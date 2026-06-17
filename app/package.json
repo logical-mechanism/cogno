@@ -1,0 +1,33 @@
+{
+  "name": "cogno-chain-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "cogno-chain M1 frontend — Next.js static-export SPA + PAPI post/read loop (Reading Room / Civic Ledger)",
+  "scripts": {
+    "postinstall": "papi",
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "lint": "next lint",
+    "papi:add": "papi add cogno -w ws://127.0.0.1:9944",
+    "papi": "papi",
+    "acceptance": "node scripts/papi-acceptance.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter-tight": "^5.1.1",
+    "@fontsource-variable/source-serif-4": "^5.1.1",
+    "@fontsource/ibm-plex-mono": "^5.1.1",
+    "@polkadot-api/descriptors": "file:.papi/descriptors",
+    "@polkadot-labs/hdkd": "^0.0.21",
+    "@polkadot-labs/hdkd-helpers": "^0.0.21",
+    "next": "^14.2.15",
+    "polkadot-api": "^1.9.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.6.0"
+  }
+}

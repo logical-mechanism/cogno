@@ -1,0 +1,18 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# papi-generated descriptor metadata cache (regenerated from the running node)
+# NOTE: .papi/ config + metadata ARE committed so a fork is reproducible; only the
+# generated node_modules package (@polkadot-api/descriptors) is transient.
+
+# typescript / next
+next-env.d.ts
+*.tsbuildinfo
+
+# misc
+.DS_Store
+*.log
