@@ -1,0 +1,18 @@
+name = "logical-mechanism/cogno-chain-l1"
+version = "0.1.0"
+compiler = "v1.1.22"
+plutus = "v3"
+license = "Apache-2.0"
+description = "cogno-chain L1 — the talk_vault owner-reclaimable ADA vault + beacon NFT (DR-01/DR-18). One merged mint+spend validator parameterized by min_lock; policy_id == this hash; beacon token_name = blake2b_256(cbor.serialise(owner Address))."
+
+[repository]
+user = "logical-mechanism"
+project = "cogno-chain"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v2.2.0"
+source = "github"
+
+[config]
