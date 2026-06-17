@@ -29,7 +29,9 @@ pallet-aura = { workspace = true }
 pallet-balances = { workspace = true }
 pallet-grandpa = { workspace = true }
 pallet-microblog = { workspace = true }
+pallet-skip-feeless-payment = { workspace = true }
 pallet-sudo = { workspace = true }
+pallet-talk-stake = { workspace = true }
 pallet-template = { workspace = true }
 pallet-timestamp = { workspace = true }
 pallet-transaction-payment = { workspace = true }
@@ -70,7 +72,9 @@ std = [
 	"pallet-balances/std",
 	"pallet-grandpa/std",
 	"pallet-microblog/std",
+	"pallet-skip-feeless-payment/std",
 	"pallet-sudo/std",
+	"pallet-talk-stake/std",
 	"pallet-template/std",
 	"pallet-timestamp/std",
 	"pallet-transaction-payment-rpc-runtime-api/std",
@@ -101,7 +105,9 @@ runtime-benchmarks = [
 	"pallet-balances/runtime-benchmarks",
 	"pallet-grandpa/runtime-benchmarks",
 	"pallet-microblog/runtime-benchmarks",
+	"pallet-skip-feeless-payment/runtime-benchmarks",
 	"pallet-sudo/runtime-benchmarks",
+	"pallet-talk-stake/runtime-benchmarks",
 	"pallet-template/runtime-benchmarks",
 	"pallet-timestamp/runtime-benchmarks",
 	"pallet-transaction-payment/runtime-benchmarks",
@@ -116,7 +122,9 @@ try-runtime = [
 	"pallet-balances/try-runtime",
 	"pallet-grandpa/try-runtime",
 	"pallet-microblog/try-runtime",
+	"pallet-skip-feeless-payment/try-runtime",
 	"pallet-sudo/try-runtime",
+	"pallet-talk-stake/try-runtime",
 	"pallet-template/try-runtime",
 	"pallet-timestamp/try-runtime",
 	"pallet-transaction-payment/try-runtime",

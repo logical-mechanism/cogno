@@ -34,7 +34,10 @@ use frame_support::{
 		IdentityFee, Weight,
 	},
 };
-use frame_system::limits::{BlockLength, BlockWeights};
+use frame_system::{
+	limits::{BlockLength, BlockWeights},
+	EnsureRoot,
+};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use sp_runtime::{traits::One, Perbill};
@@ -175,13 +178,53 @@ impl pallet_template::Config for Runtime {
 	type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
 }
 
-/// Configure pallet-microblog in pallets/microblog (M0: plain posting, no gate/capacity).
-/// MaxLength = 512 and MaxPostsPerAuthor = 10_000 are the decided v1 baselines (DR-10b);
-/// post ids are u64 (DR-21). Real benchmarked WeightInfo is DR-05 (a later milestone) — for
-/// M0 the weights are hand-set constants, the same dev-grade approach the template uses.
+/// Configure pallet-talk-stake (M2c): the per-account weight source for the talk-capacity
+/// meter. v1 dev = the operator sets weight by sudo (`EnsureRoot`, the DR-07 escape hatch);
+/// Cardano-sourced weight via the follower is M2d, and the widen to a k-of-t FollowerOrigin
+/// is signature-free (it stays an `EnsureOrigin`).
+impl pallet_talk_stake::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type SetStakeOrigin = EnsureRoot<AccountId>;
+	type WeightInfo = pallet_talk_stake::weights::SubstrateWeight<Runtime>;
+}
+
+/// The feeless fee-waiver pallet: makes `#[pallet::feeless_if]` calls skip
+/// `ChargeTransactionPayment` (wired via `SkipCheckIfFeeless` in `TxExtension`, see lib.rs).
+impl pallet_skip_feeless_payment::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+}
+
+parameter_types! {
+	// ── Talk-capacity constants (M2c) — DEV-TUNED for a snappy, watchable showcase. All are
+	//    runtime-tunable (ECONOMICS §4.4); the real v1 ~5h regen window (DR-10) is a constant
+	//    change for mainnet. Units are "micro-capacity"; one post ≈ BaseCost.
+	//
+	//    With these values, a grant of weight 10_000_000 (≈10 ADA in lovelace) yields:
+	//      cap  = min(weight·50, Ceiling) = 5·10^8  ≈ 10 posts (burst)
+	//      rate = weight·2                = 2·10^7 / block ≈ 1 post / 2.5 blocks (~15s)
+	//      empty→full = cap/rate ≈ 25 blocks (~2.5 min)
+	//    A 512-byte post costs BaseCost + 512·PerByteCost ≈ 1.5 posts of capacity.
+	pub const CapRatio: u128 = 50;
+	pub const RegenPerBlock: u128 = 2;
+	pub const Ceiling: u128 = 5_000_000_000_000; // ~100k posts — present but won't bite dev grants
+	pub const BaseCost: u128 = 50_000_000;        // 1 post
+	pub const PerByteCost: u128 = 50_000;
+}
+
+/// Configure pallet-microblog (M2c: feeless, capacity-metered posting; capacity folded in,
+/// DR-24). MaxLength = 512 / MaxPostsPerAuthor = 10_000 are the decided v1 baselines (DR-10b);
+/// post ids are u64 (DR-21). Real benchmarked WeightInfo is DR-05 (a later milestone). The
+/// `ForceOrigin` (sudo in dev) lets the operator prime/pre-charge a battery before the Cardano
+/// weight source (M2d) is wired; the future gate's `link_identity` will call `on_first_bind`.
 impl pallet_microblog::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type MaxLength = ConstU32<512>;
 	type MaxPostsPerAuthor = ConstU32<10_000>;
+	type CapRatio = CapRatio;
+	type RegenPerBlock = RegenPerBlock;
+	type Ceiling = Ceiling;
+	type BaseCost = BaseCost;
+	type PerByteCost = PerByteCost;
+	type ForceOrigin = EnsureRoot<AccountId>;
 	type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
 }

@@ -121,7 +121,11 @@ pub fn create_benchmark_extrinsic(
 		)),
 		frame_system::CheckNonce::<runtime::Runtime>::from(nonce),
 		frame_system::CheckWeight::<runtime::Runtime>::new(),
-		pallet_transaction_payment::ChargeTransactionPayment::<runtime::Runtime>::from(0),
+		// M2c: the feeless-post capacity gate, then payment wrapped in the feeless skip.
+		pallet_microblog::CheckCapacity::<runtime::Runtime>::new(),
+		pallet_skip_feeless_payment::SkipCheckIfFeeless::<runtime::Runtime, _>::from(
+			pallet_transaction_payment::ChargeTransactionPayment::<runtime::Runtime>::from(0),
+		),
 		frame_metadata_hash_extension::CheckMetadataHash::<runtime::Runtime>::new(false),
 		frame_system::WeightReclaim::<runtime::Runtime>::new(),
 	);
@@ -130,17 +134,18 @@ pub fn create_benchmark_extrinsic(
 		call.clone(),
 		tx_ext.clone(),
 		(
-			(),
-			(),
-			runtime::VERSION.spec_version,
-			runtime::VERSION.transaction_version,
-			genesis_hash,
-			best_hash,
-			(),
-			(),
-			(),
-			None,
-			(),
+			(),                                     // AuthorizeCall
+			(),                                     // CheckNonZeroSender
+			runtime::VERSION.spec_version,          // CheckSpecVersion
+			runtime::VERSION.transaction_version,   // CheckTxVersion
+			genesis_hash,                           // CheckGenesis
+			best_hash,                              // CheckEra
+			(),                                     // CheckNonce
+			(),                                     // CheckWeight
+			(),                                     // CheckCapacity (M2c)
+			(),                                     // SkipCheckIfFeeless<ChargeTransactionPayment>
+			None,                                   // CheckMetadataHash
+			(),                                     // WeightReclaim
 		),
 	);
 	let signature = raw_payload.using_encoded(|e| sender.sign(e));

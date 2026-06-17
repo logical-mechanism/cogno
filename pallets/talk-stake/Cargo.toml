@@ -1,6 +1,6 @@
 [package]
-name = "pallet-microblog"
-description = "cogno-chain microblog pallet — plain text posting (M0; identity gate + talk-capacity land in later milestones)."
+name = "pallet-talk-stake"
+description = "cogno-chain talk-stake pallet — per-account stake weight, written by the FollowerOrigin (sudo in dev). Feeds the regenerating talk-capacity meter in pallet-microblog."
 version = "0.1.0"
 license = "Unlicense"
 authors.workspace = true
@@ -20,9 +20,6 @@ codec = { features = ["derive"], workspace = true }
 frame-support = { workspace = true }
 frame-system = { workspace = true }
 scale-info = { features = ["derive"], workspace = true }
-sp-runtime = { workspace = true }
-# Tight coupling: the capacity meter reads per-account weight from talk-stake (ECONOMICS §6.2).
-pallet-talk-stake = { workspace = true }
 
 [dev-dependencies]
 sp-core = { default-features = true, workspace = true }
@@ -35,17 +32,13 @@ std = [
 	"codec/std",
 	"frame-support/std",
 	"frame-system/std",
-	"pallet-talk-stake/std",
 	"scale-info/std",
-	"sp-runtime/std",
 ]
 runtime-benchmarks = [
 	"frame-support/runtime-benchmarks",
 	"frame-system/runtime-benchmarks",
-	"pallet-talk-stake/runtime-benchmarks",
 ]
 try-runtime = [
 	"frame-support/try-runtime",
 	"frame-system/try-runtime",
-	"pallet-talk-stake/try-runtime",
 ]

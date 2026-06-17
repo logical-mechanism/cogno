@@ -1428,6 +1428,8 @@ dependencies = [
  "frame-system",
  "futures",
  "jsonrpsee",
+ "pallet-microblog",
+ "pallet-skip-feeless-payment",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc",
  "sc-basic-authorship",
@@ -1474,7 +1476,9 @@ dependencies = [
  "pallet-balances",
  "pallet-grandpa",
  "pallet-microblog",
+ "pallet-skip-feeless-payment",
  "pallet-sudo",
+ "pallet-talk-stake",
  "pallet-template",
  "pallet-timestamp",
  "pallet-transaction-payment",
@@ -6469,6 +6473,7 @@ version = "0.1.0"
 dependencies = [
  "frame-support",
  "frame-system",
+ "pallet-talk-stake",
  "parity-scale-codec",
  "scale-info",
  "sp-core",
@@ -6530,6 +6535,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-skip-feeless-payment"
+version = "21.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cf79d43bfc3b82f5e9aa02146b0e1cdbebecfbe48b1885b8638bc0191e81a7d"
+dependencies = [
+ "frame-support",
+ "frame-system",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-runtime",
+]
+
+[[package]]
 name = "pallet-staking"
 version = "46.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6564,6 +6582,19 @@ dependencies = [
  "frame-system",
  "parity-scale-codec",
  "scale-info",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
+name = "pallet-talk-stake"
+version = "0.1.0"
+dependencies = [
+ "frame-support",
+ "frame-system",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
  "sp-io",
  "sp-runtime",
 ]

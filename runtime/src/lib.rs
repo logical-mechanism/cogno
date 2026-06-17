@@ -69,11 +69,15 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	//   `spec_version`, and `authoring_version` are the same between Wasm and native.
 	// This value is set to 100 to notify Polkadot-JS App (https://polkadot.js.org/apps) to use
 	//   the compatible custom types.
-	// Bumped 100 -> 101 for M0: added pallet-microblog at index 10 (encoding-affecting).
-	spec_version: 101,
+	// Bumped 100 -> 101 for M0 (added pallet-microblog @ 10). 101 -> 102 for M2c: added
+	// pallet-talk-stake (@9) + pallet-skip-feeless-payment (@11), folded talk-capacity +
+	// feeless `post_message` into microblog (new storage/calls/constants — encoding-affecting).
+	spec_version: 102,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
-	transaction_version: 1,
+	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
+	// (the signed-extension set changed → the extrinsic format version changes).
+	transaction_version: 2,
 	system_version: 1,
 };
 
@@ -157,7 +161,16 @@ pub type TxExtension = (
 	frame_system::CheckEra<Runtime>,
 	frame_system::CheckNonce<Runtime>,
 	frame_system::CheckWeight<Runtime>,
-	pallet_transaction_payment::ChargeTransactionPayment<Runtime>,
+	// ⚑ M2c: the feeless-post spam gate. Runs at the pool BEFORE payment; over-budget
+	// `post_message` → `ExhaustsResources`, capacity consumed at inclusion (pallet-microblog §5).
+	pallet_microblog::CheckCapacity<Runtime>,
+	// ⚑ M2c: wrap payment in `SkipCheckIfFeeless` so calls marked `#[pallet::feeless_if]`
+	// (i.e. `post_message`) skip the fee. Feeless is per-call, not chain-wide — `delete_post`
+	// and everything else stay fee-bearing. (Metadata-invisible: PAPI still sees plain payment.)
+	pallet_skip_feeless_payment::SkipCheckIfFeeless<
+		Runtime,
+		pallet_transaction_payment::ChargeTransactionPayment<Runtime>,
+	>,
 	frame_metadata_hash_extension::CheckMetadataHash<Runtime>,
 	frame_system::WeightReclaim<Runtime>,
 );
@@ -223,8 +236,15 @@ mod runtime {
 	pub type Template = pallet_template;
 
 	// ── cogno-chain app pallets ──
-	// Indices are on-wire contracts: 8 = CognoGate, 9 = TalkStake are RESERVED for later
-	// milestones (FRAME allows index gaps). Microblog takes 10 now.
+	// Indices are on-wire contracts (FRAME allows index gaps): 8 = CognoGate RESERVED for the
+	// M2 identity gate; 9 = TalkStake (M2c, the weight source); 10 = Microblog (+ folded
+	// talk-capacity, DR-24); 11 = SkipFeelessPayment (the feeless fee-waiver pallet).
+	#[runtime::pallet_index(9)]
+	pub type TalkStake = pallet_talk_stake;
+
 	#[runtime::pallet_index(10)]
 	pub type Microblog = pallet_microblog;
+
+	#[runtime::pallet_index(11)]
+	pub type SkipFeelessPayment = pallet_skip_feeless_payment;
 }

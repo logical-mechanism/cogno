@@ -24,6 +24,8 @@ frame-metadata-hash-extension = { default-features = true, workspace = true }
 frame-system = { default-features = true, workspace = true }
 futures = { features = ["thread-pool"], workspace = true }
 jsonrpsee = { features = ["server"], workspace = true }
+pallet-microblog = { default-features = true, workspace = true }
+pallet-skip-feeless-payment = { default-features = true, workspace = true }
 pallet-transaction-payment = { default-features = true, workspace = true }
 pallet-transaction-payment-rpc = { default-features = true, workspace = true }
 sc-basic-authorship = { default-features = true, workspace = true }
