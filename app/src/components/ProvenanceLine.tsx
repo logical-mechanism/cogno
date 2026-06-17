@@ -101,6 +101,10 @@ export function ProvenanceLine({ heads, status }: ProvenanceLineProps) {
 
       <div className={styles.badges}>
         <HonestyBadge
+          label="follower: trusted (v1)"
+          detail="Cardano identity bindings are verified and written by a single trusted follower service. It is the sole verifier AND writer in v1 — a bad follower could bind the wrong key; the AccountOf readback is your client-side check. The on-chain self-proof (D1) and a k-of-t signer set (D2) are deferred."
+        />
+        <HonestyBadge
           label="chain: operator-run (v1)"
           detail="This chain runs on a single operator-run dev node. It is not yet a multi-validator network — treat liveness and censorship-resistance as provisional."
         />

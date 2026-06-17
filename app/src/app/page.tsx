@@ -11,6 +11,7 @@ import { useHeads } from "@/hooks/useHeads";
 import { useSigner } from "@/hooks/useSigner";
 import { useSubmit } from "@/hooks/useSubmit";
 import { useCapacity } from "@/hooks/useCapacity";
+import { useIdentity } from "@/hooks/useIdentity";
 import { Masthead } from "@/components/Masthead";
 import { ProvenanceLine } from "@/components/ProvenanceLine";
 import { Composer } from "@/components/Composer";
@@ -34,6 +35,8 @@ export default function Page() {
   const submit = useSubmit(api, signer, boot);
   // Live, advisory talk-capacity for the active posting key — ticks with the best block.
   const capacity = useCapacity(api, signer.ss58, heads.best?.number ?? null);
+  // M2: the Cardano-identity bind state for the active posting key (+ the bind action).
+  const identity = useIdentity(api, signer);
 
   const [replyTo, setReplyTo] = useState<bigint | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -51,6 +54,7 @@ export default function Page() {
         onGenerateSession={useSessionKey}
         sessionMnemonic={sessionMnemonic}
         onAckSessionMnemonic={ackSessionMnemonic}
+        identity={identity}
         status={status}
         wsUrl={wsUrl}
         onOpenSettings={() => setSettingsOpen((o) => !o)}
@@ -75,6 +79,7 @@ export default function Page() {
           onSubmit={onSubmitPost}
           capView={capacity.view}
           capConsts={capacity.consts}
+          bound={identity.bound}
         />
       </div>
 

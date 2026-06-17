@@ -10,6 +10,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PostingSigner } from "@/lib/types";
+import type { UseIdentity } from "@/hooks/useIdentity";
+import { listCardanoWallets, type CardanoWalletInfo } from "@/lib/cardano/cip8";
 import styles from "./IdentityRail.module.css";
 
 function shortSs58(addr: string): string {
@@ -25,6 +27,8 @@ export interface IdentityRailProps {
   /** The mnemonic to surface ONCE after generating a session key (null otherwise). */
   sessionMnemonic: string | null;
   onAckSessionMnemonic: () => void;
+  /** The Cardano-identity bind state + action (M2). */
+  identity: UseIdentity;
 }
 
 export function IdentityRail({
@@ -34,9 +38,22 @@ export function IdentityRail({
   onGenerateSession,
   sessionMnemonic,
   onAckSessionMnemonic,
+  identity,
 }: IdentityRailProps) {
   const [open, setOpen] = useState(false);
+  const [bindOpen, setBindOpen] = useState(false);
+  const [wallets, setWallets] = useState<CardanoWalletInfo[] | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Close the bind picker once a bind succeeds.
+  useEffect(() => {
+    if (identity.bound === true) setBindOpen(false);
+  }, [identity.bound]);
+
+  const openBindPicker = () => {
+    setBindOpen((o) => !o);
+    if (wallets == null) void listCardanoWallets().then(setWallets);
+  };
 
   // Open the switcher whenever a fresh mnemonic needs acknowledging.
   useEffect(() => {
@@ -45,12 +62,18 @@ export function IdentityRail({
 
   // Close on outside click / Escape.
   useEffect(() => {
-    if (!open) return;
+    if (!open && !bindOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        setBindOpen(false);
+      }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        setOpen(false);
+        setBindOpen(false);
+      }
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -58,7 +81,7 @@ export function IdentityRail({
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, bindOpen]);
 
   return (
     <div className={styles.rail} ref={ref}>
@@ -83,20 +106,95 @@ export function IdentityRail({
         </span>
       </button>
 
-      {/* Cardano seal — honestly EMPTY in M1. Not a button: nothing to connect yet. */}
-      <span
-        className={`${styles.chip} ${styles.sealChip}`}
-        aria-disabled="true"
-        title="Cardano identity & stake-derived talk-capacity arrive in M2."
-      >
-        <span className={styles.glyph} aria-hidden="true">
-          ◇
+      {/* Cardano seal — LIVE in M2: bind a Cardano identity (CIP-8) to this posting key. */}
+      {identity.bound === true ? (
+        <span
+          className={`${styles.chip} ${styles.sealChip} ${styles.sealBound}`}
+          title={identity.boundAddress ?? "This posting key is bound to a Cardano identity."}
+        >
+          <span className={styles.glyph} aria-hidden="true">
+            ◆
+          </span>
+          <span className={styles.chipLabel}>
+            <span className={styles.chipRole}>identity</span>
+            <span className={styles.chipValue}>
+              {identity.boundAddress ? `bound · ${shortSs58(identity.boundAddress)}` : "bound ✓"}
+            </span>
+          </span>
         </span>
-        <span className={styles.chipLabel}>
-          <span className={styles.chipRole}>identity &amp; stake</span>
-          <span className={styles.chipValueMuted}>arrives in M2</span>
-        </span>
-      </span>
+      ) : (
+        <button
+          type="button"
+          className={`${styles.chip} ${styles.sealChip}`}
+          onClick={openBindPicker}
+          disabled={identity.binding}
+          aria-expanded={bindOpen}
+          aria-haspopup="menu"
+          title="Bind a Cardano identity to this posting key (signs CIP-8 once)."
+        >
+          <span className={styles.glyph} aria-hidden="true">
+            ◇
+          </span>
+          <span className={styles.chipLabel}>
+            <span className={styles.chipRole}>identity</span>
+            <span className={styles.chipValueMuted}>
+              {identity.binding ? "binding…" : "bind Cardano →"}
+            </span>
+          </span>
+        </button>
+      )}
+
+      {bindOpen && identity.bound !== true && (
+        <div className={styles.bindPop} role="menu" aria-label="Bind a Cardano identity">
+          <p className={styles.popHead}>bind a Cardano identity</p>
+          <p className={styles.bindNote}>
+            Prove you control a Cardano wallet by signing once (CIP-8). It binds that identity
+            1:1 to your posting key — nothing moves, no funds are spent.
+          </p>
+          {wallets == null ? (
+            <p className={styles.bindMuted}>looking for wallets…</p>
+          ) : wallets.length === 0 ? (
+            <p className={styles.bindMuted}>
+              No Cardano wallet found. Install Eternl, Lace, or another CIP-30 wallet, then reload.
+            </p>
+          ) : (
+            <ul className={styles.devList}>
+              {wallets.map((w) => (
+                <li key={w.id}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={styles.devItem}
+                    disabled={identity.binding}
+                    onClick={() => identity.bind(w.id)}
+                  >
+                    {w.icon && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={w.icon} alt="" width={16} height={16} className={styles.walletIcon} />
+                    )}
+                    {w.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {identity.binding && (
+            <p className={styles.bindMuted}>
+              waiting on: your wallet signature → the follower&apos;s verify → the chain readback.
+            </p>
+          )}
+          {identity.error && (
+            <p className={styles.bindError} role="alert">
+              {identity.error}
+            </p>
+          )}
+          <p className={styles.popNote}>
+            The follower that verifies your signature is a single trusted service in v1
+            (<code>follower: trusted (v1)</code>) — it could, in principle, bind the wrong key; the
+            readback above is your check that it did not.
+          </p>
+        </div>
+      )}
 
       {open && (
         <div className={styles.popover} role="menu" aria-label="Switch posting key">

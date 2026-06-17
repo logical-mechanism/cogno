@@ -70,6 +70,8 @@ export interface ComposerProps {
   /** live talk-capacity view + constants for the active signer (advisory). */
   capView: CapacityView | null;
   capConsts: CapacityConsts | null;
+  /** whether the active posting key has a Cardano identity bound (M2). null = unknown. */
+  bound: boolean | null;
 }
 
 export function Composer({
@@ -82,6 +84,7 @@ export function Composer({
   onSubmit,
   capView,
   capConsts,
+  bound,
 }: ComposerProps) {
   const [text, setText] = useState("");
 
@@ -89,6 +92,9 @@ export function Composer({
   const overLimit = bytes > MAX_BYTES;
   const empty = text.trim().length === 0;
   const bootBlocked = boot != null && boot.ok === false;
+  // M2 identity gate: the chain rejects an unbound account (NotAllowed). Block only when we KNOW
+  // the account is unbound (false); when unknown (null) never block — the runtime is the authority.
+  const bindBlocked = bound === false;
 
   // Advisory capacity gate: when the replay says this draft can't post yet, disable the
   // button (the battery shows the reason). When capacity is unknown, never block — the
@@ -105,7 +111,7 @@ export function Composer({
     }
   }, [txState?.phase, onClearReply]);
 
-  const disabled = busy || overLimit || empty || bootBlocked || capacityBlocked;
+  const disabled = busy || overLimit || empty || bootBlocked || capacityBlocked || bindBlocked;
   const status = statusView(txState);
 
   const submit = () => {
@@ -182,6 +188,10 @@ export function Composer({
               update required to post — node spec {boot?.nodeSpecVersion} differs from
               this build
               {boot?.reason ? ` (${boot.reason})` : ""}
+            </span>
+          ) : bindBlocked ? (
+            <span className={styles.toneBad}>
+              bind a Cardano identity to post — use the seal above (signs CIP-8 once)
             </span>
           ) : status ? (
             <span className={status.tone}>{status.text}</span>

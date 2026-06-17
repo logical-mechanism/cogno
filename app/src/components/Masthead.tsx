@@ -4,6 +4,7 @@
 // then the live identity rail and the connection pill. No nav chrome beyond this.
 
 import type { ConnStatus, PostingSigner } from "@/lib/types";
+import type { UseIdentity } from "@/hooks/useIdentity";
 import { IdentityRail } from "./IdentityRail";
 import { ConnState } from "./ConnState";
 import styles from "./Masthead.module.css";
@@ -15,6 +16,7 @@ export interface MastheadProps {
   onGenerateSession: () => void;
   sessionMnemonic: string | null;
   onAckSessionMnemonic: () => void;
+  identity: UseIdentity;
   status: ConnStatus;
   wsUrl: string | null;
   onOpenSettings: () => void;
@@ -44,6 +46,7 @@ export function Masthead(props: MastheadProps) {
         onGenerateSession={props.onGenerateSession}
         sessionMnemonic={props.sessionMnemonic}
         onAckSessionMnemonic={props.onAckSessionMnemonic}
+        identity={props.identity}
       />
     </header>
   );

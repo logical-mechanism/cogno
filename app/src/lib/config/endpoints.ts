@@ -59,3 +59,34 @@ export function setEndpoints(list: string[]): void {
 export function getActiveWsUrl(): string {
   return getEndpoints()[0];
 }
+
+// ── Cogno-Follower endpoint (M2) ────────────────────────────────────────────────────────
+// The trusted v1 follower the bind flow POSTs the CIP-8 proof to. Config, like the WS
+// endpoints — but it buys ZERO route-around in v1 (one trusted follower; the badge says so).
+// HTTPS in any real deployment; plain http for the localhost dev showcase.
+
+/** The default follower the dev build binds through. */
+export const DEFAULT_FOLLOWER_URL = "http://127.0.0.1:8090";
+const FOLLOWER_STORAGE_KEY = "cogno.follower";
+
+/** The user-configured follower URL, or {@link DEFAULT_FOLLOWER_URL}. SSG-safe. */
+export function getFollowerUrl(): string {
+  if (typeof window === "undefined") return DEFAULT_FOLLOWER_URL;
+  try {
+    const raw = window.localStorage.getItem(FOLLOWER_STORAGE_KEY);
+    return raw && /^https?:\/\//.test(raw) ? raw : DEFAULT_FOLLOWER_URL;
+  } catch {
+    return DEFAULT_FOLLOWER_URL;
+  }
+}
+
+/** Persist the follower URL (http/https only). No-op without `window`. */
+export function setFollowerUrl(url: string): void {
+  if (!/^https?:\/\//.test(url)) throw new Error("Follower URL must be http:// or https://");
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(FOLLOWER_STORAGE_KEY, url);
+  } catch {
+    // Storage blocked — non-critical.
+  }
+}

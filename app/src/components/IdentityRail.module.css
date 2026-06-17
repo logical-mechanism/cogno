@@ -72,18 +72,79 @@
   color: var(--identity-substrate);
 }
 
-/* Cardano seal — honestly empty, visually muted, not interactive. */
+/* Cardano seal — M2: interactive. Unsealed (dashed) until bound, then solid + affirm. */
 .sealChip {
-  cursor: not-allowed;
-  opacity: 0.7;
+  cursor: pointer;
   border-left: 3px solid var(--identity-cardano);
   /* Dashed body says "outline, not yet filled" — the seal is unsealed. */
   border-top-style: dashed;
   border-right-style: dashed;
   border-bottom-style: dashed;
 }
+.sealChip:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.sealChip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.sealChip:disabled {
+  cursor: progress;
+  opacity: 0.8;
+}
 .sealChip .glyph {
   color: var(--identity-cardano);
+}
+
+/* Bound — the seal is sealed: solid body, verdigris affirm (the one accent, identity-affirm). */
+.sealBound {
+  cursor: default;
+  border-style: solid;
+  border-left-color: var(--verdigris);
+}
+.sealBound .glyph {
+  color: var(--verdigris);
+}
+
+/* Bind picker — same surface as the key switcher, anchored under the seal chip. */
+.bindPop {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  z-index: 20;
+  width: min(24rem, 92vw);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-0);
+  box-shadow: var(--shadow-2);
+  font-family: var(--font-ui);
+}
+.bindNote {
+  margin: 0 0 var(--space-3);
+  color: var(--ink-600);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.45;
+}
+.bindMuted {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-400);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.4;
+}
+.bindError {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  border: 1px solid var(--hairline-accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--ink-900);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.4;
+}
+.walletIcon {
+  border-radius: 3px;
+  flex: 0 0 auto;
 }
 
 /* Switcher popover */
