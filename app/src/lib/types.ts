@@ -47,6 +47,24 @@ export interface ChainHeads {
 }
 
 /**
+ * The latest Cardano anchor checkpoint (`Anchor.LastCheckpoint`, M3 Tier-A). Records which
+ * Cardano metadata tx witnessed which finalized solochain post-state root. **Evidence, not
+ * enforcement** (DR-20). `null` until the relayer has anchored at least once.
+ */
+export interface AnchorCheckpoint {
+  /** The finalized solochain block this checkpoint witnesses (`block_number`, u32). */
+  blockNumber: number;
+  /** 0x-prefixed finalized post-state root — the GRANDPA-committed root (`finalized_root`). */
+  finalizedRoot: string;
+  /** 0x-prefixed Cardano metadata tx hash carrying the root (`cardano_txhash`). */
+  cardanoTxHash: string;
+  /** `NextPostId` at that block — total posts created by then (`post_count`, u64). */
+  postCount: bigint;
+  /** Relayer-supplied unix-millis of the anchored block (`timestamp`, u64). */
+  timestamp: bigint;
+}
+
+/**
  * A live feed snapshot. `posts` is the FULL current set (rebuilt from
  * `watchEntries().entries` every emission — `entries` is authoritative; deltas can be
  * null), sorted newest-first by `id`. `asOf` is the block the snapshot reflects.

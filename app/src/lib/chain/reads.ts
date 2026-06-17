@@ -13,6 +13,7 @@ import type {
   FeedSnapshot,
   ChainHeads,
   BlockRef,
+  AnchorCheckpoint,
 } from "@/lib/types";
 
 /** A single live entry from `Posts.watchEntries()`: storage key + decoded value. */
@@ -81,6 +82,36 @@ export function watchHeads(client: PolkadotClient): Observable<ChainHeads> {
       best: toBlockRef(best),
       finalized: toBlockRef(finalized),
     })),
+  );
+}
+
+/** The raw `Anchor.LastCheckpoint` value as PAPI decodes it (snake_case struct fields). */
+interface RawCheckpoint {
+  block_number: number;
+  finalized_root: { asHex: () => string };
+  cardano_txhash: { asHex: () => string };
+  post_count: bigint;
+  timestamp: bigint;
+}
+
+/**
+ * The live Cardano anchor checkpoint (`Anchor.LastCheckpoint`, M3 Tier-A). Emits `null` until the
+ * relayer has anchored at least once, then the latest checkpoint on every change. Watched at the
+ * best head so the UI updates the moment `anchor_ack` lands (it is a record, not consensus state).
+ */
+export function watchAnchor(api: CognoApi): Observable<AnchorCheckpoint | null> {
+  return api.query.Anchor.LastCheckpoint.watchValue("best").pipe(
+    map((cp): AnchorCheckpoint | null => {
+      if (!cp) return null;
+      const c = cp as unknown as RawCheckpoint;
+      return {
+        blockNumber: c.block_number,
+        finalizedRoot: c.finalized_root.asHex(),
+        cardanoTxHash: c.cardano_txhash.asHex(),
+        postCount: c.post_count,
+        timestamp: c.timestamp,
+      };
+    }),
   );
 }
 

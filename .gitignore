@@ -8,6 +8,9 @@
 
 # Node deps (acceptance script / future app + indexer)
 node_modules/
+# The anchor-relayer reuses the app's deps via a node_modules SYMLINK (not a dir, so the
+# pattern above misses it). Recreate locally: ln -sfn ../../app/node_modules node_modules
+services/anchor-relayer/node_modules
 
 # Editor / OS cruft
 *.rs.bk

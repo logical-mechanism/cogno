@@ -1,0 +1,13 @@
+{
+  "name": "cogno-anchor-relayer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "cogno-chain M3 Tier-A Anchor Relayer — writes finalized post-state roots to Cardano as tx metadata and sudo-acks the checkpoint back on L3. Evidence, not enforcement (DR-20).",
+  "scripts": {
+    "anchor": "node relayer.mjs",
+    "anchor:once": "node relayer.mjs --once",
+    "verify": "node verify.mjs"
+  },
+  "comment": "Dependencies (polkadot-api, @meshsdk/core, @polkadot-labs/hdkd*, @polkadot-api/descriptors) are shared with the frontend via node_modules -> ../../app/node_modules (a symlink). The relayer reuses the M2d owner wallet helper at ../../app/scripts/m2d-wallet.mjs and the regenerated PAPI descriptors. No separate install needed; see README.md."
+}
