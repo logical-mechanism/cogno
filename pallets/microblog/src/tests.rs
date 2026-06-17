@@ -233,3 +233,53 @@ fn force_set_capacity_is_gated() {
 		assert_eq!(Capacity::<Test>::get(1), None);
 	});
 }
+
+// ── DR-06 property test ─────────────────────────────────────────────────────────────────────
+
+/// **DR-06 — clamp-latency ≤ grant-latency (the asymmetric-safety property).** The follower's
+/// failure modes are asymmetric: a slow GRANT is safe-but-stale, but a slow CLAMP leaves a
+/// stale-positive weight — voice no longer backed by locked ADA — which is the dangerous one
+/// (`L2-follower.md` §8.2). So a clamp (weight → 0 on unlock) must take effect no slower than a
+/// grant. On L3 this falls out of the capacity math: a grant only raises the future ceiling and
+/// must regenerate over the window (latency > 0), whereas a clamp drops usable capacity to 0 on
+/// the very next read (latency 0). We measure both latencies directly across a sweep of weights
+/// and assert `clamp_latency == 0 ≤ grant_latency`.
+#[test]
+fn clamp_latency_at_most_grant_latency_property() {
+	new_test_ext().execute_with(|| {
+		// mock constants: cap = min(weight·10, 5000), rate = weight·1 / block.
+		for &weight in &[1u128, 10, 50, 100, 400] {
+			let who = weight as u64; // distinct account per case
+			let t0 = 1u64;
+			System::set_block_number(t0);
+			Microblog::on_first_bind(&who); // empty bucket, dated @ t0
+
+			// ── GRANT: raise weight from 0; usable capacity must NOT jump — it regenerates. ──
+			assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), who, weight));
+			let cap = core::cmp::min(weight.saturating_mul(10), 5000);
+			assert!(cap > 0);
+			assert_eq!(Microblog::current_capacity(&who, t0), 0, "a grant is never instantaneous");
+			let mut grant_latency = 0u64;
+			while Microblog::current_capacity(&who, t0 + grant_latency) < cap {
+				grant_latency += 1;
+				assert!(grant_latency < 1_000_000, "bucket must fill in finite time");
+			}
+			assert!(grant_latency > 0, "grant takes > 0 blocks to fully take effect");
+
+			// ── CLAMP: fill the bucket, then unlock (weight → 0); capacity drops to 0 at once. ──
+			let tf = t0 + grant_latency;
+			assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), who, cap));
+			assert_eq!(Microblog::current_capacity(&who, tf), cap);
+			assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), who, 0));
+			let mut clamp_latency = 0u64;
+			while Microblog::current_capacity(&who, tf + clamp_latency) > 0 {
+				clamp_latency += 1;
+				assert!(clamp_latency < 1_000_000, "bucket must clamp in finite time");
+			}
+			assert_eq!(clamp_latency, 0, "clamp is instantaneous (same-block)");
+
+			// The asymmetric-safety property: the dangerous direction is never the slower one.
+			assert!(clamp_latency <= grant_latency);
+		}
+	});
+}

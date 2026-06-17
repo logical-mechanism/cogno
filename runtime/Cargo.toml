@@ -28,6 +28,7 @@ frame-try-runtime = { optional = true, workspace = true }
 pallet-anchor = { workspace = true }
 pallet-aura = { workspace = true }
 pallet-balances = { workspace = true }
+pallet-collective = { workspace = true }
 pallet-cogno-gate = { workspace = true }
 pallet-grandpa = { workspace = true }
 pallet-microblog = { workspace = true }
@@ -73,6 +74,7 @@ std = [
 	"pallet-anchor/std",
 	"pallet-aura/std",
 	"pallet-balances/std",
+	"pallet-collective/std",
 	"pallet-cogno-gate/std",
 	"pallet-grandpa/std",
 	"pallet-microblog/std",
@@ -108,6 +110,7 @@ runtime-benchmarks = [
 	"frame-system/runtime-benchmarks",
 	"pallet-anchor/runtime-benchmarks",
 	"pallet-balances/runtime-benchmarks",
+	"pallet-collective/runtime-benchmarks",
 	"pallet-cogno-gate/runtime-benchmarks",
 	"pallet-grandpa/runtime-benchmarks",
 	"pallet-microblog/runtime-benchmarks",
@@ -127,6 +130,7 @@ try-runtime = [
 	"pallet-anchor/try-runtime",
 	"pallet-aura/try-runtime",
 	"pallet-balances/try-runtime",
+	"pallet-collective/try-runtime",
 	"pallet-cogno-gate/try-runtime",
 	"pallet-grandpa/try-runtime",
 	"pallet-microblog/try-runtime",

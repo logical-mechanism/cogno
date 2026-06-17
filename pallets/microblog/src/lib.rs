@@ -34,6 +34,9 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
+
 pub mod weights;
 pub use weights::*;
 
@@ -69,6 +72,14 @@ use sp_runtime::{
 pub trait IsAllowed<AccountId> {
 	/// Whether `who` has a live 1:1 Cardano-identity binding (⇒ may post).
 	fn is_allowed(who: &AccountId) -> bool;
+
+	/// Benchmark-only setup hook (DR-05): force `who` into the allowed set so a subsequent
+	/// `is_allowed(who)` returns `true`. This lets `post_message` be benchmarked end-to-end
+	/// through the *real* runtime gate (`CognoGate`) — where the `whitelisted_caller` is
+	/// otherwise unbound and would be rejected `NotAllowed` — without the microblog crate
+	/// depending on cogno-gate. The real gate inserts a binding; the test mock is a no-op.
+	#[cfg(feature = "runtime-benchmarks")]
+	fn benchmark_set_allowed(who: &AccountId);
 }
 
 /// The first-bind hook `pallet-cogno-gate` calls (via its `OnBind` Config type) when it links an
@@ -421,8 +432,19 @@ where
 	type Val = Pre<T>;
 	type Pre = Pre<T>;
 
-	// `weight` defaults to zero; we implement validate / prepare / post_dispatch_details.
-	impl_tx_ext_default!(T::RuntimeCall; weight);
+	// We implement validate / prepare / post_dispatch_details (and a REAL weight) below; the
+	// macro defaults nothing here.
+	impl_tx_ext_default!(T::RuntimeCall;);
+
+	/// The extension's weight is **real** (DR-05 / `L3-chain.md` §5.4), NOT zero: it covers the
+	/// `AllowedStake` + `Capacity` reads `validate()` performs (`current_capacity`) and the
+	/// `Capacity` write `consume()` performs in `post_dispatch`. Counting it here is what makes
+	/// the feeless post path's FULL cost — the `post_message` call body PLUS this capacity gate —
+	/// land in the block-weight backstop (`posts_per_block_max`); a zero here would understate
+	/// the only anti-spam and leave silent free-spam headroom. Benchmarked as `check_capacity`.
+	fn weight(&self, _call: &T::RuntimeCall) -> Weight {
+		<T as Config>::WeightInfo::check_capacity()
+	}
 
 	fn validate(
 		&self,

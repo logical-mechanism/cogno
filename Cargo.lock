@@ -1476,6 +1476,7 @@ dependencies = [
  "pallet-aura",
  "pallet-balances",
  "pallet-cogno-gate",
+ "pallet-collective",
  "pallet-grandpa",
  "pallet-microblog",
  "pallet-skip-feeless-payment",
@@ -6304,6 +6305,7 @@ checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 name = "pallet-anchor"
 version = "0.1.0"
 dependencies = [
+ "frame-benchmarking",
  "frame-support",
  "frame-system",
  "parity-scale-codec",
@@ -6443,10 +6445,29 @@ dependencies = [
 name = "pallet-cogno-gate"
 version = "0.1.0"
 dependencies = [
+ "frame-benchmarking",
  "frame-support",
  "frame-system",
  "pallet-microblog",
  "pallet-talk-stake",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
+name = "pallet-collective"
+version = "46.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1257bd27a7c31bf8df9ec287bf1980e08e9ee4a36f934ff1fecf143bc8aa08f8"
+dependencies = [
+ "docify",
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
  "parity-scale-codec",
  "scale-info",
  "sp-core",
@@ -6501,6 +6522,7 @@ dependencies = [
 name = "pallet-microblog"
 version = "0.1.0"
 dependencies = [
+ "frame-benchmarking",
  "frame-support",
  "frame-system",
  "pallet-talk-stake",
@@ -6620,6 +6642,7 @@ dependencies = [
 name = "pallet-talk-stake"
 version = "0.1.0"
 dependencies = [
+ "frame-benchmarking",
  "frame-support",
  "frame-system",
  "parity-scale-codec",

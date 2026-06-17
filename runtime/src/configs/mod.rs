@@ -28,12 +28,14 @@ use frame_support::{
 	derive_impl,
 	dispatch::DispatchClass,
 	parameter_types,
-	traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, VariantCountOf},
+	traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, EitherOfDiverse, VariantCountOf},
 	weights::{
 		constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
 		IdentityFee, Weight,
 	},
 };
+// DR-07: the mutable k-of-t committee origin combinator + its default instance.
+use pallet_collective::{EnsureProportionAtLeast, Instance1};
 use frame_system::{
 	limits::{BlockLength, BlockWeights},
 	EnsureRoot,
@@ -47,7 +49,7 @@ use sp_version::RuntimeVersion;
 use super::{
 	AccountId, Aura, Balance, Balances, Block, BlockNumber, CognoGate, Hash, Microblog, Nonce,
 	PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
-	RuntimeOrigin, RuntimeTask, System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
+	RuntimeOrigin, RuntimeTask, System, DAYS, EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -178,13 +180,64 @@ impl pallet_template::Config for Runtime {
 	type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
 }
 
+// ── DR-07: the FollowerCommittee — the mutable k-of-t authority behind the crown jewels ──
+//
+// `pallet-collective` (one shared `Instance1`) holds a MUTABLE member set (rotation via
+// `Collective::set_members`, gated by `SetMembersOrigin` = root/sudo in v1) and produces an
+// `EnsureProportionAtLeast<3,5>` origin when a motion carries a 3-of-5 supermajority. That origin
+// — OR `EnsureRoot`/sudo (the retained v1 dev escape hatch) — authorizes every privileged write.
+// The proposal lifecycle (`Proposed`/`Voted`/`Closed`/`Approved`/`Executed`) IS the per-action
+// audit log (DR-07's D0 requirement). Widening to k-of-t changed ZERO call signatures because the
+// underlying origins were already `EnsureOrigin` (L2 §8.4). The D2 gate before any mainnet run is
+// exactly this 3-of-5 across five independent custody domains (DR-26).
+parameter_types! {
+	/// Motion lifetime before it lapses. Members can `close` early once 3-of-5 is reached, so this
+	/// is just the upper bound on an undecided motion (dev value).
+	pub const FollowerMotionDuration: BlockNumber = 7 * DAYS;
+	/// Max simultaneously-active motions.
+	pub const FollowerMaxProposals: u32 = 100;
+	/// Max committee members (≥ the 5 seats of the 3-of-5 D2 committee, with headroom).
+	pub const FollowerMaxMembers: u32 = 7;
+	/// Cap on the weight of a call a motion may execute (mirrors the council convention: 50% of a
+	/// block). All four privileged calls are tiny single-map writes, well under this.
+	pub MaxProposalWeight: Weight = Perbill::from_percent(50) * RuntimeBlockWeights::get().max_block;
+}
+
+impl pallet_collective::Config<Instance1> for Runtime {
+	type RuntimeOrigin = RuntimeOrigin;
+	type Proposal = RuntimeCall;
+	type RuntimeEvent = RuntimeEvent;
+	type MotionDuration = FollowerMotionDuration;
+	type MaxProposals = FollowerMaxProposals;
+	type MaxMembers = FollowerMaxMembers;
+	// Prime-member fallback vote; the prime is the tie-breaker for absentees.
+	type DefaultVote = pallet_collective::PrimeDefaultVote;
+	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
+	// v1: root/sudo rotates the committee. Move this to the committee itself (self-rotation) or an
+	// Ariadne/SPO selection pallet at the D2/D3 graduation — a signature-free EnsureOrigin swap.
+	type SetMembersOrigin = EnsureRoot<AccountId>;
+	type MaxProposalWeight = MaxProposalWeight;
+	type DisapproveOrigin = EnsureRoot<AccountId>;
+	type KillOrigin = EnsureRoot<AccountId>;
+	// No proposal deposit/consideration in v1 (the committee is permissioned, not open).
+	type Consideration = ();
+}
+
+/// The crown-jewel authority origin (DR-07): EITHER `EnsureRoot`/sudo (the v1 dev fallback) OR a
+/// **3-of-5 supermajority** of the [`FollowerCommittee`]. Shared by `cogno-gate::FollowerOrigin`,
+/// `talk-stake::SetStakeOrigin`, `anchor::AnchorOrigin`, and `microblog::ForceOrigin` so identity,
+/// weight, anchoring, and force-capacity all sit behind ONE trust boundary (L2 §8.4, L3 §4.5).
+pub type AuthorityOrigin =
+	EitherOfDiverse<EnsureRoot<AccountId>, EnsureProportionAtLeast<AccountId, Instance1, 3, 5>>;
+
 /// Configure pallet-talk-stake (M2c): the per-account weight source for the talk-capacity
 /// meter. v1 dev = the operator sets weight by sudo (`EnsureRoot`, the DR-07 escape hatch);
 /// Cardano-sourced weight via the follower is M2d, and the widen to a k-of-t FollowerOrigin
 /// is signature-free (it stays an `EnsureOrigin`).
 impl pallet_talk_stake::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	type SetStakeOrigin = EnsureRoot<AccountId>;
+	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
+	type SetStakeOrigin = AuthorityOrigin;
 	type WeightInfo = pallet_talk_stake::weights::SubstrateWeight<Runtime>;
 }
 
@@ -225,7 +278,8 @@ impl pallet_microblog::Config for Runtime {
 	type Ceiling = Ceiling;
 	type BaseCost = BaseCost;
 	type PerByteCost = PerByteCost;
-	type ForceOrigin = EnsureRoot<AccountId>;
+	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
+	type ForceOrigin = AuthorityOrigin;
 	// M2: gate posting on a live Cardano-identity binding (the anti-Sybil anchor).
 	type IdentityGate = CognoGate;
 	type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
@@ -239,7 +293,8 @@ impl pallet_microblog::Config for Runtime {
 /// is the first-bind hook into microblog (primes the capacity row + provider ref at link).
 impl pallet_cogno_gate::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	type FollowerOrigin = EnsureRoot<AccountId>;
+	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
+	type FollowerOrigin = AuthorityOrigin;
 	type OnBind = Microblog;
 	type WeightInfo = pallet_cogno_gate::weights::SubstrateWeight<Runtime>;
 }
@@ -252,6 +307,7 @@ impl pallet_cogno_gate::Config for Runtime {
 /// `EnsureOrigin` shape keeps the widen to a k-of-t committee signature-free.
 impl pallet_anchor::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	type AnchorOrigin = EnsureRoot<AccountId>;
+	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
+	type AnchorOrigin = AuthorityOrigin;
 	type WeightInfo = pallet_anchor::weights::SubstrateWeight<Runtime>;
 }
