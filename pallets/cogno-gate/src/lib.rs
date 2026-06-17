@@ -45,6 +45,9 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
+
 pub mod weights;
 pub use weights::*;
 
@@ -225,6 +228,15 @@ pub mod pallet {
 	impl<T: Config> IsAllowed<T::AccountId> for Pallet<T> {
 		fn is_allowed(who: &T::AccountId) -> bool {
 			PkhOf::<T>::contains_key(who)
+		}
+
+		/// Benchmark-only (DR-05): bind `who` to a dummy identity so `microblog::post_message`
+		/// can be benchmarked through the real gate. Writes only the forward map (`PkhOf`, which
+		/// `is_allowed` reads) — NOT `AccountOf` — so repeated calls with the same dummy hash do
+		/// not trip the 1:1 reverse-side invariant across benchmark iterations.
+		#[cfg(feature = "runtime-benchmarks")]
+		fn benchmark_set_allowed(who: &T::AccountId) {
+			PkhOf::<T>::insert(who, [0u8; 32]);
 		}
 	}
 }

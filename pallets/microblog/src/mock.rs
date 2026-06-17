@@ -25,6 +25,10 @@ impl pallet_microblog::IsAllowed<u64> for MockIdentityGate {
 	fn is_allowed(who: &u64) -> bool {
 		GATE_DENIED.with(|d| !d.borrow().contains(who))
 	}
+
+	// The mock allows everyone by default, so the benchmark setup hook is a no-op here.
+	#[cfg(feature = "runtime-benchmarks")]
+	fn benchmark_set_allowed(_who: &u64) {}
 }
 
 /// Deny `who` at the mock identity gate (to exercise the `NotAllowed` post path).

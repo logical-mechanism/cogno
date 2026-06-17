@@ -15,7 +15,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{AccountId, BalancesConfig, RuntimeGenesisConfig, SudoConfig};
+use crate::{
+	AccountId, BalancesConfig, FollowerCommitteeConfig, RuntimeGenesisConfig, SudoConfig,
+};
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
 use serde_json::Value;
@@ -28,6 +30,7 @@ use sp_keyring::Sr25519Keyring;
 fn testnet_genesis(
 	initial_authorities: Vec<(AuraId, GrandpaId)>,
 	endowed_accounts: Vec<AccountId>,
+	committee: Vec<AccountId>,
 	root: AccountId,
 ) -> Value {
 	build_struct_json_patch!(RuntimeGenesisConfig {
@@ -45,22 +48,39 @@ fn testnet_genesis(
 			authorities: initial_authorities.iter().map(|x| (x.1.clone(), 1)).collect::<Vec<_>>(),
 		},
 		sudo: SudoConfig { key: Some(root) },
+		// DR-07: seat the initial FollowerCommittee (the 3-of-5 k-of-t authority). Members must be
+		// endowed (propose/vote are fee-bearing); the caller passes a committee ⊆ endowed_accounts.
+		follower_committee: FollowerCommitteeConfig { members: committee },
 	})
 }
 
 /// Return the development genesis config.
 pub fn development_config_genesis() -> Value {
+	// The 5 seats of the dev FollowerCommittee — the 3-of-5 k-of-t authority (DR-07/DR-26). All
+	// are well-known dev keys (`//Alice`…`//Eve`) so the committee path is drivable on `--dev`.
+	let committee = vec![
+		Sr25519Keyring::Alice.to_account_id(),
+		Sr25519Keyring::Bob.to_account_id(),
+		Sr25519Keyring::Charlie.to_account_id(),
+		Sr25519Keyring::Dave.to_account_id(),
+		Sr25519Keyring::Eve.to_account_id(),
+	];
 	testnet_genesis(
 		vec![(
 			sp_keyring::Sr25519Keyring::Alice.public().into(),
 			sp_keyring::Ed25519Keyring::Alice.public().into(),
 		)],
+		// Endow the committee members (propose/vote are fee-bearing) plus the stashes.
 		vec![
 			Sr25519Keyring::Alice.to_account_id(),
 			Sr25519Keyring::Bob.to_account_id(),
+			Sr25519Keyring::Charlie.to_account_id(),
+			Sr25519Keyring::Dave.to_account_id(),
+			Sr25519Keyring::Eve.to_account_id(),
 			Sr25519Keyring::AliceStash.to_account_id(),
 			Sr25519Keyring::BobStash.to_account_id(),
 		],
+		committee,
 		sp_keyring::Sr25519Keyring::Alice.to_account_id(),
 	)
 }
@@ -82,6 +102,14 @@ pub fn local_config_genesis() -> Value {
 			.filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
 			.map(|v| v.to_account_id())
 			.collect::<Vec<_>>(),
+		// Same 5-seat committee as dev (all are in the endowed set above).
+		vec![
+			Sr25519Keyring::Alice.to_account_id(),
+			Sr25519Keyring::Bob.to_account_id(),
+			Sr25519Keyring::Charlie.to_account_id(),
+			Sr25519Keyring::Dave.to_account_id(),
+			Sr25519Keyring::Eve.to_account_id(),
+		],
 		Sr25519Keyring::Alice.to_account_id(),
 	)
 }

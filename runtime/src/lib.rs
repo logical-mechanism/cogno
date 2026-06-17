@@ -78,7 +78,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// 103 -> 104 for M3: added pallet-anchor (@12, the Tier-A Cardano WRITE link) with the
 	// `anchor_ack` call + `LastCheckpoint` storage (new pallet/calls/storage — encoding-affecting;
 	// regen the PAPI descriptors). transaction_version is UNCHANGED (no TxExtension change).
-	spec_version: 104,
+	// 104 -> 105 for M5 (DR-07): added pallet-collective (@13, FollowerCommittee Instance1) — the
+	// mutable 3-of-5 k-of-t committee that backs the crown-jewel authority origins (FollowerOrigin
+	// / SetStakeOrigin / AnchorOrigin / ForceOrigin) alongside the retained EnsureRoot/sudo dev
+	// fallback. New pallet + calls/storage/events — encoding-affecting; regen the PAPI descriptors.
+	// (DR-05 real benchmarked WeightInfo replaced the placeholders too, but weights are not
+	// encoding-affecting.) transaction_version is UNCHANGED (no TxExtension change).
+	spec_version: 105,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -262,4 +268,14 @@ mod runtime {
 	// snapshots a root itself (PLAN §4.9). Next free index after SkipFeelessPayment.
 	#[runtime::pallet_index(12)]
 	pub type Anchor = pallet_anchor;
+
+	// 13 = FollowerCommittee (M5, DR-07): the MUTABLE 3-of-5 k-of-t committee that backs the
+	// crown-jewel authority origins (cogno-gate FollowerOrigin / talk-stake SetStakeOrigin /
+	// anchor AnchorOrigin / microblog ForceOrigin) via `EnsureProportionAtLeast<3,5>`, with
+	// `EnsureRoot`/sudo retained as the v1 dev fallback (`EitherOfDiverse`). Members are mutable
+	// (rotation) via `Collective::set_members`; the proposal lifecycle events are the per-action
+	// audit log. One shared instance. The `EnsureOrigin` widen is signature-free (call signatures
+	// are unchanged). Next free index after Anchor.
+	#[runtime::pallet_index(13)]
+	pub type FollowerCommittee = pallet_collective<Instance1>;
 }
