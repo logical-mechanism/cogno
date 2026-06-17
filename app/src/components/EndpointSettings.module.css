@@ -74,6 +74,35 @@
   border-color: var(--hairline-accent);
 }
 
+.input {
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--ink-900);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  line-height: 1.6;
+}
+.input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  border-color: var(--hairline-accent);
+}
+
+.subnote {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-400);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.5;
+}
+
+.fieldLabel:not(:first-of-type) {
+  margin-top: var(--space-3);
+}
+
 .error {
   margin: var(--space-2) 0 0;
   color: var(--ink-900);

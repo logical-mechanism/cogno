@@ -24,6 +24,20 @@ export interface FeedProps {
   busy: boolean;
   onReply: (id: bigint) => void;
   onDelete: (id: bigint) => void;
+  /**
+   * A live feed-source error (e.g. the indexer is unreachable). Surfaced honestly so the feed
+   * degrades to a clear notice instead of falsely claiming the ledger is empty. M4.
+   */
+  error?: string | null;
+  /**
+   * Paginated mode (indexer search / "load more"): when set, the feed renders THIS error/
+   * affordance for the page instead of the live empty-state logic. Live mode leaves these
+   * undefined and behaves exactly as before. M4.
+   */
+  paginated?: boolean;
+  hasNextPage?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 interface Row {
@@ -65,6 +79,11 @@ export function Feed({
   busy,
   onReply,
   onDelete,
+  error = null,
+  paginated = false,
+  hasNextPage = false,
+  loadingMore = false,
+  onLoadMore,
 }: FeedProps) {
   const rows = useMemo(() => toRows(snapshot.posts), [snapshot.posts]);
   const hasPosts = snapshot.posts.length > 0;
@@ -96,14 +115,42 @@ export function Feed({
         </div>
       ) : !ready || status === "connecting" ? (
         <p className={styles.state}>reading the ledger…</p>
+      ) : error ? (
+        <p className={styles.state}>
+          can&apos;t reach the indexer right now — {error}. Clear the GraphQL
+          endpoint in settings to read directly from the node.
+        </p>
       ) : status === "reconnecting" || status === "error" ? (
         <p className={styles.state}>
           can&apos;t reach the node right now — the ledger may not be empty, just
           unreachable.
         </p>
+      ) : paginated ? (
+        <p className={styles.state}>no posts match.</p>
       ) : (
         <p className={styles.state}>
           no posts yet. write the first one above — it lands in a block.
+        </p>
+      )}
+
+      {/* The indexer can keep handing pages; the live PAPI feed is always one full snapshot. */}
+      {paginated && hasPosts && hasNextPage && (
+        <div className={styles.more}>
+          <button
+            type="button"
+            className={styles.moreButton}
+            onClick={onLoadMore}
+            disabled={loadingMore}
+          >
+            {loadingMore ? "loading…" : "load more"}
+          </button>
+        </div>
+      )}
+
+      {/* A non-fatal error while we still have posts to show: keep them, but say what's wrong. */}
+      {hasPosts && error && (
+        <p className={styles.notice} role="status">
+          the indexer errored — {error}
         </p>
       )}
     </section>

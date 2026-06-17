@@ -14,6 +14,16 @@
   margin-top: var(--space-1);
 }
 
+/* Honest read-path label: "reads: indexer" (GraphQL) vs "reads: direct node" (PAPI). Mono,
+   quiet — a chain-truth marginalia note, not chrome. Sits just above the ledger. */
+.readPath {
+  margin: var(--space-1) 0 calc(-1 * var(--space-3));
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-400);
+  text-align: right;
+}
+
 @media (min-width: 40rem) {
   .shell {
     padding-top: var(--space-6);

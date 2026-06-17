@@ -1,0 +1,25 @@
+{
+  "name": "cogno-indexer",
+  "version": "0.0.1",
+  "description": "SubQuery indexer for cogno-chain (L4 Tier-B, M4). Self-hosted, RPC-only, no Cardano.",
+  "main": "dist/index.js",
+  "license": "Apache-2.0",
+  "scripts": {
+    "codegen": "subql codegen",
+    "build": "subql build",
+    "prepack": "rm -rf dist && npm run build"
+  },
+  "devDependencies": {
+    "@polkadot/api": "^16",
+    "@subql/cli": "latest",
+    "@subql/common-substrate": "latest",
+    "@subql/node": "^6",
+    "@subql/query": "^2",
+    "@subql/types": "latest",
+    "@types/node": "^20",
+    "typescript": "^5"
+  },
+  "overrides": {
+    "graphql": "15.10.2"
+  }
+}

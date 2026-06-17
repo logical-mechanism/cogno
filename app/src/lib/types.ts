@@ -32,6 +32,74 @@ export interface CognoPost {
   parent?: bigint;
   /** Block number the post was created at (`BlockNumber` u32). */
   at: number;
+  /**
+   * Soft-delete tombstone, only ever set by the INDEXER (GraphQL) path: a deleted post
+   * leaves a record the indexer keeps and flags. On the PAPI path a deleted post is simply
+   * absent from storage, so this is left undefined (treat as not-deleted). M4.
+   */
+  deleted?: boolean;
+  /**
+   * The author's identity binding has been revoked (`Author.banned` on the indexer; the
+   * absence of `CognoGate.PkhOf` on the PAPI path). NOT a per-post chain field — revoke
+   * leaves the posts intact, so the feed must FLAG, not drop, them. M4.
+   */
+  authorRevoked?: boolean;
+}
+
+// ── M4: the indexer-backed feed seam ────────────────────────────────────────────────────
+// The data layer can now read from either the SubQuery GraphQL indexer (search + cursor
+// pagination + thread/profile views) or, as the always-available fallback, the PAPI node
+// directly. These shapes are the contract; both sources IMPLEMENT them. They are additive
+// and back-compatible — `FeedSnapshot` (the live watch shape) is unchanged.
+
+/** An opaque cursor string from the indexer (`pageInfo.endCursor` / `edges.cursor`). */
+export type FeedCursor = string;
+
+/** One page of the feed. `asOf` is the block the page reflects, when knowable (PAPI), else null. */
+export interface FeedPage {
+  posts: CognoPost[];
+  /** The cursor to pass as the next `after`, or null when there is no further page. */
+  endCursor: FeedCursor | null;
+  hasNextPage: boolean;
+  /** Total matching posts, when the source can report it (indexer `totalCount`). */
+  totalCount?: number;
+  asOf: number | null;
+}
+
+/**
+ * A page request. `after` continues a cursor; `search` is a case-insensitive substring
+ * (indexer only); `authorId` / `identityHash` scope the page to one author. Empty/omitted
+ * fields mean the global feed, page one.
+ */
+export interface FeedQuery {
+  first?: number;
+  after?: FeedCursor;
+  search?: string;
+  authorId?: Ss58;
+  identityHash?: string;
+}
+
+/** A single author's public profile + their (paginated) posts. */
+export interface ProfileView {
+  /** SS58 account, or null when looked up by identity hash and unresolved. */
+  author: Ss58 | null;
+  /** 0x-prefixed 32-byte identity hash, or null when unbound/unknown. */
+  identityHash: string | null;
+  postCount: number;
+  /** identity binding revoked (`Author.banned` / `PkhOf` absent). */
+  banned: boolean;
+  /** Cardano-sourced talk weight (lovelace), when known. */
+  weight?: bigint;
+  page: FeedPage;
+}
+
+/** A reconstructed thread: the root post + its direct replies. */
+export interface ThreadView {
+  root: CognoPost;
+  replies: CognoPost[];
+  replyCount: number;
+  /** Block height of the latest activity in the thread (root or any reply), when knowable. */
+  lastActivity: number | null;
 }
 
 /** A chain block header summary (from `bestBlocks$` / `finalizedBlock$`). */

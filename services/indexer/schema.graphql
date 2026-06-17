@@ -1,0 +1,40 @@
+# cogno-chain L4 Tier-B (M4) — the PUBLISHED, open GraphQL entity schema.
+#
+# This is the convergence contract of docs/L4-reading.md §4.1 / §6.2.1: any independent
+# indexer that ingests the same finalized events and applies the SAME mapping (incl. the
+# soft-delete policy below) produces byte-identical rows. Versioned to runtime spec_version 104.
+#
+# Sources (all public + deterministic L3 events; no Cardano, no wall-clock):
+#   Microblog.PostCreated{id,author} / PostDeleted{id}  + the Microblog.Posts storage row
+#   CognoGate.IdentityLinked{who,identity} / Revoked{who,identity}
+#   TalkStake.StakeSet{who,weight}
+
+type Author @entity {
+  id: ID! # AccountId (SS58, prefix 42)
+  identityHash: String # 0x hex of blake2b_256(serialized owner Address) == beacon token_name (DR-01); null until bound
+  banned: Boolean! # false on IdentityLinked, true on Revoked — the gate "is_allowed" mirror (revoke leaves posts intact)
+  weight: BigInt # latest TalkStake.StakeSet weight (buried lovelace) — posting power; null until staked
+  postCount: Int! # total posts CREATED by this author (does not decrement on delete)
+  posts: [Post]! @derivedFrom(field: "author")
+}
+
+type Post @entity {
+  id: ID! # on-chain u64 post id (DR-21), as a string
+  author: Author! # generates an authorId FK column
+  text: String! # UTF-8 body, read from Microblog.Posts storage at the creating block
+  parent: Post # null = top-level; self-relation reconstructs threads (no on-chain children index)
+  replies: [Post]! @derivedFrom(field: "parent")
+  blockHeight: Int! @index # the L3 block the post was created at (== Post.at; the UI shows this)
+  timestamp: Date! @index # block wall-clock (Timestamp.set inherent) — for recency ordering
+  deleted: Boolean! # SOFT-DELETE: set true on PostDeleted, row KEPT (preserves thread structure)
+}
+
+# Optional convenience aggregate, keyed on a post's IMMEDIATE parent (or self for a top-level
+# post) — NOT the transitive conversation root for depth-2+ replies. The feed's thread view uses
+# the faithful Post.parent → `replies` reverse relation, not this; Thread is a deterministic extra.
+type Thread @entity {
+  id: ID! # = immediate-parent post id (top-level ancestor only for depth-1 threads)
+  root: Post!
+  replyCount: Int!
+  lastActivity: Date! @index
+}

@@ -1,11 +1,17 @@
 "use client";
 
-// useFeed — subscribes to the live feed (watchEntries-derived) and exposes the
-// FULL current post set (authoritative, newest-first) as plain React state.
+// useFeed — subscribes to the active FeedSource's live `watch()` and exposes the FULL current
+// post set (authoritative, newest-first) as plain React state. The source may be PAPI-direct
+// (watchEntries-derived) or the GraphQL indexer (poll-derived); this hook does not care — it
+// only consumes the FeedSource seam.
+//
+// useFeedPage — for the paginated/search read path (indexer-only): fetches one page on demand,
+// supports cursor "load more" by appending, and surfaces a clear error state instead of
+// blanking the feed if the indexer is unreachable.
 
-import { useEffect, useState } from "react";
-import { watchFeed } from "@/lib/chain/reads";
-import type { CognoApi, FeedSnapshot } from "@/lib/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { FeedSnapshot, FeedPage, FeedQuery, CognoPost } from "@/lib/types";
+import type { FeedSource } from "@/lib/feed/source";
 
 const EMPTY: FeedSnapshot = { posts: [], asOf: null };
 
@@ -14,32 +20,138 @@ export interface UseFeed {
   snapshot: FeedSnapshot;
   /** false until the first emission lands (so the UI can tell "loading" from "empty"). */
   ready: boolean;
+  /** A live error (e.g. the indexer is unreachable), so the UI can degrade honestly. */
+  error: string | null;
 }
 
-export function useFeed(api: CognoApi | null): UseFeed {
+export function useFeed(source: FeedSource | null): UseFeed {
   const [snapshot, setSnapshot] = useState<FeedSnapshot>(EMPTY);
   const [ready, setReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!api) {
+    if (!source) {
       setSnapshot(EMPTY);
       setReady(false);
+      setError(null);
       return;
     }
     setReady(false);
-    const sub = watchFeed(api).subscribe({
+    setError(null);
+    const sub = source.watch().subscribe({
       next: (snap) => {
         setSnapshot(snap);
         setReady(true);
+        setError(null);
       },
-      error: () => {
-        // Keep the last good snapshot on a transient stream error; just stop
-        // claiming readiness so the UI can fall back to a connection state.
+      error: (err: unknown) => {
+        // Keep the last good snapshot, but stop claiming readiness and surface why so the UI
+        // can show a clear error state (indexer unreachable → user can clear it to use PAPI).
         setReady(false);
+        setError(err instanceof Error ? err.message : "the feed source errored");
       },
     });
     return () => sub.unsubscribe();
-  }, [api]);
+  }, [source]);
 
-  return { snapshot, ready };
+  return { snapshot, ready, error };
+}
+
+export interface UseFeedPage {
+  page: FeedPage | null;
+  posts: CognoPost[];
+  loading: boolean;
+  error: string | null;
+  hasNextPage: boolean;
+  totalCount?: number;
+  /** Fetch the next cursor page and append it (no-op when there is no further page). */
+  loadMore: () => void;
+}
+
+/**
+ * The paginated read path: fetch the first page whenever the source or query changes, then
+ * append cursor pages on `loadMore`. Used for search and "load more" — gated on
+ * `source.caps.pagination` by the caller. Honest error state; never blanks on failure.
+ */
+export function useFeedPage(
+  source: FeedSource | null,
+  query: FeedQuery,
+  enabled: boolean,
+): UseFeedPage {
+  const [posts, setPosts] = useState<CognoPost[]>([]);
+  const [page, setPage] = useState<FeedPage | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Stable key for the query so the first-page effect only re-fires on a real change.
+  const queryKey = JSON.stringify(query);
+  const cursorRef = useRef<string | null>(null);
+
+  // (Re)load the first page when the source or query changes (and the path is enabled).
+  useEffect(() => {
+    if (!source || !enabled) {
+      setPosts([]);
+      setPage(null);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    // Clear the previous query's results immediately so a term change shows the loading state
+    // rather than stale matches from the old term until the new page resolves.
+    setPosts([]);
+    setPage(null);
+    cursorRef.current = null;
+    source
+      .page(query)
+      .then((p) => {
+        if (cancelled) return;
+        setPage(p);
+        setPosts(p.posts);
+        cursorRef.current = p.endCursor;
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setPage(null);
+        setPosts([]);
+        setError(err instanceof Error ? err.message : "could not load the page");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // queryKey captures the query contents; source identity drives re-fetch on path change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, queryKey, enabled]);
+
+  const loadMore = useCallback(() => {
+    if (!source || loading) return;
+    if (!page?.hasNextPage || cursorRef.current == null) return;
+    setLoading(true);
+    setError(null);
+    source
+      .page({ ...query, after: cursorRef.current })
+      .then((p) => {
+        setPage(p);
+        setPosts((prev) => [...prev, ...p.posts]);
+        cursorRef.current = p.endCursor;
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "could not load more");
+      })
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, queryKey, page, loading]);
+
+  return {
+    page,
+    posts,
+    loading,
+    error,
+    hasNextPage: page?.hasNextPage ?? false,
+    totalCount: page?.totalCount,
+    loadMore,
+  };
 }

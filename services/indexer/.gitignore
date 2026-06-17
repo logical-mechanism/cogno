@@ -1,0 +1,14 @@
+# SubQuery generated + build artifacts
+node_modules/
+dist/
+src/types/
+.data/
+project.yaml
+
+# local env (DB creds)
+.env
+
+# the exported chainspec is a large reproducibility artifact regenerable from the node binary;
+# keep the genesis pin (GENESIS.txt) committed but not the 800KB raw spec.
+chainspec.dev.raw.json
+chainspec.dev.json

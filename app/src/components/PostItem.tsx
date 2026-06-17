@@ -35,9 +35,18 @@ export function PostItem({
 }: PostItemProps) {
   const mine = post.author === mySs58;
   const empty = post.text.trim().length === 0;
+  // Indexer-derived flags (PAPI leaves these undefined): a revoked author's posts STAY on
+  // chain — we flag, never drop, them; a deleted post leaves an indexer tombstone. Neither
+  // is an error condition, so they read in quiet ink, never a warning color.
+  const revoked = post.authorRevoked === true;
+  const deleted = post.deleted === true;
 
   return (
-    <article className={`${styles.item} ${isReply ? styles.reply : ""}`}>
+    <article
+      className={`${styles.item} ${isReply ? styles.reply : ""} ${
+        revoked || deleted ? styles.dimmed : ""
+      }`}
+    >
       <header className={styles.marginalia}>
         <span className={styles.id}>#{String(post.id)}</span>
         <span className={styles.dot} aria-hidden="true">
@@ -47,6 +56,11 @@ export function PostItem({
           {shortSs58(post.author)}
         </span>
         {mine && <span className={styles.youTag}>you</span>}
+        {revoked && (
+          <span className={styles.revokedTag} title="this author's identity binding was revoked">
+            · revoked
+          </span>
+        )}
         <span className={styles.dot} aria-hidden="true">
           ·
         </span>
@@ -61,7 +75,9 @@ export function PostItem({
         )}
       </header>
 
-      {empty ? (
+      {deleted ? (
+        <p className={styles.tombstone}>(deleted)</p>
+      ) : empty ? (
         <p className={styles.emptyBody}>(empty post)</p>
       ) : (
         <p className={styles.body}>{post.text}</p>

@@ -1,0 +1,80 @@
+.bar {
+  margin-top: var(--space-5);
+}
+
+.label {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--ink-400);
+  font-family: var(--font-ui);
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: stretch;
+}
+
+.input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--ink-900);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  line-height: 1.6;
+}
+.input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  border-color: var(--hairline-accent);
+}
+
+.go,
+.clear {
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.go {
+  border: 1px solid var(--hairline-accent);
+  background: var(--surface-0);
+  color: var(--ink-900);
+}
+.go:hover {
+  background: var(--surface-2);
+}
+.clear {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-600);
+}
+.clear:hover {
+  color: var(--ink-900);
+}
+.go:focus-visible,
+.clear:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.count {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-600);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+}
+.q {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-400);
+}

@@ -5,7 +5,12 @@
 // (the first is the active one), validates ws:// / wss://, and reconnects on save.
 
 import { useEffect, useState } from "react";
-import { getEndpoints, setEndpoints } from "@/lib/config/endpoints";
+import {
+  getEndpoints,
+  setEndpoints,
+  getGraphqlUrl,
+  setGraphqlUrl,
+} from "@/lib/config/endpoints";
 import styles from "./EndpointSettings.module.css";
 
 export interface EndpointSettingsProps {
@@ -13,6 +18,11 @@ export interface EndpointSettingsProps {
   onClose: () => void;
   /** Apply the saved list by reconnecting to the new active (first) endpoint. */
   onReconnect: (url: string) => void;
+  /**
+   * The GraphQL indexer endpoint changed (saved or cleared) — the page rebuilds its feed
+   * source so reads switch between the indexer and the PAPI-direct node. M4.
+   */
+  onGraphqlChange: () => void;
 }
 
 function isWsUrl(s: string): boolean {
@@ -27,14 +37,21 @@ function isWsUrl(s: string): boolean {
   }
 }
 
-export function EndpointSettings({ open, onClose, onReconnect }: EndpointSettingsProps) {
+export function EndpointSettings({
+  open,
+  onClose,
+  onReconnect,
+  onGraphqlChange,
+}: EndpointSettingsProps) {
   const [text, setText] = useState("");
+  const [gql, setGql] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Load the current list whenever the panel opens (client-only, SSG-safe).
+  // Load the current config whenever the panel opens (client-only, SSG-safe).
   useEffect(() => {
     if (!open) return;
     setText(getEndpoints().join("\n"));
+    setGql(getGraphqlUrl());
     setError(null);
   }, [open]);
 
@@ -56,9 +73,23 @@ export function EndpointSettings({ open, onClose, onReconnect }: EndpointSetting
       return;
     }
 
+    // The GraphQL endpoint is optional: empty ⇒ read directly from the node (PAPI).
+    const gqlTrimmed = gql.trim();
+    if (gqlTrimmed.length > 0 && !/^https?:\/\//i.test(gqlTrimmed)) {
+      setError(`Not a valid http(s) GraphQL endpoint: ${gqlTrimmed}`);
+      return;
+    }
+
     setEndpoints(list);
+    try {
+      setGraphqlUrl(gqlTrimmed);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "could not save the GraphQL endpoint");
+      return;
+    }
     setError(null);
     onReconnect(list[0]);
+    onGraphqlChange();
     onClose();
   };
 
@@ -96,6 +127,27 @@ export function EndpointSettings({ open, onClose, onReconnect }: EndpointSetting
           if (error) setError(null);
         }}
       />
+
+      <label className={styles.fieldLabel} htmlFor="cogno-graphql">
+        GraphQL indexer (optional)
+      </label>
+      <input
+        id="cogno-graphql"
+        className={styles.input}
+        type="text"
+        value={gql}
+        spellCheck={false}
+        placeholder="http://localhost:3000/"
+        onChange={(e) => {
+          setGql(e.target.value);
+          if (error) setError(null);
+        }}
+      />
+      <p className={styles.subnote}>
+        Leave empty to read directly from the node (PAPI) — slower, no search. An
+        indexer is a convenience you choose to trust; the feed it serves is still
+        verifiable against the node.
+      </p>
 
       {error && (
         <p className={styles.error} role="alert">

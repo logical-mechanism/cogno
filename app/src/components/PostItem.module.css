@@ -48,6 +48,29 @@
   letter-spacing: 0.04em;
 }
 
+/* Revoked-author marginalia tag: quiet ink, NOT a warning color — revocation is a fact,
+   not an error. The post stays; we only annotate it. */
+.revokedTag {
+  color: var(--cap-empty);
+  font-style: italic;
+}
+
+/* A revoked author's posts (and deleted tombstones) are dimmed but never hidden — the
+   conversation never silently loses a node. */
+.dimmed .body,
+.dimmed .marginalia {
+  opacity: 0.6;
+}
+
+/* Soft-delete tombstone (indexer path): the post existed, the body is gone. */
+.tombstone {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--cap-empty);
+  font-style: italic;
+}
+
 .body {
   margin: 0;
   max-width: var(--measure-post);

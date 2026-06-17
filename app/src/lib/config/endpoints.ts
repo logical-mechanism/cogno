@@ -90,3 +90,47 @@ export function setFollowerUrl(url: string): void {
     // Storage blocked — non-critical.
   }
 }
+
+// ── SubQuery GraphQL indexer endpoint (M4) ──────────────────────────────────────────────
+// The optional indexer the app reads the feed/search/thread/profile views through. Empty =
+// read directly from the node (PAPI) — slower, no search, but always available. Like the WS
+// and follower endpoints, this is config: the reader picks who they trust to index for them.
+
+/** localStorage key for the indexer URL; default is empty ("" ⇒ read directly from the node). */
+const GRAPHQL_STORAGE_KEY = "cogno.graphql";
+
+/**
+ * The user-configured GraphQL indexer URL, or "" when unset (⇒ PAPI-direct reads). SSG-safe:
+ * returns "" with no `window` and never throws; an invalid stored value is treated as unset.
+ */
+export function getGraphqlUrl(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const raw = window.localStorage.getItem(GRAPHQL_STORAGE_KEY);
+    return raw && /^https?:\/\//.test(raw) ? raw : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Persist the indexer URL (http/https only), or clear it with an empty/blank string (⇒ fall
+ * back to PAPI-direct reads). No-op without `window`. Throws on a non-empty, non-http value.
+ */
+export function setGraphqlUrl(url: string): void {
+  const trimmed = url.trim();
+  if (typeof window === "undefined") return;
+  try {
+    if (trimmed.length === 0) {
+      window.localStorage.removeItem(GRAPHQL_STORAGE_KEY);
+      return;
+    }
+    if (!/^https?:\/\//.test(trimmed)) {
+      throw new Error("GraphQL endpoint must be http:// or https:// (or empty to read directly)");
+    }
+    window.localStorage.setItem(GRAPHQL_STORAGE_KEY, trimmed);
+  } catch (err) {
+    // Re-throw a validation error so the UI can report it; swallow storage-blocked errors.
+    if (err instanceof Error && err.message.startsWith("GraphQL endpoint")) throw err;
+  }
+}
