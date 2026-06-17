@@ -99,7 +99,47 @@ Also deferred (a hardening, not a blocker): the **frontend** currently uses the 
 identity hash for the `AccountOf` readback. For a fully independent client check it should compute the
 beacon name itself (MeshJS Plutus-Data CBOR of the address — the same recipe as `beacon.py`).
 
+## 5. LIVE on preprod — DONE ✓ (2026-06-17)
+
+The whole loop ran against a **synced preprod `cardano-node` (Conway, slot ~126033494)** + Ogmios
+(:1337) + Kupo (:1442, matching the beacon policy + owner addr) + the cogno-chain node (:9944,
+spec 103) + the Cogno-Follower (:8090). Driver scripts: `app/scripts/m2d-*.mjs`.
+
+**The wallet + the live txs**
+- Owner (the identity): `addr_test1qpsk23r5c7z2aa6lj0hmjzvdxcup55dt0md0rrez0cd2vggszvlaup6c2xpeh0ppk8v4ha2j4k6qxhn749euxufdtrpspuxa4w`
+  (pkh `61654474…7e1aa621` / skh `10133fde…712d58c3`). Funded 200 tADA (tx `09dc1cc8…434ed2d1d0#0`).
+- Vault address (script payment cred + the owner's stake cred): `addr_test1zz5z6zkksd5265vqevrp8z2r7gf46furwtvk57qrg3k2e7gszvlaup6c2xpeh0ppk8v4ha2j4k6qxhn749euxufdtrps6t6ca8`;
+  policy id / vault hash `a82d0ad6…446cacf9` (min_lock = 100_000_000 applied).
+- **Lock tx `65d05e7316a1097397f47191db8ae1bc1b419bb410f3b75ab5b3974480ecfa86`** (`m2d-lock.mjs`,
+  ONE tx): mint beacon `287a99d2…0ae6be75` (+1) **and** lock 100 ADA at the vault with inline
+  `VaultDatum { owner }`. Output `#0` = 100_000_000 + the beacon (inline datum confirmed via
+  `cardano-cli query utxo`); change `#1` = 99_663_943 (fee ≈ 0.336 ADA). The beacon name byte-exactly
+  equals the owner's L1↔L2↔L3 identity hash `287a99d2…0ae6be75` — the lock and the bind meet there.
+
+**The bind → weight → post**
+- `m2d-bind.mjs`: the owner's Cardano wallet CIP-8-signs the follower's committed payload → the
+  follower binds `287a99d2…` → `//CognoVaultPoster` (`5G6P5SyEcBzMF67CVhftTFQoT52L1QbbS5oGqdjhemjGYzM9`).
+  `CognoGate.AccountOf[beacon]` readback == the poster. ✓
+- `m2d-sync-weight.mjs`: observed **1 vault UTxO → 1 identity**, largest-wins → `sudo(TalkStake.set_stake(
+  poster, 100_000_000))` + `force_set_capacity(poster, 5_000_000_000)`. Weight = the locked lovelace;
+  **zero sudo grant of the weight value itself**.
+- `m2d-post.mjs` — **THE MONEY SHOT**: `AllowedStake[poster] = 100000000` (Cardano-sourced),
+  identity-gated allowed → `post_message` → **`PostCreated id=1`**, free balance Δ = 0 (feeless,
+  before=after=0). Lock ADA → weight → feeless post, proven on real preprod.
+
+**The one live gotcha (recorded):** MeshJS builds the script-integrity hash from cost models supplied
+by the `fetcher`, but **`KupoProvider.fetchCostModels` throws "Method not implemented"** → MeshJS
+falls back to its **bundled default** cost models, which are **stale vs preprod's Conway PlutusV3
+(350 params)** → `providedScriptIntegrity ≠ computedScriptIntegrity`, ledger rejects (nothing
+submitted — the error is raised inside `.complete()`/evaluation, pre-submit, so no ADA at risk). Fix:
+fetch the live cost models from Ogmios (`queryLedgerState/protocolParameters` → `plutusCostModels`)
+and `txBuilder.setCostModels([v1, v2, v3])` (a flat-int-array list; index 0/1/2 = V1/V2/V3) **before**
+`.complete()` — an array makes MeshJS's `completeCostModels()` keep ours instead of clobbering with
+defaults. Helper: `fetchCostModels()` in `m2d-wallet.mjs`.
+
 ## Acceptance evidence
 
 `aiken check` 18/18 · `test_beacon.py` 4/4 · `test_vault.py` 8/8 · `test_agreement.py` 9/9 ·
-`m2-follower-e2e.mjs` 9/9. Next: the live preprod wiring above, then **M3 (anchor)** per PLAN §8.
+`m2-follower-e2e.mjs` 9/9 · **LIVE preprod: lock `65d05e73…` → weight 100000000 → feeless
+`PostCreated id=1` (Δbalance=0)**. Optional follow-up (not done; explicitly optional): deploy the
+`talk_vault` as an on-chain reference script + wire `m2d-lock.mjs --ref`. Next: **M3 (anchor)** per PLAN §8.
