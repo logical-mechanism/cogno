@@ -1,0 +1,137 @@
+// M6 (DR-07 / DR-26) — reusable operator tooling: drive a privileged call through the 3-of-5
+// FollowerCommittee (propose → vote ×k → close) OR through sudo (EnsureRoot, the v1 dev fallback).
+//
+// This is the committee-driven equivalent of the M2/M3 sudo drivers (grant / sync-weight /
+// anchor_ack). It uses @polkadot/api dynamic metadata (no PAPI codegen), so it auto-exposes the
+// `followerCommittee` / `validatorSet` pallets at spec 106 — the same dep + technique as the M5
+// acceptance and the indexer's verify scripts.
+//
+// ⚠ HONESTY LABEL (DR-07): on the single-operator preprod/dev stack ONE operator holds all five
+// committee keys, so the committee path here is **D2-SHAPED, not D2-TRUST** — it exercises the exact
+// propose/vote/close mechanism and on-chain origin (`EnsureProportionAtLeast<3,5>`) that real D2
+// uses, but the five "independent custody domains" of DR-07 are not yet real. See
+// docs/D2-custody-runbook.md for what closing that gap requires.
+import { ApiPromise, WsProvider } from "@polkadot/api";
+import { Keyring } from "@polkadot/keyring";
+import { cryptoWaitReady } from "@polkadot/util-crypto";
+
+export const WS_DEFAULT = process.env.WS || "ws://127.0.0.1:9944";
+
+/// The five well-known dev committee seats (DR-26 3-of-5), plus a couple of extras for targets.
+export const COMMITTEE_URIS = ["//Alice", "//Bob", "//Charlie", "//Dave", "//Eve"];
+
+export async function connect(ws = WS_DEFAULT) {
+	await cryptoWaitReady();
+	return ApiPromise.create({ provider: new WsProvider(ws) });
+}
+
+/// A keyring with the committee seats + common extras, keyed by `//Name`.
+export function operators(extra = ["//Ferdie", "//Grace"]) {
+	const kr = new Keyring({ type: "sr25519", ss58Format: 42 });
+	const map = {};
+	for (const uri of [...COMMITTEE_URIS, ...extra]) {
+		map[uri.replace(/^\/\//, "")] = kr.addFromUri(uri);
+	}
+	return { kr, map, committee: COMMITTEE_URIS.map((u) => map[u.replace(/^\/\//, "")]) };
+}
+
+/// Send a tx; resolve with the decoded events at inBlock; reject on dispatchError OR pool reject.
+export function send(api, tx, signer, label) {
+	return new Promise((resolve, reject) => {
+		tx.signAndSend(signer, ({ status, events = [], dispatchError }) => {
+			if (dispatchError) {
+				let msg = dispatchError.toString();
+				if (dispatchError.isModule) {
+					const d = api.registry.findMetaError(dispatchError.asModule);
+					msg = `${d.section}.${d.name}`;
+				}
+				reject(new Error(`${label}: dispatchError ${msg}`));
+			} else if (status.isInBlock) {
+				resolve(events.map(({ event }) => event));
+			}
+		}).catch(reject);
+	});
+}
+
+export const has = (events, section, method) =>
+	events.some((e) => e.section === section && e.method === method);
+export const find = (events, section, method) =>
+	events.find((e) => e.section === section && e.method === method);
+
+/// Drive a privileged inner call via SUDO (EnsureRoot — the retained v1 dev escape hatch).
+export async function viaSudo(api, innerCall, opts = {}) {
+	const ops = opts.operators || operators();
+	const sudo = opts.sudo || ops.map.Alice; // dev sudo key = //Alice
+	const log = opts.log || (() => {});
+	log(`via SUDO (EnsureRoot dev fallback) as ${sudo.address}`);
+	const evs = await send(api, api.tx.sudo.sudo(innerCall), sudo, `sudo:${opts.label || "call"}`);
+	if (!has(evs, "sudo", "Sudid")) throw new Error("no sudo.Sudid event");
+	return { evs, via: "sudo" };
+}
+
+/// Drive a privileged inner call through the 3-of-5 FollowerCommittee: propose → vote ×k → close.
+/// Returns { proposalIndex, proposalHash, closeEvs, evs (the executed inner events) }.
+export async function viaCommittee(api, innerCall, opts = {}) {
+	const ops = opts.operators || operators();
+	const members = opts.members || ops.committee;
+	const threshold = opts.threshold || 3;
+	const proposer = opts.proposer || members[0];
+	// The first `threshold` members each cast an aye (the proposer votes explicitly too — pallet
+	// collective does NOT auto-vote the proposer, mirroring the proven M5 flow).
+	const voters = opts.voters || members.slice(0, threshold);
+	const closer = opts.closer || members[members.length - 1];
+	const log = opts.log || (() => {});
+
+	const lengthBound = innerCall.method.toU8a().length + 8;
+	const proposeEvs = await send(
+		api,
+		api.tx.followerCommittee.propose(threshold, innerCall, lengthBound),
+		proposer,
+		"propose",
+	);
+	const proposed = find(proposeEvs, "followerCommittee", "Proposed");
+	if (!proposed) {
+		// threshold==1 executes immediately on propose (no motion). Surface that cleanly.
+		if (has(proposeEvs, "followerCommittee", "Executed"))
+			return { proposalIndex: null, proposalHash: null, closeEvs: proposeEvs, evs: proposeEvs };
+		throw new Error("no FollowerCommittee.Proposed event (is the proposer a committee member?)");
+	}
+	const proposalIndex = proposed.data[1].toNumber();
+	const proposalHash = proposed.data[2].toHex();
+	log(`proposed motion #${proposalIndex} (${proposalHash.slice(0, 10)}…), threshold ${threshold}-of-${members.length}`);
+
+	for (const v of voters) {
+		await send(api, api.tx.followerCommittee.vote(proposalHash, proposalIndex, true), v, "vote");
+	}
+	log(`${voters.length} ayes cast (${voters.map((v) => v.address.slice(0, 8)).join(", ")}…) — supermajority`);
+
+	const weightBound = opts.weightBound || { refTime: 10_000_000_000n, proofSize: 1_000_000n };
+	const closeEvs = await send(
+		api,
+		api.tx.followerCommittee.close(proposalHash, proposalIndex, weightBound, lengthBound),
+		closer,
+		"close",
+	);
+	if (!has(closeEvs, "followerCommittee", "Approved"))
+		throw new Error("motion was NOT Approved (threshold not reached?)");
+	if (!has(closeEvs, "followerCommittee", "Executed"))
+		throw new Error("motion Approved but inner call did NOT execute (Executed missing)");
+	log(`close → Approved + Executed (the proposal lifecycle IS the per-action audit log)`);
+	return { proposalIndex, proposalHash, closeEvs, evs: closeEvs };
+}
+
+/// Dispatch a privileged inner call by `via` ∈ {committee, sudo}. Default: committee (the D2 path).
+/// Prints the honesty label when going through the committee on a single-operator stack.
+export async function drive(api, innerCall, opts = {}) {
+	const via = opts.via || "committee";
+	const log = opts.log || console.log;
+	if (via === "sudo") return viaSudo(api, innerCall, { ...opts, log });
+	if (via === "committee") {
+		log(
+			"⚠ committee path on a single-operator stack = D2-SHAPED, not D2-TRUST " +
+				"(one operator holds all 5 keys; see docs/D2-custody-runbook.md)",
+		);
+		return viaCommittee(api, innerCall, { ...opts, log });
+	}
+	throw new Error(`unknown --via "${via}" (expected committee | sudo)`);
+}

@@ -65,6 +65,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stripHex = (h) => h.replace(/^0x/, "").toLowerCase();
 const hexToBytes = (h) => Uint8Array.from(Buffer.from(stripHex(h), "hex"));
 
+// ── M6 (DR-07): drive the privileged `anchor_ack` through the 3-of-5 FollowerCommittee, not sudo ──
+// `ANCHOR_VIA` ∈ {committee (default), sudo}. The committee path shells out to the validated,
+// @polkadot/api-based operator tooling (services/committee/op.mjs) — which works at spec 106 without
+// regenerating this relayer's PAPI descriptors, and keeps ONE audited propose→vote→close codepath
+// for every privileged call. `sudo` keeps the v1 dev fallback (the EnsureRoot escape hatch).
+// ⚠ HONESTY (DR-07): on the single-operator preprod stack one operator holds all five committee
+// keys, so this is D2-SHAPED, not D2-TRUST. See docs/D2-custody-runbook.md.
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const ANCHOR_VIA = process.env.ANCHOR_VIA || "committee";
+const OP_CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "committee", "op.mjs");
+
+// Drive `anchor.anchor_ack(block, root, txhash, count, ts)` via the committee tooling. Throws on
+// failure (the caller keeps the checkpoint unrecorded and retries next loop). Returns true.
+function committeeAnchorAck({ block, root, txhash, count, ts }) {
+  const args = JSON.stringify([Number(block), root, txhash, Number(count), Number(ts)]);
+  console.log(`  → anchor_ack via 3-of-5 committee (op.mjs; D2-shaped, single-operator)`);
+  execFileSync(process.execPath, [OP_CLI, "--call", "anchor.anchorAck", "--args", args, "--via", "committee", "--ws", WS], { stdio: "inherit" });
+  return true;
+}
+
 // The latest finalized head, read entirely through PAPI so the block stays PINNED — its header and
 // our storage reads (NextPostId/Timestamp) must all key on a block PAPI is tracking, or the typed
 // `getValue({ at })` throws BlockNotPinned. The post-state root of a finalized block = its
@@ -159,19 +181,29 @@ async function anchorOne(api, sudo, wallet, address, genesisHex, head, state) {
   }
   console.log(`  ✓ confirmed at slot ${slot}`);
 
-  // On confirmation, record the checkpoint on L3 (sudo = the DR-07 dev ack authority).
-  const result = await api.tx.Sudo.sudo({
-    call: api.tx.Anchor.anchor_ack({
-      block_number: Number(head.number),
-      finalized_root: FixedSizeBinary.fromBytes(hexToBytes(head.stateRoot)),
-      cardano_txhash: FixedSizeBinary.fromBytes(hexToBytes(txHash)),
-      post_count: postCount,
-      timestamp: ts,
-    }).decodedCall,
-  }).signAndSubmit(sudo);
-  const acked = (result.events || []).find((e) => e.type === "Anchor" && e.value?.type === "AnchorAcked");
-  const ignored = (result.events || []).find((e) => e.type === "Anchor" && e.value?.type === "AckIgnored");
-  console.log(acked ? `  ✓ anchor_ack → AnchorAcked (recorded on L3)` : ignored ? `  · anchor_ack → AckIgnored (idempotent no-op)` : `  ? anchor_ack submitted (ok=${result.ok})`);
+  // On confirmation, record the checkpoint on L3. DR-07: default through the 3-of-5 committee;
+  // `ANCHOR_VIA=sudo` keeps the EnsureRoot dev fallback.
+  let acked = false, ignored = false;
+  if (ANCHOR_VIA === "committee") {
+    const had = await api.query.Anchor.LastCheckpoint.getValue();
+    committeeAnchorAck({ block: head.number, root: head.stateRoot, txhash: txHash, count: postCount, ts });
+    const now = await api.query.Anchor.LastCheckpoint.getValue();
+    acked = !!now && (!had || now.block_number > (had?.block_number ?? -1));
+    ignored = !acked;
+  } else {
+    const result = await api.tx.Sudo.sudo({
+      call: api.tx.Anchor.anchor_ack({
+        block_number: Number(head.number),
+        finalized_root: FixedSizeBinary.fromBytes(hexToBytes(head.stateRoot)),
+        cardano_txhash: FixedSizeBinary.fromBytes(hexToBytes(txHash)),
+        post_count: postCount,
+        timestamp: ts,
+      }).decodedCall,
+    }).signAndSubmit(sudo);
+    acked = !!(result.events || []).find((e) => e.type === "Anchor" && e.value?.type === "AnchorAcked");
+    ignored = !!(result.events || []).find((e) => e.type === "Anchor" && e.value?.type === "AckIgnored");
+  }
+  console.log(acked ? `  ✓ anchor_ack → AnchorAcked (recorded on L3, via ${ANCHOR_VIA})` : ignored ? `  · anchor_ack → AckIgnored (idempotent no-op)` : `  ? anchor_ack submitted (via ${ANCHOR_VIA})`);
 
   state.anchors.push({ block: Number(head.number), root: stripHex(head.stateRoot), cardanoTx: txHash, slot, postCount: Number(postCount), ts: Number(ts), label: LABEL, genesis: genesisHex, acked: !!acked, at: new Date().toISOString() });
   saveState(state);

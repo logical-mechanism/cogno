@@ -84,7 +84,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// fallback. New pallet + calls/storage/events — encoding-affecting; regen the PAPI descriptors.
 	// (DR-05 real benchmarked WeightInfo replaced the placeholders too, but weights are not
 	// encoding-affecting.) transaction_version is UNCHANGED (no TxExtension change).
-	spec_version: 105,
+	// 105 -> 106 for M6 (DR-26): MUTABLE Aura+GRANDPA authorities. Added pallet-session (@15) +
+	// pallet-validator-set (@14, the SessionManager). Aura/GRANDPA now derive authorities from the
+	// session each rotation instead of from static genesis; add_validator/remove_validator (gated
+	// by the M5 AuthorityOrigin) queue a change applied at a session boundary. New pallets +
+	// calls/storage/events — encoding-affecting; regen the PAPI descriptors. transaction_version is
+	// UNCHANGED (no TxExtension change — pallet-session's set_keys/purge_keys are plain calls).
+	spec_version: 106,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -278,4 +284,20 @@ mod runtime {
 	// are unchanged). Next free index after Anchor.
 	#[runtime::pallet_index(13)]
 	pub type FollowerCommittee = pallet_collective<Instance1>;
+
+	// 14 = ValidatorSet (M6, DR-26): the MUTABLE Aura+GRANDPA validator set (vendor-forked from
+	// gautamdhameja/substrate-validator-set). It is pallet-session's SessionManager — each session
+	// rotation it hands the current set to Aura/GRANDPA. `add_validator`/`remove_validator` are
+	// gated by the M5 `AuthorityOrigin` (sudo OR 3-of-5 FollowerCommittee) and queued to a session
+	// boundary. Declared BEFORE Session so its genesis seats `Validators` before Session's genesis
+	// reads it via `SessionManager::new_session_genesis`.
+	#[runtime::pallet_index(14)]
+	pub type ValidatorSet = pallet_validator_set;
+
+	// 15 = Session (M6, DR-26): drives Aura+GRANDPA authorities from the ValidatorSet SessionManager
+	// instead of static genesis (the two are mutually exclusive — the aura/grandpa genesis is now
+	// empty; authorities are seated through SessionConfig). `SessionHandler = (Aura, Grandpa)` via
+	// the opaque SessionKeys; changes apply at session boundaries (~2 sessions). Next free index 16.
+	#[runtime::pallet_index(15)]
+	pub type Session = pallet_session;
 }

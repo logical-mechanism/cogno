@@ -16,7 +16,8 @@
 // limitations under the License.
 
 use crate::{
-	AccountId, BalancesConfig, FollowerCommitteeConfig, RuntimeGenesisConfig, SudoConfig,
+	AccountId, BalancesConfig, FollowerCommitteeConfig, RuntimeGenesisConfig, SessionConfig,
+	SessionKeys, SudoConfig, ValidatorSetConfig,
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
@@ -24,11 +25,17 @@ use serde_json::Value;
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use sp_consensus_grandpa::AuthorityId as GrandpaId;
 use sp_genesis_builder::{self, PresetId};
-use sp_keyring::Sr25519Keyring;
+use sp_keyring::{Ed25519Keyring, Sr25519Keyring};
 
 // Returns the genesis config presets populated with given parameters.
+//
+// M6 (DR-26): authorities are seated through `pallet-session`, NOT the aura/grandpa GenesisConfig
+// (the two are mutually exclusive — `L3-chain.md` §8.2). Each initial authority registers its
+// `(Aura, Grandpa)` session keys here; `pallet-validator-set` seats the same accounts as the
+// initial mutable validator set. The aura/grandpa pallets then derive their authorities from the
+// session at genesis (via `SessionHandler::on_genesis_session`) and at every rotation thereafter.
 fn testnet_genesis(
-	initial_authorities: Vec<(AuraId, GrandpaId)>,
+	initial_authorities: Vec<(AccountId, AuraId, GrandpaId)>,
 	endowed_accounts: Vec<AccountId>,
 	committee: Vec<AccountId>,
 	root: AccountId,
@@ -41,11 +48,24 @@ fn testnet_genesis(
 				.map(|k| (k, 1u128 << 60))
 				.collect::<Vec<_>>(),
 		},
-		aura: pallet_aura::GenesisConfig {
-			authorities: initial_authorities.iter().map(|x| x.0.clone()).collect::<Vec<_>>(),
+		// M6: register each initial authority's session keys. `validator_id == account` (identity
+		// ValidatorIdOf). Aura+GRANDPA authorities are populated from these at genesis.
+		session: SessionConfig {
+			keys: initial_authorities
+				.iter()
+				.cloned()
+				.map(|(account, aura, grandpa)| {
+					(account.clone(), account, SessionKeys { aura, grandpa })
+				})
+				.collect::<Vec<_>>(),
 		},
-		grandpa: pallet_grandpa::GenesisConfig {
-			authorities: initial_authorities.iter().map(|x| (x.1.clone(), 1)).collect::<Vec<_>>(),
+		// M6: seat the initial MUTABLE validator set (the same accounts). `add_validator` /
+		// `remove_validator` mutate this later, applied at a session boundary.
+		validator_set: ValidatorSetConfig {
+			initial_validators: initial_authorities
+				.iter()
+				.map(|(account, _, _)| account.clone())
+				.collect::<Vec<_>>(),
 		},
 		sudo: SudoConfig { key: Some(root) },
 		// DR-07: seat the initial FollowerCommittee (the 3-of-5 k-of-t authority). Members must be
@@ -54,7 +74,26 @@ fn testnet_genesis(
 	})
 }
 
-/// Return the development genesis config.
+/// One authority's genesis keys: `(account, Aura(sr25519), Grandpa(ed25519))`.
+/// ⚑ Aura and GRANDPA are DISTINCT keypairs (sr25519 vs ed25519) — seated from the same-named dev
+/// keyring (Alice→Alice, Bob→Bob) so they stay in lockstep.
+fn alice_authority() -> (AccountId, AuraId, GrandpaId) {
+	(
+		Sr25519Keyring::Alice.to_account_id(),
+		Sr25519Keyring::Alice.public().into(),
+		Ed25519Keyring::Alice.public().into(),
+	)
+}
+
+fn bob_authority() -> (AccountId, AuraId, GrandpaId) {
+	(
+		Sr25519Keyring::Bob.to_account_id(),
+		Sr25519Keyring::Bob.public().into(),
+		Ed25519Keyring::Bob.public().into(),
+	)
+}
+
+/// Return the development genesis config (a single authority, `//Alice`).
 pub fn development_config_genesis() -> Value {
 	// The 5 seats of the dev FollowerCommittee — the 3-of-5 k-of-t authority (DR-07/DR-26). All
 	// are well-known dev keys (`//Alice`…`//Eve`) so the committee path is drivable on `--dev`.
@@ -66,10 +105,8 @@ pub fn development_config_genesis() -> Value {
 		Sr25519Keyring::Eve.to_account_id(),
 	];
 	testnet_genesis(
-		vec![(
-			sp_keyring::Sr25519Keyring::Alice.public().into(),
-			sp_keyring::Ed25519Keyring::Alice.public().into(),
-		)],
+		// M6: one genesis authority (`//Alice`); add more at runtime via `add_validator`.
+		vec![alice_authority()],
 		// Endow the committee members (propose/vote are fee-bearing) plus the stashes.
 		vec![
 			Sr25519Keyring::Alice.to_account_id(),
@@ -81,23 +118,14 @@ pub fn development_config_genesis() -> Value {
 			Sr25519Keyring::BobStash.to_account_id(),
 		],
 		committee,
-		sp_keyring::Sr25519Keyring::Alice.to_account_id(),
+		Sr25519Keyring::Alice.to_account_id(),
 	)
 }
 
-/// Return the local genesis config preset.
+/// Return the local genesis config preset (two genesis authorities, `//Alice` + `//Bob`).
 pub fn local_config_genesis() -> Value {
 	testnet_genesis(
-		vec![
-			(
-				sp_keyring::Sr25519Keyring::Alice.public().into(),
-				sp_keyring::Ed25519Keyring::Alice.public().into(),
-			),
-			(
-				sp_keyring::Sr25519Keyring::Bob.public().into(),
-				sp_keyring::Ed25519Keyring::Bob.public().into(),
-			),
-		],
+		vec![alice_authority(), bob_authority()],
 		Sr25519Keyring::iter()
 			.filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
 			.map(|v| v.to_account_id())

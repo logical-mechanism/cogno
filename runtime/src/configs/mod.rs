@@ -42,14 +42,18 @@ use frame_system::{
 };
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
-use sp_runtime::{traits::One, Perbill};
+use sp_runtime::{
+	traits::{One, OpaqueKeys},
+	Perbill,
+};
 use sp_version::RuntimeVersion;
 
 // Local module imports
 use super::{
 	AccountId, Aura, Balance, Balances, Block, BlockNumber, CognoGate, Hash, Microblog, Nonce,
 	PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
-	RuntimeOrigin, RuntimeTask, System, DAYS, EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
+	RuntimeOrigin, RuntimeTask, SessionKeys, System, ValidatorSet, DAYS, EXISTENTIAL_DEPOSIT,
+	SLOT_DURATION, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -229,6 +233,58 @@ impl pallet_collective::Config<Instance1> for Runtime {
 /// weight, anchoring, and force-capacity all sit behind ONE trust boundary (L2 §8.4, L3 §4.5).
 pub type AuthorityOrigin =
 	EitherOfDiverse<EnsureRoot<AccountId>, EnsureProportionAtLeast<AccountId, Instance1, 3, 5>>;
+
+// ── M6 (DR-26): MUTABLE Aura+GRANDPA authorities via pallet-session + pallet-validator-set ──
+//
+// `pallet-session` rotates the block-producing authority set; `pallet-validator-set` is its
+// `SessionManager` (the mutable set, gated add/remove). Aura+GRANDPA derive their authorities from
+// the session each rotation (their `OneSessionHandler` impls), NOT from static genesis — the two
+// are mutually exclusive (the aura/grandpa genesis is left empty; authorities are seated through
+// `SessionConfig`). A queued add/remove is applied at a session boundary (~2 sessions), never
+// mid-session (`L3-chain.md` §8.2).
+parameter_types! {
+	/// Session length in blocks. DEV-TUNED short (10 blocks ≈ 1 min at 6s/block) so an add/remove
+	/// becomes active quickly in the showcase; a queued change applies at the next-but-one boundary
+	/// (~2 sessions ≈ 2 min). A constant change for a real testnet (longer sessions = less rotation
+	/// churn). Aura↔GRANDPA stay in lockstep because BOTH follow this one session schedule.
+	pub const SessionPeriod: BlockNumber = 10;
+	pub const SessionOffset: BlockNumber = 0;
+}
+
+impl pallet_session::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type ValidatorId = AccountId;
+	// Identity: an account is its own validator id (eligibility is gated by `add_validator`).
+	type ValidatorIdOf = pallet_validator_set::ValidatorOf<Runtime>;
+	type ShouldEndSession = pallet_session::PeriodicSessions<SessionPeriod, SessionOffset>;
+	type NextSessionRotation = pallet_session::PeriodicSessions<SessionPeriod, SessionOffset>;
+	// The mutable validator set IS the session manager.
+	type SessionManager = ValidatorSet;
+	// `(Aura, Grandpa)` — generated from the opaque `SessionKeys`; this is the wire that makes
+	// the two authority sets follow the session in lockstep (update one ⇒ update both).
+	type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
+	type Keys = SessionKeys;
+	type DisablingStrategy =
+		pallet_session::disabling::UpToLimitWithReEnablingDisablingStrategy;
+	type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
+	type Currency = Balances;
+	// Dev: no key deposit. A real testnet sets this above the ED so registering session keys
+	// (`set_keys`) costs something — anti-spam on the validator-candidate registry.
+	type KeyDeposit = ConstU128<0>;
+}
+
+/// Configure pallet-validator-set (M6, DR-26): the mutable Aura+GRANDPA validator set. `add_validator`
+/// / `remove_validator` are gated by the SAME `AuthorityOrigin` as the M5 crown jewels (sudo OR the
+/// 3-of-5 FollowerCommittee) — one operator committee governs identity, weight, anchoring, AND who
+/// produces blocks (the split into a separate validator committee is a documented graduation step,
+/// `L3-chain.md` §8.3). `MinAuthorities = 1` is the hard floor so removal can never strand the chain
+/// at zero authorities (it does NOT make finality safe at low counts — `L3-chain.md` §8.1).
+impl pallet_validator_set::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type AddRemoveOrigin = AuthorityOrigin;
+	type MinAuthorities = ConstU32<1>;
+	type WeightInfo = pallet_validator_set::weights::SubstrateWeight<Runtime>;
+}
 
 /// Configure pallet-talk-stake (M2c): the per-account weight source for the talk-capacity
 /// meter. v1 dev = the operator sets weight by sudo (`EnsureRoot`, the DR-07 escape hatch);
