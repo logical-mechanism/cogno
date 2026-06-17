@@ -27,6 +27,7 @@ frame-system-rpc-runtime-api = { workspace = true }
 frame-try-runtime = { optional = true, workspace = true }
 pallet-aura = { workspace = true }
 pallet-balances = { workspace = true }
+pallet-cogno-gate = { workspace = true }
 pallet-grandpa = { workspace = true }
 pallet-microblog = { workspace = true }
 pallet-skip-feeless-payment = { workspace = true }
@@ -70,6 +71,7 @@ std = [
 	"frame-try-runtime?/std",
 	"pallet-aura/std",
 	"pallet-balances/std",
+	"pallet-cogno-gate/std",
 	"pallet-grandpa/std",
 	"pallet-microblog/std",
 	"pallet-skip-feeless-payment/std",
@@ -103,6 +105,7 @@ runtime-benchmarks = [
 	"frame-system-benchmarking/runtime-benchmarks",
 	"frame-system/runtime-benchmarks",
 	"pallet-balances/runtime-benchmarks",
+	"pallet-cogno-gate/runtime-benchmarks",
 	"pallet-grandpa/runtime-benchmarks",
 	"pallet-microblog/runtime-benchmarks",
 	"pallet-skip-feeless-payment/runtime-benchmarks",
@@ -120,6 +123,7 @@ try-runtime = [
 	"frame-try-runtime/try-runtime",
 	"pallet-aura/try-runtime",
 	"pallet-balances/try-runtime",
+	"pallet-cogno-gate/try-runtime",
 	"pallet-grandpa/try-runtime",
 	"pallet-microblog/try-runtime",
 	"pallet-skip-feeless-payment/try-runtime",

@@ -31,6 +31,22 @@ fn post_and_read_works() {
 }
 
 #[test]
+fn unbound_identity_cannot_post() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// Deny account 1 at the identity gate → post_message is rejected with NotAllowed,
+		// and (assert_noop! proves) no id is consumed. The real deny-by-default gate is
+		// integration-tested in pallet-cogno-gate; here we prove the gate is wired into the body.
+		crate::mock::deny_identity(1);
+		assert_noop!(
+			Microblog::post_message(RuntimeOrigin::signed(1), b"gm".to_vec(), None),
+			Error::<Test>::NotAllowed
+		);
+		assert_eq!(NextPostId::<Test>::get(), 0);
+	});
+}
+
+#[test]
 fn replies_carry_parent() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);

@@ -72,7 +72,10 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// Bumped 100 -> 101 for M0 (added pallet-microblog @ 10). 101 -> 102 for M2c: added
 	// pallet-talk-stake (@9) + pallet-skip-feeless-payment (@11), folded talk-capacity +
 	// feeless `post_message` into microblog (new storage/calls/constants — encoding-affecting).
-	spec_version: 102,
+	// 102 -> 103 for M2: added pallet-cogno-gate (@8, the CIP-8 identity gate) + the
+	// `IdentityGate` (NotAllowed) check on `post_message` (new storage/calls/error variant —
+	// encoding-affecting). transaction_version is UNCHANGED (no TxExtension change).
+	spec_version: 103,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -236,9 +239,12 @@ mod runtime {
 	pub type Template = pallet_template;
 
 	// ── cogno-chain app pallets ──
-	// Indices are on-wire contracts (FRAME allows index gaps): 8 = CognoGate RESERVED for the
-	// M2 identity gate; 9 = TalkStake (M2c, the weight source); 10 = Microblog (+ folded
-	// talk-capacity, DR-24); 11 = SkipFeelessPayment (the feeless fee-waiver pallet).
+	// Indices are on-wire contracts (FRAME allows index gaps): 8 = CognoGate (M2, the CIP-8
+	// identity gate / anti-Sybil anchor); 9 = TalkStake (M2c, the weight source); 10 = Microblog
+	// (+ folded talk-capacity, DR-24); 11 = SkipFeelessPayment (the feeless fee-waiver pallet).
+	#[runtime::pallet_index(8)]
+	pub type CognoGate = pallet_cogno_gate;
+
 	#[runtime::pallet_index(9)]
 	pub type TalkStake = pallet_talk_stake;
 

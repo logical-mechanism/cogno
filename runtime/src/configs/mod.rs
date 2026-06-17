@@ -45,9 +45,9 @@ use sp_version::RuntimeVersion;
 
 // Local module imports
 use super::{
-	AccountId, Aura, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
-	RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
-	System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
+	AccountId, Aura, Balance, Balances, Block, BlockNumber, CognoGate, Hash, Microblog, Nonce,
+	PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
+	RuntimeOrigin, RuntimeTask, System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -226,5 +226,20 @@ impl pallet_microblog::Config for Runtime {
 	type BaseCost = BaseCost;
 	type PerByteCost = PerByteCost;
 	type ForceOrigin = EnsureRoot<AccountId>;
+	// M2: gate posting on a live Cardano-identity binding (the anti-Sybil anchor).
+	type IdentityGate = CognoGate;
 	type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
+}
+
+/// Configure pallet-cogno-gate (M2): the 1:1 Cardano-owner-Address ↔ posting-account binding —
+/// the anti-Sybil identity anchor. `link_identity`/`revoke` are written by the trusted
+/// Cogno-Follower; in v1 dev that authority is sudo (`EnsureRoot`, the DR-07 escape hatch), so
+/// the showcase is fully drivable on-chain before the Cardano follower is wired. The
+/// `EnsureOrigin` shape means the widen to a k-of-t committee (D2) is signature-free. `OnBind`
+/// is the first-bind hook into microblog (primes the capacity row + provider ref at link).
+impl pallet_cogno_gate::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type FollowerOrigin = EnsureRoot<AccountId>;
+	type OnBind = Microblog;
+	type WeightInfo = pallet_cogno_gate::weights::SubstrateWeight<Runtime>;
 }

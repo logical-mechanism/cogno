@@ -1474,6 +1474,7 @@ dependencies = [
  "frame-try-runtime",
  "pallet-aura",
  "pallet-balances",
+ "pallet-cogno-gate",
  "pallet-grandpa",
  "pallet-microblog",
  "pallet-skip-feeless-payment",
@@ -6421,6 +6422,21 @@ dependencies = [
  "sp-api",
  "sp-arithmetic",
  "sp-core",
+ "sp-runtime",
+]
+
+[[package]]
+name = "pallet-cogno-gate"
+version = "0.1.0"
+dependencies = [
+ "frame-support",
+ "frame-system",
+ "pallet-microblog",
+ "pallet-talk-stake",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
  "sp-runtime",
 ]
 

@@ -1,0 +1,55 @@
+[package]
+name = "pallet-cogno-gate"
+description = "cogno-chain identity gate (M2) — the 1:1 Cardano-owner-Address ↔ Substrate-account binding (the anti-Sybil anchor), written by the FollowerOrigin (sudo in dev). Gates pallet-microblog posting on is_allowed."
+version = "0.1.0"
+license = "Unlicense"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lints]
+workspace = true
+
+[dependencies]
+codec = { features = ["derive"], workspace = true }
+frame-support = { workspace = true }
+frame-system = { workspace = true }
+# Normal dep: cogno-gate calls into microblog's `on_first_bind` at link, and the two
+# cross-pallet traits (IsAllowed / OnIdentityBind) live in microblog (the depended-upon crate)
+# so neither pallet forms a Cargo cycle with the other.
+pallet-microblog = { workspace = true }
+scale-info = { features = ["derive"], workspace = true }
+
+[dev-dependencies]
+# The integration mock builds a full runtime (System + TalkStake + Microblog + CognoGate) to
+# exercise the real link_identity → is_allowed → post flow. talk-stake is microblog's weight
+# source; cogno-gate is the top crate, so naming it here is no cycle.
+pallet-talk-stake = { default-features = true, workspace = true }
+sp-core = { default-features = true, workspace = true }
+sp-io = { default-features = true, workspace = true }
+sp-runtime = { default-features = true, workspace = true }
+
+[features]
+default = ["std"]
+std = [
+	"codec/std",
+	"frame-support/std",
+	"frame-system/std",
+	"pallet-microblog/std",
+	"scale-info/std",
+]
+runtime-benchmarks = [
+	"frame-support/runtime-benchmarks",
+	"frame-system/runtime-benchmarks",
+	"pallet-microblog/runtime-benchmarks",
+]
+try-runtime = [
+	"frame-support/try-runtime",
+	"frame-system/try-runtime",
+	"pallet-microblog/try-runtime",
+]

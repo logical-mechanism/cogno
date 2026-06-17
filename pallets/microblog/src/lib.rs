@@ -55,6 +55,29 @@ use sp_runtime::{
 	SaturatedConversion,
 };
 
+// ───────────────────────────────────────────────────────────────────────────────────────
+// Loose-coupling traits that wire pallet-microblog ↔ pallet-cogno-gate WITHOUT a Cargo
+// dependency cycle. Both live HERE, in the depended-upon crate: pallet-cogno-gate depends on
+// pallet-microblog (to call `on_first_bind` at link), so the shared traits must live in
+// microblog — if they lived in cogno-gate, microblog would have to depend on cogno-gate and the
+// two crates would form a cycle. (L3-chain.md §4.4, the M2 architectural gotcha.) Neither
+// pallet names the other's crate in a trait bound; the runtime supplies the concrete cross-impl.
+// ───────────────────────────────────────────────────────────────────────────────────────
+
+/// The identity gate microblog consults before accepting a post. Implemented by
+/// `pallet-cogno-gate` (M2); wired to microblog's `Config::IdentityGate` in the runtime.
+pub trait IsAllowed<AccountId> {
+	/// Whether `who` has a live 1:1 Cardano-identity binding (⇒ may post).
+	fn is_allowed(who: &AccountId) -> bool;
+}
+
+/// The first-bind hook `pallet-cogno-gate` calls (via its `OnBind` Config type) when it links an
+/// identity. Implemented by microblog's own `Pallet` below (→ `on_first_bind`).
+pub trait OnIdentityBind<AccountId> {
+	/// Called once when `who` is first bound: primes the capacity row + provider ref.
+	fn on_bind(who: &AccountId);
+}
+
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
@@ -74,6 +97,10 @@ pub mod pallet {
 		#[allow(deprecated)]
 		type RuntimeEvent: From<Event<Self>>
 			+ IsType<<Self as frame_system::Config>::RuntimeEvent>;
+		/// The Cardano-identity gate (M2): `post_message` is rejected with `NotAllowed` unless
+		/// `IdentityGate::is_allowed(&who)`. Wired to `CognoGate` in the runtime. This is the
+		/// authoritative on-chain Sybil gate; the capacity extension is separate spam control.
+		type IdentityGate: IsAllowed<Self::AccountId>;
 		/// Maximum length, in bytes, of a post's text. Bounds PoV / proof size. (DR-10b: 512.)
 		#[pallet::constant]
 		type MaxLength: Get<u32>;
@@ -190,6 +217,9 @@ pub mod pallet {
 		NotAuthor,
 		/// The author has reached `MaxPostsPerAuthor` and cannot be indexed for another post.
 		TooManyPosts,
+		/// The caller has not bound a Cardano identity via the gate (`IdentityGate::is_allowed`
+		/// returned `false`). The M2 anti-Sybil gate (`L3-chain.md` §4.4/§5.1).
+		NotAllowed,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -244,6 +274,15 @@ pub mod pallet {
 		}
 	}
 
+	/// The first-bind hook `pallet-cogno-gate` invokes (via its `OnBind` Config type) at
+	/// `link_identity`. Delegates to the idempotent [`Pallet::on_first_bind`] — so the gate
+	/// primes the capacity row + provider ref without taking a Cargo dependency on cogno-gate.
+	impl<T: Config> super::OnIdentityBind<T::AccountId> for Pallet<T> {
+		fn on_bind(who: &T::AccountId) {
+			Self::on_first_bind(who);
+		}
+	}
+
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		/// Create a post with the given `text` bytes and optional `parent` (reply target).
@@ -261,6 +300,10 @@ pub mod pallet {
 			parent: Option<u64>,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
+			// ⚑ M2 identity gate (belt-and-suspenders): a weighted-but-unbound account (e.g. a
+			// sudo misconfig) is rejected here even though the capacity extension already rejects
+			// the unbound-because-unweighted case at the pool. Identity ≠ rate limit.
+			ensure!(T::IdentityGate::is_allowed(&who), Error::<T>::NotAllowed);
 			let bounded: BoundedVec<u8, T::MaxLength> =
 				text.try_into().map_err(|_| Error::<T>::TooLong)?;
 

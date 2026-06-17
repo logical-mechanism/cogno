@@ -12,6 +12,7 @@ members = [
 	"pallets/template",
 	"pallets/microblog",
 	"pallets/talk-stake",
+	"pallets/cogno-gate",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ cogno-chain-runtime = { path = "runtime", default-features = false }
 pallet-template = { path = "pallets/template", default-features = false }
 pallet-microblog = { path = "pallets/microblog", default-features = false }
 pallet-talk-stake = { path = "pallets/talk-stake", default-features = false }
+pallet-cogno-gate = { path = "pallets/cogno-gate", default-features = false }
 
 # ── codec / type info ──────────────────────────────────────────────────────────
 codec = { package = "parity-scale-codec", version = "3.7.5", default-features = false }
