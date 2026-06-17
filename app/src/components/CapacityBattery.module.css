@@ -1,0 +1,128 @@
+/* <CapacityBattery> — the one place the verdigris accent carries identity (L5 §9.3/§9.4).
+   Tokens only; no hex literals. */
+
+.battery {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.headRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.label {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-600);
+}
+
+.readout {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-600);
+}
+
+.haveNum {
+  color: var(--verdigris-ink);
+  font-weight: 600;
+}
+.capNum,
+.slash,
+.unit {
+  color: var(--ink-400);
+}
+.mutedNum {
+  color: var(--ink-400);
+}
+.rate {
+  color: var(--ink-400);
+}
+
+/* the segmented bar */
+.barWrap {
+  position: relative;
+}
+.bar {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  width: 100%;
+}
+.barMuted {
+  opacity: 0.5;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.seg {
+  flex: 1 1 0;
+  border-radius: 2px;
+  transition: background-color var(--motion-base) ease;
+}
+.segEmpty {
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.segFilled {
+  /* tone class sets the color */
+}
+.toneFull {
+  background: var(--cap-full);
+}
+.toneCharging {
+  background: var(--cap-charging);
+}
+.toneEmpty {
+  background: var(--cap-empty);
+}
+
+/* the draft need-marker — a thin vertical tick showing where this draft's cost lands */
+.needMark {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink-900);
+  border-radius: 1px;
+}
+.needMarkOver {
+  background: var(--cap-toolong);
+}
+
+/* the honest status line */
+.status {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.35;
+}
+.stOk {
+  color: var(--verdigris-ink);
+}
+.stEmpty {
+  color: var(--ink-600);
+}
+.stToolong {
+  color: var(--cap-toolong);
+}
+.stWait {
+  color: var(--ink-600);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seg {
+    transition: none;
+  }
+}

@@ -39,6 +39,16 @@
   --verdigris-soft: #6fb3a2; /* tints, soft accent hairlines */
   --verdigris-ink: #1c5145; /* accent text on paper; substrate identity */
 
+  /* ---- CAPACITY — semantic tokens for the talk-battery (M2c). Components
+   * reference ONLY these, never raw color. Verdigris = charged (patina =
+   * permanence); empty is ink-grey, NOT red ("no capacity" is not an error);
+   * --cap-toolong is the ONE warm tone in the system. (L5 §9.3.) -------------- */
+  --cap-full: var(--verdigris); /* charged segments */
+  --cap-charging: var(--verdigris-soft); /* charging-from-empty fill */
+  --cap-empty: var(--ink-400); /* no capacity — grey, not red */
+  --cap-paused: var(--ink-400); /* chain not advancing */
+  --cap-toolong: #b4603a; /* the only warm tone — draft over capacity */
+
   /* ---- IDENTITY — who/what signed (quiet, NOT brand-blue) --------------- */
   --identity-cardano: #3e4c59; /* slate, deliberately NOT Cardano blue */
   --identity-substrate: var(--verdigris-ink); /* sr25519 / substrate-side identity */

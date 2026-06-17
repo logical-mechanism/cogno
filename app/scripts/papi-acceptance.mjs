@@ -60,6 +60,17 @@ async function main() {
   const alice = deriveSr25519("//Alice");
   console.log(`signer: //Alice = ${alice.ss58}`);
 
+  // M2c: posting is now feeless + talk-capacity-gated, so grant //Alice weight + a full
+  // battery (via sudo) before posting — otherwise CheckCapacity rejects at the pool.
+  const [capRatio, ceiling] = await Promise.all([
+    api.constants.Microblog.CapRatio(),
+    api.constants.Microblog.Ceiling(),
+  ]);
+  const full = 10_000_000n * capRatio < ceiling ? 10_000_000n * capRatio : ceiling;
+  await api.tx.Sudo.sudo({ call: api.tx.TalkStake.set_stake({ who: alice.ss58, weight: 10_000_000n }).decodedCall }).signAndSubmit(alice.signer);
+  await api.tx.Sudo.sudo({ call: api.tx.Microblog.force_set_capacity({ who: alice.ss58, cap_last: full }).decodedCall }).signAndSubmit(alice.signer);
+  console.log(`granted //Alice weight 10_000_000 + battery ${full} (M2c: capacity required to post)`);
+
   const text = `gm cogno — M1 PAPI acceptance @ ${new Date().toISOString()}`;
   console.log(`\n[1] post_message(${JSON.stringify(text)}, parent: undefined)`);
   const posted = await api.tx.Microblog.post_message({

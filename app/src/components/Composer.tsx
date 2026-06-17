@@ -8,6 +8,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { PostingSigner, TxUpdate, BootGuard } from "@/lib/types";
+import { draftStatus, type CapacityConsts, type CapacityView } from "@/lib/chain/capacity";
+import { CapacityBattery } from "./CapacityBattery";
 import styles from "./Composer.module.css";
 
 // Runtime Microblog::MaxLength (Vec<u8>, bytes). Counted as UTF-8 bytes.
@@ -65,6 +67,9 @@ export interface ComposerProps {
   replyTo: bigint | null;
   onClearReply: () => void;
   onSubmit: (text: string) => void;
+  /** live talk-capacity view + constants for the active signer (advisory). */
+  capView: CapacityView | null;
+  capConsts: CapacityConsts | null;
 }
 
 export function Composer({
@@ -75,6 +80,8 @@ export function Composer({
   replyTo,
   onClearReply,
   onSubmit,
+  capView,
+  capConsts,
 }: ComposerProps) {
   const [text, setText] = useState("");
 
@@ -82,6 +89,12 @@ export function Composer({
   const overLimit = bytes > MAX_BYTES;
   const empty = text.trim().length === 0;
   const bootBlocked = boot != null && boot.ok === false;
+
+  // Advisory capacity gate: when the replay says this draft can't post yet, disable the
+  // button (the battery shows the reason). When capacity is unknown, never block — the
+  // runtime's CheckCapacity is the authority.
+  const cap = capView && capConsts ? draftStatus(capView, bytes, capConsts) : null;
+  const capacityBlocked = cap != null && cap.kind !== "ok" && !empty && !overLimit;
 
   // Clear the textarea as soon as the post lands in a best block (success), and
   // drop the reply context too.
@@ -92,7 +105,7 @@ export function Composer({
     }
   }, [txState?.phase, onClearReply]);
 
-  const disabled = busy || overLimit || empty || bootBlocked;
+  const disabled = busy || overLimit || empty || bootBlocked || capacityBlocked;
   const status = statusView(txState);
 
   const submit = () => {
@@ -108,6 +121,8 @@ export function Composer({
         submit();
       }}
     >
+      <CapacityBattery view={capView} consts={capConsts} draftLen={bytes} />
+
       {replyTo != null && (
         <div className={styles.replyBar}>
           <span className={styles.replyText}>

@@ -63,14 +63,23 @@ function stringifyDispatchError(
   }
 }
 
-/** Best-effort thrown-error → message (signer rejection, network drop, etc.). */
+/** Best-effort thrown-error → message (signer rejection, network drop, capacity gate, etc.). */
 function stringifyError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  try {
-    return String(err);
-  } catch {
-    return "Transaction failed.";
+  let raw: string;
+  if (err instanceof Error) raw = err.message;
+  else {
+    try {
+      raw = typeof err === "string" ? err : JSON.stringify(err, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+    } catch {
+      raw = String(err);
+    }
   }
+  // The feeless-post spam gate (CheckCapacity → ExhaustsResources). The composer gates this
+  // proactively via the capacity battery, so this is the rare race; surface it honestly.
+  if (/ExhaustsResources/i.test(raw)) {
+    return "Out of talk capacity right now — wait for it to regenerate, or get more weight.";
+  }
+  return raw || "Transaction failed.";
 }
 
 /**

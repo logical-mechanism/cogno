@@ -10,6 +10,7 @@ import { useFeed } from "@/hooks/useFeed";
 import { useHeads } from "@/hooks/useHeads";
 import { useSigner } from "@/hooks/useSigner";
 import { useSubmit } from "@/hooks/useSubmit";
+import { useCapacity } from "@/hooks/useCapacity";
 import { Masthead } from "@/components/Masthead";
 import { ProvenanceLine } from "@/components/ProvenanceLine";
 import { Composer } from "@/components/Composer";
@@ -31,6 +32,8 @@ export default function Page() {
     ackSessionMnemonic,
   } = useSigner();
   const submit = useSubmit(api, signer, boot);
+  // Live, advisory talk-capacity for the active posting key — ticks with the best block.
+  const capacity = useCapacity(api, signer.ss58, heads.best?.number ?? null);
 
   const [replyTo, setReplyTo] = useState<bigint | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -70,6 +73,8 @@ export default function Page() {
           replyTo={replyTo}
           onClearReply={() => setReplyTo(null)}
           onSubmit={onSubmitPost}
+          capView={capacity.view}
+          capConsts={capacity.consts}
         />
       </div>
 

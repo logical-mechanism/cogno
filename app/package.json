@@ -10,7 +10,9 @@
     "lint": "next lint",
     "papi:add": "papi add cogno -w ws://127.0.0.1:9944",
     "papi": "papi",
-    "acceptance": "node scripts/papi-acceptance.mjs"
+    "grant": "node scripts/grant-weight.mjs",
+    "acceptance": "node scripts/papi-acceptance.mjs",
+    "acceptance:m2c": "node scripts/m2c-acceptance.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter-tight": "^5.1.1",
