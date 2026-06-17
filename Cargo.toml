@@ -1,0 +1,100 @@
+# cogno-chain — Rust workspace (M0 scaffold)
+#
+# Forked from the polkadot-sdk `templates/solochain` at tag polkadot-stable2603-3
+# (commit e3737178ec726cffe506c907263aaaa417893fd0). Dependency versions below are the
+# exact crates.io versions that ship in that release (harvested from the tag's Cargo.lock).
+# Pin is locked further by the committed Cargo.lock. See docs/M0-build.md (DR-03).
+[workspace]
+resolver = "2"
+members = [
+	"node",
+	"runtime",
+	"pallets/template",
+	"pallets/microblog",
+]
+
+[workspace.package]
+authors = ["LogicalMechanism <support@logicalmechanism.io>"]
+edition = "2021"
+homepage = "https://github.com/LogicalMechanism/cogno-chain"
+repository = "https://github.com/LogicalMechanism/cogno-chain"
+license = "Unlicense"
+
+[workspace.lints.rust]
+unused_extern_crates = "allow"
+
+[workspace.dependencies]
+# ── local crates ───────────────────────────────────────────────────────────────
+cogno-chain-runtime = { path = "runtime", default-features = false }
+pallet-template = { path = "pallets/template", default-features = false }
+pallet-microblog = { path = "pallets/microblog", default-features = false }
+
+# ── codec / type info ──────────────────────────────────────────────────────────
+codec = { package = "parity-scale-codec", version = "3.7.5", default-features = false }
+scale-info = { version = "2.11.6", default-features = false }
+
+# ── external (node, std-only) ──────────────────────────────────────────────────
+clap = { version = "4.5.48" }
+futures = { version = "0.3.31" }
+jsonrpsee = { version = "0.24.10" }
+serde_json = { version = "1.0.132", default-features = false }
+
+# ── FRAME ──────────────────────────────────────────────────────────────────────
+frame-benchmarking = { version = "46.0.0", default-features = false }
+frame-benchmarking-cli = { version = "54.0.0", default-features = false }
+frame-executive = { version = "46.0.0", default-features = false }
+frame-metadata-hash-extension = { version = "0.14.0", default-features = false }
+frame-support = { version = "46.0.1", default-features = false }
+frame-system = { version = "46.0.0", default-features = false }
+frame-system-benchmarking = { version = "46.0.0", default-features = false }
+frame-system-rpc-runtime-api = { version = "41.0.0", default-features = false }
+frame-try-runtime = { version = "0.52.0", default-features = false }
+
+# ── pallets (stock) ────────────────────────────────────────────────────────────
+pallet-aura = { version = "45.0.0", default-features = false }
+pallet-balances = { version = "47.0.0", default-features = false }
+pallet-grandpa = { version = "46.0.0", default-features = false }
+pallet-sudo = { version = "46.0.0", default-features = false }
+pallet-timestamp = { version = "45.0.0", default-features = false }
+pallet-transaction-payment = { version = "46.0.0", default-features = false }
+pallet-transaction-payment-rpc = { version = "49.0.0", default-features = false }
+pallet-transaction-payment-rpc-runtime-api = { version = "46.0.0", default-features = false }
+
+# ── client (sc-*) ──────────────────────────────────────────────────────────────
+sc-basic-authorship = { version = "0.54.0", default-features = false }
+sc-cli = { version = "0.58.0", default-features = false }
+sc-client-api = { version = "45.0.0", default-features = false }
+sc-consensus = { version = "0.55.0", default-features = false }
+sc-consensus-aura = { version = "0.56.0", default-features = false }
+sc-consensus-grandpa = { version = "0.41.0", default-features = false }
+sc-executor = { version = "0.48.0", default-features = false }
+sc-network = { version = "0.56.1", default-features = false }
+sc-offchain = { version = "51.0.0", default-features = false }
+sc-service = { version = "0.57.0", default-features = false }
+sc-telemetry = { version = "30.0.1", default-features = false }
+sc-transaction-pool = { version = "45.0.0", default-features = false }
+sc-transaction-pool-api = { version = "44.0.0", default-features = false }
+
+# ── primitives (sp-*) ──────────────────────────────────────────────────────────
+sp-api = { version = "41.0.0", default-features = false }
+sp-block-builder = { version = "41.0.0", default-features = false }
+sp-blockchain = { version = "44.0.0", default-features = false }
+sp-consensus-aura = { version = "0.47.0", default-features = false }
+sp-consensus-grandpa = { version = "28.0.0", default-features = false }
+sp-core = { version = "40.0.0", default-features = false }
+sp-genesis-builder = { version = "0.22.0", default-features = false }
+sp-inherents = { version = "41.0.0", default-features = false }
+sp-io = { version = "45.0.0", default-features = false }
+sp-keyring = { version = "46.0.0", default-features = false }
+sp-offchain = { version = "41.0.0", default-features = false }
+sp-runtime = { version = "46.0.0", default-features = false }
+sp-session = { version = "43.0.0", default-features = false }
+sp-storage = { version = "23.0.0", default-features = false }
+sp-timestamp = { version = "41.0.0", default-features = false }
+sp-transaction-pool = { version = "41.0.0", default-features = false }
+sp-version = { version = "44.0.0", default-features = false }
+
+# ── substrate build/rpc utils ──────────────────────────────────────────────────
+substrate-build-script-utils = { version = "11.0.0" }
+substrate-frame-rpc-system = { version = "50.0.0", default-features = false }
+substrate-wasm-builder = { version = "32.0.0", default-features = false }

@@ -1,0 +1,18 @@
+# Pinned for polkadot-sdk templates/solochain @ polkadot-stable2603-3
+# (commit e3737178ec726cffe506c907263aaaa417893fd0). See docs/M0-build.md (DR-03).
+#
+# IMPORTANT: pinned to rustc 1.90.0 (NOT rolling "stable"). The current stable (1.96.0)
+# fails to build this SDK's WASM runtime — rust-lld reports every sp_io host function as an
+# `undefined symbol` (the runtime-interface import machinery in sp-io 45.0.0 is incompatible
+# with rustc >= ~1.91). 1.90.0 is the version the M0 de-risk build verified end-to-end.
+[toolchain]
+channel = "1.90.0"
+components = [
+	"cargo",
+	"rustc",
+	"rust-std",
+	"rust-src",
+]
+# wasm-builder prefers wasm32v1-none when present (the target the de-risk verified under 1.90.0).
+targets = ["wasm32v1-none", "wasm32-unknown-unknown"]
+profile = "minimal"
