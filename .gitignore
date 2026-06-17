@@ -1,0 +1,18 @@
+# Rust build output
+/target
+**/target
+
+# The polkadot-sdk monorepo clone used for the M0 de-risk build (huge, re-cloneable
+# at tag polkadot-stable2603-3 / commit e3737178ec726cffe506c907263aaaa417893fd0).
+/_sdk
+
+# Node deps (acceptance script / future app + indexer)
+node_modules/
+
+# Editor / OS cruft
+*.rs.bk
+.DS_Store
+
+# Local chain state (we use --tmp/--dev for M0)
+/state
+*.log
