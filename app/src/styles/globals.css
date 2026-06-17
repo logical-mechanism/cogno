@@ -1,0 +1,161 @@
+/*
+ * cogno-chain — GLOBAL STYLES
+ * ===========================
+ * Imported ONCE by the root layout. Token-driven only: every color/size/space
+ * value here resolves through a var(--token) from tokens.css. This file is a
+ * minimal modern reset + the paper/ink reading defaults + a small set of global
+ * utilities. Component styles live with their components, not here.
+ */
+
+@import "./tokens.css";
+
+/* ---- RESET — minimal & modern --------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html {
+  /* honor user reflow; keep a comfortable rhythm */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -moz-tab-size: 2;
+  tab-size: 2;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--surface-0);
+  color: var(--ink-900);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+  /* crisp text on paper */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* media defaults to block + responsive */
+img,
+picture,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* inherit type into form controls (no OS chrome leaking in) */
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+/* break long unbroken strings (hashes, ss58) instead of overflowing */
+p,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  overflow-wrap: break-word;
+}
+
+/* ---- POST-READING DEFAULTS -----------------------------------------
+ * Text is the product: post bodies are serif, generously led, and capped to a
+ * comfortable measure. Reach these via the .post-body / .measure helpers. */
+
+.post-body {
+  font-family: var(--font-serif);
+  font-size: var(--fs-post);
+  line-height: var(--fs-post-lh);
+  color: var(--ink-900);
+  /* preserve authored line breaks from the composer, still wrap long words */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* feed heading role */
+.feed-heading {
+  font-family: var(--font-ui);
+  font-size: var(--fs-h-feed);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--ink-900);
+}
+
+/* ---- CHAIN-TRUTH (mono) UTILITY ------------------------------------
+ * The monospace voice = "this is a verifiable on-chain fact" (ids, ss58,
+ * block #). tabular-nums keeps block numbers / ids aligned. */
+
+.mono,
+.tabular {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  color: var(--ink-600);
+}
+
+/* ---- MEASURE — cap reading line-length ------------------------------ */
+
+.measure {
+  max-width: var(--measure-post);
+}
+
+/* ---- LINKS — quiet, ink-first --------------------------------------- */
+
+a {
+  color: inherit;
+  text-decoration-color: var(--hairline);
+  text-underline-offset: 0.15em;
+}
+
+a:hover {
+  text-decoration-color: var(--ink-400);
+}
+
+/* ---- FOCUS — keyboard-visible, accent ring -------------------------- */
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* don't show the ring on plain mouse focus */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ---- SELECTION — soft accent tint ----------------------------------- */
+
+::selection {
+  background: var(--verdigris-soft);
+  color: var(--ink-900);
+}
+
+/* ---- MOTION — calm by default; OFF when the user asks --------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

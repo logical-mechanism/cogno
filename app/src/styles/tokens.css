@@ -1,0 +1,113 @@
+/*
+ * cogno-chain — DESIGN TOKENS  ("Reading Room / Civic Ledger")
+ * =============================================================
+ * The ONLY source of color, type, space, radius, shadow, and motion in the app.
+ * Components reference these as var(--token); they must NOT use hex literals or
+ * raw color values. This file defines tokens ONLY — no component styles.
+ *
+ * Intent (L5 §9.2 / §9.3): a calm paper/ink reading surface where text is the
+ * product. Monospace is the "ledger marginalia" voice for chain-truth (ids, ss58,
+ * block numbers) and never decoration. ONE accent (verdigris) is reserved and is
+ * barely used in M1.
+ *
+ * Two color modes: LIGHT in :root, DARK via prefers-color-scheme. Everything that
+ * is NOT color (type scale, space, radius, shadow, motion) is mode-agnostic and
+ * lives only in :root.
+ *
+ * Font-family names below MUST stay in sync with src/styles/fonts.ts, which
+ * registers the matching @font-face rules from the local @fontsource packages.
+ */
+
+:root {
+  /* ---- SURFACES — paper, stacked from the page up ---------------------- */
+  --surface-0: #faf8f3; /* page / reading surface */
+  --surface-1: #f2efe7; /* raised panels, cards, composer */
+  --surface-2: #e8e4d9; /* wells, inset / pressed, code blocks */
+
+  /* ---- INK — text on paper, by emphasis -------------------------------- */
+  --ink-900: #1c1b19; /* primary text — post body, headings */
+  --ink-600: #565248; /* secondary text — chrome, labels */
+  --ink-400: #8a8579; /* tertiary — timestamps, hints, disabled */
+
+  /* ---- LINES — hairlines do the structural work (no heavy borders) ----- */
+  --hairline: #d9d4c7; /* default rule between rows / sections */
+  --hairline-accent: var(--verdigris-soft); /* rare emphasis rule (capacity-adjacent) */
+  --focus-ring: var(--verdigris); /* keyboard focus outline color */
+
+  /* ---- ACCENT — verdigris, RESERVED. Barely used in M1. ---------------- */
+  --verdigris: #2e7d6b; /* the single accent; capacity/identity-affirm only */
+  --verdigris-soft: #6fb3a2; /* tints, soft accent hairlines */
+  --verdigris-ink: #1c5145; /* accent text on paper; substrate identity */
+
+  /* ---- IDENTITY — who/what signed (quiet, NOT brand-blue) --------------- */
+  --identity-cardano: #3e4c59; /* slate, deliberately NOT Cardano blue */
+  --identity-substrate: var(--verdigris-ink); /* sr25519 / substrate-side identity */
+
+  /* ---- FONTS — three roles, locally shipped (no Google Fonts) ----------
+   * serif = the POST BODY (text is the product)
+   * ui    = chrome (nav, labels, buttons)
+   * mono  = CHAIN-TRUTH only (ids, ss58, block #) — verifiable on-chain facts */
+  --font-serif: "Source Serif 4 Variable", Newsreader, Georgia, serif;
+  --font-ui: "Inter Tight Variable", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* ---- TYPE SCALE — sized for comfortable long-form reading ------------ */
+  --fs-post: clamp(1.0625rem, 0.98rem + 0.4vw, 1.1875rem); /* post body */
+  --fs-post-lh: 1.6; /* post body line-height */
+  --fs-ui: 0.9375rem; /* chrome / UI default */
+  --fs-ui-sm: 0.8125rem; /* small chrome — meta labels */
+  --fs-mono: 0.8125rem; /* chain-data; pairs with tabular-nums */
+  --fs-h-feed: clamp(1.25rem, 1.1rem + 0.6vw, 1.5rem); /* feed heading */
+  --measure-post: 66ch; /* reading line-length cap */
+
+  /* ---- SPACE — a 4px-based scale --------------------------------------- */
+  --space-1: 0.25rem; /*  4px */
+  --space-2: 0.5rem; /*  8px */
+  --space-3: 0.75rem; /* 12px */
+  --space-4: 1rem; /* 16px */
+  --space-5: 1.5rem; /* 24px */
+  --space-6: 2rem; /* 32px */
+
+  /* ---- RADIUS — gentle, paper-soft (not pill, not sharp) ---------------- */
+  --radius-sm: 4px; /* inputs, chips */
+  --radius-md: 8px; /* panels, composer */
+  --radius-lg: 12px; /* large containers */
+
+  /* ---- SHADOW — paper lift, NOT material-design elevation --------------- */
+  --shadow-1: 0 1px 2px rgba(28, 27, 25, 0.05); /* barely-there panel lift */
+  --shadow-2: 0 2px 8px rgba(28, 27, 25, 0.08); /* raised composer / dialog */
+
+  /* ---- MOTION — calm and brief ----------------------------------------- */
+  --motion-fast: 120ms; /* hovers, focus, small state changes */
+  --motion-base: 200ms; /* panel/feed entrance, expansion */
+}
+
+/*
+ * DARK MODE — same paper/ink calm, inverted. Only color tokens change here;
+ * type, space, radius, and motion are inherited from :root above.
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* surfaces — deep slate "paper" */
+    --surface-0: #14161a;
+    --surface-1: #1b1e24;
+    --surface-2: #23272e;
+
+    /* ink */
+    --ink-900: #ece9e2;
+    --ink-600: #a8a399;
+    --ink-400: #6f6b62;
+
+    /* lines */
+    --hairline: #2c313a;
+    /* --hairline-accent / --focus-ring keep their accent aliases */
+
+    /* accent + identity carry over (verdigris reads well on both modes);
+     * --identity-substrate / --hairline-accent / --focus-ring resolve through
+     * the verdigris aliases, so they update automatically. */
+
+    /* paper-lift shadows go deeper on dark paper */
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-2: 0 2px 10px rgba(0, 0, 0, 0.5);
+  }
+}

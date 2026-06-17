@@ -1,0 +1,142 @@
+// The PAPI client lifecycle + honest connection/boot reporting.
+//
+// `createChain` bundles the client + typed API + endpoint into a ChainHandle.
+// `watchConnStatus` derives a connecting/connected/reconnecting signal purely from block
+// liveness (no private provider events) — robust and never throws.
+// `checkBootGuard` compares the live runtime spec to what the app was built against; a
+// mismatch must BLOCK the write path (a silent spec bump mis-encodes posts) while reads
+// stay best-effort. This module only REPORTS `ok`; the UI enforces the block.
+
+import { createClient, type PolkadotClient } from "polkadot-api";
+import { getWsProvider } from "polkadot-api/ws-provider/web";
+import { cogno } from "@polkadot-api/descriptors";
+import { Observable, type Subscription } from "rxjs";
+import type { ChainHandle, ConnStatus, BootGuard, CognoApi } from "@/lib/types";
+
+/** The spec_name the descriptors were generated against (cogno-chain-runtime v101). */
+const EXPECTED_SPEC_NAME = "cogno-chain-runtime";
+
+/**
+ * The descriptor's expected spec_version, when statically discoverable. The generated
+ * `@polkadot-api/descriptors` bundle embeds the spec only inside its opaque metadata blob
+ * (no plain exported constant), so we cannot read it without decoding metadata — we leave
+ * it `null` and gate solely on the spec_name. Reported transparently via BootGuard so the
+ * UI never over-claims a version match it didn't actually verify.
+ */
+const DESCRIPTOR_SPEC_VERSION: number | null = null;
+
+/** Heartbeat window: if no new best block arrives within this, we surface "reconnecting". */
+const BLOCK_HEARTBEAT_MS = 30_000;
+
+/** Build a chain handle: a fresh PAPI client + the typed cogno API + the endpoint it speaks to. */
+export function createChain(wsUrl: string): ChainHandle {
+  const client = createClient(getWsProvider(wsUrl));
+  const api = client.getTypedApi(cogno);
+  return { client, api, wsUrl };
+}
+
+/**
+ * Connection lifecycle derived from block liveness:
+ *   - emits "connecting" immediately,
+ *   - "connected" once the first best block arrives,
+ *   - "reconnecting" if no new block lands for > {@link BLOCK_HEARTBEAT_MS},
+ *   - "error" only if the block stream itself errors.
+ * Never throws; the UI consumes this to drive the connecting/reconnecting chrome.
+ */
+export function watchConnStatus(handle: ChainHandle): Observable<ConnStatus> {
+  return new Observable<ConnStatus>((subscriber) => {
+    subscriber.next("connecting");
+
+    let connected = false;
+    let heartbeat: ReturnType<typeof setTimeout> | undefined;
+    let blockSub: Subscription | undefined;
+
+    const armHeartbeat = () => {
+      if (heartbeat) clearTimeout(heartbeat);
+      heartbeat = setTimeout(() => {
+        // No fresh block within the window — the link is likely stalled / dropped.
+        subscriber.next("reconnecting");
+      }, BLOCK_HEARTBEAT_MS);
+    };
+
+    try {
+      blockSub = handle.client.bestBlocks$.subscribe({
+        next: () => {
+          if (!connected) {
+            connected = true;
+          }
+          // Any (re)arriving block means the link is live again.
+          subscriber.next("connected");
+          armHeartbeat();
+        },
+        error: () => {
+          subscriber.next("error");
+        },
+      });
+    } catch {
+      subscriber.next("error");
+    }
+
+    return () => {
+      if (heartbeat) clearTimeout(heartbeat);
+      blockSub?.unsubscribe();
+    };
+  });
+}
+
+/**
+ * Read the live runtime version and compare it to what the app was built against.
+ * `ok` is false on a spec_name mismatch (wrong chain entirely) — and, when the descriptor
+ * spec_version is known, on a spec_version mismatch too. Never throws: a failed read yields
+ * a not-ok guard with a reason rather than crashing the boot path.
+ */
+export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
+  try {
+    const version = await api.constants.System.Version();
+    const nodeSpecName = version.spec_name;
+    const nodeSpecVersion = version.spec_version;
+
+    const nameMatches = nodeSpecName === EXPECTED_SPEC_NAME;
+    const versionMatches =
+      DESCRIPTOR_SPEC_VERSION === null ||
+      nodeSpecVersion === DESCRIPTOR_SPEC_VERSION;
+    const ok = nameMatches && versionMatches;
+
+    let reason: string | undefined;
+    if (!nameMatches) {
+      reason = `Runtime spec_name "${nodeSpecName}" does not match expected "${EXPECTED_SPEC_NAME}". This is not a cogno-chain node.`;
+    } else if (!versionMatches) {
+      reason = `Runtime spec_version ${nodeSpecVersion} does not match the version this app was built against (${DESCRIPTOR_SPEC_VERSION}). Posting is blocked to avoid mis-encoding; reads remain best-effort.`;
+    }
+
+    return {
+      ok,
+      nodeSpecName,
+      nodeSpecVersion,
+      descriptorSpecVersion: DESCRIPTOR_SPEC_VERSION,
+      reason,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      nodeSpecName: "",
+      nodeSpecVersion: 0,
+      descriptorSpecVersion: DESCRIPTOR_SPEC_VERSION,
+      reason: `Could not read runtime version: ${stringifyError(err)}`,
+    };
+  }
+}
+
+/** Best-effort error → message, used so the boot guard never leaks a thrown object. */
+function stringifyError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  try {
+    return String(err);
+  } catch {
+    return "unknown error";
+  }
+}
+
+// Re-export the client type so consumers of this module have the PAPI client type handy
+// without a second import path. (Pure type re-export; no runtime cost.)
+export type { PolkadotClient };
