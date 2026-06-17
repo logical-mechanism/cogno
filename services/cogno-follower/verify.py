@@ -15,13 +15,12 @@ datum.owner" reduces to: the recovered signing Address IS the owner identity (it
 bind), and it must be a VerificationKey-payment, non-script address. The vault-datum cross-check
 (recovered address == the observed vault's datum.owner) is the M2d seam — flagged below.
 """
-import hashlib
-
 from pycardano.address import Address
 from pycardano.hash import VerificationKeyHash
 from pycardano.cip.cip8 import verify as cip8_verify
 
 import payload as payload_mod
+from beacon import beacon_name_hex
 
 
 class VerifyError(Exception):
@@ -29,10 +28,12 @@ class VerifyError(Exception):
 
 
 def identity_hash_hex(addr: Address) -> str:
-    """DR-01 identity = blake2b_256 of the WHOLE serialized CIP-19 owner Address (== the L1 beacon
-    token_name). `to_primitive()` is the raw address bytes — proven byte-identical to MeshJS
-    `Address.toBytes()` in test_agreement.py, so L1/L3/L5 all key on the same 32 bytes."""
-    return hashlib.blake2b(addr.to_primitive(), digest_size=32).hexdigest()
+    """DR-01 identity = the L1 beacon token_name = blake2b_256(cbor.serialise(owner Address)) —
+    the Plutus-Data CBOR of the credentials (NO network byte), NOT the raw CIP-19 address bytes.
+    Proven byte-identical to the Aiken contract's util.beacon_name (test_beacon.py), so L1/L3/L5 all
+    key on the SAME 32 bytes — this is what lets the follower match a CIP-8 binding to an observed
+    on-chain vault UTxO in M2d."""
+    return beacon_name_hex(addr)
 
 
 def verify_bind(

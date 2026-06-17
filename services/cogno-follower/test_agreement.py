@@ -14,6 +14,7 @@ import subprocess
 
 import payload as payload_mod
 from verify import verify_bind, VerifyError, identity_hash_hex
+from beacon import beacon_name_hex
 from pycardano.address import Address
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -73,11 +74,12 @@ def main():
         expected_genesis=GENESIS,
         consume_nonce=accepting_nonce("cd" * 16),
     )
-    ok(idh == fx["idHashHex"], f"verify_bind returns the identity hash MeshJS computed ({idh[:16]}…)")
-    # Independent cross-check that pycardano's address-bytes == MeshJS toBytes (the L1/L3/L5 key).
+    # The identity hash is the L1 beacon name = blake2b_256(cbor.serialise(owner Address)) — the
+    # Plutus-Data CBOR (DR-01), NOT the raw CIP-19 bytes. test_beacon.py locks it to the Aiken value.
     addr = Address.decode(fx["signing_address"])
-    ok(addr.to_primitive().hex() == fx["addressRawHex"], "pycardano to_primitive() == MeshJS toBytes()")
-    ok(identity_hash_hex(addr) == fx["idHashHex"], "blake2b_256(address) agrees byte-for-byte")
+    expected = beacon_name_hex(addr)
+    ok(idh == expected, f"verify_bind returns the L1 beacon-name identity hash ({idh[:16]}…)")
+    ok(identity_hash_hex(addr) == expected, "identity hash == the L1 beacon name (DR-01)")
 
     print("\n[negative] tampered / wrong proofs are REJECTED")
 

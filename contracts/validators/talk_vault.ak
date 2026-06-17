@@ -184,6 +184,15 @@ fn vault_input(value_lovelace: Int) -> Input {
 
 // ── MINT (register / leave) ──────────────────────────────────────────────────────────────
 
+// §8.5 #1 — the cross-side agreement (the L1↔L2↔L5 join key). The beacon name for a known owner
+// (vkey a1*28 payment + vkey b2*28 stake) is LOCKED here and proven byte-identical to the pycardano
+// follower's beacon_name() — services/cogno-follower/test_beacon.py asserts the SAME value. The
+// serialization is cbor.serialise(Address) = Plutus-Data CBOR (Constr 0 / tag 121, indefinite
+// arrays), NOT the raw CIP-19 address bytes (the Aiken Address type carries no network byte).
+test beacon_name_matches_follower() {
+  beacon() == #"6e2f65e9160dfbef407bfd9bce3a0aa733e12b562a856327acc3092060e0ca50"
+}
+
 test mint_create_succeeds() {
   let tx =
     Transaction {

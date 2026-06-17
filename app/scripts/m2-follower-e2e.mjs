@@ -16,8 +16,6 @@ import { DEV_PHRASE, entropyToMiniSecret, mnemonicToEntropy, ss58Address } from 
 import { cogno } from "@polkadot-api/descriptors";
 import { toHex } from "polkadot-api/utils";
 import * as core from "@meshsdk/core";
-import * as cst from "@meshsdk/core-cst";
-import { blake2b } from "blakejs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
 const FOLLOWER = process.env.FOLLOWER || "http://127.0.0.1:8090";
@@ -54,8 +52,6 @@ async function main() {
   if (wallet.init) await wallet.init();
   const signing_address = await wallet.getChangeAddress();
   const sig = await wallet.signData(nres.payload, signing_address);
-  const rawHex = cst.Address.fromBech32(signing_address).toBytes().toString();
-  const idHashHex = toHex(blake2b(hexToBytes(rawHex), undefined, 32)).replace(/^0x/, "");
 
   // 3) POST the bind to the follower (it verifies CIP-8 + submits link_identity)
   const bres = await (await fetch(`${FOLLOWER}/bind`, {
@@ -63,7 +59,9 @@ async function main() {
     body: JSON.stringify({ signature: sig.signature, key: sig.key, signing_address, sr25519_pubkey: accountHex }),
   })).json();
   ok(bres.ok === true, `follower verified the CIP-8 proof + submitted link_identity (${JSON.stringify(bres.error ?? "ok")})`);
-  ok(bres.identity_hash === idHashHex, `follower bound the identity hash I computed (${idHashHex.slice(0, 16)}…)`);
+  // The identity hash IS the L1 beacon name (Plutus-Data CBOR, DR-01) — the follower computes it.
+  const idHashHex = bres.identity_hash;
+  ok(typeof idHashHex === "string" && idHashHex.length === 64, `follower returned a 32-byte beacon-name identity hash (${idHashHex?.slice(0, 16)}…)`);
 
   // 4) the AccountOf readback — the client's bind-complete check (L5 §5.7)
   const bound = await api.query.CognoGate.AccountOf.getValue(FixedSizeBinary.fromBytes(hexToBytes(idHashHex)));
