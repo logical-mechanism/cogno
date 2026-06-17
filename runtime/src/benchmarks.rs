@@ -36,4 +36,6 @@ frame_benchmarking::define_benchmarks!(
 	[pallet_talk_stake, TalkStake]
 	[pallet_microblog, Microblog]
 	[pallet_anchor, Anchor]
+	// M6 (DR-26): real WeightInfo for the mutable-authority add/remove extrinsics.
+	[pallet_validator_set, ValidatorSet]
 );

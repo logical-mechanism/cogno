@@ -11,6 +11,9 @@ node_modules/
 # The anchor-relayer reuses the app's deps via a node_modules SYMLINK (not a dir, so the
 # pattern above misses it). Recreate locally: ln -sfn ../../app/node_modules node_modules
 services/anchor-relayer/node_modules
+# The M6 committee tooling does the same (symlink to the indexer's deps).
+# Recreate locally: ln -sfn ../indexer/node_modules services/committee/node_modules
+services/committee/node_modules
 
 # Editor / OS cruft
 *.rs.bk

@@ -1,0 +1,68 @@
+// M6 — the general operator CLI: drive ANY privileged call through the 3-of-5 FollowerCommittee or
+// sudo. This generalizes the M2/M3 single-purpose sudo drivers (grant-weight / sync-weight /
+// anchor_ack) into one reusable propose→vote→close (or sudo) tool.
+//
+//   node op.mjs --call <pallet>.<method> --args '<jsonArray>' [--via committee|sudo] [--ws <url>]
+//
+// Examples (camelCase pallet.method, JSON args; ss58 addresses + decimal-string bignums):
+//   node op.mjs --call talkStake.setStake     --args '["5Grw…", "42000000"]'
+//   node op.mjs --call cognoGate.linkIdentity --args '["0x<32-byte hash>", "5Grw…", null]'
+//   node op.mjs --call anchor.anchorAck       --args '[123, "0x<root>", "0x<txhash>", 7, 0]'
+//   node op.mjs --call validatorSet.addValidator --args '["5FHneW…"]'  --via committee
+//   node op.mjs --call talkStake.setStake     --args '["5Grw…", "0"]'  --via sudo   # dev fallback
+import { connect, drive, find } from "./lib.mjs";
+
+function parseArgv(argv) {
+	const o = { via: "committee" };
+	for (let i = 0; i < argv.length; i++) {
+		const a = argv[i];
+		if (a === "--call") o.call = argv[++i];
+		else if (a === "--args") o.args = argv[++i];
+		else if (a === "--via") o.via = argv[++i];
+		else if (a === "--ws") o.ws = argv[++i];
+		else if (a === "--threshold") o.threshold = Number(argv[++i]);
+	}
+	return o;
+}
+
+// Revive decimal strings into BigInt so large balances/weights encode losslessly; pass through
+// hex strings, ss58 addresses, numbers, null. (JSON has no BigInt; we use decimal-string convention.)
+function revive(v) {
+	if (typeof v === "string" && /^[0-9]+$/.test(v) && v.length > 0) return BigInt(v);
+	return v;
+}
+
+async function main() {
+	const opt = parseArgv(process.argv.slice(2));
+	if (!opt.call || !opt.args) {
+		console.error("usage: node op.mjs --call <pallet>.<method> --args '<jsonArray>' [--via committee|sudo]");
+		process.exit(2);
+	}
+	const [pallet, method] = opt.call.split(".");
+	const args = JSON.parse(opt.args).map(revive);
+
+	const api = await connect(opt.ws);
+	try {
+		const spec = api.runtimeVersion.specVersion.toNumber();
+		console.log(`chain ${api.genesisHash.toHex().slice(0, 10)}… spec ${spec} | ${opt.call}(${args.length} args) via ${opt.via}`);
+		if (!api.tx[pallet] || !api.tx[pallet][method])
+			throw new Error(`no such call api.tx.${pallet}.${method} (check camelCase + spec ${spec})`);
+
+		const innerCall = api.tx[pallet][method](...args);
+		const res = await drive(api, innerCall, { via: opt.via, threshold: opt.threshold, log: (m) => console.log("  " + m) });
+
+		// Surface the executed inner result (collective Executed wraps the dispatch result).
+		const executed = find(res.evs, "followerCommittee", "Executed") || find(res.evs, "sudo", "Sudid");
+		const okMsg = executed
+			? `executed (${executed.section}.${executed.method}); inner events: ${res.evs.map((e) => `${e.section}.${e.method}`).filter((s) => !s.startsWith("system.") && !s.startsWith("followerCommittee.") && !s.startsWith("balances.")).join(", ") || "(see chain)"}`
+			: "(submitted)";
+		console.log(`✓ ${opt.call} ${okMsg}`);
+		await api.disconnect();
+		process.exit(0);
+	} catch (e) {
+		console.error("OP FAILED:", e?.message || e);
+		await api.disconnect();
+		process.exit(1);
+	}
+}
+main();
