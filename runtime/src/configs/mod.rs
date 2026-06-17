@@ -243,3 +243,15 @@ impl pallet_cogno_gate::Config for Runtime {
 	type OnBind = Microblog;
 	type WeightInfo = pallet_cogno_gate::weights::SubstrateWeight<Runtime>;
 }
+
+/// Configure pallet-anchor (M3, Tier-A: the Cardano WRITE link). Records the Anchor Relayer's
+/// confirmed checkpoints (finalized state-root → Cardano metadata txhash) via `anchor_ack`. The
+/// `AnchorOrigin` is the trusted relayer; in v1 dev that authority is sudo (`EnsureRoot`, the
+/// DR-07 escape hatch), so the relayer can ack via `Sudo.sudo(anchor_ack {..})` exactly as the
+/// follower drives `set_stake`/`link_identity`. Evidence, not enforcement (DR-20); the
+/// `EnsureOrigin` shape keeps the widen to a k-of-t committee signature-free.
+impl pallet_anchor::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type AnchorOrigin = EnsureRoot<AccountId>;
+	type WeightInfo = pallet_anchor::weights::SubstrateWeight<Runtime>;
+}

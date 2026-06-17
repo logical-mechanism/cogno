@@ -75,7 +75,10 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// 102 -> 103 for M2: added pallet-cogno-gate (@8, the CIP-8 identity gate) + the
 	// `IdentityGate` (NotAllowed) check on `post_message` (new storage/calls/error variant —
 	// encoding-affecting). transaction_version is UNCHANGED (no TxExtension change).
-	spec_version: 103,
+	// 103 -> 104 for M3: added pallet-anchor (@12, the Tier-A Cardano WRITE link) with the
+	// `anchor_ack` call + `LastCheckpoint` storage (new pallet/calls/storage — encoding-affecting;
+	// regen the PAPI descriptors). transaction_version is UNCHANGED (no TxExtension change).
+	spec_version: 104,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -253,4 +256,10 @@ mod runtime {
 
 	#[runtime::pallet_index(11)]
 	pub type SkipFeelessPayment = pallet_skip_feeless_payment;
+
+	// 12 = Anchor (M3, the Tier-A Cardano WRITE link): records the relayer-confirmed
+	// finalized-state-root → Cardano-metadata-txhash checkpoints. Records only, never
+	// snapshots a root itself (PLAN §4.9). Next free index after SkipFeelessPayment.
+	#[runtime::pallet_index(12)]
+	pub type Anchor = pallet_anchor;
 }
