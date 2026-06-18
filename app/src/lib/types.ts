@@ -168,23 +168,23 @@ export interface ChainHandle {
 }
 
 /**
- * The posting-key adapter. The sr25519 key signs every feeless post; it can be a simple
- * in-session/dev key or the hardened Model-B encrypted keystore signer — both share this
- * exact shape, so every consumer only ever touches `{ ss58, publicKeyHex, label, signer }`.
- * This is the SEPARATE posting half of the dual-key model; the Cardano CIP-30 wallet is the
- * identity/stake key that signs the CIP-8 bind and the L1 vault lock/exit.
+ * The posting-key adapter. The sr25519 key signs every feeless post; every consumer only ever
+ * touches `{ ss58, publicKeyHex, label, signer }`. In the product flow it is DERIVED from a
+ * Cardano wallet signature (kind "derived") — nothing stored, no second wallet. This is the
+ * posting half of the dual-key model; the Cardano CIP-30 wallet is the identity/stake key that
+ * derives this key, signs the CIP-8 bind, and signs the L1 vault lock/exit.
  */
 export interface PostingSigner {
   /** SS58 address (prefix 42) — the "Signing as <ss58-short>" identity. */
   ss58: Ss58;
   /** 0x-prefixed sr25519 public key. */
   publicKeyHex: string;
-  /** Human label, e.g. "//Alice (dev)" or "session key". */
+  /** Human label, e.g. "wallet key" or "//Alice (dev)". */
   label: string;
   /** The PAPI signer passed to `tx.*.signSubmitAndWatch(signer)`. */
   signer: PolkadotSigner;
   /** Provenance of the key, so the UI can be honest about what it is. */
-  kind: "dev" | "session" | "mnemonic" | "keystore";
+  kind: "dev" | "derived";
 }
 
 /** Phases of a submitted extrinsic, surfaced honestly (signed ≠ included). */

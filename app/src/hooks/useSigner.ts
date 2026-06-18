@@ -2,203 +2,131 @@
 
 // useSigner — the active posting key in React state.
 //
-// Three provenances, all the same PostingSigner shape:
-//   • dev account — re-derived from the well-known DEV_PHRASE; we persist only the CHOICE (a URI
-//     like "//Alice"), never secret material. Public, for trying things.
-//   • session key — a fresh random key kept ONLY in memory; its mnemonic is surfaced once to back
-//     up, then dropped. Gone on refresh.
-//   • keystore key (M8) — a durable key encrypted at rest (lib/signer/keystore.ts). Unlocking it
-//     needs the password each session; only ciphertext lives on disk.
+// PRODUCT FLOW: the posting key is DERIVED from the connected Cardano wallet's signature
+// (lib/signer/wallet-derive.ts) — nothing stored, no password, no second wallet. `connectWallet`
+// signs the fixed derive-message and becomes that key; re-derive each session by connecting again.
 //
-// A saved keystore stays LOCKED until you unlock it — the active signer falls back to a dev
-// account so reads/UX still work, and the UI invites you to unlock to post as your own key.
+// ADVANCED (hidden behind a toggle): the well-known dev accounts (//Alice…), for testing / operator
+// use without a wallet. We persist only the dev CHOICE (a URI), never any secret.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  DEV_ACCOUNTS,
-  getDevSigner,
-  generateSessionSigner,
-  freshMnemonic,
-  signerFromMnemonic,
-} from "@/lib/signer";
-import {
-  encryptMnemonic,
-  decryptMnemonic,
-  loadKeystore,
-  saveKeystore,
-  clearKeystore,
-  hasKeystore,
-} from "@/lib/signer/keystore";
+import { DEV_ACCOUNTS, getDevSigner } from "@/lib/signer";
+import { deriveSignerFromWallet } from "@/lib/signer/wallet-derive";
 import type { PostingSigner } from "@/lib/types";
 
 const DEV_CHOICE_KEY = "cogno.signer.devChoice";
 const DEFAULT_DEV = "//Alice";
-const KEYSTORE_LABEL = "keystore key";
-
-function readDevChoice(): string {
-  if (typeof window === "undefined") return DEFAULT_DEV;
-  try {
-    const v = window.localStorage.getItem(DEV_CHOICE_KEY);
-    if (v && (DEV_ACCOUNTS as readonly string[]).includes(v)) return v;
-  } catch {
-    /* localStorage may be unavailable (private mode); fall through to default */
-  }
-  return DEFAULT_DEV;
-}
-
-function writeDevChoice(uri: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(DEV_CHOICE_KEY, uri);
-  } catch {
-    /* best-effort; the choice is non-essential */
-  }
-}
+const LAST_WALLET_KEY = "cogno.wallet.last"; // non-secret: the wallet id, to offer a one-click reconnect
 
 export interface UseSigner {
-  /** The currently active posting signer. */
+  /** The currently active posting signer (a wallet-derived key, or a dev account in advanced mode). */
   signer: PostingSigner;
-  /** The dev URIs available to switch to (e.g. "//Alice"). */
-  devAccounts: readonly string[];
-  /** Switch to a dev account (re-derived; persisted as a non-secret choice). */
-  setDevAccount: (uri: string) => void;
-  /** Generate a fresh in-memory session key and become it. */
-  useSessionKey: () => void;
-  /** The mnemonic of a freshly created key, surfaced ONCE for backup (null otherwise). */
-  sessionMnemonic: string | null;
-  /** Dismiss the surfaced mnemonic once the user has backed it up. */
-  ackSessionMnemonic: () => void;
+  /** The active posting key is a wallet-derived key (the product flow is "connected"). */
+  walletConnected: boolean;
+  /** Posting is enabled: a wallet is connected OR a dev account was explicitly chosen (advanced). */
+  postingEnabled: boolean;
+  /** The Cardano wallet id the posting key was derived from (drives bind + vault lock/exit). */
+  connectedWalletId: string | null;
+  /** The connected wallet address (its identity/stake key). */
+  walletAddress: string | null;
+  /** A sign-to-derive is in flight. */
+  deriving: boolean;
+  error: string | null;
+  /** A previously-connected wallet id, surfaced to offer a one-click reconnect. */
+  lastWalletId: string | null;
+  /** Connect a CIP-30 wallet and derive the posting key from its signature. */
+  connectWallet: (walletId: string) => Promise<boolean>;
+  /** Drop the derived key (back to disconnected). */
+  disconnect: () => void;
 
-  // ── keystore (M8) ──
-  /** A keystore blob exists on this device (may be locked). */
-  hasKeystore: boolean;
-  /** The active signer IS the keystore key (i.e. unlocked this session). */
-  keystoreUnlocked: boolean;
-  /** Create a brand-new keystore key under a password; returns its mnemonic to back up once. */
-  createKeystore: (password: string) => Promise<string | null>;
-  /** Import an existing recovery phrase into the keystore under a password. */
-  importKeystore: (mnemonic: string, password: string) => Promise<boolean>;
-  /** Unlock the saved keystore with its password and become that key. */
-  unlockKeystore: (password: string) => Promise<boolean>;
-  /** Drop the in-memory keystore key (keep the ciphertext) — back to a dev account. */
-  lockKeystore: () => void;
-  /** Wipe the keystore ciphertext entirely. */
-  forgetKeystore: () => void;
-  /** Last keystore error (wrong password, invalid phrase, …). */
-  keystoreError: string | null;
+  // ── advanced / dev (hidden behind a toggle) ──
+  devAccounts: readonly string[];
+  setDevAccount: (uri: string) => void;
 }
 
 export function useSigner(): UseSigner {
-  // Default deterministically to //Alice so SSR/first paint matches; the persisted choice and the
-  // presence of a keystore are applied on the client after mount (avoids hydration mismatch).
+  // Default deterministically to //Alice so SSR/first paint matches; the persisted dev choice and
+  // last-wallet hint are applied on the client after mount (avoids a hydration mismatch).
   const [signer, setSigner] = useState<PostingSigner>(() => getDevSigner(DEFAULT_DEV));
-  const [sessionMnemonic, setSessionMnemonic] = useState<string | null>(null);
-  const [hasKs, setHasKs] = useState(false);
-  const [keystoreError, setKeystoreError] = useState<string | null>(null);
+  const [connectedWalletId, setConnectedWalletId] = useState<string | null>(null);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [deriving, setDeriving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastWalletId, setLastWalletId] = useState<string | null>(null);
+  // The default //Alice is a BACKGROUND signer, not an active identity: posting stays disabled
+  // until the user connects a wallet or explicitly chooses a dev account (advanced).
+  const [devChosen, setDevChosen] = useState(false);
 
-  const appliedChoice = useRef(false);
+  const init = useRef(false);
   useEffect(() => {
-    if (appliedChoice.current) return;
-    appliedChoice.current = true;
-    setHasKs(hasKeystore());
-    const choice = readDevChoice();
-    if (choice !== DEFAULT_DEV) setSigner(getDevSigner(choice));
+    if (init.current) return;
+    init.current = true;
+    try {
+      const w = window.localStorage.getItem(LAST_WALLET_KEY);
+      if (w) setLastWalletId(w);
+    } catch {
+      /* localStorage may be unavailable (private mode); ignore */
+    }
+  }, []);
+
+  const connectWallet = useCallback(async (walletId: string): Promise<boolean> => {
+    setDeriving(true);
+    setError(null);
+    try {
+      const { signer: s, signingAddress } = await deriveSignerFromWallet(walletId);
+      setSigner(s);
+      setDevChosen(false);
+      setConnectedWalletId(walletId);
+      setWalletAddress(signingAddress);
+      try {
+        window.localStorage.setItem(LAST_WALLET_KEY, walletId);
+        setLastWalletId(walletId);
+      } catch {
+        /* best-effort */
+      }
+      return true;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return false;
+    } finally {
+      setDeriving(false);
+    }
+  }, []);
+
+  const disconnect = useCallback(() => {
+    setConnectedWalletId(null);
+    setWalletAddress(null);
+    setError(null);
+    setDevChosen(false);
+    setSigner(getDevSigner(DEFAULT_DEV));
   }, []);
 
   const setDevAccount = useCallback((uri: string) => {
-    setSessionMnemonic(null);
-    setKeystoreError(null);
+    setError(null);
+    setConnectedWalletId(null);
+    setWalletAddress(null);
+    setDevChosen(true);
     setSigner(getDevSigner(uri));
-    writeDevChoice(uri);
-  }, []);
-
-  const useSessionKey = useCallback(() => {
-    setKeystoreError(null);
-    const { signer: s, mnemonic } = generateSessionSigner();
-    setSigner(s);
-    setSessionMnemonic(mnemonic);
-  }, []);
-
-  const ackSessionMnemonic = useCallback(() => setSessionMnemonic(null), []);
-
-  const createKeystore = useCallback(async (password: string): Promise<string | null> => {
-    setKeystoreError(null);
     try {
-      const mnemonic = freshMnemonic();
-      const s = signerFromMnemonic(mnemonic, { label: KEYSTORE_LABEL, kind: "keystore" });
-      saveKeystore(await encryptMnemonic(mnemonic, password, KEYSTORE_LABEL));
-      setHasKs(true);
-      setSigner(s);
-      return mnemonic;
-    } catch (e) {
-      setKeystoreError(e instanceof Error ? e.message : "could not create the keystore");
-      return null;
-    }
-  }, []);
-
-  const importKeystore = useCallback(async (mnemonic: string, password: string): Promise<boolean> => {
-    setKeystoreError(null);
-    let s: PostingSigner;
-    try {
-      s = signerFromMnemonic(mnemonic, { label: KEYSTORE_LABEL, kind: "keystore" });
+      window.localStorage.setItem(DEV_CHOICE_KEY, uri);
     } catch {
-      setKeystoreError("that does not look like a valid recovery phrase");
-      return false;
-    }
-    try {
-      saveKeystore(await encryptMnemonic(mnemonic.trim(), password, KEYSTORE_LABEL));
-      setHasKs(true);
-      setSigner(s);
-      return true;
-    } catch (e) {
-      setKeystoreError(e instanceof Error ? e.message : "could not save the keystore");
-      return false;
+      /* best-effort; the choice is non-essential */
     }
   }, []);
 
-  const unlockKeystore = useCallback(async (password: string): Promise<boolean> => {
-    setKeystoreError(null);
-    const blob = loadKeystore();
-    if (!blob) {
-      setKeystoreError("no keystore on this device to unlock");
-      return false;
-    }
-    try {
-      const mnemonic = await decryptMnemonic(blob, password);
-      setSigner(signerFromMnemonic(mnemonic, { label: KEYSTORE_LABEL, kind: "keystore" }));
-      return true;
-    } catch (e) {
-      setKeystoreError(e instanceof Error ? e.message : "unlock failed");
-      return false;
-    }
-  }, []);
-
-  const lockKeystore = useCallback(() => {
-    setKeystoreError(null);
-    setSigner(getDevSigner(readDevChoice()));
-  }, []);
-
-  const forgetKeystore = useCallback(() => {
-    clearKeystore();
-    setHasKs(false);
-    setKeystoreError(null);
-    setSigner(getDevSigner(readDevChoice()));
-  }, []);
-
+  const walletConnected = signer.kind === "derived";
   return {
     signer,
+    walletConnected,
+    postingEnabled: walletConnected || devChosen,
+    connectedWalletId,
+    walletAddress,
+    deriving,
+    error,
+    lastWalletId,
+    connectWallet,
+    disconnect,
     devAccounts: DEV_ACCOUNTS,
     setDevAccount,
-    useSessionKey,
-    sessionMnemonic,
-    ackSessionMnemonic,
-    hasKeystore: hasKs,
-    keystoreUnlocked: signer.kind === "keystore",
-    createKeystore,
-    importKeystore,
-    unlockKeystore,
-    lockKeystore,
-    forgetKeystore,
-    keystoreError,
   };
 }

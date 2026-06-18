@@ -16,9 +16,11 @@ services/anchor-relayer/node_modules
 services/committee/node_modules
 
 # Secrets / local env (never commit real creds). The committed manifests are the
-# *.env.example files (root + services/indexer); the live .env files stay local on disk.
+# *.env.example files (root + services/indexer); the live .env / .env*.local files stay local.
 .env
 **/.env
+.env*.local
+**/.env*.local
 !.env.example
 !**/.env.example
 

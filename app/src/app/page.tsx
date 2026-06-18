@@ -1,11 +1,9 @@
 "use client";
 
-// page.tsx — the M1 reading room, M4-extended. A single client-rendered page that wires the
-// data layer (via hooks) into the calm, honest UI. There is ONE socket (useChain), from which
-// heads, submit and signer all hang. The FEED now reads through a swappable FeedSource: the
-// SubQuery indexer when a GraphQL endpoint is configured (search + pagination + revocation
-// flagging), else the PAPI-direct node. The best-vs-finalized ProvenanceLine stays PAPI-driven
-// regardless of which reader serves the feed.
+// page.tsx — the reading room, product-shaped. One Cardano wallet runs everything: connecting
+// derives your posting key, registers it, and stakes ADA for talk-capacity (the Account widget).
+// The default view is just connect → stake → read/post; the trust posture, chain status, and
+// advanced config live behind the "about" link. There is ONE socket (useChain).
 
 import { useMemo, useState } from "react";
 import { useChain } from "@/hooks/useChain";
@@ -21,14 +19,11 @@ import { makeFeedSource } from "@/lib/feed";
 import { getGraphqlUrl } from "@/lib/config/endpoints";
 import type { FeedSnapshot } from "@/lib/types";
 import { Masthead } from "@/components/Masthead";
-import { ProvenanceLine } from "@/components/ProvenanceLine";
-import { AnchorStatus } from "@/components/AnchorStatus";
+import { Account } from "@/components/Account";
+import { About } from "@/components/About";
 import { Composer } from "@/components/Composer";
 import { Feed } from "@/components/Feed";
 import { SearchBar } from "@/components/SearchBar";
-import { EndpointSettings } from "@/components/EndpointSettings";
-import { StakePanel } from "@/components/StakePanel";
-import { TrustNote } from "@/components/TrustNote";
 import styles from "./page.module.css";
 
 export default function Page() {
@@ -36,19 +31,15 @@ export default function Page() {
 
   // Bumped whenever the GraphQL endpoint changes in settings, so the source rebuilds.
   const [gqlEpoch, setGqlEpoch] = useState(0);
-  // The active read path: indexer when a GraphQL endpoint is set, else the PAPI-direct node.
   const source = useMemo(
     () => (api ? makeFeedSource(api, getGraphqlUrl() || null) : null),
-    // getGraphqlUrl() is read at build time; gqlEpoch forces a re-read on save/clear.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [api, gqlEpoch],
   );
 
-  // Live feed (PAPI watchEntries or indexer poll, depending on the source).
   const { snapshot, ready, error: feedError } = useFeed(source);
   const heads = useHeads(handle?.client ?? null);
 
-  // Search (indexer-only): a non-empty query swaps the live feed for a paginated result set.
   const [search, setSearch] = useState("");
   const searching = search.trim().length > 0;
   const searchEnabled = source?.caps.search === true && searching;
@@ -57,73 +48,51 @@ export default function Page() {
   const signerCtl = useSigner();
   const signer = signerCtl.signer;
   const submit = useSubmit(api, signer, boot);
-  // Live, advisory talk-capacity for the active posting key — ticks with the best block.
   const capacity = useCapacity(api, signer.ss58, heads.best?.number ?? null);
-  // M2: the Cardano-identity bind state for the active posting key (+ the bind action).
   const identity = useIdentity(api, signer);
-  // M8: the L1 vault lock/exit state for a connected Cardano wallet (locking ADA earns capacity).
   const vault = useVault();
-  // M3: the latest Cardano anchor checkpoint (Anchor.LastCheckpoint) — the WRITE link's evidence.
   const anchor = useAnchor(api);
 
   const [replyTo, setReplyTo] = useState<bigint | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   const onSubmitPost = (text: string) => {
     submit.post(text, replyTo ?? undefined);
   };
 
-  // When searching, the Feed renders the paginated result set; otherwise the live snapshot.
   const feedSnapshot: FeedSnapshot = searchEnabled
     ? { posts: searchPage.posts, asOf: snapshot.asOf }
     : snapshot;
   const feedReady = searchEnabled ? !searchPage.loading || searchPage.posts.length > 0 : ready;
   const feedErr = searchEnabled ? searchPage.error : feedError;
 
-  // Honest read-path label: which reader is actually serving the feed right now.
-  const readPath =
-    source?.kind === "graphql" ? "reads: indexer" : "reads: direct node";
-
   return (
     <main className={styles.shell}>
-      <Masthead
+      <Masthead onOpenAbout={() => setAboutOpen(true)} />
+
+      <Account
         signerCtl={signerCtl}
         identity={identity}
-        status={status}
-        wsUrl={wsUrl}
-        onOpenSettings={() => setSettingsOpen((o) => !o)}
+        vault={vault}
+        onOpenAbout={() => setAboutOpen(true)}
       />
 
-      <ProvenanceLine heads={heads} status={status} />
-
-      <AnchorStatus anchor={anchor} />
-
-      <EndpointSettings
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        onReconnect={(url) => reconnect(url)}
-        onGraphqlChange={() => {
-          setSearch(""); // a path change invalidates any in-flight search
-          setGqlEpoch((n) => n + 1);
-        }}
-      />
-
-      <StakePanel vault={vault} onOpenSettings={() => setSettingsOpen((o) => !o)} />
-
-      <div className={styles.composerSlot}>
-        <Composer
-          signer={signer}
-          boot={boot}
-          txState={submit.state}
-          busy={submit.busy}
-          replyTo={replyTo}
-          onClearReply={() => setReplyTo(null)}
-          onSubmit={onSubmitPost}
-          capView={capacity.view}
-          capConsts={capacity.consts}
-          bound={identity.bound}
-        />
-      </div>
+      {signerCtl.postingEnabled && (
+        <div className={styles.composerSlot}>
+          <Composer
+            signer={signer}
+            boot={boot}
+            txState={submit.state}
+            busy={submit.busy}
+            replyTo={replyTo}
+            onClearReply={() => setReplyTo(null)}
+            onSubmit={onSubmitPost}
+            capView={capacity.view}
+            capConsts={capacity.consts}
+            bound={identity.bound}
+          />
+        </div>
+      )}
 
       {source?.caps.search && (
         <SearchBar
@@ -132,10 +101,6 @@ export default function Page() {
           resultCount={searchEnabled ? searchPage.totalCount : undefined}
         />
       )}
-
-      <p className={styles.readPath} aria-live="polite">
-        {readPath}
-      </p>
 
       <Feed
         snapshot={feedSnapshot}
@@ -157,7 +122,19 @@ export default function Page() {
         onDelete={(id) => submit.remove(id)}
       />
 
-      <TrustNote />
+      <About
+        open={aboutOpen}
+        onClose={() => setAboutOpen(false)}
+        signerCtl={signerCtl}
+        heads={heads}
+        status={status}
+        anchor={anchor}
+        onReconnect={(url) => reconnect(url)}
+        onGraphqlChange={() => {
+          setSearch("");
+          setGqlEpoch((n) => n + 1);
+        }}
+      />
     </main>
   );
 }

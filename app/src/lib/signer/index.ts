@@ -1,9 +1,10 @@
 // The posting-key adapter (sr25519).
 //
-// Every consumer only ever touches `{ ss58, publicKeyHex, label, signer, kind }`. The key can be a
-// well-known dev account, a memory-only session key, or — since M8 — a durable key restored from
-// the hardened encrypted keystore (lib/signer/keystore.ts). The Cardano identity is a SEPARATE key
-// (a connected CIP-30 wallet), bound 1:1 to this posting key by the M2 CIP-8 bind.
+// Every consumer only ever touches `{ ss58, publicKeyHex, label, signer, kind }`. In the product
+// flow the key is DERIVED from a connected Cardano wallet's signature (signerFromSeed, kind
+// "derived"; see lib/signer/wallet-derive.ts) — nothing stored. The dev accounts below are the
+// advanced/testing fallback. The Cardano wallet that derives this key is also the identity it binds
+// to (the M2 CIP-8 bind) and the owner that locks the L1 vault.
 
 import { getPolkadotSigner } from "polkadot-api/signer";
 import { sr25519CreateDerive } from "@polkadot-labs/hdkd";
@@ -11,8 +12,6 @@ import {
   DEV_PHRASE,
   entropyToMiniSecret,
   mnemonicToEntropy,
-  mnemonicToMiniSecret,
-  generateMnemonic,
   ss58Address,
 } from "@polkadot-labs/hdkd-helpers";
 import { toHex } from "@polkadot-api/utils";
@@ -63,39 +62,16 @@ export function getDevSigner(uri: string = "//Alice"): PostingSigner {
   return toPostingSigner(kp, `${uri} (dev)`, "dev");
 }
 
-/** Generate a fresh sr25519 mnemonic (12 words). The caller decides whether to keep it in memory
- *  (a session key) or encrypt it into the keystore. */
-export function freshMnemonic(): string {
-  return generateMnemonic();
-}
-
 /**
- * Generate a fresh random sr25519 session key. Returns both the signer and its mnemonic so the UI
- * can let the user back up the phrase. A session key lives only in memory (gone on refresh) — the
- * durable option is to save it to the encrypted keystore instead.
+ * Build a signer directly from a 32-byte seed (mini-secret) — the sign-to-derive path: the seed is
+ * `blake2b_256` of a Cardano wallet's deterministic CIP-8 signature, so the same wallet always
+ * reproduces the same posting key with nothing stored (lib/signer/wallet-derive.ts).
  */
-export function generateSessionSigner(): {
-  signer: PostingSigner;
-  mnemonic: string;
-} {
-  const mnemonic = freshMnemonic();
-  const kp = sr25519CreateDerive(
-    mnemonicToMiniSecret(mnemonic),
-  )("//0") as Sr25519KeyPair;
-  return { signer: toPostingSigner(kp, "session key", "session"), mnemonic };
-}
-
-/**
- * Rebuild a signer from a mnemonic (default derivation path `//0`). Used both to import a phrase
- * and to restore the key after the encrypted keystore is unlocked. Throws on an invalid phrase.
- */
-export function signerFromMnemonic(
-  mnemonic: string,
+export function signerFromSeed(
+  seed: Uint8Array,
   opts: { path?: string; label?: string; kind?: PostingSigner["kind"] } = {},
 ): PostingSigner {
-  const { path = "//0", label = "imported key", kind = "mnemonic" } = opts;
-  const kp = sr25519CreateDerive(
-    mnemonicToMiniSecret(mnemonic.trim()),
-  )(path) as Sr25519KeyPair;
+  const { path = "", label = "wallet key", kind = "derived" } = opts;
+  const kp = sr25519CreateDerive(seed)(path) as Sr25519KeyPair;
   return toPostingSigner(kp, label, kind);
 }
