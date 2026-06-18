@@ -43,27 +43,49 @@ export function operators(extra = ["//Ferdie", "//Grace"]) {
 /// dispatchError, a terminal non-inclusion status (dropped/invalid/usurped/finality-timeout — else
 /// finalize-mode would hang), OR a pool reject. The events returned with `finalize:true` are read
 /// FROM the finalized block, so the caller's event assertions re-verify against finalized state.
-export function send(api, tx, signer, label, { finalize = false } = {}) {
+export function send(api, tx, signer, label, { finalize = false, log = () => {} } = {}) {
 	return new Promise((resolve, reject) => {
 		let unsub;
 		const stop = () => { if (typeof unsub === "function") unsub(); };
 		tx.signAndSend(signer, ({ status, events = [], dispatchError }) => {
+			// Trace the status machine (gap 5): an operator watching a live committee write needs to
+			// see progress (inBlock → finalized) and the on-chain reason BEFORE a reject, otherwise a
+			// stalled or reverted tx looks like a hang with no context. Off by default (no-op log).
 			if (dispatchError) {
 				let msg = dispatchError.toString();
 				if (dispatchError.isModule) {
-					const d = api.registry.findMetaError(dispatchError.asModule);
-					msg = `${d.section}.${d.name}`;
+					try {
+						const d = api.registry.findMetaError(dispatchError.asModule);
+						msg = `${d.section}.${d.name}`;
+					} catch (ex) {
+						// findMetaError can throw on malformed metadata / a mock registry — surface the
+						// decode failure (with the raw module index) and still reject cleanly, never let an
+						// uncaught exception escape the callback and leave the promise unsettled (gap 3).
+						msg = `module error (undecodable: ${ex?.message || ex})`;
+					}
 				}
+				log(`${label}: dispatchError ${msg} — rejecting`);
 				stop();
 				return reject(new Error(`${label}: dispatchError ${msg}`));
 			}
 			if (status.isDropped || status.isInvalid || status.isUsurped || status.isFinalityTimeout) {
+				log(`${label}: terminal status ${status.type} (never included/finalized) — rejecting`);
 				stop();
 				return reject(new Error(`${label}: tx ${status.type} (never included/finalized)`));
 			}
+			if (status.isInBlock) log(`${label}: inBlock`);
+			if (status.isFinalized) log(`${label}: finalized`);
 			if (finalize ? status.isFinalized : status.isInBlock) {
 				stop();
-				resolve(events.map(({ event }) => event));
+				try {
+					// Defend the event destructure (gap 4): a malformed events array (a null entry or an
+					// entry without `.event`) must reject with context, not throw an uncaught TypeError
+					// out of the subscription callback (which would leave the promise hanging forever).
+					return resolve(events.map((e) => e.event));
+				} catch (ex) {
+					log(`${label}: malformed events array (${ex?.message || ex}) — rejecting`);
+					return reject(new Error(`${label}: malformed events array (${ex?.message || ex})`));
+				}
 			}
 		}).then((u) => { unsub = u; }).catch(reject);
 	});
@@ -93,8 +115,10 @@ export function ensureExecuted(api, events, section, method, resultIdx, label) {
 			} else {
 				msg = err ? err.toString() : "Err";
 			}
-		} catch {
-			msg = "inner dispatch error";
+		} catch (ex) {
+			// Surface the actual decode failure (gap 14) — "inner dispatch error" alone gives an
+			// operator nothing to troubleshoot a metadata/codec mismatch with.
+			msg = `inner dispatch error (${ex?.message || ex})`;
 		}
 		throw new Error(`${label}: inner call REVERTED (${msg}) — the motion executed but the wrapped call failed`);
 	}
@@ -107,7 +131,7 @@ export async function viaSudo(api, innerCall, opts = {}) {
 	const log = opts.log || (() => {});
 	const finalize = opts.finalize ?? true; // privileged write resolves on finalization (committee-2)
 	log(`via SUDO (EnsureRoot dev fallback) as ${sudo.address}`);
-	const evs = await send(api, api.tx.sudo.sudo(innerCall), sudo, `sudo:${opts.label || "call"}`, { finalize });
+	const evs = await send(api, api.tx.sudo.sudo(innerCall), sudo, `sudo:${opts.label || "call"}`, { finalize, log });
 	if (!has(evs, "sudo", "Sudid")) throw new Error("no sudo.Sudid event");
 	ensureExecuted(api, evs, "sudo", "Sudid", 0, "sudo"); // committee-3: surface a reverted inner call
 	return { evs, via: "sudo" };
@@ -125,6 +149,13 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 	const voters = opts.voters || members.slice(0, threshold);
 	const closer = opts.closer || members[members.length - 1];
 	const log = opts.log || (() => {});
+	// Fail loudly when the threshold can never be met (gap 2): with the default voters =
+	// members.slice(0, threshold), a threshold above the member count silently produces only
+	// `members.length` ayes, and the motion later closes as "NOT Approved" with a misleading message.
+	// Detect it up front so the operator sees the real cause (mis-sized committee), not a vote count
+	// they can't reconcile. An explicit short `voters` list is also rejected here.
+	if (voters.length < threshold)
+		throw new Error(`viaCommittee: only ${voters.length} voter(s) for a ${threshold}-of-${members.length} threshold — the motion can never reach Approved (committee too small / threshold too high)`);
 	// The privileged write resolves on finalization (committee-2). With threshold==1 the inner call
 	// executes on `propose` (no motion), so that is the step to finalize; otherwise it is `close`.
 	const finalize = opts.finalize ?? true;
@@ -135,7 +166,7 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 		api.tx.followerCommittee.propose(threshold, innerCall, lengthBound),
 		proposer,
 		"propose",
-		{ finalize: finalize && threshold === 1 },
+		{ finalize: finalize && threshold === 1, log },
 	);
 	const proposed = find(proposeEvs, "followerCommittee", "Proposed");
 	if (!proposed) {
@@ -150,8 +181,13 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 	const proposalHash = proposed.data[2].toHex();
 	log(`proposed motion #${proposalIndex} (${proposalHash.slice(0, 10)}…), threshold ${threshold}-of-${members.length}`);
 
-	for (const v of voters) {
-		await send(api, api.tx.followerCommittee.vote(proposalHash, proposalIndex, true), v, "vote");
+	for (let i = 0; i < voters.length; i++) {
+		const v = voters[i];
+		// Per-vote trace (gap 6): if vote k of n rejects (a bad seat, a duplicate vote, a stalled tx),
+		// the operator must see WHICH voter on WHICH proposal failed — the bare "vote" label otherwise
+		// gives no way to tell aye #2 from aye #3.
+		log(`  vote ${i + 1}/${voters.length} on motion #${proposalIndex} by ${String(v.address).slice(0, 8)}…`);
+		await send(api, api.tx.followerCommittee.vote(proposalHash, proposalIndex, true), v, `vote ${i + 1}/${voters.length} (${String(v.address).slice(0, 8)}…)`, { log });
 	}
 	log(`${voters.length} ayes cast (${voters.map((v) => v.address.slice(0, 8)).join(", ")}…) — supermajority`);
 
@@ -161,7 +197,7 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 		api.tx.followerCommittee.close(proposalHash, proposalIndex, weightBound, lengthBound),
 		closer,
 		"close",
-		{ finalize },
+		{ finalize, log },
 	);
 	if (!has(closeEvs, "followerCommittee", "Approved"))
 		throw new Error("motion was NOT Approved (threshold not reached?)");
