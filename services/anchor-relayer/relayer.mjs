@@ -35,8 +35,8 @@
 //                                 # (AckIgnored), proving anchor_ack never double-counts.
 //
 // Env: WS, KUPO, OGMIOS, ANCHOR_EVERY (default 10), CONFIRM_TIMEOUT_MS (180000), POLL_MS (4000),
-//      ACK_MAX_ATTEMPTS (5), ACK_BACKOFF_MS (4000), STATE_FILE (/tmp/cogno-m2/anchor-state.json),
-//      LABEL (67797178 = ASCII "COGN").
+//      ACK_MAX_ATTEMPTS (5), ACK_BACKOFF_MS (4000), COGNO_DATA_DIR / STATE_FILE (the anchor cursor now
+//      lives in the durable data dir — see services/_shared/paths.mjs — NEVER /tmp), LABEL ("COGN").
 
 import fs from "node:fs";
 import { createClient, FixedSizeBinary } from "polkadot-api";
@@ -53,6 +53,9 @@ import { getOwnerWallet, kupo, ogmios } from "../../app/scripts/m2d-wallet.mjs";
 // relayer helpers (relayer-9).
 import { fetchJson } from "../_shared/net.mjs";
 import { isMain } from "../_shared/cli.mjs";
+// Durable data dir + crash-safe persistence + single-instance lock (prod-readiness Phase 1): keep the
+// anchor cursor off volatile /tmp, persist it atomically, and refuse a second concurrent relayer.
+import { statePaths, migrateFromLegacy, writeFileAtomic, acquireSingleInstanceLock } from "../_shared/paths.mjs";
 import { missedIntervals, parseAckTokens, oldestPendingAnchor, classifyPendingAck, validateHex } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
@@ -78,7 +81,10 @@ const ACK_BACKOFF_MS = Number(process.env.ACK_BACKOFF_MS || "4000");
 // relayer — indefinitely. On timeout the call throws and the ack is retried with backoff (never a
 // re-minted Cardano tx). Generous: a 3-of-5 motion is propose + vote×k + close ≈ several blocks.
 const OP_TIMEOUT_MS = Number(process.env.OP_TIMEOUT_MS || "120000");
-const STATE_FILE = process.env.STATE_FILE || "/tmp/cogno-m2/anchor-state.json";
+// The anchor cursor + its legacy /tmp location (migrated off on first run). Defaults under
+// COGNO_DATA_DIR / the systemd StateDirectory — NEVER /tmp, where a tmpfs clear would drop the cursor
+// that is the entire double-spend defense. An explicit STATE_FILE override still wins (no legacy then).
+const { file: STATE_FILE, legacy: STATE_FILE_LEGACY } = statePaths("STATE_FILE", "anchor-state.json");
 // The Cardano metadata label. 67797178 = ASCII "COGN" (C=67 O=79 G=71 N=78) — a self-assigned
 // (NOT CIP-10-registered) showcase label; documented in services/anchor-relayer/README.md.
 const LABEL = Number(process.env.LABEL || "67797178");
@@ -150,10 +156,12 @@ function loadState() {
   }
 }
 function saveState(s) {
-  fs.mkdirSync(STATE_FILE.replace(/\/[^/]*$/, ""), { recursive: true });
   const json = JSON.stringify(s, null, 2);
   try {
-    fs.writeFileSync(STATE_FILE, json);
+    // Atomic (temp → fsync → rename) + 0600: a crash mid-write must never leave a half-written file
+    // that loadState() then silently discards as "no history" (returning {anchors:[]}) and re-anchors
+    // from scratch — re-minting paid Cardano txs. writeFileAtomic also creates the data dir 0700.
+    writeFileAtomic(STATE_FILE, json);
   } catch (e) {
     // gap 18: a failed persist (disk full, permission lost) is silent corruption-of-safety — the
     // paid-tx/ack separation relies on the entry being on disk BEFORE the ack. Surface it loudly.
@@ -456,6 +464,12 @@ async function reackLast(api, sudo) {
 async function main() {
   const mode = process.argv.includes("--once") ? "once" : process.argv.includes("--reack-last") ? "reack-last" : "watch";
 
+  // Single-instance lock for the modes that mint paid Cardano txs / persist state (watch, once). Two
+  // relayers sharing one wallet + state file would double-spend and corrupt state (last-writer-wins),
+  // so refuse the second. --reack-last only re-submits an idempotent ack (no state write), so it is
+  // exempt. A stale lock from a SIGKILLed predecessor is reclaimed automatically (see paths.mjs).
+  if (mode === "watch" || mode === "once") acquireSingleInstanceLock("cogno-relayer");
+
   const { wallet, address } = await getOwnerWallet({ withProvider: true });
   const client = createClient(getWsProvider(WS));
   const api = client.getTypedApi(cogno);
@@ -468,6 +482,9 @@ async function main() {
   // new runtime gets a NEW genesis (the wasm is part of genesis state), so a value pinned for an
   // earlier spec_version would be wrong. (A runtime UPGRADE on a *live* chain does NOT change block 0.)
   const genesisHex = stripHex((await client.getChainSpecData()).genesisHash);
+  // One-time migration of an existing anchor cursor off legacy /tmp before we load it.
+  if (migrateFromLegacy(STATE_FILE, STATE_FILE_LEGACY))
+    console.warn(`  ⚠ migrated anchor state ${STATE_FILE_LEGACY} → ${STATE_FILE} (off volatile /tmp). Remove the legacy copy: rm ${STATE_FILE_LEGACY}`);
   const state = loadState();
   state.genesis = genesisHex;
   // gap 7: surface how much persisted history we resumed (and how many anchors are still unacked /
@@ -517,9 +534,16 @@ async function main() {
   // watch: anchor the latest finalized head whenever it has advanced >= ANCHOR_EVERY since the last
   // recorded checkpoint. Single-threaded loop ⇒ each anchor fully settles before the next.
   console.log(`\nwatching finalized heads — anchoring every ${ANCHOR_EVERY} blocks. Ctrl-C to stop.`);
+  // Graceful shutdown (Phase 1): a supervisor stop (systemctl stop → SIGTERM) or Ctrl-C sets a flag
+  // that is checked only at the TOP and BOTTOM of the loop — NEVER mid-tx — so a stop can never land
+  // between submitTx and the state persist and abandon a submitted-but-unpersisted paid Cardano tx.
+  let stopping = false;
+  const onStop = (sig) => { if (!stopping) { stopping = true; console.log(`\n${sig} received — finishing the current cycle, then stopping cleanly (will NOT interrupt an in-flight Cardano tx).`); } };
+  process.on("SIGTERM", () => onStop("SIGTERM"));
+  process.on("SIGINT", () => onStop("SIGINT"));
   let consecutiveErrors = 0;
   let prevHead = null; // last observed FINALIZED head number — to detect a regression (gap 16).
-  for (;;) {
+  while (!stopping) {
     try {
       await drainPending(api, sudo, state); // finish any unacked anchor first (ack-only, no re-mint)
       const head = await finalizedHead(client);
@@ -549,8 +573,12 @@ async function main() {
       await sleep(wait);
       continue;
     }
+    if (stopping) break; // re-check after a completed cycle, before the idle sleep
     await sleep(POLL_MS);
   }
+  console.log("\nrelayer stopped cleanly.");
+  client.destroy();
+  process.exit(0);
 }
 
 // Run only when invoked directly (not when imported by tests).

@@ -1,11 +1,15 @@
-// Unit tests for the shared off-chain helpers — net.mjs (hardened fetch) + cli.mjs (run-as-main
-// guard). No framework, no live stack:  node shared.test.mjs
+// Unit tests for the shared off-chain helpers — net.mjs (hardened fetch), cli.mjs (run-as-main guard),
+// and paths.mjs (durable data dir + crash-safe persistence + single-instance lock). No framework, no
+// live stack:  node shared.test.mjs
 // Style mirrors anchor-relayer/relayer.test.mjs: ok()/throws(), final "== N passed, M failed ==".
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 import { fetchJson } from "./net.mjs";
 import { isMain } from "./cli.mjs";
+import { resolveDataDir, statePaths, writeFileAtomic, migrateFromLegacy, acquireSingleInstanceLock, LEGACY_DIR } from "./paths.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -231,6 +235,96 @@ console.log("\n[cli.isMain] run-as-main guard");
 	const importer = `import { check } from ${JSON.stringify(pathToFileURL(selfMain).href)}; console.log("IMPORTED:" + check());`;
 	const outImp = execFileSync(process.execPath, ["--input-type=module", "-e", importer], { encoding: "utf8" }).trim();
 	ok(outImp === "IMPORTED:false", `same script reports isMain FALSE when imported (got "${outImp}")`);
+}
+
+// ---------------------------------------------------------------------------------------------------
+console.log("\n[paths.resolveDataDir] resolution priority (pure: env + home injected)");
+{
+	const home = "/home/test";
+	ok(resolveDataDir({ COGNO_DATA_DIR: "/explicit/dir" }, home) === "/explicit/dir", "COGNO_DATA_DIR wins over everything");
+	ok(resolveDataDir({ STATE_DIRECTORY: "/var/lib/cogno" }, home) === "/var/lib/cogno", "STATE_DIRECTORY (systemd) used when no COGNO_DATA_DIR");
+	ok(resolveDataDir({ STATE_DIRECTORY: "/var/lib/cogno:/other" }, home) === "/var/lib/cogno", "colon-separated STATE_DIRECTORY takes the first entry");
+	ok(resolveDataDir({ XDG_STATE_HOME: "/xdg" }, home) === "/xdg/cogno", "XDG_STATE_HOME/cogno when set");
+	ok(resolveDataDir({}, home) === "/home/test/.local/state/cogno", "defaults to ~/.local/state/cogno — never /tmp");
+	ok(!resolveDataDir({}, home).startsWith("/tmp"), "default data dir is never under /tmp");
+	ok(resolveDataDir({ COGNO_DATA_DIR: "/a", STATE_DIRECTORY: "/b", XDG_STATE_HOME: "/c" }, home) === "/a", "priority order COGNO_DATA_DIR > STATE_DIRECTORY > XDG");
+}
+
+// ---------------------------------------------------------------------------------------------------
+console.log("\n[paths.statePaths] explicit override vs durable default + legacy");
+{
+	const home = "/home/test";
+	const explicit = statePaths("STATE_FILE", "anchor-state.json", { STATE_FILE: "/custom/anchor.json" }, home);
+	ok(explicit.file === "/custom/anchor.json", "explicit env override is the file path");
+	ok(explicit.legacy === null, "explicit override has NO legacy fallback (operator named the path)");
+	const def = statePaths("STATE_FILE", "anchor-state.json", { COGNO_DATA_DIR: "/var/lib/cogno" }, home);
+	ok(def.file === "/var/lib/cogno/anchor-state.json", "default file is <dataDir>/<name>");
+	ok(def.legacy === join(LEGACY_DIR, "anchor-state.json"), "default exposes the legacy /tmp path to migrate from");
+}
+
+// ---------------------------------------------------------------------------------------------------
+console.log("\n[paths.writeFileAtomic] persists content with 0600 perms, no leftover temp");
+{
+	const dir = fs.mkdtempSync(join(os.tmpdir(), "cogno-paths-"));
+	try {
+		const f = join(dir, "state.json");
+		writeFileAtomic(f, '{"anchors":[]}');
+		ok(fs.readFileSync(f, "utf8") === '{"anchors":[]}', "file holds the written content");
+		ok((fs.statSync(f).mode & 0o777) === 0o600, `file mode is 0600 (got ${(fs.statSync(f).mode & 0o777).toString(8)})`);
+		ok(!fs.readdirSync(dir).some((n) => n.includes(".tmp")), "no leftover .tmp file after the rename");
+		// Overwrite must replace atomically (the rename target already exists).
+		writeFileAtomic(f, '{"anchors":[1]}');
+		ok(fs.readFileSync(f, "utf8") === '{"anchors":[1]}', "atomic overwrite replaces existing content");
+		// It creates the parent dir (0700) if missing.
+		const nested = join(dir, "sub", "deep.json");
+		writeFileAtomic(nested, "x");
+		ok(fs.existsSync(nested), "creates a missing parent directory");
+	} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+// ---------------------------------------------------------------------------------------------------
+console.log("\n[paths.migrateFromLegacy] copies a legacy file once, 0600, idempotent");
+{
+	const dir = fs.mkdtempSync(join(os.tmpdir(), "cogno-paths-"));
+	try {
+		const legacy = join(dir, "legacy", "owner.json");
+		const file = join(dir, "data", "owner.json");
+		fs.mkdirSync(dirname(legacy), { recursive: true });
+		fs.writeFileSync(legacy, '{"mnemonic":["x"]}');
+		ok(migrateFromLegacy(file, legacy) === true, "migrates when target absent + legacy present");
+		ok(fs.readFileSync(file, "utf8") === '{"mnemonic":["x"]}', "migrated content matches the legacy file");
+		ok((fs.statSync(file).mode & 0o777) === 0o600, "migrated file is 0600");
+		ok(migrateFromLegacy(file, legacy) === false, "no-op when the target already exists (idempotent)");
+		ok(migrateFromLegacy(join(dir, "other.json"), null) === false, "no-op when there is no legacy path");
+		ok(migrateFromLegacy(join(dir, "other.json"), join(dir, "nope.json")) === false, "no-op when the legacy file does not exist");
+	} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+// ---------------------------------------------------------------------------------------------------
+console.log("\n[paths.acquireSingleInstanceLock] exclusive, reclaims a stale lock");
+{
+	const dir = fs.mkdtempSync(join(os.tmpdir(), "cogno-paths-"));
+	const savedDataDir = process.env.COGNO_DATA_DIR;
+	process.env.COGNO_DATA_DIR = dir;
+	try {
+		const lock = acquireSingleInstanceLock("cogno-relayer-test");
+		ok(fs.existsSync(lock.lockFile), "lock file created in the data dir");
+		ok(Number(fs.readFileSync(lock.lockFile, "utf8").trim()) === process.pid, "lock file records the holder pid");
+		// A second acquire sees a LIVE holder (this very process) and must refuse.
+		let refused = false;
+		try { acquireSingleInstanceLock("cogno-relayer-test"); } catch { refused = true; }
+		ok(refused, "second acquire refuses while a live instance holds the lock");
+		lock.release();
+		ok(!fs.existsSync(lock.lockFile), "release() removes the lock file");
+		// A STALE lock (dead pid) must be reclaimed.
+		fs.writeFileSync(lock.lockFile, "999999999");
+		const relock = acquireSingleInstanceLock("cogno-relayer-test");
+		ok(Number(fs.readFileSync(relock.lockFile, "utf8").trim()) === process.pid, "stale lock (dead pid) is reclaimed by the next acquire");
+		relock.release();
+	} finally {
+		if (savedDataDir === undefined) delete process.env.COGNO_DATA_DIR; else process.env.COGNO_DATA_DIR = savedDataDir;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 console.log(`\n== shared helpers: ${PASS} passed, ${FAIL} failed ==\n`);

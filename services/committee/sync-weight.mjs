@@ -22,12 +22,15 @@
 // ⚠ HONESTY (DR-07): single-operator stack ⇒ D2-SHAPED, not D2-TRUST. See docs/D2-custody-runbook.md.
 import fs from "node:fs";
 import { isMain } from "../_shared/cli.mjs";
+import { statePaths, migrateFromLegacy } from "../_shared/paths.mjs";
 import { connect, drive, has, operators, fetchJson } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
 const KUPO = process.env.KUPO;
 const OGMIOS = process.env.OGMIOS || "http://127.0.0.1:1337";
-const VAULT_FILE = process.env.VAULT_FILE || "/tmp/cogno-m2/vault.json";
+// The locked-vault descriptor, defaulting under the durable data dir (COGNO_DATA_DIR / systemd
+// StateDirectory) rather than volatile /tmp; an existing /tmp copy is migrated on first read.
+const { file: VAULT_FILE, legacy: VAULT_FILE_LEGACY } = statePaths("VAULT_FILE", "vault.json");
 const MIN_LOCK = 100_000_000n;
 // Reorg-burial depth in Cardano SLOTS (DR-09b): only credit a vault UTxO buried this many slots past
 // the tip, so a lock/exit that later rolls back can't set a wrong weight. 0 = credit as soon as it is
@@ -163,6 +166,8 @@ async function main() {
 			await setStakeFor(api, ops, opt, opt.account, opt.weight);
 		} else if (KUPO) {
 			// live mode: observe the vault, largest-wins, set_stake per bound identity.
+			if (migrateFromLegacy(VAULT_FILE, VAULT_FILE_LEGACY))
+				console.warn(`  ⚠ migrated vault descriptor ${VAULT_FILE_LEGACY} → ${VAULT_FILE} (off /tmp). Remove the legacy copy: rm ${VAULT_FILE_LEGACY}`);
 			const vaultHash = JSON.parse(fs.readFileSync(VAULT_FILE, "utf8")).vaultHash;
 			const { largest, total, reasons } = await observeKupo(vaultHash);
 			console.log(`Kupo returned ${total} unspent match(es); ${largest.size} credited, ${reasons.size} rejected (confirm-depth ${CONFIRM_DEPTH_SLOTS} slots)`);

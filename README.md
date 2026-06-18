@@ -255,15 +255,18 @@ ln -sfn ../../app/node_modules    services/anchor-relayer/node_modules
 # cogno-follower needs a Python venv with pycardano (Python 3.12):
 python3.12 -m venv services/cogno-follower/.venv
 services/cogno-follower/.venv/bin/pip install -r services/cogno-follower/requirements.txt
-export COGNO_FOLLOWER_PY="$PWD/services/cogno-follower/.venv/bin/python"   # else run.sh uses a hardcoded path
+export COGNO_FOLLOWER_PY="$PWD/services/cogno-follower/.venv/bin/python"   # optional; run.sh defaults to ./.venv
 
 # point the committee + follower at YOUR keys (from step 1 of "Your own network"):
 source ./network/env.sh              # exports COMMITTEE_SEEDS + SUDO_SEED (default: the dev keys)
 ```
 
-Each service has its own README. State files default to `/tmp/cogno-m2/…` — **relocate them off
-`/tmp`** on a server. Start order: **indexer node → query** (the query service needs the schema the
-ingest node creates); the follower and relayer can start anytime the node WS is up.
+Each service has its own README. Stateful files (relayer wallet + anchor cursor, committee vault, the
+single-instance lock) default to a **durable, user-private data dir** — `$COGNO_DATA_DIR`, else the
+systemd `StateDirectory`, else `~/.local/state/cogno` (see [`services/_shared/paths.mjs`](services/_shared/paths.mjs)); **never `/tmp`**. An existing `/tmp/cogno-m2/*` file is auto-migrated on first read.
+For a supervised, always-on deployment use the committed `systemd` units in [`deploy/`](deploy/).
+Start order: **indexer node → query** (the query service needs the schema the ingest node creates);
+the follower and relayer can start anytime the node WS is up.
 
 - **cogno-follower** (`:8090`, binds `127.0.0.1`) — the READ link. A Python CIP-8 verifier that turns
   a wallet signature into the 1:1 identity binding, then observes the `talk_vault` UTxO and writes the
@@ -272,9 +275,11 @@ ingest node creates); the follower and relayer can start anytime the node WS is 
 - **anchor-relayer** (no listen port; a polling writer) — the WRITE link. Every `ANCHOR_EVERY`
   finalized blocks it writes that block's finalized post-state root to a Cardano metadata tx, then
   `anchor_ack`s it back through the committee (`ANCHOR_VIA=committee`). It needs a **funded preprod
-  Cardano wallet**: `node app/scripts/m2d-wallet.mjs` prints the address (persisted to `OWNER_FILE`,
-  default `/tmp/cogno-m2/owner.json` — relocate it); fund that address with tADA. Set
-  `CONFIRM_DEPTH_SLOTS` (default 0) to a few hundred for reorg-safety in production. Start:
+  Cardano wallet** persisted to `OWNER_FILE` (default `$COGNO_DATA_DIR/owner.json`, `0600`): for a
+  fresh deployment run `COGNO_ALLOW_WALLET_BREW=1 node app/scripts/m2d-wallet.mjs` to print the address,
+  then fund it with tADA (it **refuses to silently brew** an unfunded wallet otherwise). Set
+  `CONFIRM_DEPTH_SLOTS` (default 0) to a few hundred for reorg-safety in production. It persists its
+  anchor cursor atomically, takes a single-instance lock, and shuts down cleanly on `SIGTERM`. Start:
   `node relayer.mjs` (`--once` for one anchor). Evidence, not enforcement.
 - **committee** — operator tooling (not a daemon) that drives privileged calls through the
   `FollowerCommittee` (propose → vote → close, ≥3/5) signing with `COMMITTEE_SEEDS`, or sudo with
@@ -312,7 +317,10 @@ After a runtime `spec_version` bump, regenerate the PAPI descriptors against a l
 
 ## Deploying on a server (preprod)
 
-A practical bring-up order and the things that bite:
+For a supervised, always-on deployment, [`deploy/`](deploy/) ships committed `systemd` units (one per
+service) with `Restart=always`, boot persistence, dependency ordering, durable `StateDirectory`, and
+sandboxing — see [`deploy/README.md`](deploy/README.md) for the full runbook. The bring-up order and
+the things that bite, whether you use the units or run by hand:
 
 1. **External Cardano** up and synced: `cardano-node` + Ogmios `:1337` + Kupo `:1442`.
 2. **Chain:** `node scripts/gen-chainspec.mjs` to mint your keys + `raw.json`, then run your
@@ -323,10 +331,12 @@ A practical bring-up order and the things that bite:
    spec, on a `spec_version` bump, and on a fresh `--dev`/`--tmp` rebuild. Capture it live
    (`chain_getBlockHash(0)`) and feed it to the indexer (`GENESIS`) and `GENESIS.txt` — never hardcode.
 4. **Services:** `source network/env.sh` so the committee/follower sign with your keys; point them at
-   your node WS, Ogmios, and Kupo; fund the relayer's `OWNER_FILE` wallet; relocate
-   `STATE_FILE`/`VAULT_FILE`/`OWNER_FILE` off `/tmp`; bind the follower behind HTTPS with a pinned
-   origin (it ships plain HTTP + permissive CORS for the localhost showcase). The relayer and follower
-   are single points of failure (DR-22) — add health checks + missed-`anchor_ack` alerting.
+   your node WS, Ogmios, and Kupo; fund the relayer's `OWNER_FILE` wallet. Stateful files now default to
+   the durable data dir (`$COGNO_DATA_DIR` / systemd `StateDirectory`, **not `/tmp`**) — set
+   `COGNO_DATA_DIR` to pick a location. Bind the follower behind HTTPS with a pinned origin (it ships
+   plain HTTP + permissive CORS for the localhost showcase — least-privilege + transport hardening is on
+   the roadmap). The relayer and follower are single points of failure (DR-22) — health checks +
+   missed-`anchor_ack` alerting are the next hardening step.
 5. **Ports to open:** P2P `30333` (public); RPC `9944` (behind a proxy if exposed); Prometheus `9615`;
    follower `8090`; indexer `3000`/`3001`; Postgres `5432`; Ogmios `1337`; Kupo `1442`.
 
@@ -348,7 +358,9 @@ Full surface in [`.env.example`](.env.example); the most-used variables:
 | `OGMIOS` / `KUPO` | `http://127.0.0.1:1337` / `:1442` | relayer, committee, follower |
 | `CARDANO_NETWORK` | `testnet` | follower (network-id gate; `mainnet` for mainnet) |
 | `ANCHOR_VIA` / `ANCHOR_EVERY` / `CONFIRM_DEPTH_SLOTS` | `committee` / `10` / `0` | anchor-relayer |
-| `STATE_FILE` / `VAULT_FILE` / `OWNER_FILE` | `/tmp/cogno-m2/…` | relayer / committee (**relocate on a server**; `OWNER_FILE` = relayer's funded Cardano wallet) |
+| `COGNO_DATA_DIR` | `~/.local/state/cogno` (systemd: `/var/lib/cogno`) | durable dir for the relayer wallet + anchor cursor + committee vault + lock (never `/tmp`) |
+| `STATE_FILE` / `VAULT_FILE` / `OWNER_FILE` | `$COGNO_DATA_DIR/…` | relayer / committee (`OWNER_FILE` = relayer's funded Cardano wallet; an explicit override wins) |
+| `COGNO_ALLOW_WALLET_BREW` | *(unset)* | set `1` to deliberately brew a new relayer wallet (else it refuses, to avoid a silent unfunded rotation) |
 | `DB_USER` / `DB_PASS` / `DB_DATABASE` / `DB_HOST` / `DB_PORT` | `cogno` / *(secret)* / `cogno_indexer` / `127.0.0.1` / `5432` | indexer (host must be TCP, not a socket) |
 | `GENESIS` | *(per-script default)* | indexer / verifiers (re-capture per chain) |
 | `NEXT_PUBLIC_WS_URL` / `_FOLLOWER_URL` / `_GRAPHQL_URL` / `_BLOCKFROST_PROJECT_ID` | localhost / *(empty)* | frontend (inlined at build) |

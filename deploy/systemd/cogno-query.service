@@ -1,0 +1,32 @@
+# cogno-chain SubQuery GraphQL query service — prod-readiness Phase 1.
+# Serves the GraphQL feed (postgraphile) over the indexed Postgres schema on :3000. The indexer must
+# create the `cogno` schema first; Restart=always lets this retry until it exists.
+#
+# This is the Tier-B read layer (never load-bearing — the frontend falls back to PAPI-direct). Public
+# exposure goes behind a TLS reverse proxy; do not bind it to the world directly.
+
+[Unit]
+Description=cogno-chain SubQuery GraphQL query service
+Documentation=https://github.com/logical-mechanism/cogno
+After=network-online.target postgresql.service cogno-indexer.service
+Wants=network-online.target cogno-indexer.service
+Requires=postgresql.service
+
+[Service]
+Type=exec
+User=cogno
+Group=cogno
+WorkingDirectory=/opt/cogno/services/indexer
+EnvironmentFile=/etc/cogno/cogno.env
+Environment=TZ=UTC
+ExecStart=/opt/cogno/services/indexer/node_modules/.bin/subql-query --name=cogno --playground --port=3000
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

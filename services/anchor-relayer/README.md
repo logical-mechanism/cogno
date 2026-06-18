@@ -76,8 +76,9 @@ node verify.mjs --block <N>      # verifies the anchor recorded for height N (fr
 
 Env: `WS` (ws://127.0.0.1:9944), `KUPO`, `OGMIOS`, `ANCHOR_EVERY` (10), `CONFIRM_TIMEOUT_MS`
 (180000), `POLL_MS` (4000), `CONFIRM_DEPTH_SLOTS` (0 = ack as soon as in a block, for the showcase;
-set to k — a few hundred slots, DR-09b — for reorg-safe production), `STATE_FILE`
-(/tmp/cogno-m2/anchor-state.json), `LABEL` (67797178).
+set to k — a few hundred slots, DR-09b — for reorg-safe production), `COGNO_DATA_DIR` / `STATE_FILE`
+(the anchor cursor defaults to `$COGNO_DATA_DIR/anchor-state.json` — never `/tmp`; an existing
+`/tmp/cogno-m2/anchor-state.json` is auto-migrated on first run), `LABEL` (67797178).
 
 ## Single points of failure (§9, honest)
 

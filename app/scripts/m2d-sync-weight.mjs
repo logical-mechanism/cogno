@@ -4,6 +4,10 @@
 // This is the Cardano-sourced weight: NO sudo grant of weight — the ADA lock IS the grant.
 //
 //   node scripts/m2d-sync-weight.mjs
+//
+// LEGACY DEMO TOOLING (frozen): the M2d sudo-path weight sync. It reads /tmp/cogno-m2/vault.json directly
+// and writes via sudo. The always-on, committee-driven successor is services/committee/sync-weight.mjs
+// (durable VAULT_FILE under $COGNO_DATA_DIR, set_stake via the 3-of-5 committee — no sudo).
 import fs from "node:fs";
 import { createClient, FixedSizeBinary } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws-provider/node";
