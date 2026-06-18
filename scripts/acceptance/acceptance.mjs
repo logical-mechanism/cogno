@@ -1,6 +1,6 @@
 // M0 acceptance test for cogno-chain.
 //
-// Verifies the PLAN.md §8 "done-when" for M0 against a running `cogno-chain-node --dev`:
+// Verifies the docs/PLAN.md §8 "done-when" for M0 against a running `cogno-chain-node --dev`:
 //   1. connect over WS and confirm the runtime is `cogno-chain-runtime`
 //   2. submit a signed `Microblog.post_message({ text, parent })` (sr25519 //Alice)
 //   3. confirm it lands in a block and `PostCreated` fires

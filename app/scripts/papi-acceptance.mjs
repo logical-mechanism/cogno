@@ -1,6 +1,6 @@
 // M1 PAPI acceptance / grounding harness for cogno-chain.
 //
-// Asserts the PLAN.md §8 M1 "post/read loop" programmatically against a running
+// Asserts the docs/PLAN.md §8 M1 "post/read loop" programmatically against a running
 // `cogno-chain-node --dev`, using the SAME stack the frontend uses: polkadot-api (PAPI),
 // an sr25519 signer via @polkadot-labs/hdkd + getPolkadotSigner, descriptors generated
 // from the live node. (The browser loop is the real acceptance; this is the regression.)
