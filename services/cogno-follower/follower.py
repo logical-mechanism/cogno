@@ -72,6 +72,8 @@ def _rpc_json(method: str, params: list, *, retries: int = 3, backoff: float = 0
                 return json.load(r)
         except Exception as e:  # noqa: BLE001 — retry any transient transport/HTTP/JSON error
             last = e
+            # Log each retry so a flaky/slow node is diagnosable instead of silently backing off.
+            print(f"[rpc-retry] {method} attempt {attempt}/{retries}: {e}", flush=True)
             if attempt < retries:
                 time.sleep(backoff * 2 ** (attempt - 1))
     raise RuntimeError(f"node RPC {method} failed after {retries} attempts: {last}")
@@ -107,8 +109,12 @@ class NonceCache:
         for k in [k for k, (_, exp) in self._d.items() if exp <= now]:
             self._d.pop(k, None)
         if len(self._d) >= self.max_entries:
-            # still over cap after sweeping expired → drop the soonest-to-expire to bound memory
+            # still over cap after sweeping expired → drop the soonest-to-expire to bound memory.
+            # Log it: hitting the cap means a flood of distinct accounts requesting nonces without
+            # using them (a possible DoS), which is otherwise an invisible no-op.
             overflow = sorted(self._d.items(), key=lambda kv: kv[1][1])[: len(self._d) - self.max_entries + 1]
+            print(f"[nonce-evict] cache at cap {self.max_entries} (live={len(self._d)}); "
+                  f"evicting {len(overflow)} soonest-to-expire — possible nonce flood", flush=True)
             for k, _ in overflow:
                 self._d.pop(k, None)
 
@@ -157,6 +163,52 @@ GENESIS = ""  # set in main()
 NONCES = NonceCache(NONCE_TTL, MAX_NONCES)
 
 
+def decide_bind(body: dict, *, genesis: str, expected_network: Network,
+                verify=verify_bind, submit=submit_link, consume_nonce=None) -> tuple[int, dict]:
+    """The pure POST /bind decision: from a parsed JSON body, run verify_bind then submit_link and
+    return (http_code, response_obj). No socket, no globals — so the rejection/acceptance MAPPING
+    (VerifyError/ValueError→400, submit failure→502, ok:false→409, ok:true→200) is unit-testable
+    (test_http.py). The Handler is a thin shell over this. `verify`/`submit`/`consume_nonce` are
+    injectable for tests; production passes the real verify_bind/submit_link/NONCES.consume."""
+    consume = consume_nonce if consume_nonce is not None else NONCES.consume
+    sig = body.get("signature")
+    key = body.get("key")
+    claimed = body.get("signing_address")
+    sr25519 = (body.get("sr25519_pubkey") or "").lower().replace("0x", "")
+    thread = body.get("thread_pointer")  # optional hex
+    try:
+        if not (sig and key and claimed and sr25519):
+            raise VerifyError("missing one of: signature, key, signing_address, sr25519_pubkey")
+        identity_hash = verify(
+            data_signature={"signature": sig, "key": key},
+            claimed_address=claimed,
+            sr25519_pubkey_hex=sr25519,
+            expected_genesis=genesis,
+            expected_network=expected_network,
+            consume_nonce=consume,
+        )
+    except (VerifyError, ValueError) as e:
+        # D0 audit line: a REJECTED proof must be provably so — log it (not just 400 the caller).
+        print(f"[bind-reject] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+              f"claimed={str(claimed)[:18]}… sr25519={str(sr25519)[:12]}… reason={e}", flush=True)
+        return 400, {"ok": False, "error": str(e)}
+
+    # Verified → write the binding (the D0 audit line: a fraudulent follower is provably so,
+    # since the binding is public and recomputable from this exact input).
+    print(f"[bind] verified {claimed[:18]}… → account {sr25519[:12]}… id_hash {identity_hash[:12]}…", flush=True)
+    try:
+        result = submit(identity_hash, sr25519, thread)
+    except Exception as e:
+        print(f"[submit-error] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+              f"identity_hash={identity_hash[:12]}… account={sr25519[:12]}… error={e}", flush=True)
+        return 502, {"ok": False, "error": f"submit error: {e}", "identity_hash": identity_hash}
+    code = 200 if result.get("ok") else 409
+    if code == 409:
+        print(f"[submit-rejected] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+              f"identity_hash={identity_hash[:12]}… account={sr25519[:12]}… result={result}", flush=True)
+    return code, {**result, "identity_hash": identity_hash, "badges": BADGES}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, obj: dict):
         body = json.dumps(obj).encode()
@@ -202,42 +254,24 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(n) or b"{}")
         except Exception as e:
+            # Log malformed bodies (probing/attack signal) before 400'ing — silent otherwise.
+            print(f"[bad-json] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                  f"from={self.client_address[0]} error={e}", flush=True)
             return self._send(400, {"error": f"bad JSON body: {e}"})
 
-        try:
-            sig = body.get("signature")
-            key = body.get("key")
-            claimed = body.get("signing_address")
-            sr25519 = (body.get("sr25519_pubkey") or "").lower().replace("0x", "")
-            thread = body.get("thread_pointer")  # optional hex
-            if not (sig and key and claimed and sr25519):
-                raise VerifyError("missing one of: signature, key, signing_address, sr25519_pubkey")
-
-            identity_hash = verify_bind(
-                data_signature={"signature": sig, "key": key},
-                claimed_address=claimed,
-                sr25519_pubkey_hex=sr25519,
-                expected_genesis=GENESIS,
-                expected_network=EXPECTED_NETWORK,
-                consume_nonce=NONCES.consume,
-            )
-        except (VerifyError, ValueError) as e:
-            return self._send(400, {"ok": False, "error": str(e)})
-
-        # Verified → write the binding (the D0 audit line: a fraudulent follower is provably so,
-        # since the binding is public and recomputable from this exact input).
-        print(f"[bind] verified {claimed[:18]}… → account {sr25519[:12]}… id_hash {identity_hash[:12]}…", flush=True)
-        try:
-            result = submit_link(identity_hash, sr25519, thread)
-        except Exception as e:
-            return self._send(502, {"ok": False, "error": f"submit error: {e}", "identity_hash": identity_hash})
-        code = 200 if result.get("ok") else 409
-        return self._send(code, {**result, "identity_hash": identity_hash, "badges": BADGES})
+        code, obj = decide_bind(body, genesis=GENESIS, expected_network=EXPECTED_NETWORK)
+        return self._send(code, obj)
 
 
 def main():
     global GENESIS
-    GENESIS = fetch_genesis()
+    try:
+        GENESIS = fetch_genesis()
+    except Exception as e:
+        # Don't dump a bare traceback on a node that isn't up yet — say WHAT failed and WHERE to look.
+        print(f"[startup-error] could not fetch L3 genesis from {NODE_HTTP}: {e}", flush=True)
+        print("  Is the cogno-chain node running and reachable at NODE_HTTP? Aborting.", flush=True)
+        raise SystemExit(1)
     print(f"Cogno-Follower (v1, {BADGES}) on :{PORT}", flush=True)
     print(f"  genesis  = {GENESIS}", flush=True)
     print(f"  network  = {CARDANO_NETWORK} ({EXPECTED_NETWORK})", flush=True)

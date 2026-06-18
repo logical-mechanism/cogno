@@ -43,6 +43,21 @@ def main():
     ms2 = [utxo(A, 150_000_000, {"deadbeef.cafe": 5})]
     ok(parse_matches(ms2, POLICY) == [(A, 150_000_000)], "extra foreign token doesn't break the parse")
 
+    # multi-beacon under THE SAME policy: the on-chain mint guards 1-beacon-per-vault, but the
+    # follower must NEVER trust that — a UTxO carrying 2 beacons under POLICY is dropped entirely
+    # (not arbitrarily crediting one of them, which would let a crafted UTxO inject weight).
+    multi = [{"value": {"coins": 500_000_000, "assets": {f"{POLICY}.{A}": 1, f"{POLICY}.{B}": 1}}}]
+    ok(parse_matches(multi, POLICY) == [], "multi-beacon UTxO (2 beacons, same policy) → rejected")
+    ok(weights_by_identity(multi, POLICY) == {}, "multi-beacon UTxO grants ZERO weight (never trusted)")
+
+    # a beacon present but with quantity != 1 (NFT invariant broken) is also dropped.
+    qty = [{"value": {"coins": 200_000_000, "assets": {f"{POLICY}.{A}": 2}}}]
+    ok(parse_matches(qty, POLICY) == [], "beacon quantity != 1 → rejected (not a valid NFT vault)")
+
+    # malformed / empty Kupo entries don't crash the parser (defensive against bad node JSON).
+    ok(parse_matches([{}, {"value": {}}, {"value": {"assets": None}}], POLICY) == [],
+       "empty / malformed UTxO entries are skipped, not fatal")
+
     # LARGEST-WINS, NEVER SUM: identity A has two vaults (200 + 350 ADA) → credit the larger only.
     dup = [utxo(A, 200_000_000), utxo(A, 350_000_000), utxo(B, 120_000_000)]
     w = weights_by_identity(dup, POLICY)

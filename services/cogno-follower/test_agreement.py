@@ -66,6 +66,28 @@ def main():
     except ValueError:
         ok(True, "malformed payload rejected")
 
+    # case-sensitivity: the regex pins lowercase hex ([0-9a-f]). An UPPERCASE genesis must be
+    # REJECTED — otherwise two payloads (upper/lower) could verify for the "same" chain, splitting
+    # the cross-chain guard. (build() always emits lowercase; a hand-crafted upper one must fail.)
+    upper = f"{payload_mod.DOMAIN};genesis={GENESIS.upper()};account={'11' * 32};nonce={'ab' * 16}"
+    try:
+        payload_mod.parse(upper); ok(False, "uppercase-hex genesis rejected")
+    except ValueError:
+        ok(True, "uppercase-hex genesis rejected (regex is lowercase-pinned)")
+
+    # trailing bytes after a valid payload must be rejected (the $ anchor — no extra-byte coercion).
+    try:
+        payload_mod.parse(p + "EXTRA"); ok(False, "trailing-byte payload rejected")
+    except ValueError:
+        ok(True, "trailing bytes after a valid payload rejected ($-anchored)")
+
+    # a too-short nonce (16 hex, not the pinned 32) must be rejected (follower-6, no length wiggle).
+    short = f"{payload_mod.DOMAIN};genesis={GENESIS};account={'11' * 32};nonce={'ab' * 8}"
+    try:
+        payload_mod.parse(short); ok(False, "short-nonce payload rejected")
+    except ValueError:
+        ok(True, "wrong-length nonce rejected (pinned to 32 hex)")
+
     print("\n[positive] a REAL MeshJS CIP-8 signature verifies + the identity hash agrees")
     fx = gen_fixture("//CognoGateA", "cd" * 16)  # nonce cd*16
     idh = verify_bind(
