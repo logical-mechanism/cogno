@@ -98,6 +98,7 @@ jobs:
       - name: indexer — pure mapping unit tests + typecheck
         working-directory: services/indexer
         run: |
+          npm run codegen   # generate src/types/ (gitignored SubQuery codegen output) so tsc resolves ../types
           node --experimental-strip-types src/mappings/pure.test.ts
           npx tsc --noEmit -p tsconfig.json
       - uses: actions/setup-python@v5
