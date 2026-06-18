@@ -1,0 +1,59 @@
+# cogno-chain validator node (Aura + GRANDPA) — prod-readiness Phase 1.
+#
+# A PERSISTENT, operator-keyed node — NOT `--dev` (which is an ephemeral //Alice single-authority dev
+# chain). Session keys (aura sr25519 + grandpa ed25519) must be inserted into the keystore under
+# <base-path>/chains/<id>/keystore BEFORE first start — see deploy/README.md ("validator keys").
+# --chain points at the raw chainspec built by scripts/gen-chainspec.mjs (operator-owned genesis).
+#
+# Install: copy to /etc/systemd/system/, edit the literal paths/--name below to match your install,
+#          then `systemctl daemon-reload && systemctl enable --now cogno-node`.
+
+[Unit]
+Description=cogno-chain node (Aura+GRANDPA validator)
+Documentation=https://github.com/logical-mechanism/cogno
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=cogno
+Group=cogno
+# --state-pruning/--blocks-pruning archive: the SubQuery indexer reads historical state, and with a
+#   single validator the node DB is the sole copy of chain history (back it up — see deploy/README).
+# RPC/Prometheus bind to localhost by default; the local services connect over 127.0.0.1. Public
+#   exposure (browser frontend, remote metrics) goes behind a TLS reverse proxy + --rpc-methods=safe —
+#   deferred to the security/observability phases, NOT enabled here.
+# --force-authoring: REQUIRED for the single-validator default topology — a lone validator has no
+#   peers to confirm against and will not author without it. REMOVE it for a multi-validator network
+#   (authoring should begin only once peers connect).
+ExecStart=/usr/local/bin/cogno-chain-node \
+  --validator \
+  --force-authoring \
+  --name %H \
+  --chain /etc/cogno/chainspec.raw.json \
+  --base-path /var/lib/cogno/node \
+  --state-pruning archive \
+  --blocks-pruning archive \
+  --port 30333 \
+  --rpc-port 9944 \
+  --rpc-cors all \
+  --prometheus-port 9615 \
+  --no-mdns
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+TimeoutStopSec=120
+
+# StateDirectory creates/owns /var/lib/cogno (0700, cogno:cogno); the node DB lives in node/ under it.
+StateDirectory=cogno
+StateDirectoryMode=0700
+
+# Sandboxing — the node only needs to write its DB under /var/lib/cogno.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cogno
+
+[Install]
+WantedBy=multi-user.target

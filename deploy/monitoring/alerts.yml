@@ -1,0 +1,128 @@
+# cogno-chain Prometheus alert rules (prod-readiness Phase 2). These encode the product-health signals:
+# the chain finalizing, the relayer anchoring + funded, the follower up + on the right chain, and the
+# indexer alive. Every rule has a `for:` window so a transient scrape miss does not page — the relayer's
+# single-threaded event loop (which also serves /metrics) can be blocked for up to OP_TIMEOUT_MS (120s)
+# by a synchronous committee ack, so RelayerDown uses `for:` wider than that. Tune to your cadence.
+groups:
+  - name: cogno-node
+    rules:
+      - alert: NodeDown
+        expr: up{job="cogno-node"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "cogno-node is down (Prometheus cannot scrape :9615)"
+
+      - alert: FinalityStalled
+        # GRANDPA finalized height not advancing for 10m. The relayer anchors the FINALIZED head, so a
+        # finality stall halts anchoring + tamper-evidence. delta() (gauge), NOT increase() (counter):
+        # substrate_block_height is a GAUGE, and increase()'s counter-reset correction would HIDE a
+        # finality REVERSION (height moving backwards) by reading it as positive progress.
+        expr: delta(substrate_block_height{job="cogno-node",status="finalized"}[10m]) == 0
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "cogno-chain finality has stalled (finalized height flat for 10m)"
+
+      - alert: BlockProductionStalled
+        expr: delta(substrate_block_height{job="cogno-node",status="best"}[10m]) == 0
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "cogno-chain is not producing blocks (best height flat for 10m)"
+
+      # NodeNoPeers — SHIPPED DISABLED (commented out). A single --force-authoring validator (the
+      # default topology) runs at 0 peers forever, so this would false-page ~15m after boot and never
+      # clear. Uncomment the WHOLE block on a MULTI-validator network.
+      # - alert: NodeNoPeers
+      #   expr: substrate_sub_libp2p_peers_count{job="cogno-node"} == 0
+      #   for: 15m
+      #   labels: { severity: warning }
+      #   annotations:
+      #     summary: "cogno-node has 0 peers (expected only for a single-validator chain)"
+
+  - name: cogno-relayer
+    rules:
+      - alert: RelayerDown
+        # for: > OP_TIMEOUT_MS (120s): a synchronous committee ack can block the relayer event loop — and
+        # thus the in-loop /metrics server — for up to that long, so a tighter window could false-page.
+        expr: up{job="cogno-relayer"} == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "anchor relayer is down — finalized state-roots are no longer being anchored to Cardano"
+
+      - alert: RelayerLoopStalled
+        # The watch loop has not iterated in 5m (wedged), distinct from the process being down.
+        expr: cogno_relayer_seconds_since_last_loop > 300
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "relayer watch loop stalled (no iteration in >5m)"
+
+      - alert: RelayerAnchorStalled
+        # No successful anchor in 30m. Tune to ANCHOR_EVERY x block-time x a safety factor + your
+        # CONFIRM_DEPTH_SLOTS burial wait. -1 means "no anchor has ever succeeded" (the gauge is seeded
+        # across restarts from persisted state) and is excluded by the `> 1800` predicate.
+        expr: cogno_relayer_seconds_since_last_anchor > 1800
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "relayer has not anchored in >30m — check Cardano (Ogmios/Kupo) + committee"
+
+      - alert: RelayerLowFunds
+        expr: cogno_relayer_low_funds == 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "relayer Cardano wallet is low on funds — top up or anchoring will stop"
+
+      - alert: RelayerFailedAnchors
+        expr: cogno_relayer_failed_anchors > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "relayer has permanently-failed anchors (NonMonotonicAnchor) — chain/relayer state diverged"
+
+      - alert: RelayerErrorLoop
+        expr: cogno_relayer_consecutive_errors > 5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "relayer watch loop is erroring repeatedly (node WS / Cardano stack unreachable?)"
+
+  - name: cogno-follower
+    rules:
+      - alert: FollowerDown
+        expr: up{job="cogno-follower"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "follower is down — new identity bindings cannot be written"
+
+      - alert: FollowerNodeUnreachable
+        expr: cogno_follower_node_reachable == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "follower cannot reach the L3 node RPC"
+
+      - alert: FollowerGenesisMismatch
+        # The node's genesis no longer matches what the follower pinned at boot (a chain re-spin) — every
+        # bind would be for the wrong chain. Restart the follower against the current chain.
+        expr: cogno_follower_genesis_ok == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "follower genesis mismatch — node was re-spun under the follower; restart it"
+
+  - name: cogno-indexer
+    rules:
+      - alert: IndexerDown
+        expr: up{job="cogno-indexer"} == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "SubQuery indexer is down (Tier-B read layer — frontend falls back to PAPI-direct)"
+      # Indexer LAG alerting needs your @subql/node version's processing-height metric name; add a rule
+      # like `substrate_block_height{status="finalized"} - <subql processed height> > N` once confirmed.

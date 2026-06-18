@@ -13,16 +13,19 @@
 //   node verify.mjs            # verify the latest on-chain checkpoint (Anchor.LastCheckpoint)
 //   node verify.mjs --block N  # verify the anchor recorded for solochain height N (from STATE_FILE)
 //
-// Env: WS, KUPO, STATE_FILE, LABEL (must match the relayer).
+// Env: WS, KUPO, COGNO_DATA_DIR / STATE_FILE, LABEL (must match the relayer).
 
 import fs from "node:fs";
 import { createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws-provider/node";
 import { cogno } from "@polkadot-api/descriptors";
+import { statePaths } from "../_shared/paths.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
 const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
-const STATE_FILE = process.env.STATE_FILE || "/tmp/cogno-m2/anchor-state.json";
+// Resolve the relayer's state the SAME way the relayer does (durable data dir, NOT /tmp) so the
+// verifier reads the cursor the relayer actually wrote.
+const { file: STATE_FILE } = statePaths("STATE_FILE", "anchor-state.json");
 const LABEL = String(process.env.LABEL || "67797178");
 const HTTP = WS.replace(/^ws/, "http");
 const stripHex = (h) => String(h).replace(/^0x/, "").toLowerCase();

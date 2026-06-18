@@ -1,0 +1,108 @@
+{
+  "__inputs": [
+    { "name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "pluginId": "prometheus" }
+  ],
+  "title": "cogno-chain",
+  "uid": "cogno-chain",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["cogno-chain"],
+  "timezone": "",
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "${DS_PROMETHEUS}" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Chain height (best vs finalized)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "substrate_block_height{job=\"cogno-node\",status=\"best\"}", "legendFormat": "best" },
+        { "expr": "substrate_block_height{job=\"cogno-node\",status=\"finalized\"}", "legendFormat": "finalized" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Relayer — seconds since last anchor",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "cogno_relayer_seconds_since_last_anchor", "legendFormat": "since last anchor (s)" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Services up",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "up{job=~\"cogno-.*\"}", "legendFormat": "{{job}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Relayer wallet (lovelace)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 },
+      "targets": [
+        { "expr": "cogno_relayer_wallet_lovelace", "legendFormat": "lovelace" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Relayer low funds",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
+      "targets": [
+        { "expr": "cogno_relayer_low_funds", "legendFormat": "low funds" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Relayer — pending / failed anchors",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        { "expr": "cogno_relayer_pending_anchors", "legendFormat": "pending" },
+        { "expr": "cogno_relayer_failed_anchors", "legendFormat": "failed" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Follower health (node reachable / genesis ok)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        { "expr": "cogno_follower_node_reachable", "legendFormat": "node reachable" },
+        { "expr": "cogno_follower_genesis_ok", "legendFormat": "genesis ok" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Node peers",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "targets": [
+        { "expr": "substrate_sub_libp2p_peers_count{job=\"cogno-node\"}", "legendFormat": "peers" }
+      ]
+    }
+  ]
+}

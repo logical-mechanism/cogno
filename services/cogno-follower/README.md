@@ -43,12 +43,16 @@ pycardano `Address.to_primitive()`.
 
 | Route | | |
 |---|---|---|
-| `GET /health` | → `{ ok, genesis, badges, domain, nonce_ttl }` | liveness + the honest badges |
+| `GET /health` (`/healthz`) | → `{ ok, node_reachable, genesis_ok, current_genesis, genesis, nonces_cached, badges, … }`; **503** when unhealthy | LIVE probe: re-checks the node + genesis each call (not a boot cache) |
+| `GET /metrics` | → Prometheus text (`cogno_follower_up`, `_node_reachable`, `_genesis_ok`, `_nonces_cached`) | scrape target |
 | `GET /nonce?account=<sr25519_hex>` | → `{ nonce, genesis, ttl, payload }` | issue a nonce + the **exact** payload to sign |
 | `POST /bind` | `{ signature, key, signing_address, sr25519_pubkey, thread_pointer? }` → `{ ok, identity_hash, account, error? }` | verify the CIP-8 proof + submit `link_identity` |
 
 `signature`/`key` are the CIP-30 `DataSignature` from `signData`. The follower NEVER receives a
-private key; the only key it holds is the dev sudo key it signs the `link_identity` submit with.
+private key; it submits `link_identity` via the **3-of-5 committee** by default (`FOLLOWER_VIA=committee`,
+holding `COMMITTEE_SEEDS`, **not** the chain's full sudo key) — set `FOLLOWER_VIA=sudo` for the dev
+fallback. `/bind` + `/nonce` are rate-limited per-IP, the body is size-capped, and concurrent binds are
+bounded (`RATE_LIMIT_PER_MIN` / `MAX_BODY_BYTES` / `MAX_INFLIGHT`); `HOST` + `CORS_ORIGIN` are configurable.
 
 ## Run
 

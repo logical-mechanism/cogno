@@ -52,9 +52,56 @@ MAX_NONCES = int(os.environ.get("MAX_NONCES", "10000"))
 # mainnet proof could bind on a preprod follower (and vice-versa).
 CARDANO_NETWORK = os.environ.get("CARDANO_NETWORK", "testnet").strip().lower()
 EXPECTED_NETWORK = Network.MAINNET if CARDANO_NETWORK in ("mainnet", "1") else Network.TESTNET
-SUBMIT = os.path.join(APP_DIR, "scripts", "submit-link.mjs")
+# The on-chain submit path (prod-readiness Phase 3): default COMMITTEE-routed — the follower holds the
+# 3-of-5 committee seats (COMMITTEE_SEEDS), NOT the chain's full SUDO key, so a follower compromise no
+# longer yields root over the whole chain (it can only drive the AuthorityOrigin-gated calls). Set
+# FOLLOWER_VIA=sudo to keep the old EnsureRoot path (the dev fallback). link_identity is gated by
+# FollowerOrigin = AuthorityOrigin = EnsureRoot OR the 3-of-5 committee, so the committee path needs no
+# runtime change. On a single-operator stack the follower holds all 5 seats ⇒ still D2-SHAPED.
+FOLLOWER_VIA = os.environ.get("FOLLOWER_VIA", "committee").strip().lower()
+SUBMIT_SUDO = os.path.join(APP_DIR, "scripts", "submit-link.mjs")
+SUBMIT_COMMITTEE = os.path.normpath(os.path.join(HERE, "..", "committee", "link-identity.mjs"))
+SUBMIT = SUBMIT_SUDO if FOLLOWER_VIA == "sudo" else SUBMIT_COMMITTEE
+# The committee bind runs propose + ceil(n*3/5) sequential votes + a finalizing close, so it needs more
+# than the old sudo-era 60s (a 7-seat motion routinely exceeds it). Default 150s; a timeout returns 202
+# (submitted, finalization pending) since the bind may already be on-chain — NOT a hard 502 failure.
+SUBMIT_TIMEOUT = int(os.environ.get("SUBMIT_TIMEOUT", "150"))
+
+# ── transport hardening (prod-readiness Phase 3) ────────────────────────────────────────────────
+HOST = os.environ.get("HOST", "127.0.0.1")           # bind host; 127.0.0.1 for the localhost showcase
+CORS_ORIGIN = os.environ.get("CORS_ORIGIN", "*")     # set to your frontend origin in production
+MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", "16384"))      # /bind bodies are a few hundred bytes
+MAX_INFLIGHT = int(os.environ.get("MAX_INFLIGHT", "4"))              # concurrent /bind subprocess forks
+RATE_LIMIT_PER_MIN = int(os.environ.get("RATE_LIMIT_PER_MIN", "30"))  # per-IP req/min on /bind+/nonce (0=off)
 
 BADGES = {"follower": "trusted (v1)", "chain": "operator-run (v1)"}
+
+
+class RateLimiter:
+    """Per-IP sliding-window limiter (Phase 3): bound /bind + /nonce so one client can't flood the
+    (subprocess-forking) bind path. Thread-safe for ThreadingHTTPServer. per_min <= 0 disables it."""
+
+    def __init__(self, per_min: int, window: float = 60.0):
+        self.per_min = per_min
+        self.window = window
+        self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, ip: str) -> bool:
+        if self.per_min <= 0:
+            return True
+        now = time.time()
+        with self._lock:
+            hits = [t for t in self._hits.get(ip, []) if now - t < self.window]
+            if len(hits) >= self.per_min:
+                self._hits[ip] = hits
+                return False
+            hits.append(now)
+            self._hits[ip] = hits
+            if len(self._hits) > 4096:  # opportunistic prune of idle IPs to bound memory
+                for k in [k for k, v in self._hits.items() if not v or now - v[-1] > self.window]:
+                    self._hits.pop(k, None)
+            return True
 
 
 def _rpc_json(method: str, params: list, *, retries: int = 3, backoff: float = 0.5) -> dict:
@@ -83,6 +130,63 @@ def fetch_genesis() -> str:
     """The L3 genesis block hash (lowercase hex, no 0x) via JSON-RPC. Committed in every payload
     so a proof for another chain is rejected."""
     return _rpc_json("chain_getBlockHash", [0])["result"].lower().replace("0x", "")
+
+
+def node_probe(timeout: float = 2.0):
+    """Cheap SINGLE-SHOT liveness probe of the L3 node for /health + /metrics (prod-readiness Phase 2):
+    returns the node's current genesis hash (lowercase, no 0x), or None if unreachable. No retry — a
+    health endpoint must answer fast even when the node is down, unlike _rpc_json's bounded retry."""
+    req = urllib.request.Request(
+        NODE_HTTP,
+        data=json.dumps({"id": 1, "jsonrpc": "2.0", "method": "chain_getBlockHash", "params": [0]}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            res = json.load(r).get("result")
+            return res.lower().replace("0x", "") if res else None
+    except Exception:  # noqa: BLE001 — any transport/HTTP/JSON error ⇒ node not healthily reachable
+        return None
+
+
+# A short TTL cache over node_probe() so the UNTHROTTLED /health + /metrics endpoints can't spawn
+# unbounded concurrent 2s node RPCs under a probe flood (only /nonce + /bind are rate-limited). A burst
+# of requests inside HEALTH_PROBE_TTL (default 2s) shares one result instead of one RPC each.
+_PROBE_TTL = float(os.environ.get("HEALTH_PROBE_TTL", "2"))
+_probe_cache = {"genesis": None, "at": 0.0}
+_probe_lock = threading.Lock()
+
+
+def cached_node_probe():
+    """node_probe() memoized for HEALTH_PROBE_TTL seconds (thread-safe). Caching None (unreachable) for
+    the window is intentional — a health flood during a node outage must not stampede it with retries.
+    The 2s staleness is negligible vs the Follower* alerts' `for:` windows (>= 5m)."""
+    now = time.time()
+    with _probe_lock:
+        if now - _probe_cache["at"] < _PROBE_TTL:
+            return _probe_cache["genesis"]
+    g = node_probe()
+    with _probe_lock:
+        _probe_cache["genesis"] = g
+        _probe_cache["at"] = time.time()
+    return g
+
+
+def health_status(current_genesis, pinned_genesis: str) -> tuple[int, dict]:
+    """PURE /health decision (unit-testable, no socket): given the node's current genesis (or None if
+    unreachable) and the follower's pinned genesis, return (http_code, fields). The follower is only
+    healthy when the node answers AND its genesis matches the one bound into every payload — a node
+    that is down, or a genesis that changed after a re-spin, both make /health report unhealthy (503)
+    instead of the old always-ok:true that a dead node still passed."""
+    node_ok = current_genesis is not None
+    genesis_ok = (current_genesis == pinned_genesis) if node_ok else None
+    healthy = bool(node_ok and genesis_ok)
+    return (200 if healthy else 503), {
+        "ok": healthy,
+        "node_reachable": node_ok,
+        "genesis_ok": genesis_ok,
+        "current_genesis": current_genesis,
+    }
 
 
 class NonceCache:
@@ -139,16 +243,30 @@ class NonceCache:
                 raise VerifyError("nonce mismatch")
             self._d.pop(account_hex.lower(), None)  # single-use
 
+    def size(self) -> int:
+        with self._lock:
+            return len(self._d)
+
+
+class SubmitPending(Exception):
+    """The submitter timed out (SUBMIT_TIMEOUT) — the bind may ALREADY be on-chain (the committee close
+    is typically in-block before the finalization wait). Mapped to 202, not a 502 failure, so a slow
+    committee bind isn't reported as failed; the client should re-query the binding before retrying."""
+
 
 def submit_link(identity_hash_hex: str, account_hex: str, thread_hex: str | None) -> dict:
-    """Shell out to the proven PAPI submitter to write sudo(link_identity). Returns its JSON.
-    A non-zero exit with no JSON is a hard error (not silently read as a malformed success), and
-    unparseable JSON is surfaced rather than crashing the handler (follower-7)."""
+    """Shell out to the configured submitter (committee-routed by default, or sudo) to write
+    link_identity; both emit the same one-line JSON contract. Returns its JSON. A non-zero exit with no
+    JSON is a hard error (not silently read as a malformed success), and unparseable JSON is surfaced
+    rather than crashing the handler (follower-7). A subprocess timeout raises SubmitPending (→ 202)."""
     cmd = [NODE_BIN, SUBMIT, identity_hash_hex, account_hex]
     if thread_hex:
         cmd.append(thread_hex)
-    proc = subprocess.run(cmd, cwd=APP_DIR, capture_output=True, text=True, timeout=60,
-                          env={**os.environ, "WS": WS})
+    try:
+        proc = subprocess.run(cmd, cwd=APP_DIR, capture_output=True, text=True, timeout=SUBMIT_TIMEOUT,
+                              env={**os.environ, "WS": WS})
+    except subprocess.TimeoutExpired:
+        raise SubmitPending(f"submit timed out after {SUBMIT_TIMEOUT}s — the bind may have been included on-chain; re-query before retrying")
     last = [ln for ln in proc.stdout.strip().splitlines() if ln.strip().startswith("{")]
     if not last:
         detail = proc.stderr.strip()[:300] or proc.stdout.strip()[:300]
@@ -161,6 +279,8 @@ def submit_link(identity_hash_hex: str, account_hex: str, thread_hex: str | None
 
 GENESIS = ""  # set in main()
 NONCES = NonceCache(NONCE_TTL, MAX_NONCES)
+RATE = RateLimiter(RATE_LIMIT_PER_MIN)
+BIND_SLOTS = threading.BoundedSemaphore(MAX_INFLIGHT)  # caps concurrent /bind subprocess forks
 
 
 def decide_bind(body: dict, *, genesis: str, expected_network: Network,
@@ -198,6 +318,12 @@ def decide_bind(body: dict, *, genesis: str, expected_network: Network,
     print(f"[bind] verified {claimed[:18]}… → account {sr25519[:12]}… id_hash {identity_hash[:12]}…", flush=True)
     try:
         result = submit(identity_hash, sr25519, thread)
+    except SubmitPending as e:
+        # Timed out, but the bind may already be on-chain (committee close is in-block before finality).
+        # 202 Accepted, not 502 — the client should re-query the binding before retrying.
+        print(f"[submit-pending] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+              f"identity_hash={identity_hash[:12]}… account={sr25519[:12]}… {e}", flush=True)
+        return 202, {"ok": False, "pending": True, "error": str(e), "identity_hash": identity_hash}
     except Exception as e:
         print(f"[submit-error] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
               f"identity_hash={identity_hash[:12]}… account={sr25519[:12]}… error={e}", flush=True)
@@ -214,9 +340,17 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_text(self, code: int, text: str, content_type: str = "text/plain; version=0.0.4"):
+        body = text.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
         self.end_headers()
         self.wfile.write(body)
 
@@ -228,11 +362,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
-        if u.path == "/health":
-            return self._send(200, {"ok": True, "genesis": GENESIS, "badges": BADGES,
-                                    "network": CARDANO_NETWORK,
-                                    "domain": payload_mod.DOMAIN, "nonce_ttl": NONCE_TTL})
+        if u.path in ("/health", "/healthz"):
+            # LIVE probe (Phase 2): re-check the node + genesis (TTL-cached ~2s so a flood can't stampede
+            # the node), not a boot-time cache.
+            code, h = health_status(cached_node_probe(), GENESIS)
+            return self._send(code, {**h, "genesis": GENESIS, "nonces_cached": NONCES.size(),
+                                     "badges": BADGES, "network": CARDANO_NETWORK,
+                                     "domain": payload_mod.DOMAIN, "nonce_ttl": NONCE_TTL})
+        if u.path == "/metrics":
+            # Prometheus text exposition (hand-rolled — no client lib). Node reachability + genesis match
+            # + outstanding nonces, so the follower (a documented SPOF) is alertable like the relayer.
+            current = cached_node_probe()
+            node_ok = 1 if current is not None else 0
+            lines = [
+                "# HELP cogno_follower_up 1 while the follower process is running",
+                "# TYPE cogno_follower_up gauge",
+                "cogno_follower_up 1",
+                "# HELP cogno_follower_node_reachable 1 if the L3 node RPC answered",
+                "# TYPE cogno_follower_node_reachable gauge",
+                f"cogno_follower_node_reachable {node_ok}",
+            ]
+            # Emit genesis_ok ONLY when the node is reachable — otherwise the match is UNKNOWN, not a
+            # mismatch. Omitting the sample (rather than reporting 0) keeps FollowerGenesisMismatch from
+            # firing on a plain node outage, which FollowerNodeUnreachable already covers.
+            if current is not None:
+                lines += [
+                    "# HELP cogno_follower_genesis_ok 1 if the node genesis matches the follower's pinned genesis",
+                    "# TYPE cogno_follower_genesis_ok gauge",
+                    f"cogno_follower_genesis_ok {1 if current == GENESIS else 0}",
+                ]
+            lines += [
+                "# HELP cogno_follower_nonces_cached outstanding issued (unconsumed) nonces",
+                "# TYPE cogno_follower_nonces_cached gauge",
+                f"cogno_follower_nonces_cached {NONCES.size()}",
+            ]
+            return self._send_text(200, "\n".join(lines) + "\n")
         if u.path == "/nonce":
+            if not RATE.allow(self.client_address[0]):
+                return self._send(429, {"error": "rate limited — slow down"})
             q = parse_qs(u.query)
             account = (q.get("account") or [""])[0].lower().replace("0x", "")
             if len(account) != 64 or any(c not in "0123456789abcdef" for c in account):
@@ -250,17 +417,31 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path != "/bind":
             return self._send(404, {"error": "not found"})
+        if not RATE.allow(self.client_address[0]):
+            return self._send(429, {"error": "rate limited — slow down"})
+        # Cap the body BEFORE reading it — a client-claimed Content-Length must never let us read unbounded.
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(n) or b"{}")
-        except Exception as e:
-            # Log malformed bodies (probing/attack signal) before 400'ing — silent otherwise.
-            print(f"[bad-json] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
-                  f"from={self.client_address[0]} error={e}", flush=True)
-            return self._send(400, {"error": f"bad JSON body: {e}"})
-
-        code, obj = decide_bind(body, genesis=GENESIS, expected_network=EXPECTED_NETWORK)
-        return self._send(code, obj)
+        except ValueError:
+            return self._send(400, {"error": "bad Content-Length header"})
+        if n < 0 or n > MAX_BODY_BYTES:
+            return self._send(413, {"error": f"body too large (> {MAX_BODY_BYTES} bytes)"})
+        # Bound concurrent bind work (each forks a <=60s node subprocess) — shed load with 503 rather
+        # than exhausting PIDs/memory under a /bind flood.
+        if not BIND_SLOTS.acquire(blocking=False):
+            return self._send(503, {"error": "server busy — too many concurrent binds, retry shortly"})
+        try:
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except Exception as e:
+                # Log malformed bodies (probing/attack signal) before 400'ing — silent otherwise.
+                print(f"[bad-json] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                      f"from={self.client_address[0]} error={e}", flush=True)
+                return self._send(400, {"error": f"bad JSON body: {e}"})
+            code, obj = decide_bind(body, genesis=GENESIS, expected_network=EXPECTED_NETWORK)
+            return self._send(code, obj)
+        finally:
+            BIND_SLOTS.release()
 
 
 def main():
@@ -272,12 +453,13 @@ def main():
         print(f"[startup-error] could not fetch L3 genesis from {NODE_HTTP}: {e}", flush=True)
         print("  Is the cogno-chain node running and reachable at NODE_HTTP? Aborting.", flush=True)
         raise SystemExit(1)
-    print(f"Cogno-Follower (v1, {BADGES}) on :{PORT}", flush=True)
+    print(f"Cogno-Follower (v1, {BADGES}) on {HOST}:{PORT}", flush=True)
     print(f"  genesis  = {GENESIS}", flush=True)
     print(f"  network  = {CARDANO_NETWORK} ({EXPECTED_NETWORK})", flush=True)
     print(f"  node     = {NODE_HTTP} (submit via {WS})", flush=True)
-    print(f"  submitter= {SUBMIT}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    print(f"  submit   = {FOLLOWER_VIA} ({SUBMIT})", flush=True)
+    print(f"  limits   = {RATE_LIMIT_PER_MIN}/min per-IP, max-body {MAX_BODY_BYTES}B, {MAX_INFLIGHT} concurrent binds, CORS {CORS_ORIGIN}", flush=True)
+    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":

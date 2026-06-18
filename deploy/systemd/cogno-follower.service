@@ -1,0 +1,38 @@
+# cogno-chain follower — prod-readiness Phase 1.
+# The CIP-8 identity-binding service: verifies a wallet's CIP-8 signature + the locked-ADA weight, then
+# writes the identity binding on-chain. HTTP API on PORT (default 8090). It forks a Node submit
+# subprocess, so it needs a real node v22 at NODE_BIN.
+#
+# The follower submits link_identity via the 3-of-5 committee by default (FOLLOWER_VIA=committee), so it
+# holds COMMITTEE_SEEDS, NOT the chain's full sudo key — a follower compromise no longer yields root.
+# Set FOLLOWER_VIA=sudo (+ SUDO_SEED) only for the dev fallback.
+
+[Unit]
+Description=cogno-chain follower (CIP-8 identity binding)
+Documentation=https://github.com/logical-mechanism/cogno
+After=network-online.target cogno-node.service
+Wants=network-online.target cogno-node.service
+
+[Service]
+Type=exec
+User=cogno
+Group=cogno
+WorkingDirectory=/opt/cogno/services/cogno-follower
+EnvironmentFile=/etc/cogno/cogno.env
+# The follower's submit subprocess uses this node — MUST be a real (non-snap) node v22.
+Environment=NODE_BIN=/usr/local/bin/node
+ExecStart=/opt/cogno/services/cogno-follower/.venv/bin/python follower.py
+Restart=always
+RestartSec=10
+
+StateDirectory=cogno
+StateDirectoryMode=0700
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cogno
+
+[Install]
+WantedBy=multi-user.target

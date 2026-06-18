@@ -13,7 +13,10 @@ ROOT="$(pwd)"
 NODE="$ROOT/target/release/cogno-chain-node"
 DIR=/tmp/cogno-m6
 SPEC="$DIR/local-spec.json"
-export PATH="/home/logic/.nvm/versions/node/v22.12.0/bin:$PATH"
+# Ensure a real (non-snap) node is on PATH — the snap `node` writes stdout to /dev/null. Point
+# COGNO_NODE_BIN_DIR at your node bin dir (e.g. ~/.nvm/versions/node/v22.12.0/bin) if needed.
+[ -n "${COGNO_NODE_BIN_DIR:-}" ] && export PATH="$COGNO_NODE_BIN_DIR:$PATH"
+command -v node >/dev/null 2>&1 || { echo "node not found on PATH — install node v22 or set COGNO_NODE_BIN_DIR"; exit 1; }
 
 [ -x "$NODE" ] || { echo "node binary not found at $NODE — build it first"; exit 1; }
 

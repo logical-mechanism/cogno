@@ -8,6 +8,10 @@
 // Reuses the live Kupo (fetcher) + Ogmios (submitter/evaluator) + the M2d cost-model fix.
 //
 //   node scripts/m2d-unlock.mjs [<txHash>#<index>]
+//
+// LEGACY DEMO TOOLING (frozen): reads the vault descriptor from /tmp/cogno-m2/vault.json directly. The
+// always-on path is the durable, committee-driven services/committee/sync-weight.mjs; in the product,
+// reclaiming locked ADA is done from the frontend's in-browser CIP-30 flow, not here.
 import fs from "node:fs";
 import { MeshTxBuilder, serializePlutusScript } from "@meshsdk/core";
 import { getOwnerWallet, kupo, ogmios, fetchCostModels } from "./m2d-wallet.mjs";

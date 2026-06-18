@@ -1,0 +1,31 @@
+# Minimal Alertmanager config for the cogno-chain stack (prod-readiness Phase 2).
+#
+# ⚠ AS SHIPPED THIS PAGES NOBODY. The `cogno-default` receiver below has every notifier commented out,
+# which is a VALID config that silently routes every alert to a blackhole — Alertmanager starts fine and
+# drops them. You MUST uncomment + point a `webhook_configs`/`slack_configs` at your real notifier, or
+# critical alerts (chain/relayer/follower down) fire in Prometheus and go nowhere. Verify the route with
+# `amtool config routes test` (or the :9093 UI) once wired.
+#
+#   cd deploy/monitoring && alertmanager --config.file=alertmanager.yml   # listens :9093 (see prometheus.yml)
+
+route:
+  receiver: cogno-default
+  group_by: ["alertname", "job"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: cogno-default
+      repeat_interval: 1h   # page critical (chain/relayer/follower down) more often
+
+receivers:
+  - name: cogno-default
+    # Replace with your real notifier. Example webhook (uncomment + point at your endpoint):
+    # webhook_configs:
+    #   - url: "http://127.0.0.1:5001/cogno-alerts"
+    # Or Slack:
+    # slack_configs:
+    #   - api_url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+    #     channel: "#cogno-alerts"
+    #     send_resolved: true

@@ -22,12 +22,15 @@
 // ⚠ HONESTY (DR-07): single-operator stack ⇒ D2-SHAPED, not D2-TRUST. See docs/D2-custody-runbook.md.
 import fs from "node:fs";
 import { isMain } from "../_shared/cli.mjs";
-import { connect, drive, has, operators, fetchJson } from "./lib.mjs";
+import { statePaths, migrateStatePath } from "../_shared/paths.mjs";
+import { connect, drive, has, operators, fetchJson, resolveCommittee, assertRealKeys, assertGenesis } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
 const KUPO = process.env.KUPO;
 const OGMIOS = process.env.OGMIOS || "http://127.0.0.1:1337";
-const VAULT_FILE = process.env.VAULT_FILE || "/tmp/cogno-m2/vault.json";
+// The locked-vault descriptor, defaulting under the durable data dir (COGNO_DATA_DIR / systemd
+// StateDirectory) rather than volatile /tmp; an existing /tmp copy is migrated on first read.
+const { file: VAULT_FILE, legacy: VAULT_FILE_LEGACY } = statePaths("VAULT_FILE", "vault.json");
 const MIN_LOCK = 100_000_000n;
 // Reorg-burial depth in Cardano SLOTS (DR-09b): only credit a vault UTxO buried this many slots past
 // the tip, so a lock/exit that later rolls back can't set a wrong weight. 0 = credit as soon as it is
@@ -136,14 +139,15 @@ async function observeKupo(vaultHash, { kupo = KUPO, ogmios = OGMIOS, confirmDep
 	return { largest, total: matches.length, reasons };
 }
 
-async function setStakeFor(api, ops, opt, account, weight) {
+async function setStakeFor(api, ops, opt, account, weight, committeeOpts = {}) {
 	// set_stake (the weight) + force_set_capacity (prime the battery), BOTH through the chosen origin.
-	const r1 = await drive(api, api.tx.talkStake.setStake(account, weight), { operators: ops, via: opt.via, log: (m) => console.log("    " + m) });
+	// committeeOpts carries the on-chain-resolved { threshold, members } for the committee path (Phase 3).
+	const r1 = await drive(api, api.tx.talkStake.setStake(account, weight), { operators: ops, via: opt.via, ...committeeOpts, log: (m) => console.log("    " + m) });
 	if (!has(r1.evs, "talkStake", "StakeSet")) throw new Error("set_stake did not execute");
 	const capRatio = api.consts.microblog.capRatio.toBigInt();
 	const ceiling = api.consts.microblog.ceiling.toBigInt();
 	const full = weight * capRatio < ceiling ? weight * capRatio : ceiling;
-	await drive(api, api.tx.microblog.forceSetCapacity(account, full), { operators: ops, via: opt.via, log: () => {} });
+	await drive(api, api.tx.microblog.forceSetCapacity(account, full), { operators: ops, via: opt.via, ...committeeOpts, log: () => {} });
 	console.log(`  ✓ ${account} ← weight ${weight} (battery ${full}) via ${opt.via}`);
 }
 
@@ -153,16 +157,25 @@ async function main() {
 	const ops = operators();
 	const spec = api.runtimeVersion.specVersion.toNumber();
 	console.log(`chain spec ${spec} | follower set_stake via ${opt.via}`);
-	if (opt.via === "committee") console.log("  ⚠ single-operator: D2-SHAPED, not D2-TRUST (one operator holds all 5 keys)");
+	assertRealKeys(opt.via); // fail-closed (Phase 3): no public dev keys under COGNO_PROFILE=prod
+	assertGenesis(api);      // pin the chain (Phase 3): refuse the wrong chain if GENESIS is set
+	// Resolve the committee threshold from ON-CHAIN membership (Phase 3) once, reused for every write.
+	let committeeOpts = {};
+	if (opt.via === "committee") {
+		const rc = await resolveCommittee(api, ops, { explicitThreshold: opt.threshold });
+		committeeOpts = { threshold: rc.threshold, members: rc.members };
+		console.log(`  ⚠ single-operator: D2-SHAPED, not D2-TRUST (one operator holds all keys) — committee ${rc.threshold}-of-${rc.onchainCount} (from on-chain membership)`);
+	}
 
 	try {
 		if (opt.account && opt.weight !== undefined) {
 			// dev mode: one account, explicit operator-supplied weight (the showcase path when Cardano
 			// is not wired). The MIN_LOCK gate applies only to live vault-observed lovelace, not to a
 			// manual override, so the explicit weight is used verbatim.
-			await setStakeFor(api, ops, opt, opt.account, opt.weight);
+			await setStakeFor(api, ops, opt, opt.account, opt.weight, committeeOpts);
 		} else if (KUPO) {
 			// live mode: observe the vault, largest-wins, set_stake per bound identity.
+			migrateStatePath(VAULT_FILE, VAULT_FILE_LEGACY, "vault descriptor");
 			const vaultHash = JSON.parse(fs.readFileSync(VAULT_FILE, "utf8")).vaultHash;
 			const { largest, total, reasons } = await observeKupo(vaultHash);
 			console.log(`Kupo returned ${total} unspent match(es); ${largest.size} credited, ${reasons.size} rejected (confirm-depth ${CONFIRM_DEPTH_SLOTS} slots)`);
@@ -173,7 +186,7 @@ async function main() {
 				// AccountOf lookup via @polkadot/api (dynamic) — beacon is a 32-byte hash key.
 				const account = await api.query.cognoGate.accountOf("0x" + beacon);
 				if (account.isNone) { console.log(`  · ${beacon.slice(0, 12)}… ${lovelace} — NOT bound, skip`); continue; }
-				await setStakeFor(api, ops, opt, account.unwrap().toString(), lockToWeight(lovelace));
+				await setStakeFor(api, ops, opt, account.unwrap().toString(), lockToWeight(lovelace), committeeOpts);
 			}
 		} else {
 			console.error("usage: --account <ss58> --weight <lovelace>   (dev)   |   set KUPO=… for live vault mode");

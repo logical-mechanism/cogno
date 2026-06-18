@@ -36,3 +36,13 @@ services/committee/node_modules
 # mnemonics) + env.sh + the generated chain spec. NEVER commit. (Override the dir with OUT=.)
 /network
 **/keys.json
+
+# Stateful secrets the services write into the data dir (relayer wallet SEED + the anchor cursor) and a
+# filled-in systemd EnvironmentFile (signing seeds + DB_PASS). Defaults live OUTSIDE the repo, but
+# OWNER_FILE/COGNO_DATA_DIR/STATE_FILE can point inside a checkout — this is the backstop. NOTE: no bare
+# **/vault.json here — vault.json is a committed build artifact (app/src/lib/cardano/, contracts/).
+**/owner.json
+**/anchor-state.json
+cogno.env
+**/cogno.env
+!**/cogno.env.example

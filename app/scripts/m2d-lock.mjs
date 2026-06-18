@@ -6,6 +6,11 @@
 // docs/M2d-build.md §Acceptance).
 //
 //   node scripts/m2d-lock.mjs
+//
+// LEGACY DEMO TOOLING (frozen): a single-operator M2d/M8 showcase script. It still reads the vault
+// descriptor from /tmp/cogno-m2/vault.json directly; the always-on path is the durable, committee-driven
+// services/committee/sync-weight.mjs (VAULT_FILE under $COGNO_DATA_DIR). In the product, locking is done
+// from the frontend's in-browser CIP-30 flow, not here.
 import fs from "node:fs";
 import { MeshTxBuilder, serializePlutusScript } from "@meshsdk/core";
 import { getOwnerWallet, kupo, ogmios, fetchCostModels } from "./m2d-wallet.mjs";

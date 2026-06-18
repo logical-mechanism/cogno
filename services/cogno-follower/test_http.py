@@ -103,6 +103,16 @@ def test_http_codes():
     ok(code == 200 and obj.get("ok") is True and obj.get("identity_hash") == "ab" * 32
        and obj.get("block") == 42 and "badges" in obj, "submit ok:true → 200 with merged result")
 
+    # (h) submit raises SubmitPending (committee bind timed out) → 202 pending, NOT a 502 failure
+    code, obj = decide_bind(
+        GOOD_BODY, genesis="0" * 64, expected_network=follower.EXPECTED_NETWORK,
+        verify=lambda **k: "fe" * 32,
+        submit=lambda *a: (_ for _ in ()).throw(follower.SubmitPending("timed out after 150s")),
+        consume_nonce=ACCEPT_NONCE,
+    )
+    ok(code == 202 and obj.get("pending") is True and obj.get("identity_hash") == "fe" * 32,
+       "SubmitPending (committee bind timeout) → 202 pending (the bind may be on-chain), not 502")
+
     # (g) the thread_pointer is threaded through to submit (optional 3rd arg)
     seen = {}
     decide_bind(
@@ -279,6 +289,20 @@ def test_submit_link_json():
         follower.subprocess.run = saved
 
 
+def test_health_status():
+    print("\n[health] health_status decision (Phase 2 — live /health)")
+    g = "ab" * 32
+    code, h = follower.health_status(g, g)
+    ok(code == 200 and h["ok"] is True and h["node_reachable"] is True and h["genesis_ok"] is True,
+       "node up + genesis matches → 200 ok")
+    code, h = follower.health_status(None, g)
+    ok(code == 503 and h["ok"] is False and h["node_reachable"] is False and h["genesis_ok"] is None,
+       "node unreachable → 503 (the old boot-cache always-ok bug is gone), genesis_ok None")
+    code, h = follower.health_status("cd" * 32, g)
+    ok(code == 503 and h["ok"] is False and h["node_reachable"] is True and h["genesis_ok"] is False,
+       "node up but genesis mismatch (a re-spin) → 503")
+
+
 def main():
     print("\n== Cogno-Follower HTTP + NonceCache tests ==")
     test_http_codes()
@@ -287,6 +311,7 @@ def main():
     test_nonce_overflow_eviction()
     test_rpc_json_retry()
     test_submit_link_json()
+    test_health_status()
     print(f"\n== RESULT: {PASS} passed, {FAIL} failed ==\n")
     raise SystemExit(0 if FAIL == 0 else 1)
 
