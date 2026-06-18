@@ -5,6 +5,15 @@ use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
 
 const ALICE: u64 = 1;
+const BOB: u64 = 2;
+
+/// Count the `StakeSet` events currently in the System event buffer for `who`.
+fn stake_set_events_for(who: u64) -> usize {
+	System::events()
+		.iter()
+		.filter(|r| matches!(&r.event, RuntimeEvent::TalkStake(Event::StakeSet { who: w, .. }) if *w == who))
+		.count()
+}
 
 #[test]
 fn unbound_account_reads_zero() {
@@ -102,5 +111,195 @@ fn set_stake_overwrites_never_sums_property() {
 				);
 			}
 		}
+	});
+}
+
+// ── Event-emission edge cases ───────────────────────────────────────────────────────────────
+
+/// **Gap 1 — every accepted `set_stake` emits, not just the last.** A regression that silently
+/// drops the event on an intermediate write (e.g. an early `return Ok(())` before
+/// `deposit_event`) would slip past `assert_last_event`. Here we drain the buffer between calls
+/// and assert that EACH accepted write — including the idempotent re-derive and the unlock to 0
+/// — deposits exactly its own `StakeSet` carrying the just-written weight.
+#[test]
+fn every_set_stake_emits_its_own_event() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		for w in [10_000_000u128, 25_000_000, 25_000_000 /* idempotent */, 0 /* unlock */] {
+			System::reset_events();
+			assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, w));
+			// Exactly one StakeSet for ALICE per call (not zero, not two).
+			assert_eq!(stake_set_events_for(ALICE), 1, "each accepted write must emit once");
+			System::assert_last_event(Event::StakeSet { who: ALICE, weight: w }.into());
+		}
+	});
+}
+
+/// **Gap 2 — a `WeightTooHigh` rejection writes nothing AND emits nothing.** The state-change
+/// guarantee is "no `StakeSet` without a corresponding write". A future maintainer moving
+/// `deposit_event` above the `ensure!` would break it silently; `assert_noop!` proves no storage
+/// change, and the explicit event scan proves no spurious event leaked.
+#[test]
+fn weight_too_high_emits_no_event() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		System::reset_events();
+		assert_noop!(
+			TalkStake::set_stake(RuntimeOrigin::root(), ALICE, MAX_STAKE_WEIGHT + 1),
+			Error::<Test>::WeightTooHigh
+		);
+		assert_eq!(AllowedStake::<Test>::get(ALICE), 0, "rejected weight must not be stored");
+		assert!(
+			!System::events()
+				.iter()
+				.any(|r| matches!(r.event, RuntimeEvent::TalkStake(Event::StakeSet { .. }))),
+			"a WeightTooHigh rejection must not emit StakeSet"
+		);
+	});
+}
+
+/// **Gap 3 — a `BadOrigin` rejection writes nothing AND emits nothing.** Extends the existing
+/// origin gate test with the event-absence assertion: an unauthorised caller must leave both the
+/// storage row and the event stream untouched.
+#[test]
+fn bad_origin_writes_nothing_and_emits_nothing() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		System::reset_events();
+		assert_noop!(
+			TalkStake::set_stake(RuntimeOrigin::signed(ALICE), ALICE, 10_000_000),
+			DispatchError::BadOrigin,
+		);
+		assert_eq!(AllowedStake::<Test>::get(ALICE), 0, "bad-origin call must not write");
+		assert!(
+			!System::events()
+				.iter()
+				.any(|r| matches!(r.event, RuntimeEvent::TalkStake(Event::StakeSet { .. }))),
+			"a BadOrigin rejection must not emit StakeSet"
+		);
+	});
+}
+
+// ── Boundary / saturation ───────────────────────────────────────────────────────────────────
+
+/// **Gaps 5 + 9 — the cap is a real comparison against the configured constant.** Against a mock
+/// whose `MaxStakeWeight == u128::MAX`, the extreme values `u128::MAX - 1` and `u128::MAX` must
+/// BOTH be accepted (there is no hidden internal ceiling below the constant), and there is no
+/// representable weight that can exceed the cap — so on this runtime `set_stake` can never return
+/// `WeightTooHigh`. Run against the default mock, `u128::MAX` is one over an `100_000_000` cap and
+/// is rejected — proving the `<=` boundary tracks `MaxStakeWeight`, not the type max.
+#[test]
+fn max_stake_weight_is_compared_against_the_configured_cap() {
+	// Cap == u128::MAX: the largest representable weights are accepted, nothing can exceed it.
+	maxcap::new_test_ext().execute_with(|| {
+		maxcap::System::set_block_number(1);
+		assert_ok!(maxcap::TalkStake::set_stake(
+			maxcap::RuntimeOrigin::root(),
+			ALICE,
+			u128::MAX - 1
+		));
+		assert_eq!(AllowedStake::<maxcap::Test>::get(ALICE), u128::MAX - 1);
+		assert_ok!(maxcap::TalkStake::set_stake(maxcap::RuntimeOrigin::root(), ALICE, u128::MAX));
+		assert_eq!(AllowedStake::<maxcap::Test>::get(ALICE), u128::MAX);
+	});
+
+	// Default mock (cap = 100_000_000): u128::MAX is far over the cap and is rejected, no write.
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_noop!(
+			TalkStake::set_stake(RuntimeOrigin::root(), ALICE, u128::MAX),
+			Error::<Test>::WeightTooHigh
+		);
+		assert_eq!(AllowedStake::<Test>::get(ALICE), 0);
+	});
+}
+
+/// **Boundary triple — cap − 1, exactly cap, cap + 1.** Pins the inequality precisely at the
+/// three values around the limit (the existing test covers cap and cap+1; this adds cap−1 and
+/// asserts the rejection at cap+1 leaves the accepted value untouched).
+#[test]
+fn set_stake_boundary_below_at_and_above_cap() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, MAX_STAKE_WEIGHT - 1));
+		assert_eq!(AllowedStake::<Test>::get(ALICE), MAX_STAKE_WEIGHT - 1);
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, MAX_STAKE_WEIGHT));
+		assert_eq!(AllowedStake::<Test>::get(ALICE), MAX_STAKE_WEIGHT);
+		assert_noop!(
+			TalkStake::set_stake(RuntimeOrigin::root(), ALICE, MAX_STAKE_WEIGHT + 1),
+			Error::<Test>::WeightTooHigh
+		);
+		// The rejected over-cap write left the last accepted value (the cap) in place.
+		assert_eq!(AllowedStake::<Test>::get(ALICE), MAX_STAKE_WEIGHT);
+	});
+}
+
+/// **Gap 9 (runtime brief) — `set_stake(who, 0)` is indistinguishable from an unbound read.**
+/// An account never written reads 0 (ValueQuery); an account explicitly unlocked to 0 must read
+/// the same 0 — the row exists but the value is identical, so capacity collapses identically
+/// either way. Also asserts the unlock emits its own `StakeSet { weight: 0 }`.
+#[test]
+fn explicit_zero_matches_unbound_zero() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// BOB is never written → ValueQuery default.
+		assert_eq!(AllowedStake::<Test>::get(BOB), 0);
+		// ALICE is funded then explicitly unlocked to 0.
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 40_000_000));
+		System::reset_events();
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 0));
+		assert_eq!(AllowedStake::<Test>::get(ALICE), AllowedStake::<Test>::get(BOB));
+		assert_eq!(AllowedStake::<Test>::get(ALICE), 0);
+		System::assert_last_event(Event::StakeSet { who: ALICE, weight: 0 }.into());
+	});
+}
+
+// ── Lifecycle / multi-account isolation ─────────────────────────────────────────────────────
+
+/// **Gap 6 — reorg-safe idempotency across a (simulated) re-org.** The follower re-derives weight
+/// after a re-org and re-submits the SAME value at a re-played block height. We set weight at
+/// block N, rewind the block number to N − 1 (a re-org rewind), and re-submit the identical
+/// weight: the stored value is unchanged and the call still succeeds and emits — i.e. re-execution
+/// is safe and deterministic regardless of block height moving backward.
+#[test]
+fn set_stake_is_idempotent_across_a_reorg_rewind() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(10);
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 30_000_000));
+		assert_eq!(AllowedStake::<Test>::get(ALICE), 30_000_000);
+
+		// Simulate a re-org: the chain rewinds and re-executes the same extrinsic.
+		System::set_block_number(9);
+		System::reset_events();
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 30_000_000));
+		// Identical state, no accumulation, and the re-played write still emits.
+		assert_eq!(AllowedStake::<Test>::get(ALICE), 30_000_000);
+		assert_eq!(stake_set_events_for(ALICE), 1);
+		System::assert_last_event(Event::StakeSet { who: ALICE, weight: 30_000_000 }.into());
+	});
+}
+
+/// **Gap 8 — many distinct accounts set in one block stay isolated.** Writes are per-account; a
+/// hash-collision or shared-key bug in the `StorageMap` would let one account's write clobber
+/// another. Set N accounts to distinct weights in a single block, then read every one back and
+/// confirm it holds exactly its own value and exactly N `StakeSet` events were emitted.
+#[test]
+fn many_accounts_set_in_one_block_are_isolated() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		const N: u64 = 100;
+		for acct in 1..=N {
+			let weight = (acct as u128) * 1_000; // distinct, all well under the cap
+			assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), acct, weight));
+		}
+		// Every account reads back exactly its own weight (no cross-contamination).
+		for acct in 1..=N {
+			assert_eq!(AllowedStake::<Test>::get(acct), (acct as u128) * 1_000);
+		}
+		let total = System::events()
+			.iter()
+			.filter(|r| matches!(r.event, RuntimeEvent::TalkStake(Event::StakeSet { .. })))
+			.count();
+		assert_eq!(total as u64, N, "one StakeSet per distinct account");
 	});
 }

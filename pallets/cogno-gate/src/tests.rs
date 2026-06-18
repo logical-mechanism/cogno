@@ -121,6 +121,247 @@ fn thread_pointer_is_stored_and_length_bounded() {
 }
 
 #[test]
+fn thread_pointer_at_exactly_ten_bytes_is_accepted() {
+	// gap-1: the BoundedVec<u8, ConstU32<10>> boundary. 10 bytes is the inclusive limit — it
+	// must succeed and be stored verbatim; 11 (tested above) fails. This pins the off-by-one.
+	new_test_ext().execute_with(|| {
+		let ptr = vec![0xABu8; 10]; // exactly at the limit
+		assert_ok!(CognoGate::link_identity(
+			RuntimeOrigin::root(),
+			HASH_A,
+			ALICE,
+			Some(ptr.clone())
+		));
+		assert_eq!(ThreadOf::<Test>::get(ALICE).map(|b| b.to_vec()), Some(ptr));
+		assert_eq!(PkhOf::<Test>::get(ALICE), Some(HASH_A));
+	});
+}
+
+#[test]
+fn thread_pointer_empty_is_accepted_and_stored_empty() {
+	// gap-3: Some(vec![]) is at the LOWER boundary (0 ≤ len ≤ 10) — it must succeed and bind.
+	// An empty pointer is stored as an empty BoundedVec (Some), distinct from the None path.
+	new_test_ext().execute_with(|| {
+		assert_ok!(CognoGate::link_identity(
+			RuntimeOrigin::root(),
+			HASH_A,
+			ALICE,
+			Some(vec![])
+		));
+		assert_eq!(PkhOf::<Test>::get(ALICE), Some(HASH_A));
+		// Some(empty) — the field was supplied (just zero-length), not omitted.
+		assert_eq!(ThreadOf::<Test>::get(ALICE).map(|b| b.to_vec()), Some(vec![]));
+	});
+}
+
+#[test]
+fn link_with_none_thread_pointer_stores_no_thread() {
+	// Companion to the empty-vec case: None must leave ThreadOf entirely unset (is_none), proving
+	// the None branch never writes a row (distinct from Some(vec![]) above).
+	new_test_ext().execute_with(|| {
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+		assert!(ThreadOf::<Test>::get(ALICE).is_none());
+	});
+}
+
+#[test]
+fn bad_thread_pointer_emits_no_event_and_writes_nothing() {
+	// Event-absence on a rejected bind (gap-style): an over-long pointer fails the up-front
+	// validation BEFORE any write, so NO directional map is touched and NO IdentityLinked fires.
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_noop!(
+			CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, Some(vec![0u8; 11])),
+			Error::<Test>::BadThread
+		);
+		// All-or-nothing: neither directional map nor the thread row was written.
+		assert!(!PkhOf::<Test>::contains_key(ALICE));
+		assert_eq!(AccountOf::<Test>::get(HASH_A), None);
+		assert!(ThreadOf::<Test>::get(ALICE).is_none());
+		// No spurious IdentityLinked event on the rejected call.
+		assert!(!System::events()
+			.iter()
+			.any(|r| matches!(r.event, RuntimeEvent::CognoGate(Event::IdentityLinked { .. }))));
+	});
+}
+
+#[test]
+fn revoke_clears_thread_pointer() {
+	// gap-2: revoke must remove ThreadOf (lib.rs ThreadOf::remove) or stale pointers accumulate.
+	new_test_ext().execute_with(|| {
+		let ptr = vec![0x01, 0x02, 0x03];
+		assert_ok!(CognoGate::link_identity(
+			RuntimeOrigin::root(),
+			HASH_A,
+			ALICE,
+			Some(ptr.clone())
+		));
+		assert_eq!(ThreadOf::<Test>::get(ALICE).map(|b| b.to_vec()), Some(ptr));
+
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+		// The thread pointer is gone — no stale row survives the revoke.
+		assert!(ThreadOf::<Test>::get(ALICE).is_none());
+	});
+}
+
+#[test]
+fn revoke_clears_account_of_immediately() {
+	// gap-5: AccountOf must be None the instant after revoke (before any rebind). Existing tests
+	// only check AccountOf after a subsequent rebind, masking a stale reverse-map row.
+	new_test_ext().execute_with(|| {
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+		assert_eq!(AccountOf::<Test>::get(HASH_A), Some(ALICE));
+
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+		// Reverse map cleared immediately — no rebind required to free the identity.
+		assert_eq!(AccountOf::<Test>::get(HASH_A), None);
+		assert!(!PkhOf::<Test>::contains_key(ALICE));
+	});
+}
+
+#[test]
+fn revoked_event_carries_the_correct_identity() {
+	// gap-4 (cogno brief): destructure the Revoked event and assert identity == the bound HASH_A
+	// (and who == ALICE). Catches a revoke that emits the event with a wrong/zeroed identity.
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+
+		let revoked = System::events()
+			.into_iter()
+			.find_map(|r| match r.event {
+				RuntimeEvent::CognoGate(Event::Revoked { who, identity }) => Some((who, identity)),
+				_ => None,
+			})
+			.expect("a Revoked event must be emitted");
+		assert_eq!(revoked, (ALICE, HASH_A), "Revoked must carry the bound account + identity");
+	});
+}
+
+#[test]
+fn revoke_unknown_account_emits_no_revoked_event() {
+	// Event-absence on the NotBound idempotent no-op: a revoke of a never-bound account must NOT
+	// emit a spurious Revoked event (the chain stays silent; only the error returns).
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_noop!(
+			CognoGate::revoke(RuntimeOrigin::root(), ALICE),
+			Error::<Test>::NotBound
+		);
+		assert!(!System::events()
+			.iter()
+			.any(|r| matches!(r.event, RuntimeEvent::CognoGate(Event::Revoked { .. }))));
+	});
+}
+
+#[test]
+fn thread_pointer_state_transitions_across_rebind() {
+	// gap-7: bind WITH a pointer, revoke (clears it), rebind the same identity to a NEW account
+	// WITHOUT a pointer → the new account's ThreadOf is None, and the old account stays cleared.
+	new_test_ext().execute_with(|| {
+		assert_ok!(CognoGate::link_identity(
+			RuntimeOrigin::root(),
+			HASH_A,
+			ALICE,
+			Some(vec![0xDE, 0xAD])
+		));
+		assert!(ThreadOf::<Test>::get(ALICE).is_some());
+
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+		assert!(ThreadOf::<Test>::get(ALICE).is_none());
+
+		// Rebind the freed identity to BOB without a thread pointer.
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, BOB, None));
+		assert!(ThreadOf::<Test>::get(BOB).is_none(), "None rebind writes no thread row");
+		assert!(ThreadOf::<Test>::get(ALICE).is_none(), "old account stays cleared");
+		assert_eq!(AccountOf::<Test>::get(HASH_A), Some(BOB));
+	});
+}
+
+#[test]
+fn rebind_can_reuse_the_same_thread_pointer() {
+	// runtime-node gap-4 (rebind reuse): after revoke frees the identity, the SAME thread pointer
+	// must be reusable on the rebind (the merkle root is not "consumed"). Rebind same identity →
+	// same account → same pointer.
+	new_test_ext().execute_with(|| {
+		let ptr = vec![0x00, 0xe5, 0x99, 0x3f, 0xa3];
+		assert_ok!(CognoGate::link_identity(
+			RuntimeOrigin::root(),
+			HASH_A,
+			ALICE,
+			Some(ptr.clone())
+		));
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+		assert_ok!(CognoGate::link_identity(
+			RuntimeOrigin::root(),
+			HASH_A,
+			ALICE,
+			Some(ptr.clone())
+		));
+		assert_eq!(ThreadOf::<Test>::get(ALICE).map(|b| b.to_vec()), Some(ptr));
+	});
+}
+
+#[test]
+fn full_event_audit_trail_for_bind_revoke_rebind() {
+	// gap-8: the complete event sequence. A bind→revoke→rebind cycle must fire
+	// IdentityLinked, then Revoked, then IdentityLinked again — in that exact order. Guards
+	// against an accidental event deletion on any one of the three state changes.
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+
+		let gate_events: Vec<_> = System::events()
+			.into_iter()
+			.filter_map(|r| match r.event {
+				RuntimeEvent::CognoGate(e) => Some(e),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(
+			gate_events,
+			vec![
+				Event::IdentityLinked { who: ALICE, identity: HASH_A },
+				Event::Revoked { who: ALICE, identity: HASH_A },
+				Event::IdentityLinked { who: ALICE, identity: HASH_A },
+			]
+		);
+	});
+}
+
+#[test]
+fn post_revoke_rebind_post_id_continuity() {
+	// runtime-node gap-10: the cross-pallet narrative. bound → can post → revoke → CANNOT post →
+	// rebind (different identity) → can post again, and the microblog post-id counter is
+	// CONTINUOUS (a revoke must never reset NextPostId, or post ids would collide after a rebind).
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+
+		assert_ok!(post_as(ALICE)); // id 0
+		assert_eq!(pallet_microblog::NextPostId::<Test>::get(), 1);
+
+		// Revoke re-locks: ALICE cannot post.
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+		assert_noop!(post_as(ALICE), pallet_microblog::Error::<Test>::NotAllowed);
+		// The id counter did NOT reset on revoke.
+		assert_eq!(pallet_microblog::NextPostId::<Test>::get(), 1);
+
+		// Rebind ALICE to a DIFFERENT identity → posting unlocks again.
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_B, ALICE, None));
+		assert_ok!(post_as(ALICE)); // id 1, NOT a reused 0
+
+		// The newly created post got id 1 (continuous), and id 0 still exists (no collision).
+		assert_eq!(pallet_microblog::NextPostId::<Test>::get(), 2);
+		assert!(pallet_microblog::Posts::<Test>::get(0).is_some());
+		assert!(pallet_microblog::Posts::<Test>::get(1).is_some());
+	});
+}
+
+#[test]
 fn revoke_relocks_posting() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);

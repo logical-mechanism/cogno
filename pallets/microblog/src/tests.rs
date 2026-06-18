@@ -141,6 +141,22 @@ fn post_cost_is_base_plus_per_byte() {
 }
 
 #[test]
+fn post_cost_saturates_safely_at_the_boundary() {
+	new_test_ext().execute_with(|| {
+		// At the MaxLength boundary (mock: BaseCost 100 + PerByteCost 1·512) the cost is exact and
+		// well clear of overflow — the spam gate never silently mis-prices a max-length post.
+		assert_eq!(Microblog::post_cost(512), 612);
+		// post_cost is computed for u32::MAX bytes (impossible at the pool given the MaxLength gate,
+		// but the formula uses saturating arithmetic): with PerByteCost 1 the product is exact and
+		// does NOT saturate (well under u128::MAX), so we get the precise linear cost — proving the
+		// saturating_mul is correct, not silently clamping a legitimate value.
+		let huge = u32::MAX; // 4_294_967_295
+		assert_eq!(Microblog::post_cost(huge), 100u128 + huge as u128);
+		assert!(Microblog::post_cost(huge) < u128::MAX, "no saturation for the mock's PerByteCost=1");
+	});
+}
+
+#[test]
 fn capacity_regenerates_then_clamps_to_cap() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(10);
@@ -151,6 +167,37 @@ fn capacity_regenerates_then_clamps_to_cap() {
 		assert_eq!(Microblog::current_capacity(&1, 13), 300);
 		// 20 blocks: 100·20 = 2000, clamped to cap = 1000.
 		assert_eq!(Microblog::current_capacity(&1, 30), 1000);
+	});
+}
+
+#[test]
+fn zero_elapsed_blocks_no_regen() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(10);
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 100)); // rate 100/block
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 250)); // banked @10
+		// Reading at the SAME block as the last touch (elapsed == 0) returns cap_last verbatim —
+		// no regen tick is credited within a block (this is the same-block-post anti-burst guard).
+		assert_eq!(Microblog::current_capacity(&1, 10), 250);
+	});
+}
+
+#[test]
+fn capacity_regen_is_linear_per_block() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(10);
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 5)); // rate 5/block, cap min(50,5000)=50
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 0)); // empty, dated @10
+		// Exactly one block ⇒ exactly one regen tick of weight·RegenPerBlock = 5 (not a constant
+		// offset, not exponential): the curve is linear at the per-block rate.
+		assert_eq!(Microblog::current_capacity(&1, 11), 5);
+		// Linear across multiple blocks: 5·k for k = 1..=10 until the ceiling (50) clamps it.
+		for k in 1..=10u64 {
+			let expected = core::cmp::min(5 * k as u128, 50);
+			assert_eq!(Microblog::current_capacity(&1, 10 + k), expected, "block +{k} regen is linear");
+		}
+		// Past the fill point it stays clamped at the ceiling, never overshoots.
+		assert_eq!(Microblog::current_capacity(&1, 100), 50);
 	});
 }
 
@@ -251,6 +298,116 @@ fn force_set_capacity_clamps_to_stake_backed_ceiling() {
 		// A force within the ceiling is stored verbatim (the legitimate priming path).
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 2, 400));
 		assert_eq!(Capacity::<Test>::get(2).unwrap().cap_last, 400);
+
+		// Boundary: cap_last == ceiling EXACTLY passes through unclamped (not clamped to < ceiling).
+		// weight 100 ⇒ ceiling 1000; force exactly 1000.
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 2, 1_000));
+		assert_eq!(Capacity::<Test>::get(2).unwrap().cap_last, 1_000);
+		System::assert_last_event(Event::CapacityForced { who: 2, cap_last: 1_000 }.into());
+
+		// Boundary: ceiling + 1 is clamped down to exactly the ceiling (off-by-one guard).
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 2, 1_001));
+		assert_eq!(Capacity::<Test>::get(2).unwrap().cap_last, 1_000);
+		// The event reports the CLAMPED value, never the requested over-ceiling input.
+		System::assert_last_event(Event::CapacityForced { who: 2, cap_last: 1_000 }.into());
+	});
+}
+
+// ── bind/revoke lifecycle on microblog's own `OnIdentityBind` impl (provider-ref accounting) ───
+// pallet-cogno-gate drives these via its `OnBind` Config type; here we exercise microblog's side
+// directly so its provider-ref inc/dec and the never-delete relock-farm guard are covered without
+// the cross-pallet plumbing. (Audit gaps 1, 2, and the on_bind/on_revoke logging paths.)
+
+#[test]
+fn on_bind_takes_a_provider_ref_and_is_idempotent_on_the_row() {
+	use crate::OnIdentityBind;
+	new_test_ext().execute_with(|| {
+		System::set_block_number(10);
+		let providers = |who: u64| frame_system::Account::<Test>::get(who).providers;
+		let base = providers(1);
+
+		<Microblog as OnIdentityBind<u64>>::on_bind(&1);
+		// The provider ref is taken so the bound account's first feeless post survives CheckNonce.
+		assert_eq!(providers(1), base + 1, "on_bind takes exactly one provider ref");
+		let row = Capacity::<Test>::get(1).expect("on_bind primes the (empty, dated) row");
+		assert_eq!(row.cap_last, 0);
+		assert_eq!(row.last_block, 10);
+
+		// A second on_bind (e.g. a relock path) re-takes a provider ref (the trait is symmetric per
+		// bind), but must NOT re-mint the capacity bucket — the row stays empty and dated @10, so a
+		// relock cannot read a None first-touch and start a fresh full-charging bucket.
+		System::set_block_number(50);
+		<Microblog as OnIdentityBind<u64>>::on_bind(&1);
+		let row2 = Capacity::<Test>::get(1).expect("row still exists");
+		assert_eq!(row2.last_block, 10, "row is NOT re-dated on a second bind (relock-farm guard)");
+		assert_eq!(row2.cap_last, 0, "row is NOT re-minted on a second bind");
+	});
+}
+
+#[test]
+fn bind_revoke_rebind_relock_farm_guard() {
+	use crate::OnIdentityBind;
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		let providers = |who: u64| frame_system::Account::<Test>::get(who).providers;
+		let base = providers(1);
+
+		// Bind: provider ref +1, empty row dated @1.
+		<Microblog as OnIdentityBind<u64>>::on_bind(&1);
+		assert_eq!(providers(1), base + 1, "bind takes a provider ref");
+
+		// Give the account real banked capacity (weight 100 ⇒ ceiling 1000).
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 100));
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 1_000));
+		System::set_block_number(20);
+		assert!(Microblog::current_capacity(&1, 20) > 0, "banked capacity is live before revoke");
+
+		// Revoke: provider ref released (back to baseline, no leak), capacity zeroed, ROW KEPT.
+		<Microblog as OnIdentityBind<u64>>::on_revoke(&1);
+		assert_eq!(providers(1), base, "revoke releases the bind provider ref (no leak)");
+		let row = Capacity::<Test>::get(1).expect("row kept on revoke (relock-farm guard)");
+		assert_eq!(row.cap_last, 0, "banked capacity zeroed on revoke");
+		assert_eq!(row.last_block, 20, "revoke re-dates the zeroed row to now");
+		// Capacity is observably zero even though weight is still 100 (the row was zeroed).
+		assert_eq!(Microblog::current_capacity(&1, 20), 0, "no usable capacity right after revoke");
+
+		// Rebind: provider ref re-taken, but the KEPT row must NOT be re-minted into a fresh full
+		// bucket — on_first_bind is a no-op because the row already exists. This is the relock-farm
+		// guard: a bind/revoke/rebind cycle cannot manufacture a fresh first-touch bucket.
+		System::set_block_number(30);
+		<Microblog as OnIdentityBind<u64>>::on_bind(&1);
+		assert_eq!(providers(1), base + 1, "rebind re-takes the provider ref");
+		let row2 = Capacity::<Test>::get(1).expect("row still exists after rebind");
+		assert_eq!(row2.cap_last, 0, "rebind does NOT re-mint a fresh bucket");
+		assert_eq!(row2.last_block, 20, "rebind does NOT re-date the kept row (no relock first-touch)");
+	});
+}
+
+#[test]
+fn on_revoke_without_a_row_releases_ref_and_is_a_noop_on_capacity() {
+	use crate::OnIdentityBind;
+	new_test_ext().execute_with(|| {
+		System::set_block_number(5);
+		let providers = |who: u64| frame_system::Account::<Test>::get(who).providers;
+		let base = providers(1);
+
+		// A bind/revoke on an account that was bound (took a ref) but never had a force-primed row
+		// beyond the empty one: revoke must still balance the ref and never create a row from nothing.
+		<Microblog as OnIdentityBind<u64>>::on_bind(&1); // row created (empty), ref +1
+		assert!(Capacity::<Test>::get(1).is_some());
+		<Microblog as OnIdentityBind<u64>>::on_revoke(&1);
+		assert_eq!(providers(1), base, "ref balanced back to baseline");
+		// Row is kept and zeroed (never deleted) — the relock-farm guard.
+		assert_eq!(Capacity::<Test>::get(1).expect("row kept").cap_last, 0);
+
+		// A second revoke is a clean no-op on capacity (the row stays zeroed) — it does not panic and
+		// does not create or mutate the bucket beyond keeping it at zero. (dec_providers may fail at
+		// baseline; on_revoke is best-effort and logs rather than aborting.)
+		let providers_before = providers(1);
+		<Microblog as OnIdentityBind<u64>>::on_revoke(&1);
+		assert_eq!(Capacity::<Test>::get(1).expect("row still kept").cap_last, 0);
+		// The capacity row is unchanged by a redundant revoke.
+		assert!(providers(1) <= providers_before, "redundant revoke never inflates the provider ref");
 	});
 }
 
@@ -381,6 +538,74 @@ mod capacity_extension {
 			let failed: sp_runtime::DispatchResult = Err(crate::Error::<Test>::TooManyPosts.into());
 			post_dispatch(pre, failed);
 			assert_eq!(Microblog::current_capacity(&1, 10), 895);
+		});
+	}
+
+	#[test]
+	fn capacity_exactly_equal_to_cost_passes_with_zero_priority() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			// Boundary: banked capacity == post cost EXACTLY. cost(5) = 105; prime exactly 105.
+			prime(1, 100, 105);
+			let (priority, pre) = validate(1, &post_call(b"hello".to_vec())).expect("have == need is valid");
+			// priority = have - need = 0 (the inequality is `have < need`, so equality passes). An
+			// off-by-one (`have <= need`) would reject here, or an underflow would wrap to u64::MAX.
+			assert_eq!(priority, 0, "exact-cost post has zero remaining-headroom priority");
+			// post_dispatch debits the exact cost, draining the bucket to precisely 0 (no underflow).
+			post_dispatch(pre, Ok(()));
+			assert_eq!(Microblog::current_capacity(&1, 10), 0);
+		});
+	}
+
+	#[test]
+	fn one_unit_short_of_cost_is_rejected_at_pool() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			// Boundary the other side of equality: have == need - 1 ⇒ rejected (have < need).
+			prime(1, 100, 104); // cost(5) = 105
+			let err = validate(1, &post_call(b"hello".to_vec())).map(|_| ()).unwrap_err();
+			assert_eq!(err, TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources));
+		});
+	}
+
+	#[test]
+	fn unbound_account_passes_extension_validate_but_fails_dispatchable() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			// Two-layer gate: the CheckCapacity extension does NOT consult the identity gate — it
+			// only checks length + capacity. So an account that is DENIED at the identity gate but has
+			// capacity passes validate() (the capacity gate is satisfied)…
+			prime(1, 100, 1_000);
+			crate::mock::deny_identity(1);
+			let (_priority, pre) = validate(1, &post_call(b"hello".to_vec()))
+				.expect("extension validate ignores the identity gate");
+			// …yet the dispatchable BODY rejects it with NotAllowed (the authoritative Sybil gate).
+			assert_noop!(
+				Microblog::post_message(RuntimeOrigin::signed(1), b"hello".to_vec(), None),
+				crate::Error::<Test>::NotAllowed
+			);
+			// And capacity is still consumed by post_dispatch even though the body would reject —
+			// the extension is identity-blind by design (capacity is spent on inclusion regardless).
+			post_dispatch(pre, Err(crate::Error::<Test>::NotAllowed.into()));
+			assert_eq!(Microblog::current_capacity(&1, 10), 895);
+		});
+	}
+
+	#[test]
+	fn unlocked_account_cannot_post_even_with_banked_capacity() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			// Prime a full bucket, then UNLOCK (weight → 0). The banked cap_last (1000) is non-zero
+			// and the row is NOT deleted, but the ceiling drops to 0 so current_capacity clamps to 0.
+			prime(1, 100, 1_000);
+			assert_eq!(Microblog::current_capacity(&1, 10), 1_000);
+			assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 0)); // full unlock ⇒ ceiling 0
+			assert!(Capacity::<Test>::get(1).is_some(), "row persists (relock-farm guard)");
+
+			// A post is now rejected at the pool with ExhaustsResources — NOT because the banked
+			// cap_last is zero (it isn't), but because the stake-backed ceiling collapsed to 0.
+			let err = validate(1, &post_call(b"hello".to_vec())).map(|_| ()).unwrap_err();
+			assert_eq!(err, TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources));
 		});
 	}
 }

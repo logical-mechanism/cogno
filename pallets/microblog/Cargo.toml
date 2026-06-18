@@ -20,6 +20,7 @@ codec = { features = ["derive"], workspace = true }
 frame-benchmarking = { optional = true, workspace = true }
 frame-support = { workspace = true }
 frame-system = { workspace = true }
+log = { workspace = true }
 scale-info = { features = ["derive"], workspace = true }
 sp-runtime = { workspace = true }
 # Tight coupling: the capacity meter reads per-account weight from talk-stake (ECONOMICS §6.2).
@@ -37,6 +38,7 @@ std = [
 	"frame-benchmarking?/std",
 	"frame-support/std",
 	"frame-system/std",
+	"log/std",
 	"pallet-talk-stake/std",
 	"scale-info/std",
 	"sp-runtime/std",

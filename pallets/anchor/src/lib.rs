@@ -52,6 +52,11 @@ pub type StateRoot = [u8; 32];
 /// A Cardano transaction hash (blake2b-256, 32 bytes) — the metadata tx that witnessed a checkpoint.
 pub type CardanoTxHash = [u8; 32];
 
+/// Target string for this pallet's `log::` records — lets a node operator filter the WRITE-link
+/// diagnostics (e.g. `RUST_LOG=runtime::anchor=debug`). Mirrors `pallet-validator-set::LOG_TARGET`.
+/// The log lines are off-chain diagnostics ONLY; the on-chain audit trail remains the event stream.
+pub const LOG_TARGET: &str = "runtime::anchor";
+
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
@@ -151,12 +156,31 @@ pub mod pallet {
 			post_count: u64,
 			timestamp: u64,
 		) -> DispatchResult {
-			T::AnchorOrigin::ensure_origin(origin)?;
+			// The WRITE-link trust boundary (DR-07). Log a rejected origin so an operator can see a
+			// forged-anchor attempt (or a misconfigured relayer key) in the node logs, not just the
+			// opaque `BadOrigin` the submitter receives. `warn!`: an unauthorised account reaching
+			// this gate is an anomaly worth noticing on a security-critical call.
+			if let Err(e) = T::AnchorOrigin::ensure_origin(origin) {
+				log::warn!(
+					target: LOG_TARGET,
+					"anchor_ack rejected: origin not AnchorOrigin (block_number={block_number:?})",
+				);
+				return Err(e.into());
+			}
 
 			// Idempotency / anti-double-count: only a strictly higher finalized height advances the
 			// recorded checkpoint. `<=` (not `<`) so a re-ack of the SAME height is also a no-op.
 			if let Some(last) = LastCheckpoint::<T>::get() {
 				if block_number <= last.block_number {
+					// Routine: a Cardano-rollback re-submit. `debug!` (not `warn!`) — the no-op IS the
+					// designed behaviour (§9); the relayer's retry path relies on it. Logged so an
+					// operator debugging a stuck relayer can see "ack ignored: N <= last" without
+					// having to scrape the AckIgnored event stream over RPC.
+					log::debug!(
+						target: LOG_TARGET,
+						"anchor_ack ignored (idempotent no-op): block_number={block_number:?} <= last={:?}",
+						last.block_number,
+					);
 					Self::deposit_event(Event::AckIgnored {
 						block_number,
 						last: last.block_number,
@@ -166,10 +190,19 @@ pub mod pallet {
 				// anchor-1: a strictly-higher height must carry non-regressing post_count + timestamp
 				// (both monotonic on-chain). A regression is inconsistent evidence — reject it rather
 				// than pinning a bad checkpoint that the monotonic height makes permanent.
-				ensure!(
-					post_count >= last.post_count && timestamp >= last.timestamp,
-					Error::<T>::NonMonotonicAnchor
-				);
+				if post_count < last.post_count || timestamp < last.timestamp {
+					// A buggy/malicious relayer reported a higher height with a regressed field. This is
+					// inconsistent on-chain evidence — `warn!` with which field(s) regressed and by how
+					// much, because the submitter only ever sees the opaque NonMonotonicAnchor error.
+					log::warn!(
+						target: LOG_TARGET,
+						"anchor_ack rejected NonMonotonicAnchor at block_number={block_number:?}: \
+						 post_count={post_count} (last={}), timestamp={timestamp} (last={})",
+						last.post_count,
+						last.timestamp,
+					);
+					return Err(Error::<T>::NonMonotonicAnchor.into());
+				}
 			}
 
 			LastCheckpoint::<T>::put(Checkpoint {
@@ -179,6 +212,10 @@ pub mod pallet {
 				post_count,
 				timestamp,
 			});
+			log::debug!(
+				target: LOG_TARGET,
+				"anchor_ack recorded checkpoint: block_number={block_number:?} post_count={post_count} timestamp={timestamp}",
+			);
 			Self::deposit_event(Event::AnchorAcked {
 				block_number,
 				finalized_root,

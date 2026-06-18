@@ -41,6 +41,12 @@ pallet-validator-set = { path = "pallets/validator-set", default-features = fals
 codec = { package = "parity-scale-codec", version = "3.7.5", default-features = false }
 scale-info = { version = "2.11.6", default-features = false }
 
+# ── logging ──────────────────────────────────────────────────────────────────
+# `log` facade for node-operator-visible diagnostics on the error/edge paths in the
+# pallets (M10). no_std-compatible (default-features = false); each pallet adds
+# "log/std" to its own std feature. Pinned to the version already in Cargo.lock.
+log = { version = "0.4.22", default-features = false }
+
 # ── external (node, std-only) ──────────────────────────────────────────────────
 clap = { version = "4.5.48" }
 futures = { version = "0.3.31" }

@@ -20,6 +20,7 @@ codec = { features = ["derive"], workspace = true }
 frame-benchmarking = { optional = true, workspace = true }
 frame-support = { workspace = true }
 frame-system = { workspace = true }
+log = { workspace = true }
 # Normal dep: cogno-gate calls into microblog's `on_first_bind` at link, and the two
 # cross-pallet traits (IsAllowed / OnIdentityBind) live in microblog (the depended-upon crate)
 # so neither pallet forms a Cargo cycle with the other.
@@ -42,6 +43,7 @@ std = [
 	"frame-benchmarking?/std",
 	"frame-support/std",
 	"frame-system/std",
+	"log/std",
 	"pallet-microblog/std",
 	"scale-info/std",
 ]

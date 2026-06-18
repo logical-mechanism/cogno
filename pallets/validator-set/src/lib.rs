@@ -33,7 +33,6 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use frame_support::{
-	ensure,
 	pallet_prelude::*,
 	traits::{EstimateNextSessionRotation, Get, ValidatorSet, ValidatorSetWithIdentification},
 	weights::Weight,
@@ -182,6 +181,15 @@ impl<T: Config> Pallet<T> {
 	/// Seat the genesis validator set (idempotent guard: must not already be initialized).
 	fn initialize_validators(validators: &[T::ValidatorId]) {
 		if !validators.is_empty() {
+			if !Validators::<T>::get().is_empty() {
+				// Double-initialization (genesis build run twice / a misconfigured chain spec). The
+				// assert below aborts the build; log the cause first so the panic is not opaque.
+				log::error!(
+					target: LOG_TARGET,
+					"initialize_validators: refusing to re-seat — the set already holds {} validator(s)",
+					Validators::<T>::get().len(),
+				);
+			}
 			assert!(Validators::<T>::get().is_empty(), "Validators are already initialized!");
 			let bounded = BoundedVec::<_, T::MaxValidators>::try_from(validators.to_vec())
 				.expect("genesis initial_validators exceeds MaxValidators");
@@ -191,13 +199,32 @@ impl<T: Config> Pallet<T> {
 
 	fn do_add_validator(validator_id: T::ValidatorId) -> DispatchResult {
 		let mut validators = Validators::<T>::get();
-		ensure!(!validators.contains(&validator_id), Error::<T>::Duplicate);
+		if validators.contains(&validator_id) {
+			// Idempotent rejection: the caller asked to add an already-seated validator. Visible
+			// on-chain only as a DispatchError, so surface the reason in node logs too.
+			log::debug!(
+				target: LOG_TARGET,
+				"add_validator rejected: {:?} already in the set (len={})",
+				validator_id,
+				validators.len(),
+			);
+			return Err(Error::<T>::Duplicate.into());
+		}
 		// BoundedVec `try_push` rejects growth past MaxValidators (validators-3) — the consensus
 		// pallets would otherwise silently truncate a set larger than their MaxAuthorities.
-		validators
-			.try_push(validator_id.clone())
-			.map_err(|_| Error::<T>::TooManyValidators)?;
+		validators.try_push(validator_id.clone()).map_err(|_| {
+			// At the consensus MaxAuthorities cap: refusing growth here prevents a silent
+			// truncation at the next rotation — an operator should notice they are wedged.
+			log::warn!(
+				target: LOG_TARGET,
+				"add_validator rejected: set at MaxValidators={}, cannot add {:?}",
+				T::MaxValidators::get(),
+				validator_id,
+			);
+			Error::<T>::TooManyValidators
+		})?;
 		Validators::<T>::put(validators);
+		log::debug!(target: LOG_TARGET, "add_validator: queued {:?} for the next session boundary", validator_id);
 		Self::deposit_event(Event::ValidatorAdditionInitiated(validator_id));
 		Ok(())
 	}
@@ -206,11 +233,39 @@ impl<T: Config> Pallet<T> {
 		let mut validators = Validators::<T>::get();
 		// Never let the *target* count fall below the floor (saturating: removing from an
 		// already-at-floor set is rejected, and the subtraction can't underflow).
-		ensure!(
-			validators.len().saturating_sub(1) as u32 >= T::MinAuthorities::get(),
-			Error::<T>::TooLowValidatorCount
-		);
+		if (validators.len().saturating_sub(1) as u32) < T::MinAuthorities::get() {
+			// Floor guard: refusing this removal is what stops an operator stranding the chain
+			// at < MinAuthorities — worth a warn so a stuck shrink is visible.
+			log::warn!(
+				target: LOG_TARGET,
+				"remove_validator rejected: removing {:?} would drop the set to {} < MinAuthorities={}",
+				validator_id,
+				validators.len().saturating_sub(1),
+				T::MinAuthorities::get(),
+			);
+			return Err(Error::<T>::TooLowValidatorCount.into());
+		}
+		let before = validators.len();
 		validators.retain(|v| *v != validator_id);
+		if validators.len() == before {
+			// `retain` silently succeeds even if the target was never in the set: the removal is a
+			// no-op but the call still returns Ok and emits the event. Make the no-op observable so
+			// a misconfigured caller (e.g. a SessionManager removing a stale id) is not invisible.
+			log::warn!(
+				target: LOG_TARGET,
+				"remove_validator: {:?} was not in the set; removal is a no-op (len unchanged at {})",
+				validator_id,
+				before,
+			);
+		} else {
+			log::debug!(
+				target: LOG_TARGET,
+				"remove_validator: queued {:?} for removal at the next session boundary (len {}->{})",
+				validator_id,
+				before,
+				validators.len(),
+			);
+		}
 		Validators::<T>::put(validators);
 		Self::deposit_event(Event::ValidatorRemovalInitiated(validator_id));
 		Ok(())
@@ -220,8 +275,22 @@ impl<T: Config> Pallet<T> {
 	fn mark_for_removal(validator_id: T::ValidatorId) {
 		// Best-effort: the offline set is a subset of the validator set so it cannot legitimately
 		// overflow MaxValidators; the `try_push` Result is intentionally ignored (inert in v1).
-		OfflineValidators::<T>::mutate(|v| {
-			let _ = v.try_push(validator_id);
+		OfflineValidators::<T>::mutate(|v| match v.try_push(validator_id.clone()) {
+			Ok(()) => log::debug!(
+				target: LOG_TARGET,
+				"mark_for_removal: queued offline validator {:?} (offline queue len now {})",
+				validator_id,
+				v.len(),
+			),
+			// The offline queue is bounded by MaxValidators; an overflow means the queue is already
+			// full of distinct ids, which should not happen if it is a subset of the live set. Drop
+			// the mark but make the lost report visible to an operator.
+			Err(_) => log::warn!(
+				target: LOG_TARGET,
+				"mark_for_removal: offline queue full (MaxValidators={}); dropped {:?}",
+				T::MaxValidators::get(),
+				validator_id,
+			),
 		});
 	}
 
@@ -232,6 +301,12 @@ impl<T: Config> Pallet<T> {
 		if validators_to_remove.is_empty() {
 			return;
 		}
+		log::debug!(
+			target: LOG_TARGET,
+			"remove_offline_validators: draining {} offline validator(s) {:?} from the set",
+			validators_to_remove.len(),
+			validators_to_remove.to_vec(),
+		);
 		Validators::<T>::mutate(|vs| vs.retain(|v| !validators_to_remove.contains(v)));
 		OfflineValidators::<T>::kill();
 	}
@@ -240,10 +315,18 @@ impl<T: Config> Pallet<T> {
 /// Hand the current validator set to `pallet-session` each rotation. `pallet-session` queues it for
 /// one session, then enacts it (feeding `pallet-aura`/`pallet-grandpa` via their session handlers).
 impl<T: Config> pallet_session::SessionManager<T::ValidatorId> for Pallet<T> {
-	fn new_session(_new_index: u32) -> Option<Vec<T::ValidatorId>> {
+	fn new_session(new_index: u32) -> Option<Vec<T::ValidatorId>> {
 		// Drain any im-online-flagged offline validators (inert in v1) before publishing the set.
 		Self::remove_offline_validators();
-		Some(Self::validators().into_inner())
+		let published = Self::validators().into_inner();
+		log::debug!(
+			target: LOG_TARGET,
+			"new_session(index={}): publishing {} validator(s) {:?}",
+			new_index,
+			published.len(),
+			published,
+		);
+		Some(published)
 	}
 
 	fn end_session(_end_index: u32) {}

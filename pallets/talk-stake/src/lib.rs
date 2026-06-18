@@ -33,6 +33,12 @@ mod benchmarking;
 pub mod weights;
 pub use weights::*;
 
+/// Log target for this pallet's operational diagnostics (off-chain node logs only — the
+/// on-chain audit trail is the `StakeSet` event; these logs add operator-visible context on
+/// the edge/rejection paths the event stream cannot show, e.g. the *requested* weight that
+/// was refused).
+pub const LOG_TARGET: &str = "runtime::talk-stake";
+
 /// Summed buried lovelace (curve output) backing one identity's talk capacity.
 /// `u128` (lovelace scale; `ECONOMICS.md` §6.1).
 pub type StakeWeight = u128;
@@ -101,10 +107,38 @@ pub mod pallet {
 			who: T::AccountId,
 			weight: StakeWeight,
 		) -> DispatchResult {
-			T::SetStakeOrigin::ensure_origin(origin)?;
+			// Origin gate: reject anything that is not the SetStakeOrigin. Log the refusal —
+			// the framework returns a bare `BadOrigin` with no pallet context, so without this
+			// an operator cannot see that an unauthorised key tried to write stake weight.
+			if let Err(e) = T::SetStakeOrigin::ensure_origin(origin) {
+				log::warn!(
+					target: LOG_TARGET,
+					"set_stake REJECTED (bad origin): unauthorised caller tried to set who={who:?} weight={weight}",
+				);
+				return Err(e.into());
+			}
 			// stake-1: reject an absurd weight up front (defence-in-depth over the saturating meter).
-			ensure!(weight <= T::MaxStakeWeight::get(), Error::<T>::WeightTooHigh);
+			// `ensure!` would discard the requested value; log it (with the cap) so the off-chain
+			// follower/committee debugging a refusal sees *what* it asked for, not just the error code.
+			let max = T::MaxStakeWeight::get();
+			if weight > max {
+				log::warn!(
+					target: LOG_TARGET,
+					"set_stake REJECTED (WeightTooHigh): who={who:?} requested_weight={weight} > max_allowed={max}",
+				);
+				return Err(Error::<T>::WeightTooHigh.into());
+			}
+			let previous = AllowedStake::<T>::get(&who);
 			AllowedStake::<T>::insert(&who, weight);
+			if weight == 0 {
+				// Full unlock: the row stays (relock-safe), capacity clamps to zero on the next read.
+				log::debug!(target: LOG_TARGET, "set_stake: who={who:?} UNLOCKED (weight 0); previous={previous}");
+			} else if weight == previous {
+				// Idempotent re-derive (e.g. a reorg-safe re-observation of the same vault).
+				log::debug!(target: LOG_TARGET, "set_stake: who={who:?} weight={weight} unchanged (idempotent re-derive)");
+			} else {
+				log::debug!(target: LOG_TARGET, "set_stake: who={who:?} weight {previous} -> {weight}");
+			}
 			Self::deposit_event(Event::StakeSet { who, weight });
 			Ok(())
 		}
