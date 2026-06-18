@@ -13,13 +13,16 @@ Fields (DR-02 — what the signature COMMITS, so bind-hijack is PREVENTED, not j
   - domain  'cogno-chain/bind/v1'  — domain separation (this signature is a cogno-chain bind, v1)
   - genesis  the L3 genesis block hash, lowercase hex, 64 chars, no 0x  — anti-cross-chain
   - account  the 32-byte sr25519 posting pubkey, lowercase hex, 64 chars — commits the bind target
-  - nonce    the follower-issued nonce, lowercase hex                    — anti-replay
+  - nonce    the follower-issued nonce, 16-byte lowercase hex, 32 chars  — anti-replay
+
+The nonce length is PINNED to exactly 32 hex chars (the `secrets.token_hex(16)` the follower issues),
+so the parser can't be fed an arbitrarily long nonce field (follower-6).
 """
 import re
 
 DOMAIN = "cogno-chain/bind/v1"
 _RE = re.compile(
-    r"^cogno-chain/bind/v1;genesis=([0-9a-f]{64});account=([0-9a-f]{64});nonce=([0-9a-f]+)$"
+    r"^cogno-chain/bind/v1;genesis=([0-9a-f]{64});account=([0-9a-f]{64});nonce=([0-9a-f]{32})$"
 )
 
 

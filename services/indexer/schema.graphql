@@ -2,7 +2,7 @@
 #
 # This is the convergence contract of docs/L4-reading.md §4.1 / §6.2.1: any independent
 # indexer that ingests the same finalized events and applies the SAME mapping (incl. the
-# soft-delete policy below) produces byte-identical rows. Versioned to runtime spec_version 104.
+# soft-delete policy below) produces byte-identical rows. Versioned to runtime spec_version 107.
 #
 # Sources (all public + deterministic L3 events; no Cardano, no wall-clock):
 #   Microblog.PostCreated{id,author} / PostDeleted{id}  + the Microblog.Posts storage row

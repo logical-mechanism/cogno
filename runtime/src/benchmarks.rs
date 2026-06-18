@@ -37,4 +37,14 @@ frame_benchmarking::define_benchmarks!(
 	[pallet_anchor, Anchor]
 	// M6 (DR-26): real WeightInfo for the mutable-authority add/remove extrinsics.
 	[pallet_validator_set, ValidatorSet]
+	// runtime-4: benchmark the FollowerCommittee (the path that EXECUTES every 3-of-5 privileged
+	// motion — its propose/close weight scales with proposal count/length, a block-fill/griefing
+	// surface). Now benchmarkable; pointing its `WeightInfo` at the generated module (instead of the
+	// upstream `SubstrateWeight` reference weights wired in configs/mod.rs) is a DEPLOY step — run
+	// `benchmark pallet` on representative production hardware, as the dev box's numbers would be wrong.
+	[pallet_collective, FollowerCommittee]
+	// NOTE: pallet-session is NOT listed — its set_keys/purge_keys benchmarks require
+	// `pallet_session::historical` wiring, which the runtime intentionally does not have yet. That is
+	// the SAME prerequisite as a real GRANDPA equivocation/offence path (runtime-5), so both graduate
+	// together when historical session is added for a public multi-validator network.
 );

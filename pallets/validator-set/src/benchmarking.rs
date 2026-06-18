@@ -38,10 +38,12 @@ mod benchmarks {
 		// Seed MinAuthorities + 1 validators so removing one leaves exactly MinAuthorities (the
 		// removal passes the floor check, and the retain scans the full set — the worst case).
 		let min = T::MinAuthorities::get();
-		let validators: Vec<T::ValidatorId> =
+		let raw: Vec<T::ValidatorId> =
 			(0..=min).map(|i| account("validator", i, SEED)).collect();
-		let target = validators[0].clone();
-		Validators::<T>::put(&validators);
+		let target = raw[0].clone();
+		let validators: BoundedVec<T::ValidatorId, T::MaxValidators> =
+			raw.try_into().expect("MinAuthorities + 1 must be <= MaxValidators for this benchmark");
+		Validators::<T>::put(validators);
 
 		#[extrinsic_call]
 		_(origin as T::RuntimeOrigin, target.clone());

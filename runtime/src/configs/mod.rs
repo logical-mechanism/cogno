@@ -119,6 +119,18 @@ impl pallet_aura::Config for Runtime {
 	type SlotDuration = pallet_aura::MinimumPeriodTimesTwo<Runtime>;
 }
 
+/// GRANDPA finality gadget.
+///
+/// ⚠ Equivocation reporting is a deliberate NO-OP on this permissioned testnet (`runtime-5`):
+/// `KeyOwnerProof = Void` + `EquivocationReportSystem = ()` (and the `grandpa` runtime API returns
+/// `None`) mean a double-signing validator has no on-chain consequence — no slashing/disabling. This
+/// is acceptable while the authority set is the small operator-run committee with off-chain
+/// accountability (M6's mutable set is gated by the 3-of-5 `AuthorityOrigin`).
+///
+/// ⚠ MAINNET PREREQUISITE: before a public multi-validator network, wire a real
+/// `KeyOwnerProofSystem` / `EquivocationReportSystem` (via `pallet-session` historical + an offences
+/// pallet) so a double-sign is provable and punishable on-chain — in lockstep with raising
+/// `MinAuthorities` to a BFT floor (`validators-1`).
 impl pallet_grandpa::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 
@@ -271,12 +283,27 @@ impl pallet_session::Config for Runtime {
 /// / `remove_validator` are gated by the SAME `AuthorityOrigin` as the M5 crown jewels (sudo OR the
 /// 3-of-5 FollowerCommittee) — one operator committee governs identity, weight, anchoring, AND who
 /// produces blocks (the split into a separate validator committee is a documented graduation step,
-/// `L3-chain.md` §8.3). `MinAuthorities = 1` is the hard floor so removal can never strand the chain
-/// at zero authorities (it does NOT make finality safe at low counts — `L3-chain.md` §8.1).
+/// `L3-chain.md` §8.3).
+///
+/// ## `MinAuthorities` is a finality-safety parameter, not just an anti-zero guard
+/// The floor stops `remove_validator` ever stranding the chain at zero authorities — but it ALSO
+/// bounds how far the committee can shrink the BFT set. It is DELIBERATELY `1` for the small
+/// single-/dual-operator preprod testnet (a higher floor would lock the operator out of removing a
+/// validator on a set already at the floor). It does NOT make finality safe at low counts: GRANDPA
+/// tolerates `f` faults only at `3f+1` authorities, so a 1–3 authority set can stall finality with one
+/// offline node (`L3-chain.md` §8.1).
+///
+/// ⚠ MAINNET PREREQUISITE: a value-bearing / public multi-validator launch MUST raise this to at
+/// least `3f+1` for the target fault tolerance (≥`4` to tolerate one Byzantine/offline authority), in
+/// lockstep with the im-online auto-removal wiring. Do not ship `1` to a network meant to be BFT.
 impl pallet_validator_set::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AddRemoveOrigin = AuthorityOrigin;
+	// Deliberate testnet floor — see the ⚠ MAINNET PREREQUISITE note above before raising/shipping.
 	type MinAuthorities = ConstU32<1>;
+	// validators-3: MUST equal (or be below) aura/grandpa `MaxAuthorities` (= 32) so a full set never
+	// gets silently truncated at a session rotation. `add_validator` rejects growth past this.
+	type MaxValidators = ConstU32<32>;
 	type WeightInfo = pallet_validator_set::weights::SubstrateWeight<Runtime>;
 }
 
@@ -288,6 +315,10 @@ impl pallet_talk_stake::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
 	type SetStakeOrigin = AuthorityOrigin;
+	// stake-1: the max lockable lovelace — total ADA supply is 45e9 ADA = 45e15 lovelace, so no
+	// account can back more than 45_000_000_000_000_000. Bounds a follower/committee bug from
+	// writing an absurd weight (the capacity meter already saturates; this is defence-in-depth).
+	type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;
 	type WeightInfo = pallet_talk_stake::weights::SubstrateWeight<Runtime>;
 }
 

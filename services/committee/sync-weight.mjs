@@ -14,16 +14,27 @@
 //   WS=… KUPO=http://127.0.0.1:1442 node sync-weight.mjs --via committee                    # live
 //   ... --via sudo   # the EnsureRoot dev fallback
 //
+// Read safety (committee-1): the Kupo read that drives the crown-jewel weight is hardened — res.ok +
+// JSON validation + timeout + bounded retry (fetchJson), and an optional reorg-burial gate
+// (CONFIRM_DEPTH_SLOTS, cross-checked against the Ogmios tip) so a UTxO that could still roll back is
+// NOT credited. A read failure aborts the whole sync rather than writing a wrong/partial weight.
+//
 // ⚠ HONESTY (DR-07): single-operator stack ⇒ D2-SHAPED, not D2-TRUST. See docs/D2-custody-runbook.md.
 import fs from "node:fs";
-import { connect, drive, has, operators } from "./lib.mjs";
+import { isMain } from "../_shared/cli.mjs";
+import { connect, drive, has, operators, fetchJson } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
 const KUPO = process.env.KUPO;
+const OGMIOS = process.env.OGMIOS || "http://127.0.0.1:1337";
 const VAULT_FILE = process.env.VAULT_FILE || "/tmp/cogno-m2/vault.json";
 const MIN_LOCK = 100_000_000n;
+// Reorg-burial depth in Cardano SLOTS (DR-09b): only credit a vault UTxO buried this many slots past
+// the tip, so a lock/exit that later rolls back can't set a wrong weight. 0 = credit as soon as it is
+// unspent (fast, dev showcase); production sets a few hundred slots.
+const CONFIRM_DEPTH_SLOTS = Number(process.env.CONFIRM_DEPTH_SLOTS || "0");
 
-function parseArgv(argv) {
+export function parseArgv(argv) {
 	const o = { via: "committee" };
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
@@ -34,20 +45,53 @@ function parseArgv(argv) {
 	return o;
 }
 
-// Observe Kupo beacon UTxOs for the vault policy → largest-wins lovelace per beacon (anti-Sybil).
-async function observeKupo(vaultHash) {
-	const matches = await (await fetch(`${KUPO}/matches/${vaultHash}.*?unspent`)).json();
-	const largest = new Map(); // beaconHex -> lovelace
+// PURE: from a list of Kupo matches, pick the largest valid single-beacon UTxO per beacon
+// (anti-Sybil largest-wins, never a sum). A match counts only if it carries EXACTLY ONE asset of the
+// vault policy at quantity 1; with `confirmDepth>0` it must also be buried >= confirmDepth slots past
+// `tipSlot` (an un-buried or slot-less match is skipped, never credited). Returns Map<beaconHex, lovelace>.
+export function pickLargest(matches, vaultHash, { tipSlot = null, confirmDepth = 0 } = {}) {
+	const largest = new Map();
 	for (const m of matches) {
 		const assets = m.value?.assets ?? {};
 		const beacons = Object.entries(assets).filter(([k]) => k.split(".")[0].toLowerCase() === vaultHash.toLowerCase());
-		if (beacons.length === 1 && Number(beacons[0][1]) === 1) {
-			const beacon = beacons[0][0].split(".")[1].toLowerCase();
-			const coins = BigInt(m.value.coins);
-			if (coins > (largest.get(beacon) ?? -1n)) largest.set(beacon, coins);
+		if (beacons.length !== 1 || Number(beacons[0][1]) !== 1) continue; // exactly one beacon, qty 1
+		if (confirmDepth > 0) {
+			const slot = m.created_at?.slot_no;
+			if (slot == null || tipSlot == null || tipSlot - slot < confirmDepth) continue; // not buried ⇒ skip
 		}
+		const beacon = beacons[0][0].split(".")[1].toLowerCase();
+		const coins = BigInt(m.value.coins);
+		if (coins > (largest.get(beacon) ?? -1n)) largest.set(beacon, coins);
 	}
 	return largest;
+}
+
+// PURE: the MIN_LOCK gate — locked lovelace at/above the floor becomes weight, below it is zero.
+export const lockToWeight = (lovelace, minLock = MIN_LOCK) => (lovelace >= minLock ? lovelace : 0n);
+
+// The Cardano tip slot via Ogmios (for the reorg-burial gate). Throws on failure — when a burial
+// depth is required we must FAIL CLOSED rather than credit weight without the check.
+async function ogmiosTipSlot(ogmios = OGMIOS) {
+	const { result } = await fetchJson(ogmios, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ jsonrpc: "2.0", method: "queryNetwork/tip" }),
+	});
+	const slot = result?.slot;
+	if (slot == null) throw new Error("Ogmios queryNetwork/tip returned no slot");
+	return slot;
+}
+
+// Observe the vault's beacon UTxOs and reduce to largest-wins lovelace per identity (committee-1).
+async function observeKupo(vaultHash, { kupo = KUPO, ogmios = OGMIOS, confirmDepth = CONFIRM_DEPTH_SLOTS } = {}) {
+	// Quote the Kupo `.*` pattern arg defensively (shell-glob gotcha) — here it's a URL, so it's literal.
+	const matches = await fetchJson(`${kupo}/matches/${vaultHash}.*?unspent`);
+	if (!Array.isArray(matches)) throw new Error(`Kupo /matches did not return an array for ${vaultHash}`);
+	let tipSlot = null;
+	if (confirmDepth > 0) {
+		tipSlot = await ogmiosTipSlot(ogmios); // throws ⇒ abort the sync (fail closed)
+	}
+	return pickLargest(matches, vaultHash, { tipSlot, confirmDepth });
 }
 
 async function setStakeFor(api, ops, opt, account, weight) {
@@ -71,21 +115,20 @@ async function main() {
 
 	try {
 		if (opt.account && opt.weight !== undefined) {
-			// dev mode: one account, explicit weight (the showcase path when Cardano is not wired).
-			const weight = opt.weight >= MIN_LOCK || opt.weight === 0n ? opt.weight : opt.weight; // weight is the locked lovelace
-			await setStakeFor(api, ops, opt, opt.account, weight);
+			// dev mode: one account, explicit operator-supplied weight (the showcase path when Cardano
+			// is not wired). The MIN_LOCK gate applies only to live vault-observed lovelace, not to a
+			// manual override, so the explicit weight is used verbatim.
+			await setStakeFor(api, ops, opt, opt.account, opt.weight);
 		} else if (KUPO) {
 			// live mode: observe the vault, largest-wins, set_stake per bound identity.
 			const vaultHash = JSON.parse(fs.readFileSync(VAULT_FILE, "utf8")).vaultHash;
 			const largest = await observeKupo(vaultHash);
-			console.log(`observed ${largest.size} identity(ies) from the vault`);
-			const { FixedSizeBinary } = await import("polkadot-api").catch(() => ({}));
+			console.log(`observed ${largest.size} identity(ies) from the vault (confirm-depth ${CONFIRM_DEPTH_SLOTS} slots)`);
 			for (const [beacon, lovelace] of largest) {
 				// AccountOf lookup via @polkadot/api (dynamic) — beacon is a 32-byte hash key.
 				const account = await api.query.cognoGate.accountOf("0x" + beacon);
 				if (account.isNone) { console.log(`  · ${beacon.slice(0, 12)}… ${lovelace} — NOT bound, skip`); continue; }
-				const weight = lovelace >= MIN_LOCK ? lovelace : 0n;
-				await setStakeFor(api, ops, opt, account.unwrap().toString(), weight);
+				await setStakeFor(api, ops, opt, account.unwrap().toString(), lockToWeight(lovelace));
 			}
 		} else {
 			console.error("usage: --account <ss58> --weight <lovelace>   (dev)   |   set KUPO=… for live vault mode");
@@ -100,4 +143,6 @@ async function main() {
 		process.exit(1);
 	}
 }
-main();
+
+// Run only when invoked directly (not when imported by tests).
+if (isMain(import.meta.url)) main();

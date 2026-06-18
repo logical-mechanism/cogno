@@ -17,6 +17,7 @@ bind), and it must be a VerificationKey-payment, non-script address. The vault-d
 """
 from pycardano.address import Address
 from pycardano.hash import VerificationKeyHash
+from pycardano.network import Network
 from pycardano.cip.cip8 import verify as cip8_verify
 
 import payload as payload_mod
@@ -43,6 +44,7 @@ def verify_bind(
     sr25519_pubkey_hex: str,     # the 32-byte posting account hex (POST body)
     expected_genesis: str,       # the follower's known L3 genesis hash (lowercase hex)
     consume_nonce,               # callable(account_hex, nonce_hex) -> None; raises VerifyError if invalid
+    expected_network: Network = Network.TESTNET,  # the Cardano network this follower binds for (follower-5)
 ) -> str:
     """Verify a CIP-8 bind proof. Returns the 32-byte identity hash (hex) to bind, or raises
     VerifyError. The order matters: cheap structural checks first, nonce consumed LAST (only a
@@ -67,6 +69,12 @@ def verify_bind(
     #     from. (L2-follower.md §7.4 — the wrong-address gotcha, structurally closed.)
     if not isinstance(addr.payment_part, VerificationKeyHash):
         raise VerifyError("payment credential is not a verification key (script/vault address rejected)")
+
+    # (2.5) Network pin (follower-5): the beacon-name identity hash carries NO network byte, so a
+    #       proof from the wrong network (mainnet address on a preprod follower, or vice-versa) would
+    #       otherwise bind to the same 32 bytes. Reject any address not on this follower's network.
+    if addr.network != expected_network:
+        raise VerifyError(f"signing address network {addr.network} != follower network {expected_network}")
 
     # (3) The committed payload must match the pinned format and commit the right things.
     fields = payload_mod.parse(res["message"])  # raises ValueError → caught by the HTTP layer

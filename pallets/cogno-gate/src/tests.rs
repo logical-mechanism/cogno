@@ -136,12 +136,43 @@ fn revoke_relocks_posting() {
 		// Re-locked: ALICE can no longer post.
 		assert_noop!(post_as(ALICE), pallet_microblog::Error::<Test>::NotAllowed);
 
-		// The capacity row is intentionally left in place (M2b owns full teardown).
-		assert!(pallet_microblog::Capacity::<Test>::get(ALICE).is_some());
+		// The capacity row is KEPT (relock-farm guard) but its banked capacity is zeroed (gate-1).
+		let row = pallet_microblog::Capacity::<Test>::get(ALICE).expect("row kept");
+		assert_eq!(row.cap_last, 0);
 
 		// After revoke the identity is free to be re-bound (to the same or a new account).
 		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, BOB, None));
 		assert_eq!(AccountOf::<Test>::get(HASH_A), Some(BOB));
+	});
+}
+
+#[test]
+fn bind_revoke_rebind_keeps_provider_accounting_balanced() {
+	// gate-1/gate-4: the bind/revoke lifecycle is symmetric — bind takes one provider ref, revoke
+	// releases it (and zeroes the banked capacity), and a rebind re-takes it. The capacity row is
+	// never deleted, so the count returns to baseline across cycles with no leak.
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		let providers = |who: u64| frame_system::Account::<Test>::get(who).providers;
+		let base = providers(ALICE);
+
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+		assert_eq!(providers(ALICE), base + 1, "bind takes a provider ref");
+
+		// Give ALICE real banked capacity, then revoke.
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 100));
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), ALICE, 1_000));
+		assert!(pallet_microblog::Capacity::<Test>::get(ALICE).unwrap().cap_last > 0);
+
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+		assert_eq!(providers(ALICE), base, "revoke releases the bind provider ref (no leak)");
+		let row = pallet_microblog::Capacity::<Test>::get(ALICE).expect("row kept (relock-farm guard)");
+		assert_eq!(row.cap_last, 0, "banked capacity zeroed on revoke");
+
+		// Rebind re-takes the provider ref so the rebound account can post feelessly again.
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+		assert_eq!(providers(ALICE), base + 1, "rebind re-takes the provider ref");
+		assert!(pallet_microblog::Capacity::<Test>::get(ALICE).is_some());
 	});
 }
 

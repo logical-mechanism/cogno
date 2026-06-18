@@ -17,6 +17,9 @@ import { cryptoWaitReady } from "@polkadot/util-crypto";
 
 export const WS_DEFAULT = process.env.WS || "ws://127.0.0.1:9944";
 
+// Hardened JSON fetch (committee-1) — shared with the relayer in services/_shared/net.mjs (themes 3/4).
+export { fetchJson } from "../_shared/net.mjs";
+
 /// The five well-known dev committee seats (DR-26 3-of-5), plus a couple of extras for targets.
 export const COMMITTEE_URIS = ["//Alice", "//Bob", "//Charlie", "//Dave", "//Eve"];
 
@@ -35,9 +38,15 @@ export function operators(extra = ["//Ferdie", "//Grace"]) {
 	return { kr, map, committee: COMMITTEE_URIS.map((u) => map[u.replace(/^\/\//, "")]) };
 }
 
-/// Send a tx; resolve with the decoded events at inBlock; reject on dispatchError OR pool reject.
-export function send(api, tx, signer, label) {
+/// Send a tx; resolve with the decoded events at inBlock (or at finalization with `{finalize:true}`,
+/// for a privileged write whose effect must survive a re-org — committee-2). Rejects on
+/// dispatchError, a terminal non-inclusion status (dropped/invalid/usurped/finality-timeout — else
+/// finalize-mode would hang), OR a pool reject. The events returned with `finalize:true` are read
+/// FROM the finalized block, so the caller's event assertions re-verify against finalized state.
+export function send(api, tx, signer, label, { finalize = false } = {}) {
 	return new Promise((resolve, reject) => {
+		let unsub;
+		const stop = () => { if (typeof unsub === "function") unsub(); };
 		tx.signAndSend(signer, ({ status, events = [], dispatchError }) => {
 			if (dispatchError) {
 				let msg = dispatchError.toString();
@@ -45,11 +54,18 @@ export function send(api, tx, signer, label) {
 					const d = api.registry.findMetaError(dispatchError.asModule);
 					msg = `${d.section}.${d.name}`;
 				}
-				reject(new Error(`${label}: dispatchError ${msg}`));
-			} else if (status.isInBlock) {
+				stop();
+				return reject(new Error(`${label}: dispatchError ${msg}`));
+			}
+			if (status.isDropped || status.isInvalid || status.isUsurped || status.isFinalityTimeout) {
+				stop();
+				return reject(new Error(`${label}: tx ${status.type} (never included/finalized)`));
+			}
+			if (finalize ? status.isFinalized : status.isInBlock) {
+				stop();
 				resolve(events.map(({ event }) => event));
 			}
-		}).catch(reject);
+		}).then((u) => { unsub = u; }).catch(reject);
 	});
 }
 
@@ -58,14 +74,42 @@ export const has = (events, section, method) =>
 export const find = (events, section, method) =>
 	events.find((e) => e.section === section && e.method === method);
 
+/// Throw if a wrapped privileged inner call reported an `Err` DispatchResult. The collective
+/// `Executed` and sudo `Sudid` events carry the inner dispatch result as a codec at `resultIdx`
+/// (Executed: [proposal_hash, result] ⇒ idx 1; Sudid: [sudo_result] ⇒ idx 0). Without this check a
+/// REVERTED inner call (Duplicate / WeightTooHigh / TooManyValidators / NonMonotonicAnchor / …) would
+/// be reported as success merely because the outer tx and the motion succeeded (committee-3). Tolerant
+/// of a missing result field (older metadata, or a mock with no data) — only an explicit `isErr` throws.
+export function ensureExecuted(api, events, section, method, resultIdx, label) {
+	const e = find(events, section, method);
+	const res = e && e.data && e.data[resultIdx];
+	if (res && res.isErr) {
+		let msg;
+		try {
+			const err = res.asErr;
+			if (err && err.isModule) {
+				const d = api.registry.findMetaError(err.asModule);
+				msg = `${d.section}.${d.name}`;
+			} else {
+				msg = err ? err.toString() : "Err";
+			}
+		} catch {
+			msg = "inner dispatch error";
+		}
+		throw new Error(`${label}: inner call REVERTED (${msg}) — the motion executed but the wrapped call failed`);
+	}
+}
+
 /// Drive a privileged inner call via SUDO (EnsureRoot — the retained v1 dev escape hatch).
 export async function viaSudo(api, innerCall, opts = {}) {
 	const ops = opts.operators || operators();
 	const sudo = opts.sudo || ops.map.Alice; // dev sudo key = //Alice
 	const log = opts.log || (() => {});
+	const finalize = opts.finalize ?? true; // privileged write resolves on finalization (committee-2)
 	log(`via SUDO (EnsureRoot dev fallback) as ${sudo.address}`);
-	const evs = await send(api, api.tx.sudo.sudo(innerCall), sudo, `sudo:${opts.label || "call"}`);
+	const evs = await send(api, api.tx.sudo.sudo(innerCall), sudo, `sudo:${opts.label || "call"}`, { finalize });
 	if (!has(evs, "sudo", "Sudid")) throw new Error("no sudo.Sudid event");
+	ensureExecuted(api, evs, "sudo", "Sudid", 0, "sudo"); // committee-3: surface a reverted inner call
 	return { evs, via: "sudo" };
 }
 
@@ -81,6 +125,9 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 	const voters = opts.voters || members.slice(0, threshold);
 	const closer = opts.closer || members[members.length - 1];
 	const log = opts.log || (() => {});
+	// The privileged write resolves on finalization (committee-2). With threshold==1 the inner call
+	// executes on `propose` (no motion), so that is the step to finalize; otherwise it is `close`.
+	const finalize = opts.finalize ?? true;
 
 	const lengthBound = innerCall.method.toU8a().length + 8;
 	const proposeEvs = await send(
@@ -88,12 +135,15 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 		api.tx.followerCommittee.propose(threshold, innerCall, lengthBound),
 		proposer,
 		"propose",
+		{ finalize: finalize && threshold === 1 },
 	);
 	const proposed = find(proposeEvs, "followerCommittee", "Proposed");
 	if (!proposed) {
 		// threshold==1 executes immediately on propose (no motion). Surface that cleanly.
-		if (has(proposeEvs, "followerCommittee", "Executed"))
+		if (has(proposeEvs, "followerCommittee", "Executed")) {
+			ensureExecuted(api, proposeEvs, "followerCommittee", "Executed", 1, "propose"); // committee-3
 			return { proposalIndex: null, proposalHash: null, closeEvs: proposeEvs, evs: proposeEvs };
+		}
 		throw new Error("no FollowerCommittee.Proposed event (is the proposer a committee member?)");
 	}
 	const proposalIndex = proposed.data[1].toNumber();
@@ -111,11 +161,13 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 		api.tx.followerCommittee.close(proposalHash, proposalIndex, weightBound, lengthBound),
 		closer,
 		"close",
+		{ finalize },
 	);
 	if (!has(closeEvs, "followerCommittee", "Approved"))
 		throw new Error("motion was NOT Approved (threshold not reached?)");
 	if (!has(closeEvs, "followerCommittee", "Executed"))
 		throw new Error("motion Approved but inner call did NOT execute (Executed missing)");
+	ensureExecuted(api, closeEvs, "followerCommittee", "Executed", 1, "close"); // committee-3: reverted inner call
 	log(`close → Approved + Executed (the proposal lifecycle IS the per-action audit log)`);
 	return { proposalIndex, proposalHash, closeEvs, evs: closeEvs };
 }

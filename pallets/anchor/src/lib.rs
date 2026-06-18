@@ -122,6 +122,14 @@ pub mod pallet {
 		AckIgnored { block_number: BlockNumberFor<T>, last: BlockNumberFor<T> },
 	}
 
+	#[pallet::error]
+	pub enum Error<T> {
+		/// A strictly-higher anchor reported a `post_count` or `timestamp` BELOW the last
+		/// checkpoint's. Both are monotonic on-chain (post ids only grow; block time only advances),
+		/// so this is inconsistent evidence from a buggy/malicious relayer (`anchor-1`).
+		NonMonotonicAnchor,
+	}
+
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		/// Record that the relayer witnessed solochain block `block_number` (post-state root
@@ -155,6 +163,13 @@ pub mod pallet {
 					});
 					return Ok(());
 				}
+				// anchor-1: a strictly-higher height must carry non-regressing post_count + timestamp
+				// (both monotonic on-chain). A regression is inconsistent evidence — reject it rather
+				// than pinning a bad checkpoint that the monotonic height makes permanent.
+				ensure!(
+					post_count >= last.post_count && timestamp >= last.timestamp,
+					Error::<T>::NonMonotonicAnchor
+				);
 			}
 
 			LastCheckpoint::<T>::put(Checkpoint {

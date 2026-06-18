@@ -80,6 +80,14 @@ pub mod pallet {
 		#[pallet::constant]
 		type MinAuthorities: Get<u32>;
 
+		/// The maximum size of the validator set (`validators-3`). MUST be `<=` the runtime's
+		/// aura/grandpa `MaxAuthorities`, or a rotation would hand `> MaxAuthorities` authorities to
+		/// the consensus pallets and they would SILENTLY truncate the set (storage here disagreeing
+		/// with the live authority set). `add_validator` rejects growth beyond it with
+		/// `TooManyValidators` instead, and `Validators` is a `BoundedVec` of this size.
+		#[pallet::constant]
+		type MaxValidators: Get<u32>;
+
 		/// Weight information for this pallet's dispatchables.
 		type WeightInfo: WeightInfo;
 	}
@@ -93,13 +101,15 @@ pub mod pallet {
 	/// this one leads it by up to ~2 sessions, the queue/apply latency.)
 	#[pallet::storage]
 	#[pallet::getter(fn validators)]
-	pub type Validators<T: Config> = StorageValue<_, Vec<T::ValidatorId>, ValueQuery>;
+	pub type Validators<T: Config> =
+		StorageValue<_, BoundedVec<T::ValidatorId, T::MaxValidators>, ValueQuery>;
 
 	/// Validators marked for auto-removal by a future `pallet-im-online` offence report. Inert in
 	/// v1 (nothing reports offences); drained in `new_session` when `pallet-im-online` is wired.
 	#[pallet::storage]
 	#[pallet::getter(fn offline_validators)]
-	pub type OfflineValidators<T: Config> = StorageValue<_, Vec<T::ValidatorId>, ValueQuery>;
+	pub type OfflineValidators<T: Config> =
+		StorageValue<_, BoundedVec<T::ValidatorId, T::MaxValidators>, ValueQuery>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -118,6 +128,9 @@ pub mod pallet {
 		TooLowValidatorCount,
 		/// The validator is already in the validator set.
 		Duplicate,
+		/// Adding the validator would push the set above [`Config::MaxValidators`] (the consensus
+		/// `MaxAuthorities` bound), which would silently truncate the authority set (`validators-3`).
+		TooManyValidators,
 	}
 
 	#[pallet::genesis_config]
@@ -170,13 +183,21 @@ impl<T: Config> Pallet<T> {
 	fn initialize_validators(validators: &[T::ValidatorId]) {
 		if !validators.is_empty() {
 			assert!(Validators::<T>::get().is_empty(), "Validators are already initialized!");
-			Validators::<T>::put(validators);
+			let bounded = BoundedVec::<_, T::MaxValidators>::try_from(validators.to_vec())
+				.expect("genesis initial_validators exceeds MaxValidators");
+			Validators::<T>::put(bounded);
 		}
 	}
 
 	fn do_add_validator(validator_id: T::ValidatorId) -> DispatchResult {
-		ensure!(!Validators::<T>::get().contains(&validator_id), Error::<T>::Duplicate);
-		Validators::<T>::mutate(|v| v.push(validator_id.clone()));
+		let mut validators = Validators::<T>::get();
+		ensure!(!validators.contains(&validator_id), Error::<T>::Duplicate);
+		// BoundedVec `try_push` rejects growth past MaxValidators (validators-3) — the consensus
+		// pallets would otherwise silently truncate a set larger than their MaxAuthorities.
+		validators
+			.try_push(validator_id.clone())
+			.map_err(|_| Error::<T>::TooManyValidators)?;
+		Validators::<T>::put(validators);
 		Self::deposit_event(Event::ValidatorAdditionInitiated(validator_id));
 		Ok(())
 	}
@@ -197,7 +218,11 @@ impl<T: Config> Pallet<T> {
 
 	/// Mark a validator for auto-removal at the next session (im-online path; inert in v1).
 	fn mark_for_removal(validator_id: T::ValidatorId) {
-		OfflineValidators::<T>::mutate(|v| v.push(validator_id));
+		// Best-effort: the offline set is a subset of the validator set so it cannot legitimately
+		// overflow MaxValidators; the `try_push` Result is intentionally ignored (inert in v1).
+		OfflineValidators::<T>::mutate(|v| {
+			let _ = v.try_push(validator_id);
+		});
 	}
 
 	/// Drain the offline queue into a removal at the next session boundary (im-online path).
@@ -208,7 +233,7 @@ impl<T: Config> Pallet<T> {
 			return;
 		}
 		Validators::<T>::mutate(|vs| vs.retain(|v| !validators_to_remove.contains(v)));
-		OfflineValidators::<T>::put(Vec::<T::ValidatorId>::new());
+		OfflineValidators::<T>::kill();
 	}
 }
 
@@ -218,7 +243,7 @@ impl<T: Config> pallet_session::SessionManager<T::ValidatorId> for Pallet<T> {
 	fn new_session(_new_index: u32) -> Option<Vec<T::ValidatorId>> {
 		// Drain any im-online-flagged offline validators (inert in v1) before publishing the set.
 		Self::remove_offline_validators();
-		Some(Self::validators())
+		Some(Self::validators().into_inner())
 	}
 
 	fn end_session(_end_index: u32) {}

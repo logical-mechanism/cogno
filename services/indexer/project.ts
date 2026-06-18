@@ -15,16 +15,26 @@ const project: SubstrateProject = {
   description:
     "Indexer for cogno-chain: Microblog posts/threads, CognoGate identity bind/revoke, TalkStake weight. Reads NEVER touch Cardano (L4).",
   runner: {
-    node: { name: "@subql/node", version: ">=6.0.0" },
-    query: { name: "@subql/query", version: "*" },
+    // Pinned exactly (indexer-4) — a future @subql release can silently change generated models or
+    // query behaviour, so the runner versions match the locked devDependencies. Re-run verify-m4c
+    // after any bump.
+    node: { name: "@subql/node", version: "6.4.6" },
+    query: { name: "@subql/query", version: "2.25.0" },
   },
   schema: { file: "./schema.graphql" },
   network: {
-    // The GENESIS (block-0) hash of THIS chain — the chain-identity pin. A fresh --dev rebuild
-    // changes it (spec-104 dev genesis below). Re-capture via chain_getBlockHash(0) after any wipe.
+    // Chain-identity pin (DR-08): the GENESIS (block-0) hash of THIS chain, plus its RPC endpoint.
+    // Both are ENV-DRIVEN so re-pointing the indexer at a different chain is a config change, not a
+    // code edit — a fresh chain (any wipe/relaunch) gets a NEW genesis, so re-capture it via
+    // `chain_getBlockHash(0)` and set CHAIN_ID/GENESIS (or rebuild). NOTE: SubQuery resolves these at
+    // BUILD time (`subql build` bakes them into project.yaml), so set the env before building.
+    // Default = the live spec-107 preprod chain (captured 2026-06; the prior spec-104 genesis
+    // 0x41467cdc… is dead — the chain was relaunched, which is why that pin would fail verify-m4c).
     chainId:
-      "0x41467cdca29a25549388e5f2f387fc2dd54fce7000d494d2578cbd0afcce65cd",
-    endpoint: ["ws://127.0.0.1:9944"],
+      process.env.CHAIN_ID ||
+      process.env.GENESIS ||
+      "0x2653e177acfa9c1c11fd5479f3b2ddc22db53cb8083b05721ea70753c62cda61",
+    endpoint: [process.env.WS_ENDPOINT || process.env.WS || "ws://127.0.0.1:9944"],
   },
   dataSources: [
     {

@@ -9,8 +9,8 @@ spec: `docs/L4-reading.md`.
 
 ## Files
 
-- `schema.graphql` — the published open entity schema (`Author`/`Post`/`Thread`), versioned to runtime spec 104.
-- `project.ts` — manifest: `chainId` = genesis pin, RPC-only (no dictionary/chaintypes), 5 event handlers.
+- `schema.graphql` — the published open entity schema (`Author`/`Post`/`Thread`), versioned to runtime spec 107.
+- `project.ts` — manifest: `chainId` = genesis pin (env-driven: `CHAIN_ID`/`GENESIS`, `WS_ENDPOINT`/`WS`), RPC-only (no dictionary/chaintypes), 5 event handlers.
 - `src/mappings/mappingHandlers.ts` — the deterministic event→entity fold (storage-read for the post body; soft-delete; ban flag).
 - `verify-m4c.mjs` — the **L4-M4c** gate: independent re-derivation from genesis == served feed (byte-for-byte).
 - `GENESIS.txt` — the published genesis-hash pin (DR-08).
@@ -65,3 +65,10 @@ See `docs/M4-build.md` for the full list. The load-bearing ones: TCP (not socket
 `TZ=UTC` required; `graphql` pinned to 15.10.2 via `overrides`; `src/global.d.ts` for the SubQuery
 globals; `btree_gist` is trusted in PG16 (no superuser). A `spec_version` bump that changes
 `PostCreated`/`Posts` encoding requires re-running `subql codegen`/`build` in lockstep with PAPI.
+
+**Chain identity is env-driven (build-time).** `chainId`/`endpoint` come from `CHAIN_ID`/`GENESIS` and
+`WS_ENDPOINT`/`WS`, defaulting to the live spec-107 preprod chain. SubQuery resolves them when you run
+`subql build` (they bake into `project.yaml`), so to target a relaunched/different chain: re-capture
+its genesis with `chain_getBlockHash(0)`, write it to `GENESIS.txt` (the `verify-m4c` pin) and set the
+env, then rebuild. A relaunch always mints a new genesis — the dead spec-104 pin `0x41467cdc…` is why
+the old manifest hard-failed `verify-m4c` against the 107 node.

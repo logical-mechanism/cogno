@@ -234,6 +234,157 @@ fn force_set_capacity_is_gated() {
 	});
 }
 
+#[test]
+fn force_set_capacity_clamps_to_stake_backed_ceiling() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// No stake ⇒ ceiling 0 ⇒ a force cannot mint capacity unbacked by locked stake (microblog-3).
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 1_000));
+		assert_eq!(Capacity::<Test>::get(1).unwrap().cap_last, 0);
+		System::assert_last_event(Event::CapacityForced { who: 1, cap_last: 0 }.into());
+
+		// weight 100 ⇒ ceiling min(100·10, 5000) = 1000 ⇒ a force above it is clamped to 1000.
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 2, 9_999));
+		assert_eq!(Capacity::<Test>::get(2).unwrap().cap_last, 1_000);
+
+		// A force within the ceiling is stored verbatim (the legitimate priming path).
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 2, 400));
+		assert_eq!(Capacity::<Test>::get(2).unwrap().cap_last, 400);
+	});
+}
+
+// ── CheckCapacity transaction extension — the WHOLE feeless anti-spam budget (microblog-1) ──────
+// The dispatchable tests above bypass the extension (it only runs in the full tx pipeline), so the
+// gate itself was previously untested. These drive validate / post_dispatch_details directly.
+mod capacity_extension {
+	use super::*;
+	use crate::CheckCapacity;
+	use frame_support::dispatch::{GetDispatchInfo, PostDispatchInfo};
+	use sp_runtime::traits::{TransactionExtension, TxBaseImplication};
+	use sp_runtime::transaction_validity::{
+		InvalidTransaction, TransactionSource, TransactionValidityError,
+	};
+
+	type Ext = CheckCapacity<Test>;
+
+	fn post_call(text: Vec<u8>) -> RuntimeCall {
+		RuntimeCall::Microblog(crate::Call::post_message { text, parent: None })
+	}
+
+	/// Run `validate` for `who`; on success return (priority, the carried Pre).
+	fn validate(
+		who: u64,
+		call: &RuntimeCall,
+	) -> Result<(u64, crate::Pre<Test>), TransactionValidityError> {
+		let info = call.get_dispatch_info();
+		Ext::new()
+			.validate(
+				RuntimeOrigin::signed(who),
+				call,
+				&info,
+				0usize,
+				(),
+				&TxBaseImplication(()),
+				TransactionSource::External,
+			)
+			.map(|(vt, pre, _origin)| (vt.priority, pre))
+	}
+
+	/// Run `post_dispatch_details` with the given dispatch result.
+	fn post_dispatch(pre: crate::Pre<Test>, result: sp_runtime::DispatchResult) {
+		let info = post_call(vec![]).get_dispatch_info();
+		<Ext as TransactionExtension<RuntimeCall>>::post_dispatch_details(
+			pre,
+			&info,
+			&PostDispatchInfo::default(),
+			0usize,
+			&result,
+		)
+		.expect("post_dispatch_details ok");
+	}
+
+	fn prime(who: u64, weight: u128, cap: u128) {
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), who, weight));
+		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), who, cap));
+	}
+
+	#[test]
+	fn over_budget_post_rejected_at_pool() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			prime(1, 100, 50); // cap ceiling 1000, but bucket only 50 < cost(5)=105
+			let err = validate(1, &post_call(b"hello".to_vec())).map(|_| ()).unwrap_err();
+			assert_eq!(err, TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources));
+		});
+	}
+
+	#[test]
+	fn affordable_post_passes_priority_and_consumes_exact_cost() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			prime(1, 100, 1_000); // full bucket
+			let (priority, pre) = validate(1, &post_call(b"hello".to_vec())).expect("valid");
+			// priority == remaining headroom == have(1000) - need(105)
+			assert_eq!(priority, 895);
+			post_dispatch(pre, Ok(()));
+			// exactly post_cost(5) = 105 debited
+			assert_eq!(Microblog::current_capacity(&1, 10), 895);
+		});
+	}
+
+	#[test]
+	fn second_same_block_post_is_rejected() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			prime(1, 100, 150); // affords one 105-cost post, not two (no same-block regen)
+			let (_p, pre) = validate(1, &post_call(b"hello".to_vec())).expect("1st valid");
+			post_dispatch(pre, Ok(())); // 150 - 105 = 45 left
+			let err = validate(1, &post_call(b"hello".to_vec())).map(|_| ()).unwrap_err();
+			assert_eq!(err, TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources));
+		});
+	}
+
+	#[test]
+	fn over_length_post_rejected_at_pool_before_metering() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			prime(1, 1_000, 5_000); // plenty of capacity (so only the length check can reject)
+			let big = vec![0u8; 513]; // > MaxLength 512
+			let err = validate(1, &post_call(big)).map(|_| ()).unwrap_err();
+			// Call (malformed), NOT ExhaustsResources — it must not be retried as merely over-budget.
+			assert_eq!(err, TransactionValidityError::Invalid(InvalidTransaction::Call));
+		});
+	}
+
+	#[test]
+	fn non_post_calls_pass_through_without_consuming() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			prime(1, 100, 1_000);
+			// delete_post is not metered: validate passes and post_dispatch consumes nothing.
+			let call = RuntimeCall::Microblog(crate::Call::delete_post { id: 0 });
+			let (_p, pre) = validate(1, &call).expect("non-post passes");
+			post_dispatch(pre, Ok(()));
+			assert_eq!(Microblog::current_capacity(&1, 10), 1_000); // unchanged
+		});
+	}
+
+	#[test]
+	fn capacity_is_consumed_even_when_the_post_body_fails() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			prime(1, 100, 1_000);
+			let (_p, pre) = validate(1, &post_call(b"hello".to_vec())).expect("valid");
+			// A failed dispatch (e.g. TooManyPosts) must STILL burn capacity — else a doomed post is
+			// free spam. post_dispatch ignores the dispatch result by design.
+			let failed: sp_runtime::DispatchResult = Err(crate::Error::<Test>::TooManyPosts.into());
+			post_dispatch(pre, failed);
+			assert_eq!(Microblog::current_capacity(&1, 10), 895);
+		});
+	}
+}
+
 // ── DR-06 property test ─────────────────────────────────────────────────────────────────────
 
 /// **DR-06 — clamp-latency ≤ grant-latency (the asymmetric-safety property).** The follower's
