@@ -10,6 +10,7 @@
 //   node op.mjs --call anchor.anchorAck       --args '[123, "0x<root>", "0x<txhash>", 7, 0]'
 //   node op.mjs --call validatorSet.addValidator --args '["5FHneW…"]'  --via committee
 //   node op.mjs --call talkStake.setStake     --args '["5Grw…", "0"]'  --via sudo   # dev fallback
+import { pathToFileURL } from "node:url";
 import { connect, drive, find } from "./lib.mjs";
 
 function parseArgv(argv) {
@@ -27,7 +28,7 @@ function parseArgv(argv) {
 
 // Revive decimal strings into BigInt so large balances/weights encode losslessly; pass through
 // hex strings, ss58 addresses, numbers, null. (JSON has no BigInt; we use decimal-string convention.)
-function revive(v) {
+export function revive(v) {
 	if (typeof v === "string" && /^[0-9]+$/.test(v) && v.length > 0) return BigInt(v);
 	return v;
 }
@@ -65,4 +66,6 @@ async function main() {
 		process.exit(1);
 	}
 }
-main();
+
+// Run only when invoked directly (not when imported by tests).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

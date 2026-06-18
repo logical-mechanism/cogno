@@ -17,6 +17,32 @@ import { cryptoWaitReady } from "@polkadot/util-crypto";
 
 export const WS_DEFAULT = process.env.WS || "ws://127.0.0.1:9944";
 
+/// Hardened JSON fetch (committee-1): validates res.ok + that the body is JSON, applies an
+/// AbortController timeout, and retries with bounded exponential backoff. A transient/HTML-error
+/// response must NOT silently become `undefined` and drive a privileged write. Throws after `retries`.
+export async function fetchJson(url, { method = "GET", body = null, headers = {}, timeoutMs = 10_000, retries = 3, backoffMs = 500 } = {}) {
+	let last;
+	for (let attempt = 1; attempt <= retries; attempt++) {
+		const ctrl = new AbortController();
+		const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+		try {
+			const res = await fetch(url, { method, body, headers, signal: ctrl.signal });
+			if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+			const text = await res.text();
+			const ct = res.headers.get("content-type") || "";
+			const looksJson = ct.includes("json") || text.trim().startsWith("{") || text.trim().startsWith("[");
+			if (!looksJson) throw new Error(`non-JSON response (content-type ${ct || "?"}): ${text.slice(0, 120)}`);
+			return JSON.parse(text);
+		} catch (e) {
+			last = e;
+			if (attempt < retries) await new Promise((r) => setTimeout(r, backoffMs * 2 ** (attempt - 1)));
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+	throw new Error(`fetchJson ${url} failed after ${retries} attempts: ${last?.message || last}`);
+}
+
 /// The five well-known dev committee seats (DR-26 3-of-5), plus a couple of extras for targets.
 export const COMMITTEE_URIS = ["//Alice", "//Bob", "//Charlie", "//Dave", "//Eve"];
 
@@ -35,9 +61,15 @@ export function operators(extra = ["//Ferdie", "//Grace"]) {
 	return { kr, map, committee: COMMITTEE_URIS.map((u) => map[u.replace(/^\/\//, "")]) };
 }
 
-/// Send a tx; resolve with the decoded events at inBlock; reject on dispatchError OR pool reject.
-export function send(api, tx, signer, label) {
+/// Send a tx; resolve with the decoded events at inBlock (or at finalization with `{finalize:true}`,
+/// for a privileged write whose effect must survive a re-org — committee-2). Rejects on
+/// dispatchError, a terminal non-inclusion status (dropped/invalid/usurped/finality-timeout — else
+/// finalize-mode would hang), OR a pool reject. The events returned with `finalize:true` are read
+/// FROM the finalized block, so the caller's event assertions re-verify against finalized state.
+export function send(api, tx, signer, label, { finalize = false } = {}) {
 	return new Promise((resolve, reject) => {
+		let unsub;
+		const stop = () => { if (typeof unsub === "function") unsub(); };
 		tx.signAndSend(signer, ({ status, events = [], dispatchError }) => {
 			if (dispatchError) {
 				let msg = dispatchError.toString();
@@ -45,11 +77,18 @@ export function send(api, tx, signer, label) {
 					const d = api.registry.findMetaError(dispatchError.asModule);
 					msg = `${d.section}.${d.name}`;
 				}
-				reject(new Error(`${label}: dispatchError ${msg}`));
-			} else if (status.isInBlock) {
+				stop();
+				return reject(new Error(`${label}: dispatchError ${msg}`));
+			}
+			if (status.isDropped || status.isInvalid || status.isUsurped || status.isFinalityTimeout) {
+				stop();
+				return reject(new Error(`${label}: tx ${status.type} (never included/finalized)`));
+			}
+			if (finalize ? status.isFinalized : status.isInBlock) {
+				stop();
 				resolve(events.map(({ event }) => event));
 			}
-		}).catch(reject);
+		}).then((u) => { unsub = u; }).catch(reject);
 	});
 }
 
@@ -63,8 +102,9 @@ export async function viaSudo(api, innerCall, opts = {}) {
 	const ops = opts.operators || operators();
 	const sudo = opts.sudo || ops.map.Alice; // dev sudo key = //Alice
 	const log = opts.log || (() => {});
+	const finalize = opts.finalize ?? true; // privileged write resolves on finalization (committee-2)
 	log(`via SUDO (EnsureRoot dev fallback) as ${sudo.address}`);
-	const evs = await send(api, api.tx.sudo.sudo(innerCall), sudo, `sudo:${opts.label || "call"}`);
+	const evs = await send(api, api.tx.sudo.sudo(innerCall), sudo, `sudo:${opts.label || "call"}`, { finalize });
 	if (!has(evs, "sudo", "Sudid")) throw new Error("no sudo.Sudid event");
 	return { evs, via: "sudo" };
 }
@@ -81,6 +121,9 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 	const voters = opts.voters || members.slice(0, threshold);
 	const closer = opts.closer || members[members.length - 1];
 	const log = opts.log || (() => {});
+	// The privileged write resolves on finalization (committee-2). With threshold==1 the inner call
+	// executes on `propose` (no motion), so that is the step to finalize; otherwise it is `close`.
+	const finalize = opts.finalize ?? true;
 
 	const lengthBound = innerCall.method.toU8a().length + 8;
 	const proposeEvs = await send(
@@ -88,6 +131,7 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 		api.tx.followerCommittee.propose(threshold, innerCall, lengthBound),
 		proposer,
 		"propose",
+		{ finalize: finalize && threshold === 1 },
 	);
 	const proposed = find(proposeEvs, "followerCommittee", "Proposed");
 	if (!proposed) {
@@ -111,6 +155,7 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 		api.tx.followerCommittee.close(proposalHash, proposalIndex, weightBound, lengthBound),
 		closer,
 		"close",
+		{ finalize },
 	);
 	if (!has(closeEvs, "followerCommittee", "Approved"))
 		throw new Error("motion was NOT Approved (threshold not reached?)");
