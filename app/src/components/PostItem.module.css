@@ -123,3 +123,11 @@
 .delete:hover:not(:disabled) {
   color: var(--ink-900);
 }
+
+@media (max-width: 40rem) {
+  /* Shallower reply indent so deeply-nested threads don't crush the measure at ~360px. */
+  .reply {
+    margin-left: var(--space-3);
+    padding-left: var(--space-3);
+  }
+}

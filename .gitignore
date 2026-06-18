@@ -15,6 +15,13 @@ services/anchor-relayer/node_modules
 # Recreate locally: ln -sfn ../indexer/node_modules services/committee/node_modules
 services/committee/node_modules
 
+# Secrets / local env (never commit real creds). The committed manifests are the
+# *.env.example files (root + services/indexer); the live .env files stay local on disk.
+.env
+**/.env
+!.env.example
+!**/.env.example
+
 # Editor / OS cruft
 *.rs.bk
 .DS_Store

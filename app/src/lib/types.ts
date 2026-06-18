@@ -1,10 +1,11 @@
-// Shared vocabulary for the cogno-chain M1 frontend.
+// Shared vocabulary for the cogno-chain frontend.
 //
 // This file is the DETERMINISTIC SEAM between the PAPI data layer (lib/chain, lib/signer)
 // and the React layer (hooks, components). The data layer IMPLEMENTS these shapes; the
 // React layer CONSUMES them. Nothing here imports React. Grounded against PAPI 1.23.3 +
-// the descriptors generated from cogno-chain-runtime v101 (see scripts/papi-acceptance.mjs
-// and scripts/watch-probe.mjs — the live shapes are confirmed, not guessed).
+// the descriptors generated from cogno-chain-runtime (spec_version 107; see
+// scripts/papi-acceptance.mjs and scripts/watch-probe.mjs — the live shapes are confirmed,
+// not guessed).
 
 import type { PolkadotClient, TypedApi } from "polkadot-api";
 import type { PolkadotSigner } from "polkadot-api/signer";
@@ -167,10 +168,11 @@ export interface ChainHandle {
 }
 
 /**
- * The posting-key adapter. In M1 the sr25519 key is a SIMPLE in-session/dev key, but it is
- * deliberately shaped exactly like the future hardened Model-B keystore signer (L5-M2) so
- * that milestone slots in with NO call-site change: every consumer only ever touches
- * `{ ss58, publicKeyHex, label, signer }`. The Cardano identity half does NOT exist in M1.
+ * The posting-key adapter. The sr25519 key signs every feeless post; it can be a simple
+ * in-session/dev key or the hardened Model-B encrypted keystore signer — both share this
+ * exact shape, so every consumer only ever touches `{ ss58, publicKeyHex, label, signer }`.
+ * This is the SEPARATE posting half of the dual-key model; the Cardano CIP-30 wallet is the
+ * identity/stake key that signs the CIP-8 bind and the L1 vault lock/exit.
  */
 export interface PostingSigner {
   /** SS58 address (prefix 42) — the "Signing as <ss58-short>" identity. */

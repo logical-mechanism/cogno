@@ -13,7 +13,7 @@ import { cogno } from "@polkadot-api/descriptors";
 import { Observable, type Subscription } from "rxjs";
 import type { ChainHandle, ConnStatus, BootGuard, CognoApi } from "@/lib/types";
 
-/** The spec_name the descriptors were generated against (cogno-chain-runtime v101). */
+/** The spec_name the descriptors were generated against (cogno-chain-runtime, spec_version 107). */
 const EXPECTED_SPEC_NAME = "cogno-chain-runtime";
 
 /**

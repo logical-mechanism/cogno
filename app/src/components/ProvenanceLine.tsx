@@ -1,8 +1,8 @@
 "use client";
 
 // ProvenanceLine — the Civic-Ledger marginalia. A mono strip stating, honestly,
-// where the chain head is and how far finality trails it. In M1 it carries ONE
-// honesty badge: "chain: operator-run (v1)". The follower/identity badge is M2.
+// where the chain head is and how far finality trails it. It carries two honesty
+// badges: "follower: trusted (v1)" and "chain: operator-run (v1)".
 //
 // Honesty rule: a head that has stopped advancing must SAY so ("chain not
 // advancing") — we never imply the feed is empty when it is merely unfinalized.
@@ -102,7 +102,7 @@ export function ProvenanceLine({ heads, status }: ProvenanceLineProps) {
       <div className={styles.badges}>
         <HonestyBadge
           label="follower: trusted (v1)"
-          detail="Cardano identity bindings are verified and written by a single trusted follower service. It is the sole verifier AND writer in v1 — a bad follower could bind the wrong key; the AccountOf readback is your client-side check. The on-chain self-proof (D1) and a k-of-t signer set (D2) are deferred."
+          detail="Cardano identity bindings are verified and written by a single trusted follower service in v1 — a bad follower could bind the wrong key; the AccountOf readback is your client-side check. Privileged writes now route through a 3-of-5 committee origin (D2-shaped on this single-operator stack). The on-chain self-proof (D1) is still deferred."
         />
         <HonestyBadge
           label="chain: operator-run (v1)"

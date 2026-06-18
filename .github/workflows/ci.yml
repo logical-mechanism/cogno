@@ -1,0 +1,68 @@
+name: ci
+
+# Build + test the three layers of cogno-chain on every push / PR:
+#   • contracts — the Aiken L1 talk_vault validator (aiken check: 38 tests incl. property/fuzz)
+#   • rust      — formatting + clippy + unit tests for the FRAME pallets (the full node/runtime
+#                 wasm build is heavy and left to the release path; the pallets are the logic)
+#   • frontend  — the Next.js static export (type-check + build) + lint
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aiken-lang/setup-aiken@v1
+        with:
+          version: v1.1.22
+      - name: aiken check
+        working-directory: contracts
+        run: aiken check
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The repo pins rustc 1.90.0 (rust-toolchain.toml); clippy is not in that pin's components,
+      # so request it explicitly. (`cargo fmt --check` is intentionally NOT gated: the codebase
+      # predates a rustfmt config and is tab-styled; enforcing a repo-wide reformat is out of scope.)
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy (pallets)
+        run: >
+          cargo clippy
+          -p pallet-microblog -p pallet-talk-stake -p pallet-cogno-gate
+          -p pallet-anchor -p pallet-validator-set
+      - name: test (pallets)
+        run: >
+          cargo test
+          -p pallet-microblog -p pallet-talk-stake -p pallet-cogno-gate
+          -p pallet-anchor -p pallet-validator-set
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - name: lint
+        run: npm run lint
+      - name: build (static export)
+        run: npm run build

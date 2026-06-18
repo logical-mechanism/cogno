@@ -1,0 +1,4 @@
+{
+  "extends": "next/core-web-vitals",
+  "ignorePatterns": [".papi/**", "scripts/**", "out/**", ".next/**"]
+}
