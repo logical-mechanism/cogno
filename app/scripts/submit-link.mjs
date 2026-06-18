@@ -3,7 +3,8 @@
 //   node scripts/submit-link.mjs <identity_hash_hex> <account_pubkey_hex> [<thread_pointer_hex>]
 //
 // Submits sudo(CognoGate.link_identity{ identity_hash, substrate_account, thread_pointer }) signed
-// by //Alice — the DR-07 sudo escape hatch (FollowerOrigin = EnsureRoot in v1 dev). The follower
+// by the chain's sudo key — the DR-07 sudo escape hatch (FollowerOrigin = EnsureRoot in v1). The
+// signer is SUDO_SEED (default dev //Alice); set it to your chain's sudo secret. The follower
 // VERIFIES the CIP-8 proof (pycardano); this script only submits. Prints one line of JSON:
 //   { ok, identity_hash, account, error? }  and exits 0 on a successful bind, 1 otherwise.
 //
@@ -17,6 +18,10 @@ import { DEV_PHRASE, entropyToMiniSecret, mnemonicToEntropy, ss58Address } from 
 import { cogno } from "@polkadot-api/descriptors";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
+// The sudo signer. Default dev `//Alice`; set SUDO_SEED to your chain's sudo secret. A value starting
+// with `//` is a derivation path on the well-known dev phrase; anything else is treated as a full
+// mnemonic (used directly, no path).
+const SUDO_SEED = process.env.SUDO_SEED || "//Alice";
 const out = (o) => console.log(JSON.stringify(o));
 
 const [hashHex, accountHex, threadHex] = process.argv.slice(2);
@@ -26,8 +31,9 @@ const hexToBytes = (h) => Uint8Array.from(Buffer.from(h.replace(/^0x/, ""), "hex
 async function main() {
   const client = createClient(getWsProvider(WS));
   const api = client.getTypedApi(cogno);
-  const derive = sr25519CreateDerive(entropyToMiniSecret(mnemonicToEntropy(DEV_PHRASE)));
-  const sudoKp = derive("//Alice");
+  const isPath = SUDO_SEED.startsWith("//");
+  const derive = sr25519CreateDerive(entropyToMiniSecret(mnemonicToEntropy(isPath ? DEV_PHRASE : SUDO_SEED)));
+  const sudoKp = derive(isPath ? SUDO_SEED : "");
   const sudo = getPolkadotSigner(sudoKp.publicKey, "Sr25519", sudoKp.sign);
 
   const accountPub = hexToBytes(accountHex);
