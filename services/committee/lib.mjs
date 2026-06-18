@@ -74,6 +74,32 @@ export const has = (events, section, method) =>
 export const find = (events, section, method) =>
 	events.find((e) => e.section === section && e.method === method);
 
+/// Throw if a wrapped privileged inner call reported an `Err` DispatchResult. The collective
+/// `Executed` and sudo `Sudid` events carry the inner dispatch result as a codec at `resultIdx`
+/// (Executed: [proposal_hash, result] ⇒ idx 1; Sudid: [sudo_result] ⇒ idx 0). Without this check a
+/// REVERTED inner call (Duplicate / WeightTooHigh / TooManyValidators / NonMonotonicAnchor / …) would
+/// be reported as success merely because the outer tx and the motion succeeded (committee-3). Tolerant
+/// of a missing result field (older metadata, or a mock with no data) — only an explicit `isErr` throws.
+export function ensureExecuted(api, events, section, method, resultIdx, label) {
+	const e = find(events, section, method);
+	const res = e && e.data && e.data[resultIdx];
+	if (res && res.isErr) {
+		let msg;
+		try {
+			const err = res.asErr;
+			if (err && err.isModule) {
+				const d = api.registry.findMetaError(err.asModule);
+				msg = `${d.section}.${d.name}`;
+			} else {
+				msg = err ? err.toString() : "Err";
+			}
+		} catch {
+			msg = "inner dispatch error";
+		}
+		throw new Error(`${label}: inner call REVERTED (${msg}) — the motion executed but the wrapped call failed`);
+	}
+}
+
 /// Drive a privileged inner call via SUDO (EnsureRoot — the retained v1 dev escape hatch).
 export async function viaSudo(api, innerCall, opts = {}) {
 	const ops = opts.operators || operators();
@@ -83,6 +109,7 @@ export async function viaSudo(api, innerCall, opts = {}) {
 	log(`via SUDO (EnsureRoot dev fallback) as ${sudo.address}`);
 	const evs = await send(api, api.tx.sudo.sudo(innerCall), sudo, `sudo:${opts.label || "call"}`, { finalize });
 	if (!has(evs, "sudo", "Sudid")) throw new Error("no sudo.Sudid event");
+	ensureExecuted(api, evs, "sudo", "Sudid", 0, "sudo"); // committee-3: surface a reverted inner call
 	return { evs, via: "sudo" };
 }
 
@@ -113,8 +140,10 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 	const proposed = find(proposeEvs, "followerCommittee", "Proposed");
 	if (!proposed) {
 		// threshold==1 executes immediately on propose (no motion). Surface that cleanly.
-		if (has(proposeEvs, "followerCommittee", "Executed"))
+		if (has(proposeEvs, "followerCommittee", "Executed")) {
+			ensureExecuted(api, proposeEvs, "followerCommittee", "Executed", 1, "propose"); // committee-3
 			return { proposalIndex: null, proposalHash: null, closeEvs: proposeEvs, evs: proposeEvs };
+		}
 		throw new Error("no FollowerCommittee.Proposed event (is the proposer a committee member?)");
 	}
 	const proposalIndex = proposed.data[1].toNumber();
@@ -138,6 +167,7 @@ export async function viaCommittee(api, innerCall, opts = {}) {
 		throw new Error("motion was NOT Approved (threshold not reached?)");
 	if (!has(closeEvs, "followerCommittee", "Executed"))
 		throw new Error("motion Approved but inner call did NOT execute (Executed missing)");
+	ensureExecuted(api, closeEvs, "followerCommittee", "Executed", 1, "close"); // committee-3: reverted inner call
 	log(`close → Approved + Executed (the proposal lifecycle IS the per-action audit log)`);
 	return { proposalIndex, proposalHash, closeEvs, evs: closeEvs };
 }

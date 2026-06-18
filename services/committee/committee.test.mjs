@@ -99,6 +99,15 @@ ok(happy.proposalIndex === 7 && happy.proposalHash === "0xfeedface00", "3-of-5 m
 await throws(() => viaCommittee(mockApi([ev("followerCommittee", "Disapproved")]), inner, baseOpts), "close without Approved is rejected");
 await throws(() => viaCommittee(mockApi([ev("followerCommittee", "Approved") /* no Executed */]), inner, baseOpts), "Approved but inner not Executed is rejected");
 
+// committee-3: Approved + Executed but the INNER call reverted (Executed carries result=Err at data[1])
+// must be rejected — not reported as success. Both a plain Err and a module Err (→ findMetaError) throw.
+const errResult = { isErr: true, asErr: { isModule: false, toString: () => "Anchor.NonMonotonicAnchor" } };
+await throws(() => viaCommittee(mockApi([ev("followerCommittee", "Approved"), ev("followerCommittee", "Executed", [{}, errResult])]), inner, baseOpts), "Approved+Executed with a reverted inner call (Err result) is rejected");
+const moduleErr = { isErr: true, asErr: { isModule: true, asModule: {} } };
+await throws(() => viaCommittee(mockApi([ev("followerCommittee", "Approved"), ev("followerCommittee", "Executed", [{}, moduleErr])]), inner, baseOpts), "Approved+Executed with a module Err inner result is rejected (findMetaError path)");
+// threshold==1 immediate-execute path also surfaces a reverted inner call.
+await throws(() => viaCommittee(mockApi([], { proposeEvents: [ev("followerCommittee", "Executed", [{}, errResult])] }), inner, { ...baseOpts, threshold: 1 }), "threshold==1 reverted inner call (on propose) is rejected");
+
 const imm = await viaCommittee(mockApi([], { proposeEvents: [ev("followerCommittee", "Executed")] }), inner, { ...baseOpts, threshold: 1 });
 ok(imm.proposalIndex === null, "threshold==1 executes on propose (no motion)");
 

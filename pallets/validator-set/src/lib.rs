@@ -218,9 +218,11 @@ impl<T: Config> Pallet<T> {
 
 	/// Mark a validator for auto-removal at the next session (im-online path; inert in v1).
 	fn mark_for_removal(validator_id: T::ValidatorId) {
-		// Best-effort `try_push` (bounded by MaxValidators): the offline set is a subset of the
-		// validator set, so it cannot legitimately overflow; inert in v1 regardless.
-		let _ = OfflineValidators::<T>::mutate(|v| v.try_push(validator_id));
+		// Best-effort: the offline set is a subset of the validator set so it cannot legitimately
+		// overflow MaxValidators; the `try_push` Result is intentionally ignored (inert in v1).
+		OfflineValidators::<T>::mutate(|v| {
+			let _ = v.try_push(validator_id);
+		});
 	}
 
 	/// Drain the offline queue into a removal at the next session boundary (im-online path).

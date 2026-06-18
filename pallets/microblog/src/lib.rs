@@ -241,6 +241,14 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
+		/// The stake-backed capacity ceiling for a stake `weight`: `min(weight·CapRatio, Ceiling)`
+		/// (capped-linear, DR-11). The SINGLE source of truth for the ceiling — both the live meter
+		/// ([`current_capacity`]) and the `force_set_capacity` clamp call this, so the
+		/// "voice == locked ADA" invariant can never drift between the two (`microblog-3`/CL1).
+		pub fn capacity_ceiling(weight: u128) -> u128 {
+			core::cmp::min(weight.saturating_mul(T::CapRatio::get()), T::Ceiling::get())
+		}
+
 		/// Lazy regenerate-on-read (`ECONOMICS.md` §4.1). **Pure** — no writes — so it is safe
 		/// to call repeatedly inside `validate()`.
 		///
@@ -248,8 +256,7 @@ pub mod pallet {
 		/// so an identity idle for years saturates into the `min(cap, …)` clamp, never wraps.
 		pub fn current_capacity(who: &T::AccountId, now: BlockNumberFor<T>) -> u128 {
 			let weight = pallet_talk_stake::AllowedStake::<T>::get(who); // 0 if unbound/unlocked
-			let cap_linear = weight.saturating_mul(T::CapRatio::get());
-			let cap = core::cmp::min(cap_linear, T::Ceiling::get()); // capped-linear (DR-11)
+			let cap = Self::capacity_ceiling(weight); // capped-linear (DR-11) — the stake-backed ceiling
 			match Capacity::<T>::get(who) {
 				None => 0, // first-touch = ZERO (charges up); closes the cheap-identity burst farm
 				Some(s) => {
@@ -396,12 +403,12 @@ pub mod pallet {
 			cap_last: u128,
 		) -> DispatchResult {
 			T::ForceOrigin::ensure_origin(origin)?;
-			Self::on_first_bind(&who); // ensure the row + provider ref exist
+			Self::on_first_bind(&who); // ensure the (relock-safe) capacity row exists (no provider ref)
 			let now = frame_system::Pallet::<T>::block_number();
 			// Clamp to what the account's current weight backs — never pre-charge above the ceiling.
+			// Shares the single ceiling helper with `current_capacity` so the two can't drift (CL1).
 			let weight = pallet_talk_stake::AllowedStake::<T>::get(&who);
-			let cap_ceiling = core::cmp::min(weight.saturating_mul(T::CapRatio::get()), T::Ceiling::get());
-			let cap_last = core::cmp::min(cap_last, cap_ceiling);
+			let cap_last = core::cmp::min(cap_last, Self::capacity_ceiling(weight));
 			Capacity::<T>::insert(&who, CapacityState { cap_last, last_block: now });
 			Self::deposit_event(Event::CapacityForced { who, cap_last });
 			Ok(())

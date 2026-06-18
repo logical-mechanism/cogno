@@ -84,11 +84,12 @@ pub mod pallet {
 		/// identities. Same shape as `pallet-talk-stake`'s `SetStakeOrigin` — identity and
 		/// weight share one trust boundary — so the widen to a k-of-t committee is signature-free.
 		type FollowerOrigin: EnsureOrigin<Self::RuntimeOrigin>;
-		/// First-bind hook into `pallet-microblog`: primes the capacity row + a provider
-		/// reference so a freshly-bound feeless poster's first post is not rejected by
-		/// `CheckNonce` (issue #3991). Wired to `Microblog` in the runtime. Defined in microblog
-		/// (not here) to avoid a Cargo dependency cycle. `on_first_bind` is idempotent and
-		/// already owns the `inc_providers` call — do not increment providers again here.
+		/// Bind/revoke lifecycle hook into `pallet-microblog`: `on_bind` primes the capacity row + a
+		/// provider reference so a freshly-bound feeless poster's first post is not rejected by
+		/// `CheckNonce` (issue #3991), and `on_revoke` releases that ref. Wired to `Microblog` in the
+		/// runtime. Defined in microblog (not here) to avoid a Cargo dependency cycle. `on_bind` owns
+		/// the single `inc_providers` call (balanced by one `dec_providers` in `on_revoke`) — do not
+		/// increment providers again here.
 		type OnBind: OnIdentityBind<Self::AccountId>;
 		/// Weight information for this pallet's dispatchables.
 		type WeightInfo: WeightInfo;
@@ -150,8 +151,8 @@ pub mod pallet {
 		/// `identity_hash` = `blake2b_256(serialized owner Address)` (DR-01). Rejects a second
 		/// bind on **either** side (`AccountAlreadyBound` / `PkhAlreadyBound`) — the 1:1 Sybil
 		/// invariant. On success it primes the account's microblog capacity row + provider ref
-		/// via [`Config::OnBind`] (`on_first_bind`), so the bound account can immediately post
-		/// feelessly once weighted. `thread_pointer` is the optional cogno_v3 thread join.
+		/// via [`Config::OnBind::on_bind`], so the bound account can immediately post feelessly
+		/// once weighted. `thread_pointer` is the optional cogno_v3 thread join.
 		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::link_identity())]
 		pub fn link_identity(
@@ -184,9 +185,9 @@ pub mod pallet {
 				ThreadOf::<T>::insert(&substrate_account, t);
 			}
 
-			// Prime the microblog capacity row + provider ref (idempotent). on_first_bind ALREADY
-			// calls inc_providers — do NOT increment providers again here, or revoke's single
-			// dec would leave the count stuck.
+			// Prime the microblog capacity row + take the provider ref (idempotent). on_bind owns the
+			// single inc_providers call — do NOT increment providers again here, or revoke's single
+			// dec_providers would leave the count stuck (the gate-1 leak).
 			T::OnBind::on_bind(&substrate_account);
 
 			Self::deposit_event(Event::IdentityLinked {

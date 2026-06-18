@@ -10,7 +10,7 @@
 //   node op.mjs --call anchor.anchorAck       --args '[123, "0x<root>", "0x<txhash>", 7, 0]'
 //   node op.mjs --call validatorSet.addValidator --args '["5FHneW…"]'  --via committee
 //   node op.mjs --call talkStake.setStake     --args '["5Grw…", "0"]'  --via sudo   # dev fallback
-import { pathToFileURL } from "node:url";
+import { isMain } from "../_shared/cli.mjs";
 import { connect, drive, find } from "./lib.mjs";
 
 function parseArgv(argv) {
@@ -68,4 +68,4 @@ async function main() {
 }
 
 // Run only when invoked directly (not when imported by tests).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (isMain(import.meta.url)) main();

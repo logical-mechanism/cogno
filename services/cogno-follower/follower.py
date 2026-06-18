@@ -22,6 +22,7 @@ import json
 import os
 import secrets
 import subprocess
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -94,8 +95,15 @@ class NonceCache:
         self.ttl = ttl
         self.max_entries = max(1, max_entries)
         self._d: dict[str, tuple[str, float]] = {}
+        # ThreadingHTTPServer dispatches each request on its own thread, and issue/consume are compound
+        # read-modify-write sequences (get → check → pop). Guard the cache with a lock so two
+        # concurrent same-account requests can't both pass consume()'s check before either pops — a
+        # single-use-nonce double-consume race. (Defence-in-depth: the nonce is also committed in the
+        # signed payload and consumed last, so this only closes the cache layer's race window.)
+        self._lock = threading.Lock()
 
     def _evict(self, now: float) -> None:
+        # Caller holds self._lock (issue); not re-entrant, so it must NOT re-acquire.
         for k in [k for k, (_, exp) in self._d.items() if exp <= now]:
             self._d.pop(k, None)
         if len(self._d) >= self.max_entries:
@@ -105,23 +113,25 @@ class NonceCache:
                 self._d.pop(k, None)
 
     def issue(self, account_hex: str) -> str:
-        now = time.time()
-        self._evict(now)
-        nonce = secrets.token_hex(16)
-        self._d[account_hex.lower()] = (nonce, now + self.ttl)
-        return nonce
+        with self._lock:
+            now = time.time()
+            self._evict(now)
+            nonce = secrets.token_hex(16)
+            self._d[account_hex.lower()] = (nonce, now + self.ttl)
+            return nonce
 
     def consume(self, account_hex: str, nonce_hex: str) -> None:
-        rec = self._d.get(account_hex.lower())
-        if not rec:
-            raise VerifyError("no nonce issued for this account (or already used)")
-        nonce, expiry = rec
-        if time.time() > expiry:
-            self._d.pop(account_hex.lower(), None)
-            raise VerifyError("nonce expired (re-fetch and re-sign)")
-        if nonce != nonce_hex:
-            raise VerifyError("nonce mismatch")
-        self._d.pop(account_hex.lower(), None)  # single-use
+        with self._lock:
+            rec = self._d.get(account_hex.lower())
+            if not rec:
+                raise VerifyError("no nonce issued for this account (or already used)")
+            nonce, expiry = rec
+            if time.time() > expiry:
+                self._d.pop(account_hex.lower(), None)
+                raise VerifyError("nonce expired (re-fetch and re-sign)")
+            if nonce != nonce_hex:
+                raise VerifyError("nonce mismatch")
+            self._d.pop(account_hex.lower(), None)  # single-use
 
 
 def submit_link(identity_hash_hex: str, account_hex: str, thread_hex: str | None) -> dict:

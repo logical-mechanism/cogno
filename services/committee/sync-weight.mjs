@@ -21,7 +21,7 @@
 //
 // ⚠ HONESTY (DR-07): single-operator stack ⇒ D2-SHAPED, not D2-TRUST. See docs/D2-custody-runbook.md.
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
+import { isMain } from "../_shared/cli.mjs";
 import { connect, drive, has, operators, fetchJson } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
@@ -145,4 +145,4 @@ async function main() {
 }
 
 // Run only when invoked directly (not when imported by tests).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (isMain(import.meta.url)) main();

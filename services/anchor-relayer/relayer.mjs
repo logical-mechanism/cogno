@@ -52,6 +52,7 @@ import { getOwnerWallet, kupo, ogmios } from "../../app/scripts/m2d-wallet.mjs";
 // Hardened HTTP (timeouts + retry, shared with the committee — themes 3/4) + the pure, unit-tested
 // relayer helpers (relayer-9).
 import { fetchJson } from "../_shared/net.mjs";
+import { isMain } from "../_shared/cli.mjs";
 import { missedIntervals, parseAckTokens } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
@@ -71,6 +72,12 @@ const CONFIRM_DEPTH_SLOTS = Number(process.env.CONFIRM_DEPTH_SLOTS || "0");
 // breaker that leaves the anchor persisted-but-unacked, to be resumed ack-only on the next run/loop).
 const ACK_MAX_ATTEMPTS = Number(process.env.ACK_MAX_ATTEMPTS || "5");
 const ACK_BACKOFF_MS = Number(process.env.ACK_BACKOFF_MS || "4000");
+// Hard cap on a single committee/sudo `op.mjs` subprocess (relayer-2). `op.mjs` connects to the L3
+// node via @polkadot/api, whose WsProvider retries a dead endpoint FOREVER (no connect timeout), so a
+// stalled WS would otherwise block this synchronous `execFileSync` — and the whole single-threaded
+// relayer — indefinitely. On timeout the call throws and the ack is retried with backoff (never a
+// re-minted Cardano tx). Generous: a 3-of-5 motion is propose + vote×k + close ≈ several blocks.
+const OP_TIMEOUT_MS = Number(process.env.OP_TIMEOUT_MS || "120000");
 const STATE_FILE = process.env.STATE_FILE || "/tmp/cogno-m2/anchor-state.json";
 // The Cardano metadata label. 67797178 = ASCII "COGN" (C=67 O=79 G=71 N=78) — a self-assigned
 // (NOT CIP-10-registered) showcase label; documented in services/anchor-relayer/README.md.
@@ -89,7 +96,7 @@ const hexToBytes = (h) => Uint8Array.from(Buffer.from(stripHex(h), "hex"));
 // keys, so this is D2-SHAPED, not D2-TRUST. See docs/D2-custody-runbook.md.
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 const ANCHOR_VIA = process.env.ANCHOR_VIA || "committee";
 const OP_CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "committee", "op.mjs");
 
@@ -106,7 +113,7 @@ function committeeAnchorAck({ block, root, txhash, count, ts }) {
   // Capture op.mjs's output and read the ACTUAL inner committee events (anchor.AnchorAcked /
   // AckIgnored). Re-reading LastCheckpoint here instead would lag GRANDPA finalization (op.mjs
   // resolves at in-block, finalized state is ~1-2 blocks behind) and mis-report a real ack as ignored.
-  const out = execFileSync(process.execPath, [OP_CLI, "--call", "anchor.anchorAck", "--args", args, "--via", "committee", "--ws", WS], { encoding: "utf8" });
+  const out = execFileSync(process.execPath, [OP_CLI, "--call", "anchor.anchorAck", "--args", args, "--via", "committee", "--ws", WS], { encoding: "utf8", timeout: OP_TIMEOUT_MS });
   process.stdout.write(out);
   return parseAckTokens(out);
 }
@@ -129,15 +136,19 @@ function saveState(s) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
 }
 
-// Record an explicit tamper-evidence gap when the relayer skipped anchoring opportunities while it
-// was down (relayer-6). True backfill of historical heights needs archived state (the typed reads
-// key on a PINNED block), so we at least RECORD the hole — in state.gaps + a loud warning — rather
-// than letting it pass silently.
+// Record an explicit tamper-evidence gap for the intermediate anchoring heights the relayer skipped
+// (relayer-6). The relayer always anchors ONLY the latest finalized head, so intermediate due heights
+// are skipped BY DESIGN — this happens both after downtime AND during normal operation whenever the
+// finalized head advances by > one interval between cycles (e.g. while a prior anchor's Cardano
+// confirmation blocks the single-threaded loop). True backfill of historical heights needs archived
+// state (the typed reads key on a PINNED block), so we at least RECORD the hole — in state.gaps + a
+// warning — rather than letting it pass silently. The gap COUNT is accurate; the cause may be either
+// catch-up or downtime, so the message does not assert which.
 function recordGap(state, last, anchored, missed) {
   const gap = { afterBlock: last == null ? 0 : Number(last), anchoredBlock: Number(anchored), missedAnchors: missed, every: Number(ANCHOR_EVERY), at: new Date().toISOString() };
   (state.gaps ||= []).push(gap);
   saveState(state);
-  console.warn(`  ⚠ tamper-evidence GAP: ~${missed} anchor(s) skipped between #${gap.afterBlock} and #${anchored} (relayer was down) — recorded in state.gaps (relayer-6).`);
+  console.warn(`  ⚠ ANCHOR GAP: ~${missed} intermediate anchor height(s) between #${gap.afterBlock} and #${anchored} were NOT anchored (relayer anchors only the latest finalized head — normal catch-up between cycles, or downtime) — recorded in state.gaps (relayer-6).`);
 }
 
 // The Cardano tip slot (for the reorg-burial check). Best-effort; null on any error — but with a
@@ -157,26 +168,44 @@ async function tipSlot() {
 
 // Wait until Kupo shows a UTxO created by `txHash` at the relayer address (⇒ the tx is in a block)
 // AND it is buried >= CONFIRM_DEPTH_SLOTS past the tip (reorg safety, DR-09b). Returns the slot it
-// landed in (needed later to read the metadata back, for verify). On timeout returns undefined —
-// the caller treats that as a (possible) rollback and resubmits. If a seen tx ROLLS BACK before it
-// buries, its Kupo match vanishes and we keep polling until burial or timeout, so it is never acked.
-// NOTE the `.catch` guards the WHOLE fetch+json: a Kupo blip mid-wait must not crash the relayer
-// while a tx is submitted-but-unacked.
+// landed in (needed later to read the metadata back, for verify).
+//
+// relayer-1 (fund-burn fix): DISTINGUISH "the tx never made it / rolled back" (→ undefined → the
+// caller resubmits a fresh PAID tx) from "the tx IS on-chain but not yet buried, or the Ogmios tip is
+// momentarily unavailable" (→ keep polling, NEVER resubmit). Once the tx has been SEEN unspent at the
+// relayer address, resubmitting would mint a SECOND paid tx for a height already witnessed — and with
+// a production burial depth (a few hundred slots ≈ minutes at ~1 slot/s) that exceeds the
+// CONFIRM_TIMEOUT_MS window, the old "timeout ⇒ resubmit" path did exactly that every timeout even
+// with a perfectly healthy stack. So CONFIRM_TIMEOUT_MS now bounds ONLY the first-appearance wait;
+// once seen, burial waiting is unbounded-but-safe (fail-closed: never ack an unburied tx, never
+// re-mint a confirmed one). NOTE the `.catch` guards the WHOLE fetch+json: a Kupo blip mid-wait must
+// not crash the relayer while a tx is submitted-but-unacked.
 async function waitConfirmed(address, txHash) {
-  const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
-  while (Date.now() < deadline) {
+  const appearDeadline = Date.now() + CONFIRM_TIMEOUT_MS;
+  let everSeen = false;
+  let warnedPendingBurial = false;
+  for (;;) {
     // Bounded timeout + retry so a hung/blipping Kupo cannot stall a submitted-but-unacked tx (relayer-7).
     const matches = await fetchJson(`${KUPO}/matches/${address}?unspent`, { timeoutMs: 10_000, retries: 2 }).catch(() => []);
     const hit = (matches || []).find((m) => (m.transaction_id || "").toLowerCase() === txHash.toLowerCase());
     const slot = hit?.created_at?.slot_no ?? null;
     if (slot != null) {
+      everSeen = true;
       if (CONFIRM_DEPTH_SLOTS <= 0) return slot; // demo: ack as soon as it's in a block
       const tip = await tipSlot();
       if (tip != null && tip - slot >= CONFIRM_DEPTH_SLOTS) return slot; // buried past k ⇒ reorg-safe
+      // On-chain but not yet buried (or tip unavailable): KEEP polling for burial — do NOT resubmit.
+      if (!warnedPendingBurial && Date.now() >= appearDeadline) {
+        warnedPendingBurial = true;
+        console.warn(`  ⏳ tx ${txHash} confirmed at slot ${slot} but not yet buried ${CONFIRM_DEPTH_SLOTS} slots (tip ${tip ?? "unavailable"}) — waiting for burial, NOT resubmitting (relayer-1).`);
+      }
+    } else if (everSeen) {
+      return undefined; // SEEN unspent then GONE ⇒ a genuine rollback ⇒ resubmit
+    } else if (Date.now() >= appearDeadline) {
+      return undefined; // never appeared within CONFIRM_TIMEOUT_MS ⇒ it likely didn't make it ⇒ resubmit
     }
     await sleep(POLL_MS);
   }
-  return undefined;
 }
 
 async function buildAndSubmitMetadataTx(wallet, address, genesisHex, head, postCount, ts) {
@@ -229,18 +258,61 @@ async function recordAck(api, sudo, head, txHash, postCount, ts) {
 
 // The oldest persisted anchor whose Cardano tx confirmed but whose L3 ack never landed. Resuming from
 // it (ack-only) is what prevents re-minting a paid Cardano tx for a height already witnessed (relayer-1).
+// `failed` entries (permanently unackable — relayer-4) are skipped so they don't wedge the loop.
+// Single O(n) min-scan (no sort) over the append-only anchors list.
 function oldestPendingAnchor(state) {
-  return (state.anchors || [])
-    .filter((a) => a.cardanoTx && a.slot != null && !a.acked)
-    .sort((a, b) => a.block - b.block)[0] || null;
+  let best = null;
+  for (const a of state.anchors || []) {
+    if (!a.cardanoTx || a.slot == null || a.acked || a.failed) continue;
+    if (best === null || a.block < best.block) best = a;
+  }
+  return best;
+}
+
+// The on-chain anchor checkpoint as plain numbers, or null if none recorded. Used to decide, BEFORE
+// retrying a pending ack (relayer-4), whether the height is already covered (a no-op) or can never be
+// acked because it would regress post_count/timestamp (the pallet rejects it as NonMonotonicAnchor).
+async function readCheckpoint(api) {
+  const cp = await api.query.Anchor.LastCheckpoint.getValue();
+  return cp
+    ? { block: Number(cp.block_number), postCount: Number(cp.post_count), ts: Number(cp.timestamp) }
+    : null;
 }
 
 // Record `entry` on L3, retrying ONLY the ack (never the paid Cardano tx) with bounded exponential
 // backoff. A dispatch/tooling error OR a reply with neither AnchorAcked nor AckIgnored (relayer-2) is
-// a hard failure for that attempt — never a silent "submitted" success. After ACK_MAX_ATTEMPTS the
-// entry stays persisted-but-unacked (acked:false) and we throw, so the next run resumes ack-only.
+// a hard failure for that attempt — never a silent "submitted" success. Returns `{ recorded }` (true
+// iff AnchorAcked or AckIgnored landed — both mean "on L3"; `ignored` is not surfaced separately as
+// no caller distinguishes it). After ACK_MAX_ATTEMPTS of TRANSIENT failure the entry stays
+// persisted-but-unacked and we throw, so the next run resumes ack-only.
+//
+// relayer-4 (permanent-failure guard): a PERMANENTLY-unackable entry would otherwise be retried by
+// `drainPending` on every loop iteration, wedging all forward anchoring. So before retrying we
+// cross-check the on-chain checkpoint: if it already covers this height the ack is a no-op (mark
+// recorded); if this entry would REGRESS post_count/timestamp (⇒ NonMonotonicAnchor, which can never
+// succeed) we mark it `failed` and skip it, letting the loop make progress. A failed checkpoint read
+// is treated as transient (fall through to the normal retry).
 async function recordAckWithRetry(api, sudo, state, entry) {
   const head = { number: BigInt(entry.block), stateRoot: entry.root };
+
+  let cp;
+  try { cp = await readCheckpoint(api); } catch { cp = undefined; }
+  if (cp) {
+    if (cp.block >= entry.block) {
+      // Already recorded or superseded on-chain ⇒ submitting would only yield AckIgnored.
+      console.log(`  · anchor #${entry.block} already covered by on-chain LastCheckpoint #${cp.block} — marking recorded (relayer-4).`);
+      entry.acked = true; entry.ackedAt = new Date().toISOString(); saveState(state);
+      return { recorded: true };
+    }
+    if (entry.postCount < cp.postCount || entry.ts < cp.ts) {
+      entry.failed = true;
+      entry.failReason = `would regress vs on-chain LastCheckpoint #${cp.block} (post_count ${entry.postCount} < ${cp.postCount} or ts ${entry.ts} < ${cp.ts}) → NonMonotonicAnchor`;
+      entry.failedAt = new Date().toISOString(); saveState(state);
+      console.error(`  ✗ anchor #${entry.block} PERMANENTLY unackable and SKIPPED (relayer-4): ${entry.failReason}. The chain state regressed vs persisted relayer state (a reset/fork?) — investigate; new anchoring continues.`);
+      return { recorded: false, failed: true };
+    }
+  }
+
   let acked = false, ignored = false;
   for (let attempt = 1; attempt <= ACK_MAX_ATTEMPTS; attempt++) {
     try {
@@ -262,7 +334,7 @@ async function recordAckWithRetry(api, sudo, state, entry) {
   entry.acked = acked || ignored; // both mean "recorded on L3" ⇒ stop retrying
   entry.ackedAt = new Date().toISOString();
   saveState(state);
-  return { acked: !!acked, ignored: !!ignored };
+  return { recorded: acked || ignored };
 }
 
 // Finish any persisted-but-unacked anchors (ack-only, never re-mint) before considering a new height.
@@ -289,7 +361,7 @@ async function anchorOne(api, sudo, wallet, address, genesisHex, head, state) {
     console.log(`  cardano tx : ${txHash}  (submitted, attempt ${attempt}) — waiting for confirmation…`);
     slot = await waitConfirmed(address, txHash);
     if (slot !== undefined) break;
-    console.log(`  ⚠ not confirmed in ${CONFIRM_TIMEOUT_MS}ms (rollback?) — rebuilding & resubmitting`);
+    console.log(`  ⚠ tx never appeared in ${CONFIRM_TIMEOUT_MS}ms or rolled back — rebuilding & resubmitting`);
     await sleep(POLL_MS);
   }
   console.log(`  ✓ confirmed at slot ${slot}`);
@@ -300,8 +372,8 @@ async function anchorOne(api, sudo, wallet, address, genesisHex, head, state) {
   state.anchors.push(entry);
   saveState(state);
 
-  const { acked } = await recordAckWithRetry(api, sudo, state, entry);
-  return { txHash, slot, acked: !!acked };
+  const { recorded } = await recordAckWithRetry(api, sudo, state, entry);
+  return { txHash, slot, acked: !!recorded };
 }
 
 async function reackLast(api, sudo) {
@@ -407,6 +479,6 @@ async function main() {
 }
 
 // Run only when invoked directly (not when imported by tests).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   main().catch((e) => { console.error("RELAYER FAILED:", e?.stack || e?.message || e); process.exit(1); });
 }
