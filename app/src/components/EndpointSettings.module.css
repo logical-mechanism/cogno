@@ -146,3 +146,14 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+
+@media (max-width: 40rem) {
+  /* Full-width, comfortably tappable actions on a phone (mirrors StakePanel). */
+  .actions {
+    justify-content: stretch;
+  }
+  .cancel,
+  .save {
+    flex: 1 1 0;
+  }
+}

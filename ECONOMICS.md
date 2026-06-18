@@ -1,6 +1,9 @@
 # cogno-chain — Economic Model: Stake-Weighted Talk Capacity
 
-> **Status:** Design document. Specifies the economic model that replaces per-post fees. Pairs with `PLAN.md` (Approach A). Honest about caveats; numbers are illustrative and runtime-tunable, not consensus-critical magic.
+> **Status: IMPLEMENTED through M8 (runtime spec 107).** This document is the original economic
+> design; see [`docs/M*-build.md`](docs/) (esp. M2c/M2d/M5) for what was built. It specifies the
+> model that replaces per-post fees. Pairs with `PLAN.md` (Approach A). Honest about caveats;
+> numbers are illustrative and runtime-tunable, not consensus-critical magic.
 > **One-line thesis:** Your stake is your rate limit. Lock ADA on Cardano → it grants a regenerating "talk capacity" on the solochain → posting is feeless and consumes capacity → capacity refills over time. No money is spent per post.
 
 > **RECONCILED to docs/DECISION-REGISTER.md (2026-06-16).** The decisions below override this doc where they conflict; the inline text has been corrected to match.

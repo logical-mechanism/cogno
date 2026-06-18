@@ -2,98 +2,131 @@
 
 // useSigner — the active posting key in React state.
 //
-// M1 honesty: the sr25519 key lives ONLY in memory (or, for a dev account, is
-// re-derived from the well-known DEV_PHRASE). We persist at most the CHOICE of dev
-// account (a URI like "//Alice"), never secret material. Generating a session key
-// surfaces its mnemonic ONCE so the user can back it up; we keep no copy on disk.
+// PRODUCT FLOW: the posting key is DERIVED from the connected Cardano wallet's signature
+// (lib/signer/wallet-derive.ts) — nothing stored, no password, no second wallet. `connectWallet`
+// signs the fixed derive-message and becomes that key; re-derive each session by connecting again.
+//
+// ADVANCED (hidden behind a toggle): the well-known dev accounts (//Alice…), for testing / operator
+// use without a wallet. We persist only the dev CHOICE (a URI), never any secret.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  DEV_ACCOUNTS,
-  getDevSigner,
-  generateSessionSigner,
-} from "@/lib/signer";
+import { DEV_ACCOUNTS, getDevSigner } from "@/lib/signer";
+import { deriveSignerFromWallet } from "@/lib/signer/wallet-derive";
 import type { PostingSigner } from "@/lib/types";
 
 const DEV_CHOICE_KEY = "cogno.signer.devChoice";
 const DEFAULT_DEV = "//Alice";
-
-function readDevChoice(): string {
-  if (typeof window === "undefined") return DEFAULT_DEV;
-  try {
-    const v = window.localStorage.getItem(DEV_CHOICE_KEY);
-    if (v && (DEV_ACCOUNTS as readonly string[]).includes(v)) return v;
-  } catch {
-    /* localStorage may be unavailable (private mode); fall through to default */
-  }
-  return DEFAULT_DEV;
-}
-
-function writeDevChoice(uri: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(DEV_CHOICE_KEY, uri);
-  } catch {
-    /* best-effort; the choice is non-essential */
-  }
-}
+const LAST_WALLET_KEY = "cogno.wallet.last"; // non-secret: the wallet id, to offer a one-click reconnect
 
 export interface UseSigner {
-  /** The currently active posting signer. */
+  /** The currently active posting signer (a wallet-derived key, or a dev account in advanced mode). */
   signer: PostingSigner;
-  /** The dev URIs available to switch to (e.g. "//Alice"). */
+  /** The active posting key is a wallet-derived key (the product flow is "connected"). */
+  walletConnected: boolean;
+  /** Posting is enabled: a wallet is connected OR a dev account was explicitly chosen (advanced). */
+  postingEnabled: boolean;
+  /** The Cardano wallet id the posting key was derived from (drives bind + vault lock/exit). */
+  connectedWalletId: string | null;
+  /** The connected wallet address (its identity/stake key). */
+  walletAddress: string | null;
+  /** A sign-to-derive is in flight. */
+  deriving: boolean;
+  error: string | null;
+  /** A previously-connected wallet id, surfaced to offer a one-click reconnect. */
+  lastWalletId: string | null;
+  /** Connect a CIP-30 wallet and derive the posting key from its signature. */
+  connectWallet: (walletId: string) => Promise<boolean>;
+  /** Drop the derived key (back to disconnected). */
+  disconnect: () => void;
+
+  // ── advanced / dev (hidden behind a toggle) ──
   devAccounts: readonly string[];
-  /** Switch to a dev account (re-derived; persisted as a non-secret choice). */
   setDevAccount: (uri: string) => void;
-  /** Generate a fresh in-memory session key and become it. */
-  useSessionKey: () => void;
-  /** The mnemonic of the active session key, surfaced ONCE for backup (null otherwise). */
-  sessionMnemonic: string | null;
-  /** Dismiss the surfaced mnemonic once the user has backed it up. */
-  ackSessionMnemonic: () => void;
 }
 
 export function useSigner(): UseSigner {
-  // Default deterministically to //Alice so SSR/first paint matches; the persisted
-  // choice is applied on the client after mount (avoids hydration mismatch).
-  const [signer, setSigner] = useState<PostingSigner>(() =>
-    getDevSigner(DEFAULT_DEV),
-  );
-  const [sessionMnemonic, setSessionMnemonic] = useState<string | null>(null);
+  // Default deterministically to //Alice so SSR/first paint matches; the persisted dev choice and
+  // last-wallet hint are applied on the client after mount (avoids a hydration mismatch).
+  const [signer, setSigner] = useState<PostingSigner>(() => getDevSigner(DEFAULT_DEV));
+  const [connectedWalletId, setConnectedWalletId] = useState<string | null>(null);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [deriving, setDeriving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastWalletId, setLastWalletId] = useState<string | null>(null);
+  // The default //Alice is a BACKGROUND signer, not an active identity: posting stays disabled
+  // until the user connects a wallet or explicitly chooses a dev account (advanced).
+  const [devChosen, setDevChosen] = useState(false);
 
-  // Apply the persisted dev choice once, on the client only.
-  const appliedChoice = useRef(false);
+  const init = useRef(false);
   useEffect(() => {
-    if (appliedChoice.current) return;
-    appliedChoice.current = true;
-    const choice = readDevChoice();
-    if (choice !== DEFAULT_DEV) {
-      setSigner(getDevSigner(choice));
+    if (init.current) return;
+    init.current = true;
+    try {
+      const w = window.localStorage.getItem(LAST_WALLET_KEY);
+      if (w) setLastWalletId(w);
+    } catch {
+      /* localStorage may be unavailable (private mode); ignore */
     }
   }, []);
 
+  const connectWallet = useCallback(async (walletId: string): Promise<boolean> => {
+    setDeriving(true);
+    setError(null);
+    try {
+      const { signer: s, signingAddress } = await deriveSignerFromWallet(walletId);
+      setSigner(s);
+      setDevChosen(false);
+      setConnectedWalletId(walletId);
+      setWalletAddress(signingAddress);
+      try {
+        window.localStorage.setItem(LAST_WALLET_KEY, walletId);
+        setLastWalletId(walletId);
+      } catch {
+        /* best-effort */
+      }
+      return true;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return false;
+    } finally {
+      setDeriving(false);
+    }
+  }, []);
+
+  const disconnect = useCallback(() => {
+    setConnectedWalletId(null);
+    setWalletAddress(null);
+    setError(null);
+    setDevChosen(false);
+    setSigner(getDevSigner(DEFAULT_DEV));
+  }, []);
+
   const setDevAccount = useCallback((uri: string) => {
-    setSessionMnemonic(null);
+    setError(null);
+    setConnectedWalletId(null);
+    setWalletAddress(null);
+    setDevChosen(true);
     setSigner(getDevSigner(uri));
-    writeDevChoice(uri);
+    try {
+      window.localStorage.setItem(DEV_CHOICE_KEY, uri);
+    } catch {
+      /* best-effort; the choice is non-essential */
+    }
   }, []);
 
-  const useSessionKey = useCallback(() => {
-    const { signer: s, mnemonic } = generateSessionSigner();
-    setSigner(s);
-    setSessionMnemonic(mnemonic);
-  }, []);
-
-  const ackSessionMnemonic = useCallback(() => {
-    setSessionMnemonic(null);
-  }, []);
-
+  const walletConnected = signer.kind === "derived";
   return {
     signer,
+    walletConnected,
+    postingEnabled: walletConnected || devChosen,
+    connectedWalletId,
+    walletAddress,
+    deriving,
+    error,
+    lastWalletId,
+    connectWallet,
+    disconnect,
     devAccounts: DEV_ACCOUNTS,
     setDevAccount,
-    useSessionKey,
-    sessionMnemonic,
-    ackSessionMnemonic,
   };
 }

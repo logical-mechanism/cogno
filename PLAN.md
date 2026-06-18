@@ -1,7 +1,8 @@
 # cogno-chain — Exploration & Plan
 
-> **Status:** Exploratory architecture document. This is a PLAN, not code. Technically rigorous and deliberately honest about tradeoffs.
-> **Repo:** `LogicalMechanism/cogno-chain` (currently an empty `README.md`)
+> **Status: IMPLEMENTED through M8 (runtime spec 107).** This document is the original design;
+> see [`docs/M*-build.md`](docs/) for what was actually built. Technically rigorous and
+> deliberately honest about tradeoffs.
 > **Owner context:** builder of **Cogno**, a Cardano-native forum/thread system. Verified against the live code: `cogno_v3/cogno_v3_contracts` (two validators only — `thread.ak`, `always_false.ak`) and the Django/pycardano backend at `cogno_v3/cogno_v3_app/backend`.
 > **Goal:** A showcase monorepo that connects the **Polkadot SDK solochain template** to Cardano with a simple **"users post text, users read text"** app, gated by Cardano wallet ownership (CIP-8) and witnessed on Cardano.
 > **Companion:** [`ECONOMICS.md`](ECONOMICS.md) specifies the **economic model** — a stake-weighted, regenerating, *feeless* "talk capacity" (Hive-RC / Midnight-DUST style) that **replaces** the per-post refundable deposit sketched in §5 below. Cogno's original fee-per-post model is exactly what killed it at volume; capacity is the fix. Where this document and `ECONOMICS.md` disagree on anti-spam, `ECONOMICS.md` is authoritative.

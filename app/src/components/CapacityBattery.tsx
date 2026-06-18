@@ -83,7 +83,7 @@ export function CapacityBattery({ view, consts, draftLen }: CapacityBatteryProps
         return { text: "ready to post", cls: styles.stOk };
       case "no_weight":
         return {
-          text: "no talk capacity yet — the operator grants weight (M2c dev); Cardano-staked weight arrives in M2d",
+          text: "no talk capacity yet — lock ADA in the vault (the Stake panel) to earn it; an empty battery means no Cardano-sourced weight yet",
           cls: styles.stEmpty,
         };
       case "too_long":
