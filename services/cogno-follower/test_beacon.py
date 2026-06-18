@@ -5,6 +5,7 @@ test asserts the SAME hex for the SAME owner (vkey a1*28 payment + vkey b2*28 st
 from pycardano import Address, Network
 from pycardano.hash import VerificationKeyHash, ScriptHash
 
+import beacon
 from beacon import beacon_name_hex
 
 # The value locked in contracts/validators/talk_vault.ak :: beacon_name_matches_follower.
@@ -45,6 +46,33 @@ def main():
     print(f"  ✓ enterprise (no stake) beacon: {beacon_name_hex(ent)[:16]}…")
     print(f"  ✓ script-stake beacon:          {beacon_name_hex(scr)[:16]}…")
     ok += 2
+
+    # Unsupported credential type → ValueError (beacon.py:38). NEVER reached by a normal Address, so
+    # drive it directly: an off-chain Address subtype the contract's owner type can't represent must
+    # be REJECTED, not silently hashed into a bogus identity.
+    try:
+        beacon._credential(object())
+        assert False, "unsupported payment credential type was NOT rejected"
+    except ValueError as e:
+        assert "unsupported payment/stake credential" in str(e), f"wrong error: {e}"
+    print("  ✓ unsupported credential type → ValueError (rejected, not coerced)")
+    ok += 1
+
+    # Same guard fires for a bad STAKE credential reached through the full beacon_name_hex path
+    # (Some(Inline(credential)) → _credential), proving the rejection isn't payment-part-only.
+    bad_stake = Address(
+        VerificationKeyHash(bytes.fromhex("a1" * 28)),
+        VerificationKeyHash(bytes.fromhex("b2" * 28)),
+        network=Network.TESTNET,
+    )
+    object.__setattr__(bad_stake, "_staking_part", 12345)  # an int is neither vkey/script/pointer
+    try:
+        beacon_name_hex(bad_stake)
+        assert False, "unsupported STAKE credential type was NOT rejected"
+    except ValueError as e:
+        assert "unsupported payment/stake credential" in str(e), f"wrong error: {e}"
+    print("  ✓ unsupported stake credential type → ValueError (via beacon_name_hex)")
+    ok += 1
 
     print(f"\n== beacon agreement: {ok} checks passed ==")
 

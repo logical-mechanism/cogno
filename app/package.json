@@ -10,6 +10,7 @@
     "lint": "next lint",
     "papi:add": "papi add cogno -w ws://127.0.0.1:9944",
     "papi": "papi",
+    "test": "vitest run",
     "grant": "node scripts/grant-weight.mjs",
     "acceptance": "node scripts/papi-acceptance.mjs",
     "acceptance:m2c": "node scripts/m2c-acceptance.mjs"
@@ -35,6 +36,7 @@
     "@types/react-dom": "^18.3.0",
     "eslint": "^8.57.1",
     "eslint-config-next": "^14.2.15",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.9"
   }
 }

@@ -28,8 +28,9 @@ interface ChainEvent {
 /**
  * Extract the post id carried by a Microblog `PostCreated` / `PostDeleted` event, if present.
  * Returns undefined when the events array has no matching Microblog event (e.g. a failed tx).
+ * Exported for unit tests (the id extraction is load-bearing for the inBestBlock/finalized phases).
  */
-function extractPostId(
+export function extractPostId(
   events: ChainEvent[] | undefined,
   eventName: "PostCreated" | "PostDeleted",
 ): bigint | undefined {
@@ -44,7 +45,7 @@ function extractPostId(
 }
 
 /** Best-effort dispatchError → human string, so failures are surfaced rather than swallowed. */
-function stringifyDispatchError(
+export function stringifyDispatchError(
   err: { type: string; value: unknown } | undefined,
 ): string {
   if (!err) return "Transaction failed (no dispatch error reported).";
@@ -64,7 +65,7 @@ function stringifyDispatchError(
 }
 
 /** Best-effort thrown-error → message (signer rejection, network drop, capacity gate, etc.). */
-function stringifyError(err: unknown): string {
+export function stringifyError(err: unknown): string {
   let raw: string;
   if (err instanceof Error) raw = err.message;
   else {
@@ -94,8 +95,11 @@ function stringifyError(err: unknown): string {
  *   "finalized"         ok:true  -> { phase: "finalized", finalized:true, blockNumber, txHash, postId }
  *                        ok:false -> { phase: "error", error }
  * Any thrown error (signer rejection / network) -> { phase: "error", error }.
+ *
+ * Exported for unit tests: the phase ordering (and the silent-skip of dropped best-block
+ * states) is load-bearing for the honest tx lifecycle.
  */
-function watchTx(
+export function watchTx(
   submit: () => { subscribe: (o: {
     next: (e: TxWatchEvent) => void;
     error: (err: unknown) => void;
@@ -163,7 +167,10 @@ function watchTx(
           }
         },
         error(err: unknown) {
-          // Signer rejection, validity error, or network drop — surface honestly.
+          // Signer rejection, validity error, or network drop — surface honestly AND log it
+          // with context so a failed submission is debuggable (the UI only shows the message).
+          // eslint-disable-next-line no-console
+          console.error(`cogno: ${eventName} submission failed (stream error):`, stringifyError(err), err);
           subscriber.next({ phase: "error", error: stringifyError(err) });
           subscriber.complete();
         },
@@ -172,7 +179,10 @@ function watchTx(
         },
       });
     } catch (err) {
-      // Synchronous failure building/signing the tx.
+      // Synchronous failure building/signing the tx — log it (a thrown tx-build error is
+      // otherwise invisible beyond the one-line message the UI renders).
+      // eslint-disable-next-line no-console
+      console.error(`cogno: ${eventName} submission threw while building/signing:`, stringifyError(err), err);
       subscriber.next({ phase: "error", error: stringifyError(err) });
       subscriber.complete();
     }

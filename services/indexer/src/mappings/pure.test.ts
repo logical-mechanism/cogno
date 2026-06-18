@@ -1,0 +1,181 @@
+// Unit tests for the PURE mapping logic (src/mappings/pure.ts) — the decode/normalization branches
+// extracted from mappingHandlers so they run with NO @subql/@polkadot runtime. These cover the
+// ERROR/EDGE paths that the acceptance tests (verify-m4c.mjs, m5-acceptance.mjs) cannot reach:
+// malformed/truncated UTF-8, missing codecs, the timestamp-0/negative/missing fallback decision,
+// oversized text, and hex/parentId normalization edge cases.
+//
+// Run: node --experimental-strip-types src/mappings/pure.test.ts   (Node 22.12+, exits 1 on failure)
+//
+// Style matches the repo's acceptance scripts: ✓ on pass, ✗ + exit(1) on the first failure.
+
+import {
+  isWellFormedIdentityHash,
+  normalizeIdentityHash,
+  normalizeParentId,
+  timestampDecision,
+  utf8FromBytes,
+} from "./pure.ts";
+
+let failed = 0;
+let passed = 0;
+
+function check(name: string, cond: boolean): void {
+  if (cond) {
+    passed++;
+    console.log(`  ✓ ${name}`);
+  } else {
+    failed++;
+    console.log(`  ✗ ${name}`);
+  }
+}
+
+function eq(name: string, actual: unknown, expected: unknown): void {
+  const same = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!same) console.log(`      actual  =${JSON.stringify(actual)}\n      expected=${JSON.stringify(expected)}`);
+  check(name, same);
+}
+
+// ── utf8FromBytes ─────────────────────────────────────────────────────────────
+console.log("\nutf8FromBytes:");
+
+eq("null bytes -> ''", utf8FromBytes(null), "");
+eq("undefined bytes -> ''", utf8FromBytes(undefined), "");
+eq("empty array -> ''", utf8FromBytes(new Uint8Array([])), "");
+eq(
+  "ascii 'hello' round-trips",
+  utf8FromBytes(new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f])),
+  "hello",
+);
+// multi-byte: € is E2 82 AC in UTF-8
+eq("multi-byte € decodes", utf8FromBytes(new Uint8Array([0xe2, 0x82, 0xac])), "€");
+// emoji 😀 = F0 9F 98 80 (4 bytes)
+eq("4-byte emoji 😀 decodes", utf8FromBytes(new Uint8Array([0xf0, 0x9f, 0x98, 0x80])), "😀");
+
+// Truncated multi-byte (€ with its last byte chopped) must NOT throw — it substitutes U+FFFD.
+{
+  let threw = false;
+  let out = "";
+  try {
+    out = utf8FromBytes(new Uint8Array([0xe2, 0x82]));
+  } catch {
+    threw = true;
+  }
+  check("truncated UTF-8 does not throw", !threw);
+  check("truncated UTF-8 yields replacement char (no crash, no halt)", out.includes("�"));
+}
+
+// Lone invalid continuation byte (0xff is never valid in UTF-8) -> replacement, no throw.
+{
+  let threw = false;
+  let out = "";
+  try {
+    out = utf8FromBytes(new Uint8Array([0xff, 0xfe, 0x68, 0x69]));
+  } catch {
+    threw = true;
+  }
+  check("invalid UTF-8 bytes do not throw", !threw);
+  // valid tail "hi" survives even though the leading bytes are garbage
+  check("invalid UTF-8 preserves the valid tail", out.endsWith("hi"));
+}
+
+// Oversized text (well beyond any BoundedVec bound) decodes fully — pure layer does not clamp;
+// length bounds are enforced on-chain, the indexer faithfully stores whatever the chain emitted.
+{
+  const big = new Uint8Array(50_000).fill(0x61); // 50k 'a'
+  const out = utf8FromBytes(big);
+  eq("oversized text length preserved", out.length, 50_000);
+  check("oversized text content is all 'a'", out === "a".repeat(50_000));
+}
+
+// Embedded NUL bytes are kept verbatim (NUL is valid UTF-8) — not silently truncated C-string style.
+eq(
+  "embedded NUL is preserved",
+  utf8FromBytes(new Uint8Array([0x61, 0x00, 0x62])),
+  "a\u0000b",
+);
+
+// ── timestampDecision ─────────────────────────────────────────────────────────
+console.log("\ntimestampDecision:");
+
+{
+  const r = timestampDecision(1_700_000_000_000);
+  check("valid ms -> no fallback", r.didFallback === false);
+  eq("valid ms -> correct Date", r.date.getTime(), 1_700_000_000_000);
+}
+{
+  const r = timestampDecision(0);
+  check("zero ms -> fallback flagged", r.didFallback === true);
+  eq("zero ms -> epoch 0", r.date.getTime(), 0);
+}
+{
+  const r = timestampDecision(-5);
+  check("negative ms -> fallback flagged", r.didFallback === true);
+  eq("negative ms -> epoch 0", r.date.getTime(), 0);
+}
+{
+  const r = timestampDecision(undefined);
+  check("undefined (unreadable) -> fallback flagged", r.didFallback === true);
+  eq("undefined -> epoch 0", r.date.getTime(), 0);
+}
+{
+  const r = timestampDecision(null);
+  check("null -> fallback flagged", r.didFallback === true);
+}
+{
+  const r = timestampDecision(NaN);
+  check("NaN -> fallback flagged (not a usable wall-clock)", r.didFallback === true);
+  eq("NaN -> epoch 0", r.date.getTime(), 0);
+}
+{
+  const r = timestampDecision(Infinity);
+  check("Infinity -> fallback flagged", r.didFallback === true);
+  eq("Infinity -> epoch 0", r.date.getTime(), 0);
+}
+{
+  // boundary: 1ms is the smallest positive value -> valid, NOT fallback
+  const r = timestampDecision(1);
+  check("1ms (boundary positive) -> no fallback", r.didFallback === false);
+  eq("1ms -> Date(1)", r.date.getTime(), 1);
+}
+
+// ── normalizeParentId ─────────────────────────────────────────────────────────
+console.log("\nnormalizeParentId:");
+
+eq("undefined parent -> undefined (top-level)", normalizeParentId(undefined), undefined);
+eq("null parent -> undefined", normalizeParentId(null), undefined);
+eq("empty string -> undefined (no dangling FK)", normalizeParentId(""), undefined);
+eq("whitespace-only -> undefined", normalizeParentId("   "), undefined);
+eq("real id '42' -> '42'", normalizeParentId("42"), "42");
+eq("id with surrounding whitespace is trimmed", normalizeParentId("  7 "), "7");
+
+// ── normalizeIdentityHash ─────────────────────────────────────────────────────
+console.log("\nnormalizeIdentityHash:");
+
+const HASH64 = "ab".repeat(32); // 64 hex chars
+eq("undefined -> undefined (unbound author)", normalizeIdentityHash(undefined), undefined);
+eq("null -> undefined", normalizeIdentityHash(null), undefined);
+eq("empty -> undefined", normalizeIdentityHash(""), undefined);
+eq("already 0x-prefixed lower stays", normalizeIdentityHash("0x" + HASH64), "0x" + HASH64);
+eq("upper-case is lower-cased", normalizeIdentityHash("0x" + "AB".repeat(32)), "0x" + HASH64);
+eq("missing 0x prefix is added", normalizeIdentityHash(HASH64), "0x" + HASH64);
+
+// ── isWellFormedIdentityHash ───────────────────────────────────────────────────
+console.log("\nisWellFormedIdentityHash:");
+
+check("canonical 0x+64hex is well-formed", isWellFormedIdentityHash("0x" + HASH64) === true);
+check("undefined is not well-formed", isWellFormedIdentityHash(undefined) === false);
+check("missing 0x is not well-formed", isWellFormedIdentityHash(HASH64) === false);
+check("too short (63 hex) is not well-formed", isWellFormedIdentityHash("0x" + "a".repeat(63)) === false);
+check("too long (65 hex) is not well-formed", isWellFormedIdentityHash("0x" + "a".repeat(65)) === false);
+check("non-hex char (g) is not well-formed", isWellFormedIdentityHash("0x" + "g".repeat(64)) === false);
+check("upper-case hex is not well-formed (we store lower)", isWellFormedIdentityHash("0x" + "A".repeat(64)) === false);
+
+// Pipeline invariant: a normalized canonical hash is always well-formed.
+check(
+  "normalize then check is self-consistent for canonical input",
+  isWellFormedIdentityHash(normalizeIdentityHash(HASH64)) === true,
+);
+
+// ── summary ─────────────────────────────────────────────────────────────────
+console.log(`\n${failed === 0 ? "✓" : "✗"} pure.test: ${passed} passed, ${failed} failed`);
+process.exit(failed === 0 ? 0 : 1);

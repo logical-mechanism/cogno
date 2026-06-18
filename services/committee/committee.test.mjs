@@ -9,7 +9,7 @@
 //   • send              — terminal non-inclusion status rejects (so finalize-mode can't hang)
 import { revive } from "./op.mjs";
 import { pickLargest, lockToWeight } from "./sync-weight.mjs";
-import { viaCommittee, send } from "./lib.mjs";
+import { viaCommittee, viaSudo, send } from "./lib.mjs";
 
 let PASS = 0, FAIL = 0;
 const ok = (cond, msg) => { if (cond) { PASS++; console.log(`  ✓ ${msg}`); } else { FAIL++; console.log(`  ✗ FAIL: ${msg}`); } };
@@ -26,12 +26,21 @@ ok(revive("") === "", "empty string passes through (not 0)");
 ok(revive("0xabc123") === "0xabc123", "hex string passes through");
 ok(revive("5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY") === "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY", "ss58 address passes through");
 ok(revive(null) === null && revive(42) === 42, "null / number pass through");
+// gap 11: a very large decimal string must convert losslessly (BigInt has no fixed width — no truncation).
+const big = "9" + "0".repeat(100);
+ok(revive(big) === BigInt(big) && revive(big).toString().length === 101, "very large decimal string → BigInt, no truncation");
+// gap 15: scientific notation is NOT all-digits, so it passes through as a string (regex is intentional).
+ok(revive("1e10") === "1e10", "scientific notation passes through as string (not coerced to BigInt)");
+ok(revive("-5") === "-5", "negative number-string passes through (regex requires all digits)");
 
 // ── pickLargest ──────────────────────────────────────────────────────────────────────────────
 console.log("\n[pickLargest] anti-Sybil vault filter + burial gate");
 const V = "ab".repeat(28);            // 56-hex policy id
 const A = "11".repeat(32), B = "22".repeat(32); // 64-hex beacon names
+let _utxoSeq = 0;
 const mk = (coins, name, qty = 1, slot = 0, extra = {}) => ({
+	transaction_id: (_utxoSeq++).toString(16).padStart(64, "0"), // unique per UTxO (realistic Kupo shape)
+	output_index: 0,
 	value: { coins: String(coins), assets: { [`${V}.${name}`]: String(qty), ...extra } },
 	created_at: { slot_no: slot },
 });
@@ -58,12 +67,46 @@ ok(pickLargest(buried, V, { tipSlot: 100, confirmDepth: 10000 }).size === 0, "no
 ok(pickLargest([mk(400, A, 1, 95)], V, { tipSlot: null, confirmDepth: 10 }).size === 0, "missing tip with depth>0 ⇒ skip (fail closed)");
 ok(pickLargest([], V).size === 0, "no matches ⇒ empty");
 
+// gap 1: a zero-lovelace beacon (a swept UTxO that still carries the NFT) must NOT be credited —
+// otherwise `0n > -1n` would list the identity as observed with no value, and lockToWeight(0n)==0n
+// would silently set zero weight for it. The floor must reject value-less beacons outright.
+ok(pickLargest([mk(0, A)], V).size === 0, "zero-coin beacon is NOT credited (no value-less identity)");
+ok(pickLargest([mk(0, A), mk(120, A)], V).get(A) === 120n, "a real (positive) UTxO still wins over a zero-coin one for the same beacon");
+ok(pickLargest([mk(0, A), mk(0, B)], V).size === 0, "all-zero vault ⇒ nothing credited (not size 2)");
+
+// gap 7/12: the optional `reasons` map records WHY each skipped UTxO was rejected (pure fn, caller logs).
+let why = new Map();
+pickLargest([mk(0, A), mk(500, B, 2)], V, { reasons: why });
+ok(why.size === 2, "reasons map captures both rejected UTxOs (zero-coin + bad qty)");
+ok([...why.values()].some((r) => /zero\/negative lovelace/.test(r)), "reasons explains the zero-lovelace skip");
+ok([...why.values()].some((r) => /not exactly one beacon/.test(r)), "reasons explains the bad-quantity skip");
+why = new Map();
+pickLargest([mk(400, A, 1, 95)], V, { tipSlot: 100, confirmDepth: 10000, reasons: why });
+ok([...why.values()].some((r) => /burial gate.*too fresh/.test(r)), "reasons explains the burial-gate (too-fresh) skip");
+
+// gap 2/6/7/11: the `reasons` map is keyed per-UTxO and pruned of credited beacons, so (a) a beacon
+// CREDITED via a buried UTxO is never ALSO reported as rejected, and (b) two rejected UTxOs for the
+// SAME beacon do not overwrite each other.
+why = new Map();
+pickLargest([mk(100, A, 1, 80), mk(400, A, 1, 95)], V, { tipSlot: 100, confirmDepth: 10, reasons: why });
+ok(why.size === 0, "a beacon credited via a buried UTxO is NOT also listed as rejected (no contradictory diagnostics)");
+why = new Map();
+pickLargest([mk(100, A, 1, 95), mk(200, A, 1, 96)], V, { tipSlot: 100, confirmDepth: 10, reasons: why });
+ok(why.size === 2, "two too-fresh UTxOs for the same beacon are both reported (unique per-UTxO keys, no overwrite)");
+
+// gap 9: a wrong/non-matching vaultHash yields an empty map (matching fails, no false credit).
+ok(pickLargest([mk(100, A)], "ff".repeat(28)).size === 0, "non-matching vaultHash ⇒ nothing credited (wrong policy is silent-but-empty)");
+
 // ── lockToWeight ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[lockToWeight] MIN_LOCK gate");
 ok(lockToWeight(100_000_000n) === 100_000_000n, "exactly MIN_LOCK passes");
 ok(lockToWeight(250_000_000n) === 250_000_000n, "above MIN_LOCK passes");
 ok(lockToWeight(99_999_999n) === 0n, "below MIN_LOCK ⇒ 0");
 ok(lockToWeight(0n) === 0n, "zero ⇒ 0");
+// gap 10: the minLock parameter is honored, not just the default.
+ok(lockToWeight(150n, 200n) === 0n, "custom minLock: below the custom floor ⇒ 0");
+ok(lockToWeight(200n, 200n) === 200n, "custom minLock: exactly the custom floor passes");
+ok(lockToWeight(250n, 200n) === 250n, "custom minLock: above the custom floor passes verbatim");
 
 // ── viaCommittee (mock api) ──────────────────────────────────────────────────────────────────
 console.log("\n[viaCommittee] propose → vote ×k → close (mock api)");
@@ -110,6 +153,59 @@ await throws(() => viaCommittee(mockApi([], { proposeEvents: [ev("followerCommit
 
 const imm = await viaCommittee(mockApi([], { proposeEvents: [ev("followerCommittee", "Executed")] }), inner, { ...baseOpts, threshold: 1 });
 ok(imm.proposalIndex === null, "threshold==1 executes on propose (no motion)");
+
+// gap 2: a threshold larger than the available members can NEVER reach Approved. With the default
+// voters = members.slice(0, threshold), this silently under-votes; the guard must reject up front so
+// the operator sees the real cause (committee too small) instead of an unreconcilable "not Approved".
+await throws(() => viaCommittee(mockApi([ev("followerCommittee", "Approved"), ev("followerCommittee", "Executed")]), inner, { members, operators: { committee: members }, threshold: 7 }), "threshold > member count is rejected up front (motion can never pass)");
+// An explicitly short voters list (fewer ayes than threshold) is rejected the same way.
+await throws(() => viaCommittee(mockApi([ev("followerCommittee", "Approved"), ev("followerCommittee", "Executed")]), inner, { ...baseOpts, threshold: 3, voters: members.slice(0, 2) }), "explicit voters list shorter than threshold is rejected");
+
+// gap 8: a malformed Proposed event (empty data) — proposed.data[1].toNumber() must surface a clear
+// throw, not be swallowed as a success. (Documents that the driver assumes the runtime event shape.)
+await throws(() => viaCommittee(mockApi([ev("followerCommittee", "Approved"), ev("followerCommittee", "Executed")], { proposeEvents: [ev("followerCommittee", "Proposed", [])] }), inner, baseOpts), "malformed Proposed event (empty data) throws, not silently mis-parsed");
+
+// ── send resilience (malformed chain feedback) ──────────────────────────────────────────────────
+console.log("\n[send] resilience to malformed registry / events");
+// gap 3: a module dispatchError whose findMetaError throws (malformed metadata / bad registry) must
+// reject CLEANLY — not let an uncaught exception escape the subscription callback and hang the promise.
+const badRegistryApi = { registry: { findMetaError: () => { throw new Error("bad registry"); } } };
+const moduleErrTx = { signAndSend(_s, cb) { queueMicrotask(() => cb({ status: { isInBlock: false, isFinalized: false }, events: [], dispatchError: { isModule: true, asModule: {}, toString: () => "Module(…)" } })); return Promise.resolve(() => {}); } };
+await throws(() => send(badRegistryApi, moduleErrTx, members[0], "bad-registry", {}), "send rejects cleanly when registry.findMetaError throws (no uncaught/hang)");
+
+// gap 4: a malformed events array (an entry with no `.event` field) must reject with context at
+// resolve time — not throw an uncaught destructure error out of the callback (leaving the promise hung).
+const malformedEventsTx = { signAndSend(_s, cb) { queueMicrotask(() => cb({ status: { isInBlock: true, type: "InBlock", isFinalized: false, isDropped: false, isInvalid: false, isUsurped: false, isFinalityTimeout: false }, events: [null], dispatchError: undefined })); return Promise.resolve(() => {}); } };
+await throws(() => send(mockApi([]), malformedEventsTx, members[0], "malformed-events", {}), "send rejects (not throws) on a malformed events array (null entry)");
+
+// send happy path still resolves the mapped events (guards the gap-4 try/catch didn't break success).
+const goodEventsTx = mockTx([ev("x", "Y", [1])]);
+const sentEvs = await send(mockApi([]), goodEventsTx, members[0], "good", { finalize: true });
+ok(sentEvs.length === 1 && sentEvs[0].section === "x" && sentEvs[0].method === "Y", "send still maps events on the happy path (try/catch wrap is transparent)");
+
+// gap 5: the optional debug log fires on status transitions (inBlock / finalized) and is off by default.
+const logs = [];
+await send(mockApi([]), mockTx([]), members[0], "logged", { finalize: true, log: (m) => logs.push(m) });
+ok(logs.some((l) => /inBlock/.test(l)) && logs.some((l) => /finalized/.test(l)), "send logs inBlock + finalized transitions when a log is injected");
+
+// gap 6: viaCommittee logs a per-vote line (which voter i/n) so a failed vote is attributable.
+const vlogs = [];
+await viaCommittee(mockApi([ev("followerCommittee", "Approved"), ev("followerCommittee", "Executed")]), inner, { ...baseOpts, log: (m) => vlogs.push(m) });
+ok(vlogs.filter((l) => /vote \d\/\d on motion #7/.test(l)).length === 3, "viaCommittee logs each of the 3 votes with voter index + motion #");
+
+// ── viaSudo (the EnsureRoot dev fallback) ───────────────────────────────────────────────────────
+console.log("\n[viaSudo] EnsureRoot dev fallback surfaces Sudid + reverted inner");
+const sudoApi = (sudidEvents) => ({
+	registry: { findMetaError: () => ({ section: "x", name: "y" }) },
+	tx: { sudo: { sudo: () => mockTx(sudidEvents) } },
+});
+const sudoKey = { address: "Alice" };
+const sudoRes = await viaSudo(sudoApi([ev("sudo", "Sudid", [{ isErr: false }])]), inner, { sudo: sudoKey, operators: { committee: members } });
+ok(sudoRes.via === "sudo" && sudoRes.evs.some((e) => e.section === "sudo" && e.method === "Sudid"), "viaSudo returns the Sudid events with via=sudo");
+// a missing Sudid event is rejected (the privileged call did not dispatch as expected).
+await throws(() => viaSudo(sudoApi([ev("system", "ExtrinsicSuccess")]), inner, { sudo: sudoKey, operators: { committee: members } }), "viaSudo with no Sudid event is rejected");
+// committee-3: a reverted inner call under sudo (Sudid result=Err at data[0]) is surfaced, not success.
+await throws(() => viaSudo(sudoApi([ev("sudo", "Sudid", [errResult])]), inner, { sudo: sudoKey, operators: { committee: members } }), "viaSudo with a reverted inner call (Err result) is rejected");
 
 // ── send terminal-state rejection ─────────────────────────────────────────────────────────────
 console.log("\n[send] terminal non-inclusion status rejects (so finalize-mode can't hang)");

@@ -47,10 +47,21 @@ export async function deriveSignerFromWallet(walletId: string): Promise<DerivedA
   const signingAddress = await wallet.getChangeAddress();
   const props = cst.Address.fromBech32(signingAddress).getProps();
   if (props.paymentPart?.type !== 0) {
+    // Critical security boundary: a script/vault payment credential is never a user vkey we can
+    // derive a posting key from. Log the credential type so a mis-connected wallet is diagnosable.
+    // eslint-disable-next-line no-console
+    console.error(
+      `cogno: wallet "${walletId}" change address has a non-vkey payment credential (type=${props.paymentPart?.type}); refusing to derive a posting key`,
+    );
     throw new Error("connect a normal wallet address (a verification key), not a script/vault address");
   }
   const sig = (await wallet.signData(DERIVE_MESSAGE, signingAddress)) as { signature: string; key: string };
-  if (!sig?.signature) throw new Error("the wallet did not return a signature");
+  if (!sig?.signature) {
+    // The wallet refused / returned nothing — log it (the identity flow is dead without a signature).
+    // eslint-disable-next-line no-console
+    console.error(`cogno: wallet "${walletId}" did not return a signature for the derive message`);
+    throw new Error("the wallet did not return a signature");
+  }
   // seed = blake2b_256 of the COSE_Sign1 signature bytes (deterministic for a given wallet+message).
   const seed = blake2b(hexToBytes(sig.signature), undefined, 32);
   const signer = signerFromSeed(seed, { label: "wallet key", kind: "derived" });

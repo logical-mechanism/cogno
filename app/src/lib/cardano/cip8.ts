@@ -74,6 +74,10 @@ export async function bindIdentity(opts: {
     const signingAddress: string = await wallet.getChangeAddress();
     const props = cst.Address.fromBech32(signingAddress).getProps();
     if (props.paymentPart?.type !== 0) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `cogno: bind aborted — wallet "${opts.walletId}" change address has a non-vkey payment credential (type=${props.paymentPart?.type}); never bind from a script/vault address`,
+      );
       throw new Error("signing address has a script payment credential — bind from a normal wallet address, never a script/vault address");
     }
 
@@ -89,6 +93,11 @@ export async function bindIdentity(opts: {
       !payload.includes(`account=${account}`) ||
       !payload.includes(`genesis=${genesis}`)
     ) {
+      // A malicious / mis-configured follower must never get us to sign something off-domain.
+      // eslint-disable-next-line no-console
+      console.error(
+        `cogno: bind aborted — follower payload failed domain/account/genesis check for account ${account.slice(0, 8)}…; refusing to sign`,
+      );
       throw new Error("follower returned an unexpected payload — refusing to sign");
     }
 
@@ -122,10 +131,19 @@ export async function bindIdentity(opts: {
       }),
     });
     if (bres.ok !== true) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `cogno: follower rejected the bind for account ${account.slice(0, 8)}…:`,
+        (bres.error as string) || "(no reason given)",
+      );
       return { ok: false, signingAddress, error: (bres.error as string) || "follower rejected the bind" };
     }
     return { ok: true, identityHash: bres.identity_hash as string, signingAddress };
   } catch (e) {
+    // The whole bind is best-effort and returns a structured outcome, but a swallowed error is
+    // a silent identity-flow failure — log it with the account for diagnosis.
+    // eslint-disable-next-line no-console
+    console.error(`cogno: bindIdentity failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

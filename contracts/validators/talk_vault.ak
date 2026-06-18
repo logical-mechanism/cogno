@@ -311,6 +311,27 @@ test mint_plus_two_fails() fail {
   talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
 }
 
+test mint_with_no_beacon_bearing_output_fails() fail {
+  // search exhaustion (util.ak `search_for_output_by_token`): the beacon is minted (+1) but NO output
+  // holds it (the lone output is a plain wallet UTxO) → the search hits its `[]` arm and `fail`s with
+  // the new "searched N outputs" trace. Exercises the one explicit error-message path in the layer.
+  let wallet =
+    Output {
+      address: owner_addr(),
+      value: assets.from_lovelace(lock),
+      datum: NoDatum,
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      outputs: [wallet],
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), 1),
+    }
+  talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
+}
+
 test mint_into_trashy_output_fails() fail {
   // a foreign token rides along in the beacon output (policies length != 2).
   let out =
@@ -330,6 +351,21 @@ test mint_into_trashy_output_fails() fail {
       mint: assets.from_asset(vault_hash, beacon(), 1),
     }
   talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
+}
+
+test mint_at_exact_floor_succeeds() {
+  // floor boundary (validate.ak:57 `>= min_lock`): fund the vault with EXACTLY the floor and pass
+  // that SAME value as min_lock — proving the comparison is `>=` (inclusive), not `>` (exclusive).
+  // Uses a floor distinct from `lock` so it can't pass by accident of the 100M constant.
+  let floor = 5_000_000
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      outputs: [vault_output(vault_addr(), floor, owner_addr())],
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), 1),
+    }
+  talk_vault.mint(floor, [Mint(owner_addr())], vault_hash, tx)
 }
 
 test burn_minus_one_succeeds() {
@@ -420,6 +456,29 @@ test continuation_drops_beacon_fails() fail {
   talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
 }
 
+test continuation_with_double_beacon_fails() fail {
+  // beacon-quantity pin (talk_vault.ak:94 `quantity_of(cont) == 1`): a continuation carrying TWO
+  // beacon units must be rejected. (This also trips the token-set freeze on talk_vault.ak:97 since
+  // the input holds only 1 — both are correct rejectors; there is no single-guard isolation because
+  // a valid 1-beacon input can never legitimately continue into a 2-beacon output.)
+  let cont =
+    Output {
+      address: vault_addr(),
+      value: assets.from_lovelace(lock + 50_000_000)
+        |> assets.add(vault_hash, beacon(), 2),
+      datum: InlineDatum(VaultDatum { owner: owner_addr() }),
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [cont],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
 test continuation_changes_stake_cred_fails() fail {
   let bad_cont_addr =
     address.from_script(vault_hash) |> address.with_delegation_key(other_vkh)
@@ -468,6 +527,29 @@ test full_exit_without_burn_fails() fail {
       outputs: [wallet],
       extra_signatories: [owner_vkh],
       // mint left empty → no -1 burn → must fail.
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test full_exit_with_beacon_in_other_output_fails() fail {
+  // belt-and-suspenders isolation (talk_vault.ak:82-85): a FULL EXIT correctly burns the beacon
+  // (mint -1, so the first conjunct passes), but a NON-vault change output still carries 1 beacon
+  // unit → the `list.all(... quantity == 0)` scan must find it and reject. This isolates the scan:
+  // delete the list.all line and this tx would pass (the -1 mint alone is satisfied).
+  let change_with_beacon =
+    Output {
+      address: owner_addr(),
+      value: assets.from_lovelace(lock) |> assets.add(vault_hash, beacon(), 1),
+      datum: NoDatum,
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [change_with_beacon],
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), -1),
     }
   talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
 }
@@ -623,6 +705,32 @@ test mint_redeemer_length_mismatch_fails() fail {
   talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
 }
 
+test mint_duplicate_redeemer_entry_fails() fail {
+  // uniqueness ISOLATED (validate.ak:93): two DISTINCT tokens are minted under the policy (size == 2)
+  // and the redeemer has length 2 — so the length guard (validate.ak:92) is satisfied — but the two
+  // redeemer entries are IDENTICAL `Mint(owner)`, so `list.unique != mint_redeemer` is the SOLE
+  // rejector. (A plain [Mint(a), Mint(a)] for a single token can't reach here: one distinct token vs
+  // length-2 trips the length guard first, since a Value never carries a zero-quantity entry.)
+  let beacon_out = vault_output(vault_addr(), lock, owner_addr())
+  // a separate output parks the 2nd distinct beacon so size(tokens)==2 without dirtying beacon_out.
+  let second_out =
+    Output {
+      address: vault_addr(),
+      value: assets.from_lovelace(lock) |> assets.add(vault_hash, "second", 1),
+      datum: InlineDatum(VaultDatum { owner: owner_addr() }),
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      outputs: [beacon_out, second_out],
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), 1)
+        |> assets.add(vault_hash, "second", 1),
+    }
+  talk_vault.mint(lock, [Mint(owner_addr()), Mint(owner_addr())], vault_hash, tx)
+}
+
 test mint_into_non_inline_datum_fails() fail {
   // non-inline-datum trap: the beacon output carries NoDatum → the mint arm's `expect InlineDatum`.
   let out =
@@ -691,6 +799,44 @@ test mint_with_script_owner_fails() fail {
       mint: assets.from_asset(vault_hash, nm, 1),
     }
   talk_vault.mint(lock, [Mint(script_owner)], vault_hash, tx)
+}
+
+test vault_with_no_stake_delegation_succeeds() {
+  // DR-01 edge: an owner with NO stake delegation (stake_credential == None). The continuation pin
+  // `cont.address.stake_credential == owner.stake_credential` (talk_vault.ak:99) must accept
+  // None == None — i.e. the whole-Address freeze treats absence-of-delegation as a first-class state.
+  // The beacon name is derived over THIS owner, so every fixture below must use it consistently.
+  let bare_owner = address.from_verification_key(owner_vkh)
+  let bare_vault = address.from_script(vault_hash)
+  let bare_beacon = util.beacon_name(bare_owner)
+  let bare_datum: Data = VaultDatum { owner: bare_owner }
+  let bare_input =
+    Input {
+      output_reference: oref(),
+      output: Output {
+        address: bare_vault,
+        value: assets.from_lovelace(lock)
+          |> assets.add(vault_hash, bare_beacon, 1),
+        datum: InlineDatum(VaultDatum { owner: bare_owner }),
+        reference_script: None,
+      },
+    }
+  let cont =
+    Output {
+      address: bare_vault,
+      value: assets.from_lovelace(lock + 50_000_000)
+        |> assets.add(vault_hash, bare_beacon, 1),
+      datum: InlineDatum(VaultDatum { owner: bare_owner }),
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [bare_input],
+      outputs: [cont],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(bare_datum), Spend, oref(), tx)
 }
 
 test spend_equal_value_continuation_succeeds() {
@@ -788,6 +934,35 @@ test prop_continuation_accepts_any_nonneg_topup(delta via fuzz.int_at_least(0)) 
       extra_signatories: [owner_vkh],
     }
   talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test prop_beacon_name_differs_on_payment_cred_change(
+  h via fuzz.bytearray_fixed(28),
+) {
+  // beacon-name COMPOSITION (util.ak:17): the name is blake2b_256(cbor.serialise(owner Address)),
+  // so changing the PAYMENT credential (stake fixed) must change the name — proving the hash binds
+  // the whole Address, not just part of it. (Skip the one collision: h == the baseline payment vkh.)
+  if h == owner_vkh {
+    True
+  } else {
+    let other =
+      address.from_verification_key(h) |> address.with_delegation_key(stake_vkh)
+    util.beacon_name(other) != beacon()
+  }
+}
+
+test prop_beacon_name_differs_on_stake_cred_change(
+  h via fuzz.bytearray_fixed(28),
+) {
+  // companion to the above on the STAKE leg: changing the stake credential (payment fixed) must
+  // change the beacon name — DR-01's whole-Address binding includes the delegation part.
+  if h == stake_vkh {
+    True
+  } else {
+    let other =
+      address.from_verification_key(owner_vkh) |> address.with_delegation_key(h)
+    util.beacon_name(other) != beacon()
+  }
 }
 
 // ── BENCHMARKS (I-02) — realistic-context budget baselines (run with `aiken bench`). ─────────

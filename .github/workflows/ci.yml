@@ -1,10 +1,12 @@
 name: ci
 
-# Build + test the three layers of cogno-chain on every push / PR:
-#   • contracts — the Aiken L1 talk_vault validator (aiken check: 38 tests incl. property/fuzz)
-#   • rust      — formatting + clippy + unit tests for the FRAME pallets (the full node/runtime
-#                 wasm build is heavy and left to the release path; the pallets are the logic)
-#   • frontend  — the Next.js static export (type-check + build) + lint
+# Build + test the layers of cogno-chain on every push / PR:
+#   • contracts — the Aiken L1 talk_vault validator (aiken check: property/fuzz + boundary tests)
+#   • rust      — clippy + unit tests for the FRAME pallets (the full node/runtime wasm build is
+#                 heavy and left to the release path; the pallets are the logic)
+#   • frontend  — the Next.js static export (type-check + build) + lint + Vitest unit tests
+#   • services  — the off-chain JS relayer/committee/_shared helpers, the SubQuery indexer's pure
+#                 mapping logic, and the Python Cogno-Follower (hand-rolled suites, exit-on-fail)
 on:
   push:
     branches: [main]
@@ -64,5 +66,51 @@ jobs:
       - run: npm ci
       - name: lint
         run: npm run lint
+      - name: test (vitest — pure logic units)
+        run: npm run test
       - name: build (static export)
         run: npm run build
+
+  services:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+      # The committee tooling resolves @polkadot/api through a node_modules symlink to the
+      # indexer; the Cogno-Follower's CIP-8 agreement test shells out to a MeshJS fixture in app/.
+      - name: install indexer deps (committee symlinks here for @polkadot)
+        working-directory: services/indexer
+        run: npm ci
+      - name: install app deps (Cogno-Follower CIP-8 fixture + PAPI descriptors)
+        working-directory: app
+        run: npm ci
+      - name: recreate gitignored node_modules symlinks
+        run: |
+          ln -sfn ../indexer/node_modules services/committee/node_modules
+          ln -sfn ../../app/node_modules services/anchor-relayer/node_modules
+      - name: js — anchor-relayer + _shared + committee
+        run: |
+          node services/anchor-relayer/relayer.test.mjs
+          node services/_shared/shared.test.mjs
+          node services/committee/committee.test.mjs
+      - name: indexer — pure mapping unit tests + typecheck
+        working-directory: services/indexer
+        run: |
+          npm run codegen   # generate src/types/ (gitignored SubQuery codegen output) so tsc resolves ../types
+          node --experimental-strip-types src/mappings/pure.test.ts
+          npx tsc --noEmit -p tsconfig.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: install Cogno-Follower deps
+        working-directory: services/cogno-follower
+        run: pip install -r requirements.txt
+      - name: python — Cogno-Follower (beacon / vault / http / CIP-8 agreement)
+        working-directory: services/cogno-follower
+        run: |
+          python test_beacon.py
+          python test_vault.py
+          python test_http.py
+          python test_agreement.py

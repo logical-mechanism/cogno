@@ -51,6 +51,11 @@ mod benchmarking;
 pub mod weights;
 pub use weights::*;
 
+/// Log target for operator-facing diagnostics on the identity-gate edge paths (rejections,
+/// idempotent revoke no-ops, the bind/revoke provider-ref lifecycle). These are `log::` lines
+/// only — the on-chain audit trail is still the `IdentityLinked`/`Revoked` events, NOT logs.
+pub const LOG_TARGET: &str = "runtime::cogno-gate";
+
 /// The on-chain identity key: the 32-byte `blake2b_256` of the serialized owner Cardano
 /// Address (== the L1 beacon `token_name`, DR-01). A fixed `[u8; 32]` (not a `BoundedVec`):
 /// it is exactly a hash, so the codec enforces the length for free and the `AccountOf` key is
@@ -163,19 +168,41 @@ pub mod pallet {
 		) -> DispatchResult {
 			T::FollowerOrigin::ensure_origin(origin)?;
 
-			// 1:1 enforcement — reject a second bind on EITHER side (the anti-Sybil anchor).
-			ensure!(
-				!PkhOf::<T>::contains_key(&substrate_account),
-				Error::<T>::AccountAlreadyBound
-			);
-			ensure!(!AccountOf::<T>::contains_key(identity_hash), Error::<T>::PkhAlreadyBound);
+			// 1:1 enforcement — reject a second bind on EITHER side (the anti-Sybil anchor). A
+			// rejected bind is an operator-visible anomaly (a follower tried to double-bind an
+			// already-anchored account or identity) — warn so it surfaces in the node logs, not
+			// just as a silent DispatchError.
+			if PkhOf::<T>::contains_key(&substrate_account) {
+				log::warn!(
+					target: LOG_TARGET,
+					"link_identity rejected: account already bound (1:1 account side); identity={:?}",
+					identity_hash,
+				);
+				return Err(Error::<T>::AccountAlreadyBound.into());
+			}
+			if AccountOf::<T>::contains_key(identity_hash) {
+				log::warn!(
+					target: LOG_TARGET,
+					"link_identity rejected: identity already bound (1:1 identity side); identity={:?}",
+					identity_hash,
+				);
+				return Err(Error::<T>::PkhAlreadyBound.into());
+			}
 
 			// Validate the optional thread pointer up front (fallible) before any write.
 			let thread = match thread_pointer {
-				Some(ptr) => Some(
-					BoundedVec::<u8, ConstU32<10>>::try_from(ptr)
-						.map_err(|_| Error::<T>::BadThread)?,
-				),
+				Some(ptr) => {
+					let len = ptr.len();
+					Some(BoundedVec::<u8, ConstU32<10>>::try_from(ptr).map_err(|_| {
+						log::warn!(
+							target: LOG_TARGET,
+							"link_identity rejected: thread pointer too long ({} bytes > 10); identity={:?}",
+							len,
+							identity_hash,
+						);
+						Error::<T>::BadThread
+					})?)
+				},
 				None => None,
 			};
 
@@ -189,6 +216,11 @@ pub mod pallet {
 			// single inc_providers call — do NOT increment providers again here, or revoke's single
 			// dec_providers would leave the count stuck (the gate-1 leak).
 			T::OnBind::on_bind(&substrate_account);
+			log::debug!(
+				target: LOG_TARGET,
+				"link_identity ok: identity={:?} bound 1:1, provider ref taken via on_bind",
+				identity_hash,
+			);
 
 			Self::deposit_event(Event::IdentityLinked {
 				who: substrate_account,
@@ -209,12 +241,31 @@ pub mod pallet {
 		#[pallet::weight(T::WeightInfo::revoke())]
 		pub fn revoke(origin: OriginFor<T>, substrate_account: T::AccountId) -> DispatchResult {
 			T::FollowerOrigin::ensure_origin(origin)?;
-			let identity = PkhOf::<T>::take(&substrate_account).ok_or(Error::<T>::NotBound)?;
+			// A revoke of a never-bound account is REJECTED with NotBound (no state change, no event) —
+			// it is NOT a silent success. Log it at debug so a relayer/operator can tell a stale/retried
+			// revoke from a real one without scraping for the (deliberately absent) event.
+			let identity = match PkhOf::<T>::take(&substrate_account) {
+				Some(id) => id,
+				None => {
+					log::debug!(
+						target: LOG_TARGET,
+						"revoke rejected: account not bound (NotBound) — nothing to release",
+					);
+					return Err(Error::<T>::NotBound.into());
+				},
+			};
 			AccountOf::<T>::remove(identity);
 			ThreadOf::<T>::remove(&substrate_account);
 			// Symmetric teardown (gate-1): release the provider ref taken at bind + zero the banked
-			// capacity, while microblog KEEPS the (relock-safe) capacity row.
+			// capacity, while microblog KEEPS the (relock-safe) capacity row. NOTE: `on_revoke` is
+			// infallible today; if it is ever made fallible, an Err here would leak the bind/revoke
+			// provider-ref symmetry (the count stays incremented) — it MUST be error-checked then.
 			T::OnBind::on_revoke(&substrate_account);
+			log::debug!(
+				target: LOG_TARGET,
+				"revoke ok: identity={:?} unbound, provider ref released + banked capacity zeroed via on_revoke",
+				identity,
+			);
 			Self::deposit_event(Event::Revoked { who: substrate_account, identity });
 			Ok(())
 		}

@@ -39,7 +39,14 @@ export function useCapacity(
     let cancelled = false;
     readCapacityConsts(api)
       .then((k) => !cancelled && setConsts(k))
-      .catch(() => !cancelled && setConsts(null));
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        // Fail-closed: with no constants the advisory capacity battery cannot render. A missing
+        // constant means a spec mismatch or an unreachable node — make it visible, don't blank.
+        // eslint-disable-next-line no-console
+        console.warn("cogno: could not read capacity constants — advisory capacity check disabled:", err);
+        setConsts(null);
+      });
     return () => {
       cancelled = true;
     };

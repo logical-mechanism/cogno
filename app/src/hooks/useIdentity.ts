@@ -66,11 +66,19 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
             await new Promise((r) => setTimeout(r, 1000));
           }
           if (!resolved) {
+            // 20 blocks elapsed with no AccountOf resolution — log it (the follower may have
+            // accepted the proof but never submitted, or the chain hasn't caught up).
+            // eslint-disable-next-line no-console
+            console.error(
+              `cogno: bind AccountOf readback did not resolve to ${signer.ss58.slice(0, 8)}… after 20 polls (wallet "${walletId}", identityHash ${res.identityHash.slice(0, 10)}…)`,
+            );
             throw new Error("bind submitted, but the AccountOf readback did not resolve to your account — check the follower");
           }
           setBound(true);
           setBoundAddress(res.signingAddress ?? null);
         } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error(`cogno: bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
           setError(e instanceof Error ? e.message : String(e));
         } finally {
           setBinding(false);

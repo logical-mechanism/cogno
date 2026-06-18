@@ -29,6 +29,11 @@ extern crate alloc;
 
 pub use pallet::*;
 
+/// Log target for this pallet's operator-facing diagnostics (rejections, idempotent no-ops,
+/// clamps, provider-ref failures). Events remain the on-chain audit trail; these `log::` lines
+/// are stderr/journald-only and add NO new Event variants or spec change.
+pub const LOG_TARGET: &str = "runtime::microblog";
+
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
@@ -293,10 +298,25 @@ pub mod pallet {
 		/// zero the bucket, never underflow.
 		pub fn consume(who: &T::AccountId, now: BlockNumberFor<T>, cost: u128) {
 			let current = Self::current_capacity(who, now);
-			Capacity::<T>::insert(
-				who,
-				CapacityState { cap_last: current.saturating_sub(cost), last_block: now },
-			);
+			let remaining = current.saturating_sub(cost);
+			// Operator audit trail for the spam gate: every debit (and whether it floored at 0).
+			// debug, not an event — `consume` runs on inclusion and must not bloat the hot path.
+			if cost > current {
+				// An operator-forced over-budget post can floor the bucket at 0 (saturating_sub);
+				// surface that the debit was larger than the banked balance.
+				log::debug!(
+					target: LOG_TARGET,
+					"consume: {:?} debited cost={} from balance={} (floored to 0; over-budget)",
+					who, cost, current,
+				);
+			} else {
+				log::debug!(
+					target: LOG_TARGET,
+					"consume: {:?} debited cost={} ({} -> {})",
+					who, cost, current, remaining,
+				);
+			}
+			Capacity::<T>::insert(who, CapacityState { cap_last: remaining, last_block: now });
 		}
 	}
 
@@ -307,19 +327,34 @@ pub mod pallet {
 			Self::on_first_bind(who); // ensure the (relock-safe) capacity row
 			// Take a provider reference so the bound account's first feeless post is not rejected by
 			// `CheckNonce` (issue #3991). `link_identity` only binds an unbound account, so this inc
-			// is balanced by exactly one `dec` in `on_revoke`.
+			// is balanced by exactly one `dec` in `on_revoke`. `inc_providers` is infallible (it
+			// returns Created/Existed, never an error) — the matching failable side is `dec_providers`.
 			let _ = frame_system::Pallet::<T>::inc_providers(who);
 		}
 
 		fn on_revoke(who: &T::AccountId) {
 			// Release the provider reference taken at `on_bind` (gate-1). Best-effort: an outstanding
 			// consumer ref would make `dec_providers` fail, in which case the ref stays — no worse
-			// than the prior always-leak behaviour.
-			let _ = frame_system::Pallet::<T>::dec_providers(who);
+			// than the prior always-leak behaviour, but log so the leak is observable.
+			if let Err(e) = frame_system::Pallet::<T>::dec_providers(who) {
+				log::warn!(
+					target: LOG_TARGET,
+					"on_revoke: dec_providers failed for {:?}: {:?} — provider ref leaked (outstanding consumer ref?)",
+					who, e,
+				);
+			}
 			// Zero the banked capacity but KEEP the row (never delete — relock-farm guard).
 			if Capacity::<T>::contains_key(who) {
 				let now = frame_system::Pallet::<T>::block_number();
 				Capacity::<T>::insert(who, CapacityState { cap_last: 0, last_block: now });
+			} else {
+				// Revoke without a prior bind row: nothing to zero. Not an error (force-priming or
+				// a re-revoke), but worth a debug trail for a confused operator.
+				log::debug!(
+					target: LOG_TARGET,
+					"on_revoke: no capacity row for {:?} — nothing to zero (re-revoke or never primed)",
+					who,
+				);
 			}
 		}
 	}
@@ -343,8 +378,16 @@ pub mod pallet {
 			let who = ensure_signed(origin)?;
 			// ⚑ M2 identity gate (belt-and-suspenders): a weighted-but-unbound account (e.g. a
 			// sudo misconfig) is rejected here even though the capacity extension already rejects
-			// the unbound-because-unweighted case at the pool. Identity ≠ rate limit.
-			ensure!(T::IdentityGate::is_allowed(&who), Error::<T>::NotAllowed);
+			// the unbound-because-unweighted case at the pool. Identity ≠ rate limit. No event is
+			// emitted on rejection (the call reverts), so log it for the operator's audit trail.
+			if !T::IdentityGate::is_allowed(&who) {
+				log::debug!(
+					target: LOG_TARGET,
+					"post_message rejected: identity not allowed for {:?} (no live Cardano binding)",
+					who,
+				);
+				return Err(Error::<T>::NotAllowed.into());
+			}
 			let bounded: BoundedVec<u8, T::MaxLength> =
 				text.try_into().map_err(|_| Error::<T>::TooLong)?;
 
@@ -408,7 +451,18 @@ pub mod pallet {
 			// Clamp to what the account's current weight backs — never pre-charge above the ceiling.
 			// Shares the single ceiling helper with `current_capacity` so the two can't drift (CL1).
 			let weight = pallet_talk_stake::AllowedStake::<T>::get(&who);
-			let cap_last = core::cmp::min(cap_last, Self::capacity_ceiling(weight));
+			let ceiling = Self::capacity_ceiling(weight);
+			let requested = cap_last;
+			let cap_last = core::cmp::min(cap_last, ceiling);
+			// The CapacityForced event reports the STORED (clamped) value but not that clamping
+			// occurred — surface the silent operator clamp so a misconfigured prime is visible.
+			if requested > ceiling {
+				log::warn!(
+					target: LOG_TARGET,
+					"force_set_capacity: clamped requested cap_last={} to ceiling={} for {:?} (weight={})",
+					requested, ceiling, who, weight,
+				);
+			}
 			Capacity::<T>::insert(&who, CapacityState { cap_last, last_block: now });
 			Self::deposit_event(Event::CapacityForced { who, cap_last });
 			Ok(())
@@ -508,6 +562,11 @@ where
 			// burn block weight on a doomed tx. `Call` (not `ExhaustsResources`) — it's malformed, not
 			// merely over-budget, so it must not be retried.
 			if text.len() as u32 > T::MaxLength::get() {
+				log::debug!(
+					target: crate::LOG_TARGET,
+					"CheckCapacity: post from {:?} rejected at pool: text len={} > MaxLength={} (malformed, not retried)",
+					who, text.len(), T::MaxLength::get(),
+				);
 				return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
 			}
 			let now = frame_system::Pallet::<T>::block_number();
@@ -516,6 +575,13 @@ where
 			if have < need {
 				// POOL REJECT — bounds INCLUSION (the block author re-runs validate at build
 				// time and rejects over-budget posts). On a feeless chain this IS the spam gate.
+				// Off-chain only (the pool never touches storage): log so an operator can see WHICH
+				// accounts hit the capacity gate and tune capacity / debug a stuck relayer.
+				log::debug!(
+					target: crate::LOG_TARGET,
+					"CheckCapacity: post from {:?} rejected at pool: have={} < need={} for {} bytes",
+					who, have, need, text.len(),
+				);
 				return Err(TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources));
 			}
 			// Priority tied to remaining headroom + short longevity so over-budget bursts age
