@@ -53,7 +53,7 @@ import { getOwnerWallet, kupo, ogmios } from "../../app/scripts/m2d-wallet.mjs";
 // relayer helpers (relayer-9).
 import { fetchJson } from "../_shared/net.mjs";
 import { isMain } from "../_shared/cli.mjs";
-import { missedIntervals, parseAckTokens } from "./lib.mjs";
+import { missedIntervals, parseAckTokens, oldestPendingAnchor, classifyPendingAck, validateHex } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
 const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
@@ -85,7 +85,11 @@ const LABEL = Number(process.env.LABEL || "67797178");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stripHex = (h) => h.replace(/^0x/, "").toLowerCase();
-const hexToBytes = (h) => Uint8Array.from(Buffer.from(stripHex(h), "hex"));
+// hexToBytes is only ever called for the [u8;32] anchor fields (state_root, Cardano txhash). Validate
+// the input is exactly 32 bytes of clean hex BEFORE Buffer.from, so a corrupted/truncated state-file
+// hash (gap 6/10) is rejected EARLY with a descriptive error instead of silently producing the wrong
+// bytes (Buffer.from drops a trailing odd nibble) and failing cryptically deep in the ack dispatch.
+const hexToBytes = (h) => Uint8Array.from(Buffer.from(validateHex(h, 32), "hex"));
 
 // ── M6 (DR-07): drive the privileged `anchor_ack` through the 3-of-5 FollowerCommittee, not sudo ──
 // `ANCHOR_VIA` ∈ {committee (default), sudo}. The committee path shells out to the validated,
@@ -129,11 +133,29 @@ async function finalizedHead(client) {
 }
 
 function loadState() {
-  try { return JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); } catch { return { anchors: [] }; }
+  try {
+    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+  } catch (e) {
+    // gap 7: a MISSING state file (ENOENT, the normal first run) is expected — start empty quietly.
+    // ANY OTHER error (corrupt/partial JSON, permission denied, truncated file) means PERSISTED
+    // HISTORY WAS LOST: log it loudly with the path + error so an operator knows the relayer is about
+    // to re-anchor from scratch (risking double-anchoring), not silently swallow it as "no state".
+    if (e?.code !== "ENOENT")
+      console.error(`  ✗ loadState: could NOT read STATE_FILE ${STATE_FILE} (${e?.code || "?"}: ${e?.message || e}) — persisted anchor history LOST, starting empty. Re-anchoring from scratch may double-anchor; inspect/restore the file before continuing.`);
+    return { anchors: [] };
+  }
 }
 function saveState(s) {
   fs.mkdirSync(STATE_FILE.replace(/\/[^/]*$/, ""), { recursive: true });
-  fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+  const json = JSON.stringify(s, null, 2);
+  try {
+    fs.writeFileSync(STATE_FILE, json);
+  } catch (e) {
+    // gap 18: a failed persist (disk full, permission lost) is silent corruption-of-safety — the
+    // paid-tx/ack separation relies on the entry being on disk BEFORE the ack. Surface it loudly.
+    console.error(`  ✗ saveState: FAILED to persist ${STATE_FILE} (${e?.code || "?"}: ${e?.message || e}) — the anchor entry is NOT on disk; a crash now could re-mint a paid Cardano tx for this height.`);
+    throw e;
+  }
 }
 
 // Record an explicit tamper-evidence gap for the intermediate anchoring heights the relayer skipped
@@ -163,7 +185,14 @@ async function tipSlot() {
       retries: 2,
     });
     return result?.slot ?? null;
-  } catch { return null; }
+  } catch (e) {
+    // gap 8: a null tip is treated by the caller as "burial unknown ⇒ keep polling, don't resubmit",
+    // which is safe but indistinguishable from a healthy stack unless we say WHY the tip is missing.
+    // Log so the operator can tell a real Ogmios outage from a transient blip (best-effort; null still
+    // returned so the confirmation loop fails CLOSED rather than crashing on a submitted-but-unacked tx).
+    console.warn(`  ⚠ tipSlot: Ogmios tip query failed (${OGMIOS}): ${e?.message || e} — treating tip as unavailable (burial check skipped, NOT resubmitting).`);
+    return null;
+  }
 }
 
 // Wait until Kupo shows a UTxO created by `txHash` at the relayer address (⇒ the tx is in a block)
@@ -182,11 +211,19 @@ async function tipSlot() {
 // not crash the relayer while a tx is submitted-but-unacked.
 async function waitConfirmed(address, txHash) {
   const appearDeadline = Date.now() + CONFIRM_TIMEOUT_MS;
+  const startedAt = Date.now();
   let everSeen = false;
   let warnedPendingBurial = false;
+  let polls = 0;
   for (;;) {
+    polls++;
     // Bounded timeout + retry so a hung/blipping Kupo cannot stall a submitted-but-unacked tx (relayer-7).
-    const matches = await fetchJson(`${KUPO}/matches/${address}?unspent`, { timeoutMs: 10_000, retries: 2 }).catch(() => []);
+    const matches = await fetchJson(`${KUPO}/matches/${address}?unspent`, { timeoutMs: 10_000, retries: 2 }).catch((e) => {
+      // gap 6/17: a Kupo blip returns [] so the loop keeps polling without crashing — but if the tx
+      // was ALREADY seen, an empty result here is the SAME shape as a rollback and must not be silent.
+      console.warn(`  ⚠ waitConfirmed: Kupo match query failed for tx ${txHash} (${e?.message || e})${everSeen ? " — tx was previously seen; a persistent failure here looks like a rollback, investigate Kupo" : ""}.`);
+      return [];
+    });
     const hit = (matches || []).find((m) => (m.transaction_id || "").toLowerCase() === txHash.toLowerCase());
     const slot = hit?.created_at?.slot_no ?? null;
     if (slot != null) {
@@ -204,6 +241,10 @@ async function waitConfirmed(address, txHash) {
     } else if (Date.now() >= appearDeadline) {
       return undefined; // never appeared within CONFIRM_TIMEOUT_MS ⇒ it likely didn't make it ⇒ resubmit
     }
+    // gap 17: periodic trace so an operator tracing a specific anchor can see this tx is still being
+    // polled (and for how long) instead of a silent gap in the log between submit and confirm/timeout.
+    if (polls % 3 === 0)
+      console.log(`  · still waiting on tx ${txHash} (${everSeen ? "seen, awaiting burial" : "not yet on-chain"}, ${Math.round((Date.now() - startedAt) / 1000)}s, poll ${polls}).`);
     await sleep(POLL_MS);
   }
 }
@@ -256,18 +297,8 @@ async function recordAck(api, sudo, head, txHash, postCount, ts) {
   };
 }
 
-// The oldest persisted anchor whose Cardano tx confirmed but whose L3 ack never landed. Resuming from
-// it (ack-only) is what prevents re-minting a paid Cardano tx for a height already witnessed (relayer-1).
-// `failed` entries (permanently unackable — relayer-4) are skipped so they don't wedge the loop.
-// Single O(n) min-scan (no sort) over the append-only anchors list.
-function oldestPendingAnchor(state) {
-  let best = null;
-  for (const a of state.anchors || []) {
-    if (!a.cardanoTx || a.slot == null || a.acked || a.failed) continue;
-    if (best === null || a.block < best.block) best = a;
-  }
-  return best;
-}
+// `oldestPendingAnchor` (the resume-ordering: oldest non-failed unacked anchor) is the pure, unit-
+// tested helper from lib.mjs — imported above, used by drainPending.
 
 // The on-chain anchor checkpoint as plain numbers, or null if none recorded. Used to decide, BEFORE
 // retrying a pending ack (relayer-4), whether the height is already covered (a no-op) or can never be
@@ -296,21 +327,27 @@ async function recordAckWithRetry(api, sudo, state, entry) {
   const head = { number: BigInt(entry.block), stateRoot: entry.root };
 
   let cp;
-  try { cp = await readCheckpoint(api); } catch { cp = undefined; }
-  if (cp) {
-    if (cp.block >= entry.block) {
-      // Already recorded or superseded on-chain ⇒ submitting would only yield AckIgnored.
-      console.log(`  · anchor #${entry.block} already covered by on-chain LastCheckpoint #${cp.block} — marking recorded (relayer-4).`);
-      entry.acked = true; entry.ackedAt = new Date().toISOString(); saveState(state);
-      return { recorded: true };
-    }
-    if (entry.postCount < cp.postCount || entry.ts < cp.ts) {
-      entry.failed = true;
-      entry.failReason = `would regress vs on-chain LastCheckpoint #${cp.block} (post_count ${entry.postCount} < ${cp.postCount} or ts ${entry.ts} < ${cp.ts}) → NonMonotonicAnchor`;
-      entry.failedAt = new Date().toISOString(); saveState(state);
-      console.error(`  ✗ anchor #${entry.block} PERMANENTLY unackable and SKIPPED (relayer-4): ${entry.failReason}. The chain state regressed vs persisted relayer state (a reset/fork?) — investigate; new anchoring continues.`);
-      return { recorded: false, failed: true };
-    }
+  try { cp = await readCheckpoint(api); } catch (e) {
+    // A failed checkpoint read is TRANSIENT — fall through to the normal bounded-retry path rather
+    // than mis-classifying the entry. Log so a persistent read failure is visible (it would otherwise
+    // look like the no-checkpoint case forever).
+    console.warn(`  ⚠ recordAckWithRetry: readCheckpoint failed for anchor #${entry.block} (${e?.message || e}) — treating as no-checkpoint, proceeding to ack retry.`);
+    cp = undefined;
+  }
+  // The regression/ordering decision is the pure, unit-tested classifyPendingAck (lib.mjs, relayer-4).
+  const verdict = classifyPendingAck(entry, cp);
+  if (verdict.covered) {
+    // Already recorded or superseded on-chain ⇒ submitting would only yield AckIgnored.
+    console.log(`  · anchor #${entry.block} already covered by on-chain LastCheckpoint #${cp.block} — marking recorded (relayer-4).`);
+    entry.acked = true; entry.ackedAt = new Date().toISOString(); saveState(state);
+    return { recorded: true };
+  }
+  if (verdict.failed) {
+    entry.failed = true;
+    entry.failReason = verdict.reason;
+    entry.failedAt = new Date().toISOString(); saveState(state);
+    console.error(`  ✗ anchor #${entry.block} PERMANENTLY unackable and SKIPPED (relayer-4): ${entry.failReason}. The chain state regressed vs persisted relayer state (a reset/fork?) — investigate; new anchoring continues.`);
+    return { recorded: false, failed: true };
   }
 
   let acked = false, ignored = false;
@@ -342,7 +379,15 @@ async function recordAckWithRetry(api, sudo, state, entry) {
 async function drainPending(api, sudo, state) {
   for (let entry; (entry = oldestPendingAnchor(state)); ) {
     console.log(`\n▶ resuming anchor for block #${entry.block} — Cardano tx ${entry.cardanoTx} @slot ${entry.slot} already confirmed, retrying ack only`);
-    await recordAckWithRetry(api, sudo, state, entry);
+    try {
+      await recordAckWithRetry(api, sudo, state, entry);
+    } catch (e) {
+      // gap 9: the ack exhausted its retries — name the WEDGED anchor (block + Cardano tx) before the
+      // error unwinds to the main loop, which only logs the generic "loop error #N". Without this the
+      // operator sees a backoff but not WHICH persisted anchor is stuck (and is blocking forward progress).
+      console.error(`  ✗ drainPending: anchor #${entry.block} (Cardano tx ${entry.cardanoTx} @slot ${entry.slot}) is WEDGED — ack still failing after ${ACK_MAX_ATTEMPTS} attempts; backing off and resuming ack-only next cycle. Cause: ${e?.message || e}`);
+      throw e;
+    }
   }
 }
 
@@ -415,9 +460,18 @@ async function main() {
   const genesisHex = stripHex((await client.getChainSpecData()).genesisHash);
   const state = loadState();
   state.genesis = genesisHex;
+  // gap 7: surface how much persisted history we resumed (and how many anchors are still unacked /
+  // permanently failed) so an operator immediately sees the relayer's starting position rather than
+  // inferring it from later log lines.
+  const loaded = (state.anchors || []).length;
+  const pending = (state.anchors || []).filter((a) => a.cardanoTx && a.slot != null && !a.acked && !a.failed).length;
+  const failed = (state.anchors || []).filter((a) => a.failed).length;
   console.log(`relayer  : ${address}`);
   console.log(`L3       : ${WS}  genesis ${genesisHex}`);
   console.log(`mode     : ${mode}   anchor-every ${ANCHOR_EVERY}   label ${LABEL}`);
+  console.log(`state    : loaded ${loaded} persisted anchor(s) from ${STATE_FILE} (${pending} pending ack-only resume, ${failed} permanently failed)`);
+  if (failed > 0)
+    console.warn(`  ⚠ ${failed} persisted anchor(s) are marked permanently failed (relayer-4, NonMonotonicAnchor) — they are SKIPPED so forward anchoring continues; inspect ${STATE_FILE} for failReason.`);
   // relayer-8: a zero burial depth has NO reorg protection — make that loud (the showcase default).
   if (CONFIRM_DEPTH_SLOTS <= 0)
     console.warn(`  ⚠ CONFIRM_DEPTH_SLOTS=0 — NO reorg-burial protection: a Cardano rollback after an ack would pin a vanished txhash into the monotonic LastCheckpoint. Set CONFIRM_DEPTH_SLOTS (a few hundred slots, DR-09b) for a value-bearing deployment.`);
@@ -436,6 +490,10 @@ async function main() {
     await drainPending(api, sudo, state); // resume any unacked anchor first (ack-only, no re-mint)
     const head = await finalizedHead(client);
     const last = await lastOnChain();
+    if (last !== null && head.number < last)
+      // gap 16: the finalized head is BELOW the last anchored checkpoint — finality regressed (GRANDPA
+      // reversion / wiped or forked L3). Distinct from the benign equal case; warn before exiting.
+      console.warn(`  ⚠ FINALIZED HEAD #${head.number} is BELOW last anchored #${last} (depth ${last - head.number}) — finality regressed; not anchoring backwards. Investigate the L3 chain.`);
     if (last !== null && head.number <= last) {
       console.log(`\nfinalized #${head.number} <= last anchored #${last} — nothing new to anchor.`);
       client.destroy(); process.exit(0);
@@ -450,11 +508,18 @@ async function main() {
   // recorded checkpoint. Single-threaded loop ⇒ each anchor fully settles before the next.
   console.log(`\nwatching finalized heads — anchoring every ${ANCHOR_EVERY} blocks. Ctrl-C to stop.`);
   let consecutiveErrors = 0;
+  let prevHead = null; // last observed FINALIZED head number — to detect a regression (gap 16).
   for (;;) {
     try {
       await drainPending(api, sudo, state); // finish any unacked anchor first (ack-only, no re-mint)
       const head = await finalizedHead(client);
       const last = await lastOnChain();
+      // gap 16: a FINALIZED head should be monotonic; if it regresses, GRANDPA reverted finality or
+      // the L3 chain was wiped/forked. The relayer silently skips (head < last+EVERY ⇒ not due) — but
+      // a regressing FINALIZED head is a serious anomaly the operator must see, not a quiet skip.
+      if (prevHead !== null && head.number < prevHead)
+        console.warn(`  ⚠ FINALIZED HEAD REGRESSED: #${head.number} < previously observed #${prevHead} (depth ${prevHead - head.number}). Finality should be monotonic — possible GRANDPA reversion or a wiped/forked L3 chain. Not anchoring backwards.`);
+      prevHead = head.number;
       const due = last === null ? head.number >= ANCHOR_EVERY : head.number >= last + ANCHOR_EVERY;
       if (due) {
         // relayer-6: if more than one interval elapsed since the last checkpoint, the relayer was
