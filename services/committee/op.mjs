@@ -11,7 +11,7 @@
 //   node op.mjs --call validatorSet.addValidator --args '["5FHneW…"]'  --via committee
 //   node op.mjs --call talkStake.setStake     --args '["5Grw…", "0"]'  --via sudo   # dev fallback
 import { isMain } from "../_shared/cli.mjs";
-import { connect, drive, find } from "./lib.mjs";
+import { connect, drive, find, operators, resolveCommittee, assertRealKeys, assertGenesis } from "./lib.mjs";
 
 function parseArgv(argv) {
 	const o = { via: "committee" };
@@ -49,8 +49,22 @@ async function main() {
 		if (!api.tx[pallet] || !api.tx[pallet][method])
 			throw new Error(`no such call api.tx.${pallet}.${method} (check camelCase + spec ${spec})`);
 
+		assertRealKeys(opt.via); // fail-closed (Phase 3): no public dev keys under COGNO_PROFILE=prod
+		assertGenesis(api);      // pin the chain (Phase 3): refuse the wrong chain if GENESIS is set
+
 		const innerCall = api.tx[pallet][method](...args);
-		const res = await drive(api, innerCall, { via: opt.via, threshold: opt.threshold, log: (m) => console.log("  " + m) });
+		const ops = operators();
+		const driveOpts = { via: opt.via, log: (m) => console.log("  " + m) };
+		if (opt.via === "committee") {
+			// Threshold from ON-CHAIN membership (Phase 3): ceil(n*3/5), not a hardcoded 3 (which fails
+			// the 3/5 origin on any non-5-seat committee). Also reconciles your seeds vs the live members.
+			const rc = await resolveCommittee(api, ops, { explicitThreshold: opt.threshold });
+			Object.assign(driveOpts, { threshold: rc.threshold, members: rc.members, operators: ops });
+			console.log(`  committee: ${rc.threshold}-of-${rc.onchainCount} (threshold from on-chain membership)`);
+		} else {
+			driveOpts.threshold = opt.threshold;
+		}
+		const res = await drive(api, innerCall, driveOpts);
 
 		// Surface the executed inner result (collective Executed wraps the dispatch result).
 		const executed = find(res.evs, "followerCommittee", "Executed") || find(res.evs, "sudo", "Sudid");

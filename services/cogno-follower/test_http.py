@@ -103,6 +103,16 @@ def test_http_codes():
     ok(code == 200 and obj.get("ok") is True and obj.get("identity_hash") == "ab" * 32
        and obj.get("block") == 42 and "badges" in obj, "submit ok:true → 200 with merged result")
 
+    # (h) submit raises SubmitPending (committee bind timed out) → 202 pending, NOT a 502 failure
+    code, obj = decide_bind(
+        GOOD_BODY, genesis="0" * 64, expected_network=follower.EXPECTED_NETWORK,
+        verify=lambda **k: "fe" * 32,
+        submit=lambda *a: (_ for _ in ()).throw(follower.SubmitPending("timed out after 150s")),
+        consume_nonce=ACCEPT_NONCE,
+    )
+    ok(code == 202 and obj.get("pending") is True and obj.get("identity_hash") == "fe" * 32,
+       "SubmitPending (committee bind timeout) → 202 pending (the bind may be on-chain), not 502")
+
     # (g) the thread_pointer is threaded through to submit (optional 3rd arg)
     seen = {}
     decide_bind(

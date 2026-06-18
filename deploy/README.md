@@ -116,16 +116,20 @@ sudo install -m 0640 -o root -g cogno deploy/systemd/cogno.env.example /etc/cogn
 sudoedit /etc/cogno/cogno.env     # fill in COMMITTEE_SEEDS (from network/env.sh) + DB_PASS
 ```
 
+Once the node is producing blocks, **set `GENESIS`** in `/etc/cogno/cogno.env` to its block-0 hash
+(`curl -s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"chain_getBlockHash","params":[0]}' http://127.0.0.1:9944`)
+— the genesis pin makes the relayer + committee tooling + follower refuse to anchor/sign against the
+wrong chain. (`COGNO_PROFILE=prod`, already set in the template, additionally refuses the public dev keys.)
+
 **Authority model (committee-routed, sudo offline as break-glass):** put `COMMITTEE_SEEDS` into
 `/etc/cogno/cogno.env` and leave `SUDO_SEED` **commented out / off this host**. The relayer defaults to
 `ANCHOR_VIA=committee`; routine privileged writes never touch the sudo key. Bring `SUDO_SEED` online
 only for a deliberate emergency break-glass op, then remove it again.
 
-> **Follower exception:** `cogno-follower` currently submits `link_identity` with `SUDO_SEED` (moving it
-> to a committee/`FollowerOrigin` scope is prod-readiness Phase 3). If you run the follower on an
-> operator-keyed chain you **must** set `SUDO_SEED` here for now (accepting that the follower then holds
-> root) — otherwise every identity bind fails `BadOrigin`. Leave it commented only if you are not
-> running the follower yet.
+> **Follower:** `cogno-follower` submits `link_identity` via the 3-of-5 committee by default
+> (`FOLLOWER_VIA=committee`), so it uses `COMMITTEE_SEEDS` and does **not** need the sudo key. Set
+> `FOLLOWER_VIA=sudo` (and `SUDO_SEED`) only to use the dev fallback. Setting `COGNO_PROFILE=prod` makes
+> every privileged signer refuse the public dev keys, so a misconfigured `COMMITTEE_SEEDS` fails loudly.
 
 ## Migrating an existing `/tmp/cogno-m2` deployment
 

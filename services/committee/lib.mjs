@@ -233,3 +233,61 @@ export async function drive(api, innerCall, opts = {}) {
 	}
 	throw new Error(`unknown --via "${via}" (expected committee | sudo)`);
 }
+
+const DEV_KEY_RE = /^\/\/(Alice|Bob|Charlie|Dave|Eve|Ferdie|Grace)$/;
+
+/// Resolve the committee against ON-CHAIN membership (DR-26): the `EnsureProportionAtLeast<3,5>` origin
+/// needs `ceil(n*3/5)` ayes of the `n` current members, so a hardcoded threshold of 3 silently FAILS the
+/// origin (BadOrigin / "not Approved") on any committee that isn't exactly 5 seats (the runtime allows up
+/// to `FollowerMaxMembers=7`). This queries the live member set, computes the correct threshold, and
+/// reconciles your local `COMMITTEE_SEEDS` against it — failing loudly if too few of your seats are
+/// actually on-chain members to ever reach the threshold (a stale/mismatched env). Returns
+/// { threshold, onchainCount, members } where `members` are your eligible (on-chain) local signers.
+export async function resolveCommittee(api, ops = operators(), { explicitThreshold = null } = {}) {
+	const onchain = (await api.query.followerCommittee.members()).map((a) => a.toString());
+	if (onchain.length === 0)
+		throw new Error("FollowerCommittee has no on-chain members — seat the committee (genesis / sudo) before driving a committee call.");
+	const min = Math.ceil((onchain.length * 3) / 5); // the EnsureProportionAtLeast<3,5> floor
+	let threshold = min;
+	if (explicitThreshold != null) {
+		// Reject a malformed or BELOW-minimum override up front: a too-low threshold closes the motion
+		// Approved but then BadOrigins on the inner call (surfaced misleadingly as "inner call REVERTED").
+		if (!Number.isInteger(explicitThreshold) || explicitThreshold < 1)
+			throw new Error(`--threshold must be a positive integer (got ${explicitThreshold})`);
+		if (explicitThreshold < min)
+			throw new Error(`--threshold ${explicitThreshold} is below the 3/5 minimum ${min} for this committee of ${onchain.length} — the inner call would BadOrigin. Use >= ${min}.`);
+		threshold = explicitThreshold;
+	}
+	const onSet = new Set(onchain);
+	const eligible = ops.committee.filter((m) => onSet.has(m.address));
+	if (eligible.length < threshold)
+		throw new Error(
+			`committee: ${eligible.length} of your local seat(s) are on-chain members, but the 3/5 origin needs ${threshold} ayes of ${onchain.length} members — your COMMITTEE_SEEDS do not match the on-chain committee (re-source network/env.sh?).`,
+		);
+	return { threshold, onchainCount: onchain.length, members: eligible };
+}
+
+/// Fail-closed key guard: in `COGNO_PROFILE=prod`, refuse to sign privileged calls with the well-known
+/// public dev keys (a forgotten `source network/env.sh` would otherwise silently sign with //Alice…).
+/// No-op outside the prod profile. `via` selects which seed set to check.
+export function assertRealKeys(via = "committee") {
+	if ((process.env.COGNO_PROFILE || "").toLowerCase() !== "prod") return;
+	if (via === "sudo") {
+		if (!process.env.SUDO_SEED || DEV_KEY_RE.test(SUDO_SEED.trim()))
+			throw new Error("COGNO_PROFILE=prod + --via sudo: SUDO_SEED is unset or a public dev key (//Alice…). Refusing. Set your real sudo seed, or use --via committee.");
+	} else {
+		if (!process.env.COMMITTEE_SEEDS || COMMITTEE_URIS.some((u) => DEV_KEY_RE.test(u)))
+			throw new Error("COGNO_PROFILE=prod: COMMITTEE_SEEDS is unset or contains public dev keys (//Alice…). Refusing to sign privileged calls with dev keys — source your network/env.sh.");
+	}
+}
+
+/// Pin the chain: if `GENESIS` is set, assert the connected chain's genesis matches it BEFORE a
+/// privileged broadcast, so a mis-pointed `--ws` can't drive a privileged call against the wrong chain.
+/// No-op when `GENESIS` is unset. Accepts 0x-prefixed or bare hex, case-insensitive.
+export function assertGenesis(api) {
+	const want = (process.env.GENESIS || "").toLowerCase().replace(/^0x/, "");
+	if (!want) return;
+	const got = api.genesisHash.toHex().toLowerCase().replace(/^0x/, "");
+	if (got !== want)
+		throw new Error(`genesis mismatch: connected chain ${got.slice(0, 16)}… != expected GENESIS ${want.slice(0, 16)}… — refusing to drive a privileged call against the wrong chain.`);
+}

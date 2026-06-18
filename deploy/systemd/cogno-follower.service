@@ -3,9 +3,9 @@
 # writes the identity binding on-chain. HTTP API on PORT (default 8090). It forks a Node submit
 # subprocess, so it needs a real node v22 at NODE_BIN.
 #
-# NOTE: on a real network the follower must submit via the committee/FollowerOrigin, NOT the full sudo
-# key — that least-privilege move is prod-readiness Phase 3. Until then keep SUDO_SEED off this host
-# unless you accept the follower holding root.
+# The follower submits link_identity via the 3-of-5 committee by default (FOLLOWER_VIA=committee), so it
+# holds COMMITTEE_SEEDS, NOT the chain's full sudo key — a follower compromise no longer yields root.
+# Set FOLLOWER_VIA=sudo (+ SUDO_SEED) only for the dev fallback.
 
 [Unit]
 Description=cogno-chain follower (CIP-8 identity binding)

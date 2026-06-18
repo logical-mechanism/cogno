@@ -9,7 +9,8 @@
 //   • send              — terminal non-inclusion status rejects (so finalize-mode can't hang)
 import { revive } from "./op.mjs";
 import { pickLargest, lockToWeight } from "./sync-weight.mjs";
-import { viaCommittee, viaSudo, send } from "./lib.mjs";
+import { viaCommittee, viaSudo, send, resolveCommittee, assertRealKeys, assertGenesis } from "./lib.mjs";
+import { parseArgs as parseLinkArgs } from "./link-identity.mjs";
 
 let PASS = 0, FAIL = 0;
 const ok = (cond, msg) => { if (cond) { PASS++; console.log(`  ✓ ${msg}`); } else { FAIL++; console.log(`  ✗ FAIL: ${msg}`); } };
@@ -211,6 +212,74 @@ await throws(() => viaSudo(sudoApi([ev("sudo", "Sudid", [errResult])]), inner, {
 console.log("\n[send] terminal non-inclusion status rejects (so finalize-mode can't hang)");
 const droppedTx = { signAndSend(_s, cb) { queueMicrotask(() => cb({ status: { isDropped: true, type: "Dropped" }, events: [], dispatchError: undefined })); return Promise.resolve(() => {}); } };
 await throws(() => send(mockApi([]), droppedTx, members[0], "drop-test", { finalize: true }), "a Dropped tx rejects instead of hanging");
+
+// ── resolveCommittee (Phase 3: threshold from on-chain membership + seed reconciliation) ──────────
+console.log("\n[resolveCommittee] threshold = ceil(n*3/5) from on-chain members + reconciliation");
+const qApi = (memberAddrs) => ({ query: { followerCommittee: { members: async () => memberAddrs.map((a) => ({ toString: () => a })) } } });
+const opsOf = (addrs) => ({ committee: addrs.map((a) => ({ address: a })) });
+{
+	const r5 = await resolveCommittee(qApi(["a", "b", "c", "d", "e"]), opsOf(["a", "b", "c", "d", "e"]));
+	ok(r5.threshold === 3 && r5.onchainCount === 5 && r5.members.length === 5, "5 on-chain members → threshold 3 (ceil(15/5))");
+	const r7 = await resolveCommittee(qApi(["a", "b", "c", "d", "e", "f", "g"]), opsOf(["a", "b", "c", "d", "e", "f", "g"]));
+	ok(r7.threshold === 5, "7 members → threshold 5 (ceil(21/5)=5) — the hardcoded-3 bug case");
+	const r6 = await resolveCommittee(qApi(["a", "b", "c", "d", "e", "f"]), opsOf(["a", "b", "c", "d", "e", "f"]));
+	ok(r6.threshold === 4, "6 members → threshold 4 (ceil(18/5)=4)");
+	const rExp = await resolveCommittee(qApi(["a", "b", "c", "d", "e"]), opsOf(["a", "b", "c", "d", "e"]), { explicitThreshold: 4 });
+	ok(rExp.threshold === 4, "explicitThreshold overrides the computed value");
+	// only the eligible (on-chain) local seats are returned
+	const rPartial = await resolveCommittee(qApi(["a", "b", "c", "d", "e"]), opsOf(["a", "b", "c", "x", "y"]));
+	ok(rPartial.members.length === 3 && rPartial.members.every((m) => ["a", "b", "c"].includes(m.address)), "only local seats that are on-chain members are eligible");
+	// drift: too few local seats are on-chain members to reach the threshold → fail loudly
+	await throws(() => resolveCommittee(qApi(["x", "y", "z", "p", "q"]), opsOf(["a", "b", "c", "d", "e"])), "local seeds not matching on-chain members → throws (mismatch)");
+	await throws(() => resolveCommittee(qApi([]), opsOf(["a", "b", "c"])), "no on-chain members → throws");
+	// explicit --threshold BELOW the 3/5 minimum would close Approved then BadOrigin — reject up front
+	await throws(() => resolveCommittee(qApi(["a", "b", "c", "d", "e", "f", "g"]), opsOf(["a", "b", "c", "d", "e", "f", "g"]), { explicitThreshold: 3 }), "explicit --threshold 3 below the 3/5 min (7 seats → 5) → throws");
+	await throws(() => resolveCommittee(qApi(["a", "b", "c", "d", "e"]), opsOf(["a", "b", "c", "d", "e"]), { explicitThreshold: 0 }), "--threshold 0 → throws (not silently dropped to the auto value)");
+}
+
+// ── link-identity.mjs parseArgs (Phase 3: --via value must not leak into the thread_pointer slot) ──
+console.log("\n[link-identity parseArgs] --via value is consumed, never mis-read as thread_pointer");
+{
+	const a = parseLinkArgs(["0xaa", "0xbb", "--via", "committee"]);
+	ok(a.hashHex === "aa" && a.accountHex === "bb" && a.threadHexRaw === undefined && a.via === "committee",
+		"hash + account parsed; --via value consumed (NOT mis-read as thread_pointer)");
+	const b = parseLinkArgs(["aa", "bb", "cc", "--via", "sudo"]);
+	ok(b.threadHexRaw === "cc" && b.via === "sudo", "explicit thread_hex + --via both parsed correctly");
+	const c = parseLinkArgs(["aa", "bb"]);
+	ok(c.threadHexRaw === undefined && c.via === "committee", "no --via → default committee, no thread");
+}
+
+// ── assertRealKeys / assertGenesis (Phase 3: fail-closed config + chain pin) ──────────────────────
+console.log("\n[assertRealKeys] refuses public dev keys under COGNO_PROFILE=prod");
+{
+	const savedProfile = process.env.COGNO_PROFILE;
+	delete process.env.COGNO_PROFILE;
+	let threw = false; try { assertRealKeys("committee"); } catch { threw = true; }
+	ok(!threw, "no COGNO_PROFILE → no-op (dev/default is allowed)");
+	process.env.COGNO_PROFILE = "prod";
+	// In this test process COMMITTEE_SEEDS/SUDO_SEED are unset, so the module defaults are the dev keys.
+	let threwC = false; try { assertRealKeys("committee"); } catch { threwC = true; }
+	ok(threwC, "COGNO_PROFILE=prod + default dev COMMITTEE_SEEDS → throws");
+	let threwS = false; try { assertRealKeys("sudo"); } catch { threwS = true; }
+	ok(threwS, "COGNO_PROFILE=prod + default dev SUDO_SEED (//Alice) → throws");
+	if (savedProfile === undefined) delete process.env.COGNO_PROFILE; else process.env.COGNO_PROFILE = savedProfile;
+}
+
+console.log("\n[assertGenesis] pins the chain when GENESIS is set");
+{
+	const savedGenesis = process.env.GENESIS;
+	const api = { genesisHash: { toHex: () => "0xABCD1234ef" } };
+	delete process.env.GENESIS;
+	let threw = false; try { assertGenesis(api); } catch { threw = true; }
+	ok(!threw, "GENESIS unset → no-op");
+	process.env.GENESIS = "0xabcd1234ef"; // case-insensitive match
+	threw = false; try { assertGenesis(api); } catch { threw = true; }
+	ok(!threw, "GENESIS matches (case-insensitive, 0x-tolerant) → no-op");
+	process.env.GENESIS = "deadbeef00";
+	threw = false; try { assertGenesis(api); } catch { threw = true; }
+	ok(threw, "GENESIS mismatch → throws (wrong chain refused)");
+	if (savedGenesis === undefined) delete process.env.GENESIS; else process.env.GENESIS = savedGenesis;
+}
 
 console.log(`\n== committee drivers: ${PASS} passed, ${FAIL} failed ==\n`);
 process.exit(FAIL === 0 ? 0 : 1);

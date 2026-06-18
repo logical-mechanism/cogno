@@ -117,7 +117,29 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const ANCHOR_VIA = process.env.ANCHOR_VIA || "committee";
+// Fail-fast on a typo'd ANCHOR_VIA (e.g. "Committee") BEFORE any chain connection or paid Cardano tx —
+// otherwise an unknown value falls through to the sudo branch and signAndSubmit(null) (sudo is built
+// only for the sudo/--reack-last paths), crashing AFTER a paid tx is minted and wedging the watch loop.
+if (!new Set(["committee", "sudo"]).has(ANCHOR_VIA))
+  throw new Error(`invalid ANCHOR_VIA="${ANCHOR_VIA}" (expected committee | sudo)`);
 const OP_CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "committee", "op.mjs");
+// The sudo (EnsureRoot) signer seed — used ONLY when ANCHOR_VIA=sudo (the dev fallback) or --reack-last.
+// Default dev //Alice; set SUDO_SEED to your chain's sudo secret (a `//path` on the dev phrase, or a
+// full mnemonic). Fixes the prior hardcoded //Alice that ignored SUDO_SEED and broke ANCHOR_VIA=sudo on
+// any operator-keyed chain (it signed with a key holding no privileges → BadOrigin).
+const SUDO_SEED = process.env.SUDO_SEED || "//Alice";
+const DEV_KEY_RE = /^\/\/(Alice|Bob|Charlie|Dave|Eve|Ferdie|Grace)$/;
+
+// Build the sudo signer from SUDO_SEED, mirroring app/scripts/submit-link.mjs. Constructed LAZILY (only
+// on the sudo path / --reack-last) so the committee deployment never derives a key it doesn't use.
+function makeSudoSigner() {
+  if ((process.env.COGNO_PROFILE || "").toLowerCase() === "prod" && DEV_KEY_RE.test(SUDO_SEED.trim()))
+    throw new Error("COGNO_PROFILE=prod + sudo path: SUDO_SEED is a public dev key (//Alice…) — refusing to sign privileged calls with it. Set your real sudo seed, or use ANCHOR_VIA=committee.");
+  const isPath = SUDO_SEED.startsWith("//");
+  const derive = sr25519CreateDerive(entropyToMiniSecret(mnemonicToEntropy(isPath ? DEV_PHRASE : SUDO_SEED)));
+  const kp = derive(isPath ? SUDO_SEED : "");
+  return getPolkadotSigner(kp.publicKey, "Sr25519", kp.sign);
+}
 
 // Drive `anchor.anchor_ack(block, root, txhash, count, ts)` via the committee tooling. Throws on
 // failure (the caller keeps the checkpoint unrecorded and retries next loop). Returns true.
@@ -544,15 +566,20 @@ async function main() {
   const { wallet, address } = await getOwnerWallet({ withProvider: true });
   const client = createClient(getWsProvider(WS));
   const api = client.getTypedApi(cogno);
-  const derive = sr25519CreateDerive(entropyToMiniSecret(mnemonicToEntropy(DEV_PHRASE)));
-  const sudoKp = derive("//Alice");
-  const sudo = getPolkadotSigner(sudoKp.publicKey, "Sr25519", sudoKp.sign);
+  // Lazily build the sudo signer ONLY when it's actually used (ANCHOR_VIA=sudo or --reack-last) —
+  // otherwise null. The committee path drives anchor_ack through op.mjs and never touches sudo.
+  const sudo = (ANCHOR_VIA === "sudo" || mode === "reack-last") ? makeSudoSigner() : null;
 
   // The genesis hash is the chain's immutable identifier (the block-0 hash) — it pins WHICH chain a
   // verifier checks against. Fetch it live rather than hardcoding: a FRESH --dev chain rebuilt from a
   // new runtime gets a NEW genesis (the wasm is part of genesis state), so a value pinned for an
   // earlier spec_version would be wrong. (A runtime UPGRADE on a *live* chain does NOT change block 0.)
   const genesisHex = stripHex((await client.getChainSpecData()).genesisHash);
+  // Genesis pin (Phase 3): if GENESIS is set, refuse to anchor against a chain that isn't it — a
+  // mis-pointed WS could otherwise anchor (and spend ADA) against the wrong chain.
+  const wantGenesis = (process.env.GENESIS || "").toLowerCase().replace(/^0x/, "");
+  if (wantGenesis && wantGenesis !== genesisHex)
+    throw new Error(`genesis mismatch: connected chain ${genesisHex.slice(0, 16)}… != expected GENESIS ${wantGenesis.slice(0, 16)}… — refusing to anchor against the wrong chain.`);
   // One-time migration of an existing anchor cursor off legacy /tmp before we load it.
   if (migrateFromLegacy(STATE_FILE, STATE_FILE_LEGACY))
     console.warn(`  ⚠ migrated anchor state ${STATE_FILE_LEGACY} → ${STATE_FILE} (off volatile /tmp). Remove the legacy copy: rm ${STATE_FILE_LEGACY}`);
