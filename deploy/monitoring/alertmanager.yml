@@ -1,8 +1,12 @@
-# Minimal Alertmanager config for the cogno-chain stack (prod-readiness Phase 2). Replace the receiver
-# with your real notifier (Slack/PagerDuty/email/webhook). As shipped it groups alerts and routes them
-# to a single webhook placeholder — wire it to where YOU want to be paged.
+# Minimal Alertmanager config for the cogno-chain stack (prod-readiness Phase 2).
 #
-#   alertmanager --config.file=deploy/monitoring/alertmanager.yml   # listens :9093 (see prometheus.yml)
+# ⚠ AS SHIPPED THIS PAGES NOBODY. The `cogno-default` receiver below has every notifier commented out,
+# which is a VALID config that silently routes every alert to a blackhole — Alertmanager starts fine and
+# drops them. You MUST uncomment + point a `webhook_configs`/`slack_configs` at your real notifier, or
+# critical alerts (chain/relayer/follower down) fire in Prometheus and go nowhere. Verify the route with
+# `amtool config routes test` (or the :9093 UI) once wired.
+#
+#   cd deploy/monitoring && alertmanager --config.file=alertmanager.yml   # listens :9093 (see prometheus.yml)
 
 route:
   receiver: cogno-default

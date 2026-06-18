@@ -9,8 +9,9 @@ import fs from "node:fs";
 import os from "node:os";
 import { fetchJson } from "./net.mjs";
 import { isMain } from "./cli.mjs";
-import { resolveDataDir, statePaths, writeFileAtomic, migrateFromLegacy, acquireSingleInstanceLock, LEGACY_DIR } from "./paths.mjs";
+import { resolveDataDir, statePaths, writeFileAtomic, migrateFromLegacy, migrateStatePath, ensureParentDir, acquireSingleInstanceLock, LEGACY_DIR } from "./paths.mjs";
 import { renderPrometheus } from "./metrics.mjs";
+import { DEV_KEY_RE, isDevKey } from "./keys.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -299,6 +300,48 @@ console.log("\n[paths.migrateFromLegacy] copies a legacy file once, 0600, idempo
 		ok(migrateFromLegacy(join(dir, "other.json"), null) === false, "no-op when there is no legacy path");
 		ok(migrateFromLegacy(join(dir, "other.json"), join(dir, "nope.json")) === false, "no-op when the legacy file does not exist");
 	} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+// ---------------------------------------------------------------------------------------------------
+console.log("\n[paths.migrateStatePath] migrate + standard warning, returns whether it migrated");
+{
+	const dir = fs.mkdtempSync(join(os.tmpdir(), "cogno-paths-"));
+	try {
+		const legacy = join(dir, "legacy", "vault.json");
+		const file = join(dir, "data", "vault.json");
+		fs.mkdirSync(dirname(legacy), { recursive: true });
+		fs.writeFileSync(legacy, '{"vaultHash":"ab"}');
+		ok(migrateStatePath(file, legacy, "vault descriptor") === true, "migrates + returns true when legacy present");
+		ok(fs.readFileSync(file, "utf8") === '{"vaultHash":"ab"}', "migrated content matches the legacy file");
+		ok(migrateStatePath(file, legacy, "vault descriptor") === false, "no-op (false) when the target already exists");
+		ok(migrateStatePath(join(dir, "x.json"), null, "x") === false, "no-op (false) when there is no legacy path");
+	} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+// ---------------------------------------------------------------------------------------------------
+console.log("\n[paths.ensureParentDir] creates the file's OWN parent dir (explicit override outside data dir)");
+{
+	const dir = fs.mkdtempSync(join(os.tmpdir(), "cogno-paths-"));
+	try {
+		const file = join(dir, "explicit", "deep", "owner.json");  // parent does not exist yet
+		ok(!fs.existsSync(dirname(file)), "precondition: the parent dir is absent");
+		ok(ensureParentDir(file) === file, "returns the file path");
+		ok(fs.existsSync(dirname(file)) && fs.statSync(dirname(file)).isDirectory(), "creates dirname(file), not the default data dir");
+		// The wallet-brew failure mode: writing to an explicit path in a fresh dir now succeeds.
+		fs.writeFileSync(file, "{}");
+		ok(fs.readFileSync(file, "utf8") === "{}", "a write to the explicit path no longer ENOENTs");
+	} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+// ---------------------------------------------------------------------------------------------------
+console.log("\n[keys.isDevKey] detects the public dev seeds (//Alice…), tolerant of whitespace");
+{
+	ok(isDevKey("//Alice") && isDevKey("//Bob") && isDevKey("//Ferdie") && isDevKey("//Grace"), "all well-known dev seeds match");
+	ok(isDevKey("  //Eve  ") === true, "leading/trailing whitespace is tolerated");
+	ok(isDevKey("//Mallory") === false, "a non-dev //derivation is not a dev key");
+	ok(isDevKey("bottom drive obey lake curtain smoke basket hold race lonely fit walk") === false, "a real mnemonic is not flagged by the // regex");
+	ok(isDevKey("") === false && isDevKey(null) === false && isDevKey(undefined) === false, "empty/null/undefined ⇒ false (no throw)");
+	ok(DEV_KEY_RE.test("//Charlie") === true, "DEV_KEY_RE is exported for direct use");
 }
 
 // ---------------------------------------------------------------------------------------------------

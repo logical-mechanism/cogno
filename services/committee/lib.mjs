@@ -19,6 +19,8 @@ export const WS_DEFAULT = process.env.WS || "ws://127.0.0.1:9944";
 
 // Hardened JSON fetch (committee-1) — shared with the relayer in services/_shared/net.mjs (themes 3/4).
 export { fetchJson } from "../_shared/net.mjs";
+// Public dev-seed detection (//Alice…) — shared with the relayer's sudo signer (single source of truth).
+import { DEV_KEY_RE } from "../_shared/keys.mjs";
 
 /// The FollowerCommittee seats (DR-26, origin = ≥3/5 of members). Defaults to the well-known dev
 /// keys for `--dev`/`local`; on your own network set `COMMITTEE_SEEDS` to a comma-separated list of
@@ -233,8 +235,6 @@ export async function drive(api, innerCall, opts = {}) {
 	}
 	throw new Error(`unknown --via "${via}" (expected committee | sudo)`);
 }
-
-const DEV_KEY_RE = /^\/\/(Alice|Bob|Charlie|Dave|Eve|Ferdie|Grace)$/;
 
 /// Resolve the committee against ON-CHAIN membership (DR-26): the `EnsureProportionAtLeast<3,5>` origin
 /// needs `ceil(n*3/5)` ayes of the `n` current members, so a hardcoded threshold of 3 silently FAILS the

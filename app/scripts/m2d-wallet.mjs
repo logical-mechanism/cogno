@@ -12,7 +12,7 @@
 import fs from "node:fs";
 import { MeshWallet, KupoProvider, OgmiosProvider } from "@meshsdk/core";
 import * as cst from "@meshsdk/core-cst";
-import { statePaths, migrateFromLegacy, ensureDataDir } from "../../services/_shared/paths.mjs";
+import { statePaths, migrateStatePath, ensureParentDir } from "../../services/_shared/paths.mjs";
 
 const { file: WALLET_FILE, legacy: WALLET_LEGACY } = statePaths("OWNER_FILE", "owner.json");
 // Brewing a fresh wallet is a deliberate, one-time act (first-time setup / dev) — gate it behind an
@@ -50,15 +50,16 @@ export async function fetchCostModels() {
 export async function getOwnerWallet({ withProvider = false } = {}) {
   let mnemonic;
   // Migrate an existing funded wallet off legacy /tmp before deciding to brew (preserves the key).
-  if (migrateFromLegacy(WALLET_FILE, WALLET_LEGACY))
-    console.warn(`migrated relayer wallet ${WALLET_LEGACY} → ${WALLET_FILE} (0600). Delete the plaintext legacy copy: rm ${WALLET_LEGACY}`);
+  migrateStatePath(WALLET_FILE, WALLET_LEGACY, "relayer wallet");
   if (fs.existsSync(WALLET_FILE)) {
     mnemonic = JSON.parse(fs.readFileSync(WALLET_FILE, "utf8")).mnemonic;
   } else {
     if (!ALLOW_BREW)
       throw new Error(`No wallet at ${WALLET_FILE} and COGNO_ALLOW_WALLET_BREW is unset — refusing to silently brew a NEW (empty, unfunded) wallet, which would make the relayer stop anchoring. To reuse an existing wallet set OWNER_FILE=/path/to/owner.json (or place it at ${WALLET_FILE}); to deliberately create a fresh one re-run with COGNO_ALLOW_WALLET_BREW=1, then FUND the printed address.`);
     mnemonic = MeshWallet.brew(); // 24-word array
-    ensureDataDir();
+    // Create the wallet file's OWN parent dir — an explicit OWNER_FILE can point outside the data dir,
+    // where ensureDataDir() would create the wrong directory and writeFileSync would ENOENT.
+    ensureParentDir(WALLET_FILE);
     fs.writeFileSync(WALLET_FILE, JSON.stringify({ mnemonic }, null, 2), { mode: 0o600 });
     try { fs.chmodSync(WALLET_FILE, 0o600); } catch { /* best-effort tighten if umask widened it */ }
     console.warn(`brewed a NEW wallet at ${WALLET_FILE} (0600) — FUND this address before anchoring.`);

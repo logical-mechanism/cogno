@@ -22,10 +22,19 @@ Key custom metrics: `cogno_relayer_seconds_since_last_anchor`, `cogno_relayer_wa
 ## Run it
 
 ```bash
-prometheus   --config.file=deploy/monitoring/prometheus.yml      # scrape + rules, :9090
-alertmanager --config.file=deploy/monitoring/alertmanager.yml    # routing, :9093
-# Grafana: add the Prometheus datasource, then import deploy/monitoring/grafana-dashboard.json
+# Run Prometheus FROM THIS DIRECTORY: its `rule_files: [alerts.yml]` is resolved relative to the
+# working directory (NOT the --config.file path), so launching from the repo root would silently load
+# zero alert rules.
+cd deploy/monitoring
+prometheus   --config.file=prometheus.yml      # scrape + rules, :9090
+alertmanager --config.file=alertmanager.yml    # routing, :9093
+# Grafana: add the Prometheus datasource, then import grafana-dashboard.json
 ```
+
+> ⚠ **You will not be paged until you wire a receiver.** As shipped, `alertmanager.yml`'s `cogno-default`
+> receiver has every notifier commented out — a valid config that routes every alert to a **blackhole**.
+> Uncomment + point its `webhook_configs`/`slack_configs` at your real notifier, or alerts fire in
+> Prometheus and silently go nowhere. Verify with `amtool config routes test` / the `:9093` UI.
 
 All targets bind `127.0.0.1`, so run Prometheus **on the same host**. For a remote Prometheus: start
 the node with `--prometheus-external` (it binds localhost otherwise), and reach the service `/metrics`

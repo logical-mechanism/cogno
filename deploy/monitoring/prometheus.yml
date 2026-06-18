@@ -3,12 +3,17 @@
 # node metrics with `--prometheus-external` (it binds localhost otherwise) and put the service /metrics
 # behind your scrape network / a proxy — do NOT expose them to the public internet.
 #
-#   prometheus --config.file=deploy/monitoring/prometheus.yml
+# Run FROM THIS DIRECTORY so the relative `rule_files: [alerts.yml]` below resolves — Prometheus loads
+# rule_files relative to its WORKING DIRECTORY, not the --config.file path, so running from the repo root
+# would silently load ZERO alert rules:
+#
+#   cd deploy/monitoring && prometheus --config.file=prometheus.yml
 
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Relative to Prometheus's working directory (run from deploy/monitoring/ — see the header note).
 rule_files:
   - alerts.yml
 

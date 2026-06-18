@@ -149,6 +149,29 @@ def node_probe(timeout: float = 2.0):
         return None
 
 
+# A short TTL cache over node_probe() so the UNTHROTTLED /health + /metrics endpoints can't spawn
+# unbounded concurrent 2s node RPCs under a probe flood (only /nonce + /bind are rate-limited). A burst
+# of requests inside HEALTH_PROBE_TTL (default 2s) shares one result instead of one RPC each.
+_PROBE_TTL = float(os.environ.get("HEALTH_PROBE_TTL", "2"))
+_probe_cache = {"genesis": None, "at": 0.0}
+_probe_lock = threading.Lock()
+
+
+def cached_node_probe():
+    """node_probe() memoized for HEALTH_PROBE_TTL seconds (thread-safe). Caching None (unreachable) for
+    the window is intentional — a health flood during a node outage must not stampede it with retries.
+    The 2s staleness is negligible vs the Follower* alerts' `for:` windows (>= 5m)."""
+    now = time.time()
+    with _probe_lock:
+        if now - _probe_cache["at"] < _PROBE_TTL:
+            return _probe_cache["genesis"]
+    g = node_probe()
+    with _probe_lock:
+        _probe_cache["genesis"] = g
+        _probe_cache["at"] = time.time()
+    return g
+
+
 def health_status(current_genesis, pinned_genesis: str) -> tuple[int, dict]:
     """PURE /health decision (unit-testable, no socket): given the node's current genesis (or None if
     unreachable) and the follower's pinned genesis, return (http_code, fields). The follower is only
@@ -340,15 +363,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ("/health", "/healthz"):
-            # LIVE probe (Phase 2): re-check the node + genesis on every request, not a boot-time cache.
-            code, h = health_status(node_probe(), GENESIS)
+            # LIVE probe (Phase 2): re-check the node + genesis (TTL-cached ~2s so a flood can't stampede
+            # the node), not a boot-time cache.
+            code, h = health_status(cached_node_probe(), GENESIS)
             return self._send(code, {**h, "genesis": GENESIS, "nonces_cached": NONCES.size(),
                                      "badges": BADGES, "network": CARDANO_NETWORK,
                                      "domain": payload_mod.DOMAIN, "nonce_ttl": NONCE_TTL})
         if u.path == "/metrics":
             # Prometheus text exposition (hand-rolled — no client lib). Node reachability + genesis match
             # + outstanding nonces, so the follower (a documented SPOF) is alertable like the relayer.
-            current = node_probe()
+            current = cached_node_probe()
             node_ok = 1 if current is not None else 0
             lines = [
                 "# HELP cogno_follower_up 1 while the follower process is running",

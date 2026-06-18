@@ -41,6 +41,15 @@ export function ensureDataDir() {
 
 export const dataPath = (name) => path.join(dataDir(), name);
 
+// Create the PARENT directory of `file` (0700) and return `file`. Use this before writing a stateful
+// file whose path may be an explicit override OUTSIDE the data dir — ensureDataDir() would create the
+// default dir, not dirname(file), so an explicit OWNER_FILE/STATE_FILE in a not-yet-existing dir would
+// otherwise fail the write with ENOENT.
+export function ensureParentDir(file) {
+	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+	return file;
+}
+
 // PURE (given `env` + `home`): resolve a stateful file. An explicit `envVar` override wins (and then
 // there is no legacy fallback — the operator named the path); otherwise the durable default applies and
 // `legacy` points at the old /tmp location to migrate from. Returns { file, legacy }.
@@ -60,6 +69,16 @@ export function migrateFromLegacy(file, legacy) {
 	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
 	fs.copyFileSync(legacy, file);
 	try { fs.chmodSync(file, 0o600); } catch { /* best-effort on platforms without chmod */ }
+	return true;
+}
+
+// migrateFromLegacy + a STANDARD operator warning in one call — the single blessed migrate idiom every
+// stateful reader should use, so a new/forgotten call site can't silently orphan a funded wallet /
+// anchor cursor / vault on volatile /tmp. `label` names the file in the warning. Returns true iff it
+// migrated. Logs via console.warn (best-effort observability is fine here); callers need not re-log.
+export function migrateStatePath(file, legacy, label = "state file") {
+	if (!migrateFromLegacy(file, legacy)) return false;
+	console.warn(`  ⚠ migrated ${label} ${legacy} → ${file} (off volatile /tmp, 0600). Remove the plaintext legacy copy: rm ${legacy}`);
 	return true;
 }
 

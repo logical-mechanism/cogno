@@ -56,7 +56,9 @@ import { fetchJson } from "../_shared/net.mjs";
 import { isMain } from "../_shared/cli.mjs";
 // Durable data dir + crash-safe persistence + single-instance lock (prod-readiness Phase 1): keep the
 // anchor cursor off volatile /tmp, persist it atomically, and refuse a second concurrent relayer.
-import { statePaths, migrateFromLegacy, writeFileAtomic, acquireSingleInstanceLock } from "../_shared/paths.mjs";
+import { statePaths, migrateStatePath, writeFileAtomic, acquireSingleInstanceLock } from "../_shared/paths.mjs";
+// Public dev-seed detection (//Alice…) — shared with the committee tooling (single source of truth).
+import { DEV_KEY_RE } from "../_shared/keys.mjs";
 // Observability (prod-readiness Phase 2): a dependency-free /metrics + /healthz surface for Prometheus.
 import { renderPrometheus, startMetricsServer } from "../_shared/metrics.mjs";
 import { missedIntervals, parseAckTokens, oldestPendingAnchor, classifyPendingAck, validateHex } from "./lib.mjs";
@@ -95,6 +97,11 @@ const LABEL = Number(process.env.LABEL || "67797178");
 // warn + expose cogno_relayer_low_funds=1 below this (the relayer pays ADA per anchor; running dry
 // silently stops anchoring). FUNDS_POLL_MS: how often the watch loop re-reads the wallet balance.
 const METRICS_PORT = Number(process.env.METRICS_PORT || "9101");
+// Fail LOUD on a typo'd METRICS_PORT: Number("abc") is NaN and `NaN > 0` is false, which would SILENTLY
+// disable the whole /metrics + /healthz surface (looks like RelayerDown) with no error. Reject up front,
+// matching LOW_FUNDS_LOVELACE's BigInt(...) throw on the next line. 0 deliberately disables the server.
+if (!Number.isInteger(METRICS_PORT) || METRICS_PORT < 0 || METRICS_PORT > 65535)
+  throw new Error(`invalid METRICS_PORT="${process.env.METRICS_PORT}" (expected an integer 0..65535; 0 disables the metrics server)`);
 const LOW_FUNDS_LOVELACE = BigInt(process.env.LOW_FUNDS_LOVELACE || "10000000"); // 10 ADA
 const FUNDS_POLL_MS = Number(process.env.FUNDS_POLL_MS || "60000");
 
@@ -128,7 +135,6 @@ const OP_CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "co
 // full mnemonic). Fixes the prior hardcoded //Alice that ignored SUDO_SEED and broke ANCHOR_VIA=sudo on
 // any operator-keyed chain (it signed with a key holding no privileges → BadOrigin).
 const SUDO_SEED = process.env.SUDO_SEED || "//Alice";
-const DEV_KEY_RE = /^\/\/(Alice|Bob|Charlie|Dave|Eve|Ferdie|Grace)$/;
 
 // Build the sudo signer from SUDO_SEED, mirroring app/scripts/submit-link.mjs. Constructed LAZILY (only
 // on the sudo path / --reack-last) so the committee deployment never derives a key it doesn't use.
@@ -581,8 +587,7 @@ async function main() {
   if (wantGenesis && wantGenesis !== genesisHex)
     throw new Error(`genesis mismatch: connected chain ${genesisHex.slice(0, 16)}… != expected GENESIS ${wantGenesis.slice(0, 16)}… — refusing to anchor against the wrong chain.`);
   // One-time migration of an existing anchor cursor off legacy /tmp before we load it.
-  if (migrateFromLegacy(STATE_FILE, STATE_FILE_LEGACY))
-    console.warn(`  ⚠ migrated anchor state ${STATE_FILE_LEGACY} → ${STATE_FILE} (off volatile /tmp). Remove the legacy copy: rm ${STATE_FILE_LEGACY}`);
+  migrateStatePath(STATE_FILE, STATE_FILE_LEGACY, "anchor state");
   const state = loadState();
   state.genesis = genesisHex;
   // gap 7: surface how much persisted history we resumed (and how many anchors are still unacked /
