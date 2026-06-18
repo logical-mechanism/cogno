@@ -61,6 +61,7 @@ impl pallet_balances::Config for Test {
 
 parameter_types! {
 	pub const MinAuthorities: u32 = 2;
+	pub const MaxValidators: u32 = 5;
 	pub const Period: u64 = 2;
 	pub const Offset: u64 = 0;
 	pub const MockKeyDeposit: u64 = 0;
@@ -70,6 +71,7 @@ impl pallet_validator_set::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type AddRemoveOrigin = EnsureRoot<Self::AccountId>;
 	type MinAuthorities = MinAuthorities;
+	type MaxValidators = MaxValidators;
 	type WeightInfo = ();
 }
 

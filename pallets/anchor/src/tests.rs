@@ -5,7 +5,7 @@
 //! monotonic** — a re-ack of an equal or lower finalized height is a no-op, so a Cardano-rollback
 //! re-submit can never double-count (`PLAN.md` §9).
 
-use crate::{mock::*, CardanoTxHash, Checkpoint, Event, LastCheckpoint, StateRoot};
+use crate::{mock::*, CardanoTxHash, Checkpoint, Error, Event, LastCheckpoint, StateRoot};
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
 
@@ -108,6 +108,28 @@ fn lower_height_is_noop() {
 		assert_eq!(cp.block_number, 20, "recorded height only moves forward");
 		assert_eq!(cp.finalized_root, ROOT_A);
 		System::assert_has_event(Event::AckIgnored { block_number: 10, last: 20 }.into());
+	});
+}
+
+#[test]
+fn rejects_regressing_post_count_or_timestamp() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(Anchor::anchor_ack(RuntimeOrigin::root(), 10, ROOT_A, TX_A, 7, 100));
+		// A strictly-higher block reporting a LOWER post_count is inconsistent → rejected (anchor-1).
+		assert_noop!(
+			Anchor::anchor_ack(RuntimeOrigin::root(), 20, ROOT_B, TX_B, 6, 200),
+			Error::<Test>::NonMonotonicAnchor
+		);
+		// ...and a LOWER timestamp too.
+		assert_noop!(
+			Anchor::anchor_ack(RuntimeOrigin::root(), 20, ROOT_B, TX_B, 9, 50),
+			Error::<Test>::NonMonotonicAnchor
+		);
+		// assert_noop proved nothing was written: the checkpoint is still height 10.
+		assert_eq!(Anchor::last_checkpoint().unwrap().block_number, 10);
+		// Equal (non-decreasing) post_count + timestamp at a higher height is accepted.
+		assert_ok!(Anchor::anchor_ack(RuntimeOrigin::root(), 20, ROOT_B, TX_B, 7, 100));
+		assert_eq!(Anchor::last_checkpoint().unwrap().block_number, 20);
 	});
 }
 

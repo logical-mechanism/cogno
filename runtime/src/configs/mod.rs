@@ -289,6 +289,9 @@ impl pallet_validator_set::Config for Runtime {
 	type AddRemoveOrigin = AuthorityOrigin;
 	// Deliberate testnet floor — see the ⚠ MAINNET PREREQUISITE note above before raising/shipping.
 	type MinAuthorities = ConstU32<1>;
+	// validators-3: MUST equal (or be below) aura/grandpa `MaxAuthorities` (= 32) so a full set never
+	// gets silently truncated at a session rotation. `add_validator` rejects growth past this.
+	type MaxValidators = ConstU32<32>;
 	type WeightInfo = pallet_validator_set::weights::SubstrateWeight<Runtime>;
 }
 
