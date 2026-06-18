@@ -4,9 +4,19 @@
 //
 // SSG-safe: this module is imported during static export, so it must NEVER touch
 // `window`/`localStorage` at module-evaluation time — only inside functions, guarded.
+//
+// Build-time seeds: NEXT_PUBLIC_* are inlined by Next at build (referenced literally so the static
+// export can substitute them), letting a real deployment ship its own defaults while the localhost
+// values stay as the dev fallback. A user override in localStorage always wins over both.
+const ENV_WS = process.env.NEXT_PUBLIC_WS_URL || "";
+const ENV_FOLLOWER = process.env.NEXT_PUBLIC_FOLLOWER_URL || "";
+const ENV_GRAPHQL = process.env.NEXT_PUBLIC_GRAPHQL_URL || "";
+const ENV_BLOCKFROST = process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID || "";
 
 /** The default node the dev build speaks to. The only network call the app makes. */
-export const DEFAULT_WS_ENDPOINTS: string[] = ["ws://127.0.0.1:9944"];
+export const DEFAULT_WS_ENDPOINTS: string[] = [
+  ENV_WS && (ENV_WS.startsWith("ws://") || ENV_WS.startsWith("wss://")) ? ENV_WS : "ws://127.0.0.1:9944",
+];
 
 /** localStorage key holding a JSON array of ws/wss URLs. */
 const STORAGE_KEY = "cogno.endpoints";
@@ -66,7 +76,7 @@ export function getActiveWsUrl(): string {
 // HTTPS in any real deployment; plain http for the localhost dev showcase.
 
 /** The default follower the dev build binds through. */
-export const DEFAULT_FOLLOWER_URL = "http://127.0.0.1:8090";
+export const DEFAULT_FOLLOWER_URL = /^https?:\/\//.test(ENV_FOLLOWER) ? ENV_FOLLOWER : "http://127.0.0.1:8090";
 const FOLLOWER_STORAGE_KEY = "cogno.follower";
 
 /** The user-configured follower URL, or {@link DEFAULT_FOLLOWER_URL}. SSG-safe. */
@@ -104,12 +114,12 @@ const GRAPHQL_STORAGE_KEY = "cogno.graphql";
  * returns "" with no `window` and never throws; an invalid stored value is treated as unset.
  */
 export function getGraphqlUrl(): string {
-  if (typeof window === "undefined") return "";
+  if (typeof window === "undefined") return ENV_GRAPHQL;
   try {
     const raw = window.localStorage.getItem(GRAPHQL_STORAGE_KEY);
-    return raw && /^https?:\/\//.test(raw) ? raw : "";
+    return raw && /^https?:\/\//.test(raw) ? raw : ENV_GRAPHQL;
   } catch {
-    return "";
+    return ENV_GRAPHQL;
   }
 }
 
@@ -132,5 +142,40 @@ export function setGraphqlUrl(url: string): void {
   } catch (err) {
     // Re-throw a validation error so the UI can report it; swallow storage-blocked errors.
     if (err instanceof Error && err.message.startsWith("GraphQL endpoint")) throw err;
+  }
+}
+
+// ── Blockfrost provider (M8) ─────────────────────────────────────────────────────────────
+// The Cardano provider the in-browser vault lock/exit txs use (fetcher/submitter/evaluator +
+// live cost models). A preprod project id — exposed client-side by design so any visitor can
+// lock from their own wallet without a backend. Empty ⇒ the lock action is hidden. Config like
+// the WS/follower/indexer endpoints: NEXT_PUBLIC_BLOCKFROST_PROJECT_ID seeds the default, a
+// user override in localStorage wins.
+
+const BLOCKFROST_STORAGE_KEY = "cogno.blockfrost";
+
+/** The configured Blockfrost preprod project id, or "" when unset. SSG-safe. */
+export function getBlockfrostProjectId(): string {
+  if (typeof window === "undefined") return ENV_BLOCKFROST;
+  try {
+    const raw = window.localStorage.getItem(BLOCKFROST_STORAGE_KEY);
+    return raw && raw.trim().length > 0 ? raw.trim() : ENV_BLOCKFROST;
+  } catch {
+    return ENV_BLOCKFROST;
+  }
+}
+
+/** Persist the Blockfrost project id, or clear it with an empty string. No-op without `window`. */
+export function setBlockfrostProjectId(id: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const trimmed = id.trim();
+    if (trimmed.length === 0) {
+      window.localStorage.removeItem(BLOCKFROST_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(BLOCKFROST_STORAGE_KEY, trimmed);
+  } catch {
+    // Storage blocked — non-critical.
   }
 }

@@ -15,6 +15,7 @@ import { useSigner } from "@/hooks/useSigner";
 import { useSubmit } from "@/hooks/useSubmit";
 import { useCapacity } from "@/hooks/useCapacity";
 import { useIdentity } from "@/hooks/useIdentity";
+import { useVault } from "@/hooks/useVault";
 import { useAnchor } from "@/hooks/useAnchor";
 import { makeFeedSource } from "@/lib/feed";
 import { getGraphqlUrl } from "@/lib/config/endpoints";
@@ -26,6 +27,7 @@ import { Composer } from "@/components/Composer";
 import { Feed } from "@/components/Feed";
 import { SearchBar } from "@/components/SearchBar";
 import { EndpointSettings } from "@/components/EndpointSettings";
+import { StakePanel } from "@/components/StakePanel";
 import { TrustNote } from "@/components/TrustNote";
 import styles from "./page.module.css";
 
@@ -65,6 +67,8 @@ export default function Page() {
   const capacity = useCapacity(api, signer.ss58, heads.best?.number ?? null);
   // M2: the Cardano-identity bind state for the active posting key (+ the bind action).
   const identity = useIdentity(api, signer);
+  // M8: the L1 vault lock/exit state for a connected Cardano wallet (locking ADA earns capacity).
+  const vault = useVault();
   // M3: the latest Cardano anchor checkpoint (Anchor.LastCheckpoint) — the WRITE link's evidence.
   const anchor = useAnchor(api);
 
@@ -114,6 +118,8 @@ export default function Page() {
           setGqlEpoch((n) => n + 1);
         }}
       />
+
+      <StakePanel vault={vault} onOpenSettings={() => setSettingsOpen((o) => !o)} />
 
       <div className={styles.composerSlot}>
         <Composer

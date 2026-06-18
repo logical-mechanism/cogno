@@ -73,5 +73,10 @@ const artifact = {
 const { address: sampleAddress } = serializePlutusScript({ code: appliedCbor, version: "V3" }, STAKE, 0, false);
 artifact.sampleVaultAddress = { stakeKeyHash: STAKE, address: sampleAddress };
 
+const json = JSON.stringify(artifact, null, 2) + "\n";
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
-fs.writeFileSync(OUT, JSON.stringify(artifact, null, 2) + "\n");
+fs.writeFileSync(OUT, json);
+
+// Keep the frontend's pinned copy in sync (the in-browser lock imports + asserts this).
+const APP_OUT = path.join(repoRoot, "app", "src", "lib", "cardano", "vault.json");
+if (fs.existsSync(path.dirname(APP_OUT))) fs.writeFileSync(APP_OUT, json);

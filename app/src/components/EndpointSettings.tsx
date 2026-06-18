@@ -10,6 +10,8 @@ import {
   setEndpoints,
   getGraphqlUrl,
   setGraphqlUrl,
+  getBlockfrostProjectId,
+  setBlockfrostProjectId,
 } from "@/lib/config/endpoints";
 import styles from "./EndpointSettings.module.css";
 
@@ -45,6 +47,7 @@ export function EndpointSettings({
 }: EndpointSettingsProps) {
   const [text, setText] = useState("");
   const [gql, setGql] = useState("");
+  const [bf, setBf] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   // Load the current config whenever the panel opens (client-only, SSG-safe).
@@ -52,6 +55,7 @@ export function EndpointSettings({
     if (!open) return;
     setText(getEndpoints().join("\n"));
     setGql(getGraphqlUrl());
+    setBf(getBlockfrostProjectId());
     setError(null);
   }, [open]);
 
@@ -87,6 +91,7 @@ export function EndpointSettings({
       setError(e instanceof Error ? e.message : "could not save the GraphQL endpoint");
       return;
     }
+    setBlockfrostProjectId(bf.trim());
     setError(null);
     onReconnect(list[0]);
     onGraphqlChange();
@@ -110,7 +115,7 @@ export function EndpointSettings({
       <p className={styles.note}>
         One WS endpoint per line; the first is the active one. These are
         endpoint-as-config — reads are credibly neutral, so point this at whichever
-        node you choose to trust. M1 ships a single operator-run dev node.
+        node you choose to trust. The v1 stack is a single operator-run node.
       </p>
 
       <label className={styles.fieldLabel} htmlFor="cogno-endpoints">
@@ -147,6 +152,27 @@ export function EndpointSettings({
         Leave empty to read directly from the node (PAPI) — slower, no search. An
         indexer is a convenience you choose to trust; the feed it serves is still
         verifiable against the node.
+      </p>
+
+      <label className={styles.fieldLabel} htmlFor="cogno-blockfrost">
+        Blockfrost preprod project id (optional)
+      </label>
+      <input
+        id="cogno-blockfrost"
+        className={styles.input}
+        type="text"
+        value={bf}
+        spellCheck={false}
+        autoComplete="off"
+        placeholder="preprod…"
+        onChange={(e) => {
+          setBf(e.target.value);
+          if (error) setError(null);
+        }}
+      />
+      <p className={styles.subnote}>
+        Needed only to lock ADA into the vault from your own Cardano wallet in-browser. A preprod
+        read/submit key, used client-side. Leave empty to hide the lock action.
       </p>
 
       {error && (

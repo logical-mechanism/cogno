@@ -1,0 +1,212 @@
+/* StakePanel — the L1 vault lock/exit surface. Reading Room tokens only (no hex literals). */
+
+.panel {
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-1);
+  padding: var(--space-4);
+  margin-block: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.title {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-600);
+}
+
+.note {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  color: var(--ink-600);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.muted {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-400);
+  margin: 0;
+}
+
+.inlineBtn,
+.linkBtn {
+  font-family: var(--font-ui);
+  font-size: inherit;
+  color: var(--verdigris-ink);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.inlineBtn:hover,
+.linkBtn:hover {
+  color: var(--verdigris);
+}
+
+.wallets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.walletBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-900);
+  background: var(--surface-0);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.walletBtn:hover {
+  border-color: var(--verdigris-soft);
+  background: var(--surface-1);
+}
+
+.walletIcon {
+  border-radius: 2px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fact dt {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-400);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-900);
+  word-break: break-all;
+}
+.mono:is(a) {
+  color: var(--verdigris-ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--hairline-accent);
+}
+.mono:is(a):hover {
+  color: var(--verdigris);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.primary,
+.secondary {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  transition: opacity var(--motion-fast), background var(--motion-fast);
+}
+.primary {
+  color: var(--surface-0);
+  background: var(--verdigris);
+  border: 1px solid var(--verdigris-ink);
+}
+.primary:hover:not(:disabled) {
+  background: var(--verdigris-ink);
+}
+.secondary {
+  color: var(--ink-900);
+  background: var(--surface-0);
+  border: 1px solid var(--hairline);
+}
+.secondary:hover:not(:disabled) {
+  border-color: var(--ink-400);
+}
+.primary:disabled,
+.secondary:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.ok {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-600);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.err {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  color: var(--cap-toolong);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.foot {
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-400);
+  line-height: 1.5;
+  margin: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--hairline);
+}
+
+.foot code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  color: var(--ink-600);
+}
+
+@media (max-width: 40rem) {
+  .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .primary,
+  .secondary {
+    width: 100%;
+  }
+}
