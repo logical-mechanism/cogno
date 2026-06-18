@@ -43,7 +43,7 @@ pub use weights::*;
 use codec::{Decode, DecodeWithMemTracking, Encode};
 use frame_support::{
 	dispatch::{DispatchInfo, PostDispatchInfo},
-	traits::IsSubType,
+	traits::{Get, IsSubType},
 	weights::Weight,
 };
 use scale_info::TypeInfo;
@@ -358,6 +358,12 @@ pub mod pallet {
 		/// bookkeeping: it primes the row + provider ref (via [`Pallet::on_first_bind`]) and lets
 		/// the operator pre-charge a battery so the showcase is interactive immediately.
 		/// (Cardano-sourced weight + on-first-bind-at-`link_identity` are M2/M2d.)
+		///
+		/// `cap_last` is **clamped to the stake-backed ceiling** `min(weight·CapRatio, Ceiling)`
+		/// (microblog-3): the force can prime up to what the account's locked stake backs, but can
+		/// never mint capacity above it — preserving the "voice == locked ADA" invariant even
+		/// against a misconfigured/compromised authority origin. (The legitimate follower flow sets
+		/// `set_stake` first, then forces exactly `min(weight·CapRatio, Ceiling)`, so it is unaffected.)
 		#[pallet::call_index(2)]
 		#[pallet::weight(<T as Config>::WeightInfo::force_set_capacity())]
 		pub fn force_set_capacity(
@@ -368,6 +374,10 @@ pub mod pallet {
 			T::ForceOrigin::ensure_origin(origin)?;
 			Self::on_first_bind(&who); // ensure the row + provider ref exist
 			let now = frame_system::Pallet::<T>::block_number();
+			// Clamp to what the account's current weight backs — never pre-charge above the ceiling.
+			let weight = pallet_talk_stake::AllowedStake::<T>::get(&who);
+			let cap_ceiling = core::cmp::min(weight.saturating_mul(T::CapRatio::get()), T::Ceiling::get());
+			let cap_last = core::cmp::min(cap_last, cap_ceiling);
 			Capacity::<T>::insert(&who, CapacityState { cap_last, last_block: now });
 			Self::deposit_event(Event::CapacityForced { who, cap_last });
 			Ok(())
@@ -462,6 +472,13 @@ where
 		};
 		// Only meter `post_message`; everything else passes through untouched.
 		if let Some(crate::pallet::Call::post_message { text, .. }) = call.is_sub_type() {
+			// O(1) over-length reject at the POOL (microblog-4): a post longer than `MaxLength` is
+			// guaranteed to fail `TooLong` in the body, so metering + feeless-including it would only
+			// burn block weight on a doomed tx. `Call` (not `ExhaustsResources`) — it's malformed, not
+			// merely over-budget, so it must not be retried.
+			if text.len() as u32 > T::MaxLength::get() {
+				return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
+			}
 			let now = frame_system::Pallet::<T>::block_number();
 			let have = crate::pallet::Pallet::<T>::current_capacity(&who, now);
 			let need = crate::pallet::Pallet::<T>::post_cost(text.len() as u32);
