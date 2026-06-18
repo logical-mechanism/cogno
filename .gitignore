@@ -31,3 +31,8 @@ services/committee/node_modules
 # Local chain state (we use --tmp/--dev for M0)
 /state
 *.log
+
+# Operator-keyed network output from scripts/gen-chainspec.mjs — contains keys.json (secret
+# mnemonics) + env.sh + the generated chain spec. NEVER commit. (Override the dir with OUT=.)
+/network
+**/keys.json

@@ -60,13 +60,17 @@ cogno-chain separates **identity/stake** from **posting**, and the two are diffe
   the L1 **lock / exit** transactions that put ADA into / pull ADA out of the `talk_vault`. Locking
   ADA is what earns talk capacity. The ADA never leaves the owner's control — the vault is
   owner-reclaimable and exit is one click.
-- **sr25519 posting key** (the spend key for the chain). Signs **every feeless post**. It can be a
-  well-known dev account, a memory-only session key, or — since M8 — a durable key restored from the
-  **hardened encrypted keystore**: the mnemonic is held as PBKDF2(310k) → AES-GCM-256 ciphertext in
-  `localStorage`; only ciphertext + salt + iv are stored, and unlocking it requires the password
-  each session. (`src/lib/signer/keystore.ts`. Honest threat model: this protects the key **at
-  rest** — a stolen storage dump is useless without the password — but it does **not** defend
-  against XSS on this origin once unlocked. Treat it as a convenience posting key, not cold storage.)
+- **sr25519 posting key** (the spend key for the chain). Signs **every feeless post**. Since M8 it
+  is **sign-to-derive — nothing is stored**: the Cardano wallet signs one fixed, domain-separated
+  CIP-8 message; that signature (deterministic Ed25519) is `blake2b_256`'d into the seed for the
+  sr25519 posting key (`src/lib/signer/wallet-derive.ts` → `signerFromSeed` in
+  `src/lib/signer/index.ts`). Same wallet ⇒ same posting account, re-derived each session by signing
+  again — no mnemonic, no password, no `localStorage` ciphertext, nothing to back up. (`//Alice…//Eve`
+  dev accounts remain as a testing fallback.) Honest threat model: the derived key signs **posts
+  only** and never controls funds, so the worst case if it is phished is impersonation (revoke +
+  re-derive), never theft — but it does **not** defend against XSS on this origin once derived in
+  memory. *(An earlier PBKDF2(310k) → AES-GCM-256 keystore was built in M8 and then superseded by
+  sign-to-derive.)*
 
 The two keys are bound 1:1 by the M2 CIP-8 bind: one Cardano identity ⇒ one posting account.
 

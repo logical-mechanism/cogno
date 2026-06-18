@@ -20,8 +20,18 @@ export const WS_DEFAULT = process.env.WS || "ws://127.0.0.1:9944";
 // Hardened JSON fetch (committee-1) — shared with the relayer in services/_shared/net.mjs (themes 3/4).
 export { fetchJson } from "../_shared/net.mjs";
 
-/// The five well-known dev committee seats (DR-26 3-of-5), plus a couple of extras for targets.
-export const COMMITTEE_URIS = ["//Alice", "//Bob", "//Charlie", "//Dave", "//Eve"];
+/// The FollowerCommittee seats (DR-26, origin = ≥3/5 of members). Defaults to the well-known dev
+/// keys for `--dev`/`local`; on your own network set `COMMITTEE_SEEDS` to a comma-separated list of
+/// your seat secrets (each a mnemonic or `//derivation` URI — `scripts/gen-chainspec.mjs` writes
+/// these into `network/env.sh`).
+export const COMMITTEE_URIS = (process.env.COMMITTEE_SEEDS || "//Alice,//Bob,//Charlie,//Dave,//Eve")
+	.split(",")
+	.map((s) => s.trim())
+	.filter(Boolean);
+
+/// The sudo (EnsureRoot) signer. Defaults to the dev `//Alice`; set `SUDO_SEED` (a mnemonic or
+/// `//derivation` URI) to your chain's sudo key. Must match `sudo.key` in your genesis.
+export const SUDO_SEED = process.env.SUDO_SEED || "//Alice";
 
 export async function connect(ws = WS_DEFAULT) {
 	await cryptoWaitReady();
@@ -127,7 +137,7 @@ export function ensureExecuted(api, events, section, method, resultIdx, label) {
 /// Drive a privileged inner call via SUDO (EnsureRoot — the retained v1 dev escape hatch).
 export async function viaSudo(api, innerCall, opts = {}) {
 	const ops = opts.operators || operators();
-	const sudo = opts.sudo || ops.map.Alice; // dev sudo key = //Alice
+	const sudo = opts.sudo || ops.kr.addFromUri(SUDO_SEED); // SUDO_SEED (default dev //Alice)
 	const log = opts.log || (() => {});
 	const finalize = opts.finalize ?? true; // privileged write resolves on finalization (committee-2)
 	log(`via SUDO (EnsureRoot dev fallback) as ${sudo.address}`);
