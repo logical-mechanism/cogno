@@ -85,6 +85,40 @@ def fetch_genesis() -> str:
     return _rpc_json("chain_getBlockHash", [0])["result"].lower().replace("0x", "")
 
 
+def node_probe(timeout: float = 2.0):
+    """Cheap SINGLE-SHOT liveness probe of the L3 node for /health + /metrics (prod-readiness Phase 2):
+    returns the node's current genesis hash (lowercase, no 0x), or None if unreachable. No retry — a
+    health endpoint must answer fast even when the node is down, unlike _rpc_json's bounded retry."""
+    req = urllib.request.Request(
+        NODE_HTTP,
+        data=json.dumps({"id": 1, "jsonrpc": "2.0", "method": "chain_getBlockHash", "params": [0]}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            res = json.load(r).get("result")
+            return res.lower().replace("0x", "") if res else None
+    except Exception:  # noqa: BLE001 — any transport/HTTP/JSON error ⇒ node not healthily reachable
+        return None
+
+
+def health_status(current_genesis, pinned_genesis: str) -> tuple[int, dict]:
+    """PURE /health decision (unit-testable, no socket): given the node's current genesis (or None if
+    unreachable) and the follower's pinned genesis, return (http_code, fields). The follower is only
+    healthy when the node answers AND its genesis matches the one bound into every payload — a node
+    that is down, or a genesis that changed after a re-spin, both make /health report unhealthy (503)
+    instead of the old always-ok:true that a dead node still passed."""
+    node_ok = current_genesis is not None
+    genesis_ok = (current_genesis == pinned_genesis) if node_ok else None
+    healthy = bool(node_ok and genesis_ok)
+    return (200 if healthy else 503), {
+        "ok": healthy,
+        "node_reachable": node_ok,
+        "genesis_ok": genesis_ok,
+        "current_genesis": current_genesis,
+    }
+
+
 class NonceCache:
     """Per-account, single-use, TTL'd nonces (server-cache, 300s — the cogno_v3 nonce_view.py
     pattern). v1 ALSO commits the nonce inside the signed payload (DR-02), so this is belt-and-
@@ -138,6 +172,10 @@ class NonceCache:
             if nonce != nonce_hex:
                 raise VerifyError("nonce mismatch")
             self._d.pop(account_hex.lower(), None)  # single-use
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._d)
 
 
 def submit_link(identity_hash_hex: str, account_hex: str, thread_hex: str | None) -> dict:
@@ -220,6 +258,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_text(self, code: int, text: str, content_type: str = "text/plain; version=0.0.4"):
+        body = text.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, *a):  # quieter logs
         pass
 
@@ -228,10 +274,40 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
-        if u.path == "/health":
-            return self._send(200, {"ok": True, "genesis": GENESIS, "badges": BADGES,
-                                    "network": CARDANO_NETWORK,
-                                    "domain": payload_mod.DOMAIN, "nonce_ttl": NONCE_TTL})
+        if u.path in ("/health", "/healthz"):
+            # LIVE probe (Phase 2): re-check the node + genesis on every request, not a boot-time cache.
+            code, h = health_status(node_probe(), GENESIS)
+            return self._send(code, {**h, "genesis": GENESIS, "nonces_cached": NONCES.size(),
+                                     "badges": BADGES, "network": CARDANO_NETWORK,
+                                     "domain": payload_mod.DOMAIN, "nonce_ttl": NONCE_TTL})
+        if u.path == "/metrics":
+            # Prometheus text exposition (hand-rolled — no client lib). Node reachability + genesis match
+            # + outstanding nonces, so the follower (a documented SPOF) is alertable like the relayer.
+            current = node_probe()
+            node_ok = 1 if current is not None else 0
+            lines = [
+                "# HELP cogno_follower_up 1 while the follower process is running",
+                "# TYPE cogno_follower_up gauge",
+                "cogno_follower_up 1",
+                "# HELP cogno_follower_node_reachable 1 if the L3 node RPC answered",
+                "# TYPE cogno_follower_node_reachable gauge",
+                f"cogno_follower_node_reachable {node_ok}",
+            ]
+            # Emit genesis_ok ONLY when the node is reachable — otherwise the match is UNKNOWN, not a
+            # mismatch. Omitting the sample (rather than reporting 0) keeps FollowerGenesisMismatch from
+            # firing on a plain node outage, which FollowerNodeUnreachable already covers.
+            if current is not None:
+                lines += [
+                    "# HELP cogno_follower_genesis_ok 1 if the node genesis matches the follower's pinned genesis",
+                    "# TYPE cogno_follower_genesis_ok gauge",
+                    f"cogno_follower_genesis_ok {1 if current == GENESIS else 0}",
+                ]
+            lines += [
+                "# HELP cogno_follower_nonces_cached outstanding issued (unconsumed) nonces",
+                "# TYPE cogno_follower_nonces_cached gauge",
+                f"cogno_follower_nonces_cached {NONCES.size()}",
+            ]
+            return self._send_text(200, "\n".join(lines) + "\n")
         if u.path == "/nonce":
             q = parse_qs(u.query)
             account = (q.get("account") or [""])[0].lower().replace("0x", "")

@@ -10,6 +10,7 @@ import os from "node:os";
 import { fetchJson } from "./net.mjs";
 import { isMain } from "./cli.mjs";
 import { resolveDataDir, statePaths, writeFileAtomic, migrateFromLegacy, acquireSingleInstanceLock, LEGACY_DIR } from "./paths.mjs";
+import { renderPrometheus } from "./metrics.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -325,6 +326,30 @@ console.log("\n[paths.acquireSingleInstanceLock] exclusive, reclaims a stale loc
 		if (savedDataDir === undefined) delete process.env.COGNO_DATA_DIR; else process.env.COGNO_DATA_DIR = savedDataDir;
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+}
+
+// ---------------------------------------------------------------------------------------------------
+console.log("\n[metrics.renderPrometheus] Prometheus text-exposition format");
+{
+	const out = renderPrometheus([
+		{ name: "g_big", help: "h", value: 1332000000n },
+		{ name: "g_big", value: 5n },             // second sample of same metric: no repeated HELP/TYPE
+		{ name: "g_null", value: null },           // skipped (unmeasured, not zeroed)
+		{ name: "g_undef", value: undefined },     // skipped
+		{ name: "g_nan", value: NaN },             // skipped
+		{ name: "g_neg", value: -1 },
+		{ name: "c_total", type: "counter", value: 3 },
+		{ name: "lbl", value: 7, labels: { via: "committee", q: 'a"b' } },
+	]);
+	ok(out.includes("g_big 1332000000"), "BigInt rendered losslessly as an integer");
+	ok(out.includes("g_big 5"), "a second sample of the same metric is still emitted");
+	ok((out.match(/# TYPE g_big/g) || []).length === 1, "HELP/TYPE emitted once per metric name");
+	ok(!out.includes("g_null") && !out.includes("g_undef") && !out.includes("g_nan"),
+		"null/undefined/NaN samples are SKIPPED (omitted, never zeroed)");
+	ok(out.includes("# TYPE g_neg gauge") && out.includes("g_neg -1"), "default type is gauge; negatives pass");
+	ok(out.includes("# TYPE c_total counter"), "explicit type is respected");
+	ok(out.includes('lbl{via="committee",q="a\\"b"} 7'), "labels rendered with double-quote escaping");
+	ok(out.endsWith("\n"), "output ends with a trailing newline");
 }
 
 console.log(`\n== shared helpers: ${PASS} passed, ${FAIL} failed ==\n`);

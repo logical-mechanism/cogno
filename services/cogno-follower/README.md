@@ -43,7 +43,8 @@ pycardano `Address.to_primitive()`.
 
 | Route | | |
 |---|---|---|
-| `GET /health` | → `{ ok, genesis, badges, domain, nonce_ttl }` | liveness + the honest badges |
+| `GET /health` (`/healthz`) | → `{ ok, node_reachable, genesis_ok, current_genesis, genesis, nonces_cached, badges, … }`; **503** when unhealthy | LIVE probe: re-checks the node + genesis each call (not a boot cache) |
+| `GET /metrics` | → Prometheus text (`cogno_follower_up`, `_node_reachable`, `_genesis_ok`, `_nonces_cached`) | scrape target |
 | `GET /nonce?account=<sr25519_hex>` | → `{ nonce, genesis, ttl, payload }` | issue a nonce + the **exact** payload to sign |
 | `POST /bind` | `{ signature, key, signing_address, sr25519_pubkey, thread_pointer? }` → `{ ok, identity_hash, account, error? }` | verify the CIP-8 proof + submit `link_identity` |
 

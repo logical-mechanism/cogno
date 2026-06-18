@@ -167,9 +167,17 @@ sudo systemctl enable --now cogno-indexer cogno-query cogno-follower cogno-relay
 systemctl status 'cogno-*'                       # all active (running)
 journalctl -u cogno-node -f                      # "Imported #N", "finalized #M" advancing
 journalctl -u cogno-relayer -f                   # "watching finalized heads", "anchor_ack → AnchorAcked"
+curl -s localhost:9101/healthz                   # relayer liveness + anchor/funds summary (JSON)
+curl -s localhost:9101/metrics | head            # relayer Prometheus metrics
+curl -s localhost:8090/health                    # follower LIVE health (node reachable + genesis ok; 503 if not)
 curl -s localhost:3001/health                    # indexer health
-curl -s localhost:9615/metrics | head            # node Prometheus (Phase 2 wires scraping/alerts)
+curl -s localhost:9615/metrics | head            # node Prometheus
 ```
+
+**Monitoring + alerting.** [`deploy/monitoring/`](monitoring/) ships a Prometheus scrape config, alert
+rules (finality stalled, relayer down / not anchoring / low funds, follower down / genesis mismatch,
+indexer down), an Alertmanager config, and a starter Grafana dashboard — see
+[`deploy/monitoring/README.md`](monitoring/README.md).
 
 ## Operating notes
 

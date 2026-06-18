@@ -279,6 +279,20 @@ def test_submit_link_json():
         follower.subprocess.run = saved
 
 
+def test_health_status():
+    print("\n[health] health_status decision (Phase 2 — live /health)")
+    g = "ab" * 32
+    code, h = follower.health_status(g, g)
+    ok(code == 200 and h["ok"] is True and h["node_reachable"] is True and h["genesis_ok"] is True,
+       "node up + genesis matches → 200 ok")
+    code, h = follower.health_status(None, g)
+    ok(code == 503 and h["ok"] is False and h["node_reachable"] is False and h["genesis_ok"] is None,
+       "node unreachable → 503 (the old boot-cache always-ok bug is gone), genesis_ok None")
+    code, h = follower.health_status("cd" * 32, g)
+    ok(code == 503 and h["ok"] is False and h["node_reachable"] is True and h["genesis_ok"] is False,
+       "node up but genesis mismatch (a re-spin) → 503")
+
+
 def main():
     print("\n== Cogno-Follower HTTP + NonceCache tests ==")
     test_http_codes()
@@ -287,6 +301,7 @@ def main():
     test_nonce_overflow_eviction()
     test_rpc_json_retry()
     test_submit_link_json()
+    test_health_status()
     print(f"\n== RESULT: {PASS} passed, {FAIL} failed ==\n")
     raise SystemExit(0 if FAIL == 0 else 1)
 

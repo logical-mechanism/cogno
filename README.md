@@ -335,10 +335,12 @@ the things that bite, whether you use the units or run by hand:
    the durable data dir (`$COGNO_DATA_DIR` / systemd `StateDirectory`, **not `/tmp`**) — set
    `COGNO_DATA_DIR` to pick a location. Bind the follower behind HTTPS with a pinned origin (it ships
    plain HTTP + permissive CORS for the localhost showcase — least-privilege + transport hardening is on
-   the roadmap). The relayer and follower are single points of failure (DR-22) — health checks +
-   missed-`anchor_ack` alerting are the next hardening step.
+   the roadmap). The relayer and follower are single points of failure (DR-22) — the node + both
+   services now expose Prometheus `/metrics` + health endpoints, with scrape config + alert rules in
+   [`deploy/monitoring/`](deploy/monitoring/).
 5. **Ports to open:** P2P `30333` (public); RPC `9944` (behind a proxy if exposed); Prometheus `9615`;
-   follower `8090`; indexer `3000`/`3001`; Postgres `5432`; Ogmios `1337`; Kupo `1442`.
+   relayer metrics `9101`; follower `8090`; indexer `3000`/`3001`; Postgres `5432`; Ogmios `1337`; Kupo
+   `1442`. (The `/metrics` + health ports stay on your private scrape network, not public.)
 
 You now run on your **own** keys, sudo, and committee. What still stays **testnet-scoped** (the
 deeper mainnet prerequisites, by design): sudo retained as an escape hatch, `MinAuthorities = 1`,

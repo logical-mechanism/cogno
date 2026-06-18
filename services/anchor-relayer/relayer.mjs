@@ -36,7 +36,8 @@
 //
 // Env: WS, KUPO, OGMIOS, ANCHOR_EVERY (default 10), CONFIRM_TIMEOUT_MS (180000), POLL_MS (4000),
 //      ACK_MAX_ATTEMPTS (5), ACK_BACKOFF_MS (4000), COGNO_DATA_DIR / STATE_FILE (the anchor cursor now
-//      lives in the durable data dir — see services/_shared/paths.mjs — NEVER /tmp), LABEL ("COGN").
+//      lives in the durable data dir — see services/_shared/paths.mjs — NEVER /tmp), LABEL ("COGN"),
+//      METRICS_PORT (9101; 0=off), LOW_FUNDS_LOVELACE (10 ADA), FUNDS_POLL_MS (60000).
 
 import fs from "node:fs";
 import { createClient, FixedSizeBinary } from "polkadot-api";
@@ -56,6 +57,8 @@ import { isMain } from "../_shared/cli.mjs";
 // Durable data dir + crash-safe persistence + single-instance lock (prod-readiness Phase 1): keep the
 // anchor cursor off volatile /tmp, persist it atomically, and refuse a second concurrent relayer.
 import { statePaths, migrateFromLegacy, writeFileAtomic, acquireSingleInstanceLock } from "../_shared/paths.mjs";
+// Observability (prod-readiness Phase 2): a dependency-free /metrics + /healthz surface for Prometheus.
+import { renderPrometheus, startMetricsServer } from "../_shared/metrics.mjs";
 import { missedIntervals, parseAckTokens, oldestPendingAnchor, classifyPendingAck, validateHex } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
@@ -88,6 +91,12 @@ const { file: STATE_FILE, legacy: STATE_FILE_LEGACY } = statePaths("STATE_FILE",
 // The Cardano metadata label. 67797178 = ASCII "COGN" (C=67 O=79 G=71 N=78) — a self-assigned
 // (NOT CIP-10-registered) showcase label; documented in services/anchor-relayer/README.md.
 const LABEL = Number(process.env.LABEL || "67797178");
+// Observability (Phase 2). METRICS_PORT 0 disables the /metrics + /healthz server. LOW_FUNDS_LOVELACE:
+// warn + expose cogno_relayer_low_funds=1 below this (the relayer pays ADA per anchor; running dry
+// silently stops anchoring). FUNDS_POLL_MS: how often the watch loop re-reads the wallet balance.
+const METRICS_PORT = Number(process.env.METRICS_PORT || "9101");
+const LOW_FUNDS_LOVELACE = BigInt(process.env.LOW_FUNDS_LOVELACE || "10000000"); // 10 ADA
+const FUNDS_POLL_MS = Number(process.env.FUNDS_POLL_MS || "60000");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stripHex = (h) => h.replace(/^0x/, "").toLowerCase();
@@ -461,6 +470,68 @@ async function reackLast(api, sudo) {
     : `  ? no Anchor event (ok=${result.ok})`);
 }
 
+// ── observability (Phase 2): /metrics (Prometheus) + /healthz (liveness) ──────────────────────────
+// `metrics` is mutated by the watch loop and read by the HTTP handlers. Rich health signals (stalled
+// anchoring, low funds, errors) live in /metrics for Prometheus alert RULES; /healthz is a cheap
+// always-200 liveness probe (process is responsive). The single-threaded loop yields to the HTTP
+// server on every await — EXCEPT during a synchronous committee `op.mjs` ack, which can block it for up
+// to OP_TIMEOUT_MS; the alert rules use a `for:` window wider than that so a scrape miss never pages.
+const metrics = { startedAt: Date.now(), lastLoopAt: 0, consecutiveErrors: 0, lastAnchoredHeight: 0, lastAnchorAt: 0, walletLovelace: null, walletCheckedAt: 0 };
+const countPending = (state) => (state.anchors || []).filter((a) => a.cardanoTx && a.slot != null && !a.acked && !a.failed).length;
+const countFailed = (state) => (state.anchors || []).filter((a) => a.failed).length;
+
+// Re-read the wallet balance (sum lovelace across its UTxOs) and warn below LOW_FUNDS_LOVELACE.
+// Best-effort: a Kupo blip keeps the last known value (the metric is omitted only if NEVER measured,
+// so an alert never misreads "unknown" as "0").
+async function refreshWalletFunds(wallet) {
+  try {
+    const utxos = await wallet.getUtxos();
+    let lovelace = 0n;
+    for (const u of utxos || []) {
+      const a = (u.output?.amount || []).find((x) => x.unit === "lovelace");
+      if (a) lovelace += BigInt(a.quantity);
+    }
+    metrics.walletLovelace = lovelace;
+    metrics.walletCheckedAt = Date.now();
+    if (lovelace < LOW_FUNDS_LOVELACE)
+      console.warn(`  ⚠ LOW FUNDS: relayer wallet holds ${lovelace} lovelace (< ${LOW_FUNDS_LOVELACE}) — top up the address or anchoring will stop.`);
+  } catch (e) {
+    console.warn(`  ⚠ refreshWalletFunds: could not read wallet balance (${e?.message || e}) — keeping last known value.`);
+  }
+}
+
+function metricsText(state) {
+  const now = Date.now();
+  const lowFunds = metrics.walletLovelace == null ? null : (metrics.walletLovelace < LOW_FUNDS_LOVELACE ? 1 : 0);
+  return renderPrometheus([
+    { name: "cogno_relayer_up", help: "1 while the relayer process is running", value: 1 },
+    { name: "cogno_relayer_start_time_seconds", help: "Unix start time of this relayer run", value: Math.floor(metrics.startedAt / 1000) },
+    { name: "cogno_relayer_seconds_since_last_loop", help: "Seconds since the watch loop last iterated (liveness)", value: metrics.lastLoopAt ? (now - metrics.lastLoopAt) / 1000 : -1 },
+    { name: "cogno_relayer_last_anchored_height", help: "Highest solochain block anchored (on-chain checkpoint)", value: metrics.lastAnchoredHeight },
+    { name: "cogno_relayer_seconds_since_last_anchor", help: "Seconds since the last successful anchor (persisted across restarts; -1 if none ever)", value: metrics.lastAnchorAt ? (now - metrics.lastAnchorAt) / 1000 : -1 },
+    { name: "cogno_relayer_pending_anchors", help: "Persisted anchors awaiting ack-only resume", value: countPending(state) },
+    { name: "cogno_relayer_failed_anchors", help: "Anchors marked permanently failed (NonMonotonicAnchor)", value: countFailed(state) },
+    { name: "cogno_relayer_consecutive_errors", help: "Consecutive watch-loop errors (0 when healthy)", value: metrics.consecutiveErrors },
+    { name: "cogno_relayer_wallet_lovelace", help: "Relayer Cardano wallet balance in lovelace (omitted if never measured)", value: metrics.walletLovelace },
+    { name: "cogno_relayer_low_funds", help: "1 if the wallet balance is below LOW_FUNDS_LOVELACE", value: lowFunds },
+    { name: "cogno_relayer_anchor_every_blocks", help: "Configured anchor cadence in finalized blocks", value: Number(ANCHOR_EVERY) },
+  ]);
+}
+
+function healthz(state) {
+  const now = Date.now();
+  return { code: 200, contentType: "application/json", body: JSON.stringify({
+    ok: true,
+    lastLoopAgoSec: metrics.lastLoopAt ? Math.round((now - metrics.lastLoopAt) / 1000) : null,
+    lastAnchoredHeight: metrics.lastAnchoredHeight,
+    secondsSinceLastAnchor: metrics.lastAnchorAt ? Math.round((now - metrics.lastAnchorAt) / 1000) : null,
+    pending: countPending(state), failed: countFailed(state),
+    consecutiveErrors: metrics.consecutiveErrors,
+    walletLovelace: metrics.walletLovelace == null ? null : metrics.walletLovelace.toString(),
+    lowFunds: metrics.walletLovelace == null ? null : metrics.walletLovelace < LOW_FUNDS_LOVELACE,
+  }) + "\n" };
+}
+
 async function main() {
   const mode = process.argv.includes("--once") ? "once" : process.argv.includes("--reack-last") ? "reack-last" : "watch";
 
@@ -541,13 +612,34 @@ async function main() {
   const onStop = (sig) => { if (!stopping) { stopping = true; console.log(`\n${sig} received — finishing the current cycle, then stopping cleanly (will NOT interrupt an in-flight Cardano tx).`); } };
   process.on("SIGTERM", () => onStop("SIGTERM"));
   process.on("SIGINT", () => onStop("SIGINT"));
+
+  // Observability (Phase 2): serve /metrics + /healthz, seed gauges from persisted state, and prime the
+  // wallet-balance reading so low-funds alerting works from the first scrape.
+  if (METRICS_PORT > 0)
+    startMetricsServer({ port: METRICS_PORT, routes: {
+      "/metrics": () => ({ contentType: "text/plain; version=0.0.4", body: metricsText(state) }),
+      "/healthz": () => healthz(state),
+    } });
+  {
+    const acked = (state.anchors || []).filter((a) => a.acked);
+    if (acked.length) {
+      metrics.lastAnchoredHeight = Math.max(...acked.map((a) => Number(a.block)));
+      const lastAt = acked.map((a) => a.ackedAt || a.at).filter(Boolean).sort().pop();
+      metrics.lastAnchorAt = lastAt ? Date.parse(lastAt) || 0 : 0;
+    }
+  }
+  await refreshWalletFunds(wallet);
+
   let consecutiveErrors = 0;
   let prevHead = null; // last observed FINALIZED head number — to detect a regression (gap 16).
   while (!stopping) {
     try {
+      metrics.lastLoopAt = Date.now();
+      if (Date.now() - metrics.walletCheckedAt >= FUNDS_POLL_MS) await refreshWalletFunds(wallet);
       await drainPending(api, sudo, state); // finish any unacked anchor first (ack-only, no re-mint)
       const head = await finalizedHead(client);
       const last = await lastOnChain();
+      if (last !== null) metrics.lastAnchoredHeight = Number(last);
       // gap 16: a FINALIZED head should be monotonic; if it regresses, GRANDPA reverted finality or
       // the L3 chain was wiped/forked. The relayer silently skips (head < last+EVERY ⇒ not due) — but
       // a regressing FINALIZED head is a serious anomaly the operator must see, not a quiet skip.
@@ -561,13 +653,17 @@ async function main() {
         const missed = missedIntervals(last, head.number, ANCHOR_EVERY);
         if (missed > 0) recordGap(state, last, head.number, missed);
         await anchorOne(api, sudo, wallet, address, genesisHex, head, state);
+        metrics.lastAnchorAt = Date.now();
+        metrics.lastAnchoredHeight = Number(head.number);
       }
       consecutiveErrors = 0;
+      metrics.consecutiveErrors = 0;
     } catch (e) {
       // relayer-7: bounded exponential backoff so a persistent fault (node WS down, Cardano stack
       // unreachable) doesn't hot-loop. The PAPI ws-provider auto-reconnects under the client; a
       // transient drop surfaces here and is retried with growing backoff (capped at 60s).
       consecutiveErrors++;
+      metrics.consecutiveErrors = consecutiveErrors;
       const wait = Math.min(POLL_MS * 2 ** (consecutiveErrors - 1), 60_000);
       console.error(`  ⚠ loop error #${consecutiveErrors} (retry in ${wait}ms):`, e?.message || e);
       await sleep(wait);

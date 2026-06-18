@@ -1,0 +1,46 @@
+# Prometheus scrape config for the cogno-chain stack (prod-readiness Phase 2).
+# Same-host deployment: every target binds 127.0.0.1. If Prometheus runs on another host, expose the
+# node metrics with `--prometheus-external` (it binds localhost otherwise) and put the service /metrics
+# behind your scrape network / a proxy — do NOT expose them to the public internet.
+#
+#   prometheus --config.file=deploy/monitoring/prometheus.yml
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:9093"]   # alertmanager.yml below
+
+scrape_configs:
+  # Substrate node — built-in Prometheus exporter (cogno-node.service: --prometheus-port 9615).
+  - job_name: cogno-node
+    static_configs:
+      - targets: ["127.0.0.1:9615"]
+
+  # Anchor relayer — hand-rolled /metrics (relayer METRICS_PORT, default 9101).
+  - job_name: cogno-relayer
+    static_configs:
+      - targets: ["127.0.0.1:9101"]
+
+  # Follower — hand-rolled /metrics on its HTTP port (default 8090).
+  - job_name: cogno-follower
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8090"]
+
+  # SubQuery indexer admin/health port. NOTE: confirm @subql/node exposes Prometheus metrics on this
+  # port for your version; if not, this target just powers the `up`/IndexerDown liveness signal.
+  - job_name: cogno-indexer
+    static_configs:
+      - targets: ["127.0.0.1:3001"]
+
+  # OPTIONAL: host metrics (CPU/mem/disk for the chain + indexer DB) if you run node_exporter.
+  # - job_name: node-exporter
+  #   static_configs:
+  #     - targets: ["127.0.0.1:9100"]

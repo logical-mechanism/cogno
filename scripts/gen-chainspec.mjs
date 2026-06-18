@@ -13,6 +13,7 @@
 //   VALIDATORS=1                                 # genesis block-producing authorities
 //   COMMITTEE=5                                  # FollowerCommittee seats (origin needs ≥3/5)
 //   CHAIN_NAME="Cogno"  CHAIN_ID="cogno"         # network name / id (id picks the base-path subdir)
+//   TOKEN_SYMBOL=COGNO  TOKEN_DECIMALS=12  SS58_FORMAT=42  PROTOCOL_ID=$CHAIN_ID  # spec properties
 //   BASE=local                                   # preset to source the runtime wasm + shape from
 //   ENDOW=1000000000000000000                    # free balance seeded to every generated account
 //
@@ -90,6 +91,16 @@ const spec = JSON.parse(readFileSync(basePlain, "utf8"));
 spec.name = CHAIN_NAME;
 spec.id = CHAIN_ID;
 spec.bootNodes = [];
+// Network identity + render metadata (Phase 2): protocolId isolates this chain's p2p gossip from
+// other Substrate networks; `properties` tell wallets/explorers how to render balances + addresses
+// (without it they fall back to generic defaults and mis-render). ss58Format 42 + tokenDecimals 12
+// mirror the runtime (SS58Prefix=42, UNIT=10^12); all overridable via env.
+spec.protocolId = process.env.PROTOCOL_ID || CHAIN_ID;
+spec.properties = {
+  tokenSymbol: process.env.TOKEN_SYMBOL || "COGNO",
+  tokenDecimals: Number(process.env.TOKEN_DECIMALS || "12"),
+  ss58Format: Number(process.env.SS58_FORMAT || "42"),
+};
 spec.genesis.runtimeGenesis.patch = patch;
 const plain = resolve(OUT, "plain.json");
 writeFileSync(plain, JSON.stringify(spec, null, 2));
