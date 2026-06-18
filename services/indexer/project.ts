@@ -15,8 +15,11 @@ const project: SubstrateProject = {
   description:
     "Indexer for cogno-chain: Microblog posts/threads, CognoGate identity bind/revoke, TalkStake weight. Reads NEVER touch Cardano (L4).",
   runner: {
-    node: { name: "@subql/node", version: ">=6.0.0" },
-    query: { name: "@subql/query", version: "*" },
+    // Pinned exactly (indexer-4) — a future @subql release can silently change generated models or
+    // query behaviour, so the runner versions match the locked devDependencies. Re-run verify-m4c
+    // after any bump.
+    node: { name: "@subql/node", version: "6.4.6" },
+    query: { name: "@subql/query", version: "2.25.0" },
   },
   schema: { file: "./schema.graphql" },
   network: {
