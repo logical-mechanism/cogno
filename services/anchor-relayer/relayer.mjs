@@ -81,10 +81,19 @@ const OP_CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "co
 // Drive `anchor.anchor_ack(block, root, txhash, count, ts)` via the committee tooling. Throws on
 // failure (the caller keeps the checkpoint unrecorded and retries next loop). Returns true.
 function committeeAnchorAck({ block, root, txhash, count, ts }) {
-  const args = JSON.stringify([Number(block), root, txhash, Number(count), Number(ts)]);
+  // op.mjs (@polkadot/api) decodes the [u8;32] args from 0x-hex. The state_root (from PAPI) is
+  // already 0x-prefixed, but the Cardano txHash (from MeshJS submitTx) is NOT — passed bare, the
+  // 64-char hex is read as a 64-BYTE raw string and rejected ("Expected 32 bytes, found 64").
+  // Normalize both to 0x-hex so the committee path matches the PAPI/sudo path's encoding.
+  const hx = (h) => (String(h).startsWith("0x") ? String(h) : "0x" + h);
+  const args = JSON.stringify([Number(block), hx(root), hx(txhash), Number(count), Number(ts)]);
   console.log(`  → anchor_ack via 3-of-5 committee (op.mjs; D2-shaped, single-operator)`);
-  execFileSync(process.execPath, [OP_CLI, "--call", "anchor.anchorAck", "--args", args, "--via", "committee", "--ws", WS], { stdio: "inherit" });
-  return true;
+  // Capture op.mjs's output and read the ACTUAL inner committee events (anchor.AnchorAcked /
+  // AckIgnored). Re-reading LastCheckpoint here instead would lag GRANDPA finalization (op.mjs
+  // resolves at in-block, finalized state is ~1-2 blocks behind) and mis-report a real ack as ignored.
+  const out = execFileSync(process.execPath, [OP_CLI, "--call", "anchor.anchorAck", "--args", args, "--via", "committee", "--ws", WS], { encoding: "utf8" });
+  process.stdout.write(out);
+  return { acked: /AnchorAcked/.test(out), ignored: /AckIgnored/.test(out) };
 }
 
 // The latest finalized head, read entirely through PAPI so the block stays PINNED — its header and
@@ -185,11 +194,9 @@ async function anchorOne(api, sudo, wallet, address, genesisHex, head, state) {
   // `ANCHOR_VIA=sudo` keeps the EnsureRoot dev fallback.
   let acked = false, ignored = false;
   if (ANCHOR_VIA === "committee") {
-    const had = await api.query.Anchor.LastCheckpoint.getValue();
-    committeeAnchorAck({ block: head.number, root: head.stateRoot, txhash: txHash, count: postCount, ts });
-    const now = await api.query.Anchor.LastCheckpoint.getValue();
-    acked = !!now && (!had || now.block_number > (had?.block_number ?? -1));
-    ignored = !acked;
+    const r = committeeAnchorAck({ block: head.number, root: head.stateRoot, txhash: txHash, count: postCount, ts });
+    acked = r.acked;
+    ignored = r.ignored;
   } else {
     const result = await api.tx.Sudo.sudo({
       call: api.tx.Anchor.anchor_ack({

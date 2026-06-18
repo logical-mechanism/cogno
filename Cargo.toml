@@ -9,7 +9,6 @@ resolver = "2"
 members = [
 	"node",
 	"runtime",
-	"pallets/template",
 	"pallets/microblog",
 	"pallets/talk-stake",
 	"pallets/cogno-gate",
@@ -30,7 +29,6 @@ unused_extern_crates = "allow"
 [workspace.dependencies]
 # ── local crates ───────────────────────────────────────────────────────────────
 cogno-chain-runtime = { path = "runtime", default-features = false }
-pallet-template = { path = "pallets/template", default-features = false }
 pallet-microblog = { path = "pallets/microblog", default-features = false }
 pallet-talk-stake = { path = "pallets/talk-stake", default-features = false }
 pallet-cogno-gate = { path = "pallets/cogno-gate", default-features = false }

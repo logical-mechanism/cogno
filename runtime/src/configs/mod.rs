@@ -178,12 +178,6 @@ impl pallet_sudo::Config for Runtime {
 	type WeightInfo = pallet_sudo::weights::SubstrateWeight<Runtime>;
 }
 
-/// Configure the pallet-template in pallets/template.
-impl pallet_template::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
-}
-
 // ── DR-07: the FollowerCommittee — the mutable k-of-t authority behind the crown jewels ──
 //
 // `pallet-collective` (one shared `Instance1`) holds a MUTABLE member set (rotation via

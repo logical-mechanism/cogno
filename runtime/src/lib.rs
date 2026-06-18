@@ -90,7 +90,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// by the M5 AuthorityOrigin) queue a change applied at a session boundary. New pallets +
 	// calls/storage/events — encoding-affecting; regen the PAPI descriptors. transaction_version is
 	// UNCHANGED (no TxExtension change — pallet-session's set_keys/purge_keys are plain calls).
-	spec_version: 106,
+	// 106 -> 107 for M7 (ops cleanup): dropped the unused `pallet-template` (@7, the M0 scaffold).
+	// Removing a pallet from construct_runtime changes the metadata — encoding-affecting; regen the
+	// PAPI descriptors. transaction_version is UNCHANGED (no TxExtension change). The on-wire pallet
+	// indices 8..15 are UNCHANGED (FRAME allows index gaps; only @7 is vacated).
+	spec_version: 107,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -248,10 +252,8 @@ mod runtime {
 	#[runtime::pallet_index(6)]
 	pub type Sudo = pallet_sudo;
 
-	// Include the custom logic from the pallet-template in the runtime.
-	// (Kept at index 7 for M0; to be dropped in a later milestone.)
-	#[runtime::pallet_index(7)]
-	pub type Template = pallet_template;
+	// (Index 7 is vacant: the M0 `pallet-template` scaffold was dropped in M7. FRAME allows index
+	// gaps, so vacating @7 leaves the on-wire indices 8..15 unchanged.)
 
 	// ── cogno-chain app pallets ──
 	// Indices are on-wire contracts (FRAME allows index gaps): 8 = CognoGate (M2, the CIP-8

@@ -27,10 +27,10 @@ async function main() {
 
 	const spec = api.runtimeVersion.specVersion.toNumber();
 	console.log(`genesis: ${api.genesisHash.toHex()} | spec: ${spec}`);
-	if (spec !== 106) fail(`spec_version ${spec} != 106`);
+	if (spec < 106) fail(`spec_version ${spec} < 106 (M6 minimum)`);
 	const members = await api.query.followerCommittee.members();
 	if (members.length !== 5) fail(`FollowerCommittee seated ${members.length} != 5`);
-	ok(`spec 106 · FollowerCommittee seated 5 members (3-of-5 k-of-t live)`);
+	ok(`spec ${spec} · FollowerCommittee seated 5 members (3-of-5 k-of-t live)`);
 	console.log("  ⚠ single-operator stack: D2-SHAPED, not D2-TRUST (one operator holds all 5 keys)\n");
 
 	// ── (A) the follower's set_stake via the committee (no sudo) ─────────────────────────────────
