@@ -403,6 +403,8 @@ pallet); `talk-stake` only supplies the weight the meter reads.
   node acceptance.mjs`.
 - **Encoding discipline:** pallet indices and `transaction_version` are on-wire contracts; bump
   `spec_version` only for encoding-affecting changes and regenerate PAPI descriptors afterward.
+- **Upgrading a live chain** (adding features, soft vs hard forks, the mixed-validator question,
+  storage migrations, enactment): [`docs/UPGRADES.md`](docs/UPGRADES.md).
 - **Design & build history:** the full L1–L5 design, the economic model, and the canonical
   [`DECISION-REGISTER.md`](docs/DECISION-REGISTER.md) live in [`docs/`](docs/), alongside per-milestone
   build logs ([`docs/M*-build.md`](docs/)) recording how the stack was built incrementally (M0–M10).
