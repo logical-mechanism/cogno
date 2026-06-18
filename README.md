@@ -37,14 +37,19 @@ cogno-chain/
 ├─ node/                   # cogno-chain-node (forked solochain-template-node; Aura + GRANDPA)
 ├─ runtime/                # cogno-chain-runtime  (#[frame_support::runtime])
 ├─ pallets/
-│  ├─ template/            # stock pallet-template, kept at index 7 (to be dropped later)
-│  └─ microblog/           # pallet-microblog — Posts/NextPostId(u64)/ByAuthor; index 10
+│  ├─ microblog/           # pallet-microblog — Posts/NextPostId(u64)/ByAuthor; index 10
+│  ├─ cogno-gate/          # pallet-cogno-gate — CIP-8 identity gate; index 8
+│  ├─ talk-stake/          # pallet-talk-stake — Cardano-sourced weight; index 9
+│  ├─ anchor/              # pallet-anchor — Tier-A Cardano anchor; index 12
+│  └─ validator-set/       # pallet-validator-set — mutable Aura/GRANDPA; index 14
 └─ scripts/acceptance/     # headless @polkadot/api M0 acceptance test
 ```
 
 Pallet indices (on-wire contracts, stable forever): System(0) Timestamp(1) Aura(2) Grandpa(3)
-Balances(4) TransactionPayment(5) Sudo(6) Template(7) — **Microblog(10)**; 8 (CognoGate) and 9
-(TalkStake) reserved for later milestones.
+Balances(4) TransactionPayment(5) Sudo(6) — **CognoGate(8) TalkStake(9) Microblog(10)**
+SkipFeelessPayment(11) Anchor(12) FollowerCommittee(13) ValidatorSet(14) Session(15). Index 7 is
+vacant: the stock `pallet-template` scaffold was dropped in M7 (spec 107); FRAME allows index gaps,
+so the on-wire indices never shift.
 
 ## Build & run
 

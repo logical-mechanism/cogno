@@ -30,7 +30,6 @@ frame_benchmarking::define_benchmarks!(
 	[pallet_balances, Balances]
 	[pallet_timestamp, Timestamp]
 	[pallet_sudo, Sudo]
-	[pallet_template, Template]
 	// ── cogno-chain app pallets (DR-05: real WeightInfo for the feeless+capacity anti-spam) ──
 	[pallet_cogno_gate, CognoGate]
 	[pallet_talk_stake, TalkStake]
