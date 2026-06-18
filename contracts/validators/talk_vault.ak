@@ -11,6 +11,10 @@
 //// close every continuation attack. Do not relax any ⛔ line.
 
 use aiken/collection/list
+// `aiken/fuzz` is used ONLY by the property tests + benchmarks below — never by the validator,
+// so it is not linked into the compiled on-chain script.
+use aiken/fuzz
+use aiken/option
 use cardano/address.{Address, Credential, Script, VerificationKey}
 use cardano/assets.{PolicyId, lovelace_of, quantity_of, without_lovelace}
 use cardano/transaction
@@ -93,6 +97,9 @@ validator talk_vault(min_lock: Int) {
                   (without_lovelace(cont.value) == without_lovelace(in_value))?,
                   // ⛔ whole-Address: stake cred consistency on continuation (DR-01).
                   (cont.address.stake_credential == owner.stake_credential)?,
+                  // ⛔ no reference-script bloat on the continuation — mirror the mint arm
+                  //    (validate.ak `option.is_none(reference_script)`), close L-01's perimeter gap.
+                  option.is_none(cont.reference_script)?,
                   // ⛔ owner Address frozen → the beacon name cannot drift either.
                   (cont.datum == this_input.output.datum)?,
                 }
@@ -169,6 +176,30 @@ fn vault_output(addr: Address, lovelace: Int, owner: Address) -> Output {
     datum: InlineDatum(VaultDatum { owner }),
     reference_script: None,
   }
+}
+
+// I-03 fixture variant: a vault output whose `reference_script` slot can be populated. The default
+// builder hardcodes `None`; this one lets a negative test attach `Some(_)` to exercise the mint-arm
+// pin (validate.ak) and the L-01 spend-continuation pin.
+fn vault_output_ref(
+  addr: Address,
+  lovelace: Int,
+  owner: Address,
+  reference_script: Option<ByteArray>,
+) -> Output {
+  Output {
+    address: addr,
+    value: assets.from_lovelace(lovelace)
+      |> assets.add(vault_hash, beacon(), 1),
+    datum: InlineDatum(VaultDatum { owner }),
+    reference_script,
+  }
+}
+
+// a SECOND, distinct owner (other payment vkey + same stake key) — for cross-owner negative tests.
+fn other_owner_addr() -> Address {
+  address.from_verification_key(other_vkh)
+    |> address.with_delegation_key(stake_vkh)
 }
 
 fn oref() -> OutputReference {
@@ -439,4 +470,406 @@ test full_exit_without_burn_fails() fail {
       // mint left empty → no -1 burn → must fail.
     }
   talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+// ── REFERENCE-SCRIPT PERIMETER (L-01 + I-03) ──────────────────────────────────────────────
+// The address perimeter has four slots: payment cred, stake cred, reference_script, datum/value.
+// Both the mint arm AND the spend continuation must pin reference_script == None. These tests
+// drive the I-03 fixture variant that can attach Some(_).
+
+test continuation_with_no_reference_script_succeeds() {
+  // positive regression guard for the L-01 pin: a well-formed continuation (ref-script None) accepts.
+  let cont = vault_output_ref(vault_addr(), lock + 50_000_000, owner_addr(), None)
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [cont],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test continuation_with_reference_script_fails() fail {
+  // L-01: a continuation may NOT carry a reference script (min-ADA bloat); the new pin rejects it.
+  let cont =
+    vault_output_ref(vault_addr(), lock + 50_000_000, owner_addr(), Some(vault_hash))
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [cont],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test mint_into_output_with_reference_script_fails() fail {
+  // I-03 / mint arm: the beacon output may not carry a reference script (validate.ak pin).
+  let out = vault_output_ref(vault_addr(), lock, owner_addr(), Some(vault_hash))
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      outputs: [out],
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), 1),
+    }
+  talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
+}
+
+// ── LOAD-BEARING GUARD NEGATIVES (I-04) ───────────────────────────────────────────────────
+// One `fail` test per guard that previously had no dedicated negative, each tweaking exactly one
+// load-bearing line off a valid base tx.
+
+test continuation_adds_foreign_token_fails() fail {
+  // token-set freeze: a foreign token riding the continuation breaks `without_lovelace` equality.
+  let cont =
+    Output {
+      address: vault_addr(),
+      value: assets.from_lovelace(lock + 50_000_000)
+        |> assets.add(vault_hash, beacon(), 1)
+        |> assets.add(other_vkh, "junk", 1),
+      datum: InlineDatum(VaultDatum { owner: owner_addr() }),
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [cont],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test continuation_mutates_owner_datum_fails() fail {
+  // datum freeze: the continuation names a DIFFERENT owner → `cont.datum == input.datum` rejects.
+  let cont =
+    Output {
+      address: vault_addr(),
+      value: assets.from_lovelace(lock + 50_000_000)
+        |> assets.add(vault_hash, beacon(), 1),
+      datum: InlineDatum(VaultDatum { owner: other_owner_addr() }),
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [cont],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test continuation_below_floor_fails() fail {
+  // floor (isolated): input is BELOW min_lock so the NON-DECREASE holds (lock-1 >= lock-100),
+  // leaving the floor `>= min_lock` (lock-1 >= lock) as the SOLE rejector — deleting it un-fails this.
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock - 100)],
+      outputs: [vault_output(vault_addr(), lock - 1, owner_addr())],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test two_continuing_outputs_fan_out_fails() fail {
+  // fan-out reject: two own-script continuing outputs → `find_script_outputs` hits the `_ -> False`.
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [
+        vault_output(vault_addr(), lock + 50_000_000, owner_addr()),
+        vault_output(vault_addr(), lock, owner_addr()),
+      ],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test mint_datum_names_other_owner_fails() fail {
+  // mint-side datum binding: the beacon output's datum names a DIFFERENT owner than the redeemer.
+  let out =
+    Output {
+      address: vault_addr(),
+      value: assets.from_lovelace(lock) |> assets.add(vault_hash, beacon(), 1),
+      datum: InlineDatum(VaultDatum { owner: other_owner_addr() }),
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      outputs: [out],
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), 1),
+    }
+  talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
+}
+
+test mint_redeemer_length_mismatch_fails() fail {
+  // length/uniqueness: one redeemer entry but TWO distinct tokens under the policy → size != length.
+  let out = vault_output(vault_addr(), lock, owner_addr())
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      outputs: [out],
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), 1)
+        |> assets.add(vault_hash, "second_beacon", 1),
+    }
+  talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
+}
+
+test mint_into_non_inline_datum_fails() fail {
+  // non-inline-datum trap: the beacon output carries NoDatum → the mint arm's `expect InlineDatum`.
+  let out =
+    Output {
+      address: vault_addr(),
+      value: assets.from_lovelace(lock) |> assets.add(vault_hash, beacon(), 1),
+      datum: NoDatum,
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      outputs: [out],
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), 1),
+    }
+  talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
+}
+
+// ── DOCUMENTED CREATOR FOOTGUNS (I-05 / I-06) ─────────────────────────────────────────────
+// These prove the two always-true datum arms are an intentional liveness sweep for MISCONFIGURED,
+// non-protocol deposits — and that a real (beacon-bearing, VaultDatum) vault can never reach them.
+
+test no_datum_utxo_is_spendable_by_anyone() {
+  // hyper-02: a NoDatum UTxO at the vault address is spendable by anyone (no sig, no value check).
+  talk_vault.spend(lock, None, Spend, oref(), transaction.placeholder)
+}
+
+test non_vault_datum_utxo_is_spendable_by_anyone() {
+  // hyper-01: a datum that does NOT decode to VaultDatum falls through to the permissive arm.
+  let not_a_vault: Data = 42
+  talk_vault.spend(lock, Some(not_a_vault), Spend, oref(), transaction.placeholder)
+}
+
+test beacon_bearing_vault_not_spendable_via_bad_datum_arm() fail {
+  // A real VaultDatum ALWAYS enters the owner-gated branch, never the permissive arm: owner signs,
+  // but with no continuation and no -1 burn the gated path rejects → the arm cannot sweep a vault.
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test mint_with_script_owner_fails() fail {
+  // I-06: the mint arm rejects a Script-payment-credential owner (v1: VerificationKey only) — the
+  // structural mitigation that makes the lock-forever footgun unreachable through the protocol.
+  let script_owner =
+    address.from_script(other_vkh) |> address.with_delegation_key(stake_vkh)
+  let nm = util.beacon_name(script_owner)
+  let out =
+    Output {
+      address: vault_addr(),
+      value: assets.from_lovelace(lock) |> assets.add(vault_hash, nm, 1),
+      datum: InlineDatum(VaultDatum { owner: script_owner }),
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      outputs: [out],
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, nm, 1),
+    }
+  talk_vault.mint(lock, [Mint(script_owner)], vault_hash, tx)
+}
+
+test spend_equal_value_continuation_succeeds() {
+  // I-06 positive + value-rule boundary: a vkey owner may top up with EXACTLY equal value (no-op).
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [vault_output(vault_addr(), lock, owner_addr())],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+// ── PROPERTY / FUZZ TESTS (I-01) ──────────────────────────────────────────────────────────
+// `via`-driven properties over the adversarial input distribution (default 100 samples each): every
+// fuzzed perimeter break is rejected; every well-formed non-decreasing top-up is accepted. A fuzzer
+// over `reference_script` is precisely what would have surfaced L-01.
+
+test prop_continuation_rejects_any_reference_script(h via fuzz.bytearray_fixed(28)) {
+  // any attached reference script (any 28-byte hash) → reject (L-01 pin).
+  let cont = vault_output_ref(vault_addr(), lock + 50_000_000, owner_addr(), Some(h))
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [cont],
+      extra_signatories: [owner_vkh],
+    }
+  !talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test prop_continuation_rejects_any_foreign_token(nm via fuzz.bytearray_between(0, 32)) {
+  // any foreign token (under a non-vault policy) riding the continuation → reject (token freeze).
+  let cont =
+    Output {
+      address: vault_addr(),
+      value: assets.from_lovelace(lock + 50_000_000)
+        |> assets.add(vault_hash, beacon(), 1)
+        |> assets.add(other_vkh, nm, 1),
+      datum: InlineDatum(VaultDatum { owner: owner_addr() }),
+      reference_script: None,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [cont],
+      extra_signatories: [owner_vkh],
+    }
+  !talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+test prop_continuation_rejects_any_stake_cred_drift(h via fuzz.bytearray_fixed(28)) {
+  // any continuation stake credential != the owner's → reject (DR-01 stake pin).
+  if h == stake_vkh {
+    True
+  } else {
+    let bad_addr =
+      address.from_script(vault_hash) |> address.with_delegation_key(h)
+    let tx =
+      Transaction {
+        ..transaction.placeholder,
+        inputs: [vault_input(lock)],
+        outputs: [vault_output(bad_addr, lock + 50_000_000, owner_addr())],
+        extra_signatories: [owner_vkh],
+      }
+    !talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+  }
+}
+
+test prop_mint_rejects_any_non_owner_signer(h via fuzz.bytearray_fixed(28)) {
+  // any single signer that is NOT the owner → mint rejects (owner-gated creation).
+  if h == owner_vkh {
+    True
+  } else {
+    let tx =
+      Transaction {
+        ..transaction.placeholder,
+        outputs: [vault_output(vault_addr(), lock, owner_addr())],
+        extra_signatories: [h],
+        mint: assets.from_asset(vault_hash, beacon(), 1),
+      }
+    !talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
+  }
+}
+
+test prop_continuation_accepts_any_nonneg_topup(delta via fuzz.int_at_least(0)) {
+  // any non-decreasing top-up (delta >= 0) with a frozen perimeter → accept.
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock)],
+      outputs: [vault_output(vault_addr(), lock + delta, owner_addr())],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+// ── BENCHMARKS (I-02) — realistic-context budget baselines (run with `aiken bench`). ─────────
+// The samplers vary the number of filler (non-own) inputs/outputs to model a real tx carrying
+// change + payment UTxOs alongside the single vault UTxO — the dimension the validator's
+// `list.count` (inputs), `find_script_outputs` / `list.all` (outputs), and the mint-side
+// `search_for_output_by_token` scan all grow on. `--max-size` caps the filler count.
+
+// a plain wallet output (change/payment) — never carries the vault payment credential or a beacon.
+fn filler_output() -> Output {
+  Output {
+    address: owner_addr(),
+    value: assets.from_lovelace(2_000_000),
+    datum: NoDatum,
+    reference_script: None,
+  }
+}
+
+// a plain wallet input — counted by `list.count` but never matches the own-script predicate.
+fn filler_input() -> Input {
+  Input {
+    output_reference: OutputReference { transaction_id: tx_id, output_index: 1 },
+    output: filler_output(),
+  }
+}
+
+// Sampler: 0..size filler UTxOs — the realistic-context size knob aiken sweeps for the baseline.
+fn fillers(size: Int) -> Fuzzer<Int> {
+  fuzz.int_between(0, size)
+}
+
+bench talk_vault__spend__topup(n via fillers) {
+  // one continuing vault output + n change outputs; vault input + n wallet inputs.
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock), ..list.repeat(filler_input(), n)],
+      outputs: [
+        vault_output(vault_addr(), lock + 50_000_000, owner_addr()),
+        ..list.repeat(filler_output(), n)
+      ],
+      extra_signatories: [owner_vkh],
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+bench talk_vault__spend__full_exit(n via fillers) {
+  // exit + burn with n+1 change outputs (the `list.all` beacon-absence scan covers every output).
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [vault_input(lock), ..list.repeat(filler_input(), n)],
+      outputs: list.repeat(filler_output(), n + 1),
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), -1),
+    }
+  talk_vault.spend(lock, Some(owner_datum()), Spend, oref(), tx)
+}
+
+bench talk_vault__mint(n via fillers) {
+  // the beacon output sits AFTER n filler outputs, so `search_for_output_by_token` scans past them.
+  // NOTE: this sweeps the OUTPUTS dimension only; the redeemer list stays length-1, which is the v1
+  // path (one beacon per tx). A multi-entry-redeemer baseline is out of scope until batch mint lands.
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      outputs: list.concat(
+        list.repeat(filler_output(), n),
+        [vault_output(vault_addr(), lock, owner_addr())],
+      ),
+      extra_signatories: [owner_vkh],
+      mint: assets.from_asset(vault_hash, beacon(), 1),
+    }
+  talk_vault.mint(lock, [Mint(owner_addr())], vault_hash, tx)
+}
+
+bench talk_vault__burn(_n via fillers) {
+  // cold path: a -1 beacon burn (cost is independent of tx size — single baseline row).
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      mint: assets.from_asset(vault_hash, beacon(), -1),
+    }
+  talk_vault.mint(lock, [Burn(beacon())], vault_hash, tx)
 }
