@@ -49,6 +49,10 @@ import { MeshTxBuilder } from "@meshsdk/core";
 // The relayer signing wallet IS the M2d owner wallet (a single dev key, DR-07/§9 — labelled as
 // such). Reuses the funded preprod wallet + the Kupo fetcher / Ogmios submitter helpers.
 import { getOwnerWallet, kupo, ogmios } from "../../app/scripts/m2d-wallet.mjs";
+// Hardened HTTP (timeouts + retry, shared with the committee — themes 3/4) + the pure, unit-tested
+// relayer helpers (relayer-9).
+import { fetchJson } from "../_shared/net.mjs";
+import { missedIntervals, parseAckTokens } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
 const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
@@ -85,7 +89,7 @@ const hexToBytes = (h) => Uint8Array.from(Buffer.from(stripHex(h), "hex"));
 // keys, so this is D2-SHAPED, not D2-TRUST. See docs/D2-custody-runbook.md.
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 const ANCHOR_VIA = process.env.ANCHOR_VIA || "committee";
 const OP_CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "committee", "op.mjs");
 
@@ -104,7 +108,7 @@ function committeeAnchorAck({ block, root, txhash, count, ts }) {
   // resolves at in-block, finalized state is ~1-2 blocks behind) and mis-report a real ack as ignored.
   const out = execFileSync(process.execPath, [OP_CLI, "--call", "anchor.anchorAck", "--args", args, "--via", "committee", "--ws", WS], { encoding: "utf8" });
   process.stdout.write(out);
-  return { acked: /AnchorAcked/.test(out), ignored: /AckIgnored/.test(out) };
+  return parseAckTokens(out);
 }
 
 // The latest finalized head, read entirely through PAPI so the block stays PINNED — its header and
@@ -125,11 +129,28 @@ function saveState(s) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
 }
 
-// The Cardano tip slot (for the reorg-burial check). Best-effort; null on any error.
+// Record an explicit tamper-evidence gap when the relayer skipped anchoring opportunities while it
+// was down (relayer-6). True backfill of historical heights needs archived state (the typed reads
+// key on a PINNED block), so we at least RECORD the hole — in state.gaps + a loud warning — rather
+// than letting it pass silently.
+function recordGap(state, last, anchored, missed) {
+  const gap = { afterBlock: last == null ? 0 : Number(last), anchoredBlock: Number(anchored), missedAnchors: missed, every: Number(ANCHOR_EVERY), at: new Date().toISOString() };
+  (state.gaps ||= []).push(gap);
+  saveState(state);
+  console.warn(`  ⚠ tamper-evidence GAP: ~${missed} anchor(s) skipped between #${gap.afterBlock} and #${anchored} (relayer was down) — recorded in state.gaps (relayer-6).`);
+}
+
+// The Cardano tip slot (for the reorg-burial check). Best-effort; null on any error — but with a
+// bounded timeout so a hung Ogmios connection cannot stall the confirmation loop (relayer-7).
 async function tipSlot() {
   try {
-    const res = await fetch(OGMIOS, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", method: "queryNetwork/tip" }) });
-    const { result } = await res.json();
+    const { result } = await fetchJson(OGMIOS, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "queryNetwork/tip" }),
+      timeoutMs: 10_000,
+      retries: 2,
+    });
     return result?.slot ?? null;
   } catch { return null; }
 }
@@ -144,7 +165,8 @@ async function tipSlot() {
 async function waitConfirmed(address, txHash) {
   const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const matches = await fetch(`${KUPO}/matches/${address}?unspent`).then((r) => r.json()).catch(() => []);
+    // Bounded timeout + retry so a hung/blipping Kupo cannot stall a submitted-but-unacked tx (relayer-7).
+    const matches = await fetchJson(`${KUPO}/matches/${address}?unspent`, { timeoutMs: 10_000, retries: 2 }).catch(() => []);
     const hit = (matches || []).find((m) => (m.transaction_id || "").toLowerCase() === txHash.toLowerCase());
     const slot = hit?.created_at?.slot_no ?? null;
     if (slot != null) {
@@ -324,6 +346,9 @@ async function main() {
   console.log(`relayer  : ${address}`);
   console.log(`L3       : ${WS}  genesis ${genesisHex}`);
   console.log(`mode     : ${mode}   anchor-every ${ANCHOR_EVERY}   label ${LABEL}`);
+  // relayer-8: a zero burial depth has NO reorg protection — make that loud (the showcase default).
+  if (CONFIRM_DEPTH_SLOTS <= 0)
+    console.warn(`  ⚠ CONFIRM_DEPTH_SLOTS=0 — NO reorg-burial protection: a Cardano rollback after an ack would pin a vanished txhash into the monotonic LastCheckpoint. Set CONFIRM_DEPTH_SLOTS (a few hundred slots, DR-09b) for a value-bearing deployment.`);
 
   const lastOnChain = async () => {
     const cp = await api.query.Anchor.LastCheckpoint.getValue();
@@ -343,6 +368,8 @@ async function main() {
       console.log(`\nfinalized #${head.number} <= last anchored #${last} — nothing new to anchor.`);
       client.destroy(); process.exit(0);
     }
+    const missed = missedIntervals(last, head.number, ANCHOR_EVERY);
+    if (missed > 0) recordGap(state, last, head.number, missed);
     await anchorOne(api, sudo, wallet, address, genesisHex, head, state);
     client.destroy(); process.exit(0);
   }
@@ -350,18 +377,36 @@ async function main() {
   // watch: anchor the latest finalized head whenever it has advanced >= ANCHOR_EVERY since the last
   // recorded checkpoint. Single-threaded loop ⇒ each anchor fully settles before the next.
   console.log(`\nwatching finalized heads — anchoring every ${ANCHOR_EVERY} blocks. Ctrl-C to stop.`);
+  let consecutiveErrors = 0;
   for (;;) {
     try {
       await drainPending(api, sudo, state); // finish any unacked anchor first (ack-only, no re-mint)
       const head = await finalizedHead(client);
       const last = await lastOnChain();
       const due = last === null ? head.number >= ANCHOR_EVERY : head.number >= last + ANCHOR_EVERY;
-      if (due) await anchorOne(api, sudo, wallet, address, genesisHex, head, state);
+      if (due) {
+        // relayer-6: if more than one interval elapsed since the last checkpoint, the relayer was
+        // down and skipped anchoring opportunities — record the gap before anchoring the latest head.
+        const missed = missedIntervals(last, head.number, ANCHOR_EVERY);
+        if (missed > 0) recordGap(state, last, head.number, missed);
+        await anchorOne(api, sudo, wallet, address, genesisHex, head, state);
+      }
+      consecutiveErrors = 0;
     } catch (e) {
-      console.error("  ⚠ loop error (will retry):", e?.message || e);
+      // relayer-7: bounded exponential backoff so a persistent fault (node WS down, Cardano stack
+      // unreachable) doesn't hot-loop. The PAPI ws-provider auto-reconnects under the client; a
+      // transient drop surfaces here and is retried with growing backoff (capped at 60s).
+      consecutiveErrors++;
+      const wait = Math.min(POLL_MS * 2 ** (consecutiveErrors - 1), 60_000);
+      console.error(`  ⚠ loop error #${consecutiveErrors} (retry in ${wait}ms):`, e?.message || e);
+      await sleep(wait);
+      continue;
     }
     await sleep(POLL_MS);
   }
 }
 
-main().catch((e) => { console.error("RELAYER FAILED:", e?.stack || e?.message || e); process.exit(1); });
+// Run only when invoked directly (not when imported by tests).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => { console.error("RELAYER FAILED:", e?.stack || e?.message || e); process.exit(1); });
+}
