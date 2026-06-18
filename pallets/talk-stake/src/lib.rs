@@ -56,6 +56,13 @@ pub mod pallet {
 		/// single key (+ `EnsureRoot` sudo escape hatch) in v1 dev (DR-07). Same shape as
 		/// the future `cogno-gate` `FollowerOrigin`, so the widen to k-of-t is signature-free.
 		type SetStakeOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+		/// Hard ceiling on a single account's stake weight (`stake-1`). `set_stake` rejects anything
+		/// above it with `WeightTooHigh`. Defence-in-depth: the capacity meter already uses saturating
+		/// math, but a follower/committee bug must never be able to write an absurd weight (e.g.
+		/// `u128::MAX`). Set to the maximum lockable lovelace (no account can back more than the total
+		/// ADA supply).
+		#[pallet::constant]
+		type MaxStakeWeight: Get<StakeWeight>;
 		/// Weight information for this pallet's dispatchables.
 		type WeightInfo: WeightInfo;
 	}
@@ -71,6 +78,12 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		/// An account's stake weight was set (idempotent overwrite; reorg-safe re-derive).
 		StakeSet { who: T::AccountId, weight: StakeWeight },
+	}
+
+	#[pallet::error]
+	pub enum Error<T> {
+		/// The requested stake weight exceeds [`Config::MaxStakeWeight`] (`stake-1`).
+		WeightTooHigh,
 	}
 
 	#[pallet::call]
@@ -89,6 +102,8 @@ pub mod pallet {
 			weight: StakeWeight,
 		) -> DispatchResult {
 			T::SetStakeOrigin::ensure_origin(origin)?;
+			// stake-1: reject an absurd weight up front (defence-in-depth over the saturating meter).
+			ensure!(weight <= T::MaxStakeWeight::get(), Error::<T>::WeightTooHigh);
 			AllowedStake::<T>::insert(&who, weight);
 			Self::deposit_event(Event::StakeSet { who, weight });
 			Ok(())

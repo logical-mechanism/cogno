@@ -122,8 +122,9 @@ pub mod pallet {
 		/// A Cardano identity was bound 1:1 to a posting account (the D0 per-bind audit record,
 		/// DR-07). `identity` is `blake2b_256(serialized owner Address)`.
 		IdentityLinked { who: T::AccountId, identity: IdentityHash },
-		/// A binding was revoked (the v1 manual-operator-ban path, DR-14). The capacity row +
-		/// provider ref are intentionally left in place (M2b owns the full teardown).
+		/// A binding was revoked (the v1 manual-operator-ban path, DR-14). The provider ref is
+		/// released and the banked capacity zeroed; the capacity row itself is kept (relock-farm
+		/// guard) — see [`pallet_microblog::OnIdentityBind::on_revoke`] (gate-1).
 		Revoked { who: T::AccountId, identity: IdentityHash },
 	}
 
@@ -199,11 +200,10 @@ pub mod pallet {
 		/// `FollowerOrigin`. Removes both directional maps + the thread pointer, so `is_allowed`
 		/// flips to `false` and the account can no longer post.
 		///
-		/// ⚑ v1 scope (M2): this is the *ban* mechanism — it does **not** tear down the microblog
-		/// capacity row or the provider reference. Those pair with microblog's never-delete-row
-		/// anti-farm invariant (a relock must not re-mint a fresh bucket); the full teardown
-		/// (`dec_providers` + row policy, atomically) is M2b. Leaving the provider ref is the
-		/// consistent choice: the row still exists and still needs it.
+		/// Calls [`OnIdentityBind::on_revoke`] so the bind/revoke lifecycle is symmetric (`gate-1`):
+		/// the provider reference taken at `link_identity` is released and the banked capacity is
+		/// zeroed, while the `Capacity` row itself is KEPT (microblog's never-delete relock-farm
+		/// invariant — a relock must not read a fresh first-touch bucket).
 		#[pallet::call_index(1)]
 		#[pallet::weight(T::WeightInfo::revoke())]
 		pub fn revoke(origin: OriginFor<T>, substrate_account: T::AccountId) -> DispatchResult {
@@ -211,6 +211,9 @@ pub mod pallet {
 			let identity = PkhOf::<T>::take(&substrate_account).ok_or(Error::<T>::NotBound)?;
 			AccountOf::<T>::remove(identity);
 			ThreadOf::<T>::remove(&substrate_account);
+			// Symmetric teardown (gate-1): release the provider ref taken at bind + zero the banked
+			// capacity, while microblog KEEPS the (relock-safe) capacity row.
+			T::OnBind::on_revoke(&substrate_account);
 			Self::deposit_event(Event::Revoked { who: substrate_account, identity });
 			Ok(())
 		}

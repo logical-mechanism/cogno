@@ -300,6 +300,10 @@ impl pallet_talk_stake::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
 	type SetStakeOrigin = AuthorityOrigin;
+	// stake-1: the max lockable lovelace — total ADA supply is 45e9 ADA = 45e15 lovelace, so no
+	// account can back more than 45_000_000_000_000_000. Bounds a follower/committee bug from
+	// writing an absurd weight (the capacity meter already saturates; this is defence-in-depth).
+	type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;
 	type WeightInfo = pallet_talk_stake::weights::SubstrateWeight<Runtime>;
 }
 

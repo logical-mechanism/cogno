@@ -1,7 +1,7 @@
 //! Test mock runtime for `pallet-talk-stake`.
 
 use crate as pallet_talk_stake;
-use frame_support::derive_impl;
+use frame_support::{derive_impl, traits::ConstU128};
 use frame_system::EnsureRoot;
 use sp_runtime::BuildStorage;
 
@@ -23,6 +23,7 @@ impl pallet_talk_stake::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	// In the mock the follower authority is root (mirrors the v1 dev sudo escape hatch).
 	type SetStakeOrigin = EnsureRoot<u64>;
+	type MaxStakeWeight = ConstU128<100_000_000>;
 	type WeightInfo = ();
 }
 

@@ -52,6 +52,7 @@ impl frame_system::Config for Test {
 impl pallet_talk_stake::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type SetStakeOrigin = EnsureRoot<u64>;
+	type MaxStakeWeight = ConstU128<100_000_000>;
 	type WeightInfo = ();
 }
 

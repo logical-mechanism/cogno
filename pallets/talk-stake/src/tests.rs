@@ -1,6 +1,6 @@
 //! Unit tests for `pallet-talk-stake`.
 
-use crate::{mock::*, AllowedStake, Event};
+use crate::{mock::*, AllowedStake, Error, Event};
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
 
@@ -29,6 +29,22 @@ fn root_can_set_stake_and_overwrite() {
 		// Full unlock writes weight = 0 (the row stays; capacity clamps elsewhere).
 		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 0));
 		assert_eq!(AllowedStake::<Test>::get(ALICE), 0);
+	});
+}
+
+#[test]
+fn set_stake_rejects_weight_above_max() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// MaxStakeWeight = 100_000_000 in the mock.
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 100_000_000)); // exactly the cap
+		assert_eq!(AllowedStake::<Test>::get(ALICE), 100_000_000);
+		// One over the cap is rejected (stake-1) and (assert_noop proves) no write happened.
+		assert_noop!(
+			TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 100_000_001),
+			Error::<Test>::WeightTooHigh
+		);
+		assert_eq!(AllowedStake::<Test>::get(ALICE), 100_000_000); // unchanged
 	});
 }
 

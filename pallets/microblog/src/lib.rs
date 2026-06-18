@@ -82,11 +82,18 @@ pub trait IsAllowed<AccountId> {
 	fn benchmark_set_allowed(who: &AccountId);
 }
 
-/// The first-bind hook `pallet-cogno-gate` calls (via its `OnBind` Config type) when it links an
-/// identity. Implemented by microblog's own `Pallet` below (→ `on_first_bind`).
+/// The bind/revoke lifecycle hooks `pallet-cogno-gate` calls (via its `OnBind` Config type).
+/// Implemented by microblog's own `Pallet` below. The two are symmetric (`gate-1`): `on_bind`
+/// takes a provider reference, `on_revoke` releases it, so a bind/revoke cycle nets to zero.
 pub trait OnIdentityBind<AccountId> {
-	/// Called once when `who` is first bound: primes the capacity row + provider ref.
+	/// Called when `who` is bound: primes the (relock-safe) capacity row and takes a provider
+	/// reference (so a feeless poster's first post is not rejected by `CheckNonce`, issue #3991).
 	fn on_bind(who: &AccountId);
+
+	/// Called when `who`'s binding is revoked: releases the provider reference taken at `on_bind`
+	/// and zeroes the banked capacity, but KEEPS the capacity row (the never-delete relock-farm
+	/// guard — a re-bind must not read a `None` first-touch and mint a fresh bucket).
+	fn on_revoke(who: &AccountId);
 }
 
 #[frame_support::pallet]
@@ -255,15 +262,16 @@ pub mod pallet {
 			}
 		}
 
-		/// Stamp the bucket empty **and dated** at first bind, and give the account a provider
-		/// reference so a feeless post is not rejected by `CheckNonce` (`L3-chain.md` §5.5).
-		/// Idempotent: a no-op if a row already exists, so a relock cannot re-mint.
+		/// Stamp the capacity bucket empty **and dated** if the row does not yet exist. Idempotent:
+		/// a no-op if a row already exists, so a relock cannot re-mint a fresh full-charging bucket.
+		///
+		/// ⚑ Row only — it does **not** touch the provider reference (that is the bind lifecycle's
+		/// job, [`OnIdentityBind::on_bind`] / `on_revoke`). A force-primed but unbound account can't
+		/// post (the identity gate rejects it) so it needs no provider ref.
 		pub fn on_first_bind(who: &T::AccountId) {
 			if !Capacity::<T>::contains_key(who) {
 				let now = frame_system::Pallet::<T>::block_number();
 				Capacity::<T>::insert(who, CapacityState { cap_last: 0, last_block: now });
-				// Feeless posters need a provider ref (issue #3991); revoke would dec it.
-				let _ = frame_system::Pallet::<T>::inc_providers(who);
 			}
 		}
 
@@ -285,12 +293,27 @@ pub mod pallet {
 		}
 	}
 
-	/// The first-bind hook `pallet-cogno-gate` invokes (via its `OnBind` Config type) at
-	/// `link_identity`. Delegates to the idempotent [`Pallet::on_first_bind`] — so the gate
-	/// primes the capacity row + provider ref without taking a Cargo dependency on cogno-gate.
+	/// The bind/revoke lifecycle hooks `pallet-cogno-gate` invokes (via its `OnBind` Config type),
+	/// kept symmetric (`gate-1`) without a Cargo dependency on cogno-gate.
 	impl<T: Config> super::OnIdentityBind<T::AccountId> for Pallet<T> {
 		fn on_bind(who: &T::AccountId) {
-			Self::on_first_bind(who);
+			Self::on_first_bind(who); // ensure the (relock-safe) capacity row
+			// Take a provider reference so the bound account's first feeless post is not rejected by
+			// `CheckNonce` (issue #3991). `link_identity` only binds an unbound account, so this inc
+			// is balanced by exactly one `dec` in `on_revoke`.
+			let _ = frame_system::Pallet::<T>::inc_providers(who);
+		}
+
+		fn on_revoke(who: &T::AccountId) {
+			// Release the provider reference taken at `on_bind` (gate-1). Best-effort: an outstanding
+			// consumer ref would make `dec_providers` fail, in which case the ref stays — no worse
+			// than the prior always-leak behaviour.
+			let _ = frame_system::Pallet::<T>::dec_providers(who);
+			// Zero the banked capacity but KEEP the row (never delete — relock-farm guard).
+			if Capacity::<T>::contains_key(who) {
+				let now = frame_system::Pallet::<T>::block_number();
+				Capacity::<T>::insert(who, CapacityState { cap_last: 0, last_block: now });
+			}
 		}
 	}
 
@@ -355,8 +378,9 @@ pub mod pallet {
 
 		/// Force a capacity bucket for `who` to `cap_last` (dated at the current block), gated
 		/// by `ForceOrigin`. The **M2c operator/dev stand-in** for the future gate's first-bind
-		/// bookkeeping: it primes the row + provider ref (via [`Pallet::on_first_bind`]) and lets
-		/// the operator pre-charge a battery so the showcase is interactive immediately.
+		/// bookkeeping: it primes the capacity row (via [`Pallet::on_first_bind`]) and lets the
+		/// operator pre-charge a battery so the showcase is interactive immediately. (The provider
+		/// reference is taken at identity bind, not here — an unbound account can't post anyway.)
 		/// (Cardano-sourced weight + on-first-bind-at-`link_identity` are M2/M2d.)
 		///
 		/// `cap_last` is **clamped to the stake-backed ceiling** `min(weight·CapRatio, Ceiling)`
