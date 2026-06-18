@@ -55,31 +55,43 @@ export function parseArgv(argv) {
 // zero-lovelace beacon (a swept/degenerate UTxO that still carries the NFT) is NOT credited: a real
 // lock always holds positive lovelace, and `0n > -1n` would otherwise list the identity as
 // "observed" with no value behind it (gap 1). The floor is therefore `0n`, not the `-1n` sentinel.
+//
+// The `reasons` map is keyed per-UTxO (transaction_id#output_index), NOT per-beacon, so two rejected
+// UTxOs for the SAME beacon (e.g. an old too-fresh re-lock + a swept dust UTxO) don't overwrite each
+// other; and a rejection is only surfaced if that beacon was NOT ultimately credited by another
+// (buried, positive) UTxO — so a weighted identity is never also reported as "rejected".
 export function pickLargest(matches, vaultHash, { tipSlot = null, confirmDepth = 0, reasons = null } = {}) {
 	const largest = new Map();
-	const note = (key, why) => { if (reasons) reasons.set(key, why); };
+	const rejected = []; // { utxo, beacon|null, why } — surfaced into `reasons` after credits are known
+	const utxoId = (m, fallback) => `${m.transaction_id ?? fallback}#${m.output_index ?? 0}`;
 	for (const m of matches) {
 		const assets = m.value?.assets ?? {};
 		const beacons = Object.entries(assets).filter(([k]) => k.split(".")[0].toLowerCase() === vaultHash.toLowerCase());
 		if (beacons.length !== 1 || Number(beacons[0][1]) !== 1) {
-			note(m.transaction_id ?? JSON.stringify(assets), `not exactly one beacon at qty 1 (${beacons.length} vault asset(s))`);
+			rejected.push({ utxo: utxoId(m, JSON.stringify(assets)), beacon: null, why: `not exactly one beacon at qty 1 (${beacons.length} vault asset(s))` });
 			continue; // exactly one beacon, qty 1
 		}
 		const beacon = beacons[0][0].split(".")[1].toLowerCase();
 		if (confirmDepth > 0) {
 			const slot = m.created_at?.slot_no;
 			if (slot == null || tipSlot == null || tipSlot - slot < confirmDepth) {
-				note(beacon, slot == null || tipSlot == null
+				rejected.push({ utxo: utxoId(m, beacon), beacon, why: slot == null || tipSlot == null
 					? "burial gate: no slot/tip (fail closed)"
-					: `burial gate: depth ${tipSlot - slot} < required ${confirmDepth} (too fresh)`);
+					: `burial gate: depth ${tipSlot - slot} < required ${confirmDepth} (too fresh)` });
 				continue; // not buried ⇒ skip
 			}
 		}
 		const coins = BigInt(m.value.coins);
-		if (coins <= 0n) { note(beacon, "zero/negative lovelace (swept UTxO not credited)"); continue; } // gap 1: never credit a value-less beacon
+		if (coins <= 0n) { rejected.push({ utxo: utxoId(m, beacon), beacon, why: "zero/negative lovelace (swept UTxO not credited)" }); continue; } // gap 1: never credit a value-less beacon
 		// Floor is 0n (not the old -1n sentinel): a zero-coin match is already filtered above, so any
 		// stored value is positive and largest-wins is unaffected.
 		if (coins > (largest.get(beacon) ?? 0n)) largest.set(beacon, coins);
+	}
+	if (reasons) {
+		for (const r of rejected) {
+			if (r.beacon && largest.has(r.beacon)) continue; // credited by another UTxO ⇒ not a real rejection
+			reasons.set(r.utxo, r.beacon ? `${r.beacon.slice(0, 16)}…: ${r.why}` : r.why);
+		}
 	}
 	return largest;
 }

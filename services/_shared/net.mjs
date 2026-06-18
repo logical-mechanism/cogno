@@ -55,10 +55,11 @@ export async function fetchJson(url, { method = "GET", body = null, headers = {}
 			clearTimeout(timer);
 		}
 	}
-	// Final failure: surface FULL context (url, attempts, last error stack) at error level AND in the
-	// thrown message, so it is captured even if the caller swallows the throw, and so the stack from the
-	// last attempt is not discarded behind a bare last.message (gap 6).
-	const detail = last?.stack || describeError(last);
-	console.error(`  ✗ fetchJson ${url} FAILED after ${retries} attempts: ${detail}`);
-	throw new Error(`fetchJson ${url} failed after ${retries} attempts: ${detail}`);
+	// Final failure: log the FULL stack at error level so it is captured even if the caller swallows the
+	// throw. The thrown message carries only the concise reason (timeout / HTTP / parse) — NOT the
+	// multi-line stack — so callers that re-wrap it (`new Error('Kupo read failed: ' + e.message)`) don't
+	// propagate a giant stack up the chain; the stack lives in the console.error here (gap 6).
+	const reason = isAbort(last) ? `timeout after ${timeoutMs}ms` : describeError(last);
+	console.error(`  ✗ fetchJson ${url} FAILED after ${retries} attempts: ${last?.stack || reason}`);
+	throw new Error(`fetchJson ${url} failed after ${retries} attempts: ${reason}`);
 }

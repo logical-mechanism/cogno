@@ -148,6 +148,7 @@ export const handlePostCreated = guarded(
     // reverse relation); Thread is an optional, deterministic convenience entity.
     const rootId = parentId ?? postId;
     let thread = await Thread.get(rootId);
+    const threadExisted = !!thread;
     if (!thread) {
       thread = Thread.create({
         id: rootId,
@@ -159,7 +160,9 @@ export const handlePostCreated = guarded(
     if (parentId) thread.replyCount += 1;
     thread.lastActivity = timestamp;
     await thread.save();
-    logger.debug(`thread #${rootId} ${parentId ? "updated" : "created"}: replyCount=${thread.replyCount}`);
+    // "created" vs "updated" reflects whether the Thread row already existed (e.g. a reply indexed
+    // before its parent, or re-org re-indexing) — NOT whether this post has a parent.
+    logger.debug(`thread #${rootId} ${threadExisted ? "updated" : "created"}: replyCount=${thread.replyCount}`);
 
     logger.info(`indexed post #${postId} by ${authorId.slice(0, 8)}… @#${blockHeight}${parentId ? ` ↳#${parentId}` : ""}`);
   },

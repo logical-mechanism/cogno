@@ -140,15 +140,18 @@ describe("draftStatus — edge ordering is load-bearing", () => {
 
     // need=100, have=1, rate=100 -> (99 + 99)/100 = 0? No: (100-1+100-1)/100 = 198/100 = 1 (ceil).
     s = draftStatus(view({ have: 1n }), 0, K);
+    expect(s.kind).toBe("wait");
     if (s.kind === "wait") expect(s.blocks).toBe(1);
 
     // need=300 (40-byte post), have=0, rate=100 -> ceil(300/100) = 3.
     s = draftStatus(view({ have: 0n, cap: 500n }), 40, K);
+    expect(s.kind).toBe("wait");
     if (s.kind === "wait") expect(s.blocks).toBe(3);
 
     // need=301, have=0, rate=100 -> ceil(301/100) = 4 (the +rate-1 ceil term).
     const K2: CapacityConsts = { ...K, baseCost: 301n, perByteCost: 0n };
     s = draftStatus(view({ have: 0n, cap: 500n }), 0, K2);
+    expect(s.kind).toBe("wait");
     if (s.kind === "wait") expect(s.blocks).toBe(4);
   });
 

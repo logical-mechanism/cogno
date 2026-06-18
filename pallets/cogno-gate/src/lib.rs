@@ -241,15 +241,15 @@ pub mod pallet {
 		#[pallet::weight(T::WeightInfo::revoke())]
 		pub fn revoke(origin: OriginFor<T>, substrate_account: T::AccountId) -> DispatchResult {
 			T::FollowerOrigin::ensure_origin(origin)?;
-			// A revoke of a never-bound account is a benign no-op for the operator (a stale/retried
-			// ban). Log it at debug so a relayer/operator can tell a duplicate revoke from a real one
-			// without scraping the (absent) event.
+			// A revoke of a never-bound account is REJECTED with NotBound (no state change, no event) —
+			// it is NOT a silent success. Log it at debug so a relayer/operator can tell a stale/retried
+			// revoke from a real one without scraping for the (deliberately absent) event.
 			let identity = match PkhOf::<T>::take(&substrate_account) {
 				Some(id) => id,
 				None => {
 					log::debug!(
 						target: LOG_TARGET,
-						"revoke no-op: account not bound (NotBound), nothing to release",
+						"revoke rejected: account not bound (NotBound) — nothing to release",
 					);
 					return Err(Error::<T>::NotBound.into());
 				},

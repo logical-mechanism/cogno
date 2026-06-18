@@ -111,7 +111,11 @@ function committeeAnchorAck({ block, root, txhash, count, ts }) {
   // already 0x-prefixed, but the Cardano txHash (from MeshJS submitTx) is NOT — passed bare, the
   // 64-char hex is read as a 64-BYTE raw string and rejected ("Expected 32 bytes, found 64").
   // Normalize both to 0x-hex so the committee path matches the PAPI/sudo path's encoding.
-  const hx = (h) => (String(h).startsWith("0x") ? String(h) : "0x" + h);
+  // Validate both hashes are well-formed 32-byte hex BEFORE handing them to op.mjs, so a truncated/
+  // corrupted state-file hash fails fast here with a clear message instead of an opaque @polkadot
+  // decode error deep in the committee call. The sudo path guards via hexToBytes→validateHex; this
+  // closes the same gap on the DEFAULT committee path (gap 5).
+  const hx = (h) => "0x" + validateHex(h, 32);
   const args = JSON.stringify([Number(block), hx(root), hx(txhash), Number(count), Number(ts)]);
   console.log(`  → anchor_ack via 3-of-5 committee (op.mjs; D2-shaped, single-operator)`);
   // Capture op.mjs's output and read the ACTUAL inner committee events (anchor.AnchorAcked /
@@ -218,10 +222,13 @@ async function waitConfirmed(address, txHash) {
   for (;;) {
     polls++;
     // Bounded timeout + retry so a hung/blipping Kupo cannot stall a submitted-but-unacked tx (relayer-7).
+    let readFailed = false;
     const matches = await fetchJson(`${KUPO}/matches/${address}?unspent`, { timeoutMs: 10_000, retries: 2 }).catch((e) => {
-      // gap 6/17: a Kupo blip returns [] so the loop keeps polling without crashing — but if the tx
-      // was ALREADY seen, an empty result here is the SAME shape as a rollback and must not be silent.
-      console.warn(`  ⚠ waitConfirmed: Kupo match query failed for tx ${txHash} (${e?.message || e})${everSeen ? " — tx was previously seen; a persistent failure here looks like a rollback, investigate Kupo" : ""}.`);
+      // A Kupo read failure returns [] so the loop does not crash — but [] from a FAILED read has the
+      // same shape as a genuine "tx gone" rollback. Flag it so the rollback/timeout decision below is
+      // SKIPPED on a read failure (resubmitting on it would re-mint a paid tx; relayer-1 fund-burn).
+      readFailed = true;
+      console.warn(`  ⚠ waitConfirmed: Kupo match query failed for tx ${txHash} (${e?.message || e}) — transient read error, will keep polling (NOT a rollback; never resubmit on uncertainty).`);
       return [];
     });
     const hit = (matches || []).find((m) => (m.transaction_id || "").toLowerCase() === txHash.toLowerCase());
@@ -236,8 +243,11 @@ async function waitConfirmed(address, txHash) {
         warnedPendingBurial = true;
         console.warn(`  ⏳ tx ${txHash} confirmed at slot ${slot} but not yet buried ${CONFIRM_DEPTH_SLOTS} slots (tip ${tip ?? "unavailable"}) — waiting for burial, NOT resubmitting (relayer-1).`);
       }
+    } else if (readFailed) {
+      // Fail closed: a failed read is NOT evidence the tx vanished, so neither the rollback (everSeen)
+      // nor the appear-timeout branch may fire. Fall through to keep polling until Kupo answers (gap 6).
     } else if (everSeen) {
-      return undefined; // SEEN unspent then GONE ⇒ a genuine rollback ⇒ resubmit
+      return undefined; // SEEN unspent then GONE (on a SUCCESSFUL read) ⇒ a genuine rollback ⇒ resubmit
     } else if (Date.now() >= appearDeadline) {
       return undefined; // never appeared within CONFIRM_TIMEOUT_MS ⇒ it likely didn't make it ⇒ resubmit
     }

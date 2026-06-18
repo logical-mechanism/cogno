@@ -37,7 +37,10 @@ ok(revive("-5") === "-5", "negative number-string passes through (regex requires
 console.log("\n[pickLargest] anti-Sybil vault filter + burial gate");
 const V = "ab".repeat(28);            // 56-hex policy id
 const A = "11".repeat(32), B = "22".repeat(32); // 64-hex beacon names
+let _utxoSeq = 0;
 const mk = (coins, name, qty = 1, slot = 0, extra = {}) => ({
+	transaction_id: (_utxoSeq++).toString(16).padStart(64, "0"), // unique per UTxO (realistic Kupo shape)
+	output_index: 0,
 	value: { coins: String(coins), assets: { [`${V}.${name}`]: String(qty), ...extra } },
 	created_at: { slot_no: slot },
 });
@@ -80,6 +83,16 @@ ok([...why.values()].some((r) => /not exactly one beacon/.test(r)), "reasons exp
 why = new Map();
 pickLargest([mk(400, A, 1, 95)], V, { tipSlot: 100, confirmDepth: 10000, reasons: why });
 ok([...why.values()].some((r) => /burial gate.*too fresh/.test(r)), "reasons explains the burial-gate (too-fresh) skip");
+
+// gap 2/6/7/11: the `reasons` map is keyed per-UTxO and pruned of credited beacons, so (a) a beacon
+// CREDITED via a buried UTxO is never ALSO reported as rejected, and (b) two rejected UTxOs for the
+// SAME beacon do not overwrite each other.
+why = new Map();
+pickLargest([mk(100, A, 1, 80), mk(400, A, 1, 95)], V, { tipSlot: 100, confirmDepth: 10, reasons: why });
+ok(why.size === 0, "a beacon credited via a buried UTxO is NOT also listed as rejected (no contradictory diagnostics)");
+why = new Map();
+pickLargest([mk(100, A, 1, 95), mk(200, A, 1, 96)], V, { tipSlot: 100, confirmDepth: 10, reasons: why });
+ok(why.size === 2, "two too-fresh UTxOs for the same beacon are both reported (unique per-UTxO keys, no overwrite)");
 
 // gap 9: a wrong/non-matching vaultHash yields an empty map (matching fails, no false credit).
 ok(pickLargest([mk(100, A)], "ff".repeat(28)).size === 0, "non-matching vaultHash ⇒ nothing credited (wrong policy is silent-but-empty)");

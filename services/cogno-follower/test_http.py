@@ -136,8 +136,9 @@ def test_concurrent_nonce_consume():
         t1.start(); t2.start(); t1.join(); t2.join()
         if results.count("ok") != 1 or results.count("err") != 1:
             ok(False, f"trial {trial}: expected exactly 1 ok + 1 err, got {results}")
-            return
-    ok(True, "two threads, same nonce → exactly one consume succeeds, one VerifyError (25 trials)")
+            break  # don't `return`: the burned-nonce sub-test below must still run
+    else:
+        ok(True, "two threads, same nonce → exactly one consume succeeds, one VerifyError (25 trials)")
 
     # And a third consume of an already-burned nonce always fails (single-use, no resurrection).
     cache = NonceCache(ttl=300, max_entries=100)
