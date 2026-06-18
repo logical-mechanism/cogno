@@ -16,10 +16,11 @@ import payload as payload_mod
 from verify import verify_bind, VerifyError, identity_hash_hex
 from beacon import beacon_name_hex
 from pycardano.address import Address
+from pycardano.network import Network
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.environ.get("APP_DIR", os.path.normpath(os.path.join(HERE, "..", "..", "app")))
-NODE_BIN = os.environ.get("NODE_BIN", "/home/logic/.nvm/versions/node/v22.12.0/bin/node")
+NODE_BIN = os.environ.get("NODE_BIN", "node")
 FIXTURE = os.path.join(APP_DIR, "scripts", "m2-cip8-fixture.mjs")
 
 PASS = 0
@@ -105,6 +106,8 @@ def main():
     # tampered signature bytes
     bad_sig = fx["signature"][:-2] + ("00" if fx["signature"][-2:] != "00" else "11")
     rejects("tampered signature", **{**base, "data_signature": {"signature": bad_sig, "key": fx["key"]}})
+    # wrong network: a (testnet) preprod proof presented to a follower configured for mainnet (follower-5)
+    rejects("wrong network (testnet proof, mainnet follower)", **{**base, "expected_network": Network.MAINNET})
 
     # wrong-address: sign with wallet A but CLAIM a different address (the release-gate negative test)
     print("\n[negative] wrong-address gate (claimed address != signing address)")
