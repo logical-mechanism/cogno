@@ -271,11 +271,23 @@ impl pallet_session::Config for Runtime {
 /// / `remove_validator` are gated by the SAME `AuthorityOrigin` as the M5 crown jewels (sudo OR the
 /// 3-of-5 FollowerCommittee) — one operator committee governs identity, weight, anchoring, AND who
 /// produces blocks (the split into a separate validator committee is a documented graduation step,
-/// `L3-chain.md` §8.3). `MinAuthorities = 1` is the hard floor so removal can never strand the chain
-/// at zero authorities (it does NOT make finality safe at low counts — `L3-chain.md` §8.1).
+/// `L3-chain.md` §8.3).
+///
+/// ## `MinAuthorities` is a finality-safety parameter, not just an anti-zero guard
+/// The floor stops `remove_validator` ever stranding the chain at zero authorities — but it ALSO
+/// bounds how far the committee can shrink the BFT set. It is DELIBERATELY `1` for the small
+/// single-/dual-operator preprod testnet (a higher floor would lock the operator out of removing a
+/// validator on a set already at the floor). It does NOT make finality safe at low counts: GRANDPA
+/// tolerates `f` faults only at `3f+1` authorities, so a 1–3 authority set can stall finality with one
+/// offline node (`L3-chain.md` §8.1).
+///
+/// ⚠ MAINNET PREREQUISITE: a value-bearing / public multi-validator launch MUST raise this to at
+/// least `3f+1` for the target fault tolerance (≥`4` to tolerate one Byzantine/offline authority), in
+/// lockstep with the im-online auto-removal wiring. Do not ship `1` to a network meant to be BFT.
 impl pallet_validator_set::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AddRemoveOrigin = AuthorityOrigin;
+	// Deliberate testnet floor — see the ⚠ MAINNET PREREQUISITE note above before raising/shipping.
 	type MinAuthorities = ConstU32<1>;
 	type WeightInfo = pallet_validator_set::weights::SubstrateWeight<Runtime>;
 }

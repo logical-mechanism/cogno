@@ -14,6 +14,10 @@
 // §9 risks handled here (this is most of the relayer):
 //  • idempotency / anti-double-count — never re-anchor a height <= the pallet's LastCheckpoint;
 //    the pallet ALSO no-ops a stale ack (belt + suspenders). Keyed by solochain block_number.
+//  • paid-tx / ack separation (relayer-1) — the Cardano metadata tx costs ADA; the L3 ack is free &
+//    idempotent. The confirmed Cardano tx is PERSISTED before the ack, and a failed/ambiguous ack is
+//    retried ACK-ONLY (never re-minting a paid tx). A run resumes any persisted-but-unacked anchor
+//    before considering a new height, so a crash or a down committee can't double-spend the wallet.
 //  • UTxO contention / output chaining — single-threaded; each Cardano tx is awaited to confirm
 //    (its change UTxO indexed by Kupo) BEFORE the next anchor selects UTxOs, so anchor_{k+1}
 //    naturally spends anchor_k's change. No two in-flight txs fighting over one UTxO.
@@ -31,7 +35,8 @@
 //                                 # (AckIgnored), proving anchor_ack never double-counts.
 //
 // Env: WS, KUPO, OGMIOS, ANCHOR_EVERY (default 10), CONFIRM_TIMEOUT_MS (180000), POLL_MS (4000),
-//      STATE_FILE (/tmp/cogno-m2/anchor-state.json), LABEL (67797178 = ASCII "COGN").
+//      ACK_MAX_ATTEMPTS (5), ACK_BACKOFF_MS (4000), STATE_FILE (/tmp/cogno-m2/anchor-state.json),
+//      LABEL (67797178 = ASCII "COGN").
 
 import fs from "node:fs";
 import { createClient, FixedSizeBinary } from "polkadot-api";
@@ -56,6 +61,12 @@ const POLL_MS = Number(process.env.POLL_MS || "4000");
 // (LastCheckpoint advances monotonically and would otherwise pin a vanished txhash). 0 = ack as soon
 // as it's in a block (fast for the showcase); production sets k (a few hundred slots, DR-09b).
 const CONFIRM_DEPTH_SLOTS = Number(process.env.CONFIRM_DEPTH_SLOTS || "0");
+// anchor_ack retry (relayer-1/2). The Cardano metadata tx is PAID; the L3 ack is height-keyed and
+// idempotent. So a failed/ambiguous ack must NEVER re-mint a fresh Cardano tx — we persist the
+// confirmed tx, then retry ONLY the ack with bounded exponential backoff before giving up (a circuit
+// breaker that leaves the anchor persisted-but-unacked, to be resumed ack-only on the next run/loop).
+const ACK_MAX_ATTEMPTS = Number(process.env.ACK_MAX_ATTEMPTS || "5");
+const ACK_BACKOFF_MS = Number(process.env.ACK_BACKOFF_MS || "4000");
 const STATE_FILE = process.env.STATE_FILE || "/tmp/cogno-m2/anchor-state.json";
 // The Cardano metadata label. 67797178 = ASCII "COGN" (C=67 O=79 G=71 N=78) — a self-assigned
 // (NOT CIP-10-registered) showcase label; documented in services/anchor-relayer/README.md.
@@ -170,6 +181,77 @@ async function buildAndSubmitMetadataTx(wallet, address, genesisHex, head, postC
   return { txHash, meta };
 }
 
+// Submit anchor_ack via the configured path. Returns {acked, ignored}; throws on a dispatch/tooling
+// failure. EITHER AnchorAcked (recorded) OR AckIgnored (idempotent no-op, height <= last) counts as
+// "recorded on L3"; the caller treats neither-token as a hard failure (relayer-2). `head` carries
+// {number, stateRoot} — stateRoot may be bare or 0x-hex (both encoders normalise it).
+async function recordAck(api, sudo, head, txHash, postCount, ts) {
+  // DR-07: default through the 3-of-5 committee; `ANCHOR_VIA=sudo` keeps the EnsureRoot dev fallback.
+  if (ANCHOR_VIA === "committee") {
+    return committeeAnchorAck({ block: head.number, root: head.stateRoot, txhash: txHash, count: postCount, ts });
+  }
+  const result = await api.tx.Sudo.sudo({
+    call: api.tx.Anchor.anchor_ack({
+      block_number: Number(head.number),
+      finalized_root: FixedSizeBinary.fromBytes(hexToBytes(head.stateRoot)),
+      cardano_txhash: FixedSizeBinary.fromBytes(hexToBytes(txHash)),
+      post_count: postCount,
+      timestamp: ts,
+    }).decodedCall,
+  }).signAndSubmit(sudo);
+  return {
+    acked: !!(result.events || []).find((e) => e.type === "Anchor" && e.value?.type === "AnchorAcked"),
+    ignored: !!(result.events || []).find((e) => e.type === "Anchor" && e.value?.type === "AckIgnored"),
+  };
+}
+
+// The oldest persisted anchor whose Cardano tx confirmed but whose L3 ack never landed. Resuming from
+// it (ack-only) is what prevents re-minting a paid Cardano tx for a height already witnessed (relayer-1).
+function oldestPendingAnchor(state) {
+  return (state.anchors || [])
+    .filter((a) => a.cardanoTx && a.slot != null && !a.acked)
+    .sort((a, b) => a.block - b.block)[0] || null;
+}
+
+// Record `entry` on L3, retrying ONLY the ack (never the paid Cardano tx) with bounded exponential
+// backoff. A dispatch/tooling error OR a reply with neither AnchorAcked nor AckIgnored (relayer-2) is
+// a hard failure for that attempt — never a silent "submitted" success. After ACK_MAX_ATTEMPTS the
+// entry stays persisted-but-unacked (acked:false) and we throw, so the next run resumes ack-only.
+async function recordAckWithRetry(api, sudo, state, entry) {
+  const head = { number: BigInt(entry.block), stateRoot: entry.root };
+  let acked = false, ignored = false;
+  for (let attempt = 1; attempt <= ACK_MAX_ATTEMPTS; attempt++) {
+    try {
+      const r = await recordAck(api, sudo, head, entry.cardanoTx, BigInt(entry.postCount), BigInt(entry.ts));
+      acked = r.acked; ignored = r.ignored;
+      if (acked || ignored) break;
+      throw new Error("anchor_ack returned neither AnchorAcked nor AckIgnored (inner dispatch failed?)");
+    } catch (e) {
+      if (attempt >= ACK_MAX_ATTEMPTS) {
+        console.error(`  ✗ anchor_ack failed after ${attempt} attempts — Cardano tx ${entry.cardanoTx} stays persisted for ack-only resume: ${e?.message || e}`);
+        throw e;
+      }
+      const backoff = ACK_BACKOFF_MS * 2 ** (attempt - 1);
+      console.error(`  ⚠ anchor_ack attempt ${attempt}/${ACK_MAX_ATTEMPTS} failed (${e?.message || e}) — retrying ACK ONLY in ${backoff}ms`);
+      await sleep(backoff);
+    }
+  }
+  console.log(acked ? `  ✓ anchor_ack → AnchorAcked (recorded on L3, via ${ANCHOR_VIA})` : `  · anchor_ack → AckIgnored (idempotent no-op, already recorded)`);
+  entry.acked = acked || ignored; // both mean "recorded on L3" ⇒ stop retrying
+  entry.ackedAt = new Date().toISOString();
+  saveState(state);
+  return { acked: !!acked, ignored: !!ignored };
+}
+
+// Finish any persisted-but-unacked anchors (ack-only, never re-mint) before considering a new height.
+// Throws if an ack is still failing after its retries, so the caller backs off and resumes later.
+async function drainPending(api, sudo, state) {
+  for (let entry; (entry = oldestPendingAnchor(state)); ) {
+    console.log(`\n▶ resuming anchor for block #${entry.block} — Cardano tx ${entry.cardanoTx} @slot ${entry.slot} already confirmed, retrying ack only`);
+    await recordAckWithRetry(api, sudo, state, entry);
+  }
+}
+
 async function anchorOne(api, sudo, wallet, address, genesisHex, head, state) {
   const postCount = await api.query.Microblog.NextPostId.getValue({ at: head.hash });
   const ts = await api.query.Timestamp.Now.getValue({ at: head.hash });
@@ -179,9 +261,9 @@ async function anchorOne(api, sudo, wallet, address, genesisHex, head, state) {
 
   // Submit the Cardano metadata tx, then wait for it to settle. On a (possible) rollback / timeout,
   // rebuild & resubmit — the L3 ack is height-keyed so this can never double-count.
-  let txHash, meta, slot;
+  let txHash, slot;
   for (let attempt = 1; ; attempt++) {
-    ({ txHash, meta } = await buildAndSubmitMetadataTx(wallet, address, genesisHex, head, postCount, ts));
+    ({ txHash } = await buildAndSubmitMetadataTx(wallet, address, genesisHex, head, postCount, ts));
     console.log(`  cardano tx : ${txHash}  (submitted, attempt ${attempt}) — waiting for confirmation…`);
     slot = await waitConfirmed(address, txHash);
     if (slot !== undefined) break;
@@ -190,30 +272,13 @@ async function anchorOne(api, sudo, wallet, address, genesisHex, head, state) {
   }
   console.log(`  ✓ confirmed at slot ${slot}`);
 
-  // On confirmation, record the checkpoint on L3. DR-07: default through the 3-of-5 committee;
-  // `ANCHOR_VIA=sudo` keeps the EnsureRoot dev fallback.
-  let acked = false, ignored = false;
-  if (ANCHOR_VIA === "committee") {
-    const r = committeeAnchorAck({ block: head.number, root: head.stateRoot, txhash: txHash, count: postCount, ts });
-    acked = r.acked;
-    ignored = r.ignored;
-  } else {
-    const result = await api.tx.Sudo.sudo({
-      call: api.tx.Anchor.anchor_ack({
-        block_number: Number(head.number),
-        finalized_root: FixedSizeBinary.fromBytes(hexToBytes(head.stateRoot)),
-        cardano_txhash: FixedSizeBinary.fromBytes(hexToBytes(txHash)),
-        post_count: postCount,
-        timestamp: ts,
-      }).decodedCall,
-    }).signAndSubmit(sudo);
-    acked = !!(result.events || []).find((e) => e.type === "Anchor" && e.value?.type === "AnchorAcked");
-    ignored = !!(result.events || []).find((e) => e.type === "Anchor" && e.value?.type === "AckIgnored");
-  }
-  console.log(acked ? `  ✓ anchor_ack → AnchorAcked (recorded on L3, via ${ANCHOR_VIA})` : ignored ? `  · anchor_ack → AckIgnored (idempotent no-op)` : `  ? anchor_ack submitted (via ${ANCHOR_VIA})`);
-
-  state.anchors.push({ block: Number(head.number), root: stripHex(head.stateRoot), cardanoTx: txHash, slot, postCount: Number(postCount), ts: Number(ts), label: LABEL, genesis: genesisHex, acked: !!acked, at: new Date().toISOString() });
+  // Persist the confirmed (but not-yet-acked) anchor BEFORE the ack, so a failed ack or a crash
+  // resumes by retrying ONLY the ack — never minting a second paid Cardano tx for this height.
+  const entry = { block: Number(head.number), root: stripHex(head.stateRoot), cardanoTx: txHash, slot, postCount: Number(postCount), ts: Number(ts), label: LABEL, genesis: genesisHex, acked: false, at: new Date().toISOString() };
+  state.anchors.push(entry);
   saveState(state);
+
+  const { acked } = await recordAckWithRetry(api, sudo, state, entry);
   return { txHash, slot, acked: !!acked };
 }
 
@@ -271,6 +336,7 @@ async function main() {
   }
 
   if (mode === "once") {
+    await drainPending(api, sudo, state); // resume any unacked anchor first (ack-only, no re-mint)
     const head = await finalizedHead(client);
     const last = await lastOnChain();
     if (last !== null && head.number <= last) {
@@ -286,6 +352,7 @@ async function main() {
   console.log(`\nwatching finalized heads — anchoring every ${ANCHOR_EVERY} blocks. Ctrl-C to stop.`);
   for (;;) {
     try {
+      await drainPending(api, sudo, state); // finish any unacked anchor first (ack-only, no re-mint)
       const head = await finalizedHead(client);
       const last = await lastOnChain();
       const due = last === null ? head.number >= ANCHOR_EVERY : head.number >= last + ANCHOR_EVERY;
