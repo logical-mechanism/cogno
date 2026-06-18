@@ -58,17 +58,22 @@ export function useSubmit(
       setState({ phase: "signing" });
       subRef.current = obs.subscribe({
         next: (u) => setState(u),
-        error: (err: unknown) =>
+        error: (err: unknown) => {
+          // The observable rarely errors (post.ts maps stream errors into an "error" TxUpdate),
+          // but if the subscription itself errors, log it with the signer so it is debuggable.
+          // eslint-disable-next-line no-console
+          console.error(`cogno: submit subscription errored (signer ${signer.ss58.slice(0, 8)}…):`, err);
           setState({
             phase: "error",
             error:
               err instanceof Error
                 ? err.message
                 : "submission failed (connection or runtime error)",
-          }),
+          });
+        },
       });
     },
-    [cancelInFlight],
+    [cancelInFlight, signer.ss58],
   );
 
   const post = useCallback(

@@ -85,10 +85,19 @@ export function useChain(): UseChain {
     let cancelled = false;
     checkBootGuard(handle.api)
       .then((g) => {
-        if (!cancelled) setBoot(g);
+        if (cancelled) return;
+        if (!g.ok) {
+          // A not-ok boot guard BLOCKS posting (wrong chain / spec mismatch). Make it observable.
+          // eslint-disable-next-line no-console
+          console.warn(`cogno: boot guard not ok — posting blocked:`, g.reason ?? "(no reason)");
+        }
+        setBoot(g);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
+        // checkBootGuard never throws in normal operation; if it does, the node is unreachable.
+        // eslint-disable-next-line no-console
+        console.warn(`cogno: boot guard probe threw (node unreachable?):`, err);
         setBoot({
           ok: false,
           nodeSpecName: "",

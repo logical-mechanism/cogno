@@ -10,7 +10,7 @@
 // them honestly so the feed degrades to a clear error state instead of silently blanking.
 
 import { Observable, timer, switchMap, map, catchError, of } from "rxjs";
-import { gqlRequest } from "./client";
+import { gqlRequest, GraphqlError } from "./client";
 import { FEED, PROFILE_BY_IDENTITY, PROFILE_BY_ACCOUNT, THREAD } from "./queries";
 import type {
   CognoPost,
@@ -275,8 +275,16 @@ export function createGraphqlFeedSource(endpoint: string): FeedSource {
         });
         return poll$.pipe(
           catchError((err) => {
+            // Carry the error kind (network/http/graphql) + endpoint so a persistent indexer
+            // outage is monitorable, not just a one-line "poll failed". A transient blip self-
+            // heals on the next poll; a sustained run of these warns means the indexer is down.
+            const kind = err instanceof GraphqlError ? err.kind : "unknown";
+            const status = err instanceof GraphqlError && err.status != null ? ` status=${err.status}` : "";
             // eslint-disable-next-line no-console
-            console.warn("cogno: indexer feed poll failed, retaining last snapshot:", err?.message ?? err);
+            console.warn(
+              `cogno: indexer feed poll failed (kind=${kind}${status}, endpoint=${endpoint}), retaining last snapshot:`,
+              err?.message ?? err,
+            );
             return of(lastGood);
           }),
         );
