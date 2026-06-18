@@ -119,6 +119,18 @@ impl pallet_aura::Config for Runtime {
 	type SlotDuration = pallet_aura::MinimumPeriodTimesTwo<Runtime>;
 }
 
+/// GRANDPA finality gadget.
+///
+/// ⚠ Equivocation reporting is a deliberate NO-OP on this permissioned testnet (`runtime-5`):
+/// `KeyOwnerProof = Void` + `EquivocationReportSystem = ()` (and the `grandpa` runtime API returns
+/// `None`) mean a double-signing validator has no on-chain consequence — no slashing/disabling. This
+/// is acceptable while the authority set is the small operator-run committee with off-chain
+/// accountability (M6's mutable set is gated by the 3-of-5 `AuthorityOrigin`).
+///
+/// ⚠ MAINNET PREREQUISITE: before a public multi-validator network, wire a real
+/// `KeyOwnerProofSystem` / `EquivocationReportSystem` (via `pallet-session` historical + an offences
+/// pallet) so a double-sign is provable and punishable on-chain — in lockstep with raising
+/// `MinAuthorities` to a BFT floor (`validators-1`).
 impl pallet_grandpa::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 
