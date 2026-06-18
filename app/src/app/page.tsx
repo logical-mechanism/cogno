@@ -54,14 +54,8 @@ export default function Page() {
   const searchEnabled = source?.caps.search === true && searching;
   const searchPage = useFeedPage(source, { search, first: 50 }, searchEnabled);
 
-  const {
-    signer,
-    devAccounts,
-    setDevAccount,
-    useSessionKey,
-    sessionMnemonic,
-    ackSessionMnemonic,
-  } = useSigner();
+  const signerCtl = useSigner();
+  const signer = signerCtl.signer;
   const submit = useSubmit(api, signer, boot);
   // Live, advisory talk-capacity for the active posting key — ticks with the best block.
   const capacity = useCapacity(api, signer.ss58, heads.best?.number ?? null);
@@ -93,12 +87,7 @@ export default function Page() {
   return (
     <main className={styles.shell}>
       <Masthead
-        signer={signer}
-        devAccounts={devAccounts}
-        onSelectDev={setDevAccount}
-        onGenerateSession={useSessionKey}
-        sessionMnemonic={sessionMnemonic}
-        onAckSessionMnemonic={ackSessionMnemonic}
+        signerCtl={signerCtl}
         identity={identity}
         status={status}
         wsUrl={wsUrl}

@@ -3,19 +3,16 @@
 // Masthead — the calm head of the reading room. A wordmark + one honest tagline,
 // then the live identity rail and the connection pill. No nav chrome beyond this.
 
-import type { ConnStatus, PostingSigner } from "@/lib/types";
+import type { ConnStatus } from "@/lib/types";
 import type { UseIdentity } from "@/hooks/useIdentity";
+import type { UseSigner } from "@/hooks/useSigner";
 import { IdentityRail } from "./IdentityRail";
 import { ConnState } from "./ConnState";
 import styles from "./Masthead.module.css";
 
 export interface MastheadProps {
-  signer: PostingSigner;
-  devAccounts: readonly string[];
-  onSelectDev: (uri: string) => void;
-  onGenerateSession: () => void;
-  sessionMnemonic: string | null;
-  onAckSessionMnemonic: () => void;
+  /** The posting-key controller (active signer + dev/session/keystore actions). */
+  signerCtl: UseSigner;
   identity: UseIdentity;
   status: ConnStatus;
   wsUrl: string | null;
@@ -39,15 +36,7 @@ export function Masthead(props: MastheadProps) {
         />
       </div>
 
-      <IdentityRail
-        signer={props.signer}
-        devAccounts={props.devAccounts}
-        onSelectDev={props.onSelectDev}
-        onGenerateSession={props.onGenerateSession}
-        sessionMnemonic={props.sessionMnemonic}
-        onAckSessionMnemonic={props.onAckSessionMnemonic}
-        identity={props.identity}
-      />
+      <IdentityRail signerCtl={props.signerCtl} identity={props.identity} />
     </header>
   );
 }

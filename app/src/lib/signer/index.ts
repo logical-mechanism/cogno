@@ -1,9 +1,9 @@
 // The posting-key adapter (sr25519).
 //
-// In M1 this is a SIMPLE in-session/dev key — but the returned shape is exactly the future
-// hardened Model-B keystore signer (L5-M2), so when that lands NO call-site changes: every
-// consumer only ever touches `{ ss58, publicKeyHex, label, signer, kind }`. The Cardano
-// identity half does not exist in M1.
+// Every consumer only ever touches `{ ss58, publicKeyHex, label, signer, kind }`. The key can be a
+// well-known dev account, a memory-only session key, or — since M8 — a durable key restored from
+// the hardened encrypted keystore (lib/signer/keystore.ts). The Cardano identity is a SEPARATE key
+// (a connected CIP-30 wallet), bound 1:1 to this posting key by the M2 CIP-8 bind.
 
 import { getPolkadotSigner } from "polkadot-api/signer";
 import { sr25519CreateDerive } from "@polkadot-labs/hdkd";
@@ -63,16 +63,22 @@ export function getDevSigner(uri: string = "//Alice"): PostingSigner {
   return toPostingSigner(kp, `${uri} (dev)`, "dev");
 }
 
+/** Generate a fresh sr25519 mnemonic (12 words). The caller decides whether to keep it in memory
+ *  (a session key) or encrypt it into the keystore. */
+export function freshMnemonic(): string {
+  return generateMnemonic();
+}
+
 /**
- * Generate a fresh random sr25519 session key. Returns both the signer and its mnemonic so
- * the UI can show / let the user back up the phrase. In M1 this lives only in memory/session
- * (the hardened encrypted keystore is L5-M2); the adapter shape is already final.
+ * Generate a fresh random sr25519 session key. Returns both the signer and its mnemonic so the UI
+ * can let the user back up the phrase. A session key lives only in memory (gone on refresh) — the
+ * durable option is to save it to the encrypted keystore instead.
  */
 export function generateSessionSigner(): {
   signer: PostingSigner;
   mnemonic: string;
 } {
-  const mnemonic = generateMnemonic();
+  const mnemonic = freshMnemonic();
   const kp = sr25519CreateDerive(
     mnemonicToMiniSecret(mnemonic),
   )("//0") as Sr25519KeyPair;
@@ -80,15 +86,16 @@ export function generateSessionSigner(): {
 }
 
 /**
- * Rebuild a signer from a user-supplied mnemonic (default derivation path `//0`).
- * Lets a user restore the same key across sessions until the real keystore exists.
+ * Rebuild a signer from a mnemonic (default derivation path `//0`). Used both to import a phrase
+ * and to restore the key after the encrypted keystore is unlocked. Throws on an invalid phrase.
  */
 export function signerFromMnemonic(
   mnemonic: string,
-  path: string = "//0",
+  opts: { path?: string; label?: string; kind?: PostingSigner["kind"] } = {},
 ): PostingSigner {
+  const { path = "//0", label = "imported key", kind = "mnemonic" } = opts;
   const kp = sr25519CreateDerive(
-    mnemonicToMiniSecret(mnemonic),
+    mnemonicToMiniSecret(mnemonic.trim()),
   )(path) as Sr25519KeyPair;
-  return toPostingSigner(kp, "imported key", "mnemonic");
+  return toPostingSigner(kp, label, kind);
 }

@@ -182,7 +182,7 @@ export interface PostingSigner {
   /** The PAPI signer passed to `tx.*.signSubmitAndWatch(signer)`. */
   signer: PolkadotSigner;
   /** Provenance of the key, so the UI can be honest about what it is. */
-  kind: "dev" | "session" | "mnemonic";
+  kind: "dev" | "session" | "mnemonic" | "keystore";
 }
 
 /** Phases of a submitted extrinsic, surfaced honestly (signed ≠ included). */

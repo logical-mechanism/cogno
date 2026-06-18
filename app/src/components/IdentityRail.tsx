@@ -1,16 +1,16 @@
 "use client";
 
-// IdentityRail — the dual-key MENTAL model, made honest for M1.
+// IdentityRail — the dual-key model, made honest.
 //
-//  • The sr25519 "posting key" chip (--identity-substrate) is REAL and clickable:
-//    it opens a switcher (dev accounts + "generate session key"). It shows the
-//    short ss58 and the key label, with a key glyph so colour is never the sole signal.
-//  • The Cardano "seal" chip (--identity-cardano) is shown EMPTY / disabled with
-//    honest copy — identity & stake arrive in M2. We do NOT fake a connected wallet.
+//  • The sr25519 "posting key" chip (--identity-substrate) is REAL and clickable. Its popover is a
+//    small key manager: create / import / unlock a durable encrypted keystore key (M8), generate a
+//    throwaway session key, or fall back to the public dev accounts (behind a toggle).
+//  • The Cardano "identity" chip (--identity-cardano) binds a Cardano wallet to this posting key
+//    via a single CIP-8 signature (M2). Locking ADA to earn capacity lives in the StakePanel.
 
 import { useEffect, useRef, useState } from "react";
-import type { PostingSigner } from "@/lib/types";
 import type { UseIdentity } from "@/hooks/useIdentity";
+import type { UseSigner } from "@/hooks/useSigner";
 import { listCardanoWallets, type CardanoWalletInfo } from "@/lib/cardano/cip8";
 import styles from "./IdentityRail.module.css";
 
@@ -19,31 +19,31 @@ function shortSs58(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+type KeyMode = null | "create" | "import" | "unlock";
+
 export interface IdentityRailProps {
-  signer: PostingSigner;
-  devAccounts: readonly string[];
-  onSelectDev: (uri: string) => void;
-  onGenerateSession: () => void;
-  /** The mnemonic to surface ONCE after generating a session key (null otherwise). */
-  sessionMnemonic: string | null;
-  onAckSessionMnemonic: () => void;
+  /** The full posting-key controller (active signer + dev/session/keystore actions). */
+  signerCtl: UseSigner;
   /** The Cardano-identity bind state + action (M2). */
   identity: UseIdentity;
 }
 
-export function IdentityRail({
-  signer,
-  devAccounts,
-  onSelectDev,
-  onGenerateSession,
-  sessionMnemonic,
-  onAckSessionMnemonic,
-  identity,
-}: IdentityRailProps) {
+export function IdentityRail({ signerCtl, identity }: IdentityRailProps) {
+  const sc = signerCtl;
+  const signer = sc.signer;
+
   const [open, setOpen] = useState(false);
   const [bindOpen, setBindOpen] = useState(false);
   const [wallets, setWallets] = useState<CardanoWalletInfo[] | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Key-manager local state.
+  const [mode, setMode] = useState<KeyMode>(null);
+  const [pw, setPw] = useState("");
+  const [phrase, setPhrase] = useState("");
+  const [createdMnemonic, setCreatedMnemonic] = useState<string | null>(null);
+  const [showDev, setShowDev] = useState(false);
+  const [working, setWorking] = useState(false);
 
   // Close the bind picker once a bind succeeds.
   useEffect(() => {
@@ -55,10 +55,20 @@ export function IdentityRail({
     if (wallets == null) void listCardanoWallets().then(setWallets);
   };
 
-  // Open the switcher whenever a fresh mnemonic needs acknowledging.
+  // Open the switcher whenever a fresh session mnemonic needs acknowledging.
   useEffect(() => {
-    if (sessionMnemonic) setOpen(true);
-  }, [sessionMnemonic]);
+    if (sc.sessionMnemonic) setOpen(true);
+  }, [sc.sessionMnemonic]);
+
+  // Reset the key-manager forms whenever the popover closes.
+  useEffect(() => {
+    if (!open) {
+      setMode(null);
+      setPw("");
+      setPhrase("");
+      setWorking(false);
+    }
+  }, [open]);
 
   // Close on outside click / Escape.
   useEffect(() => {
@@ -83,6 +93,41 @@ export function IdentityRail({
     };
   }, [open, bindOpen]);
 
+  const doCreate = async () => {
+    setWorking(true);
+    const m = await sc.createKeystore(pw);
+    setWorking(false);
+    if (m) {
+      setCreatedMnemonic(m);
+      setMode(null);
+      setPw("");
+    }
+  };
+  const doImport = async () => {
+    setWorking(true);
+    const ok = await sc.importKeystore(phrase, pw);
+    setWorking(false);
+    if (ok) {
+      setMode(null);
+      setPw("");
+      setPhrase("");
+    }
+  };
+  const doUnlock = async () => {
+    setWorking(true);
+    const ok = await sc.unlockKeystore(pw);
+    setWorking(false);
+    if (ok) {
+      setPw("");
+      setOpen(false);
+    }
+  };
+  const confirmForget = () => {
+    if (typeof window !== "undefined" && window.confirm("Forget this keystore? The encrypted key is erased from this device. Make sure you have its recovery phrase.")) {
+      sc.forgetKeystore();
+    }
+  };
+
   return (
     <div className={styles.rail} ref={ref}>
       {/* Posting key — REAL, interactive. */}
@@ -92,11 +137,11 @@ export function IdentityRail({
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label={`Posting key ${shortSs58(signer.ss58)}, ${signer.label}. Click to switch key.`}
+        aria-label={`Posting key ${shortSs58(signer.ss58)}, ${signer.label}. Click to manage keys.`}
         title={signer.ss58}
       >
         <span className={styles.glyph} aria-hidden="true">
-          ⚿
+          {sc.keystoreUnlocked ? "🔓" : "⚿"}
         </span>
         <span className={styles.chipLabel}>
           <span className={styles.chipRole}>posting key</span>
@@ -106,7 +151,7 @@ export function IdentityRail({
         </span>
       </button>
 
-      {/* Cardano seal — LIVE in M2: bind a Cardano identity (CIP-8) to this posting key. */}
+      {/* Cardano identity — bind a Cardano wallet (CIP-8) to this posting key (M2). */}
       {identity.bound === true ? (
         <span
           className={`${styles.chip} ${styles.sealChip} ${styles.sealBound}`}
@@ -197,64 +242,186 @@ export function IdentityRail({
       )}
 
       {open && (
-        <div className={styles.popover} role="menu" aria-label="Switch posting key">
+        <div className={styles.popover} role="menu" aria-label="Manage posting key">
           <p className={styles.popHead}>posting key</p>
 
-          <ul className={styles.devList}>
-            {devAccounts.map((uri) => {
-              const active = signer.label.startsWith(uri) || signer.label === uri;
-              return (
-                <li key={uri}>
-                  <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={active}
-                    className={`${styles.devItem} ${active ? styles.devActive : ""}`}
-                    onClick={() => {
-                      onSelectDev(uri);
-                      setOpen(false);
-                    }}
-                  >
-                    <span className={styles.devTick} aria-hidden="true">
-                      {active ? "•" : ""}
-                    </span>
-                    {uri} <span className={styles.devTag}>(dev)</span>
+          {/* ── The durable, encrypted keystore key (M8) ── */}
+          <div className={styles.keySection}>
+            {sc.keystoreUnlocked ? (
+              <>
+                <p className={styles.keyStatus}>🔓 unlocked — your saved key is active.</p>
+                <div className={styles.keyRow}>
+                  <button type="button" className={styles.sessionBtn} onClick={sc.lockKeystore}>
+                    lock
                   </button>
-                </li>
-              );
-            })}
-          </ul>
+                  <button type="button" className={styles.dangerBtn} onClick={confirmForget}>
+                    forget…
+                  </button>
+                </div>
+              </>
+            ) : sc.hasKeystore ? (
+              <>
+                <p className={styles.keyStatus}>🔒 a saved key is locked on this device.</p>
+                <input
+                  className={styles.pwInput}
+                  type="password"
+                  placeholder="password"
+                  autoComplete="current-password"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && pw && !working) void doUnlock();
+                  }}
+                />
+                <div className={styles.keyRow}>
+                  <button type="button" className={styles.primaryBtn} disabled={!pw || working} onClick={doUnlock}>
+                    {working ? "unlocking…" : "unlock"}
+                  </button>
+                  <button type="button" className={styles.dangerBtn} onClick={confirmForget}>
+                    forget…
+                  </button>
+                </div>
+              </>
+            ) : mode === "create" ? (
+              <>
+                <p className={styles.keyStatus}>Set a password to encrypt a new posting key on this device.</p>
+                <input
+                  className={styles.pwInput}
+                  type="password"
+                  placeholder="password (min 6 chars)"
+                  autoComplete="new-password"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                />
+                <div className={styles.keyRow}>
+                  <button type="button" className={styles.primaryBtn} disabled={pw.length < 6 || working} onClick={doCreate}>
+                    {working ? "creating…" : "create"}
+                  </button>
+                  <button type="button" className={styles.sessionBtn} onClick={() => { setMode(null); setPw(""); }}>
+                    cancel
+                  </button>
+                </div>
+              </>
+            ) : mode === "import" ? (
+              <>
+                <p className={styles.keyStatus}>Paste a recovery phrase and a password to encrypt it on this device.</p>
+                <textarea
+                  className={styles.importArea}
+                  placeholder="your recovery phrase"
+                  spellCheck={false}
+                  rows={2}
+                  value={phrase}
+                  onChange={(e) => setPhrase(e.target.value)}
+                />
+                <input
+                  className={styles.pwInput}
+                  type="password"
+                  placeholder="password (min 6 chars)"
+                  autoComplete="new-password"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                />
+                <div className={styles.keyRow}>
+                  <button type="button" className={styles.primaryBtn} disabled={!phrase.trim() || pw.length < 6 || working} onClick={doImport}>
+                    {working ? "importing…" : "import"}
+                  </button>
+                  <button type="button" className={styles.sessionBtn} onClick={() => { setMode(null); setPw(""); setPhrase(""); }}>
+                    cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className={styles.keyStatus}>A durable posting key, encrypted on this device with a password.</p>
+                <div className={styles.keyRow}>
+                  <button type="button" className={styles.primaryBtn} onClick={() => setMode("create")}>
+                    create a key
+                  </button>
+                  <button type="button" className={styles.sessionBtn} onClick={() => setMode("import")}>
+                    import a phrase
+                  </button>
+                </div>
+              </>
+            )}
 
-          <button
-            type="button"
-            role="menuitem"
-            className={styles.sessionBtn}
-            onClick={onGenerateSession}
-          >
-            generate session key
-          </button>
+            {sc.keystoreError && (
+              <p className={styles.bindError} role="alert">
+                {sc.keystoreError}
+              </p>
+            )}
+          </div>
 
-          {sessionMnemonic && (
+          {createdMnemonic && (
             <div className={styles.mnemonicBox} role="alert">
               <p className={styles.mnemonicWarn}>
-                Back this up now. M1 keeps this key only in memory — refresh and it
-                is gone. The hardened keystore arrives in M2.
+                Back this up now — it is the ONLY way to recover this key. We store only an
+                encrypted copy and can never recover it for you.
               </p>
-              <code className={styles.mnemonic}>{sessionMnemonic}</code>
-              <button
-                type="button"
-                className={styles.mnemonicAck}
-                onClick={onAckSessionMnemonic}
-              >
+              <code className={styles.mnemonic}>{createdMnemonic}</code>
+              <button type="button" className={styles.mnemonicAck} onClick={() => setCreatedMnemonic(null)}>
                 I&apos;ve saved it
               </button>
             </div>
           )}
 
+          {/* ── Throwaway session key ── */}
+          <button type="button" role="menuitem" className={styles.sessionBtn} onClick={sc.useSessionKey}>
+            generate a temporary key (memory only)
+          </button>
+
+          {sc.sessionMnemonic && (
+            <div className={styles.mnemonicBox} role="alert">
+              <p className={styles.mnemonicWarn}>
+                This temporary key lives only in memory — refresh and it is gone. Back up the phrase
+                or save it to the keystore above to keep it.
+              </p>
+              <code className={styles.mnemonic}>{sc.sessionMnemonic}</code>
+              <button type="button" className={styles.mnemonicAck} onClick={sc.ackSessionMnemonic}>
+                I&apos;ve saved it
+              </button>
+            </div>
+          )}
+
+          {/* ── Public dev accounts, behind a toggle ── */}
+          <button
+            type="button"
+            className={styles.devToggle}
+            onClick={() => setShowDev((s) => !s)}
+            aria-expanded={showDev}
+          >
+            {showDev ? "hide" : "show"} dev accounts
+          </button>
+          {showDev && (
+            <ul className={styles.devList}>
+              {sc.devAccounts.map((uri) => {
+                const active = signer.kind === "dev" && (signer.label.startsWith(uri) || signer.label === uri);
+                return (
+                  <li key={uri}>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={active}
+                      className={`${styles.devItem} ${active ? styles.devActive : ""}`}
+                      onClick={() => {
+                        sc.setDevAccount(uri);
+                        setOpen(false);
+                      }}
+                    >
+                      <span className={styles.devTick} aria-hidden="true">
+                        {active ? "•" : ""}
+                      </span>
+                      {uri} <span className={styles.devTag}>(dev)</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
           <p className={styles.popNote}>
-            Dev keys are the public, well-known Substrate development accounts —
-            anyone can sign as them. Use them for trying things, not for anything you
-            care about.
+            Dev keys are the public, well-known Substrate development accounts — anyone can sign as
+            them. A keystore key is yours: encrypted at rest, but (like any browser key) readable by
+            script on this page once unlocked. Treat it as a convenience key, not cold storage.
           </p>
         </div>
       )}

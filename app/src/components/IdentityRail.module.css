@@ -284,3 +284,114 @@
   font-size: var(--fs-ui-sm);
   line-height: 1.45;
 }
+
+/* ── Keystore key manager (M8) ── */
+.keySection {
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.keyStatus {
+  margin: 0;
+  color: var(--ink-600);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.4;
+}
+
+.keyRow {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.keyRow > * {
+  flex: 1 1 auto;
+}
+
+.pwInput,
+.importArea {
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--ink-900);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+}
+.importArea {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  resize: vertical;
+}
+.pwInput:focus-visible,
+.importArea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.primaryBtn {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--verdigris-ink);
+  border-radius: var(--radius-sm);
+  background: var(--verdigris);
+  color: var(--surface-0);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  cursor: pointer;
+}
+.primaryBtn:hover:not(:disabled) {
+  background: var(--verdigris-ink);
+}
+.primaryBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.primaryBtn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.dangerBtn {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--cap-toolong);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  cursor: pointer;
+}
+.dangerBtn:hover {
+  background: var(--surface-2);
+  border-color: var(--cap-toolong);
+}
+.dangerBtn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.devToggle {
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  background: none;
+  color: var(--ink-400);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui-sm);
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.devToggle:hover {
+  color: var(--ink-600);
+}
+.devToggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
