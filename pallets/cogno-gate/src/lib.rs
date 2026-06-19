@@ -9,16 +9,17 @@
 //! ## What is bound (DR-01)
 //! The key is the **32-byte `blake2b_256` of the serialized owner Cardano Address** (== the L1
 //! beacon `token_name`), NOT a bare 28-byte payment-key-hash. Identity is the *whole* CIP-19
-//! Address (payment + stake credential). The chain does **zero** Cardano/CIP-8 crypto: the
-//! trusted off-chain Cogno-Follower verifies the CIP-8 signature (reusing `pycardano.cip.cip8.
-//! verify`) and submits the already-computed 32-byte hash through [`Config::FollowerOrigin`].
-//! The on-chain self-proof (runtime ed25519 verify) is the deferred D1 upgrade.
+//! Address (payment + stake credential). The bind is **trustless (D1)**: a user submits the CIP-8
+//! (COSE_Sign1) `signData` proof their wallet produced over the pinned bind payload, and the RUNTIME
+//! verifies it on-chain ([`cip8::verify_bind_proof`] → `sp_io::crypto::ed25519_verify`) — no trusted
+//! writer. The old `FollowerOrigin`-gated `link_identity` (which trusted an off-chain `pycardano`
+//! verify) is REMOVED; its `call_index(0)` is permanently vacant.
 //!
 //! ## The 1:1 Sybil invariant (do not break it)
-//! `link_identity` rejects a second bind on **either** side — [`PkhOf`] (account → identity)
-//! and [`AccountOf`] (identity → account) are both checked. Skipping the reverse-map check
-//! would let one identity bind many accounts → multiply talk capacity → defeat the entire
-//! anti-Sybil purpose of the chain.
+//! [`do_bind`](Pallet::do_bind) (the shared bind body) rejects a second bind on **either** side —
+//! [`PkhOf`] (account → identity) and [`AccountOf`] (identity → account) are both checked. Skipping
+//! the reverse-map check would let one identity bind many accounts → multiply talk capacity → defeat
+//! the entire anti-Sybil purpose of the chain.
 //!
 //! ## Loose coupling (the M2 architectural gotcha)
 //! cogno-gate calls **into** `pallet-microblog` ([`pallet_microblog::OnIdentityBind`] →
@@ -29,10 +30,14 @@
 //! and *consumes* `OnIdentityBind` (wired to `Microblog` in the runtime). Neither pallet names
 //! the other's crate in a trait bound.
 //!
-//! ## v1 trust posture (named honestly — DR-07)
-//! `FollowerOrigin` is a single trusted key (+ `EnsureRoot` sudo escape hatch) in v1 dev — the
-//! crown jewel: its compromise = arbitrary identity forgery. It is an `EnsureOrigin`, so the
-//! widen to a 3-of-5 k-of-t committee (D2, before any mainnet) is signature-free.
+//! ## Trust posture (D1 — named honestly)
+//! The bind is permissionless + cryptographic: [`Call::link_identity_signed`] removes the operator
+//! from the identity-correctness path entirely (every full node re-verifies the proof). `FollowerOrigin`
+//! (a single trusted key + `EnsureRoot` sudo escape hatch in v1 dev, an `EnsureOrigin` that widens to a
+//! 3-of-5 committee signature-free) now gates ONLY [`Call::revoke`] — the manual-operator-ban moderation
+//! lever (DR-14), which tombstones an identity permanently. ⚠ The verifier itself is the anti-Sybil crown
+//! jewel — a bug forges any identity; it is hardened by an adversarial threat-model + tests but is NOT
+//! externally audited (MAINNET PREREQUISITE, see [`cip8`] + `docs/L2-follower.md` §7.2).
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -86,11 +91,11 @@ pub mod pallet {
 		#[allow(deprecated)]
 		type RuntimeEvent: From<Event<Self>>
 			+ IsType<<Self as frame_system::Config>::RuntimeEvent>;
-		/// The authority allowed to write identity bindings — the trusted Cogno-Follower in the
-		/// full system; a single key **plus `EnsureRoot`/sudo escape hatch** in v1 dev (DR-07).
-		/// An `EnsureOrigin` (never `ensure_signed`): the public pool must not be able to forge
-		/// identities. Same shape as `pallet-talk-stake`'s `SetStakeOrigin` — identity and
-		/// weight share one trust boundary — so the widen to a k-of-t committee is signature-free.
+		/// The authority allowed to [`Call::revoke`] (the manual-operator-ban moderation lever, DR-14):
+		/// a single trusted key **plus `EnsureRoot`/sudo escape hatch** in v1 dev (DR-07). An
+		/// `EnsureOrigin` (never `ensure_signed`) — the public pool must not be able to ban identities —
+		/// so the widen to a 3-of-5 k-of-t committee is signature-free. NOTE: binding is no longer gated
+		/// by this; it is the permissionless cryptographic [`Call::link_identity_signed`] (D1).
 		type FollowerOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 		/// Bind/revoke lifecycle hook into `pallet-microblog`: `on_bind` primes the capacity row + a
 		/// provider reference so a freshly-bound feeless poster's first post is not rejected by
@@ -172,26 +177,10 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// Bind a Cardano `identity_hash` 1:1 to `substrate_account`. Gated by `FollowerOrigin`
-		/// (the trusted follower; sudo in dev) — the chain trusts that the follower already
-		/// verified the CIP-8 proof off-chain (`L2-follower.md` §7).
-		///
-		/// `identity_hash` = `blake2b_256(serialized owner Address)` (DR-01). Rejects a second
-		/// bind on **either** side (`AccountAlreadyBound` / `PkhAlreadyBound`) — the 1:1 Sybil
-		/// invariant. On success it primes the account's microblog capacity row + provider ref
-		/// via [`Config::OnBind::on_bind`], so the bound account can immediately post feelessly
-		/// once weighted. `thread_pointer` is the optional cogno_v3 thread join.
-		#[pallet::call_index(0)]
-		#[pallet::weight(T::WeightInfo::link_identity())]
-		pub fn link_identity(
-			origin: OriginFor<T>,
-			identity_hash: IdentityHash,
-			substrate_account: T::AccountId,
-			thread_pointer: Option<Vec<u8>>,
-		) -> DispatchResult {
-			T::FollowerOrigin::ensure_origin(origin)?;
-			Self::do_bind(&substrate_account, identity_hash, thread_pointer)
-		}
+		// `call_index(0)` is PERMANENTLY VACANT: it held the trusted `FollowerOrigin`-gated
+		// `link_identity` (which trusted an off-chain `pycardano` CIP-8 verify), REMOVED for D1 in favour
+		// of the permissionless on-chain self-proof `link_identity_signed` (@2). On-wire call indices are
+		// a contract — the index is never reused (FRAME allows gaps).
 
 		/// **Trustless bind (D1).** Anyone submits the CIP-8 (COSE_Sign1) `signData` proof their Cardano
 		/// wallet produced over the pinned bind payload, and the RUNTIME verifies it on-chain

@@ -56,7 +56,6 @@ use core::marker::PhantomData;
 
 /// Weight functions needed for `pallet_cogno_gate`.
 pub trait WeightInfo {
-	fn link_identity() -> Weight;
 	fn link_identity_signed() -> Weight;
 	fn revoke() -> Weight;
 }
@@ -64,23 +63,6 @@ pub trait WeightInfo {
 /// Weights for `pallet_cogno_gate` using the Substrate node and recommended hardware.
 pub struct SubstrateWeight<T>(PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
-	/// Storage: `CognoGate::PkhOf` (r:1 w:1)
-	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
-	/// Storage: `CognoGate::AccountOf` (r:1 w:1)
-	/// Proof: `CognoGate::AccountOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
-	/// Storage: `Microblog::Capacity` (r:1 w:1)
-	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
-	/// Storage: `CognoGate::ThreadOf` (r:0 w:1)
-	/// Proof: `CognoGate::ThreadOf` (`max_values`: None, `max_size`: Some(59), added: 2534, mode: `MaxEncodedLen`)
-	fn link_identity() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `48`
-		//  Estimated: `3545`
-		// Minimum execution time: 23_617_000 picoseconds.
-		Weight::from_parts(26_486_000, 3545)
-			.saturating_add(T::DbWeight::get().reads(3_u64))
-			.saturating_add(T::DbWeight::get().writes(4_u64))
-	}
 	/// ⚠ PLACEHOLDER — MUST be FRAME-benchmarked (DR-05): the on-chain `ed25519_verify` + 2× blake2 +
 	/// the bounded CBOR/address parse, on top of `do_bind`'s reads/writes + the `Tombstoned` + genesis
 	/// reads. The generous constant keeps the feeless/DoS accounting honest until the real benchmark.
@@ -108,23 +90,6 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
 // For backwards compatibility and tests.
 impl WeightInfo for () {
-	/// Storage: `CognoGate::PkhOf` (r:1 w:1)
-	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
-	/// Storage: `CognoGate::AccountOf` (r:1 w:1)
-	/// Proof: `CognoGate::AccountOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
-	/// Storage: `Microblog::Capacity` (r:1 w:1)
-	/// Proof: `Microblog::Capacity` (`max_values`: None, `max_size`: Some(68), added: 2543, mode: `MaxEncodedLen`)
-	/// Storage: `CognoGate::ThreadOf` (r:0 w:1)
-	/// Proof: `CognoGate::ThreadOf` (`max_values`: None, `max_size`: Some(59), added: 2534, mode: `MaxEncodedLen`)
-	fn link_identity() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `48`
-		//  Estimated: `3545`
-		// Minimum execution time: 23_617_000 picoseconds.
-		Weight::from_parts(26_486_000, 3545)
-			.saturating_add(RocksDbWeight::get().reads(3_u64))
-			.saturating_add(RocksDbWeight::get().writes(4_u64))
-	}
 	/// ⚠ PLACEHOLDER — MUST be FRAME-benchmarked (DR-05): ed25519_verify + 2× blake2 + bounded CBOR parse.
 	fn link_identity_signed() -> Weight {
 		Weight::from_parts(80_000_000, 3545)

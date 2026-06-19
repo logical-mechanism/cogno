@@ -71,3 +71,16 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 		.unwrap()
 		.into()
 }
+
+/// Test helper: drive the shared 1:1 bind body directly. The trusted `link_identity` dispatchable was
+/// REMOVED in D1 — the only on-chain bind path is now the permissionless `link_identity_signed` (covered
+/// by the `link_identity_signed_*` tests against the real wallet fixture). Tests that just need a
+/// *pre-existing* binding (to exercise double-bind / revoke / posting) call this instead of constructing
+/// a CIP-8 proof. Arg order mirrors the old `link_identity`: `(identity, account, thread)`.
+pub fn bind(
+	identity: crate::IdentityHash,
+	account: u64,
+	thread: Option<Vec<u8>>,
+) -> sp_runtime::DispatchResult {
+	CognoGate::do_bind(&account, identity, thread)
+}
