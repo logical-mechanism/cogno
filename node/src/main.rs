@@ -2,6 +2,7 @@
 #![warn(missing_docs)]
 
 mod benchmarking;
+mod cardano_observer;
 mod chain_spec;
 mod cli;
 mod command;

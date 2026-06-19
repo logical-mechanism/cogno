@@ -19,6 +19,11 @@ workspace = true
 
 [dependencies]
 clap = { features = ["derive"], workspace = true }
+# in-protocol-observation (D4): the node-side Cardano observation InherentDataProvider.
+async-trait = "0.1"
+codec = { features = ["std"], workspace = true }
+serde_json = { features = ["std"], workspace = true }
+pallet-cardano-observer = { features = ["std"], workspace = true }
 frame-benchmarking-cli = { default-features = true, workspace = true }
 frame-metadata-hash-extension = { default-features = true, workspace = true }
 frame-system = { default-features = true, workspace = true }
