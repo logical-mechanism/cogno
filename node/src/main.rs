@@ -6,6 +6,7 @@ mod cardano_observer;
 mod chain_spec;
 mod cli;
 mod command;
+mod consensus;
 mod rpc;
 mod service;
 

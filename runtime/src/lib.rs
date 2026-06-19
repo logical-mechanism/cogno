@@ -116,7 +116,20 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// variant (`ComputeDiverged`), so `check_inherent` can tell "saw different Cardano data" apart from
 	// "reduced the same data differently". The `observe` Call encoding changed — encoding-affecting,
 	// regen the PAPI descriptors. `observe` is still an INHERENT, so transaction_version is UNCHANGED.
-	spec_version: 110,
+	// 110 -> 111 (in-protocol-observation §15.3 / Midnight delta A.1): the header-sealed "McHash"
+	// stable-block reference. `CardanoRef.block_hash` is now the SEALED anchor — the header hash of the
+	// latest stable Cardano block ≤ the reference (from Kupo /checkpoints) — instead of a node-local tip
+	// diagnostic, and `check_inherent` now RE-VALIDATES it cross-node (a forged/regressing anchor ⇒
+	// Mismatch). The custom block proposer also seals it into each block HEADER as a `cobs` PreRuntime
+	// digest (external auditability). This is a CONSENSUS-VALIDITY change (a new block-import rejection
+	// rule), NOT an encoding change: `CardanoRef` already carried `block_hash`, so the `observe`
+	// Call/storage/event encoding is UNCHANGED and the PAPI/indexer/frontend metadata is byte-identical —
+	// the bump exists to signal the REQUIRED LOCKSTEP node upgrade (an old author's tip-hash anchor would
+	// be fatally rejected by a new importer). `observe` is still an INHERENT, so transaction_version is
+	// UNCHANGED. Architecture A: the header digest is auditability; the load-bearing importer
+	// re-validation rides `check_inherent` (no import_queue/start_aura fork). D4-SHAPED, not D4-TRUST —
+	// load-bearing only with ≥3 independent producers, co-sequenced with the enforcement cutover.
+	spec_version: 111,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

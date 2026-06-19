@@ -71,12 +71,19 @@ pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"cgnoobsv";
 pub type BeaconName = [u8; 32];
 
 /// The stable Cardano reference the observation was taken as-of (carried in the inherent). The `slot`
-/// is a deterministic function of the PARENT block (so author + importer agree; §5.1) and IS the
-/// consensus anchor. `block_hash` carries the node's Kupo checkpoint-tip header hash — a node-LOCAL
-/// diagnostic that legitimately varies by Kupo config / sync position, so [`ProvideInherent::check_inherent`]
-/// compares only `slot` + `entries`, never `block_hash` (including it would spuriously fork two honest
-/// nodes that agree on the stable read). The node-side point-existence guard (a Kupo that is BEHIND the
-/// reference abstains rather than returning a partial set) lives in the IDP, not here.
+/// is a deterministic function of the PARENT block (so author + importer agree; §5.1) and is the as-of
+/// reference. `block_hash` is the SEALED stable-block anchor: the header hash of the latest stable
+/// Cardano block AT/UNDER `slot` (the partner-chains McHash anchor, in-protocol-observation §15.3 /
+/// Midnight delta A.1) — NOT the old Kupo tip diagnostic. The custom proposer seals it into the block
+/// HEADER (the `cobs` PreRuntime digest, an external-auditability artifact), and
+/// [`ProvideInherent::check_inherent`] now re-validates BOTH `slot` + `block_hash` + `entries` cross-node.
+/// This is safe (it does NOT spuriously fork) because the anchor is the latest stable block ≤ `slot` —
+/// deterministic across honest caught-up nodes on the same Kupo version (the reference is ≥ the stability
+/// window old, i.e. immutable Cardano history) — and an importer whose Kupo is BEHIND the reference
+/// abstains (→ `CannotVerify`) via the node-side point-existence guard in the IDP, never reaching a FALSE
+/// mismatch here. (MAINNET PREREQUISITE: at the prod ~36 h stability window, Kupo must retain checkpoints
+/// back to the reference; the deliberately-relaxed testnet window keeps the anchor in Kupo's dense recent
+/// checkpoints.)
 #[derive(
 	Encode, Decode, DecodeWithMemTracking, Clone, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen, Default,
 )]
@@ -461,8 +468,8 @@ pub mod pallet {
 		}
 
 		/// IMPORTER side: compare the author's observation against THIS node's own read at the same
-		/// reference. Identical reference slot + reduced entries ⇒ Ok. Own source behind/absent ⇒
-		/// `CannotVerify` (non-fatal: accept without verifying — never fork because YOUR follower lags).
+		/// reference. Identical reference (slot + sealed `block_hash` anchor) + reduced entries ⇒ Ok. Own
+		/// source behind/absent ⇒ `CannotVerify` (non-fatal: accept without verifying — never fork on lag).
 		/// When the reduced entries DIFFER, the `inputs_commitment` splits the (fatal) failure: a differing
 		/// commitment ⇒ `Mismatch` (saw different Cardano data); an identical commitment ⇒ `ComputeDiverged`
 		/// (same data, different reduction — a determinism bug / version skew).
@@ -481,21 +488,24 @@ pub mod pallet {
 				Some(o) => o,
 				None => return Err(InherentError::CannotVerify),
 			};
-			// Compare the reference SLOT + the canonical entries only — NOT `block_hash` (a node-local Kupo
-			// checkpoint-tip diagnostic, see [`CardanoRef`]). The slot is the consensus anchor; the entries
-			// are the verified read. A behind/forked importer never reaches a FALSE mismatch here because
-			// its IDP abstains (→ CannotVerify) when its Kupo has not indexed past the reference.
-			if reference.slot == local.reference.slot && entries.as_slice() == local.entries.as_slice() {
+			// Compare the FULL reference (slot + the SEALED `block_hash` anchor) + the canonical entries. The
+			// anchor is the latest stable Cardano block ≤ the reference (see [`CardanoRef`]) — re-validating
+			// it is what makes the header-sealed `cobs` anchor importer-checked (Midnight delta A.1). It does
+			// NOT spuriously fork: a behind importer abstains (→ CannotVerify above) before it can reach a
+			// FALSE mismatch, and two honest caught-up nodes agree on the stable anchor by construction.
+			if reference == &local.reference && entries.as_slice() == local.entries.as_slice() {
 				// Outputs agree ⇒ accept, REGARDLESS of the input commitment: two honest nodes whose raw
 				// candidate sets differ only in UTxOs the reduction drops (too-fresh / spent) still reduce
 				// to the same entries, so the commitment must never reject on its own.
 				return Ok(());
 			}
-			// The reduced reads disagree (fatal either way). A differing reference slot is always a data
-			// disagreement (the reference is a pure function of the parent). Otherwise the entries differ at
-			// the SAME reference: consult the input commitment to tell a data fork (`Mismatch`) apart from a
-			// reduction divergence (`ComputeDiverged` — same raw candidates, different reduced output).
-			if reference.slot == local.reference.slot && *inputs_commitment == local.inputs_commitment {
+			// The reads disagree (fatal either way). A differing reference slot OR a differing sealed anchor
+			// `block_hash` is always a DATA disagreement (the reference slot is a pure function of the parent;
+			// the anchor is a forged/regressing or different stable block) ⇒ `Mismatch`. Only when the FULL
+			// reference matches but the reduced `entries` differ do we consult the input commitment to tell a
+			// data fork (`Mismatch`) apart from a reduction divergence (`ComputeDiverged` — same raw
+			// candidates AND same anchor, different reduced output).
+			if reference == &local.reference && *inputs_commitment == local.inputs_commitment {
 				Err(InherentError::ComputeDiverged)
 			} else {
 				Err(InherentError::Mismatch)

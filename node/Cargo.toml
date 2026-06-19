@@ -54,6 +54,7 @@ cogno-chain-runtime = { workspace = true }
 sp-api = { default-features = true, workspace = true }
 sp-block-builder = { default-features = true, workspace = true }
 sp-blockchain = { default-features = true, workspace = true }
+sp-consensus = { default-features = true, workspace = true }
 sp-consensus-aura = { default-features = true, workspace = true }
 sp-core = { default-features = true, workspace = true }
 sp-genesis-builder = { default-features = true, workspace = true }

@@ -109,6 +109,34 @@ const asU128 = (v) => asUintStrict(v, MAX_U128);
 // would credit a name Rust drops (and `canonicalBytes` would then throw). Always lowercase-normalised.
 const isBeacon32 = (hex) => typeof hex === "string" && hex.length === 64 && /^[0-9a-f]+$/.test(hex);
 
+// ── the sealed stable-block anchor (§15.3 / Midnight delta A.1) ──────────────────────────────────────
+// PURE: the latest STABLE Cardano block at/under `referenceSlot` — the max Kupo `/checkpoints` element
+// whose `slot_no` is ≤ referenceSlot, as `{ slot:BigInt, hash:string }` (hash = 64-lowercase-hex header
+// hash) or `null` when none. The JS mirror of `parse_checkpoint_anchor` in node/src/cardano_observer.rs
+// (the partner-chains McHash `get_latest_stable_block_for` analog). This hash is the SEALED block-hash
+// anchor that becomes `CardanoRef.block_hash` — written into the `cobs` header digest by the custom
+// proposer AND re-validated cross-node by the runtime's check_inherent, so it must derive byte-identically
+// here. Defensive against ordering / number-vs-string slots (strict asU64, max-fold), exactly like the
+// Rust port. An unparseable `header_hash` degrades to 64 zero-nibbles (matches Rust `hex32().unwrap_or([0;
+// 32])`) — unreachable with real Kupo data. Determinism: every honest node on the same Kupo version over
+// the same settled history selects the same anchor (the reference is ≥ the stability window old).
+export function latestStableBlock(checkpoints, { referenceSlot } = {}) {
+	if (referenceSlot == null) return null;
+	const ref = BigInt(referenceSlot);
+	let best = null; // { slot:BigInt, hash:string }
+	for (const c of checkpoints ?? []) {
+		const slot = asU64(c?.slot_no);
+		if (slot == null || slot > ref) continue; // only blocks at/under the stable reference
+		if (best == null || slot > best.slot) {
+			const h = typeof c?.header_hash === "string" ? c.header_hash.toLowerCase() : "";
+			best = { slot, hash: isBeacon32(h) ? h : "0".repeat(64) };
+		}
+	}
+	return best;
+}
+// Convenience: just the sealed anchor hash hex (or null) — the value carried as CardanoRef.block_hash.
+export const latestStableBlockHash = (checkpoints, opts) => latestStableBlock(checkpoints, opts)?.hash ?? null;
+
 // ── the deterministic observation (§5.3) ──────────────────────────────────────────────────────────
 // PURE: from Kupo `/matches/{vaultHash}.*` JSON, reduce to the largest-wins locked lovelace per beacon
 // AS-OF `referenceSlot`. A match counts only if it carries EXACTLY ONE asset of the vault policy at

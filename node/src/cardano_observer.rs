@@ -271,8 +271,9 @@ pub async fn fetch_kupo_matches(
 /// the array is sorted or that `[0]` is the tip; mis-taking a min would let a behind node wrongly think
 /// it is caught up, re-introducing the false-Mismatch bug) and against number-vs-string encodings
 /// (reuses [`as_u64`]). `None` unless the value is a non-empty array with at least one valid `slot_no`.
-/// The header hash is a node-LOCAL diagnostic (→ `CardanoRef.block_hash`, never consensus-compared); an
-/// unparseable hash degrades to `[0; 32]` but does NOT discard the load-bearing slot.
+/// Used ONLY for the point-existence guard (its `slot` answers "has this node indexed PAST the
+/// reference?"); the consensus `block_hash` anchor comes from [`parse_checkpoint_anchor`], NOT the tip.
+/// An unparseable hash degrades to `[0; 32]` but does NOT discard the load-bearing slot.
 pub fn parse_checkpoint_tip(value: &serde_json::Value) -> Option<(u64, [u8; 32])> {
 	let arr = value.as_array()?;
 	let mut best: Option<(u64, [u8; 32])> = None;
@@ -293,13 +294,49 @@ pub fn parse_checkpoint_tip(value: &serde_json::Value) -> Option<(u64, [u8; 32])
 	best
 }
 
-/// Read this node's own Kupo `/checkpoints` and return its most-recent indexed point (tip slot + header
-/// hash) — the point-existence / freshness guard (design §5.4 / open-question 7). The caller abstains
-/// (emits the empty observation) when the tip slot is BEHIND the reference, so a lagging Kupo defers
-/// (→ `CannotVerify`, accept) instead of returning a partial UTxO set that would trigger a FALSE fatal
-/// `Mismatch` on import. Bounded by a short timeout; any error (down / non-2xx / empty / non-array) is
-/// returned so the caller fails closed. Done BEFORE the `/matches` read so a degraded Kupo short-circuits.
-pub async fn fetch_kupo_tip(kupo_url: &str) -> Result<(u64, [u8; 32]), String> {
+/// PURE: the latest STABLE Cardano block at/under `reference_slot` — the max `/checkpoints` element whose
+/// `slot_no` is `≤ reference_slot`, returned as `(slot_no, header_hash)`. This is the partner-chains McHash
+/// `get_latest_stable_block_for(T)` analog adapted to cogno's single pinned vault + Kupo `/checkpoints`
+/// (in-protocol-observation §15.3 step 3 / Midnight delta A.1). The returned `header_hash` is the SEALED
+/// anchor: it becomes [`CardanoRef::block_hash`], is written into the `cobs` header digest by the custom
+/// proposer, AND is re-validated cross-node by [`pallet_cardano_observer::ProvideInherent::check_inherent`]
+/// — NO longer a node-local tip diagnostic. Defensive against ordering / number-vs-string encodings (same
+/// max-fold shape as [`parse_checkpoint_tip`], filtered to `slot_no ≤ reference_slot`). `None` when no
+/// checkpoint is at/under the reference (a young/behind index ⇒ the caller abstains → `CannotVerify`).
+/// Determinism contract: every honest node running the SAME Kupo version over the SAME settled history
+/// selects the SAME anchor (the reference is ≥ the stability window old, i.e. immutable Cardano history) —
+/// the consensus property that makes the hash safe to compare (mirrored by `latestStableBlockHash` in
+/// `services/_shared/observation.mjs`).
+pub fn parse_checkpoint_anchor(value: &serde_json::Value, reference_slot: u64) -> Option<(u64, [u8; 32])> {
+	let arr = value.as_array()?;
+	let mut best: Option<(u64, [u8; 32])> = None;
+	for c in arr {
+		let slot = match c.get("slot_no").and_then(as_u64) {
+			Some(s) => s,
+			None => continue,
+		};
+		if slot > reference_slot {
+			continue; // only blocks at/under the stable reference are eligible anchors
+		}
+		if best.map_or(true, |(b, _)| slot > b) {
+			let hash = c
+				.get("header_hash")
+				.and_then(|h| h.as_str())
+				.and_then(hex32)
+				.unwrap_or([0u8; 32]);
+			best = Some((slot, hash));
+		}
+	}
+	best
+}
+
+/// Read this node's own Kupo `/checkpoints` as raw JSON (the indexed-points array). The single source for
+/// BOTH the point-existence guard ([`parse_checkpoint_tip`] — has this node indexed past the reference?)
+/// AND the consensus block-hash anchor ([`parse_checkpoint_anchor`] — the latest stable block ≤ reference).
+/// Reading once keeps the two derivations consistent (no inter-call rollback between a separate tip and
+/// anchor fetch). Bounded by a short timeout; any error (down / non-2xx / non-JSON) is returned so the
+/// caller fails closed (abstains → empty observation → `CannotVerify`).
+pub async fn fetch_kupo_checkpoints(kupo_url: &str) -> Result<serde_json::Value, String> {
 	let url = format!("{}/checkpoints", kupo_url.trim_end_matches('/'));
 	let resp = reqwest::Client::new()
 		.get(&url)
@@ -312,9 +349,7 @@ pub async fn fetch_kupo_tip(kupo_url: &str) -> Result<(u64, [u8; 32]), String> {
 	}
 	let text =
 		resp.text().await.map_err(|e| format!("kupo /checkpoints body read failed: {e}"))?;
-	let v: serde_json::Value = serde_json::from_str(&text)
-		.map_err(|e| format!("kupo /checkpoints JSON parse failed: {e}"))?;
-	parse_checkpoint_tip(&v).ok_or_else(|| format!("kupo /checkpoints had no usable tip for {url}"))
+	serde_json::from_str(&text).map_err(|e| format!("kupo /checkpoints JSON parse failed: {e}"))
 }
 
 /// The node-side `InherentDataProvider` for the Cardano observation. Holds the observation this node
@@ -481,6 +516,38 @@ mod tests {
 		assert_eq!(parse_checkpoint_tip(&json!([])), None);
 		assert_eq!(parse_checkpoint_tip(&json!({ "slot_no": 1 })), None);
 		assert_eq!(parse_checkpoint_tip(&json!([{ "header_hash": hh }])), None);
+	}
+
+	#[test]
+	fn parse_checkpoint_anchor_takes_the_latest_block_at_or_under_the_reference() {
+		let h1 = "1111111111111111111111111111111111111111111111111111111111111111";
+		let h2 = "2222222222222222222222222222222222222222222222222222222222222222";
+		let h3 = "3333333333333333333333333333333333333333333333333333333333333333";
+		let cps = json!([
+			{ "slot_no": 100, "header_hash": h1 },
+			{ "slot_no": 200, "header_hash": h2 }, // the tip — too fresh for a ref of 150
+			{ "slot_no": 150, "header_hash": h3 },
+		]);
+		// ref between 150 and 200 ⇒ the anchor is slot 150 (the latest block AT/UNDER the reference),
+		// NOT the tip (slot 200) and NOT an older block (slot 100).
+		assert_eq!(parse_checkpoint_anchor(&cps, 175), Some((150, hex32(h3).unwrap())));
+		// ref exactly on a checkpoint ⇒ that checkpoint (≤ is inclusive).
+		assert_eq!(parse_checkpoint_anchor(&cps, 150), Some((150, hex32(h3).unwrap())));
+		assert_eq!(parse_checkpoint_anchor(&cps, 200), Some((200, hex32(h2).unwrap())));
+		// ref between 100 and 150 ⇒ slot 100.
+		assert_eq!(parse_checkpoint_anchor(&cps, 149), Some((100, hex32(h1).unwrap())));
+		// ref below every checkpoint ⇒ None (no stable block yet ⇒ caller abstains → CannotVerify).
+		assert_eq!(parse_checkpoint_anchor(&cps, 99), None);
+		// order- and encoding-independent (string slot_no), same as the tip parser.
+		let shuffled = json!([
+			{ "slot_no": "150", "header_hash": h3 },
+			{ "slot_no": "100", "header_hash": h1 },
+			{ "slot_no": "200", "header_hash": h2 },
+		]);
+		assert_eq!(parse_checkpoint_anchor(&shuffled, 175), Some((150, hex32(h3).unwrap())));
+		// empty / non-array ⇒ None.
+		assert_eq!(parse_checkpoint_anchor(&json!([]), 1_000), None);
+		assert_eq!(parse_checkpoint_anchor(&json!({ "slot_no": 1 }), 1_000), None);
 	}
 
 	#[test]

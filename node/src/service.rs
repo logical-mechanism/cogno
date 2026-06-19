@@ -12,7 +12,8 @@ use sp_consensus_aura::sr25519::AuthorityPair as AuraPair;
 use std::{sync::Arc, time::Duration};
 // in-protocol-observation (D4): the node-side Cardano-observation InherentDataProvider wiring.
 use crate::cardano_observer::{
-	build_observation, fetch_kupo_matches, fetch_kupo_tip, hex_encode, reference_slot,
+	build_observation, fetch_kupo_checkpoints, fetch_kupo_matches, hex_encode,
+	parse_checkpoint_anchor, parse_checkpoint_tip, reference_slot,
 	CardanoObservationInherentDataProvider,
 };
 use pallet_cardano_observer::{CardanoObserverApi, CardanoRef};
@@ -77,15 +78,22 @@ async fn build_cardano_idp(
 		.or_else(|_| std::env::var("KUPO"))
 		.unwrap_or_else(|_| "http://127.0.0.1:1442".to_string());
 	let vault_hex = hex_encode(&config.vault_policy_id);
-	// 4. point-existence guard (§5.4): only trust the read if THIS node's Kupo has indexed PAST the
-	//    reference. A behind Kupo must ABSTAIN (→ the runtime's CannotVerify accept/defer path) rather
-	//    than return a partial UTxO set that would trigger a FALSE fatal Mismatch on import. Checked FIRST
-	//    (cheap) so a degraded Kupo short-circuits before the /matches read. The tip header hash becomes
-	//    `CardanoRef.block_hash` (a node-local diagnostic, never consensus-compared).
-	let (tip_slot, tip_hash) = match fetch_kupo_tip(&kupo).await {
-		Ok(t) => t,
+	// 4. read /checkpoints ONCE → derive (a) the tip for the point-existence guard and (b) the stable
+	//    block-hash anchor. Both from one read so they cannot diverge across an inter-call rollback.
+	let checkpoints = match fetch_kupo_checkpoints(&kupo).await {
+		Ok(c) => c,
 		Err(e) => {
-			log::warn!(target: "cardano-observer", "Kupo tip read failed: {e} — abstaining (empty observation)");
+			log::warn!(target: "cardano-observer", "Kupo /checkpoints read failed: {e} — abstaining (empty observation)");
+			return empty;
+		},
+	};
+	// 4a. point-existence guard (§5.4): only trust the read if THIS node's Kupo has indexed PAST the
+	//     reference. A behind Kupo must ABSTAIN (→ the runtime's CannotVerify accept/defer path) rather
+	//     than return a partial UTxO set that would trigger a FALSE fatal Mismatch on import.
+	let tip_slot = match parse_checkpoint_tip(&checkpoints) {
+		Some((s, _)) => s,
+		None => {
+			log::warn!(target: "cardano-observer", "Kupo /checkpoints had no usable tip — abstaining (empty observation)");
 			return empty;
 		},
 	};
@@ -96,6 +104,22 @@ async fn build_cardano_idp(
 		);
 		return empty;
 	}
+	// 4b. the SEALED stable block-hash anchor (in-protocol-observation §15.3, Midnight delta A.1): the
+	//     header hash of the latest stable Cardano block AT/UNDER the reference. It becomes
+	//     `CardanoRef.block_hash` — the custom proposer seals it into the block header (`cobs` digest) and
+	//     `check_inherent` re-validates it cross-node (no longer a node-local tip diagnostic). The tip is
+	//     past the reference (guard above), so an anchor ≤ reference must exist; its absence means a
+	//     checkpoint gap ⇒ abstain (fail closed) rather than seal a degenerate hash.
+	let anchor_hash = match parse_checkpoint_anchor(&checkpoints, ref_slot) {
+		Some((_, hash)) => hash,
+		None => {
+			log::debug!(
+				target: "cardano-observer",
+				"no Kupo checkpoint at/under reference {ref_slot} (tip {tip_slot}) — abstaining (defer/CannotVerify)",
+			);
+			return empty;
+		},
+	};
 	// ⚠ KNOWN RESIDUAL (tip→matches TOCTOU): the tip check and the /matches read below are two separate
 	// Kupo calls. If THIS node's Kupo rolls its index back below `ref_slot` in the millisecond window
 	// between them (a Kupo restart / full re-sync — NOT a Cardano rollback: `ref_slot` is ≥ the stability
@@ -109,7 +133,7 @@ async fn build_cardano_idp(
 	match fetch_kupo_matches(&kupo, &vault_hex, ref_slot).await {
 		Ok(matches) => {
 			let obs = build_observation(
-				CardanoRef { slot: ref_slot, block_hash: tip_hash },
+				CardanoRef { slot: ref_slot, block_hash: anchor_hash },
 				&matches,
 				&vault_hex,
 			);
@@ -360,6 +384,18 @@ pub fn new_full<
 			prometheus_registry.as_ref(),
 			telemetry.as_ref().map(|x| x.handle()),
 		);
+		// D4 (in-protocol-observation §15.3 / Midnight delta A.1): wrap the stock proposer so each authored
+		// block SEALS the stable Cardano block anchor (CardanoRef { slot, block_hash }) into its HEADER as a
+		// `cobs` PreRuntime digest — the external-auditability artifact. The wrapper is passed to the STOCK
+		// `start_aura` (generic over the proposer factory; NO import_queue/start_aura fork), and the
+		// load-bearing importer re-validation rides the existing `check_inherent` (which compares the anchor
+		// `block_hash`). The appended PreRuntime item survives `Executive::final_checks` because
+		// `frame_system::initialize` stores the full incoming header digest (just like the Aura pre-digest).
+		let proposer_factory = crate::consensus::PartnerChainsProposerFactory::<
+			Block,
+			_,
+			crate::consensus::CardanoObsInherentDigest,
+		>::new(proposer_factory);
 
 		let slot_duration = sc_consensus_aura::slot_duration(&*client)?;
 			// D4: a client clone for the authoring CIDP (it produces this node's observation too).
