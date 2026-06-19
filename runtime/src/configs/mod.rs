@@ -415,9 +415,12 @@ impl pallet_cardano_observer::WeightSink<AccountId> for WeightApply {
 }
 
 parameter_types! {
-	// The stability window in Cardano slots: 3k/f ≈ 36 h (mainnet/preprod k=2160, f=0.05). A smaller
-	// LABELED value is permitted on a dev testnet only (docs/IN-PROTOCOL-OBSERVATION.md §5.2).
-	pub const ObsStabilitySlots: u64 = 129_600;
+	// ⚠ TESTNET RELAXATION: the stability window is set SMALL (600 slots ≈ 10 min) so the live preprod
+	// PoC vault is observable promptly on this testnet. The PRODUCTION value is 3k/f = 129_600 slots
+	// ≈ 36 h (mainnet/preprod k=2160, f=0.05) — the no-rollback horizon. A smaller value is permitted
+	// ONLY on a labeled dev/testnet (docs/IN-PROTOCOL-OBSERVATION.md §5.2); raise it to 129_600 before
+	// any mainnet/real-value deployment. ⚠ MAINNET PREREQUISITE.
+	pub const ObsStabilitySlots: u64 = 600;
 	// ⚠ PREPROD Shelley anchor (we are live there) — NOT Byron `systemStart` (1654041600). The Shelley
 	// era begins at slot 86400 / unix 1655769600 after a 20-day Byron prefix. Verify the MAINNET anchor
 	// against its genesis before any mainnet cutover.
@@ -425,6 +428,14 @@ parameter_types! {
 	pub const ObsShelleyStartSlot: u64 = 86_400;
 	// The L1 `min_lock` floor (lovelace); below it, observed lovelace maps to weight 0.
 	pub const ObsMinLock: u128 = 100_000_000;
+	// The live `talk_vault` policy id (== vault script hash, contracts/vault.json:
+	// 168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7). Consensus-pinned; the node reads it via
+	// the CardanoObserverApi so every node queries the SAME Cardano policy. ⚠ moving the live contract
+	// hash orphans the M8 vault — if contracts change, update this to match the new applied vault hash.
+	pub const ObsVaultPolicyId: [u8; 28] = [
+		0x16, 0x8a, 0x97, 0x10, 0xe9, 0x91, 0xb7, 0x68, 0x42, 0x6b, 0x58, 0x01, 0x1f, 0xeb,
+		0xec, 0x0f, 0xa3, 0xc5, 0xff, 0x6b, 0xeb, 0x49, 0x06, 0x5c, 0xc5, 0x24, 0x89, 0xc7,
+	];
 }
 
 /// Configure pallet-cardano-observer (in-protocol-observation, the D4 weight rung). Sets talk-stake
@@ -449,6 +460,7 @@ impl pallet_cardano_observer::Config for Runtime {
 	type StabilitySlots = ObsStabilitySlots;
 	type ShelleyStartUnix = ObsShelleyStartUnix;
 	type ShelleyStartSlot = ObsShelleyStartSlot;
+	type VaultPolicyId = ObsVaultPolicyId;
 	type BeaconResolver = BeaconLookup;
 	type WeightSink = WeightApply;
 	// pallet-timestamp implements `UnixTime` — the block's consensus clock for the stability sanity bound.

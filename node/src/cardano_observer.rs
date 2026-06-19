@@ -12,10 +12,6 @@
 //! `service.rs` closure wiring (deriving the reference from the parent block, both the import and
 //! authoring `CreateInherentDataProviders`) are the next increment.
 
-// The pure fns + the IDP are consumed by the tests below now and by service.rs in the next increment;
-// until that wiring lands they are dead code from the binary's entrypoint's perspective.
-#![allow(dead_code)]
-
 use codec::Decode;
 use pallet_cardano_observer::{
 	BeaconName, CardanoObservation, CardanoRef, InherentError, INHERENT_IDENTIFIER,
@@ -145,6 +141,49 @@ pub fn build_observation(
 ) -> CardanoObservation {
 	let slot = reference.slot;
 	CardanoObservation { reference, entries: observe_as_of(matches, vault_hash, slot) }
+}
+
+/// Lowercase-hex encode bytes (the vault policy id → the Kupo `/matches/{policy}.*` pattern).
+pub fn hex_encode(bytes: &[u8]) -> String {
+	let mut s = String::with_capacity(bytes.len() * 2);
+	for b in bytes {
+		s.push_str(&format!("{b:02x}"));
+	}
+	s
+}
+
+/// Read the vault's UTxOs AS-OF `reference_slot` from this node's OWN Kupo: query
+/// `/matches/{policy}.*?created_before={ref+1}` (a prefilter — the authoritative `created ≤ ref AND
+/// unspent-as-of-ref` is applied client-side in [`observe_as_of`]; Kupo's `created_before`/`spent_before`
+/// are both upper bounds and cannot be combined, and `?unspent` would wrongly drop UTxOs spent after the
+/// reference). Bounded by a short timeout so a slow/down Kupo can't stall authoring/import — the caller
+/// treats any `Err` as fail-closed (empty observation). Returns the raw match array.
+pub async fn fetch_kupo_matches(
+	kupo_url: &str,
+	vault_policy_hex: &str,
+	reference_slot: u64,
+) -> Result<Vec<serde_json::Value>, String> {
+	let url = format!(
+		"{}/matches/{}.*?created_before={}",
+		kupo_url.trim_end_matches('/'),
+		vault_policy_hex,
+		reference_slot.saturating_add(1),
+	);
+	let resp = reqwest::Client::new()
+		.get(&url)
+		.timeout(core::time::Duration::from_secs(2))
+		.send()
+		.await
+		.map_err(|e| format!("kupo request failed ({url}): {e}"))?;
+	if !resp.status().is_success() {
+		return Err(format!("kupo HTTP {} for {url}", resp.status()));
+	}
+	let text = resp.text().await.map_err(|e| format!("kupo body read failed: {e}"))?;
+	let v: serde_json::Value =
+		serde_json::from_str(&text).map_err(|e| format!("kupo JSON parse failed: {e}"))?;
+	v.as_array()
+		.cloned()
+		.ok_or_else(|| format!("kupo /matches did not return an array for {vault_policy_hex}"))
 }
 
 /// The node-side `InherentDataProvider` for the Cardano observation. Holds the observation this node

@@ -118,6 +118,27 @@ pub trait WeightSink<AccountId> {
 	fn set_weight(who: &AccountId, weight: u128);
 }
 
+/// The consensus-pinned observation config the node-side `InherentDataProvider` reads via the
+/// [`CardanoObserverApi`] runtime API — the SINGLE source of truth, so the node and the runtime cannot
+/// drift on the anchors, the stability window, or which Cardano policy to observe (design "no-drift").
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct ObserverConfig {
+	pub shelley_start_unix: u64,
+	pub shelley_start_slot: u64,
+	pub stability_slots: u64,
+	/// The 28-byte Cardano policy id (== the `talk_vault` script hash, `contracts/vault.json`) the node
+	/// queries Kupo for. Consensus-pinned so a misconfigured node can't silently observe the wrong policy.
+	pub vault_policy_id: alloc::vec::Vec<u8>,
+}
+
+sp_api::decl_runtime_apis! {
+	/// Exposes the consensus-pinned [`ObserverConfig`] to the node-side observation InherentDataProvider.
+	pub trait CardanoObserverApi {
+		/// The current observation config (anchors, stability window, vault policy id).
+		fn observer_config() -> ObserverConfig;
+	}
+}
+
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
@@ -157,6 +178,10 @@ pub mod pallet {
 		type ShelleyStartUnix: Get<u64>;
 		#[pallet::constant]
 		type ShelleyStartSlot: Get<u64>;
+		/// The 28-byte Cardano policy id (== `talk_vault` script hash) to observe. Consensus-pinned and
+		/// surfaced to the node via [`CardanoObserverApi`] so every node queries the SAME policy.
+		#[pallet::constant]
+		type VaultPolicyId: Get<[u8; 28]>;
 		/// Beacon → bound account (cogno-gate `AccountOf` in the runtime).
 		type BeaconResolver: BeaconResolver<Self::AccountId>;
 		/// Apply weight + capacity (talk-stake + microblog adapter in the runtime).
@@ -273,6 +298,17 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
+		/// The consensus-pinned observation config for the node-side IDP (via [`CardanoObserverApi`]).
+		/// Single source of truth — node + runtime cannot drift on the anchors / window / vault policy.
+		pub fn observer_config() -> ObserverConfig {
+			ObserverConfig {
+				shelley_start_unix: T::ShelleyStartUnix::get(),
+				shelley_start_slot: T::ShelleyStartSlot::get(),
+				stability_slots: T::StabilitySlots::get(),
+				vault_policy_id: T::VaultPolicyId::get().to_vec(),
+			}
+		}
+
 		/// The maximum legitimate reference slot for THIS block = `cardano_slot(now) − StabilitySlots`,
 		/// or `None` when the block time predates the Shelley anchor (so the bound is skipped). All
 		/// arithmetic is CHECKED (release WASM has overflow-checks off; a naive subtraction would WRAP,

@@ -8,7 +8,7 @@ use crate as pallet_cardano_observer;
 use crate::{BeaconResolver, WeightSink};
 use core::time::Duration;
 use frame_support::{
-	derive_impl,
+	derive_impl, parameter_types,
 	traits::{ConstU128, ConstU32, ConstU64, UnixTime},
 };
 use sp_runtime::BuildStorage;
@@ -86,6 +86,11 @@ pub const STABILITY_SLOTS: u64 = 1_000; // small for the mock
 pub const MIN_LOCK: u128 = 100_000_000;
 pub const MAX_STAKE_WEIGHT: u128 = 45_000_000_000_000_000;
 
+parameter_types! {
+	// A dummy 28-byte policy id for the mock (the real one is the live vault hash in the runtime).
+	pub const MockVaultPolicyId: [u8; 28] = [0u8; 28];
+}
+
 impl pallet_cardano_observer::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type MaxObserved = ConstU32<64>;
@@ -94,6 +99,7 @@ impl pallet_cardano_observer::Config for Test {
 	type StabilitySlots = ConstU64<STABILITY_SLOTS>;
 	type ShelleyStartUnix = ConstU64<SHELLEY_START_UNIX>;
 	type ShelleyStartSlot = ConstU64<SHELLEY_START_SLOT>;
+	type VaultPolicyId = MockVaultPolicyId;
 	type BeaconResolver = MockBeacons;
 	type WeightSink = MockSink;
 	type UnixTime = MockTime;
