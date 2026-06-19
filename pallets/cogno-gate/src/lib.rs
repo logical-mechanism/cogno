@@ -40,6 +40,9 @@ extern crate alloc;
 
 pub use pallet::*;
 
+/// The on-chain CIP-8 (COSE_Sign1) identity self-proof verifier (D1 — trustless identity).
+pub mod cip8;
+
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
