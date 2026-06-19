@@ -83,6 +83,32 @@ export function referenceFromAuraSlot({
 	return cardanoReferenceSlot({ unixSeconds, shelleyStartUnix, shelleyStartSlot, stabilitySlots, slotLengthMs });
 }
 
+// ── strict integer parsers (EXACT mirrors of the Rust node's as_u64 / as_u128, §5.3/§5.4) ───────────
+// The consensus inherent is built in Rust; observation.mjs is the determinism witness that must match it
+// BYTE-FOR-BYTE. JS's coercions (`Number("1.0")===1`, `BigInt(" 1")===1n`) are LOOSER than Rust's
+// `serde_json::Value::as_u64()/as_str().parse()`, so a beacon qty / coins / slot that one accepts and the
+// other drops would fork the read. These helpers reproduce Rust's parse exactly:
+//   • a JSON NUMBER counts only if it is a non-negative integer within range (Rust `as_u64()` returns None
+//     for floats / out-of-range; JS `Number.isInteger` matches, modulo the one case JS cannot see — a JSON
+//     number written `1.0`, which `JSON.parse` collapses to `1`; Kupo never emits fractional integers, so
+//     this residual is unreachable with real data and is the documented precondition).
+//   • a STRING counts only if it is pure ASCII digits within range (Rust `u64::from_str` / `u128::from_str`
+//     reject "1.0", " 1", "0x1", "+1"; `/^[0-9]+$/` matches exactly).
+const MAX_U64 = (1n << 64n) - 1n;
+const MAX_U128 = (1n << 128n) - 1n;
+const asUintStrict = (v, max) => {
+	if (typeof v === "number") return Number.isInteger(v) && v >= 0 && BigInt(v) <= max ? BigInt(v) : null;
+	if (typeof v === "bigint") return v >= 0n && v <= max ? v : null;
+	if (typeof v === "string") return /^[0-9]+$/.test(v) && BigInt(v) <= max ? BigInt(v) : null;
+	return null;
+};
+const asU64 = (v) => asUintStrict(v, MAX_U64);
+const asU128 = (v) => asUintStrict(v, MAX_U128);
+// A vault beacon name is the 32-byte (64 lowercase-hex) L1 `token_name`. The Rust port resolves it via
+// hex32 (which returns None for any other length), so JS must skip a non-32-byte name too — otherwise it
+// would credit a name Rust drops (and `canonicalBytes` would then throw). Always lowercase-normalised.
+const isBeacon32 = (hex) => typeof hex === "string" && hex.length === 64 && /^[0-9a-f]+$/.test(hex);
+
 // ── the deterministic observation (§5.3) ──────────────────────────────────────────────────────────
 // PURE: from Kupo `/matches/{vaultHash}.*` JSON, reduce to the largest-wins locked lovelace per beacon
 // AS-OF `referenceSlot`. A match counts only if it carries EXACTLY ONE asset of the vault policy at
@@ -107,34 +133,47 @@ export function observeAsOf(matches, { vaultHash, referenceSlot, reasons = null 
 	for (const m of matches) {
 		const assets = m.value?.assets ?? {};
 		const beacons = Object.entries(assets).filter(([k]) => k.split(".")[0].toLowerCase() === vh);
-		if (beacons.length !== 1 || Number(beacons[0][1]) !== 1) {
+		// Exactly one vault asset at qty 1 — qty parsed the SAME strict way the Rust port does (asU64 == 1),
+		// so a Number-coercible-but-not-integer qty like "1.0"/" 1" is dropped on BOTH sides, not just Rust.
+		if (beacons.length !== 1 || asU64(beacons[0][1]) !== 1n) {
 			rejected.push({ utxo: utxoId(m, JSON.stringify(assets)), beacon: null, why: `not exactly one beacon at qty 1 (${beacons.length} vault asset(s))` });
 			continue;
 		}
-		const beacon = beacons[0][0].split(".")[1].toLowerCase();
-
-		// AS-OF-ref window: created at/before ref, and unspent as-of ref. A missing/unparseable created
-		// slot fails closed (skip) — we must never credit a UTxO we can't place in time.
-		const createdSlot = m.created_at?.slot_no;
-		if (createdSlot == null) {
-			rejected.push({ utxo: utxoId(m, beacon), beacon, why: "no created_at.slot_no (fail closed)" });
+		const beacon = beacons[0][0].split(".")[1]?.toLowerCase() ?? "";
+		// A 32-byte (64-hex) beacon only — matches the Rust port's hex32 (which drops any other length).
+		// Without this, JS would credit a short name then `canonicalBytes` would throw while Rust silently
+		// drops it — a hard cross-node divergence (the on-chain beacon is always 32 bytes, so this is the
+		// fail-closed guard, not a reachable on-chain case).
+		if (!isBeacon32(beacon)) {
+			rejected.push({ utxo: utxoId(m, beacon), beacon: null, why: `beacon name is not 32 bytes ("${beacon}")` });
 			continue;
 		}
-		if (BigInt(createdSlot) > ref) {
+
+		// AS-OF-ref window: created at/before ref, and unspent as-of ref. A missing/unparseable created
+		// slot fails closed (skip) — we must never credit a UTxO we can't place in time. Parsed via the
+		// strict asU64 mirror (Rust drops a non-integer slot too).
+		const createdSlot = asU64(m.created_at?.slot_no);
+		if (createdSlot == null) {
+			rejected.push({ utxo: utxoId(m, beacon), beacon, why: "no/invalid created_at.slot_no (fail closed)" });
+			continue;
+		}
+		if (createdSlot > ref) {
 			rejected.push({ utxo: utxoId(m, beacon), beacon, why: `created at slot ${createdSlot} > reference ${ref} (too fresh)` });
 			continue;
 		}
-		// Spent strictly AT/BEFORE the reference ⇒ not locked as-of ref. spent_at == null OR a spend
-		// slot AFTER the reference ⇒ still locked as-of ref (the `?unspent`-would-wrongly-drop case).
-		const spentSlot = m.spent_at?.slot_no;
-		if (spentSlot != null && BigInt(spentSlot) <= ref) {
+		// Spent strictly AT/BEFORE the reference ⇒ not locked as-of ref. A null/unparseable spent_at slot ⇒
+		// treated as still-locked (Rust: `if let Some(spent) = …as_u64 { if spent <= ref … }` — an
+		// unparseable spend does not exclude). spent slot AFTER ref ⇒ still locked (the `?unspent` trap).
+		const spentSlot = asU64(m.spent_at?.slot_no);
+		if (spentSlot != null && spentSlot <= ref) {
 			rejected.push({ utxo: utxoId(m, beacon), beacon, why: `spent at slot ${spentSlot} <= reference ${ref} (not locked as-of ref)` });
 			continue;
 		}
 
-		const coins = BigInt(m.value.coins);
-		if (coins <= 0n) {
-			rejected.push({ utxo: utxoId(m, beacon), beacon, why: "zero/negative lovelace (swept UTxO not credited)" });
+		// Lovelace parsed via the strict asU128 mirror (Rust as_u128); null/non-positive ⇒ not credited.
+		const coins = asU128(m.value?.coins);
+		if (coins == null || coins <= 0n) {
+			rejected.push({ utxo: utxoId(m, beacon), beacon, why: "zero/negative/invalid lovelace (not credited)" });
 			continue;
 		}
 		// LARGEST-WINS: strict `>` so equal-lovelace duplicates collapse to one (value-identical) entry —
@@ -178,6 +217,80 @@ export function canonicalBytes({ referenceSlot, observed }) {
 
 // Hex of the canonical bytes — the convenient determinism witness for tests/cross-checks.
 export const canonicalHex = (args) => bytesToHex(canonicalBytes(args));
+
+// ── the input-commitment (the partner-chains `selection_inputs_hash` analog) ────────────────────────
+// PURE: the PRE-REDUCTION structural candidate set — every vault UTxO the as-of reduction CONSUMES
+// before the time-filter / largest-wins fold. This is the "raw observed Cardano data" the inherent
+// commits to: `inputs_commitment = blake2_256(candidateBytes(candidates(matches)))`. It lets the
+// runtime's check_inherent distinguish "the importer saw DIFFERENT Cardano data" (the candidate
+// commitments differ ⇒ Mismatch) from "the importer COMPUTED a different reduced output from the SAME
+// data" (commitments agree but entries differ ⇒ ComputeDiverged — a determinism bug / version skew),
+// where today both collapse to one Mismatch. The commitment is only consulted when the reduced outputs
+// already disagree (a fatal condition either way); it never causes a rejection on its own, so two honest
+// nodes with slightly different candidate sets that reduce to the SAME entries are still accepted.
+//
+// A candidate is included iff the match carries EXACTLY ONE vault beacon at qty 1, a 32-byte beacon
+// name, a present `created_at.slot_no`, and a parseable non-negative `coins` — the same structural gate
+// observeAsOf applies BEFORE its time/coins/largest-wins reduction (mirrored byte-for-byte by
+// `candidate_tuples` in node/src/cardano_observer.rs). Carries RAW (beacon, created, spent, coins) — no
+// time filter, no largest-wins (those are the reduction, not the input). NOT a consensus filter itself:
+// the determinism it rests on is that every node runs this identical parse over identical stable data.
+export function candidates(matches, { vaultHash } = {}) {
+	const vh = String(vaultHash).toLowerCase();
+	const out = [];
+	for (const m of matches) {
+		const assets = m.value?.assets ?? {};
+		const beacons = Object.entries(assets).filter(([k]) => k.split(".")[0].toLowerCase() === vh);
+		// SAME structural gate as observe_as_of / candidate_tuples (strict asU64 qty == 1, 32-byte beacon,
+		// strict integer created/coins) so the candidate pre-image is byte-identical to the Rust port.
+		if (beacons.length !== 1 || asU64(beacons[0][1]) !== 1n) continue;
+		const beacon = beacons[0][0].split(".")[1]?.toLowerCase() ?? "";
+		if (!isBeacon32(beacon)) continue;
+		const created = asU64(m.created_at?.slot_no);
+		if (created == null) continue; // fail closed: a UTxO we can't place in time is not an input
+		const coins = asU128(m.value?.coins);
+		if (coins == null) continue;
+		const spent = asU64(m.spent_at?.slot_no);
+		out.push({ beacon, created, spent, coins });
+	}
+	// Total order matching Rust's DERIVED Ord on ([u8;32], u64, Option<u64>, u128): beacon bytes (≡
+	// lowercased-hex order), then created, then spent (Rust Option: None < Some), then coins.
+	out.sort((a, b) => {
+		if (a.beacon !== b.beacon) return a.beacon < b.beacon ? -1 : 1;
+		if (a.created !== b.created) return a.created < b.created ? -1 : 1;
+		const an = a.spent == null, bn = b.spent == null;
+		if (an !== bn) return an ? -1 : 1; // None sorts before Some
+		if (!an && a.spent !== b.spent) return a.spent < b.spent ? -1 : 1;
+		if (a.coins !== b.coins) return a.coins < b.coins ? -1 : 1;
+		return 0;
+	});
+	return out;
+}
+
+// PURE: canonical SCALE encoding of the sorted candidate set — the commitment PRE-IMAGE the runtime
+// hashes. Byte-identical to `Vec<([u8;32], u64, Option<u64>, u128)>::encode()` in Rust: a SCALE-compact
+// length, then per candidate 32 beacon bytes ++ u64 LE created ++ Option<u64> spent (0x00 None | 0x01 ++
+// u64 LE Some) ++ u128 LE coins. The inputs_commitment is `blake2_256` of these bytes (computed in the
+// node — observation.mjs stays dependency-free, so it produces the deterministic PRE-IMAGE only; the
+// Rust↔JS equivalence fixture pins the pre-image, and blake2_256 of byte-identical input is identical).
+export function candidateBytes({ candidates: cands }) {
+	const out = [];
+	pushCompact(out, cands.length);
+	for (const c of cands) {
+		const bytes = hexToBytes(c.beacon);
+		if (bytes.length !== 32) throw new Error(`candidate beacon must be 32 bytes (got ${bytes.length} from "${c.beacon}")`);
+		for (const b of bytes) out.push(b);
+		pushU64LE(out, c.created);
+		if (c.spent == null) { out.push(0x00); } else { out.push(0x01); pushU64LE(out, c.spent); }
+		pushU128LE(out, c.coins);
+	}
+	return Uint8Array.from(out);
+}
+
+// Convenience: the candidate-commitment pre-image bytes straight from Kupo matches.
+export const candidateBytesFor = (matches, { vaultHash } = {}) => candidateBytes({ candidates: candidates(matches, { vaultHash }) });
+// Hex of the candidate pre-image — the determinism witness the Rust↔JS equivalence fixture pins.
+export const candidateHex = (matches, opts) => bytesToHex(candidateBytesFor(matches, opts));
 
 // ── SCALE-compatible primitives (dependency-free) ───────────────────────────────────────────────────
 function pushU64LE(out, v) {

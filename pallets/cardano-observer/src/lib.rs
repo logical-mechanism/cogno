@@ -18,8 +18,12 @@
 //!
 //! ## The two enforcement layers (§6)
 //! - [`ProvideInherent::check_inherent`] does the CROSS-NODE read match only: the importer compares the
-//!   author's observation against its OWN node's read at the same reference. A difference is
-//!   [`InherentError::Mismatch`] (**fatal** → block rejected); the importer's source being behind is
+//!   author's observation against its OWN node's read at the same reference. When the reduced `entries`
+//!   differ, the carried `inputs_commitment` (a `blake2_256` of the pre-reduction candidate set — the
+//!   partner-chains `selection_inputs_hash` analog) splits the failure: differing commitments ⇒
+//!   [`InherentError::Mismatch`] ("saw different Cardano data"); identical commitments ⇒
+//!   [`InherentError::ComputeDiverged`] ("same data, different reduction" — a determinism bug). BOTH are
+//!   **fatal** → block rejected; the split is diagnostic. The importer's own source being behind is
 //!   [`InherentError::CannotVerify`] (**non-fatal** → accept without verifying — never fork on a slow
 //!   node). `check_inherent` is NOT run by every node (warp/state sync skip it; it is not re-run in
 //!   `execute_block`), so anything that must hold for EVERY node is enforced in the Mandatory
@@ -84,21 +88,42 @@ pub struct CardanoRef {
 /// The observation supplied as inherent DATA by the node (transport form: an unbounded `Vec`; the
 /// runtime `Call` bounds it to [`Config::MaxObserved`]). Entries are canonical-sorted ascending by the
 /// 32 beacon bytes — the SAME canonical order `services/_shared/observation.mjs` produces.
+///
+/// `inputs_commitment` is the `blake2_256` of the canonical SCALE encoding of the PRE-REDUCTION
+/// structural candidate set (every vault UTxO the as-of reduction consumes, before the time-filter /
+/// largest-wins fold) — the partner-chains `selection_inputs_hash` analog. It lets
+/// [`ProvideInherent::check_inherent`] distinguish "the importer saw DIFFERENT Cardano data" (commitments
+/// differ ⇒ [`InherentError::Mismatch`]) from "the importer COMPUTED a different reduced output from the
+/// SAME data" (commitments agree but `entries` differ ⇒ [`InherentError::ComputeDiverged`], a determinism
+/// bug / version skew) — where today both collapse to one `Mismatch`. The node computes it over its own
+/// Kupo read (`inputs_commitment` in `node/src/cardano_observer.rs`); the runtime only COMPARES the
+/// author's value (carried in the [`Call::observe`] extrinsic) against the importer's own — it never
+/// re-derives it (no Kupo in-runtime). It is only consulted when the reduced `entries` already disagree,
+/// so it never causes a rejection on its own.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct CardanoObservation {
 	pub reference: CardanoRef,
+	pub inputs_commitment: [u8; 32],
 	pub entries: alloc::vec::Vec<(BeaconName, u128)>,
 }
 
-/// The inherent error. The node-side `try_handle_error` branches on this: `Mismatch` is propagated
-/// (`Some(Err(_))` → block rejected); `CannotVerify` is swallowed (`Some(Ok(()))` → accept without
-/// verifying). A blanket-swallow would defeat the entire fork-protection (§6).
+/// The inherent error. The node-side `try_handle_error` branches on this: `Mismatch` and
+/// `ComputeDiverged` are propagated (`Some(Err(_))` → block rejected); `CannotVerify` is swallowed
+/// (`Some(Ok(()))` → accept without verifying). A blanket-swallow would defeat the entire
+/// fork-protection (§6).
 #[derive(Encode, Decode, Debug)]
 pub enum InherentError {
-	/// The author's observation does not match the importer's own read at the same reference. FATAL.
+	/// The author's observation reflects DIFFERENT Cardano data than the importer's own read at the same
+	/// reference (the reduced `entries` differ AND the input commitments differ). FATAL.
 	Mismatch,
 	/// The importer's own Cardano data source is behind the reference / unavailable. NON-FATAL.
 	CannotVerify,
+	/// The author and importer agree on the raw Cardano inputs (identical `inputs_commitment`) but the
+	/// author's REDUCED `entries` differ from the importer's — i.e. the same data reduced to a different
+	/// observed set. This is a determinism divergence in the shared reduction (a bug / a version skew
+	/// between binaries), not a data disagreement. FATAL (a divergent reduction must not be consensus-
+	/// pinned), but reported distinctly so operators can tell it apart from a genuine data fork (§6).
+	ComputeDiverged,
 }
 
 impl IsFatalError for InherentError {
@@ -106,6 +131,7 @@ impl IsFatalError for InherentError {
 		match self {
 			InherentError::Mismatch => true,
 			InherentError::CannotVerify => false,
+			InherentError::ComputeDiverged => true,
 		}
 	}
 }
@@ -269,9 +295,17 @@ pub mod pallet {
 		pub fn observe(
 			origin: OriginFor<T>,
 			reference: CardanoRef,
+			inputs_commitment: [u8; 32],
 			entries: BoundedVec<(BeaconName, u128), T::MaxObserved>,
 		) -> DispatchResult {
 			ensure_none(origin)?; // inherents dispatch with the None origin
+
+			// `inputs_commitment` (the blake2_256 of the author's pre-reduction candidate set) is verified
+			// CROSS-NODE in `check_inherent` (it splits a `Mismatch` from a `ComputeDiverged` when reads
+			// disagree). The Mandatory dispatchable does NOT re-derive or apply it: there is no Kupo
+			// in-runtime, and the consensus-pinned auditable artifact is the commitment carried in THIS
+			// extrinsic — recomputable by anyone against an archived Kupo at `reference.slot`.
+			let _ = inputs_commitment;
 
 			// Anti-regression (§5.6): never accept an older reference than the chain already holds.
 			if let Some(last) = LastReference::<T>::get() {
@@ -419,15 +453,24 @@ pub mod pallet {
 				.ok()
 				.flatten()?;
 			let entries = BoundedVec::try_from(obs.entries).ok()?;
-			Some(Call::observe { reference: obs.reference, entries })
+			Some(Call::observe {
+				reference: obs.reference,
+				inputs_commitment: obs.inputs_commitment,
+				entries,
+			})
 		}
 
 		/// IMPORTER side: compare the author's observation against THIS node's own read at the same
-		/// reference. Exact match ⇒ Ok. Difference ⇒ `Mismatch` (fatal). Own source behind/absent ⇒
+		/// reference. Identical reference slot + reduced entries ⇒ Ok. Own source behind/absent ⇒
 		/// `CannotVerify` (non-fatal: accept without verifying — never fork because YOUR follower lags).
+		/// When the reduced entries DIFFER, the `inputs_commitment` splits the (fatal) failure: a differing
+		/// commitment ⇒ `Mismatch` (saw different Cardano data); an identical commitment ⇒ `ComputeDiverged`
+		/// (same data, different reduction — a determinism bug / version skew).
 		fn check_inherent(call: &Self::Call, data: &InherentData) -> Result<(), Self::Error> {
-			let (reference, entries) = match call {
-				Call::observe { reference, entries } => (reference, entries),
+			let (reference, inputs_commitment, entries) = match call {
+				Call::observe { reference, inputs_commitment, entries } => {
+					(reference, inputs_commitment, entries)
+				},
 				_ => return Ok(()),
 			};
 			let local = match data
@@ -443,7 +486,17 @@ pub mod pallet {
 			// are the verified read. A behind/forked importer never reaches a FALSE mismatch here because
 			// its IDP abstains (→ CannotVerify) when its Kupo has not indexed past the reference.
 			if reference.slot == local.reference.slot && entries.as_slice() == local.entries.as_slice() {
-				Ok(())
+				// Outputs agree ⇒ accept, REGARDLESS of the input commitment: two honest nodes whose raw
+				// candidate sets differ only in UTxOs the reduction drops (too-fresh / spent) still reduce
+				// to the same entries, so the commitment must never reject on its own.
+				return Ok(());
+			}
+			// The reduced reads disagree (fatal either way). A differing reference slot is always a data
+			// disagreement (the reference is a pure function of the parent). Otherwise the entries differ at
+			// the SAME reference: consult the input commitment to tell a data fork (`Mismatch`) apart from a
+			// reduction divergence (`ComputeDiverged` — same raw candidates, different reduced output).
+			if reference.slot == local.reference.slot && *inputs_commitment == local.inputs_commitment {
+				Err(InherentError::ComputeDiverged)
 			} else {
 				Err(InherentError::Mismatch)
 			}
