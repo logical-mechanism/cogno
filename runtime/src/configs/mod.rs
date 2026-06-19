@@ -52,8 +52,8 @@ use sp_version::RuntimeVersion;
 use super::{
 	AccountId, Aura, Balance, Balances, Block, BlockNumber, CognoGate, Hash, Microblog, Nonce,
 	PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
-	RuntimeOrigin, RuntimeTask, SessionKeys, System, ValidatorSet, DAYS, EXISTENTIAL_DEPOSIT,
-	SLOT_DURATION, VERSION,
+	RuntimeOrigin, RuntimeTask, SessionKeys, System, Timestamp, ValidatorSet, DAYS,
+	EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -391,4 +391,67 @@ impl pallet_anchor::Config for Runtime {
 	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
 	type AnchorOrigin = AuthorityOrigin;
 	type WeightInfo = pallet_anchor::weights::SubstrateWeight<Runtime>;
+}
+
+/// Beacon → bound account adapter for pallet-cardano-observer: the beacon name IS the cogno-gate
+/// `AccountOf` key (the 32-byte L1 beacon `token_name`), so the in-runtime lookup is a direct read.
+pub struct BeaconLookup;
+impl pallet_cardano_observer::BeaconResolver<AccountId> for BeaconLookup {
+	fn resolve(beacon: &[u8; 32]) -> Option<AccountId> {
+		pallet_cogno_gate::AccountOf::<Runtime>::get(beacon)
+	}
+}
+
+/// Weight-application adapter for pallet-cardano-observer: set the talk-stake weight (writes ONLY
+/// `AllowedStake`, going-forward-only) and ensure the relock-safe microblog capacity row exists. The
+/// lazy capacity meter reads the live weight, so `cap`/`rate` follow it and `weight = 0` collapses
+/// capacity on the next read — deliberately NO per-block refill (that would defeat the spam meter).
+pub struct WeightApply;
+impl pallet_cardano_observer::WeightSink<AccountId> for WeightApply {
+	fn set_weight(who: &AccountId, weight: u128) {
+		pallet_talk_stake::Pallet::<Runtime>::apply_weight(who, weight);
+		pallet_microblog::Pallet::<Runtime>::on_first_bind(who);
+	}
+}
+
+parameter_types! {
+	// The stability window in Cardano slots: 3k/f ≈ 36 h (mainnet/preprod k=2160, f=0.05). A smaller
+	// LABELED value is permitted on a dev testnet only (docs/IN-PROTOCOL-OBSERVATION.md §5.2).
+	pub const ObsStabilitySlots: u64 = 129_600;
+	// ⚠ PREPROD Shelley anchor (we are live there) — NOT Byron `systemStart` (1654041600). The Shelley
+	// era begins at slot 86400 / unix 1655769600 after a 20-day Byron prefix. Verify the MAINNET anchor
+	// against its genesis before any mainnet cutover.
+	pub const ObsShelleyStartUnix: u64 = 1_655_769_600;
+	pub const ObsShelleyStartSlot: u64 = 86_400;
+	// The L1 `min_lock` floor (lovelace); below it, observed lovelace maps to weight 0.
+	pub const ObsMinLock: u128 = 100_000_000;
+}
+
+/// Configure pallet-cardano-observer (in-protocol-observation, the D4 weight rung). Sets talk-stake
+/// weight from a consensus-verified Cardano observation INHERENT — every importing validator re-derives
+/// the read and rejects the block on mismatch — instead of the trusted off-chain `set_stake` write.
+///
+/// ADDITIVE / SHADOW until cutover: with no node-side `InherentDataProvider` wired yet,
+/// `create_inherent` yields nothing and the pallet is inert; the committee `set_stake` path still drives
+/// weight (the old trusted path keeps working). The node IDP + the cutover are later steps.
+///
+/// ⚠ MAINNET PREREQUISITE: `check_inherent`'s "every producer re-derives" is load-bearing only with
+/// MULTIPLE independent producers — on a single operator this is "D4-SHAPED, not D4-TRUST"; and every
+/// validator must run cardano-node + Kupo. See docs/IN-PROTOCOL-OBSERVATION.md §2/§8/§11.
+impl pallet_cardano_observer::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	// Max identities observed per block (bounds the inherent body + `LastObserved`).
+	type MaxObserved = ConstU32<1024>;
+	// The same `stake-1` ceiling as talk-stake (max lockable lovelace = total ADA supply). An entry
+	// above it is SKIPPED by the observer (never bricks the Mandatory block), not rejected.
+	type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;
+	type MinLock = ObsMinLock;
+	type StabilitySlots = ObsStabilitySlots;
+	type ShelleyStartUnix = ObsShelleyStartUnix;
+	type ShelleyStartSlot = ObsShelleyStartSlot;
+	type BeaconResolver = BeaconLookup;
+	type WeightSink = WeightApply;
+	// pallet-timestamp implements `UnixTime` — the block's consensus clock for the stability sanity bound.
+	type UnixTime = Timestamp;
+	type WeightInfo = ();
 }

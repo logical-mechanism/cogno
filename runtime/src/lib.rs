@@ -94,7 +94,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// Removing a pallet from construct_runtime changes the metadata — encoding-affecting; regen the
 	// PAPI descriptors. transaction_version is UNCHANGED (no TxExtension change). The on-wire pallet
 	// indices 8..15 are UNCHANGED (FRAME allows index gaps; only @7 is vacated).
-	spec_version: 107,
+	// 107 -> 108 for in-protocol-observation (D4): added pallet-cardano-observer (@16) — the
+	// `ProvideInherent` pallet that sets talk-stake weight from a consensus-verified Cardano observation
+	// inherent. New pallet + Mandatory `observe` call + storage (LastReference/LastObserved) + event —
+	// encoding-affecting; regen the PAPI descriptors. transaction_version is UNCHANGED (the `observe`
+	// call is an INHERENT, not a signed extrinsic — no TxExtension change). ADDITIVE/shadow: inert until
+	// the node-side InherentDataProvider is wired; the committee `set_stake` path still drives weight.
+	spec_version: 108,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -299,7 +305,17 @@ mod runtime {
 	// 15 = Session (M6, DR-26): drives Aura+GRANDPA authorities from the ValidatorSet SessionManager
 	// instead of static genesis (the two are mutually exclusive — the aura/grandpa genesis is now
 	// empty; authorities are seated through SessionConfig). `SessionHandler = (Aura, Grandpa)` via
-	// the opaque SessionKeys; changes apply at session boundaries (~2 sessions). Next free index 16.
+	// the opaque SessionKeys; changes apply at session boundaries (~2 sessions).
 	#[runtime::pallet_index(15)]
 	pub type Session = pallet_session;
+
+	// 16 = CardanoObserver (in-protocol-observation, the D4 weight rung): sets talk-stake weight from a
+	// consensus-verified Cardano observation INHERENT (`ProvideInherent`; every importing validator
+	// re-derives the read and rejects the block on mismatch) instead of the trusted off-chain
+	// `set_stake` write. Declared AFTER Timestamp (@1) and CognoGate (@8), which its Mandatory inherent
+	// reads (block time for the stability bound; `AccountOf` for beacon→account). ADDITIVE / shadow:
+	// inert until the node-side InherentDataProvider is wired (a later step); the committee `set_stake`
+	// path keeps driving weight until cutover. Next free index 17.
+	#[runtime::pallet_index(16)]
+	pub type CardanoObserver = pallet_cardano_observer;
 }

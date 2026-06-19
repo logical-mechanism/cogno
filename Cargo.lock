@@ -1475,6 +1475,7 @@ dependencies = [
  "pallet-anchor",
  "pallet-aura",
  "pallet-balances",
+ "pallet-cardano-observer",
  "pallet-cogno-gate",
  "pallet-collective",
  "pallet-grandpa",
