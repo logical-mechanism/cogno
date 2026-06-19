@@ -177,6 +177,15 @@ impl_runtime_apis! {
 		}
 	}
 
+	// in-protocol-observation (D4): the node-side observation InherentDataProvider reads the
+	// consensus-pinned config (anchors, stability window, vault policy id) through this API, so the
+	// node and the runtime cannot drift on what/how to observe.
+	impl pallet_cardano_observer::CardanoObserverApi<Block> for Runtime {
+		fn observer_config() -> pallet_cardano_observer::ObserverConfig {
+			pallet_cardano_observer::Pallet::<Runtime>::observer_config()
+		}
+	}
+
 	impl pallet_transaction_payment_rpc_runtime_api::TransactionPaymentApi<Block, Balance> for Runtime {
 		fn query_info(
 			uxt: <Block as BlockT>::Extrinsic,
