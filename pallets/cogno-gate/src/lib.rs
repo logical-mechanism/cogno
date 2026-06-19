@@ -70,8 +70,8 @@ pub type IdentityHash = [u8; 32];
 pub mod pallet {
 	use super::*;
 	use alloc::vec::Vec;
-	use frame_support::pallet_prelude::*;
-	use frame_system::pallet_prelude::*;
+	use frame_support::{pallet_prelude::*, sp_runtime::traits::Zero};
+	use frame_system::{ensure_signed, pallet_prelude::*};
 	// The two cross-pallet traits live in microblog (the depended-upon crate) to avoid a
 	// dependency cycle — see the module docs. cogno-gate implements `IsAllowed` and consumes
 	// `OnIdentityBind`.
@@ -99,6 +99,12 @@ pub mod pallet {
 		/// the single `inc_providers` call (balanced by one `dec_providers` in `on_revoke`) — do not
 		/// increment providers again here.
 		type OnBind: OnIdentityBind<Self::AccountId>;
+		/// The Cardano network the trustless self-proof ([`Call::link_identity_signed`]) binds for — the
+		/// low nibble of the address header byte (0 = testnet, 1 = mainnet). The beacon-name identity
+		/// carries NO network byte, so this pins which network's addresses may bind (else a mainnet and a
+		/// testnet address with the same credentials would collide on the identical identity). See [`cip8`].
+		#[pallet::constant]
+		type CardanoNetwork: Get<u8>;
 		/// Weight information for this pallet's dispatchables.
 		type WeightInfo: WeightInfo;
 	}
@@ -125,6 +131,13 @@ pub mod pallet {
 	pub type ThreadOf<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, BoundedVec<u8, ConstU32<10>>, OptionQuery>;
 
+	/// Permanently-banned identities — the manual-operator-ban tombstone (DR-14). [`Call::revoke`]
+	/// inserts here; the permissionless [`Call::link_identity_signed`] refuses to (re)bind a tombstoned
+	/// identity, so an eternally-valid CIP-8 proof replayed after a ban does NOT resurrect the binding.
+	/// Never removed (a tombstone is permanent — your "ban means ban" decision).
+	#[pallet::storage]
+	pub type Tombstoned<T: Config> = StorageMap<_, Blake2_128Concat, IdentityHash, (), OptionQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -148,6 +161,13 @@ pub mod pallet {
 		BadThread,
 		/// No binding exists for this account (revoke target not found).
 		NotBound,
+		/// The submitted CIP-8 self-proof failed verification (signature / address-key bind / format /
+		/// unsupported address). The node log carries the specific [`cip8::Cip8Error`] variant.
+		ProofInvalid,
+		/// The proof commits a different chain's genesis hash (anti-cross-chain replay).
+		WrongGenesis,
+		/// This Cardano identity was permanently banned (revoked) and cannot be re-bound (the tombstone).
+		IdentityTombstoned,
 	}
 
 	#[pallet::call]
@@ -170,66 +190,45 @@ pub mod pallet {
 			thread_pointer: Option<Vec<u8>>,
 		) -> DispatchResult {
 			T::FollowerOrigin::ensure_origin(origin)?;
+			Self::do_bind(&substrate_account, identity_hash, thread_pointer)
+		}
 
-			// 1:1 enforcement — reject a second bind on EITHER side (the anti-Sybil anchor). A
-			// rejected bind is an operator-visible anomaly (a follower tried to double-bind an
-			// already-anchored account or identity) — warn so it surfaces in the node logs, not
-			// just as a silent DispatchError.
-			if PkhOf::<T>::contains_key(&substrate_account) {
-				log::warn!(
-					target: LOG_TARGET,
-					"link_identity rejected: account already bound (1:1 account side); identity={:?}",
-					identity_hash,
-				);
-				return Err(Error::<T>::AccountAlreadyBound.into());
-			}
-			if AccountOf::<T>::contains_key(identity_hash) {
-				log::warn!(
-					target: LOG_TARGET,
-					"link_identity rejected: identity already bound (1:1 identity side); identity={:?}",
-					identity_hash,
-				);
-				return Err(Error::<T>::PkhAlreadyBound.into());
-			}
-
-			// Validate the optional thread pointer up front (fallible) before any write.
-			let thread = match thread_pointer {
-				Some(ptr) => {
-					let len = ptr.len();
-					Some(BoundedVec::<u8, ConstU32<10>>::try_from(ptr).map_err(|_| {
-						log::warn!(
-							target: LOG_TARGET,
-							"link_identity rejected: thread pointer too long ({} bytes > 10); identity={:?}",
-							len,
-							identity_hash,
-						);
-						Error::<T>::BadThread
-					})?)
-				},
-				None => None,
-			};
-
-			PkhOf::<T>::insert(&substrate_account, identity_hash);
-			AccountOf::<T>::insert(identity_hash, &substrate_account);
-			if let Some(t) = thread {
-				ThreadOf::<T>::insert(&substrate_account, t);
-			}
-
-			// Prime the microblog capacity row + take the provider ref (idempotent). on_bind owns the
-			// single inc_providers call — do NOT increment providers again here, or revoke's single
-			// dec_providers would leave the count stuck (the gate-1 leak).
-			T::OnBind::on_bind(&substrate_account);
-			log::debug!(
-				target: LOG_TARGET,
-				"link_identity ok: identity={:?} bound 1:1, provider ref taken via on_bind",
-				identity_hash,
-			);
-
-			Self::deposit_event(Event::IdentityLinked {
-				who: substrate_account,
-				identity: identity_hash,
-			});
-			Ok(())
+		/// **Trustless bind (D1).** Anyone submits the CIP-8 (COSE_Sign1) `signData` proof their Cardano
+		/// wallet produced over the pinned bind payload, and the RUNTIME verifies it on-chain
+		/// ([`cip8::verify_bind_proof`]) — **no trusted writer**. `ensure_signed` is the FEE payer (the
+		/// DoS defence: an unbound junk-proof spammer must pay), but the BOUND account + identity come from
+		/// the cryptographically-verified proof, so the submitter cannot retarget it (front-running a
+		/// valid proof merely completes the intended bind). The signed payload must commit THIS chain's
+		/// genesis (anti-cross-chain); a tombstoned (revoked) identity is refused.
+		///
+		/// ⚠ The verifier is the anti-Sybil crown jewel — a bug forges any identity. It is hardened by an
+		/// adversarial threat-model + tests but has NOT had a formal external audit (`L2-follower.md`
+		/// §7.2): **MAINNET PREREQUISITE — independent verifier audit** before real value.
+		#[pallet::call_index(2)]
+		#[pallet::weight(T::WeightInfo::link_identity_signed())]
+		pub fn link_identity_signed(
+			origin: OriginFor<T>,
+			cose_sign1: BoundedVec<u8, ConstU32<512>>,
+			cose_key: BoundedVec<u8, ConstU32<128>>,
+			thread_pointer: Option<Vec<u8>>,
+		) -> DispatchResult {
+			// NOT feeless: the signed submitter pays the tx fee, so a junk proof costs the attacker.
+			let _submitter = ensure_signed(origin)?;
+			// Verify the wallet signature on-chain (the trustless core). The bounded args were already
+			// size-capped at decode, before this heavy path runs.
+			let proof = cip8::verify_bind_proof(&cose_sign1, &cose_key, T::CardanoNetwork::get())
+				.map_err(|e| {
+					log::warn!(target: LOG_TARGET, "link_identity_signed: proof rejected: {e:?}");
+					Error::<T>::ProofInvalid
+				})?;
+			// Anti-cross-chain: the signed payload must commit THIS chain's genesis hash (block 0).
+			let genesis = frame_system::Pallet::<T>::block_hash(BlockNumberFor::<T>::zero());
+			ensure!(genesis.as_ref() == proof.genesis.as_slice(), Error::<T>::WrongGenesis);
+			// The bound account is the 32-byte sr25519 key the PROOF commits — never the submitter.
+			let account =
+				T::AccountId::decode(&mut &proof.account[..]).map_err(|_| Error::<T>::ProofInvalid)?;
+			log::debug!(target: LOG_TARGET, "link_identity_signed: verified proof for identity={:?}", proof.identity);
+			Self::do_bind(&account, proof.identity, thread_pointer)
 		}
 
 		/// Revoke an account's binding (the v1 manual-operator-ban path, DR-14). Gated by
@@ -259,6 +258,10 @@ pub mod pallet {
 			};
 			AccountOf::<T>::remove(identity);
 			ThreadOf::<T>::remove(&substrate_account);
+			// Tombstone the identity PERMANENTLY: the permissionless `link_identity_signed` path consults
+			// `Tombstoned` and refuses to re-bind it, so a ban cannot be undone by replaying an
+			// (eternally-valid) CIP-8 proof. A tombstone is never removed (your "ban means ban" decision).
+			Tombstoned::<T>::insert(identity, ());
 			// Symmetric teardown (gate-1): release the provider ref taken at bind + zero the banked
 			// capacity, while microblog KEEPS the (relock-safe) capacity row. NOTE: `on_revoke` is
 			// infallible today; if it is ever made fallible, an Err here would leak the bind/revoke
@@ -278,6 +281,51 @@ pub mod pallet {
 		/// The identity hash bound to `who`, if any. Read-only helper for tooling/readback.
 		pub fn identity_of(who: &T::AccountId) -> Option<IdentityHash> {
 			PkhOf::<T>::get(who)
+		}
+
+		/// The shared 1:1 bind body, called by BOTH the trusted [`Call::link_identity`] and the trustless
+		/// [`Call::link_identity_signed`]: the tombstone + double-bind checks, the thread-pointer
+		/// validation, the two directional maps, the microblog `on_bind` (provider ref + capacity row),
+		/// and the `IdentityLinked` event. NOT a dispatchable — it performs no origin check; each caller
+		/// authorizes per its own rule (FollowerOrigin vs a verified cryptographic proof).
+		pub(crate) fn do_bind(
+			account: &T::AccountId,
+			identity: IdentityHash,
+			thread_pointer: Option<Vec<u8>>,
+		) -> DispatchResult {
+			// A permanently-banned (revoked) identity can never be re-bound (the tombstone, DR-14).
+			ensure!(!Tombstoned::<T>::contains_key(identity), Error::<T>::IdentityTombstoned);
+			// 1:1 enforcement — reject a second bind on EITHER side (the anti-Sybil anchor). A rejected
+			// bind is an operator-visible anomaly — warn so it surfaces in the node logs.
+			if PkhOf::<T>::contains_key(account) {
+				log::warn!(target: LOG_TARGET, "do_bind rejected: account already bound; identity={identity:?}");
+				return Err(Error::<T>::AccountAlreadyBound.into());
+			}
+			if AccountOf::<T>::contains_key(identity) {
+				log::warn!(target: LOG_TARGET, "do_bind rejected: identity already bound; identity={identity:?}");
+				return Err(Error::<T>::PkhAlreadyBound.into());
+			}
+			// Validate the optional thread pointer up front (fallible) before any write.
+			let thread = match thread_pointer {
+				Some(ptr) => {
+					let len = ptr.len();
+					Some(BoundedVec::<u8, ConstU32<10>>::try_from(ptr).map_err(|_| {
+						log::warn!(target: LOG_TARGET, "do_bind rejected: thread pointer too long ({len} bytes > 10)");
+						Error::<T>::BadThread
+					})?)
+				},
+				None => None,
+			};
+			PkhOf::<T>::insert(account, identity);
+			AccountOf::<T>::insert(identity, account);
+			if let Some(t) = thread {
+				ThreadOf::<T>::insert(account, t);
+			}
+			// on_bind owns the single inc_providers (balanced by on_revoke's dec) — the gate-1 invariant.
+			T::OnBind::on_bind(account);
+			log::debug!(target: LOG_TARGET, "do_bind ok: identity={identity:?} bound 1:1, provider ref taken");
+			Self::deposit_event(Event::IdentityLinked { who: account.clone(), identity });
+			Ok(())
 		}
 	}
 

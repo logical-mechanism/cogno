@@ -9,8 +9,8 @@
 //! the feeless/capacity gate is exercised end-to-end by the node acceptance harness. These
 //! tests isolate the *identity* gate.
 
-use crate::{mock::*, AccountOf, Error, Event, IdentityHash, PkhOf, ThreadOf};
-use frame_support::{assert_noop, assert_ok};
+use crate::{mock::*, AccountOf, Error, Event, IdentityHash, PkhOf, ThreadOf, Tombstoned};
+use frame_support::{assert_noop, assert_ok, traits::ConstU32, BoundedVec};
 use sp_runtime::DispatchError;
 
 const ALICE: u64 = 1;
@@ -271,19 +271,18 @@ fn thread_pointer_state_transitions_across_rebind() {
 		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
 		assert!(ThreadOf::<Test>::get(ALICE).is_none());
 
-		// Rebind the freed identity to BOB without a thread pointer.
-		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, BOB, None));
+		// HASH_A is now tombstoned; bind a FRESH identity (HASH_B) to BOB without a thread pointer.
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_B, BOB, None));
 		assert!(ThreadOf::<Test>::get(BOB).is_none(), "None rebind writes no thread row");
 		assert!(ThreadOf::<Test>::get(ALICE).is_none(), "old account stays cleared");
-		assert_eq!(AccountOf::<Test>::get(HASH_A), Some(BOB));
+		assert_eq!(AccountOf::<Test>::get(HASH_B), Some(BOB));
 	});
 }
 
 #[test]
-fn rebind_can_reuse_the_same_thread_pointer() {
-	// runtime-node gap-4 (rebind reuse): after revoke frees the identity, the SAME thread pointer
-	// must be reusable on the rebind (the merkle root is not "consumed"). Rebind same identity →
-	// same account → same pointer.
+fn tombstone_blocks_reusing_a_revoked_identity() {
+	// "Ban means ban": after revoke tombstones the identity, it can NEVER be re-bound — not even to
+	// the same account with the same thread pointer (was: rebind-reuse; now a permanent ban).
 	new_test_ext().execute_with(|| {
 		let ptr = vec![0x00, 0xe5, 0x99, 0x3f, 0xa3];
 		assert_ok!(CognoGate::link_identity(
@@ -293,13 +292,12 @@ fn rebind_can_reuse_the_same_thread_pointer() {
 			Some(ptr.clone())
 		));
 		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
-		assert_ok!(CognoGate::link_identity(
-			RuntimeOrigin::root(),
-			HASH_A,
-			ALICE,
-			Some(ptr.clone())
-		));
-		assert_eq!(ThreadOf::<Test>::get(ALICE).map(|b| b.to_vec()), Some(ptr));
+		// Tombstone: the SAME identity cannot be reused after a ban (permanent), even with its old thread.
+		assert_noop!(
+			CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, Some(ptr.clone())),
+			Error::<Test>::IdentityTombstoned
+		);
+		let _ = ptr;
 	});
 }
 
@@ -312,7 +310,8 @@ fn full_event_audit_trail_for_bind_revoke_rebind() {
 		System::set_block_number(1);
 		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
 		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
-		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+		// HASH_A is tombstoned; the rebind uses a FRESH identity (HASH_B).
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_B, ALICE, None));
 
 		let gate_events: Vec<_> = System::events()
 			.into_iter()
@@ -326,7 +325,7 @@ fn full_event_audit_trail_for_bind_revoke_rebind() {
 			vec![
 				Event::IdentityLinked { who: ALICE, identity: HASH_A },
 				Event::Revoked { who: ALICE, identity: HASH_A },
-				Event::IdentityLinked { who: ALICE, identity: HASH_A },
+				Event::IdentityLinked { who: ALICE, identity: HASH_B },
 			]
 		);
 	});
@@ -381,9 +380,13 @@ fn revoke_relocks_posting() {
 		let row = pallet_microblog::Capacity::<Test>::get(ALICE).expect("row kept");
 		assert_eq!(row.cap_last, 0);
 
-		// After revoke the identity is free to be re-bound (to the same or a new account).
-		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, BOB, None));
-		assert_eq!(AccountOf::<Test>::get(HASH_A), Some(BOB));
+		// Tombstone ("ban means ban"): the revoked identity is PERMANENTLY banned — it cannot be
+		// re-bound to anyone, even via the trusted path.
+		assert_noop!(
+			CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, BOB, None),
+			Error::<Test>::IdentityTombstoned
+		);
+		assert_eq!(AccountOf::<Test>::get(HASH_A), None);
 	});
 }
 
@@ -410,8 +413,8 @@ fn bind_revoke_rebind_keeps_provider_accounting_balanced() {
 		let row = pallet_microblog::Capacity::<Test>::get(ALICE).expect("row kept (relock-farm guard)");
 		assert_eq!(row.cap_last, 0, "banked capacity zeroed on revoke");
 
-		// Rebind re-takes the provider ref so the rebound account can post feelessly again.
-		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_A, ALICE, None));
+		// ALICE rebinds to a FRESH identity (HASH_A is tombstoned) — the provider ref is re-taken.
+		assert_ok!(CognoGate::link_identity(RuntimeOrigin::root(), HASH_B, ALICE, None));
 		assert_eq!(providers(ALICE), base + 1, "rebind re-takes the provider ref");
 		assert!(pallet_microblog::Capacity::<Test>::get(ALICE).is_some());
 	});
@@ -436,5 +439,107 @@ fn revoke_requires_follower_origin() {
 			DispatchError::BadOrigin
 		);
 		assert!(PkhOf::<Test>::contains_key(ALICE)); // still bound
+	});
+}
+
+// ── the trustless self-proof (link_identity_signed, D1) ─────────────────────────────────────────────
+// A REAL MeshWallet.signData fixture (app/scripts/m2-cip8-fixture.mjs); the verifier itself is unit-tested
+// in src/cip8/tests.rs — here we prove the CALL wires verify → genesis-check → 1:1 bind / tombstone.
+
+const SIG: &str = "845869a3012704582073fea80d424276ad0978d4fe5310e8bc2d485f5f6bb3bf87612989f112ad5a7d67616464726573735839009493315cd92eb5d8c4304e67b7e16ae36d61d34502694657811a2c8e32c728d3861e164cab28cb8f006448139c8f1740ffb8e7aa9e5232dca166686173686564f458cc636f676e6f2d636861696e2f62696e642f76313b67656e657369733d323761663338353730616230373261326137383233326664663436616335653935376561613463343461356339326430366235363435353862666232656431363b6163636f756e743d333033356361336134626436306335356635313035626231386663373636613630333634643032323666373230666665336665333364323964363633313033343b6e6f6e63653d616261626162616261626162616261626162616261626162616261626162616258400cdf9b33e4179a29995b0d0d96fb770c58b54ed570ede16df0d32b2e904efa7687ee2efa0bbc6840ecab99a6c6e20992f1916f41e4ca6b28b4d5b103234cf00e";
+const KEY: &str = "a401010327200621582073fea80d424276ad0978d4fe5310e8bc2d485f5f6bb3bf87612989f112ad5a7d";
+const GENESIS: &str = "27af38570ab072a2a78232fdf46ac5e957eaa4c44a5c92d06b564558bfb2ed16";
+const PROOF_ACCOUNT: &str = "3035ca3a4bd60c55f5105bb18fc766a60364d0226f720ffe3fe33d29d6631034";
+
+fn hx(s: &str) -> Vec<u8> {
+	(0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
+}
+/// Pin BlockHash[0] to the fixture's genesis so the on-chain anti-cross-chain check passes.
+fn set_genesis(g: &str) {
+	frame_system::BlockHash::<Test>::insert(0u64, sp_core::H256::from_slice(&hx(g)));
+}
+fn proof() -> (BoundedVec<u8, ConstU32<512>>, BoundedVec<u8, ConstU32<128>>) {
+	(hx(SIG).try_into().expect("cose_sign1 fits 512"), hx(KEY).try_into().expect("cose_key fits 128"))
+}
+/// The u64 the mock decodes the proof's 32-byte committed account into (first 8 bytes, LE).
+fn bound_account() -> u64 {
+	u64::from_le_bytes(hx(PROOF_ACCOUNT)[..8].try_into().unwrap())
+}
+
+#[test]
+fn link_identity_signed_binds_a_real_wallet_proof() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		set_genesis(GENESIS);
+		let (s, k) = proof();
+		// ANY signed submitter (ALICE pays the fee); the bound account is the one the PROOF commits — the
+		// submitter cannot retarget it.
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s, k, None));
+		let acct = bound_account();
+		let identity = PkhOf::<Test>::get(acct).expect("the committed account is now bound");
+		assert_eq!(AccountOf::<Test>::get(identity), Some(acct), "1:1 both ways via the verified proof");
+		System::assert_has_event(Event::IdentityLinked { who: acct, identity }.into());
+	});
+}
+
+#[test]
+fn link_identity_signed_rejects_a_wrong_genesis() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// BlockHash[0] is left at the default (NOT the fixture's chain) ⇒ anti-cross-chain reject.
+		let (s, k) = proof();
+		assert_noop!(
+			CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s, k, None),
+			Error::<Test>::WrongGenesis
+		);
+		assert!(AccountOf::<Test>::iter().next().is_none(), "nothing bound on a rejected proof");
+	});
+}
+
+#[test]
+fn link_identity_signed_rejects_a_garbage_proof() {
+	new_test_ext().execute_with(|| {
+		set_genesis(GENESIS);
+		let bad: BoundedVec<u8, ConstU32<512>> = vec![0xde, 0xad, 0xbe, 0xef].try_into().unwrap();
+		let key: BoundedVec<u8, ConstU32<128>> = vec![0x00].try_into().unwrap();
+		assert_noop!(
+			CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), bad, key, None),
+			Error::<Test>::ProofInvalid
+		);
+	});
+}
+
+#[test]
+fn link_identity_signed_is_not_callable_unsigned() {
+	new_test_ext().execute_with(|| {
+		set_genesis(GENESIS);
+		let (s, k) = proof();
+		// Permissionless ≠ origin-free: it is a SIGNED call (the fee payer). Root/none is rejected.
+		assert_noop!(
+			CognoGate::link_identity_signed(RuntimeOrigin::root(), s, k, None),
+			DispatchError::BadOrigin
+		);
+	});
+}
+
+#[test]
+fn revoke_tombstones_and_blocks_a_signed_rebind() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		set_genesis(GENESIS);
+		let (s, k) = proof();
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s.clone(), k.clone(), None));
+		let acct = bound_account();
+		let identity = PkhOf::<Test>::get(acct).unwrap();
+
+		// Operator ban: revoke tombstones the identity permanently.
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), acct));
+		assert!(Tombstoned::<Test>::contains_key(identity), "revoke tombstones the identity");
+
+		// Replaying the SAME (eternally-valid) wallet proof cannot resurrect the binding.
+		assert_noop!(
+			CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s, k, None),
+			Error::<Test>::IdentityTombstoned
+		);
 	});
 }

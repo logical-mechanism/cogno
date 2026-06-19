@@ -94,7 +94,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// Removing a pallet from construct_runtime changes the metadata — encoding-affecting; regen the
 	// PAPI descriptors. transaction_version is UNCHANGED (no TxExtension change). The on-wire pallet
 	// indices 8..15 are UNCHANGED (FRAME allows index gaps; only @7 is vacated).
-	spec_version: 107,
+	// 107 -> 108 for D1 (trustless identity): added the permissionless `cogno_gate::link_identity_signed`
+	// call (@8 call_index 2 — on-chain CIP-8 ed25519 self-proof) + the `Tombstoned` storage + the
+	// `CardanoNetwork` constant + new error variants. New call/storage/constant — encoding-affecting;
+	// regen the PAPI descriptors. transaction_version is UNCHANGED (the new call is a normal signed
+	// extrinsic, no TxExtension change). ⚠ NB: the in-protocol-observation branch ALSO uses 108 (separate
+	// PR); whichever merges second must bump to 109.
+	spec_version: 108,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

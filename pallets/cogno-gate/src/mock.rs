@@ -59,6 +59,8 @@ impl pallet_cogno_gate::Config for Test {
 	type FollowerOrigin = EnsureRoot<u64>;
 	// The first-bind hook into microblog (primes the capacity row + provider ref).
 	type OnBind = Microblog;
+	// Testnet (the live preprod fixtures are network 0).
+	type CardanoNetwork = frame_support::traits::ConstU8<0>;
 	type WeightInfo = ();
 }
 
