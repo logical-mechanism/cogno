@@ -17,6 +17,13 @@ const BOB: AccountId = 2;
 const A: BeaconName = [0xAA; 32];
 const B: BeaconName = [0xBB; 32];
 
+/// A placeholder input commitment for the application/dispatchable tests. The commitment is only
+/// load-bearing in `check_inherent` (the Mandatory dispatchable carries-but-ignores it), exercised by
+/// the dedicated taxonomy tests below with `COMMIT` vs `COMMIT2`.
+const COMMIT: [u8; 32] = [0u8; 32];
+/// A DIFFERENT input commitment — "the importer saw different raw Cardano data".
+const COMMIT2: [u8; 32] = [0x99u8; 32];
+
 fn cref(slot: u64) -> CardanoRef {
 	CardanoRef { slot, block_hash: [0u8; 32] }
 }
@@ -44,13 +51,18 @@ fn shadow_of(who: AccountId) -> u128 {
 #[test]
 fn create_inherent_builds_the_observe_call_from_node_data() {
 	new_test_ext().execute_with(|| {
-		let obs = CardanoObservation { reference: cref(1000), entries: vec![(A, 200_000_000), (B, 300_000_000)] };
+		let obs = CardanoObservation {
+			reference: cref(1000),
+			inputs_commitment: COMMIT2,
+			entries: vec![(A, 200_000_000), (B, 300_000_000)],
+		};
 		let mut id = InherentData::new();
 		put_obs(&mut id, &obs);
 		let call = <CardanoObserver as ProvideInherent>::create_inherent(&id).expect("inherent produced");
 		match call {
-			crate::Call::observe { reference, entries } => {
+			crate::Call::observe { reference, inputs_commitment, entries } => {
 				assert_eq!(reference, cref(1000));
+				assert_eq!(inputs_commitment, COMMIT2, "the node's input commitment is carried into the call");
 				assert_eq!(entries.to_vec(), vec![(A, 200_000_000), (B, 300_000_000)]);
 			},
 			_ => panic!("expected observe call"),
@@ -70,10 +82,10 @@ fn create_inherent_absent_data_is_none() {
 #[test]
 fn check_inherent_matches_local_read() {
 	new_test_ext().execute_with(|| {
-		let obs = CardanoObservation { reference: cref(1000), entries: vec![(A, 200_000_000)] };
+		let obs = CardanoObservation { reference: cref(1000), inputs_commitment: COMMIT, entries: vec![(A, 200_000_000)] };
 		let mut id = InherentData::new();
 		put_obs(&mut id, &obs);
-		let call = crate::Call::<Test>::observe { reference: cref(1000), entries: entries(&[(A, 200_000_000)]) };
+		let call = crate::Call::<Test>::observe { reference: cref(1000), inputs_commitment: COMMIT, entries: entries(&[(A, 200_000_000)]) };
 		assert!(<CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok());
 	});
 }
@@ -81,35 +93,72 @@ fn check_inherent_matches_local_read() {
 #[test]
 fn check_inherent_mismatch_is_fatal() {
 	new_test_ext().execute_with(|| {
-		// The importer's own read differs from the author's claim ⇒ Mismatch (FATAL → block rejected).
-		let local = CardanoObservation { reference: cref(1000), entries: vec![(A, 200_000_000)] };
+		// The importer's own read differs from the author's claim AND the input commitments differ (the
+		// author saw DIFFERENT Cardano data) ⇒ Mismatch (FATAL → block rejected).
+		let local = CardanoObservation { reference: cref(1000), inputs_commitment: COMMIT, entries: vec![(A, 200_000_000)] };
 		let mut id = InherentData::new();
 		put_obs(&mut id, &local);
-		let lying_call = crate::Call::<Test>::observe { reference: cref(1000), entries: entries(&[(A, 999_000_000)]) };
+		let lying_call = crate::Call::<Test>::observe { reference: cref(1000), inputs_commitment: COMMIT2, entries: entries(&[(A, 999_000_000)]) };
 		let err = <CardanoObserver as ProvideInherent>::check_inherent(&lying_call, &id).unwrap_err();
 		assert!(matches!(err, InherentError::Mismatch));
 		assert!(err.is_fatal_error(), "Mismatch must be fatal (reject the block)");
 
-		// A differing reference is also a mismatch.
-		let wrong_ref = crate::Call::<Test>::observe { reference: cref(1001), entries: entries(&[(A, 200_000_000)]) };
+		// A differing reference is also a mismatch (regardless of the commitment — the reference is a pure
+		// function of the parent, so a differing slot is always a data disagreement).
+		let wrong_ref = crate::Call::<Test>::observe { reference: cref(1001), inputs_commitment: COMMIT, entries: entries(&[(A, 200_000_000)]) };
 		assert!(matches!(<CardanoObserver as ProvideInherent>::check_inherent(&wrong_ref, &id).unwrap_err(), InherentError::Mismatch));
+	});
+}
+
+#[test]
+fn check_inherent_compute_diverged_when_same_inputs_different_output() {
+	new_test_ext().execute_with(|| {
+		// SAME reference + SAME input commitment (both nodes agreed on the raw Cardano candidate set) but
+		// DIFFERENT reduced entries ⇒ ComputeDiverged: the reduction itself diverged (a determinism bug /
+		// binary version skew), NOT a data disagreement. FATAL but reported distinctly from Mismatch.
+		let local = CardanoObservation { reference: cref(1000), inputs_commitment: COMMIT, entries: vec![(A, 200_000_000)] };
+		let mut id = InherentData::new();
+		put_obs(&mut id, &local);
+		let diverged_call = crate::Call::<Test>::observe { reference: cref(1000), inputs_commitment: COMMIT, entries: entries(&[(A, 999_000_000)]) };
+		let err = <CardanoObserver as ProvideInherent>::check_inherent(&diverged_call, &id).unwrap_err();
+		assert!(matches!(err, InherentError::ComputeDiverged), "same inputs, different output ⇒ ComputeDiverged");
+		assert!(err.is_fatal_error(), "ComputeDiverged must be fatal (a divergent reduction must not be consensus-pinned)");
+	});
+}
+
+#[test]
+fn check_inherent_accepts_when_entries_agree_despite_commitment_diff() {
+	new_test_ext().execute_with(|| {
+		// The reduced OUTPUTS agree (same reference + same entries) but the input commitments DIFFER — e.g.
+		// two honest nodes whose raw candidate sets differ only in UTxOs the reduction drops (too-fresh /
+		// spent). The commitment must NEVER reject on its own: outputs agree ⇒ accept.
+		let local = CardanoObservation { reference: cref(1000), inputs_commitment: COMMIT, entries: vec![(A, 200_000_000)] };
+		let mut id = InherentData::new();
+		put_obs(&mut id, &local);
+		let call = crate::Call::<Test>::observe { reference: cref(1000), inputs_commitment: COMMIT2, entries: entries(&[(A, 200_000_000)]) };
+		assert!(
+			<CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok(),
+			"agreeing entries must be accepted even when the input commitments differ",
+		);
 	});
 }
 
 #[test]
 fn check_inherent_ignores_block_hash_diagnostic() {
 	new_test_ext().execute_with(|| {
-		// The importer's local read agrees on the reference SLOT and the entries but carries a DIFFERENT
-		// block_hash (its own Kupo checkpoint-tip — a node-local diagnostic). This must be accepted, never
-		// a Mismatch: block_hash is not consensus-load-bearing (only slot + entries are).
+		// The importer's local read agrees on the reference SLOT, the entries, and the input commitment but
+		// carries a DIFFERENT block_hash (its own Kupo checkpoint-tip — a node-local diagnostic). This must
+		// be accepted, never a Mismatch: block_hash is not consensus-load-bearing (only slot + entries are).
 		let local = CardanoObservation {
 			reference: CardanoRef { slot: 1000, block_hash: [0x11; 32] },
+			inputs_commitment: COMMIT,
 			entries: vec![(A, 200_000_000)],
 		};
 		let mut id = InherentData::new();
 		put_obs(&mut id, &local);
 		let call = crate::Call::<Test>::observe {
 			reference: CardanoRef { slot: 1000, block_hash: [0x22; 32] }, // different hash, same slot
+			inputs_commitment: COMMIT,
 			entries: entries(&[(A, 200_000_000)]),
 		};
 		assert!(
@@ -125,7 +174,7 @@ fn check_inherent_cannot_verify_when_local_source_behind_is_non_fatal() {
 		// The importer has NO local observation (its Cardano source is behind/down) ⇒ CannotVerify,
 		// NON-FATAL: accept without verifying (never fork because YOUR follower lags).
 		let id = InherentData::new(); // no data
-		let call = crate::Call::<Test>::observe { reference: cref(1000), entries: entries(&[(A, 200_000_000)]) };
+		let call = crate::Call::<Test>::observe { reference: cref(1000), inputs_commitment: COMMIT, entries: entries(&[(A, 200_000_000)]) };
 		let err = <CardanoObserver as ProvideInherent>::check_inherent(&call, &id).unwrap_err();
 		assert!(matches!(err, InherentError::CannotVerify));
 		assert!(!err.is_fatal_error(), "CannotVerify must be NON-fatal (accept, don't fork on a slow node)");
@@ -134,7 +183,7 @@ fn check_inherent_cannot_verify_when_local_source_behind_is_non_fatal() {
 
 #[test]
 fn observe_call_is_recognised_as_an_inherent() {
-	let call = crate::Call::<Test>::observe { reference: cref(1), entries: entries(&[]) };
+	let call = crate::Call::<Test>::observe { reference: cref(1), inputs_commitment: COMMIT, entries: entries(&[]) };
 	assert!(<CardanoObserver as ProvideInherent>::is_inherent(&call));
 }
 
@@ -150,6 +199,7 @@ fn observe_applies_weight_to_bound_accounts_and_skips_unbound() {
 		assert_ok!(CardanoObserver::observe(
 			RuntimeOrigin::none(),
 			cref(MAX_REFERENCE - 1),
+			COMMIT,
 			entries(&[(A, 200_000_000), (B, 500_000_000)]),
 		));
 		assert_eq!(weight_of(ALICE), 200_000_000, "bound A credited at its lovelace");
@@ -163,7 +213,7 @@ fn observe_applies_min_lock_floor() {
 	new_test_ext().execute_with(|| {
 		enforce();
 		bind(A, ALICE);
-		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 1), entries(&[(A, MIN_LOCK - 1)])));
+		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 1), COMMIT, entries(&[(A, MIN_LOCK - 1)])));
 		assert_eq!(weight_of(ALICE), 0, "below MIN_LOCK ⇒ weight 0");
 		assert_eq!(shadow_of(ALICE), 0, "the projection also floors to 0");
 	});
@@ -181,6 +231,7 @@ fn observe_skips_over_max_stake_weight_without_bricking_the_block() {
 		assert_ok!(CardanoObserver::observe(
 			RuntimeOrigin::none(),
 			cref(MAX_REFERENCE - 1),
+			COMMIT,
 			entries(&[(A, 200_000_000), (B, MAX_STAKE_WEIGHT + 1)]),
 		));
 		assert_eq!(weight_of(ALICE), 200_000_000, "A still credited");
@@ -197,11 +248,11 @@ fn observe_clamps_accounts_that_dropped_out_to_zero() {
 		bind(A, ALICE);
 		bind(B, BOB);
 		// Block 1: both A and B locked.
-		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 10), entries(&[(A, 200_000_000), (B, 300_000_000)])));
+		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 10), COMMIT, entries(&[(A, 200_000_000), (B, 300_000_000)])));
 		assert_eq!(weight_of(ALICE), 200_000_000);
 		assert_eq!(weight_of(BOB), 300_000_000);
 		// Block 2: B unlocked (absent now) ⇒ clamped to 0; A persists.
-		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 5), entries(&[(A, 200_000_000)])));
+		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 5), COMMIT, entries(&[(A, 200_000_000)])));
 		assert_eq!(weight_of(ALICE), 200_000_000, "A persists");
 		assert_eq!(weight_of(BOB), 0, "B (absent now) is clamped to 0 — the unlock path");
 		assert_eq!(shadow_of(BOB), 0, "the projection also clamps B to 0 (insert-0-never-delete)");
@@ -216,7 +267,7 @@ fn shadow_mode_records_projection_but_never_writes_weight() {
 		System::set_block_number(1);
 		// EnforceWeight defaults to false (shadow) — no enforce() call.
 		bind(A, ALICE);
-		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 1), entries(&[(A, 200_000_000)])));
+		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 1), COMMIT, entries(&[(A, 200_000_000)])));
 		// The WeightSink (talk-stake/microblog) is NEVER called in shadow — the committee owns AllowedStake.
 		assert!(!was_written(ALICE), "shadow mode must NOT apply weight (committee remains sole writer)");
 		// …but the projection IS recorded, so the off-chain diff can compare it against AllowedStake.
@@ -231,11 +282,11 @@ fn shadow_mode_clamp_zeroes_the_projection_only() {
 		bind(A, ALICE);
 		bind(B, BOB);
 		// Both observed (shadow) — projection recorded, weight untouched.
-		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 10), entries(&[(A, 200_000_000), (B, 300_000_000)])));
+		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 10), COMMIT, entries(&[(A, 200_000_000), (B, 300_000_000)])));
 		assert_eq!(shadow_of(BOB), 300_000_000);
 		assert!(!was_written(BOB));
 		// B drops out: the projection clamps to 0, but the WeightSink is STILL never called.
-		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 5), entries(&[(A, 200_000_000)])));
+		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 5), COMMIT, entries(&[(A, 200_000_000)])));
 		assert_eq!(shadow_of(BOB), 0, "the dropped account's projection is zeroed (visible to the diff)");
 		assert!(!was_written(BOB), "…but no AllowedStake write in shadow");
 	});
@@ -272,10 +323,10 @@ fn set_enforcement_is_not_an_inherent() {
 fn observe_rejects_a_regressing_reference() {
 	new_test_ext().execute_with(|| {
 		bind(A, ALICE);
-		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 5), entries(&[(A, 200_000_000)])));
+		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 5), COMMIT, entries(&[(A, 200_000_000)])));
 		// A later block proposing an OLDER reference than the chain already holds is rejected (§5.6).
 		assert_noop!(
-			CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 6), entries(&[(A, 200_000_000)])),
+			CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 6), COMMIT, entries(&[(A, 200_000_000)])),
 			Error::<Test>::ReferenceRegressed
 		);
 	});
@@ -287,11 +338,11 @@ fn observe_rejects_a_too_fresh_reference() {
 		bind(A, ALICE);
 		// A reference fresher than the stability window allows (closer to `now` than STABILITY_SLOTS).
 		assert_noop!(
-			CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE + 1), entries(&[(A, 200_000_000)])),
+			CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE + 1), COMMIT, entries(&[(A, 200_000_000)])),
 			Error::<Test>::ReferenceTooFresh
 		);
 		// Exactly at the boundary is allowed.
-		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE), entries(&[(A, 200_000_000)])));
+		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE), COMMIT, entries(&[(A, 200_000_000)])));
 	});
 }
 
@@ -300,6 +351,6 @@ fn observe_requires_the_none_origin() {
 	new_test_ext().execute_with(|| {
 		// An inherent must be dispatched with the None origin — a signed caller is rejected (it also
 		// can never reach the pool, since is_inherent is true; this is defence-in-depth).
-		assert!(CardanoObserver::observe(RuntimeOrigin::signed(ALICE), cref(MAX_REFERENCE - 1), entries(&[(A, 200_000_000)])).is_err());
+		assert!(CardanoObserver::observe(RuntimeOrigin::signed(ALICE), cref(MAX_REFERENCE - 1), COMMIT, entries(&[(A, 200_000_000)])).is_err());
 	});
 }

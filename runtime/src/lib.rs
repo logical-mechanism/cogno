@@ -111,7 +111,12 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// metadata a distinct version. New pallet + new call/storage relative to either branch alone —
 	// encoding-affecting; regen the PAPI descriptors. transaction_version is UNCHANGED (no TxExtension
 	// change on either branch).
-	spec_version: 109,
+	// 109 -> 110 (cardano-observer hardening): the `observe` inherent gained an `inputs_commitment:
+	// [u8;32]` arg (the partner-chains `selection_inputs_hash` analog) and a third `InherentError`
+	// variant (`ComputeDiverged`), so `check_inherent` can tell "saw different Cardano data" apart from
+	// "reduced the same data differently". The `observe` Call encoding changed — encoding-affecting,
+	// regen the PAPI descriptors. `observe` is still an INHERENT, so transaction_version is UNCHANGED.
+	spec_version: 110,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

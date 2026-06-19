@@ -484,17 +484,28 @@ live — but **neither half is automatic; both must be coded deliberately** in t
 fatal or not — through the IDP's `try_handle_error`, whose return value is the final import verdict:
 `Some(Ok(()))` = accept, `Some(Err)` = reject, `None` = reject as "unknown".)
 
-Define a typed `InherentError` with at least two variants:
+Define a typed `InherentError` with **three** variants (LANDED — the third added in the 2026-06-19
+hardening pass, §15):
 
 - **`Mismatch` — `is_fatal_error() == true`.** Returned by `check_inherent` when the importer's own read
-  at the (parent-derived, §5.1) reference produces a *different* canonical set than the author's `call`.
-  Its `try_handle_error` returns **`Some(Err(_))`** → block **permanently invalid**. **Exact equality,
-  never a tolerance band** — a band would let a malicious author inject an observation no honest follower
-  agrees with as long as it is "close." (`pallet_timestamp` *must* tolerate ±`MAX_TIMESTAMP_DRIFT` because
-  wall clocks are never byte-equal; a stable-history Cardano read is the opposite kind of quantity and is
-  matched exactly. Note pallet_timestamp marks **both** its errors fatal and does **not** "defer" via the
-  inherent — its future-block tolerance is Aura's *header* drift check, a different mechanism — so it is
-  the precedent for the *Mandatory/exact* half, **not** for the can't-check defer.)
+  at the (parent-derived, §5.1) reference produces a *different* canonical set than the author's `call`
+  **and the input commitments differ** (the importer saw DIFFERENT Cardano data). Its `try_handle_error`
+  returns **`Some(Err(_))`** → block **permanently invalid**. **Exact equality, never a tolerance band** —
+  a band would let a malicious author inject an observation no honest follower agrees with as long as it is
+  "close." (`pallet_timestamp` *must* tolerate ±`MAX_TIMESTAMP_DRIFT` because wall clocks are never
+  byte-equal; a stable-history Cardano read is the opposite kind of quantity and is matched exactly. Note
+  pallet_timestamp marks **both** its errors fatal and does **not** "defer" via the inherent — its
+  future-block tolerance is Aura's *header* drift check, a different mechanism — so it is the precedent for
+  the *Mandatory/exact* half, **not** for the can't-check defer.)
+- **`ComputeDiverged` — `is_fatal_error() == true`.** Returned when the author and importer agree on the
+  raw Cardano inputs (identical `inputs_commitment`, the §15 `selection_inputs_hash` analog) but the
+  *reduced* `entries` differ — i.e. the SAME data reduced to a different observed set, a determinism bug or
+  a binary version skew. `try_handle_error` returns **`Some(Err(_))`** → reject (a divergent reduction must
+  never be consensus-pinned). It is split out from `Mismatch` **only as a diagnostic**: it is the precise
+  signal for the silent-fork risk an enforced multi-producer network most fears (the reduction code, not
+  the data, diverged). The commitment is consulted **only** when the reduced reads already disagree — it
+  **never** causes a rejection on its own, so two honest nodes whose raw candidate sets differ only in
+  UTxOs the reduction drops (too-fresh / spent) but which reduce to the SAME `entries` are still accepted.
 - **`CannotVerify` (a.k.a. `SourceBehind`) — `is_fatal_error() == false`.** Returned when the importer's
   *own* Kupo is behind the reference slot / down. Its `try_handle_error` returns **`Some(Ok(()))`** →
   **accept the block without verifying it**. This variant **must** be registered so the framework's
@@ -639,9 +650,11 @@ The migration is **throw-nothing-away**: the same pure function moves from the f
 ---
 
 ## 10. Spec-version & on-wire impact
-- **spec_version 107 → 108 (developed) → 109 (merged).** This branch added pallet @16 + new inherent
-  call/storage at 108; on merge to `main` it shares the runtime with the trustless-identity (D1) branch
-  which also claimed 108, so the combined runtime bumped to **109** (see §14.3). New pallet/call/storage =
+- **spec_version 107 → 108 (developed) → 109 (merged) → 110 (hardening §15.2).** This branch added pallet
+  @16 + new inherent call/storage at 108; on merge to `main` it shares the runtime with the
+  trustless-identity (D1) branch which also claimed 108, so the combined runtime bumped to **109** (see
+  §14.3); the 2026-06-19 input-commitment hardening (§15.2) added the `inputs_commitment` arg to the
+  `observe` Call + a third `InherentError` variant, bumping to **110**. New pallet/call/storage =
   encoding-affecting — regenerate PAPI descriptors (CLAUDE.md spec-bump discipline). `transaction_version`
   stays **2**.
 - **Pallet index 16** — new index; 7 stays vacant; 8–15 unchanged (indices are on-wire contracts).
@@ -819,3 +832,115 @@ and `shadow-diff.mjs` one-shot cross-confirmed all three legs agree at the live 
 The default-off flag + the `set_enforcement` control + the reconciliation requirement are documented in §9
 step 3. Cutover is co-sequenced with ≥3 independent producers (the SPO/Ariadne graduation, §11) and is the
 ONLY remaining step. Until then: default shadow, committee still drives weight, **D4-SHAPED, not D4-TRUST.**
+
+---
+
+## 15. Mechanism-hardening toward Midnight parity (2026-06-19)
+
+A pass to close the *achievable* mechanism-hardening deltas against Midnight's `cnight-observation` /
+the partner-chains Ariadne inherent (the full mapping + the overclaim guardrails are in
+`_reference/MIDNIGHT-MAPPING.md`). This does **not** touch the one delta that matters most — validator
+decentralization (`check_inherent` is load-bearing only with ≥3 independent producers; §2). Two items
+landed; the flagship third is designed below for a sign-off.
+
+### 15.1 LANDED — determinism equivalence regression (mapping delta B.8) — no spec change
+A committed-golden **cross-language** (Rust↔JS) equivalence regression, mirroring Midnight's
+`primitives/mainchain-follower/tests/cnight_equivalence.rs` (which asserts two observation implementations
+return byte-identical output for the same input). Here the two implementations are in *different*
+languages, so instead of comparing in one process we pin a golden computed by the canonical JS spec and
+re-derive it from both sides:
+- `services/_shared/fixtures/observation-equivalence.json` — 17 cases (largest-wins, spent-after-ref,
+  too-fresh, multi-beacon-reject, realistic-mixed, the candidate-sort `None < Some` / coins tiebreak, the
+  three parser-strictness edges below, and a **64-beacon SCALE 2-byte compact-length** boundary), generated
+  by `gen-equivalence-fixtures.mjs` from `observation.mjs`.
+- `services/_shared/observation-equivalence.test.mjs` (JS leg) and
+  `node/src/cardano_observer.rs::rust_matches_js_observation_equivalence_fixture` (Rust leg) each re-derive
+  every case and assert the **canonical SCALE bytes** *and* the **input-commitment pre-image** equal the
+  golden. A Rust↔JS divergence fails one suite (proven: corrupting one golden byte fails *both*).
+- Always-on in CI (`ci.yml` `services` job), vs Midnight's db-gated skip-by-default; the live-Kupo
+  recompute leg Midnight gets from db-sync, cogno already has in `shadow-diff.mjs`'s correctness oracle.
+- **Parser-strictness alignment (closed by the build's adversarial review).** An equivalence pass is only
+  as good as the parse it pins. `observation.mjs`'s coercions were looser than the Rust node's
+  `serde_json` parse — JS `Number("1.0")===1` / `BigInt(" 1")` accepted asset-qty / coins / slot values the
+  Rust `as_u64`/`as_u128` reject, and JS credited a non-32-byte beacon (then `canonicalBytes` threw) where
+  Rust's `hex32` silently drops it. These never occur with honest Kupo data (the on-chain beacon is always
+  32 bytes; Kupo emits integer qty/coins), but they were latent Rust↔JS divergences. `observeAsOf` +
+  `candidates` now parse through strict `asU64`/`asU128`/`isBeacon32` helpers that **exactly mirror** the
+  Rust `as_u64`/`as_u128`/`hex32`, and three fixture cases (`short-beacon-name-dropped`,
+  `non-integer-qty-dropped`, `non-integer-coins-dropped`) pin the now-identical "both drop" behavior. The
+  one residual JS cannot mirror — a JSON **number** written `1.0` (which `JSON.parse` collapses to `1`
+  before any guard can see the decimal) — is a documented precondition: Kupo never emits fractional
+  integers, and the consensus read is Rust-only regardless.
+
+### 15.2 LANDED — input-commitment hash + the `ComputeDiverged` taxonomy (mapping delta A.2) — spec 109 → 110
+The partner-chains `selection_inputs_hash` analog. The `observe` inherent now carries an
+`inputs_commitment: [u8;32]` — a `blake2_256` of the canonical SCALE encoding of the **pre-reduction
+structural candidate set** (every vault UTxO the as-of reduction consumes, before the time-filter /
+largest-wins fold; `candidate_tuples` in the node, `candidates`/`candidateBytes` in `observation.mjs`,
+byte-identical and pinned by the §15.1 fixture). When the reduced reads disagree, `check_inherent` splits
+the (fatal) failure with the commitment: differing commitments ⇒ `Mismatch` ("saw different Cardano
+data"); identical commitments ⇒ `ComputeDiverged` ("same data, different reduction" — a determinism bug /
+binary version skew). Both are fatal; the split is **diagnostic**. The commitment is consulted **only**
+when the reduced outputs already disagree, so it never rejects on its own (agreeing `entries` ⇒ accept
+regardless of the commitment — two honest nodes whose raw candidate sets differ only in UTxOs the reduction
+drops still agree on the output). The Mandatory dispatchable carries-but-ignores it (no Kupo in-runtime;
+it is auditable from the extrinsic, recomputable against an archived Kupo at `reference.slot`).
+- **Not** "compare the full UTxO list like Midnight" (a stated non-goal): cogno observes ONE pinned vault,
+  so the reduced largest-wins set IS the complete canonical observation; this is a finer *failure
+  taxonomy*, not a wider comparison.
+- Encoding-affecting (`observe` Call + `CardanoObservation` gained the field; `InherentError` gained the
+  variant) ⇒ **spec_version 109 → 110**, PAPI + indexer + frontend regenerated; `transaction_version`
+  stays 2 (`observe` is an inherent, not a signed tx). The live `talk_vault` contract is **untouched**.
+
+### 15.3 PLAN (awaiting sign-off) — header-sealed, importer-re-validated stable Cardano block (mapping delta A.1, "the biggest gap")
+**Status: DESIGN ONLY. Do not implement without explicit sign-off — this is header/consensus-affecting and
+the heaviest of the three items.**
+
+**The gap.** Today the reference is `f(parent Aura slot) − stability_window` (§5.1) bounded by the runtime
+`ReferenceRegressed` / `ReferenceTooFresh` checks. It **trusts the slot arithmetic**: it does not prove
+that a *specific, stable Cardano block* underlies the read. Midnight/partner-chains instead seal the chosen
+**stable Cardano block hash** into the PC block header (the `mcsh` `PreRuntime` digest) and every importer
+**independently re-validates** that block was stable-for-that-timestamp and **non-regressing** vs the
+parent's sealed hash (`sidechain-mc-hash` `new_proposal` / `new_verification`). This upgrades the anchor
+from "trust the arithmetic" to "prove *this exact* Cardano block was stable."
+
+**Architecture to adopt it (the McHash pattern, adapted to cogno):**
+1. **Header digest seam.** A stock FRAME/Aura pallet cannot add a header digest item
+   (`Executive::final_checks` asserts exact digest-log equality — §4.4). Sealing the stable hash needs a
+   **custom proposer** that writes a `PreRuntime` digest (the partner-chains `PartnerChainsProposerFactory`
+   + `InherentDigest`). DR-26 says *study, don't depend on* the archived partner-chains repo, so this means
+   **vendoring/reimplementing** that proposer + digest in `node/` (a non-trivial node-consensus change to
+   `service.rs` authoring **and** import, alongside the M6 session/validator seam which must stay untouched).
+2. **McHash-style IDP** with two constructors: `new_proposal` (author selects the latest **stable** Cardano
+   block at/under the reference window) and `new_verification` (importer re-validates the header's sealed
+   hash is stable-for-that-timestamp **and** its block number ≥ the parent's sealed block number).
+3. **Data-source capability.** Extend the Kupo reader (today `fetch_kupo_tip` over `/checkpoints`) to answer
+   "latest stable block for time T", "is block H stable for T", and "block by hash" (the `McHashDataSource`
+   trait) — Kupo `/checkpoints` + a block-by-hash lookup suffice for the single-policy case.
+4. **Reference derivation** then anchors to the *sealed stable block's slot* instead of pure parent-slot
+   arithmetic; the existing `LastReference` monotonicity becomes the on-chain mirror of `new_verification`'s
+   non-regression check.
+
+**Honest cost/benefit for cogno (the sign-off decision):**
+- **Pro:** closes delta A.1 — the anchor becomes "prove this exact Cardano block was stable", exactly
+  Midnight's. Strongest mechanism-parity gain available.
+- **Con / scope:** header/consensus-affecting (spec bump + a new header digest item); requires a custom
+  proposer (vendored, since the partner-chains toolkit is archived — DR-26) touching both CIDP paths in
+  `service.rs`; a new data-source capability. It is the heaviest change of the three.
+- **Marginal value is smaller for cogno than for Midnight.** Midnight seals because its reference is
+  otherwise unconstrained; cogno's reference is *already* a deterministic pure function of the parent
+  (every honest node computes the identical slot — §5.1), *already* monotone (`LastReference`), and
+  *already* re-read per-importer. McHash adds "prove the block existed and was stable" on top of an anchor
+  that is already deterministic + non-regressing. The residual it closes is a malicious author pointing the
+  reference at a slot whose Cardano history had not actually settled — partly bounded today by the
+  stability-window arithmetic + monotonicity + the per-importer re-read.
+- **The ceiling is unchanged.** Like the inherent itself, McHash is trust-bearing only with ≥3 independent
+  producers; on a single operator it is auditability, not trust (D4-shaped, §2).
+
+**Recommendation.** Build this **co-sequenced with the validator-decentralization cutover** (the same
+≥3-producer gate as `set_enforcement(true)`, §9 step 3), not before: sealing a provably-stable block (vs
+trusting deterministic slot arithmetic) starts to buy *trust* only once there are independent producers to
+out-vote a bad author. Until then it is polish on an anchor that is already deterministic — lower ROI than
+the validator work it depends on. If sign-off is to proceed now regardless, scope it as its own branch with
+its own spec bump and a multi-node import test (healthy seal imports; a forged/regressing sealed hash is
+rejected; a lagging importer defers).

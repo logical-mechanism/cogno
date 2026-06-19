@@ -96,6 +96,15 @@ async fn build_cardano_idp(
 		);
 		return empty;
 	}
+	// ⚠ KNOWN RESIDUAL (tip→matches TOCTOU): the tip check and the /matches read below are two separate
+	// Kupo calls. If THIS node's Kupo rolls its index back below `ref_slot` in the millisecond window
+	// between them (a Kupo restart / full re-sync — NOT a Cardano rollback: `ref_slot` is ≥ the stability
+	// window old, i.e. immutable history a follower never rewinds), the /matches read could return a
+	// PARTIAL set, yielding a partial observation that imports as a FALSE fatal `Mismatch` instead of the
+	// intended `CannotVerify`. Effect is bounded: a single rejected block on THAT importer that the next
+	// healthy author re-proposes (a liveness hiccup, never a fork or a safety break), and it self-heals on
+	// the next block. Left as a documented residual rather than paying a second round-trip (a re-check of
+	// the tip AFTER the matches read) on the block-production hot path; revisit only if it ever manifests.
 	// 5. read this node's own Kupo as-of the reference + reduce (fail-closed on any read error).
 	match fetch_kupo_matches(&kupo, &vault_hex, ref_slot).await {
 		Ok(matches) => {

@@ -13,7 +13,7 @@
 //! (the point-existence guard — a Kupo that has not indexed PAST the reference abstains rather than
 //! returning a partial set) then [`fetch_kupo_matches`] (the as-of-reference read).
 
-use codec::Decode;
+use codec::{Decode, Encode};
 use pallet_cardano_observer::{
 	BeaconName, CardanoObservation, CardanoRef, InherentError, INHERENT_IDENTIFIER,
 };
@@ -134,14 +134,93 @@ pub fn observe_as_of(
 	largest.into_iter().collect()
 }
 
-/// Build the full observation (reference + canonical entries) from Kupo matches.
+/// PURE: the PRE-REDUCTION structural candidate set — every vault UTxO the as-of reduction CONSUMES,
+/// before the time-filter / largest-wins fold. The canonical SCALE encoding of this sorted set is the
+/// input-commitment PRE-IMAGE; its `blake2_256` is the [`inputs_commitment`] (the partner-chains
+/// `selection_inputs_hash` analog) the runtime's `check_inherent` uses to tell a data fork (`Mismatch`)
+/// apart from a reduction divergence (`ComputeDiverged`). Rust port of `candidates` (observation.mjs): a
+/// UTxO is a candidate iff it holds EXACTLY ONE vault-policy asset at qty 1, a 32-byte beacon, a present
+/// `created_at.slot_no`, and a parseable `coins` — the SAME structural gate [`observe_as_of`] applies
+/// before its time/largest-wins reduction. Carries RAW `(beacon, created, spent, coins)`; NO time filter,
+/// NO largest-wins. The derived `Ord` sort (beacon bytes, created, spent with `None` < `Some`, coins)
+/// matches the JS comparator exactly, so the SCALE bytes are byte-identical cross-language.
+pub fn candidate_tuples(
+	matches: &[serde_json::Value],
+	vault_hash: &str,
+) -> Vec<(BeaconName, u64, Option<u64>, u128)> {
+	let vh = vault_hash.to_lowercase();
+	let mut out: Vec<(BeaconName, u64, Option<u64>, u128)> = Vec::new();
+	for m in matches {
+		let value = match m.get("value") {
+			Some(v) => v,
+			None => continue,
+		};
+		// Exactly one beacon under the vault policy at qty 1 (same structural gate as observe_as_of).
+		let mut beacon: Option<BeaconName> = None;
+		let mut vault_assets = 0u32;
+		if let Some(assets) = value.get("assets").and_then(|a| a.as_object()) {
+			for (key, qty) in assets {
+				let policy = key.split('.').next().unwrap_or("").to_lowercase();
+				if policy == vh {
+					vault_assets += 1;
+					if as_u64(qty) == Some(1) {
+						beacon = key.splitn(2, '.').nth(1).and_then(hex32);
+					}
+				}
+			}
+		}
+		if vault_assets != 1 {
+			continue;
+		}
+		let beacon = match beacon {
+			Some(b) => b,
+			None => continue,
+		};
+		// created present (fail closed: a UTxO we can't place in time is not an input); coins parseable.
+		let created = match m.get("created_at").and_then(|c| c.get("slot_no")).and_then(as_u64) {
+			Some(c) => c,
+			None => continue,
+		};
+		let coins = match value.get("coins").and_then(as_u128) {
+			Some(c) => c,
+			None => continue,
+		};
+		let spent = m.get("spent_at").and_then(|s| s.get("slot_no")).and_then(as_u64);
+		out.push((beacon, created, spent, coins));
+	}
+	// Derived Ord on the tuple: beacon (lexicographic ≡ byte order), created, spent (None < Some), coins —
+	// the SAME total order `candidates` sorts by in observation.mjs.
+	out.sort();
+	out
+}
+
+/// PURE: the canonical SCALE encoding of the sorted candidate set — the input-commitment PRE-IMAGE.
+/// `Vec<([u8;32], u64, Option<u64>, u128)>::encode()` is byte-identical to `candidateBytes`
+/// (observation.mjs): a SCALE-compact length ++ per candidate 32 beacon bytes ++ u64 LE created ++
+/// Option<u64> spent (`0x00` None / `0x01` ++ u64 LE Some) ++ u128 LE coins.
+pub fn candidate_bytes(matches: &[serde_json::Value], vault_hash: &str) -> Vec<u8> {
+	candidate_tuples(matches, vault_hash).encode()
+}
+
+/// PURE: the input commitment = `blake2_256` of the candidate pre-image (the partner-chains
+/// `selection_inputs_hash` analog). Carried in the inherent so `check_inherent` can distinguish "saw
+/// different Cardano data" (`Mismatch`) from "reduced the same data differently" (`ComputeDiverged`).
+pub fn inputs_commitment(matches: &[serde_json::Value], vault_hash: &str) -> [u8; 32] {
+	sp_core::hashing::blake2_256(&candidate_bytes(matches, vault_hash))
+}
+
+/// Build the full observation (reference + input commitment + canonical entries) from Kupo matches.
 pub fn build_observation(
 	reference: CardanoRef,
 	matches: &[serde_json::Value],
 	vault_hash: &str,
 ) -> CardanoObservation {
 	let slot = reference.slot;
-	CardanoObservation { reference, entries: observe_as_of(matches, vault_hash, slot) }
+	CardanoObservation {
+		reference,
+		inputs_commitment: inputs_commitment(matches, vault_hash),
+		entries: observe_as_of(matches, vault_hash, slot),
+	}
 }
 
 /// Lowercase-hex encode bytes (the vault policy id → the Kupo `/matches/{policy}.*` pattern).
@@ -265,14 +344,22 @@ impl InherentDataProvider for CardanoObservationInherentDataProvider {
 		if *identifier != INHERENT_IDENTIFIER {
 			return None;
 		}
-		// THE load-bearing rule (design §6): branch on the runtime's typed error. A Mismatch is
-		// PROPAGATED (Some(Err) ⇒ block rejected); a CannotVerify is SWALLOWED (Some(Ok) ⇒ accept
-		// without verifying — never fork because OUR follower lags). A blanket swallow would silently
-		// defeat the entire cross-node fork-protection.
+		// THE load-bearing rule (design §6): branch on the runtime's typed error. Mismatch and
+		// ComputeDiverged are PROPAGATED (Some(Err) ⇒ block rejected — both are real disagreements on the
+		// verified read); a CannotVerify is SWALLOWED (Some(Ok) ⇒ accept without verifying — never fork
+		// because OUR follower lags). A blanket swallow would silently defeat the entire cross-node
+		// fork-protection. The Mismatch/ComputeDiverged split is diagnostic: ComputeDiverged means the two
+		// nodes agreed on the raw Cardano inputs but reduced them differently — a determinism bug / binary
+		// version skew, the silent-fork risk an enforced multi-producer network most fears.
 		match InherentError::decode(&mut &error[..]) {
 			Ok(InherentError::Mismatch) => Some(Err(sp_inherents::Error::Application(
 				Box::<dyn core::error::Error + Send + Sync>::from(
-					"cardano observation mismatch: the author's read disagrees with this node's",
+					"cardano observation mismatch: the author's read disagrees with this node's (different Cardano data)",
+				),
+			))),
+			Ok(InherentError::ComputeDiverged) => Some(Err(sp_inherents::Error::Application(
+				Box::<dyn core::error::Error + Send + Sync>::from(
+					"cardano observation compute-divergence: same raw Cardano inputs, different reduced observation (a determinism bug / version skew)",
 				),
 			))),
 			Ok(InherentError::CannotVerify) => Some(Ok(())),
@@ -402,7 +489,9 @@ mod tests {
 		let idp = CardanoObservationInherentDataProvider { observation: None };
 		let mismatch = InherentError::Mismatch.encode();
 		let cannot = InherentError::CannotVerify.encode();
-		// Mismatch ⇒ Some(Err) (propagate → reject); CannotVerify ⇒ Some(Ok) (accept without verifying).
+		let diverged = InherentError::ComputeDiverged.encode();
+		// Mismatch ⇒ Some(Err) (propagate → reject); CannotVerify ⇒ Some(Ok) (accept without verifying);
+		// ComputeDiverged ⇒ Some(Err) (propagate → reject, like Mismatch but a distinct diagnostic).
 		assert!(matches!(
 			futures::executor::block_on(idp.try_handle_error(&INHERENT_IDENTIFIER, &mismatch)),
 			Some(Err(_))
@@ -411,8 +500,94 @@ mod tests {
 			futures::executor::block_on(idp.try_handle_error(&INHERENT_IDENTIFIER, &cannot)),
 			Some(Ok(()))
 		));
+		assert!(matches!(
+			futures::executor::block_on(idp.try_handle_error(&INHERENT_IDENTIFIER, &diverged)),
+			Some(Err(_))
+		));
 		// A different identifier is not ours ⇒ None.
 		assert!(futures::executor::block_on(idp.try_handle_error(b"timstap0", &mismatch)).is_none());
+	}
+
+	/// Rust↔JS observation determinism EQUIVALENCE regression — the Rust leg (mirrors Midnight's
+	/// primitives/mainchain-follower/tests/cnight_equivalence.rs cross-implementation equality test).
+	///
+	/// Loads the committed golden fixture (`services/_shared/fixtures/observation-equivalence.json`,
+	/// generated by `gen-equivalence-fixtures.mjs` from the canonical `observation.mjs` spec) and, for
+	/// each case, re-derives `observe_as_of` and SCALE-encodes the canonical `(reference_slot, entries)`
+	/// structure, asserting it equals the JS-produced golden BYTE-FOR-BYTE. The JS leg
+	/// (`observation-equivalence.test.mjs`) re-derives the same golden. Because both languages assert
+	/// against the one committed golden, a Rust↔JS divergence (a different reduction, sort, or encoding)
+	/// fails one of the two suites — the determinism a consensus inherent rests on (a divergence here is a
+	/// chain FORK). The SCALE encoding of `(u64, Vec<([u8;32], u128)>)` is `u64` LE ++ compact-len ++ per
+	/// entry `[u8;32]` ++ `u128` LE — exactly what `canonicalBytes` in observation.mjs emits.
+	#[test]
+	fn rust_matches_js_observation_equivalence_fixture() {
+		use codec::Encode;
+		let path = concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/../services/_shared/fixtures/observation-equivalence.json"
+		);
+		let text = std::fs::read_to_string(path)
+			.unwrap_or_else(|e| panic!("read equivalence fixture {path}: {e}"));
+		let fixture: serde_json::Value =
+			serde_json::from_str(&text).expect("parse equivalence fixture JSON");
+		let cases = fixture.get("cases").and_then(|c| c.as_array()).expect("fixture.cases is an array");
+		assert!(!cases.is_empty(), "equivalence fixture must have at least one case");
+
+		for case in cases {
+			let name = case.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+			let vault = case.get("vaultHash").and_then(|v| v.as_str()).expect("vaultHash");
+			let reference_slot =
+				as_u64(case.get("referenceSlot").expect("referenceSlot")).expect("referenceSlot u64");
+			let matches: Vec<serde_json::Value> =
+				case.get("matches").and_then(|m| m.as_array()).cloned().expect("matches array");
+
+			let entries = observe_as_of(&matches, vault, reference_slot);
+
+			// 1. the reduced entries match the golden, value-for-value, in the canonical (ascending-by-
+			//    beacon-bytes) order BTreeMap yields — the same order observeAsOf+sort yields in JS.
+			let expected_entries =
+				case.get("expectedEntries").and_then(|e| e.as_array()).expect("expectedEntries");
+			assert_eq!(
+				entries.len(),
+				expected_entries.len(),
+				"case {name}: observed entry count diverges from the JS golden",
+			);
+			for ((beacon, lovelace), exp) in entries.iter().zip(expected_entries) {
+				let exp = exp.as_array().expect("expectedEntries entry is [hex, lovelaceString]");
+				let exp_hex = exp[0].as_str().expect("beacon hex");
+				let exp_lovelace: u128 = exp[1].as_str().expect("lovelace string").parse().expect("u128");
+				assert_eq!(hex_encode(beacon), exp_hex, "case {name}: beacon diverges from the JS golden");
+				assert_eq!(*lovelace, exp_lovelace, "case {name}: lovelace diverges from the JS golden");
+			}
+
+			// 2. THE HEADLINE: the canonical SCALE bytes equal the JS observation.mjs golden byte-for-byte.
+			let canonical = (reference_slot, entries).encode();
+			let got = hex_encode(&canonical);
+			let expected = case
+				.get("expectedCanonicalHex")
+				.and_then(|v| v.as_str())
+				.expect("expectedCanonicalHex");
+			assert_eq!(
+				got, expected,
+				"case {name}: Rust canonical SCALE bytes DIVERGE from the JS observation.mjs golden — a \
+				 cross-node determinism fork (regenerate the fixture only on a deliberate observation.mjs \
+				 change, then port it here)",
+			);
+
+			// 3. the input-commitment PRE-IMAGE bytes equal the JS golden — so blake2_256 of them (the
+			//    inputs_commitment carried in the inherent) is identical cross-node. A divergence here would
+			//    make the Mismatch/ComputeDiverged taxonomy misfire under binary version skew.
+			let got_cand = hex_encode(&candidate_bytes(&matches, vault));
+			let expected_cand = case
+				.get("expectedCandidateHex")
+				.and_then(|v| v.as_str())
+				.expect("expectedCandidateHex");
+			assert_eq!(
+				got_cand, expected_cand,
+				"case {name}: Rust candidate pre-image bytes DIVERGE from the JS candidateBytes golden",
+			);
+		}
 	}
 
 	#[test]
@@ -420,6 +595,7 @@ mod tests {
 		// Some(obs) ⇒ data is put under our identifier; None ⇒ nothing (fail-closed author abstains).
 		let obs = CardanoObservation {
 			reference: CardanoRef { slot: 1_000, block_hash: [0u8; 32] },
+			inputs_commitment: [0u8; 32],
 			entries: vec![(beacon(A), 200_000_000)],
 		};
 		let with = CardanoObservationInherentDataProvider { observation: Some(obs) };
