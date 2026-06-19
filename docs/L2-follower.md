@@ -650,10 +650,13 @@ prove key-control (so Mithril is irrelevant to identity).
   gated extrinsic, with a **committed payload** ({ sr25519 + L3 genesis hash + nonce })
   and a **whole-Address match** (recovered signing Address == `datum.owner`). Lowest
   effort, matches `PLAN.md` M2, and already PREVENTS bind-hijack.
-- **Deferred D1 (not gated on L3):** move to the **on-chain `ed25519_verify`
-  self-proof** (same committed payload, same whole-Address match, re-checked by every
-  node) — the one identity trust reduction that removes the operator from the
-  identity-correctness path; ship it only behind the §7.2 verifier audit.
+- **D1 — DONE (spec 108):** the on-chain `ed25519_verify` self-proof
+  (`cognoGate.link_identity_signed`, `pallet_cogno_gate::cip8`) **replaces** the trusted
+  off-chain bind — the runtime verifies the wallet signature, removing the operator from
+  the identity-correctness path entirely. The trusted `link_identity` is removed; the
+  follower is now a read-only helper; `FollowerOrigin` gates only `revoke` (a permanent
+  tombstone). Shipped **enabled on testnet**, labelled `MAINNET PREREQUISITE` (the §7.2
+  verifier audit is still owed). See **[`TRUSTLESS-IDENTITY.md`](TRUSTLESS-IDENTITY.md)**.
 
 ### 7.4 The binding-key gotcha is now STRUCTURALLY CLOSED (RESOLVED, DR-01/DR-02)
 
