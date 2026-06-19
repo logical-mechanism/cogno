@@ -57,6 +57,126 @@ def weights_by_identity(matches: list, policy_id_hex: str, min_lock: int = 100_0
     return {b: weight_for_lock(c, min_lock) for b, c in largest.items()}
 
 
+# ── DETERMINISTIC as-of-reference observation (in-protocol-observation step 2 / D4) ─────────────────
+# The Python mirror of services/_shared/observation.mjs. The SAME pure logic the off-chain reader, the
+# in-node InherentDataProvider, and (eventually) the Rust runtime all run BYTE-IDENTICALLY — proven by
+# the cross-language canonical-bytes vector in test_vault.py. See docs/IN-PROTOCOL-OBSERVATION.md §5.
+#
+# Key difference vs weights_by_identity (which reads "unspent now" + applies the floor): observe_as_of
+# reads AS-OF a FIXED reference slot — created ≤ ref AND (spent is None OR spent.slot > ref) — so a UTxO
+# spent AFTER the reference is still counted as locked-at-ref (the bug `?unspent` would introduce). It
+# returns the RAW largest lovelace per beacon (the observed STATE); the MIN_LOCK floor (weight_for_lock)
+# is applied downstream at weight-application, not here.
+
+def cardano_reference_slot(unix_seconds, shelley_start_unix, shelley_start_slot,
+                           stability_slots, slot_length_ms: int = 1000):
+    """PURE + FAIL-CLOSED: the Cardano slot to observe AS-OF = Shelley-anchored slot at `unix_seconds`
+    minus the stability window. Returns an int slot, or None on a degenerate input (pre-Shelley /
+    wrong-network / underflow) ⇒ the caller emits the EMPTY observation. Guards BEFORE subtracting so a
+    pre-Shelley time can never produce a wrong slot (mirrors the wasm overflow-checks-off guard in Rust).
+    Only 1 s Shelley slots; the anchor is the Shelley start, NOT Byron systemStart (§5.2)."""
+    if int(slot_length_ms) != 1000:
+        raise ValueError(f"cardano_reference_slot supports only 1 s Shelley slots (got {slot_length_ms})")
+    t, t0, s0, w = int(unix_seconds), int(shelley_start_unix), int(shelley_start_slot), int(stability_slots)
+    if w < 0:
+        raise ValueError("stability_slots must be >= 0")
+    if t < t0:
+        return None  # before the Shelley anchor ⇒ no valid slot (fail closed)
+    reference = (s0 + (t - t0)) - w
+    if reference < s0:
+        return None  # window larger than elapsed Shelley slots ⇒ fail closed
+    return reference
+
+
+def observe_as_of(matches: list, policy_id_hex: str, reference_slot, reasons: dict | None = None) -> dict:
+    """`beacon_name_hex -> raw largest lovelace` AS-OF `reference_slot`, LARGEST-WINS per identity (never
+    sum). A match counts only if it carries exactly one vault-policy beacon at qty 1, positive lovelace,
+    was created ≤ ref, and is unspent as-of ref. Pass `reasons` (a dict) to capture why each skipped UTxO
+    was rejected (only surfaced if that beacon was not credited by another UTxO)."""
+    if reference_slot is None:
+        return {}
+    ref = int(reference_slot)
+    ph = policy_id_hex.lower()
+    largest: dict[str, int] = {}
+    rejected: list = []
+
+    def utxo_id(m, fb):
+        return f"{m.get('transaction_id', fb)}#{m.get('output_index', 0)}"
+
+    for m in matches:
+        value = m.get("value", {}) or {}
+        assets = value.get("assets", {}) or {}
+        beacons = [(k.split(".", 1)[1], int(q)) for k, q in assets.items()
+                   if k.split(".", 1)[0].lower() == ph]
+        if len(beacons) != 1 or beacons[0][1] != 1:
+            rejected.append((utxo_id(m, str(assets)), None,
+                             f"not exactly one beacon at qty 1 ({len(beacons)} vault asset(s))"))
+            continue
+        beacon = beacons[0][0].lower()
+        created = (m.get("created_at") or {}).get("slot_no")
+        if created is None:
+            rejected.append((utxo_id(m, beacon), beacon, "no created_at.slot_no (fail closed)"))
+            continue
+        if int(created) > ref:
+            rejected.append((utxo_id(m, beacon), beacon, f"created at slot {created} > reference {ref} (too fresh)"))
+            continue
+        spent = (m.get("spent_at") or {}).get("slot_no") if m.get("spent_at") else None
+        if spent is not None and int(spent) <= ref:
+            rejected.append((utxo_id(m, beacon), beacon, f"spent at slot {spent} <= reference {ref} (not locked as-of ref)"))
+            continue
+        coins = int(value.get("coins", 0))
+        if coins <= 0:
+            rejected.append((utxo_id(m, beacon), beacon, "zero/negative lovelace (swept UTxO not credited)"))
+            continue
+        if coins > largest.get(beacon, 0):  # strict: equal-lovelace dups collapse to one value-identical entry
+            largest[beacon] = coins
+
+    if reasons is not None:
+        for uid, beacon, why in rejected:
+            if beacon and beacon in largest:
+                continue  # credited by another UTxO ⇒ not a real rejection
+            reasons[uid] = f"{beacon[:16]}…: {why}" if beacon else why
+    return largest
+
+
+def _compact(n: int) -> bytes:
+    """SCALE compact integer (single / two-byte / four-byte modes — enough for any real vault set)."""
+    v = int(n)
+    if v < 0:
+        raise ValueError("compact length must be >= 0")
+    if v < 64:
+        return bytes([v << 2])
+    if v < 16384:
+        return ((v << 2) | 0b01).to_bytes(2, "little")
+    if v < 1073741824:
+        return ((v << 2) | 0b10).to_bytes(4, "little")
+    raise ValueError("compact length too large for this encoder")
+
+
+def canonical_bytes(reference_slot, observed) -> bytes:
+    """PURE: the canonical SCALE-compatible byte layout two independent reads must agree on (the
+    determinism WITNESS). ObservedVault { reference_slot: u64 LE, entries: Vec<([u8;32], u128 LE)> },
+    entries sorted ascending by the 32 raw beacon bytes (≡ lowercased-hex order). `observed` is a dict
+    `{beacon_hex: lovelace}` or a list of `(beacon_hex, lovelace)`. Byte-identical to canonicalBytes() in
+    services/_shared/observation.mjs (cross-checked in test_vault.py)."""
+    items = list(observed.items()) if isinstance(observed, dict) else list(observed)
+    entries = sorted(((h.lower(), int(v)) for h, v in items), key=lambda e: e[0])
+    out = bytearray()
+    out += int(reference_slot).to_bytes(8, "little")          # reference_slot: u64
+    out += _compact(len(entries))                              # Vec length
+    for h, v in entries:
+        b = bytes.fromhex(h)
+        if len(b) != 32:
+            raise ValueError(f"beacon must be 32 bytes (got {len(b)} from '{h}')")
+        out += b                                               # 32 raw beacon bytes
+        out += int(v).to_bytes(16, "little")                   # lovelace: u128
+    return bytes(out)
+
+
+def canonical_hex(reference_slot, observed) -> str:
+    return canonical_bytes(reference_slot, observed).hex()
+
+
 # ── live wiring (needs a SYNCED cardano-node + Kupo — the M2d external dependency) ─────────────
 
 def query_kupo(kupo_url: str, policy_id_hex: str) -> list:
