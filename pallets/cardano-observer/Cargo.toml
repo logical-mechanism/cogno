@@ -1,0 +1,48 @@
+[package]
+name = "pallet-cardano-observer"
+description = "cogno-chain cardano-observer pallet (in-protocol-observation, D4 weight rung) — sets talk-stake weight from a consensus-verified Substrate INHERENT carrying the deterministically-observed Cardano talk_vault state, replacing the trusted off-chain set_stake write. See docs/IN-PROTOCOL-OBSERVATION.md."
+version = "0.1.0"
+license = "Unlicense"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lints]
+workspace = true
+
+[dependencies]
+codec = { features = ["derive"], workspace = true }
+frame-support = { workspace = true }
+frame-system = { workspace = true }
+log = { workspace = true }
+scale-info = { features = ["derive"], workspace = true }
+sp-inherents = { workspace = true }
+
+[dev-dependencies]
+sp-core = { default-features = true, workspace = true }
+sp-io = { default-features = true, workspace = true }
+sp-runtime = { default-features = true, workspace = true }
+
+[features]
+default = ["std"]
+std = [
+	"codec/std",
+	"frame-support/std",
+	"frame-system/std",
+	"log/std",
+	"scale-info/std",
+	"sp-inherents/std",
+]
+runtime-benchmarks = [
+	"frame-support/runtime-benchmarks",
+	"frame-system/runtime-benchmarks",
+]
+try-runtime = [
+	"frame-support/try-runtime",
+	"frame-system/try-runtime",
+]
