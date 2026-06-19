@@ -1,10 +1,14 @@
 # cogno-chain — In-Protocol Deterministic Observation of Cardano (the D4 weight rung)
 
-> **Status: DESIGN — for review. No runtime code is written yet.**
-> Branch `in-protocol-observation` off `main` @170fb3c. This doc completes step 1 of the
-> initiative (explore + design); steps 2–5 (the deterministic observation library, the inherent
-> provider, inherent verification + weight application, and the deferred Ariadne committee) begin
-> only after this design is approved.
+> **Status: IMPLEMENTED IN SHADOW (default-off enforcement) — proven live against preprod.**
+> Branch `in-protocol-observation` off `main` @170fb3c. The design (this doc) is approved and built
+> through **step 4**: the deterministic observation library (step 2), the `ProvideInherent` pallet +
+> node IDP (step 3), and the shadow-validation layer (step 4: a default-off enforce/shadow flag, the
+> shadow-diff observability tool, and the Kupo point-existence guard). The inherent runs **every block,
+> verified cross-node**, but `EnforceWeight` defaults to `false` so it only PROJECTS weight — the trusted
+> committee `set_stake` path still drives `AllowedStake`. **Cutover** (enforce = sole writer) is gated on
+> ≥3 independent producers and is the only remaining step; until then this is **D4-SHAPED, not D4-TRUST**
+> (§2). See **§14** for the landed-state summary + live evidence.
 
 > **One sentence.** Today the Cardano→chain *weight* path is a **trusted off-chain oracle** (the
 > follower reads the `talk_vault` UTxO set and *injects* the result via a privileged
@@ -432,7 +436,7 @@ After applying the consensus filters, encode the observed state deterministicall
 |---|---|---|
 | **Live tip** (`?unspent` + `ogmiosTipSlot`) | each node's tip differs | reference = f(parent block), §5.1; **delete `ogmiosTipSlot` from the enforced path** |
 | **`?unspent` = "unspent now"** | depends on tip | reconstruct unspent **as-of reference_slot**: query `?created_before={ref}` **alone**, then apply `created≤ref AND (spent==null OR spent>ref)` **client-side** (Kupo's `created_before`/`spent_before` are both upper bounds and **cannot be combined**; `?unspent` would wrongly drop UTxOs spent *after* ref) |
-| **Rollbacks behind the read** | a fork changes recent UTxOs | reference is ≥36 h back (past max rollback); use Kupo's `slot.headerhash` point-existence so a forked instance **fails the read → abstains** rather than returning a wrong set |
+| **Rollbacks behind the read** | a fork changes recent UTxOs | reference is ≥36 h back (past max rollback); **tip-freshness guard** — the node reads Kupo `/checkpoints` and abstains when its most-recent indexed slot is **behind the reference** (a behind/forked instance returns a partial set ⇒ this turns it into a non-fatal `CannotVerify` defer, not a false fatal `Mismatch`). Compare the **tip slot vs the reference**, NOT a header *at* the reference (≈95 % of slots are empty under f=0.05). The tip header hash rides in `CardanoRef.block_hash` as a node-local diagnostic, never consensus-compared (`check_inherent` compares slot + entries only). **LANDED step 4c** (`node/src/cardano_observer.rs::fetch_kupo_tip`). |
 | **Result ordering** | server/version/insertion order | canonical sort by beacon bytes; never hash wire order |
 | **Excluded fields drift** (datum/script/address/output_index/other assets) | Kupo represents these differently across versions | **exclude all of them from the encoding**; hash only `(beacon, coins)` (§5.3 rule 5) |
 | **Kupo `--prune-utxo`** | pruned spent UTxO loses `spent_at` ⇒ the client-side `spent>ref` predicate is uncomputable | **mandate Kupo without `--prune-utxo`** (hard operator requirement) |
@@ -601,7 +605,7 @@ determinism test + reference-slot wrap/Shelley-anchor/wrong-network edges; `test
 `shared` (78) / `relayer` (63) / `beacon` (6) / `http` (23) suites unchanged. CI gains
 `node services/_shared/observation.test.mjs`. **No spec bump** (off-chain only).
 
-**Step 2 — Inherent provider, shadow / non-enforcing.**
+**Step 2 — Inherent provider, shadow / non-enforcing. ✅ LANDED (commits step 3a–3c + 4a–4c; see §14).**
 Add `pallet-cardano-observer` @16 with `create_inherent` + the node-side IDP wired into both `service.rs`
 closures. **Gate so the inherent is emitted + `check_inherent`-verified but its *application* is a no-op
 (write-behind-flag)**; the committee `set_stake` still drives weight. Emit a metric diffing the
@@ -612,8 +616,15 @@ digest into the `verify-m4c` recompute gate; **spec bump 107→108 + PAPI regen*
 (`rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`);
 `transaction_version` stays 2 (inherents are not signed txs).
 
-**Step 3 — Verification + application (cutover).**
-Flip the flag: the Mandatory dispatchable becomes the **sole** weight writer (monotonicity +
+**Step 3 — Verification + application (cutover). ⏳ GATED — the mechanism is built, the flip is not done.**
+The default-off `EnforceWeight` flag + the `set_enforcement` cutover control are LANDED (step 4a); flipping
+it is the cutover. ⚠ The cutover is **NOT a pure flag flip for weight already on-chain**: in shadow the
+inherent's `LastObserved` clamp baseline tracks only what *it* observed, so an account the committee
+credited but the inherent never saw (its Kupo lagging at flip time, or a beacon it skipped) would be
+**stale and un-clampable** after the flip. So the cutover procedure is: (1) ≥3 independent producers each
+running their own Kupo; (2) **stop the committee weight-sync**; (3) **reconcile** — drain/zero any
+`AllowedStake` key not in the inherent's `ShadowStake` projection (so the keysets match); (4) THEN
+`set_enforcement(true)`. Flip the flag: the Mandatory dispatchable becomes the **sole** weight writer (monotonicity +
 `MaxStakeWeight` + capacity priming atomic); `is_inherent` keeps it off the tx pool; the committee-gated
 `set_stake` is retired to dev-only / break-glass. *Delivers:* weight is now a consensus-verified output.
 **Cutover gate:** co-sequence with ≥3 genuinely independent producers (§2); until then keep step 3
@@ -683,8 +694,14 @@ Consistent with the repo's grep-enforced honest posture ("usable ≠ trustless /
    §4.4.)
 6. **Mismatch vs can't-check.** *Default (non-negotiable):* mismatch → fatal reject; can't-check → accept/
    defer. Reversing this splits the chain on a slow node (§6).
-7. **Forked/non-canonical Kupo answer.** *Default:* use Kupo's `slot.headerhash` point-existence check so
-   a forked instance fails the read and the node abstains, rather than returning a wrong set.
+7. **Forked/non-canonical Kupo answer.** *Default (LANDED, step 4c):* a **tip-freshness** guard — the node
+   reads Kupo `/checkpoints` and abstains (emits the empty observation → `CannotVerify`) when its
+   most-recent indexed **tip slot is behind the reference**, so a behind/forked Kupo defers rather than
+   returns a partial set that would trigger a false fatal `Mismatch`. Compare the **tip slot vs the
+   reference**, never a header hash *at* the reference (most Cardano slots are empty, so the reference
+   usually has no block of its own). The tip header hash is carried in `CardanoRef.block_hash` as a
+   node-LOCAL diagnostic only — `check_inherent` compares `reference.slot` + `entries`, never `block_hash`
+   (it varies by Kupo config/sync position; comparing it would spuriously fork two honest nodes).
 8. **Capacity priming.** *Default:* set weight + prime capacity atomically in the one Mandatory
    dispatchable (removes the separate `force_set_capacity` write; preserves the §6.1 invariants).
 9. **`MaxStakeWeight` over-bound.** *Default:* **skip the single offending entry** (never reject the
@@ -727,3 +744,69 @@ pattern; `CARDANO_SECURITY_PARAMETER` (k=2160) + `BLOCK_STABILITY_MARGIN`; Ariad
 IOG partner-chains repo was **archived ~2026-04 and folded into Midnight** — study as a template, do not
 depend on it (DR-26). Kupo point-in-time / `created_at`/`spent_at` semantics:
 <https://github.com/CardanoSolutions/kupo>.
+
+---
+
+## 14. Implementation status (what actually landed)
+
+The initiative is **built through step 4 and proven live against preprod**, running in **shadow** behind a
+default-off enforcement flag. spec_version **108** (unreleased — see below); `transaction_version` stays 2.
+
+### 14.1 The pieces (commits on `in-protocol-observation`)
+- **Step 2 — deterministic library:** `services/_shared/observation.mjs` + the Python mirror
+  `services/cogno-follower/vault.py` (`observeAsOf` / `cardanoReferenceSlot`), byte-identical across JS≡Python.
+- **Step 3 — the inherent path:** `pallets/cardano-observer` @16 (`ProvideInherent`: `create_inherent` /
+  `check_inherent` / the Mandatory `observe` dispatchable) + `node/src/cardano_observer.rs` (the Rust port +
+  async Kupo IO) wired into both `service.rs` CIDP closures, reference = f(parent Aura slot); the
+  `CardanoObserverApi` runtime API is the no-drift config source (anchors, stability window, vault policy id).
+- **Step 4a — enforce/shadow flag:** `EnforceWeight: bool` (default `false` = shadow). `observe` reads the
+  mode once and gates **both** `WeightSink::set_weight` sites (credit + unlock clamp) under it; the
+  projection, `LastObserved`/`LastReference`, the monotonicity + stability `ensure!`s, and the event are
+  **unconditional**. A new account-keyed `ShadowStake: StorageMap<AccountId, u128>` records the inherent's
+  per-account projection EVERY block (mirrors `AllowedStake`'s insert-0-on-unlock-never-delete shape) so it
+  is diffable even in shadow and clamped accounts stay visible as 0. `set_enforcement(enabled)` @
+  `call_index(1)` (NOT an inherent) is gated by `EnforceOrigin = AuthorityOrigin` (root OR 3-of-5 committee).
+  `ObservationApplied` gained `skipped` (over-cap entries) + `enforced`.
+- **Step 4b — shadow-diff:** `services/committee/shadow-diff.mjs` — a **convergence** monitor (on-chain
+  `ShadowStake` vs `AllowedStake`) PLUS an independent **correctness** oracle (re-derive off-chain via
+  `observeAsOf` over the operator's own Kupo at the inherent's own reference slot, vs the on-chain
+  projection). Prometheus `:9102` + `deploy/monitoring` alerts: persistent committee-divergence (a streak,
+  not a transient) is a warning; **any** recompute disagreement is critical.
+- **Step 4c — point-existence guard:** `fetch_kupo_tip` (`/checkpoints`, max-slot, defensive parse); the IDP
+  abstains when its Kupo tip is behind the reference; `check_inherent` compares slot + entries only (§5.4 / OQ7).
+- **Step 4e — frontend:** PAPI descriptors regenerated for spec 108 (the observer pallet).
+
+### 14.2 Honest framing (corrects two over-statements)
+- **Shadow ≠ zero consensus risk.** Shadow removes the **weight-application** risk only. `observe` is
+  `Mandatory`, so a divergent author read (`check_inherent` → fatal `Mismatch`) or a non-monotone / too-fresh
+  reference still **invalidates the block in shadow exactly as in enforce** — the `ensure!`s and
+  `check_inherent` run flag-independently. What shadow buys is that the committee, not the inherent, owns
+  `AllowedStake` until cutover.
+- **Convergence ≠ correctness.** The committee leg of the shadow-diff is **eventual-consistency**: the two
+  writers are asynchronous (committee sync lags the every-block inherent; the clamp lags the full stability
+  window), so a momentary disagreement is EXPECTED at every lock/unlock. Only a **persistent** streak, or
+  **any** independent-recompute disagreement, is a real signal. Committee-vs-inherent agreement is **not**
+  proof of trustlessness — on a single producer there is no independent verifier (§2/§6).
+
+### 14.3 spec 108 is UNRELEASED — fold, don't bump
+108 was introduced on this branch, is **not merged to `main`** (main is at 107), and runs on **no persistent
+shared network**, so step-4's additive storage/call/event changes **fold into 108** rather than forcing a
+109. The line past which a NEW spec becomes mandatory is the **first merge-to-main OR the first
+persistent/shared chain at 108**. The `CardanoObserverApi` runtime API is **unchanged** by step 4 (no
+`#[api_version]` bump). The live preprod `talk_vault` Aiken contract is untouched (no hash move).
+
+### 14.4 Live evidence (preprod, this branch)
+A persistent `--dev` node (spec 108, genesis `0x995be6cc…`) against live Kupo `:1442`, via
+`services/committee/obs-shadow-demo.mjs` (beacon `287a99d2…` / 100 ADA, bound `//Bob`):
+
+```
+[SHADOW]  ShadowStake[//Bob] = 100000000   ;  AllowedStake[//Bob] = 0   (inherent projects, does not apply)
+[ENFORCE] set_enforcement(true) → AllowedStake[//Bob] = 100000000        (the SAME inherent applies; credited=1)
+```
+and `shadow-diff.mjs` one-shot cross-confirmed all three legs agree at the live reference slot:
+**inherent projection == committee `AllowedStake` == independent Kupo recompute = 100000000.**
+
+### 14.5 What remains (the cutover — GATED, do not flip on a single operator)
+The default-off flag + the `set_enforcement` control + the reconciliation requirement are documented in §9
+step 3. Cutover is co-sequenced with ≥3 independent producers (the SPO/Ariadne graduation, §11) and is the
+ONLY remaining step. Until then: default shadow, committee still drives weight, **D4-SHAPED, not D4-TRUST.**
