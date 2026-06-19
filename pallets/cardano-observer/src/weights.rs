@@ -8,6 +8,7 @@ use frame_support::weights::Weight;
 
 pub trait WeightInfo {
 	fn observe(n: u32) -> Weight;
+	fn set_enforcement() -> Weight;
 }
 
 /// Placeholder: a fixed base + a per-observed-entry increment, with a couple of storage reads/writes
@@ -17,5 +18,9 @@ impl WeightInfo for () {
 		Weight::from_parts(10_000_000, 0)
 			.saturating_add(Weight::from_parts(2_000_000, 0).saturating_mul(n as u64))
 			.saturating_add(Weight::from_parts(0, 0))
+	}
+	/// A single storage write (`EnforceWeight`) + one event — a cheap, constant governance flip.
+	fn set_enforcement() -> Weight {
+		Weight::from_parts(10_000_000, 0)
 	}
 }

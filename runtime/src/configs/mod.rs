@@ -442,9 +442,12 @@ parameter_types! {
 /// weight from a consensus-verified Cardano observation INHERENT — every importing validator re-derives
 /// the read and rejects the block on mismatch — instead of the trusted off-chain `set_stake` write.
 ///
-/// ADDITIVE / SHADOW until cutover: with no node-side `InherentDataProvider` wired yet,
-/// `create_inherent` yields nothing and the pallet is inert; the committee `set_stake` path still drives
-/// weight (the old trusted path keeps working). The node IDP + the cutover are later steps.
+/// ADDITIVE / SHADOW until cutover: the node-side `InherentDataProvider` is wired (every block carries +
+/// `check_inherent`-verifies the Cardano read), but `EnforceWeight` defaults to `false` (shadow), so the
+/// verified observation is only PROJECTED into `cardanoObserver::ShadowStake` — it does not write
+/// `AllowedStake`. The committee `set_stake` path still drives weight; the off-chain shadow-diff
+/// (`services/committee/shadow-diff.mjs`) proves the two agree on real preprod data. Flipping
+/// `set_enforcement(true)` (the cutover) is gated on ≥3 independent producers (a later step).
 ///
 /// ⚠ MAINNET PREREQUISITE: `check_inherent`'s "every producer re-derives" is load-bearing only with
 /// MULTIPLE independent producers — on a single operator this is "D4-SHAPED, not D4-TRUST"; and every
@@ -463,6 +466,11 @@ impl pallet_cardano_observer::Config for Runtime {
 	type VaultPolicyId = ObsVaultPolicyId;
 	type BeaconResolver = BeaconLookup;
 	type WeightSink = WeightApply;
+	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee gates the enforce/shadow cutover flip — the same
+	// crown-jewel origin as set_stake/link_identity/anchor_ack. Default is SHADOW (EnforceWeight=false):
+	// the inherent verifies + projects but does not write weight; the committee set_stake stays the sole
+	// writer until the gated, multi-producer cutover (D4-SHAPED, IN-PROTOCOL-OBSERVATION.md §2/§9).
+	type EnforceOrigin = AuthorityOrigin;
 	// pallet-timestamp implements `UnixTime` — the block's consensus clock for the stability sanity bound.
 	type UnixTime = Timestamp;
 	type WeightInfo = ();

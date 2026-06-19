@@ -102,6 +102,8 @@ impl pallet_cardano_observer::Config for Test {
 	type VaultPolicyId = MockVaultPolicyId;
 	type BeaconResolver = MockBeacons;
 	type WeightSink = MockSink;
+	// Root-only in the mock (the runtime uses the 3-of-5 AuthorityOrigin); enough to exercise the gate.
+	type EnforceOrigin = frame_system::EnsureRoot<AccountId>;
 	type UnixTime = MockTime;
 	type WeightInfo = ();
 }
