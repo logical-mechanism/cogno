@@ -268,10 +268,13 @@ For a supervised, always-on deployment use the committed `systemd` units in [`de
 Start order: **indexer node → query** (the query service needs the schema the ingest node creates);
 the follower and relayer can start anytime the node WS is up.
 
-- **cogno-follower** (`:8090`, binds `127.0.0.1`) — the READ link. A Python CIP-8 verifier that turns
-  a wallet signature into the 1:1 identity binding, then observes the `talk_vault` UTxO and writes the
-  Cardano-sourced weight (its `link_identity` is submitted with `SUDO_SEED`). `CARDANO_NETWORK=testnet`
-  for preprod. Start: `./run.sh`.
+- **cogno-follower** (`:8090`, binds `127.0.0.1`) — a **read-only** HTTP helper for the identity gate
+  (it no longer writes the chain). Serves the exact CIP-8 bind payload to sign (`/nonce`), liveness
+  (`/health`), and Prometheus `/metrics`. Since D1, identity binding is the permissionless **on-chain**
+  self-proof `cognoGate.link_identity_signed` — the runtime verifies the wallet signature — optionally
+  fee-sponsored via the **sponsored-bind-relay** (`POST /bind` is retired → 410). Cardano-sourced weight
+  is driven separately by the 3-of-5 committee `set_stake` path. `CARDANO_NETWORK=testnet` for preprod.
+  Start: `./run.sh`.
 - **anchor-relayer** (no listen port; a polling writer) — the WRITE link. Every `ANCHOR_EVERY`
   finalized blocks it writes that block's finalized post-state root to a Cardano metadata tx, then
   `anchor_ack`s it back through the committee (`ANCHOR_VIA=committee`). It needs a **funded preprod

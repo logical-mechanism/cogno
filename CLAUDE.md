@@ -24,7 +24,7 @@ are scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA) |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 107 / tx_version 2**) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 109 / tx_version 2**) |
 | `pallets/` | `microblog` (10, posts + folded capacity), `talk-stake` (9, Cardano weight), `cogno-gate` (8, CIP-8 1:1 identity), `anchor` (12), `validator-set` (14) |
 | `contracts/` | the Aiken (Plutus V3) L1 `talk_vault` validator + `audits/` — **LIVE on preprod, see gotcha below** |
 | `app/` | Next.js 14 static-export frontend (PAPI + MeshJS). See [app/README.md](app/README.md) |

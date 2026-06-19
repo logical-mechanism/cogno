@@ -93,12 +93,14 @@ groups:
 
   - name: cogno-follower
     rules:
+      # D1: the follower is a read-only helper (binding is the on-chain self-proof), so these are
+      # warnings, not critical — a follower outage no longer blocks identity binding.
       - alert: FollowerDown
         expr: up{job="cogno-follower"} == 0
-        for: 2m
-        labels: { severity: critical }
+        for: 5m
+        labels: { severity: warning }
         annotations:
-          summary: "follower is down — new identity bindings cannot be written"
+          summary: "follower read-only helper is down (/nonce + /health unavailable; on-chain binding still works)"
 
       - alert: FollowerNodeUnreachable
         expr: cogno_follower_node_reachable == 0
@@ -108,11 +110,12 @@ groups:
           summary: "follower cannot reach the L3 node RPC"
 
       - alert: FollowerGenesisMismatch
-        # The node's genesis no longer matches what the follower pinned at boot (a chain re-spin) — every
-        # bind would be for the wrong chain. Restart the follower against the current chain.
+        # The node's genesis no longer matches what the follower pinned at boot (a chain re-spin), so the
+        # /nonce helper would hand out a wrong-chain bind payload (rejected on-chain as WrongGenesis).
+        # Restart the follower against the current chain.
         expr: cogno_follower_genesis_ok == 0
         for: 5m
-        labels: { severity: critical }
+        labels: { severity: warning }
         annotations:
           summary: "follower genesis mismatch — node was re-spun under the follower; restart it"
 
@@ -136,7 +139,7 @@ groups:
   - name: cogno-shadow-diff
     rules:
       - alert: ShadowDiffDown
-        # Optional component: only fires if you actually scrape it (a node carrying the spec-108 observer).
+        # Optional component: only fires if you actually scrape it (a node carrying the spec-109 observer).
         expr: up{job="cogno-shadow-diff"} == 0
         for: 10m
         labels: { severity: warning }

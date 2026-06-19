@@ -1,5 +1,5 @@
 // Live acceptance for the in-protocol-observation D4 shadow→enforce path (step 4d). Against the LIVE
-// preprod vault + a local node carrying the spec-108 cardanoObserver pallet, it proves:
+// preprod vault + a local node carrying the spec-109 cardanoObserver pallet, it proves:
 //   1. SHADOW (the default): the verified `observe` inherent records a per-account PROJECTION
 //      (`cardanoObserver.ShadowStake`) but does NOT write `talkStake.AllowedStake` — the committee
 //      stays the sole weight writer.
@@ -10,16 +10,16 @@
 // D4-SHAPED, NOT D4-TRUST (docs/IN-PROTOCOL-OBSERVATION.md §2/§6). Run it on a THROWAWAY local chain the
 // production committee does not also sync (else enforce mode and the committee fight over AllowedStake).
 //
-//   KUPO=http://127.0.0.1:1442 WS=ws://127.0.0.1:9944 node obs-shadow-demo.mjs [--account //Bob]
-import { encodeAddress } from "@polkadot/util-crypto";
+//   KUPO=http://127.0.0.1:1442 WS=ws://127.0.0.1:9944 node obs-shadow-demo.mjs
+//
+// The vault beacon must already be bound to an account via the trustless CIP-8 self-proof
+// (`cognoGate.link_identity_signed`) — D1 removed the operator/sudo bind, so this demo no longer binds.
 import { isMain } from "../_shared/cli.mjs";
 import { connect, drive, operators, fetchJson } from "./lib.mjs";
 import { pickLargest } from "./sync-weight.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
 const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
-
-const arg = (name, def) => { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : def; };
 
 // Subscribe to new heads and resolve when `predicate(blockNumber)` (async) returns truthy, or reject
 // after `maxBlocks` heads — the deterministic way to wait for the every-block inherent to land.
@@ -45,7 +45,7 @@ async function main() {
 	const spec = api.runtimeVersion.specVersion.toNumber();
 	console.log(`chain ${api.genesisHash.toHex().slice(0, 10)}… spec ${spec}`);
 	if (!api.query.cardanoObserver?.shadowStake)
-		throw new Error(`spec ${spec} has no cardanoObserver.shadowStake — needs the spec-108 observer`);
+		throw new Error(`spec ${spec} has no cardanoObserver.shadowStake — needs the cardanoObserver pallet (spec >= 109)`);
 
 	// 1. Resolve the LIVE vault beacon from this node's own Kupo (the consensus-pinned policy id from chain).
 	const vaultHex = api.consts.cardanoObserver.vaultPolicyId.toHex().replace(/^0x/, "");
@@ -55,19 +55,20 @@ async function main() {
 	const [beacon, lovelace] = [...largest][0];
 	console.log(`live vault: beacon ${beacon.slice(0, 12)}… = ${lovelace} lovelace (policy ${vaultHex.slice(0, 12)}…)`);
 
-	// 2. Bind the beacon → the demo account (sudo), unless already bound to it.
-	const acctUri = arg("--account", "//Bob");
-	const pair = ops.kr.addFromUri(acctUri);
-	const account = encodeAddress(pair.publicKey, 42);
+	// 2. Resolve the account the beacon is bound to. In the trustless world (D1) there is NO operator/sudo
+	//    bind: the beacon→account link is a CIP-8 self-proof SIGNED BY THE VAULT OWNER
+	//    (`cognoGate.link_identity_signed`), so this demo requires the beacon to be PRE-BOUND out-of-band
+	//    (the in-browser bind, the sponsored-bind relay, or app/scripts/d1-acceptance with the vault wallet).
 	const bound = await api.query.cognoGate.accountOf("0x" + beacon);
-	if (bound.isNone) {
-		console.log(`binding beacon → ${acctUri} (${account.slice(0, 8)}…) via sudo…`);
-		await drive(api, api.tx.cognoGate.linkIdentity("0x" + beacon, account, null), { operators: ops, via: "sudo", log: () => {} });
-	} else if (bound.unwrap().toString() !== account) {
-		throw new Error(`beacon already bound to a DIFFERENT account ${bound.unwrap().toString()} (expected ${account}); use --account or a fresh chain`);
-	} else {
-		console.log(`beacon already bound to ${acctUri}`);
-	}
+	if (bound.isNone)
+		throw new Error(
+			`live vault beacon ${beacon.slice(0, 12)}… is not bound to any account. Bind it first via the ` +
+			`trustless self-proof (cognoGate.link_identity_signed) — there is no operator/sudo bind anymore. ` +
+			`See docs/TRUSTLESS-IDENTITY.md and services/sponsored-bind-relay/.`,
+		);
+	const account = bound.unwrap().toString();
+	const label = `${account.slice(0, 8)}…`;
+	console.log(`beacon bound → ${label} (the CIP-8 self-proof target; the observer projects weight here)`);
 
 	const wantWeight = lovelace; // weight == locked lovelace (>= MIN_LOCK 100 ADA)
 	const shadowOf = async () => (await api.query.cardanoObserver.shadowStake(account)).toBigInt();
@@ -80,15 +81,15 @@ async function main() {
 	await waitForHead(api, "shadow projection", 12, async () => (await shadowOf()) === wantWeight);
 	const allowedInShadow = await allowedOf();
 	if (allowedInShadow !== 0n) throw new Error(`SHADOW violated: AllowedStake=${allowedInShadow} (expected 0 — the inherent must not write weight in shadow)`);
-	console.log(`  ✓ ShadowStake[${acctUri}] = ${wantWeight} (projected by the inherent)`);
-	console.log(`  ✓ AllowedStake[${acctUri}] = 0 (inherent did NOT apply weight in shadow — committee remains sole writer)`);
+	console.log(`  ✓ ShadowStake[${label}] = ${wantWeight} (projected by the inherent)`);
+	console.log(`  ✓ AllowedStake[${label}] = 0 (inherent did NOT apply weight in shadow — committee remains sole writer)`);
 
 	// 4. ENFORCE: flip the gated flag, then assert the SAME inherent now writes AllowedStake.
 	console.log("\n[ENFORCE] flipping set_enforcement(true) via sudo (the gated cutover control)…");
 	await drive(api, api.tx.cardanoObserver.setEnforcement(true), { operators: ops, via: "sudo", log: () => {} });
 	console.log("  waiting for the next observe inherent to APPLY the weight…");
 	await waitForHead(api, "enforced application", 12, async () => (await allowedOf()) === wantWeight);
-	console.log(`  ✓ AllowedStake[${acctUri}] = ${wantWeight} — set by the consensus-verified inherent (credited=1)`);
+	console.log(`  ✓ AllowedStake[${label}] = ${wantWeight} — set by the consensus-verified inherent (credited=1)`);
 
 	// 5. Reset to the safe default (shadow) so the chain is not left in an enforce posture.
 	await drive(api, api.tx.cardanoObserver.setEnforcement(false), { operators: ops, via: "sudo", log: () => {} });

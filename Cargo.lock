@@ -6476,6 +6476,7 @@ dependencies = [
 name = "pallet-cogno-gate"
 version = "0.1.0"
 dependencies = [
+ "blake2 0.10.6",
  "frame-benchmarking",
  "frame-support",
  "frame-system",

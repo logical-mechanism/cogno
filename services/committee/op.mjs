@@ -6,7 +6,6 @@
 //
 // Examples (camelCase pallet.method, JSON args; ss58 addresses + decimal-string bignums):
 //   node op.mjs --call talkStake.setStake     --args '["5Grw…", "42000000"]'
-//   node op.mjs --call cognoGate.linkIdentity --args '["0x<32-byte hash>", "5Grw…", null]'
 //   node op.mjs --call anchor.anchorAck       --args '[123, "0x<root>", "0x<txhash>", 7, 0]'
 //   node op.mjs --call validatorSet.addValidator --args '["5FHneW…"]'  --via committee
 //   node op.mjs --call talkStake.setStake     --args '["5Grw…", "0"]'  --via sudo   # dev fallback

@@ -1,15 +1,14 @@
-// The Cardano CIP-8 bind flow (M2, L5 §5.5/§5.6). Connect a CIP-30 wallet, sign the follower's
-// committed payload ONCE, run the client-side pre-flight gate, and POST the proof to the
-// Cogno-Follower (the authoritative verifier). MeshJS is browser-only, so every dependency is
-// dynamically imported INSIDE the async functions — this module is import-safe during the static
-// export (no `window`/`document` at module-evaluation time).
+// The Cardano CIP-8 bind flow (D1 — trustless identity). Connect a CIP-30 wallet, build the pinned
+// bind payload IN-BROWSER over THIS chain's live genesis, run the client-side pre-flight gate, and sign
+// it ONCE. The signed proof (COSE_Sign1 + COSE_Key) is then submitted DIRECTLY on-chain via
+// `cognoGate.link_identity_signed` (see lib/chain/identity.ts) — the RUNTIME verifies the signature, so
+// there is no trusted follower in the bind path. MeshJS is browser-only, so every dependency is
+// dynamically imported INSIDE the async functions — this module is import-safe during the static export.
 //
-// The dual-key discipline: the Cardano wallet signs CIP-8 exactly ONCE, here, at bind. It NEVER
-// signs a post — posting uses the separate sr25519 key. This module never sees a private key.
+// The dual-key discipline: the Cardano wallet signs CIP-8 exactly ONCE, here, at bind. It NEVER signs a
+// post — posting uses the separate sr25519 key. This module never sees a private key.
 
-import { getFollowerUrl } from "@/lib/config/endpoints";
-
-/** The domain separator the follower commits — we re-check the follower's payload against it. */
+/** The domain separator the runtime verifier pins; the payload grammar is shared with cip8.rs/payload.py. */
 const DOMAIN = "cogno-chain/bind/v1";
 
 export interface CardanoWalletInfo {
@@ -18,9 +17,14 @@ export interface CardanoWalletInfo {
   icon?: string;
 }
 
-export interface BindOutcome {
+/** A signed bind proof, ready to submit via `cognoGate.link_identity_signed` (hex COSE blobs). */
+export interface BindProof {
   ok: boolean;
-  identityHash?: string;
+  /** the wallet's `signData` signature = the COSE_Sign1 blob (hex). */
+  coseSign1?: string;
+  /** the wallet's `signData` key = the COSE_Key blob (hex). */
+  coseKey?: string;
+  /** the Cardano address the proof was signed from (for display). */
   signingAddress?: string;
   error?: string;
 }
@@ -39,28 +43,36 @@ export async function listCardanoWallets(): Promise<CardanoWalletInfo[]> {
   }
 }
 
-async function fetchJson(url: string, init?: RequestInit): Promise<Record<string, unknown>> {
-  const r = await fetch(url, init);
-  const body = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!r.ok) throw new Error((body.error as string) || `follower ${r.status}`);
-  return body;
+/** Crypto-random 16-byte nonce as 32 lowercase-hex chars (matches the pinned payload grammar). */
+function randomNonceHex(): string {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+const hexByteLen = (h: string) => h.replace(/^0x/, "").length / 2;
+
 /**
- * The full bind: enable the wallet → fetch a nonce + the exact payload → sign it → client
- * pre-flight (vkey-payment address, 32-byte key) → POST to the follower. Returns a structured
- * outcome (never throws). The AccountOf readback is the caller's (the hook), so the bind is
- * "complete" only once the chain confirms it.
+ * Produce a CIP-8 bind self-proof: enable the wallet → pick a vkey-payment signing address → build the
+ * pinned payload IN-BROWSER (committing MY posting account + THIS chain's genesis + a fresh nonce) →
+ * client pre-flight (vkey-payment address, 32-byte key, on-chain size bounds) → sign it ONCE. Returns a
+ * structured outcome (never throws). The caller submits the returned proof via
+ * {@link import("@/lib/chain/identity").submitLinkIdentitySigned}; the runtime is the authoritative verifier.
  */
-export async function bindIdentity(opts: {
+export async function produceBindProof(opts: {
   walletId: string;
-  /** the sr25519 posting account (0x-prefixed or bare hex). */
+  /** the sr25519 posting account the proof commits (0x-prefixed or bare hex). */
   sr25519PubkeyHex: string;
-  followerUrl?: string;
-}): Promise<BindOutcome> {
+  /** THIS chain's block-0 (genesis) hash, read via PAPI (0x-prefixed or bare hex) — anti-cross-chain. */
+  genesisHex: string;
+}): Promise<BindProof> {
   const account = opts.sr25519PubkeyHex.replace(/^0x/, "").toLowerCase();
-  const followerUrl = opts.followerUrl ?? getFollowerUrl();
+  const genesis = opts.genesisHex.replace(/^0x/, "").toLowerCase();
   try {
+    // The payload grammar pins 64-hex genesis + 64-hex account; refuse to sign a malformed commitment.
+    if (!/^[0-9a-f]{64}$/.test(account)) throw new Error("posting account is not a 32-byte hex pubkey");
+    if (!/^[0-9a-f]{64}$/.test(genesis)) throw new Error("chain genesis is not a 32-byte hex hash");
+
     const [{ BrowserWallet }, cst] = await Promise.all([
       import("@meshsdk/core"),
       import("@meshsdk/core-cst"),
@@ -68,9 +80,9 @@ export async function bindIdentity(opts: {
 
     const wallet = await BrowserWallet.enable(opts.walletId);
 
-    // Pick a signing address the user controls whose PAYMENT credential is a verification key
-    // (type 0) — never a script-payment (vault) address (L5 §5.6 / L2 §7.4). The change address
-    // is always a base address the wallet controls.
+    // Pick a signing address the user controls whose PAYMENT credential is a verification key (type 0) —
+    // never a script-payment (vault) address (L5 §5.6 / L2 §7.4). The change address is always a base
+    // address the wallet controls. The on-chain verifier also rejects script/pointer/stake-only addresses.
     const signingAddress: string = await wallet.getChangeAddress();
     const props = cst.Address.fromBech32(signingAddress).getProps();
     if (props.paymentPart?.type !== 0) {
@@ -81,32 +93,17 @@ export async function bindIdentity(opts: {
       throw new Error("signing address has a script payment credential — bind from a normal wallet address, never a script/vault address");
     }
 
-    // (1) fetch the nonce + the EXACT payload to sign.
-    const nres = await fetchJson(`${followerUrl}/nonce?account=${account}`);
-    const payload = nres.payload as string;
-    const genesis = nres.genesis as string;
-    // Defense in depth: refuse to sign anything that isn't a v1 bind committing MY account + this
-    // chain's genesis (a malicious follower must not get us to sign something else).
-    if (
-      typeof payload !== "string" ||
-      !payload.startsWith(`${DOMAIN};`) ||
-      !payload.includes(`account=${account}`) ||
-      !payload.includes(`genesis=${genesis}`)
-    ) {
-      // A malicious / mis-configured follower must never get us to sign something off-domain.
-      // eslint-disable-next-line no-console
-      console.error(
-        `cogno: bind aborted — follower payload failed domain/account/genesis check for account ${account.slice(0, 8)}…; refusing to sign`,
-      );
-      throw new Error("follower returned an unexpected payload — refusing to sign");
-    }
+    // Build the EXACT payload IN-BROWSER (no follower): the nonce is client-generated and on-chain it is
+    // format-checked only (replay is prevented by the pallet's 1:1 maps + permanent tombstone, not a nonce).
+    const nonce = randomNonceHex();
+    const payload = `${DOMAIN};genesis=${genesis};account=${account};nonce=${nonce}`;
 
-    // (2) sign ONCE with the Cardano wallet (the only CIP-8 signature in the whole app).
+    // Sign ONCE with the Cardano wallet (the only CIP-8 signature in the whole app).
     const sig = (await wallet.signData(payload, signingAddress)) as { signature: string; key: string };
 
-    // (3) client pre-flight: recover the verification key and reject 64-byte extended keys —
-    //     only 32-byte CIP-30 keys are accepted (L5 §5.6). Best-effort: the follower is the
-    //     authoritative verifier, so a recovery quirk doesn't block, but a clear extended key does.
+    // Client pre-flight: recover the verification key and reject 64-byte extended keys — only 32-byte
+    // CIP-30 keys are accepted (L5 §5.6, matched by the on-chain verifier). Best-effort: the runtime is
+    // the authoritative verifier, so a recovery quirk doesn't block, but a clear extended key does.
     try {
       const vk = cst.getPublicKeyFromCoseKey(sig.key);
       const vkHex = typeof vk === "string" ? vk : (vk as { hex?: () => string }).hex?.() ?? String(vk);
@@ -116,34 +113,20 @@ export async function bindIdentity(opts: {
       }
     } catch (e) {
       if (e instanceof Error && e.message.includes("extended key")) throw e;
-      // recovery shape varied — let the follower (pycardano) be the authority.
+      // recovery shape varied — let the on-chain verifier be the authority.
     }
 
-    // (4) POST the proof to the follower (it verifies the CIP-8 + submits link_identity).
-    const bres = await fetchJson(`${followerUrl}/bind`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        signature: sig.signature,
-        key: sig.key,
-        signing_address: signingAddress,
-        sr25519_pubkey: account,
-      }),
-    });
-    if (bres.ok !== true) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `cogno: follower rejected the bind for account ${account.slice(0, 8)}…:`,
-        (bres.error as string) || "(no reason given)",
-      );
-      return { ok: false, signingAddress, error: (bres.error as string) || "follower rejected the bind" };
-    }
-    return { ok: true, identityHash: bres.identity_hash as string, signingAddress };
+    // The on-chain args are bounded (cose_sign1 <= 512 bytes, cose_key <= 128 bytes); a blob over the
+    // bound would be rejected at decode, so fail early with a clear message.
+    if (hexByteLen(sig.signature) > 512) throw new Error("CIP-8 signature exceeds the 512-byte on-chain bound");
+    if (hexByteLen(sig.key) > 128) throw new Error("CIP-8 key exceeds the 128-byte on-chain bound");
+
+    return { ok: true, coseSign1: sig.signature, coseKey: sig.key, signingAddress };
   } catch (e) {
-    // The whole bind is best-effort and returns a structured outcome, but a swallowed error is
-    // a silent identity-flow failure — log it with the account for diagnosis.
+    // The whole proof is best-effort and returns a structured outcome, but a swallowed error is a silent
+    // identity-flow failure — log it with the account for diagnosis.
     // eslint-disable-next-line no-console
-    console.error(`cogno: bindIdentity failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
+    console.error(`cogno: produceBindProof failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

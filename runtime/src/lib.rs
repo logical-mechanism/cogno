@@ -94,13 +94,24 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// Removing a pallet from construct_runtime changes the metadata — encoding-affecting; regen the
 	// PAPI descriptors. transaction_version is UNCHANGED (no TxExtension change). The on-wire pallet
 	// indices 8..15 are UNCHANGED (FRAME allows index gaps; only @7 is vacated).
-	// 107 -> 108 for in-protocol-observation (D4): added pallet-cardano-observer (@16) — the
-	// `ProvideInherent` pallet that sets talk-stake weight from a consensus-verified Cardano observation
-	// inherent. New pallet + Mandatory `observe` call + storage (LastReference/LastObserved) + event —
-	// encoding-affecting; regen the PAPI descriptors. transaction_version is UNCHANGED (the `observe`
-	// call is an INHERENT, not a signed extrinsic — no TxExtension change). ADDITIVE/shadow: inert until
-	// the node-side InherentDataProvider is wired; the committee `set_stake` path still drives weight.
-	spec_version: 108,
+	// 107 -> 108: two independent branches each developed against 108, folded together here (see the
+	// 108 -> 109 merge note below).
+	//   • D1 (trustless identity): added the permissionless `cogno_gate::link_identity_signed` call
+	//     (@8 call_index 2 — on-chain CIP-8 ed25519 self-proof) + the `Tombstoned` storage + the
+	//     `CardanoNetwork` constant + new error variants. New call/storage/constant — encoding-affecting.
+	//     The new call is a normal signed extrinsic, so transaction_version is UNCHANGED.
+	//   • in-protocol-observation (D4): added pallet-cardano-observer (@16) — the `ProvideInherent`
+	//     pallet that sets talk-stake weight from a consensus-verified Cardano observation inherent.
+	//     New pallet + Mandatory `observe` call + storage (LastReference/LastObserved) + event —
+	//     encoding-affecting. `observe` is an INHERENT (not a signed extrinsic), so transaction_version
+	//     is UNCHANGED. ADDITIVE/shadow: inert until the node-side InherentDataProvider is wired; the
+	//     committee `set_stake` path still drives weight.
+	// 108 -> 109 (merge): both PRs above independently claimed spec 108, so the runtime that carries
+	// BOTH (the trustless gate AND the cardano-observer pallet) bumps to 109 to give the combined
+	// metadata a distinct version. New pallet + new call/storage relative to either branch alone —
+	// encoding-affecting; regen the PAPI descriptors. transaction_version is UNCHANGED (no TxExtension
+	// change on either branch).
+	spec_version: 109,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

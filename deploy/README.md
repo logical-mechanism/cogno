@@ -21,7 +21,7 @@ multi-validator network by editing a couple of flags (noted inline).
 |---|---|---|---|
 | `cogno-node` | the Substrate validator | p2p :30333, RPC :9944, Prometheus :9615 | — |
 | `cogno-relayer` | anchor relayer | — | node, Ogmios, Kupo |
-| `cogno-follower` | CIP-8 identity binding | HTTP :8090 | node, Ogmios/Kupo |
+| `cogno-follower` | read-only identity helper (`/nonce`, `/health`; D1 — binding is on-chain) | HTTP :8090 | node |
 | `cogno-indexer` | SubQuery ingest | health :3001 | node, **Postgres** |
 | `cogno-query` | GraphQL feed | :3000 | indexer, Postgres |
 
@@ -126,10 +126,12 @@ wrong chain. (`COGNO_PROFILE=prod`, already set in the template, additionally re
 `ANCHOR_VIA=committee`; routine privileged writes never touch the sudo key. Bring `SUDO_SEED` online
 only for a deliberate emergency break-glass op, then remove it again.
 
-> **Follower:** `cogno-follower` submits `link_identity` via the 3-of-5 committee by default
-> (`FOLLOWER_VIA=committee`), so it uses `COMMITTEE_SEEDS` and does **not** need the sudo key. Set
-> `FOLLOWER_VIA=sudo` (and `SUDO_SEED`) only to use the dev fallback. Setting `COGNO_PROFILE=prod` makes
-> every privileged signer refuse the public dev keys, so a misconfigured `COMMITTEE_SEEDS` fails loudly.
+> **Follower (D1):** `cogno-follower` no longer writes bindings — identity binding is the permissionless
+> on-chain `cognoGate.link_identity_signed` self-proof, re-verified by every full node. The follower is a
+> read-only helper (`/health`, `/metrics`, `/nonce`); it needs **no** signing key, no `WS`, and no
+> committee/sudo seeds. (`COMMITTEE_SEEDS` is still used by the relayer for `anchor_ack` / `set_stake` /
+> validators / the gate `revoke` ban; `COGNO_PROFILE=prod` makes every privileged signer refuse the
+> public dev keys.)
 
 ## Migrating an existing `/tmp/cogno-m2` deployment
 

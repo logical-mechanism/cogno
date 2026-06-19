@@ -1,3 +1,9 @@
+// ⚠ PARTIALLY SUPERSEDED BY D1: the Mallory `sudo(link_identity)` bind below uses the REMOVED trusted
+// dispatchable and will fail — binding is now the on-chain self-proof `cognoGate.link_identity_signed`
+// (sudo can no longer fabricate identities). To seed real bound accounts, bind via the frontend or
+// `scripts/d1-acceptance.mjs` first, then run this for the post/revoke event surface. Kept for the M4
+// build-log narrative; not in CI.
+//
 // M4 seed — populate the chain with the full event surface the SubQuery indexer ingests:
 // PostCreated (top-level + threaded replies), PostDeleted, IdentityLinked, Revoked, StakeSet.
 //

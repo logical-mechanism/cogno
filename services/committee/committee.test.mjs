@@ -10,7 +10,6 @@
 import { revive } from "./op.mjs";
 import { pickLargest, lockToWeight } from "./sync-weight.mjs";
 import { viaCommittee, viaSudo, send, resolveCommittee, assertRealKeys, assertGenesis } from "./lib.mjs";
-import { parseArgs as parseLinkArgs } from "./link-identity.mjs";
 
 let PASS = 0, FAIL = 0;
 const ok = (cond, msg) => { if (cond) { PASS++; console.log(`  ✓ ${msg}`); } else { FAIL++; console.log(`  ✗ FAIL: ${msg}`); } };
@@ -237,17 +236,9 @@ const opsOf = (addrs) => ({ committee: addrs.map((a) => ({ address: a })) });
 	await throws(() => resolveCommittee(qApi(["a", "b", "c", "d", "e"]), opsOf(["a", "b", "c", "d", "e"]), { explicitThreshold: 0 }), "--threshold 0 → throws (not silently dropped to the auto value)");
 }
 
-// ── link-identity.mjs parseArgs (Phase 3: --via value must not leak into the thread_pointer slot) ──
-console.log("\n[link-identity parseArgs] --via value is consumed, never mis-read as thread_pointer");
-{
-	const a = parseLinkArgs(["0xaa", "0xbb", "--via", "committee"]);
-	ok(a.hashHex === "aa" && a.accountHex === "bb" && a.threadHexRaw === undefined && a.via === "committee",
-		"hash + account parsed; --via value consumed (NOT mis-read as thread_pointer)");
-	const b = parseLinkArgs(["aa", "bb", "cc", "--via", "sudo"]);
-	ok(b.threadHexRaw === "cc" && b.via === "sudo", "explicit thread_hex + --via both parsed correctly");
-	const c = parseLinkArgs(["aa", "bb"]);
-	ok(c.threadHexRaw === undefined && c.via === "committee", "no --via → default committee, no thread");
-}
+// (Removed the `link-identity.mjs parseArgs` test: the trusted committee-routed identity-bind driver was
+// deleted for D1 — identity binding is now the permissionless on-chain `cognoGate.link_identity_signed`
+// self-proof, not a committee/sudo op. The committee still routes set_stake / anchor_ack / validators.)
 
 // ── assertRealKeys / assertGenesis (Phase 3: fail-closed config + chain pin) ──────────────────────
 console.log("\n[assertRealKeys] refuses public dev keys under COGNO_PROFILE=prod");

@@ -1,3 +1,9 @@
+// ⚠ SUPERSEDED BY D1 (trustless identity) — this script drives the RETIRED follower /bind + /nonce
+// write path (the follower no longer verifies or writes bindings; POST /bind now returns 410). Binding
+// is the permissionless on-chain self-proof `cognoGate.link_identity_signed`. For a working live bind
+// demo (real headless-MeshJS CIP-8 → on-chain self-proof → 1:1 + post + tombstone) see
+// `scripts/d1-acceptance.mjs`. Kept for the M2d build-log narrative only.
+//
 // M2d — CIP-8 bind the OWNER's Cardano address → an sr25519 posting account, via the follower.
 // The owner's Cardano wallet signs the follower's committed payload once (signData); the follower
 // verifies it and binds blake2b_256(cbor.serialise(owner address)) (== the vault's beacon name) to

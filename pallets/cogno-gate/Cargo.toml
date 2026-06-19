@@ -26,14 +26,21 @@ log = { workspace = true }
 # so neither pallet forms a Cargo cycle with the other.
 pallet-microblog = { workspace = true }
 scale-info = { features = ["derive"], workspace = true }
+# D1 (on-chain CIP-8 self-proof): `sp_io::crypto::ed25519_verify` + `sp_io::hashing::blake2_256`
+# (host functions) for the trustless identity verifier. NOW a runtime dep (was dev-only).
+sp-io = { workspace = true, default-features = false }
+# blake2b-224 (Cardano key hash) — NOT an sp_io host fn (only blake2_256/_128 are), so use the
+# RustCrypto variable-output blake2 (no_std). Pinned to the 0.10.x already in Cargo.lock.
+blake2 = { version = "0.10.6", default-features = false }
+# sp-core: the `ed25519::{Public, Signature}` types `sp_io::crypto::ed25519_verify` takes. NOW a
+# runtime dep (was dev-only) for the D1 verifier.
+sp-core = { workspace = true, default-features = false }
 
 [dev-dependencies]
 # The integration mock builds a full runtime (System + TalkStake + Microblog + CognoGate) to
 # exercise the real link_identity → is_allowed → post flow. talk-stake is microblog's weight
 # source; cogno-gate is the top crate, so naming it here is no cycle.
 pallet-talk-stake = { default-features = true, workspace = true }
-sp-core = { default-features = true, workspace = true }
-sp-io = { default-features = true, workspace = true }
 sp-runtime = { default-features = true, workspace = true }
 
 [features]
@@ -46,6 +53,9 @@ std = [
 	"log/std",
 	"pallet-microblog/std",
 	"scale-info/std",
+	"sp-io/std",
+	"blake2/std",
+	"sp-core/std",
 ]
 runtime-benchmarks = [
 	"frame-benchmarking/runtime-benchmarks",

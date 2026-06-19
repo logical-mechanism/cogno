@@ -18,7 +18,8 @@ healthy?* — without tailing logs by hand.
 Key custom metrics: `cogno_relayer_seconds_since_last_anchor`, `cogno_relayer_wallet_lovelace`,
 `cogno_relayer_low_funds`, `cogno_relayer_pending_anchors` / `_failed_anchors`,
 `cogno_relayer_consecutive_errors`, `cogno_relayer_seconds_since_last_loop`;
-`cogno_follower_node_reachable`, `cogno_follower_genesis_ok`, `cogno_follower_nonces_cached`;
+`cogno_follower_node_reachable`, `cogno_follower_genesis_ok` (the follower is a read-only helper in D1 —
+no `nonces_cached`, since the off-chain bind-WRITE was retired);
 `cogno_shadow_accounts_disagree`, `cogno_shadow_max_disagree_blocks`, `cogno_shadow_recompute_disagree`
 (in-protocol observation vs committee weight — convergence + an independent-recompute correctness leg).
 

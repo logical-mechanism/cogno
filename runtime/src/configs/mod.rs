@@ -372,11 +372,19 @@ impl pallet_microblog::Config for Runtime {
 /// the showcase is fully drivable on-chain before the Cardano follower is wired. The
 /// `EnsureOrigin` shape means the widen to a k-of-t committee (D2) is signature-free. `OnBind`
 /// is the first-bind hook into microblog (primes the capacity row + provider ref at link).
+///
+/// D1 (trustless identity): `link_identity_signed` is the PERMISSIONLESS self-proof bind — the runtime
+/// verifies a CIP-8 wallet signature on-chain (`pallet_cogno_gate::cip8`), so no `FollowerOrigin` trust
+/// is needed to create a binding. `FollowerOrigin` now only gates `revoke` (the moderation ban, which
+/// tombstones permanently). `CardanoNetwork = 0` (testnet — the live preprod addresses). ⚠ MAINNET
+/// PREREQUISITE: the verifier has NOT had a formal external audit (see `cip8` module docs).
 impl pallet_cogno_gate::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
+	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`) — gates `revoke` only.
 	type FollowerOrigin = AuthorityOrigin;
 	type OnBind = Microblog;
+	// The Cardano network the on-chain self-proof binds for: 0 = testnet (live preprod), 1 = mainnet.
+	type CardanoNetwork = ConstU8<0>;
 	type WeightInfo = pallet_cogno_gate::weights::SubstrateWeight<Runtime>;
 }
 

@@ -639,8 +639,11 @@ The migration is **throw-nothing-away**: the same pure function moves from the f
 ---
 
 ## 10. Spec-version & on-wire impact
-- **spec_version 107 → 108** (new pallet @16 + new inherent call/storage = encoding-affecting). Bump and
-  regenerate PAPI descriptors (CLAUDE.md spec-bump discipline). `transaction_version` stays **2**.
+- **spec_version 107 → 108 (developed) → 109 (merged).** This branch added pallet @16 + new inherent
+  call/storage at 108; on merge to `main` it shares the runtime with the trustless-identity (D1) branch
+  which also claimed 108, so the combined runtime bumped to **109** (see §14.3). New pallet/call/storage =
+  encoding-affecting — regenerate PAPI descriptors (CLAUDE.md spec-bump discipline). `transaction_version`
+  stays **2**.
 - **Pallet index 16** — new index; 7 stays vacant; 8–15 unchanged (indices are on-wire contracts).
 - **`is_inherent = true`** on the `observe` call ⇒ pool-inadmissible; the dev-only `set_stake` stays a
   normal gated extrinsic — the two are mutually exclusive per call (`L2-follower.md` §5.2).
@@ -750,7 +753,8 @@ depend on it (DR-26). Kupo point-in-time / `created_at`/`spent_at` semantics:
 ## 14. Implementation status (what actually landed)
 
 The initiative is **built through step 4 and proven live against preprod**, running in **shadow** behind a
-default-off enforcement flag. spec_version **108** (unreleased — see below); `transaction_version` stays 2.
+default-off enforcement flag. spec_version **109** (developed at 108; folded to 109 on merge to `main`
+alongside the trustless-identity branch — see §14.3); `transaction_version` stays 2.
 
 ### 14.1 The pieces (commits on `in-protocol-observation`)
 - **Step 2 — deterministic library:** `services/_shared/observation.mjs` + the Python mirror
@@ -774,7 +778,8 @@ default-off enforcement flag. spec_version **108** (unreleased — see below); `
   not a transient) is a warning; **any** recompute disagreement is critical.
 - **Step 4c — point-existence guard:** `fetch_kupo_tip` (`/checkpoints`, max-slot, defensive parse); the IDP
   abstains when its Kupo tip is behind the reference; `check_inherent` compares slot + entries only (§5.4 / OQ7).
-- **Step 4e — frontend:** PAPI descriptors regenerated for spec 108 (the observer pallet).
+- **Step 4e — frontend:** PAPI descriptors regenerated for the observer pallet (at spec 108 on this
+  branch; re-regenerated at spec 109 on merge to `main`, where the observer shares the runtime with D1).
 
 ### 14.2 Honest framing (corrects two over-statements)
 - **Shadow ≠ zero consensus risk.** Shadow removes the **weight-application** risk only. `observe` is
@@ -788,16 +793,20 @@ default-off enforcement flag. spec_version **108** (unreleased — see below); `
   **any** independent-recompute disagreement, is a real signal. Committee-vs-inherent agreement is **not**
   proof of trustlessness — on a single producer there is no independent verifier (§2/§6).
 
-### 14.3 spec 108 is UNRELEASED — fold, don't bump
-108 was introduced on this branch, is **not merged to `main`** (main is at 107), and runs on **no persistent
-shared network**, so step-4's additive storage/call/event changes **fold into 108** rather than forcing a
-109. The line past which a NEW spec becomes mandatory is the **first merge-to-main OR the first
-persistent/shared chain at 108**. The `CardanoObserverApi` runtime API is **unchanged** by step 4 (no
-`#[api_version]` bump). The live preprod `talk_vault` Aiken contract is untouched (no hash move).
+### 14.3 spec 108 folded on this branch; bumped to 109 at merge-to-main
+While on this branch, 108 was **unreleased** (not on `main`, no persistent shared network), so step-4's
+additive storage/call/event changes **folded into 108** rather than forcing a 109 — the line past which a
+NEW spec becomes mandatory is the **first merge-to-main OR the first persistent/shared chain at 108**.
+That line has now been crossed: the trustless-identity (D1) branch **also** claimed 108 and merged to
+`main` first, so when this work merged second the combined runtime (observer pallet @16 **and** the D1
+gate) bumped to **spec 109** and the PAPI descriptors were regenerated against it. The `CardanoObserverApi`
+runtime API is **unchanged** (no `#[api_version]` bump); the live preprod `talk_vault` Aiken contract is
+untouched (no hash move).
 
-### 14.4 Live evidence (preprod, this branch)
+### 14.4 Live evidence (preprod, this branch — pre-merge at spec 108)
 A persistent `--dev` node (spec 108, genesis `0x995be6cc…`) against live Kupo `:1442`, via
-`services/committee/obs-shadow-demo.mjs` (beacon `287a99d2…` / 100 ADA, bound `//Bob`):
+`services/committee/obs-shadow-demo.mjs` (beacon `287a99d2…` / 100 ADA, bound `//Bob` via the then-extant
+trusted bind — post-merge that demo requires the beacon to be pre-bound via `link_identity_signed`):
 
 ```
 [SHADOW]  ShadowStake[//Bob] = 100000000   ;  AllowedStake[//Bob] = 0   (inherent projects, does not apply)

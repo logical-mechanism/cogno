@@ -1,14 +1,17 @@
-"""The Cogno-Follower's CIP-8 verification — the trusted v1 binding check (L2-follower.md §7).
+"""The CIP-8 bind verification — now the INDEPENDENT REFERENCE verifier (L2-follower.md §7).
+
+⚠ D1: this is NO LONGER on any production write path. Identity binding is the permissionless on-chain
+self-proof `cognoGate.link_identity_signed`, where the RUNTIME verifies the CIP-8 signature itself
+(`pallet_cogno_gate::cip8`). This module is KEPT as a second, independent implementation of the same
+checks, run in CI (`test_agreement.py`) against real MeshJS fixtures + adversarial negatives — a
+cross-impl agreement oracle for the unaudited on-chain crown-jewel verifier. Nothing here writes the
+chain; the follower (`follower.py`) is a read-only helper.
 
 REUSES the proven `pycardano.cip.cip8.verify` path from cogno_v3 (verify_view.py) — it does NOT
 re-implement COSE_Sign1. `verify()` returns {verified, message, signing_address}; its `verified`
 flag already folds in the Ed25519 signature check AND that the COSE-header address hashes to the
-signing key. On top of that the follower asserts the cogno-chain-specific binding invariants.
-
-v1 trust posture (named honestly): the follower is the SOLE verifier and the sole writer — a
-malicious/buggy follower could fabricate a binding. The committed payload (account + genesis +
-nonce inside the signature) PREVENTS re-pointing an honest user's proof at another account; the
-on-chain ed25519 self-proof (which would remove the follower from the trust path) is deferred D1.
+signing key. On top of that this asserts the cogno-chain-specific binding invariants — the SAME ones
+the on-chain verifier enforces, so the two implementations must agree (a disagreement is a bug).
 
 M2 scope: WALLET-ONLY CIP-8 (DR-14). There is no observed Cardano vault yet, so "whole-Address ==
 datum.owner" reduces to: the recovered signing Address IS the owner identity (its hash is what we
