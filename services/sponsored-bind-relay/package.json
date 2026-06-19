@@ -1,0 +1,12 @@
+{
+  "name": "cogno-sponsored-bind-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "cogno-chain D1 bind-funding — a funded LIVENESS-only relay that pays the fee for the trustless on-chain identity bind (cognoGate.link_identity_signed). The runtime is the sole verifier; the relay cannot forge or retarget a binding. Closes the new-user funding gap without weakening the DoS defence.",
+  "scripts": {
+    "relay": "node relay.mjs",
+    "test": "node relay.test.mjs"
+  },
+  "comment": "Dependencies (polkadot-api, @polkadot-labs/hdkd*, @polkadot-api/descriptors) are shared with the frontend via node_modules -> ../../app/node_modules (a gitignored symlink, recreated in CI). The unit test (relay.test.mjs) imports only ./lib.mjs + ../_shared (node-builtins only) and needs no install; the live submit is exercised by app/scripts/d1-bind-funding-acceptance.mjs. See README.md."
+}
