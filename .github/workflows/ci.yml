@@ -90,13 +90,11 @@ jobs:
         run: |
           ln -sfn ../indexer/node_modules services/committee/node_modules
           ln -sfn ../../app/node_modules services/anchor-relayer/node_modules
-          ln -sfn ../../app/node_modules services/sponsored-bind-relay/node_modules
-      - name: js — anchor-relayer + _shared + committee + sponsored-bind-relay
+      - name: js — anchor-relayer + _shared + committee
         run: |
           node services/anchor-relayer/relayer.test.mjs
           node services/_shared/shared.test.mjs
           node services/committee/committee.test.mjs
-          node services/sponsored-bind-relay/relay.test.mjs
       - name: indexer — pure mapping unit tests + typecheck
         working-directory: services/indexer
         run: |

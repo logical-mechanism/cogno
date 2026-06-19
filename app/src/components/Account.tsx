@@ -129,14 +129,7 @@ export function Account({ signerCtl: sc, identity, vault, onOpenAbout }: Account
           <span className={styles.fine}>one signature links this wallet to your posting key.</span>
         </div>
       ) : identity.bound === true ? (
-        <>
-          <p className={styles.ok}>✓ registered — you can post.</p>
-          {identity.boundVia === "relay" && (
-            <p className={styles.fine}>
-              bind fee sponsored by the relay — your wallet signature is what registered you (the relay can&apos;t forge it).
-            </p>
-          )}
-        </>
+        <p className={styles.ok}>✓ registered — you can post.</p>
       ) : (
         <p className={styles.muted}>checking registration…</p>
       )}

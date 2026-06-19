@@ -8,20 +8,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { CognoApi, PostingSigner } from "@/lib/types";
-import { getGenesisHex, isAccountBound, readAccountOf, submitBindSponsored, type BindVia } from "@/lib/chain/identity";
-import { getBindRelayUrl } from "@/lib/config/endpoints";
+import { getGenesisHex, isAccountBound, readAccountOf, submitLinkIdentitySigned } from "@/lib/chain/identity";
 import { produceBindProof } from "@/lib/cardano/cip8";
 
 export interface UseIdentity {
   /** true = bound (may post), false = unbound, null = unknown/loading. */
   bound: boolean | null;
-  /** a bind is in flight (wallet sign → on-chain submit/relay → readback). */
+  /** a bind is in flight (wallet sign → follower → readback). */
   binding: boolean;
   error: string | null;
   /** the Cardano address the bind was signed from, once bound (for display). */
   boundAddress: string | null;
-  /** how the just-completed bind was submitted: "self" (paid own fee) or "relay" (sponsored). null = unknown. */
-  boundVia: BindVia | null;
   bind: (walletId: string) => void;
   refresh: () => void;
 }
@@ -31,15 +28,8 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
   const [binding, setBinding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [boundAddress, setBoundAddress] = useState<string | null>(null);
-  const [boundVia, setBoundVia] = useState<BindVia | null>(null);
 
   const refresh = useCallback(() => {
-    // boundVia/boundAddress describe a bind PERFORMED for the current key this session; they are not
-    // re-derivable from chain state. Clear them whenever the key/chain changes (this callback re-runs on
-    // [api, signer.ss58]) so the "fee sponsored by the relay" sub-label can't go stale after a wallet
-    // switch to a different — already-bound — account.
-    setBoundVia(null);
-    setBoundAddress(null);
     if (!api) {
       setBound(null);
       return;
@@ -68,11 +58,9 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
           if (!proof.ok || !proof.coseSign1 || !proof.coseKey) {
             throw new Error(proof.error || "could not produce the CIP-8 bind proof");
           }
-          // (3) submit the self-proof on-chain. Balance-aware (D1 bind-funding): if MY posting key can
-          //     pay its own fee, self-submit (fully trustless); otherwise POST the proof to the funded
-          //     Sponsored-Bind Relay, which pays the fee (a LIVENESS party — it can't forge the binding,
-          //     the runtime re-verifies). A fresh derived account (balance 0) always takes the relay.
-          const res = await submitBindSponsored(api, signer, proof.coseSign1, proof.coseKey, getBindRelayUrl());
+          // (3) submit the self-proof on-chain, signed (fee-paid) by MY posting key. signAndSubmit
+          //     resolves at finalization, so on success the binding is already on-chain.
+          const res = await submitLinkIdentitySigned(api, signer, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
             throw new Error(res.error || "the on-chain bind was rejected");
           }
@@ -94,7 +82,6 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
           }
           setBound(true);
           setBoundAddress(proof.signingAddress ?? null);
-          setBoundVia(res.via ?? null);
         } catch (e) {
           // eslint-disable-next-line no-console
           console.error(`cogno: bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
@@ -107,5 +94,5 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
     [api, binding, signer],
   );
 
-  return { bound, binding, error, boundAddress, boundVia, bind, refresh };
+  return { bound, binding, error, boundAddress, bind, refresh };
 }
