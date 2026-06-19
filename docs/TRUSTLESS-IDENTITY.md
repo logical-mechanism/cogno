@@ -1,6 +1,8 @@
 # Trustless identity (D1) — on-chain CIP-8 self-proof
 
-**Status: DONE (spec_version 108), proven live on a `--dev` node.** This is the D1 rung of the identity
+**Status: DONE (spec_version 109; the live proof below ran on the pre-merge spec-108 node — the gate
+logic is byte-identical, the bump to 109 came only from folding in the in-protocol-observation pallet at
+merge — see the trust-ladder note at the end), proven live on a `--dev` node.** This is the D1 rung of the identity
 trust ladder from [`L2-follower.md`](L2-follower.md) §7.2/§7.3: the trusted off-chain identity binding is
 **replaced** by an on-chain cryptographic self-proof. It is **validator-independent** — it *removes* a
 trusted party (the follower's bind-write key) without adding one.
@@ -156,6 +158,9 @@ This ships **enabled on testnet** as an honestly-labelled proof-of-concept; an i
   maps + the permanent tombstone, not by a server nonce cache (the follower's nonce cache is removed).
 - **Ariadne / SPO-graduation** for the *weight* path is separate (see `L3-SPO-graduation.md`); identity
   binding needs no Cardano observation at all (it is a pure signature — no Kupo/Ogmios).
-- The **in-protocol weight observation** branch (PR #10) also targets spec 108; whichever merges second
-  bumps to 109, and its `obs-shadow-demo.mjs` (which binds via the old `link_identity`/sudo) must be moved
-  to `link_identity_signed`.
+- **Trust-ladder / merge note:** the **in-protocol weight observation** branch (PR #10) also targeted
+  spec 108 and merged to `main` first. This branch merged second, so the combined runtime (the trustless
+  gate **and** the `cardanoObserver` pallet @16) bumped to **spec 109** and the PAPI descriptors were
+  regenerated against it. The observer's `obs-shadow-demo.mjs` used to bind the live vault beacon via the
+  old `link_identity`/sudo — which D1 removed — so it now **requires the beacon to be pre-bound** via the
+  trustless self-proof (`link_identity_signed`); it no longer binds (there is no operator/sudo bind).

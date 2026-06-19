@@ -23,6 +23,11 @@
 import fs from "node:fs";
 import { isMain } from "../_shared/cli.mjs";
 import { statePaths, migrateStatePath } from "../_shared/paths.mjs";
+// The DETERMINISTIC observation core (in-protocol-observation step 2): the largest-wins / floor / as-of-
+// reference logic that BOTH this off-chain reader and (later) the in-node inherent share byte-identically.
+// `lockToWeight` lives there now; re-exported below so committee.test.mjs's import is unchanged.
+import { lockToWeight, observeAsOf } from "../_shared/observation.mjs";
+export { lockToWeight };
 import { connect, drive, has, operators, fetchJson, resolveCommittee, assertRealKeys, assertGenesis } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
@@ -31,10 +36,11 @@ const OGMIOS = process.env.OGMIOS || "http://127.0.0.1:1337";
 // The locked-vault descriptor, defaulting under the durable data dir (COGNO_DATA_DIR / systemd
 // StateDirectory) rather than volatile /tmp; an existing /tmp copy is migrated on first read.
 const { file: VAULT_FILE, legacy: VAULT_FILE_LEGACY } = statePaths("VAULT_FILE", "vault.json");
-const MIN_LOCK = 100_000_000n;
 // Reorg-burial depth in Cardano SLOTS (DR-09b): only credit a vault UTxO buried this many slots past
 // the tip, so a lock/exit that later rolls back can't set a wrong weight. 0 = credit as soon as it is
-// unspent (fast, dev showcase); production sets a few hundred slots.
+// unspent (fast, dev showcase); production sets a few hundred slots (≥ the no-rollback window for the
+// in-protocol path, docs/IN-PROTOCOL-OBSERVATION.md §5.2). When > 0 the read is AS-OF a stable reference
+// slot (tip − depth) via observeAsOf — the determinism-correct read — not the live `?unspent` set.
 const CONFIRM_DEPTH_SLOTS = Number(process.env.CONFIRM_DEPTH_SLOTS || "0");
 
 export function parseArgv(argv) {
@@ -99,8 +105,8 @@ export function pickLargest(matches, vaultHash, { tipSlot = null, confirmDepth =
 	return largest;
 }
 
-// PURE: the MIN_LOCK gate — locked lovelace at/above the floor becomes weight, below it is zero.
-export const lockToWeight = (lovelace, minLock = MIN_LOCK) => (lovelace >= minLock ? lovelace : 0n);
+// (`lockToWeight` and the deterministic as-of-reference observation now live in ../_shared/observation.mjs
+// and are imported above — the SAME pure logic the in-node inherent will reuse byte-identically.)
 
 // The Cardano tip slot via Ogmios (for the reorg-burial gate). Throws on failure — when a burial
 // depth is required we must FAIL CLOSED rather than credit weight without the check.
@@ -116,10 +122,39 @@ async function ogmiosTipSlot(ogmios = OGMIOS) {
 }
 
 // Observe the vault's beacon UTxOs and reduce to largest-wins lovelace per identity (committee-1).
-// Returns { largest, total, reasons } so the caller can surface vault health (how many UTxOs Kupo
-// returned, how many passed the filters, and WHY the rest were rejected — gaps 7/12/13).
+// Returns { largest, total, reasons, referenceSlot? } so the caller can surface vault health (how many
+// UTxOs Kupo returned, how many passed the filters, and WHY the rest were rejected — gaps 7/12/13).
+//
+// Two read postures (in-protocol-observation step 2):
+//   • confirmDepth > 0 (production): read AS-OF a stable reference slot (tip − confirmDepth). Query
+//     `?created_before={ref+1}` and apply the unspent-as-of-ref predicate via observeAsOf (the SAME pure
+//     logic the in-node inherent will reuse). This is the determinism-correct read: a UTxO spent AFTER the
+//     reference is still counted as locked-at-ref (the bug `?unspent` would introduce), and a lock/exit
+//     that could still roll back (within `confirmDepth`) is never credited.
+//   • confirmDepth == 0 (dev showcase): the legacy `?unspent` ("unspent now") + pickLargest fast path —
+//     no Ogmios needed for the localhost demo. NOT the enforced path.
 async function observeKupo(vaultHash, { kupo = KUPO, ogmios = OGMIOS, confirmDepth = CONFIRM_DEPTH_SLOTS } = {}) {
-	// Quote the Kupo `.*` pattern arg defensively (shell-glob gotcha) — here it's a URL, so it's literal.
+	const reasons = new Map();
+	if (confirmDepth > 0) {
+		const tipSlot = await ogmiosTipSlot(ogmios); // throws ⇒ abort the sync (fail closed)
+		const referenceSlot = tipSlot - confirmDepth;
+		// created_before is an exclusive upper bound; +1 includes created == referenceSlot. It is only a
+		// prefilter — the authoritative `created ≤ ref AND (spent == null OR spent > ref)` is applied
+		// CLIENT-SIDE in observeAsOf (Kupo's created_before/spent_before are both upper bounds and cannot
+		// be combined; `?unspent` would wrongly drop UTxOs spent AFTER the reference). Quote the `.*`
+		// pattern defensively (shell-glob gotcha) — here it's a URL, so it's literal.
+		const url = `${kupo}/matches/${vaultHash}.*?created_before=${referenceSlot + 1}`;
+		let matches;
+		try {
+			matches = await fetchJson(url);
+		} catch (e) {
+			throw new Error(`Kupo read failed (${url}): ${e?.message || e}`);
+		}
+		if (!Array.isArray(matches)) throw new Error(`Kupo /matches did not return an array for ${vaultHash}`);
+		const largest = observeAsOf(matches, { vaultHash, referenceSlot: BigInt(referenceSlot), reasons });
+		return { largest, total: matches.length, reasons, referenceSlot };
+	}
+	// dev fast path (confirmDepth == 0): unspent-now, legacy pickLargest, no Ogmios.
 	let matches;
 	try {
 		matches = await fetchJson(`${kupo}/matches/${vaultHash}.*?unspent`);
@@ -130,12 +165,7 @@ async function observeKupo(vaultHash, { kupo = KUPO, ogmios = OGMIOS, confirmDep
 		throw new Error(`Kupo read failed (${kupo}/matches/${vaultHash}.*): ${e?.message || e}`);
 	}
 	if (!Array.isArray(matches)) throw new Error(`Kupo /matches did not return an array for ${vaultHash}`);
-	let tipSlot = null;
-	if (confirmDepth > 0) {
-		tipSlot = await ogmiosTipSlot(ogmios); // throws ⇒ abort the sync (fail closed)
-	}
-	const reasons = new Map();
-	const largest = pickLargest(matches, vaultHash, { tipSlot, confirmDepth, reasons });
+	const largest = pickLargest(matches, vaultHash, { reasons });
 	return { largest, total: matches.length, reasons };
 }
 
@@ -177,8 +207,9 @@ async function main() {
 			// live mode: observe the vault, largest-wins, set_stake per bound identity.
 			migrateStatePath(VAULT_FILE, VAULT_FILE_LEGACY, "vault descriptor");
 			const vaultHash = JSON.parse(fs.readFileSync(VAULT_FILE, "utf8")).vaultHash;
-			const { largest, total, reasons } = await observeKupo(vaultHash);
-			console.log(`Kupo returned ${total} unspent match(es); ${largest.size} credited, ${reasons.size} rejected (confirm-depth ${CONFIRM_DEPTH_SLOTS} slots)`);
+			const { largest, total, reasons, referenceSlot } = await observeKupo(vaultHash);
+			const asOf = referenceSlot != null ? `as-of slot ${referenceSlot}` : "unspent-now (dev fast path)";
+			console.log(`Kupo returned ${total} match(es) [${asOf}]; ${largest.size} credited, ${reasons.size} rejected (confirm-depth ${CONFIRM_DEPTH_SLOTS} slots)`);
 			// Surface WHY UTxOs were filtered out so an operator can tell "too fresh" (will pass next
 			// block) from "never will be buried" / "swept" / "malformed" (gaps 7/12).
 			for (const [key, why] of reasons) console.log(`  ⊘ ${String(key).slice(0, 16)}… rejected: ${why}`);

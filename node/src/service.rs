@@ -10,6 +10,14 @@ use sc_transaction_pool_api::OffchainTransactionPoolFactory;
 use cogno_chain_runtime::{self, apis::RuntimeApi, opaque::Block};
 use sp_consensus_aura::sr25519::AuthorityPair as AuraPair;
 use std::{sync::Arc, time::Duration};
+// in-protocol-observation (D4): the node-side Cardano-observation InherentDataProvider wiring.
+use crate::cardano_observer::{
+	build_observation, fetch_kupo_matches, fetch_kupo_tip, hex_encode, reference_slot,
+	CardanoObservationInherentDataProvider,
+};
+use pallet_cardano_observer::{CardanoObserverApi, CardanoRef};
+use sp_api::ProvideRuntimeApi;
+use sp_runtime::traits::Block as BlockT;
 
 pub(crate) type FullClient = sc_service::TFullClient<
 	Block,
@@ -18,6 +26,97 @@ pub(crate) type FullClient = sc_service::TFullClient<
 >;
 type FullBackend = sc_service::TFullBackend<Block>;
 type FullSelectChain = sc_consensus::LongestChain<FullBackend, Block>;
+
+/// Build the node-side Cardano-observation `InherentDataProvider` for a block whose parent is `parent`
+/// (in-protocol-observation, D4). Reads the consensus-pinned config via the `CardanoObserverApi` runtime
+/// API (single source of truth — node + runtime can't drift), derives the stable reference slot from the
+/// PARENT block's Aura slot (so author + every importer agree, design §5.1), and reads THIS node's own
+/// Kupo as-of that slot. **Fail-closed:** any error (API / header / Kupo down or behind) ⇒ an empty
+/// observation — the author abstains (no inherent; the chain stays live) and an importer that can't read
+/// defers-accepts via the runtime's `CannotVerify` path. Used by BOTH the import and authoring CIDPs.
+async fn build_cardano_idp(
+	client: Arc<FullClient>,
+	parent: <Block as BlockT>::Hash,
+) -> CardanoObservationInherentDataProvider {
+	let empty = CardanoObservationInherentDataProvider { observation: None };
+	// 1. consensus-pinned config (anchors, stability window, vault policy id).
+	let config = match client.runtime_api().observer_config(parent) {
+		Ok(c) => c,
+		Err(e) => {
+			log::warn!(target: "cardano-observer", "observer_config runtime API failed: {e:?} — abstaining");
+			return empty;
+		},
+	};
+	// 2. parent block's Aura slot → canonical unix time (slot × SLOT_DURATION). Genesis ⇒ slot 0 ⇒
+	//    pre-Shelley ⇒ abstain.
+	let header = match client.header(parent) {
+		Ok(Some(h)) => h,
+		_ => return empty,
+	};
+	let parent_slot = match sc_consensus_aura::standalone::find_pre_digest::<
+		Block,
+		sp_consensus_aura::sr25519::AuthoritySignature,
+	>(&header)
+	{
+		Ok(s) => s,
+		Err(_) => return empty,
+	};
+	let parent_unix_s =
+		u64::from(parent_slot).saturating_mul(cogno_chain_runtime::SLOT_DURATION / 1000);
+	// 3. the deterministic reference slot (fail-closed: pre-Shelley / underflow ⇒ None).
+	let ref_slot = match reference_slot(
+		parent_unix_s,
+		config.shelley_start_unix,
+		config.shelley_start_slot,
+		config.stability_slots,
+	) {
+		Some(r) => r,
+		None => return empty,
+	};
+	let kupo = std::env::var("KUPO_URL")
+		.or_else(|_| std::env::var("KUPO"))
+		.unwrap_or_else(|_| "http://127.0.0.1:1442".to_string());
+	let vault_hex = hex_encode(&config.vault_policy_id);
+	// 4. point-existence guard (§5.4): only trust the read if THIS node's Kupo has indexed PAST the
+	//    reference. A behind Kupo must ABSTAIN (→ the runtime's CannotVerify accept/defer path) rather
+	//    than return a partial UTxO set that would trigger a FALSE fatal Mismatch on import. Checked FIRST
+	//    (cheap) so a degraded Kupo short-circuits before the /matches read. The tip header hash becomes
+	//    `CardanoRef.block_hash` (a node-local diagnostic, never consensus-compared).
+	let (tip_slot, tip_hash) = match fetch_kupo_tip(&kupo).await {
+		Ok(t) => t,
+		Err(e) => {
+			log::warn!(target: "cardano-observer", "Kupo tip read failed: {e} — abstaining (empty observation)");
+			return empty;
+		},
+	};
+	if tip_slot < ref_slot {
+		log::debug!(
+			target: "cardano-observer",
+			"Kupo tip slot {tip_slot} < reference {ref_slot} — source behind, abstaining (defer/CannotVerify)",
+		);
+		return empty;
+	}
+	// 5. read this node's own Kupo as-of the reference + reduce (fail-closed on any read error).
+	match fetch_kupo_matches(&kupo, &vault_hex, ref_slot).await {
+		Ok(matches) => {
+			let obs = build_observation(
+				CardanoRef { slot: ref_slot, block_hash: tip_hash },
+				&matches,
+				&vault_hex,
+			);
+			log::debug!(
+				target: "cardano-observer",
+				"observed {} vault entrie(s) as-of slot {} (from {} Kupo match(es))",
+				obs.entries.len(), ref_slot, matches.len(),
+			);
+			CardanoObservationInherentDataProvider { observation: Some(obs) }
+		},
+		Err(e) => {
+			log::warn!(target: "cardano-observer", "Kupo read failed: {e} — abstaining (empty observation)");
+			empty
+		},
+	}
+}
 
 /// The minimum period of blocks on which justifications will be
 /// imported and generated.
@@ -106,7 +205,11 @@ pub fn new_partial(config: &Configuration) -> Result<Service, ServiceError> {
 							slot_duration,
 						);
 
-					Ok((slot, timestamp))
+					// D4: the importer re-derives its OWN Cardano observation at the parent-derived
+					// reference; the runtime's check_inherent compares it to the author's.
+					let cardano = build_cardano_idp(cidp_client.clone(), parent_hash).await;
+
+					Ok((slot, timestamp, cardano))
 				}
 			},
 			spawner: &task_manager.spawn_essential_handle(),
@@ -250,6 +353,8 @@ pub fn new_full<
 		);
 
 		let slot_duration = sc_consensus_aura::slot_duration(&*client)?;
+			// D4: a client clone for the authoring CIDP (it produces this node's observation too).
+			let cardano_idp_client = client.clone();
 
 		let aura = sc_consensus_aura::start_aura::<AuraPair, _, _, _, _, _, _, _, _, _, _>(
 			StartAuraParams {
@@ -258,16 +363,22 @@ pub fn new_full<
 				select_chain,
 				block_import,
 				proposer_factory,
-				create_inherent_data_providers: move |_, ()| async move {
-					let timestamp = sp_timestamp::InherentDataProvider::from_system_time();
+				create_inherent_data_providers: move |parent_hash, ()| {
+					let cardano_idp_client = cardano_idp_client.clone();
+					async move {
+						let timestamp = sp_timestamp::InherentDataProvider::from_system_time();
 
-					let slot =
-						sp_consensus_aura::inherents::InherentDataProvider::from_timestamp_and_slot_duration(
-							*timestamp,
-							slot_duration,
-						);
+						let slot =
+							sp_consensus_aura::inherents::InherentDataProvider::from_timestamp_and_slot_duration(
+								*timestamp,
+								slot_duration,
+							);
 
-					Ok((slot, timestamp))
+						// D4: the author proposes this node's observation as-of the parent-derived reference.
+						let cardano = build_cardano_idp(cardano_idp_client, parent_hash).await;
+
+						Ok((slot, timestamp, cardano))
+					}
 				},
 				force_authoring,
 				backoff_authoring_blocks,

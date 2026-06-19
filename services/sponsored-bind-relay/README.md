@@ -64,7 +64,7 @@ Submissions are **serialized** on the single relay key so concurrent POSTs don't
 ## Run
 
 ```bash
-# 1. a cogno-chain --dev node (spec_version >= 108)
+# 1. a cogno-chain --dev node (spec_version >= 109)
 # 2. the relay (uses the nvm node v22 + the app/node_modules symlink for PAPI deps):
 WS=ws://127.0.0.1:9944 RELAY_SEED=//Bob PORT=8091 ./run.sh
 # 3. unit tests (pure helpers; no node, no install — imports only ./lib.mjs + ../_shared):

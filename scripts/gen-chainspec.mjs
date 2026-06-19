@@ -173,8 +173,9 @@ A non-validator **tracking** node is the same command minus \`--validator\` (it 
 source ${resolve(OUT, "env.sh")}   # exports COMMITTEE_SEEDS + SUDO_SEED (replacing the //Alice… defaults)
 \`\`\`
 
-The committee tooling now signs with your seats and your sudo key; the cogno-follower's
-\`link_identity\` is submitted with your sudo key.
+The committee tooling now signs with your seats and your sudo key (set_stake / anchor_ack / revoke).
+Identity binding is the permissionless on-chain self-proof \`cognoGate.link_identity_signed\` — no sudo
+key involved; the cogno-follower is a read-only helper.
 
 ## 5. Onboard a NEW validator after genesis
 

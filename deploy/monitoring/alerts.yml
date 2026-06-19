@@ -129,3 +129,41 @@ groups:
           summary: "SubQuery indexer is down (Tier-B read layer — frontend falls back to PAPI-direct)"
       # Indexer LAG alerting needs your @subql/node version's processing-height metric name; add a rule
       # like `substrate_block_height{status="finalized"} - <subql processed height> > N` once confirmed.
+
+  # Shadow-diff — the in-protocol-observation D4 validation. The two writers it compares are ASYNCHRONOUS
+  # (the committee weight-sync lags the every-block inherent; the unlock clamp lags the full stability
+  # window), so a momentary committee-vs-inherent disagreement is EXPECTED at every lock/unlock and must
+  # NOT page. We alert only on (a) PERSISTENT committee divergence (a streak that never converges) and
+  # (b) ANY recompute divergence (the inherent disagreeing with an independent off-chain re-derivation —
+  # a real correctness defect, not a timing transient).
+  - name: cogno-shadow-diff
+    rules:
+      - alert: ShadowDiffDown
+        # Optional component: only fires if you actually scrape it (a node carrying the spec-109 observer).
+        expr: up{job="cogno-shadow-diff"} == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "shadow-diff is down — the in-protocol observation is no longer being validated vs committee weight"
+
+      - alert: ShadowWeightPersistentDisagreement
+        # A committee-vs-inherent divergence streak that has NOT converged for many finalized blocks —
+        # past any normal committee-sync cadence. `max_disagree_blocks` is reset to 0 the moment an account
+        # re-converges, so a long streak means a STUCK divergence (a binding the committee never synced, a
+        # stale committee write, or a genuine read disagreement), not a lock/unlock transient. Tune the
+        # threshold to > your committee sync cadence in blocks.
+        expr: cogno_shadow_max_disagree_blocks > 200
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "inherent vs committee weight has disagreed for >200 finalized blocks without converging (investigate the shadow-diff /metrics)"
+
+      - alert: ShadowRecomputeDisagreement
+        # The on-chain inherent projection disagrees with an INDEPENDENT off-chain Kupo recompute at the
+        # SAME reference slot — the runtime computed something the deterministic library does not. This is
+        # a correctness defect (not async-writer skew), so it pages faster. Only meaningful when KUPO is set.
+        expr: cogno_shadow_recompute_disagree > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "in-protocol observation MISMATCHES an independent recompute — the inherent's computation is wrong (do NOT cut over)"

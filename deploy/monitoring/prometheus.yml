@@ -45,6 +45,14 @@ scrape_configs:
     static_configs:
       - targets: ["127.0.0.1:3001"]
 
+  # Shadow-diff — hand-rolled /metrics (shadow-diff.mjs --serve, METRICS_PORT default 9102). Validates
+  # that the in-protocol observation inherent agrees with the trusted committee weight on real preprod
+  # data BEFORE any cutover (the D4 shadow-validation step, IN-PROTOCOL-OBSERVATION.md §9). Optional —
+  # only run on a node carrying the spec-109 cardanoObserver pallet.
+  - job_name: cogno-shadow-diff
+    static_configs:
+      - targets: ["127.0.0.1:9102"]
+
   # OPTIONAL: host metrics (CPU/mem/disk for the chain + indexer DB) if you run node_exporter.
   # - job_name: node-exporter
   #   static_configs:

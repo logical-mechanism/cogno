@@ -650,7 +650,7 @@ prove key-control (so Mithril is irrelevant to identity).
   gated extrinsic, with a **committed payload** ({ sr25519 + L3 genesis hash + nonce })
   and a **whole-Address match** (recovered signing Address == `datum.owner`). Lowest
   effort, matches `PLAN.md` M2, and already PREVENTS bind-hijack.
-- **D1 — DONE (spec 108):** the on-chain `ed25519_verify` self-proof
+- **D1 — DONE (spec 109; developed at 108, folded to 109 when the in-protocol-observation pallet merged):** the on-chain `ed25519_verify` self-proof
   (`cognoGate.link_identity_signed`, `pallet_cogno_gate::cip8`) **replaces** the trusted
   off-chain bind — the runtime verifies the wallet signature, removing the operator from
   the identity-correctness path entirely. The trusted `link_identity` is removed; the

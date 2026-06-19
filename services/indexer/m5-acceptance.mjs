@@ -1,5 +1,9 @@
 // M5 live acceptance (DR-05 + DR-07) — run against a fresh `--dev` node.
 //
+// ⚠ FROZEN M5 ARTIFACT (self-gated to spec_version == 105). The //Dave / //Ferdie binds below use the
+// trusted `cognoGate.linkIdentity`, which D1 REMOVED (binding is now the on-chain self-proof
+// `link_identity_signed`); against the current runtime the spec==105 guard aborts before those calls.
+//
 // Proves, end-to-end on a live chain built with the REAL benchmarked weights:
 //   (0) spec_version == 105 and the FollowerCommittee is seated 5-of-5 at genesis (DR-07).
 //   (A) the EnsureRoot/sudo fallback still works AND posting is still FEELESS under the

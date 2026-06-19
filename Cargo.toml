@@ -14,6 +14,7 @@ members = [
 	"pallets/cogno-gate",
 	"pallets/anchor",
 	"pallets/validator-set",
+	"pallets/cardano-observer",
 ]
 
 [workspace.package]
@@ -36,6 +37,8 @@ pallet-anchor = { path = "pallets/anchor", default-features = false }
 # M6 (DR-26): the MUTABLE Aura+GRANDPA validator set — vendor-forked from
 # gautamdhameja/substrate-validator-set, drives pallet-session's SessionManager.
 pallet-validator-set = { path = "pallets/validator-set", default-features = false }
+# in-protocol-observation (D4): sets talk-stake weight from a consensus-verified Cardano inherent.
+pallet-cardano-observer = { path = "pallets/cardano-observer", default-features = false }
 
 # ── codec / type info ──────────────────────────────────────────────────────────
 codec = { package = "parity-scale-codec", version = "3.7.5", default-features = false }

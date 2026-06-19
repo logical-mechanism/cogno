@@ -54,7 +54,7 @@ follower needs no signing key, no `WS`, no committee/sudo seeds — it only read
 ## Run
 
 ```bash
-# 1. a cogno-chain --dev node on :9944   (spec_version >= 108)
+# 1. a cogno-chain --dev node on :9944   (spec_version >= 109)
 # 2. the follower (reuses cogno_v3's venv by default):
 ./run.sh
 # 3. read-only-helper unit tests (no node needed):

@@ -95,8 +95,10 @@ jobs:
         run: |
           node services/anchor-relayer/relayer.test.mjs
           node services/_shared/shared.test.mjs
+          node services/_shared/observation.test.mjs
           node services/committee/committee.test.mjs
           node services/sponsored-bind-relay/relay.test.mjs
+          node services/committee/shadow-diff.test.mjs
       - name: indexer — pure mapping unit tests + typecheck
         working-directory: services/indexer
         run: |

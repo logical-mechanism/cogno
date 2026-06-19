@@ -128,19 +128,33 @@ pub mod pallet {
 				);
 				return Err(Error::<T>::WeightTooHigh.into());
 			}
-			let previous = AllowedStake::<T>::get(&who);
-			AllowedStake::<T>::insert(&who, weight);
-			if weight == 0 {
-				// Full unlock: the row stays (relock-safe), capacity clamps to zero on the next read.
-				log::debug!(target: LOG_TARGET, "set_stake: who={who:?} UNLOCKED (weight 0); previous={previous}");
-			} else if weight == previous {
-				// Idempotent re-derive (e.g. a reorg-safe re-observation of the same vault).
-				log::debug!(target: LOG_TARGET, "set_stake: who={who:?} weight={weight} unchanged (idempotent re-derive)");
-			} else {
-				log::debug!(target: LOG_TARGET, "set_stake: who={who:?} weight {previous} -> {weight}");
-			}
-			Self::deposit_event(Event::StakeSet { who, weight });
+			// Origin + bound checked above; the write + event is the shared internal entry point
+			// `apply_weight` (also called by pallet-cardano-observer's verified Mandatory inherent).
+			Self::apply_weight(&who, weight);
 			Ok(())
+		}
+	}
+
+	impl<T: Config> Pallet<T> {
+		/// Write `who`'s stake weight (insert `AllowedStake` + emit `StakeSet`), WITHOUT the origin or
+		/// `MaxStakeWeight` check. The shared internal entry point: [`Pallet::set_stake`] calls it after
+		/// `SetStakeOrigin` + the bound; **pallet-cardano-observer** calls it from its verified Mandatory
+		/// inherent (which applies its OWN `MaxStakeWeight` skip-not-reject *before* calling, so a bad
+		/// value is filtered out and never reaches here). Writes **only** `AllowedStake` (the
+		/// going-forward-only rule, `ECONOMICS.md` §6.1): the lazy capacity meter reads this live, so a
+		/// raise lifts the future `cap`/`rate` and `weight = 0` collapses capacity on the next read —
+		/// without touching the (relock-safe) capacity row in `pallet-microblog`.
+		pub fn apply_weight(who: &T::AccountId, weight: StakeWeight) {
+			let previous = AllowedStake::<T>::get(who);
+			AllowedStake::<T>::insert(who, weight);
+			if weight == 0 {
+				log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} UNLOCKED (weight 0); previous={previous}");
+			} else if weight == previous {
+				log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} weight={weight} unchanged (idempotent re-derive)");
+			} else {
+				log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} weight {previous} -> {weight}");
+			}
+			Self::deposit_event(Event::StakeSet { who: who.clone(), weight });
 		}
 	}
 }
