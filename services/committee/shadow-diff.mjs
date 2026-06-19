@@ -94,11 +94,17 @@ async function readIndependentRecompute(api, kupo) {
 	const matches = await fetchJson(url);
 	if (!Array.isArray(matches)) throw new Error(`Kupo /matches did not return an array for ${vaultHex}`);
 	const largest = observeAsOf(matches, { vaultHash: vaultHex, referenceSlot: refSlot });
+	const maxStakeWeight = api.consts.cardanoObserver.maxStakeWeight.toBigInt();
 	const m = new Map();
 	for (const [beacon, lovelace] of largest) {
 		const acc = await api.query.cognoGate.accountOf("0x" + beacon);
 		if (acc.isNone) continue; // unbound ⇒ the inherent skips it too
-		m.set(acc.unwrap().toString(), lockToWeight(lovelace));
+		const weight = lockToWeight(lovelace);
+		// Mirror the pallet's MaxStakeWeight SKIP-not-credit (lib.rs observe): an over-cap entry is never
+		// written to ShadowStake (reads 0), so the correctness oracle must skip it too — else it would
+		// flag a spurious recompute disagreement (a false critical alert).
+		if (weight > maxStakeWeight) continue;
+		m.set(acc.unwrap().toString(), weight);
 	}
 	return m;
 }
@@ -160,7 +166,10 @@ async function serve(api) {
 		{ name: "cogno_shadow_recompute_disagree", help: "Accounts where the on-chain inherent projection != an INDEPENDENT Kupo recompute at the same reference — a REAL inherent-correctness defect, not a timing transient", value: metrics.recomputeDisagree },
 		{ name: "cogno_shadow_recompute_ok", help: "1 if the independent recompute leg ran cleanly this cycle, 0 if it errored (e.g. Kupo blip), absent if KUPO unset", value: KUPO ? (metrics.recomputeError ? 0 : 1) : null },
 		{ name: "cogno_shadow_last_update_seconds", help: "Seconds since the diff was last recomputed (liveness)", value: metrics.lastUpdateAt ? (Date.now() - metrics.lastUpdateAt) / 1000 : -1 },
-		...metrics.rows.flatMap((r) => [
+		// Per-account gauges only for LIVE/diverging accounts. Both ShadowStake and AllowedStake are
+		// insert-0-on-unlock-never-delete, so a permanently-cleared account would otherwise accrete a
+		// 0-valued time series forever — drop it from the label set (the aggregate counters still cover it).
+		...metrics.rows.filter((r) => r.inherent !== 0n || r.committee !== 0n).flatMap((r) => [
 			{ name: "cogno_shadow_inherent_weight", help: "Inherent-projected weight per account (lovelace)", labels: { account: r.account }, value: r.inherent },
 			{ name: "cogno_shadow_committee_weight", help: "Committee-written weight per account (lovelace)", labels: { account: r.account }, value: r.committee },
 		]),

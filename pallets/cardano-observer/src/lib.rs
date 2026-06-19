@@ -33,7 +33,9 @@
 //! `check_inherent`'s "every producer re-derives" is load-bearing only with MULTIPLE independent block
 //! producers — on a single-operator stack this is **D4-SHAPED, not D4-TRUST** (it buys consensus-pinned
 //! auditability, not trust). Cutting `set_stake` over to inherent-only is co-sequenced with ≥3
-//! independent producers; until then this pallet runs in shadow (see the runtime wiring, a later step).
+//! independent producers; until then this pallet runs in shadow — the runtime wiring + node IDP are
+//! LIVE, but `EnforceWeight` defaults to `false`, so the inherent only PROJECTS weight (it records
+//! `ShadowStake` without writing `talk_stake`'s `AllowedStake`). The cutover is the `set_enforcement` flip.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -88,9 +90,9 @@ pub struct CardanoObservation {
 	pub entries: alloc::vec::Vec<(BeaconName, u128)>,
 }
 
-/// The inherent error. The node-side `try_handle_error` (a later step) branches on this: `Mismatch`
-/// is propagated (`Some(Err(_))` → block rejected); `CannotVerify` is swallowed (`Some(Ok(()))` →
-/// accept without verifying). A blanket-swallow would defeat the entire fork-protection (§6).
+/// The inherent error. The node-side `try_handle_error` branches on this: `Mismatch` is propagated
+/// (`Some(Err(_))` → block rejected); `CannotVerify` is swallowed (`Some(Ok(()))` → accept without
+/// verifying). A blanket-swallow would defeat the entire fork-protection (§6).
 #[derive(Encode, Decode, Debug)]
 pub enum InherentError {
 	/// The author's observation does not match the importer's own read at the same reference. FATAL.

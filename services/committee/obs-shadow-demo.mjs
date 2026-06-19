@@ -92,7 +92,7 @@ async function main() {
 
 	// 5. Reset to the safe default (shadow) so the chain is not left in an enforce posture.
 	await drive(api, api.tx.cardanoObserver.setEnforcement(false), { operators: ops, via: "sudo", log: () => {} });
-	console.log("  ✓ reset to SHADOW (the safe default)");
+	console.log("  ✓ reset the FLAG to SHADOW (the AllowedStake credited in enforce is left as-is — throwaway chain only)");
 
 	console.log("\n=== MECHANISM PROVEN: the in-protocol observation inherent CAN write talk-stake weight ===");
 	console.log("⚠ NOT a trust property on a single producer — D4-SHAPED, not D4-TRUST. Cutover is gated on");
