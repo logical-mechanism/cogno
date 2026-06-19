@@ -13,11 +13,14 @@ healthy?* — without tailing logs by hand.
 | relayer | `:9101/metrics`, `:9101/healthz` | hand-rolled ([metrics.mjs](../../services/_shared/metrics.mjs)) |
 | follower | `:8090/metrics`, `:8090/health` (live probe) | hand-rolled |
 | indexer | `:3001` | @subql/node admin/health (`up` liveness) |
+| shadow-diff | `:9102/metrics`, `:9102/healthz` | hand-rolled (`shadow-diff.mjs --serve`; optional, D4 observation) |
 
 Key custom metrics: `cogno_relayer_seconds_since_last_anchor`, `cogno_relayer_wallet_lovelace`,
 `cogno_relayer_low_funds`, `cogno_relayer_pending_anchors` / `_failed_anchors`,
 `cogno_relayer_consecutive_errors`, `cogno_relayer_seconds_since_last_loop`;
-`cogno_follower_node_reachable`, `cogno_follower_genesis_ok`, `cogno_follower_nonces_cached`.
+`cogno_follower_node_reachable`, `cogno_follower_genesis_ok`, `cogno_follower_nonces_cached`;
+`cogno_shadow_accounts_disagree`, `cogno_shadow_max_disagree_blocks`, `cogno_shadow_recompute_disagree`
+(in-protocol observation vs committee weight — convergence + an independent-recompute correctness leg).
 
 ## Run it
 
