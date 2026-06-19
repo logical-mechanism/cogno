@@ -34,6 +34,12 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
   const [boundVia, setBoundVia] = useState<BindVia | null>(null);
 
   const refresh = useCallback(() => {
+    // boundVia/boundAddress describe a bind PERFORMED for the current key this session; they are not
+    // re-derivable from chain state. Clear them whenever the key/chain changes (this callback re-runs on
+    // [api, signer.ss58]) so the "fee sponsored by the relay" sub-label can't go stale after a wallet
+    // switch to a different — already-bound — account.
+    setBoundVia(null);
+    setBoundAddress(null);
     if (!api) {
       setBound(null);
       return;

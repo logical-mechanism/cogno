@@ -55,6 +55,10 @@ const GENESIS = (process.env.GENESIS || "").toLowerCase().replace(/^0x/, ""); //
 const MIN_BALANCE = BigInt(process.env.MIN_BALANCE || 1_000_000_000n); // /health: unhealthy below ~this many planck
 const MAX_BODY = 16 * 1024; // /bind body cap (a valid proof is < 1 KB)
 const PROBE_TTL_MS = Number(process.env.HEALTH_PROBE_TTL || 2) * 1000;
+// Bound a single submission so a node that admits the tx but never FINALIZES it (a finality stall on
+// the single-operator chain) can't wedge the serialized /bind queue forever — it fails that one request
+// and frees the queue (mirrors the committee's SUBMIT_TIMEOUT=150 convention).
+const SUBMIT_TIMEOUT_MS = Number(process.env.SUBMIT_TIMEOUT || 150) * 1000;
 
 const stripHex = (h) => String(h).toLowerCase().replace(/^0x/, "");
 
@@ -64,14 +68,17 @@ const counters = { binds_total: 0, binds_ok: 0, binds_rejected: 0, rate_limited:
 
 /**
  * Build the relay's FUNDED submitter signer from RELAY_SEED. This key is NOT privileged — it holds no
- * committee/sudo/FollowerOrigin authority; it only pays fees. Default dev //Alice; set RELAY_SEED to a
- * real funded seed (a `//path` on the dev phrase, or a full mnemonic) in any real deployment.
+ * committee/sudo/FollowerOrigin authority; it only pays fees. Default dev //Bob (a funded endowed dev
+ * account that is NOT the --dev sudo key //Alice); set RELAY_SEED to a real funded seed (a `//path` on
+ * the dev phrase, or a full mnemonic) in any real deployment.
  */
 function makeRelaySigner() {
-	const seed = (process.env.RELAY_SEED || "//Alice").trim();
-	if ((process.env.COGNO_PROFILE || "").toLowerCase() === "prod" && isDevKey(seed))
+	const seed = (process.env.RELAY_SEED || "//Bob").trim();
+	// Refuse a publicly-known dev key under prod — both a `//Name` path AND the raw dev-phrase mnemonic
+	// root (isDevKey only catches the former; the latter derives an equally-public account).
+	if ((process.env.COGNO_PROFILE || "").toLowerCase() === "prod" && (isDevKey(seed) || seed === DEV_PHRASE))
 		throw new Error(
-			`COGNO_PROFILE=prod: RELAY_SEED is a public dev key (${seed}) — refusing to fund binds from a key everyone holds. Set a real funded seed.`,
+			`COGNO_PROFILE=prod: RELAY_SEED is a public dev key (${isDevKey(seed) ? seed : "the dev-phrase mnemonic"}) — refusing to fund binds from a key everyone holds. Set a real funded seed.`,
 		);
 	const isPath = seed.startsWith("//");
 	const derive = sr25519CreateDerive(entropyToMiniSecret(mnemonicToEntropy(isPath ? DEV_PHRASE : seed)));
@@ -105,7 +112,20 @@ async function submitBind(api, signer, { coseSign1, coseKey, thread }) {
 		cose_key: Binary.fromBytes(hexToBytes(coseKey)),
 		thread_pointer: thread ? Binary.fromBytes(hexToBytes(thread)) : undefined,
 	});
-	const res = await tx.signAndSubmit(signer);
+	// PAPI's signAndSubmit resolves on FINALIZATION (or a terminal invalid/dropped status). If the node
+	// admits the tx but finality stalls it neither settles — so race it against a timeout that rejects,
+	// freeing the serialized queue for the next bind rather than wedging it (the timed-out tx may still
+	// land later; the client gets an error and can retry).
+	let timer;
+	const timeout = new Promise((_, rej) => {
+		timer = setTimeout(() => rej(new Error(`bind did not finalize within ${SUBMIT_TIMEOUT_MS / 1000}s`)), SUBMIT_TIMEOUT_MS);
+	});
+	let res;
+	try {
+		res = await Promise.race([tx.signAndSubmit(signer), timeout]);
+	} finally {
+		clearTimeout(timer);
+	}
 	if (!res.ok) return { ok: false, error: stringifyDispatchError(res.dispatchError) };
 	const linked = extractLinked(res.events);
 	if (!linked) return { ok: false, error: "submitted ok but no CognoGate.IdentityLinked event was found" };
@@ -173,12 +193,16 @@ function makeServer(api, relay, rate) {
 				counters.rate_limited++;
 				return send(res, 429, { ok: false, error: "rate limited — slow down (the relay bounds binds per IP)" });
 			}
+			// Count every non-rate-limited POST here so the invariant binds_total == binds_ok +
+			// binds_rejected holds (each terminal path below bumps exactly one of ok/rejected).
+			counters.binds_total++;
 			let raw = "";
 			let aborted = false;
 			req.on("data", (c) => {
 				raw += c;
 				if (raw.length > MAX_BODY) {
 					aborted = true;
+					counters.binds_rejected++;
 					send(res, 413, { ok: false, error: "request body too large" });
 					req.destroy();
 				}
@@ -197,7 +221,6 @@ function makeServer(api, relay, rate) {
 					counters.binds_rejected++;
 					return send(res, 400, { ok: false, error: v.error });
 				}
-				counters.binds_total++;
 				// Submit on the serialized chain (one in-flight bind per relay key). The runtime is the
 				// verifier — a bad proof comes back as a dispatch error (ProofInvalid / WrongGenesis /
 				// IdentityTombstoned / AccountAlreadyBound …), which we relay verbatim to the client.

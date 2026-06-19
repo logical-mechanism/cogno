@@ -25,16 +25,19 @@ const LINKED_EVENT = {
 };
 
 // A mock typed api: System.Account.getValue → { data: { free } }; link_identity_signed(...) → a tx
-// with getEstimatedFees + signAndSubmit (one shared tx object so both methods are observable).
-function mockApi({ free = 0n, fee = 1_000n, submit }: { free?: bigint; fee?: bigint; submit?: unknown } = {}): CognoApi {
+// with getEstimatedFees + signAndSubmit (one shared tx object so both methods are observable). `ed`,
+// when provided, wires constants.Balances.ExistentialDeposit (omitted ⇒ canSelfPayBind treats ED as 0).
+function mockApi({ free = 0n, fee = 1_000n, ed, submit }: { free?: bigint; fee?: bigint; ed?: bigint; submit?: unknown } = {}): CognoApi {
   const tx = {
     getEstimatedFees: vi.fn(async () => fee),
     signAndSubmit: vi.fn(async () => submit ?? { ok: true, events: [LINKED_EVENT] }),
   };
-  return {
+  const api: Record<string, unknown> = {
     query: { System: { Account: { getValue: vi.fn(async () => ({ data: { free } })) } } },
     tx: { CognoGate: { link_identity_signed: vi.fn(() => tx) } },
-  } as unknown as CognoApi;
+  };
+  if (ed !== undefined) api.constants = { Balances: { ExistentialDeposit: vi.fn(async () => ed) } };
+  return api as unknown as CognoApi;
 }
 
 afterEach(() => {
@@ -90,6 +93,12 @@ describe("canSelfPayBind", () => {
   });
   it("false when free balance is below the estimated fee", async () => {
     expect(await canSelfPayBind(mockApi({ free: 500n, fee: 1_000n }), signer, SIGN1, KEY)).toBe(false);
+  });
+  it("false when the fee would dust the account below the existential deposit (routes to relay)", async () => {
+    expect(await canSelfPayBind(mockApi({ free: 1_500n, fee: 1_000n, ed: 1_000n }), signer, SIGN1, KEY)).toBe(false);
+  });
+  it("true when free balance covers fee + ED", async () => {
+    expect(await canSelfPayBind(mockApi({ free: 2_500n, fee: 1_000n, ed: 1_000n }), signer, SIGN1, KEY)).toBe(true);
   });
   it("false (not throw) when the balance read fails", async () => {
     const api = {

@@ -21,9 +21,13 @@ which also rate-limits per-IP) — and the user needs no funds.
 `identity: trustless self-proof (D1, on-chain)` · `relay: sponsored bind — liveness-only fee payer (cannot forge)` · `chain: operator-run (v1)`
 
 The relay is a **LIVENESS party, never a CORRECTNESS party.** The CIP-8 proof cryptographically commits
-`{account, genesis}`, and the **runtime is the sole verifier**, so the relay **cannot forge or retarget
-a binding**, and a tombstoned identity is refused on-chain. A compromised relay key can spam its own
-funds away or refuse service (censor) — it can **not** fabricate a single identity.
+`{account, genesis}`, and the **runtime is the sole verifier**, so the relay **cannot forge an identity
+or change the bound account**, and a tombstoned identity is refused on-chain. A compromised relay key can
+spam its own funds away or refuse service (censor) — it can **not** fabricate a single identity.
+
+> The one field the signature does **not** cover is the optional `thread_pointer` (a non-identity
+> cogno_v3 thread hint) — the relay, like any submitter of `link_identity_signed`, could set or drop it.
+> It carries no identity or capacity weight, and the frontend bind sends none.
 
 > **Contrast the retired follower `POST /bind`** (M2), whose key *was* a correctness party: a follower
 > compromise could forge any identity. D1 removed that. This relay does **not** bring it back — it holds
@@ -50,8 +54,9 @@ Submissions are **serialized** on the single relay key so concurrent POSTs don't
 |---|---|---|
 | `WS` | `ws://127.0.0.1:9944` | the L3 node the relay submits to |
 | `PORT` / `HOST` | `8091` / `127.0.0.1` | listen address (the follower is `8090`) |
-| `RELAY_SEED` | `//Alice` | the **funded** submitter — a `//derivation` or a full mnemonic. **NOT a privileged key.** `COGNO_PROFILE=prod` refuses a public dev seed |
-| `RATE_LIMIT_PER_MIN` | `10` | per-IP cap on `/bind` (anti-abuse / liveness; `0` = off) |
+| `RELAY_SEED` | `//Bob` | the **funded** submitter — a `//derivation` or a full mnemonic. **NOT a privileged key** (the default is `//Bob`, not the `--dev` sudo key `//Alice`). `COGNO_PROFILE=prod` refuses a public dev seed (a `//Name` path or the raw dev-phrase mnemonic) |
+| `RATE_LIMIT_PER_MIN` | `10` | per-IP cap on `/bind`, keyed on the socket peer (anti-abuse / liveness; `0` = off). **Behind a reverse proxy all requests share the proxy's IP** — enforce per-client limits at the proxy in production |
+| `SUBMIT_TIMEOUT` | `150` | seconds before a non-finalizing submission fails that request (frees the serialized queue rather than wedging it on a finality stall) |
 | `MIN_BALANCE` | `1000000000` | planck floor below which `/health` reports unhealthy |
 | `GENESIS` | *(unset)* | if set, refuse to sponsor binds on a chain whose genesis ≠ this (wrong-chain guard) |
 | `CORS_ORIGIN` | `*` | set to your frontend origin in production |

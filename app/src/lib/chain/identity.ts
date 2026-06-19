@@ -111,9 +111,11 @@ export async function submitBindViaRelay(
 }
 
 /**
- * Whether `signer.ss58` can pay the `link_identity_signed` fee from its own free balance. A fresh
- * sign-to-derived posting account holds 0 ⇒ false (route through the relay). Best-effort: any read or
- * fee-estimate failure ⇒ false (prefer the relay over a doomed self-submit).
+ * Whether `signer.ss58` can pay the `link_identity_signed` fee from its own free balance AND stay above
+ * the existential deposit. A fresh sign-to-derived posting account holds 0 ⇒ false (route through the
+ * relay); a *barely*-funded account (free ≥ fee but the fee would dust it below the ED) also routes to
+ * the relay rather than risking a self-submit the runtime rejects. Best-effort: any read or fee-estimate
+ * failure ⇒ false (prefer the relay over a doomed self-submit); an absent ED constant ⇒ treat ED as 0.
  */
 export async function canSelfPayBind(
   api: CognoApi,
@@ -127,7 +129,13 @@ export async function canSelfPayBind(
     const free = acct?.data?.free ?? 0n;
     if (free <= 0n) return false;
     const fee = await buildLinkIdentityTx(api, coseSign1Hex, coseKeyHex, threadHex).getEstimatedFees(signer.ss58);
-    return free >= fee;
+    let ed = 0n;
+    try {
+      ed = await api.constants.Balances.ExistentialDeposit();
+    } catch {
+      ed = 0n; // ED constant unavailable — fall back to the bare fee comparison
+    }
+    return free >= fee + ed;
   } catch {
     return false;
   }

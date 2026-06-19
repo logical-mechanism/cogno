@@ -7,7 +7,10 @@
 // This relay is a LIVENESS party, never a CORRECTNESS party. It blindly pays the tx fee for
 // `cognoGate.link_identity_signed` and relays the user's proof; the RUNTIME is the sole verifier
 // (`pallet_cogno_gate::cip8`). The CIP-8 proof cryptographically commits {account, genesis}, so the
-// relay CANNOT forge or retarget a binding, and a tombstoned identity is refused on-chain. A
+// relay CANNOT forge an identity or change the bound account, and a tombstoned identity is refused
+// on-chain. (The one field the signature does NOT cover is the optional `thread_pointer` — a
+// non-identity cogno_v3 thread hint the relay, like any submitter, could set or drop; it carries no
+// identity or capacity weight, and the frontend bind sends none.) A
 // compromised relay key can spam its own funds away or refuse service (censor) — it can NOT fabricate
 // a single identity. (Contrast the RETIRED follower POST /bind, whose key WAS a correctness party:
 // compromise ⇒ forge any identity.) The validation below is ANTI-ABUSE only — to avoid wasting the

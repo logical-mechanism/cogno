@@ -116,10 +116,13 @@ trustlessly — `app/src/lib/chain/identity.ts → submitBindSponsored`).
 
 - **The DoS defence is intact** — *someone* always pays (the relay, which also rate-limits per-IP).
 - **The relay is a LIVENESS party, never a CORRECTNESS party.** The proof commits `{account, genesis}`
-  and the **runtime is the sole verifier**, so the relay **cannot forge or retarget** a binding, and a
-  tombstoned identity is refused on-chain. A compromised relay key can spam its own funds or censor — it
-  can **not** fabricate a single identity. (It holds **no** committee/sudo/`FollowerOrigin` authority;
-  contrast the *retired* follower `POST /bind`, whose key **was** a correctness party.)
+  and the **runtime is the sole verifier**, so the relay **cannot forge an identity or change the bound
+  account**, and a tombstoned identity is refused on-chain. A compromised relay key can spam its own
+  funds or censor — it can **not** fabricate a single identity. (It holds **no** committee/sudo/
+  `FollowerOrigin` authority; contrast the *retired* follower `POST /bind`, whose key **was** a
+  correctness party.) The only field the signature does **not** cover is the optional `thread_pointer`
+  (a non-identity cogno_v3 thread hint), which the relay — like any submitter — could set or drop; it
+  carries no identity or capacity weight, and the frontend bind sends none.
 
 Proven live by `app/scripts/d1-bind-funding-acceptance.mjs`: a brand-new **zero-balance** account binds
 through the relay (the relay payer's balance drops; the bound account stays at 0), posts **feelessly**,
