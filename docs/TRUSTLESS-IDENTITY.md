@@ -98,9 +98,33 @@ implementations agreeing on real bytes.
 
 `link_identity_signed` is **not feeless** — the signed submitter pays, so a junk-proof spammer pays. The
 FRAME-benchmarked weight is **≈ 67.85 µs / 6 reads / 5 writes** (the `ed25519_verify` + 2× blake2 + the
-bounded CBOR/address/payload parse, on top of `do_bind`). On a testnet showcase the user's derived posting
-account must hold a small balance to pay this fee (a faucet concern); the bound account == the submitter
-in the frontend flow, but a third party *may* pay for someone else's bind (the proof fixes the target).
+bounded CBOR/address/payload parse, on top of `do_bind`). The bound account == the submitter in the
+frontend flow, but a third party *may* pay for someone else's bind because **the proof fixes the
+target** — this is what makes the funding gap solvable without trust (next section).
+
+## Bind funding (D1 bind-funding) — the Sponsored-Bind Relay
+
+A consequence of "not feeless": the user's freshly sign-to-derived posting account has **zero balance**
+on a new chain, so it cannot pay the fee — a real new user can't complete a bind in the browser. This is
+a **usability** gap, not a correctness bug (the on-chain mechanism is proven by `d1-acceptance.mjs`,
+which used a funded submitter).
+
+It is closed by `services/sponsored-bind-relay/` — a small **funded** service that accepts a signed
+proof and submits `link_identity_signed` with its **own** key, paying the fee. The frontend POSTs the
+proof to the relay instead of self-submitting (balance-aware: a *funded* account still self-submits
+trustlessly — `app/src/lib/chain/identity.ts → submitBindSponsored`).
+
+- **The DoS defence is intact** — *someone* always pays (the relay, which also rate-limits per-IP).
+- **The relay is a LIVENESS party, never a CORRECTNESS party.** The proof commits `{account, genesis}`
+  and the **runtime is the sole verifier**, so the relay **cannot forge or retarget** a binding, and a
+  tombstoned identity is refused on-chain. A compromised relay key can spam its own funds or censor — it
+  can **not** fabricate a single identity. (It holds **no** committee/sudo/`FollowerOrigin` authority;
+  contrast the *retired* follower `POST /bind`, whose key **was** a correctness party.)
+
+Proven live by `app/scripts/d1-bind-funding-acceptance.mjs`: a brand-new **zero-balance** account binds
+through the relay (the relay payer's balance drops; the bound account stays at 0), posts **feelessly**,
+the relay relays a chain rejection (`AccountAlreadyBound`) **verbatim** (it cannot force a re-bind), and
+400s a malformed proof before paying. See `services/sponsored-bind-relay/README.md`.
 
 ## Live proof (`app/scripts/d1-acceptance.mjs`)
 
