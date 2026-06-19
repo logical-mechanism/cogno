@@ -22,6 +22,7 @@ Uses **`@polkadot/api`** (dynamic metadata — auto-exposes the spec-106 `follow
 | `op.mjs` | general CLI — drive ANY privileged call via committee or sudo |
 | `sync-weight.mjs` | the FOLLOWER's `set_stake` (+ battery), committee-driven (Kupo live mode or dev `--account/--weight`) |
 | `shadow-diff.mjs` | in-protocol-observation **D4 shadow validation** — diffs the inherent's `cardanoObserver.ShadowStake` projection vs the committee's `talkStake.AllowedStake` (+ an independent Kupo recompute oracle). One-shot JSON, or `--serve` for Prometheus `:9102`. Convergence (committee leg) is eventual, not a correctness proof; a recompute disagreement IS a defect |
+| `obs-shadow-demo.mjs` | live acceptance for the D4 shadow→enforce path — binds the live vault beacon, proves SHADOW projects-without-applying then ENFORCE applies (`credited=1`), resets to shadow. Mechanism proof only (D4-SHAPED on a single producer) |
 | `m6-track2.mjs` | Track 2 live acceptance (set_stake + anchor_ack + add/remove_validator via committee) |
 | `m6-validators.mjs` | Track 1 live acceptance (the on-chain mutable-validator checks) |
 | `run-m6-track1.sh` | Track 1 orchestrator — stands up a 3-node `local` network + runs the acceptance |
