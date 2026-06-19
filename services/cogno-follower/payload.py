@@ -1,7 +1,7 @@
-"""The PINNED v1 CIP-8 bind payload (DR-02) — the single source of truth for the bytes the
-user signs. A two-sided, byte-exact agreement with the frontend's MeshJS `signData`, proven in
-`test_agreement.py` (the frontend signs exactly what `GET /nonce` returns from `build()`, and
-`POST /bind` re-derives the same string here).
+"""The PINNED CIP-8 bind payload (DR-02) — the single source of truth for the bytes the user signs.
+A byte-exact agreement across three implementations: the frontend's MeshJS `signData`, the on-chain
+verifier's `parse_payload` (`pallet_cogno_gate::cip8`, which is what production checks now), and the
+independent reference verifier here (`build`/`parse`, proven in `test_agreement.py`).
 
     cogno-chain/bind/v1;genesis=<64hex>;account=<64hex>;nonce=<hex>
 
@@ -13,10 +13,12 @@ Fields (DR-02 — what the signature COMMITS, so bind-hijack is PREVENTED, not j
   - domain  'cogno-chain/bind/v1'  — domain separation (this signature is a cogno-chain bind, v1)
   - genesis  the L3 genesis block hash, lowercase hex, 64 chars, no 0x  — anti-cross-chain
   - account  the 32-byte sr25519 posting pubkey, lowercase hex, 64 chars — commits the bind target
-  - nonce    the follower-issued nonce, 16-byte lowercase hex, 32 chars  — anti-replay
+  - nonce    a 16-byte lowercase-hex value, 32 chars — FORMAT-checked only (D1). Replay is now
+             prevented on-chain by the pallet's 1:1 maps + permanent tombstone, not by a server
+             nonce cache; the field is retained so the signed-payload grammar stays fixed.
 
-The nonce length is PINNED to exactly 32 hex chars (the `secrets.token_hex(16)` the follower issues),
-so the parser can't be fed an arbitrarily long nonce field (follower-6).
+The nonce length is PINNED to exactly 32 hex chars, so neither the on-chain parser nor this reference
+parser can be fed an arbitrarily long nonce field (follower-6).
 """
 import re
 

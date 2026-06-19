@@ -1,84 +1,80 @@
-# Cogno-Follower (M2)
+# Cogno-Follower (M2 → D1: read-only helper)
 
-The off-chain bridge that turns a real Cardano **CIP-8 signature** into a 1:1 identity binding on
-the cogno-chain L3. This is the "Cardano READ link" — it lets a user prove control of a Cardano
-owner Address and bind it to their Substrate posting account, so one Cardano identity ⇒ one
-posting account (the anti-Sybil anchor).
+Originally the off-chain bridge that turned a Cardano **CIP-8 signature** into a 1:1 identity binding
+on the cogno-chain L3. **As of D1 (trustless identity) the bind WRITE path is retired:** binding is now
+the permissionless on-chain self-proof `cognoGate.link_identity_signed`, where the runtime itself
+verifies the CIP-8 (COSE_Sign1) wallet signature (`pallet_cogno_gate::cip8`). No trusted off-chain
+writer exists, so the follower is now a small **read-only helper** (genesis/payload + health), not a
+binding oracle.
 
-## v1 trust posture — named honestly (DR-07)
+## Trust posture — named honestly
 
-`follower: trusted (v1)` · `chain: operator-run (v1)`
+`identity: trustless self-proof (D1, on-chain)` · `follower: read-only helper (v1)` · `chain: operator-run (v1)`
 
-The follower is a **single trusted oracle**: it both runs the CIP-8 verification *and* is the sole
-writer of bindings (via `FollowerOrigin`, which is `EnsureRoot`/sudo in v1 dev). A malicious or
-buggy follower could fabricate bindings. What the design **prevents** (not just detects) in v1: the
-committed payload binds `{sr25519 account + L3 genesis + nonce}` *inside* the signature, so the
-follower cannot re-point an honest user's proof at a different account, and the on-chain 1:1 anchor
-rejects double-binds. The on-chain ed25519 self-proof that would remove the follower from the trust
-path entirely is the **deferred D1** upgrade; a 3-of-5 k-of-t `FollowerOrigin` is **D2** (before any
-mainnet). Not "decentralized", not "trustless" — said plainly.
+The follower can no longer fabricate bindings — it does not write the chain. Identity correctness is
+re-verified by every full node from the user's own wallet signature. (A 3-of-5 k-of-t `FollowerOrigin`
+is **D2**; it now gates only `revoke`, the moderation ban. The CIP-8 verifier is the anti-Sybil crown
+jewel and is **NOT externally audited** — `MAINNET PREREQUISITE`, see `pallet_cogno_gate::cip8` +
+`docs/TRUSTLESS-IDENTITY.md`.)
 
-## The CIP-8 verify path (reused, not reimplemented)
+## The pinned committed payload (DR-02) — still the canon, now signed by the user
 
-Uses `pycardano.cip.cip8.verify` — the **proven** path from cogno_v3 (`verify_view.py`), pinned to
-`pycardano==0.13.0`. On top of `verify()`'s own checks (Ed25519 + the COSE-header address hashes to
-the signing key) the follower asserts the cogno-chain binding invariants (see `verify.py`).
-
-## The pinned committed payload (DR-02) — a two-sided byte-exact agreement
-
-The exact UTF-8 string the user signs (must be UTF-8: pycardano returns `payload.decode("utf-8")`):
+The exact UTF-8 string the user's wallet signs (the on-chain verifier parses the identical grammar):
 
 ```
-cogno-chain/bind/v1;genesis=<64hex>;account=<64hex>;nonce=<hex>
+cogno-chain/bind/v1;genesis=<64hex>;account=<64hex>;nonce=<32hex>
 ```
 
-`genesis` (anti-cross-chain) · `account` = the 32-byte sr25519 posting pubkey (commits the bind
-target, anti-hijack) · `nonce` (anti-replay, single-use, 300s). The frontend's MeshJS `signData`
-and this follower's pycardano verify agree on these bytes **byte-for-byte** — proven in
-`test_agreement.py`. The identity key bound on-chain is `blake2b_256(serialized owner Address)`
-(== the L1 beacon `token_name`, DR-01), proven identical across MeshJS `Address.toBytes()` and
-pycardano `Address.to_primitive()`.
+`genesis` (anti-cross-chain — must be THIS chain's block-0 hash) · `account` = the 32-byte sr25519
+posting pubkey the bind commits to · `nonce` (format-checked only — replay is now prevented by the
+pallet's 1:1 maps + permanent tombstone, not a server cache). The identity bound on-chain is
+`blake2b_256(plutus_data_cbor(owner Address))` (== the L1 beacon `token_name`, DR-01), reproduced
+byte-exact by the on-chain verifier and by `beacon.py` (`test_beacon.py`).
+
+## The independent reference verifier (kept as a cross-impl oracle)
+
+`verify.py` + `beacon.py` are a SECOND, independent implementation of the on-chain verifier's checks
+(pycardano CIP-8 + the binding invariants + the beacon-name identity). They are **not** on any
+production write path — they exist so CI (`test_agreement.py`) can prove an independent implementation
+agrees with the on-chain verifier on real MeshJS fixtures and rejects adversarial proofs. Cross-impl
+agreement is the safety net for the unaudited on-chain crown-jewel verifier.
 
 ## API
 
 | Route | | |
 |---|---|---|
-| `GET /health` (`/healthz`) | → `{ ok, node_reachable, genesis_ok, current_genesis, genesis, nonces_cached, badges, … }`; **503** when unhealthy | LIVE probe: re-checks the node + genesis each call (not a boot cache) |
-| `GET /metrics` | → Prometheus text (`cogno_follower_up`, `_node_reachable`, `_genesis_ok`, `_nonces_cached`) | scrape target |
-| `GET /nonce?account=<sr25519_hex>` | → `{ nonce, genesis, ttl, payload }` | issue a nonce + the **exact** payload to sign |
-| `POST /bind` | `{ signature, key, signing_address, sr25519_pubkey, thread_pointer? }` → `{ ok, identity_hash, account, error? }` | verify the CIP-8 proof + submit `link_identity` |
+| `GET /health` (`/healthz`) | → `{ ok, node_reachable, genesis_ok, current_genesis, genesis, badges, … }`; **503** when unhealthy | LIVE probe: re-checks the node + genesis each call |
+| `GET /metrics` | → Prometheus text (`cogno_follower_up`, `_node_reachable`, `_genesis_ok`) | scrape target |
+| `GET /nonce?account=<sr25519_hex>` | → `{ nonce, genesis, payload }` | stateless convenience: the exact payload to sign + the live genesis (the client may build this itself) |
+| `POST /bind` | → **410 Gone** | retired (D1): submit `cognoGate.link_identity_signed` on-chain instead |
 
-`signature`/`key` are the CIP-30 `DataSignature` from `signData`. The follower NEVER receives a
-private key; it submits `link_identity` via the **3-of-5 committee** by default (`FOLLOWER_VIA=committee`,
-holding `COMMITTEE_SEEDS`, **not** the chain's full sudo key) — set `FOLLOWER_VIA=sudo` for the dev
-fallback. `/bind` + `/nonce` are rate-limited per-IP, the body is size-capped, and concurrent binds are
-bounded (`RATE_LIMIT_PER_MIN` / `MAX_BODY_BYTES` / `MAX_INFLIGHT`); `HOST` + `CORS_ORIGIN` are configurable.
+`/nonce` is rate-limited per-IP (`RATE_LIMIT_PER_MIN`); `HOST` + `CORS_ORIGIN` are configurable. The
+follower needs no signing key, no `WS`, no committee/sudo seeds — it only reads the node genesis.
 
 ## Run
 
 ```bash
-# 1. a cogno-chain --dev node on :9944   (spec_version >= 103)
+# 1. a cogno-chain --dev node on :9944   (spec_version >= 108)
 # 2. the follower (reuses cogno_v3's venv by default):
 ./run.sh
-# 3. prove it end-to-end (real headless-MeshJS CIP-8 → verify → submit → on-chain readback → post):
-cd ../../app && node scripts/m2-follower-e2e.mjs
-# verify-only unit + negative tests (no node needed):
+# 3. read-only-helper unit tests (no node needed):
+<venv>/bin/python test_http.py
+# 4. the independent reference verifier — agreement + negative tests (needs node for the fixture gen):
 <venv>/bin/python test_agreement.py
 ```
 
-## ⚠ Dev shortcuts (named, to be removed before any real deployment)
+## ⚠ Dev shortcuts (named)
 
 - Plain **HTTP** + permissive CORS (localhost showcase). Prod = HTTPS-only, pinned origin.
-- Bindings are written through **sudo** (`//Alice`); the dedicated `EnsureSignedBy<FollowerKey>`
-  arm + an HSM/k-of-t key is the D2 hardening.
-- **No Cardano vault observed yet** (wallet-only CIP-8, DR-14). The recovered owner Address is
-  self-asserted; cross-checking it against an on-chain `talk_vault` UTxO (and sourcing *weight*
-  from the locked ADA) is **M2d** — see the seam in `verify.py`.
+- The Cardano vault→weight oracle (`vault.py`, M2d — unrelated to identity binding) still self-asserts
+  the owner Address; sourcing *weight* from a buried `talk_vault` UTxO is the separate weight track.
 
 ## Files
 
-- `payload.py` — the pinned payload (single source of truth: build + parse)
-- `verify.py` — the CIP-8 + binding-invariant verification (pure, testable)
-- `follower.py` — the HTTP service (nonce cache + `/bind` → PAPI submit subprocess)
-- `test_agreement.py` — both-sides-agree + the wrong-address/tamper negative tests
-- submit path: `../../app/scripts/submit-link.mjs` (proven PAPI sudo `link_identity`)
+- `payload.py` — the pinned bind-payload grammar (single source of truth: build + parse)
+- `verify.py` / `beacon.py` — the independent REFERENCE CIP-8 verifier + beacon-name identity hash
+  (cross-impl oracle for the on-chain `pallet_cogno_gate::cip8`; not a production writer)
+- `follower.py` — the read-only HTTP helper (`/health`, `/metrics`, `/nonce`; `/bind` → 410 Gone)
+- `vault.py` — the M2d vault→weight oracle (separate track, unaffected by D1)
+- `test_agreement.py` — cross-impl agreement + the wrong-address/tamper negative tests
+- `test_http.py` — the follower's remaining pure logic (rpc retry + health decision)
