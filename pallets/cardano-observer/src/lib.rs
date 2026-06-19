@@ -65,8 +65,12 @@ pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"cgnoobsv";
 pub type BeaconName = [u8; 32];
 
 /// The stable Cardano reference the observation was taken as-of (carried in the inherent). The `slot`
-/// is a deterministic function of the PARENT block (so author + importer agree; §5.1); `block_hash` is
-/// for the node-side point-existence check (not consensus-load-bearing inside the runtime).
+/// is a deterministic function of the PARENT block (so author + importer agree; §5.1) and IS the
+/// consensus anchor. `block_hash` carries the node's Kupo checkpoint-tip header hash — a node-LOCAL
+/// diagnostic that legitimately varies by Kupo config / sync position, so [`ProvideInherent::check_inherent`]
+/// compares only `slot` + `entries`, never `block_hash` (including it would spuriously fork two honest
+/// nodes that agree on the stable read). The node-side point-existence guard (a Kupo that is BEHIND the
+/// reference abstains rather than returning a partial set) lives in the IDP, not here.
 #[derive(
 	Encode, Decode, DecodeWithMemTracking, Clone, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen, Default,
 )]
@@ -432,7 +436,11 @@ pub mod pallet {
 				Some(o) => o,
 				None => return Err(InherentError::CannotVerify),
 			};
-			if *reference == local.reference && entries.as_slice() == local.entries.as_slice() {
+			// Compare the reference SLOT + the canonical entries only — NOT `block_hash` (a node-local Kupo
+			// checkpoint-tip diagnostic, see [`CardanoRef`]). The slot is the consensus anchor; the entries
+			// are the verified read. A behind/forked importer never reaches a FALSE mismatch here because
+			// its IDP abstains (→ CannotVerify) when its Kupo has not indexed past the reference.
+			if reference.slot == local.reference.slot && entries.as_slice() == local.entries.as_slice() {
 				Ok(())
 			} else {
 				Err(InherentError::Mismatch)

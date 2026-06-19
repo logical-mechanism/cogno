@@ -97,6 +97,29 @@ fn check_inherent_mismatch_is_fatal() {
 }
 
 #[test]
+fn check_inherent_ignores_block_hash_diagnostic() {
+	new_test_ext().execute_with(|| {
+		// The importer's local read agrees on the reference SLOT and the entries but carries a DIFFERENT
+		// block_hash (its own Kupo checkpoint-tip — a node-local diagnostic). This must be accepted, never
+		// a Mismatch: block_hash is not consensus-load-bearing (only slot + entries are).
+		let local = CardanoObservation {
+			reference: CardanoRef { slot: 1000, block_hash: [0x11; 32] },
+			entries: vec![(A, 200_000_000)],
+		};
+		let mut id = InherentData::new();
+		put_obs(&mut id, &local);
+		let call = crate::Call::<Test>::observe {
+			reference: CardanoRef { slot: 1000, block_hash: [0x22; 32] }, // different hash, same slot
+			entries: entries(&[(A, 200_000_000)]),
+		};
+		assert!(
+			<CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok(),
+			"identical slot + entries with a differing block_hash must be accepted"
+		);
+	});
+}
+
+#[test]
 fn check_inherent_cannot_verify_when_local_source_behind_is_non_fatal() {
 	new_test_ext().execute_with(|| {
 		// The importer has NO local observation (its Cardano source is behind/down) ⇒ CannotVerify,

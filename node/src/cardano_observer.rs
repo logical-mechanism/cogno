@@ -8,9 +8,10 @@
 //! (`observeAsOf` / `cardanoReferenceSlot`) — kept logically identical so the off-chain shadow-diff
 //! aligns; consensus determinism rests on every validator running this same node code.
 //!
-//! **This module is the pure core + the `InherentDataProvider` wrapper.** The live Kupo fetch and the
-//! `service.rs` closure wiring (deriving the reference from the parent block, both the import and
-//! authoring `CreateInherentDataProviders`) are the next increment.
+//! **This module is the pure core + the live Kupo IO + the `InherentDataProvider` wrapper.** The
+//! `service.rs` closures derive the reference slot from the parent block and call [`fetch_kupo_tip`]
+//! (the point-existence guard — a Kupo that has not indexed PAST the reference abstains rather than
+//! returning a partial set) then [`fetch_kupo_matches`] (the as-of-reference read).
 
 use codec::Decode;
 use pallet_cardano_observer::{
@@ -186,6 +187,57 @@ pub async fn fetch_kupo_matches(
 		.ok_or_else(|| format!("kupo /matches did not return an array for {vault_policy_hex}"))
 }
 
+/// PURE: extract the most-recent indexed point (max `slot_no` + its `header_hash`) from a Kupo
+/// `/checkpoints` JSON array. Defensive against ORDERING (takes the max over ALL elements — never assumes
+/// the array is sorted or that `[0]` is the tip; mis-taking a min would let a behind node wrongly think
+/// it is caught up, re-introducing the false-Mismatch bug) and against number-vs-string encodings
+/// (reuses [`as_u64`]). `None` unless the value is a non-empty array with at least one valid `slot_no`.
+/// The header hash is a node-LOCAL diagnostic (→ `CardanoRef.block_hash`, never consensus-compared); an
+/// unparseable hash degrades to `[0; 32]` but does NOT discard the load-bearing slot.
+pub fn parse_checkpoint_tip(value: &serde_json::Value) -> Option<(u64, [u8; 32])> {
+	let arr = value.as_array()?;
+	let mut best: Option<(u64, [u8; 32])> = None;
+	for c in arr {
+		let slot = match c.get("slot_no").and_then(as_u64) {
+			Some(s) => s,
+			None => continue,
+		};
+		if best.map_or(true, |(b, _)| slot > b) {
+			let hash = c
+				.get("header_hash")
+				.and_then(|h| h.as_str())
+				.and_then(hex32)
+				.unwrap_or([0u8; 32]);
+			best = Some((slot, hash));
+		}
+	}
+	best
+}
+
+/// Read this node's own Kupo `/checkpoints` and return its most-recent indexed point (tip slot + header
+/// hash) — the point-existence / freshness guard (design §5.4 / open-question 7). The caller abstains
+/// (emits the empty observation) when the tip slot is BEHIND the reference, so a lagging Kupo defers
+/// (→ `CannotVerify`, accept) instead of returning a partial UTxO set that would trigger a FALSE fatal
+/// `Mismatch` on import. Bounded by a short timeout; any error (down / non-2xx / empty / non-array) is
+/// returned so the caller fails closed. Done BEFORE the `/matches` read so a degraded Kupo short-circuits.
+pub async fn fetch_kupo_tip(kupo_url: &str) -> Result<(u64, [u8; 32]), String> {
+	let url = format!("{}/checkpoints", kupo_url.trim_end_matches('/'));
+	let resp = reqwest::Client::new()
+		.get(&url)
+		.timeout(core::time::Duration::from_secs(2))
+		.send()
+		.await
+		.map_err(|e| format!("kupo /checkpoints request failed ({url}): {e}"))?;
+	if !resp.status().is_success() {
+		return Err(format!("kupo HTTP {} for {url}", resp.status()));
+	}
+	let text =
+		resp.text().await.map_err(|e| format!("kupo /checkpoints body read failed: {e}"))?;
+	let v: serde_json::Value = serde_json::from_str(&text)
+		.map_err(|e| format!("kupo /checkpoints JSON parse failed: {e}"))?;
+	parse_checkpoint_tip(&v).ok_or_else(|| format!("kupo /checkpoints had no usable tip for {url}"))
+}
+
 /// The node-side `InherentDataProvider` for the Cardano observation. Holds the observation this node
 /// computed, or `None` when its own Kupo source is behind/down (fail-closed — provide nothing, so the
 /// author emits no inherent and the chain stays live).
@@ -237,7 +289,6 @@ mod tests {
 	// preprod anchor (matches the runtime config); a small mock stability window.
 	const SHELLEY_UNIX: u64 = 1_655_769_600;
 	const SHELLEY_SLOT: u64 = 86_400;
-	const STABILITY: u64 = 1_000;
 	const VAULT: &str = "168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7";
 	const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 	const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -319,6 +370,30 @@ mod tests {
 			"created_at": { "slot_no": 1 }, "spent_at": serde_json::Value::Null,
 		});
 		assert!(observe_as_of(&[m], VAULT, r).is_empty());
+	}
+
+	#[test]
+	fn parse_checkpoint_tip_takes_the_max_slot_regardless_of_order_or_encoding() {
+		let hh = "2a6081ac666ab5ec49467675d63271eb1feca6e37d381acd63dd9d41f2353dbb";
+		// Descending order: the tip (max slot) is NOT element [0].
+		let desc = json!([
+			{ "slot_no": 200, "header_hash": hh },
+			{ "slot_no": 100, "header_hash": "aa".repeat(32) },
+		]);
+		assert_eq!(parse_checkpoint_tip(&desc), Some((200, hex32(hh).unwrap())));
+		// Ascending order + a string-encoded slot_no (Kupo's int encoding is not stable across versions).
+		let asc = json!([
+			{ "slot_no": "100", "header_hash": "aa".repeat(32) },
+			{ "slot_no": "300", "header_hash": hh },
+		]);
+		assert_eq!(parse_checkpoint_tip(&asc), Some((300, hex32(hh).unwrap())));
+		// An unparseable header hash degrades to [0;32] but keeps the (load-bearing) slot.
+		let bad_hash = json!([{ "slot_no": 42, "header_hash": "not-hex" }]);
+		assert_eq!(parse_checkpoint_tip(&bad_hash), Some((42, [0u8; 32])));
+		// Empty / non-array / no valid slot ⇒ None (caller fails closed → abstain).
+		assert_eq!(parse_checkpoint_tip(&json!([])), None);
+		assert_eq!(parse_checkpoint_tip(&json!({ "slot_no": 1 })), None);
+		assert_eq!(parse_checkpoint_tip(&json!([{ "header_hash": hh }])), None);
 	}
 
 	#[test]

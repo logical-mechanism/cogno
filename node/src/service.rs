@@ -12,7 +12,7 @@ use sp_consensus_aura::sr25519::AuthorityPair as AuraPair;
 use std::{sync::Arc, time::Duration};
 // in-protocol-observation (D4): the node-side Cardano-observation InherentDataProvider wiring.
 use crate::cardano_observer::{
-	build_observation, fetch_kupo_matches, hex_encode, reference_slot,
+	build_observation, fetch_kupo_matches, fetch_kupo_tip, hex_encode, reference_slot,
 	CardanoObservationInherentDataProvider,
 };
 use pallet_cardano_observer::{CardanoObserverApi, CardanoRef};
@@ -73,15 +73,34 @@ async fn build_cardano_idp(
 		Some(r) => r,
 		None => return empty,
 	};
-	// 4. read this node's own Kupo as-of the reference + reduce (fail-closed on any read error).
 	let kupo = std::env::var("KUPO_URL")
 		.or_else(|_| std::env::var("KUPO"))
 		.unwrap_or_else(|_| "http://127.0.0.1:1442".to_string());
 	let vault_hex = hex_encode(&config.vault_policy_id);
+	// 4. point-existence guard (§5.4): only trust the read if THIS node's Kupo has indexed PAST the
+	//    reference. A behind Kupo must ABSTAIN (→ the runtime's CannotVerify accept/defer path) rather
+	//    than return a partial UTxO set that would trigger a FALSE fatal Mismatch on import. Checked FIRST
+	//    (cheap) so a degraded Kupo short-circuits before the /matches read. The tip header hash becomes
+	//    `CardanoRef.block_hash` (a node-local diagnostic, never consensus-compared).
+	let (tip_slot, tip_hash) = match fetch_kupo_tip(&kupo).await {
+		Ok(t) => t,
+		Err(e) => {
+			log::warn!(target: "cardano-observer", "Kupo tip read failed: {e} — abstaining (empty observation)");
+			return empty;
+		},
+	};
+	if tip_slot < ref_slot {
+		log::debug!(
+			target: "cardano-observer",
+			"Kupo tip slot {tip_slot} < reference {ref_slot} — source behind, abstaining (defer/CannotVerify)",
+		);
+		return empty;
+	}
+	// 5. read this node's own Kupo as-of the reference + reduce (fail-closed on any read error).
 	match fetch_kupo_matches(&kupo, &vault_hex, ref_slot).await {
 		Ok(matches) => {
 			let obs = build_observation(
-				CardanoRef { slot: ref_slot, block_hash: [0u8; 32] },
+				CardanoRef { slot: ref_slot, block_hash: tip_hash },
 				&matches,
 				&vault_hex,
 			);
