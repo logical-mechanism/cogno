@@ -18,6 +18,13 @@ Wants=network-online.target
 Type=exec
 User=cogno
 Group=cogno
+# The observer (in-protocol Cardano weight, D4) reads the read-only Cardano db-sync at DBSYNC_URL from the
+# shared EnvironmentFile. The leading `-` makes it OPTIONAL: a missing file or an unset DBSYNC_URL is NOT
+# fatal — the observer simply ABSTAINS (empty observation, non-fatal) and the node keeps producing +
+# finalizing. The node consumes only DBSYNC_URL (+ optional RUST_LOG) from this file; db-sync must be FULL /
+# tx_in-enabled (see deploy/README.md + .env.example). Without this line the observer logs
+# "no DBSYNC_URL/DBSYNC set — abstaining" and credits nothing.
+EnvironmentFile=-/etc/cogno/cogno.env
 # --state-pruning/--blocks-pruning archive: the SubQuery indexer reads historical state, and with a
 #   single validator the node DB is the sole copy of chain history (back it up — see deploy/README).
 # RPC/Prometheus bind to localhost by default; the local services connect over 127.0.0.1. Public
