@@ -157,7 +157,7 @@ This ships **enabled on testnet** as an honestly-labelled proof-of-concept; an i
 - **Committed nonce.** The payload nonce is now **format-checked only** — replay is prevented by the 1:1
   maps + the permanent tombstone, not by a server nonce cache (the follower's nonce cache is removed).
 - **Ariadne / SPO-graduation** for the *weight* path is separate (see `L3-SPO-graduation.md`); identity
-  binding needs no Cardano observation at all (it is a pure signature — no Kupo/Ogmios).
+  binding needs no Cardano observation at all (it is a pure signature — no db-sync/Ogmios).
 - **Trust-ladder / merge note:** the **in-protocol weight observation** branch (PR #10) also targeted
   spec 108 and merged to `main` first. This branch merged second, so the combined runtime (the trustless
   gate **and** the `cardanoObserver` pallet @16) bumped to **spec 109** and the PAPI descriptors were

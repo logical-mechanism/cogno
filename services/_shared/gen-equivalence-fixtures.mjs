@@ -27,8 +27,8 @@ const B = "bb".repeat(32); // beacon B
 const C = "cc".repeat(32); // beacon C
 const OTHER = "ff".repeat(28); // a non-vault policy id
 
-// A Kupo-shaped /matches entry: exactly one vault beacon at qty 1, `coins` lovelace (string, as Kupo
-// encodes it), created/spent slots, optional extra (non-vault or second-vault) assets. Mirrors the `mk`
+// A vault match entry: exactly one vault beacon at qty 1, `coins` lovelace (string, as db-sync encodes
+// it), created/spent slots, optional extra (non-vault or second-vault) assets. Mirrors the `mk`
 // in observation.test.mjs and the field layout node/src/cardano_observer.rs::observe_as_of reads.
 const mk = (beacon, coins, { created = 0, spent = null, extra = {}, tx = "tx", ix = 0 } = {}) => ({
 	transaction_id: tx,

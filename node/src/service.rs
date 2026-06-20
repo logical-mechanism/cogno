@@ -81,8 +81,8 @@ async fn build_cardano_idp(
 	}
 	let vault_hex = hex_encode(&config.vault_policy_id);
 	// 4. ONE consistent-snapshot db-sync read: freshness tip + the deterministic stable-block anchor + the
-	//    vault matches (Kupo-shaped JSON). A single MVCC snapshot, so the tip/anchor/matches cannot diverge
-	//    across an inter-call rollback (this closes the old Kupo tip→matches TOCTOU residual entirely).
+	//    vault matches. A single MVCC snapshot, so the tip/anchor/matches cannot diverge across an
+	//    inter-call rollback (one atomic view).
 	let read = match dbsync::read_observation(&dbsync_url, &vault_hex, ref_slot).await {
 		Ok(r) => r,
 		Err(e) => {
@@ -118,7 +118,7 @@ async fn build_cardano_idp(
 			return empty;
 		},
 	};
-	// 5. reduce the db-sync matches (the pure reduction is UNCHANGED — only the source moved from Kupo).
+	// 5. reduce the db-sync matches (the pure reduction is the canonical largest-wins-per-beacon fold).
 	let obs = build_observation(
 		CardanoRef { slot: ref_slot, block_hash: anchor_hash },
 		&read.matches,

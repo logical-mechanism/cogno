@@ -84,7 +84,7 @@
 > - **`thread_pointer` storage = `ConstU32<10>` (10 hex) with an optional bind field
 >   (DR-23)** — matches §5.5; the "never `<4>`" warning stands.
 > - **Network = preprod (DR-31); reference indexer = SubQuery (DR-27); archive is COMMITTED
->   in v1 (DR-08); Kupo optional cross-check, NO Blockfrost as a sole source / default read
+>   in v1 (DR-08); db-sync optional cross-check, NO Blockfrost as a sole source / default read
 >   = L3 `AllowedStake` (DR-33).** Tightens §8.2/§10.3/§13 Q5 (drop the Blockfrost-as-option
 >   ambiguity) and §10.4 ("open in principle" is now backed by a committed archive). The
 >   Tier-B indexer named in §2.3/§8.2 is SubQuery.
@@ -149,7 +149,7 @@
   partial-withdraw inter-tx marker) are persisted, so a refresh recovers truth
   (`L4-reading.md` §5). ⛔ **Never cache a Cardano confirm as permanent** — a rollback
   un-confirms (`L1-cardano.md` §10.3, `L2-follower.md` §6.2).
-- **Two never-conflated balances.** "Parked now" (Cardano live, optional Kupo cross-check,
+- **Two never-conflated balances.** "Parked now" (Cardano live, optional db-sync cross-check,
   NO Blockfrost — DR-33, off the post path) vs "Counted for posting" (L3 `AllowedStake`, the
   largest **buried** beacon as-of the follower cursor — **never summed**,
   `L1-cardano.md` §10 / `L2-follower.md` §6.4 / `L4-reading.md` §5.1). The hero
@@ -271,8 +271,8 @@ nothing is re-derived below (mirrors `L4-reading.md` §2).
   `L3-chain.md` §4.1 — `revoke` is the M2b revocation hook). The mnemonic backup is the
   load-bearing recovery; generate-new-and-re-bind is presented honestly as
   operator-gated and possibly unavailable (§5.7).
-- **The parked-now Cardano cross-check** — an optional **Kupo** toggle (light
-  Kupo/Ogmios on **preprod**, DR-31; **NO Blockfrost**, DR-33), never the sole source,
+- **The parked-now Cardano cross-check** — an optional **db-sync** toggle (read-only
+  db-sync on **preprod**, DR-31; **NO Blockfrost**, DR-33), never the sole source,
   never on the post path (§8.3).
 
 ---
@@ -830,7 +830,7 @@ them (catch a wrong constant once, loudly).
 ⛔ **One derivation now drives BOTH keys (DR-01).** The **Cardano beacon `token_name`** and
 the **L3 `CognoGate` identity key** are the **SAME** 32-byte value: `id32 =
 blake2b_256(serialized owner Address)` (used for the beacon name AND for
-`PkhOf`/`AccountOf`, `L3-chain.md` §4.1; Kupo lookups, §8.3). The old "two lengths — 28-byte
+`PkhOf`/`AccountOf`, `L3-chain.md` §4.1; db-sync lookups, §8.3). The old "two lengths — 28-byte
 `owner_pkh` for L3 vs 32-byte hash for the beacon — never cross them" rule is **gone**: both
 are the 32-byte address hash.
 
@@ -1510,12 +1510,12 @@ The default "posting power" read is **L3 `AllowedStake`** — the largest **buri
 lovelace the follower already published, needing **zero Cardano access** and fully
 recomputable from L1 + the published largest-wins spec (`L4-reading.md` §5.1,
 `L2-follower.md` §3.1/D0; DR-33). The Cardano **"parked now" cross-check** is an **OPTIONAL,
-user-supplied Kupo URL** (light Kupo/Ogmios on **preprod**, DR-31; **NO Blockfrost**, DR-33):
-⛔ never the sole source, never Cardano on the post path. (Kupo read:
-`GET <kupo>/matches/<vaultHash>.<token_name>?unspent`, where `policy_id == vaultHash` (DR-18)
-and `token_name = blake2b_256(serialized owner Address)` (DR-01), **largest** unspent match —
-mirroring largest-wins, never summed.) Per DR-33 a managed Blockfrost option is **not**
-offered.
+user-supplied db-sync URL** (read-only db-sync on **preprod**, DR-31; **NO Blockfrost**, DR-33):
+⛔ never the sole source, never Cardano on the post path. (db-sync read: select the vault
+UTxOs by `tx_out.payment_cred = <vaultHash>`, where `policy_id == vaultHash` (DR-18), keep the
+unspent ones via `tx_in` and filter to the beacon `token_name = blake2b_256(serialized owner
+Address)` (DR-01), taking the **largest** unspent match — mirroring largest-wins, never summed.)
+Per DR-33 a managed Blockfrost option is **not** offered.
 
 ### 10.4 Open-source, self-hostable, forkable, telemetry-free, reproducible
 
@@ -1716,7 +1716,7 @@ L4-M3 onward. Each has an acceptance test. ⛔ Several gate on upstream confirma
    "onboarding unavailable; reading + posting unaffected" with the asymmetric-window
    caveat in the `unlocking` copy.
 7. **L5-M6 — Neutrality + honesty surface (with L4-M5).** `<EndpointSettings>` (RPC +
-   indexer + HTTPS-only pinned-default follower lists, §10.1/§10.2); the optional **Kupo**
+   indexer + HTTPS-only pinned-default follower lists, §10.1/§10.2); the optional **db-sync**
    parked-now cross-check (NO Blockfrost, DR-33; §10.3); the two §9.6 honesty badges; the §10.6
    `<TrustExplainer>` table; the "open in principle, contingent on the archive" copy.
    **Acceptance (mirrors L4-M5):** the app works against a **second, independently-run
@@ -1748,7 +1748,7 @@ L4-M3 onward. Each has an acceptance test. ⛔ Several gate on upstream confirma
 ⛔ **Several of these are RESOLVED in DECISION-REGISTER.md (2026-06-16) — see that doc.**
 Q1 (KDF = Argon2id, no plaintext device-unlock default — DR-28a), Q2 (CIP-8 = a COMMITTED
 payload committing { sr25519 account + L3 genesis + nonce }, not an opaque nonce — DR-02),
-Q5 (parked-now = Kupo only, NO Blockfrost — DR-33; network = preprod — DR-31), Q6 (supported
+Q5 (parked-now = db-sync only, NO Blockfrost — DR-33; network = preprod — DR-31), Q6 (supported
 wallets = those exposing a base address + 32-byte CIP-30 keys — DR-28c), and Q9 (Model C
 offered as an opt-in in v1 — DR-28b) are **decided**; the detail below is kept for context.
 
@@ -1774,10 +1774,10 @@ offered as an opt-in in v1 — DR-28b) are **decided**; the detail below is kept
    a **public, rate-limited read RPC** so the PAPI-direct fallback has a real default
    (`L4-reading.md` §10 / L4-M5b)? The neutrality property needs ≥1 independently-runnable
    default **plus** the documented exit.
-5. **Parked-now cross-check provider.** ⛔ **RESOLVED — DR-33/DR-31:** ship a **Kupo URL
-   field** (light Kupo/Ogmios on **preprod**); **NO Blockfrost** option (default read =
+5. **Parked-now cross-check provider.** ⛔ **RESOLVED — DR-33/DR-31:** ship a **db-sync URL
+   field** (read-only db-sync on **preprod**); **NO Blockfrost** option (default read =
    L3 `AllowedStake`, DR-33). This is the only place L5 reads Cardano off the post path.
-   Remaining owner call: the default Kupo endpoint (if any) shipped with the build.
+   Remaining owner call: the default db-sync endpoint (if any) shipped with the build.
 6. **Mobile / hardware-wallet CIP-8 reality (the supported-wallet matrix).** ⛔ **RESOLVED
    in shape — DR-28c:** supported wallets = those exposing a **base address (payment
    `VerificationKey` + stake cred)** + 32-byte CIP-30 keys (v1 restricts to 32-byte keys and

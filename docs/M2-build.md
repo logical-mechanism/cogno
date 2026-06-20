@@ -215,6 +215,6 @@ cd app && node scripts/grant-weight.mjs //Alice
 
 ## 9. Next: M2d (Cardano-sourced weight)
 
-Compile the L1 Aiken `talk_vault` + add Kupo/Ogmios vault observation to the follower (the seam in
+Compile the L1 Aiken `talk_vault` + add db-sync vault observation to the follower (the seam in
 `verify.py`): assert the recovered owner Address `== datum.owner` of an observed vault UTxO, and drive
 `set_stake` from the locked ADA (largest-UTxO-wins per pkh). Then M3 (anchor) per PLAN §8.

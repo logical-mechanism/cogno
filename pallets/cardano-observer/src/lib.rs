@@ -74,7 +74,7 @@ pub type BeaconName = [u8; 32];
 /// is a deterministic function of the PARENT block (so author + importer agree; §5.1) and is the as-of
 /// reference. `block_hash` is the SEALED stable-block anchor: the header hash of the latest stable
 /// Cardano block AT/UNDER `slot` (the partner-chains McHash anchor, in-protocol-observation §15.3 /
-/// Midnight delta A.1) — NOT the old Kupo tip diagnostic. The custom proposer seals it into the block
+/// Midnight delta A.1). The custom proposer seals it into the block
 /// HEADER (the `cobs` PreRuntime digest, an external-auditability artifact), and
 /// [`ProvideInherent::check_inherent`] now re-validates BOTH `slot` + `block_hash` + `entries` cross-node.
 /// This is safe (it does NOT spuriously fork) because the anchor is the latest stable block ≤ `slot`,
@@ -82,8 +82,7 @@ pub type BeaconName = [u8; 32];
 /// table holds EVERY block, so that row is UNIQUE and identical across every fully-synced db-sync (≤1
 /// block/slot on settled history; the reference is ≥ the stability window old = immutable Cardano history).
 /// An importer whose db-sync is BEHIND the reference abstains (→ `CannotVerify`) via the node-side
-/// point-existence guard in the IDP, never reaching a FALSE mismatch here. (This determinism is exactly
-/// what the retired Kupo `/checkpoints` ladder could NOT give — it was tip-relative; §15.3.) (MAINNET
+/// point-existence guard in the IDP, never reaching a FALSE mismatch here (§15.3). (MAINNET
 /// PREREQUISITE: db-sync must run full / non-pruned, retaining block history back to the reference.)
 #[derive(
 	Encode, Decode, DecodeWithMemTracking, Clone, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen, Default,
@@ -104,9 +103,9 @@ pub struct CardanoRef {
 /// differ ⇒ [`InherentError::Mismatch`]) from "the importer COMPUTED a different reduced output from the
 /// SAME data" (commitments agree but `entries` differ ⇒ [`InherentError::ComputeDiverged`], a determinism
 /// bug / version skew) — where today both collapse to one `Mismatch`. The node computes it over its own
-/// Kupo read (`inputs_commitment` in `node/src/cardano_observer.rs`); the runtime only COMPARES the
+/// db-sync read (`inputs_commitment` in `node/src/cardano_observer.rs`); the runtime only COMPARES the
 /// author's value (carried in the [`Call::observe`] extrinsic) against the importer's own — it never
-/// re-derives it (no Kupo in-runtime). It is only consulted when the reduced `entries` already disagree,
+/// re-derives it (no Cardano read in-runtime). It is only consulted when the reduced `entries` already disagree,
 /// so it never causes a rejection on its own.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct CardanoObservation {

@@ -32,8 +32,9 @@ weight-sync → bind-relay → frontend into one sequence and calls out the piec
   `--consumed-tx-out` — spentness is read from `tx_in`; the read probes `EXISTS (SELECT 1 FROM tx_in)` and
   **abstains fail-closed** otherwise). Expose a read-only role (e.g. `cogno_reader`) as `DBSYNC_URL`.
   MAINNET PREREQUISITE: db-sync over TLS.
-- **Ogmios + Kupo** — still needed for the **L1 write path** only (the anchor-relayer's metadata tx and the
-  in-browser CIP-30 vault lock/exit). Not used by the observation path. Optional for a first bring-up.
+- **Ogmios** — still needed for the **L1 write path** only (it submits the anchor-relayer's metadata tx and
+  serves Plutus cost models). Reads come from db-sync; the in-browser CIP-30 vault lock/exit uses Blockfrost.
+  Not used by the observation path. Optional for a first bring-up.
 - **Postgres 16** — only if you run the optional SubQuery indexer.
 - **The built node binary**, from a clean `cargo build --release` (pinned rustc 1.90.0). The **same** binary
   must generate the genesis and run the node — a `--features runtime-benchmarks` build embeds a runtime a
@@ -53,7 +54,7 @@ weight-sync → bind-relay → frontend into one sequence and calls out the piec
    └──────────┬───────────┘
               │ ws://…:9944 (PAPI)
               ▼
-   app/ (Next.js + MeshJS + PAPI)  ──L1 lock/exit──▶ Ogmios/Kupo/Blockfrost
+   app/ (Next.js + MeshJS + PAPI)  ──L1 lock/exit──▶ Ogmios/Blockfrost
 ```
 
 ## Step 1 — Generate + archive the operator-keyed genesis
@@ -155,15 +156,15 @@ the frontend keeps a **PAPI-direct fallback**, so the indexer is never load-bear
 
 ## Optional services
 
-- **anchor-relayer** — Tier-A *evidence* (finalized `state_root` → Cardano metadata via Ogmios+Kupo →
-  `anchor_ack`). Evidence, not enforcement; safe to add later.
+- **anchor-relayer** — Tier-A *evidence* (finalized `state_root` → Cardano metadata submitted via Ogmios,
+  reads via db-sync → `anchor_ack`). Evidence, not enforcement; safe to add later.
 - **indexer + GraphQL** — richer L4 feed (paginated/searchable/threaded). Needs Postgres and a codegen build
   pinned to **your** genesis hash (the baked default refuses any other chain). PAPI-direct is the fallback.
 
 ## The dapp loop, end to end
 
 1. In the browser (CIP-30 wallet), **lock ≥100 ADA** at the live preprod `talk_vault` (mints the beacon). →
-   Ogmios/Kupo/Blockfrost.
+   Ogmios/Blockfrost.
 2. **Bind identity**: sign the CIP-8 proof; the sponsored-bind-relay submits `link_identity_signed`. →
    1:1 owner-address ↔ account.
 3. The **weight-sync** (Step 4) observes the lock via db-sync and credits `talkStake.AllowedStake`. →

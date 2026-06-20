@@ -5,7 +5,7 @@
 //   - burn the beacon bound to THIS datum (mint -1, `Burn(name)` redeemer)
 //   - NO continuing output to the vault → the reclaimed ADA flows back to the owner as change
 // The own-input-count==1 guard means exactly ONE vault per tx; pass a target if several exist.
-// Reuses the live Kupo (fetcher) + Ogmios (submitter/evaluator) + the M2d cost-model fix.
+// Reuses the live db-sync (fetcher + vault discovery) + Ogmios (submitter/evaluator) + the M2d cost-model fix.
 //
 //   node scripts/m2d-unlock.mjs [<txHash>#<index>]
 //
@@ -14,10 +14,11 @@
 // reclaiming locked ADA is done from the frontend's in-browser CIP-30 flow, not here.
 import fs from "node:fs";
 import { MeshTxBuilder, serializePlutusScript } from "@meshsdk/core";
-import { getOwnerWallet, kupo, ogmios, fetchCostModels } from "./m2d-wallet.mjs";
+import { getOwnerWallet, dbsync, ogmios, fetchCostModels } from "./m2d-wallet.mjs";
 import { burnRedeemerCborHex } from "./m2d-beacon.mjs";
+import { readUnspentMatches } from "../../services/committee/dbsync.mjs";
 
-const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
+const DBSYNC_URL = process.env.DBSYNC_URL || process.env.DBSYNC || "postgres://cogno_reader@127.0.0.1:5432/cexplorer";
 const vaultMeta = JSON.parse(fs.readFileSync("/tmp/cogno-m2/vault.json", "utf8"));
 const VAULT_HASH = vaultMeta.vaultHash;
 const APPLIED_CBOR = vaultMeta.appliedCbor;
@@ -34,8 +35,8 @@ async function main() {
     { code: APPLIED_CBOR, version: "V3" }, stakeKeyHash, 0, false,
   );
 
-  // 1) find the live vault UTxO(s) via Kupo: each must hold exactly 1 beacon of this policy.
-  const matches = await (await fetch(`${KUPO}/matches/${VAULT_HASH}.*?unspent`)).json();
+  // 1) find the live vault UTxO(s) via db-sync: each must hold exactly 1 beacon of this policy.
+  const matches = await readUnspentMatches(DBSYNC_URL, VAULT_HASH);
   const vaults = [];
   for (const m of matches) {
     const assets = m.value?.assets ?? {};
@@ -51,7 +52,7 @@ async function main() {
       });
     }
   }
-  if (!vaults.length) throw new Error("no live vault UTxO observed via Kupo");
+  if (!vaults.length) throw new Error("no live vault UTxO observed via db-sync");
   let target;
   if (TARGET) {
     target = vaults.find((v) => v.ref === TARGET);
@@ -81,7 +82,7 @@ async function main() {
 
   const burnRedeemer = burnRedeemerCborHex(target.beacon);
 
-  const txBuilder = new MeshTxBuilder({ fetcher: kupo(), submitter: ogmios(), evaluator: ogmios(), verbose: false });
+  const txBuilder = new MeshTxBuilder({ fetcher: dbsync(), submitter: ogmios(), evaluator: ogmios(), verbose: false });
   txBuilder
     // ── spend the vault UTxO (inline datum present; embedded script) ──
     .spendingPlutusScriptV3()
@@ -100,8 +101,8 @@ async function main() {
     .changeAddress(address)
     .selectUtxosFrom(utxos);
 
-  // Inject live preprod cost models (Kupo can't supply them; MeshJS defaults are stale → bad script
-  // integrity hash). An array makes completeCostModels() keep ours.
+  // Inject live preprod cost models (the fetcher can't supply them; MeshJS defaults are stale → bad
+  // script integrity hash). An array makes completeCostModels() keep ours.
   txBuilder.setCostModels(await fetchCostModels());
   await txBuilder.complete();
   const signed = await wallet.signTx(txBuilder.txHex);

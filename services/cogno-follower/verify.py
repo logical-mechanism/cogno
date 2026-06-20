@@ -95,7 +95,7 @@ def verify_bind(
     consume_nonce(sr25519_pubkey_hex.lower(), fields["nonce"])
 
     # ── M2d SEAM: here is where the follower will additionally assert that this recovered Address
-    #    matches the `datum.owner` of an OBSERVED on-chain talk_vault UTxO (Kupo/Ogmios) before
+    #    matches the `datum.owner` of an OBSERVED on-chain talk_vault UTxO (db-sync) before
     #    granting weight. In M2 (wallet-only CIP-8, DR-14) there is no vault yet — the address is
     #    self-asserted; the committed payload + the 1:1 on-chain anchor are the v1 defenses. ──
 

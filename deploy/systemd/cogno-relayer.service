@@ -11,8 +11,9 @@ Description=cogno-chain anchor relayer (finalized state-root -> Cardano metadata
 Documentation=https://github.com/logical-mechanism/cogno
 After=network-online.target cogno-node.service
 Wants=network-online.target cogno-node.service
-# Also needs Ogmios + Kupo reachable. Add `After=`/`Wants=` for your cardano-node/ogmios/kupo units
-# here (names vary by install) — the relayer fails closed and retries with backoff if they are down.
+# Also needs db-sync (reads) + Ogmios (submit) reachable. Add `After=`/`Wants=` for your
+# cardano-node/db-sync/ogmios units here (names vary by install) — the relayer fails closed and retries
+# with backoff if they are down.
 
 [Service]
 Type=exec

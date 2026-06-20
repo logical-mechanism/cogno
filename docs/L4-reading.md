@@ -29,7 +29,7 @@
 >   owner Address)`** (== the beacon `token_name`), NOT a 28-byte `owner_pkh`. Throughout
 >   §2.1/§4.1/§4.2/§5.1/§6.1: "profile-by-`owner_pkh`" is **profile-by-identity (the
 >   address hash)**, the gate's reverse map (`CognoGate.AccountOf`) is **keyed on the
->   32-byte address hash**, and the Kupo "parked-now" read uses `token_name =
+>   32-byte address hash**, and the db-sync "parked-now" read uses `token_name =
 >   blake2b_256(serialized owner Address)`. The trust-inherited framing stands, but the
 >   value is an **Address hash**, and its on-chain length check is **`len()==32`**, not 28.
 >   *(supersedes §2.1, §2.2's `len()==28` claim, the §4.1 schema `ownerPkh` comment,
@@ -38,7 +38,7 @@
 > - **DR-18 — single merged `talk_vault` validator (mint + spend), no separate beacon
 >   policy.** There is **one** validator whose `policy_id == vault script hash`; the
 >   beacon `token_name` length is **`blake2b_256` / 32 bytes**. The old two-validator /
->   separate `beacon_policy_id` framing is deleted. *(affects the §5.1 Kupo read and
+>   separate `beacon_policy_id` framing is deleted. *(affects the §5.1 db-sync read and
 >   App. A's L1 reference — the policy id is the vault script hash.)*
 > - **DR-21 — `NextPostId` is `u64`, not `u32`.** The "`u32` ceiling / `2^32` wrap"
 >   caveat is **removed**: L3 uses `u64`, so the reproducibility claim is no longer
@@ -53,11 +53,11 @@
 >   operator runs a `--pruning archive` node + publishes the genesis hash + chainspec;
 >   the L4-M4c re-derivation from genesis is a **v1 acceptance test**. §10 Q4 is
 >   **DECIDED** (only operational *how*, not *whether*). *(supersedes §6.5, §8, §10 Q4.)*
-> - **DR-33 — default "parked ADA" read = L3 `AllowedStake`; Kupo optional cross-check,
+> - **DR-33 — default "parked ADA" read = L3 `AllowedStake`; db-sync optional cross-check,
 >   NO Blockfrost.** Drop Blockfrost as a source everywhere; the live-balance cross-check
->   is an **optional self-hosted Kupo**, and the default posting-power read is L3
+>   is an **optional read-only db-sync**, and the default posting-power read is L3
 >   `AllowedStake`. *(supersedes §5.1, §5.3, §9 diagram, §10 Q6.)*
-> - **DR-31 — devnet network = PREPROD** (light Kupo/Ogmios path, not db-sync). *(context
+> - **DR-31 — devnet network = PREPROD** (db-sync/Ogmios path). *(context
 >   for the §5.1 onboarding Cardano read.)*
 >
 > The "Open questions" §10 items above are **RESOLVED in DECISION-REGISTER.md
@@ -359,14 +359,14 @@ accident, so the read map is explicit.
 | **clock** | **L3** (PAPI) | current best/finalized block number (`finalizedBlock$`) |
 | **identity bound?** | **L3** (PAPI) | `CognoGate.PkhOf.getValue(acct).isSome` (the `is_allowed` proxy; the stored value is the 32-byte address hash, DR-01) |
 | **constants** (`CapRatio`, `RegenPerBlock`, `Ceiling`, `BaseCost`, `PerByteCost`) | **L3** (PAPI) | `api.constants.Microblog.*()` — read from metadata, not hardcoded |
-| **live vault balance** (parked now) | **Cardano** (Kupo — **optional cross-check**, DR-33; **NO Blockfrost**) | largest unspent beacon UTxO for `blake2b_256(serialized owner Address)` (DR-01) — onboarding only, **off** the post path. Default is to skip Cardano and read counted weight off L3 `AllowedStake`. |
+| **live vault balance** (parked now) | **Cardano** (db-sync — **optional cross-check**, DR-33; **NO Blockfrost**) | largest unspent beacon UTxO for `blake2b_256(serialized owner Address)` (DR-01) — onboarding only, **off** the post path. Default is to skip Cardano and read counted weight off L3 `AllowedStake`. |
 
 Everything that gates or sizes posting is an **L3-only** read. Cardano is consulted
 **only** to answer "is my vault set up / how much ADA is parked," and never blocks
 posting.
 
 > ⚑ **Two balances, do NOT conflate them.** **Live vault balance** = Cardano tip
-> (optional self-hosted Kupo, DR-33; **no Blockfrost**), changes instantly on
+> (optional read-only db-sync, DR-33; **no Blockfrost**), changes instantly on
 > top-up/unlock. **Weight-bearing balance** = L3 `AllowedStake`, equals the
 > **largest** buried beacon UTxO as-of the follower's pinned cursor (`L1-cardano.md`
 > §10 / `L2-follower.md` largest-wins — **never sum** an identity's duplicate beacons).
@@ -377,18 +377,19 @@ posting.
 > freshly-funded user isn't confused that weight/capacity lag the deposit
 > (going-forward-only + burial latency, `L2-follower.md`).
 
-**Cardano onboarding read (self-hostable Kupo, the same index the follower uses):**
-`GET <kupo>/matches/<policy_id>.<token_name>?unspent` where the **`policy_id` is the
-merged `talk_vault` script hash** (DR-18 — there is one validator; the beacon policy
-== the vault script hash, no separate beacon policy) and `token_name =
-blake2b_256(serialized owner Address)` (DR-01, `L1-cardano.md`); parked-now ADA =
+**Cardano onboarding read (read-only db-sync, the same index the follower uses):**
+query db-sync (via `DBSYNC_URL`) for unspent vault UTxOs where the **`payment_cred`
+is the merged `talk_vault` script hash** (DR-18 — there is one validator; the beacon
+policy == the vault script hash, no separate beacon policy) and the beacon
+`token_name = blake2b_256(serialized owner Address)` (DR-01, `L1-cardano.md`);
+spentness comes from `tx_in` and lovelace is read as `::text`; parked-now ADA =
 lovelace of the **largest** unspent match (mirror largest-wins so the UI agrees with
 the follower). **Best default (DR-33):** skip Cardano entirely and read "ADA that
 counts" straight off L3 (`AllowedStake` **is** the largest-beacon buried lovelace the
 follower already published) — zero Cardano access, fully reproducible, and the
-**default posting-power read**. Use Kupo only as an **optional** independent cross-
+**default posting-power read**. Use db-sync only as an **optional** independent cross-
 check; **do NOT use Blockfrost** (DR-33 — no Blockfrost dependency). Devnet is PREPROD
-(light Kupo/Ogmios, DR-31).
+(db-sync/Ogmios, DR-31).
 
 ### 5.2 The live talk-capacity + regen countdown (client-side)
 
@@ -448,7 +449,7 @@ slotMs` and recomputes for a smooth countdown; the next `watchValue` emission
   ┌─ ONBOARDING / STATUS PANEL ────────────────────────────────────────────────┐
   │                                                                             │
   │  1. Vault funded?   ── L3 AllowedStake>0 (DEFAULT, DR-33)   OR optional      │
-  │                          Kupo cross-check: beacon UTxO for                  │
+  │                          db-sync cross-check: beacon UTxO for               │
   │                          blake2b_256(owner Address), lovelace ≥ 100 ADA     │
   │                          (no Blockfrost)                                     │
   │         │                                                                   │
@@ -719,7 +720,7 @@ convenience; the chain is truth.**
         │                                          ▲ anyone can run their own (open schema
         │                                          │  + independently-served archive, §6.5)
         │  ONBOARDING READ (off the post path):    │ no indexer is authoritative
-        └──L3 AllowedStake (DEFAULT) · Kupo opt. ──┘   +   L3: AllowedStake → Capacity → countdown
+        └──L3 AllowedStake (DEFAULT) · db-sync opt.┘   +   L3: AllowedStake → Capacity → countdown
            cross-check (no Blockfrost): largest         (the capacity widget is L3-ONLY)
            beacon UTxO (vault ADA, one-time/verify)
 
@@ -739,7 +740,7 @@ the authority.
 > **RESOLVED in DECISION-REGISTER.md (2026-06-16) — see that doc.** Q2 (SubQuery is the
 > chosen reference indexer, DR-27), Q4 (the archive is COMMITTED, DR-08), Q5 (run a
 > public rate-limited read RPC for the PAPI fallback, DR-27), and Q6 (default = L3
-> `AllowedStake`; Kupo optional cross-check, no Blockfrost, DR-33) are decided. The
+> `AllowedStake`; db-sync optional cross-check, no Blockfrost, DR-33) are decided. The
 > detail is kept below for context.
 
 1. **PAPI-only for v1, or stand up the indexer at M3?** Recommend PAPI-direct for
@@ -774,8 +775,8 @@ the authority.
    run-your-own-node? What rate-limit / proxy stance (the feeless DoS surface applies to
    reads too)?
 6. **Onboarding read default for "parked ADA."** *(RESOLVED — DR-33: default posting-power
-   read = L3 `AllowedStake`; live Cardano balance is an **optional** self-hosted Kupo
-   cross-check; **no Blockfrost**.)* Show the live Cardano balance (optional Kupo)
+   read = L3 `AllowedStake`; live Cardano balance is an **optional** read-only db-sync
+   cross-check; **no Blockfrost**.)* Show the live Cardano balance (optional db-sync)
    alongside the L3 counted weight, or show counted-weight only by default and make the
    Cardano cross-check opt-in? (Avoids any external-key single dependency.)
 7. **Multi-endpoint UX.** Should the frontend ship a user-overridable indexer/RPC
@@ -800,7 +801,7 @@ frontend post/read loop is L3 M3).
    `RangeError`.
 2. **L4-M3b — Onboarding/status panel (cross-layer read).** Wire the read map of
    §5.1: L3-only weight/capacity/binding by default (DR-33: `AllowedStake` is the
-   posting-power source) + (optional) the self-hosted-Kupo "parked-now vs counted"
+   posting-power source) + (optional) the db-sync "parked-now vs counted"
    two-number cross-check with the burial-latency note (**no Blockfrost**).
    **Acceptance:** a freshly-funded user sees "pending burial," then weight, then
    capacity charging up — never a false "ready."
@@ -844,7 +845,7 @@ frontend post/read loop is L3 M3).
   *auditable ≠ trustless* — carried here as *reproducible ≠ effortless*; largest-wins
   / never-sum; clamp-on-unlock); `docs/L1-cardano.md` (the merged single `talk_vault`
   validator, DR-18 — `policy_id == vault script hash`, no separate beacon policy; beacon
-  `token_name = blake2b_256(serialized owner Address)`, DR-01; Kupo by policy id; §10 the
+  `token_name = blake2b_256(serialized owner Address)`, DR-01; db-sync by script hash; §10 the
   L1→L2 read).
 - **PAPI (typed read client):** storage queries
   (`getValue`/`getValues`/`getEntries`/`watchValue`/`watchEntries`,
@@ -871,7 +872,8 @@ frontend post/read loop is L3 M3).
   https://subquery.network/doc/indexer/run_publish/query/graphql.html ; reorg
   flag https://subquery.network/doc/indexer/run_publish/references.html ; SQT
   network (optional/managed) https://subquery.network/doc/subquery_network/welcome.html
-- **Kupo (self-hostable Cardano UTxO indexer; `--match policy.token_name`,
-  `created_at`/`spent_at`):** https://github.com/CardanoSolutions/kupo
+- **Cardano db-sync (read-only Postgres index of Cardano state, via `DBSYNC_URL`;
+  vault UTxOs by `tx_out.payment_cred`, spentness from `tx_in`, lovelace as `::text`):**
+  https://github.com/IntersectMBO/cardano-db-sync
 - **Polkadot wiki — indexers (build-data):**
   https://wiki.polkadot.network/docs/build-data

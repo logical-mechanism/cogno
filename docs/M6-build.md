@@ -115,7 +115,7 @@ CLIs that generalize the M2/M3 single-purpose sudo drivers:
 - **`lib.mjs`** — `viaCommittee` (propose → vote ×k → close), `viaSudo`, and `drive({via})` (default
   `committee`) that prints the **honesty label** on every committee run.
 - **`op.mjs`** — drive ANY privileged call: `--call <pallet>.<method> --args '<json>' --via committee|sudo`.
-- **`sync-weight.mjs`** — the FOLLOWER's `set_stake` (+ battery prime), committee-driven; live Kupo
+- **`sync-weight.mjs`** — the FOLLOWER's `set_stake` (+ battery prime), committee-driven; live db-sync
   largest-wins mode or dev `--account/--weight` mode (the spec-106 successor to `m2d-sync-weight.mjs`).
 - **`run-m6-track1.sh` + `m6-validators.mjs`** — the Track 1 multi-node orchestrator + acceptance.
 - **`m6-track2.mjs`** — the Track 2 committee acceptance.

@@ -13,9 +13,8 @@
 //! lives in [`crate::dbsync`]; `service.rs` derives the reference slot from the parent block, calls
 //! [`crate::dbsync::read_observation`] once, applies the point-existence guard (a db-sync that has not
 //! indexed PAST the reference abstains rather than returning a partial set), and feeds the returned
-//! Kupo-shaped matches to the pure reduction below UNCHANGED. (The retired Kupo `/matches` + `/checkpoints`
-//! reads were superseded by db-sync because Kupo's tip-relative checkpoint ladder gave a non-deterministic
-//! block anchor — see in-protocol-observation §15.3.)
+//! matches to the pure reduction below UNCHANGED. db-sync gives a deterministic stable-block anchor —
+//! see in-protocol-observation §15.3.
 
 use codec::{Decode, Encode};
 use pallet_cardano_observer::{
@@ -90,7 +89,7 @@ fn as_u64(v: &serde_json::Value) -> Option<u64> {
 	s.parse::<u64>().ok()
 }
 
-/// PURE: reduce Kupo `/matches` JSON to the canonical largest-wins-per-beacon set AS-OF `reference_slot`.
+/// PURE: reduce the vault match JSON to the canonical largest-wins-per-beacon set AS-OF `reference_slot`.
 /// Rust port of `observeAsOf` (observation.mjs): a UTxO counts iff it holds EXACTLY ONE asset of the
 /// vault policy at qty 1, positive lovelace, was created ≤ ref, and is unspent as-of ref (`spent_at` is
 /// null OR `spent_at.slot > ref` — so a UTxO spent AFTER the reference is still counted as locked-at-ref).
@@ -234,7 +233,7 @@ pub fn inputs_commitment(matches: &[serde_json::Value], vault_hash: &str) -> [u8
 	sp_core::hashing::blake2_256(&candidate_bytes(matches, vault_hash))
 }
 
-/// Build the full observation (reference + input commitment + canonical entries) from Kupo matches.
+/// Build the full observation (reference + input commitment + canonical entries) from the vault matches.
 pub fn build_observation(
 	reference: CardanoRef,
 	matches: &[serde_json::Value],

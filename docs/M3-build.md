@@ -62,7 +62,7 @@ as the relayer signing wallet (a single dev key, DR-07/§9, labelled as such). S
 The loop: read the **finalized** head via PAPI (`getFinalizedBlock` → `getBlockHeader(hash).stateRoot`
 = the post-state root) + `NextPostId` + `Timestamp.Now` **at that pinned block** → build a metadata
 tx (`MeshTxBuilder.metadataValue(LABEL, {...})`, **no Plutus script**) embedding the root → submit via
-Ogmios → **await Kupo confirmation (+ optional burial past `CONFIRM_DEPTH_SLOTS`)** → `sudo`-call
+Ogmios → **await db-sync confirmation (+ optional burial past `CONFIRM_DEPTH_SLOTS`)** → `sudo`-call
 `anchor_ack`. Modes: `--once`, `--reack-last` (the verbatim rollback-resubmit / idempotency test),
 and watch (every `ANCHOR_EVERY` blocks).
 
@@ -87,10 +87,10 @@ from a new runtime gets a NEW genesis (the wasm is part of genesis state), so th
   `chain_getHeader(chain_getBlockHash(N))` over HTTP is the right tool (works regardless of pinning,
   since headers are always retained); deep **state** reads at an old block need a `--pruning archive`
   node (DR-08) — best-effort, never fails the verify (the `state_root` is the load-bearing check).
-- **Cost-model warning is BENIGN here** — `KupoProvider.fetchCostModels` still throws "Method not
-  implemented" and MeshJS logs a fallback to default cost models, **but a metadata-only tx has no
-  Plutus script**, so cost models are irrelevant and the tx validates + confirms. (The M2d cost-model
-  fix — inject Ogmios models via `setCostModels` — applies only to script txs; PLAN was explicit.)
+- **Cost-model warning is BENIGN here** — MeshJS logs a fallback to default cost models, **but a
+  metadata-only tx has no Plutus script**, so cost models are irrelevant and the tx validates +
+  confirms. (The M2d cost-model fix — inject Ogmios models via `setCostModels` — applies only to
+  script txs; PLAN was explicit.)
 
 ## 3. Frontend — "anchored to Cardano at tx X" (PLAN §7-E)
 
@@ -106,7 +106,7 @@ confirmed emitting the live checkpoint.
 
 A background review workflow (3 dimensions × find→adversarially-verify) raised 18, confirmed 7; all
 fixed and re-validated live:
-1. **[med]** `waitConfirmed` `.catch()` guarded only `.json()`, not `fetch()` → a Kupo blip mid-wait
+1. **[med]** `waitConfirmed` `.catch()` guarded only `.json()`, not `fetch()` → a db-sync blip mid-wait
    crashed `--once`. → `fetch(...).then(r=>r.json()).catch(()=>[])`.
 2. **[med]** acked at Cardano depth-1 (no reorg burial) → a confirm-then-rollback tx would pin a
    vanished txhash. → added `CONFIRM_DEPTH_SLOTS` burial gate (read Ogmios tip; default 0 for the
@@ -124,8 +124,9 @@ fixed and re-validated live:
 
 ## 5. LIVE preprod acceptance — DONE ✓ (2026-06-17)
 
-Stack: synced preprod `cardano-node` (Conway, slot ~126040k) + Ogmios :1337 + Kupo :1442 (matching
-the relayer addr) + cogno-chain node :9944 (spec 104) + 3 feeless posts (`NextPostId = 3`). Relayer
+Stack: synced preprod `cardano-node` (Conway, slot ~126040k) + Ogmios :1337 (submit) + read-only
+db-sync (matching the relayer addr) + cogno-chain node :9944 (spec 104) + 3 feeless posts
+(`NextPostId = 3`). Relayer
 wallet `addr_test1qpsk23r…` 99.66 → **99.14 ADA** after 3 anchors (≈0.17 ADA fee each).
 
 | solochain block | finalized post-state root | Cardano metadata tx | slot |
@@ -135,13 +136,13 @@ wallet `addr_test1qpsk23r…` 99.66 → **99.14 ADA** after 3 anchors (≈0.17 A
 | #224 | `e5916cfafefba54f…efa2e60e` | `2e82c32272990013be2328c33d33c9c26d3a710515c442d376e66b8b5bdb687c` | 126040198 (acked after burial ≥15 slots) |
 
 - **Anchored** (`AnchorAcked`): finalized root → metadata tx → confirmed → `anchor_ack`. The
-  on-chain metadata (read back via Kupo) carries the exact root, block, genesis, and post_count.
+  on-chain metadata (read back via db-sync) carries the exact root, block, genesis, and post_count.
 - **Idempotent** (`--reack-last`): a verbatim re-submit of checkpoint #149 → **`AckIgnored`**
   (block #149, last #149), `LastCheckpoint` unchanged — not double-counted.
 - **Monotonic**: 149 → 167 → 224 each strictly advanced; the 2nd/3rd txs spent the prior anchor's
   change (output-chaining, no UTxO contention).
 - **Verified** (`verify.mjs`): for every checkpoint, **A == B == C** — A (L3 `LastCheckpoint`) ==
-  B (archive `chain_getHeader(N).state_root`, re-derived) == C (Cardano metadata read back via Kupo);
+  B (archive `chain_getHeader(N).state_root`, re-derived) == C (Cardano metadata read back via db-sync);
   chain identity (node genesis == anchored genesis) ✓; the Cardano `block` field matches; post_count
   consistent where archive state is retained. *"No silent rewrite before this anchor."*
 

@@ -39,7 +39,7 @@ const V = "ab".repeat(28);            // 56-hex policy id
 const A = "11".repeat(32), B = "22".repeat(32); // 64-hex beacon names
 let _utxoSeq = 0;
 const mk = (coins, name, qty = 1, slot = 0, extra = {}) => ({
-	transaction_id: (_utxoSeq++).toString(16).padStart(64, "0"), // unique per UTxO (realistic Kupo shape)
+	transaction_id: (_utxoSeq++).toString(16).padStart(64, "0"), // unique per UTxO (realistic match shape)
 	output_index: 0,
 	value: { coins: String(coins), assets: { [`${V}.${name}`]: String(qty), ...extra } },
 	created_at: { slot_no: slot },

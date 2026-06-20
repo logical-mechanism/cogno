@@ -57,7 +57,7 @@ export function parseArgv(argv) {
 	return o;
 }
 
-// PURE: from a list of Kupo-shaped matches (now sourced from db-sync), pick the largest valid single-beacon UTxO per beacon
+// PURE: from a list of db-sync vault matches, pick the largest valid single-beacon UTxO per beacon
 // (anti-Sybil largest-wins, never a sum). A match counts only if it carries EXACTLY ONE asset of the
 // vault policy at quantity 1 AND positive lovelace; with `confirmDepth>0` it must also be buried >=
 // confirmDepth slots past `tipSlot` (an un-buried or slot-less match is skipped, never credited).

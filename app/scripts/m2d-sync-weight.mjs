@@ -1,4 +1,4 @@
-// M2d — the follower's vault→weight sync (live). Observe talk_vault beacon UTxOs via Kupo, apply
+// M2d — the follower's vault→weight sync (live). Observe talk_vault beacon UTxOs via db-sync, apply
 // LARGEST-WINS per identity (never sum), look up the bound account (CognoGate.AccountOf[beacon]),
 // and write TalkStake.set_stake(account, weight=locked lovelace) via sudo (the DR-07 dev hatch).
 // This is the Cardano-sourced weight: NO sudo grant of weight — the ADA lock IS the grant.
@@ -15,16 +15,17 @@ import { getPolkadotSigner } from "polkadot-api/signer";
 import { sr25519CreateDerive } from "@polkadot-labs/hdkd";
 import { DEV_PHRASE, entropyToMiniSecret, mnemonicToEntropy } from "@polkadot-labs/hdkd-helpers";
 import { cogno } from "@polkadot-api/descriptors";
+import { readUnspentMatches } from "../../services/committee/dbsync.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
-const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
+const DBSYNC_URL = process.env.DBSYNC_URL || process.env.DBSYNC || "postgres://cogno_reader@127.0.0.1:5432/cexplorer";
 const VAULT_HASH = JSON.parse(fs.readFileSync("/tmp/cogno-m2/vault.json", "utf8")).vaultHash;
 const MIN_LOCK = 100_000_000n;
 const hexToBytes = (h) => Uint8Array.from(Buffer.from(h.replace(/^0x/, ""), "hex"));
 
 async function main() {
-  // 1) observe: Kupo matches for the vault policy → largest-wins per beacon name.
-  const matches = await (await fetch(`${KUPO}/matches/${VAULT_HASH}.*?unspent`)).json();
+  // 1) observe: db-sync matches for the vault policy → largest-wins per beacon name.
+  const matches = await readUnspentMatches(DBSYNC_URL, VAULT_HASH);
   const largest = new Map(); // beaconHex -> lovelace
   for (const m of matches) {
     const assets = m.value?.assets ?? {};

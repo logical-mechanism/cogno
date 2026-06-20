@@ -29,8 +29,7 @@ pallet-cardano-observer = { features = ["std"], workspace = true }
 # vault UTxO observation). NoTls — cogno_reader is a read-only role on a private-LAN db-sync that also
 # allows plaintext; TLS is a MAINNET PREREQUISITE (keeps the node free of a TLS dependency stack). The
 # read is bounded by an in-IDP timeout so a slow/down db-sync can't stall authoring/import (fail-closed
-# → empty observation). Replaces the retired Kupo HTTP reads (the Kupo /checkpoints anchor was
-# tip-relative / non-deterministic; db-sync gives a deterministic "block at/before slot S").
+# → empty observation). db-sync gives a deterministic "block at/before slot S" anchor.
 tokio = { version = "1", default-features = false, features = ["rt", "time", "sync"] }
 tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
 frame-benchmarking-cli = { default-features = true, workspace = true }

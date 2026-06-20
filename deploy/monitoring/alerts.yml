@@ -68,7 +68,7 @@ groups:
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: "relayer has not anchored in >30m — check Cardano (Ogmios/Kupo) + committee"
+          summary: "relayer has not anchored in >30m — check Cardano (db-sync/Ogmios) + committee"
 
       - alert: RelayerLowFunds
         expr: cogno_relayer_low_funds == 1
@@ -159,9 +159,9 @@ groups:
           summary: "inherent vs committee weight has disagreed for >200 finalized blocks without converging (investigate the shadow-diff /metrics)"
 
       - alert: ShadowRecomputeDisagreement
-        # The on-chain inherent projection disagrees with an INDEPENDENT off-chain Kupo recompute at the
+        # The on-chain inherent projection disagrees with an INDEPENDENT off-chain db-sync recompute at the
         # SAME reference slot — the runtime computed something the deterministic library does not. This is
-        # a correctness defect (not async-writer skew), so it pages faster. Only meaningful when KUPO is set.
+        # a correctness defect (not async-writer skew), so it pages faster. Only meaningful when DBSYNC_URL is set.
         expr: cogno_shadow_recompute_disagree > 0
         for: 5m
         labels: { severity: critical }

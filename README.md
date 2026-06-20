@@ -50,8 +50,8 @@ equivocation/slashing, replacing the single trusted follower, and dropping sudo 
 ```
                  Cardano preprod (external)                 The app-chain (this repo)
         ┌───────────────────────────────────┐      ┌──────────────────────────────────────┐
-        │  cardano-node  ─ Ogmios :1337      │      │  validator node(s)   Aura + GRANDPA   │
-        │                ─ Kupo   :1442      │◀────▶│  tracking node(s)    sync + RPC :9944 │
+        │  cardano-node  ─ Ogmios  :1337     │      │  validator node(s)   Aura + GRANDPA   │
+        │                ─ db-sync (Postgres)│◀────▶│  tracking node(s)    sync + RPC :9944 │
         │  talk_vault contract + beacon NFT  │      │  runtime: microblog · talk-stake ·    │
         └───────────────────────────────────┘      │           cogno-gate · anchor ·       │
                           ▲                          │           validator-set + committee   │
@@ -97,7 +97,7 @@ just have `rustup` installed. Pinned upstream (DR-03): polkadot-sdk **`polkadot-
 | cogno-follower | Python with `pycardano` (the pinned `cogno_v3` venv) |
 | indexer | **PostgreSQL 16** (uses `btree_gist`) |
 | contracts (only to rebuild) | **Aiken** `v1.1.22` |
-| Cardano integration | a synced preprod **`cardano-node`** + **Ogmios** (:1337) + **Kupo** (:1442); optional **Blockfrost** preprod project id for the in-browser wallet |
+| Cardano integration | a synced preprod **`cardano-node`** + **Ogmios** (:1337) + **db-sync** (read-only Postgres); optional **Blockfrost** preprod project id for the in-browser wallet |
 
 ## Build
 
@@ -217,10 +217,10 @@ This turns the standalone chain into the full ADA-metered app. It needs the exte
 ### 1 — External Cardano dependencies (preprod)
 
 A synced preprod `cardano-node` feeding **Ogmios** (`http://127.0.0.1:1337` — cost models, tx submit,
-tip) and **Kupo** (`http://127.0.0.1:1442` — UTxO/datum/asset queries, vault observation). Start Kupo
-matching the live vault policy id and the owner address. Ogmios/Kupo launch flags live with those
-tools, not in this repo (M7/M8 used Ogmios v6.x + Kupo v2.x). The services point at them via the
-`OGMIOS` / `KUPO` env vars.
+tip) and a read-only **db-sync** Postgres (vault observation: a deterministic block-at/before-slot
+anchor and the vault UTxO reads — spentness from `tx_in`, coins as `::text`, driven by the indexed
+`tx_out.payment_cred`). Ogmios/db-sync launch flags live with those tools, not in this repo (M7/M8
+used Ogmios v6.x). The services point at them via the `OGMIOS` / `DBSYNC_URL` env vars.
 
 ### 2 — The L1 contract (`contracts/`)
 
@@ -325,7 +325,7 @@ service) with `Restart=always`, boot persistence, dependency ordering, durable `
 sandboxing — see [`deploy/README.md`](deploy/README.md) for the full runbook. The bring-up order and
 the things that bite, whether you use the units or run by hand:
 
-1. **External Cardano** up and synced: `cardano-node` + Ogmios `:1337` + Kupo `:1442`.
+1. **External Cardano** up and synced: `cardano-node` + Ogmios `:1337` + db-sync (read-only Postgres).
 2. **Chain:** `node scripts/gen-chainspec.mjs` to mint your keys + `raw.json`, then run your
    validators with `--state-pruning archive --blocks-pruning archive` (the indexer/anchor-verifier
    need history) plus tracking nodes for RPC. Put `--base-path` on a real disk (not `/tmp`), and keep
@@ -334,7 +334,7 @@ the things that bite, whether you use the units or run by hand:
    spec, on a `spec_version` bump, and on a fresh `--dev`/`--tmp` rebuild. Capture it live
    (`chain_getBlockHash(0)`) and feed it to the indexer (`GENESIS`) and `GENESIS.txt` — never hardcode.
 4. **Services:** `source network/env.sh` so the committee/follower sign with your keys; point them at
-   your node WS, Ogmios, and Kupo; fund the relayer's `OWNER_FILE` wallet. Stateful files now default to
+   your node WS, Ogmios, and db-sync; fund the relayer's `OWNER_FILE` wallet. Stateful files now default to
    the durable data dir (`$COGNO_DATA_DIR` / systemd `StateDirectory`, **not `/tmp`**) — set
    `COGNO_DATA_DIR` to pick a location. Bind the follower behind HTTPS with a pinned origin (it ships
    plain HTTP + permissive CORS for the localhost showcase — least-privilege + transport hardening is on
@@ -342,8 +342,8 @@ the things that bite, whether you use the units or run by hand:
    services now expose Prometheus `/metrics` + health endpoints, with scrape config + alert rules in
    [`deploy/monitoring/`](deploy/monitoring/).
 5. **Ports to open:** P2P `30333` (public); RPC `9944` (behind a proxy if exposed); Prometheus `9615`;
-   relayer metrics `9101`; follower `8090`; indexer `3000`/`3001`; Postgres `5432`; Ogmios `1337`; Kupo
-   `1442`. (The `/metrics` + health ports stay on your private scrape network, not public.)
+   relayer metrics `9101`; follower `8090`; indexer `3000`/`3001`; Postgres `5432`; Ogmios `1337`. (The
+   `/metrics` + health ports stay on your private scrape network, not public.)
 
 You now run on your **own** keys, sudo, and committee. What still stays **testnet-scoped** (the
 deeper mainnet prerequisites, by design): sudo retained as an escape hatch, `MinAuthorities = 1`,
@@ -360,7 +360,7 @@ Full surface in [`.env.example`](.env.example); the most-used variables:
 |---|---|---|
 | `WS` | `ws://127.0.0.1:9944` | every service (node JSON-RPC) |
 | `COMMITTEE_SEEDS` / `SUDO_SEED` | the dev keys | committee + follower signers (set to **your** keys via `network/env.sh`) |
-| `OGMIOS` / `KUPO` | `http://127.0.0.1:1337` / `:1442` | relayer, committee, follower |
+| `OGMIOS` / `DBSYNC_URL` | `http://127.0.0.1:1337` / *(read-only Postgres DSN)* | relayer, committee, follower |
 | `CARDANO_NETWORK` | `testnet` | follower (network-id gate; `mainnet` for mainnet) |
 | `ANCHOR_VIA` / `ANCHOR_EVERY` / `CONFIRM_DEPTH_SLOTS` | `committee` / `10` / `0` | anchor-relayer |
 | `COGNO_DATA_DIR` | `~/.local/state/cogno` (systemd: `/var/lib/cogno`) | durable dir for the relayer wallet + anchor cursor + committee vault + lock (never `/tmp`) |

@@ -1,7 +1,7 @@
 // M2d — lock ≥100 ADA at the talk_vault + mint the owner's beacon, in ONE tx (preprod, live).
 // Mirrors the contract's create rule: mint beacon(owner) +1, output it at the vault's OWN address
 // (script payment cred + the owner's stake cred), value ≥ min_lock, inline VaultDatum{owner}, owner
-// signs. Uses the local Kupo (fetcher) + Ogmios (submitter/evaluator). Prints the tx hash.
+// signs. Uses the local db-sync (fetcher) + Ogmios (submitter/evaluator). Prints the tx hash.
 // The script is embedded in the tx (a reference-script variant is an optional follow-up, see
 // docs/M2d-build.md §Acceptance).
 //
@@ -13,7 +13,7 @@
 // from the frontend's in-browser CIP-30 flow, not here.
 import fs from "node:fs";
 import { MeshTxBuilder, serializePlutusScript } from "@meshsdk/core";
-import { getOwnerWallet, kupo, ogmios, fetchCostModels } from "./m2d-wallet.mjs";
+import { getOwnerWallet, dbsync, ogmios, fetchCostModels } from "./m2d-wallet.mjs";
 import { beaconNameHex, vaultDatumCborHex, mintRedeemerCborHex } from "./m2d-beacon.mjs";
 
 const LOCK_LOVELACE = process.env.LOCK || "100000000"; // 100 ADA (== min_lock)
@@ -46,7 +46,7 @@ async function main() {
   // Collateral: a pure-ADA UTxO (≥5 ADA), returned on success.
   const collateral = utxos.find((u) => u.output.amount.length === 1 && BigInt(u.output.amount[0].quantity) >= 5_000_000n) || utxos[0];
 
-  const txBuilder = new MeshTxBuilder({ fetcher: kupo(), submitter: ogmios(), evaluator: ogmios(), verbose: false });
+  const txBuilder = new MeshTxBuilder({ fetcher: dbsync(), submitter: ogmios(), evaluator: ogmios(), verbose: false });
   txBuilder
     .mintPlutusScriptV3()
     .mint("1", VAULT_HASH, beacon)
@@ -62,7 +62,7 @@ async function main() {
     .changeAddress(address)
     .selectUtxosFrom(utxos);
 
-  // Inject the live preprod cost models (Kupo can't supply them; MeshJS defaults are stale → bad
+  // Inject the live preprod cost models (the fetcher can't supply them; MeshJS defaults are stale → bad
   // script integrity hash). An array makes completeCostModels() keep ours instead of clobbering.
   txBuilder.setCostModels(await fetchCostModels());
   await txBuilder.complete();

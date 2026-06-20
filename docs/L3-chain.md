@@ -1111,7 +1111,7 @@ turns weight into feeless capacity-gated posting; reads never touch Cardano.
 ```
   L1 CARDANO (talk_vault)        L2 FOLLOWER (trusted oracle v1)        L3 cogno-chain (this doc)
   ════════════════════════       ══════════════════════════════        ════════════════════════════════
-  user LOCKS >= min_lock ADA at   observe vaults (Kupo, by Address);    pallet-cogno-gate (8)
+  user LOCKS >= min_lock ADA at   observe vaults (db-sync, by Address); pallet-cogno-gate (8)
   talk_vault(min_lock) MERGED     bury past k; aggregate per identity  ┌──────────────────────────────┐
   mint+spend (DR-18)              largest-wins/never-sum (DR-34) ─────▶ │ link_identity (FollowerOrigin)│
   datum { owner: Address }        => ONE weight per identity          │ 1:1 identhash<->AccountId     │

@@ -25,7 +25,7 @@ const A = "aa".repeat(32); // beacon A
 const B = "bb".repeat(32); // beacon B
 const C = "cc".repeat(32); // beacon C
 
-// A Kupo-shaped match: one vault beacon at qty 1, `coins` lovelace, created/spent slots, extra assets.
+// A vault match: one vault beacon at qty 1, `coins` lovelace, created/spent slots, extra assets.
 const mk = (beacon, coins, { created = 0, spent = null, extra = {}, tx = "tx", ix = 0 } = {}) => ({
 	transaction_id: tx,
 	output_index: ix,
@@ -72,9 +72,8 @@ function main() {
 	ok(r !== null && r > 86400n, "a recent parent Aura slot yields a valid reference");
 	ok(referenceFromAuraSlot({ auraSlot: 0, slotDurationMs: 6000, ...PREPROD }) === null, "genesis (slot 0) ⇒ pre-Shelley ⇒ null (fail closed)");
 
-	// (The sealed stable-block anchor is no longer a JS reduction — with the db-sync pivot it is a single
-	// SQL row, `block` at `max(slot_no) <= reference`; see services/committee/dbsync.mjs. The retired
-	// latestStableBlock Kupo `/checkpoints` mirror + its tests are gone, §15.3.)
+	// (The sealed stable-block anchor is not a JS reduction — it is a single db-sync SQL row, `block` at
+	// `max(slot_no) <= reference`; see services/committee/dbsync.mjs. §15.3.)
 
 	// ── observeAsOf (as-of-ref largest-wins) ───────────────────────────────────────────────────────
 	console.log("\n[observeAsOf] as-of-reference largest-wins (replaces ?unspent + tip burial)");

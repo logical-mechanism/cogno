@@ -20,18 +20,19 @@ multi-validator network by editing a couple of flags (noted inline).
 | Unit | Process | Binds | Needs |
 |---|---|---|---|
 | `cogno-node` | the Substrate validator | p2p :30333, RPC :9944, Prometheus :9615 | **db-sync** (read-only; the observer) |
-| `cogno-relayer` | anchor relayer | — | node, Ogmios, Kupo |
+| `cogno-relayer` | anchor relayer | — | node, **db-sync**, Ogmios |
 | `cogno-follower` | read-only identity helper (`/nonce`, `/health`; D1 — binding is on-chain) | HTTP :8090 | node |
 | `cogno-indexer` | SubQuery ingest | health :3001 | node, **Postgres** |
 | `cogno-query` | GraphQL feed | :3000 | indexer, Postgres |
 
 **Not managed here** (external infrastructure you run separately): `cardano-node` + **db-sync** (the
-read-only Postgres the node's in-protocol observer reads, via `DBSYNC_URL`) + **Ogmios** + **Kupo** (the L1
-write path — anchor-relayer + in-browser vault) and **Postgres 16** (the indexer). Add `After=`/`Wants=`
-lines for your db-sync/Ogmios/Kupo/cardano units to `cogno-node.service` (db-sync) and
-`cogno-relayer.service` (Ogmios/Kupo) (names vary by install); the units already order after
+read-only Postgres the node's in-protocol observer **and** the anchor-relayer read, via `DBSYNC_URL`) +
+**Ogmios** (the anchor-relayer's L1 tx submit + cost models) and **Postgres 16** (the indexer). Add
+`After=`/`Wants=` lines for your db-sync/Ogmios/cardano units to `cogno-node.service` (db-sync) and
+`cogno-relayer.service` (db-sync, Ogmios) (names vary by install); the units already order after
 `postgresql.service` for the indexer/query. Every service fails closed and retries with
 backoff if a dependency is down, so strict ordering is a convenience, not a correctness requirement.
+(The in-browser CIP-30 vault uses a hosted Blockfrost key, not a service you run here.)
 
 ## Install layout (the paths the units assume)
 
