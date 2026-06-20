@@ -1031,3 +1031,21 @@ spec-111 binary, each pointed at a synced preprod Kupo via `KUPO_URL`:
 - **(d) Author abstains, chain stays live:** stop Alice's Kupo. Alice emits no `observe` inherent and no
   `cobs` digest (the `from_inherent_data` total-over-missing path) and keeps authoring; the chain stays
   live. Unit-proven by `from_inherent_data_is_total_over_missing_data` + the live no-Kupo smoke test above.
+
+**Live evidence — two-node import run (2026-06-19, spec-111 binary `fa445b5`, two keyrings on one
+operator).** Ran Alice+Bob as `--chain local` authorities against the real preprod **db-sync** (`DBSYNC_URL`;
+Kupo is retired from the observation path per the consolidation note above — the runbook commands here predate
+that and now read `DBSYNC_URL`, not `KUPO_URL`). **(a) Healthy:** both nodes logged `observed 1 vault
+entrie(s) as-of slot R … anchor block H`, and for every shared reference slot the sealed anchor agreed
+cross-node byte-for-byte (`8c789818…96fbc`); both authored, imported, and GRANDPA-**finalized** in lockstep
+(to #20) with **no** `Mismatch`/`ComputeDiverged`/panic; block #2+ headers carried the `cobs` `PreRuntime`
+digest (block #1 abstained on its genesis parent) and `ObservationApplied` fired in shadow mode
+(`enforced=false`, `credited=0` — beacon unbound on a fresh chain; the #2 event `reference_slot` equalled the
+decoded `cobs` slot). **(c)+(d) Degraded:** Bob started with no `DBSYNC_URL` abstained every block
+(`no DBSYNC_URL/DBSYNC set — abstaining`) yet **imported and finalized Alice's `cobs`-sealed observed blocks**
+(`check_inherent` → `CannotVerify`, non-fatal accept — the same path a lagging db-sync takes) while Alice
+imported Bob's inherent-free blocks; the chain kept finalizing throughout. Case (b) (forged anchor → fatal
+`Mismatch`) stays unit-proven only (it needs an adversarial-author build). **Caveat:** one db-sync instance
+proves the import/abstain mechanics + same-reference cross-node anchor agreement, **not** cross-*instance*
+determinism (that needs ≥2 independent db-syncs = the deferred validator decentralization) — still
+**D4-SHAPED, not D4-TRUST**.
