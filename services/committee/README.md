@@ -20,8 +20,8 @@ Uses **`@polkadot/api`** (dynamic metadata — auto-exposes the spec-106 `follow
 |---|---|
 | `lib.mjs` | the reusable library: `viaCommittee` (propose/vote/close), `viaSudo`, `drive({via})` |
 | `op.mjs` | general CLI — drive ANY privileged call via committee or sudo |
-| `sync-weight.mjs` | the FOLLOWER's `set_stake` (+ battery), committee-driven (Kupo live mode or dev `--account/--weight`) |
-| `shadow-diff.mjs` | in-protocol-observation **D4 shadow validation** — diffs the inherent's `cardanoObserver.ShadowStake` projection vs the committee's `talkStake.AllowedStake` (+ an independent Kupo recompute oracle). One-shot JSON, or `--serve` for Prometheus `:9102`. Convergence (committee leg) is eventual, not a correctness proof; a recompute disagreement IS a defect |
+| `sync-weight.mjs` | the FOLLOWER's `set_stake` (+ battery), committee-driven (db-sync live mode or dev `--account/--weight`) |
+| `shadow-diff.mjs` | in-protocol-observation **D4 shadow validation** — diffs the inherent's `cardanoObserver.ShadowStake` projection vs the committee's `talkStake.AllowedStake` (+ an independent db-sync recompute oracle). One-shot JSON, or `--serve` for Prometheus `:9102`. Convergence (committee leg) is eventual, not a correctness proof; a recompute disagreement IS a defect |
 | `obs-shadow-demo.mjs` | live acceptance for the D4 shadow→enforce path — binds the live vault beacon, proves SHADOW projects-without-applying then ENFORCE applies (`credited=1`), resets to shadow. Mechanism proof only (D4-SHAPED on a single producer) |
 | `m6-track2.mjs` | Track 2 live acceptance (set_stake + anchor_ack + add/remove_validator via committee) |
 | `m6-validators.mjs` | Track 1 live acceptance (the on-chain mutable-validator checks) |
@@ -36,13 +36,13 @@ WS=ws://127.0.0.1:9944 node op.mjs --call validatorSet.addValidator --args '["5F
 
 # Follower set_stake (dev mode) through the committee:
 WS=ws://127.0.0.1:9944 node sync-weight.mjs --account 5Grw… --weight 100000000 --via committee
-# Follower set_stake (live: observe the vault via Kupo, largest-wins):
-WS=… KUPO=http://127.0.0.1:1442 node sync-weight.mjs --via committee
+# Follower set_stake (live: observe the vault via Cardano db-sync, largest-wins):
+WS=… DBSYNC_URL=postgres://cogno_reader:…@host:5432/cexplorer node sync-weight.mjs --via committee
 
 # In-protocol-observation (D4) shadow validation — inherent vs committee weight:
 WS=ws://127.0.0.1:9944 node shadow-diff.mjs                                   # one-shot JSON (committee leg)
-WS=… KUPO=http://127.0.0.1:1442 node shadow-diff.mjs                          # + independent recompute oracle
-WS=… KUPO=… METRICS_PORT=9102 node shadow-diff.mjs --serve                    # Prometheus /metrics + /healthz
+WS=… DBSYNC_URL=postgres://… node shadow-diff.mjs                             # + independent db-sync recompute oracle
+WS=… DBSYNC_URL=… METRICS_PORT=9102 node shadow-diff.mjs --serve              # Prometheus /metrics + /healthz
 # Flip the enforce/shadow flag (the gated cutover control — root/committee only; default is shadow):
 WS=ws://127.0.0.1:9944 node op.mjs --call cardanoObserver.setEnforcement --args '[true]'  --via committee
 

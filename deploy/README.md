@@ -19,16 +19,18 @@ multi-validator network by editing a couple of flags (noted inline).
 
 | Unit | Process | Binds | Needs |
 |---|---|---|---|
-| `cogno-node` | the Substrate validator | p2p :30333, RPC :9944, Prometheus :9615 | — |
+| `cogno-node` | the Substrate validator | p2p :30333, RPC :9944, Prometheus :9615 | **db-sync** (read-only; the observer) |
 | `cogno-relayer` | anchor relayer | — | node, Ogmios, Kupo |
 | `cogno-follower` | read-only identity helper (`/nonce`, `/health`; D1 — binding is on-chain) | HTTP :8090 | node |
 | `cogno-indexer` | SubQuery ingest | health :3001 | node, **Postgres** |
 | `cogno-query` | GraphQL feed | :3000 | indexer, Postgres |
 
-**Not managed here** (external infrastructure you run separately): `cardano-node` + **Ogmios** + **Kupo**
-(the Cardano observers) and **Postgres 16**. Add `After=`/`Wants=` lines for your Ogmios/Kupo/cardano
-units to `cogno-relayer.service` / `cogno-follower.service` (names vary by install); the units already
-order after `postgresql.service` for the indexer/query. Every service fails closed and retries with
+**Not managed here** (external infrastructure you run separately): `cardano-node` + **db-sync** (the
+read-only Postgres the node's in-protocol observer reads, via `DBSYNC_URL`) + **Ogmios** + **Kupo** (the L1
+write path — anchor-relayer + in-browser vault) and **Postgres 16** (the indexer). Add `After=`/`Wants=`
+lines for your db-sync/Ogmios/Kupo/cardano units to `cogno-node.service` (db-sync) and
+`cogno-relayer.service` (Ogmios/Kupo) (names vary by install); the units already order after
+`postgresql.service` for the indexer/query. Every service fails closed and retries with
 backoff if a dependency is down, so strict ordering is a convenience, not a correctness requirement.
 
 ## Install layout (the paths the units assume)
@@ -113,7 +115,8 @@ before first start, `sudo install -d -o cogno -g cogno -m 0700 /var/lib/cogno/no
 ```bash
 sudo install -d -m 0750 -o root -g cogno /etc/cogno
 sudo install -m 0640 -o root -g cogno deploy/systemd/cogno.env.example /etc/cogno/cogno.env
-sudoedit /etc/cogno/cogno.env     # fill in COMMITTEE_SEEDS (from network/env.sh) + DB_PASS
+sudoedit /etc/cogno/cogno.env     # fill in DBSYNC_URL (db-sync read-only; the node's observer) +
+                                  #          COMMITTEE_SEEDS (from network/env.sh) + DB_PASS
 ```
 
 Once the node is producing blocks, **set `GENESIS`** in `/etc/cogno/cogno.env` to its block-0 hash

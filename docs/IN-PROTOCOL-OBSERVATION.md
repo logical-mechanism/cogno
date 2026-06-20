@@ -685,8 +685,10 @@ Consistent with the repo's grep-enforced honest posture ("usable ≠ trustless /
   proves transaction **membership, not address completeness** — even with it, the completeness assumption
   (an *omitted* vault is invisible) is **not** discharged. State this plainly: the inherent verifies the
   *computation* over observed UTxOs, not that the observation is *complete*.
-- **Per-validator `cardano-node` + Kupo (no-pruning)** is a hard `MAINNET PREREQUISITE` for a
-  multi-validator chain (§8).
+- **Per-validator `cardano-node` + Cardano db-sync** is a hard `MAINNET PREREQUISITE` for a
+  multi-validator chain (§8): full / **non-pruned** (history back to the reference) and **tx_in-enabled**
+  (NOT `--consumed-tx-out`; the read probes `EXISTS (SELECT 1 FROM tx_in)` and abstains otherwise, so a
+  mis-configured db-sync fails closed rather than forking on spentness). (Kupo retired from this path.)
 - **The existing deferred `MAINNET PREREQUISITE` comments stay** (dev-key custody, prod genesis, GRANDPA
   equivocation, `MinAuthorities`) — do not "fix" them under cover of this work (CLAUDE.md).
 
@@ -892,55 +894,158 @@ it is auditable from the extrinsic, recomputable against an archived Kupo at `re
   variant) ⇒ **spec_version 109 → 110**, PAPI + indexer + frontend regenerated; `transaction_version`
   stays 2 (`observe` is an inherent, not a signed tx). The live `talk_vault` contract is **untouched**.
 
-### 15.3 PLAN (awaiting sign-off) — header-sealed, importer-re-validated stable Cardano block (mapping delta A.1, "the biggest gap")
-**Status: DESIGN ONLY. Do not implement without explicit sign-off — this is header/consensus-affecting and
-the heaviest of the three items.**
+### 15.3 LANDED — header-sealed, importer-re-validated stable Cardano block on **db-sync** (mapping delta A.1, "the biggest gap") — spec 110 → 111
+> ✅ **LANDED (db-sync consolidation, 2026-06-19).** The header-seal **infrastructure** (the custom proposer
+> + `cobs` digest, the `check_inherent` full-`CardanoRef` re-validation) shipped first, then the anchor +
+> vault read were **moved off Kupo onto Cardano db-sync** — the consensus-determinism fix. The reason: an
+> adversarial review + a live-Kupo probe proved the **Kupo `/checkpoints` anchor was tip-relative /
+> non-deterministic** (a doubling rollback ladder anchored to each node's own tip — two honest nodes resolve
+> *different* anchor blocks at the reference → a false `Mismatch`; dormant on a single author, a latent
+> consensus-split at the ≥3-producer cutover). **db-sync's `block` table holds every block, so "latest block
+> at/before slot S" is EXACT** (≤1 block/slot on settled history ⇒ a single, unique row identical across
+> every fully-synced db-sync) — what makes `block_hash` genuinely safe to compare cross-node. The node
+> (`node/src/dbsync.rs`), the committee tooling (`services/committee/dbsync.mjs`), and the follower
+> (`vault.py`) all read the vault from db-sync now; **Kupo is retired from the observation path** (it stays
+> for the anchor-relayer's L1 write/metadata path); **Ogmios stays for L1 tx submission** (db-sync is
+> read-only and cannot submit). The ceiling is unchanged — **D4-SHAPED, not D4-TRUST** until ≥3 independent
+> producers each run their own db-sync; this did **not** flip `set_enforcement` or tighten the window.
 
-**The gap.** Today the reference is `f(parent Aura slot) − stability_window` (§5.1) bounded by the runtime
-`ReferenceRegressed` / `ReferenceTooFresh` checks. It **trusts the slot arithmetic**: it does not prove
-that a *specific, stable Cardano block* underlies the read. Midnight/partner-chains instead seal the chosen
-**stable Cardano block hash** into the PC block header (the `mcsh` `PreRuntime` digest) and every importer
-**independently re-validates** that block was stable-for-that-timestamp and **non-regressing** vs the
-parent's sealed hash (`sidechain-mc-hash` `new_proposal` / `new_verification`). This upgrades the anchor
-from "trust the arithmetic" to "prove *this exact* Cardano block was stable."
+**Status: LANDED on branch `cardano-observer-mchash`.** The McHash-faithful **Architecture B** (the header
+digest itself consensus-binding on import) is deliberately deferred — see "What was deferred".
 
-**Architecture to adopt it (the McHash pattern, adapted to cogno):**
-1. **Header digest seam.** A stock FRAME/Aura pallet cannot add a header digest item
-   (`Executive::final_checks` asserts exact digest-log equality — §4.4). Sealing the stable hash needs a
-   **custom proposer** that writes a `PreRuntime` digest (the partner-chains `PartnerChainsProposerFactory`
-   + `InherentDigest`). DR-26 says *study, don't depend on* the archived partner-chains repo, so this means
-   **vendoring/reimplementing** that proposer + digest in `node/` (a non-trivial node-consensus change to
-   `service.rs` authoring **and** import, alongside the M6 session/validator seam which must stay untouched).
-2. **McHash-style IDP** with two constructors: `new_proposal` (author selects the latest **stable** Cardano
-   block at/under the reference window) and `new_verification` (importer re-validates the header's sealed
-   hash is stable-for-that-timestamp **and** its block number ≥ the parent's sealed block number).
-3. **Data-source capability.** Extend the Kupo reader (today `fetch_kupo_tip` over `/checkpoints`) to answer
-   "latest stable block for time T", "is block H stable for T", and "block by hash" (the `McHashDataSource`
-   trait) — Kupo `/checkpoints` + a block-by-hash lookup suffice for the single-policy case.
-4. **Reference derivation** then anchors to the *sealed stable block's slot* instead of pure parent-slot
-   arithmetic; the existing `LastReference` monotonicity becomes the on-chain mirror of `new_verification`'s
-   non-regression check.
+**The db-sync read (the consensus-critical part).** One read-only snapshot per block
+(`read_observation`, mirrored in Rust / committee-JS / follower-Python) returns, from a single Postgres MVCC
+snapshot: (1) freshness `max(block.slot_no)` — the point-existence guard (a behind db-sync abstains →
+`CannotVerify`); (2) the deterministic anchor — the `block` row at `max(slot_no) <= reference`; (3) the
+vault UTxOs shaped **in SQL** into the EXACT Kupo `/matches` JSON the pure reduction already consumes, so
+`observe_as_of` / `observeAsOf` / `observe_as_of` (Rust/JS/Python) run **byte-identically, UNCHANGED — only
+the source moved**. A single snapshot also closes the old Kupo tip→matches TOCTOU residual. Three byte-identity
+choices (a divergence is a chain FORK), each grounded in a live-data finding:
+- **Spentness from `tx_in`, NOT `consumed_by_tx_id`.** The denormalized `consumed_by_tx_id` column was
+  observed NULL for a known-spent vault UTxO on the live instance (it is config-dependent); `tx_in` is
+  canonical ledger data, identical on every correctly-synced db-sync.
+- **Coins/quantities as `::text` strings.** `MaxStakeWeight` = 4.5e16 lovelace > 2^53, so a JS `Number` (or
+  any float) would lose precision; the strict integer parsers consume the strings, same path as Kupo's.
+- **Driven from `tx_out.payment_cred = <vault script hash>`** (the vault script address equals the beacon
+  policy id) — an indexed (`idx_tx_out_payment_cred`) analog of Kupo `/matches/{policy}.*`. The
+  asset-driven query would seq-scan 7.4M `ma_tx_out` rows (no index on `ident`, which the read-only
+  `cogno_reader` cannot add); the address path runs the full read in ~15 ms. Verified equivalent: 0
+  escaped beacons in all preprod history, and ADA-only-at-address UTxOs are excluded by the asset `EXISTS`.
 
-**Honest cost/benefit for cogno (the sign-off decision):**
-- **Pro:** closes delta A.1 — the anchor becomes "prove this exact Cardano block was stable", exactly
-  Midnight's. Strongest mechanism-parity gain available.
-- **Con / scope:** header/consensus-affecting (spec bump + a new header digest item); requires a custom
-  proposer (vendored, since the partner-chains toolkit is archived — DR-26) touching both CIDP paths in
-  `service.rs`; a new data-source capability. It is the heaviest change of the three.
-- **Marginal value is smaller for cogno than for Midnight.** Midnight seals because its reference is
-  otherwise unconstrained; cogno's reference is *already* a deterministic pure function of the parent
-  (every honest node computes the identical slot — §5.1), *already* monotone (`LastReference`), and
-  *already* re-read per-importer. McHash adds "prove the block existed and was stable" on top of an anchor
-  that is already deterministic + non-regressing. The residual it closes is a malicious author pointing the
-  reference at a slot whose Cardano history had not actually settled — partly bounded today by the
-  stability-window arithmetic + monotonicity + the per-importer re-read.
-- **The ceiling is unchanged.** Like the inherent itself, McHash is trust-bearing only with ≥3 independent
-  producers; on a single operator it is auditability, not trust (D4-shaped, §2).
+**Live byte-identity evidence.** The db-sync-shaped read and the (now-retired) Kupo read were both run through
+the canonical `observeAsOf`/`canonicalHex`/`candidateHex` at two preprod references straddling the
+spent-before/after-ref split: the reduced observation **and** the input-commitment pre-image were byte-identical
+both ways. The Rust↔JS golden fixture (`observation-equivalence.json`) now carries two `dbsync-live-preprod-*`
+cases sourced from that real db-sync output; the Rust and JS equivalence suites both re-derive them and agree
+byte-for-byte. **MAINNET PREREQUISITE:** run db-sync **full / non-pruned** (retaining history back to the
+reference), **tx_in-enabled** (NOT `--consumed-tx-out` — spentness is read from `tx_in`; the read probes
+`EXISTS (SELECT 1 FROM tx_in)` and abstains fail-closed otherwise, so a `--consumed-tx-out` instance can never
+silently emit a spent vault as locked), and over **TLS** (the node uses `NoTls` against the read-only
+`cogno_reader` on a private LAN here).
 
-**Recommendation.** Build this **co-sequenced with the validator-decentralization cutover** (the same
-≥3-producer gate as `set_enforcement(true)`, §9 step 3), not before: sealing a provably-stable block (vs
-trusting deterministic slot arithmetic) starts to buy *trust* only once there are independent producers to
-out-vote a bad author. Until then it is polish on an anchor that is already deterministic — lower ROI than
-the validator work it depends on. If sign-off is to proceed now regardless, scope it as its own branch with
-its own spec bump and a multi-node import test (healthy seal imports; a forged/regressing sealed hash is
-rejected; a lagging importer defers).
+**The gap.** Before this, the reference was `f(parent Aura slot) − stability_window` (§5.1), and
+`CardanoRef.block_hash` carried the node's Kupo **checkpoint-tip** header hash — a node-local diagnostic
+that `check_inherent` deliberately **never compared** (it varies by sync position). The anchor **trusted
+the slot arithmetic**: it never proved a *specific, stable Cardano block* underlay the read. Midnight/
+partner-chains instead seal the chosen **stable Cardano block hash** into the PC header (the `mcsh`
+`PreRuntime` digest) and every importer **re-validates** it.
+
+**What landed (Architecture A):**
+1. **`block_hash` promoted from tip-diagnostic → sealed stable-block anchor.** `node/src/cardano_observer.rs::parse_checkpoint_anchor` (the McHash `get_latest_stable_block_for` analog) selects the latest stable
+   Cardano block **at/under** the reference from Kupo `/checkpoints`; `service.rs::build_cardano_idp` now
+   sets `CardanoRef.block_hash` to that block's header hash (not the tip). `reference.slot` is **unchanged**
+   (still the deterministic parent-slot arithmetic — the consensus bedrock that always agrees), and the read
+   is still as-of `reference.slot`.
+2. **Custom proposer seals it into the HEADER.** A reimplemented (Apache-2.0 partner-chains
+   `sp-partner-chains-consensus-aura`, DR-26) `PartnerChainsProposerFactory` + `InherentDigest` in
+   `node/src/consensus/` writes the anchor (`CardanoRef`) into each authored block as a `cobs` `PreRuntime`
+   digest. It wraps the stock `sc_basic_authorship::ProposerFactory` and is passed to the **stock**
+   `start_aura` — **no `start_aura`/`import_queue`/verifier fork, no GPL crate.** The appended `PreRuntime`
+   item survives `Executive::final_checks` because `frame_system::initialize` stores the full incoming
+   header digest (exactly like the Aura slot pre-digest, §4.4) — no runtime change for the digest itself.
+3. **`check_inherent` re-validates the anchor.** It now compares the **full** `CardanoRef` (slot **+
+   block_hash**) + entries (`pallets/cardano-observer/src/lib.rs`). A forged/regressing/wrong anchor that a
+   caught-up importer can see is wrong ⇒ **`Mismatch` (fatal)**; an importer whose own Kupo is behind the
+   reference abstains via the point-existence guard (`tip < reference`) ⇒ **`CannotVerify` (non-fatal,
+   accept)** — preserving the "forged → reject, can't-check → accept" asymmetry. The existing `LastReference`
+   slot-monotonicity remains the on-chain non-regression mirror.
+
+**Why this is safe to compare `block_hash` now (it was excluded before for fork-safety):** the anchor is the
+latest stable block **≤ the reference**, deterministic across honest caught-up nodes on the same Kupo
+version (the reference is ≥ the stability window old = immutable Cardano history), and a behind importer
+abstains before it can reach a false mismatch. (MAINNET PREREQUISITE: at the prod ~36 h window Kupo must
+retain checkpoints back to the reference; the relaxed testnet window keeps the anchor in Kupo's dense recent
+checkpoints.)
+
+**Spec bump is consensus-VALIDITY, not encoding.** `CardanoRef` already encoded `block_hash`, so the
+`observe` Call / storage / event encoding is **unchanged** and the PAPI/indexer/frontend metadata is
+byte-identical. The 110 → 111 bump exists to signal the **required lockstep node upgrade** (an old author's
+tip-hash anchor would be fatally rejected by a new importer). `transaction_version` is unchanged (`observe`
+is still an inherent). The Rust↔JS equivalence golden fixture is unaffected (the anchor `block_hash` is not
+part of the SCALE canonical `(reference_slot, entries)` bytes); the anchor selection is mirrored by
+`latestStableBlock` in `services/_shared/observation.mjs` and unit-tested both sides.
+
+**What was deferred (Architecture B, co-sequence with the ≥3-producer cutover).** In Architecture A the
+header `cobs` digest is an **external-auditability** artifact (a third party reading only PC headers sees the
+sealed Cardano block); the **load-bearing** importer re-validation rides `check_inherent` on the inherent's
+`block_hash`. Making the header digest **itself** consensus-binding (extracting it in a forked verifier and
+re-validating it on import) is Architecture B — it needs import-path surgery (and is the only part that
+would want the GPL consensus fork), and is trust-bearing only with ≥3 independent producers. The
+`value_from_digest` decoder (missing→`NoSeal`, duplicate→`Err`, malformed→`Err`) is implemented + tested in
+`node/src/consensus/cardano_digest.rs` so B is ready to wire.
+
+**The ceiling is unchanged (D4-SHAPED, not D4-TRUST).** Like the inherent itself, header-sealing is
+auditability, not trust, until ≥3 independent producers exist to out-vote a bad author. This shipped
+labeled honestly and is co-sequenced with the validator-decentralization / `set_enforcement(true)` cutover
+(§9 step 3); it does **not** flip enforcement and does **not** tighten the testnet stability window.
+
+**Acceptance.** Unit/pallet/node tests cover the rejection logic: `check_inherent` accepts a matching anchor
+and fatally rejects a forged one (`check_inherent_rejects_a_forged_sealed_block_hash_anchor`); a behind
+importer → `CannotVerify` (`check_inherent_cannot_verify_when_local_source_behind_is_non_fatal`); the `cobs`
+codec round-trips and rejects duplicate/malformed seals; `parse_checkpoint_anchor` / `latestStableBlock`
+agree cross-language. The full multi-node live import test (two `--chain local` nodes against preprod Kupo:
+healthy seal imports / forged seal rejected / lagging importer defers / Kupo-down author abstains, chain
+stays live) is the operational acceptance step — staged as **two keyrings under one operator** (NOT the ≥3
+independent producers the trust payoff needs), consistent with the honest posture above.
+
+**Live multi-node runbook (`--chain local`, Alice + Bob = two keyrings on one operator).** The runtime
+tests above prove the rejection *logic*; this proves the live import flow. Spin two nodes with the
+spec-111 binary, each pointed at a synced preprod Kupo via `KUPO_URL`:
+```
+# node A (authority Alice)  — KUPO_URL=<synced kupo>  --chain local --alice  --rpc-port 9944 ...
+# node B (authority Bob)    — KUPO_URL=<synced kupo>  --chain local --bob --port 30334 --rpc-port 9945 ...
+```
+- **(a) Healthy:** with both Kupos caught up past the reference, Alice authors blocks carrying a `cobs`
+  header digest whose anchor matches Bob's own `parse_checkpoint_anchor` read ⇒ Bob imports + GRANDPA
+  finalizes. (The author-abstain smoke test — no Kupo ⇒ clean authoring + finality — already passed live on
+  spec 111: blocks #1–5 authored and finalized through #2 with no panic, proving the `cobs` proposer is
+  GRANDPA-neutral and the digest survives `Executive::final_checks`.)
+- **(b) Forged/regressing anchor → fatal:** no honest node authors a forged anchor, so the live form needs
+  a deliberate adversarial-author build (or a hand-crafted block injected at the import queue) that seals a
+  `block_hash` ≠ the stable block. A caught-up Bob then re-derives the real anchor, mismatches, and FATALLY
+  rejects (`Mismatch`). The logic is unit-proven by `check_inherent_rejects_a_forged_sealed_block_hash_anchor`.
+- **(c) Lagging importer defers:** stop Bob's Kupo (or point it at an index behind the reference). Bob's
+  point-existence guard (`tip < reference`) makes its IDP abstain ⇒ `check_inherent` returns `CannotVerify`
+  (non-fatal) ⇒ Bob ACCEPTS Alice's blocks and the chain keeps finalizing. Unit-proven by
+  `check_inherent_cannot_verify_when_local_source_behind_is_non_fatal`.
+- **(d) Author abstains, chain stays live:** stop Alice's Kupo. Alice emits no `observe` inherent and no
+  `cobs` digest (the `from_inherent_data` total-over-missing path) and keeps authoring; the chain stays
+  live. Unit-proven by `from_inherent_data_is_total_over_missing_data` + the live no-Kupo smoke test above.
+
+**Live evidence — two-node import run (2026-06-19, spec-111 binary `fa445b5`, two keyrings on one
+operator).** Ran Alice+Bob as `--chain local` authorities against the real preprod **db-sync** (`DBSYNC_URL`;
+Kupo is retired from the observation path per the consolidation note above — the runbook commands here predate
+that and now read `DBSYNC_URL`, not `KUPO_URL`). **(a) Healthy:** both nodes logged `observed 1 vault
+entrie(s) as-of slot R … anchor block H`, and for every shared reference slot the sealed anchor agreed
+cross-node byte-for-byte (`8c789818…96fbc`); both authored, imported, and GRANDPA-**finalized** in lockstep
+(to #20) with **no** `Mismatch`/`ComputeDiverged`/panic; block #2+ headers carried the `cobs` `PreRuntime`
+digest (block #1 abstained on its genesis parent) and `ObservationApplied` fired in shadow mode
+(`enforced=false`, `credited=0` — beacon unbound on a fresh chain; the #2 event `reference_slot` equalled the
+decoded `cobs` slot). **(c)+(d) Degraded:** Bob started with no `DBSYNC_URL` abstained every block
+(`no DBSYNC_URL/DBSYNC set — abstaining`) yet **imported and finalized Alice's `cobs`-sealed observed blocks**
+(`check_inherent` → `CannotVerify`, non-fatal accept — the same path a lagging db-sync takes) while Alice
+imported Bob's inherent-free blocks; the chain kept finalizing throughout. Case (b) (forged anchor → fatal
+`Mismatch`) stays unit-proven only (it needs an adversarial-author build). **Caveat:** one db-sync instance
+proves the import/abstain mechanics + same-reference cross-node anchor agreement, **not** cross-*instance*
+determinism (that needs ≥2 independent db-syncs = the deferred validator decentralization) — still
+**D4-SHAPED, not D4-TRUST**.

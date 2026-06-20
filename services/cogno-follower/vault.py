@@ -1,6 +1,6 @@
 """M2d — observe `talk_vault` UTxOs on Cardano and turn locked ADA into L3 weight.
 
-The follower indexes beacon UTxOs by the vault's policy id (== the validator hash) via Kupo, then
+The follower indexes beacon UTxOs by the vault's policy id (== the validator hash) via db-sync, then
 for each identity (= the beacon asset name = blake2b_256(cbor.serialise(owner)), the SAME 32 bytes
 the gate binds — see beacon.py) computes a weight from the locked lovelace and writes it via
 `TalkStake.set_stake(account, weight)` (sudo in v1 dev). The bound `account` for an identity comes
@@ -13,12 +13,10 @@ is ever zeroed by it. The capped-linear CURVE + the per-identity ceiling live on
 clamps `min(weight·CapRatio, Ceiling)`); L1 only enforces `min_lock`, so the follower's job is just
 "weight = the largest locked lovelace for this identity".
 
-⚠ The Kupo HTTP query + the set_stake submit need a SYNCED cardano-node + Kupo on preprod/mainnet
+⚠ The db-sync query + the set_stake submit need a SYNCED cardano-node + db-sync on preprod/mainnet
 (the one external dependency M2d can't satisfy locally). The pure logic below is fixture-tested in
 test_vault.py; the live wiring is a thin wrapper named honestly.
 """
-import json
-import urllib.request
 
 
 def weight_for_lock(lovelace: int, min_lock: int = 100_000_000) -> int:
@@ -177,13 +175,59 @@ def canonical_hex(reference_slot, observed) -> str:
     return canonical_bytes(reference_slot, observed).hex()
 
 
-# ── live wiring (needs a SYNCED cardano-node + Kupo — the M2d external dependency) ─────────────
+# ── live wiring (needs a SYNCED cardano-node + db-sync — the M2d external dependency) ──────────
 
-def query_kupo(kupo_url: str, policy_id_hex: str) -> list:
-    """GET unspent beacon UTxOs under the vault policy from Kupo. Live; needs a synced Kupo."""
-    url = f"{kupo_url.rstrip('/')}/matches/{policy_id_hex}.*?unspent"
-    with urllib.request.urlopen(url, timeout=20) as r:
-        return json.load(r)
+def query_dbsync(dbsync_url: str, policy_id_hex: str) -> list:
+    """SELECT currently-unspent beacon UTxOs under the vault policy from Cardano db-sync (the indexed
+    analog of Kupo's `/matches/{policy}.*?unspent`). Live; needs a synced db-sync. Returns the SAME
+    Kupo-shaped list of match dicts the pure functions above consume.
+
+    Determinism choices (mirrored from the node + committee JS that already moved to db-sync):
+      • spentness comes from the canonical `tx_in` ledger table (NOT the denormalized/unreliable
+        `consumed_by_tx_id`) — the NOT EXISTS subquery is the `?unspent` semantics. This REQUIRES a
+        tx_in-enabled db-sync: under `--consumed-tx-out` mode tx_in is empty, so we probe
+        `EXISTS (SELECT 1 FROM tx_in)` and RAISE (fail-closed) rather than emit spent vaults as unspent;
+      • coins/quantities are emitted as `::text` strings: lovelace exceeds 2^53, so they must never
+        round-trip through a float/int that loses precision;
+      • driven from `tx_out.payment_cred = <vault script hash>` (the vault script address == the
+        policy id), the indexed analog of Kupo `/matches/{policy}.*`.
+
+    The query returns one row / one column `matches`: a JSON array psycopg returns already parsed as
+    a Python list, so we hand it straight to parse_matches/observe_as_of. `spent_at` is always NULL
+    because the NOT EXISTS filter already excludes spent UTxOs (these are the live `?unspent` reads).
+
+    ⚠ The connection is plaintext (read-only `cogno_reader` role; the server allows non-SSL). TLS to
+    db-sync is a MAINNET PREREQUISITE."""
+    import psycopg  # lazy: keeps the pure-logic tests in test_vault.py runnable without psycopg
+    sql = """
+SELECT (SELECT EXISTS (SELECT 1 FROM tx_in)) AS tx_in_ok,
+  COALESCE(json_agg(json_build_object(
+  'transaction_id', encode(ctx.hash,'hex'),
+  'output_index',   o.index,
+  'value', json_build_object(
+     'coins',  o.value::text,
+     'assets', (SELECT json_object_agg(encode(a.policy,'hex')||'.'||encode(a.name,'hex'), m.quantity::text)
+                FROM ma_tx_out m JOIN multi_asset a ON a.id = m.ident
+                WHERE m.tx_out_id = o.id AND a.policy = decode(%(pol)s,'hex'))),
+  'created_at', json_build_object('slot_no', cb.slot_no),
+  'spent_at',   NULL)), '[]'::json) AS matches
+FROM tx_out o
+JOIN tx ctx   ON ctx.id = o.tx_id
+JOIN block cb ON cb.id = ctx.block_id
+WHERE o.payment_cred = decode(%(pol)s,'hex')
+  AND NOT EXISTS (SELECT 1 FROM tx_in ti WHERE ti.tx_out_id = o.tx_id AND ti.tx_out_index = o.index)
+  AND EXISTS (SELECT 1 FROM ma_tx_out m JOIN multi_asset a ON a.id = m.ident
+              WHERE m.tx_out_id = o.id AND a.policy = decode(%(pol)s,'hex'))
+"""
+    with psycopg.connect(dbsync_url) as conn, conn.cursor() as cur:
+        cur.execute(sql, {"pol": policy_id_hex.lower()})
+        row = cur.fetchone()
+        # Fail-closed: under db-sync `--consumed-tx-out` mode tx_in is empty, which would emit a spent
+        # vault as unspent (a wrong read). Mirror Midnight's `EXISTS (SELECT 1 FROM tx_in)` probe + RAISE.
+        if not row or not row[0]:
+            raise RuntimeError("db-sync tx_in table is empty (--consumed-tx-out mode?); requires a "
+                               "tx_in-enabled db-sync (fail closed)")
+        return row[1] if row[1] else []
 
 
 def plan_set_stakes(matches: list, policy_id_hex: str, account_of, min_lock: int = 100_000_000) -> list:

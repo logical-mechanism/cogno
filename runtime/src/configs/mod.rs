@@ -422,13 +422,23 @@ impl pallet_cardano_observer::WeightSink<AccountId> for WeightApply {
 	}
 }
 
+/// The Cardano stability window (3k/f = the no-rollback horizon), as a deliberate **TESTNET vs MAINNET
+/// split** — exactly like `MinAuthorities = 1` / the single-validator testnet set: run the relaxed value
+/// while testing here, flip to the production value before mainnet. The flip is a one-line, ENCODING-NEUTRAL
+/// change (it only widens the as-of reference lag — no Call/storage/event change, no spec bump), gated as a
+/// ⚠ MAINNET PREREQUISITE, NOT a bug. Co-sequence it with the ≥3-producer cutover; at the mainnet depth
+/// db-sync must retain history back to the reference (docs/IN-PROTOCOL-OBSERVATION.md §5.2/§15.3).
+const STABILITY_SLOTS_TESTNET: u64 = 600; // ≈ 10 min — prompt PoC observability on this testnet
+/// The production value: 3k/f = 129_600 slots ≈ 36 h (mainnet/preprod k=2160, f=0.05). Ready + named; the
+/// mainnet cutover flips `ObsStabilitySlots` below from `_TESTNET` to `_MAINNET`. (Held unused until then.)
+#[allow(dead_code)]
+const STABILITY_SLOTS_MAINNET: u64 = 129_600;
+
 parameter_types! {
-	// ⚠ TESTNET RELAXATION: the stability window is set SMALL (600 slots ≈ 10 min) so the live preprod
-	// PoC vault is observable promptly on this testnet. The PRODUCTION value is 3k/f = 129_600 slots
-	// ≈ 36 h (mainnet/preprod k=2160, f=0.05) — the no-rollback horizon. A smaller value is permitted
-	// ONLY on a labeled dev/testnet (docs/IN-PROTOCOL-OBSERVATION.md §5.2); raise it to 129_600 before
-	// any mainnet/real-value deployment. ⚠ MAINNET PREREQUISITE.
-	pub const ObsStabilitySlots: u64 = 600;
+	// ⚠ MAINNET PREREQUISITE: flip STABILITY_SLOTS_TESTNET -> STABILITY_SLOTS_MAINNET before any
+	// mainnet/real-value deployment (a smaller window is permitted ONLY on a labeled dev/testnet; see the
+	// split doc above + docs/IN-PROTOCOL-OBSERVATION.md §5.2). Selected = TESTNET while we test here.
+	pub const ObsStabilitySlots: u64 = STABILITY_SLOTS_TESTNET;
 	// ⚠ PREPROD Shelley anchor (we are live there) — NOT Byron `systemStart` (1654041600). The Shelley
 	// era begins at slot 86400 / unix 1655769600 after a 20-day Byron prefix. Verify the MAINNET anchor
 	// against its genesis before any mainnet cutover.
@@ -459,7 +469,7 @@ parameter_types! {
 ///
 /// ⚠ MAINNET PREREQUISITE: `check_inherent`'s "every producer re-derives" is load-bearing only with
 /// MULTIPLE independent producers — on a single operator this is "D4-SHAPED, not D4-TRUST"; and every
-/// validator must run cardano-node + Kupo. See docs/IN-PROTOCOL-OBSERVATION.md §2/§8/§11.
+/// validator must run cardano-node + Cardano db-sync. See docs/IN-PROTOCOL-OBSERVATION.md §2/§8/§11.
 impl pallet_cardano_observer::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	// Max identities observed per block (bounds the inherent body + `LastObserved`).

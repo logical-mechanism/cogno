@@ -5,4 +5,6 @@
 # Easiest: reuse cogno_v3's venv (already has these). Or a fresh venv:
 #   python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 pycardano==0.13.0
-# M2d (vault observation via Ogmios/Kupo) will add: ogmios==1.3.0
+# M2d vault observation now reads Cardano db-sync via psycopg 3 (Kupo retired from the observation
+# path; Ogmios stays for L1 tx submission elsewhere):
+psycopg[binary]==3.2.*

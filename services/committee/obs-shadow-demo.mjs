@@ -10,16 +10,17 @@
 // D4-SHAPED, NOT D4-TRUST (docs/IN-PROTOCOL-OBSERVATION.md §2/§6). Run it on a THROWAWAY local chain the
 // production committee does not also sync (else enforce mode and the committee fight over AllowedStake).
 //
-//   KUPO=http://127.0.0.1:1442 WS=ws://127.0.0.1:9944 node obs-shadow-demo.mjs
+//   DBSYNC_URL=postgres://… WS=ws://127.0.0.1:9944 node obs-shadow-demo.mjs
 //
 // The vault beacon must already be bound to an account via the trustless CIP-8 self-proof
 // (`cognoGate.link_identity_signed`) — D1 removed the operator/sudo bind, so this demo no longer binds.
 import { isMain } from "../_shared/cli.mjs";
-import { connect, drive, operators, fetchJson } from "./lib.mjs";
+import { connect, drive, operators } from "./lib.mjs";
 import { pickLargest } from "./sync-weight.mjs";
+import { readUnspentMatches } from "./dbsync.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
-const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
+const DBSYNC = process.env.DBSYNC_URL || process.env.DBSYNC;
 
 // Subscribe to new heads and resolve when `predicate(blockNumber)` (async) returns truthy, or reject
 // after `maxBlocks` heads — the deterministic way to wait for the every-block inherent to land.
@@ -40,6 +41,7 @@ async function waitForHead(api, label, maxBlocks, predicate) {
 }
 
 async function main() {
+	if (!DBSYNC) throw new Error("set DBSYNC_URL — this demo reads the live vault via Cardano db-sync");
 	const api = await connect(WS);
 	const ops = operators();
 	const spec = api.runtimeVersion.specVersion.toNumber();
@@ -47,9 +49,9 @@ async function main() {
 	if (!api.query.cardanoObserver?.shadowStake)
 		throw new Error(`spec ${spec} has no cardanoObserver.shadowStake — needs the cardanoObserver pallet (spec >= 109)`);
 
-	// 1. Resolve the LIVE vault beacon from this node's own Kupo (the consensus-pinned policy id from chain).
+	// 1. Resolve the LIVE vault beacon from db-sync (the consensus-pinned policy id from chain).
 	const vaultHex = api.consts.cardanoObserver.vaultPolicyId.toHex().replace(/^0x/, "");
-	const matches = await fetchJson(`${KUPO}/matches/${vaultHex}.*?unspent`);
+	const matches = await readUnspentMatches(DBSYNC, vaultHex);
 	const largest = pickLargest(matches, vaultHex);
 	if (largest.size !== 1) throw new Error(`expected exactly one live vault beacon, found ${largest.size}`);
 	const [beacon, lovelace] = [...largest][0];

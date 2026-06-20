@@ -9,27 +9,28 @@
 //     writers are ASYNCHRONOUS (the committee sync lags the every-block inherent; the unlock clamp lags
 //     the full stability window), so a momentary disagreement is EXPECTED at every lock/unlock — this is
 //     an eventual-consistency signal, NOT a correctness oracle. We alert only on PERSISTENT disagreement.
-//   • CORRECTNESS (recompute-vs-inherent, when KUPO is set): re-derive the observation INDEPENDENTLY
-//     off-chain (observeAsOf over this operator's own Kupo at the inherent's own reference slot) and
+//   • CORRECTNESS (recompute-vs-inherent, when DBSYNC_URL is set): re-derive the observation INDEPENDENTLY
+//     off-chain (observeAsOf over this operator's own db-sync at the inherent's own reference slot) and
 //     compare it to the on-chain projection. A disagreement here is a REAL inherent defect (the runtime
 //     computed something the deterministic library does not), not a timing transient.
 //
 //   WS=ws://127.0.0.1:9944 node shadow-diff.mjs                       # one-shot JSON (committee leg)
-//   WS=… KUPO=http://127.0.0.1:1442 node shadow-diff.mjs              # + the independent recompute leg
-//   WS=… KUPO=… METRICS_PORT=9102 node shadow-diff.mjs --serve        # Prometheus /metrics + /healthz
+//   WS=… DBSYNC_URL=postgres://… node shadow-diff.mjs                 # + the independent recompute leg
+//   WS=… DBSYNC_URL=… METRICS_PORT=9102 node shadow-diff.mjs --serve  # Prometheus /metrics + /healthz
 //
 // ⚠ HONESTY (§2): committee-vs-inherent AGREEMENT is a convergence signal, not proof the inherent is
 // trustless — on a single producer there is no independent verifier (D4-SHAPED, not D4-TRUST).
 import { isMain } from "../_shared/cli.mjs";
-import { connect, fetchJson } from "./lib.mjs";
+import { connect } from "./lib.mjs";
 import { observeAsOf, lockToWeight } from "../_shared/observation.mjs";
 import { renderPrometheus, startMetricsServer } from "../_shared/metrics.mjs";
+import { readObservation } from "./dbsync.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
-const KUPO = process.env.KUPO || null; // optional: enables the independent off-chain recompute leg
+const DBSYNC = process.env.DBSYNC_URL || process.env.DBSYNC || null; // optional: enables the independent off-chain recompute leg
 const METRICS_PORT = Number(process.env.METRICS_PORT || "9102");
 
-// PURE: 3-way per-account diff. Inputs are Map<ss58, bigint>; `recompute` is null when KUPO is unset.
+// PURE: 3-way per-account diff. Inputs are Map<ss58, bigint>; `recompute` is null when DBSYNC is unset.
 // Absent keys default to 0n (matches AllowedStake/ShadowStake ValueQuery semantics). The recompute leg is
 // only meaningful for accounts the recompute could actually place (present in the recompute OR in the
 // inherent) — a committee-only account (e.g. a dev `--account/--weight` grant with no on-chain vault) is
@@ -82,17 +83,15 @@ async function readCommitteeWeight(api) {
 }
 
 // Independently re-derive the observation off-chain at the inherent's OWN reference slot, resolve beacons
-// to accounts on-chain, and apply the MIN_LOCK floor — the correctness leg. Returns null if KUPO unset or
-// there is no observation yet; throws on a Kupo read failure (the serve loop catches + degrades).
-async function readIndependentRecompute(api, kupo) {
-	if (!kupo) return null;
+// to accounts on-chain, and apply the MIN_LOCK floor — the correctness leg. Returns null if DBSYNC unset or
+// there is no observation yet; throws on a db-sync read failure (the serve loop catches + degrades).
+async function readIndependentRecompute(api, dbsync) {
+	if (!dbsync) return null;
 	const lastRef = await api.query.cardanoObserver.lastReference();
 	if (lastRef.isNone) return new Map();
 	const refSlot = lastRef.unwrap().slot.toBigInt();
 	const vaultHex = api.consts.cardanoObserver.vaultPolicyId.toHex().replace(/^0x/, "");
-	const url = `${kupo}/matches/${vaultHex}.*?created_before=${refSlot + 1n}`;
-	const matches = await fetchJson(url);
-	if (!Array.isArray(matches)) throw new Error(`Kupo /matches did not return an array for ${vaultHex}`);
+	const { matches } = await readObservation(dbsync, vaultHex, refSlot);
 	const largest = observeAsOf(matches, { vaultHash: vaultHex, referenceSlot: refSlot });
 	const maxStakeWeight = api.consts.cardanoObserver.maxStakeWeight.toBigInt();
 	const m = new Map();
@@ -110,7 +109,7 @@ async function readIndependentRecompute(api, kupo) {
 }
 
 // Read everything once and produce the diff + the chain context (mode + reference slot).
-async function snapshot(api, kupo) {
+async function snapshot(api, dbsync) {
 	const [inherent, committee, enforced, lastRef] = await Promise.all([
 		readInherentProjection(api),
 		readCommitteeWeight(api),
@@ -120,7 +119,7 @@ async function snapshot(api, kupo) {
 	let recompute = null;
 	let recomputeError = null;
 	try {
-		recompute = await readIndependentRecompute(api, kupo);
+		recompute = await readIndependentRecompute(api, dbsync);
 	} catch (e) {
 		recomputeError = String(e?.message || e); // degrade: keep the committee leg, drop the recompute leg
 	}
@@ -137,10 +136,10 @@ async function snapshot(api, kupo) {
 const jsonReplacer = (_k, v) => (typeof v === "bigint" ? v.toString() : v);
 
 async function oneShot(api) {
-	const s = await snapshot(api, KUPO);
+	const s = await snapshot(api, DBSYNC);
 	const { accounts, agreeCommittee, disagreeCommittee, recomputeChecked, recomputeDisagree } = s.summary;
 	console.log(`mode=${s.enforced ? "ENFORCE" : "shadow"} ref_slot=${s.referenceSlot ?? "—"} | committee: ${agreeCommittee}/${accounts} agree, ${disagreeCommittee} disagree` +
-		(KUPO ? ` | recompute: ${recomputeChecked - recomputeDisagree}/${recomputeChecked} agree, ${recomputeDisagree} disagree` : " | recompute: (KUPO unset)") +
+		(DBSYNC ? ` | recompute: ${recomputeChecked - recomputeDisagree}/${recomputeChecked} agree, ${recomputeDisagree} disagree` : " | recompute: (DBSYNC unset)") +
 		(s.recomputeError ? `\n  ⚠ recompute leg skipped: ${s.recomputeError}` : ""));
 	console.log(JSON.stringify(s, jsonReplacer, 2));
 	// Exit 3 ONLY on a recompute disagreement (a real inherent defect). Committee disagreement is an
@@ -162,9 +161,9 @@ async function serve(api) {
 		{ name: "cogno_shadow_accounts_agree", help: "Accounts where the inherent projection == committee weight", value: metrics.agree },
 		{ name: "cogno_shadow_accounts_disagree", help: "Accounts where inherent != committee (convergence signal; transient at lock/unlock)", value: metrics.disagree },
 		{ name: "cogno_shadow_max_disagree_blocks", help: "Longest current committee-vs-inherent divergence streak in finalized blocks — powers the PERSISTENT-disagreement alert (transients clear quickly)", value: metrics.maxDisagreeBlocks },
-		{ name: "cogno_shadow_recompute_checked", help: "Accounts cross-checked against an independent off-chain Kupo recompute (0 if KUPO unset)", value: metrics.recomputeChecked },
-		{ name: "cogno_shadow_recompute_disagree", help: "Accounts where the on-chain inherent projection != an INDEPENDENT Kupo recompute at the same reference — a REAL inherent-correctness defect, not a timing transient", value: metrics.recomputeDisagree },
-		{ name: "cogno_shadow_recompute_ok", help: "1 if the independent recompute leg ran cleanly this cycle, 0 if it errored (e.g. Kupo blip), absent if KUPO unset", value: KUPO ? (metrics.recomputeError ? 0 : 1) : null },
+		{ name: "cogno_shadow_recompute_checked", help: "Accounts cross-checked against an independent off-chain db-sync recompute (0 if DBSYNC unset)", value: metrics.recomputeChecked },
+		{ name: "cogno_shadow_recompute_disagree", help: "Accounts where the on-chain inherent projection != an INDEPENDENT db-sync recompute at the same reference — a REAL inherent-correctness defect, not a timing transient", value: metrics.recomputeDisagree },
+		{ name: "cogno_shadow_recompute_ok", help: "1 if the independent recompute leg ran cleanly this cycle, 0 if it errored (e.g. db-sync blip), absent if DBSYNC unset", value: DBSYNC ? (metrics.recomputeError ? 0 : 1) : null },
 		{ name: "cogno_shadow_last_update_seconds", help: "Seconds since the diff was last recomputed (liveness)", value: metrics.lastUpdateAt ? (Date.now() - metrics.lastUpdateAt) / 1000 : -1 },
 		// Per-account gauges only for LIVE/diverging accounts. Both ShadowStake and AllowedStake are
 		// insert-0-on-unlock-never-delete, so a permanently-cleared account would otherwise accrete a
@@ -179,14 +178,14 @@ async function serve(api) {
 	if (METRICS_PORT > 0) startMetricsServer({ port: METRICS_PORT, routes: { "/metrics": () => ({ contentType: "text/plain; version=0.0.4", body: metricsText() }), "/healthz": healthz } });
 
 	const update = async (height) => {
-		const s = await snapshot(api, KUPO);
+		const s = await snapshot(api, DBSYNC);
 		Object.assign(metrics, { enforced: s.enforced, referenceSlot: s.referenceSlot, accounts: s.summary.accounts, agree: s.summary.agreeCommittee, disagree: s.summary.disagreeCommittee, recomputeChecked: s.summary.recomputeChecked, recomputeDisagree: s.summary.recomputeDisagree, recomputeError: s.recomputeError, lastUpdateAt: Date.now(), rows: s.rows });
 		// Streak tracking: a row that disagrees on the committee leg starts/continues a streak; agreement clears it.
 		const disagreeing = new Set(s.rows.filter((r) => !r.agreeCommittee).map((r) => r.account));
 		for (const acc of disagreeing) if (!divergedSince.has(acc)) divergedSince.set(acc, height);
 		for (const acc of [...divergedSince.keys()]) if (!disagreeing.has(acc)) divergedSince.delete(acc);
 		metrics.maxDisagreeBlocks = divergedSince.size ? Math.max(...[...divergedSince.values()].map((h) => height - h)) : 0;
-		const recPart = KUPO ? (s.recomputeError ? ` recompute=ERR(${s.recomputeError})` : ` recompute_disagree=${s.summary.recomputeDisagree}`) : "";
+		const recPart = DBSYNC ? (s.recomputeError ? ` recompute=ERR(${s.recomputeError})` : ` recompute_disagree=${s.summary.recomputeDisagree}`) : "";
 		console.log(`#${height} mode=${s.enforced ? "ENFORCE" : "shadow"} ref=${s.referenceSlot ?? "—"} committee_disagree=${s.summary.disagreeCommittee} max_streak=${metrics.maxDisagreeBlocks}b${recPart}`);
 	};
 
@@ -199,7 +198,7 @@ async function serve(api) {
 		try { await update(header.number.toNumber()); }
 		catch (e) { console.error(`  ⚠ shadow-diff update failed: ${e?.message || e}`); }
 	});
-	console.log(`shadow-diff serving on :${METRICS_PORT} (committee${KUPO ? " + recompute" : ""} leg) — watching finalized heads`);
+	console.log(`shadow-diff serving on :${METRICS_PORT} (committee${DBSYNC ? " + recompute" : ""} leg) — watching finalized heads`);
 	void unsub;
 }
 

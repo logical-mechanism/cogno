@@ -144,11 +144,15 @@ fn check_inherent_accepts_when_entries_agree_despite_commitment_diff() {
 }
 
 #[test]
-fn check_inherent_ignores_block_hash_diagnostic() {
+fn check_inherent_rejects_a_forged_sealed_block_hash_anchor() {
 	new_test_ext().execute_with(|| {
-		// The importer's local read agrees on the reference SLOT, the entries, and the input commitment but
-		// carries a DIFFERENT block_hash (its own Kupo checkpoint-tip — a node-local diagnostic). This must
-		// be accepted, never a Mismatch: block_hash is not consensus-load-bearing (only slot + entries are).
+		// in-protocol-observation §15.3 / Midnight delta A.1: `block_hash` is now the SEALED stable-block
+		// anchor (the latest stable Cardano block ≤ the reference), re-validated cross-node — NOT the old
+		// node-local tip diagnostic. The importer agrees on the SLOT, the entries, and the input commitment
+		// but the author sealed a DIFFERENT block_hash (a forged / regressing / wrong stable block). A
+		// caught-up importer (which HAS a local read) must FATALLY reject this as a Mismatch — the header-
+		// sealed anchor is importer-re-validated. (A BEHIND importer never reaches here: its IDP abstains →
+		// CannotVerify, see `check_inherent_cannot_verify_when_local_source_behind_is_non_fatal`.)
 		let local = CardanoObservation {
 			reference: CardanoRef { slot: 1000, block_hash: [0x11; 32] },
 			inputs_commitment: COMMIT,
@@ -156,15 +160,25 @@ fn check_inherent_ignores_block_hash_diagnostic() {
 		};
 		let mut id = InherentData::new();
 		put_obs(&mut id, &local);
-		let call = crate::Call::<Test>::observe {
-			reference: CardanoRef { slot: 1000, block_hash: [0x22; 32] }, // different hash, same slot
+		let forged = crate::Call::<Test>::observe {
+			reference: CardanoRef { slot: 1000, block_hash: [0x22; 32] }, // forged anchor, same slot + entries
 			inputs_commitment: COMMIT,
 			entries: entries(&[(A, 200_000_000)]),
 		};
+		let err = <CardanoObserver as ProvideInherent>::check_inherent(&forged, &id).unwrap_err();
 		assert!(
-			<CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok(),
-			"identical slot + entries with a differing block_hash must be accepted"
+			matches!(err, InherentError::Mismatch),
+			"a forged sealed block_hash anchor (differing from the importer's stable block) ⇒ Mismatch",
 		);
+		assert!(err.is_fatal_error(), "a forged anchor must be fatal (reject the block)");
+
+		// The matching anchor (same slot + block_hash + entries) is still accepted.
+		let honest = crate::Call::<Test>::observe {
+			reference: CardanoRef { slot: 1000, block_hash: [0x11; 32] },
+			inputs_commitment: COMMIT,
+			entries: entries(&[(A, 200_000_000)]),
+		};
+		assert!(<CardanoObserver as ProvideInherent>::check_inherent(&honest, &id).is_ok());
 	});
 }
 

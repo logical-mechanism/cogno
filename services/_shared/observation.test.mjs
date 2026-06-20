@@ -72,6 +72,10 @@ function main() {
 	ok(r !== null && r > 86400n, "a recent parent Aura slot yields a valid reference");
 	ok(referenceFromAuraSlot({ auraSlot: 0, slotDurationMs: 6000, ...PREPROD }) === null, "genesis (slot 0) ⇒ pre-Shelley ⇒ null (fail closed)");
 
+	// (The sealed stable-block anchor is no longer a JS reduction — with the db-sync pivot it is a single
+	// SQL row, `block` at `max(slot_no) <= reference`; see services/committee/dbsync.mjs. The retired
+	// latestStableBlock Kupo `/checkpoints` mirror + its tests are gone, §15.3.)
+
 	// ── observeAsOf (as-of-ref largest-wins) ───────────────────────────────────────────────────────
 	console.log("\n[observeAsOf] as-of-reference largest-wins (replaces ?unspent + tip burial)");
 	const REF = 1000n;
