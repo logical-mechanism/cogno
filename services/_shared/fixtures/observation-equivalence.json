@@ -1872,6 +1872,100 @@
 			],
 			"expectedCanonicalHex": "40420f00000000000caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00389c1c000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00e1f505000000000000000000000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0065cd1d000000000000000000000000",
 			"expectedCandidateHex": "18aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa320000000000000000000e2707000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa46000000000000000000389c1c000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa41420f00000000000000f2052a010000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb3c000000000000000000e1f505000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb5000000000000000013b420f0000000000804a5d05000000000000000000000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc64000000000000000168650f00000000000065cd1d000000000000000000000000"
+		},
+		{
+			"name": "dbsync-live-preprod-locked-both",
+			"vaultHash": "168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7",
+			"referenceSlot": 126073000,
+			"matches": [
+				{
+					"transaction_id": "33202448b66e91389fc6ba68f555fdf02b673bb420cd143959fbf26fdcc87e30",
+					"output_index": 0,
+					"value": {
+						"coins": "100000000",
+						"assets": {
+							"168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7.287a99d244b41967cd6944ad096d57d0cbad6d152c40cd803b9a9cec0ae6be75": "1"
+						}
+					},
+					"created_at": {
+						"slot_no": 126066527
+					},
+					"spent_at": null
+				},
+				{
+					"transaction_id": "169232476681d885b23463fecc93677ecca9486411d6f82273f85639351205c8",
+					"output_index": 0,
+					"value": {
+						"coins": "100000000",
+						"assets": {
+							"168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7.8c2ef2a09dd01694d4a9052665c787b954a572451662b01ff6ed2a18b68779ce": "1"
+						}
+					},
+					"created_at": {
+						"slot_no": 126071260
+					},
+					"spent_at": {
+						"slot_no": 126075034
+					}
+				}
+			],
+			"expectedEntries": [
+				[
+					"287a99d244b41967cd6944ad096d57d0cbad6d152c40cd803b9a9cec0ae6be75",
+					"100000000"
+				],
+				[
+					"8c2ef2a09dd01694d4a9052665c787b954a572451662b01ff6ed2a18b68779ce",
+					"100000000"
+				]
+			],
+			"expectedCanonicalHex": "a8b883070000000008287a99d244b41967cd6944ad096d57d0cbad6d152c40cd803b9a9cec0ae6be7500e1f5050000000000000000000000008c2ef2a09dd01694d4a9052665c787b954a572451662b01ff6ed2a18b68779ce00e1f505000000000000000000000000",
+			"expectedCandidateHex": "08287a99d244b41967cd6944ad096d57d0cbad6d152c40cd803b9a9cec0ae6be755f9f8307000000000000e1f5050000000000000000000000008c2ef2a09dd01694d4a9052665c787b954a572451662b01ff6ed2a18b68779cedcb1830700000000019ac083070000000000e1f505000000000000000000000000"
+		},
+		{
+			"name": "dbsync-live-preprod-one-spent",
+			"vaultHash": "168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7",
+			"referenceSlot": 126080000,
+			"matches": [
+				{
+					"transaction_id": "33202448b66e91389fc6ba68f555fdf02b673bb420cd143959fbf26fdcc87e30",
+					"output_index": 0,
+					"value": {
+						"coins": "100000000",
+						"assets": {
+							"168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7.287a99d244b41967cd6944ad096d57d0cbad6d152c40cd803b9a9cec0ae6be75": "1"
+						}
+					},
+					"created_at": {
+						"slot_no": 126066527
+					},
+					"spent_at": null
+				},
+				{
+					"transaction_id": "169232476681d885b23463fecc93677ecca9486411d6f82273f85639351205c8",
+					"output_index": 0,
+					"value": {
+						"coins": "100000000",
+						"assets": {
+							"168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7.8c2ef2a09dd01694d4a9052665c787b954a572451662b01ff6ed2a18b68779ce": "1"
+						}
+					},
+					"created_at": {
+						"slot_no": 126071260
+					},
+					"spent_at": {
+						"slot_no": 126075034
+					}
+				}
+			],
+			"expectedEntries": [
+				[
+					"287a99d244b41967cd6944ad096d57d0cbad6d152c40cd803b9a9cec0ae6be75",
+					"100000000"
+				]
+			],
+			"expectedCanonicalHex": "00d483070000000004287a99d244b41967cd6944ad096d57d0cbad6d152c40cd803b9a9cec0ae6be7500e1f505000000000000000000000000",
+			"expectedCandidateHex": "08287a99d244b41967cd6944ad096d57d0cbad6d152c40cd803b9a9cec0ae6be755f9f8307000000000000e1f5050000000000000000000000008c2ef2a09dd01694d4a9052665c787b954a572451662b01ff6ed2a18b68779cedcb1830700000000019ac083070000000000e1f505000000000000000000000000"
 		}
 	]
 }

@@ -13,8 +13,6 @@ import {
 	observeAsOf,
 	canonicalBytes,
 	canonicalHex,
-	latestStableBlock,
-	latestStableBlockHash,
 } from "./observation.mjs";
 import { isMain } from "./cli.mjs";
 
@@ -74,32 +72,9 @@ function main() {
 	ok(r !== null && r > 86400n, "a recent parent Aura slot yields a valid reference");
 	ok(referenceFromAuraSlot({ auraSlot: 0, slotDurationMs: 6000, ...PREPROD }) === null, "genesis (slot 0) ⇒ pre-Shelley ⇒ null (fail closed)");
 
-	// ── latestStableBlock (the sealed block-hash anchor; mirror of parse_checkpoint_anchor) ──────────
-	console.log("\n[latestStableBlock] McHash anchor: latest stable block ≤ reference (§15.3 / delta A.1)");
-	const ch1 = "11".repeat(32), ch2 = "22".repeat(32), ch3 = "33".repeat(32);
-	// Tip at 200 is too fresh for a ref of 175 ⇒ the anchor is the latest block AT/UNDER the reference (150).
-	const cps = [
-		{ slot_no: 100, header_hash: ch1 },
-		{ slot_no: 200, header_hash: ch2 }, // tip — too fresh
-		{ slot_no: 150, header_hash: ch3 },
-	];
-	ok(latestStableBlock(cps, { referenceSlot: 175 })?.hash === ch3, "anchor = latest block ≤ ref (150), not the tip (200)");
-	ok(latestStableBlock(cps, { referenceSlot: 175 })?.slot === 150n, "anchor slot is the block's slot");
-	ok(latestStableBlockHash(cps, { referenceSlot: 150 }) === ch3, "ref exactly on a checkpoint is inclusive (≤)");
-	ok(latestStableBlockHash(cps, { referenceSlot: 200 }) === ch2, "ref at the tip ⇒ the tip block");
-	ok(latestStableBlockHash(cps, { referenceSlot: 149 }) === ch1, "ref between 100 and 150 ⇒ block 100");
-	ok(latestStableBlock(cps, { referenceSlot: 99 }) === null, "ref below every checkpoint ⇒ null (abstain → CannotVerify)");
-	ok(latestStableBlockHash([], { referenceSlot: 1000 }) === null, "empty checkpoints ⇒ null");
-	ok(latestStableBlock(cps, { referenceSlot: null }) === null, "null reference ⇒ null (fail closed)");
-	// Order- and encoding-independent (string slot_no), exactly like the Rust max-fold over /checkpoints.
-	const shuffled = [
-		{ slot_no: "150", header_hash: ch3 },
-		{ slot_no: "100", header_hash: ch1 },
-		{ slot_no: "200", header_hash: ch2 },
-	];
-	ok(latestStableBlockHash(shuffled, { referenceSlot: 175 }) === ch3, "string slot_no + shuffled order ⇒ same anchor (deterministic)");
-	// An unparseable header hash degrades to 64 zero-nibbles (matches Rust hex32 → unwrap_or([0;32])).
-	ok(latestStableBlockHash([{ slot_no: 50, header_hash: "not-hex" }], { referenceSlot: 100 }) === "0".repeat(64), "unparseable header_hash degrades to [0;32] (Rust parity)");
+	// (The sealed stable-block anchor is no longer a JS reduction — with the db-sync pivot it is a single
+	// SQL row, `block` at `max(slot_no) <= reference`; see services/committee/dbsync.mjs. The retired
+	// latestStableBlock Kupo `/checkpoints` mirror + its tests are gone, §15.3.)
 
 	// ── observeAsOf (as-of-ref largest-wins) ───────────────────────────────────────────────────────
 	console.log("\n[observeAsOf] as-of-reference largest-wins (replaces ?unspent + tip burial)");

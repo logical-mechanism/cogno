@@ -118,7 +118,8 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// regen the PAPI descriptors. `observe` is still an INHERENT, so transaction_version is UNCHANGED.
 	// 110 -> 111 (in-protocol-observation §15.3 / Midnight delta A.1): the header-sealed "McHash"
 	// stable-block reference. `CardanoRef.block_hash` is now the SEALED anchor — the header hash of the
-	// latest stable Cardano block ≤ the reference (from Kupo /checkpoints) — instead of a node-local tip
+	// latest stable Cardano block ≤ the reference (the deterministic db-sync `block` at/before slot) —
+	// instead of a node-local tip
 	// diagnostic, and `check_inherent` now RE-VALIDATES it cross-node (a forged/regressing anchor ⇒
 	// Mismatch). The custom block proposer also seals it into each block HEADER as a `cobs` PreRuntime
 	// digest (external auditability). This is a CONSENSUS-VALIDITY change (a new block-import rejection

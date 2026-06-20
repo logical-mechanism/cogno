@@ -15,7 +15,7 @@ pub trait InherentDigest {
 
 	/// AUTHOR side: construct the header digest items from a block's inherent data. MUST be total over
 	/// MISSING/empty inherent data (return `Ok(vec![])` — "seal nothing"): cogno's author legitimately
-	/// abstains when its Kupo lags, and the proposer must never fail on that path.
+	/// abstains when its db-sync lags, and the proposer must never fail on that path.
 	fn from_inherent_data(
 		inherent_data: &InherentData,
 	) -> Result<Vec<DigestItem>, Box<dyn Error + Send + Sync>>;

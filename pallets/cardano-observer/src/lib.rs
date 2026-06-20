@@ -77,13 +77,14 @@ pub type BeaconName = [u8; 32];
 /// Midnight delta A.1) — NOT the old Kupo tip diagnostic. The custom proposer seals it into the block
 /// HEADER (the `cobs` PreRuntime digest, an external-auditability artifact), and
 /// [`ProvideInherent::check_inherent`] now re-validates BOTH `slot` + `block_hash` + `entries` cross-node.
-/// This is safe (it does NOT spuriously fork) because the anchor is the latest stable block ≤ `slot` —
-/// deterministic across honest caught-up nodes on the same Kupo version (the reference is ≥ the stability
-/// window old, i.e. immutable Cardano history) — and an importer whose Kupo is BEHIND the reference
-/// abstains (→ `CannotVerify`) via the node-side point-existence guard in the IDP, never reaching a FALSE
-/// mismatch here. (MAINNET PREREQUISITE: at the prod ~36 h stability window, Kupo must retain checkpoints
-/// back to the reference; the deliberately-relaxed testnet window keeps the anchor in Kupo's dense recent
-/// checkpoints.)
+/// This is safe (it does NOT spuriously fork) because the anchor is the latest stable block ≤ `slot`,
+/// resolved from Cardano db-sync as the single `block` row at `max(slot_no) <= slot` — db-sync's `block`
+/// table holds EVERY block, so that row is UNIQUE and identical across every fully-synced db-sync (≤1
+/// block/slot on settled history; the reference is ≥ the stability window old = immutable Cardano history).
+/// An importer whose db-sync is BEHIND the reference abstains (→ `CannotVerify`) via the node-side
+/// point-existence guard in the IDP, never reaching a FALSE mismatch here. (This determinism is exactly
+/// what the retired Kupo `/checkpoints` ladder could NOT give — it was tip-relative; §15.3.) (MAINNET
+/// PREREQUISITE: db-sync must run full / non-pruned, retaining block history back to the reference.)
 #[derive(
 	Encode, Decode, DecodeWithMemTracking, Clone, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen, Default,
 )]
@@ -166,7 +167,8 @@ pub struct ObserverConfig {
 	pub shelley_start_slot: u64,
 	pub stability_slots: u64,
 	/// The 28-byte Cardano policy id (== the `talk_vault` script hash, `contracts/vault.json`) the node
-	/// queries Kupo for. Consensus-pinned so a misconfigured node can't silently observe the wrong policy.
+	/// reads db-sync for (the vault script address `payment_cred` / beacon `multi_asset.policy`).
+	/// Consensus-pinned so a misconfigured node can't silently observe the wrong policy.
 	pub vault_policy_id: alloc::vec::Vec<u8>,
 }
 
@@ -309,9 +311,9 @@ pub mod pallet {
 
 			// `inputs_commitment` (the blake2_256 of the author's pre-reduction candidate set) is verified
 			// CROSS-NODE in `check_inherent` (it splits a `Mismatch` from a `ComputeDiverged` when reads
-			// disagree). The Mandatory dispatchable does NOT re-derive or apply it: there is no Kupo
+			// disagree). The Mandatory dispatchable does NOT re-derive or apply it: there is no db-sync
 			// in-runtime, and the consensus-pinned auditable artifact is the commitment carried in THIS
-			// extrinsic — recomputable by anyone against an archived Kupo at `reference.slot`.
+			// extrinsic — recomputable by anyone against an archived db-sync at `reference.slot`.
 			let _ = inputs_commitment;
 
 			// Anti-regression (§5.6): never accept an older reference than the chain already holds.

@@ -40,6 +40,29 @@ const mk = (beacon, coins, { created = 0, spent = null, extra = {}, tx = "tx", i
 
 const REF = 1_000_000; // a reference slot well past the Shelley anchor
 
+// REAL preprod db-sync output for the two live talk_vault UTxOs (captured via services/committee/dbsync.mjs).
+// The EXACT shape the db-sync SQL emits: `coins` a ::text string, `slot_no` a JSON number, `spent_at` either
+// `{slot_no}` or null, and NO `header_hash` (the SQL omits it — the reduction never reads it). Used by the
+// two `dbsync-live-preprod-*` cases below so the cross-language golden is grounded in real db-sync data.
+const BEACON_287 = "287a99d244b41967cd6944ad096d57d0cbad6d152c40cd803b9a9cec0ae6be75";
+const BEACON_8C2 = "8c2ef2a09dd01694d4a9052665c787b954a572451662b01ff6ed2a18b68779ce";
+const DBSYNC_LIVE_MATCHES = [
+	{
+		transaction_id: "33202448b66e91389fc6ba68f555fdf02b673bb420cd143959fbf26fdcc87e30",
+		output_index: 0,
+		value: { coins: "100000000", assets: { [`${V}.${BEACON_287}`]: "1" } },
+		created_at: { slot_no: 126066527 },
+		spent_at: null,
+	},
+	{
+		transaction_id: "169232476681d885b23463fecc93677ecca9486411d6f82273f85639351205c8",
+		output_index: 0,
+		value: { coins: "100000000", assets: { [`${V}.${BEACON_8C2}`]: "1" } },
+		created_at: { slot_no: 126071260 },
+		spent_at: { slot_no: 126075034 },
+	},
+];
+
 // The cases — each exercises a determinism-relevant rule the Rust port must reproduce EXACTLY.
 const rawCases = [
 	{ name: "empty", referenceSlot: 0, matches: [] },
@@ -181,6 +204,23 @@ const rawCases = [
 			mk(B, 90_000_000, { created: 80, spent: REF - 5, tx: "b-spent" }), // spent before ref — excluded
 			mk(A, 5_000_000_000, { created: REF + 1, tx: "a-fresh" }), // too fresh — excluded
 		],
+	},
+	{
+		name: "dbsync-live-preprod-locked-both",
+		// REAL preprod db-sync output (services/committee/dbsync.mjs / node/src/dbsync.rs) at a reference
+		// BETWEEN the two live vaults' creation and the 8c2ef2a0 spend (slot 126075034) — both locked. Pins
+		// db-sync's EXACT emitted shape — `coins` as a ::text STRING (precision-safe), `slot_no` as a JSON
+		// number, `spent_at` either `{slot_no}` or null, and NO `header_hash` (the SQL omits it) — reducing
+		// byte-identically cross-language. Captured live (tip ≈ 126.22M, vault policy 168a9710…).
+		referenceSlot: 126073000,
+		matches: DBSYNC_LIVE_MATCHES,
+	},
+	{
+		name: "dbsync-live-preprod-one-spent",
+		// The SAME real UTxOs, reference AFTER the 8c2ef2a0 spend (126075034) ⇒ only 287a99d2 stays locked
+		// (8c2ef2a0 spent-before-ref is excluded). The two cases straddle the spent-before/after-ref split.
+		referenceSlot: 126080000,
+		matches: DBSYNC_LIVE_MATCHES,
 	},
 ];
 

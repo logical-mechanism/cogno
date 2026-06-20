@@ -15,7 +15,7 @@
 //! Apache-2.0 `sp-partner-chains-consensus-aura` crate, pinned to cogno's polkadot-stable2603-3: the
 //! [`InherentDigest`] trait + the [`PartnerChainsProposerFactory`]/`PartnerChainsProposer` wrapper. The
 //! upstream proposer's `from_inherent_data` panic is replaced with a logged-empty fallback so a
-//! Kupo-lagging author that legitimately abstains can never wedge the essential authoring task.
+//! db-sync-lagging author that legitimately abstains can never wedge the essential authoring task.
 
 mod block_proposal;
 mod cardano_digest;

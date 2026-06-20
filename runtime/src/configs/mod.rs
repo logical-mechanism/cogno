@@ -459,7 +459,7 @@ parameter_types! {
 ///
 /// ⚠ MAINNET PREREQUISITE: `check_inherent`'s "every producer re-derives" is load-bearing only with
 /// MULTIPLE independent producers — on a single operator this is "D4-SHAPED, not D4-TRUST"; and every
-/// validator must run cardano-node + Kupo. See docs/IN-PROTOCOL-OBSERVATION.md §2/§8/§11.
+/// validator must run cardano-node + Cardano db-sync. See docs/IN-PROTOCOL-OBSERVATION.md §2/§8/§11.
 impl pallet_cardano_observer::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	// Max identities observed per block (bounds the inherent body + `LastObserved`).

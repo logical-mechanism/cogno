@@ -28,7 +28,7 @@ pub const CARDANO_OBS_DIGEST_ID: [u8; 4] = *b"cobs";
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SealedAnchor {
-	/// No `cobs` digest in the header — a legitimately-abstaining block (e.g. a Kupo-lagging author). This
+	/// No `cobs` digest in the header — a legitimately-abstaining block (e.g. a db-sync-lagging author). This
 	/// is NEVER an error: a missing seal is a legal "no observation this block".
 	NoSeal,
 	/// The sealed stable Cardano block reference (the anchor the author observed as-of).
@@ -45,7 +45,7 @@ impl InherentDigest for CardanoObsInherentDigest {
 		inherent_data: &InherentData,
 	) -> Result<Vec<DigestItem>, Box<dyn Error + Send + Sync>> {
 		// Read this node's own observation. ABSENT ⇒ the author abstains ⇒ seal nothing (TOTAL over missing
-		// data, so the proposer never fails on the common Kupo-lag abstain path). The sealed payload is the
+		// data, so the proposer never fails on the common db-sync-lag abstain path). The sealed payload is the
 		// observation's `reference` (CardanoRef { slot, block_hash }), SCALE-encoded.
 		match inherent_data.get_data::<CardanoObservation>(&INHERENT_IDENTIFIER) {
 			Ok(Some(obs)) => {
@@ -113,7 +113,7 @@ mod tests {
 
 	#[test]
 	fn from_inherent_data_is_total_over_missing_data() {
-		// The abstain path (Kupo lagging ⇒ no observation): seal nothing, NEVER panic/Err.
+		// The abstain path (db-sync lagging ⇒ no observation): seal nothing, NEVER panic/Err.
 		let id = InherentData::new();
 		assert_eq!(CardanoObsInherentDigest::from_inherent_data(&id).unwrap(), Vec::<DigestItem>::new());
 	}

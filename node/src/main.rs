@@ -7,6 +7,7 @@ mod chain_spec;
 mod cli;
 mod command;
 mod consensus;
+mod dbsync;
 mod rpc;
 mod service;
 

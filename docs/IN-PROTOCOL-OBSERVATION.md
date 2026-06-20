@@ -685,8 +685,10 @@ Consistent with the repo's grep-enforced honest posture ("usable ≠ trustless /
   proves transaction **membership, not address completeness** — even with it, the completeness assumption
   (an *omitted* vault is invisible) is **not** discharged. State this plainly: the inherent verifies the
   *computation* over observed UTxOs, not that the observation is *complete*.
-- **Per-validator `cardano-node` + Kupo (no-pruning)** is a hard `MAINNET PREREQUISITE` for a
-  multi-validator chain (§8).
+- **Per-validator `cardano-node` + Cardano db-sync** is a hard `MAINNET PREREQUISITE` for a
+  multi-validator chain (§8): full / **non-pruned** (history back to the reference) and **tx_in-enabled**
+  (NOT `--consumed-tx-out`; the read probes `EXISTS (SELECT 1 FROM tx_in)` and abstains otherwise, so a
+  mis-configured db-sync fails closed rather than forking on spentness). (Kupo retired from this path.)
 - **The existing deferred `MAINNET PREREQUISITE` comments stay** (dev-key custody, prod genesis, GRANDPA
   equivocation, `MinAuthorities`) — do not "fix" them under cover of this work (CLAUDE.md).
 
@@ -892,24 +894,54 @@ it is auditable from the extrinsic, recomputable against an archived Kupo at `re
   variant) ⇒ **spec_version 109 → 110**, PAPI + indexer + frontend regenerated; `transaction_version`
   stays 2 (`observe` is an inherent, not a signed tx). The live `talk_vault` contract is **untouched**.
 
-### 15.3 WIP (anchor pivoting to db-sync) — header-sealed, importer-re-validated stable Cardano block (mapping delta A.1, "the biggest gap") — spec 110 → 111
-> ⚠ **STATUS UPDATE (post-review pivot).** The **infrastructure** below is built + sound (the custom
-> proposer + `cobs` header seal, the `check_inherent` full-`CardanoRef` re-validation, spec 110 → 111 —
-> proven live: a spec-111 `--dev` node authored + GRANDPA-finalized cleanly). **BUT the anchor SOURCE is
-> being replaced.** An adversarial review + a live-Kupo probe found the **Kupo `/checkpoints` anchor is
-> tip-relative / non-deterministic** (a doubling rollback ladder anchored to each node's own tip — two
-> honest nodes resolve *different* anchor blocks at the reference, → a false `Mismatch`). It is dormant on
-> the single-author stack but a **latent consensus-split at the ≥3-producer cutover.** Owner decision:
-> **consolidate the observation onto Cardano db-sync + Ogmios** — db-sync gives a deterministic "block
-> at/before slot S" (the anchor) and absorbs the vault read; Kupo retires; Ogmios stays for L1 tx
-> submission. The db-sync read is wired + verified (preprod, anchor query ~2.8 ms). The Kupo anchor +
-> Kupo vault read described below are being rewritten on db-sync in a follow-up. **Everything from
-> "Architecture A" down describes the Kupo implementation that is being superseded — read it for the
-> infra that stays (proposer/seal/check_inherent), not the (Kupo) anchor source.**
+### 15.3 LANDED — header-sealed, importer-re-validated stable Cardano block on **db-sync** (mapping delta A.1, "the biggest gap") — spec 110 → 111
+> ✅ **LANDED (db-sync consolidation, 2026-06-19).** The header-seal **infrastructure** (the custom proposer
+> + `cobs` digest, the `check_inherent` full-`CardanoRef` re-validation) shipped first, then the anchor +
+> vault read were **moved off Kupo onto Cardano db-sync** — the consensus-determinism fix. The reason: an
+> adversarial review + a live-Kupo probe proved the **Kupo `/checkpoints` anchor was tip-relative /
+> non-deterministic** (a doubling rollback ladder anchored to each node's own tip — two honest nodes resolve
+> *different* anchor blocks at the reference → a false `Mismatch`; dormant on a single author, a latent
+> consensus-split at the ≥3-producer cutover). **db-sync's `block` table holds every block, so "latest block
+> at/before slot S" is EXACT** (≤1 block/slot on settled history ⇒ a single, unique row identical across
+> every fully-synced db-sync) — what makes `block_hash` genuinely safe to compare cross-node. The node
+> (`node/src/dbsync.rs`), the committee tooling (`services/committee/dbsync.mjs`), and the follower
+> (`vault.py`) all read the vault from db-sync now; **Kupo is retired from the observation path** (it stays
+> for the anchor-relayer's L1 write/metadata path); **Ogmios stays for L1 tx submission** (db-sync is
+> read-only and cannot submit). The ceiling is unchanged — **D4-SHAPED, not D4-TRUST** until ≥3 independent
+> producers each run their own db-sync; this did **not** flip `set_enforcement` or tighten the window.
 
-**Status: WIP — Architecture A infra landed, anchor pivoting from Kupo `/checkpoints` to db-sync.** Built on
-branch `cardano-observer-mchash`. The McHash-faithful **Architecture B** (the header digest itself
-consensus-binding on import) is deliberately deferred — see "What was deferred".
+**Status: LANDED on branch `cardano-observer-mchash`.** The McHash-faithful **Architecture B** (the header
+digest itself consensus-binding on import) is deliberately deferred — see "What was deferred".
+
+**The db-sync read (the consensus-critical part).** One read-only snapshot per block
+(`read_observation`, mirrored in Rust / committee-JS / follower-Python) returns, from a single Postgres MVCC
+snapshot: (1) freshness `max(block.slot_no)` — the point-existence guard (a behind db-sync abstains →
+`CannotVerify`); (2) the deterministic anchor — the `block` row at `max(slot_no) <= reference`; (3) the
+vault UTxOs shaped **in SQL** into the EXACT Kupo `/matches` JSON the pure reduction already consumes, so
+`observe_as_of` / `observeAsOf` / `observe_as_of` (Rust/JS/Python) run **byte-identically, UNCHANGED — only
+the source moved**. A single snapshot also closes the old Kupo tip→matches TOCTOU residual. Three byte-identity
+choices (a divergence is a chain FORK), each grounded in a live-data finding:
+- **Spentness from `tx_in`, NOT `consumed_by_tx_id`.** The denormalized `consumed_by_tx_id` column was
+  observed NULL for a known-spent vault UTxO on the live instance (it is config-dependent); `tx_in` is
+  canonical ledger data, identical on every correctly-synced db-sync.
+- **Coins/quantities as `::text` strings.** `MaxStakeWeight` = 4.5e16 lovelace > 2^53, so a JS `Number` (or
+  any float) would lose precision; the strict integer parsers consume the strings, same path as Kupo's.
+- **Driven from `tx_out.payment_cred = <vault script hash>`** (the vault script address equals the beacon
+  policy id) — an indexed (`idx_tx_out_payment_cred`) analog of Kupo `/matches/{policy}.*`. The
+  asset-driven query would seq-scan 7.4M `ma_tx_out` rows (no index on `ident`, which the read-only
+  `cogno_reader` cannot add); the address path runs the full read in ~15 ms. Verified equivalent: 0
+  escaped beacons in all preprod history, and ADA-only-at-address UTxOs are excluded by the asset `EXISTS`.
+
+**Live byte-identity evidence.** The db-sync-shaped read and the (now-retired) Kupo read were both run through
+the canonical `observeAsOf`/`canonicalHex`/`candidateHex` at two preprod references straddling the
+spent-before/after-ref split: the reduced observation **and** the input-commitment pre-image were byte-identical
+both ways. The Rust↔JS golden fixture (`observation-equivalence.json`) now carries two `dbsync-live-preprod-*`
+cases sourced from that real db-sync output; the Rust and JS equivalence suites both re-derive them and agree
+byte-for-byte. **MAINNET PREREQUISITE:** run db-sync **full / non-pruned** (retaining history back to the
+reference), **tx_in-enabled** (NOT `--consumed-tx-out` — spentness is read from `tx_in`; the read probes
+`EXISTS (SELECT 1 FROM tx_in)` and abstains fail-closed otherwise, so a `--consumed-tx-out` instance can never
+silently emit a spent vault as locked), and over **TLS** (the node uses `NoTls` against the read-only
+`cogno_reader` on a private LAN here).
 
 **The gap.** Before this, the reference was `f(parent Aura slot) − stability_window` (§5.1), and
 `CardanoRef.block_hash` carried the node's Kupo **checkpoint-tip** header hash — a node-local diagnostic

@@ -8,10 +8,14 @@
 //! (`observeAsOf` / `cardanoReferenceSlot`) — kept logically identical so the off-chain shadow-diff
 //! aligns; consensus determinism rests on every validator running this same node code.
 //!
-//! **This module is the pure core + the live Kupo IO + the `InherentDataProvider` wrapper.** The
-//! `service.rs` closures derive the reference slot from the parent block and call [`fetch_kupo_tip`]
-//! (the point-existence guard — a Kupo that has not indexed PAST the reference abstains rather than
-//! returning a partial set) then [`fetch_kupo_matches`] (the as-of-reference read).
+//! **This module is the pure core + the `InherentDataProvider` wrapper.** The IO half (the deterministic
+//! Cardano db-sync read — freshness tip + the stable-block anchor + the vault UTxOs as-of the reference)
+//! lives in [`crate::dbsync`]; `service.rs` derives the reference slot from the parent block, calls
+//! [`crate::dbsync::read_observation`] once, applies the point-existence guard (a db-sync that has not
+//! indexed PAST the reference abstains rather than returning a partial set), and feeds the returned
+//! Kupo-shaped matches to the pure reduction below UNCHANGED. (The retired Kupo `/matches` + `/checkpoints`
+//! reads were superseded by db-sync because Kupo's tip-relative checkpoint ladder gave a non-deterministic
+//! block anchor — see in-protocol-observation §15.3.)
 
 use codec::{Decode, Encode};
 use pallet_cardano_observer::{
@@ -41,8 +45,9 @@ pub fn reference_slot(
 	Some(reference)
 }
 
-/// Parse a 64-char (32-byte) hex string into a `BeaconName`; `None` on bad length/chars.
-fn hex32(s: &str) -> Option<BeaconName> {
+/// Parse a 64-char (32-byte) hex string into a `BeaconName`; `None` on bad length/chars. Public so the
+/// db-sync IO ([`crate::dbsync`]) can resolve the stable-block anchor `header_hash` into `[u8; 32]`.
+pub fn hex32(s: &str) -> Option<BeaconName> {
 	let s = s.strip_prefix("0x").unwrap_or(s);
 	if s.len() != 64 {
 		return None;
@@ -57,12 +62,32 @@ fn hex32(s: &str) -> Option<BeaconName> {
 	Some(out)
 }
 
-/// Read an integer field that Kupo may encode as a JSON number OR a string (defensive).
+/// Parse a JSON integer field the SAME strict way `services/_shared/observation.mjs` does (the
+/// determinism witness): a JSON number iff a non-negative integer in range, OR a string iff it is PURE
+/// ASCII digits in range. Rust's bare `u64::from_str` is LOOSER than the JS `/^[0-9]+$/` — it accepts a
+/// leading `+` ("+1") — so a coins / qty / slot one side accepts and the other drops would FORK the read.
+/// The `all(is_ascii_digit)` guard pins Rust to the JS regex ("+1" / " 1" / "0x1" rejected both sides).
+/// (db-sync now returns clean numeric `::text`, so the loose case is unreachable with real data, but the
+/// shared parser must not silently diverge — the equivalence fixture exercises it.)
 fn as_u128(v: &serde_json::Value) -> Option<u128> {
-	v.as_u64().map(u128::from).or_else(|| v.as_str().and_then(|s| s.parse::<u128>().ok()))
+	if let Some(n) = v.as_u64() {
+		return Some(u128::from(n));
+	}
+	let s = v.as_str()?;
+	if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+		return None;
+	}
+	s.parse::<u128>().ok()
 }
 fn as_u64(v: &serde_json::Value) -> Option<u64> {
-	v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+	if let Some(n) = v.as_u64() {
+		return Some(n);
+	}
+	let s = v.as_str()?;
+	if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+		return None;
+	}
+	s.parse::<u64>().ok()
 }
 
 /// PURE: reduce Kupo `/matches` JSON to the canonical largest-wins-per-beacon set AS-OF `reference_slot`.
@@ -223,7 +248,8 @@ pub fn build_observation(
 	}
 }
 
-/// Lowercase-hex encode bytes (the vault policy id → the Kupo `/matches/{policy}.*` pattern).
+/// Lowercase-hex encode bytes (the consensus-pinned vault policy id → the `$2` text the db-sync read
+/// filters on, via `tx_out.payment_cred` / `multi_asset.policy`).
 pub fn hex_encode(bytes: &[u8]) -> String {
 	let mut s = String::with_capacity(bytes.len() * 2);
 	for b in bytes {
@@ -232,128 +258,8 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 	s
 }
 
-/// Read the vault's UTxOs AS-OF `reference_slot` from this node's OWN Kupo: query
-/// `/matches/{policy}.*?created_before={ref+1}` (a prefilter — the authoritative `created ≤ ref AND
-/// unspent-as-of-ref` is applied client-side in [`observe_as_of`]; Kupo's `created_before`/`spent_before`
-/// are both upper bounds and cannot be combined, and `?unspent` would wrongly drop UTxOs spent after the
-/// reference). Bounded by a short timeout so a slow/down Kupo can't stall authoring/import — the caller
-/// treats any `Err` as fail-closed (empty observation). Returns the raw match array.
-pub async fn fetch_kupo_matches(
-	kupo_url: &str,
-	vault_policy_hex: &str,
-	reference_slot: u64,
-) -> Result<Vec<serde_json::Value>, String> {
-	let url = format!(
-		"{}/matches/{}.*?created_before={}",
-		kupo_url.trim_end_matches('/'),
-		vault_policy_hex,
-		reference_slot.saturating_add(1),
-	);
-	let resp = reqwest::Client::new()
-		.get(&url)
-		.timeout(core::time::Duration::from_secs(2))
-		.send()
-		.await
-		.map_err(|e| format!("kupo request failed ({url}): {e}"))?;
-	if !resp.status().is_success() {
-		return Err(format!("kupo HTTP {} for {url}", resp.status()));
-	}
-	let text = resp.text().await.map_err(|e| format!("kupo body read failed: {e}"))?;
-	let v: serde_json::Value =
-		serde_json::from_str(&text).map_err(|e| format!("kupo JSON parse failed: {e}"))?;
-	v.as_array()
-		.cloned()
-		.ok_or_else(|| format!("kupo /matches did not return an array for {vault_policy_hex}"))
-}
-
-/// PURE: extract the most-recent indexed point (max `slot_no` + its `header_hash`) from a Kupo
-/// `/checkpoints` JSON array. Defensive against ORDERING (takes the max over ALL elements — never assumes
-/// the array is sorted or that `[0]` is the tip; mis-taking a min would let a behind node wrongly think
-/// it is caught up, re-introducing the false-Mismatch bug) and against number-vs-string encodings
-/// (reuses [`as_u64`]). `None` unless the value is a non-empty array with at least one valid `slot_no`.
-/// Used ONLY for the point-existence guard (its `slot` answers "has this node indexed PAST the
-/// reference?"); the consensus `block_hash` anchor comes from [`parse_checkpoint_anchor`], NOT the tip.
-/// An unparseable hash degrades to `[0; 32]` but does NOT discard the load-bearing slot.
-pub fn parse_checkpoint_tip(value: &serde_json::Value) -> Option<(u64, [u8; 32])> {
-	let arr = value.as_array()?;
-	let mut best: Option<(u64, [u8; 32])> = None;
-	for c in arr {
-		let slot = match c.get("slot_no").and_then(as_u64) {
-			Some(s) => s,
-			None => continue,
-		};
-		if best.map_or(true, |(b, _)| slot > b) {
-			let hash = c
-				.get("header_hash")
-				.and_then(|h| h.as_str())
-				.and_then(hex32)
-				.unwrap_or([0u8; 32]);
-			best = Some((slot, hash));
-		}
-	}
-	best
-}
-
-/// PURE: the latest STABLE Cardano block at/under `reference_slot` — the max `/checkpoints` element whose
-/// `slot_no` is `≤ reference_slot`, returned as `(slot_no, header_hash)`. This is the partner-chains McHash
-/// `get_latest_stable_block_for(T)` analog adapted to cogno's single pinned vault + Kupo `/checkpoints`
-/// (in-protocol-observation §15.3 step 3 / Midnight delta A.1). The returned `header_hash` is the SEALED
-/// anchor: it becomes [`CardanoRef::block_hash`], is written into the `cobs` header digest by the custom
-/// proposer, AND is re-validated cross-node by [`pallet_cardano_observer::ProvideInherent::check_inherent`]
-/// — NO longer a node-local tip diagnostic. Defensive against ordering / number-vs-string encodings (same
-/// max-fold shape as [`parse_checkpoint_tip`], filtered to `slot_no ≤ reference_slot`). `None` when no
-/// checkpoint is at/under the reference (a young/behind index ⇒ the caller abstains → `CannotVerify`).
-/// Determinism contract: every honest node running the SAME Kupo version over the SAME settled history
-/// selects the SAME anchor (the reference is ≥ the stability window old, i.e. immutable Cardano history) —
-/// the consensus property that makes the hash safe to compare (mirrored by `latestStableBlockHash` in
-/// `services/_shared/observation.mjs`).
-pub fn parse_checkpoint_anchor(value: &serde_json::Value, reference_slot: u64) -> Option<(u64, [u8; 32])> {
-	let arr = value.as_array()?;
-	let mut best: Option<(u64, [u8; 32])> = None;
-	for c in arr {
-		let slot = match c.get("slot_no").and_then(as_u64) {
-			Some(s) => s,
-			None => continue,
-		};
-		if slot > reference_slot {
-			continue; // only blocks at/under the stable reference are eligible anchors
-		}
-		if best.map_or(true, |(b, _)| slot > b) {
-			let hash = c
-				.get("header_hash")
-				.and_then(|h| h.as_str())
-				.and_then(hex32)
-				.unwrap_or([0u8; 32]);
-			best = Some((slot, hash));
-		}
-	}
-	best
-}
-
-/// Read this node's own Kupo `/checkpoints` as raw JSON (the indexed-points array). The single source for
-/// BOTH the point-existence guard ([`parse_checkpoint_tip`] — has this node indexed past the reference?)
-/// AND the consensus block-hash anchor ([`parse_checkpoint_anchor`] — the latest stable block ≤ reference).
-/// Reading once keeps the two derivations consistent (no inter-call rollback between a separate tip and
-/// anchor fetch). Bounded by a short timeout; any error (down / non-2xx / non-JSON) is returned so the
-/// caller fails closed (abstains → empty observation → `CannotVerify`).
-pub async fn fetch_kupo_checkpoints(kupo_url: &str) -> Result<serde_json::Value, String> {
-	let url = format!("{}/checkpoints", kupo_url.trim_end_matches('/'));
-	let resp = reqwest::Client::new()
-		.get(&url)
-		.timeout(core::time::Duration::from_secs(2))
-		.send()
-		.await
-		.map_err(|e| format!("kupo /checkpoints request failed ({url}): {e}"))?;
-	if !resp.status().is_success() {
-		return Err(format!("kupo HTTP {} for {url}", resp.status()));
-	}
-	let text =
-		resp.text().await.map_err(|e| format!("kupo /checkpoints body read failed: {e}"))?;
-	serde_json::from_str(&text).map_err(|e| format!("kupo /checkpoints JSON parse failed: {e}"))
-}
-
 /// The node-side `InherentDataProvider` for the Cardano observation. Holds the observation this node
-/// computed, or `None` when its own Kupo source is behind/down (fail-closed — provide nothing, so the
+/// computed, or `None` when its own db-sync source is behind/down (fail-closed — provide nothing, so the
 /// author emits no inherent and the chain stays live).
 pub struct CardanoObservationInherentDataProvider {
 	pub observation: Option<CardanoObservation>,
@@ -495,59 +401,17 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_checkpoint_tip_takes_the_max_slot_regardless_of_order_or_encoding() {
-		let hh = "2a6081ac666ab5ec49467675d63271eb1feca6e37d381acd63dd9d41f2353dbb";
-		// Descending order: the tip (max slot) is NOT element [0].
-		let desc = json!([
-			{ "slot_no": 200, "header_hash": hh },
-			{ "slot_no": 100, "header_hash": "aa".repeat(32) },
-		]);
-		assert_eq!(parse_checkpoint_tip(&desc), Some((200, hex32(hh).unwrap())));
-		// Ascending order + a string-encoded slot_no (Kupo's int encoding is not stable across versions).
-		let asc = json!([
-			{ "slot_no": "100", "header_hash": "aa".repeat(32) },
-			{ "slot_no": "300", "header_hash": hh },
-		]);
-		assert_eq!(parse_checkpoint_tip(&asc), Some((300, hex32(hh).unwrap())));
-		// An unparseable header hash degrades to [0;32] but keeps the (load-bearing) slot.
-		let bad_hash = json!([{ "slot_no": 42, "header_hash": "not-hex" }]);
-		assert_eq!(parse_checkpoint_tip(&bad_hash), Some((42, [0u8; 32])));
-		// Empty / non-array / no valid slot ⇒ None (caller fails closed → abstain).
-		assert_eq!(parse_checkpoint_tip(&json!([])), None);
-		assert_eq!(parse_checkpoint_tip(&json!({ "slot_no": 1 })), None);
-		assert_eq!(parse_checkpoint_tip(&json!([{ "header_hash": hh }])), None);
-	}
-
-	#[test]
-	fn parse_checkpoint_anchor_takes_the_latest_block_at_or_under_the_reference() {
-		let h1 = "1111111111111111111111111111111111111111111111111111111111111111";
-		let h2 = "2222222222222222222222222222222222222222222222222222222222222222";
-		let h3 = "3333333333333333333333333333333333333333333333333333333333333333";
-		let cps = json!([
-			{ "slot_no": 100, "header_hash": h1 },
-			{ "slot_no": 200, "header_hash": h2 }, // the tip — too fresh for a ref of 150
-			{ "slot_no": 150, "header_hash": h3 },
-		]);
-		// ref between 150 and 200 ⇒ the anchor is slot 150 (the latest block AT/UNDER the reference),
-		// NOT the tip (slot 200) and NOT an older block (slot 100).
-		assert_eq!(parse_checkpoint_anchor(&cps, 175), Some((150, hex32(h3).unwrap())));
-		// ref exactly on a checkpoint ⇒ that checkpoint (≤ is inclusive).
-		assert_eq!(parse_checkpoint_anchor(&cps, 150), Some((150, hex32(h3).unwrap())));
-		assert_eq!(parse_checkpoint_anchor(&cps, 200), Some((200, hex32(h2).unwrap())));
-		// ref between 100 and 150 ⇒ slot 100.
-		assert_eq!(parse_checkpoint_anchor(&cps, 149), Some((100, hex32(h1).unwrap())));
-		// ref below every checkpoint ⇒ None (no stable block yet ⇒ caller abstains → CannotVerify).
-		assert_eq!(parse_checkpoint_anchor(&cps, 99), None);
-		// order- and encoding-independent (string slot_no), same as the tip parser.
-		let shuffled = json!([
-			{ "slot_no": "150", "header_hash": h3 },
-			{ "slot_no": "100", "header_hash": h1 },
-			{ "slot_no": "200", "header_hash": h2 },
-		]);
-		assert_eq!(parse_checkpoint_anchor(&shuffled, 175), Some((150, hex32(h3).unwrap())));
-		// empty / non-array ⇒ None.
-		assert_eq!(parse_checkpoint_anchor(&json!([]), 1_000), None);
-		assert_eq!(parse_checkpoint_anchor(&json!({ "slot_no": 1 }), 1_000), None);
+	fn as_uint_strict_matches_the_js_regex_rejecting_a_leading_plus() {
+		// The Rust↔JS parser parity fix: Rust's bare `u64::from_str` accepts a leading `+`, but the JS
+		// `/^[0-9]+$/` does not — a coins / qty / slot one side accepts and the other drops would FORK the
+		// read. as_u64/as_u128 now reject any non-pure-ASCII-digit string, matching observation.mjs.
+		assert_eq!(as_u64(&json!("100")), Some(100));
+		assert_eq!(as_u128(&json!("100000000")), Some(100_000_000));
+		assert_eq!(as_u64(&json!(7)), Some(7)); // JSON number still accepted
+		for bad in ["+1", " 1", "1 ", "0x1", "1.0", "-1", "", "1_0", "abc"] {
+			assert_eq!(as_u64(&json!(bad)), None, "as_u64 must reject {bad:?} (JS regex parity)");
+			assert_eq!(as_u128(&json!(bad)), None, "as_u128 must reject {bad:?} (JS regex parity)");
+		}
 	}
 
 	#[test]

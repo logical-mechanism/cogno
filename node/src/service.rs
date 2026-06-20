@@ -12,10 +12,9 @@ use sp_consensus_aura::sr25519::AuthorityPair as AuraPair;
 use std::{sync::Arc, time::Duration};
 // in-protocol-observation (D4): the node-side Cardano-observation InherentDataProvider wiring.
 use crate::cardano_observer::{
-	build_observation, fetch_kupo_checkpoints, fetch_kupo_matches, hex_encode,
-	parse_checkpoint_anchor, parse_checkpoint_tip, reference_slot,
-	CardanoObservationInherentDataProvider,
+	build_observation, hex_encode, reference_slot, CardanoObservationInherentDataProvider,
 };
+use crate::dbsync;
 use pallet_cardano_observer::{CardanoObserverApi, CardanoRef};
 use sp_api::ProvideRuntimeApi;
 use sp_runtime::traits::Block as BlockT;
@@ -32,9 +31,10 @@ type FullSelectChain = sc_consensus::LongestChain<FullBackend, Block>;
 /// (in-protocol-observation, D4). Reads the consensus-pinned config via the `CardanoObserverApi` runtime
 /// API (single source of truth — node + runtime can't drift), derives the stable reference slot from the
 /// PARENT block's Aura slot (so author + every importer agree, design §5.1), and reads THIS node's own
-/// Kupo as-of that slot. **Fail-closed:** any error (API / header / Kupo down or behind) ⇒ an empty
-/// observation — the author abstains (no inherent; the chain stays live) and an importer that can't read
-/// defers-accepts via the runtime's `CannotVerify` path. Used by BOTH the import and authoring CIDPs.
+/// db-sync as-of that slot (ONE consistent snapshot: freshness tip + the deterministic stable-block
+/// anchor + the vault UTxOs). **Fail-closed:** any error (API / header / db-sync down or behind) ⇒ an
+/// empty observation — the author abstains (no inherent; the chain stays live) and an importer that can't
+/// read defers-accepts via the runtime's `CannotVerify` path. Used by BOTH the import and authoring CIDPs.
 async fn build_cardano_idp(
 	client: Arc<FullClient>,
 	parent: <Block as BlockT>::Hash,
@@ -74,81 +74,62 @@ async fn build_cardano_idp(
 		Some(r) => r,
 		None => return empty,
 	};
-	let kupo = std::env::var("KUPO_URL")
-		.or_else(|_| std::env::var("KUPO"))
-		.unwrap_or_else(|_| "http://127.0.0.1:1442".to_string());
+	let dbsync_url = std::env::var("DBSYNC_URL").or_else(|_| std::env::var("DBSYNC")).unwrap_or_default();
+	if dbsync_url.is_empty() {
+		log::warn!(target: "cardano-observer", "no DBSYNC_URL/DBSYNC set — abstaining (empty observation)");
+		return empty;
+	}
 	let vault_hex = hex_encode(&config.vault_policy_id);
-	// 4. read /checkpoints ONCE → derive (a) the tip for the point-existence guard and (b) the stable
-	//    block-hash anchor. Both from one read so they cannot diverge across an inter-call rollback.
-	let checkpoints = match fetch_kupo_checkpoints(&kupo).await {
-		Ok(c) => c,
+	// 4. ONE consistent-snapshot db-sync read: freshness tip + the deterministic stable-block anchor + the
+	//    vault matches (Kupo-shaped JSON). A single MVCC snapshot, so the tip/anchor/matches cannot diverge
+	//    across an inter-call rollback (this closes the old Kupo tip→matches TOCTOU residual entirely).
+	let read = match dbsync::read_observation(&dbsync_url, &vault_hex, ref_slot).await {
+		Ok(r) => r,
 		Err(e) => {
-			log::warn!(target: "cardano-observer", "Kupo /checkpoints read failed: {e} — abstaining (empty observation)");
+			log::warn!(target: "cardano-observer", "db-sync read failed: {e} — abstaining (empty observation)");
 			return empty;
 		},
 	};
-	// 4a. point-existence guard (§5.4): only trust the read if THIS node's Kupo has indexed PAST the
-	//     reference. A behind Kupo must ABSTAIN (→ the runtime's CannotVerify accept/defer path) rather
+	// 4a. point-existence guard (§5.4): only trust the read if THIS node's db-sync has indexed PAST the
+	//     reference. A behind db-sync must ABSTAIN (→ the runtime's CannotVerify accept/defer path) rather
 	//     than return a partial UTxO set that would trigger a FALSE fatal Mismatch on import.
-	let tip_slot = match parse_checkpoint_tip(&checkpoints) {
-		Some((s, _)) => s,
-		None => {
-			log::warn!(target: "cardano-observer", "Kupo /checkpoints had no usable tip — abstaining (empty observation)");
-			return empty;
-		},
-	};
-	if tip_slot < ref_slot {
+	if read.tip_slot < ref_slot {
 		log::debug!(
 			target: "cardano-observer",
-			"Kupo tip slot {tip_slot} < reference {ref_slot} — source behind, abstaining (defer/CannotVerify)",
+			"db-sync tip slot {} < reference {ref_slot} — source behind, abstaining (defer/CannotVerify)",
+			read.tip_slot,
 		);
 		return empty;
 	}
 	// 4b. the SEALED stable block-hash anchor (in-protocol-observation §15.3, Midnight delta A.1): the
-	//     header hash of the latest stable Cardano block AT/UNDER the reference. It becomes
+	//     header hash of the latest stable Cardano block AT/UNDER the reference — the single `block` row at
+	//     max `slot_no ≤ reference` (deterministic: ≤1 block/slot on settled history). It becomes
 	//     `CardanoRef.block_hash` — the custom proposer seals it into the block header (`cobs` digest) and
-	//     `check_inherent` re-validates it cross-node (no longer a node-local tip diagnostic). The tip is
-	//     past the reference (guard above), so an anchor ≤ reference must exist; its absence means a
-	//     checkpoint gap ⇒ abstain (fail closed) rather than seal a degenerate hash.
-	let anchor_hash = match parse_checkpoint_anchor(&checkpoints, ref_slot) {
+	//     `check_inherent` re-validates it cross-node. The tip is past the reference (guard above), so an
+	//     anchor ≤ reference exists except at genesis depth ⇒ abstain rather than seal a degenerate hash.
+	let anchor_hash = match read.anchor {
 		Some((_, hash)) => hash,
 		None => {
 			log::debug!(
 				target: "cardano-observer",
-				"no Kupo checkpoint at/under reference {ref_slot} (tip {tip_slot}) — abstaining (defer/CannotVerify)",
+				"no db-sync block at/under reference {ref_slot} (tip {}) — abstaining (defer/CannotVerify)",
+				read.tip_slot,
 			);
 			return empty;
 		},
 	};
-	// ⚠ KNOWN RESIDUAL (tip→matches TOCTOU): the tip check and the /matches read below are two separate
-	// Kupo calls. If THIS node's Kupo rolls its index back below `ref_slot` in the millisecond window
-	// between them (a Kupo restart / full re-sync — NOT a Cardano rollback: `ref_slot` is ≥ the stability
-	// window old, i.e. immutable history a follower never rewinds), the /matches read could return a
-	// PARTIAL set, yielding a partial observation that imports as a FALSE fatal `Mismatch` instead of the
-	// intended `CannotVerify`. Effect is bounded: a single rejected block on THAT importer that the next
-	// healthy author re-proposes (a liveness hiccup, never a fork or a safety break), and it self-heals on
-	// the next block. Left as a documented residual rather than paying a second round-trip (a re-check of
-	// the tip AFTER the matches read) on the block-production hot path; revisit only if it ever manifests.
-	// 5. read this node's own Kupo as-of the reference + reduce (fail-closed on any read error).
-	match fetch_kupo_matches(&kupo, &vault_hex, ref_slot).await {
-		Ok(matches) => {
-			let obs = build_observation(
-				CardanoRef { slot: ref_slot, block_hash: anchor_hash },
-				&matches,
-				&vault_hex,
-			);
-			log::debug!(
-				target: "cardano-observer",
-				"observed {} vault entrie(s) as-of slot {} (from {} Kupo match(es))",
-				obs.entries.len(), ref_slot, matches.len(),
-			);
-			CardanoObservationInherentDataProvider { observation: Some(obs) }
-		},
-		Err(e) => {
-			log::warn!(target: "cardano-observer", "Kupo read failed: {e} — abstaining (empty observation)");
-			empty
-		},
-	}
+	// 5. reduce the db-sync matches (the pure reduction is UNCHANGED — only the source moved from Kupo).
+	let obs = build_observation(
+		CardanoRef { slot: ref_slot, block_hash: anchor_hash },
+		&read.matches,
+		&vault_hex,
+	);
+	log::debug!(
+		target: "cardano-observer",
+		"observed {} vault entrie(s) as-of slot {} (from {} db-sync match(es), anchor block {})",
+		obs.entries.len(), ref_slot, read.matches.len(), hex_encode(&anchor_hash),
+	);
+	CardanoObservationInherentDataProvider { observation: Some(obs) }
 }
 
 /// The minimum period of blocks on which justifications will be

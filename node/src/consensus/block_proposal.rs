@@ -9,7 +9,7 @@
 //! longer has `ProofRecording`/`Proof` associated types (proof recording moved into
 //! `ProposeArgs::storage_proof_recorder`). ONE deliberate behavioural change from upstream: the
 //! `.expect("InherentDigest can be created from inherent data")` is replaced with a logged-empty fallback
-//! — a Kupo-lagging author that legitimately abstains (no inherent data) must NEVER panic the essential
+//! — a db-sync-lagging author that legitimately abstains (no inherent data) must NEVER panic the essential
 //! authoring task.
 //!
 //! Why the appended `PreRuntime` item survives `Executive::final_checks`: `frame_system::initialize`
@@ -81,7 +81,7 @@ impl<B: BlockT, P: Proposer<B>, ID: InherentDigest> Proposer<B>
 		let mut logs: Vec<DigestItem> = Vec::from(args.inherent_digests.logs());
 		// Append the sealed header digest. Unlike upstream's `.expect()`, a failure here is LOGGED and the
 		// block is proposed WITHOUT the seal — `from_inherent_data` is total over missing inherent data
-		// (Ok(vec![]) on the Kupo-lag abstain path), and an Err only on genuinely-corrupt local data, which
+		// (Ok(vec![]) on the db-sync-lag abstain path), and an Err only on genuinely-corrupt local data, which
 		// must still never wedge the essential authoring task.
 		match ID::from_inherent_data(&args.inherent_data) {
 			Ok(mut inherent_logs) => logs.append(&mut inherent_logs),

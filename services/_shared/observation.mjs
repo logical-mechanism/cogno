@@ -92,8 +92,12 @@ export function referenceFromAuraSlot({
 //     for floats / out-of-range; JS `Number.isInteger` matches, modulo the one case JS cannot see — a JSON
 //     number written `1.0`, which `JSON.parse` collapses to `1`; Kupo never emits fractional integers, so
 //     this residual is unreachable with real data and is the documented precondition).
-//   • a STRING counts only if it is pure ASCII digits within range (Rust `u64::from_str` / `u128::from_str`
-//     reject "1.0", " 1", "0x1", "+1"; `/^[0-9]+$/` matches exactly).
+//   • a STRING counts only if it is pure ASCII digits within range. The Rust port's `as_u64`/`as_u128`
+//     apply an explicit `all(is_ascii_digit)` guard BEFORE `from_str` — Rust's bare `u64::from_str` would
+//     ACCEPT a leading `+` ("+1") that this `/^[0-9]+$/` rejects — so "1.0" / " 1" / "0x1" / "+1" are
+//     dropped IDENTICALLY on both sides (a beacon qty / coins / slot one side dropped and the other kept
+//     would fork the read). db-sync now returns clean numeric `::text`, so the loose case is unreachable
+//     with real data, but the shared parser must not silently diverge (the equivalence fixture pins it).
 const MAX_U64 = (1n << 64n) - 1n;
 const MAX_U128 = (1n << 128n) - 1n;
 const asUintStrict = (v, max) => {
@@ -110,32 +114,13 @@ const asU128 = (v) => asUintStrict(v, MAX_U128);
 const isBeacon32 = (hex) => typeof hex === "string" && hex.length === 64 && /^[0-9a-f]+$/.test(hex);
 
 // ── the sealed stable-block anchor (§15.3 / Midnight delta A.1) ──────────────────────────────────────
-// PURE: the latest STABLE Cardano block at/under `referenceSlot` — the max Kupo `/checkpoints` element
-// whose `slot_no` is ≤ referenceSlot, as `{ slot:BigInt, hash:string }` (hash = 64-lowercase-hex header
-// hash) or `null` when none. The JS mirror of `parse_checkpoint_anchor` in node/src/cardano_observer.rs
-// (the partner-chains McHash `get_latest_stable_block_for` analog). This hash is the SEALED block-hash
-// anchor that becomes `CardanoRef.block_hash` — written into the `cobs` header digest by the custom
-// proposer AND re-validated cross-node by the runtime's check_inherent, so it must derive byte-identically
-// here. Defensive against ordering / number-vs-string slots (strict asU64, max-fold), exactly like the
-// Rust port. An unparseable `header_hash` degrades to 64 zero-nibbles (matches Rust `hex32().unwrap_or([0;
-// 32])`) — unreachable with real Kupo data. Determinism: every honest node on the same Kupo version over
-// the same settled history selects the same anchor (the reference is ≥ the stability window old).
-export function latestStableBlock(checkpoints, { referenceSlot } = {}) {
-	if (referenceSlot == null) return null;
-	const ref = BigInt(referenceSlot);
-	let best = null; // { slot:BigInt, hash:string }
-	for (const c of checkpoints ?? []) {
-		const slot = asU64(c?.slot_no);
-		if (slot == null || slot > ref) continue; // only blocks at/under the stable reference
-		if (best == null || slot > best.slot) {
-			const h = typeof c?.header_hash === "string" ? c.header_hash.toLowerCase() : "";
-			best = { slot, hash: isBeacon32(h) ? h : "0".repeat(64) };
-		}
-	}
-	return best;
-}
-// Convenience: just the sealed anchor hash hex (or null) — the value carried as CardanoRef.block_hash.
-export const latestStableBlockHash = (checkpoints, opts) => latestStableBlock(checkpoints, opts)?.hash ?? null;
+// The anchor is no longer reduced in JS: with the pivot from Kupo to db-sync it is a SINGLE SQL row — the
+// `block` row at `max(slot_no) <= reference` (see `services/committee/dbsync.mjs` / `node/src/dbsync.rs`).
+// `block` holds EVERY block, so "latest block at/under S" is exact (≤1 block/slot on settled history ⇒
+// unique across every fully-synced db-sync), unlike Kupo's sparse, tip-relative `/checkpoints` ladder which
+// resolved different anchors on two honest nodes (the false-`Mismatch` blocker). The retired `latestStableBlock`/
+// `latestStableBlockHash` Kupo `/checkpoints` mirror (and `parse_checkpoint_anchor` in the node) are gone; the
+// sealed `CardanoRef.block_hash` now derives deterministically from SQL, not a JS reduction over a checkpoint array.
 
 // ── the deterministic observation (§5.3) ──────────────────────────────────────────────────────────
 // PURE: from Kupo `/matches/{vaultHash}.*` JSON, reduce to the largest-wins locked lovelace per beacon
