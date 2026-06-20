@@ -307,6 +307,11 @@ npm run dev                 # dev server on :3000 (points at ws://127.0.0.1:9944
 npm run build               # Next.js static export → app/out/ (host on any static host / IPFS)
 ```
 
+To iterate on the frontend against the **real, running chain** (not `--dev`), run a local
+non-validator tracking node that syncs the real chain over P2P and serves RPC to the dev server —
+see [`docs/LOCAL-FRONTEND.md`](docs/LOCAL-FRONTEND.md) (`scripts/fetch-chainspec.mjs` +
+`scripts/run-tracking-node.sh`).
+
 **Wallet model — one Cardano wallet does everything, nothing stored.** Connecting a CIP-30 wallet
 signs one fixed CIP-8 message; that signature is `blake2b_256`'d into the seed for an sr25519
 *posting* key (sign-to-derive — no keystore, no password, re-derived each session). The same wallet
