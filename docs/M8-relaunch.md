@@ -28,7 +28,8 @@ the live `paramForm` and the exact path the in-browser lock uses). `aiken check`
 ## 1. Live relaunch on preprod — DONE ✓ (2026-06-17)
 
 Stack: synced preprod `cardano-node` v11.0.1 (Conway, tip slot ~126066xxx) + Ogmios :1337
-+ Kupo :1442 + the `cogno-chain-node --dev :9944` (spec 107, genesis `2653e177…`) + the
+(L1 submit + cost models) + a read-only db-sync (`DBSYNC_URL`) + the
+`cogno-chain-node --dev :9944` (spec 107, genesis `2653e177…`) + the
 Cogno-Follower :8090. Owner wallet `addr_test1qpsk23r…` (1331.9 → 1331.3 tADA after fees).
 
 1. **Exit the orphaned vault** (`app/scripts/m2d-unlock.mjs`, against the OLD `vault.json`):
@@ -39,8 +40,9 @@ Cogno-Follower :8090. Owner wallet `addr_test1qpsk23r…` (1331.9 → 1331.3 tAD
 3. **Re-lock** 100 tADA at the new vault (`m2d-lock.mjs`): minted beacon `287a99d2` under the
    new policy `168a9710`, inline `VaultDatum{owner}`, at `addr_test1zqtg49cs…svljrte`.
    **Lock tx `33202448b66e91389fc6ba68f555fdf02b673bb420cd143959fbf26fdcc87e30`** (slot 126066527).
-4. **Kupo** re-indexed with the new policy match (`--match 168a9710….*`); the new vault UTxO
-   `33202448…#0` (100 ADA + the beacon) observed.
+4. **db-sync** observed the new vault under the new policy (driven by
+   `tx_out.payment_cred = 168a9710…`); the new vault UTxO
+   `33202448…#0` (100 ADA + the beacon) read.
 5. **Committee `set_stake`** (`services/committee/sync-weight.mjs --via committee`): observed
    the new vault, looked up `AccountOf[287a99d2] → poster`, drove `talk_stake.set_stake(poster,
    100000000)` + `force_set_capacity` through the 3-of-5 FollowerCommittee (motion #10,

@@ -20,7 +20,7 @@ Builds on [M6](M6-build.md). See `docs/M2d-build.md`, `docs/M3-build.md`, `docs/
 | `pallet-template` (@7) | present (M0 scaffold, "drop later") | **removed**; index 7 vacated (8..15 unchanged) |
 | `spec_version` | 106 | **107** (`transaction_version` unchanged = 2) |
 | Frontend PAPI descriptors | **stale** (couldn't encode against 106/107) | **regenerated against the live spec-107 node** |
-| Cardano preprod stack | node synced but Ogmios/Kupo down | Ogmios :1337 + Kupo :1442 live against the synced node |
+| Cardano preprod stack | node synced but Ogmios/db-sync down | Ogmios :1337 + db-sync live against the synced node |
 | Relayer committee `anchor_ack` | never run live (M6 used a synthetic test) | **run live — 2 bugs found + fixed**, real preprod tx + `AnchorAcked` |
 
 ---
@@ -31,15 +31,15 @@ The preprod `cardano-node` (Conway, v11.0.1) was **already running and fully syn
 4834410, epoch 295, slot ~126056199, `syncProgress 100.00`), DB intact at
 `testnets/node-preprod/db-testnet` (19 GB). So no re-sync was needed — just the indexers:
 
-- **Ogmios** v6.14.0.2 on `:1337`, **Kupo** v2.11.0.1 on `:1442`, both pointed at the node socket.
-  Kupo re-indexed from the saved `/tmp/cogno-m2/since.txt` point (`126031476.59be249f…`) to tip in
-  seconds (match patterns = the vault policy `a82d0ad6…` + the owner address).
+- **Ogmios** v6.14.0.2 on `:1337` and **db-sync** (read-only Postgres via `DBSYNC_URL`), both pointed
+  at the node socket. db-sync caught up to tip and serves the vault reads keyed off
+  `tx_out.payment_cred = <script hash>` (the vault policy `a82d0ad6…`) + the owner address.
 - **The wallet + the M2d artifacts survived the reboot** (all in `/tmp/cogno-m2`, verified):
   - owner `addr_test1qpsk23r…` — the persisted 24-word mnemonic **derives the same address** (pkh
     `61654474…`, skh `10133fde…`); funds spendable.
   - **The M2d vault UTxO is still unspent on-chain**: `65d05e73…#0` = 100 ADA + beacon
-    `287a99d2…0ae6be75`, inline `VaultDatum{owner}` intact — confirmed via both `cardano-cli` and Kupo
-    (`spent_at: null`).
+    `287a99d2…0ae6be75`, inline `VaultDatum{owner}` intact — confirmed via both `cardano-cli` and
+    db-sync (no `tx_in` consuming it).
 
 ---
 
@@ -95,8 +95,8 @@ single-operator holds all 5 keys):
 1. **CIP-8 bind** (`m2d-bind.mjs` via the Cogno-Follower on :8090): owner Cardano wallet signs the
    committed payload → follower verifies → `link_identity` → identity `287a99d2…0ae6be75` (== the
    vault beacon name) bound to `//CognoVaultPoster` (`5G6P5SyE…`); `AccountOf` readback matches.
-2. **Committee `set_stake` from the live vault** (`services/committee/sync-weight.mjs`, `KUPO` set,
-   `--via committee`): observed the real vault (100 ADA, largest-wins) → `AccountOf[287a99d2…]` →
+2. **Committee `set_stake` from the live vault** (`services/committee/sync-weight.mjs`, `DBSYNC_URL`
+   set, `--via committee`): observed the real vault (100 ADA, largest-wins) → `AccountOf[287a99d2…]` →
    `talk_stake.set_stake(5G6P5SyE…, 100000000)` executed by a 3-of-5 committee motion → `StakeSet`.
    Weight = the **locked lovelace**, Cardano-sourced, **zero sudo grant**.
 3. **Feeless post** (`m2d-post.mjs`): `//CognoVaultPoster` posts → **`PostCreated id=0`**, **free
@@ -137,7 +137,7 @@ for a metadata-only / no-script tx, per M3).
 SPEND path live, which M2d only aiken-checked): spend the vault UTxO with the `Spend` redeemer
 (`d87980` = `VaultRedeemer::Spend`), **burn the beacon (-1)** with the existing `burnRedeemerCborHex`
 helper, owner payment signature, no continuing output → the reclaimed ADA flows to the owner as
-change. Reuses the live Kupo/Ogmios + the M2d `setCostModels` fix. Targets one vault per tx (the
+change. Reuses the live db-sync reads + Ogmios submit + the M2d `setCostModels` fix. Targets one vault per tx (the
 own-input-count==1 guard); defaults to the oldest if several exist, or pass `<txHash>#<index>`.
 
 ---
@@ -146,7 +146,7 @@ own-input-count==1 guard); defaults to the oldest if several exist, or pass `<tx
 
 | Item | Evidence |
 |---|---|
-| Cardano stack | Ogmios :1337 tip slot ~126056712; Kupo :1442 caught up; vault `65d05e73…#0` unspent |
+| Cardano stack | Ogmios :1337 tip slot ~126056712; db-sync caught up; vault `65d05e73…#0` unspent |
 | Template drop / spec 107 | runtime reports `specVersion 107`; pallet tests + both feature builds green |
 | Descriptor regen | `cogno.scale` `b39e10c5…`→`ed43ba0e…`; no Template; `npm run build` green |
 | Browser | `e2e-m7-browse.mjs` PASS — connect + live feed (post id=0) + anchor status, no decode errors |
@@ -170,7 +170,7 @@ path were exercised on real preprod:
 1. **Live burn / full-exit (the SPEND path — first time ever live).** `m2d-unlock.mjs` spent the
    original M2d vault `65d05e73…#0` with the `Spend` redeemer (`d87980`) + burned its beacon (-1) +
    owner signature, no continuing output → **tx `888515c6fe9545c0256d55b316e568160e5d5acdf8928f81a13fecad306eaee6`**.
-   Verified: Kupo shows the vault spent (redeemer `d87980`, slot 126058697), the vault address is
+   Verified: db-sync shows the vault spent (redeemer `d87980`, slot 126058697), the vault address is
    **empty** (beacon burned), and the owner reclaimed **99.67 ADA**. M2d had only aiken-checked the
    spend path; it now executes on-chain.
 2. **Fresh mint+lock.** `m2d-lock.mjs` minted a new beacon `287a99d2…` (same deterministic name) +

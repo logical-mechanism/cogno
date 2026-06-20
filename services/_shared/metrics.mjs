@@ -11,7 +11,7 @@ const escapeLabel = (v) => String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')
 // PURE: render the Prometheus text-exposition format from a list of samples. Each sample is
 // { name, value, help?, type?, labels? }. `# HELP`/`# TYPE` are emitted once per metric name (the
 // first sample that carries them). Samples whose value is null/undefined/NaN are SKIPPED (a metric we
-// could not compute this scrape — e.g. wallet balance during a Kupo blip — is omitted, not zeroed,
+// could not compute this scrape — e.g. wallet balance during a db-sync blip — is omitted, not zeroed,
 // so an alert never misreads "unknown" as "0"). BigInt values are rendered losslessly.
 export function renderPrometheus(samples) {
 	const declared = new Set();

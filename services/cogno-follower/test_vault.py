@@ -55,7 +55,7 @@ def main():
     qty = [{"value": {"coins": 200_000_000, "assets": {f"{POLICY}.{A}": 2}}}]
     ok(parse_matches(qty, POLICY) == [], "beacon quantity != 1 → rejected (not a valid NFT vault)")
 
-    # malformed / empty Kupo entries don't crash the parser (defensive against bad node JSON).
+    # malformed / empty match entries don't crash the parser (defensive against bad node JSON).
     ok(parse_matches([{}, {"value": {}}, {"value": {"assets": None}}], POLICY) == [],
        "empty / malformed UTxO entries are skipped, not fatal")
 

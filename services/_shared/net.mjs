@@ -18,7 +18,7 @@ const describeError = (e) => {
 
 // AbortController-based timeouts surface as a DOMException named "AbortError" (or, on some paths, an
 // Error whose name is "AbortError"). Detect both so a slow/dead endpoint is logged as a TIMEOUT rather
-// than an opaque "fetch failed" — operators need to tell a hung Ogmios/Kupo apart from an HTTP 500.
+// than an opaque "fetch failed" — operators need to tell a hung Ogmios/db-sync apart from an HTTP 500.
 const isAbort = (e) => e != null && (e.name === "AbortError" || e.code === "ABORT_ERR");
 
 /// Hardened JSON fetch: validates res.ok + that the body is JSON, applies an AbortController timeout,
@@ -57,7 +57,7 @@ export async function fetchJson(url, { method = "GET", body = null, headers = {}
 	}
 	// Final failure: log the FULL stack at error level so it is captured even if the caller swallows the
 	// throw. The thrown message carries only the concise reason (timeout / HTTP / parse) — NOT the
-	// multi-line stack — so callers that re-wrap it (`new Error('Kupo read failed: ' + e.message)`) don't
+	// multi-line stack — so callers that re-wrap it (`new Error('db-sync read failed: ' + e.message)`) don't
 	// propagate a giant stack up the chain; the stack lives in the console.error here (gap 6).
 	const reason = isAbort(last) ? `timeout after ${timeoutMs}ms` : describeError(last);
 	console.error(`  ✗ fetchJson ${url} FAILED after ${retries} attempts: ${last?.stack || reason}`);

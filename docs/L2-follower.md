@@ -38,7 +38,7 @@
 >   asserts the beacon lands at the script's OWN address (an on-chain "beacon ⇒ canonical
 >   vault" guarantee). This DELETES the separate beacon minting policy, the
 >   `beacon_policy_id` parameter, and the **entire hash-cycle concern (old L1 §4.5)**.
->   Index Kupo by **the `talk_vault` policy id** (== script hash). Supersedes the
+>   Index db-sync by **the `talk_vault` policy id** (== script hash). Supersedes the
 >   "beacon POLICY id" / separate-policy wording throughout §2, §5, §6.1, §9, §12, and
 >   App. A.
 > - **CIP-8 = committed payload; bind-hijack is PREVENTED, not just detected (DR-02).**
@@ -65,10 +65,10 @@
 >   audit log; the **3-of-5 k-of-t committee + rotation + on-chain committee-key update**
 >   is the **D2 gate** (before any mainnet / real value). `FollowerOrigin` stays an
 >   `EnsureOrigin`. Refines §8.4 / §8.5 / §11 Q4.
-> - **Tooling / network (DR-26, DR-27, DR-31, DR-33):** devnet = **PREPROD** (light
->   Kupo/Ogmios, not db-sync); 1-3 honest permissioned operator nodes in v1; reference
+> - **Tooling / network (DR-26, DR-27, DR-31, DR-33):** devnet = **PREPROD** (db-sync
+>   for reads + Ogmios for submit); 1-3 honest permissioned operator nodes in v1; reference
 >   indexer = SubQuery (PAPI-direct is the v1 baseline); default posting-power read =
->   L3 `AllowedStake` (Kupo optional cross-check, **no Blockfrost**); self-build / vendor
+>   L3 `AllowedStake` (db-sync optional cross-check, **no Blockfrost**); self-build / vendor
 >   fork the follower (NOT the archived partner-chains repo).
 > - **Stale-banner correction (DR-34):** the old L1 §0/§3 banner calling this doc
 >   "group-and-sum / a LIVE double-dip" is FALSE — this doc is, and always was on disk,
@@ -106,7 +106,7 @@
   path. So an elaborate fraud-proof / Mithril L2 **buys little NOW** — its payoff is
   **coupled to L3 graduating to an SPO/Ariadne committee.** Do not overclaim.
 - **RECOMMENDED v1 = the Single Follower (Approach A).** One operator-run service
-  (cardano-node + Kupo + Ogmios) runs the observation and the CIP-8 verify
+  (cardano-node + db-sync + Ogmios) runs the observation and the CIP-8 verify
   off-chain, and writes via **one `FollowerOrigin`-gated extrinsic**. This is a
   **trusted oracle** and a single point of failure — and that is *honest*, because
   under single-operator L3 it adds **no new trust** beyond "trust the operator."
@@ -128,7 +128,7 @@
   in-runtime COSE_Sign1 verifier. v1 reuses the proven `pycardano.cip.cip8.verify`
   path from `cogno_v3`.
 - **Reorg-safety is non-negotiable and trust-model-independent.** Bury **both**
-  `created_at` and `spent_at` past depth *k*; never cache "spent" as permanent (Kupo
+  `created_at` and `spent_at` past depth *k*; never cache "spent" as permanent (db-sync
   flips it back on rollback); clamp capacity to **zero** on observed unlock
   (`L1-cardano.md` §10.3–10.4). A short reorg can neither grant un-earned voice nor
   strand it.
@@ -170,7 +170,7 @@
 
 ### 2.1 The seven responsibilities
 
-1. **OBSERVE** all beacon-bearing vault UTxOs, reorg-safe (Kupo/Ogmios), indexed by
+1. **OBSERVE** all beacon-bearing vault UTxOs, reorg-safe (db-sync), indexed by
    the **`talk_vault` policy id** (== vault script hash, DR-18; one `--match`;
    optionally per-asset by `token_name`); one merged validator / one contract in v1
    (`L1-cardano.md` §10.1).
@@ -200,8 +200,8 @@
 
   vault UTxO (beacon-bearing)                                                    pallet-cogno-gate
   ┌───────────────────────────┐  observe   ┌──────────────────────────┐         ┌──────────────────────┐
-  │ value: ADA (>=floor)+1 bcn │ ────────▶ │ Kupo (1 --match, by       │         │ 1:1 owner Addr<->Acct│
-  │ datum:{ owner: Address }   │  (Kupo)    │  talk_vault policy id)   │         │ binding map          │
+  │ value: ADA (>=floor)+1 bcn │ ────────▶ │ db-sync (payment_cred =   │         │ 1:1 owner Addr<->Acct│
+  │ datum:{ owner: Address }   │  (db-sync) │  talk_vault script hash)  │         │ binding map          │
   └───────────────────────────┘            └────────────┬─────────────┘         └──────────┬───────────┘
         (one identity may have                           │ read lovelace+datum             │ is_allowed?
          MANY same-name beacons)                         ▼                                 │
@@ -227,7 +227,7 @@
   └───────────────────────────┘            │ addr==datum.owner; bind sr│ (gated) └──────────────────────┘
                                             └──────────────────────────┘
 
-  UNLOCK PATH (clamp):  vault spent / beacon BURN (mint -1) ──▶ Kupo spent_at | tx mint -1 ──▶ bury past k ──▶ set_stake{addr, 0} ──▶ capacity = 0
+  UNLOCK PATH (clamp):  vault spent / beacon BURN (mint -1) ──▶ db-sync spent_at | tx mint -1 ──▶ bury past k ──▶ set_stake{addr, 0} ──▶ capacity = 0
        (on rollback, spent_at flips back to null ──▶ follower recomputes ──▶ re-grants)
 
   ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -350,7 +350,7 @@ committee.
 
 **Ship Approach A (Single Follower) for v1, structured to graduate.** Concretely:
 
-- **v1 that ships honestly:** one operator-run follower (cardano-node + Kupo +
+- **v1 that ships honestly:** one operator-run follower (cardano-node + db-sync +
   Ogmios) running the §10 observation and the reused `pycardano.cip.cip8.verify`,
   writing via **one `FollowerOrigin`-gated `set_stake` / `link_identity` extrinsic**.
   Label it, plainly, a **trusted oracle and a single point of failure** — and note
@@ -449,31 +449,34 @@ This is the deterministic core. It is identical in all four approaches; only **w
 runs it** and **how its output is trusted** differ. Reuses `L1-cardano.md` §10
 verbatim.
 
-### 6.1 Index beacon-bearing UTxOs by the `talk_vault` policy id (Kupo/Ogmios)
+### 6.1 Index beacon-bearing UTxOs by the `talk_vault` policy id (db-sync)
 
-Run Kupo with **one `--match` on the `talk_vault` policy id** — which, under the merged
-single-validator design (DR-18), **equals the vault script hash** (the validator carries
-both the mint and spend handlers; `policy_id == script_hash`) — optionally per-asset by
-`policy_id.token_name`, so every canonical-vault UTxO is indexed directly by asset
-instead of scanning an address and deciding which UTxOs count. With the multi-set
-collapse and the merged validator there is **one policy / one contract / one address in
-v1** (`min_lock`; `L1-cardano.md` §9, §10.1):
+Read db-sync, driving the vault set from **`tx_out.payment_cred = <talk_vault script hash>`**
+— which, under the merged single-validator design (DR-18), **equals the `talk_vault`
+policy id** (the validator carries both the mint and spend handlers; `policy_id ==
+script_hash`) — optionally narrowed per-asset by `token_name`, so every canonical-vault
+UTxO is found directly via the indexed payment credential instead of scanning an address
+and deciding which UTxOs count. With the multi-set collapse and the merged validator there
+is **one policy / one contract / one address in v1** (`min_lock`; `L1-cardano.md` §9,
+§10.1):
 
 ```
-kupo --match <talk_vault_policy_id>              # == vault script hash; one contract in v1
-kupo --match <talk_vault_policy_id>.<token_name> # optional: per-user (one identity's beacons)
+tx_out.payment_cred = <talk_vault_script_hash>   # == policy id; one contract in v1
+… AND ma.name = <token_name>                     # optional: per-user (one identity's beacons)
 ```
 
-For each match Kupo returns `{transaction_id, output_index, address, value, datum
-(inline), created_at {slot_no, header_hash}, spent_at {slot_no, header_hash} | null}`.
-The follower MUST derive the `talk_vault` policy id (== script hash) from the **same
+For each match db-sync supplies `{transaction_id, output_index, address, value (coins as
+::text — lovelace can exceed 2^53), datum (inline), created_at {slot_no, header_hash},
+spent_at {slot_no, header_hash} | null}`, with spentness derived from **`tx_in`** (the
+canonical spent relation) so the read gives a deterministic block-at/before-slot anchor.
+The follower MUST derive the `talk_vault` script hash (== policy id) from the **same
 applied blueprint** the contracts ship (same `min_lock`, same compiler/stdlib pin) or it
 will index the wrong asset (`L1-cardano.md` §9.2). Because the mint arm asserts the
-beacon lands at the script's own address, the policy-id match is a real "beacon ⇒
+beacon lands at the script's own address, the payment-credential match is a real "beacon ⇒
 canonical vault" guarantee (DR-18) — there is no separate beacon policy and no hash-cycle
 to reason about (the old L1 §4.5 concern is DELETED). **Ogmios** supplies network params + tx
 submission and is needed only for the **write/anchor** side, not for observation —
-mirroring the partner-chains "db-sync-for-observe / Ogmios-for-submit" split.
+mirroring the "db-sync-for-observe / Ogmios-for-submit" split.
 
 ### 6.2 Reorg-safe read (the load-bearing part)
 
@@ -494,14 +497,14 @@ Reorg-safety is **orthogonal to every trust model** and must hold in all of them
   trivially agrees with itself; this becomes load-bearing in B/C/D where multiple
   honest parties must compute the *same* "correct" map — without a shared cursor they
   diverge and never reach quorum / a dispute has no canonical resolution.)
-- **Never cache "spent" as permanent.** Kupo flips `spent_at` back to `null` on
-  rollback. On `RollBackward` to slot S, discard observations with `slot_no > S` and
+- **Never cache "spent" as permanent.** db-sync flips `spent_at` back to `null` on
+  rollback (the `tx_in` row is removed). On `RollBackward` to slot S, discard observations with `slot_no > S` and
   recompute. Bury **both** `created_at` **and** `spent_at` past depth *k*. A **beacon
   BURN (`mint −1` of the `talk_vault` policy) is an equivalent leave signal** alongside
   `spent_at` — a full exit burns the beacon, so the tx `mint` field shows the policy
   at −1 (`L1-cardano.md` §10.4); bury the burn past the (shorter) clamp-*k* too, and
-  likewise never cache it as permanent (a rollback un-burns it). Use Kupo's
-  ETag/checkpoint for rollback handling; never treat a single read as final.
+  likewise never cache it as permanent (a rollback un-burns it). Use db-sync's
+  block/slot cursor `(slot_no, header_hash)` for rollback handling; never treat a single read as final.
 
 ### 6.3 The deterministic `beacons → weights` pure function
 
@@ -764,7 +767,7 @@ Both are normal `#[pallet::call]` dispatchables on `pallet-cogno-gate` /
 ### 8.3 Idempotency / reorg re-derivation
 
 The follower MUST be **idempotent and restart-safe**: on startup, **re-derive** weight
-from the buried Kupo snapshot rather than trusting any cached "spent" state. A backfill
+from the buried db-sync snapshot rather than trusting any cached "spent" state. A backfill
 path re-applies skipped vault events on restart. On a Cardano rollback that flips
 `spent_at` back to `null`, the follower **recomputes** and re-grants — never caching
 spent-as-permanent. Net invariant: a reorg can **never** grant un-earned capacity, and
@@ -884,7 +887,7 @@ Mithril/inherent investment to **track the L3 milestone**, not ahead of it.
   persists until the spend buries and the clamp lands. The window **widens** while the
   follower is down, and (later) the optimistic challenge window in D3 **adds** latency
   on top of burial — keep both, and rush the clamp path.
-- **Operational burden.** Even the light path runs cardano-node + Kupo + Ogmios;
+- **Operational burden.** Even the light path runs cardano-node + db-sync + Ogmios;
   initial mainnet sync is multi-day (use preview/preprod for devnet). The heavy
   inherent topology (D4) imposes a synced indexer **+** Mithril client on **every**
   producer.
@@ -969,9 +972,10 @@ notes flag what changed.
 Bite-sized, executable cold. Each builds on the last. Aligns with `PLAN.md`
 M2 / M2c / M2d / M5.
 
-1. **Observation stub.** Stand up cardano-node + Kupo + Ogmios on **PREPROD** (the v1
-   devnet, DR-31; light Kupo/Ogmios, not db-sync). One Kupo `--match` by the
-   **`talk_vault` policy id (== vault script hash, DR-18)** (optionally per-asset by
+1. **Observation stub.** Stand up cardano-node + db-sync + Ogmios on **PREPROD** (the v1
+   devnet, DR-31; db-sync for reads, Ogmios for submit). Drive the vault set from db-sync via
+   `tx_out.payment_cred = <talk_vault script hash>` (== the
+   **`talk_vault` policy id, DR-18**) (optionally narrowed per-asset by
    `token_name`; derived from the same applied blueprint the contracts ship). Parse inline
    datum → `owner` **Address** (`VaultDatum { owner: Address }`, DR-01), integrity-check
    `util.beacon_name(owner_address) == token_name` (where `token_name =
@@ -1059,7 +1063,7 @@ M2 / M2c / M2d / M5.
 
 - **cogno-chain L1 design** (`docs/L1-cardano.md`) — the **single merged
   `talk_vault(min_lock)` validator** (mint + spend handlers; policy_id == vault script
-  hash, DR-18) + beacon NFT, and §10 the L1 → L2 read interface (Kupo by the
+  hash, DR-18) + beacon NFT, and §10 the L1 → L2 read interface (db-sync by the
   **`talk_vault` policy id**, == script hash; group-by-owner-`Address` + **largest-wins**
   — select the single largest beacon UTxO, **never sum**; tiebreak by output reference;
   reorg burial; clamp-to-zero on `spent_at` **or** a beacon burn; deferred delegation
@@ -1106,8 +1110,11 @@ M2 / M2c / M2d / M5.
   *membership* proofs only, no address-completeness; still beta, single IOG aggregator;
   pin client ≥0.12.2 post-advisory) — https://mithril.network/doc/ ; advisories
   GHSA-724h-fpm5-4qvr, GHSA-qv97-5qr8-2266.
-- **Kupo** (reorg-safe index; `created_at`/`spent_at` slot+header-hash; `spent_at`
-  flips to `null` on rollback) — https://github.com/CardanoSolutions/kupo
+- **Cardano db-sync** (read-only Postgres index, via `DBSYNC_URL`; the reorg-safe read:
+  vault set driven by `tx_out.payment_cred = <script hash>`, coins as `::text`, spentness
+  from `tx_in` (`created_at`/`spent_at` slot+header-hash; `spent_at` flips to `null` on
+  rollback when the `tx_in` row is removed); gives a deterministic block-at/before-slot
+  anchor) — https://github.com/IntersectMBO/cardano-db-sync
 - **Trust-pattern references:** Wormhole Guardians (13-of-19 PoA); Hyperlane Multisig /
   Optimistic ISM (1-of-N watcher); UMA optimistic oracle (assert-then-challenge);
   Axelar (PoS + quadratic voting); Snowbridge (permissionless relayer outside the trust

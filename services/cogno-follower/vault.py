@@ -27,7 +27,7 @@ def weight_for_lock(lovelace: int, min_lock: int = 100_000_000) -> int:
 
 
 def parse_matches(matches: list, policy_id_hex: str) -> list:
-    """From Kupo `/matches/{policy_id}.*` JSON, extract `(beacon_name_hex, lovelace)` for every
+    """From the db-sync vault match JSON, extract `(beacon_name_hex, lovelace)` for every
     UTxO holding exactly one beacon under `policy_id`. Ignores anything not holding a single beacon
     (the on-chain mint guards guarantee 1 beacon per vault, but we never trust that off-chain)."""
     out = []
@@ -35,7 +35,7 @@ def parse_matches(matches: list, policy_id_hex: str) -> list:
         value = m.get("value", {})
         coins = int(value.get("coins", 0))
         assets = value.get("assets", {}) or {}
-        # Kupo keys assets as "<policyid>.<assetname>" (hex). Find this policy's single beacon.
+        # Assets are keyed as "<policyid>.<assetname>" (hex). Find this policy's single beacon.
         beacons = [
             (k.split(".", 1)[1], int(q))
             for k, q in assets.items()
@@ -178,9 +178,8 @@ def canonical_hex(reference_slot, observed) -> str:
 # ── live wiring (needs a SYNCED cardano-node + db-sync — the M2d external dependency) ──────────
 
 def query_dbsync(dbsync_url: str, policy_id_hex: str) -> list:
-    """SELECT currently-unspent beacon UTxOs under the vault policy from Cardano db-sync (the indexed
-    analog of Kupo's `/matches/{policy}.*?unspent`). Live; needs a synced db-sync. Returns the SAME
-    Kupo-shaped list of match dicts the pure functions above consume.
+    """SELECT currently-unspent beacon UTxOs under the vault policy from Cardano db-sync. Live; needs a
+    synced db-sync. Returns the canonical list of match dicts the pure functions above consume.
 
     Determinism choices (mirrored from the node + committee JS that already moved to db-sync):
       • spentness comes from the canonical `tx_in` ledger table (NOT the denormalized/unreliable
@@ -190,7 +189,7 @@ def query_dbsync(dbsync_url: str, policy_id_hex: str) -> list:
       • coins/quantities are emitted as `::text` strings: lovelace exceeds 2^53, so they must never
         round-trip through a float/int that loses precision;
       • driven from `tx_out.payment_cred = <vault script hash>` (the vault script address == the
-        policy id), the indexed analog of Kupo `/matches/{policy}.*`.
+        policy id, indexed via `idx_tx_out_payment_cred`).
 
     The query returns one row / one column `matches`: a JSON array psycopg returns already parsed as
     a Python list, so we hand it straight to parse_matches/observe_as_of. `spent_at` is always NULL

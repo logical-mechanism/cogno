@@ -72,19 +72,20 @@ src/mappings/pure.test.ts`; follower `python test_<name>.py` in its venv.
 - **Use the nvm node `v22.12.0`, not the snap node.** The snap `node` writes stdout to `/dev/null`
   (silent failures), and importing `@meshsdk/core-cst` redirects stdio. Prepend
   `~/.nvm/versions/node/v22.12.0/bin` to `PATH` for all Node/MeshJS work.
-- **The in-protocol observation reads Cardano db-sync, NOT Kupo (consensus-critical determinism).** The
+- **Cardano is read EXCLUSIVELY through db-sync (consensus-critical determinism).** The
   node (`node/src/dbsync.rs`), the committee tooling (`services/committee/dbsync.mjs`), and the follower
-  (`vault.py`) all read the `talk_vault` from a read-only db-sync via `DBSYNC_URL|DBSYNC`. Kupo's
-  `/checkpoints` anchor was tip-relative / non-deterministic (a latent fork at the ≥3-producer cutover);
-  db-sync gives a deterministic "block at/before slot S". Three byte-identity invariants — a divergence is
-  a **chain fork** — pinned by the Rust↔JS golden (`services/_shared/fixtures/observation-equivalence.json`):
+  (`vault.py`) read the `talk_vault` from a read-only db-sync via `DBSYNC_URL|DBSYNC`; the anchor-relayer +
+  the M2d wallet scripts read their own wallet UTxOs / tx-confirmation / anchor-metadata through the same
+  `services/committee/dbsync.mjs` (the write-path helpers at the bottom of that file). db-sync gives a
+  deterministic "block at/before slot S" anchor. Three byte-identity invariants — a divergence is a **chain
+  fork** — pinned by the Rust↔JS golden (`services/_shared/fixtures/observation-equivalence.json`):
   spentness from **`tx_in`** (canonical), NOT `consumed_by_tx_id` (denormalized/unreliable); coins/qty as
-  **`::text`** (lovelace > 2^53); the vault set driven from **`tx_out.payment_cred = <script hash>`** (the
-  indexed analog of Kupo `/matches/{policy}.*`). The SQL is parallel across all three languages — keep them
-  in lockstep. Kupo is **retired from the observation path** but stays for the anchor-relayer (L1 write/
-  metadata) + the in-browser CIP-30 vault. MAINNET PREREQUISITE: db-sync must run FULL (non-pruned),
-  **tx_in-enabled** (NOT `--consumed-tx-out` — the read probes `EXISTS (SELECT 1 FROM tx_in)` and abstains
-  fail-closed otherwise, so a wrong-mode instance never emits a spent vault as locked), and over TLS.
+  **`::text`** (lovelace > 2^53); the vault set driven from **`tx_out.payment_cred = <script hash>`**
+  (indexed `idx_tx_out_payment_cred`). The OBSERVATION SQL is parallel across all three languages — keep
+  them in lockstep. **Ogmios** still SUBMITS L1 txs + serves cost models (db-sync is read-only and cannot
+  submit); the **in-browser CIP-30 vault** uses **Blockfrost**. MAINNET PREREQUISITE: db-sync must run FULL
+  (non-pruned), **tx_in-enabled** (NOT `--consumed-tx-out` — the read probes `EXISTS (SELECT 1 FROM tx_in)`
+  and abstains fail-closed otherwise, so a wrong-mode instance never emits a spent vault as locked), and over TLS.
 - **Pallet indices are on-wire contracts — never renumber.** Index **7 is permanently vacant**
   (`pallet-template` dropped in M7). Adding a pallet uses a new index; gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions)

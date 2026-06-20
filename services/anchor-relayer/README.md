@@ -22,8 +22,8 @@ deliberately does **not** snapshot a root itself in `on_initialize` (that would 
 | §9 risk | How it's handled |
 |---|---|
 | **idempotency / double-count** | `anchor_ack` is keyed by solochain `block_number` and no-ops a height `<= last recorded` (emits `AckIgnored`). The relayer also never re-anchors a height `<= LastCheckpoint`. Belt **and** suspenders. |
-| **UTxO contention / output-chaining** | Single-threaded: each Cardano tx is **awaited to confirm** (its change UTxO indexed by Kupo) before the next anchor selects UTxOs, so anchor *k+1* naturally spends anchor *k*'s change. No two in-flight txs fight over one UTxO. |
-| **Cardano rollback** | Two-sided: (a) if a submitted tx never confirms within `CONFIRM_TIMEOUT_MS`, it is rebuilt & resubmitted; (b) the ack waits until the tx is buried `CONFIRM_DEPTH_SLOTS` past the Cardano tip (DR-09b) so a confirm-then-rollback tx is never recorded — if a seen tx rolls back before burial its Kupo match vanishes and we keep polling. Acks are height-keyed, so a duplicate Cardano tx for the same height cannot double-count on L3. |
+| **UTxO contention / output-chaining** | Single-threaded: each Cardano tx is **awaited to confirm** (its change UTxO indexed by db-sync) before the next anchor selects UTxOs, so anchor *k+1* naturally spends anchor *k*'s change. No two in-flight txs fight over one UTxO. |
+| **Cardano rollback** | Two-sided: (a) if a submitted tx never confirms within `CONFIRM_TIMEOUT_MS`, it is rebuilt & resubmitted; (b) the ack waits until the tx is buried `CONFIRM_DEPTH_SLOTS` past the Cardano tip (DR-09b) so a confirm-then-rollback tx is never recorded — db-sync rolls back with the chain, so if a seen tx rolls back before burial its db-sync record vanishes and we keep polling. Acks are height-keyed, so a duplicate Cardano tx for the same height cannot double-count on L3. |
 | **fees / min-ADA / collateral** | A metadata-only, **NO-script** tx → MeshTxBuilder coin-selects + computes the fee, change returns to the relayer. No collateral (no Plutus spend) and the M2d cost-model gotcha does **not** apply (the `fetchCostModels` warning is harmless here — the tx still validates and confirms). |
 
 ## Trust posture (DR-07, named honestly)
@@ -51,9 +51,10 @@ runtime wasm is part of genesis state, so the genesis hash changes on every `spe
 ## Run
 
 Shares the frontend's deps via `node_modules -> ../../app/node_modules` (a symlink; no separate
-install) and reuses the M2d owner wallet at `../../app/scripts/m2d-wallet.mjs`. Prereqs: the live
-stack (preprod `cardano-node` + Ogmios :1337 + Kupo :1442 matching the relayer address) and the
-cogno-chain node on `:9944` (see `docs/M3-build.md`).
+install) and reuses the M2d owner wallet at `../../app/scripts/m2d-wallet.mjs`. db-sync reads resolve
+`pg` via the committee's `node_modules -> ../indexer/node_modules` symlink (it imports
+`../committee/dbsync.mjs`). Prereqs: the live stack (preprod `cardano-node` + db-sync (read-only) +
+Ogmios :1337) and the cogno-chain node on `:9944` (see `docs/M3-build.md`).
 
 ```bash
 export PATH="/home/logic/.nvm/versions/node/v22.12.0/bin:$PATH"
@@ -69,12 +70,12 @@ node relayer.mjs --once
 node relayer.mjs --reack-last
 
 # Verify (anyone can): A (L3 Anchor.LastCheckpoint) == B (archive header.state_root, re-derived)
-#                      == C (Cardano metadata read back via Kupo). A mismatch is public evidence.
+#                      == C (Cardano metadata read back via db-sync). A mismatch is public evidence.
 node verify.mjs                  # verifies the latest checkpoint
 node verify.mjs --block <N>      # verifies the anchor recorded for height N (from the state file)
 ```
 
-Env: `WS` (ws://127.0.0.1:9944), `KUPO`, `OGMIOS`, `ANCHOR_EVERY` (10), `CONFIRM_TIMEOUT_MS`
+Env: `WS` (ws://127.0.0.1:9944), `DBSYNC_URL` (db-sync, read-only), `OGMIOS`, `ANCHOR_EVERY` (10), `CONFIRM_TIMEOUT_MS`
 (180000), `POLL_MS` (4000), `CONFIRM_DEPTH_SLOTS` (0 = ack as soon as in a block, for the showcase;
 set to k — a few hundred slots, DR-09b — for reorg-safe production), `COGNO_DATA_DIR` / `STATE_FILE`
 (the anchor cursor defaults to `$COGNO_DATA_DIR/anchor-state.json` — never `/tmp`; an existing

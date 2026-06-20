@@ -3,9 +3,10 @@
 **Status: PARTIAL (2026-06-17).** The self-contained, fully-verifiable half is **DONE**: the L1
 `talk_vault` Aiken contract is **compiled** with a green freeze-gate suite, and the L1↔L2↔L3 beacon
 identity hash is **proven byte-exact and reconciled**. The remaining half — **live** vault
-observation (Kupo/Ogmios) driving `set_stake` from a real ADA lock — needs a **synced cardano-node +
-Kupo on preprod/mainnet**, the one external dependency this environment can't satisfy. The pure
-logic for it is built and fixture-tested; the live wiring is a thin, named wrapper.
+observation (db-sync reads, Ogmios submit) driving `set_stake` from a real ADA lock — needs a
+**synced cardano-node + db-sync on preprod/mainnet**, the one external dependency this environment
+can't satisfy. The pure logic for it is built and fixture-tested; the live wiring is a thin, named
+wrapper.
 
 ## What M2d is
 
@@ -67,30 +68,32 @@ readback → feeless post). **The M2 already-committed runtime/gate is unaffecte
 ## 3. The vault→weight pipeline — LOGIC BUILT + FIXTURE-TESTED
 
 `services/cogno-follower/vault.py`:
-- `parse_matches` — extract `(beacon_name, lovelace)` from Kupo `/matches/{policy}.*` JSON.
+- `parse_matches` — extract `(beacon_name, lovelace)` from the db-sync vault rows (driven by
+  `tx_out.payment_cred = <script hash>`, spentness from `tx_in`, lovelace as `::text`).
 - `weights_by_identity` — **LARGEST-WINS per identity, NEVER SUM** (a Sybil can't multiply weight by
   fragmenting a lock; nobody is zeroed). `weight = locked lovelace` (the L3 `CapRatio`/`Ceiling`
   apply the capped-linear curve + the per-identity ceiling; L1 only enforces `min_lock`).
 - `plan_set_stakes` — map each observed identity → its bound account (`CognoGate.AccountOf[beacon]`),
   skipping the unbound; yields `[(account, weight)]`.
-- `query_kupo` / live submit — **thin wrappers needing a synced node** (named, not hidden).
+- `query_dbsync` / live submit — **thin wrappers needing a synced node** (named, not hidden).
 
 `test_vault.py` 8/8: curve floor; parse; **largest-wins (A's two vaults 200+350 → 350, not the
 sum 550)**; the set_stake plan (bound A weighted, unbound B skipped).
 
 ## 4. The remaining live integration (the external wall — your hand-off)
 
-`aiken`, `kupo`, `ogmios`, `cardano-node`, `cardano-cli` are all installed (`/usr/local/bin`), but
-**no node is synced** here. To close M2d live:
+`aiken`, `ogmios`, `cardano-node`, `cardano-cli`, and db-sync are all installed (`/usr/local/bin`),
+but **no node is synced** here. To close M2d live:
 
 1. **Publish the parameterized vault address.** `applyParamsToScript(talk_vault, [100_000_000])` →
    the vault hash; pair its script payment cred with your stake key → the type-1 base address;
    beacon policy id = the vault hash. (An off-chain helper in `app/scripts/` using
    `@meshsdk/core-cst` `applyParamsToScript` + `resolveScriptHash`.)
-2. **Sync** a preprod `cardano-node`, point **Ogmios** at it and **Kupo** at the beacon policy id.
+2. **Sync** a preprod `cardano-node`, point **Ogmios** at it (L1 submit) and **db-sync** at it
+   (read-only vault observation by the script payment cred).
 3. **Lock** ≥100 ADA at the vault address with `VaultDatum { owner }` + mint the beacon (a MeshJS tx;
    `Mint(owner)` redeemer).
-4. **Follower:** add a `query_kupo` poll loop → `plan_set_stakes` → submit `sudo(set_stake)` (a
+4. **Follower:** add a `query_dbsync` poll loop → `plan_set_stakes` → submit `sudo(set_stake)` (a
    `submit-stake.mjs`, mirroring `submit-link.mjs`); add the **vault-datum cross-check** at the
    `verify.py` M2d seam (recovered CIP-8 owner Address == the observed `datum.owner`).
 5. **Demo:** lock ADA → the follower grants weight → post feelessly with **zero sudo grant**.
@@ -102,8 +105,9 @@ beacon name itself (MeshJS Plutus-Data CBOR of the address — the same recipe a
 ## 5. LIVE on preprod — DONE ✓ (2026-06-17)
 
 The whole loop ran against a **synced preprod `cardano-node` (Conway, slot ~126033494)** + Ogmios
-(:1337) + Kupo (:1442, matching the beacon policy + owner addr) + the cogno-chain node (:9944,
-spec 103) + the Cogno-Follower (:8090). Driver scripts: `app/scripts/m2d-*.mjs`.
+(:1337, L1 submit) + db-sync (read-only, observing the vault by the script payment cred + owner addr)
++ the cogno-chain node (:9944, spec 103) + the Cogno-Follower (:8090). Driver scripts:
+`app/scripts/m2d-*.mjs`.
 
 **The wallet + the live txs**
 - Owner (the identity): `addr_test1qpsk23r5c7z2aa6lj0hmjzvdxcup55dt0md0rrez0cd2vggszvlaup6c2xpeh0ppk8v4ha2j4k6qxhn749euxufdtrpspuxa4w`
@@ -128,10 +132,10 @@ spec 103) + the Cogno-Follower (:8090). Driver scripts: `app/scripts/m2d-*.mjs`.
   before=after=0). Lock ADA → weight → feeless post, proven on real preprod.
 
 **The one live gotcha (recorded):** MeshJS builds the script-integrity hash from cost models supplied
-by the `fetcher`, but **`KupoProvider.fetchCostModels` throws "Method not implemented"** → MeshJS
-falls back to its **bundled default** cost models, which are **stale vs preprod's Conway PlutusV3
-(350 params)** → `providedScriptIntegrity ≠ computedScriptIntegrity`, ledger rejects (nothing
-submitted — the error is raised inside `.complete()`/evaluation, pre-submit, so no ADA at risk). Fix:
+by the `fetcher`, but when the fetcher does not supply them MeshJS falls back to its **bundled
+default** cost models, which are **stale vs preprod's Conway PlutusV3 (350 params)** →
+`providedScriptIntegrity ≠ computedScriptIntegrity`, ledger rejects (nothing submitted — the error is
+raised inside `.complete()`/evaluation, pre-submit, so no ADA at risk). Fix:
 fetch the live cost models from Ogmios (`queryLedgerState/protocolParameters` → `plutusCostModels`)
 and `txBuilder.setCostModels([v1, v2, v3])` (a flat-int-array list; index 0/1/2 = V1/V2/V3) **before**
 `.complete()` — an array makes MeshJS's `completeCostModels()` keep ours instead of clobbering with

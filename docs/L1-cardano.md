@@ -1504,9 +1504,9 @@ policy id (== the vault script hash, DR-18), and select — never sum.**
 > mustFix-or-live-exploit. (The old banner that called L2 a "live double-dip" was
 > false — removed per DR-34.)
 
-### 10.1 Index by the beacon POLICY id (Kupo)
+### 10.1 Index by the beacon POLICY id (db-sync)
 
-Run **one** Kupo `--match` on the **beacon policy id** (which **equals the
+Read **db-sync** by the **beacon policy id** (which **equals the
 `talk_vault` script hash**, DR-18; optionally per-asset by `policy_id.token_name`).
 Beacons are **trivially findable by asset**, so you query the exact set of
 canonical-vault UTxOs directly, instead of scanning all UTxOs at an address and
@@ -1514,14 +1514,14 @@ deciding which count. With the multi-set collapse (§9) there is **one** policy 
 **one** address in v1.
 
 ```
-kupo --match <vault_hash>          # vault_hash == beacon policy id (DR-18);
-                                   # or <vault_hash>.<token_name> per user
+# db-sync: select vault UTxOs driven by tx_out.payment_cred = <vault_hash>
+#          (vault_hash == beacon policy id, DR-18; or per-user by token_name)
 ```
 
-Kupo returns per output `transaction_id`, `output_index`, `address`, `value`, inline
-`datum`, `created_at { slot_no, header_hash }`, `spent_at { slot_no, header_hash } |
-null`. Use `?unspent` to read live beacon UTxOs; `spent_at` (buried) is a leave
-signal.
+For each output db-sync gives `transaction_id`, `output_index`, `address`, `value`
+(coins as `::text` — lovelace > 2^53), inline `datum`, the creating block's
+`slot_no`/`header_hash`, and spentness from `tx_in`. Read the live (unspent) beacon
+UTxOs; a beacon UTxO consumed by a `tx_in` (buried) is a leave signal.
 
 ### 10.2 Read amount + datum; group by owner Address; LARGEST-wins (never sum)
 
@@ -1546,7 +1546,7 @@ Then:
 - **Same-name duplicates are EXPECTED, not anomalous.** Two of an Address's beacons
   share an **identical asset id** (same policy == vault hash, same `token_name =
   blake2b_256(serialize(owner))`), differing only by output reference — so a per-asset
-  Kupo match returns **multiple UTxOs for one user**. Don't assume one-asset ⇒
+  db-sync read returns **multiple UTxOs for one user**. Don't assume one-asset ⇒
   one-UTxO; group by datum `owner` Address and select max over the returned set. With
   largest-wins it is pure over the buried snapshot and self-heals on reorg (DR-34: the
   follower on disk is already largest-wins, so there is no summing double-dip).
@@ -1570,10 +1570,10 @@ with the off-chain CIP-8 committed-payload proof.
 
 ### 10.3 Reorg-safe filter (load-bearing, unchanged in spirit)
 
-- Count a UTxO only once `created_at.slot_no` is **buried past depth k**. On
+- Count a UTxO only once its creating `slot_no` is **buried past depth k**. On
   `RollBackward` to slot S, discard observations with `slot_no > S` and recompute;
-  Kupo flips `spent_at` back to `null` on rollback, so **never cache "spent" as
-  permanent.** Bury **both** `created_at` and `spent_at` past k. The largest-wins
+  db-sync removes a rolled-back spend (the `tx_in` row goes away), so **never cache
+  "spent" as permanent.** Bury **both** the creating and the spending slot past k. The largest-wins
   selection re-runs on every recompute (it is **pure** over the buried snapshot), so
   a reorg that adds/removes a duplicate, or swaps which beacon is largest, **self-
   heals** — provided you **never cache the chosen UTxO as permanent** and always
@@ -1582,8 +1582,8 @@ with the off-chain CIP-8 committed-payload proof.
 ### 10.4 Leave / clamp path — a burn is an equivalent leave signal
 
 A full exit burns the beacon (`mint == −1`) and produces **no** continuing beacon
-UTxO, so the follower sees it **two ways**: (i) the beacon UTxO's `spent_at` is set,
-and (ii) the tx `mint` field shows the beacon policy at `−1`. **Either**, buried past
+UTxO, so the follower sees it **two ways**: (i) the beacon UTxO is spent (a `tx_in`
+consumes it), and (ii) the tx `mint` field shows the beacon policy at `−1`. **Either**, buried past
 k, means that beacon is gone — **a burn == a leave**. If it was the Address's largest,
 recompute promotes the next-largest remaining beacon; if it was the Address's only
 beacon, **clamp weight → 0**. **Consolidation subtlety:** a user merging two beacons
@@ -1596,7 +1596,7 @@ reference + lovelace**. Largest-wins over output-refs handles it.
 
 Because there is no timelock, a user can unlock anytime. **Closed at L2/L3:** require
 burial past depth k before granting weight; clamp L3 capacity to zero on observed
-unlock (a `spent_at` **or** a beacon burn); recompute on rollback. ⛔ Do **not** fix
+unlock (a spend **or** a beacon burn); recompute on rollback. ⛔ Do **not** fix
 this with an on-chain cooldown.
 
 ### 10.6 What L2 does NOT get from L1
@@ -1623,14 +1623,14 @@ No capacity math, no regen, no ceiling, no per-user reward figure. L1 → L2 is 
 - **§2.1 responsibility #3**: "select the largest beacon UTxO per **owner Address**
   (never sum)."
 - **§2.2 ASCII data-flow box**: "group by **owner Address** → **LARGEST beacon UTxO**
-  → 1 weight"; the Kupo box reads "**by beacon policy id (== the vault hash)**"; keep
-  the beacon (ADA + 1 beacon) and the **burn=leave** signal alongside `spent_at`.
+  → 1 weight"; the db-sync box reads "**by beacon policy id (== the vault hash)**"; keep
+  the beacon (ADA + 1 beacon) and the **burn=leave** signal alongside the spend.
 - **§6.1**: "**Index beacon-bearing UTxOs by the beacon POLICY id** (== the vault
-  script hash, DR-18) (one `--match`; optionally per-asset by `token_name`); **one
-  policy/contract in v1** (multi-set collapsed to 100 ADA)."
+  script hash, DR-18) (read db-sync by `tx_out.payment_cred`; optionally per-asset by
+  `token_name`); **one policy/contract in v1** (multi-set collapsed to 100 ADA)."
 - **§6.2 Reorg-safe read**: in the "**Never cache 'spent' as permanent**" bullet,
   keep that a beacon **BURN (`mint −1`) is an equivalent leave signal** alongside
-  `spent_at` (bury both past depth k).
+  the spend (bury both past depth k).
 - **§6.3 the deterministic pure function**: ensure the body is **group-by-`owner`
   Address + MAX-by-lovelace** (tiebreak by output reference), **never `+=`**.
   Signature: `fn beacons_to_weights(buried_beacon_utxos) -> Map<owner Address,
@@ -1643,13 +1643,14 @@ No capacity math, no regen, no ceiling, no per-user reward figure. L1 → L2 is 
 - **§9 D0 + §12 steps 1/3/7**: publish the **largest-wins function + the beacon
   POLICY id (== vault hash) + the Address serialization + the tiebreak rule
   (output-ref order) + depth k + cursor rule**; the standalone recomputer recomputes
-  **max-per-Address**; step-1 Kupo command → "one `--match` by **beacon policy id** …
-  **select max lovelace** per `owner` Address"; step-3 property test asserts
+  **max-per-Address**; step-1 db-sync read → "select vault UTxOs by **beacon policy id**
+  (== vault hash, via `tx_out.payment_cred`) … **select max lovelace** per `owner`
+  Address"; step-3 property test asserts
   determinism of the **MAX + tiebreak** independent of read order, and **explicitly
   tests the duplicate-beacon case** (two equal-lovelace beacons pick the same one by
   outref).
 - **Appendix A**: keep the L1 §10 reference pointing at the **beacon-based,
-  whole-Address** interface (Kupo per-policy-id == vault hash; largest-wins, never
+  whole-Address** interface (db-sync per-policy-id == vault hash; largest-wins, never
   sum); **state explicitly that on-chain does NOT guarantee global one-per-identity
   and that the follower largest-wins rule IS the uniqueness mechanism** (do not claim
   the mint enforces it).
@@ -1760,12 +1761,13 @@ Bite-sized, executable cold. Each builds on the last.
    ADA). Assert each output's value = ADA + exactly 1 beacon (or 0 on full exit),
    datum well-formed, beacon name == `blake2b_256(serialize(owner))`.
 
-7. **L2 interface stub.** Minimal Kupo reader: one `--match` by the **beacon policy
-   id** (== the vault hash, DR-18; optionally per-asset), parse datum → `owner`
-   Address, integrity-check `blake2b_256(serialize(owner)) == token_name` (same
-   `util.beacon_name` fn + same serialization), group by the whole `owner` Address,
-   **select max lovelace** (tiebreak by output reference), bury past depth k, handle
-   `RollBackward`, clamp on observed `spent_at` **or** beacon burn. Confirms the §10
+7. **L2 interface stub.** Minimal db-sync reader: select vault UTxOs by the **beacon
+   policy id** (== the vault hash, DR-18, via `tx_out.payment_cred`; optionally
+   per-asset), parse datum → `owner` Address, integrity-check
+   `blake2b_256(serialize(owner)) == token_name` (same `util.beacon_name` fn + same
+   serialization), group by the whole `owner` Address, **select max lovelace**
+   (tiebreak by output reference), bury past depth k, handle `RollBackward`, clamp on
+   an observed spend **or** beacon burn. Confirms the §10
    contract; property-test read-order-independence + the equal-lovelace tiebreak + the
    duplicate-beacon case. **Cross-check `docs/L2-follower.md` per §10.7** (DR-34: L2 is
    already largest-wins; the alignment is the whole-Address grouping + serialization).
@@ -1850,9 +1852,10 @@ Bite-sized, executable cold. Each builds on the last.
   nonce }` from an address that must recover to == `datum.owner` (the WHOLE Address,
   payment AND stake); an L2 concern, NOT verifiable by the mint handler):
   https://github.com/cardano-foundation/CIPs/tree/master/CIP-0008
-- **Kupo** (index by policy id / `policy_id.asset_name`; `created_at`/`spent_at`
-  slot+header-hash; `spent_at` flips to `null` on rollback):
-  https://github.com/CardanoSolutions/kupo · https://cardanosolutions.github.io/kupo/
+- **db-sync** (read-only Postgres, the sole Cardano data/observation layer via
+  `DBSYNC_URL`; select vault UTxOs by `tx_out.payment_cred = <policy id>`; spentness
+  from `tx_in`; coins/qty as `::text`; a rolled-back spend's `tx_in` row is removed):
+  https://github.com/IntersectMBO/cardano-db-sync
 - **Companion docs:** `docs/L2-follower.md` (already largest-wins / never-sum on disk,
   DR-34 — cross-check per §10.7 for the whole-Address grouping + serialization, NOT a
   live double-dip); `DECISION-REGISTER.md` (the canonical decisions DR-01/DR-02/DR-13/

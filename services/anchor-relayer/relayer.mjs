@@ -19,7 +19,7 @@
 //    retried ACK-ONLY (never re-minting a paid tx). A run resumes any persisted-but-unacked anchor
 //    before considering a new height, so a crash or a down committee can't double-spend the wallet.
 //  • UTxO contention / output chaining — single-threaded; each Cardano tx is awaited to confirm
-//    (its change UTxO indexed by Kupo) BEFORE the next anchor selects UTxOs, so anchor_{k+1}
+//    (its change UTxO indexed by db-sync) BEFORE the next anchor selects UTxOs, so anchor_{k+1}
 //    naturally spends anchor_k's change. No two in-flight txs fighting over one UTxO.
 //  • Cardano rollback — if a submitted tx never confirms within the timeout it is rebuilt &
 //    resubmitted; because anchor_ack is keyed by solochain height, a duplicate Cardano tx for the
@@ -34,7 +34,7 @@
 //                                 # exact rollback-resubmit case) → expect the idempotent no-op
 //                                 # (AckIgnored), proving anchor_ack never double-counts.
 //
-// Env: WS, KUPO, OGMIOS, ANCHOR_EVERY (default 10), CONFIRM_TIMEOUT_MS (180000), POLL_MS (4000),
+// Env: WS, DBSYNC_URL (db-sync, read-only), OGMIOS, ANCHOR_EVERY (default 10), CONFIRM_TIMEOUT_MS (180000), POLL_MS (4000),
 //      ACK_MAX_ATTEMPTS (5), ACK_BACKOFF_MS (4000), COGNO_DATA_DIR / STATE_FILE (the anchor cursor now
 //      lives in the durable data dir — see services/_shared/paths.mjs — NEVER /tmp), LABEL ("COGN"),
 //      METRICS_PORT (9101; 0=off), LOW_FUNDS_LOVELACE (10 ADA), FUNDS_POLL_MS (60000).
@@ -48,8 +48,11 @@ import { DEV_PHRASE, entropyToMiniSecret, mnemonicToEntropy } from "@polkadot-la
 import { cogno } from "@polkadot-api/descriptors";
 import { MeshTxBuilder } from "@meshsdk/core";
 // The relayer signing wallet IS the M2d owner wallet (a single dev key, DR-07/§9 — labelled as
-// such). Reuses the funded preprod wallet + the Kupo fetcher / Ogmios submitter helpers.
-import { getOwnerWallet, kupo, ogmios } from "../../app/scripts/m2d-wallet.mjs";
+// such). Reuses the funded preprod wallet + the db-sync fetcher / Ogmios submitter helpers.
+import { getOwnerWallet, dbsync, ogmios } from "../../app/scripts/m2d-wallet.mjs";
+// db-sync (the project's Cardano data layer) confirms a submitted tx by hash — its slot, or null when
+// it is not (yet) in a block / has rolled back.
+import { txSlot } from "../committee/dbsync.mjs";
 // Hardened HTTP (timeouts + retry, shared with the committee — themes 3/4) + the pure, unit-tested
 // relayer helpers (relayer-9).
 import { fetchJson } from "../_shared/net.mjs";
@@ -64,7 +67,7 @@ import { renderPrometheus, startMetricsServer } from "../_shared/metrics.mjs";
 import { missedIntervals, parseAckTokens, oldestPendingAnchor, classifyPendingAck, validateHex } from "./lib.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
-const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
+const DBSYNC_URL = process.env.DBSYNC_URL || process.env.DBSYNC || "postgres://cogno_reader@127.0.0.1:5432/cexplorer";
 const OGMIOS = process.env.OGMIOS || "http://127.0.0.1:1337";
 const ANCHOR_EVERY = BigInt(process.env.ANCHOR_EVERY || "10");
 const CONFIRM_TIMEOUT_MS = Number(process.env.CONFIRM_TIMEOUT_MS || "180000");
@@ -244,21 +247,22 @@ async function tipSlot() {
   }
 }
 
-// Wait until Kupo shows a UTxO created by `txHash` at the relayer address (⇒ the tx is in a block)
-// AND it is buried >= CONFIRM_DEPTH_SLOTS past the tip (reorg safety, DR-09b). Returns the slot it
-// landed in (needed later to read the metadata back, for verify).
+// Wait until db-sync shows `txHash` in a block (⇒ the tx is confirmed) AND it is buried
+// >= CONFIRM_DEPTH_SLOTS past the tip (reorg safety, DR-09b). Returns the slot it landed in (needed
+// later to read the metadata back, for verify).
 //
 // relayer-1 (fund-burn fix): DISTINGUISH "the tx never made it / rolled back" (→ undefined → the
 // caller resubmits a fresh PAID tx) from "the tx IS on-chain but not yet buried, or the Ogmios tip is
-// momentarily unavailable" (→ keep polling, NEVER resubmit). Once the tx has been SEEN unspent at the
-// relayer address, resubmitting would mint a SECOND paid tx for a height already witnessed — and with
-// a production burial depth (a few hundred slots ≈ minutes at ~1 slot/s) that exceeds the
+// momentarily unavailable" (→ keep polling, NEVER resubmit). Once the tx has been SEEN in a db-sync
+// block, resubmitting would mint a SECOND paid tx for a height already witnessed — and with a
+// production burial depth (a few hundred slots ≈ minutes at ~1 slot/s) that exceeds the
 // CONFIRM_TIMEOUT_MS window, the old "timeout ⇒ resubmit" path did exactly that every timeout even
 // with a perfectly healthy stack. So CONFIRM_TIMEOUT_MS now bounds ONLY the first-appearance wait;
 // once seen, burial waiting is unbounded-but-safe (fail-closed: never ack an unburied tx, never
-// re-mint a confirmed one). NOTE the `.catch` guards the WHOLE fetch+json: a Kupo blip mid-wait must
-// not crash the relayer while a tx is submitted-but-unacked.
-async function waitConfirmed(address, txHash) {
+// re-mint a confirmed one). NOTE the `.catch` guards the WHOLE db-sync read: a db-sync blip mid-wait
+// must not crash the relayer while a tx is submitted-but-unacked. db-sync rolls back WITH the chain,
+// so a tx seen then absent is a genuine Cardano rollback.
+async function waitConfirmed(txHash) {
   const appearDeadline = Date.now() + CONFIRM_TIMEOUT_MS;
   const startedAt = Date.now();
   let everSeen = false;
@@ -266,18 +270,15 @@ async function waitConfirmed(address, txHash) {
   let polls = 0;
   for (;;) {
     polls++;
-    // Bounded timeout + retry so a hung/blipping Kupo cannot stall a submitted-but-unacked tx (relayer-7).
+    // A db-sync read failure flags `readFailed` so the rollback/timeout decision below is SKIPPED — a
+    // failed read has the same null shape as a genuine "tx gone" rollback, and resubmitting on it would
+    // re-mint a paid tx (relayer-1 fund-burn). `txSlot` already bounds its own connect+query.
     let readFailed = false;
-    const matches = await fetchJson(`${KUPO}/matches/${address}?unspent`, { timeoutMs: 10_000, retries: 2 }).catch((e) => {
-      // A Kupo read failure returns [] so the loop does not crash — but [] from a FAILED read has the
-      // same shape as a genuine "tx gone" rollback. Flag it so the rollback/timeout decision below is
-      // SKIPPED on a read failure (resubmitting on it would re-mint a paid tx; relayer-1 fund-burn).
+    const slot = await txSlot(DBSYNC_URL, txHash).then((s) => (s == null ? null : Number(s))).catch((e) => {
       readFailed = true;
-      console.warn(`  ⚠ waitConfirmed: Kupo match query failed for tx ${txHash} (${e?.message || e}) — transient read error, will keep polling (NOT a rollback; never resubmit on uncertainty).`);
-      return [];
+      console.warn(`  ⚠ waitConfirmed: db-sync confirmation read failed for tx ${txHash} (${e?.message || e}) — transient read error, will keep polling (NOT a rollback; never resubmit on uncertainty).`);
+      return null;
     });
-    const hit = (matches || []).find((m) => (m.transaction_id || "").toLowerCase() === txHash.toLowerCase());
-    const slot = hit?.created_at?.slot_no ?? null;
     if (slot != null) {
       everSeen = true;
       if (CONFIRM_DEPTH_SLOTS <= 0) return slot; // demo: ack as soon as it's in a block
@@ -290,7 +291,7 @@ async function waitConfirmed(address, txHash) {
       }
     } else if (readFailed) {
       // Fail closed: a failed read is NOT evidence the tx vanished, so neither the rollback (everSeen)
-      // nor the appear-timeout branch may fire. Fall through to keep polling until Kupo answers (gap 6).
+      // nor the appear-timeout branch may fire. Fall through to keep polling until db-sync answers (gap 6).
     } else if (everSeen) {
       return undefined; // SEEN unspent then GONE (on a SUCCESSFUL read) ⇒ a genuine rollback ⇒ resubmit
     } else if (Date.now() >= appearDeadline) {
@@ -320,7 +321,7 @@ async function buildAndSubmitMetadataTx(wallet, address, genesisHex, head, postC
   if (!utxos.length) throw new Error("relayer wallet has no UTxOs — fund it");
   // Metadata-only, NO script: just attach metadata + return change to self (single change output ⇒
   // clean output-chaining for the next anchor). No txOut, no collateral, no cost models.
-  const txBuilder = new MeshTxBuilder({ fetcher: kupo(), submitter: ogmios(), verbose: false });
+  const txBuilder = new MeshTxBuilder({ fetcher: dbsync(), submitter: ogmios(), verbose: false });
   txBuilder.metadataValue(LABEL, meta).changeAddress(address).selectUtxosFrom(utxos);
   await txBuilder.complete();
   const signed = await wallet.signTx(txBuilder.txHex);
@@ -459,7 +460,7 @@ async function anchorOne(api, sudo, wallet, address, genesisHex, head, state) {
   for (let attempt = 1; ; attempt++) {
     ({ txHash } = await buildAndSubmitMetadataTx(wallet, address, genesisHex, head, postCount, ts));
     console.log(`  cardano tx : ${txHash}  (submitted, attempt ${attempt}) — waiting for confirmation…`);
-    slot = await waitConfirmed(address, txHash);
+    slot = await waitConfirmed(txHash);
     if (slot !== undefined) break;
     console.log(`  ⚠ tx never appeared in ${CONFIRM_TIMEOUT_MS}ms or rolled back — rebuilding & resubmitting`);
     await sleep(POLL_MS);
@@ -509,7 +510,7 @@ const countPending = (state) => (state.anchors || []).filter((a) => a.cardanoTx 
 const countFailed = (state) => (state.anchors || []).filter((a) => a.failed).length;
 
 // Re-read the wallet balance (sum lovelace across its UTxOs) and warn below LOW_FUNDS_LOVELACE.
-// Best-effort: a Kupo blip keeps the last known value (the metric is omitted only if NEVER measured,
+// Best-effort: a db-sync blip keeps the last known value (the metric is omitted only if NEVER measured,
 // so an alert never misreads "unknown" as "0").
 async function refreshWalletFunds(wallet) {
   try {

@@ -181,7 +181,7 @@ console.log("\n[net.fetchJson] content-type handling");
 		ok(Array.isArray(r) && r[0].a === 1, "content-type containing 'json' + valid JSON body parses");
 
 		// content-type WITHOUT 'json' but a body that looks like JSON ('{') is still accepted by the
-		// looksJson fallback — a real Ogmios/Kupo behavior the relayer depends on.
+		// looksJson fallback — a real Ogmios/db-sync behavior the relayer depends on.
 		globalThis.fetch = okFetch('{"y":7}', "application/octet-stream");
 		const r2 = await fetchJson("http://x", { retries: 1, backoffMs: 1, sleep: async () => {} });
 		ok(r2.y === 7, "non-json content-type but JSON-looking body is accepted (looksJson fallback)");

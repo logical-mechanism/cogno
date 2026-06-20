@@ -1,28 +1,25 @@
-//! Read-only Cardano **db-sync** client for the in-protocol observation (D4) — replaces the retired Kupo
-//! IO that lived in [`crate::cardano_observer`].
+//! Read-only Cardano **db-sync** client for the in-protocol observation (D4) — the on-node Cardano IO,
+//! kept separate from [`crate::cardano_observer`] (which holds the pure reduction).
 //!
 //! ONE read-only snapshot per block ([`read_observation`]) returns the three things the node-side
-//! `InherentDataProvider` needs, from a single consistent Postgres MVCC snapshot (which also closes the
-//! old Kupo tip→matches TOCTOU residual):
+//! `InherentDataProvider` needs, from a single consistent Postgres MVCC snapshot (so the tip, anchor and
+//! matches all come from ONE atomic view — they cannot diverge across an inter-call rollback):
 //!   1. `tip_slot` — db-sync freshness (`max(block.slot_no)`). The node ABSTAINS (→ `CannotVerify`) when
-//!      its own db-sync is behind the reference, exactly like the retired Kupo `/checkpoints` tip guard.
+//!      its own db-sync is behind the reference (a point-existence freshness guard).
 //!   2. `anchor` — the **deterministic** stable Cardano block AT/UNDER the reference: the single `block`
 //!      row with the max `slot_no <= reference`. Cardano has ≤1 block per slot on settled history, so this
-//!      is unique and identical across every fully-synced db-sync — the false-`Mismatch` fix that Kupo's
-//!      sparse, tip-relative `/checkpoints` rollback ladder could not give (it resolved different anchor
-//!      blocks on two honest nodes; in-protocol-observation §15.3).
-//!   3. `matches` — the vault UTxOs shaped (in SQL) into the SAME JSON the Kupo `/matches` path produced,
-//!      so the pure reduction (`observe_as_of` / `candidate_tuples`) consumes them BYTE-IDENTICALLY,
-//!      UNCHANGED — ONLY the data source moved. Spentness is read from `tx_in` (canonical ledger data),
-//!      NOT `consumed_by_tx_id` (a denormalized, config-dependent column — observed NULL for a known-spent
-//!      vault UTxO on the live instance — which would be a cross-node determinism trap). A tx_in-ENABLED
-//!      db-sync is REQUIRED: under `--consumed-tx-out` mode `tx_in` is empty (spentness moves to
-//!      `consumed_by_tx_id`), so the read probes `EXISTS (SELECT 1 FROM tx_in)` and ABSTAINS otherwise
-//!      (fail-closed; we do not fall back to the unreliable column). Coins/quantities
-//!      are emitted as STRINGS (lovelace can exceed 2^53; `MaxStakeWeight` = 4.5e16). Driven from
-//!      `tx_out.payment_cred = <vault script hash>` (indexed): the vault script address equals the beacon
-//!      policy id, so this is the indexed analog of Kupo `/matches/{policy}.*` (verified: 0 escaped
-//!      beacons in all preprod history; ADA-only-at-address UTxOs are excluded by the asset `EXISTS`).
+//!      is unique and identical across every fully-synced db-sync (in-protocol-observation §15.3).
+//!   3. `matches` — the vault UTxOs shaped (in SQL) into the canonical match JSON the pure reduction
+//!      (`observe_as_of` / `candidate_tuples`) consumes BYTE-IDENTICALLY, UNCHANGED. Spentness is read
+//!      from `tx_in` (canonical ledger data), NOT `consumed_by_tx_id` (a denormalized, config-dependent
+//!      column — observed NULL for a known-spent vault UTxO on the live instance — which would be a
+//!      cross-node determinism trap). A tx_in-ENABLED db-sync is REQUIRED: under `--consumed-tx-out` mode
+//!      `tx_in` is empty (spentness moves to `consumed_by_tx_id`), so the read probes
+//!      `EXISTS (SELECT 1 FROM tx_in)` and ABSTAINS otherwise (fail-closed; we do not fall back to the
+//!      unreliable column). Coins/quantities are emitted as STRINGS (lovelace can exceed 2^53;
+//!      `MaxStakeWeight` = 4.5e16). Driven from `tx_out.payment_cred = <vault script hash>` (indexed):
+//!      the vault script address equals the beacon policy id (verified: 0 escaped beacons in all preprod
+//!      history; ADA-only-at-address UTxOs are excluded by the asset `EXISTS`).
 
 use crate::cardano_observer::hex32;
 use pallet_cardano_observer::BeaconName;
@@ -31,9 +28,9 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 
-/// Fail-closed bound on the whole read (connect + query) — same 2 s budget the retired Kupo reads used,
-/// so a slow/down db-sync can never stall authoring/import (the caller treats any `Err` as abstain →
-/// empty observation → `CannotVerify`).
+/// Fail-closed bound on the whole read (connect + query) — a 2 s budget, so a slow/down db-sync can
+/// never stall authoring/import (the caller treats any `Err` as abstain → empty observation →
+/// `CannotVerify`).
 const DBSYNC_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// One consistent-snapshot db-sync read for a single block's observation.
@@ -43,7 +40,7 @@ pub struct DbsyncRead {
 	/// The deterministic stable-block anchor `(slot, header_hash)` at/under the reference, or `None`
 	/// when no block is at/under it (a pre-genesis-depth reference ⇒ the caller abstains).
 	pub anchor: Option<(u64, BeaconName)>,
-	/// The vault UTxOs as Kupo-shaped match objects (fed UNCHANGED to the pure reduction).
+	/// The vault UTxOs as canonical match objects (fed UNCHANGED to the pure reduction).
 	pub matches: Vec<serde_json::Value>,
 }
 

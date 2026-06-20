@@ -7,22 +7,23 @@
 //       "re-derive the finalized state-root from genesis" check: an archive node computes a block's
 //       header.state_root by executing every block from genesis, so reading it back re-derives it.
 //   (C) Cardano witness — the metadata under our label in the anchor tx, read back from Cardano via
-//       Kupo. This is the tamper-evidence: it lives on a chain the operator does not control.
+//       db-sync. This is the tamper-evidence: it lives on a chain the operator does not control.
 // A == B == C ⇒ no silent rewrite before this anchor. A mismatch is public, on-Cardano evidence.
 //
 //   node verify.mjs            # verify the latest on-chain checkpoint (Anchor.LastCheckpoint)
 //   node verify.mjs --block N  # verify the anchor recorded for solochain height N (from STATE_FILE)
 //
-// Env: WS, KUPO, COGNO_DATA_DIR / STATE_FILE, LABEL (must match the relayer).
+// Env: WS, DBSYNC_URL (db-sync, read-only), COGNO_DATA_DIR / STATE_FILE, LABEL (must match the relayer).
 
 import fs from "node:fs";
 import { createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws-provider/node";
 import { cogno } from "@polkadot-api/descriptors";
 import { statePaths } from "../_shared/paths.mjs";
+import { txMetadata } from "../committee/dbsync.mjs";
 
 const WS = process.env.WS || "ws://127.0.0.1:9944";
-const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
+const DBSYNC_URL = process.env.DBSYNC_URL || process.env.DBSYNC || "postgres://cogno_reader@127.0.0.1:5432/cexplorer";
 // Resolve the relayer's state the SAME way the relayer does (durable data dir, NOT /tmp) so the
 // verifier reads the cursor the relayer actually wrote.
 const { file: STATE_FILE } = statePaths("STATE_FILE", "anchor-state.json");
@@ -37,18 +38,6 @@ async function rpc(method, params = []) {
   const j = await res.json();
   if (j.error) throw new Error(`${method}: ${JSON.stringify(j.error)}`);
   return j.result;
-}
-
-// Pull the value of metadata field `key` (e.g. "root") under our LABEL out of Kupo's detailed
-// schema. Kupo returns, per tx, { schema: { "<label>": { map: [ { k:{string}, v:{string|int} } ] } } }.
-function extractFromKupoSchema(metaEntry, key) {
-  const top = metaEntry?.schema?.[LABEL];
-  const pairs = top?.map || [];
-  for (const p of pairs) {
-    const k = p?.k?.string;
-    if (k === key) return p?.v?.string ?? p?.v?.int ?? null;
-  }
-  return null;
 }
 
 async function main() {
@@ -96,15 +85,14 @@ async function main() {
   catch (e) { console.log(`   (archive post_count at #${block} unavailable: ${e?.message || e})`); }
   console.log(`B) committed archive : block #${block}  header.state_root ${archiveRoot}  posts ${archivePosts ?? "(state pruned)"}`);
 
-  // (C) the Cardano witness — read the metadata back from Cardano via Kupo /metadata/{slot}. This is
-  // the whole tamper-evidence point, so an unreadable witness is a HARD FAIL, never a silent skip.
+  // (C) the Cardano witness — read the metadata back from Cardano via db-sync (the decoded tx_metadata
+  // JSON under our LABEL). This is the whole tamper-evidence point, so an unreadable witness is a HARD
+  // FAIL, never a silent skip.
   let cardanoRoot = null, cardanoBlock = null;
   try {
-    const url = `${KUPO}/metadata/${entry.slot}?transaction_id=${recordedTx}`;
-    const arr = await (await fetch(url)).json();
-    const metaEntry = Array.isArray(arr) ? arr[0] : arr;
-    cardanoRoot = stripHex(extractFromKupoSchema(metaEntry, "root") || "");
-    cardanoBlock = extractFromKupoSchema(metaEntry, "block");
+    const md = await txMetadata(DBSYNC_URL, recordedTx, LABEL);
+    cardanoRoot = stripHex(md?.root || "");
+    cardanoBlock = md?.block ?? null;
     console.log(`C) Cardano witness   : tx ${recordedTx} @slot ${entry.slot}  metadata.root ${cardanoRoot || "(unreadable)"}  block ${cardanoBlock}`);
   } catch (e) {
     console.log(`C) Cardano witness   : metadata read failed (${e?.message || e})`);

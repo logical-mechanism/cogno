@@ -90,8 +90,8 @@ export function referenceFromAuraSlot({
 // other drops would fork the read. These helpers reproduce Rust's parse exactly:
 //   • a JSON NUMBER counts only if it is a non-negative integer within range (Rust `as_u64()` returns None
 //     for floats / out-of-range; JS `Number.isInteger` matches, modulo the one case JS cannot see — a JSON
-//     number written `1.0`, which `JSON.parse` collapses to `1`; Kupo never emits fractional integers, so
-//     this residual is unreachable with real data and is the documented precondition).
+//     number written `1.0`, which `JSON.parse` collapses to `1`; db-sync never emits fractional integers,
+//     so this residual is unreachable with real data and is the documented precondition).
 //   • a STRING counts only if it is pure ASCII digits within range. The Rust port's `as_u64`/`as_u128`
 //     apply an explicit `all(is_ascii_digit)` guard BEFORE `from_str` — Rust's bare `u64::from_str` would
 //     ACCEPT a leading `+` ("+1") that this `/^[0-9]+$/` rejects — so "1.0" / " 1" / "0x1" / "+1" are
@@ -114,16 +114,14 @@ const asU128 = (v) => asUintStrict(v, MAX_U128);
 const isBeacon32 = (hex) => typeof hex === "string" && hex.length === 64 && /^[0-9a-f]+$/.test(hex);
 
 // ── the sealed stable-block anchor (§15.3 / Midnight delta A.1) ──────────────────────────────────────
-// The anchor is no longer reduced in JS: with the pivot from Kupo to db-sync it is a SINGLE SQL row — the
-// `block` row at `max(slot_no) <= reference` (see `services/committee/dbsync.mjs` / `node/src/dbsync.rs`).
-// `block` holds EVERY block, so "latest block at/under S" is exact (≤1 block/slot on settled history ⇒
-// unique across every fully-synced db-sync), unlike Kupo's sparse, tip-relative `/checkpoints` ladder which
-// resolved different anchors on two honest nodes (the false-`Mismatch` blocker). The retired `latestStableBlock`/
-// `latestStableBlockHash` Kupo `/checkpoints` mirror (and `parse_checkpoint_anchor` in the node) are gone; the
-// sealed `CardanoRef.block_hash` now derives deterministically from SQL, not a JS reduction over a checkpoint array.
+// The anchor is not reduced in JS: it is a SINGLE db-sync SQL row — the `block` row at
+// `max(slot_no) <= reference` (see `services/committee/dbsync.mjs` / `node/src/dbsync.rs`). `block` holds
+// EVERY block, so "latest block at/under S" is exact (≤1 block/slot on settled history ⇒ unique across
+// every fully-synced db-sync). The sealed `CardanoRef.block_hash` derives deterministically from SQL, not
+// a JS reduction.
 
 // ── the deterministic observation (§5.3) ──────────────────────────────────────────────────────────
-// PURE: from Kupo `/matches/{vaultHash}.*` JSON, reduce to the largest-wins locked lovelace per beacon
+// PURE: from the db-sync vault match JSON, reduce to the largest-wins locked lovelace per beacon
 // AS-OF `referenceSlot`. A match counts only if it carries EXACTLY ONE asset of the vault policy at
 // quantity 1, positive lovelace, was created at/before the reference, and is unspent as-of the reference
 // (`spent_at == null OR spent_at.slot_no > referenceSlot`). Largest-wins per beacon (never sum).
@@ -300,7 +298,7 @@ export function candidateBytes({ candidates: cands }) {
 	return Uint8Array.from(out);
 }
 
-// Convenience: the candidate-commitment pre-image bytes straight from Kupo matches.
+// Convenience: the candidate-commitment pre-image bytes straight from the vault matches.
 export const candidateBytesFor = (matches, { vaultHash } = {}) => candidateBytes({ candidates: candidates(matches, { vaultHash }) });
 // Hex of the candidate pre-image — the determinism witness the Rust↔JS equivalence fixture pins.
 export const candidateHex = (matches, opts) => bytesToHex(candidateBytesFor(matches, opts));

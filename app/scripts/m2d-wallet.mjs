@@ -1,7 +1,8 @@
 // M2d owner wallet — the preprod wallet that owns the talk_vault (the identity) AND signs the anchor
 // relayer's paid Cardano txs. The mnemonic is persisted (testnet only, NOT committed) so every step
-// reuses the SAME funded wallet. The local Kupo (fetcher) + Ogmios (submitter/evaluator) back it, so no
-// Blockfrost is needed. `node scripts/m2d-wallet.mjs` prints the address to fund.
+// reuses the SAME funded wallet. The local db-sync (fetcher — the project's Cardano data layer) +
+// Ogmios (submitter/evaluator) back it, so no Blockfrost is needed. `node scripts/m2d-wallet.mjs`
+// prints the address to fund.
 //
 // PROD-READINESS Phase 1: the wallet now lives in the DURABLE data dir (COGNO_DATA_DIR / systemd
 // StateDirectory) written 0600 — NOT volatile, world-readable /tmp, where a reboot/tmpfs clear would
@@ -10,9 +11,10 @@
 // wallet unless COGNO_ALLOW_WALLET_BREW is set, so a missing key fails loudly instead of rotating to an
 // unfunded address.
 import fs from "node:fs";
-import { MeshWallet, KupoProvider, OgmiosProvider } from "@meshsdk/core";
+import { MeshWallet, OgmiosProvider } from "@meshsdk/core";
 import * as cst from "@meshsdk/core-cst";
 import { statePaths, migrateStatePath, ensureParentDir } from "../../services/_shared/paths.mjs";
+import { dbsyncFetcher } from "../../services/committee/dbsync.mjs";
 
 const { file: WALLET_FILE, legacy: WALLET_LEGACY } = statePaths("OWNER_FILE", "owner.json");
 // Brewing a fresh wallet is a deliberate, one-time act (first-time setup / dev) — gate it behind an
@@ -20,19 +22,21 @@ const { file: WALLET_FILE, legacy: WALLET_LEGACY } = statePaths("OWNER_FILE", "o
 // an unfunded address and stopping anchoring.
 const ALLOW_BREW = ["1", "true", "yes"].includes((process.env.COGNO_ALLOW_WALLET_BREW || "").toLowerCase());
 const OGMIOS = process.env.OGMIOS || "http://127.0.0.1:1337";
-const KUPO = process.env.KUPO || "http://127.0.0.1:1442";
+const DBSYNC_URL = process.env.DBSYNC_URL || process.env.DBSYNC || "postgres://cogno_reader@127.0.0.1:5432/cexplorer";
 
-export function kupo() {
-  return new KupoProvider(KUPO);
+/** The db-sync-backed MeshJS fetcher (the wallet's UTxO source for coin selection). db-sync is the
+ * project's read-only Cardano data layer; Ogmios stays the submitter/evaluator. */
+export function dbsync() {
+  return dbsyncFetcher(DBSYNC_URL);
 }
 export function ogmios() {
   return new OgmiosProvider(OGMIOS);
 }
 
 /** The live preprod cost models from Ogmios, as the [v1, v2, v3] integer-array list MeshTxBuilder
- * wants (setCostModels). REQUIRED: KupoProvider doesn't implement fetchCostModels, so MeshJS falls
- * back to its bundled defaults — but those are stale vs preprod's Conway PlutusV3 (350 params), so
- * the script integrity hash mismatches and the ledger rejects the tx. Inject the real ones instead. */
+ * wants (setCostModels). REQUIRED: the fetcher doesn't supply cost models, so MeshJS falls back to its
+ * bundled defaults — but those are stale vs preprod's Conway PlutusV3 (350 params), so the script
+ * integrity hash mismatches and the ledger rejects the tx. Inject the real ones from Ogmios instead. */
 export async function fetchCostModels() {
   const res = await fetch(OGMIOS, {
     method: "POST",
@@ -45,7 +49,7 @@ export async function fetchCostModels() {
 }
 
 /** Load (or first-time create + persist) the owner wallet. networkId 0 = preprod/testnet.
- * `withProvider` attaches the Kupo fetcher + Ogmios submitter (needed for utxos/submit, not for
+ * `withProvider` attaches the db-sync fetcher + Ogmios submitter (needed for utxos/submit, not for
  * deriving the address). */
 export async function getOwnerWallet({ withProvider = false } = {}) {
   let mnemonic;
@@ -69,7 +73,7 @@ export async function getOwnerWallet({ withProvider = false } = {}) {
     key: { type: "mnemonic", words: Array.isArray(mnemonic) ? mnemonic : mnemonic.split(" ") },
   };
   if (withProvider) {
-    opts.fetcher = kupo();
+    opts.fetcher = dbsync();
     opts.submitter = ogmios();
   }
   const wallet = new MeshWallet(opts);
