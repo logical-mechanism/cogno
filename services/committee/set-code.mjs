@@ -5,13 +5,18 @@
 // spec_version is not strictly greater than on-chain (a built-in safety net against the wrong/older wasm).
 // set_code is Root-only (frame_system) — the 3/5 committee CANNOT do it, so this is sudo, by design.
 //
+// Success is confirmed by the RUNTIME-VERSION BUMP, never by decoding events: set_code swaps the
+// metadata MID-BLOCK, so @polkadot/api (still on the old metadata) cannot decode that block's
+// `system.events` — which would otherwise throw a FALSE "no Sudid event" on a real success. We only
+// touch `status` (no event decode) and then re-read the on-chain runtime version.
+//
 //   SUDO_SEED='//YourSudo' node set-code.mjs \
 //     --wasm ../../target/release/wbuild/cogno-chain-runtime/cogno_chain_runtime.compact.compressed.wasm \
 //     [--ws ws://127.0.0.1:9944]
 //
 // (SUDO_SEED defaults to the dev //Alice; set it to the real operator sudo seed on the live node.)
 import { readFileSync } from "node:fs";
-import { connect, operators, viaSudo, find, assertGenesis } from "./lib.mjs";
+import { connect, operators, assertGenesis, SUDO_SEED } from "./lib.mjs";
 
 function parseArgv(argv) {
 	const o = {};
@@ -34,23 +39,35 @@ async function main() {
 
 	const api = await connect(opt.ws);
 	try {
-		const spec = api.runtimeVersion.specVersion.toNumber();
+		const before = api.runtimeVersion.specVersion.toNumber();
+		const sudo = operators().kr.addFromUri(SUDO_SEED);
 		console.log(
-			`chain ${api.genesisHash.toHex().slice(0, 10)}… on-chain spec ${spec} | uploading ${(code.length - 2) / 2} wasm bytes from ${opt.wasm}`,
+			`chain ${api.genesisHash.toHex().slice(0, 10)}… on-chain spec ${before} | uploading ${(code.length - 2) / 2} wasm bytes from ${opt.wasm} as sudo ${sudo.address}`,
 		);
 		assertGenesis(api); // pin the chain if GENESIS is set — refuse the wrong chain
-		const { evs } = await viaSudo(api, api.tx.system.setCode(code), {
-			operators: operators(),
-			log: (m) => console.log("  " + m),
+
+		// Submit and resolve on FINALIZATION, touching only `status` (NOT `events` — see header).
+		await new Promise((resolve, reject) => {
+			api.tx.sudo
+				.sudo(api.tx.system.setCode(code))
+				.signAndSend(sudo, ({ status }) => {
+					if (status.isInBlock) console.log(`  in block ${status.asInBlock.toHex()}`);
+					if (status.isFinalized) resolve();
+					else if (status.isInvalid || status.isDropped || status.isUsurped || status.isFinalityTimeout)
+						reject(new Error(`tx not included: ${status.type}`));
+				})
+				.catch(reject);
 		});
-		const updated = find(evs, "system", "CodeUpdated");
-		console.log(
-			updated
-				? "✓ system.CodeUpdated — the new runtime is live at the next block"
-				: "submitted but NO CodeUpdated seen — check the wasm spec_version > on-chain, and the sudo key",
-		);
-		await api.disconnect();
-		process.exit(updated ? 0 : 1);
+
+		// Authoritative success signal: the on-chain runtime version strictly increased. A can_set_code
+		// rejection (wasm spec not greater / wrong sudo) leaves it unchanged ⇒ we report failure.
+		const after = (await api.rpc.state.getRuntimeVersion()).specVersion.toNumber();
+		if (after > before) {
+			console.log(`✓ runtime upgraded: spec ${before} → ${after} (live now; the node applies it at the next block)`);
+			await api.disconnect();
+			process.exit(0);
+		}
+		throw new Error(`spec did NOT change (still ${after}) — set_code rejected (wasm spec not greater than on-chain? wrong sudo key?)`);
 	} catch (e) {
 		console.error("SET-CODE FAILED:", e?.message || e);
 		await api.disconnect();
