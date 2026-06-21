@@ -154,6 +154,50 @@ mod benchmarks {
 		Ok(())
 	}
 
+	/// `create_poll` of an `s`-byte question with the max number of options, through the real gate.
+	#[benchmark]
+	fn create_poll(s: Linear<0, { T::MaxLength::get() }>) -> Result<(), BenchmarkError> {
+		let caller: T::AccountId = whitelisted_caller();
+		T::IdentityGate::benchmark_set_allowed(&caller);
+		let question = alloc::vec![0u8; s as usize];
+		// Worst case: the maximum number of max-length options.
+		let opt = alloc::vec![0u8; T::MaxPollOptionLen::get() as usize];
+		let options = alloc::vec![opt; T::MaxPollOptions::get() as usize];
+
+		#[extrinsic_call]
+		_(RawOrigin::Signed(caller.clone()), question, options);
+
+		assert!(Polls::<T>::contains_key(0u64));
+		Ok(())
+	}
+
+	/// `cast_poll_vote` — worst case is the RE-CAST path (an existing choice is reversed, then the new
+	/// option applied) with a non-zero stake.
+	#[benchmark]
+	fn cast_poll_vote() -> Result<(), BenchmarkError> {
+		let caller: T::AccountId = whitelisted_caller();
+		T::IdentityGate::benchmark_set_allowed(&caller);
+		// Seed a 2-option poll at id 0.
+		seed_post::<T>(&caller);
+		let opt: BoundedVec<u8, T::MaxPollOptionLen> =
+			alloc::vec![b'a'].try_into().expect("1 <= MaxPollOptionLen");
+		let mut options: BoundedVec<BoundedVec<u8, T::MaxPollOptionLen>, T::MaxPollOptions> =
+			Default::default();
+		options.try_push(opt.clone()).expect("room");
+		options.try_push(opt).expect("room");
+		Polls::<T>::insert(0u64, Poll::<T> { options });
+		pallet_talk_stake::AllowedStake::<T>::insert(&caller, 2_000u128);
+		// Pre-existing choice (option 0) so the re-cast exercises reverse + apply.
+		PollVotes::<T>::insert(0u64, &caller, PollVoteRecord { option: 0, weight: 1_000u128 });
+		PollTally::<T>::insert(0u64, 0u8, OptionTally { weight: 1_000, count: 1 });
+
+		#[extrinsic_call]
+		_(RawOrigin::Signed(caller.clone()), 0u64, 1u8);
+
+		assert_eq!(PollTally::<T>::get(0u64, 1u8).count, 1);
+		Ok(())
+	}
+
 	/// The `CheckCapacity` transaction-extension hot path (DR-05 / `L3-chain.md` §5.4): the reads
 	/// `validate()` performs (`AllowedStake` + `Capacity`, via `current_capacity`) plus the
 	/// `Capacity` write `consume()` performs in `post_dispatch`. Worst case: a bound, weighted,

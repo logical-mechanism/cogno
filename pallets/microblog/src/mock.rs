@@ -72,6 +72,8 @@ impl pallet_microblog::Config for Test {
 	type VoteCost = ConstU128<50>;
 	type RepostCost = ConstU128<30>;
 	type FollowCost = ConstU128<30>;
+	type MaxPollOptions = ConstU32<4>;
+	type MaxPollOptionLen = ConstU32<32>;
 	type ForceOrigin = EnsureRoot<u64>;
 	type IdentityGate = MockIdentityGate;
 	type WeightInfo = ();

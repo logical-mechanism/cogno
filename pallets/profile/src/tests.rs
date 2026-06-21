@@ -1,6 +1,6 @@
 //! Unit tests for `pallet-profile`.
 
-use crate::{mock::*, Error, Event, Profiles};
+use crate::{mock::*, Error, Event, PinnedPost, Profiles};
 use frame_support::{assert_noop, assert_ok};
 
 #[test]
@@ -90,5 +90,40 @@ fn clear_profile_works_and_errors_when_absent() {
 		assert_ok!(Profile::clear_profile(RuntimeOrigin::signed(1)));
 		assert!(Profiles::<Test>::get(1).is_none());
 		System::assert_last_event(Event::ProfileCleared { who: 1 }.into());
+	});
+}
+
+#[test]
+fn pin_and_unpin_post_works() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Profile::pin_post(RuntimeOrigin::signed(1), 42));
+		assert_eq!(PinnedPost::<Test>::get(1), Some(42));
+		System::assert_last_event(Event::PostPinned { who: 1, id: 42 }.into());
+		// Pinning again overwrites.
+		assert_ok!(Profile::pin_post(RuntimeOrigin::signed(1), 7));
+		assert_eq!(PinnedPost::<Test>::get(1), Some(7));
+		// Unpin clears it.
+		assert_ok!(Profile::unpin_post(RuntimeOrigin::signed(1)));
+		assert!(PinnedPost::<Test>::get(1).is_none());
+		System::assert_last_event(Event::PostUnpinned { who: 1 }.into());
+	});
+}
+
+#[test]
+fn pin_post_requires_identity_gate() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		deny_identity(1);
+		assert_noop!(Profile::pin_post(RuntimeOrigin::signed(1), 42), Error::<Test>::NotAllowed);
+		assert!(PinnedPost::<Test>::get(1).is_none());
+	});
+}
+
+#[test]
+fn unpin_without_a_pin_is_rejected() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_noop!(Profile::unpin_post(RuntimeOrigin::signed(1)), Error::<Test>::NotPinned);
 	});
 }

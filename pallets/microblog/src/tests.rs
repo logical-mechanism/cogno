@@ -8,7 +8,7 @@
 
 use crate::{
 	mock::*, ByAuthor, Capacity, Error, Event, FollowerCount, Following, FollowingCount, NextPostId,
-	Posts, RepostCount, Reposts, VoteDir, VoteTally, Votes,
+	PollTally, PollVotes, Polls, Posts, RepostCount, Reposts, VoteDir, VoteTally, Votes,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -365,6 +365,113 @@ fn engagement_calls_require_identity_gate() {
 		);
 		assert_noop!(Microblog::repost(RuntimeOrigin::signed(2), 0), Error::<Test>::NotAllowed);
 		assert_noop!(Microblog::follow(RuntimeOrigin::signed(2), 1), Error::<Test>::NotAllowed);
+	});
+}
+
+// ── stake-weighted polls ────────────────────────────────────────────────────────────────────────
+
+fn opts(n: usize) -> Vec<Vec<u8>> {
+	(0..n).map(|i| alloc_opt(i)).collect()
+}
+fn alloc_opt(i: usize) -> Vec<u8> {
+	vec![b'a' + i as u8]
+}
+
+#[test]
+fn create_poll_makes_a_post_and_stores_options() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::create_poll(RuntimeOrigin::signed(1), b"best chain?".to_vec(), opts(3)));
+		// The poll's question is an ordinary post (so it threads/quotes/reposts + shows in the feed).
+		let p = Posts::<Test>::get(0).expect("host post exists");
+		assert_eq!(p.text.to_vec(), b"best chain?".to_vec());
+		assert_eq!(p.parent, None);
+		assert_eq!(p.quote, None);
+		// And the options live in the Polls side-map.
+		let poll = Polls::<Test>::get(0).expect("poll exists");
+		assert_eq!(poll.options.len(), 3);
+		assert_eq!(NextPostId::<Test>::get(), 1);
+		System::assert_has_event(Event::PostCreated { id: 0, author: 1 }.into());
+		System::assert_last_event(Event::PollCreated { id: 0, author: 1 }.into());
+	});
+}
+
+#[test]
+fn create_poll_needs_at_least_two_options() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_noop!(
+			Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(1)),
+			Error::<Test>::NotEnoughOptions
+		);
+		assert_eq!(NextPostId::<Test>::get(), 0);
+	});
+}
+
+#[test]
+fn create_poll_rejects_too_many_options() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// MaxPollOptions = 4 in the mock.
+		assert_noop!(
+			Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(5)),
+			Error::<Test>::TooManyOptions
+		);
+	});
+}
+
+#[test]
+fn create_poll_rejects_overlong_option() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		let long = vec![0u8; 33]; // MaxPollOptionLen = 32
+		assert_noop!(
+			Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), vec![b"ok".to_vec(), long]),
+			Error::<Test>::OptionTooLong
+		);
+	});
+}
+
+#[test]
+fn cast_poll_vote_is_stake_weighted_and_deterministic_on_recast() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(3)));
+		// Account 2 votes option 0 at weight 100.
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 0));
+		assert_eq!(PollTally::<Test>::get(0, 0).weight, 100);
+		assert_eq!(PollTally::<Test>::get(0, 0).count, 1);
+		System::assert_last_event(Event::PollVoted { id: 0, who: 2, option: 0, weight: 100 }.into());
+
+		// Stake grows to 300, account 2 re-casts to option 1: option 0 reverses by the STORED 100
+		// (to zero), option 1 gets the fresh 300 — no drift.
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 300));
+		assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 1));
+		assert_eq!(PollTally::<Test>::get(0, 0).weight, 0);
+		assert_eq!(PollTally::<Test>::get(0, 0).count, 0);
+		assert_eq!(PollTally::<Test>::get(0, 1).weight, 300);
+		assert_eq!(PollTally::<Test>::get(0, 1).count, 1);
+		assert_eq!(PollVotes::<Test>::get(0, 2).expect("record").option, 1);
+	});
+}
+
+#[test]
+fn cast_poll_vote_rejects_non_poll_and_bad_option() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// A plain post is not a poll.
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"not a poll".to_vec(), None));
+		assert_noop!(
+			Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 0),
+			Error::<Test>::PollNotFound
+		);
+		// An out-of-range option on a real poll.
+		assert_ok!(Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(2)));
+		assert_noop!(
+			Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 1, 2), // poll id 1 has options 0,1
+			Error::<Test>::InvalidOption
+		);
 	});
 }
 
@@ -857,6 +964,8 @@ mod capacity_extension {
 			assert_eq!(cost(Call::repost { post_id: 0 }), Some(30));
 			assert_eq!(cost(Call::follow { target: 2 }), Some(30));
 			assert_eq!(cost(Call::unfollow { target: 2 }), Some(30));
+			assert_eq!(cost(Call::create_poll { question: vec![0u8; 5], options: vec![] }), Some(105)); // post_cost
+			assert_eq!(cost(Call::cast_poll_vote { post_id: 0, option: 0 }), Some(50)); // VoteCost
 			// Not metered.
 			assert_eq!(cost(Call::force_set_capacity { who: 1, cap_last: 0 }), None);
 		});

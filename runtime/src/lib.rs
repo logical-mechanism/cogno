@@ -142,7 +142,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// mappings. transaction_version is UNCHANGED (2): the `TxExtension` tuple is byte-identical —
 	// the new feeless calls ride the existing `CheckCapacity` (only its internal match arms grew),
 	// and `set_profile` is a plain fee-bearing signed extrinsic.
-	spec_version: 112,
+	// 112 -> 113 (polls + pinned post): microblog gained `create_poll` (@9) + `cast_poll_vote` (@10)
+	// — a stake-weighted poll is a normal post (the question) plus a `Polls`/`PollVotes`/`PollTally`
+	// side-record; pallet-profile gained `pin_post` (@2) + `unpin_post` (@3) + a `PinnedPost` map.
+	// All ADDITIVE storage/calls/constants (NO Post/Profile struct change) — so NO new migration;
+	// encoding-affecting, so regen the PAPI descriptors + indexer mappings. The new microblog calls
+	// ride the existing CheckCapacity (feeless); pin/unpin are fee-bearing. transaction_version is
+	// UNCHANGED (2) — the TxExtension tuple is byte-identical.
+	spec_version: 113,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

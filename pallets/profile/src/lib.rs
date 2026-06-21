@@ -95,6 +95,12 @@ pub mod pallet {
 	pub type Profiles<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, Profile<T>, OptionQuery>;
 
+	/// The post id each account has pinned to the top of their profile. `None` ⇒ nothing pinned.
+	/// Stored as a bare id (not validated against microblog on-chain — the FE/indexer renders it; a
+	/// stale/foreign id simply shows nothing, mirroring the dangling-parent precedent).
+	#[pallet::storage]
+	pub type PinnedPost<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u64, OptionQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -102,6 +108,10 @@ pub mod pallet {
 		ProfileSet { who: T::AccountId },
 		/// `who` cleared their profile.
 		ProfileCleared { who: T::AccountId },
+		/// `who` pinned post `id` to the top of their profile.
+		PostPinned { who: T::AccountId, id: u64 },
+		/// `who` removed their pinned post.
+		PostUnpinned { who: T::AccountId },
 	}
 
 	#[pallet::error]
@@ -116,6 +126,8 @@ pub mod pallet {
 		AvatarTooLong,
 		/// `clear_profile` was called but the caller has no profile.
 		NoProfile,
+		/// `unpin_post` was called but the caller has nothing pinned.
+		NotPinned,
 	}
 
 	#[pallet::call]
@@ -152,6 +164,32 @@ pub mod pallet {
 			let who = ensure_signed(origin)?;
 			ensure!(Profiles::<T>::take(&who).is_some(), Error::<T>::NoProfile);
 			Self::deposit_event(Event::ProfileCleared { who });
+			Ok(())
+		}
+
+		/// Pin post `id` to the top of the caller's profile (overwrites any prior pin). Fee-bearing;
+		/// requires a live identity binding. The post id is not validated on-chain (FE renders it).
+		#[pallet::call_index(2)]
+		#[pallet::weight(T::WeightInfo::pin_post())]
+		pub fn pin_post(origin: OriginFor<T>, id: u64) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			if !T::IdentityGate::is_allowed(&who) {
+				log::debug!(target: LOG_TARGET, "pin_post rejected: identity not allowed for {who:?}");
+				return Err(Error::<T>::NotAllowed.into());
+			}
+			PinnedPost::<T>::insert(&who, id);
+			Self::deposit_event(Event::PostPinned { who, id });
+			Ok(())
+		}
+
+		/// Remove the caller's pinned post. Fee-bearing. Fails `NotPinned` if nothing is pinned. No
+		/// identity gate (a revoked account may still tidy up its own state).
+		#[pallet::call_index(3)]
+		#[pallet::weight(T::WeightInfo::unpin_post())]
+		pub fn unpin_post(origin: OriginFor<T>) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			ensure!(PinnedPost::<T>::take(&who).is_some(), Error::<T>::NotPinned);
+			Self::deposit_event(Event::PostUnpinned { who });
 			Ok(())
 		}
 	}

@@ -177,6 +177,13 @@ pub mod pallet {
 		#[pallet::constant]
 		type FollowCost: Get<u128>;
 
+		/// Maximum number of options a poll may have. (`create_poll` rejects more; ≥2 required.)
+		#[pallet::constant]
+		type MaxPollOptions: Get<u32>;
+		/// Maximum length, in bytes, of a single poll option's label.
+		#[pallet::constant]
+		type MaxPollOptionLen: Get<u32>;
+
 		/// Origin allowed to force a capacity row (operator/migration; **sudo in dev**). The
 		/// future `cogno-gate` `link_identity` will call [`Pallet::on_first_bind`] directly;
 		/// this dispatchable is the M2c stand-in that lets the operator prime/pre-charge an
@@ -246,6 +253,37 @@ pub mod pallet {
 		pub up_count: u32,
 		/// Count of down-votes.
 		pub down_count: u32,
+	}
+
+	/// A poll attached to a post: the fixed set of options voters choose between. The poll's question
+	/// IS the host post's `text`, so a poll is a first-class post (it threads / quotes / reposts and
+	/// shows in the feed); only the options + the stake-weighted per-option tally live here.
+	#[derive(
+		Encode, Decode, CloneNoBound, PartialEqNoBound, EqNoBound, DebugNoBound, TypeInfo, MaxEncodedLen,
+	)]
+	#[scale_info(skip_type_params(T))]
+	pub struct Poll<T: Config> {
+		/// The selectable options (each bounded to `MaxPollOptionLen`, up to `MaxPollOptions`).
+		pub options: BoundedVec<BoundedVec<u8, T::MaxPollOptionLen>, T::MaxPollOptions>,
+	}
+
+	/// One account's recorded poll choice: the chosen option index + the voter's stake weight snapshot
+	/// at cast time. Same drift-free contract as [`VoteRecord`]: a re-cast reverses THIS stored weight.
+	#[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
+	pub struct PollVoteRecord {
+		/// The chosen option index (`< options.len()`).
+		pub option: u8,
+		/// The voter's `AllowedStake` weight at cast time.
+		pub weight: u128,
+	}
+
+	/// The stake-weighted tally for a single poll option. `ValueQuery` (default zero) keyed per option.
+	#[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, Default, TypeInfo, MaxEncodedLen)]
+	pub struct OptionTally {
+		/// Sum of the weight snapshots of accounts currently choosing this option.
+		pub weight: u128,
+		/// Number of accounts currently choosing this option.
+		pub count: u32,
 	}
 
 	/// The lazy token-bucket state for one identity (`ECONOMICS.md` §4.1).
@@ -345,6 +383,34 @@ pub mod pallet {
 	pub type FollowingCount<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u32, ValueQuery>;
 
+	/// Poll metadata keyed by the host post id. `None` ⇒ that post is not a poll.
+	#[pallet::storage]
+	pub type Polls<T: Config> = StorageMap<_, Blake2_128Concat, u64, Poll<T>, OptionQuery>;
+
+	/// Per-(poll, voter) recorded choice. `None` ⇒ that account has not voted in that poll.
+	#[pallet::storage]
+	pub type PollVotes<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		u64,
+		Blake2_128Concat,
+		T::AccountId,
+		PollVoteRecord,
+		OptionQuery,
+	>;
+
+	/// Stake-weighted tally per (poll, option). `ValueQuery` ⇒ default-zero per option.
+	#[pallet::storage]
+	pub type PollTally<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		u64,
+		Blake2_128Concat,
+		u8,
+		OptionTally,
+		ValueQuery,
+	>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -363,6 +429,10 @@ pub mod pallet {
 		Followed { follower: T::AccountId, followee: T::AccountId },
 		/// `follower` stopped following `followee`.
 		Unfollowed { follower: T::AccountId, followee: T::AccountId },
+		/// A poll was created (its question is the host post `id`'s text; options are in storage).
+		PollCreated { id: u64, author: T::AccountId },
+		/// `who` (stake-`weight`) cast or changed their vote on poll `id` to `option`.
+		PollVoted { id: u64, who: T::AccountId, option: u8, weight: u128 },
 	}
 
 	#[pallet::error]
@@ -386,6 +456,16 @@ pub mod pallet {
 		AlreadyFollowing,
 		/// `unfollow` was called but the caller does not follow that target.
 		NotFollowing,
+		/// `create_poll` was called with fewer than 2 options.
+		NotEnoughOptions,
+		/// `create_poll` was called with more than `MaxPollOptions` options.
+		TooManyOptions,
+		/// A poll option label exceeded `MaxPollOptionLen`.
+		OptionTooLong,
+		/// `cast_poll_vote` referenced a post that is not a poll.
+		PollNotFound,
+		/// `cast_poll_vote` referenced an option index outside the poll's options.
+		InvalidOption,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -481,6 +561,9 @@ pub mod pallet {
 				Call::repost { .. } => Some(T::RepostCost::get()),
 				// Follow / unfollow are a flat relationship cost (symmetric, no free-churn).
 				Call::follow { .. } | Call::unfollow { .. } => Some(T::FollowCost::get()),
+				// A poll is content priced by its question length; a poll vote is a flat signal cost.
+				Call::create_poll { question, .. } => Some(Self::post_cost(question.len() as u32)),
+				Call::cast_poll_vote { .. } => Some(T::VoteCost::get()),
 				// Everything else (force_set_capacity, the codec phantom) is unmetered.
 				_ => None,
 			}
@@ -786,6 +869,84 @@ pub mod pallet {
 			Self::deposit_event(Event::Unfollowed { follower: who, followee: target });
 			Ok(())
 		}
+
+		/// Create a stake-weighted poll. The `question` becomes a normal post (so the poll threads /
+		/// quotes / reposts and shows in the feed); `options` (2..=`MaxPollOptions`, each
+		/// ≤`MaxPollOptionLen`) are stored alongside. Feeless + capacity-metered like a post.
+		#[pallet::call_index(9)]
+		#[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32))]
+		#[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>| -> bool { true })]
+		pub fn create_poll(
+			origin: OriginFor<T>,
+			question: Vec<u8>,
+			options: Vec<Vec<u8>>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			if !T::IdentityGate::is_allowed(&who) {
+				log::debug!(target: LOG_TARGET, "create_poll rejected: identity not allowed for {who:?}");
+				return Err(Error::<T>::NotAllowed.into());
+			}
+			ensure!(options.len() >= 2, Error::<T>::NotEnoughOptions);
+			let text: BoundedVec<u8, T::MaxLength> =
+				question.try_into().map_err(|_| Error::<T>::TooLong)?;
+			// Bound each option, then the option set. Distinct errors so the caller knows which bound.
+			let mut bounded_options: BoundedVec<BoundedVec<u8, T::MaxPollOptionLen>, T::MaxPollOptions> =
+				Default::default();
+			for opt in options {
+				let bounded_opt: BoundedVec<u8, T::MaxPollOptionLen> =
+					opt.try_into().map_err(|_| Error::<T>::OptionTooLong)?;
+				bounded_options
+					.try_push(bounded_opt)
+					.map_err(|_| Error::<T>::TooManyOptions)?;
+			}
+
+			let id = NextPostId::<T>::get();
+			ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
+				.map_err(|_| Error::<T>::TooManyPosts)?;
+			let at = frame_system::Pallet::<T>::block_number();
+			// The poll's question is an ordinary post (parent/quote None), so it lives in the feed.
+			Posts::<T>::insert(id, Post { author: who.clone(), text, parent: None, quote: None, at });
+			Polls::<T>::insert(id, Poll { options: bounded_options });
+			NextPostId::<T>::put(id.saturating_add(1));
+
+			// PostCreated keeps poll-unaware indexers/feeds folding it as a post; PollCreated flags
+			// that this post carries options.
+			Self::deposit_event(Event::PostCreated { id, author: who.clone() });
+			Self::deposit_event(Event::PollCreated { id, author: who });
+			Ok(())
+		}
+
+		/// Cast or change a **stake-weighted** vote in poll `post_id` for `option`. Weight is the
+		/// caller's `AllowedStake` snapshot; a re-cast reverses the PREVIOUSLY-STORED weight from the
+		/// per-option tally before applying the fresh one (same drift-free fold as [`vote`]). Feeless.
+		#[pallet::call_index(10)]
+		#[pallet::weight(<T as Config>::WeightInfo::cast_poll_vote())]
+		#[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _option: &u8| -> bool { true })]
+		pub fn cast_poll_vote(origin: OriginFor<T>, post_id: u64, option: u8) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			if !T::IdentityGate::is_allowed(&who) {
+				log::debug!(target: LOG_TARGET, "cast_poll_vote rejected: identity not allowed for {who:?}");
+				return Err(Error::<T>::NotAllowed.into());
+			}
+			let poll = Polls::<T>::get(post_id).ok_or(Error::<T>::PollNotFound)?;
+			ensure!((option as usize) < poll.options.len(), Error::<T>::InvalidOption);
+			let weight = pallet_talk_stake::AllowedStake::<T>::get(&who); // snapshot AT cast time
+			// 1. Reverse the previously-stored choice (if any) by its STORED weight — no drift.
+			if let Some(prev) = PollVotes::<T>::get(post_id, &who) {
+				PollTally::<T>::mutate(post_id, prev.option, |t| {
+					t.weight = t.weight.saturating_sub(prev.weight);
+					t.count = t.count.saturating_sub(1);
+				});
+			}
+			// 2. Apply the new choice with the freshly-snapshotted weight.
+			PollTally::<T>::mutate(post_id, option, |t| {
+				t.weight = t.weight.saturating_add(weight);
+				t.count = t.count.saturating_add(1);
+			});
+			PollVotes::<T>::insert(post_id, &who, PollVoteRecord { option, weight });
+			Self::deposit_event(Event::PollVoted { id: post_id, who, option, weight });
+			Ok(())
+		}
 	}
 }
 
@@ -882,17 +1043,22 @@ where
 		// than `MaxLength` is guaranteed to fail `TooLong`, so metering + feeless-including it would
 		// only burn block weight on a doomed tx. `Call` (malformed) — NOT `ExhaustsResources` (which
 		// would be retried) — it must not be retried.
-		if let crate::pallet::Call::post_message { text, .. } | crate::pallet::Call::quote_post { text, .. } =
-			inner
-		{
-			if text.len() as u32 > T::MaxLength::get() {
-				log::debug!(
-					target: crate::LOG_TARGET,
-					"CheckCapacity: call from {:?} rejected at pool: text len={} > MaxLength={} (malformed, not retried)",
-					who, text.len(), T::MaxLength::get(),
-				);
-				return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
-			}
+		let over_len = match inner {
+			crate::pallet::Call::post_message { text, .. }
+			| crate::pallet::Call::quote_post { text, .. }
+			// A poll's question is also length-bounded by MaxLength (it becomes a post body).
+			| crate::pallet::Call::create_poll { question: text, .. } => {
+				text.len() as u32 > T::MaxLength::get()
+			},
+			_ => false,
+		};
+		if over_len {
+			log::debug!(
+				target: crate::LOG_TARGET,
+				"CheckCapacity: call from {:?} rejected at pool: body len > MaxLength={} (malformed, not retried)",
+				who, T::MaxLength::get(),
+			);
+			return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
 		}
 		// Price the call against the ONE per-account battery. `None` ⇒ not metered (e.g.
 		// `force_set_capacity`) ⇒ pass through and consume nothing.

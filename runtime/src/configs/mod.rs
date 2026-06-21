@@ -369,6 +369,9 @@ impl pallet_microblog::Config for Runtime {
 	type VoteCost = ConstU128<20_000_000>;
 	type RepostCost = ConstU128<20_000_000>;
 	type FollowCost = ConstU128<10_000_000>;
+	// Poll bounds: up to 4 options, each up to 80 bytes (the question reuses MaxLength = 512).
+	type MaxPollOptions = ConstU32<4>;
+	type MaxPollOptionLen = ConstU32<80>;
 	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
 	type ForceOrigin = AuthorityOrigin;
 	// M2: gate posting on a live Cardano-identity binding (the anti-Sybil anchor).

@@ -58,6 +58,8 @@ use core::marker::PhantomData;
 pub trait WeightInfo {
 	fn set_profile() -> Weight;
 	fn clear_profile() -> Weight;
+	fn pin_post() -> Weight;
+	fn unpin_post() -> Weight;
 }
 
 /// Weights for `pallet_profile` using the Substrate node and recommended hardware.
@@ -71,8 +73,8 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `148`
 		//  Estimated: `3545`
-		// Minimum execution time: 13_173_000 picoseconds.
-		Weight::from_parts(15_037_000, 3545)
+		// Minimum execution time: 12_936_000 picoseconds.
+		Weight::from_parts(14_941_000, 3545)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -82,8 +84,32 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Proof Size summary in bytes:
 		//  Measured:  `83`
 		//  Estimated: `3967`
-		// Minimum execution time: 10_837_000 picoseconds.
-		Weight::from_parts(12_346_000, 3967)
+		// Minimum execution time: 10_841_000 picoseconds.
+		Weight::from_parts(12_391_000, 3967)
+			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
+	}
+	/// Storage: `CognoGate::PkhOf` (r:1 w:0)
+	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
+	/// Storage: `Profile::PinnedPost` (r:0 w:1)
+	/// Proof: `Profile::PinnedPost` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	fn pin_post() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `148`
+		//  Estimated: `3545`
+		// Minimum execution time: 12_136_000 picoseconds.
+		Weight::from_parts(13_911_000, 3545)
+			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
+	}
+	/// Storage: `Profile::PinnedPost` (r:1 w:1)
+	/// Proof: `Profile::PinnedPost` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	fn unpin_post() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `87`
+		//  Estimated: `3521`
+		// Minimum execution time: 10_523_000 picoseconds.
+		Weight::from_parts(12_085_000, 3521)
 			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
@@ -99,8 +125,8 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `148`
 		//  Estimated: `3545`
-		// Minimum execution time: 13_173_000 picoseconds.
-		Weight::from_parts(15_037_000, 3545)
+		// Minimum execution time: 12_936_000 picoseconds.
+		Weight::from_parts(14_941_000, 3545)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
@@ -110,8 +136,32 @@ impl WeightInfo for () {
 		// Proof Size summary in bytes:
 		//  Measured:  `83`
 		//  Estimated: `3967`
-		// Minimum execution time: 10_837_000 picoseconds.
-		Weight::from_parts(12_346_000, 3967)
+		// Minimum execution time: 10_841_000 picoseconds.
+		Weight::from_parts(12_391_000, 3967)
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	}
+	/// Storage: `CognoGate::PkhOf` (r:1 w:0)
+	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
+	/// Storage: `Profile::PinnedPost` (r:0 w:1)
+	/// Proof: `Profile::PinnedPost` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	fn pin_post() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `148`
+		//  Estimated: `3545`
+		// Minimum execution time: 12_136_000 picoseconds.
+		Weight::from_parts(13_911_000, 3545)
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	}
+	/// Storage: `Profile::PinnedPost` (r:1 w:1)
+	/// Proof: `Profile::PinnedPost` (`max_values`: None, `max_size`: Some(56), added: 2531, mode: `MaxEncodedLen`)
+	fn unpin_post() -> Weight {
+		// Proof Size summary in bytes:
+		//  Measured:  `87`
+		//  Estimated: `3521`
+		// Minimum execution time: 10_523_000 picoseconds.
+		Weight::from_parts(12_085_000, 3521)
 			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}

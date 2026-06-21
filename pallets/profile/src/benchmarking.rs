@@ -52,5 +52,29 @@ mod benchmarks {
 		Ok(())
 	}
 
+	#[benchmark]
+	fn pin_post() -> Result<(), BenchmarkError> {
+		let caller: T::AccountId = whitelisted_caller();
+		T::IdentityGate::benchmark_set_allowed(&caller);
+
+		#[extrinsic_call]
+		_(RawOrigin::Signed(caller.clone()), 7u64);
+
+		assert_eq!(PinnedPost::<T>::get(&caller), Some(7u64));
+		Ok(())
+	}
+
+	#[benchmark]
+	fn unpin_post() -> Result<(), BenchmarkError> {
+		let caller: T::AccountId = whitelisted_caller();
+		PinnedPost::<T>::insert(&caller, 7u64);
+
+		#[extrinsic_call]
+		_(RawOrigin::Signed(caller.clone()));
+
+		assert!(!PinnedPost::<T>::contains_key(&caller));
+		Ok(())
+	}
+
 	impl_benchmark_test_suite!(ProfilePallet, crate::mock::new_test_ext(), crate::mock::Test);
 }
