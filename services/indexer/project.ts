@@ -13,7 +13,7 @@ const project: SubstrateProject = {
   version: "0.0.1",
   name: "cogno-indexer",
   description:
-    "Indexer for cogno-chain: Microblog posts/threads, CognoGate identity bind/revoke, TalkStake weight. Reads NEVER touch Cardano (L4).",
+    "Indexer for cogno-chain: Microblog posts/threads + the social surface (votes, polls, reposts, quotes, follows), Profile profiles/pins, CognoGate identity bind/revoke, TalkStake weight. Reads NEVER touch Cardano (L4).",
   runner: {
     // Pinned exactly (indexer-4) — a future @subql release can silently change generated models or
     // query behaviour, so the runner versions match the locked devDependencies. Re-run verify-m4c
@@ -44,14 +44,67 @@ const project: SubstrateProject = {
         file: "./dist/index.js",
         handlers: [
           {
+            // PostCreated is fired by post_message, quote_post AND create_poll (the quote/poll
+            // shape is read from Microblog.Posts/Polls storage by the handler). There is no
+            // PostDeleted handler — `delete_post` was removed (content is a permanent ledger).
             kind: SubstrateHandlerKind.Event,
             handler: "handlePostCreated",
             filter: { module: "microblog", method: "PostCreated" },
           },
           {
             kind: SubstrateHandlerKind.Event,
-            handler: "handlePostDeleted",
-            filter: { module: "microblog", method: "PostDeleted" },
+            handler: "handleVoted",
+            filter: { module: "microblog", method: "Voted" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handleVoteCleared",
+            filter: { module: "microblog", method: "VoteCleared" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handleReposted",
+            filter: { module: "microblog", method: "Reposted" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handleFollowed",
+            filter: { module: "microblog", method: "Followed" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handleUnfollowed",
+            filter: { module: "microblog", method: "Unfollowed" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handlePollCreated",
+            filter: { module: "microblog", method: "PollCreated" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handlePollVoted",
+            filter: { module: "microblog", method: "PollVoted" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handleProfileSet",
+            filter: { module: "profile", method: "ProfileSet" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handleProfileCleared",
+            filter: { module: "profile", method: "ProfileCleared" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handlePostPinned",
+            filter: { module: "profile", method: "PostPinned" },
+          },
+          {
+            kind: SubstrateHandlerKind.Event,
+            handler: "handlePostUnpinned",
+            filter: { module: "profile", method: "PostUnpinned" },
           },
           {
             kind: SubstrateHandlerKind.Event,
