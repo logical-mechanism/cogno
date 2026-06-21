@@ -385,7 +385,7 @@ cogno-chain/
 ├─ Cargo.toml / Cargo.lock     # workspace, pinned to stable2603-3; Cargo.lock committed
 ├─ rust-toolchain.toml         # channel = 1.90.0; targets = [wasm32v1-none, wasm32-unknown-unknown]
 ├─ node/                       # cogno-chain-node (Aura + GRANDPA)
-├─ runtime/                    # cogno-chain-runtime (#[frame_support::runtime], spec 107)
+├─ runtime/                    # cogno-chain-runtime (#[frame_support::runtime], spec 116)
 ├─ pallets/                    # microblog, cogno-gate, talk-stake, anchor, validator-set
 ├─ contracts/                  # the Aiken L1 `talk_vault` validator (+ audits/)
 ├─ app/                        # Next.js 14 static-export frontend (PAPI + MeshJS) — see app/README.md
