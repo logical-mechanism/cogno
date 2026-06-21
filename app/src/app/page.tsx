@@ -119,7 +119,6 @@ export default function Page() {
             window.scrollTo({ top: 0, behavior: "smooth" });
           }
         }}
-        onDelete={(id) => submit.remove(id)}
       />
 
       <About

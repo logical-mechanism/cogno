@@ -3,8 +3,8 @@
 // PostItem — one post as a well-set page block. The BODY is the product: serif,
 // generous line-height, held to a reading measure. The marginalia header carries
 // the CHAIN-TRUTH facts in mono (#id, author ss58, block #at) — mono means
-// "verifiable on-chain fact", never decoration. Reply is always available; delete
-// only when the post's author is the active signer.
+// "verifiable on-chain fact", never decoration. Reply is always available; there is
+// no delete — posts are permanent on-chain.
 
 import type { CognoPost, Ss58 } from "@/lib/types";
 import styles from "./PostItem.module.css";
@@ -16,13 +16,12 @@ function shortSs58(addr: string): string {
 
 export interface PostItemProps {
   post: CognoPost;
-  /** The active signer's ss58 — enables the delete affordance for own posts. */
+  /** The active signer's ss58 — tags the reader's own posts with a "you" marker. */
   mySs58: Ss58;
   /** true while a tx is in flight (disables the per-post actions). */
   busy: boolean;
   isReply?: boolean;
   onReply: (id: bigint) => void;
-  onDelete: (id: bigint) => void;
 }
 
 export function PostItem({
@@ -31,7 +30,6 @@ export function PostItem({
   busy,
   isReply = false,
   onReply,
-  onDelete,
 }: PostItemProps) {
   const mine = post.author === mySs58;
   const empty = post.text.trim().length === 0;
@@ -92,17 +90,6 @@ export function PostItem({
         >
           reply
         </button>
-        {mine && (
-          <button
-            type="button"
-            className={`${styles.action} ${styles.delete}`}
-            onClick={() => onDelete(post.id)}
-            disabled={busy}
-            aria-label={`Delete your post #${String(post.id)}`}
-          >
-            delete
-          </button>
-        )}
       </footer>
     </article>
   );

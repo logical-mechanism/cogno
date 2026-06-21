@@ -8,9 +8,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { CognoApi, PostingSigner } from "@/lib/types";
-import { getGenesisHex, isAccountBound, readAccountOf, submitBindSponsored, type BindVia } from "@/lib/chain/identity";
+import {
+  getGenesisHex,
+  isAccountBound,
+  readAccountOf,
+  submitBindSponsored,
+  submitLinkStakeSigned,
+  type BindVia,
+} from "@/lib/chain/identity";
 import { getBindRelayUrl } from "@/lib/config/endpoints";
-import { produceBindProof } from "@/lib/cardano/cip8";
+import { produceBindProof, produceBindProofStake } from "@/lib/cardano/cip8";
 
 export interface UseIdentity {
   /** true = bound (may post), false = unbound, null = unknown/loading. */
@@ -24,6 +31,25 @@ export interface UseIdentity {
   boundVia: BindVia | null;
   bind: (walletId: string) => void;
   refresh: () => void;
+
+  // ── Voting power (spec 115 — the SEPARATE stake-key bind) ───────────────────────────────
+  // Posting capacity comes from the 100-ADA vault deposit (see useVault/useCapacity). VOTE
+  // weight is distinct: it comes from the TOTAL Cardano stake of a stake credential the user
+  // proves 1:1 with a stake-key CIP-8 signature. These watch chain state live.
+  /** true = a stake credential is bound (votes carry weight), false = none, null = loading. */
+  stakeBound: boolean | null;
+  /** the account's live voting power = total observed Cardano stake (lovelace); 0n until a committee
+   *  `set_voting_power` / the enforced inherent observes it; null while loading. */
+  votingPower: bigint | null;
+  /** the bound 28-byte stake credential as 0x-hex, once stake-bound (for display). */
+  boundStakeCredHex: string | null;
+  /** a stake bind is in flight (stake-key wallet sign → on-chain `link_stake_signed`). */
+  stakeBinding: boolean;
+  /** error from the LAST stake-bind attempt (kept separate from the payment-bind `error`). */
+  stakeError: string | null;
+  /** Bind the wallet's stake key to enable stake-weighted voting. Requires the account to already
+   *  be payment-bound (`bound === true`); the runtime rejects an unbound account (`NotPaymentBound`). */
+  bindStake: (walletId: string) => void;
 }
 
 export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIdentity {
@@ -32,6 +58,13 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
   const [error, setError] = useState<string | null>(null);
   const [boundAddress, setBoundAddress] = useState<string | null>(null);
   const [boundVia, setBoundVia] = useState<BindVia | null>(null);
+
+  // Stake (voting-power) bind state.
+  const [stakeBound, setStakeBound] = useState<boolean | null>(null);
+  const [votingPower, setVotingPower] = useState<bigint | null>(null);
+  const [boundStakeCredHex, setBoundStakeCredHex] = useState<string | null>(null);
+  const [stakeBinding, setStakeBinding] = useState(false);
+  const [stakeError, setStakeError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     // boundVia/boundAddress describe a bind PERFORMED for the current key this session; they are not
@@ -53,6 +86,36 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Watch the stake (voting-power) state LIVE for the active key: the bound stake credential
+  // (`CognoGate.StakeCredOf`, OptionQuery) and the voting power it confers (`TalkStake.VotingPower`,
+  // ValueQuery → 0n until a committee `set_voting_power` / the enforced inherent observes the stake).
+  // Watched (not one-shot) because the weight lands ASYNCHRONOUSLY, a few blocks after the bind.
+  useEffect(() => {
+    // A stale per-attempt error must not survive a key/chain switch.
+    setStakeError(null);
+    if (!api) {
+      setStakeBound(null);
+      setVotingPower(null);
+      setBoundStakeCredHex(null);
+      return;
+    }
+    const s1 = api.query.CognoGate.StakeCredOf.watchValue(signer.ss58, "best").subscribe(
+      (cred) => {
+        setStakeBound(cred !== undefined);
+        setBoundStakeCredHex(cred ? cred.asHex() : null);
+      },
+      () => setStakeBound(null),
+    );
+    const s2 = api.query.TalkStake.VotingPower.watchValue(signer.ss58, "best").subscribe(
+      (w) => setVotingPower((w as bigint) ?? 0n),
+      () => setVotingPower(null),
+    );
+    return () => {
+      s1.unsubscribe();
+      s2.unsubscribe();
+    };
+  }, [api, signer.ss58]);
 
   const bind = useCallback(
     (walletId: string) => {
@@ -107,5 +170,64 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
     [api, binding, signer],
   );
 
-  return { bound, binding, error, boundAddress, boundVia, bind, refresh };
+  const bindStake = useCallback(
+    (walletId: string) => {
+      if (!api || stakeBinding) return;
+      // The runtime requires the account to be payment-bound first (NotPaymentBound). Pre-check for a
+      // clear message; the on-chain rule is the authority either way.
+      if (bound !== true) {
+        setStakeError("register your posting key first — voting power needs an account that can already post");
+        return;
+      }
+      setStakeBinding(true);
+      setStakeError(null);
+      void (async () => {
+        try {
+          // (1) the live genesis the proof must commit (anti-cross-chain), read straight from the node.
+          const genesisHex = await getGenesisHex(api);
+          // (2) the wallet signs the pinned payload ONCE WITH ITS STAKE KEY (over the reward address).
+          //     Requires a wallet that signs over a reward address (Eternl/Lace); the UI gates this.
+          const proof = await produceBindProofStake({ walletId, sr25519PubkeyHex: signer.publicKeyHex, genesisHex });
+          if (!proof.ok || !proof.coseSign1 || !proof.coseKey) {
+            throw new Error(proof.error || "could not produce the CIP-8 stake proof");
+          }
+          // (3) submit the stake self-proof on-chain. NOT sponsored: the (already-registered) account
+          //     self-pays the fee. The runtime verifies the stake-key signature + binds the credential.
+          const res = await submitLinkStakeSigned(api, signer, proof.coseSign1, proof.coseKey);
+          if (!res.ok) {
+            throw new Error(res.error || "the on-chain stake bind was rejected");
+          }
+          // The live watch (above) flips stakeBound and surfaces the voting power once observed; seed
+          // boundStakeCredHex from the proof so the UI confirms the proven credential immediately.
+          setBoundStakeCredHex(
+            res.stakeCredHex ?? (proof.stakeCredentialHex ? `0x${proof.stakeCredentialHex}` : null),
+          );
+          setStakeBound(true);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error(`cogno: stake bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
+          setStakeError(e instanceof Error ? e.message : String(e));
+        } finally {
+          setStakeBinding(false);
+        }
+      })();
+    },
+    [api, stakeBinding, bound, signer],
+  );
+
+  return {
+    bound,
+    binding,
+    error,
+    boundAddress,
+    boundVia,
+    bind,
+    refresh,
+    stakeBound,
+    votingPower,
+    boundStakeCredHex,
+    stakeBinding,
+    stakeError,
+    bindStake,
+  };
 }
