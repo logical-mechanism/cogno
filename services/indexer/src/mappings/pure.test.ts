@@ -9,11 +9,25 @@
 // Style matches the repo's acceptance scripts: ✓ on pass, ✗ + exit(1) on the first failure.
 
 import {
+  applyOption,
+  applyVote,
+  decCount,
+  foldVote,
   isWellFormedIdentityHash,
   normalizeIdentityHash,
   normalizeParentId,
+  normalizeVoteDir,
+  reverseOption,
+  reverseVote,
+  satDec,
+  satSubU128,
+  tallyScore,
   timestampDecision,
   utf8FromBytes,
+  zeroTally,
+  type OptionState,
+  type TallyState,
+  type VoteSnapshot,
 } from "./pure.ts";
 
 let failed = 0;
@@ -29,9 +43,12 @@ function check(name: string, cond: boolean): void {
   }
 }
 
+// BigInt-aware stringify (JSON.stringify throws on bigint) — tags bigints so 1n != "1".
+const ser = (v: unknown) => JSON.stringify(v, (_k, val) => (typeof val === "bigint" ? `${val}n` : val));
+
 function eq(name: string, actual: unknown, expected: unknown): void {
-  const same = JSON.stringify(actual) === JSON.stringify(expected);
-  if (!same) console.log(`      actual  =${JSON.stringify(actual)}\n      expected=${JSON.stringify(expected)}`);
+  const same = ser(actual) === ser(expected);
+  if (!same) console.log(`      actual  =${ser(actual)}\n      expected=${ser(expected)}`);
   check(name, same);
 }
 
@@ -175,6 +192,114 @@ check(
   "normalize then check is self-consistent for canonical input",
   isWellFormedIdentityHash(normalizeIdentityHash(HASH64)) === true,
 );
+
+// ── satSubU128 / satDec (the saturating primitives) ───────────────────────────
+console.log("\nsatSubU128 / satDec:");
+
+eq("satSubU128 normal", satSubU128(100n, 40n), 60n);
+eq("satSubU128 exact-to-zero", satSubU128(100n, 100n), 0n);
+eq("satSubU128 floors at 0n (never negative)", satSubU128(40n, 100n), 0n);
+// u128 max round-trips with no Number precision loss
+{
+  const U128_MAX = (1n << 128n) - 1n;
+  eq("satSubU128 u128-max - 1", satSubU128(U128_MAX, 1n), U128_MAX - 1n);
+  eq("satSubU128 keeps full u128 precision", satSubU128(U128_MAX, 0n), U128_MAX);
+}
+eq("satDec normal", satDec(3), 2);
+eq("satDec floors at 0", satDec(0), 0);
+eq("decCount is satDec", decCount(0), 0);
+
+// ── foldVote — the reverse-then-apply vote tally (mirrors vote / clear_vote) ───
+console.log("\nfoldVote (vote tally fold):");
+
+const ZERO: TallyState = zeroTally();
+const up = (w: bigint): VoteSnapshot => ({ dir: "Up", weight: w });
+const down = (w: bigint): VoteSnapshot => ({ dir: "Down", weight: w });
+
+// first up-vote
+eq("first up-vote", foldVote(ZERO, null, up(100n)), {
+  upWeight: 100n, downWeight: 0n, upCount: 1, downCount: 0,
+});
+// first down-vote
+eq("first down-vote", foldVote(ZERO, null, down(70n)), {
+  upWeight: 0n, downWeight: 70n, upCount: 0, downCount: 1,
+});
+// re-vote SAME direction at a NEW weight: count stays 1, weight swaps 100 -> 250
+{
+  const after1 = foldVote(ZERO, null, up(100n));
+  eq("re-vote same dir, new weight (count stays 1)", foldVote(after1, up(100n), up(250n)), {
+    upWeight: 250n, downWeight: 0n, upCount: 1, downCount: 0,
+  });
+}
+// flip Up -> Down: up side fully reversed, down side gains
+{
+  const after1 = foldVote(ZERO, null, up(100n));
+  eq("flip Up -> Down", foldVote(after1, up(100n), down(60n)), {
+    upWeight: 0n, downWeight: 60n, upCount: 0, downCount: 1,
+  });
+}
+// clear (prev set, next null) -> back to zero
+{
+  const after1 = foldVote(ZERO, null, up(100n));
+  eq("clear vote -> zero", foldVote(after1, up(100n), null), {
+    upWeight: 0n, downWeight: 0n, upCount: 0, downCount: 0,
+  });
+}
+// double-clear / reverse with nothing present: pure fns are identity / floor (no underflow)
+eq("reverseVote of null is identity", reverseVote(ZERO, null), ZERO);
+eq("applyVote of null is identity", applyVote(ZERO, null), ZERO);
+// SATURATING FLOOR: reverse a stored weight LARGER than the running total (drift / out-of-order)
+// floors at 0n and 0 count — NOT negative. This is the byte-parity-with-Rust saturating_sub test.
+{
+  const drift: TallyState = { upWeight: 40n, downWeight: 0n, upCount: 0, downCount: 0 };
+  eq("reverse more weight than present floors at 0n; count floors at 0", reverseVote(drift, up(100n)), {
+    upWeight: 0n, downWeight: 0n, upCount: 0, downCount: 0,
+  });
+}
+
+// ── normalizeVoteDir ──────────────────────────────────────────────────────────
+console.log("\nnormalizeVoteDir:");
+
+eq("'Up' -> 'Up'", normalizeVoteDir("Up"), "Up");
+eq("'Down' -> 'Down'", normalizeVoteDir("Down"), "Down");
+eq("lower 'up' normalizes", normalizeVoteDir("up"), "Up");
+eq("lower 'down' normalizes", normalizeVoteDir("down"), "Down");
+eq("surrounding whitespace tolerated", normalizeVoteDir("  Up "), "Up");
+{
+  let threw = false;
+  try { normalizeVoteDir("sideways"); } catch { threw = true; }
+  check("unknown variant THROWS (not silently a down-vote)", threw);
+}
+
+// ── tallyScore (derived, may be negative) ─────────────────────────────────────
+console.log("\ntallyScore:");
+
+eq("score positive", tallyScore({ upWeight: 30n, downWeight: 10n, upCount: 1, downCount: 1 }), 20n);
+eq("score negative", tallyScore({ upWeight: 10n, downWeight: 30n, upCount: 1, downCount: 1 }), -20n);
+eq("negative score stringifies with leading -", tallyScore({ upWeight: 10n, downWeight: 30n, upCount: 0, downCount: 0 }).toString(), "-20");
+eq("score zero", tallyScore(ZERO), 0n);
+
+// ── poll per-option fold (mirrors cast_poll_vote) ─────────────────────────────
+console.log("\npoll option fold:");
+
+const ZERO_OPT: OptionState = { weight: 0n, count: 0 };
+// first cast on an option
+eq("first poll cast on an option", applyOption(ZERO_OPT, 100n), { weight: 100n, count: 1 });
+// SAME-OPTION re-cast: reverse then apply on ONE option object -> weight swaps, count stays 1
+{
+  const opt = applyOption(ZERO_OPT, 100n); // {100,1}
+  const recast = applyOption(reverseOption(opt, 100n), 300n);
+  eq("poll same-option re-cast (count stays 1)", recast, { weight: 300n, count: 1 });
+}
+// CROSS-OPTION re-cast: previous option reversed to zero, new option gains
+{
+  const optA = applyOption(ZERO_OPT, 100n); // option 0 -> {100,1}
+  const optB = ZERO_OPT; // option 2 -> {0,0}
+  eq("poll cross-option recast: old option reversed", reverseOption(optA, 100n), { weight: 0n, count: 0 });
+  eq("poll cross-option recast: new option applied", applyOption(optB, 100n), { weight: 100n, count: 1 });
+}
+// saturating floor on option reverse
+eq("poll option reverse floors at 0", reverseOption({ weight: 40n, count: 0 }, 100n), { weight: 0n, count: 0 });
 
 // ── summary ─────────────────────────────────────────────────────────────────
 console.log(`\n${failed === 0 ? "✓" : "✗"} pure.test: ${passed} passed, ${failed} failed`);
