@@ -161,7 +161,16 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// storage they read. All ADDITIVE storage/calls/constants (NO struct re-encode) — so NO new migration.
 	// Encoding-affecting (new calls/storage/events/errors) — regen the PAPI descriptors. The new calls are
 	// normal signed extrinsics, so transaction_version is UNCHANGED (2).
-	spec_version: 114,
+	// 114 -> 115 (trustless voting power): the cardano-observer inherent now ALSO observes, per BOUND stake
+	// credential, its total Cardano stake (the `epoch_stake` snapshot) and projects it to talk-stake
+	// `VotingPower` — the trustless replacement for the committee `set_voting_power` path. `CardanoObservation`
+	// + the `observe` inherent Call gained a `stake_entries` field (encoding-affecting → regen PAPI), the
+	// `CardanoObserverApi` gained `bound_stake_credentials()`, the `ObserverConfig` a `stake_epoch_lookback`,
+	// and the pallet new storage (`ShadowVotingPower`/`LastObservedStake`) + a `VotingPowerObserved` event.
+	// Runs in SHADOW (the existing `EnforceWeight` flag also gates voting power): the inherent verifies +
+	// projects but the committee `set_voting_power` stays the writer until the ≥3-producer cutover. `observe`
+	// is still an INHERENT, so transaction_version is UNCHANGED (2).
+	spec_version: 115,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

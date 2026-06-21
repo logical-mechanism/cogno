@@ -118,16 +118,42 @@ async fn build_cardano_idp(
 			return empty;
 		},
 	};
-	// 5. reduce the db-sync matches (the pure reduction is the canonical largest-wins-per-beacon fold).
+	// 5. the VOTING-POWER (epoch_stake) read: the bound stake credentials (from the parent block's state,
+	//    deterministic) + their total Cardano stake at the as-of epoch. Same fail-closed discipline as the
+	//    vault read: a db-sync error / an unpopulated target epoch ⇒ abstain, so the author never emits a
+	//    partial voting-power set (and a behind importer defers via CannotVerify).
+	let bound_creds = match client.runtime_api().bound_stake_credentials(parent) {
+		Ok(c) => c,
+		Err(e) => {
+			log::warn!(target: "cardano-observer", "bound_stake_credentials runtime API failed: {e:?} — abstaining");
+			return empty;
+		},
+	};
+	let stake_entries = match dbsync::read_stake_observation(
+		&dbsync_url,
+		&bound_creds,
+		ref_slot,
+		config.stake_epoch_lookback,
+	)
+	.await
+	{
+		Ok(s) => s.entries,
+		Err(e) => {
+			log::warn!(target: "cardano-observer", "db-sync epoch_stake read failed: {e} — abstaining (empty observation)");
+			return empty;
+		},
+	};
+	// 6. reduce the db-sync matches (canonical largest-wins-per-beacon) + canonicalize the stake set.
 	let obs = build_observation(
 		CardanoRef { slot: ref_slot, block_hash: anchor_hash },
 		&read.matches,
 		&vault_hex,
+		stake_entries,
 	);
 	log::debug!(
 		target: "cardano-observer",
-		"observed {} vault entrie(s) as-of slot {} (from {} db-sync match(es), anchor block {})",
-		obs.entries.len(), ref_slot, read.matches.len(), hex_encode(&anchor_hash),
+		"observed {} vault + {} stake entrie(s) as-of slot {} ({} db-sync match(es), {} bound cred(s), anchor block {})",
+		obs.entries.len(), obs.stake_entries.len(), ref_slot, read.matches.len(), bound_creds.len(), hex_encode(&anchor_hash),
 	);
 	CardanoObservationInherentDataProvider { observation: Some(obs) }
 }

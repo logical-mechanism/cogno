@@ -184,6 +184,10 @@ impl_runtime_apis! {
 		fn observer_config() -> pallet_cardano_observer::ObserverConfig {
 			pallet_cardano_observer::Pallet::<Runtime>::observer_config()
 		}
+		fn bound_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
+			use pallet_cardano_observer::BoundStakeCredentials;
+			crate::configs::BoundStakeCreds::bound_stake_credentials()
+		}
 	}
 
 	impl pallet_transaction_payment_rpc_runtime_api::TransactionPaymentApi<Block, Balance> for Runtime {

@@ -70,6 +70,12 @@ pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"cgnoobsv";
 /// (= `blake2b_256(plutus_data_cbor(owner Address))`; derived off-chain at bind, never re-derived here).
 pub type BeaconName = [u8; 32];
 
+/// A 28-byte Cardano STAKE credential == the cogno-gate `AccountOfStakeCred` key (the reward-address key
+/// hash a voter proved via the stake-key CIP-8). The VOTING-POWER analog of [`BeaconName`]: the inherent
+/// observes each BOUND stake credential's total Cardano stake (`epoch_stake`) and projects it to
+/// talk-stake `VotingPower`, exactly as it observes vault lovelace → `AllowedStake`.
+pub type StakeCredential = [u8; 28];
+
 /// The stable Cardano reference the observation was taken as-of (carried in the inherent). The `slot`
 /// is a deterministic function of the PARENT block (so author + importer agree; §5.1) and is the as-of
 /// reference. `block_hash` is the SEALED stable-block anchor: the header hash of the latest stable
@@ -112,6 +118,12 @@ pub struct CardanoObservation {
 	pub reference: CardanoRef,
 	pub inputs_commitment: [u8; 32],
 	pub entries: alloc::vec::Vec<(BeaconName, u128)>,
+	/// The VOTING-POWER observation (spec 115): for every BOUND stake credential, its total Cardano stake
+	/// (`epoch_stake` snapshot) at the deterministic as-of epoch, canonical-sorted ascending by the 28
+	/// credential bytes. Unlike `entries` (a largest-wins reduction over a UTxO candidate set, hence the
+	/// `inputs_commitment`), this is a DIRECT read of immutable per-epoch totals for an on-chain-known set,
+	/// so there is no reduction to diverge — a cross-node difference is always a data `Mismatch`.
+	pub stake_entries: alloc::vec::Vec<(StakeCredential, u128)>,
 }
 
 /// The inherent error. The node-side `try_handle_error` branches on this: `Mismatch` and
@@ -157,6 +169,27 @@ pub trait WeightSink<AccountId> {
 	fn set_weight(who: &AccountId, weight: u128);
 }
 
+/// Resolve a 28-byte STAKE credential to its bound posting account. Implemented by cogno-gate
+/// (`AccountOfStakeCred`) in the runtime; a fixture map in tests. The voting-power analog of
+/// [`BeaconResolver`].
+pub trait StakeResolver<AccountId> {
+	fn resolve(stake_cred: &StakeCredential) -> Option<AccountId>;
+}
+
+/// Apply an observed VOTING POWER to an account (talk-stake `apply_voting_power` in the runtime; a
+/// recorder in tests). The voting-power analog of [`WeightSink`]; `weight == 0` is the unlock clamp.
+pub trait VotingPowerSink<AccountId> {
+	fn set_voting_power(who: &AccountId, weight: u128);
+}
+
+/// The set of currently-bound stake credentials, exposed to the node-side IDP via [`CardanoObserverApi`]
+/// so it knows WHICH credentials to read `epoch_stake` for (unlike vaults, which are discovered by a fixed
+/// policy-id filter, a stake credential is votable only once bound on-chain). Implemented in the runtime by
+/// enumerating cogno-gate `AccountOfStakeCred`.
+pub trait BoundStakeCredentials {
+	fn bound_stake_credentials() -> alloc::vec::Vec<StakeCredential>;
+}
+
 /// The consensus-pinned observation config the node-side `InherentDataProvider` reads via the
 /// [`CardanoObserverApi`] runtime API — the SINGLE source of truth, so the node and the runtime cannot
 /// drift on the anchors, the stability window, or which Cardano policy to observe (design "no-drift").
@@ -169,13 +202,22 @@ pub struct ObserverConfig {
 	/// reads db-sync for (the vault script address `payment_cred` / beacon `multi_asset.policy`).
 	/// Consensus-pinned so a misconfigured node can't silently observe the wrong policy.
 	pub vault_policy_id: alloc::vec::Vec<u8>,
+	/// How many epochs BEFORE the reference slot's epoch to read `epoch_stake` at (the voting-power
+	/// observation). Consensus-pinned so every node reads the SAME epoch. A lookback ≥ 1 reads a
+	/// fully-closed (immutable) snapshot and gives the ~2-epoch manipulation-resistant lag Cardano itself
+	/// uses for leader election (CIP-1694 voting power); the node resolves the reference slot's epoch from
+	/// db-sync's `block.epoch_no` (network-agnostic — no slots-per-epoch arithmetic) and subtracts this.
+	pub stake_epoch_lookback: u64,
 }
 
 sp_api::decl_runtime_apis! {
 	/// Exposes the consensus-pinned [`ObserverConfig`] to the node-side observation InherentDataProvider.
 	pub trait CardanoObserverApi {
-		/// The current observation config (anchors, stability window, vault policy id).
+		/// The current observation config (anchors, stability window, vault policy id, stake epoch lookback).
 		fn observer_config() -> ObserverConfig;
+		/// The set of currently-bound stake credentials (cogno-gate `AccountOfStakeCred` keys) — the
+		/// credentials the node must read `epoch_stake` for, evaluated at the parent block's state.
+		fn bound_stake_credentials() -> alloc::vec::Vec<StakeCredential>;
 	}
 }
 
@@ -222,10 +264,22 @@ pub mod pallet {
 		/// surfaced to the node via [`CardanoObserverApi`] so every node queries the SAME policy.
 		#[pallet::constant]
 		type VaultPolicyId: Get<[u8; 28]>;
+		/// Hard ceiling on a single account's VOTING POWER (total observed Cardano stake). An entry above it
+		/// is SKIPPED (not a block error), exactly like [`Config::MaxStakeWeight`] for vault weight.
+		#[pallet::constant]
+		type MaxVotingPower: Get<u128>;
+		/// How many epochs before the reference's epoch to read `epoch_stake` at (the voting-power lag).
+		/// Consensus-pinned and surfaced to the node via [`CardanoObserverApi`].
+		#[pallet::constant]
+		type StakeEpochLookback: Get<u64>;
 		/// Beacon → bound account (cogno-gate `AccountOf` in the runtime).
 		type BeaconResolver: BeaconResolver<Self::AccountId>;
+		/// Stake credential → bound account (cogno-gate `AccountOfStakeCred` in the runtime).
+		type StakeResolver: StakeResolver<Self::AccountId>;
 		/// Apply weight + capacity (talk-stake + microblog adapter in the runtime).
 		type WeightSink: WeightSink<Self::AccountId>;
+		/// Apply voting power (talk-stake `apply_voting_power` adapter in the runtime).
+		type VotingPowerSink: VotingPowerSink<Self::AccountId>;
 		/// Origin allowed to flip the enforce/shadow flag ([`Call::set_enforcement`]) — the crown-jewel
 		/// cutover control. In the runtime this is `AuthorityOrigin` (root OR the 3-of-5 FollowerCommittee),
 		/// the same origin that gates `set_stake`/`link_identity`/`anchor_ack`.
@@ -268,6 +322,20 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type ShadowStake<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
 
+	/// The inherent's per-account PROJECTED VOTING POWER, written EVERY block in BOTH modes — the
+	/// voting-power shadow artifact (mirrors [`ShadowStake`]). In enforce mode it equals talk-stake
+	/// `VotingPower` by construction; in shadow mode it is the side-by-side comparison against whatever the
+	/// committee `set_voting_power` wrote.
+	#[pallet::storage]
+	pub type ShadowVotingPower<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+
+	/// The previously-credited `(stake_credential, account)` set — the voting-power unlock-clamp basis
+	/// (`LastObservedStake \ current` → 0), mirroring [`LastObserved`] for the vault weight.
+	#[pallet::storage]
+	pub type LastObservedStake<T: Config> =
+		StorageValue<_, BoundedVec<(StakeCredential, T::AccountId), T::MaxObserved>, ValueQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -277,6 +345,11 @@ pub mod pallet {
 		/// projection was APPLIED to `AllowedStake`/capacity; `false` ⇒ shadow (recorded in [`ShadowStake`]
 		/// only, the committee still drives weight).
 		ObservationApplied { reference_slot: u64, credited: u32, cleared: u32, skipped: u32, enforced: bool },
+		/// The VOTING-POWER projection of the same verified observation: `credited` bound stake credentials
+		/// had a projected voting power recorded, `cleared` were zeroed (unlock clamp), `skipped` exceeded
+		/// `MaxVotingPower`. `enforced` mirrors [`Event::ObservationApplied`]: `true` ⇒ applied to talk-stake
+		/// `VotingPower`; `false` ⇒ shadow ([`ShadowVotingPower`] only).
+		VotingPowerObserved { reference_slot: u64, credited: u32, cleared: u32, skipped: u32, enforced: bool },
 		/// The enforce/shadow flag was set via [`Call::set_enforcement`]. `enabled = true` ⇒ the verified
 		/// inherent now APPLIES weight (enforce / cutover); `false` ⇒ shadow (projection-only, the default).
 		EnforcementSet { enabled: bool },
@@ -305,6 +378,7 @@ pub mod pallet {
 			reference: CardanoRef,
 			inputs_commitment: [u8; 32],
 			entries: BoundedVec<(BeaconName, u128), T::MaxObserved>,
+			stake_entries: BoundedVec<(StakeCredential, u128), T::MaxObserved>,
 		) -> DispatchResult {
 			ensure_none(origin)?; // inherents dispatch with the None origin
 
@@ -385,12 +459,63 @@ pub mod pallet {
 			}
 
 			LastObserved::<T>::put(credited_set);
+
+			// ── VOTING POWER (epoch_stake) projection — the same shadow/enforce discipline as the vault
+			// weight above, on the SAME verified observation. No MIN_LOCK floor (total stake counts at any
+			// size) and no largest-wins (the node supplies one total per credential); just resolve →
+			// cap-skip → project/apply → unlock-clamp.
+			let max_vp = T::MaxVotingPower::get();
+			let mut vp_credited_set: BoundedVec<(StakeCredential, T::AccountId), T::MaxObserved> =
+				BoundedVec::new();
+			let mut vp_credited: u32 = 0;
+			let mut vp_skipped: u32 = 0;
+			for (stake_cred, total) in stake_entries.iter() {
+				let account = match T::StakeResolver::resolve(stake_cred) {
+					Some(a) => a,
+					None => continue, // unbound stake credential — skipped, not an error
+				};
+				if *total > max_vp {
+					log::warn!(
+						target: LOG_TARGET,
+						"observe: SKIP voting power={total} > MaxVotingPower={max_vp} (bad value not consensus-pinned)",
+					);
+					vp_skipped = vp_skipped.saturating_add(1);
+					continue;
+				}
+				ShadowVotingPower::<T>::insert(&account, *total);
+				if enforce {
+					T::VotingPowerSink::set_voting_power(&account, *total);
+				}
+				let _ = vp_credited_set.try_push((*stake_cred, account));
+				vp_credited = vp_credited.saturating_add(1);
+			}
+			// Unlock clamp: a previously-credited stake credential absent from the current set → 0.
+			let vp_prev = LastObservedStake::<T>::get();
+			let mut vp_cleared: u32 = 0;
+			for (stake_cred, account) in vp_prev.iter() {
+				if !vp_credited_set.iter().any(|(c, _)| c == stake_cred) {
+					ShadowVotingPower::<T>::insert(account, 0u128);
+					if enforce {
+						T::VotingPowerSink::set_voting_power(account, 0);
+					}
+					vp_cleared = vp_cleared.saturating_add(1);
+				}
+			}
+			LastObservedStake::<T>::put(vp_credited_set);
+
 			LastReference::<T>::put(&reference);
 			Self::deposit_event(Event::ObservationApplied {
 				reference_slot: reference.slot,
 				credited,
 				cleared,
 				skipped,
+				enforced: enforce,
+			});
+			Self::deposit_event(Event::VotingPowerObserved {
+				reference_slot: reference.slot,
+				credited: vp_credited,
+				cleared: vp_cleared,
+				skipped: vp_skipped,
 				enforced: enforce,
 			});
 			Ok(())
@@ -424,6 +549,7 @@ pub mod pallet {
 				shelley_start_slot: T::ShelleyStartSlot::get(),
 				stability_slots: T::StabilitySlots::get(),
 				vault_policy_id: T::VaultPolicyId::get().to_vec(),
+				stake_epoch_lookback: T::StakeEpochLookback::get(),
 			}
 		}
 
@@ -461,10 +587,12 @@ pub mod pallet {
 				.ok()
 				.flatten()?;
 			let entries = BoundedVec::try_from(obs.entries).ok()?;
+			let stake_entries = BoundedVec::try_from(obs.stake_entries).ok()?;
 			Some(Call::observe {
 				reference: obs.reference,
 				inputs_commitment: obs.inputs_commitment,
 				entries,
+				stake_entries,
 			})
 		}
 
@@ -475,9 +603,9 @@ pub mod pallet {
 		/// commitment ⇒ `Mismatch` (saw different Cardano data); an identical commitment ⇒ `ComputeDiverged`
 		/// (same data, different reduction — a determinism bug / version skew).
 		fn check_inherent(call: &Self::Call, data: &InherentData) -> Result<(), Self::Error> {
-			let (reference, inputs_commitment, entries) = match call {
-				Call::observe { reference, inputs_commitment, entries } => {
-					(reference, inputs_commitment, entries)
+			let (reference, inputs_commitment, entries, stake_entries) = match call {
+				Call::observe { reference, inputs_commitment, entries, stake_entries } => {
+					(reference, inputs_commitment, entries, stake_entries)
 				},
 				_ => return Ok(()),
 			};
@@ -494,19 +622,24 @@ pub mod pallet {
 			// it is what makes the header-sealed `cobs` anchor importer-checked (Midnight delta A.1). It does
 			// NOT spuriously fork: a behind importer abstains (→ CannotVerify above) before it can reach a
 			// FALSE mismatch, and two honest caught-up nodes agree on the stable anchor by construction.
-			if reference == &local.reference && entries.as_slice() == local.entries.as_slice() {
-				// Outputs agree ⇒ accept, REGARDLESS of the input commitment: two honest nodes whose raw
-				// candidate sets differ only in UTxOs the reduction drops (too-fresh / spent) still reduce
-				// to the same entries, so the commitment must never reject on its own.
+			if reference == &local.reference
+				&& entries.as_slice() == local.entries.as_slice()
+				&& stake_entries.as_slice() == local.stake_entries.as_slice()
+			{
+				// Outputs agree (vault entries AND voting-power stake entries) ⇒ accept, REGARDLESS of the
+				// input commitment: two honest nodes whose raw candidate sets differ only in UTxOs the
+				// reduction drops (too-fresh / spent) still reduce to the same entries.
 				return Ok(());
 			}
-			// The reads disagree (fatal either way). A differing reference slot OR a differing sealed anchor
-			// `block_hash` is always a DATA disagreement (the reference slot is a pure function of the parent;
-			// the anchor is a forged/regressing or different stable block) ⇒ `Mismatch`. Only when the FULL
-			// reference matches but the reduced `entries` differ do we consult the input commitment to tell a
-			// data fork (`Mismatch`) apart from a reduction divergence (`ComputeDiverged` — same raw
-			// candidates AND same anchor, different reduced output).
-			if reference == &local.reference && *inputs_commitment == local.inputs_commitment {
+			// The reads disagree (fatal either way). `ComputeDiverged` is reserved for the VAULT reduction:
+			// same reference + same vault `inputs_commitment` but different vault `entries` ⇒ same raw vault
+			// data reduced differently (a determinism bug). Everything else — a differing reference/anchor, a
+			// differing vault commitment, or a differing `stake_entries` (a DIRECT `epoch_stake` read, no
+			// reduction to diverge) — is a data `Mismatch`.
+			if reference == &local.reference
+				&& *inputs_commitment == local.inputs_commitment
+				&& entries.as_slice() != local.entries.as_slice()
+			{
 				Err(InherentError::ComputeDiverged)
 			} else {
 				Err(InherentError::Mismatch)
