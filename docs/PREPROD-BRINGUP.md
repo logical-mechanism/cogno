@@ -4,7 +4,7 @@ How to stand up a **real, persistent, single-operator** cogno-chain on Cardano *
 full dapp loop (lock ADA → bind identity → earn talk-capacity → feeless post → read). This is the
 end-to-end companion to [deploy/README.md](../deploy/README.md) (which covers the `systemd` mechanics) and
 [docs/IN-PROTOCOL-OBSERVATION.md](IN-PROTOCOL-OBSERVATION.md) (the observer design). It ties genesis → node →
-weight-sync → bind-relay → frontend into one sequence and calls out the pieces unique to a single-observer
+weight-sync → frontend into one sequence and calls out the pieces unique to a single-observer
 **shadow-mode** chain.
 
 > ## Honest posture — read first
@@ -50,8 +50,8 @@ weight-sync → bind-relay → frontend into one sequence and calls out the piec
    │  cogno-chain node    │◀────── sync-weight.mjs ───────────│  services/committee  │
    │  (Aura+GRANDPA, the  │        (LOAD-BEARING in shadow:    └──────────────────────┘
    │   sole producer)     │         writes talkStake.AllowedStake)
-   │                      │◀────── relay.mjs (sponsored-bind-relay): pays for link_identity_signed
-   └──────────┬───────────┘
+   │                      │◀────── feeless bare-unsigned binds (link_identity_signed / link_stake_signed),
+   └──────────┬───────────┘        verified at pool admission — submitted straight from the browser
               │ ws://…:9944 (PAPI)
               ▼
    app/ (Next.js + MeshJS + PAPI)  ──L1 lock/exit──▶ Ogmios/Blockfrost
@@ -132,19 +132,16 @@ Run it on a schedule (cron/timer) so new locks get credited. The read **fails cl
 aborts rather than writing a partial weight), and `CONFIRM_DEPTH_SLOTS` buries reorg-able UTxOs. (Dev
 shortcut with no Cardano: `WS=… node services/committee/sync-weight.mjs --account <ss58> --weight <lovelace>`.)
 
-## Step 5 — Run the sponsored-bind-relay (REQUIRED for new browser users)
+## Step 5 — Binds are feeless (no relay to run)
 
-`cognoGate.link_identity_signed` is intentionally **not feeless** (the ed25519 verify would be a free
-compute-DoS otherwise), but a freshly sign-to-derived browser account has **zero balance** and can't pay.
-The [sponsored-bind-relay](../services/sponsored-bind-relay/relay.mjs) pays the fee with its own funded key
-(a **liveness** party only — it cannot forge or retarget a binding; the runtime is the sole verifier).
-
-```bash
-WS=ws://127.0.0.1:9944 RELAY_SEED="<a funded seed>" PORT=8091 \
-  node services/sponsored-bind-relay/relay.mjs       # POST /bind, GET /health, GET /metrics
-```
-
-Fund the relay's address with a little COGNO so it can pay bind fees; it rate-limits per-IP.
+The CIP-8 binds (`cognoGate.link_identity_signed` for identity, `link_stake_signed` for voting power) are
+**feeless bare unsigned extrinsics**: the CIP-8 proof *is* the authorization, and the runtime verifies it at
+transaction-pool admission (`validate_unsigned`) and again at block inclusion, so junk + already-bound /
+tombstoned proofs are rejected before gossip. A freshly sign-to-derived, **zero-balance** browser account
+therefore binds itself directly — no fee payer, no nonce, no funded relay (the old sponsored-bind-relay is
+gone). Spam costs an attacker only the per-block-weight-bounded ed25519 verify and grants nothing actionable
+(posting capacity + voting power come from observed Cardano stake keyed on the bound credential); rate-limit
+feeless calls at the RPC ingress if needed.
 
 ## Step 6 — Point the frontend at the chain
 
@@ -165,8 +162,8 @@ the frontend keeps a **PAPI-direct fallback**, so the indexer is never load-bear
 
 1. In the browser (CIP-30 wallet), **lock ≥100 ADA** at the live preprod `talk_vault` (mints the beacon). →
    Ogmios/Blockfrost.
-2. **Bind identity**: sign the CIP-8 proof; the sponsored-bind-relay submits `link_identity_signed`. →
-   1:1 owner-address ↔ account.
+2. **Bind identity**: sign the CIP-8 proof; the browser submits the feeless bare-unsigned
+   `link_identity_signed` directly. → 1:1 owner-address ↔ account.
 3. The **weight-sync** (Step 4) observes the lock via db-sync and credits `talkStake.AllowedStake`. →
    talk-capacity appears.
 4. **Post feelessly** — `microblog.post_message` passes `CheckCapacity` (Δbalance = 0).

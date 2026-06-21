@@ -271,8 +271,9 @@ the follower and relayer can start anytime the node WS is up.
 - **cogno-follower** (`:8090`, binds `127.0.0.1`) — a **read-only** HTTP helper for the identity gate
   (it no longer writes the chain). Serves the exact CIP-8 bind payload to sign (`/nonce`), liveness
   (`/health`), and Prometheus `/metrics`. Since D1, identity binding is the permissionless **on-chain**
-  self-proof `cognoGate.link_identity_signed` — the runtime verifies the wallet signature — optionally
-  fee-sponsored via the **sponsored-bind-relay** (`POST /bind` is retired → 410). Cardano-sourced weight
+  self-proof `cognoGate.link_identity_signed` — the runtime verifies the wallet signature. The bind is
+  **feeless** (a bare unsigned extrinsic verified at transaction-pool admission), so a brand-new
+  zero-balance account binds itself from the browser — no fee payer, no funded relay. Cardano-sourced weight
   is driven separately by the 3-of-5 committee `set_stake` path. `CARDANO_NETWORK=testnet` for preprod.
   Start: `./run.sh`.
 - **anchor-relayer** (no listen port; a polling writer) — the WRITE link. Every `ANCHOR_EVERY`

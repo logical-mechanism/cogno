@@ -10,7 +10,6 @@
 // values stay as the dev fallback. A user override in localStorage always wins over both.
 const ENV_WS = process.env.NEXT_PUBLIC_WS_URL || "";
 const ENV_FOLLOWER = process.env.NEXT_PUBLIC_FOLLOWER_URL || "";
-const ENV_BIND_RELAY = process.env.NEXT_PUBLIC_BIND_RELAY_URL || "";
 const ENV_GRAPHQL = process.env.NEXT_PUBLIC_GRAPHQL_URL || "";
 const ENV_BLOCKFROST = process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID || "";
 
@@ -102,39 +101,9 @@ export function setFollowerUrl(url: string): void {
   }
 }
 
-// ── Sponsored-Bind Relay endpoint (D1 bind-funding) ─────────────────────────────────────
-// A freshly sign-to-derived posting account starts with ZERO balance, so it cannot pay the
-// (deliberately non-feeless) link_identity_signed fee. The bind flow POSTs the signed CIP-8 proof
-// to this funded relay, which pays the fee + submits on the user's behalf. Config, like the WS /
-// follower endpoints — and like them it buys ZERO trust over correctness: the relay is a LIVENESS
-// party (it can censor, NEVER forge — the proof commits {account, genesis} and the runtime is the
-// sole verifier). HTTPS in any real deployment; plain http for the localhost dev showcase.
-
-/** The default Sponsored-Bind Relay the dev build binds through (the follower is :8090; the relay :8091). */
-export const DEFAULT_BIND_RELAY_URL = /^https?:\/\//.test(ENV_BIND_RELAY) ? ENV_BIND_RELAY : "http://127.0.0.1:8091";
-const BIND_RELAY_STORAGE_KEY = "cogno.bindRelay";
-
-/** The user-configured bind-relay URL, or {@link DEFAULT_BIND_RELAY_URL}. SSG-safe. */
-export function getBindRelayUrl(): string {
-  if (typeof window === "undefined") return DEFAULT_BIND_RELAY_URL;
-  try {
-    const raw = window.localStorage.getItem(BIND_RELAY_STORAGE_KEY);
-    return raw && /^https?:\/\//.test(raw) ? raw : DEFAULT_BIND_RELAY_URL;
-  } catch {
-    return DEFAULT_BIND_RELAY_URL;
-  }
-}
-
-/** Persist the bind-relay URL (http/https only). No-op without `window`. */
-export function setBindRelayUrl(url: string): void {
-  if (!/^https?:\/\//.test(url)) throw new Error("Bind-relay URL must be http:// or https://");
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(BIND_RELAY_STORAGE_KEY, url);
-  } catch {
-    // Storage blocked — non-critical.
-  }
-}
+// (The Sponsored-Bind Relay endpoint was REMOVED in spec 116: the CIP-8 identity / stake binds are now
+// FEELESS, submitted as bare unsigned extrinsics, so there is no fee to sponsor and no relay to point at.
+// See `lib/chain/identity.ts` + `docs/TRUSTLESS-IDENTITY.md`.)
 
 // ── SubQuery GraphQL indexer endpoint (M4) ──────────────────────────────────────────────
 // The optional indexer the app reads the feed/search/thread/profile views through. Empty =

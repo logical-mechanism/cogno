@@ -12,11 +12,15 @@
 //! tests isolate the *identity* gate.
 
 use crate::{
-	mock::*, AccountOf, AccountOfStakeCred, Error, Event, IdentityHash, PkhOf, StakeCredOf,
+	mock::*, AccountOf, AccountOfStakeCred, Call, Error, Event, IdentityHash, PkhOf, StakeCredOf,
 	StakeCredential, ThreadOf, Tombstoned, TombstonedStakeCred,
 };
 use frame_support::{assert_noop, assert_ok, traits::ConstU32, BoundedVec};
-use sp_runtime::DispatchError;
+use sp_runtime::{
+	traits::ValidateUnsigned,
+	transaction_validity::{InvalidTransaction, TransactionSource, TransactionValidityError},
+	DispatchError,
+};
 
 const ALICE: u64 = 1;
 const BOB: u64 = 2;
@@ -547,9 +551,9 @@ fn link_identity_signed_binds_a_real_wallet_proof() {
 		System::set_block_number(1);
 		set_genesis(GENESIS);
 		let (s, k) = proof();
-		// ANY signed submitter (ALICE pays the fee); the bound account is the one the PROOF commits — the
-		// submitter cannot retarget it.
-		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s, k, None));
+		// FEELESS + unsigned: no fee payer, no signing account — the bound account is the one the PROOF
+		// commits (the submitter cannot retarget it). Dispatched with `RuntimeOrigin::none()`.
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None));
 		let acct = bound_account();
 		let identity = PkhOf::<Test>::get(acct).expect("the committed account is now bound");
 		assert_eq!(AccountOf::<Test>::get(identity), Some(acct), "1:1 both ways via the verified proof");
@@ -564,7 +568,7 @@ fn link_identity_signed_rejects_a_wrong_genesis() {
 		// BlockHash[0] is left at the default (NOT the fixture's chain) ⇒ anti-cross-chain reject.
 		let (s, k) = proof();
 		assert_noop!(
-			CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s, k, None),
+			CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None),
 			Error::<Test>::WrongGenesis
 		);
 		assert!(AccountOf::<Test>::iter().next().is_none(), "nothing bound on a rejected proof");
@@ -578,22 +582,29 @@ fn link_identity_signed_rejects_a_garbage_proof() {
 		let bad: BoundedVec<u8, ConstU32<512>> = vec![0xde, 0xad, 0xbe, 0xef].try_into().unwrap();
 		let key: BoundedVec<u8, ConstU32<128>> = vec![0x00].try_into().unwrap();
 		assert_noop!(
-			CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), bad, key, None),
+			CognoGate::link_identity_signed(RuntimeOrigin::none(), bad, key, None),
 			Error::<Test>::ProofInvalid
 		);
 	});
 }
 
 #[test]
-fn link_identity_signed_is_not_callable_unsigned() {
+fn link_identity_signed_requires_none_origin() {
+	// D1 feeless flip: the bind is now UNSIGNED (`ensure_none`) — the CIP-8 proof is the authorization,
+	// there is no fee payer. A SIGNED (or root) origin must be rejected with BadOrigin; only `none()`
+	// dispatches (proven by the success tests above). This pins the origin contract of the feeless bind.
 	new_test_ext().execute_with(|| {
 		set_genesis(GENESIS);
 		let (s, k) = proof();
-		// Permissionless ≠ origin-free: it is a SIGNED call (the fee payer). Root/none is rejected.
+		assert_noop!(
+			CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s.clone(), k.clone(), None),
+			DispatchError::BadOrigin
+		);
 		assert_noop!(
 			CognoGate::link_identity_signed(RuntimeOrigin::root(), s, k, None),
 			DispatchError::BadOrigin
 		);
+		assert!(AccountOf::<Test>::iter().next().is_none(), "nothing bound on a wrong-origin call");
 	});
 }
 
@@ -603,7 +614,7 @@ fn revoke_tombstones_and_blocks_a_signed_rebind() {
 		System::set_block_number(1);
 		set_genesis(GENESIS);
 		let (s, k) = proof();
-		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s.clone(), k.clone(), None));
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s.clone(), k.clone(), None));
 		let acct = bound_account();
 		let identity = PkhOf::<Test>::get(acct).unwrap();
 
@@ -613,7 +624,7 @@ fn revoke_tombstones_and_blocks_a_signed_rebind() {
 
 		// Replaying the SAME (eternally-valid) wallet proof cannot resurrect the binding.
 		assert_noop!(
-			CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s, k, None),
+			CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None),
 			Error::<Test>::IdentityTombstoned
 		);
 	});
@@ -626,11 +637,11 @@ fn link_stake_signed_binds_voting_power_for_a_payment_bound_account() {
 		set_genesis(GENESIS);
 		// First payment-bind the account (the participant) via the real payment fixture.
 		let (s, k) = proof();
-		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s, k, None));
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None));
 		let acct = bound_account();
 		// Then stake-bind: the real stake-key proof anchors the SAME account's voting power.
 		let (ss, sk) = stake_proof();
-		assert_ok!(CognoGate::link_stake_signed(RuntimeOrigin::signed(BOB), ss, sk));
+		assert_ok!(CognoGate::link_stake_signed(RuntimeOrigin::none(), ss, sk));
 		assert_eq!(StakeCredOf::<Test>::get(acct), Some(stake_cred_fix()), "voting anchor bound to the proof's account");
 		assert_eq!(AccountOfStakeCred::<Test>::get(stake_cred_fix()), Some(acct), "1:1 both ways");
 		System::assert_has_event(Event::StakeLinked { who: acct, stake_cred: stake_cred_fix() }.into());
@@ -645,7 +656,7 @@ fn link_stake_signed_requires_a_payment_bind_first() {
 		// No payment bind for the committed account ⇒ NotPaymentBound (voting needs participation).
 		let (ss, sk) = stake_proof();
 		assert_noop!(
-			CognoGate::link_stake_signed(RuntimeOrigin::signed(ALICE), ss, sk),
+			CognoGate::link_stake_signed(RuntimeOrigin::none(), ss, sk),
 			Error::<Test>::NotPaymentBound
 		);
 	});
@@ -658,7 +669,7 @@ fn link_stake_signed_rejects_a_wrong_genesis() {
 		// BlockHash[0] left at default ⇒ anti-cross-chain reject, before any participation check.
 		let (ss, sk) = stake_proof();
 		assert_noop!(
-			CognoGate::link_stake_signed(RuntimeOrigin::signed(ALICE), ss, sk),
+			CognoGate::link_stake_signed(RuntimeOrigin::none(), ss, sk),
 			Error::<Test>::WrongGenesis
 		);
 	});
@@ -671,8 +682,131 @@ fn link_stake_signed_rejects_a_garbage_proof() {
 		let bad: BoundedVec<u8, ConstU32<512>> = vec![0xde, 0xad, 0xbe, 0xef].try_into().unwrap();
 		let key: BoundedVec<u8, ConstU32<128>> = vec![0x00].try_into().unwrap();
 		assert_noop!(
-			CognoGate::link_stake_signed(RuntimeOrigin::signed(ALICE), bad, key),
+			CognoGate::link_stake_signed(RuntimeOrigin::none(), bad, key),
 			Error::<Test>::ProofInvalid
 		);
+	});
+}
+
+// ── the feeless pool gate (validate_unsigned) ───────────────────────────────────────────────────────
+// The binds are UNSIGNED — `validate_unsigned` is the WHOLE pool-admission spam gate (no fee/nonce to
+// lean on). These prove it verifies the proof, mirrors `do_bind`/`do_bind_stake`'s tombstone + 1:1
+// rejections AT THE POOL (so a doomed bind is never gossiped/included), `provides` a dedup tag, and
+// refuses an origin-gated call (`revoke`) submitted unsigned.
+
+/// The unsigned identity-bind `Call` over the real wallet fixture.
+fn id_call() -> Call<Test> {
+	let (cose_sign1, cose_key) = proof();
+	Call::link_identity_signed { cose_sign1, cose_key, thread_pointer: None }
+}
+/// The unsigned stake-bind `Call` over the real stake-key fixture.
+fn stake_call() -> Call<Test> {
+	let (cose_sign1, cose_key) = stake_proof();
+	Call::link_stake_signed { cose_sign1, cose_key }
+}
+fn validate(call: &Call<Test>) -> Result<(), TransactionValidityError> {
+	<CognoGate as ValidateUnsigned>::validate_unsigned(TransactionSource::External, call).map(|_| ())
+}
+
+#[test]
+fn validate_unsigned_admits_a_valid_identity_proof_with_a_dedup_tag() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		set_genesis(GENESIS);
+		let valid = <CognoGate as ValidateUnsigned>::validate_unsigned(
+			TransactionSource::External,
+			&id_call(),
+		)
+		.expect("a valid proof is admitted to the pool");
+		assert!(valid.propagate, "binds must gossip");
+		assert!(!valid.provides.is_empty(), "a `provides` tag dedupes the bind in the pool");
+	});
+}
+
+#[test]
+fn validate_unsigned_rejects_a_garbage_proof_before_inclusion() {
+	new_test_ext().execute_with(|| {
+		set_genesis(GENESIS);
+		let bad: BoundedVec<u8, ConstU32<512>> = vec![0xde, 0xad, 0xbe, 0xef].try_into().unwrap();
+		let key: BoundedVec<u8, ConstU32<128>> = vec![0x00].try_into().unwrap();
+		let call = Call::link_identity_signed { cose_sign1: bad, cose_key: key, thread_pointer: None };
+		assert_eq!(validate(&call), Err(InvalidTransaction::BadProof.into()));
+	});
+}
+
+#[test]
+fn validate_unsigned_rejects_wrong_genesis_at_the_pool() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// BlockHash[0] left at default ⇒ cross-chain ⇒ rejected at the pool (mapped to BadProof).
+		assert_eq!(validate(&id_call()), Err(InvalidTransaction::BadProof.into()));
+	});
+}
+
+#[test]
+fn validate_unsigned_rejects_an_already_bound_identity_at_the_pool() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		set_genesis(GENESIS);
+		let (s, k) = proof();
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None));
+		// The SAME proof is now Stale at the pool — never re-gossiped or re-included.
+		assert_eq!(validate(&id_call()), Err(InvalidTransaction::Stale.into()));
+	});
+}
+
+#[test]
+fn validate_unsigned_rejects_a_tombstoned_identity_at_the_pool() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		set_genesis(GENESIS);
+		let (s, k) = proof();
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None));
+		let acct = bound_account();
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), acct)); // permanent tombstone
+		// "Ban means ban" enforced AT THE POOL: the eternally-valid proof cannot resurrect the binding.
+		assert_eq!(validate(&id_call()), Err(InvalidTransaction::Stale.into()));
+	});
+}
+
+#[test]
+fn validate_unsigned_stake_requires_payment_bind_then_admits() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		set_genesis(GENESIS);
+		// A stake bind whose committed account is not yet payment-bound is rejected (Custom 1) at the pool.
+		assert_eq!(validate(&stake_call()), Err(InvalidTransaction::Custom(1).into()));
+		// Payment-bind that account, then the stake bind is admitted with a dedup tag.
+		let (s, k) = proof();
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None));
+		let valid = <CognoGate as ValidateUnsigned>::validate_unsigned(
+			TransactionSource::External,
+			&stake_call(),
+		)
+		.expect("stake bind admitted once the account is payment-bound");
+		assert!(!valid.provides.is_empty());
+	});
+}
+
+#[test]
+fn validate_unsigned_rejects_an_already_stake_bound_at_the_pool() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		set_genesis(GENESIS);
+		let (s, k) = proof();
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None));
+		let (ss, sk) = stake_proof();
+		assert_ok!(CognoGate::link_stake_signed(RuntimeOrigin::none(), ss, sk));
+		// Re-submitting the same (already-bound) stake proof is Stale at the pool.
+		assert_eq!(validate(&stake_call()), Err(InvalidTransaction::Stale.into()));
+	});
+}
+
+#[test]
+fn validate_unsigned_refuses_an_origin_gated_call() {
+	new_test_ext().execute_with(|| {
+		// `revoke` is FollowerOrigin-gated — it must NEVER be admitted as an unsigned transaction.
+		let call = Call::revoke { substrate_account: ALICE };
+		assert_eq!(validate(&call), Err(InvalidTransaction::Call.into()));
 	});
 }
