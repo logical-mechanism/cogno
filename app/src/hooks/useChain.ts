@@ -8,6 +8,7 @@
 // hook/component receives `api` / `client` from here — there is exactly one socket.
 
 import { useCallback, useEffect, useState } from "react";
+import type { PolkadotClient } from "polkadot-api";
 import { createChain, watchConnStatus, checkBootGuard } from "@/lib/chain/client";
 import { getActiveWsUrl } from "@/lib/config/endpoints";
 import type {
@@ -22,6 +23,8 @@ export interface UseChain {
   handle: ChainHandle | null;
   /** Shortcut to handle.api (null until connected). */
   api: CognoApi | null;
+  /** The PolkadotClient (null until connected) — needed by the bare-unsigned CIP-8 binds + useIdentity. */
+  client: PolkadotClient | null;
   /** Derived socket lifecycle. */
   status: ConnStatus;
   /** Read/write boot guard; null until the first probe resolves. */
@@ -117,6 +120,7 @@ export function useChain(): UseChain {
   return {
     handle,
     api: handle?.api ?? null,
+    client: handle?.client ?? null,
     status,
     boot,
     wsUrl: handle?.wsUrl ?? null,
