@@ -1,6 +1,6 @@
 //! Unit tests for `pallet-talk-stake`.
 
-use crate::{mock::*, AllowedStake, Error, Event};
+use crate::{mock::*, AllowedStake, Error, Event, VotingPower};
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
 
@@ -301,5 +301,67 @@ fn many_accounts_set_in_one_block_are_isolated() {
 			.filter(|r| matches!(r.event, RuntimeEvent::TalkStake(Event::StakeSet { .. })))
 			.count();
 		assert_eq!(total as u64, N, "one StakeSet per distinct account");
+	});
+}
+
+// ── Voting power (set_voting_power) — the stake-weighted-vote source ─────────────────────────
+
+#[test]
+fn voting_power_unbound_reads_zero() {
+	new_test_ext().execute_with(|| {
+		// ValueQuery: an account that was never set reads 0 voting power (its votes carry no weight).
+		assert_eq!(VotingPower::<Test>::get(ALICE), 0);
+	});
+}
+
+#[test]
+fn root_can_set_voting_power_and_overwrite() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), ALICE, 500_000_000));
+		assert_eq!(VotingPower::<Test>::get(ALICE), 500_000_000);
+		System::assert_last_event(Event::VotingPowerSet { who: ALICE, weight: 500_000_000 }.into());
+		// Idempotent overwrite (epoch re-snapshot): a later set replaces, never sums.
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), ALICE, 250_000_000));
+		assert_eq!(VotingPower::<Test>::get(ALICE), 250_000_000);
+	});
+}
+
+#[test]
+fn voting_power_and_allowed_stake_are_independent() {
+	// The two weights are stored separately: setting voting power never touches the posting/deposit
+	// AllowedStake, and vice versa. A voting power ABOVE MaxStakeWeight (but under MaxVotingPower) is
+	// accepted — proving the ceilings are distinct (total stake can exceed any single vault's lock).
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 50_000_000));
+		// MAX_STAKE_WEIGHT = 100_000_000; this voting power exceeds it but is under MAX_VOTING_POWER.
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), ALICE, 800_000_000));
+		assert_eq!(AllowedStake::<Test>::get(ALICE), 50_000_000, "stake untouched by voting-power set");
+		assert_eq!(VotingPower::<Test>::get(ALICE), 800_000_000);
+		// And setting stake does not disturb voting power.
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 0));
+		assert_eq!(VotingPower::<Test>::get(ALICE), 800_000_000, "voting power untouched by stake unlock");
+	});
+}
+
+#[test]
+fn set_voting_power_rejects_above_max_and_signed_origin() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// Exactly the cap is accepted; one over is rejected with no write.
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), ALICE, MAX_VOTING_POWER));
+		assert_eq!(VotingPower::<Test>::get(ALICE), MAX_VOTING_POWER);
+		assert_noop!(
+			TalkStake::set_voting_power(RuntimeOrigin::root(), ALICE, MAX_VOTING_POWER + 1),
+			Error::<Test>::VotingPowerTooHigh
+		);
+		assert_eq!(VotingPower::<Test>::get(ALICE), MAX_VOTING_POWER); // unchanged
+		// Only SetStakeOrigin (root in the mock) may write voting power.
+		assert_noop!(
+			TalkStake::set_voting_power(RuntimeOrigin::signed(BOB), BOB, 1),
+			DispatchError::BadOrigin,
+		);
+		assert_eq!(VotingPower::<Test>::get(BOB), 0);
 	});
 }

@@ -149,7 +149,28 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// encoding-affecting, so regen the PAPI descriptors + indexer mappings. The new microblog calls
 	// ride the existing CheckCapacity (feeless); pin/unpin are fee-bearing. transaction_version is
 	// UNCHANGED (2) — the TxExtension tuple is byte-identical.
-	spec_version: 113,
+	// 113 -> 114 (stake-key voting power): the franken-address fix. Voting/poll weight is now the
+	// voter's TOTAL Cardano stake (the `epoch_stake` snapshot of a PROVEN stake credential), not the
+	// locked-ADA posting deposit. cogno-gate gained `link_stake_signed` (@3, a stake-key CIP-8 self-proof
+	// over the wallet's reward address) + the 1:1 stake-credential anchor storage (StakeCredOf/
+	// AccountOfStakeCred/TombstonedStakeCred), the `StakeLinked` event, and four new errors; `revoke` now
+	// also tombstones the bound stake credential (ban-the-key). talk-stake gained `set_voting_power` (@1)
+	// + the `VotingPower` map + `VotingPowerSet` event + `VotingPowerTooHigh` error + the `MaxVotingPower`
+	// config bound. microblog `vote`/`cast_poll_vote` now read `VotingPower` instead of `AllowedStake`
+	// (posting capacity still reads `AllowedStake`) — the Call/struct ENCODING is unchanged, only the
+	// storage they read. All ADDITIVE storage/calls/constants (NO struct re-encode) — so NO new migration.
+	// Encoding-affecting (new calls/storage/events/errors) — regen the PAPI descriptors. The new calls are
+	// normal signed extrinsics, so transaction_version is UNCHANGED (2).
+	// 114 -> 115 (trustless voting power): the cardano-observer inherent now ALSO observes, per BOUND stake
+	// credential, its total Cardano stake (the `epoch_stake` snapshot) and projects it to talk-stake
+	// `VotingPower` — the trustless replacement for the committee `set_voting_power` path. `CardanoObservation`
+	// + the `observe` inherent Call gained a `stake_entries` field (encoding-affecting → regen PAPI), the
+	// `CardanoObserverApi` gained `bound_stake_credentials()`, the `ObserverConfig` a `stake_epoch_lookback`,
+	// and the pallet new storage (`ShadowVotingPower`/`LastObservedStake`) + a `VotingPowerObserved` event.
+	// Runs in SHADOW (the existing `EnforceWeight` flag also gates voting power): the inherent verifies +
+	// projects but the committee `set_voting_power` stays the writer until the ≥3-producer cutover. `observe`
+	// is still an INHERENT, so transaction_version is UNCHANGED (2).
+	spec_version: 115,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

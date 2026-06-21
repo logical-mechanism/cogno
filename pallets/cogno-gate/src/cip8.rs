@@ -52,6 +52,22 @@ pub struct VerifiedProof {
 	pub genesis: [u8; 32],
 }
 
+/// A verified STAKE-key self-proof ([`verify_bind_proof_stake`]) — the CIP-8 the wallet produced
+/// over its REWARD address, signed with the STAKE key. The caller asserts `genesis` == the chain
+/// genesis and binds `account` ↔ `stake_credential` (1:1, non-tombstoned) as the **voting-power**
+/// anchor. Distinct from [`VerifiedProof`]: that proves the PAYMENT key (the posting/deposit
+/// identity); this proves the STAKE key (the total-stake voting weight), so a whale's stake cannot
+/// be claimed by anyone who does not hold its stake key.
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifiedStakeProof {
+	/// The 28-byte stake credential (the reward address's key hash) — the 1:1 voting anchor.
+	pub stake_credential: [u8; 28],
+	/// The 32-byte sr25519 account the signed payload commits (the bind target).
+	pub account: [u8; 32],
+	/// The genesis hash the signed payload commits (caller checks == this chain's genesis).
+	pub genesis: [u8; 32],
+}
+
 /// Every failure mode is a typed, fail-closed reject — never a panic.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Cip8Error {
@@ -456,6 +472,35 @@ fn parse_address<'a>(
 	}
 }
 
+/// Parse a Cardano REWARD (stake) address, returning the 28-byte STAKE key hash. Allows ONLY a
+/// VerificationKey stake-only reward address (header type `0b1110`, 1 + 28 bytes) on the configured
+/// network; a SCRIPT reward address (`0b1111`) and every non-reward / wrong-network form is a
+/// fail-closed reject. The stake credential IS the voting-power identity, so the returned hash is
+/// later bound to `blake2b_224(stake_pubkey)` exactly as the payment path binds the payment cred.
+fn parse_reward_address<'a>(
+	addr: &'a [u8],
+	expected_network: NetworkId,
+) -> Result<&'a [u8], Cip8Error> {
+	let header = *addr.first().ok_or(Cip8Error::BadAddress)?;
+	let addr_type = header >> 4;
+	let network = header & 0x0f;
+	if network != expected_network {
+		return Err(Cip8Error::WrongNetwork);
+	}
+	match addr_type {
+		// 0b1110: reward, vkey stake only (1 + 28).
+		0b1110 => {
+			let stake = addr.get(1..29).ok_or(Cip8Error::BadAddress)?;
+			if addr.len() != 29 {
+				return Err(Cip8Error::BadAddress);
+			}
+			Ok(stake)
+		},
+		// script reward (1111) + every non-reward type (base/enterprise/pointer/Byron) — reject.
+		_ => Err(Cip8Error::UnsupportedAddressType),
+	}
+}
+
 // Plutus-Data CBOR primitives (constants only — no arithmetic, total). Constr 0 = tag 121 = `d8 79`,
 // Constr 1 = tag 122 = `d8 7a`; fields as an INDEFINITE-length array `9f … ff`; a 28-byte hash as
 // `58 1c <28>`. This is exactly `aiken/cbor.serialise` of the Aiken `Address` type (beacon.py).
@@ -635,6 +680,63 @@ pub fn verify_bind_proof(
 	let (genesis, account) = parse_payload(cose.payload_content)?;
 
 	Ok(VerifiedProof { identity, account, genesis })
+}
+
+/// Verify a CIP-8 STAKE-key bind self-proof (the wallet's `signData` over its REWARD address, signed
+/// with the STAKE key). Returns the verified `(stake_credential, account, genesis)` or a typed reject.
+/// PURE — no storage, no panics. The caller asserts `genesis` == the chain genesis and binds
+/// `account` ↔ `stake_credential` 1:1 as the voting-power anchor.
+///
+/// ⚠ Steps 1, 2 and 5 are IDENTICAL to [`verify_bind_proof`] (the same single-key-source rule, the
+/// same verbatim `Sig_structure` Ed25519 check, the same pinned payload grammar) and MUST stay in
+/// lockstep with it — only step 3/4 differs: the address is a REWARD address and the verified key is
+/// bound to its STAKE credential (not a payment credential), which IS the returned identity (no
+/// `plutus_data_cbor` / beacon hashing — the voting anchor is the bare 28-byte stake key hash).
+pub fn verify_bind_proof_stake(
+	cose_sign1: &[u8],
+	cose_key: &[u8],
+	expected_network: NetworkId,
+) -> Result<VerifiedStakeProof, Cip8Error> {
+	// 1. Parse the COSE_Sign1 (verbatim protected/payload elements) + the COSE_Key (single key source).
+	let cose = parse_cose_sign1(cose_sign1)?;
+	let pubkey = parse_cose_key(cose_key)?;
+	let (kid, address) = parse_protected(cose.protected_content)?;
+	// If a KID rides in the (signed) protected header, it MUST be the same key we verify + hash.
+	if let Some(kid) = kid {
+		if kid != pubkey {
+			return Err(Cip8Error::KeyMismatch);
+		}
+	}
+
+	// 2. Ed25519-verify over the verbatim Sig_structure with the COSE_Key pubkey.
+	let message = sig_structure(cose.protected_raw, cose.payload_raw);
+	let mut pk = [0u8; 32];
+	pk.copy_from_slice(pubkey.get(..32).ok_or(Cip8Error::BadKey)?);
+	let mut sig = [0u8; 64];
+	sig.copy_from_slice(cose.signature.get(..64).ok_or(Cip8Error::BadCose)?);
+	let ok = sp_io::crypto::ed25519_verify(
+		&sp_core::ed25519::Signature::from_raw(sig),
+		&message,
+		&sp_core::ed25519::Public::from_raw(pk),
+	);
+	if !ok {
+		return Err(Cip8Error::SignatureInvalid);
+	}
+
+	// 3. Bind the verified key to the REWARD address: blake2b-224(stake_pubkey) == the stake credential.
+	let stake_cred = parse_reward_address(address, expected_network)?;
+	if blake2b_224(&pk) != *stake_cred {
+		return Err(Cip8Error::AddressKeyMismatch);
+	}
+
+	// 4. Identity = the bare 28-byte stake credential (the 1:1 voting anchor — no beacon hashing).
+	let mut stake_credential = [0u8; 28];
+	stake_credential.copy_from_slice(stake_cred.get(..28).ok_or(Cip8Error::BadAddress)?);
+
+	// 5. The signed payload commits the genesis + account (the same pinned grammar as the payment path).
+	let (genesis, account) = parse_payload(cose.payload_content)?;
+
+	Ok(VerifiedStakeProof { stake_credential, account, genesis })
 }
 
 #[cfg(test)]

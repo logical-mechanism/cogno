@@ -34,6 +34,7 @@ impl pallet_talk_stake::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type SetStakeOrigin = EnsureRoot<u64>;
 	type MaxStakeWeight = ConstU128<100_000_000>;
+	type MaxVotingPower = ConstU128<45_000_000_000_000_000>;
 	type WeightInfo = ();
 }
 
@@ -88,4 +89,15 @@ pub fn bind(
 	thread: Option<Vec<u8>>,
 ) -> sp_runtime::DispatchResult {
 	CognoGate::do_bind(&account, identity, thread)
+}
+
+/// Test helper: drive the stake-credential bind body directly (the voting-power anchor). Mirrors
+/// [`bind`] for the stake side — tests that just need a pre-existing stake binding call this instead
+/// of constructing a stake-key CIP-8 proof. The account must already be payment-bound (`do_bind_stake`
+/// enforces `NotPaymentBound`).
+pub fn bind_stake(
+	stake_cred: crate::StakeCredential,
+	account: u64,
+) -> sp_runtime::DispatchResult {
+	CognoGate::do_bind_stake(&account, stake_cred)
 }

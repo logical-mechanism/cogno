@@ -237,7 +237,8 @@ pub mod pallet {
 	pub struct VoteRecord {
 		/// The vote direction.
 		pub dir: VoteDir,
-		/// The voter's `pallet_talk_stake::AllowedStake` weight at the moment the vote was cast.
+		/// The voter's `pallet_talk_stake::VotingPower` (total Cardano stake) at the moment the vote
+		/// was cast.
 		pub weight: u128,
 	}
 
@@ -273,7 +274,7 @@ pub mod pallet {
 	pub struct PollVoteRecord {
 		/// The chosen option index (`< options.len()`).
 		pub option: u8,
-		/// The voter's `AllowedStake` weight at cast time.
+		/// The voter's `VotingPower` (total Cardano stake) weight at cast time.
 		pub weight: u128,
 	}
 
@@ -741,10 +742,11 @@ pub mod pallet {
 		}
 
 		/// Cast or change a **stake-weighted** vote on post `post_id`. The vote's weight is the
-		/// caller's `pallet_talk_stake::AllowedStake` snapshot at call time. Re-voting (changing
-		/// direction or re-voting the same direction at a new weight) deterministically reverses the
-		/// PREVIOUSLY-STORED weight from the tally before applying the fresh one — so the tally never
-		/// drifts and an indexer folding the `Voted` events reproduces it byte-exactly. Feeless.
+		/// caller's `pallet_talk_stake::VotingPower` snapshot at call time — the total Cardano stake
+		/// of the caller's bound stake credential, NOT the posting deposit (`AllowedStake`). Re-voting
+		/// (changing direction or re-voting the same direction at a new weight) deterministically
+		/// reverses the PREVIOUSLY-STORED weight from the tally before applying the fresh one — so the
+		/// tally never drifts and an indexer folding the `Voted` events reproduces it byte-exactly. Feeless.
 		#[pallet::call_index(4)]
 		#[pallet::weight(<T as Config>::WeightInfo::vote())]
 		#[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _dir: &VoteDir| -> bool { true })]
@@ -755,7 +757,7 @@ pub mod pallet {
 				return Err(Error::<T>::NotAllowed.into());
 			}
 			ensure!(Posts::<T>::contains_key(post_id), Error::<T>::NotFound);
-			let weight = pallet_talk_stake::AllowedStake::<T>::get(&who); // snapshot AT vote time
+			let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT vote time
 			VoteTally::<T>::mutate(post_id, |t| {
 				// 1. REVERSE the previously-stored record (if any) by its STORED weight — never by
 				//    re-reading current stake — so the tally cannot drift across a stake change.
@@ -917,8 +919,9 @@ pub mod pallet {
 		}
 
 		/// Cast or change a **stake-weighted** vote in poll `post_id` for `option`. Weight is the
-		/// caller's `AllowedStake` snapshot; a re-cast reverses the PREVIOUSLY-STORED weight from the
-		/// per-option tally before applying the fresh one (same drift-free fold as [`vote`]). Feeless.
+		/// caller's `pallet_talk_stake::VotingPower` snapshot (total Cardano stake of the bound stake
+		/// credential, NOT the posting deposit); a re-cast reverses the PREVIOUSLY-STORED weight from
+		/// the per-option tally before applying the fresh one (same drift-free fold as [`vote`]). Feeless.
 		#[pallet::call_index(10)]
 		#[pallet::weight(<T as Config>::WeightInfo::cast_poll_vote())]
 		#[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _option: &u8| -> bool { true })]
@@ -930,7 +933,7 @@ pub mod pallet {
 			}
 			let poll = Polls::<T>::get(post_id).ok_or(Error::<T>::PollNotFound)?;
 			ensure!((option as usize) < poll.options.len(), Error::<T>::InvalidOption);
-			let weight = pallet_talk_stake::AllowedStake::<T>::get(&who); // snapshot AT cast time
+			let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT cast time
 			// 1. Reverse the previously-stored choice (if any) by its STORED weight — no drift.
 			if let Some(prev) = PollVotes::<T>::get(post_id, &who) {
 				PollTally::<T>::mutate(post_id, prev.option, |t| {

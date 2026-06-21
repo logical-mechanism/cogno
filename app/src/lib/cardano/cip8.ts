@@ -26,6 +26,8 @@ export interface BindProof {
   coseKey?: string;
   /** the Cardano address the proof was signed from (for display). */
   signingAddress?: string;
+  /** for a STAKE proof: the 28-byte stake credential the reward address proved (the voting anchor). */
+  stakeCredentialHex?: string;
   error?: string;
 }
 
@@ -127,6 +129,81 @@ export async function produceBindProof(opts: {
     // identity-flow failure — log it with the account for diagnosis.
     // eslint-disable-next-line no-console
     console.error(`cogno: produceBindProof failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Produce a CIP-8 STAKE-key bind self-proof (spec 114 — voting power): enable the wallet → take its
+ * REWARD address → build the same pinned payload IN-BROWSER → sign it ONCE WITH THE STAKE KEY (CIP-30
+ * `signData` over the reward address). The proven 28-byte stake credential becomes the account's 1:1
+ * voting-power anchor (its votes/polls then weight by the total Cardano stake of that credential). The
+ * caller submits the returned proof via `cognoGate.link_stake_signed`; the runtime
+ * ({@link import("../../../pallets/cogno-gate/src/cip8").verify_bind_proof_stake}) is the authoritative
+ * verifier. Requires a wallet that signs over a reward address (Eternl, Lace); returns a structured
+ * error otherwise (never throws). The posting account must already be payment-bound.
+ */
+export async function produceBindProofStake(opts: {
+  walletId: string;
+  /** the sr25519 posting account the proof commits (0x-prefixed or bare hex). */
+  sr25519PubkeyHex: string;
+  /** THIS chain's block-0 (genesis) hash, read via PAPI (0x-prefixed or bare hex) — anti-cross-chain. */
+  genesisHex: string;
+}): Promise<BindProof> {
+  const account = opts.sr25519PubkeyHex.replace(/^0x/, "").toLowerCase();
+  const genesis = opts.genesisHex.replace(/^0x/, "").toLowerCase();
+  try {
+    if (!/^[0-9a-f]{64}$/.test(account)) throw new Error("posting account is not a 32-byte hex pubkey");
+    if (!/^[0-9a-f]{64}$/.test(genesis)) throw new Error("chain genesis is not a 32-byte hex hash");
+
+    const [{ BrowserWallet }, cst] = await Promise.all([
+      import("@meshsdk/core"),
+      import("@meshsdk/core-cst"),
+    ]);
+
+    const wallet = await BrowserWallet.enable(opts.walletId);
+
+    // The wallet's REWARD (stake) address — signing over it makes the wallet sign with the STAKE key.
+    const rewardAddresses: string[] = await wallet.getRewardAddresses();
+    if (!rewardAddresses.length) {
+      throw new Error("wallet exposes no reward address — use Eternl (a base address with a stake key)");
+    }
+    const rewardAddress = rewardAddresses[0];
+
+    // Parse the 29-byte reward address (header + 28-byte stake credential). Require a vkey stake reward
+    // (header type 0b1110); a SCRIPT-stake reward (0b1111) is not a votable identity here.
+    const rewardRaw = cst.Address.fromBech32(rewardAddress).toBytes().toString();
+    if (rewardRaw.length !== 58) throw new Error("reward address is not 29 bytes — unexpected address shape");
+    const addrType = parseInt(rewardRaw.slice(0, 2), 16) >> 4;
+    if (addrType !== 0b1110) {
+      throw new Error(`reward address has a script stake credential (type ${addrType}) — only vkey stake keys can bind`);
+    }
+    const stakeCredentialHex = rewardRaw.slice(2);
+
+    const nonce = randomNonceHex();
+    const payload = `${DOMAIN};genesis=${genesis};account=${account};nonce=${nonce}`;
+
+    // Sign ONCE over the reward address → a stake-key COSE_Sign1 (Eternl/Lace support this).
+    const sig = (await wallet.signData(payload, rewardAddress)) as { signature: string; key: string };
+
+    // Client pre-flight: reject 64-byte extended keys (only 32-byte CIP-30 keys verify on-chain).
+    try {
+      const vk = cst.getPublicKeyFromCoseKey(sig.key);
+      const vkHex = typeof vk === "string" ? vk : (vk as { hex?: () => string }).hex?.() ?? String(vk);
+      if (vkHex.replace(/^0x/, "").length / 2 === 64) {
+        throw new Error("signing key is a 64-byte extended key — only 32-byte CIP-30 keys are accepted");
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("extended key")) throw e;
+    }
+
+    if (hexByteLen(sig.signature) > 512) throw new Error("CIP-8 signature exceeds the 512-byte on-chain bound");
+    if (hexByteLen(sig.key) > 128) throw new Error("CIP-8 key exceeds the 128-byte on-chain bound");
+
+    return { ok: true, coseSign1: sig.signature, coseKey: sig.key, signingAddress: rewardAddress, stakeCredentialHex };
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(`cogno: produceBindProofStake failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

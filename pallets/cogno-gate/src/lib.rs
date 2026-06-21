@@ -71,6 +71,12 @@ pub const LOG_TARGET: &str = "runtime::cogno-gate";
 /// identical bytes.
 pub type IdentityHash = [u8; 32];
 
+/// The voting-power identity key: the 28-byte stake credential (a reward address's key hash) proven
+/// via [`cip8::verify_bind_proof_stake`]. Distinct from [`IdentityHash`] (the 32-byte full-Address
+/// beacon that anchors POSTING/deposit): this anchors VOTING POWER — the account's total Cardano
+/// stake — 1:1 to the proven STAKE key, so many payment keys cannot multiply one staker's vote weight.
+pub type StakeCredential = [u8; 28];
+
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
@@ -143,6 +149,28 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type Tombstoned<T: Config> = StorageMap<_, Blake2_128Concat, IdentityHash, (), OptionQuery>;
 
+	/// Forward map: posting account → its bound 28-byte stake credential (the voting-power anchor).
+	/// Set by [`Call::link_stake_signed`] once the stake-key CIP-8 proof verifies. `OptionQuery` ⇒
+	/// an account with no stake bind has zero observed voting power (its votes carry no weight).
+	#[pallet::storage]
+	pub type StakeCredOf<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, StakeCredential, OptionQuery>;
+
+	/// Reverse map: 28-byte stake credential → the one account it is bound to. Load-bearing for the
+	/// 1:1 voting invariant: a stake credential is claimed once, by the account whose owner proved the
+	/// stake key — so a second account (a "franken" payment key reusing this stake) cannot ride the
+	/// same on-chain stake.
+	#[pallet::storage]
+	pub type AccountOfStakeCred<T: Config> =
+		StorageMap<_, Blake2_128Concat, StakeCredential, T::AccountId, OptionQuery>;
+
+	/// Permanently-banned stake credentials — the ban-the-key tombstone. [`Call::revoke`] inserts the
+	/// revoked account's stake credential here so a banned operator cannot grind a fresh address /
+	/// payment identity and re-bind the same stake key. Never removed (a tombstone is permanent).
+	#[pallet::storage]
+	pub type TombstonedStakeCred<T: Config> =
+		StorageMap<_, Blake2_128Concat, StakeCredential, (), OptionQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -153,6 +181,10 @@ pub mod pallet {
 		/// released and the banked capacity zeroed; the capacity row itself is kept (relock-farm
 		/// guard) — see [`pallet_microblog::OnIdentityBind::on_revoke`] (gate-1).
 		Revoked { who: T::AccountId, identity: IdentityHash },
+		/// A stake credential was bound 1:1 to a posting account as its voting-power anchor (the
+		/// stake-key self-proof, [`Call::link_stake_signed`]). `stake_cred` is the 28-byte
+		/// reward-address key hash; the account's vote weight is then the total Cardano stake of it.
+		StakeLinked { who: T::AccountId, stake_cred: StakeCredential },
 	}
 
 	#[pallet::error]
@@ -173,6 +205,15 @@ pub mod pallet {
 		WrongGenesis,
 		/// This Cardano identity was permanently banned (revoked) and cannot be re-bound (the tombstone).
 		IdentityTombstoned,
+		/// The account must be payment-bound ([`Call::link_identity_signed`]) before it can stake-bind —
+		/// voting power attaches only to an existing posting identity.
+		NotPaymentBound,
+		/// This account already has a bound stake credential (1:1, account side).
+		AccountAlreadyStakeBound,
+		/// This stake credential is already bound to an account (1:1, stake side).
+		StakeCredAlreadyBound,
+		/// This stake credential was permanently banned (revoked) and cannot be re-bound (ban-the-key).
+		StakeCredTombstoned,
 	}
 
 	#[pallet::call]
@@ -220,6 +261,43 @@ pub mod pallet {
 			Self::do_bind(&account, proof.identity, thread_pointer)
 		}
 
+		/// **Trustless stake bind (voting power).** Anyone submits the CIP-8 (COSE_Sign1) `signData`
+		/// proof their wallet produced over its REWARD address, signed with the STAKE key, and the
+		/// RUNTIME verifies it on-chain ([`cip8::verify_bind_proof_stake`]). The proven 28-byte stake
+		/// credential is bound 1:1 to the committed account as its voting-power anchor, so a whale's
+		/// stake can be voted ONLY by whoever holds its stake key, and only once. The account must
+		/// already be payment-bound ([`Call::link_identity_signed`]) — voting power attaches only to a
+		/// participant. `ensure_signed` is the fee payer (anti-DoS); the bound account comes from the
+		/// verified proof, so the submitter cannot retarget it. The signed payload must commit THIS
+		/// chain's genesis; a tombstoned (banned) stake credential is refused.
+		///
+		/// ⚠ Reuses the same crown-jewel verifier plumbing as [`Call::link_identity_signed`]; the same
+		/// MAINNET PREREQUISITE (independent audit) applies (see [`cip8`]).
+		#[pallet::call_index(3)]
+		#[pallet::weight(T::WeightInfo::link_identity_signed())]
+		pub fn link_stake_signed(
+			origin: OriginFor<T>,
+			cose_sign1: BoundedVec<u8, ConstU32<512>>,
+			cose_key: BoundedVec<u8, ConstU32<128>>,
+		) -> DispatchResult {
+			// NOT feeless: the signed submitter pays the tx fee, so a junk proof costs the attacker.
+			let _submitter = ensure_signed(origin)?;
+			let proof =
+				cip8::verify_bind_proof_stake(&cose_sign1, &cose_key, T::CardanoNetwork::get())
+					.map_err(|e| {
+						log::warn!(target: LOG_TARGET, "link_stake_signed: proof rejected: {e:?}");
+						Error::<T>::ProofInvalid
+					})?;
+			// Anti-cross-chain: the signed payload must commit THIS chain's genesis hash (block 0).
+			let genesis = frame_system::Pallet::<T>::block_hash(BlockNumberFor::<T>::zero());
+			ensure!(genesis.as_ref() == proof.genesis.as_slice(), Error::<T>::WrongGenesis);
+			// The bound account is the 32-byte sr25519 key the PROOF commits — never the submitter.
+			let account =
+				T::AccountId::decode(&mut &proof.account[..]).map_err(|_| Error::<T>::ProofInvalid)?;
+			log::debug!(target: LOG_TARGET, "link_stake_signed: verified stake proof for {account:?}");
+			Self::do_bind_stake(&account, proof.stake_credential)
+		}
+
 		/// Revoke an account's binding (the v1 manual-operator-ban path, DR-14). Gated by
 		/// `FollowerOrigin`. Removes both directional maps + the thread pointer, so `is_allowed`
 		/// flips to `false` and the account can no longer post.
@@ -251,6 +329,14 @@ pub mod pallet {
 			// `Tombstoned` and refuses to re-bind it, so a ban cannot be undone by replaying an
 			// (eternally-valid) CIP-8 proof. A tombstone is never removed (your "ban means ban" decision).
 			Tombstoned::<T>::insert(identity, ());
+			// Ban-the-key: if the account had a stake (voting-power) bind, tear it down AND tombstone the
+			// stake credential permanently, so a banned operator cannot grind a fresh payment identity to
+			// re-bind the SAME on-chain stake and keep voting.
+			if let Some(stake_cred) = StakeCredOf::<T>::take(&substrate_account) {
+				AccountOfStakeCred::<T>::remove(stake_cred);
+				TombstonedStakeCred::<T>::insert(stake_cred, ());
+				log::debug!(target: LOG_TARGET, "revoke: stake credential unbound + tombstoned (ban-the-key)");
+			}
 			// Symmetric teardown (gate-1): release the provider ref taken at bind + zero the banked
 			// capacity, while microblog KEEPS the (relock-safe) capacity row. NOTE: `on_revoke` is
 			// infallible today; if it is ever made fallible, an Err here would leak the bind/revoke
@@ -270,6 +356,12 @@ pub mod pallet {
 		/// The identity hash bound to `who`, if any. Read-only helper for tooling/readback.
 		pub fn identity_of(who: &T::AccountId) -> Option<IdentityHash> {
 			PkhOf::<T>::get(who)
+		}
+
+		/// The stake credential bound to `who`, if any (the voting-power anchor). Read-only helper
+		/// for tooling and for the weight pipeline (resolve account → stake credential → observed stake).
+		pub fn stake_credential_of(who: &T::AccountId) -> Option<StakeCredential> {
+			StakeCredOf::<T>::get(who)
 		}
 
 		/// The shared 1:1 bind body, called by BOTH the trusted [`Call::link_identity`] and the trustless
@@ -314,6 +406,39 @@ pub mod pallet {
 			T::OnBind::on_bind(account);
 			log::debug!(target: LOG_TARGET, "do_bind ok: identity={identity:?} bound 1:1, provider ref taken");
 			Self::deposit_event(Event::IdentityLinked { who: account.clone(), identity });
+			Ok(())
+		}
+
+		/// The 1:1 stake-credential bind body for [`Call::link_stake_signed`]: requires the account to
+		/// be payment-bound, consults the ban-the-key tombstone + both directional stake maps, writes
+		/// them, and emits `StakeLinked`. NOT a dispatchable — no origin check; the caller authorizes
+		/// via the cryptographically-verified stake proof. No microblog `on_bind` hook: this grants
+		/// VOTING POWER, not posting capacity (the provider ref / capacity row belong to the payment
+		/// bind), so it stays out of the gate-1 provider-ref lifecycle.
+		pub(crate) fn do_bind_stake(
+			account: &T::AccountId,
+			stake_cred: StakeCredential,
+		) -> DispatchResult {
+			// Voting power attaches only to a participant: the account must already be payment-bound.
+			ensure!(PkhOf::<T>::contains_key(account), Error::<T>::NotPaymentBound);
+			// A permanently-banned (revoked) stake credential can never be re-bound (ban-the-key).
+			ensure!(
+				!TombstonedStakeCred::<T>::contains_key(stake_cred),
+				Error::<T>::StakeCredTombstoned
+			);
+			// 1:1 enforcement — reject a second bind on EITHER side (the voting anti-Sybil anchor).
+			if StakeCredOf::<T>::contains_key(account) {
+				log::warn!(target: LOG_TARGET, "do_bind_stake rejected: account already stake-bound");
+				return Err(Error::<T>::AccountAlreadyStakeBound.into());
+			}
+			if AccountOfStakeCred::<T>::contains_key(stake_cred) {
+				log::warn!(target: LOG_TARGET, "do_bind_stake rejected: stake credential already bound");
+				return Err(Error::<T>::StakeCredAlreadyBound.into());
+			}
+			StakeCredOf::<T>::insert(account, stake_cred);
+			AccountOfStakeCred::<T>::insert(stake_cred, account);
+			log::debug!(target: LOG_TARGET, "do_bind_stake ok: stake credential bound 1:1 for voting power");
+			Self::deposit_event(Event::StakeLinked { who: account.clone(), stake_cred });
 			Ok(())
 		}
 	}

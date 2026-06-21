@@ -5,7 +5,8 @@
 //   node op.mjs --call <pallet>.<method> --args '<jsonArray>' [--via committee|sudo] [--ws <url>]
 //
 // Examples (camelCase pallet.method, JSON args; ss58 addresses + decimal-string bignums):
-//   node op.mjs --call talkStake.setStake     --args '["5Grw…", "42000000"]'
+//   node op.mjs --call talkStake.setStake       --args '["5Grw…", "42000000"]'  # posting deposit weight
+//   node op.mjs --call talkStake.setVotingPower --args '["5Grw…", "42000000"]'  # total-stake vote weight
 //   node op.mjs --call anchor.anchorAck       --args '[123, "0x<root>", "0x<txhash>", 7, 0]'
 //   node op.mjs --call validatorSet.addValidator --args '["5FHneW…"]'  --via committee
 //   node op.mjs --call talkStake.setStake     --args '["5Grw…", "0"]'  --via sudo   # dev fallback

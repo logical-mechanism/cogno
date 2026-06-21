@@ -93,7 +93,7 @@ mod tests {
 	}
 
 	fn obs(reference: CardanoRef) -> CardanoObservation {
-		CardanoObservation { reference, inputs_commitment: [0u8; 32], entries: vec![] }
+		CardanoObservation { reference, inputs_commitment: [0u8; 32], entries: vec![], stake_entries: vec![] }
 	}
 
 	#[test]

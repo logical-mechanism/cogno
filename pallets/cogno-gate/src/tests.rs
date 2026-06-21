@@ -11,7 +11,10 @@
 //! the feeless/capacity gate is exercised end-to-end by the node acceptance harness. These
 //! tests isolate the *identity* gate.
 
-use crate::{mock::*, AccountOf, Error, Event, IdentityHash, PkhOf, ThreadOf, Tombstoned};
+use crate::{
+	mock::*, AccountOf, AccountOfStakeCred, Error, Event, IdentityHash, PkhOf, StakeCredOf,
+	StakeCredential, ThreadOf, Tombstoned, TombstonedStakeCred,
+};
 use frame_support::{assert_noop, assert_ok, traits::ConstU32, BoundedVec};
 use sp_runtime::DispatchError;
 
@@ -19,6 +22,8 @@ const ALICE: u64 = 1;
 const BOB: u64 = 2;
 const HASH_A: IdentityHash = [0xAAu8; 32];
 const HASH_B: IdentityHash = [0xBBu8; 32];
+const STAKE_CRED_1: StakeCredential = [0xC1u8; 28];
+const STAKE_CRED_2: StakeCredential = [0xC2u8; 28];
 
 fn post_as(who: u64) -> sp_runtime::DispatchResult {
 	Microblog::post_message(RuntimeOrigin::signed(who), b"gm cogno".to_vec(), None)
@@ -406,6 +411,94 @@ fn revoke_requires_follower_origin() {
 	});
 }
 
+// ── the stake-credential voting anchor (link_stake_signed) ──────────────────────────────────────────
+// The voting-power 1:1 anchor: a stake credential is bound once, by a payment-bound participant. These
+// helper-based tests drive `do_bind_stake` directly (a stake CIP-8 proof is exercised end-to-end by the
+// `link_stake_signed_*` fixture tests below).
+
+#[test]
+fn stake_bind_requires_payment_bind_first() {
+	new_test_ext().execute_with(|| {
+		// Voting power attaches only to a participant: an account with no payment bind cannot stake-bind.
+		assert_noop!(bind_stake(STAKE_CRED_1, ALICE), Error::<Test>::NotPaymentBound);
+		assert!(!StakeCredOf::<Test>::contains_key(ALICE));
+		assert!(!AccountOfStakeCred::<Test>::contains_key(STAKE_CRED_1));
+	});
+}
+
+#[test]
+fn stake_bind_binds_both_ways_and_emits_event() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(bind(HASH_A, ALICE, None));
+		assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
+		assert_eq!(StakeCredOf::<Test>::get(ALICE), Some(STAKE_CRED_1));
+		assert_eq!(AccountOfStakeCred::<Test>::get(STAKE_CRED_1), Some(ALICE));
+		assert_eq!(CognoGate::stake_credential_of(&ALICE), Some(STAKE_CRED_1));
+		System::assert_has_event(Event::StakeLinked { who: ALICE, stake_cred: STAKE_CRED_1 }.into());
+	});
+}
+
+#[test]
+fn stake_bind_rejects_a_second_stake_cred_on_one_account() {
+	new_test_ext().execute_with(|| {
+		assert_ok!(bind(HASH_A, ALICE, None));
+		assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
+		// One account anchors exactly one stake credential (account side of the 1:1).
+		assert_noop!(bind_stake(STAKE_CRED_2, ALICE), Error::<Test>::AccountAlreadyStakeBound);
+		assert_eq!(StakeCredOf::<Test>::get(ALICE), Some(STAKE_CRED_1)); // unchanged
+		assert!(!AccountOfStakeCred::<Test>::contains_key(STAKE_CRED_2));
+	});
+}
+
+#[test]
+fn franken_many_payment_keys_cannot_share_one_stake_credential() {
+	// THE HEADLINE: ALICE and BOB are DISTINCT payment identities (distinct payment keys, both
+	// payment-bound). The SAME stake credential — the voting-power anchor — can be claimed by only ONE
+	// of them. So "many payment credentials, one stake credential" CANNOT split/share that stake's vote
+	// weight: the second binder is rejected, and only the proven owner's single account votes with it.
+	new_test_ext().execute_with(|| {
+		assert_ok!(bind(HASH_A, ALICE, None));
+		assert_ok!(bind(HASH_B, BOB, None));
+		assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
+		// BOB (a different payment key) cannot ride ALICE's stake credential.
+		assert_noop!(bind_stake(STAKE_CRED_1, BOB), Error::<Test>::StakeCredAlreadyBound);
+		assert_eq!(AccountOfStakeCred::<Test>::get(STAKE_CRED_1), Some(ALICE)); // still ALICE's, once
+		assert!(!StakeCredOf::<Test>::contains_key(BOB));
+	});
+}
+
+#[test]
+fn revoke_bans_the_stake_key_permanently() {
+	// Ban-the-key: revoking a stake-bound account tombstones its stake credential, so the banned
+	// operator cannot grind a fresh payment identity and re-bind the SAME on-chain stake to keep voting.
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(bind(HASH_A, ALICE, None));
+		assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
+
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+		// The stake binding is gone and the credential is tombstoned.
+		assert!(!StakeCredOf::<Test>::contains_key(ALICE));
+		assert_eq!(AccountOfStakeCred::<Test>::get(STAKE_CRED_1), None);
+		assert!(TombstonedStakeCred::<Test>::contains_key(STAKE_CRED_1));
+
+		// A fresh participant (BOB) cannot re-bind the banned stake credential.
+		assert_ok!(bind(HASH_B, BOB, None));
+		assert_noop!(bind_stake(STAKE_CRED_1, BOB), Error::<Test>::StakeCredTombstoned);
+	});
+}
+
+#[test]
+fn revoke_without_a_stake_bind_leaves_stake_maps_untouched() {
+	// A payment-only account (no stake bind) revokes cleanly — no stake tombstone is written.
+	new_test_ext().execute_with(|| {
+		assert_ok!(bind(HASH_A, ALICE, None));
+		assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
+		assert_eq!(TombstonedStakeCred::<Test>::iter().count(), 0);
+	});
+}
+
 // ── the trustless self-proof (link_identity_signed, D1) ─────────────────────────────────────────────
 // A REAL MeshWallet.signData fixture (app/scripts/m2-cip8-fixture.mjs); the verifier itself is unit-tested
 // in src/cip8/tests.rs — here we prove the CALL wires verify → genesis-check → 1:1 bind / tombstone.
@@ -428,6 +521,24 @@ fn proof() -> (BoundedVec<u8, ConstU32<512>>, BoundedVec<u8, ConstU32<128>>) {
 /// The u64 the mock decodes the proof's 32-byte committed account into (first 8 bytes, LE).
 fn bound_account() -> u64 {
 	u64::from_le_bytes(hx(PROOF_ACCOUNT)[..8].try_into().unwrap())
+}
+
+// The REAL stake-key fixture (app/scripts/m2-cip8-stake-fixture.mjs) — the SAME wallet + //CognoGateA
+// account as the payment fixture, signed over the wallet's REWARD address with the STAKE key. So the
+// committed account (PROOF_ACCOUNT) is identical: the payment fixture binds the posting identity, this
+// one then anchors that account's voting power to the proven stake credential STAKE_CRED_FIX.
+const STAKE_SIG_FIX: &str = "84584da301270458202c041c9c6a676ac54d25e2fdce44c56581e316ae43adc4c7bf17f23214d8d8926761646472657373581de032c728d3861e164cab28cb8f006448139c8f1740ffb8e7aa9e5232dca166686173686564f458cc636f676e6f2d636861696e2f62696e642f76313b67656e657369733d323761663338353730616230373261326137383233326664663436616335653935376561613463343461356339326430366235363435353862666232656431363b6163636f756e743d333033356361336134626436306335356635313035626231386663373636613630333634643032323666373230666665336665333364323964363633313033343b6e6f6e63653d61626162616261626162616261626162616261626162616261626162616261625840c529e2e90f856433733c21100d9d3e2e7f891491464aab47df94822feadce361c45352bbc3c4fa4397ee3843b5edd18df7d3318b389d652a4a771041bffbd40b";
+const STAKE_KEY_FIX: &str = "a40101032720062158202c041c9c6a676ac54d25e2fdce44c56581e316ae43adc4c7bf17f23214d8d892";
+const STAKE_CRED_FIX_HEX: &str = "32c728d3861e164cab28cb8f006448139c8f1740ffb8e7aa9e5232dc";
+
+fn stake_proof() -> (BoundedVec<u8, ConstU32<512>>, BoundedVec<u8, ConstU32<128>>) {
+	(
+		hx(STAKE_SIG_FIX).try_into().expect("cose_sign1 fits 512"),
+		hx(STAKE_KEY_FIX).try_into().expect("cose_key fits 128"),
+	)
+}
+fn stake_cred_fix() -> StakeCredential {
+	hx(STAKE_CRED_FIX_HEX).try_into().expect("28-byte stake credential")
 }
 
 #[test]
@@ -504,6 +615,64 @@ fn revoke_tombstones_and_blocks_a_signed_rebind() {
 		assert_noop!(
 			CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s, k, None),
 			Error::<Test>::IdentityTombstoned
+		);
+	});
+}
+
+#[test]
+fn link_stake_signed_binds_voting_power_for_a_payment_bound_account() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		set_genesis(GENESIS);
+		// First payment-bind the account (the participant) via the real payment fixture.
+		let (s, k) = proof();
+		assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s, k, None));
+		let acct = bound_account();
+		// Then stake-bind: the real stake-key proof anchors the SAME account's voting power.
+		let (ss, sk) = stake_proof();
+		assert_ok!(CognoGate::link_stake_signed(RuntimeOrigin::signed(BOB), ss, sk));
+		assert_eq!(StakeCredOf::<Test>::get(acct), Some(stake_cred_fix()), "voting anchor bound to the proof's account");
+		assert_eq!(AccountOfStakeCred::<Test>::get(stake_cred_fix()), Some(acct), "1:1 both ways");
+		System::assert_has_event(Event::StakeLinked { who: acct, stake_cred: stake_cred_fix() }.into());
+	});
+}
+
+#[test]
+fn link_stake_signed_requires_a_payment_bind_first() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		set_genesis(GENESIS);
+		// No payment bind for the committed account ⇒ NotPaymentBound (voting needs participation).
+		let (ss, sk) = stake_proof();
+		assert_noop!(
+			CognoGate::link_stake_signed(RuntimeOrigin::signed(ALICE), ss, sk),
+			Error::<Test>::NotPaymentBound
+		);
+	});
+}
+
+#[test]
+fn link_stake_signed_rejects_a_wrong_genesis() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// BlockHash[0] left at default ⇒ anti-cross-chain reject, before any participation check.
+		let (ss, sk) = stake_proof();
+		assert_noop!(
+			CognoGate::link_stake_signed(RuntimeOrigin::signed(ALICE), ss, sk),
+			Error::<Test>::WrongGenesis
+		);
+	});
+}
+
+#[test]
+fn link_stake_signed_rejects_a_garbage_proof() {
+	new_test_ext().execute_with(|| {
+		set_genesis(GENESIS);
+		let bad: BoundedVec<u8, ConstU32<512>> = vec![0xde, 0xad, 0xbe, 0xef].try_into().unwrap();
+		let key: BoundedVec<u8, ConstU32<128>> = vec![0x00].try_into().unwrap();
+		assert_noop!(
+			CognoGate::link_stake_signed(RuntimeOrigin::signed(ALICE), bad, key),
+			Error::<Test>::ProofInvalid
 		);
 	});
 }

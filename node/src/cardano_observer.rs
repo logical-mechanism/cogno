@@ -18,7 +18,7 @@
 
 use codec::{Decode, Encode};
 use pallet_cardano_observer::{
-	BeaconName, CardanoObservation, CardanoRef, InherentError, INHERENT_IDENTIFIER,
+	BeaconName, CardanoObservation, CardanoRef, InherentError, StakeCredential, INHERENT_IDENTIFIER,
 };
 use sp_inherents::{InherentData, InherentDataProvider, InherentIdentifier};
 use std::collections::BTreeMap;
@@ -233,17 +233,31 @@ pub fn inputs_commitment(matches: &[serde_json::Value], vault_hash: &str) -> [u8
 	sp_core::hashing::blake2_256(&candidate_bytes(matches, vault_hash))
 }
 
-/// Build the full observation (reference + input commitment + canonical entries) from the vault matches.
+/// PURE: canonicalize the raw per-credential `epoch_stake` totals into the SAME ascending-by-28-bytes
+/// order the runtime compares against (a `BTreeMap` over the 28 credential bytes — last-write-wins on the
+/// impossible duplicate, matching the vault path's `BTreeMap` discipline). The db-sync read returns one
+/// row per bound credential; this only fixes the order so author + importer SCALE-encode identically.
+pub fn canonical_stake_entries(
+	raw: Vec<(StakeCredential, u128)>,
+) -> Vec<(StakeCredential, u128)> {
+	let map: BTreeMap<StakeCredential, u128> = raw.into_iter().collect();
+	map.into_iter().collect()
+}
+
+/// Build the full observation (reference + input commitment + canonical vault entries + canonical
+/// voting-power stake entries) from the vault matches and the raw per-credential `epoch_stake` totals.
 pub fn build_observation(
 	reference: CardanoRef,
 	matches: &[serde_json::Value],
 	vault_hash: &str,
+	stake_entries: Vec<(StakeCredential, u128)>,
 ) -> CardanoObservation {
 	let slot = reference.slot;
 	CardanoObservation {
 		reference,
 		inputs_commitment: inputs_commitment(matches, vault_hash),
 		entries: observe_as_of(matches, vault_hash, slot),
+		stake_entries: canonical_stake_entries(stake_entries),
 	}
 }
 
@@ -521,12 +535,25 @@ mod tests {
 	}
 
 	#[test]
+	fn canonical_stake_entries_sorts_ascending_by_credential_bytes() {
+		// Same ascending-by-28-bytes order the runtime BTreeMap compares against, independent of input
+		// order — so author + importer SCALE-encode the stake observation identically.
+		let s1: StakeCredential = [0xC1; 28];
+		let s2: StakeCredential = [0xC2; 28];
+		let out = canonical_stake_entries(vec![(s2, 300), (s1, 800)]);
+		assert_eq!(out, vec![(s1, 800), (s2, 300)], "sorted ascending by credential bytes");
+		// duplicate credential collapses (last-wins), as the BTreeMap collect does.
+		assert_eq!(canonical_stake_entries(vec![(s1, 1), (s1, 9)]), vec![(s1, 9)]);
+	}
+
+	#[test]
 	fn provide_inherent_data_puts_observation_only_when_present() {
 		// Some(obs) ⇒ data is put under our identifier; None ⇒ nothing (fail-closed author abstains).
 		let obs = CardanoObservation {
 			reference: CardanoRef { slot: 1_000, block_hash: [0u8; 32] },
 			inputs_commitment: [0u8; 32],
 			entries: vec![(beacon(A), 200_000_000)],
+			stake_entries: vec![],
 		};
 		let with = CardanoObservationInherentDataProvider { observation: Some(obs) };
 		let mut id = InherentData::new();

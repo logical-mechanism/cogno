@@ -323,6 +323,10 @@ impl pallet_talk_stake::Config for Runtime {
 	// account can back more than 45_000_000_000_000_000. Bounds a follower/committee bug from
 	// writing an absurd weight (the capacity meter already saturates; this is defence-in-depth).
 	type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;
+	// Voting power = the total Cardano stake of a bound stake credential; its ceiling is also the
+	// whole ADA supply (45e15 lovelace). Distinct constant from MaxStakeWeight (which bounds one
+	// vault's lock) so the two weights can diverge without coupling.
+	type MaxVotingPower = ConstU128<45_000_000_000_000_000>;
 	type WeightInfo = pallet_talk_stake::weights::SubstrateWeight<Runtime>;
 }
 
@@ -435,6 +439,34 @@ impl pallet_cardano_observer::WeightSink<AccountId> for WeightApply {
 	}
 }
 
+/// Stake credential → bound account adapter: the 28-byte stake credential IS the cogno-gate
+/// `AccountOfStakeCred` key (the proven reward-address key hash), so the lookup is a direct read.
+pub struct StakeLookup;
+impl pallet_cardano_observer::StakeResolver<AccountId> for StakeLookup {
+	fn resolve(stake_cred: &[u8; 28]) -> Option<AccountId> {
+		pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(stake_cred)
+	}
+}
+
+/// The set of bound stake credentials, for the node-side IDP (via the `CardanoObserverApi`): enumerate
+/// the cogno-gate `AccountOfStakeCred` keys at the parent block's state.
+pub struct BoundStakeCreds;
+impl pallet_cardano_observer::BoundStakeCredentials for BoundStakeCreds {
+	fn bound_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
+		pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys().collect()
+	}
+}
+
+/// Voting-power-application adapter: write the talk-stake `VotingPower` (the total-stake VOTE weight).
+/// Distinct from `WeightApply` (which sets the locked-ADA `AllowedStake` deposit weight + primes the
+/// microblog capacity row) — voting power touches neither capacity nor `AllowedStake`.
+pub struct VotingPowerApply;
+impl pallet_cardano_observer::VotingPowerSink<AccountId> for VotingPowerApply {
+	fn set_voting_power(who: &AccountId, weight: u128) {
+		pallet_talk_stake::Pallet::<Runtime>::apply_voting_power(who, weight);
+	}
+}
+
 /// The Cardano stability window (3k/f = the no-rollback horizon), as a deliberate **TESTNET vs MAINNET
 /// split** — exactly like `MinAuthorities = 1` / the single-validator testnet set: run the relaxed value
 /// while testing here, flip to the production value before mainnet. The flip is a one-line, ENCODING-NEUTRAL
@@ -495,8 +527,16 @@ impl pallet_cardano_observer::Config for Runtime {
 	type ShelleyStartUnix = ObsShelleyStartUnix;
 	type ShelleyStartSlot = ObsShelleyStartSlot;
 	type VaultPolicyId = ObsVaultPolicyId;
+	// Voting power = total Cardano stake; its ceiling is also the whole ADA supply. Over-cap entries are
+	// SKIPPED (never brick the Mandatory block), like MaxStakeWeight for the vault.
+	type MaxVotingPower = ConstU128<45_000_000_000_000_000>;
+	// Read epoch_stake 1 epoch before the reference's epoch — a fully-closed (immutable) snapshot, and the
+	// ~2-epoch manipulation-resistant lag Cardano itself uses (CIP-1694 voting power).
+	type StakeEpochLookback = ConstU64<1>;
 	type BeaconResolver = BeaconLookup;
+	type StakeResolver = StakeLookup;
 	type WeightSink = WeightApply;
+	type VotingPowerSink = VotingPowerApply;
 	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee gates the enforce/shadow cutover flip — the same
 	// crown-jewel origin as set_stake/link_identity/anchor_ack. Default is SHADOW (EnforceWeight=false):
 	// the inherent verifies + projects but does not write weight; the committee set_stake stays the sole

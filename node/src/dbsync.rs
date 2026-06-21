@@ -22,7 +22,7 @@
 //!      history; ADA-only-at-address UTxOs are excluded by the asset `EXISTS`).
 
 use crate::cardano_observer::hex32;
-use pallet_cardano_observer::BeaconName;
+use pallet_cardano_observer::{BeaconName, StakeCredential};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -167,4 +167,119 @@ pub async fn read_observation(
 	tokio::time::timeout(DBSYNC_TIMEOUT, read)
 		.await
 		.map_err(|_| format!("db-sync read timed out after {}s", DBSYNC_TIMEOUT.as_secs()))?
+}
+
+/// The VOTING-POWER (`epoch_stake`) read: for each bound 28-byte stake credential, its total Cardano
+/// stake at the deterministic as-of epoch (the epoch of the stable block ≤ `reference_slot`, minus
+/// `lookback`). The epoch is resolved from db-sync's `block.epoch_no` (network-agnostic — no
+/// slots-per-epoch arithmetic), so every fully-synced node reads the SAME immutable snapshot. Matches a
+/// credential network-agnostically (`substring(hash_raw from 2 for 28)` — the 28 bytes after the reward
+/// header), so the same query works on preprod and mainnet. `::text` totals (stake exceeds 2^53).
+const STAKE_OBSERVATION_SQL: &str = "\
+WITH params AS (SELECT $1::bigint AS ref, $2::bigint AS lookback), \
+ep AS (SELECT b.epoch_no AS e FROM block b, params p WHERE b.slot_no <= p.ref ORDER BY b.slot_no DESC LIMIT 1), \
+target AS (SELECT (SELECT e FROM ep) - (SELECT lookback FROM params) AS e), \
+stake AS ( \
+  SELECT encode(substring(sa.hash_raw from 2 for 28),'hex') AS cred, SUM(es.amount)::text AS total \
+  FROM epoch_stake es JOIN stake_address sa ON sa.id = es.addr_id \
+  WHERE es.epoch_no = (SELECT e FROM target) \
+    AND substring(sa.hash_raw from 2 for 28) = ANY($3::bytea[]) \
+  GROUP BY substring(sa.hash_raw from 2 for 28)) \
+SELECT (SELECT EXISTS (SELECT 1 FROM epoch_stake)) AS epoch_stake_ok, \
+       (SELECT EXISTS (SELECT 1 FROM epoch_stake WHERE epoch_no = (SELECT e FROM target))) AS target_ok, \
+       COALESCE(json_agg(json_build_object('cred', cred, 'total', total)), '[]'::json) AS rows \
+FROM stake";
+
+/// The result of the `epoch_stake` read. `entries` is `(28-byte credential, total lovelace)` for every
+/// bound credential that had stake at the as-of epoch (absent ⇒ 0 via the on-chain unlock clamp).
+pub struct DbsyncStakeRead {
+	pub entries: Vec<(StakeCredential, u128)>,
+}
+
+/// Read the total `epoch_stake` for each bound stake credential AS-OF the epoch derived from
+/// `reference_slot` (minus `lookback`). Fail-closed: any error, an unpopulated `epoch_stake`, or a target
+/// epoch not yet snapshotted (while there ARE bound credentials) returns `Err` ⇒ the caller abstains
+/// (empty observation, never a partial/forking read). `bound_creds` empty ⇒ `Ok(empty)` (legitimately no
+/// voters yet — not an abstain).
+pub async fn read_stake_observation(
+	url: &str,
+	bound_creds: &[StakeCredential],
+	reference_slot: u64,
+	lookback: u64,
+) -> Result<DbsyncStakeRead, String> {
+	if bound_creds.is_empty() {
+		return Ok(DbsyncStakeRead { entries: Vec::new() });
+	}
+	let read = async {
+		let mut slot = client_cell().lock().await;
+		if slot.as_ref().map_or(true, |c| c.is_closed()) {
+			*slot = Some(connect(url).await?);
+		}
+		let ref_i64 = i64::try_from(reference_slot).map_err(|_| "reference slot exceeds i64".to_string())?;
+		let lookback_i64 = i64::try_from(lookback).map_err(|_| "lookback exceeds i64".to_string())?;
+		let creds: Vec<&[u8]> = bound_creds.iter().map(|c| c.as_slice()).collect();
+		let row = match slot
+			.as_ref()
+			.expect("just connected/validated above; qed")
+			.query_one(STAKE_OBSERVATION_SQL, &[&ref_i64, &lookback_i64, &creds])
+			.await
+		{
+			Ok(r) => r,
+			Err(e) => {
+				*slot = None;
+				return Err(format!("db-sync epoch_stake query failed: {e}"));
+			},
+		};
+		drop(slot);
+
+		// Fail-closed: epoch_stake must be populated, and the target epoch must be snapshotted (else a
+		// not-yet-indexed node would read 0 for a real staker → a false unlock-clamp / cross-node fork).
+		if !row.get::<_, bool>(0) {
+			return Err("db-sync epoch_stake table is empty; the voting-power read requires a populated \
+			            epoch_stake — abstaining (fail closed)"
+				.to_string());
+		}
+		if !row.get::<_, bool>(1) {
+			return Err("db-sync has no epoch_stake snapshot for the target epoch yet (source behind) — \
+			            abstaining (defer/CannotVerify)"
+				.to_string());
+		}
+		let rows = row
+			.get::<_, serde_json::Value>(2)
+			.as_array()
+			.cloned()
+			.ok_or_else(|| "db-sync epoch_stake rows column was not a JSON array".to_string())?;
+		let mut entries: Vec<(StakeCredential, u128)> = Vec::with_capacity(rows.len());
+		for r in &rows {
+			let cred_hex = r.get("cred").and_then(|v| v.as_str()).ok_or("missing cred")?;
+			let total = r
+				.get("total")
+				.and_then(|v| v.as_str())
+				.and_then(|s| s.parse::<u128>().ok())
+				.ok_or("bad total")?;
+			let bytes = hex28(cred_hex).ok_or("bad credential hex")?;
+			entries.push((bytes, total));
+		}
+		Ok(DbsyncStakeRead { entries })
+	};
+
+	tokio::time::timeout(DBSYNC_TIMEOUT, read)
+		.await
+		.map_err(|_| format!("db-sync epoch_stake read timed out after {}s", DBSYNC_TIMEOUT.as_secs()))?
+}
+
+/// Parse a 56-char (28-byte) hex string into a `StakeCredential`; `None` on bad length/chars.
+fn hex28(s: &str) -> Option<StakeCredential> {
+	let s = s.strip_prefix("0x").unwrap_or(s);
+	if s.len() != 56 {
+		return None;
+	}
+	let b = s.as_bytes();
+	let mut out = [0u8; 28];
+	for i in 0..28 {
+		let hi = (b[2 * i] as char).to_digit(16)?;
+		let lo = (b[2 * i + 1] as char).to_digit(16)?;
+		out[i] = ((hi << 4) | lo) as u8;
+	}
+	Some(out)
 }

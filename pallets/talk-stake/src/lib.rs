@@ -69,6 +69,12 @@ pub mod pallet {
 		/// ADA supply).
 		#[pallet::constant]
 		type MaxStakeWeight: Get<StakeWeight>;
+		/// Hard ceiling on a single account's VOTING POWER (the total observed Cardano stake of its
+		/// bound stake credential). Same defence-in-depth role as [`Config::MaxStakeWeight`] but a
+		/// distinct, larger bound: voting power is total stake (up to the whole ADA supply), not the
+		/// lock backing one vault. `set_voting_power` rejects anything above it with `VotingPowerTooHigh`.
+		#[pallet::constant]
+		type MaxVotingPower: Get<StakeWeight>;
 		/// Weight information for this pallet's dispatchables.
 		type WeightInfo: WeightInfo;
 	}
@@ -79,17 +85,31 @@ pub mod pallet {
 	pub type AllowedStake<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, StakeWeight, ValueQuery>;
 
+	/// Per-account VOTING POWER — the total Cardano stake of the account's bound stake credential
+	/// (cogno-gate `StakeCredOf`), observed from `epoch_stake`. Distinct from [`AllowedStake`]: that
+	/// (the locked-ADA deposit) meters POSTING capacity; this drives stake-weighted VOTES and POLLS in
+	/// `pallet-microblog`. `ValueQuery` → an account with no stake bind / no stake reads `0` (its votes
+	/// carry no weight). Written only by `SetStakeOrigin` (committee/follower; the cardano-observer
+	/// inherent is the trustless upgrade path).
+	#[pallet::storage]
+	pub type VotingPower<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, StakeWeight, ValueQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
 		/// An account's stake weight was set (idempotent overwrite; reorg-safe re-derive).
 		StakeSet { who: T::AccountId, weight: StakeWeight },
+		/// An account's voting power (total observed Cardano stake) was set (idempotent overwrite).
+		VotingPowerSet { who: T::AccountId, weight: StakeWeight },
 	}
 
 	#[pallet::error]
 	pub enum Error<T> {
 		/// The requested stake weight exceeds [`Config::MaxStakeWeight`] (`stake-1`).
 		WeightTooHigh,
+		/// The requested voting power exceeds [`Config::MaxVotingPower`].
+		VotingPowerTooHigh,
 	}
 
 	#[pallet::call]
@@ -133,6 +153,38 @@ pub mod pallet {
 			Self::apply_weight(&who, weight);
 			Ok(())
 		}
+
+		/// Set (overwrite) the VOTING POWER for `who` — the total observed Cardano stake of its bound
+		/// stake credential. Gated by `SetStakeOrigin` (same authority as [`Call::set_stake`]). Drives
+		/// stake-weighted votes/polls in microblog; writes ONLY `VotingPower` (never `AllowedStake` or
+		/// the capacity row). The caller (committee/follower/observer) is responsible for only setting
+		/// accounts whose stake credential is bound + proven in cogno-gate; this pallet stores the value
+		/// the authority computed (the off-chain `epoch_stake` total).
+		#[pallet::call_index(1)]
+		#[pallet::weight(T::WeightInfo::set_stake())]
+		pub fn set_voting_power(
+			origin: OriginFor<T>,
+			who: T::AccountId,
+			weight: StakeWeight,
+		) -> DispatchResult {
+			if let Err(e) = T::SetStakeOrigin::ensure_origin(origin) {
+				log::warn!(
+					target: LOG_TARGET,
+					"set_voting_power REJECTED (bad origin): unauthorised caller tried to set who={who:?} weight={weight}",
+				);
+				return Err(e.into());
+			}
+			let max = T::MaxVotingPower::get();
+			if weight > max {
+				log::warn!(
+					target: LOG_TARGET,
+					"set_voting_power REJECTED (VotingPowerTooHigh): who={who:?} requested_weight={weight} > max_allowed={max}",
+				);
+				return Err(Error::<T>::VotingPowerTooHigh.into());
+			}
+			Self::apply_voting_power(&who, weight);
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -155,6 +207,22 @@ pub mod pallet {
 				log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} weight {previous} -> {weight}");
 			}
 			Self::deposit_event(Event::StakeSet { who: who.clone(), weight });
+		}
+
+		/// Write `who`'s voting power (insert `VotingPower` + emit `VotingPowerSet`), WITHOUT the origin
+		/// or `MaxVotingPower` check. Shared internal entry point: [`Pallet::set_voting_power`] calls it
+		/// after the origin + bound checks; the cardano-observer inherent can call it from its verified
+		/// projection. Writes ONLY `VotingPower` — microblog reads it live for vote/poll weight, so a
+		/// change lifts/drops future votes; existing recorded votes keep their stored snapshot.
+		pub fn apply_voting_power(who: &T::AccountId, weight: StakeWeight) {
+			let previous = VotingPower::<T>::get(who);
+			VotingPower::<T>::insert(who, weight);
+			if weight == previous {
+				log::debug!(target: LOG_TARGET, "apply_voting_power: who={who:?} weight={weight} unchanged");
+			} else {
+				log::debug!(target: LOG_TARGET, "apply_voting_power: who={who:?} weight {previous} -> {weight}");
+			}
+			Self::deposit_event(Event::VotingPowerSet { who: who.clone(), weight });
 		}
 	}
 }
