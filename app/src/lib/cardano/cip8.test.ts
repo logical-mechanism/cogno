@@ -6,6 +6,10 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// A testnet vkey reward address: header 0xe0 (type 0b1110) + 28-byte stake credential = 29 bytes / 58 hex.
+const STAKE_CRED = "c1".repeat(28);
+const VKEY_REWARD_RAW = `e0${STAKE_CRED}`; // 0xe0 >> 4 = 0b1110 (vkey stake)
+
 const fake = {
   changeAddress: "addr_test_vkey",
   paymentType: 0 as number,
@@ -14,14 +18,19 @@ const fake = {
   signature: "sigsig" as string,
   key: "cose-key" as string,
   signDataCalls: [] as string[],
+  signDataAddrs: [] as string[],
+  rewardAddresses: ["stake_test_reward"] as string[],
+  rewardRaw: VKEY_REWARD_RAW as string, // bech32→bytes hex for the reward address (header + stake cred)
 };
 
 vi.mock("@meshsdk/core", () => ({
   BrowserWallet: {
     enable: vi.fn(async () => ({
       getChangeAddress: async () => fake.changeAddress,
-      signData: async (message: string) => {
+      getRewardAddresses: async () => fake.rewardAddresses,
+      signData: async (message: string, addr?: string) => {
         fake.signDataCalls.push(message);
+        if (addr !== undefined) fake.signDataAddrs.push(addr);
         return { signature: fake.signature, key: fake.key };
       },
     })),
@@ -30,7 +39,10 @@ vi.mock("@meshsdk/core", () => ({
 
 vi.mock("@meshsdk/core-cst", () => ({
   Address: {
-    fromBech32: () => ({ getProps: () => ({ paymentPart: { type: fake.paymentType, hash: "ph" } }) }),
+    fromBech32: () => ({
+      getProps: () => ({ paymentPart: { type: fake.paymentType, hash: "ph" } }),
+      toBytes: () => ({ toString: () => fake.rewardRaw }),
+    }),
   },
   getPublicKeyFromCoseKey: () => {
     if (fake.vkThrows) throw new Error("recovery shape varied");
@@ -38,7 +50,7 @@ vi.mock("@meshsdk/core-cst", () => ({
   },
 }));
 
-import { produceBindProof } from "./cip8";
+import { produceBindProof, produceBindProofStake } from "./cip8";
 
 const DOMAIN = "cogno-chain/bind/v1";
 const ACCOUNT = "ab".repeat(32); // 64-hex sr25519 pubkey
@@ -52,6 +64,9 @@ beforeEach(() => {
   fake.signature = "sigsig";
   fake.key = "cose-key";
   fake.signDataCalls = [];
+  fake.signDataAddrs = [];
+  fake.rewardAddresses = ["stake_test_reward"];
+  fake.rewardRaw = VKEY_REWARD_RAW;
   vi.restoreAllMocks();
 });
 
@@ -139,6 +154,80 @@ describe("produceBindProof — address + key defense", () => {
     fake.signature = "ab".repeat(513); // 513 bytes > the 512-byte BoundedVec cap
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await produceBindProof({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/512-byte on-chain bound/i);
+  });
+});
+
+describe("produceBindProofStake — happy path (voting-power bind)", () => {
+  it("signs over the REWARD address with the stake key and returns the proven 28-byte stake credential", async () => {
+    const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: `0x${ACCOUNT}`, genesisHex: `0x${GENESIS}` });
+    expect(res.ok).toBe(true);
+    expect(res.coseSign1).toBe("sigsig");
+    expect(res.coseKey).toBe("cose-key");
+    // The signature is taken over the wallet's REWARD address (⇒ signed with the stake key).
+    expect(res.signingAddress).toBe("stake_test_reward");
+    expect(fake.signDataAddrs).toEqual(["stake_test_reward"]);
+    // The stake credential is the 28 bytes AFTER the 1-byte header (vkey reward).
+    expect(res.stakeCredentialHex).toBe(STAKE_CRED);
+    // It signed exactly ONE payload, the pinned grammar committing my account + genesis + a 32-hex nonce.
+    expect(fake.signDataCalls).toHaveLength(1);
+    expect(fake.signDataCalls[0]).toMatch(
+      new RegExp(`^${DOMAIN};genesis=${GENESIS};account=${ACCOUNT};nonce=[0-9a-f]{32}$`),
+    );
+  });
+});
+
+describe("produceBindProofStake — reward-address defense (refuse before signing)", () => {
+  it("rejects a wallet that exposes no reward address (no stake key to prove)", async () => {
+    fake.rewardAddresses = [];
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await produceBindProofStake({ walletId: "nami", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/no reward address/i);
+    expect(fake.signDataCalls).toHaveLength(0); // NEVER signed
+  });
+
+  it("rejects a SCRIPT-stake reward address (header 0b1111) — only vkey stake keys can bind", async () => {
+    fake.rewardRaw = `f0${STAKE_CRED}`; // 0xf0 >> 4 = 0b1111 (script stake)
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/script stake credential/i);
+    expect(fake.signDataCalls).toHaveLength(0);
+  });
+
+  it("rejects a malformed (non-29-byte) reward address shape", async () => {
+    fake.rewardRaw = "e0dead"; // far too short to be a 29-byte reward address
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/29 bytes/i);
+    expect(fake.signDataCalls).toHaveLength(0);
+  });
+
+  it("rejects a non-32-byte account hex before touching the wallet", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: "deadbeef", genesisHex: GENESIS });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/32-byte hex pubkey/i);
+    expect(fake.signDataCalls).toHaveLength(0);
+  });
+});
+
+describe("produceBindProofStake — key + size defense", () => {
+  it("rejects a 64-byte extended verification key", async () => {
+    fake.vkHex = "22".repeat(64);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/extended key/i);
+  });
+
+  it("rejects a COSE signature over the 512-byte on-chain bound", async () => {
+    fake.signature = "ab".repeat(513);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/512-byte on-chain bound/i);
   });

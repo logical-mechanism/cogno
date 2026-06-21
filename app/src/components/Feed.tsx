@@ -23,7 +23,6 @@ export interface FeedProps {
   mySs58: Ss58;
   busy: boolean;
   onReply: (id: bigint) => void;
-  onDelete: (id: bigint) => void;
   /**
    * A live feed-source error (e.g. the indexer is unreachable). Surfaced honestly so the feed
    * degrades to a clear notice instead of falsely claiming the ledger is empty. M4.
@@ -78,7 +77,6 @@ export function Feed({
   mySs58,
   busy,
   onReply,
-  onDelete,
   error = null,
   paginated = false,
   hasNextPage = false,
@@ -109,7 +107,6 @@ export function Feed({
               busy={busy}
               isReply={r.isReply}
               onReply={onReply}
-              onDelete={onDelete}
             />
           ))}
         </div>

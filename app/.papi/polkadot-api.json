@@ -5,8 +5,8 @@
     "cogno": {
       "wsUrl": "ws://127.0.0.1:9944",
       "metadata": ".papi/metadata/cogno.scale",
-      "genesis": "0x4545454545454545454545454545454545454545454545454545454545454545",
-      "codeHash": "0x1d431acf148c020f3fd4206504b7d56d8877733712d1f454225ce02d92b85e04"
+      "genesis": "0x6f78249f8dae79c88cec912a9fdf88e59b6fdbe7d6660ffa9e6cfb8e6ce852cc",
+      "codeHash": "0x6180056ad0e3902e51f6b8e453bd7607c0185b8d241850a3f75c6924ded70648"
     }
   }
 }

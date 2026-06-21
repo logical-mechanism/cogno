@@ -15,6 +15,11 @@ import styles from "./Account.module.css";
 const short = (s: string, h = 8, t = 6) => (s.length <= h + t + 1 ? s : `${s.slice(0, h)}…${s.slice(-t)}`);
 const ada = (l: bigint) => `${(Number(l) / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 6 })} ₳`;
 
+// Wallets whose CIP-30 `signData` signs over a REWARD (stake) address — the stake-key proof the
+// voting-power bind needs. Eternl is the reference; Lace works too. Other wallets can post but can't
+// prove stake, so the "Enable voting" action is gated to these (others see a switch-to-Eternl note).
+const STAKE_SIGN_WALLETS = ["eternl", "lace"];
+
 export interface AccountProps {
   signerCtl: UseSigner;
   identity: UseIdentity;
@@ -95,6 +100,8 @@ export function Account({ signerCtl: sc, identity, vault, onOpenAbout }: Account
 
   // ── CONNECTED ──
   const locked = vault.lockedKnown && vault.locked != null && vault.locked > 0n;
+  const canStakeSign = STAKE_SIGN_WALLETS.includes((sc.connectedWalletId ?? "").toLowerCase());
+  const hasVotePower = identity.votingPower != null && identity.votingPower > 0n;
   return (
     <section className={styles.card} aria-label="Account">
       <div className={styles.identity}>
@@ -203,6 +210,51 @@ export function Account({ signerCtl: sc, identity, vault, onOpenAbout }: Account
           </p>
         )}
       </div>
+
+      {/* Vote weight — a SEPARATE, optional bind. Posting capacity (above) comes from the 100 ₳ vault
+          deposit; VOTE weight comes from your TOTAL Cardano stake, proved once with your stake key. The
+          stake credential binds 1:1, so many wallets can't share one stake's votes. Shown only once the
+          posting key is registered, because the runtime requires a payment bind first. */}
+      {identity.bound === true && (
+        <div className={styles.stake}>
+          <span className={styles.idLabel}>vote weight</span>
+          {identity.stakeBound === true ? (
+            <>
+              <span className={styles.mono}>{hasVotePower ? `${ada(identity.votingPower!)} staked` : "stake key bound"}</span>
+              <p className={styles.fine}>
+                {hasVotePower
+                  ? "your votes and polls weigh by your total Cardano stake — not the 100 ₳ lock."
+                  : "weight appears once the chain observes your stake (a few blocks)."}
+              </p>
+            </>
+          ) : identity.stakeBound === false ? (
+            canStakeSign ? (
+              <div className={styles.row}>
+                <button
+                  type="button"
+                  className={styles.primary}
+                  disabled={identity.stakeBinding}
+                  onClick={() => sc.connectedWalletId && identity.bindStake(sc.connectedWalletId)}
+                >
+                  {identity.stakeBinding ? "enabling…" : "Enable voting"}
+                </button>
+                <span className={styles.fine}>one stake-key signature — votes weigh by your total ADA stake, not the 100 ₳ lock.</span>
+              </div>
+            ) : (
+              <p className={styles.fine}>
+                To vote with your stake, switch to Eternl (or Lace) — they sign with your stake key. Your current wallet can post but can&apos;t prove stake.
+              </p>
+            )
+          ) : (
+            <p className={styles.muted}>checking voting power…</p>
+          )}
+          {identity.stakeError && (
+            <p className={styles.err} role="alert">
+              {identity.stakeError}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }

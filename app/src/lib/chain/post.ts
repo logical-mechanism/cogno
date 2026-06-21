@@ -1,8 +1,11 @@
-// The write path: submit a post or a delete, surfaced as an honest phase stream.
+// The write path: submit a post, surfaced as an honest phase stream.
 //
 // Honesty is a product property here: "signed" ≠ "broadcast" ≠ "inBestBlock" ≠ "finalized".
 // The UI must be able to say exactly where a tx is, and never claim "posted" before the tx
 // is actually in a block — and never claim "permanent" before GRANDPA finalization.
+//
+// There is no delete: posts are permanent on-chain (the `Microblog.delete_post` call was removed
+// at spec 113 — "content is permanent"), so the client offers no delete affordance.
 
 import { Binary } from "polkadot-api";
 import { Observable } from "rxjs";
@@ -26,13 +29,13 @@ interface ChainEvent {
 }
 
 /**
- * Extract the post id carried by a Microblog `PostCreated` / `PostDeleted` event, if present.
+ * Extract the post id carried by a Microblog `PostCreated` event, if present.
  * Returns undefined when the events array has no matching Microblog event (e.g. a failed tx).
  * Exported for unit tests (the id extraction is load-bearing for the inBestBlock/finalized phases).
  */
 export function extractPostId(
   events: ChainEvent[] | undefined,
-  eventName: "PostCreated" | "PostDeleted",
+  eventName: "PostCreated",
 ): bigint | undefined {
   if (!events) return undefined;
   for (const ev of events) {
@@ -105,7 +108,7 @@ export function watchTx(
     error: (err: unknown) => void;
     complete: () => void;
   }) => { unsubscribe: () => void } },
-  eventName: "PostCreated" | "PostDeleted",
+  eventName: "PostCreated",
   fallbackId?: bigint,
 ): Observable<TxUpdate> {
   return new Observable<TxUpdate>((subscriber) => {
@@ -216,21 +219,3 @@ export function submitPost(
   );
 }
 
-/**
- * Delete one of the signer's own posts by id. Same honest phase stream as {@link submitPost};
- * `postId` carries the deleted id (from the `PostDeleted` event, falling back to the input id).
- */
-export function submitDelete(
-  api: CognoApi,
-  signer: PostingSigner,
-  id: bigint,
-): Observable<TxUpdate> {
-  const tx = api.tx.Microblog.delete_post({ id });
-  return watchTx(
-    () => tx.signSubmitAndWatch(signer.signer) as unknown as ReturnType<
-      Parameters<typeof watchTx>[0]
-    >,
-    "PostDeleted",
-    id,
-  );
-}

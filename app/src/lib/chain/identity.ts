@@ -71,6 +71,54 @@ export async function submitLinkIdentitySigned(
   }
 }
 
+/** Outcome of submitting a CIP-8 STAKE self-proof on-chain (the voting-power bind). */
+export interface StakeLinkResult {
+  ok: boolean;
+  /** the 28-byte stake credential the runtime verified + bound (0x-hex), from the `StakeLinked` event. */
+  stakeCredHex?: string;
+  error?: string;
+}
+
+/** Build the `cognoGate.link_stake_signed` tx — takes ONLY the two COSE blobs (NO thread pointer). */
+function buildLinkStakeTx(api: CognoApi, coseSign1Hex: string, coseKeyHex: string) {
+  return api.tx.CognoGate.link_stake_signed({
+    cose_sign1: Binary.fromBytes(hexToBytes(coseSign1Hex)),
+    cose_key: Binary.fromBytes(hexToBytes(coseKeyHex)),
+  });
+}
+
+/**
+ * Submit a CIP-8 STAKE-key self-proof via `cognoGate.link_stake_signed` (spec 115 — voting power),
+ * signed (and fee-paid) by the user's posting account. The runtime verifies the stake-key signature,
+ * parses the proven 28-byte stake credential, and binds it 1:1 to the account — its votes/polls then
+ * weigh by the total Cardano stake of that credential. The account MUST already be payment-bound
+ * (`link_identity_signed`); the runtime rejects an unbound account with `NotPaymentBound`. Unlike the
+ * payment bind there is no sponsored-relay path here: the (already-registered) account self-pays the
+ * fee. Resolves when included; returns the bound stake credential from the `StakeLinked` event.
+ */
+export async function submitLinkStakeSigned(
+  api: CognoApi,
+  signer: PostingSigner,
+  coseSign1Hex: string,
+  coseKeyHex: string,
+): Promise<StakeLinkResult> {
+  try {
+    const tx = buildLinkStakeTx(api, coseSign1Hex, coseKeyHex);
+    const res = await tx.signAndSubmit(signer.signer);
+    if (!res.ok) {
+      const dispatchError = (res as { dispatchError?: { type: string; value: unknown } }).dispatchError;
+      return { ok: false, error: stringifyDispatchError(dispatchError) };
+    }
+    const ev = (res.events as Array<{ type: string; value?: { type: string; value?: { stake_cred?: { asHex: () => string } } } }>)
+      .find((e) => e.type === "CognoGate" && e.value?.type === "StakeLinked");
+    return { ok: true, stakeCredHex: ev?.value?.value?.stake_cred?.asHex() };
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("cogno: link_stake_signed submission failed:", stringifyError(e), e);
+    return { ok: false, error: stringifyError(e) };
+  }
+}
+
 /** How a sponsored bind completed — so the UI can be honest about whether a liveness party was used. */
 export type BindVia = "self" | "relay";
 

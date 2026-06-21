@@ -28,11 +28,6 @@ describe("extractPostId", () => {
     expect(extractPostId(events as never, "PostCreated")).toBe(42n);
   });
 
-  it("extracts the id from a PostDeleted event", () => {
-    const events = [microblogEvent("PostDeleted", { id: 7n })];
-    expect(extractPostId(events as never, "PostDeleted")).toBe(7n);
-  });
-
   it("returns undefined when the events array is absent (e.g. a failed tx)", () => {
     expect(extractPostId(undefined, "PostCreated")).toBeUndefined();
   });
@@ -40,7 +35,7 @@ describe("extractPostId", () => {
   it("returns undefined when no Microblog event of the wanted name is present", () => {
     const events = [
       { type: "System", value: { type: "ExtrinsicSuccess", value: {} } },
-      microblogEvent("PostDeleted", { id: 9n }), // wrong event name for the query
+      microblogEvent("Reposted", { id: 9n }), // a different Microblog event — not the one queried
     ];
     expect(extractPostId(events as never, "PostCreated")).toBeUndefined();
   });

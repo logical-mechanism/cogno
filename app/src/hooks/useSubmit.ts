@@ -1,13 +1,13 @@
 "use client";
 
-// useSubmit — turns the submitPost / submitDelete observables into a single
-// React-friendly tx lifecycle. Tracks the latest TxUpdate, cancels any in-flight
-// subscription when a new submit starts or on unmount, and is gated by the boot
-// guard (a spec mismatch must block the WRITE path — reads stay live).
+// useSubmit — turns the submitPost observable into a single React-friendly tx
+// lifecycle. Tracks the latest TxUpdate, cancels any in-flight subscription when a
+// new submit starts or on unmount, and is gated by the boot guard (a spec mismatch
+// must block the WRITE path — reads stay live). There is no delete: posts are permanent.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Subscription } from "rxjs";
-import { submitPost, submitDelete } from "@/lib/chain/post";
+import { submitPost } from "@/lib/chain/post";
 import type {
   CognoApi,
   PostingSigner,
@@ -24,8 +24,6 @@ export interface UseSubmit {
   canSubmit: boolean;
   /** Submit a post (optionally a reply to `parent`). No-op when not allowed. */
   post: (text: string, parent?: bigint) => void;
-  /** Delete one of your own posts by id. No-op when not allowed. */
-  remove: (id: bigint) => void;
   /** Clear the tx state back to idle. */
   reset: () => void;
 }
@@ -84,14 +82,6 @@ export function useSubmit(
     [api, canSubmit, signer, run],
   );
 
-  const remove = useCallback(
-    (id: bigint) => {
-      if (!api || !canSubmit) return;
-      run(submitDelete(api, signer, id));
-    },
-    [api, canSubmit, signer, run],
-  );
-
   const reset = useCallback(() => {
     cancelInFlight();
     setState(null);
@@ -99,5 +89,5 @@ export function useSubmit(
 
   const busy = state !== null && !isTerminal(state.phase);
 
-  return { state, busy, canSubmit, post, remove, reset };
+  return { state, busy, canSubmit, post, reset };
 }

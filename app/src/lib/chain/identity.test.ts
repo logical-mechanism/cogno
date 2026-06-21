@@ -4,7 +4,7 @@
 // under test: a zero-balance derived account is routed through the relay; a funded one self-submits.
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { submitBindViaRelay, canSelfPayBind, submitBindSponsored } from "./identity";
+import { submitBindViaRelay, canSelfPayBind, submitBindSponsored, submitLinkStakeSigned } from "./identity";
 import type { CognoApi, PostingSigner } from "@/lib/types";
 
 const SIGN1 = "ab".repeat(80); // 80-byte cose_sign1 (within the 512 bound)
@@ -130,5 +130,53 @@ describe("submitBindSponsored", () => {
     const r = await submitBindSponsored(mockApi({ free: 0n }), signer, SIGN1, KEY, "");
     expect(r.ok).toBe(false);
     expect(r.error).toContain("no sponsored-bind relay");
+  });
+});
+
+// The stake (voting-power) bind: self-submit `link_stake_signed` and surface the bound credential
+// from the StakeLinked event. NO relay / fee-estimate path here — the already-registered account
+// self-pays — so the surface is just the submit-and-read-the-event logic.
+const STAKE_LINKED_EVENT = {
+  type: "CognoGate",
+  value: { type: "StakeLinked", value: { who: "5GxAccount", stake_cred: { asHex: () => "0xc1c1c1" } } },
+};
+
+function stakeApi(submit?: unknown): CognoApi {
+  const tx = { signAndSubmit: vi.fn(async () => submit ?? { ok: true, events: [STAKE_LINKED_EVENT] }) };
+  return { tx: { CognoGate: { link_stake_signed: vi.fn(() => tx) } } } as unknown as CognoApi;
+}
+
+describe("submitLinkStakeSigned", () => {
+  it("submits and returns the bound stake credential from the StakeLinked event", async () => {
+    const r = await submitLinkStakeSigned(stakeApi(), signer, SIGN1, KEY);
+    expect(r.ok).toBe(true);
+    expect(r.stakeCredHex).toBe("0xc1c1c1");
+  });
+
+  it("surfaces a dispatch error (e.g. NotPaymentBound) instead of throwing", async () => {
+    const r = await submitLinkStakeSigned(
+      stakeApi({ ok: false, dispatchError: { type: "NotPaymentBound", value: undefined } }),
+      signer,
+      SIGN1,
+      KEY,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("NotPaymentBound");
+  });
+
+  it("ok but with no StakeLinked event ⇒ ok with undefined credential (never throws)", async () => {
+    const r = await submitLinkStakeSigned(stakeApi({ ok: true, events: [] }), signer, SIGN1, KEY);
+    expect(r.ok).toBe(true);
+    expect(r.stakeCredHex).toBeUndefined();
+  });
+
+  it("returns ok:false (never throws) when the submission itself throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const api = {
+      tx: { CognoGate: { link_stake_signed: vi.fn(() => ({ signAndSubmit: vi.fn(async () => { throw new Error("node down"); }) })) } },
+    } as unknown as CognoApi;
+    const r = await submitLinkStakeSigned(api, signer, SIGN1, KEY);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("node down");
   });
 });
