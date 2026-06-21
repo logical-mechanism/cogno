@@ -170,7 +170,23 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// Runs in SHADOW (the existing `EnforceWeight` flag also gates voting power): the inherent verifies +
 	// projects but the committee `set_voting_power` stays the writer until the ≥3-producer cutover. `observe`
 	// is still an INHERENT, so transaction_version is UNCHANGED (2).
-	spec_version: 115,
+	// 115 -> 116 (feeless binds, remove the sponsored-bind relay): the two cogno-gate CIP-8 self-proofs —
+	// `link_identity_signed` (@2) and `link_stake_signed` (@3) — are now FEELESS, submitted as BARE
+	// (unsigned) extrinsics (`ensure_none`): the CIP-8 proof is the authorization, so no fee payer and no
+	// nonce are needed and a brand-new zero-balance / zero-provider sign-to-derived account can complete
+	// its FIRST on-chain action with no funded sponsor. The compute-DoS the fee defended is moved EARLIER:
+	// a new `#[pallet::validate_unsigned]` runs the CIP-8 verify at POOL admission (and at inclusion via
+	// `pre_dispatch`), rejecting junk + already-bound/tombstoned proofs before gossip/inclusion. This
+	// RETIRES `services/sponsored-bind-relay/`. The Call args / call indices / storage / events / errors /
+	// constants and the `TxExtension` tuple ENCODINGS are ALL byte-identical (the change is signed->bare
+	// submission + the validate_unsigned gate, neither of which affects extrinsic/call encoding), so
+	// transaction_version is UNCHANGED (2). NOTE: the regenerated PAPI `.scale` metadata is NOT byte-identical
+	// — it grew ~1KB because the `link_identity_signed`/`link_stake_signed` call doc-comments were rewritten
+	// and FRAME embeds `#[doc]` strings in chain metadata; doc-strings are metadata-only and do NOT affect
+	// encoding, so they need no tx_version bump (do not treat a `.scale` git-diff as a wire-compat no-op
+	// check). The spec bump exists to version the new runtime behaviour (a node must run 116 to accept the
+	// unsigned binds; an old 115 node rejects them).
+	spec_version: 116,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

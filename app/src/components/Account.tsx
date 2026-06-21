@@ -138,11 +138,9 @@ export function Account({ signerCtl: sc, identity, vault, onOpenAbout }: Account
       ) : identity.bound === true ? (
         <>
           <p className={styles.ok}>✓ registered — you can post.</p>
-          {identity.boundVia === "relay" && (
-            <p className={styles.fine}>
-              bind fee sponsored by the relay — your wallet signature is what registered you (the relay can&apos;t forge it).
-            </p>
-          )}
+          <p className={styles.fine}>
+            registration is feeless — your wallet signature is what registered you, verified on-chain.
+          </p>
         </>
       ) : (
         <p className={styles.muted}>checking registration…</p>
@@ -226,11 +224,6 @@ export function Account({ signerCtl: sc, identity, vault, onOpenAbout }: Account
                   ? "your votes and polls weigh by your total Cardano stake — not the 100 ₳ lock."
                   : "weight appears once the chain observes your stake (a few blocks)."}
               </p>
-              {identity.stakeBoundVia === "relay" && (
-                <p className={styles.fine}>
-                  bind fee sponsored by the relay — your stake-key signature is what bound your voting power (the relay can&apos;t forge it).
-                </p>
-              )}
             </>
           ) : identity.stakeBound === false ? (
             canStakeSign ? (

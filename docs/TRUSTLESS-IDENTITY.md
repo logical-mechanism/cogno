@@ -1,11 +1,14 @@
 # Trustless identity (D1) — on-chain CIP-8 self-proof
 
-**Status: DONE (spec_version 109; the live proof below ran on the pre-merge spec-108 node — the gate
-logic is byte-identical, the bump to 109 came only from folding in the in-protocol-observation pallet at
-merge — see the trust-ladder note at the end), proven live on a `--dev` node.** This is the D1 rung of the identity
-trust ladder from [`L2-follower.md`](L2-follower.md) §7.2/§7.3: the trusted off-chain identity binding is
-**replaced** by an on-chain cryptographic self-proof. It is **validator-independent** — it *removes* a
-trusted party (the follower's bind-write key) without adding one.
+**Status: DONE, proven live on a `--dev` node. The bind is now FEELESS (spec_version 116): the two CIP-8
+self-proofs — `link_identity_signed` (@2) and `link_stake_signed` (@3) — are submitted as BARE (unsigned)
+extrinsics and verified at transaction-pool admission (`#[pallet::validate_unsigned]`), so a brand-new
+zero-balance account binds with no fee and NO funded relay (the Sponsored-Bind Relay is removed). The
+crown-jewel verifier `cip8.rs` is byte-identical; only the origin (signed → none) and the spam gate (a fee
+→ pool-admission verify) changed.** This is the D1 rung of the identity trust ladder from
+[`L2-follower.md`](L2-follower.md) §7.2/§7.3: the trusted off-chain identity binding is **replaced** by an
+on-chain cryptographic self-proof. It is **validator-independent** — it *removes* a trusted party (the
+follower's bind-write key) without adding one.
 
 ## What changed
 
@@ -20,26 +23,41 @@ trusted party (the follower's bind-write key) without adding one.
 The trusted `link_identity` dispatchable is **removed**; its `call_index(0)` is permanently vacant
 (on-wire call indices are a contract). `link_identity_signed` (`call_index(2)`) is the only bind path.
 
-## The on-chain flow (`pallet_cogno_gate`)
+## The on-chain flow (`pallet_cogno_gate`) — FEELESS, unsigned (spec 116)
 
 ```
-link_identity_signed(origin: Signed, cose_sign1: BoundedVec<u8,512>, cose_key: BoundedVec<u8,128>,
-                     thread: Option<Vec<u8>>)
+link_identity_signed(origin: None, cose_sign1: BoundedVec<u8,512>, cose_key: BoundedVec<u8,128>,
+                     thread: Option<Vec<u8>>)        // a BARE (unsigned) extrinsic
 ```
 
-1. `ensure_signed(origin)` — the submitter is the **fee payer** (the DoS defence; the call is **NOT**
-   feeless). The submitter is *not* the bound account.
-2. `cip8::verify_bind_proof(cose_sign1, cose_key, CardanoNetwork)` — verify the wallet signature and
-   reconstruct `{ identity, account, genesis }` (see below). A reject maps to `Error::ProofInvalid`.
-3. **Genesis check** — the proof's committed `genesis` must equal `frame_system::BlockHash[0]`
-   (anti-cross-chain replay), else `Error::WrongGenesis`.
-4. **Bind** — `do_bind(account, identity, thread)`: refuse a tombstoned identity
-   (`Error::IdentityTombstoned`); enforce the 1:1 invariant on **both** maps (`AccountAlreadyBound` /
-   `PkhAlreadyBound`); write `PkhOf` + `AccountOf` (+ `ThreadOf`); prime the microblog capacity row +
-   provider ref via `OnBind::on_bind`; emit `IdentityLinked`.
+The bind is **feeless** and submitted as a **bare (unsigned) extrinsic**: the CIP-8 proof *is* the
+authorization, so there is no fee payer, no nonce, and no signing account. That is what lets a brand-new
+sign-to-derived posting account — **zero balance, zero provider references** — complete its FIRST
+on-chain action with no funded sponsor (the old bind-funding gap, closed without a relay; see below).
 
-The **bound account is the one the proof cryptographically commits** — the submitter cannot retarget it.
-Front-running a valid proof merely completes the intended bind.
+There are two gates, the same verifier in both:
+
+1. **Pool admission** — `#[pallet::validate_unsigned]` runs on every full node at gossip AND at block
+   inclusion (via `pre_dispatch`, which is consensus-enforced: an importer re-runs it and rejects a block
+   carrying a junk bind). It runs `cip8::verify_bind_proof`, the genesis check, and then mirrors
+   `do_bind`'s state rejections **at the pool**: a tombstoned identity, or either side of the 1:1 already
+   bound, is rejected `Stale`; a bad/cross-chain proof is `BadProof`. So junk + already-settled binds are
+   refused *before* they are gossiped or included for free, and a `provides` tag (the identity hash) lets
+   the pool dedupe repeats. This is the WHOLE spam gate now that the fee is gone (see the DoS posture).
+2. **Dispatch** (`ensure_none(origin)`) — re-runs `cip8::verify_bind_proof` + the genesis check
+   (authoritatively, to derive `{ account, identity }`) and calls `do_bind(account, identity, thread)`:
+   refuse a tombstoned identity (`Error::IdentityTombstoned`); enforce the 1:1 invariant on **both** maps
+   (`AccountAlreadyBound` / `PkhAlreadyBound`); write `PkhOf` + `AccountOf` (+ `ThreadOf`); prime the
+   microblog capacity row + provider ref via `OnBind::on_bind`; emit `IdentityLinked`.
+
+The verify (`verify_bind_proof` / `verify_bind_proof_stake` in `cip8.rs`) is **byte-identical** to before
+— only the *origin* (signed → none) and the *gate* (a fee → `validate_unsigned`) changed; `cip8.rs` was
+not touched. The stake (voting-power) bind `link_stake_signed` (`call_index 3`) is the same shape:
+feeless, unsigned, verified at the pool, with `validate_unsigned` additionally requiring the committed
+account to be payment-bound (the frontend submits it only after the identity bind is in a block).
+
+The **bound account is the one the proof cryptographically commits** — there is no submitter to retarget
+it, so no one can bind a victim's key. Front-running a valid proof merely completes the intended bind.
 
 ### Revocation is a permanent tombstone (DR-14)
 
@@ -96,52 +114,74 @@ The live `d1-acceptance.mjs` run confirmed the on-chain identity (beacon name
 `9a8cdaa7df32352a…` for the fixture address) equals the Python reference's output — independent
 implementations agreeing on real bytes.
 
-## Weight / DoS posture
+## Weight / DoS posture (feeless — spec 116)
 
-`link_identity_signed` is **not feeless** — the signed submitter pays, so a junk-proof spammer pays. The
-FRAME-benchmarked weight is **≈ 67.85 µs / 6 reads / 5 writes** (the `ed25519_verify` + 2× blake2 + the
-bounded CBOR/address/payload parse, on top of `do_bind`). The bound account == the submitter in the
-frontend flow, but a third party *may* pay for someone else's bind because **the proof fixes the
-target** — this is what makes the funding gap solvable without trust (next section).
+The fee is **gone**; the compute-DoS it defended is moved EARLIER, to **pool admission**. The whole
+defence is now `#[pallet::validate_unsigned]`. The FRAME-benchmarked dispatch weight is unchanged
+(**≈ 67.85 µs / 6 reads / 5 writes** — the `ed25519_verify` + 2× blake2 + the bounded CBOR/address/payload
+parse, on top of `do_bind`); it lands in the block-weight budget so `CheckWeight` bounds how many binds a
+block can carry. The honest spam analysis:
 
-## Bind funding (D1 bind-funding) — the Sponsored-Bind Relay
+- **What is rejected for free** (no crypto): oversized blobs are rejected at SCALE **decode** (the call
+  args are `BoundedVec<.., 512>` / `BoundedVec<.., 128>`); a malformed COSE structure is rejected by the
+  verifier's own pre-`ed25519` parse (`verify_bind_proof` returns before the signature check). Only a
+  *well-formed* proof reaches the (unavoidable, audited) `ed25519` verify.
+- **What costs one `ed25519`** (~68 µs, uncompensated): a well-formed proof with a junk signature, a
+  wrong-genesis proof, or a valid proof for an already-bound / tombstoned identity. All are rejected at
+  the pool (`BadProof` / `Stale`) *before* gossip or inclusion. The `provides`-tag dedupes exact repeats;
+  a short `longevity` ages stragglers out. The aggregate cost is bounded by the pool's size/peer caps and
+  by `CheckWeight` at inclusion — an attacker cannot fill blocks faster than the per-block weight budget.
+- **No amplification.** A bind grants **nothing actionable** on its own: posting talk-capacity comes from
+  the observed locked-ADA vault and voting power from the observed Cardano stake, both keyed on the bound
+  credential and both requiring **real on-chain Cardano value**. So a flood of *valid* binds of fresh,
+  empty Cardano addresses (which an attacker can keygen cheaply) is **not** a Sybil/economic win — it
+  buys zero posting or voting weight. Its only effect is permanent storage growth, rate-bounded per block
+  as above. (The prior fee bounded that growth; a mainnet deployment would re-introduce an anti-bloat
+  cost — a refundable deposit or a PoW stamp — as a documented `MAINNET PREREQUISITE`, not a testnet bug.)
+- **Per-IP rate-limiting still exists** — it moves from the (now-deleted) relay's app code to the **RPC
+  ingress** (nginx / the node's RPC limits), where it protects *all* feeless calls (posts included), not
+  just binds.
+- **Authorization is not weakened.** The proof still commits `{account, genesis}` and the runtime is the
+  sole verifier, so removing the fee/relay does **not** let anyone bind a victim's key or retarget a
+  bind; a tombstoned identity is still refused — now at the pool, not only at dispatch.
 
-A consequence of "not feeless": the user's freshly sign-to-derived posting account has **zero balance**
-on a new chain, so it cannot pay the fee — a real new user can't complete a bind in the browser. This is
-a **usability** gap, not a correctness bug (the on-chain mechanism is proven by `d1-acceptance.mjs`,
-which used a funded submitter).
+This is an honestly-labelled **testnet** posture (`usable ≠ trustless`). Proven live by
+`app/scripts/d1-acceptance.mjs`: a brand-new **zero-balance** account completes BOTH the identity and the
+stake bind as bare unsigned extrinsics with **Δbalance = 0** (no fee, no relay), posts feelessly, then a
+replayed proof is **refused at the pool** (`Invalid: Stale`) by the tombstone, and a junk proof is
+refused at the pool (`Invalid: BadProof`).
 
-It is closed by `services/sponsored-bind-relay/` — a small **funded** service that accepts a signed
-proof and submits `link_identity_signed` with its **own** key, paying the fee. The frontend POSTs the
-proof to the relay instead of self-submitting (balance-aware: a *funded* account still self-submits
-trustlessly — `app/src/lib/chain/identity.ts → submitBindSponsored`).
+## Bind funding — closed by making the bind feeless (no relay)
 
-- **The DoS defence is intact** — *someone* always pays (the relay, which also rate-limits per-IP).
-- **The relay is a LIVENESS party, never a CORRECTNESS party.** The proof commits `{account, genesis}`
-  and the **runtime is the sole verifier**, so the relay **cannot forge an identity or change the bound
-  account**, and a tombstoned identity is refused on-chain. A compromised relay key can spam its own
-  funds or censor — it can **not** fabricate a single identity. (It holds **no** committee/sudo/
-  `FollowerOrigin` authority; contrast the *retired* follower `POST /bind`, whose key **was** a
-  correctness party.) The only field the signature does **not** cover is the optional `thread_pointer`
-  (a non-identity cogno_v3 thread hint), which the relay — like any submitter — could set or drop; it
-  carries no identity or capacity weight, and the frontend bind sends none.
+Before spec 116, `link_identity_signed` was **not feeless**, so a freshly sign-to-derived posting account
+(zero balance on a new chain) could not pay the fee — a real new user could not complete a bind in the
+browser. That gap was previously closed by a funded off-chain "Sponsored-Bind Relay" that paid the fee.
 
-Proven live by `app/scripts/d1-bind-funding-acceptance.mjs`: a brand-new **zero-balance** account binds
-through the relay (the relay payer's balance drops; the bound account stays at 0), posts **feelessly**,
-the relay relays a chain rejection (`AccountAlreadyBound`) **verbatim** (it cannot force a re-bind), and
-400s a malformed proof before paying. See `services/sponsored-bind-relay/README.md`.
+That relay is **removed**. Making the bind feeless (a bare unsigned extrinsic, verified at pool admission)
+closes the funding gap *directly*: there is no fee, so there is nothing to sponsor and no funded service
+to run, custody a key for, or rate-limit. The browser submits the bind itself
+(`app/src/lib/chain/identity.ts → submitLinkIdentityFeeless` / `submitLinkStakeFeeless`, via PAPI
+`tx.getBareTx()` + the low-level `client.submit`). This also *strengthens* the trust story: the relay was
+a liveness party that could censor and whose funds an attacker could drain (bounded only by per-IP
+limits); a feeless self-submitted bind has neither weakness.
 
 ## Live proof (`app/scripts/d1-acceptance.mjs`)
 
-Against a fresh `--dev` spec-108 node, a real headless-MeshJS wallet signed the pinned payload over the
-live genesis; `//Alice` submitted `link_identity_signed`. **ALL PASSED:**
+Against a fresh `--dev` spec-116 node, a real headless-MeshJS wallet signed the pinned payload over the
+live genesis; the proof was submitted as a **bare (unsigned) extrinsic** — no submitter, no fee, no relay.
+**ALL PASSED:**
 
-- `IdentityLinked.who == //CognoGateA` (the proof's account, **not** the `//Alice` submitter);
+- the bound account `//CognoGateA` starts at **zero balance** and stays there — `Δbalance = 0` after both
+  binds (no fee path exists, so no `InvalidTransaction::Payment`);
+- `IdentityLinked.who == //CognoGateA` (the proof's account — there is no submitter to retarget it);
 - `AccountOf[identity] == //CognoGateA` and `PkhOf[account] == identity` (1:1 both ways);
 - the bound account posted **feelessly** (`PostCreated`);
+- the **stake** (voting-power) bind `link_stake_signed` likewise bound feelessly (`StakeLinked`,
+  `StakeCredOf[account]` = the proven credential), again `Δbalance = 0`;
 - `revoke` → `Tombstoned[identity]` set, `AccountOf` cleared;
-- **replaying the identical proof was rejected with `IdentityTombstoned`** — the eternally-valid proof
-  cannot resurrect a banned identity.
+- **replaying the identical proof was refused AT THE POOL** (`Invalid: Stale`) — the eternally-valid proof
+  cannot resurrect a banned identity, and is rejected *before* inclusion, not only at dispatch;
+- a **junk proof** is refused at the pool (`Invalid: BadProof`) — the spam gate, live.
 
 ## ⚠ MAINNET PREREQUISITE — independent verifier audit
 

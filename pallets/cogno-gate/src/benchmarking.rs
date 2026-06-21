@@ -47,12 +47,13 @@ mod benchmarks {
 			hx(SIG_HEX).try_into().map_err(|_| BenchmarkError::Stop("sig too long"))?;
 		let cose_key: BoundedVec<u8, ConstU32<128>> =
 			hx(KEY_HEX).try_into().map_err(|_| BenchmarkError::Stop("key too long"))?;
-		// Any signed origin pays the fee; the bound account is the one the PROOF commits.
-		let caller: T::AccountId = whitelisted_caller();
+		// FEELESS + unsigned: no fee payer / no signing account — the CIP-8 proof is the authorization
+		// and the bound account is the one the PROOF commits (`ensure_none`). The benchmark dispatches
+		// with `RawOrigin::None`, exactly as the block author applies the bare extrinsic.
 		let thread = alloc::vec![0u8; 10]; // worst case: also writes ThreadOf
 
 		#[extrinsic_call]
-		_(RawOrigin::Signed(caller), cose_sign1, cose_key, Some(thread));
+		_(RawOrigin::None, cose_sign1, cose_key, Some(thread));
 
 		// The proof's committed account is now bound (verify → genesis → do_bind all ran).
 		assert_eq!(AccountOf::<T>::iter().count(), 1);

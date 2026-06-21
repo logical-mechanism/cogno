@@ -60,13 +60,13 @@ async function main() {
 	// 2. Resolve the account the beacon is bound to. In the trustless world (D1) there is NO operator/sudo
 	//    bind: the beacon→account link is a CIP-8 self-proof SIGNED BY THE VAULT OWNER
 	//    (`cognoGate.link_identity_signed`), so this demo requires the beacon to be PRE-BOUND out-of-band
-	//    (the in-browser bind, the sponsored-bind relay, or app/scripts/d1-acceptance with the vault wallet).
+	//    (the in-browser feeless bind, or app/scripts/d1-acceptance with the vault wallet).
 	const bound = await api.query.cognoGate.accountOf("0x" + beacon);
 	if (bound.isNone)
 		throw new Error(
 			`live vault beacon ${beacon.slice(0, 12)}… is not bound to any account. Bind it first via the ` +
 			`trustless self-proof (cognoGate.link_identity_signed) — there is no operator/sudo bind anymore. ` +
-			`See docs/TRUSTLESS-IDENTITY.md and services/sponsored-bind-relay/.`,
+			`The bind is FEELESS (a bare unsigned extrinsic); see docs/TRUSTLESS-IDENTITY.md.`,
 		);
 	const account = bound.unwrap().toString();
 	const label = `${account.slice(0, 8)}…`;

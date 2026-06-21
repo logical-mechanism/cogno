@@ -82,7 +82,7 @@ pub mod pallet {
 	use super::*;
 	use alloc::vec::Vec;
 	use frame_support::{pallet_prelude::*, sp_runtime::traits::Zero};
-	use frame_system::{ensure_signed, pallet_prelude::*};
+	use frame_system::{ensure_none, pallet_prelude::*};
 	// The two cross-pallet traits live in microblog (the depended-upon crate) to avoid a
 	// dependency cycle — see the module docs. cogno-gate implements `IsAllowed` and consumes
 	// `OnIdentityBind`.
@@ -223,13 +223,22 @@ pub mod pallet {
 		// of the permissionless on-chain self-proof `link_identity_signed` (@2). On-wire call indices are
 		// a contract — the index is never reused (FRAME allows gaps).
 
-		/// **Trustless bind (D1).** Anyone submits the CIP-8 (COSE_Sign1) `signData` proof their Cardano
-		/// wallet produced over the pinned bind payload, and the RUNTIME verifies it on-chain
-		/// ([`cip8::verify_bind_proof`]) — **no trusted writer**. `ensure_signed` is the FEE payer (the
-		/// DoS defence: an unbound junk-proof spammer must pay), but the BOUND account + identity come from
-		/// the cryptographically-verified proof, so the submitter cannot retarget it (front-running a
-		/// valid proof merely completes the intended bind). The signed payload must commit THIS chain's
-		/// genesis (anti-cross-chain); a tombstoned (revoked) identity is refused.
+		/// **Trustless bind (D1) — FEELESS, unsigned.** Anyone submits the CIP-8 (COSE_Sign1) `signData`
+		/// proof their Cardano wallet produced over the pinned bind payload, and the RUNTIME verifies it
+		/// on-chain ([`cip8::verify_bind_proof`]) — **no trusted writer, no fee payer**. The CIP-8 proof
+		/// IS the authorization, so the call is **unsigned** (`ensure_none`): it carries no signing account,
+		/// no nonce and no fee, which is what lets a brand-new sign-to-derived account (zero balance, zero
+		/// provider refs) complete its FIRST on-chain action with no funded sponsor. The BOUND account +
+		/// identity come from the cryptographically-verified proof, so no one can bind a victim's key and
+		/// the submitter cannot retarget it (front-running merely completes the intended bind). The payload
+		/// must commit THIS chain's genesis (anti-cross-chain); a tombstoned (revoked) identity is refused.
+		///
+		/// **Spam resistance without a fee** — see [`Pallet::validate_unsigned`]: junk is rejected at POOL
+		/// admission (before gossip/inclusion), and an already-bound / tombstoned proof is rejected there
+		/// too (not only at dispatch). A bind grants NOTHING actionable on its own (talk-capacity and voting
+		/// power come from observed Cardano stake keyed on the bound credential), so flooding empty binds
+		/// buys an attacker no posting/voting amplification — only the per-block-weight-bounded cost of the
+		/// `ed25519` verify it forces. See the PR's DoS analysis.
 		///
 		/// ⚠ The verifier is the anti-Sybil crown jewel — a bug forges any identity. It is hardened by an
 		/// adversarial threat-model + tests but has NOT had a formal external audit (`L2-follower.md`
@@ -242,34 +251,26 @@ pub mod pallet {
 			cose_key: BoundedVec<u8, ConstU32<128>>,
 			thread_pointer: Option<Vec<u8>>,
 		) -> DispatchResult {
-			// NOT feeless: the signed submitter pays the tx fee, so a junk proof costs the attacker.
-			let _submitter = ensure_signed(origin)?;
-			// Verify the wallet signature on-chain (the trustless core). The bounded args were already
-			// size-capped at decode, before this heavy path runs.
-			let proof = cip8::verify_bind_proof(&cose_sign1, &cose_key, T::CardanoNetwork::get())
-				.map_err(|e| {
-					log::warn!(target: LOG_TARGET, "link_identity_signed: proof rejected: {e:?}");
-					Error::<T>::ProofInvalid
-				})?;
-			// Anti-cross-chain: the signed payload must commit THIS chain's genesis hash (block 0).
-			let genesis = frame_system::Pallet::<T>::block_hash(BlockNumberFor::<T>::zero());
-			ensure!(genesis.as_ref() == proof.genesis.as_slice(), Error::<T>::WrongGenesis);
-			// The bound account is the 32-byte sr25519 key the PROOF commits — never the submitter.
-			let account =
-				T::AccountId::decode(&mut &proof.account[..]).map_err(|_| Error::<T>::ProofInvalid)?;
-			log::debug!(target: LOG_TARGET, "link_identity_signed: verified proof for identity={:?}", proof.identity);
-			Self::do_bind(&account, proof.identity, thread_pointer)
+			// Unsigned: the CIP-8 proof is the authorization (no fee, no nonce). Pool admission
+			// (`validate_unsigned`) already verified the proof + cheap-rejected junk before this runs;
+			// re-verify here authoritatively to derive the bound account + identity for the write.
+			ensure_none(origin)?;
+			let (account, identity) = Self::verify_identity_proof(&cose_sign1, &cose_key)?;
+			log::debug!(target: LOG_TARGET, "link_identity_signed: verified proof for identity={identity:?}");
+			Self::do_bind(&account, identity, thread_pointer)
 		}
 
-		/// **Trustless stake bind (voting power).** Anyone submits the CIP-8 (COSE_Sign1) `signData`
-		/// proof their wallet produced over its REWARD address, signed with the STAKE key, and the
-		/// RUNTIME verifies it on-chain ([`cip8::verify_bind_proof_stake`]). The proven 28-byte stake
-		/// credential is bound 1:1 to the committed account as its voting-power anchor, so a whale's
-		/// stake can be voted ONLY by whoever holds its stake key, and only once. The account must
+		/// **Trustless stake bind (voting power) — FEELESS, unsigned.** Anyone submits the CIP-8
+		/// (COSE_Sign1) `signData` proof their wallet produced over its REWARD address, signed with the
+		/// STAKE key, and the RUNTIME verifies it on-chain ([`cip8::verify_bind_proof_stake`]). The proven
+		/// 28-byte stake credential is bound 1:1 to the committed account as its voting-power anchor, so a
+		/// whale's stake can be voted ONLY by whoever holds its stake key, and only once. The account must
 		/// already be payment-bound ([`Call::link_identity_signed`]) — voting power attaches only to a
-		/// participant. `ensure_signed` is the fee payer (anti-DoS); the bound account comes from the
-		/// verified proof, so the submitter cannot retarget it. The signed payload must commit THIS
-		/// chain's genesis; a tombstoned (banned) stake credential is refused.
+		/// participant. Like the identity bind it is **unsigned** (`ensure_none`): the proof is the
+		/// authorization, so the same zero-balance derived account that posts feelessly can stake-bind with
+		/// no fee and no sponsor. The bound account comes from the verified proof, so the submitter cannot
+		/// retarget it. The payload must commit THIS chain's genesis; a tombstoned (banned) stake credential
+		/// is refused — all enforced at POOL admission too (see [`Pallet::validate_unsigned`]).
 		///
 		/// ⚠ Reuses the same crown-jewel verifier plumbing as [`Call::link_identity_signed`]; the same
 		/// MAINNET PREREQUISITE (independent audit) applies (see [`cip8`]).
@@ -280,22 +281,12 @@ pub mod pallet {
 			cose_sign1: BoundedVec<u8, ConstU32<512>>,
 			cose_key: BoundedVec<u8, ConstU32<128>>,
 		) -> DispatchResult {
-			// NOT feeless: the signed submitter pays the tx fee, so a junk proof costs the attacker.
-			let _submitter = ensure_signed(origin)?;
-			let proof =
-				cip8::verify_bind_proof_stake(&cose_sign1, &cose_key, T::CardanoNetwork::get())
-					.map_err(|e| {
-						log::warn!(target: LOG_TARGET, "link_stake_signed: proof rejected: {e:?}");
-						Error::<T>::ProofInvalid
-					})?;
-			// Anti-cross-chain: the signed payload must commit THIS chain's genesis hash (block 0).
-			let genesis = frame_system::Pallet::<T>::block_hash(BlockNumberFor::<T>::zero());
-			ensure!(genesis.as_ref() == proof.genesis.as_slice(), Error::<T>::WrongGenesis);
-			// The bound account is the 32-byte sr25519 key the PROOF commits — never the submitter.
-			let account =
-				T::AccountId::decode(&mut &proof.account[..]).map_err(|_| Error::<T>::ProofInvalid)?;
+			// Unsigned: the CIP-8 stake proof is the authorization (no fee, no nonce). Pool admission
+			// re-verified + cheap-rejected already; re-verify here authoritatively for the write.
+			ensure_none(origin)?;
+			let (account, stake_credential) = Self::verify_stake_proof(&cose_sign1, &cose_key)?;
 			log::debug!(target: LOG_TARGET, "link_stake_signed: verified stake proof for {account:?}");
-			Self::do_bind_stake(&account, proof.stake_credential)
+			Self::do_bind_stake(&account, stake_credential)
 		}
 
 		/// Revoke an account's binding (the v1 manual-operator-ban path, DR-14). Gated by
@@ -362,6 +353,52 @@ pub mod pallet {
 		/// for tooling and for the weight pipeline (resolve account → stake credential → observed stake).
 		pub fn stake_credential_of(who: &T::AccountId) -> Option<StakeCredential> {
 			StakeCredOf::<T>::get(who)
+		}
+
+		/// Verify a CIP-8 PAYMENT-key bind proof and resolve `(bound account, identity)`. The single,
+		/// shared crown-jewel call path for the IDENTITY bind: it runs the audited [`cip8::verify_bind_proof`]
+		/// (the `ed25519` verify + address-key bind), the anti-cross-chain genesis check, and the account
+		/// decode — and is invoked from BOTH [`Call::link_identity_signed`]'s dispatch body (authoritative)
+		/// and [`Pallet::validate_unsigned`] (pool admission), so the two can never diverge. PURE w.r.t.
+		/// storage except the one genesis read. Does NOT do the tombstone / 1:1 checks — those live in
+		/// `do_bind` (dispatch) and are mirrored in `validate_unsigned` (pool).
+		pub(crate) fn verify_identity_proof(
+			cose_sign1: &[u8],
+			cose_key: &[u8],
+		) -> Result<(T::AccountId, IdentityHash), Error<T>> {
+			let proof = cip8::verify_bind_proof(cose_sign1, cose_key, T::CardanoNetwork::get())
+				.map_err(|e| {
+					log::warn!(target: LOG_TARGET, "verify_identity_proof: proof rejected: {e:?}");
+					Error::<T>::ProofInvalid
+				})?;
+			// Anti-cross-chain: the signed payload must commit THIS chain's genesis hash (block 0).
+			let genesis = frame_system::Pallet::<T>::block_hash(BlockNumberFor::<T>::zero());
+			ensure!(genesis.as_ref() == proof.genesis.as_slice(), Error::<T>::WrongGenesis);
+			// The bound account is the 32-byte sr25519 key the PROOF commits — never any submitter.
+			let account =
+				T::AccountId::decode(&mut &proof.account[..]).map_err(|_| Error::<T>::ProofInvalid)?;
+			Ok((account, proof.identity))
+		}
+
+		/// Verify a CIP-8 STAKE-key bind proof and resolve `(bound account, stake credential)` — the stake
+		/// (voting-power) analog of [`Self::verify_identity_proof`], shared by the dispatch body and the
+		/// pool gate so the audited [`cip8::verify_bind_proof_stake`] + genesis check + account decode run
+		/// identically in both. Does NOT do the participation / tombstone / 1:1 checks (those live in
+		/// `do_bind_stake` and are mirrored in `validate_unsigned`).
+		pub(crate) fn verify_stake_proof(
+			cose_sign1: &[u8],
+			cose_key: &[u8],
+		) -> Result<(T::AccountId, StakeCredential), Error<T>> {
+			let proof = cip8::verify_bind_proof_stake(cose_sign1, cose_key, T::CardanoNetwork::get())
+				.map_err(|e| {
+					log::warn!(target: LOG_TARGET, "verify_stake_proof: proof rejected: {e:?}");
+					Error::<T>::ProofInvalid
+				})?;
+			let genesis = frame_system::Pallet::<T>::block_hash(BlockNumberFor::<T>::zero());
+			ensure!(genesis.as_ref() == proof.genesis.as_slice(), Error::<T>::WrongGenesis);
+			let account =
+				T::AccountId::decode(&mut &proof.account[..]).map_err(|_| Error::<T>::ProofInvalid)?;
+			Ok((account, proof.stake_credential))
 		}
 
 		/// The shared 1:1 bind body, called by BOTH the trusted [`Call::link_identity`] and the trustless
@@ -457,6 +494,89 @@ pub mod pallet {
 		#[cfg(feature = "runtime-benchmarks")]
 		fn benchmark_set_allowed(who: &T::AccountId) {
 			PkhOf::<T>::insert(who, [0u8; 32]);
+		}
+	}
+
+	/// Pool priority for the feeless unsigned bind transactions — deliberately LOW so a bind never
+	/// starves the feeless posting hot path (whose `CheckCapacity` priority scales with capacity
+	/// headroom). A bind is an infrequent onboarding action; it only needs to eventually land.
+	const BIND_TX_PRIORITY: u64 = 100;
+	/// Pool longevity (in blocks) for a bind transaction: short, so a bind that cannot yet be included
+	/// ages out of the pool quickly rather than camping. The browser re-submits on demand.
+	const BIND_TX_LONGEVITY: u64 = 32;
+
+	/// **The feeless-bind spam gate.** Both binds ([`Call::link_identity_signed`] /
+	/// [`Call::link_stake_signed`]) are UNSIGNED — the CIP-8 proof is the authorization, so there is no
+	/// fee or nonce to gate them. This `ValidateUnsigned` impl is therefore the WHOLE pool-admission
+	/// defence: every full node runs it at gossip AND at block inclusion (via `pre_dispatch`, which is
+	/// consensus-enforced — an importer re-runs it and rejects a block carrying a junk bind), so junk is
+	/// rejected BEFORE it is gossiped or included for free, and an already-bound / tombstoned proof is
+	/// rejected HERE (not only at dispatch).
+	///
+	/// Check ordering / cost (see the PR DoS analysis): oversized blobs are already rejected at SCALE
+	/// decode (the `BoundedVec<.., 512/128>` call args); a malformed COSE structure is rejected by the
+	/// verifier's own pre-`ed25519` parse — so only a well-formed proof reaches the (unavoidable, audited)
+	/// `ed25519` verify. After it, cheap storage reads reject a tombstoned / already-bound / non-participant
+	/// proof. `provides` a per-credential tag so the pool dedupes repeats; a short `longevity` ages
+	/// stragglers out. A bind grants nothing actionable without observed Cardano stake, so a flood of valid
+	/// empty binds gains no posting/voting amplification — only the per-block-weight-bounded verify cost.
+	#[pallet::validate_unsigned]
+	impl<T: Config> ValidateUnsigned for Pallet<T> {
+		type Call = Call<T>;
+
+		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+			match call {
+				Call::link_identity_signed { cose_sign1, cose_key, .. } => {
+					// Verify the proof (audited crown jewel) + genesis + decode the committed account.
+					// A bad / cross-chain proof is a hard, non-retried reject.
+					let (account, identity) = Self::verify_identity_proof(cose_sign1, cose_key)
+						.map_err(|_| InvalidTransaction::BadProof)?;
+					// Mirror `do_bind`'s rejections AT THE POOL so a doomed bind is never gossiped or
+					// included: a tombstoned identity, or either side of the 1:1 already bound, is Stale
+					// (already settled — drop it, do not retry).
+					if Tombstoned::<T>::contains_key(identity)
+						|| AccountOf::<T>::contains_key(identity)
+						|| PkhOf::<T>::contains_key(&account)
+					{
+						log::debug!(target: LOG_TARGET, "validate_unsigned: identity bind rejected at pool (tombstoned/already-bound) identity={identity:?}");
+						return Err(InvalidTransaction::Stale.into());
+					}
+					ValidTransaction::with_tag_prefix("CognoGateBindIdentity")
+						.priority(BIND_TX_PRIORITY)
+						.and_provides(identity)
+						.longevity(BIND_TX_LONGEVITY)
+						.propagate(true)
+						.build()
+				},
+				Call::link_stake_signed { cose_sign1, cose_key } => {
+					let (account, stake_cred) = Self::verify_stake_proof(cose_sign1, cose_key)
+						.map_err(|_| InvalidTransaction::BadProof)?;
+					// Voting power attaches only to a participant: the committed account must already be
+					// payment-bound. The frontend submits the stake bind only after the identity bind is
+					// in a block, so this holds in practice; a stake bind that arrives first is rejected
+					// (Custom 1) and the browser re-submits once the payment bind has landed.
+					if !PkhOf::<T>::contains_key(&account) {
+						return Err(InvalidTransaction::Custom(1).into());
+					}
+					// Mirror `do_bind_stake`'s rejections at the pool: a banned (tombstoned) stake key, or
+					// either side of the 1:1 stake anchor already bound, is Stale.
+					if TombstonedStakeCred::<T>::contains_key(stake_cred)
+						|| StakeCredOf::<T>::contains_key(&account)
+						|| AccountOfStakeCred::<T>::contains_key(stake_cred)
+					{
+						log::debug!(target: LOG_TARGET, "validate_unsigned: stake bind rejected at pool (tombstoned/already-bound)");
+						return Err(InvalidTransaction::Stale.into());
+					}
+					ValidTransaction::with_tag_prefix("CognoGateBindStake")
+						.priority(BIND_TX_PRIORITY)
+						.and_provides(stake_cred)
+						.longevity(BIND_TX_LONGEVITY)
+						.propagate(true)
+						.build()
+				},
+				// Every other call (e.g. `revoke`) is origin-gated and must NOT be accepted unsigned.
+				_ => Err(InvalidTransaction::Call.into()),
+			}
 		}
 	}
 }

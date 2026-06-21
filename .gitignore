@@ -14,9 +14,6 @@ services/anchor-relayer/node_modules
 # The M6 committee tooling does the same (symlink to the indexer's deps).
 # Recreate locally: ln -sfn ../indexer/node_modules services/committee/node_modules
 services/committee/node_modules
-# The D1 sponsored-bind relay also reuses the app's deps via a symlink.
-# Recreate locally: ln -sfn ../../app/node_modules services/sponsored-bind-relay/node_modules
-services/sponsored-bind-relay/node_modules
 
 # Secrets / local env (never commit real creds). The committed manifests are the
 # *.env.example files (root + services/indexer); the live .env / .env*.local files stay local.

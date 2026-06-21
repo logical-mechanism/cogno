@@ -49,7 +49,7 @@ export default function Page() {
   const signer = signerCtl.signer;
   const submit = useSubmit(api, signer, boot);
   const capacity = useCapacity(api, signer.ss58, heads.best?.number ?? null);
-  const identity = useIdentity(api, signer);
+  const identity = useIdentity(api, handle?.client ?? null, signer);
   const vault = useVault();
   const anchor = useAnchor(api);
 
