@@ -92,9 +92,10 @@ function buildLinkStakeTx(api: CognoApi, coseSign1Hex: string, coseKeyHex: strin
  * signed (and fee-paid) by the user's posting account. The runtime verifies the stake-key signature,
  * parses the proven 28-byte stake credential, and binds it 1:1 to the account — its votes/polls then
  * weigh by the total Cardano stake of that credential. The account MUST already be payment-bound
- * (`link_identity_signed`); the runtime rejects an unbound account with `NotPaymentBound`. Unlike the
- * payment bind there is no sponsored-relay path here: the (already-registered) account self-pays the
- * fee. Resolves when included; returns the bound stake credential from the `StakeLinked` event.
+ * (`link_identity_signed`); the runtime rejects an unbound account with `NotPaymentBound`. This is the
+ * SELF-PAY leg of {@link submitStakeBindSponsored} — used when the posting account can cover its own
+ * fee; a zero-balance derived account routes through the Sponsored-Bind Relay instead. Resolves when
+ * included; returns the bound stake credential from the `StakeLinked` event.
  */
 export async function submitLinkStakeSigned(
   api: CognoApi,
@@ -159,24 +160,19 @@ export async function submitBindViaRelay(
 }
 
 /**
- * Whether `signer.ss58` can pay the `link_identity_signed` fee from its own free balance AND stay above
- * the existential deposit. A fresh sign-to-derived posting account holds 0 ⇒ false (route through the
- * relay); a *barely*-funded account (free ≥ fee but the fee would dust it below the ED) also routes to
- * the relay rather than risking a self-submit the runtime rejects. Best-effort: any read or fee-estimate
- * failure ⇒ false (prefer the relay over a doomed self-submit); an absent ED constant ⇒ treat ED as 0.
+ * Whether `ss58` can pay `estimateFee()`'s fee from its free balance AND stay above the existential
+ * deposit. Shared by {@link canSelfPayBind} (identity) and {@link canSelfPayStakeBind} (voting power).
+ * A fresh sign-to-derived account holds 0 ⇒ false (route through the relay); a *barely*-funded account
+ * (free ≥ fee but the fee would dust it below the ED) also routes to the relay rather than risking a
+ * self-submit the runtime rejects. Best-effort: any read or fee-estimate failure ⇒ false (prefer the
+ * relay over a doomed self-submit); an absent ED constant ⇒ treat ED as 0.
  */
-export async function canSelfPayBind(
-  api: CognoApi,
-  signer: PostingSigner,
-  coseSign1Hex: string,
-  coseKeyHex: string,
-  threadHex?: string,
-): Promise<boolean> {
+async function canSelfPayFee(api: CognoApi, ss58: Ss58, estimateFee: () => Promise<bigint>): Promise<boolean> {
   try {
-    const acct = await api.query.System.Account.getValue(signer.ss58);
+    const acct = await api.query.System.Account.getValue(ss58);
     const free = acct?.data?.free ?? 0n;
     if (free <= 0n) return false;
-    const fee = await buildLinkIdentityTx(api, coseSign1Hex, coseKeyHex, threadHex).getEstimatedFees(signer.ss58);
+    const fee = await estimateFee();
     let ed = 0n;
     try {
       ed = await api.constants.Balances.ExistentialDeposit();
@@ -187,6 +183,31 @@ export async function canSelfPayBind(
   } catch {
     return false;
   }
+}
+
+/** Whether the posting account can self-pay the `link_identity_signed` fee (else route to the relay). */
+export async function canSelfPayBind(
+  api: CognoApi,
+  signer: PostingSigner,
+  coseSign1Hex: string,
+  coseKeyHex: string,
+  threadHex?: string,
+): Promise<boolean> {
+  return canSelfPayFee(api, signer.ss58, () =>
+    buildLinkIdentityTx(api, coseSign1Hex, coseKeyHex, threadHex).getEstimatedFees(signer.ss58),
+  );
+}
+
+/** Whether the posting account can self-pay the `link_stake_signed` fee (else route to the relay). */
+export async function canSelfPayStakeBind(
+  api: CognoApi,
+  signer: PostingSigner,
+  coseSign1Hex: string,
+  coseKeyHex: string,
+): Promise<boolean> {
+  return canSelfPayFee(api, signer.ss58, () =>
+    buildLinkStakeTx(api, coseSign1Hex, coseKeyHex).getEstimatedFees(signer.ss58),
+  );
 }
 
 /**
@@ -214,6 +235,73 @@ export async function submitBindSponsored(
     };
   }
   const res = await submitBindViaRelay(relayUrl, coseSign1Hex, coseKeyHex, threadHex);
+  return { ...res, via: "relay" };
+}
+
+/** A stake (voting-power) bind result that records whether the fee was self-paid or relay-sponsored. */
+export interface SponsoredStakeBindResult extends StakeLinkResult {
+  /** "self" = the posting account paid its own fee (fully trustless); "relay" = a funded relay paid it. */
+  via?: BindVia;
+}
+
+/**
+ * POST a signed CIP-8 STAKE proof to the Sponsored-Bind Relay's `/bind-stake` route. The relay pays the
+ * fee and submits `cognoGate.link_stake_signed` for the user — a LIVENESS party only: the proof commits
+ * {account, stake_credential, genesis} and the RUNTIME re-verifies it, so the relay can never forge or
+ * retarget the voting-power binding (it can only withhold/censor). Returns the bound 28-byte stake
+ * credential (0x-hex) the relay reports. `fetchImpl` is injectable for testing.
+ */
+export async function submitStakeBindViaRelay(
+  relayUrl: string,
+  coseSign1Hex: string,
+  coseKeyHex: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<StakeLinkResult> {
+  try {
+    const url = relayUrl.replace(/\/+$/, "") + "/bind-stake";
+    const res = await fetchImpl(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cose_sign1: coseSign1Hex, cose_key: coseKeyHex }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; stake_cred?: string; error?: string };
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.error || `the sponsored-bind relay responded ${res.status}` };
+    }
+    // Normalize to 0x-hex so the bound credential displays identically whether self- or relay-submitted.
+    const cred = data.stake_cred;
+    return { ok: true, stakeCredHex: cred ? (cred.startsWith("0x") ? cred : `0x${cred}`) : undefined };
+  } catch (e) {
+    return { ok: false, error: `could not reach the sponsored-bind relay: ${stringifyError(e)}` };
+  }
+}
+
+/**
+ * Balance-aware STAKE (voting-power) bind, mirroring {@link submitBindSponsored}. If the posting account
+ * can pay its own `link_stake_signed` fee, self-submit (fully trustless — no liveness party); otherwise
+ * POST the signed proof to the Sponsored-Bind Relay's `/bind-stake`, which pays the fee. A derived
+ * account that posts feelessly and bound its identity through the relay holds 0 balance, so it takes the
+ * relay path here too. `via` is surfaced so the UI can label which path was taken honestly. The account
+ * must already be payment-bound — the runtime rejects an unbound account with `NotPaymentBound`.
+ */
+export async function submitStakeBindSponsored(
+  api: CognoApi,
+  signer: PostingSigner,
+  coseSign1Hex: string,
+  coseKeyHex: string,
+  relayUrl: string,
+): Promise<SponsoredStakeBindResult> {
+  if (await canSelfPayStakeBind(api, signer, coseSign1Hex, coseKeyHex)) {
+    const res = await submitLinkStakeSigned(api, signer, coseSign1Hex, coseKeyHex);
+    return { ...res, via: "self" };
+  }
+  if (!relayUrl) {
+    return {
+      ok: false,
+      error: "your posting account has no balance to pay the stake-bind fee, and no sponsored-bind relay is configured",
+    };
+  }
+  const res = await submitStakeBindViaRelay(relayUrl, coseSign1Hex, coseKeyHex);
   return { ...res, via: "relay" };
 }
 

@@ -1,7 +1,12 @@
 # Sponsored-Bind Relay (D1 bind-funding)
 
-Closes the **new-user funding gap** for the trustless identity bind, without weakening the chain's
-DoS defence.
+Closes the **new-user funding gap** for the two trustless on-chain binds — the **identity** bind
+(`/bind` → `link_identity_signed`) and the **voting-power** bind (`/bind-stake` →
+`link_stake_signed`, spec 115) — without weakening the chain's DoS defence. Both binds are
+deliberately non-feeless and submitted by the user's zero-balance sign-to-derived posting account, so
+both hit the same wall; this relay pays the fee for either. Same posture for both: the runtime is the
+sole verifier and each proof commits the account, so the relay can **never** forge or retarget a
+binding — it can only pay or censor.
 
 ## The gap it closes
 
@@ -43,8 +48,9 @@ account (balance 0) takes the relay path; a funded one does not.
 | Route | | |
 |---|---|---|
 | `POST /bind` | `{ cose_sign1, cose_key, thread_pointer? }` (hex) → submits `cognoGate.link_identity_signed`, fee-paid by the relay key. `200 { ok, identity, who }` on success; `422 { ok:false, error }` for a chain rejection (`ProofInvalid` / `WrongGenesis` / `IdentityTombstoned` / `AccountAlreadyBound` …), relayed **verbatim**; `400` for a malformed body; `429` when rate-limited |
+| `POST /bind-stake` | `{ cose_sign1, cose_key }` (hex) → submits `cognoGate.link_stake_signed`, the **voting-power** bind, fee-paid by the relay key. `200 { ok, stake_cred, who }` on success; `422 { ok:false, error }` for a chain rejection (`ProofInvalid` / `WrongGenesis` / `NotPaymentBound` / `StakeCredAlreadyBound` / `StakeCredTombstoned` …), relayed **verbatim**; `400` malformed; `429` rate-limited. No `thread_pointer` (the stake call takes none). The account must already be payment-bound (via `/bind`) — else the chain returns `NotPaymentBound` |
 | `GET /health` (`/healthz`) | → `{ ok, node_reachable, relay_funded, relay_balance, min_balance, badges }`; **503** when the node is unreachable or the relay is below `MIN_BALANCE` (it can't pay a fee ⇒ unhealthy) |
-| `GET /metrics` | → Prometheus text (`cogno_bind_relay_up`, `_node_reachable`, `_balance_planck`, `_binds_total`, `_binds_ok_total`, `_binds_rejected_total`, `_rate_limited_total`) |
+| `GET /metrics` | → Prometheus text (`cogno_bind_relay_up`, `_node_reachable`, `_balance_planck`, `_binds_total`, `_binds_ok_total`, `_binds_rejected_total`, `_stake_binds_total`, `_stake_binds_ok_total`, `_stake_binds_rejected_total`, `_rate_limited_total`) |
 
 Submissions are **serialized** on the single relay key so concurrent POSTs don't race the account nonce.
 

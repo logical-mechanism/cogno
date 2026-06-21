@@ -6,8 +6,10 @@ import {
 	hexByteLen,
 	hexToBytes,
 	validateBindBody,
+	validateStakeBindBody,
 	RateLimiter,
 	extractLinked,
+	extractStakeLinked,
 	stringifyDispatchError,
 	COSE_SIGN1_MAX_BYTES,
 	COSE_KEY_MAX_BYTES,
@@ -73,6 +75,28 @@ ok(
 );
 ok(!validateBindBody({ cose_sign1: sign1, cose_key: key, thread_pointer: "zz" }).ok, "non-hex thread → rejected");
 
+console.log("\n[validateStakeBindBody] /bind-stake anti-abuse pre-check (two COSE blobs, NO thread)");
+{
+	const v = validateStakeBindBody({ cose_sign1: "0x" + sign1, cose_key: key });
+	ok(v.ok && v.coseSign1 === sign1 && v.coseKey === key, "0x-prefixed normalized; no thread field");
+	ok(v.thread === undefined, "no thread on the stake body (link_stake_signed takes none)");
+}
+ok(validateStakeBindBody({ coseSign1: sign1, coseKey: key }).ok, "camelCase spellings tolerated");
+ok(validateStakeBindBody({ cose_sign1: sign1, cose_key: key, thread_pointer: "0aff" }).ok, "an extra thread_pointer is ignored (not rejected)");
+ok(!validateStakeBindBody(null).ok, "null body → rejected");
+ok(!validateStakeBindBody({ cose_key: key }).ok, "missing cose_sign1 → rejected");
+ok(!validateStakeBindBody({ cose_sign1: sign1 }).ok, "missing cose_key → rejected");
+ok(!validateStakeBindBody({ cose_sign1: "zz", cose_key: key }).ok, "non-hex cose_sign1 → rejected");
+ok(!validateStakeBindBody({ cose_sign1: "", cose_key: key }).ok, "empty cose_sign1 → rejected");
+ok(
+	!validateStakeBindBody({ cose_sign1: "ab".repeat(COSE_SIGN1_MAX_BYTES + 1), cose_key: key }).ok,
+	`cose_sign1 over ${COSE_SIGN1_MAX_BYTES}B → rejected (matches on-chain BoundedVec)`,
+);
+ok(
+	!validateStakeBindBody({ cose_sign1: sign1, cose_key: "cd".repeat(COSE_KEY_MAX_BYTES + 1) }).ok,
+	`cose_key over ${COSE_KEY_MAX_BYTES}B → rejected`,
+);
+
 console.log("\n[RateLimiter] per-IP sliding window (anti-abuse / liveness only)");
 {
 	const rl = new RateLimiter(2, 1000);
@@ -98,6 +122,19 @@ console.log("\n[extractLinked] reads CognoGate.IdentityLinked from PAPI events")
 	ok(extractLinked([{ type: "CognoGate", value: { type: "Revoked" } }]) === null, "wrong CognoGate event → null");
 }
 
+console.log("\n[extractStakeLinked] reads CognoGate.StakeLinked from PAPI events");
+{
+	const events = [
+		{ type: "System", value: { type: "ExtrinsicSuccess" } },
+		{ type: "CognoGate", value: { type: "StakeLinked", value: { who: "5GxAccount", stake_cred: { asHex: () => "0xc1c1" } } } },
+	];
+	const l = extractStakeLinked(events);
+	ok(l && l.who === "5GxAccount" && l.stake_cred === "0xc1c1", "extracts who + stake_cred (asHex)");
+	ok(extractStakeLinked([]) === null, "no event → null");
+	ok(extractStakeLinked(undefined) === null, "non-array → null");
+	ok(extractStakeLinked([{ type: "CognoGate", value: { type: "IdentityLinked" } }]) === null, "the identity event is NOT a stake event → null");
+}
+
 console.log("\n[stringifyDispatchError] walks the nested variant union to the leaf name");
 ok(
 	stringifyDispatchError({ type: "Module", value: { type: "CognoGate", value: { type: "IdentityTombstoned" } } }) ===
@@ -121,12 +158,14 @@ ok(healthBody({ node_reachable: false, balance: null }, MIN).code === 503, "node
 
 console.log("\n[metricsBody] Prometheus text exposition");
 {
-	const m = metricsBody({ node_reachable: true, balance: 42n }, { binds_total: 3, binds_ok: 2 });
+	const m = metricsBody({ node_reachable: true, balance: 42n }, { binds_total: 3, binds_ok: 2, stake_binds_total: 5, stake_binds_ok: 4 });
 	ok(/cogno_bind_relay_up 1/.test(m), "emits up gauge");
 	ok(/cogno_bind_relay_balance_planck 42/.test(m), "emits balance when known");
-	ok(/cogno_bind_relay_binds_total 3/.test(m) && /cogno_bind_relay_binds_ok_total 2/.test(m), "emits lifetime counters");
+	ok(/cogno_bind_relay_binds_total 3/.test(m) && /cogno_bind_relay_binds_ok_total 2/.test(m), "emits identity-bind lifetime counters");
+	ok(/cogno_bind_relay_stake_binds_total 5/.test(m) && /cogno_bind_relay_stake_binds_ok_total 4/.test(m), "emits stake-bind lifetime counters");
 	const down = metricsBody({ node_reachable: false, balance: null }, {});
 	ok(/cogno_bind_relay_node_reachable 0/.test(down), "node_reachable 0 when down");
+	ok(/cogno_bind_relay_stake_binds_total 0/.test(down), "stake counters default to 0 when unset");
 	ok(!/cogno_bind_relay_balance_planck/.test(down), "balance OMITTED (not zeroed) when unknown");
 }
 
