@@ -4,7 +4,15 @@
 // under test: a zero-balance derived account is routed through the relay; a funded one self-submits.
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { submitBindViaRelay, canSelfPayBind, submitBindSponsored, submitLinkStakeSigned } from "./identity";
+import {
+  submitBindViaRelay,
+  canSelfPayBind,
+  submitBindSponsored,
+  submitLinkStakeSigned,
+  submitStakeBindViaRelay,
+  canSelfPayStakeBind,
+  submitStakeBindSponsored,
+} from "./identity";
 import type { CognoApi, PostingSigner } from "@/lib/types";
 
 const SIGN1 = "ab".repeat(80); // 80-byte cose_sign1 (within the 512 bound)
@@ -133,9 +141,10 @@ describe("submitBindSponsored", () => {
   });
 });
 
-// The stake (voting-power) bind: self-submit `link_stake_signed` and surface the bound credential
-// from the StakeLinked event. NO relay / fee-estimate path here — the already-registered account
-// self-pays — so the surface is just the submit-and-read-the-event logic.
+// The stake (voting-power) bind, SELF-PAY leg: submit `link_stake_signed` and surface the bound
+// credential from the StakeLinked event. This is the path taken when the account can cover its own
+// fee; a zero-balance account routes through the /bind-stake relay instead — the balance-aware
+// decision + relay POST are covered by the submitStakeBind* describe blocks below.
 const STAKE_LINKED_EVENT = {
   type: "CognoGate",
   value: { type: "StakeLinked", value: { who: "5GxAccount", stake_cred: { asHex: () => "0xc1c1c1" } } },
@@ -178,5 +187,106 @@ describe("submitLinkStakeSigned", () => {
     const r = await submitLinkStakeSigned(api, signer, SIGN1, KEY);
     expect(r.ok).toBe(false);
     expect(r.error).toContain("node down");
+  });
+});
+
+// The sponsored STAKE (voting-power) bind: the balance-aware self-vs-relay decision for
+// link_stake_signed. Mirrors the identity bind's sponsor path — a zero-balance derived account (every
+// browser user: posts feelessly, bound its identity through the relay) is routed through /bind-stake.
+function mockStakeApi({ free = 0n, fee = 1_000n, ed, submit }: { free?: bigint; fee?: bigint; ed?: bigint; submit?: unknown } = {}): CognoApi {
+  const tx = {
+    getEstimatedFees: vi.fn(async () => fee),
+    signAndSubmit: vi.fn(async () => submit ?? { ok: true, events: [STAKE_LINKED_EVENT] }),
+  };
+  const api: Record<string, unknown> = {
+    query: { System: { Account: { getValue: vi.fn(async () => ({ data: { free } })) } } },
+    tx: { CognoGate: { link_stake_signed: vi.fn(() => tx) } },
+  };
+  if (ed !== undefined) api.constants = { Balances: { ExistentialDeposit: vi.fn(async () => ed) } };
+  return api as unknown as CognoApi;
+}
+
+describe("submitStakeBindViaRelay", () => {
+  it("POSTs the proof to <relay>/bind-stake (no thread) and returns the 0x-normalized stake credential", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, stake_cred: "0xc1c1c1" }), { status: 200 }));
+    const r = await submitStakeBindViaRelay("http://relay:8091/", SIGN1, KEY, fetchImpl as unknown as typeof fetch);
+    expect(r.ok).toBe(true);
+    expect(r.stakeCredHex).toBe("0xc1c1c1");
+    expect((fetchImpl.mock.calls[0] as unknown[])[0]).toBe("http://relay:8091/bind-stake");
+    const init = (fetchImpl.mock.calls[0] as unknown[])[1] as { method: string; body: string };
+    expect(init.method).toBe("POST");
+    // link_stake_signed takes NO thread pointer — the body carries only the two COSE blobs.
+    expect(JSON.parse(init.body)).toEqual({ cose_sign1: SIGN1, cose_key: KEY });
+  });
+
+  it("normalizes a bare-hex stake_cred from the relay to 0x-prefixed", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, stake_cred: "c1c1c1" }), { status: 200 }));
+    const r = await submitStakeBindViaRelay("http://relay", SIGN1, KEY, fetchImpl as unknown as typeof fetch);
+    expect(r.stakeCredHex).toBe("0xc1c1c1");
+  });
+
+  it("surfaces a relay-reported chain error (e.g. NotPaymentBound)", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: false, error: "Module.CognoGate.NotPaymentBound" }), { status: 422 }),
+    );
+    const r = await submitStakeBindViaRelay("http://relay", SIGN1, KEY, fetchImpl as unknown as typeof fetch);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("NotPaymentBound");
+  });
+
+  it("reports the status when a non-ok response has no usable body", async () => {
+    const fetchImpl = vi.fn(async () => new Response("oops", { status: 502 }));
+    const r = await submitStakeBindViaRelay("http://relay", SIGN1, KEY, fetchImpl as unknown as typeof fetch);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("502");
+  });
+
+  it("reports a network failure as unreachable (never throws)", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    const r = await submitStakeBindViaRelay("http://relay", SIGN1, KEY, fetchImpl as unknown as typeof fetch);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("could not reach the sponsored-bind relay");
+  });
+});
+
+describe("canSelfPayStakeBind", () => {
+  it("false when the balance is 0 (a fresh sign-to-derived account)", async () => {
+    expect(await canSelfPayStakeBind(mockStakeApi({ free: 0n }), signer, SIGN1, KEY)).toBe(false);
+  });
+  it("true when free balance covers the estimated fee", async () => {
+    expect(await canSelfPayStakeBind(mockStakeApi({ free: 10_000n, fee: 1_000n }), signer, SIGN1, KEY)).toBe(true);
+  });
+  it("false when free balance is below the estimated fee", async () => {
+    expect(await canSelfPayStakeBind(mockStakeApi({ free: 500n, fee: 1_000n }), signer, SIGN1, KEY)).toBe(false);
+  });
+  it("false when the fee would dust the account below the existential deposit (routes to relay)", async () => {
+    expect(await canSelfPayStakeBind(mockStakeApi({ free: 1_500n, fee: 1_000n, ed: 1_000n }), signer, SIGN1, KEY)).toBe(false);
+  });
+});
+
+describe("submitStakeBindSponsored", () => {
+  it("self-submits and tags via:self when the account can pay its own fee", async () => {
+    const r = await submitStakeBindSponsored(mockStakeApi({ free: 10_000n, fee: 1_000n }), signer, SIGN1, KEY, "http://relay");
+    expect(r.ok).toBe(true);
+    expect(r.via).toBe("self");
+    expect(r.stakeCredHex).toBe("0xc1c1c1");
+  });
+
+  it("routes a zero-balance account through the relay and tags via:relay", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, stake_cred: "0xc1c1c1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const r = await submitStakeBindSponsored(mockStakeApi({ free: 0n }), signer, SIGN1, KEY, "http://relay");
+    expect(r.via).toBe("relay");
+    expect(r.ok).toBe(true);
+    expect(r.stakeCredHex).toBe("0xc1c1c1");
+    expect((fetchImpl.mock.calls[0] as unknown[])[0]).toBe("http://relay/bind-stake");
+  });
+
+  it("errors clearly when it can't self-pay and no relay is configured", async () => {
+    const r = await submitStakeBindSponsored(mockStakeApi({ free: 0n }), signer, SIGN1, KEY, "");
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("no sponsored-bind relay");
   });
 });

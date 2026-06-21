@@ -19,10 +19,12 @@
 // key is merely funded. It does NOT verify the proof (the runtime does); it pre-checks size bounds only
 // to avoid wasting fees on junk.
 //
-//   POST /bind  { cose_sign1, cose_key, thread_pointer? }  → submits cognoGate.link_identity_signed,
-//                                                            fee-paid by the relay's funded key
+//   POST /bind        { cose_sign1, cose_key, thread_pointer? }  → cognoGate.link_identity_signed
+//   POST /bind-stake  { cose_sign1, cose_key }                   → cognoGate.link_stake_signed (voting
+//                                                                   power; account must be payment-bound)
+//                       both fee-paid by the relay's funded key (liveness only — cannot forge/retarget)
 //   GET  /health (/healthz)  → node reachable + relay funded (503 when unhealthy)
-//   GET  /metrics            → Prometheus text (up / node_reachable / relay_balance / binds_*)
+//   GET  /metrics            → Prometheus text (up / node_reachable / relay_balance / binds_* / stake_binds_*)
 //
 //   WS=ws://127.0.0.1:9944 RELAY_SEED=//Alice PORT=8091 node relay.mjs   # (use the nvm node v22 — PAPI)
 import http from "node:http";
@@ -36,8 +38,10 @@ import { isMain } from "../_shared/cli.mjs";
 import { isDevKey } from "../_shared/keys.mjs";
 import {
 	validateBindBody,
+	validateStakeBindBody,
 	hexToBytes,
 	extractLinked,
+	extractStakeLinked,
 	stringifyDispatchError,
 	RateLimiter,
 	RELAY_BADGES,
@@ -63,8 +67,17 @@ const SUBMIT_TIMEOUT_MS = Number(process.env.SUBMIT_TIMEOUT || 150) * 1000;
 const stripHex = (h) => String(h).toLowerCase().replace(/^0x/, "");
 
 // In-process counters for /metrics — the relay is a documented operator service, alertable like the
-// follower/relayer (a funded service that stops binding should page someone).
-const counters = { binds_total: 0, binds_ok: 0, binds_rejected: 0, rate_limited: 0 };
+// follower/relayer (a funded service that stops binding should page someone). The stake_* set tracks
+// the /bind-stake voting-power route separately; rate_limited is shared across both routes.
+const counters = {
+	binds_total: 0,
+	binds_ok: 0,
+	binds_rejected: 0,
+	stake_binds_total: 0,
+	stake_binds_ok: 0,
+	stake_binds_rejected: 0,
+	rate_limited: 0,
+};
 
 /**
  * Build the relay's FUNDED submitter signer from RELAY_SEED. This key is NOT privileged — it holds no
@@ -132,6 +145,36 @@ async function submitBind(api, signer, { coseSign1, coseKey, thread }) {
 	return { ok: true, identity: stripHex(linked.identity), who: linked.who };
 }
 
+/**
+ * Submit cognoGate.link_stake_signed (the voting-power bind), signed (fee-paid) by the relay's funded
+ * key. Identical trust posture to {@link submitBind}: the BOUND account is the one the proof commits,
+ * NOT the relay — the proof's pinned payload carries the sr25519 account and the runtime binds THAT, so
+ * the relay cannot retarget the credential (it can only pay or censor). `link_stake_signed` takes no
+ * thread pointer. Returns { ok, stake_cred (0x-hex), who } or { ok:false, error }.
+ */
+async function submitStakeBind(api, signer, { coseSign1, coseKey }) {
+	const tx = api.tx.CognoGate.link_stake_signed({
+		cose_sign1: Binary.fromBytes(hexToBytes(coseSign1)),
+		cose_key: Binary.fromBytes(hexToBytes(coseKey)),
+	});
+	// Same finality-stall guard as submitBind: race signAndSubmit against a timeout so a tx the node
+	// admits but never finalizes frees the serialized queue rather than wedging it.
+	let timer;
+	const timeout = new Promise((_, rej) => {
+		timer = setTimeout(() => rej(new Error(`stake bind did not finalize within ${SUBMIT_TIMEOUT_MS / 1000}s`)), SUBMIT_TIMEOUT_MS);
+	});
+	let res;
+	try {
+		res = await Promise.race([tx.signAndSubmit(signer), timeout]);
+	} finally {
+		clearTimeout(timer);
+	}
+	if (!res.ok) return { ok: false, error: stringifyDispatchError(res.dispatchError) };
+	const linked = extractStakeLinked(res.events);
+	if (!linked) return { ok: false, error: "submitted ok but no CognoGate.StakeLinked event was found" };
+	return { ok: true, stake_cred: linked.stake_cred, who: linked.who };
+}
+
 // ── liveness probe (TTL-cached so a /health flood can't stampede the node) ──────────────────────
 const _probe = { at: 0, node_reachable: false, balance: null };
 async function probe(api, relaySs58) {
@@ -161,6 +204,69 @@ function makeServer(api, relay, rate) {
 		res.end(body);
 	};
 
+	// Shared POST handler for the two sponsored-bind routes (/bind = identity, /bind-stake = voting
+	// power). They are byte-identical except the validator, the submitter, and which counter set they
+	// bump — one handler keeps them in lockstep: the runtime is the sole verifier for BOTH, and the
+	// relay only pays the fee (it cannot forge or retarget either binding — the proof commits the
+	// account). `count` names the {total, ok, rejected} counter keys; each terminal path bumps exactly
+	// one of ok/rejected so the invariant total == ok + rejected holds.
+	const handleSponsorRoute = (req, res, ip, { validate, submit, count }) => {
+		if (!rate.allow(ip)) {
+			counters.rate_limited++;
+			return send(res, 429, { ok: false, error: "rate limited — slow down (the relay bounds binds per IP)" });
+		}
+		counters[count.total]++;
+		let raw = "";
+		let aborted = false;
+		req.on("data", (c) => {
+			raw += c;
+			if (raw.length > MAX_BODY) {
+				aborted = true;
+				counters[count.rejected]++;
+				send(res, 413, { ok: false, error: "request body too large" });
+				req.destroy();
+			}
+		});
+		req.on("end", () => {
+			if (aborted) return;
+			let parsed;
+			try {
+				parsed = JSON.parse(raw || "{}");
+			} catch {
+				counters[count.rejected]++;
+				return send(res, 400, { ok: false, error: "body is not valid JSON" });
+			}
+			const v = validate(parsed);
+			if (!v.ok) {
+				counters[count.rejected]++;
+				return send(res, 400, { ok: false, error: v.error });
+			}
+			// Submit on the serialized chain (one in-flight bind per relay key). The runtime is the
+			// verifier — a bad proof comes back as a dispatch error (ProofInvalid / WrongGenesis /
+			// NotPaymentBound / *AlreadyBound / *Tombstoned …), which we relay verbatim to the client.
+			serialize(() => submit(api, relay.signer, v)).then(
+				(out) => {
+					if (out.ok) counters[count.ok]++;
+					else counters[count.rejected]++;
+					send(res, out.ok ? 200 : 422, out);
+				},
+				(e) => {
+					counters[count.rejected]++;
+					console.error(`[bind-error] ${e?.message || e}`);
+					send(res, 502, { ok: false, error: `relay submission failed: ${e?.message || e}` });
+				},
+			);
+		});
+		req.on("error", () => {
+			// A mid-stream socket error is also a terminal reject — bump count.rejected so the
+			// total == ok + rejected invariant holds here too (when aborted, the 413 path already did).
+			if (!aborted) {
+				counters[count.rejected]++;
+				send(res, 400, { ok: false, error: "request stream error" });
+			}
+		});
+	};
+
 	return http.createServer((req, res) => {
 		const url = (req.url || "/").split("?")[0];
 		const ip = req.socket?.remoteAddress || "?";
@@ -188,59 +294,23 @@ function makeServer(api, relay, rate) {
 			});
 		}
 
+		// POST /bind — the identity (payment-key) bind: cognoGate.link_identity_signed.
 		if (req.method === "POST" && url === "/bind") {
-			if (!rate.allow(ip)) {
-				counters.rate_limited++;
-				return send(res, 429, { ok: false, error: "rate limited — slow down (the relay bounds binds per IP)" });
-			}
-			// Count every non-rate-limited POST here so the invariant binds_total == binds_ok +
-			// binds_rejected holds (each terminal path below bumps exactly one of ok/rejected).
-			counters.binds_total++;
-			let raw = "";
-			let aborted = false;
-			req.on("data", (c) => {
-				raw += c;
-				if (raw.length > MAX_BODY) {
-					aborted = true;
-					counters.binds_rejected++;
-					send(res, 413, { ok: false, error: "request body too large" });
-					req.destroy();
-				}
+			return handleSponsorRoute(req, res, ip, {
+				validate: validateBindBody,
+				submit: submitBind,
+				count: { total: "binds_total", ok: "binds_ok", rejected: "binds_rejected" },
 			});
-			req.on("end", () => {
-				if (aborted) return;
-				let parsed;
-				try {
-					parsed = JSON.parse(raw || "{}");
-				} catch {
-					counters.binds_rejected++;
-					return send(res, 400, { ok: false, error: "body is not valid JSON" });
-				}
-				const v = validateBindBody(parsed);
-				if (!v.ok) {
-					counters.binds_rejected++;
-					return send(res, 400, { ok: false, error: v.error });
-				}
-				// Submit on the serialized chain (one in-flight bind per relay key). The runtime is the
-				// verifier — a bad proof comes back as a dispatch error (ProofInvalid / WrongGenesis /
-				// IdentityTombstoned / AccountAlreadyBound …), which we relay verbatim to the client.
-				serialize(() => submitBind(api, relay.signer, v)).then(
-					(out) => {
-						if (out.ok) counters.binds_ok++;
-						else counters.binds_rejected++;
-						send(res, out.ok ? 200 : 422, out);
-					},
-					(e) => {
-						counters.binds_rejected++;
-						console.error(`[bind-error] ${e?.message || e}`);
-						send(res, 502, { ok: false, error: `relay submission failed: ${e?.message || e}` });
-					},
-				);
+		}
+
+		// POST /bind-stake — the voting-power (stake-key) bind: cognoGate.link_stake_signed. The account
+		// must already be payment-bound; the runtime returns NotPaymentBound otherwise (relayed verbatim).
+		if (req.method === "POST" && url === "/bind-stake") {
+			return handleSponsorRoute(req, res, ip, {
+				validate: validateStakeBindBody,
+				submit: submitStakeBind,
+				count: { total: "stake_binds_total", ok: "stake_binds_ok", rejected: "stake_binds_rejected" },
 			});
-			req.on("error", () => {
-				if (!aborted) send(res, 400, { ok: false, error: "request stream error" });
-			});
-			return;
 		}
 
 		return send(res, 404, { ok: false, error: "not found" });
@@ -272,7 +342,8 @@ async function main() {
 		console.log(`  L3        = ${WS}  genesis ${genesisHex}`);
 		console.log(`  relay key = ${relay.ss58}  (funded fee-payer — NOT a privileged key)`);
 		console.log(`  balance   = ${balance == null ? "unknown (node syncing?)" : `${balance} planck`}${balance != null && balance < MIN_BALANCE ? "  ⚠ below MIN_BALANCE — top it up" : ""}`);
-		console.log(`  limits    = ${RATE_LIMIT_PER_MIN}/min per-IP on /bind, CORS ${CORS_ORIGIN}`);
+		console.log(`  routes    = POST /bind (identity), POST /bind-stake (voting power)`);
+		console.log(`  limits    = ${RATE_LIMIT_PER_MIN}/min per-IP on each bind route, CORS ${CORS_ORIGIN}`);
 		console.log(`  role      = LIVENESS-only fee payer: the runtime verifies every proof; the relay cannot forge or retarget a binding (D1)`);
 	});
 	server.on("error", (e) => {

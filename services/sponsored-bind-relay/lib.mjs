@@ -83,6 +83,30 @@ export function validateBindBody(body) {
 }
 
 /**
+ * Validate + normalize a POST /bind-stake body (the voting-power bind). Same anti-abuse posture as
+ * {@link validateBindBody} — NOT correctness; the chain verifies the stake proof — but for
+ * `cognoGate.link_stake_signed`, which takes ONLY the two COSE blobs (NO `thread_pointer`). Accepts
+ * { cose_sign1, cose_key } as hex strings (0x optional; a couple of camelCase spellings tolerated; any
+ * extra fields are ignored). Returns { ok:true, coseSign1, coseKey } (lowercase bare hex) or
+ * { ok:false, error } carrying a 400-grade message.
+ */
+export function validateStakeBindBody(body) {
+	if (body == null || typeof body !== "object")
+		return { ok: false, error: "body must be a JSON object { cose_sign1, cose_key }" };
+	const coseSign1 = normalizeHex(body.cose_sign1 ?? body.coseSign1);
+	const coseKey = normalizeHex(body.cose_key ?? body.coseKey);
+	if (coseSign1 == null) return { ok: false, error: "cose_sign1 must be a hex string" };
+	if (coseKey == null) return { ok: false, error: "cose_key must be a hex string" };
+	if (hexByteLen(coseSign1) === 0) return { ok: false, error: "cose_sign1 is empty" };
+	if (hexByteLen(coseKey) === 0) return { ok: false, error: "cose_key is empty" };
+	if (hexByteLen(coseSign1) > COSE_SIGN1_MAX_BYTES)
+		return { ok: false, error: `cose_sign1 exceeds the ${COSE_SIGN1_MAX_BYTES}-byte on-chain bound` };
+	if (hexByteLen(coseKey) > COSE_KEY_MAX_BYTES)
+		return { ok: false, error: `cose_key exceeds the ${COSE_KEY_MAX_BYTES}-byte on-chain bound` };
+	return { ok: true, coseSign1, coseKey };
+}
+
+/**
  * Per-IP sliding-window limiter (mirrors the Python follower's RateLimiter): bound /bind so one client
  * can't drain the relay's funds. ANTI-ABUSE (liveness) only — nothing to do with binding correctness.
  * `per_min <= 0` disables it. `now` is injectable purely so the unit test needn't burn wall-clock.
@@ -140,7 +164,8 @@ export function healthBody(probe, minBalance) {
  * PURE /metrics rendering: the Prometheus text for the relay's probe + lifetime counters. The balance
  * sample is OMITTED (not zeroed) when the node is unreachable, so a "relay broke" alert never misfires
  * on a plain node outage (the renderPrometheus convention). `counters` = { binds_total, binds_ok,
- * binds_rejected, rate_limited }.
+ * binds_rejected, rate_limited, stake_binds_total, stake_binds_ok, stake_binds_rejected } (the
+ * stake_* set counts the /bind-stake voting-power route; rate_limited is shared across both routes).
  */
 export function metricsBody(probe, counters) {
 	const reachable = Boolean(probe?.node_reachable);
@@ -153,7 +178,10 @@ export function metricsBody(probe, counters) {
 		{ name: "cogno_bind_relay_binds_total", value: c.binds_total ?? 0, help: "POST /bind submissions attempted", type: "counter" },
 		{ name: "cogno_bind_relay_binds_ok_total", value: c.binds_ok ?? 0, help: "POST /bind that landed a binding", type: "counter" },
 		{ name: "cogno_bind_relay_binds_rejected_total", value: c.binds_rejected ?? 0, help: "POST /bind rejected (bad input or chain reject)", type: "counter" },
-		{ name: "cogno_bind_relay_rate_limited_total", value: c.rate_limited ?? 0, help: "POST /bind refused by the per-IP rate limit", type: "counter" },
+		{ name: "cogno_bind_relay_stake_binds_total", value: c.stake_binds_total ?? 0, help: "POST /bind-stake submissions attempted", type: "counter" },
+		{ name: "cogno_bind_relay_stake_binds_ok_total", value: c.stake_binds_ok ?? 0, help: "POST /bind-stake that landed a stake (voting-power) binding", type: "counter" },
+		{ name: "cogno_bind_relay_stake_binds_rejected_total", value: c.stake_binds_rejected ?? 0, help: "POST /bind-stake rejected (bad input or chain reject)", type: "counter" },
+		{ name: "cogno_bind_relay_rate_limited_total", value: c.rate_limited ?? 0, help: "POST /bind or /bind-stake refused by the per-IP rate limit", type: "counter" },
 	]);
 }
 
@@ -165,6 +193,16 @@ export function extractLinked(events) {
 	if (!v) return null;
 	const identity = typeof v.identity?.asHex === "function" ? v.identity.asHex() : v.identity;
 	return { identity, who: v.who };
+}
+
+/** Extract the StakeLinked { stake_cred (0x-hex), who (ss58) } from a PAPI tx result's events, or null. */
+export function extractStakeLinked(events) {
+	if (!Array.isArray(events)) return null;
+	const ev = events.find((e) => e?.type === "CognoGate" && e?.value?.type === "StakeLinked");
+	const v = ev?.value?.value;
+	if (!v) return null;
+	const stakeCred = typeof v.stake_cred?.asHex === "function" ? v.stake_cred.asHex() : v.stake_cred;
+	return { stake_cred: stakeCred, who: v.who };
 }
 
 /**

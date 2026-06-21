@@ -13,7 +13,7 @@ import {
   isAccountBound,
   readAccountOf,
   submitBindSponsored,
-  submitLinkStakeSigned,
+  submitStakeBindSponsored,
   type BindVia,
 } from "@/lib/chain/identity";
 import { getBindRelayUrl } from "@/lib/config/endpoints";
@@ -43,6 +43,8 @@ export interface UseIdentity {
   votingPower: bigint | null;
   /** the bound 28-byte stake credential as 0x-hex, once stake-bound (for display). */
   boundStakeCredHex: string | null;
+  /** how the just-completed stake bind was submitted: "self" (paid own fee) or "relay" (sponsored). null = unknown. */
+  stakeBoundVia: BindVia | null;
   /** a stake bind is in flight (stake-key wallet sign → on-chain `link_stake_signed`). */
   stakeBinding: boolean;
   /** error from the LAST stake-bind attempt (kept separate from the payment-bind `error`). */
@@ -63,6 +65,7 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
   const [stakeBound, setStakeBound] = useState<boolean | null>(null);
   const [votingPower, setVotingPower] = useState<bigint | null>(null);
   const [boundStakeCredHex, setBoundStakeCredHex] = useState<string | null>(null);
+  const [stakeBoundVia, setStakeBoundVia] = useState<BindVia | null>(null);
   const [stakeBinding, setStakeBinding] = useState(false);
   const [stakeError, setStakeError] = useState<string | null>(null);
 
@@ -92,8 +95,10 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
   // ValueQuery → 0n until a committee `set_voting_power` / the enforced inherent observes the stake).
   // Watched (not one-shot) because the weight lands ASYNCHRONOUSLY, a few blocks after the bind.
   useEffect(() => {
-    // A stale per-attempt error must not survive a key/chain switch.
+    // A stale per-attempt error / via-label must not survive a key/chain switch (this effect re-runs
+    // on [api, signer.ss58]; stakeBoundVia describes a bind PERFORMED for the current key this session).
     setStakeError(null);
+    setStakeBoundVia(null);
     if (!api) {
       setStakeBound(null);
       setVotingPower(null);
@@ -191,17 +196,26 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
           if (!proof.ok || !proof.coseSign1 || !proof.coseKey) {
             throw new Error(proof.error || "could not produce the CIP-8 stake proof");
           }
-          // (3) submit the stake self-proof on-chain. NOT sponsored: the (already-registered) account
-          //     self-pays the fee. The runtime verifies the stake-key signature + binds the credential.
-          const res = await submitLinkStakeSigned(api, signer, proof.coseSign1, proof.coseKey);
+          // (3) submit the stake self-proof. Balance-aware (like the payment bind): if MY posting key
+          //     can pay its own fee, self-submit (fully trustless); otherwise POST the proof to the
+          //     Sponsored-Bind Relay's /bind-stake, which pays the fee (a LIVENESS party — it can't
+          //     forge the binding, the runtime re-verifies). A fresh derived account (balance 0) takes
+          //     the relay. The runtime requires the account already be payment-bound (NotPaymentBound).
+          const res = await submitStakeBindSponsored(api, signer, proof.coseSign1, proof.coseKey, getBindRelayUrl());
           if (!res.ok) {
             throw new Error(res.error || "the on-chain stake bind was rejected");
           }
           // The live watch (above) flips stakeBound and surfaces the voting power once observed; seed
-          // boundStakeCredHex from the proof so the UI confirms the proven credential immediately.
+          // boundStakeCredHex from the LOCALLY-PROVEN credential (what the runtime binds) so the UI
+          // confirms it immediately — never trust the relay's echoed stake_cred for display (a buggy
+          // relay could return any hex; the proof value can't be relay-influenced). Fall back to the
+          // event-derived value only if the proof somehow lacks it.
           setBoundStakeCredHex(
-            res.stakeCredHex ?? (proof.stakeCredentialHex ? `0x${proof.stakeCredentialHex}` : null),
+            proof.stakeCredentialHex ? `0x${proof.stakeCredentialHex}` : (res.stakeCredHex ?? null),
           );
+          // Surface how the fee was paid so the UI can honestly label a relay-sponsored bind (parity
+          // with the identity bind's boundVia). A zero-balance derived account always takes "relay".
+          setStakeBoundVia(res.via ?? null);
           setStakeBound(true);
         } catch (e) {
           // eslint-disable-next-line no-console
@@ -226,6 +240,7 @@ export function useIdentity(api: CognoApi | null, signer: PostingSigner): UseIde
     stakeBound,
     votingPower,
     boundStakeCredHex,
+    stakeBoundVia,
     stakeBinding,
     stakeError,
     bindStake,
