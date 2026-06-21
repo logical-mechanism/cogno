@@ -33,6 +33,7 @@ pallet-collective = { workspace = true }
 pallet-cogno-gate = { workspace = true }
 pallet-grandpa = { workspace = true }
 pallet-microblog = { workspace = true }
+pallet-profile = { workspace = true }
 pallet-session = { workspace = true }
 pallet-skip-feeless-payment = { workspace = true }
 pallet-sudo = { workspace = true }
@@ -81,6 +82,7 @@ std = [
 	"pallet-cogno-gate/std",
 	"pallet-grandpa/std",
 	"pallet-microblog/std",
+	"pallet-profile/std",
 	"pallet-session/std",
 	"pallet-skip-feeless-payment/std",
 	"pallet-sudo/std",
@@ -119,6 +121,7 @@ runtime-benchmarks = [
 	"pallet-cogno-gate/runtime-benchmarks",
 	"pallet-grandpa/runtime-benchmarks",
 	"pallet-microblog/runtime-benchmarks",
+	"pallet-profile/runtime-benchmarks",
 	"pallet-skip-feeless-payment/runtime-benchmarks",
 	"pallet-sudo/runtime-benchmarks",
 	"pallet-talk-stake/runtime-benchmarks",
@@ -140,6 +143,7 @@ try-runtime = [
 	"pallet-cogno-gate/try-runtime",
 	"pallet-grandpa/try-runtime",
 	"pallet-microblog/try-runtime",
+	"pallet-profile/try-runtime",
 	"pallet-session/try-runtime",
 	"pallet-skip-feeless-payment/try-runtime",
 	"pallet-sudo/try-runtime",

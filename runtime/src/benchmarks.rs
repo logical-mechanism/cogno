@@ -35,6 +35,8 @@ frame_benchmarking::define_benchmarks!(
 	[pallet_talk_stake, TalkStake]
 	[pallet_microblog, Microblog]
 	[pallet_anchor, Anchor]
+	// Social-actions branch: the fee-bearing display-profile pallet.
+	[pallet_profile, Profile]
 	// M6 (DR-26): real WeightInfo for the mutable-authority add/remove extrinsics.
 	[pallet_validator_set, ValidatorSet]
 	// runtime-4: benchmark the FollowerCommittee (the path that EXECUTES every 3-of-5 privileged

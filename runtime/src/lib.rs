@@ -130,7 +130,26 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// UNCHANGED. Architecture A: the header digest is auditability; the load-bearing importer
 	// re-validation rides `check_inherent` (no import_queue/start_aura fork). D4-SHAPED, not D4-TRUST —
 	// load-bearing only with ≥3 independent producers, co-sequenced with the enforcement cutover.
-	spec_version: 111,
+	// 111 -> 112 (social actions, chain-first): microblog gained the engagement calls — `quote_post`
+	// (@3), stake-weighted `vote`/`clear_vote` (@4/@5), permanent `repost` (@6), `follow`/`unfollow`
+	// (@7/@8) — plus the `Post.quote` field, new storage (Votes/VoteTally/Reposts/RepostCount/
+	// Following/Follower+FollowingCount), per-action cost constants, and REMOVED `delete_post`
+	// (@1 permanently vacant; content is append-only). Added pallet-profile (@17, mutable display
+	// profile; fee-bearing `set_profile`). The `Post.quote` field RE-ENCODES `Posts`, so this ships
+	// the project's FIRST storage migration: microblog now declares `#[pallet::storage_version(1)]`
+	// and a v0->v1 `VersionedMigration` is wired into `SingleBlockMigrations`. Encoding-affecting
+	// (calls/storage/struct field/constants/new pallet) — regen the PAPI descriptors + indexer
+	// mappings. transaction_version is UNCHANGED (2): the `TxExtension` tuple is byte-identical —
+	// the new feeless calls ride the existing `CheckCapacity` (only its internal match arms grew),
+	// and `set_profile` is a plain fee-bearing signed extrinsic.
+	// 112 -> 113 (polls + pinned post): microblog gained `create_poll` (@9) + `cast_poll_vote` (@10)
+	// — a stake-weighted poll is a normal post (the question) plus a `Polls`/`PollVotes`/`PollTally`
+	// side-record; pallet-profile gained `pin_post` (@2) + `unpin_post` (@3) + a `PinnedPost` map.
+	// All ADDITIVE storage/calls/constants (NO Post/Profile struct change) — so NO new migration;
+	// encoding-affecting, so regen the PAPI descriptors + indexer mappings. The new microblog calls
+	// ride the existing CheckCapacity (feeless); pin/unpin are fee-bearing. transaction_version is
+	// UNCHANGED (2) — the TxExtension tuple is byte-identical.
+	spec_version: 113,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -223,8 +242,9 @@ pub type TxExtension = (
 	// `post_message` → `ExhaustsResources`, capacity consumed at inclusion (pallet-microblog §5).
 	pallet_microblog::CheckCapacity<Runtime>,
 	// ⚑ M2c: wrap payment in `SkipCheckIfFeeless` so calls marked `#[pallet::feeless_if]`
-	// (i.e. `post_message`) skip the fee. Feeless is per-call, not chain-wide — `delete_post`
-	// and everything else stay fee-bearing. (Metadata-invisible: PAPI still sees plain payment.)
+	// (i.e. `post_message`) skip the fee. Feeless is per-call, not chain-wide — `set_profile`
+	// (the microblog social writes post_message/quote_post/vote/clear_vote/repost/follow/unfollow
+	// are feeless) and everything else stays fee-bearing. (Metadata-invisible: PAPI sees plain payment.)
 	pallet_skip_feeless_payment::SkipCheckIfFeeless<
 		Runtime,
 		pallet_transaction_payment::ChargeTransactionPayment<Runtime>,
@@ -348,4 +368,12 @@ mod runtime {
 	// path keeps driving weight until cutover. Next free index 17.
 	#[runtime::pallet_index(16)]
 	pub type CardanoObserver = pallet_cardano_observer;
+
+		// 17 = Profile (social-actions branch): the mutable per-account display profile (name/bio/
+		// avatar). `set_profile` is identity-gated via the microblog `IsAllowed` trait (CognoGate)
+		// and FEE-BEARING (low-frequency — the tx fee is its own anti-spam, so no second capacity
+		// extension is needed and transaction_version is unaffected). A separate pallet keeps the
+		// security-sensitive identity verifier and the feeless hot path lean. Next free index 18.
+		#[runtime::pallet_index(17)]
+		pub type Profile = pallet_profile;
 }

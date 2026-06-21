@@ -74,11 +74,15 @@ parameter_types! {
 	pub const SS58Prefix: u8 = 42;
 }
 
-/// All migrations of the runtime, aside from the ones declared in the pallets.
+/// All migrations of the runtime, aside from the ones declared in the pallets. A tuple of types,
+/// each implementing `OnRuntimeUpgrade`. Run by the Executive (via `AllPalletsWithSystem`) BEFORE
+/// the per-pallet `on_runtime_upgrade` hooks, in the first block after a `setCode`.
 ///
-/// This can be a tuple of types, each implementing `OnRuntimeUpgrade`.
+/// The project's FIRST migration: microblog `Post` v0 → v1 (adds the `quote` field), guarded by
+/// `VersionedMigration` so it runs once (on-chain storage version 0 → 1) and self-skips thereafter.
+/// Leave it registered across the next few spec bumps (it's a no-op once applied), then drop it.
 #[allow(unused_parens)]
-type SingleBlockMigrations = ();
+type SingleBlockMigrations = (pallet_microblog::migrations::v1::MigrateV0ToV1<Runtime>,);
 
 /// The default types are being injected by [`derive_impl`](`frame_support::derive_impl`) from
 /// [`SoloChainDefaultConfig`](`struct@frame_system::config_preludes::SolochainDefaultConfig`),
@@ -359,6 +363,15 @@ impl pallet_microblog::Config for Runtime {
 	type Ceiling = Ceiling;
 	type BaseCost = BaseCost;
 	type PerByteCost = PerByteCost;
+	// Per-action costs for the social engagement calls, all drawn from the SAME single talk-capacity
+	// battery as posting. DEV-tuned relative to BaseCost (= 50_000_000, one post): a vote/repost ≈
+	// 0.4 of a post, a follow ≈ 0.2. (quote_post reuses `post_cost`, so it has no constant here.)
+	type VoteCost = ConstU128<20_000_000>;
+	type RepostCost = ConstU128<20_000_000>;
+	type FollowCost = ConstU128<10_000_000>;
+	// Poll bounds: up to 4 options, each up to 80 bytes (the question reuses MaxLength = 512).
+	type MaxPollOptions = ConstU32<4>;
+	type MaxPollOptionLen = ConstU32<80>;
 	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
 	type ForceOrigin = AuthorityOrigin;
 	// M2: gate posting on a live Cardano-identity binding (the anti-Sybil anchor).
@@ -492,4 +505,19 @@ impl pallet_cardano_observer::Config for Runtime {
 	// pallet-timestamp implements `UnixTime` — the block's consensus clock for the stability sanity bound.
 	type UnixTime = Timestamp;
 	type WeightInfo = ();
+}
+
+/// Configure pallet-profile (social-actions branch): the mutable per-account display profile. Gated
+/// on a live Cardano-identity binding via the SAME `IsAllowed` trait microblog posting uses
+/// (`IdentityGate = CognoGate`). `set_profile`/`clear_profile` are FEE-BEARING (the tx fee is the
+/// anti-spam for this low-frequency call), so no second capacity extension is wired — feeless +
+/// capacity-metering stays reserved for the high-frequency microblog social writes. The avatar is a
+/// URL / IPFS CID reference (`MaxAvatar` bytes), NOT image bytes.
+impl pallet_profile::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type IdentityGate = CognoGate;
+	type MaxName = ConstU32<64>;
+	type MaxBio = ConstU32<256>;
+	type MaxAvatar = ConstU32<128>;
+	type WeightInfo = pallet_profile::weights::SubstrateWeight<Runtime>;
 }

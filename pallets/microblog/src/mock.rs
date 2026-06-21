@@ -68,6 +68,12 @@ impl pallet_microblog::Config for Test {
 	type Ceiling = ConstU128<5_000>;
 	type BaseCost = ConstU128<100>;
 	type PerByteCost = ConstU128<1>;
+	// Engagement costs are a fraction of a post (BaseCost 100) so tests can prime small buckets.
+	type VoteCost = ConstU128<50>;
+	type RepostCost = ConstU128<30>;
+	type FollowCost = ConstU128<30>;
+	type MaxPollOptions = ConstU32<4>;
+	type MaxPollOptionLen = ConstU32<32>;
 	type ForceOrigin = EnsureRoot<u64>;
 	type IdentityGate = MockIdentityGate;
 	type WeightInfo = ();
