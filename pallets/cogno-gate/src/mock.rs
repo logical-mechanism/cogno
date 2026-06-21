@@ -47,6 +47,9 @@ impl pallet_microblog::Config for Test {
 	type Ceiling = ConstU128<5_000>;
 	type BaseCost = ConstU128<100>;
 	type PerByteCost = ConstU128<1>;
+	type VoteCost = ConstU128<50>;
+	type RepostCost = ConstU128<30>;
+	type FollowCost = ConstU128<30>;
 	type ForceOrigin = EnsureRoot<u64>;
 	// The REAL gate — this is what makes the mock an integration test.
 	type IdentityGate = CognoGate;

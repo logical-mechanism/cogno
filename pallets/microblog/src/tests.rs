@@ -6,7 +6,10 @@
 //! *feeless* fee waiver are exercised end-to-end by the node acceptance harness; here we unit
 //! test the pure bucket math + `force_set_capacity` + the anti-farm invariants.
 
-use crate::{mock::*, ByAuthor, Capacity, Error, Event, NextPostId, Posts};
+use crate::{
+	mock::*, ByAuthor, Capacity, Error, Event, FollowerCount, Following, FollowingCount, NextPostId,
+	Posts, RepostCount, Reposts, VoteDir, VoteTally, Votes,
+};
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
 
@@ -68,28 +71,300 @@ fn too_long_is_rejected() {
 	});
 }
 
+// ── social engagement: quote / vote / repost / follow ───────────────────────────────────────────
+
 #[test]
-fn delete_post_works_and_guards_author() {
+fn quote_post_sets_quote_and_emits_postcreated() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
-		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"hello".to_vec(), None));
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		// Quote post 0 with new text. The quote is a post in its own right (parent None, quote Some).
+		assert_ok!(Microblog::quote_post(RuntimeOrigin::signed(2), b"hot take".to_vec(), 0));
+		let q = Posts::<Test>::get(1).expect("quote exists");
+		assert_eq!(q.author, 2);
+		assert_eq!(q.parent, None);
+		assert_eq!(q.quote, Some(0));
+		assert_eq!(NextPostId::<Test>::get(), 2);
+		System::assert_last_event(Event::PostCreated { id: 1, author: 2 }.into());
+	});
+}
 
-		// A non-author cannot delete.
+#[test]
+fn quote_post_nonexistent_target_is_rejected() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// Unlike a reply's parent (unvalidated), a quote target must exist.
 		assert_noop!(
-			Microblog::delete_post(RuntimeOrigin::signed(2), 0),
-			Error::<Test>::NotAuthor
-		);
-		// Deleting a missing id fails.
-		assert_noop!(
-			Microblog::delete_post(RuntimeOrigin::signed(1), 99),
+			Microblog::quote_post(RuntimeOrigin::signed(1), b"x".to_vec(), 99),
 			Error::<Test>::NotFound
 		);
+		assert_eq!(NextPostId::<Test>::get(), 0);
+	});
+}
 
-		// The author can delete; the post and its index entry are removed.
-		assert_ok!(Microblog::delete_post(RuntimeOrigin::signed(1), 0));
-		assert!(Posts::<Test>::get(0).is_none());
-		assert!(ByAuthor::<Test>::get(1).is_empty());
-		System::assert_last_event(Event::PostDeleted { id: 0 }.into());
+#[test]
+fn quote_post_too_long_is_rejected() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		let big = vec![0u8; 513]; // MaxLength = 512
+		assert_noop!(
+			Microblog::quote_post(RuntimeOrigin::signed(1), big, 0),
+			Error::<Test>::TooLong
+		);
+	});
+}
+
+#[test]
+fn vote_records_stake_weight_and_tally() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
+		let t = VoteTally::<Test>::get(0);
+		assert_eq!(t.up_weight, 100);
+		assert_eq!(t.up_count, 1);
+		assert_eq!(t.down_weight, 0);
+		assert_eq!(Votes::<Test>::get(0, 2).expect("record").weight, 100);
+		System::assert_last_event(Event::Voted { id: 0, who: 2, dir: VoteDir::Up, weight: 100 }.into());
+	});
+}
+
+#[test]
+fn vote_on_nonexistent_post_is_rejected() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_noop!(
+			Microblog::vote(RuntimeOrigin::signed(1), 99, VoteDir::Up),
+			Error::<Test>::NotFound
+		);
+	});
+}
+
+#[test]
+fn revote_flip_reverses_stored_weight_not_current_stake() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		// Vote Up at weight 100 …
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
+		// … then stake changes to 300 and the voter flips to Down. The Up side must reverse by the
+		// STORED 100 (to zero), and the Down side apply the fresh 300 — no drift.
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 300));
+		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Down));
+		let t = VoteTally::<Test>::get(0);
+		assert_eq!(t.up_weight, 0);
+		assert_eq!(t.up_count, 0);
+		assert_eq!(t.down_weight, 300);
+		assert_eq!(t.down_count, 1);
+	});
+}
+
+#[test]
+fn revote_same_direction_updates_weight_not_count() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 300));
+		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up)); // same dir, new weight
+		let t = VoteTally::<Test>::get(0);
+		assert_eq!(t.up_weight, 300, "weight replaced, not summed");
+		assert_eq!(t.up_count, 1, "count not double-incremented");
+	});
+}
+
+#[test]
+fn clear_vote_reverses_exact_stored_weight() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
+		// Stake balloons, then the vote is cleared — the reversal must use the stored 100, not 9999.
+		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 9999));
+		assert_ok!(Microblog::clear_vote(RuntimeOrigin::signed(2), 0));
+		let t = VoteTally::<Test>::get(0);
+		assert_eq!(t.up_weight, 0);
+		assert_eq!(t.up_count, 0);
+		assert!(Votes::<Test>::get(0, 2).is_none());
+		System::assert_last_event(Event::VoteCleared { id: 0, who: 2 }.into());
+	});
+}
+
+#[test]
+fn clear_vote_without_a_vote_is_rejected() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		assert_noop!(
+			Microblog::clear_vote(RuntimeOrigin::signed(2), 0),
+			Error::<Test>::NotVoted
+		);
+	});
+}
+
+/// The fold-determinism invariant: an independent fold of the emitted `Voted`/`VoteCleared` events
+/// (reverse-then-apply with the SAME saturating math) must reproduce `VoteTally` byte-for-byte. We
+/// drive a sweep of votes/flips/clears across several accounts and compare the on-chain tally to a
+/// hand fold that mimics what an off-chain indexer does.
+#[test]
+fn tally_fold_determinism_property() {
+	use std::collections::BTreeMap;
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		// (voter, weight, action) — action: Some(dir) = vote, None = clear.
+		let steps: &[(u64, u128, Option<VoteDir>)] = &[
+			(2, 100, Some(VoteDir::Up)),
+			(3, 50, Some(VoteDir::Down)),
+			(2, 250, Some(VoteDir::Up)),   // same-dir reweight
+			(4, 70, Some(VoteDir::Up)),
+			(3, 50, Some(VoteDir::Up)),    // flip Down -> Up (weight unchanged here)
+			(2, 250, None),                // clear
+			(4, 999, Some(VoteDir::Down)), // flip Up -> Down at new weight
+		];
+		// Independent fold: last-seen record per voter + the running tally, reverse-then-apply.
+		let mut seen: BTreeMap<u64, (VoteDir, u128)> = BTreeMap::new();
+		let (mut up_w, mut dn_w, mut up_c, mut dn_c) = (0u128, 0u128, 0u32, 0u32);
+		for &(voter, weight, action) in steps {
+			// Reverse a prior record if present.
+			if let Some((dir, w)) = seen.remove(&voter) {
+				match dir {
+					VoteDir::Up => { up_w = up_w.saturating_sub(w); up_c = up_c.saturating_sub(1); }
+					VoteDir::Down => { dn_w = dn_w.saturating_sub(w); dn_c = dn_c.saturating_sub(1); }
+				}
+			}
+			match action {
+				Some(dir) => {
+					assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), voter, weight));
+					assert_ok!(Microblog::vote(RuntimeOrigin::signed(voter), 0, dir));
+					match dir {
+						VoteDir::Up => { up_w = up_w.saturating_add(weight); up_c = up_c.saturating_add(1); }
+						VoteDir::Down => { dn_w = dn_w.saturating_add(weight); dn_c = dn_c.saturating_add(1); }
+					}
+					seen.insert(voter, (dir, weight));
+				}
+				None => {
+					assert_ok!(Microblog::clear_vote(RuntimeOrigin::signed(voter), 0));
+				}
+			}
+		}
+		let t = VoteTally::<Test>::get(0);
+		assert_eq!((t.up_weight, t.down_weight, t.up_count, t.down_count), (up_w, dn_w, up_c, dn_c));
+	});
+}
+
+#[test]
+fn repost_is_permanent_and_counts_once() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		assert_ok!(Microblog::repost(RuntimeOrigin::signed(2), 0));
+		assert_eq!(RepostCount::<Test>::get(0), 1);
+		assert!(Reposts::<Test>::contains_key(0, 2));
+		System::assert_last_event(Event::Reposted { id: 0, who: 2 }.into());
+		// A second repost by the same account is rejected (permanent — there is no un-repost).
+		assert_noop!(
+			Microblog::repost(RuntimeOrigin::signed(2), 0),
+			Error::<Test>::AlreadyReposted
+		);
+		assert_eq!(RepostCount::<Test>::get(0), 1);
+	});
+}
+
+#[test]
+fn repost_nonexistent_post_is_rejected() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_noop!(
+			Microblog::repost(RuntimeOrigin::signed(1), 99),
+			Error::<Test>::NotFound
+		);
+	});
+}
+
+#[test]
+fn follow_sets_edge_and_counts() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 2));
+		assert!(Following::<Test>::contains_key(1, 2));
+		assert_eq!(FollowingCount::<Test>::get(1), 1);
+		assert_eq!(FollowerCount::<Test>::get(2), 1);
+		System::assert_last_event(Event::Followed { follower: 1, followee: 2 }.into());
+	});
+}
+
+#[test]
+fn follow_self_is_rejected() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_noop!(Microblog::follow(RuntimeOrigin::signed(1), 1), Error::<Test>::SelfFollow);
+	});
+}
+
+#[test]
+fn follow_twice_is_rejected() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 2));
+		assert_noop!(Microblog::follow(RuntimeOrigin::signed(1), 2), Error::<Test>::AlreadyFollowing);
+		assert_eq!(FollowingCount::<Test>::get(1), 1); // not double-counted
+	});
+}
+
+#[test]
+fn follow_dangling_followee_is_allowed() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// The followee (account 42) has never been seen on-chain — following still succeeds (mirrors
+		// the dangling-parent design; the followee may bind an identity later).
+		assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 42));
+		assert_eq!(FollowerCount::<Test>::get(42), 1);
+	});
+}
+
+#[test]
+fn unfollow_clears_edge_and_decrements() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 2));
+		assert_ok!(Microblog::unfollow(RuntimeOrigin::signed(1), 2));
+		assert!(!Following::<Test>::contains_key(1, 2));
+		assert_eq!(FollowingCount::<Test>::get(1), 0);
+		assert_eq!(FollowerCount::<Test>::get(2), 0);
+		System::assert_last_event(Event::Unfollowed { follower: 1, followee: 2 }.into());
+	});
+}
+
+#[test]
+fn unfollow_without_following_is_rejected() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_noop!(Microblog::unfollow(RuntimeOrigin::signed(1), 2), Error::<Test>::NotFollowing);
+	});
+}
+
+#[test]
+fn engagement_calls_require_identity_gate() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		crate::mock::deny_identity(2);
+		assert_noop!(
+			Microblog::quote_post(RuntimeOrigin::signed(2), b"x".to_vec(), 0),
+			Error::<Test>::NotAllowed
+		);
+		assert_noop!(
+			Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up),
+			Error::<Test>::NotAllowed
+		);
+		assert_noop!(Microblog::repost(RuntimeOrigin::signed(2), 0), Error::<Test>::NotAllowed);
+		assert_noop!(Microblog::follow(RuntimeOrigin::signed(2), 1), Error::<Test>::NotAllowed);
 	});
 }
 
@@ -515,15 +790,75 @@ mod capacity_extension {
 	}
 
 	#[test]
-	fn non_post_calls_pass_through_without_consuming() {
+	fn non_metered_calls_pass_through_without_consuming() {
 		new_test_ext().execute_with(|| {
 			System::set_block_number(10);
 			prime(1, 100, 1_000);
-			// delete_post is not metered: validate passes and post_dispatch consumes nothing.
-			let call = RuntimeCall::Microblog(crate::Call::delete_post { id: 0 });
-			let (_p, pre) = validate(1, &call).expect("non-post passes");
+			// force_set_capacity is a Microblog call but is NOT metered: validate passes through and
+			// post_dispatch consumes nothing (the `metered_cost` helper returns None for it).
+			let call = RuntimeCall::Microblog(crate::Call::force_set_capacity { who: 1, cap_last: 0 });
+			let (_p, pre) = validate(1, &call).expect("non-metered passes");
 			post_dispatch(pre, Ok(()));
 			assert_eq!(Microblog::current_capacity(&1, 10), 1_000); // unchanged
+		});
+	}
+
+	#[test]
+	fn each_engagement_call_is_metered_at_its_constant() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			// VoteCost 50, RepostCost 30, FollowCost 30 in the mock; cap ceiling 1000.
+			let vote = RuntimeCall::Microblog(crate::Call::vote { post_id: 0, dir: crate::VoteDir::Up });
+			let repost = RuntimeCall::Microblog(crate::Call::repost { post_id: 0 });
+			let follow = RuntimeCall::Microblog(crate::Call::follow { target: 2 });
+			for (call, cost) in [(vote, 50u128), (repost, 30), (follow, 30)] {
+				prime(1, 100, 1_000); // reset to a full bucket each iteration
+				let (priority, pre) = validate(1, &call).expect("affordable");
+				assert_eq!(priority as u128, 1_000 - cost, "priority is remaining headroom");
+				post_dispatch(pre, Ok(()));
+				assert_eq!(Microblog::current_capacity(&1, 10), 1_000 - cost, "debited exactly the cost");
+			}
+		});
+	}
+
+	#[test]
+	fn over_budget_vote_is_rejected_at_pool() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			prime(1, 100, 40); // < VoteCost 50
+			let call = RuntimeCall::Microblog(crate::Call::vote { post_id: 0, dir: crate::VoteDir::Up });
+			let err = validate(1, &call).map(|_| ()).unwrap_err();
+			assert_eq!(err, TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources));
+		});
+	}
+
+	#[test]
+	fn over_length_quote_is_rejected_at_pool() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			prime(1, 1_000, 5_000); // plenty, so only the length gate can reject
+			let big = vec![0u8; 513]; // > MaxLength 512
+			let call = RuntimeCall::Microblog(crate::Call::quote_post { text: big, quoted_id: 0 });
+			let err = validate(1, &call).map(|_| ()).unwrap_err();
+			// Call (malformed), NOT ExhaustsResources — the length gate covers quote_post too.
+			assert_eq!(err, TransactionValidityError::Invalid(InvalidTransaction::Call));
+		});
+	}
+
+	#[test]
+	fn metered_cost_matches_constants() {
+		new_test_ext().execute_with(|| {
+			use crate::Call;
+			let cost = |c: Call<Test>| Microblog::metered_cost(&c);
+			assert_eq!(cost(Call::post_message { text: vec![0u8; 5], parent: None }), Some(105)); // 100 + 5
+			assert_eq!(cost(Call::quote_post { text: vec![0u8; 5], quoted_id: 0 }), Some(105));
+			assert_eq!(cost(Call::vote { post_id: 0, dir: crate::VoteDir::Up }), Some(50));
+			assert_eq!(cost(Call::clear_vote { post_id: 0 }), Some(50));
+			assert_eq!(cost(Call::repost { post_id: 0 }), Some(30));
+			assert_eq!(cost(Call::follow { target: 2 }), Some(30));
+			assert_eq!(cost(Call::unfollow { target: 2 }), Some(30));
+			// Not metered.
+			assert_eq!(cost(Call::force_set_capacity { who: 1, cap_last: 0 }), None);
 		});
 	}
 
@@ -606,6 +941,73 @@ mod capacity_extension {
 			// cap_last is zero (it isn't), but because the stake-backed ceiling collapsed to 0.
 			let err = validate(1, &post_call(b"hello".to_vec())).map(|_| ()).unwrap_err();
 			assert_eq!(err, TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources));
+		});
+	}
+}
+
+// ── storage migration v0 → v1 (the project's first migration) ───────────────────────────────────
+// Validates the `Post` re-encode deterministically: write OLD-encoded rows (no `quote`) directly
+// under the Posts prefix, run the migration, and assert they decode as the new `Post` with
+// `quote: None` and all other fields preserved — plus the VersionedMigration version-guard
+// idempotency (a second run is a no-op).
+mod migration_v1 {
+	use super::*;
+	use crate::migrations::v1::{MigrateV0ToV1, OldPost};
+	use crate::Pallet;
+	use codec::Encode;
+	use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+
+	/// Write an OLD (pre-quote) Post encoding directly under the `Posts` storage key for `id`.
+	fn put_old_post(id: u64, author: u64, text: &[u8], parent: Option<u64>, at: u64) {
+		let old = OldPost::<Test> {
+			author,
+			text: text.to_vec().try_into().expect("fits MaxLength"),
+			parent,
+			at,
+		};
+		let key = Posts::<Test>::hashed_key_for(id);
+		sp_io::storage::set(&key, &old.encode());
+	}
+
+	#[test]
+	fn v0_to_v1_translates_posts_and_is_idempotent() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(7);
+			// On-chain storage version starts at 0 (nothing written) — the FROM the guard checks.
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(0));
+
+			put_old_post(0, 1, b"root", None, 5);
+			put_old_post(1, 2, b"reply", Some(0), 6);
+
+			// Run the real (version-guarded) migration. (Weight is mock-DbWeight-dependent — zero in
+			// this test runtime — so we assert the OBSERVABLE effect: the rows are translated.)
+			let _w = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+
+			// Storage version advanced to 1.
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(1));
+
+			// Both rows decode as the NEW Post with quote=None and all other fields preserved.
+			let p0 = Posts::<Test>::get(0).expect("post 0 migrated");
+			assert_eq!((p0.author, p0.text.to_vec(), p0.parent, p0.at, p0.quote), (1, b"root".to_vec(), None, 5, None));
+			let p1 = Posts::<Test>::get(1).expect("post 1 migrated");
+			assert_eq!((p1.author, p1.parent, p1.at, p1.quote), (2, Some(0), 6, None));
+
+			// Idempotency: a second run is a no-op (the version guard skips the inner translate now
+			// that the on-chain version is 1, not the FROM=0 it requires).
+			let w2 = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+			// Only the cheap version read is charged; the rows are untouched.
+			assert_eq!(Posts::<Test>::get(0).expect("still there").quote, None);
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(1));
+			let _ = w2;
+		});
+	}
+
+	#[test]
+	fn v0_to_v1_on_empty_posts_is_safe() {
+		new_test_ext().execute_with(|| {
+			// No posts: the migration still advances the version and translates zero rows.
+			let _ = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(1));
 		});
 	}
 }

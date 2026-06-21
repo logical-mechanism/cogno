@@ -1488,6 +1488,7 @@ dependencies = [
  "pallet-collective",
  "pallet-grandpa",
  "pallet-microblog",
+ "pallet-profile",
  "pallet-session",
  "pallet-skip-feeless-payment",
  "pallet-sudo",
@@ -6602,6 +6603,22 @@ dependencies = [
  "polkadot-sdk-frame",
  "scale-info",
  "sp-mmr-primitives",
+]
+
+[[package]]
+name = "pallet-profile"
+version = "0.1.0"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "pallet-microblog",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
 ]
 
 [[package]]
