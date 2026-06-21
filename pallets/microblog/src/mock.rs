@@ -36,6 +36,20 @@ pub fn deny_identity(who: u64) {
 	GATE_DENIED.with(|d| d.borrow_mut().push(who));
 }
 
+/// Mock foreign cost source: prices `System::remark` at 200 micro-capacity units (a stand-in for a
+/// real foreign feeless call, e.g. `pallet-profile`'s writes in the runtime). Lets the `ForeignCost`
+/// seam — non-microblog calls sharing the one battery, gated at the pool — be unit-tested without
+/// wiring a second pallet into this mock.
+pub struct MockForeignCost;
+impl pallet_microblog::ForeignCapacityCost<RuntimeCall> for MockForeignCost {
+	fn cost(call: &RuntimeCall) -> Option<u128> {
+		match call {
+			RuntimeCall::System(frame_system::Call::remark { .. }) => Some(200),
+			_ => None,
+		}
+	}
+}
+
 frame_support::construct_runtime!(
 	pub enum Test {
 		System: frame_system,
@@ -77,6 +91,7 @@ impl pallet_microblog::Config for Test {
 	type MaxPollOptionLen = ConstU32<32>;
 	type ForceOrigin = EnsureRoot<u64>;
 	type IdentityGate = MockIdentityGate;
+	type ForeignCost = MockForeignCost;
 	type WeightInfo = ();
 }
 

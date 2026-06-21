@@ -972,6 +972,44 @@ mod capacity_extension {
 	}
 
 	#[test]
+	fn foreign_call_is_metered_via_foreign_cost() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			// A NON-microblog call (System::remark) the runtime prices via the `ForeignCost` seam at 200
+			// (the mock's `MockForeignCost`). It must draw on the SAME battery and be gated at the pool —
+			// exactly how pallet-profile's feeless writes are metered against `ProfileCost` in the runtime.
+			let foreign = RuntimeCall::System(frame_system::Call::remark { remark: vec![] });
+
+			// Affordable: priced 200, priority == remaining headroom, consumes exactly 200.
+			prime(1, 100, 1_000);
+			let (priority, pre) = validate(1, &foreign).expect("affordable foreign call passes");
+			assert_eq!(priority as u128, 1_000 - 200, "priority is remaining headroom after the foreign cost");
+			post_dispatch(pre, Ok(()));
+			assert_eq!(Microblog::current_capacity(&1, 10), 800, "debited exactly the foreign cost (200)");
+
+			// Over budget: < 200 banked ⇒ rejected at the pool, just like an over-budget post.
+			prime(2, 100, 150);
+			let err = validate(2, &foreign).map(|_| ()).unwrap_err();
+			assert_eq!(err, TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources));
+		});
+	}
+
+	#[test]
+	fn unpriced_foreign_call_passes_through_unmetered() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(10);
+			prime(1, 100, 1_000);
+			// A foreign call the runtime does NOT price (`MockForeignCost` returns `None` for anything but
+			// `remark`) passes through untouched — same as microblog's own unmetered `force_set_capacity`.
+			let unpriced =
+				RuntimeCall::System(frame_system::Call::remark_with_event { remark: vec![] });
+			let (_p, pre) = validate(1, &unpriced).expect("unpriced foreign call passes through");
+			post_dispatch(pre, Ok(()));
+			assert_eq!(Microblog::current_capacity(&1, 10), 1_000, "nothing consumed for an unpriced call");
+		});
+	}
+
+	#[test]
 	fn capacity_is_consumed_even_when_the_post_body_fails() {
 		new_test_ext().execute_with(|| {
 			System::set_block_number(10);

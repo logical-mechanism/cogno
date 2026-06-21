@@ -186,7 +186,19 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// encoding, so they need no tx_version bump (do not treat a `.scale` git-diff as a wire-compat no-op
 	// check). The spec bump exists to version the new runtime behaviour (a node must run 116 to accept the
 	// unsigned binds; an old 115 node rejects them).
-	spec_version: 116,
+	// 116 -> 117 (feeless profile writes): the four pallet-profile writes — `set_profile` (@0),
+	// `clear_profile` (@1), `pin_post` (@2), `unpin_post` (@3) — are now FEELESS (`#[pallet::feeless_if]`),
+	// metered against the SAME single per-account talk-capacity battery as posting, at a steep flat
+	// `ProfileCost` (= 500_000_000 ≈ 10 posts) so a low-frequency mutable overwrite is rate-limited by
+	// capacity instead of a fee — the whole app is now feeless (a freshly-derived posting key never needs
+	// funding). Microblog meters these foreign calls AT THE POOL via a new `ForeignCapacityCost` seam on
+	// its `Config` (the runtime supplies the price through `ProfileCapacityCost`), so `CheckCapacity` now
+	// also gates profile writes with NO second transaction-extension. The Call args / call indices /
+	// storage / events / errors and the `TxExtension` tuple ENCODINGS are ALL byte-identical (adding
+	// `feeless_if` + a Config associated type changes neither extrinsic nor extension encoding), so
+	// transaction_version is UNCHANGED (2). Encoding-neutral for the wire, but regen the PAPI descriptors
+	// (the `.scale` doc-strings + spec_version changed) — and a node must run 117 to waive the profile fee.
+	spec_version: 117,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -279,9 +291,11 @@ pub type TxExtension = (
 	// `post_message` → `ExhaustsResources`, capacity consumed at inclusion (pallet-microblog §5).
 	pallet_microblog::CheckCapacity<Runtime>,
 	// ⚑ M2c: wrap payment in `SkipCheckIfFeeless` so calls marked `#[pallet::feeless_if]`
-	// (i.e. `post_message`) skip the fee. Feeless is per-call, not chain-wide — `set_profile`
-	// (the microblog social writes post_message/quote_post/vote/clear_vote/repost/follow/unfollow
-	// are feeless) and everything else stays fee-bearing. (Metadata-invisible: PAPI sees plain payment.)
+	// (i.e. `post_message`) skip the fee. Feeless is per-call, not chain-wide — the microblog social
+	// writes (post_message/quote_post/vote/clear_vote/repost/follow/unfollow/create_poll/cast_poll_vote)
+	// AND pallet-profile's four writes (set_profile/clear_profile/pin_post/unpin_post, since spec 117 —
+	// metered against the one battery via the `ForeignCapacityCost` seam at `ProfileCost`) are feeless;
+	// everything else stays fee-bearing. (Metadata-invisible: PAPI sees plain payment.)
 	pallet_skip_feeless_payment::SkipCheckIfFeeless<
 		Runtime,
 		pallet_transaction_payment::ChargeTransactionPayment<Runtime>,

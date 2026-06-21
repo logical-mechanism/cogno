@@ -104,6 +104,28 @@ pub trait OnIdentityBind<AccountId> {
 	fn on_revoke(who: &AccountId);
 }
 
+/// Prices a feeless call that the [`CheckCapacity`] extension meters but that does **not** belong to
+/// this pallet — e.g. `pallet-profile`'s writes, which draw on the SAME single per-account talk-capacity
+/// battery as posting. The runtime supplies the concrete impl (it can match every pallet's `Call`), so
+/// microblog meters foreign feeless calls WITHOUT ever naming those crates in a trait bound — the same
+/// no-Cargo-cycle posture as [`IsAllowed`]/[`OnIdentityBind`] (microblog is the depended-upon crate).
+///
+/// Returns the capacity cost (micro-capacity units) for a call it prices, or `None` for any call it
+/// does not (those pass through the extension unmetered, exactly like microblog's own `metered_cost`
+/// returns `None` for `force_set_capacity`). It is only ever consulted for calls that are NOT this
+/// pallet's, so an impl can match purely on the foreign variants.
+pub trait ForeignCapacityCost<RuntimeCall> {
+	/// The talk-capacity cost of `call`, or `None` if this source does not price it.
+	fn cost(call: &RuntimeCall) -> Option<u128>;
+}
+
+/// Default: meter nothing foreign. A runtime with no extra feeless pallets wires `type ForeignCost = ()`.
+impl<RuntimeCall> ForeignCapacityCost<RuntimeCall> for () {
+	fn cost(_call: &RuntimeCall) -> Option<u128> {
+		None
+	}
+}
+
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
@@ -189,6 +211,12 @@ pub mod pallet {
 		/// this dispatchable is the M2c stand-in that lets the operator prime/pre-charge an
 		/// account's battery without the Cardano side wired.
 		type ForceOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+		/// Prices feeless calls from OTHER pallets (e.g. `pallet-profile`) against this pallet's one
+		/// per-account capacity battery, so the whole app can be feeless while every write is still
+		/// pool-gated by [`CheckCapacity`]. The runtime supplies it (it can see every pallet's `Call`);
+		/// `()` meters nothing foreign. See [`ForeignCapacityCost`].
+		type ForeignCost: ForeignCapacityCost<<Self as frame_system::Config>::RuntimeCall>;
 
 		/// Weight information for this pallet's dispatchables.
 		type WeightInfo: WeightInfo;
@@ -1038,34 +1066,42 @@ where
 		let Ok(who) = frame_system::ensure_signed(origin.clone()) else {
 			return Ok((ValidTransaction::default(), Pre { who: None, cost: 0 }, origin));
 		};
-		// Pass through anything that isn't one of THIS pallet's calls.
-		let Some(inner) = call.is_sub_type() else {
-			return Ok((ValidTransaction::default(), Pre { who: None, cost: 0 }, origin));
+		// Price the call against the ONE per-account battery. A call from THIS pallet is priced by
+		// `metered_cost`; any OTHER feeless call (e.g. `pallet-profile`'s writes) is priced by the
+		// runtime-supplied `ForeignCost`. Both draw on the same battery and are gated here at the pool,
+		// so the whole app stays feeless without a second capacity extension. A `None` from the relevant
+		// source ⇒ not metered (e.g. `force_set_capacity`, or a foreign call the runtime does not price)
+		// ⇒ pass through and consume nothing.
+		let need = if let Some(inner) = call.is_sub_type() {
+			// O(1) over-length reject at the POOL (microblog-4) for the text-bearing calls: a body
+			// longer than `MaxLength` is guaranteed to fail `TooLong`, so metering + feeless-including
+			// it would only burn block weight on a doomed tx. `Call` (malformed) — NOT
+			// `ExhaustsResources` (which would be retried) — it must not be retried.
+			let over_len = match inner {
+				crate::pallet::Call::post_message { text, .. }
+				| crate::pallet::Call::quote_post { text, .. }
+				// A poll's question is also length-bounded by MaxLength (it becomes a post body).
+				| crate::pallet::Call::create_poll { question: text, .. } => {
+					text.len() as u32 > T::MaxLength::get()
+				},
+				_ => false,
+			};
+			if over_len {
+				log::debug!(
+					target: crate::LOG_TARGET,
+					"CheckCapacity: call from {:?} rejected at pool: body len > MaxLength={} (malformed, not retried)",
+					who, T::MaxLength::get(),
+				);
+				return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
+			}
+			crate::pallet::Pallet::<T>::metered_cost(inner)
+		} else {
+			// Not one of this pallet's calls: ask the runtime-supplied foreign cost source. This seam
+			// lets `pallet-profile`'s feeless writes share the one battery without microblog depending
+			// on the profile crate (no Cargo cycle).
+			<T as Config>::ForeignCost::cost(call)
 		};
-		// O(1) over-length reject at the POOL (microblog-4) for the text-bearing calls: a body longer
-		// than `MaxLength` is guaranteed to fail `TooLong`, so metering + feeless-including it would
-		// only burn block weight on a doomed tx. `Call` (malformed) — NOT `ExhaustsResources` (which
-		// would be retried) — it must not be retried.
-		let over_len = match inner {
-			crate::pallet::Call::post_message { text, .. }
-			| crate::pallet::Call::quote_post { text, .. }
-			// A poll's question is also length-bounded by MaxLength (it becomes a post body).
-			| crate::pallet::Call::create_poll { question: text, .. } => {
-				text.len() as u32 > T::MaxLength::get()
-			},
-			_ => false,
-		};
-		if over_len {
-			log::debug!(
-				target: crate::LOG_TARGET,
-				"CheckCapacity: call from {:?} rejected at pool: body len > MaxLength={} (malformed, not retried)",
-				who, T::MaxLength::get(),
-			);
-			return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
-		}
-		// Price the call against the ONE per-account battery. `None` ⇒ not metered (e.g.
-		// `force_set_capacity`) ⇒ pass through and consume nothing.
-		let Some(need) = crate::pallet::Pallet::<T>::metered_cost(inner) else {
+		let Some(need) = need else {
 			return Ok((ValidTransaction::default(), Pre { who: None, cost: 0 }, origin));
 		};
 		let now = frame_system::Pallet::<T>::block_number();
