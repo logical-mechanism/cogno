@@ -78,9 +78,9 @@ describe("stringifyDispatchError", () => {
 });
 
 describe("stringifyError", () => {
-  it("rephrases ExhaustsResources as a capacity error (the spam gate race)", () => {
+  it("rephrases ExhaustsResources as the Twitter-style rate-limit line (the spam gate race)", () => {
     const out = stringifyError(new Error("1010: Invalid Transaction: ExhaustsResources"));
-    expect(out).toMatch(/talk capacity/i);
+    expect(out).toMatch(/rate limit/i);
     expect(out).not.toContain("ExhaustsResources");
   });
 

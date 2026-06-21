@@ -1,10 +1,12 @@
-// The data-layer SEAM for reading the Civic Ledger. M4 adds a second reader (the SubQuery
-// GraphQL indexer) behind this interface; the existing PAPI-direct reader is the always-
-// available fallback. Both implement `FeedSource`; the React layer only ever touches this
-// interface, never a concrete reader, so the read path is swappable with no call-site churn.
+// The data-layer SEAM for reading the social feed. Two readers implement it: the SubQuery
+// GraphQL indexer (search + cursor pagination + thread/profile/social aggregates) and the
+// always-available PAPI-direct fallback. The React layer only ever touches this interface,
+// never a concrete reader, so the read path is swappable with no call-site churn.
 //
-// `caps` lets the UI light up ONLY the affordances a source can honestly serve: search and
-// cursor pagination are indexer-only; threads and revocation-flagging both sources do.
+// `caps` lets the UI light up ONLY the affordances a source can honestly serve. With the
+// honesty/trust layer dropped, the UI does NOT show a "reads: indexer" badge — it simply
+// HIDES (never greys-with-explanation) what a reader cannot serve (e.g. the Following tab,
+// who-to-follow rail, and profile counts vanish on PAPI-direct).
 
 import type { Observable } from "rxjs";
 import type {
@@ -13,49 +15,77 @@ import type {
   FeedQuery,
   ThreadView,
   ProfileView,
+  PollView,
+  ViewerPostState,
+  FollowEdges,
+  Suggestion,
+  Ss58,
 } from "@/lib/types";
 
 /** What a feed source can do — drives which UI affordances are shown (never faked). */
 export interface FeedCaps {
-  /** case-insensitive substring search over post bodies. */
+  /** case-insensitive substring search over post bodies. (indexer-only) */
   search: boolean;
-  /** cursor (`after`) pagination beyond the first page. */
+  /** cursor (`after`) pagination beyond the first page. (indexer-only) */
   pagination: boolean;
-  /** thread reconstruction (root + direct replies). */
+  /** thread reconstruction (root + direct replies). (both) */
   threads: boolean;
-  /** author-revocation flagging on posts. */
+  /** author-revocation flagging on posts. (both) */
   revocation: boolean;
+  // ── spec-113 social ──
+  /** vote/poll weight tallies + counts + the viewer's own vote/repost state. (both — PAPI reads the aggregate maps) */
+  tallies: boolean;
+  /** follow edges + follower/following counts. (indexer-only — reverse-index aggregation) */
+  follows: boolean;
+  /** display name / bio / avatar / pinned. (indexer-only — denormalized on Author) */
+  profiles: boolean;
+  /** ranked who-to-follow suggestion list. (indexer-only) */
+  whoToFollow: boolean;
 }
 
 /** Arguments for {@link FeedSource.profile} — by account or by identity hash. */
 export interface ProfileArgs {
   author?: string;
   identityHash?: string;
+  /** Which posts tab to fold into `page` (the indexer applies it as filter + orderBy). */
+  tab?: "forYou" | "following" | "replies" | "likes";
 }
 
 /**
- * A swappable reader for the feed/thread/profile views. `kind` is for honest labeling
- * ("reads: indexer" vs "reads: direct node"); the rest is the read surface.
+ * A swappable reader for the feed/thread/profile/social views. `kind` is retained only for
+ * internal diagnostics (NOT rendered — the trust layer is dropped); the rest is the read
+ * surface. Every method beyond the original four is gated by a `caps` flag; calling a method a
+ * reader cannot serve throws {@link UnsupportedQuery} (a logic-slip guard — the UI gates on
+ * `caps` so it never gets there).
  */
 export interface FeedSource {
-  /** Which reader this is, for the honest read-path indicator. */
   kind: "papi" | "graphql";
-  /** What this reader can do (gates UI affordances). */
   caps: FeedCaps;
   /** The live feed — a continuously-updating full snapshot, newest-first. */
   watch(): Observable<FeedSnapshot>;
-  /** One page of the feed (global, search, or author-scoped). */
+  /** One page of the feed (global, search, author-scoped, or a home/profile tab). */
   page(q: FeedQuery): Promise<FeedPage>;
-  /** A reconstructed thread for `rootId`. */
+  /** A reconstructed thread for `rootId`. (gated on `caps.threads`) */
   thread(rootId: bigint): Promise<ThreadView>;
-  /** One author's profile + posts. */
+  /** One author's profile + posts. (display fields gated on `caps.profiles`) */
   profile(args: ProfileArgs): Promise<ProfileView>;
+  // ── spec-113 social ──
+  /** Options + per-option stake-weighted tally for a poll host id. (gated on `caps.tallies`) */
+  poll(hostId: bigint): Promise<PollView>;
+  /** The viewer's own vote/repost state on a post. (gated on `caps.tallies`) */
+  viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState>;
+  /** Followers/following ids + counts for an account. (gated on `caps.follows`) */
+  followEdges(who: Ss58): Promise<FollowEdges>;
+  /** Ranked who-to-follow suggestions. (gated on `caps.whoToFollow`) */
+  whoToFollow(who: Ss58 | null, limit: number): Promise<Suggestion[]>;
+  /** Author search by display name. (gated on `caps.search && caps.profiles`) */
+  searchPeople(q: string, limit: number): Promise<Suggestion[]>;
 }
 
 /**
- * Thrown when a {@link FeedQuery} asks for something a source cannot honestly serve — e.g.
- * search or cursor pagination on the PAPI-direct path. The UI gates these on `caps`, so this
- * is a guard against a logic slip, not an expected user-facing state.
+ * Thrown when a {@link FeedQuery} / social method asks for something a source cannot honestly
+ * serve — e.g. search, cursor pagination, or follow edges on the PAPI-direct path. The UI gates
+ * these on `caps`, so this is a guard against a logic slip, not an expected user-facing state.
  */
 export class UnsupportedQuery extends Error {
   constructor(message: string) {

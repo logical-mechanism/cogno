@@ -1,10 +1,13 @@
 /*
- * cogno-chain — GLOBAL STYLES
- * ===========================
+ * cogno-chain — GLOBAL STYLES (X-clone)
+ * =====================================
  * Imported ONCE by the root layout. Token-driven only: every color/size/space
- * value here resolves through a var(--token) from tokens.css. This file is a
- * minimal modern reset + the paper/ink reading defaults + a small set of global
- * utilities. Component styles live with their components, not here.
+ * value here resolves through a var(--cg-*) from tokens.css. This file is a
+ * minimal modern reset + the global type/focus/selection defaults. Component
+ * styles live with their components (CSS Modules), not here.
+ *
+ * The prefers-reduced-motion reset lives in tokens.css (single source); it is
+ * intentionally NOT duplicated here.
  */
 
 @import "./tokens.css";
@@ -22,7 +25,6 @@
 }
 
 html {
-  /* honor user reflow; keep a comfortable rhythm */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   -moz-tab-size: 2;
@@ -31,12 +33,11 @@ html {
 
 body {
   min-height: 100vh;
-  background: var(--surface-0);
-  color: var(--ink-900);
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui);
-  line-height: 1.5;
-  /* crisp text on paper */
+  background: var(--cg-bg);
+  color: var(--cg-text);
+  font-family: var(--cg-font-ui);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -72,70 +73,40 @@ h6 {
   overflow-wrap: break-word;
 }
 
-/* ---- POST-READING DEFAULTS -----------------------------------------
- * Text is the product: post bodies are serif, generously led, and capped to a
- * comfortable measure. Reach these via the .post-body / .measure helpers. */
+/* ---- POST BODY ------------------------------------------------------
+ * X-clone: the post body is the same UI sans as everything else (NOT serif),
+ * 15px / 20px, authored line breaks preserved, long words wrap. The PostBody
+ * component owns inline link styling; this is the base typographic surface. */
 
 .post-body {
-  font-family: var(--font-serif);
-  font-size: var(--fs-post);
-  line-height: var(--fs-post-lh);
-  color: var(--ink-900);
-  /* preserve authored line breaks from the composer, still wrap long words */
+  font-family: var(--cg-font-ui);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text);
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
 
-/* feed heading role */
-.feed-heading {
-  font-family: var(--font-ui);
-  font-size: var(--fs-h-feed);
-  font-weight: 600;
-  line-height: 1.25;
-  letter-spacing: -0.01em;
-  color: var(--ink-900);
-}
-
-/* ---- CHAIN-TRUTH (mono) UTILITY ------------------------------------
- * The monospace voice = "this is a verifiable on-chain fact" (ids, ss58,
- * block #). tabular-nums keeps block numbers / ids aligned. */
-
-.mono,
-.tabular {
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1;
-  color: var(--ink-600);
-}
-
-/* ---- MEASURE — cap reading line-length ------------------------------ */
-
-.measure {
-  max-width: var(--measure-post);
-}
-
-/* ---- LINKS — quiet, ink-first --------------------------------------- */
+/* ---- LINKS — neutral by default (X underlines almost nothing) -------- */
 
 a {
   color: inherit;
-  text-decoration-color: var(--hairline);
-  text-underline-offset: 0.15em;
+  text-decoration: none;
 }
 
 a:hover {
-  text-decoration-color: var(--ink-400);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
-/* ---- FOCUS — keyboard-visible, accent ring -------------------------- */
+/* ---- FOCUS — keyboard-visible accent ring, tracks pill geometry ------ */
 
 :focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-  border-radius: var(--radius-sm);
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: inherit;
 }
 
-/* don't show the ring on plain mouse focus */
 :focus:not(:focus-visible) {
   outline: none;
 }
@@ -143,19 +114,6 @@ a:hover {
 /* ---- SELECTION — soft accent tint ----------------------------------- */
 
 ::selection {
-  background: var(--verdigris-soft);
-  color: var(--ink-900);
-}
-
-/* ---- MOTION — calm by default; OFF when the user asks --------------- */
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
+  background: var(--cg-accent-wash);
+  color: var(--cg-text);
 }

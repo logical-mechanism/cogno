@@ -2,10 +2,10 @@
 //
 // This file is the DETERMINISTIC SEAM between the PAPI data layer (lib/chain, lib/signer)
 // and the React layer (hooks, components). The data layer IMPLEMENTS these shapes; the
-// React layer CONSUMES them. Nothing here imports React. Grounded against PAPI 1.23.3 +
-// the descriptors generated from cogno-chain-runtime (spec_version 107; see
-// scripts/papi-acceptance.mjs and scripts/watch-probe.mjs — the live shapes are confirmed,
-// not guessed).
+// React layer CONSUMES them. Nothing here imports React. Grounded against PAPI 1.x + the
+// descriptors generated from cogno-chain-runtime (spec_version 117 — the spec-113 social
+// pallet set + spec-117 feeless pallet-profile; the live shapes are confirmed against the
+// running node's metadata, not guessed).
 
 import type { PolkadotClient, TypedApi } from "polkadot-api";
 import type { PolkadotSigner } from "polkadot-api/signer";
@@ -19,8 +19,13 @@ export type Ss58 = string;
 
 /**
  * A decoded microblog post. Mirrors `Microblog.Posts` value
- * `{ author: SS58String, text: Binary, parent?: bigint, at: number }` with `text`
- * already decoded via `Binary.asText()` and the storage-key id attached.
+ * `{ author, text, parent?, at, quote? }` with `text` already decoded via `Binary.asText()`
+ * and the storage-key id attached.
+ *
+ * The social fields (quote/tallies/counts + author profile snapshot) are ADDITIVE and all
+ * optional: the indexer reader fills them fully; the PAPI-direct reader fills only what
+ * direct storage allows (gated by `FeedCaps`). Weight/score fields are `bigint` (u128 ⇒
+ * lovelace-scale, may exceed 2^53; `score` may be negative).
  */
 export interface CognoPost {
   /** Storage key (`NextPostId`-assigned u64). */
@@ -31,27 +36,97 @@ export interface CognoPost {
   text: string;
   /** Parent post id for replies (`Option<u64>` → undefined when top-level). */
   parent?: bigint;
-  /** Block number the post was created at (`BlockNumber` u32). */
+  /** Block number the post was created at (`BlockNumber` u32). NOT a timestamp; never rendered as one. */
   at: number;
-  /**
-   * Soft-delete tombstone, only ever set by the INDEXER (GraphQL) path: a deleted post
-   * leaves a record the indexer keeps and flags. On the PAPI path a deleted post is simply
-   * absent from storage, so this is left undefined (treat as not-deleted). M4.
-   */
-  deleted?: boolean;
   /**
    * The author's identity binding has been revoked (`Author.banned` on the indexer; the
    * absence of `CognoGate.PkhOf` on the PAPI path). NOT a per-post chain field — revoke
-   * leaves the posts intact, so the feed must FLAG, not drop, them. M4.
+   * leaves the posts intact, so the feed must FLAG (dim), not drop, them.
    */
   authorRevoked?: boolean;
+
+  // ── spec-113 social (indexer-derived; PAPI-direct fills what storage allows) ──
+  /** Present iff this post quotes another (`Post.quote` on-chain). A shallow, one-level embed. */
+  quote?: QuotedRef;
+  /** True iff a `PollCreated` fired for this id; fetch options via `source.poll(id)`. */
+  isPoll?: boolean;
+  /** Stake-weighted up tally (u128). */
+  upWeight?: bigint;
+  /** Stake-weighted down tally (u128). */
+  downWeight?: bigint;
+  upCount?: number;
+  downCount?: number;
+  /** `upWeight - downWeight` (u128 difference; MAY be negative). */
+  score?: bigint;
+  /** Permanent repost count; only increments. */
+  repostCount?: number;
+  /** Count of direct replies. */
+  replyCount?: number;
+
+  // ── profile snapshot of the author (indexer convenience; avoids N+1 on the timeline) ──
+  authorDisplayName?: string;
+  authorAvatar?: string;
+  /** Author posting power (lovelace); undefined until staked. */
+  authorWeight?: bigint;
+}
+
+/** A 0-indexed poll option with its stake-weighted tally. */
+export interface PollOptionView {
+  index: number; // 0..=3
+  label: string; // UTF-8 option text (<= 80 bytes)
+  weight: bigint; // sum of weight snapshots currently choosing this option
+  count: number; // accounts currently choosing this option
+}
+
+/** A poll attached to a host post (`Poll.id == host post id`; the question IS the host post's text). */
+export interface PollView {
+  hostId: bigint;
+  options: PollOptionView[];
+  /** Σ option weight, for percent bars. */
+  totalWeight: bigint;
+  totalCount: number;
+}
+
+/** A compact reference to a quoted post for the `QuotedPostEmbed` (no recursion). */
+export interface QuotedRef {
+  id: bigint;
+  author: Ss58;
+  text: string;
+  authorRevoked: boolean;
+  /** Resolved from Profile when available (indexer only). */
+  displayName?: string;
+  avatar?: string;
+}
+
+/** The viewer's own relationship to a post — drives the active/filled action icons. */
+export interface ViewerPostState {
+  myVote: "Up" | "Down" | null; // null = not voted
+  reposted: boolean; // permanent once true
+}
+
+/** Followers/following ids + counts for an account (indexer only). */
+export interface FollowEdges {
+  followers: Ss58[]; // accounts following `who`
+  following: Ss58[]; // accounts `who` follows
+  followerCount: number;
+  followingCount: number;
+}
+
+/** A who-to-follow / people-search suggestion. */
+export interface Suggestion {
+  author: Ss58;
+  displayName?: string;
+  avatar?: string;
+  weight?: bigint;
+  followerCount: number;
 }
 
 // ── M4: the indexer-backed feed seam ────────────────────────────────────────────────────
-// The data layer can now read from either the SubQuery GraphQL indexer (search + cursor
-// pagination + thread/profile views) or, as the always-available fallback, the PAPI node
-// directly. These shapes are the contract; both sources IMPLEMENT them. They are additive
-// and back-compatible — `FeedSnapshot` (the live watch shape) is unchanged.
+// The data layer reads from either the SubQuery GraphQL indexer (search + cursor pagination
+// + thread/profile/social views) or, as the always-available fallback, the PAPI node directly.
+// These shapes are the contract; both sources IMPLEMENT them, the indexer fully and the PAPI-
+// direct reader as far as direct storage allows. `FeedSnapshot` (the live watch shape) is
+// unchanged.
 
 /** An opaque cursor string from the indexer (`pageInfo.endCursor` / `edges.cursor`). */
 export type FeedCursor = string;
@@ -69,8 +144,9 @@ export interface FeedPage {
 
 /**
  * A page request. `after` continues a cursor; `search` is a case-insensitive substring
- * (indexer only); `authorId` / `identityHash` scope the page to one author. Empty/omitted
- * fields mean the global feed, page one.
+ * (indexer only); `authorId` / `identityHash` scope the page to one author. `tab` selects a
+ * home/profile view; `followeeOf` scopes the Following timeline; `order` picks recency vs top.
+ * Empty/omitted fields mean the global feed, page one.
  */
 export interface FeedQuery {
   first?: number;
@@ -78,6 +154,10 @@ export interface FeedQuery {
   search?: string;
   authorId?: Ss58;
   identityHash?: string;
+  // ── NEW ──
+  tab?: "forYou" | "following" | "replies" | "likes";
+  followeeOf?: Ss58; // "Following" timeline: posts by accounts this user follows
+  order?: "recency" | "score"; // forYou default recency; "score" = top (indexer SCORE_DESC)
 }
 
 /** A single author's public profile + their (paginated) posts. */
@@ -91,14 +171,25 @@ export interface ProfileView {
   banned: boolean;
   /** Cardano-sourced talk weight (lovelace), when known. */
   weight?: bigint;
+  // ── spec-117 pallet-profile (indexer-derived; PAPI-direct omits — caps.profiles:false) ──
+  displayName?: string;
+  bio?: string;
+  avatar?: string;
+  /** Pinned post id (a bare on-chain string id; not existence-validated). */
+  pinnedPostId?: bigint;
+  /** Follower/following counts (indexer-only; PAPI-direct omits — caps.follows:false). */
+  followerCount?: number;
+  followingCount?: number;
   page: FeedPage;
 }
 
-/** A reconstructed thread: the root post + its direct replies. */
+/** A reconstructed thread: the root post + its direct replies, with the "replying to" parent. */
 export interface ThreadView {
   root: CognoPost;
   replies: CognoPost[];
   replyCount: number;
+  /** The post `root` replies to, for the "Replying to @…" context line (when known). */
+  parent?: QuotedRef;
   /** Block height of the latest activity in the thread (root or any reply), when knowable. */
   lastActivity: number | null;
 }
@@ -109,27 +200,26 @@ export interface BlockRef {
   hash: string;
 }
 
-/** Live head positions for honest best-vs-finalized labeling (Civic Ledger). */
+/**
+ * Live head positions. The honesty/trust UI is dropped, so these are NOT rendered as
+ * "best vs finalized" marginalia anymore — `best.number` drives `useCapacity`'s `bestBlock`
+ * (the rate-limit gate) and nothing else.
+ */
 export interface ChainHeads {
   best: BlockRef | null;
   finalized: BlockRef | null;
 }
 
 /**
- * The latest Cardano anchor checkpoint (`Anchor.LastCheckpoint`, M3 Tier-A). Records which
- * Cardano metadata tx witnessed which finalized solochain post-state root. **Evidence, not
- * enforcement** (DR-20). `null` until the relayer has anchored at least once.
+ * The latest Cardano anchor checkpoint (`Anchor.LastCheckpoint`, M3 Tier-A). Recorded by the
+ * relayer; the UI no longer renders it (trust layer dropped). The read is kept (evidence,
+ * not enforcement) but has no surface.
  */
 export interface AnchorCheckpoint {
-  /** The finalized solochain block this checkpoint witnesses (`block_number`, u32). */
   blockNumber: number;
-  /** 0x-prefixed finalized post-state root — the GRANDPA-committed root (`finalized_root`). */
   finalizedRoot: string;
-  /** 0x-prefixed Cardano metadata tx hash carrying the root (`cardano_txhash`). */
   cardanoTxHash: string;
-  /** `NextPostId` at that block — total posts created by then (`post_count`, u64). */
   postCount: bigint;
-  /** Relayer-supplied unix-millis of the anchored block (`timestamp`, u64). */
   timestamp: bigint;
 }
 
@@ -170,12 +260,10 @@ export interface ChainHandle {
 /**
  * The posting-key adapter. The sr25519 key signs every feeless post; every consumer only ever
  * touches `{ ss58, publicKeyHex, label, signer }`. In the product flow it is DERIVED from a
- * Cardano wallet signature (kind "derived") — nothing stored, no second wallet. This is the
- * posting half of the dual-key model; the Cardano CIP-30 wallet is the identity/stake key that
- * derives this key, signs the CIP-8 bind, and signs the L1 vault lock/exit.
+ * Cardano wallet signature (kind "derived") — nothing stored, no second wallet.
  */
 export interface PostingSigner {
-  /** SS58 address (prefix 42) — the "Signing as <ss58-short>" identity. */
+  /** SS58 address (prefix 42). */
   ss58: Ss58;
   /** 0x-prefixed sr25519 public key. */
   publicKeyHex: string;
@@ -183,11 +271,11 @@ export interface PostingSigner {
   label: string;
   /** The PAPI signer passed to `tx.*.signSubmitAndWatch(signer)`. */
   signer: PolkadotSigner;
-  /** Provenance of the key, so the UI can be honest about what it is. */
+  /** Provenance of the key. */
   kind: "dev" | "derived";
 }
 
-/** Phases of a submitted extrinsic, surfaced honestly (signed ≠ included). */
+/** Phases of a submitted extrinsic. */
 export type TxPhase =
   | "signing"
   | "broadcast"
@@ -196,13 +284,13 @@ export type TxPhase =
   | "invalid"
   | "error";
 
-/** A progress update for a post/delete submission. */
+/** A progress update for a submitted extrinsic. */
 export interface TxUpdate {
   phase: TxPhase;
   /** best-block number once the tx is seen in a block. */
   blockNumber?: number;
   txHash?: string;
-  /** the new post id (from the `PostCreated` event) once in a block. */
+  /** the new post id (from an id-bearing event, e.g. `PostCreated`) once in a block. */
   postId?: bigint;
   /** dispatch/validity/runtime error message when phase is "invalid" | "error". */
   error?: string;
