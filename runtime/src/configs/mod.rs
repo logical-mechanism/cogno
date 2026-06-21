@@ -351,6 +351,25 @@ parameter_types! {
 	pub const Ceiling: u128 = 5_000_000_000_000; // ~100k posts — present but won't bite dev grants
 	pub const BaseCost: u128 = 50_000_000;        // 1 post
 	pub const PerByteCost: u128 = 50_000;
+	// A profile write (set/clear/pin/unpin) is feeless but capacity-metered at this STEEP price —
+	// ≈10 posts (10 × BaseCost). Profiles are a low-frequency mutable overwrite, so a high capacity
+	// cost is the anti-spam: only the identity-bound owner can edit, and they cannot churn it. The
+	// whole app stays feeless (a freshly-derived posting key never needs funding).
+	pub const ProfileCost: u128 = 500_000_000;    // 10 × BaseCost
+}
+
+/// Prices `pallet-profile`'s feeless writes against microblog's ONE per-account capacity battery — the
+/// [`pallet_microblog::ForeignCapacityCost`] seam that lets the profile pallet share the feeless+capacity
+/// machinery without microblog ever naming the profile crate (no Cargo cycle). Every profile call costs
+/// the flat `ProfileCost`; any other call is `None` (unpriced ⇒ untouched by the capacity gate).
+pub struct ProfileCapacityCost;
+impl pallet_microblog::ForeignCapacityCost<RuntimeCall> for ProfileCapacityCost {
+	fn cost(call: &RuntimeCall) -> Option<u128> {
+		match call {
+			RuntimeCall::Profile(_) => Some(ProfileCost::get()),
+			_ => None,
+		}
+	}
 }
 
 /// Configure pallet-microblog (M2c: feeless, capacity-metered posting; capacity folded in,
@@ -380,6 +399,9 @@ impl pallet_microblog::Config for Runtime {
 	type ForceOrigin = AuthorityOrigin;
 	// M2: gate posting on a live Cardano-identity binding (the anti-Sybil anchor).
 	type IdentityGate = CognoGate;
+	// Profile pallet's feeless writes share this one battery, priced at `ProfileCost` and gated at the
+	// pool by `CheckCapacity` — so the whole app is feeless with no second transaction-extension.
+	type ForeignCost = ProfileCapacityCost;
 	type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
 }
 

@@ -12,11 +12,15 @@
 //! is the depended-upon crate; it never names this one).
 //!
 //! ## Fee posture (named honestly)
-//! [`Pallet::set_profile`] / [`Pallet::clear_profile`] are **fee-bearing** (NOT feeless). Profiles are
-//! low-frequency, so the tx fee is its own anti-spam — exactly cogno-gate's `link_identity_signed`
-//! posture. This avoids a second capacity transaction-extension (the feeless+capacity machinery stays
-//! reserved for the high-frequency microblog social writes). A frontend can sponsor the fee for a
-//! freshly-derived posting key the same way the bind relay does (a later, FE-side step).
+//! All four writes are **feeless** (`#[pallet::feeless_if]`), metered against the SAME single
+//! per-account talk-capacity battery as posting — so the whole app is feeless and a freshly-derived
+//! posting key never needs funding. They are deliberately **expensive** in capacity terms (`ProfileCost`
+//! ≈ 10 posts, set in the runtime): a profile is a low-frequency mutable *overwrite*, so a steep
+//! capacity price is its anti-spam (only the identity-bound owner can edit, and they cannot churn it).
+//! Microblog meters these foreign calls at the pool via its `ForeignCapacityCost` seam (the runtime
+//! supplies the price), so there is NO second transaction-extension — the feeless+capacity machinery is
+//! shared, not duplicated. Metering at the pool (not in the call body) is what keeps a zero-capacity
+//! account from free-spamming doomed profile writes into blocks.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -132,10 +136,12 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// Set (or overwrite) the caller's display profile. **Fee-bearing** (the caller pays the tx
-		/// fee — the anti-spam for this low-frequency call). Requires a live identity binding.
+		/// Set (or overwrite) the caller's display profile. **Feeless**, metered against the caller's one
+		/// talk-capacity battery at a steep `ProfileCost` (≈10 posts) — the high capacity price is the
+		/// anti-spam for this low-frequency mutable overwrite. Requires a live identity binding.
 		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::set_profile())]
+		#[pallet::feeless_if(|_origin: &OriginFor<T>, _display_name: &Vec<u8>, _bio: &Vec<u8>, _avatar: &Vec<u8>| -> bool { true })]
 		pub fn set_profile(
 			origin: OriginFor<T>,
 			display_name: Vec<u8>,
@@ -157,9 +163,12 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Clear the caller's profile. Fee-bearing. Fails `NoProfile` if there is nothing to clear.
+		/// Clear the caller's profile. Feeless, capacity-metered at `ProfileCost` (same anti-spam as
+		/// `set_profile`; metering a doomed call is what stops free-spamming it). Fails `NoProfile` if
+		/// there is nothing to clear.
 		#[pallet::call_index(1)]
 		#[pallet::weight(T::WeightInfo::clear_profile())]
+		#[pallet::feeless_if(|_origin: &OriginFor<T>| -> bool { true })]
 		pub fn clear_profile(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(Profiles::<T>::take(&who).is_some(), Error::<T>::NoProfile);
@@ -167,10 +176,12 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Pin post `id` to the top of the caller's profile (overwrites any prior pin). Fee-bearing;
-		/// requires a live identity binding. The post id is not validated on-chain (FE renders it).
+		/// Pin post `id` to the top of the caller's profile (overwrites any prior pin). Feeless,
+		/// capacity-metered at `ProfileCost`; requires a live identity binding. The post id is not
+		/// validated on-chain (FE renders it).
 		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::pin_post())]
+		#[pallet::feeless_if(|_origin: &OriginFor<T>, _id: &u64| -> bool { true })]
 		pub fn pin_post(origin: OriginFor<T>, id: u64) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			if !T::IdentityGate::is_allowed(&who) {
@@ -182,10 +193,12 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Remove the caller's pinned post. Fee-bearing. Fails `NotPinned` if nothing is pinned. No
-		/// identity gate (a revoked account may still tidy up its own state).
+		/// Remove the caller's pinned post. Feeless, capacity-metered at `ProfileCost`. Fails `NotPinned`
+		/// if nothing is pinned. No identity gate (a revoked account with capacity may still tidy up its
+		/// own state).
 		#[pallet::call_index(3)]
 		#[pallet::weight(T::WeightInfo::unpin_post())]
+		#[pallet::feeless_if(|_origin: &OriginFor<T>| -> bool { true })]
 		pub fn unpin_post(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(PinnedPost::<T>::take(&who).is_some(), Error::<T>::NotPinned);

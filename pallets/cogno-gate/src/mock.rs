@@ -56,6 +56,8 @@ impl pallet_microblog::Config for Test {
 	type ForceOrigin = EnsureRoot<u64>;
 	// The REAL gate — this is what makes the mock an integration test.
 	type IdentityGate = CognoGate;
+	// No foreign feeless pallets in this integration mock — meter nothing extra.
+	type ForeignCost = ();
 	type WeightInfo = ();
 }
 
