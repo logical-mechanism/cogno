@@ -129,6 +129,60 @@ export async function readUnspentMatches(url, vaultHex) {
 	});
 }
 
+// ── Stake-key VOTING POWER observation (epoch_stake) ───────────────────────────────────────────────
+// The voting-power source (spec 114): the TOTAL Cardano stake of a PROVEN stake credential, read from
+// db-sync's per-epoch `epoch_stake` snapshot — the same snapshot Cardano uses for leader election and
+// CIP-1694/Catalyst use for voting power. Deterministic + manipulation-resistant (an epoch snapshot is
+// immutable once closed; the ~2-epoch lookback resists borrow-and-snapshot). The committee folds this
+// per bound stake credential and pushes it on-chain via `talkStake.set_voting_power` (op.mjs). Distinct
+// from the vault observation above: that meters POSTING capacity from locked ADA; this drives VOTES.
+
+// The Shelley-era reward-address header nibble for a vkey stake credential is 0b1110; the low nibble is
+// the network (0 = testnet/preprod, 1 = mainnet). db-sync's `stake_address.hash_raw` is that 29-byte
+// value (1 header byte + the 28-byte credential). Map a bare 28-byte stake credential → that hash_raw.
+export function rewardHashRaw(stakeCredHex, network = 0) {
+	const cred = lower(stakeCredHex);
+	if (cred.length !== 56) throw new Error(`stake credential must be 28 bytes (56 hex), got ${cred.length}`);
+	const header = (0b1110 << 4) | (network & 0x0f); // 0xe0 testnet, 0xe1 mainnet
+	return header.toString(16).padStart(2, "0") + cred;
+}
+
+// Total stake (lovelace) delegated under a stake credential AS-OF a given epoch. `$1` = the 29-byte
+// reward `hash_raw` hex; `$2` = the epoch number. `::text` (totals can exceed 2^53). The probe column
+// fails closed when epoch_stake is unpopulated (an empty table would read 0 for everyone — wrong).
+const EPOCH_STAKE_SQL = `
+SELECT (SELECT EXISTS (SELECT 1 FROM epoch_stake)) AS epoch_stake_ok,
+  COALESCE((
+    SELECT SUM(es.amount)::text
+    FROM epoch_stake es
+    JOIN stake_address sa ON sa.id = es.addr_id
+    WHERE sa.hash_raw = decode($1,'hex') AND es.epoch_no = $2
+  ), '0') AS total`;
+
+function assertEpochStakeEnabled(ok) {
+	if (ok === false)
+		throw new Error("db-sync epoch_stake table is empty; the voting-power observation requires a populated epoch_stake (fail closed)");
+}
+
+// The latest epoch for which db-sync holds an `epoch_stake` snapshot (BigInt), or null if none. This is
+// the deterministic "as-of" epoch the committee folds (the most recent immutable snapshot).
+export async function latestStakeEpoch(url) {
+	return withClient(url, async (c) => {
+		const { rows } = await c.query("SELECT max(epoch_no) AS e FROM epoch_stake");
+		return rows[0]?.e != null ? BigInt(rows[0].e) : null;
+	});
+}
+
+// Total stake (BigInt lovelace) for a bare 28-byte stake credential at `epochNo`, on `network`
+// (0 = preprod). Throws (fail closed) if epoch_stake is unpopulated.
+export async function stakeForCredential(url, stakeCredHex, epochNo, network = 0) {
+	return withClient(url, async (c) => {
+		const { rows } = await c.query(EPOCH_STAKE_SQL, [rewardHashRaw(stakeCredHex, network), String(epochNo)]);
+		assertEpochStakeEnabled(rows[0]?.epoch_stake_ok);
+		return BigInt(rows[0]?.total ?? "0");
+	});
+}
+
 // ── Write-path helpers (the anchor-relayer + the M2d demo scripts) ─────────────────────────────────
 // These are NOT part of the consensus observation lockstep above (no Rust/Python twin): they serve the
 // L1 WRITE path — the relayer/wallet's own unspent UTxOs (so MeshTxBuilder can coin-select), tx-in-a-

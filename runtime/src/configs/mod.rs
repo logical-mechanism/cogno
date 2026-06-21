@@ -323,6 +323,10 @@ impl pallet_talk_stake::Config for Runtime {
 	// account can back more than 45_000_000_000_000_000. Bounds a follower/committee bug from
 	// writing an absurd weight (the capacity meter already saturates; this is defence-in-depth).
 	type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;
+	// Voting power = the total Cardano stake of a bound stake credential; its ceiling is also the
+	// whole ADA supply (45e15 lovelace). Distinct constant from MaxStakeWeight (which bounds one
+	// vault's lock) so the two weights can diverge without coupling.
+	type MaxVotingPower = ConstU128<45_000_000_000_000_000>;
 	type WeightInfo = pallet_talk_stake::weights::SubstrateWeight<Runtime>;
 }
 

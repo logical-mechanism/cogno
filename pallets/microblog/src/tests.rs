@@ -120,7 +120,7 @@ fn vote_records_stake_weight_and_tally() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
 		let t = VoteTally::<Test>::get(0);
 		assert_eq!(t.up_weight, 100);
@@ -148,11 +148,11 @@ fn revote_flip_reverses_stored_weight_not_current_stake() {
 		System::set_block_number(1);
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
 		// Vote Up at weight 100 …
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
 		// … then stake changes to 300 and the voter flips to Down. The Up side must reverse by the
 		// STORED 100 (to zero), and the Down side apply the fresh 300 — no drift.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 300));
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 300));
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Down));
 		let t = VoteTally::<Test>::get(0);
 		assert_eq!(t.up_weight, 0);
@@ -167,9 +167,9 @@ fn revote_same_direction_updates_weight_not_count() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 300));
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 300));
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up)); // same dir, new weight
 		let t = VoteTally::<Test>::get(0);
 		assert_eq!(t.up_weight, 300, "weight replaced, not summed");
@@ -182,10 +182,10 @@ fn clear_vote_reverses_exact_stored_weight() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
 		// Stake balloons, then the vote is cleared — the reversal must use the stored 100, not 9999.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 9999));
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 9999));
 		assert_ok!(Microblog::clear_vote(RuntimeOrigin::signed(2), 0));
 		let t = VoteTally::<Test>::get(0);
 		assert_eq!(t.up_weight, 0);
@@ -240,7 +240,7 @@ fn tally_fold_determinism_property() {
 			}
 			match action {
 				Some(dir) => {
-					assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), voter, weight));
+					assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), voter, weight));
 					assert_ok!(Microblog::vote(RuntimeOrigin::signed(voter), 0, dir));
 					match dir {
 						VoteDir::Up => { up_w = up_w.saturating_add(weight); up_c = up_c.saturating_add(1); }
@@ -438,7 +438,7 @@ fn cast_poll_vote_is_stake_weighted_and_deterministic_on_recast() {
 		System::set_block_number(1);
 		assert_ok!(Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(3)));
 		// Account 2 votes option 0 at weight 100.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
 		assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 0));
 		assert_eq!(PollTally::<Test>::get(0, 0).weight, 100);
 		assert_eq!(PollTally::<Test>::get(0, 0).count, 1);
@@ -446,7 +446,7 @@ fn cast_poll_vote_is_stake_weighted_and_deterministic_on_recast() {
 
 		// Stake grows to 300, account 2 re-casts to option 1: option 0 reverses by the STORED 100
 		// (to zero), option 1 gets the fresh 300 — no drift.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 300));
+		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 300));
 		assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 1));
 		assert_eq!(PollTally::<Test>::get(0, 0).weight, 0);
 		assert_eq!(PollTally::<Test>::get(0, 0).count, 0);

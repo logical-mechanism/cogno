@@ -23,11 +23,17 @@ impl frame_system::Config for Test {
 /// cap and at cap + 1 without hard-coding the literal in two places.
 pub const MAX_STAKE_WEIGHT: u128 = 100_000_000;
 
+/// The mock voting-power cap (`MaxVotingPower`). Deliberately LARGER than `MAX_STAKE_WEIGHT` so the
+/// boundary tests can prove the two ceilings are independent (a voting power above the stake cap but
+/// under this is accepted).
+pub const MAX_VOTING_POWER: u128 = 1_000_000_000;
+
 impl pallet_talk_stake::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	// In the mock the follower authority is root (mirrors the v1 dev sudo escape hatch).
 	type SetStakeOrigin = EnsureRoot<u64>;
 	type MaxStakeWeight = ConstU128<MAX_STAKE_WEIGHT>;
+	type MaxVotingPower = ConstU128<MAX_VOTING_POWER>;
 	type WeightInfo = ();
 }
 
@@ -67,6 +73,7 @@ pub mod maxcap {
 		type RuntimeEvent = RuntimeEvent;
 		type SetStakeOrigin = EnsureRoot<u64>;
 		type MaxStakeWeight = ConstU128<{ u128::MAX }>;
+		type MaxVotingPower = ConstU128<{ u128::MAX }>;
 		type WeightInfo = ();
 	}
 
