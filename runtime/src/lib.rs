@@ -198,12 +198,16 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// `feeless_if` + a Config associated type changes neither extrinsic nor extension encoding), so
 	// transaction_version is UNCHANGED (2). Encoding-neutral for the wire, but regen the PAPI descriptors
 	// (the `.scale` doc-strings + spec_version changed) — and a node must run 117 to waive the profile fee.
-	spec_version: 117,
+	// 117 -> 118: pallet-profile `set_profile` GAINS args (banner / location / website) = a call-arg
+	// ENCODING change; pallet-microblog adds the reverse `Followers` + `VotesByAccount` storage maps;
+	// three `SingleBlockMigrations` re-encode/backfill them. Because the call args changed, BOTH
+	// spec_version AND transaction_version bump. Regen the PAPI descriptors after deploying 118.
+	spec_version: 118,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
 	// (the signed-extension set changed → the extrinsic format version changes).
-	transaction_version: 2,
+	transaction_version: 3,
 	system_version: 1,
 };
 
