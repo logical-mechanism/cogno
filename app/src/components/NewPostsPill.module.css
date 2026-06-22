@@ -1,0 +1,38 @@
+/* NewPostsPill — sticky "Show N posts" pill under the tabs (doc 06 §6.5). */
+
+.wrap {
+  position: sticky;
+  top: calc(var(--cg-header-h) * 2);
+  z-index: var(--cg-z-sticky);
+  display: flex;
+  justify-content: center;
+  padding: var(--cg-space-2) 0;
+  /* let it float over the feed without a solid band */
+  pointer-events: none;
+}
+
+.pill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-2) var(--cg-space-5);
+  border: none;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  box-shadow: var(--cg-shadow-menu);
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.pill:hover {
+  background: var(--cg-accent-hover);
+}
+
+.pill:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}

@@ -1,0 +1,60 @@
+/* TimelineTabs — the For you / Following strip under the sticky header (doc 06 §4).
+   Monochrome: the active underline is a NEUTRAL text-coloured pill, never a coloured accent. */
+
+.tablist {
+  display: flex;
+  width: 100%;
+}
+
+.tab {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--cg-header-h);
+  padding: var(--cg-space-4) var(--cg-space-2);
+  border: none;
+  background: transparent;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-md);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
+    color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.tab:hover {
+  background: var(--cg-bg-hover);
+}
+
+.tab.active {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-bold);
+}
+
+.tab:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: calc(-1 * var(--cg-focus-ring-width));
+  border-radius: var(--cg-radius-input);
+}
+
+.label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+}
+
+/* 4px-tall neutral pill under the active label (X-exact geometry, monochrome fill). */
+.indicator {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 100%;
+  min-width: 56px;
+  height: 4px;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-text);
+}
