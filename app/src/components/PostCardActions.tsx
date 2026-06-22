@@ -19,8 +19,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./PostCardActions.module.css";
-import { IconReply, IconRepost, IconQuote, IconLike, IconShare } from "./icons";
-import { formatCount } from "@/lib/format";
+import { IconReply, IconRepost, IconQuote, IconShare, IconDownvote } from "./icons";
+import { formatCount, formatSignedWeight } from "@/lib/format";
 import type { CognoPost, ViewerPostState, Viewer, ActionState } from "./kit";
 
 export interface PostCardActionsProps {
@@ -56,22 +56,22 @@ export function PostCardActions({
   onQuote,
   onLike,
   onRepost,
-  onDownvote: _onDownvote,
+  onDownvote,
   onClearVote: _onClearVote,
   onCopyLink,
   likeState = "idle",
   repostState = "idle",
   dense,
 }: PostCardActionsProps) {
-  // onDownvote / onClearVote are part of the contract but routed through the header overflow; the
-  // PostCard passes the same bundle to both. Referenced here so the prop is explicitly consumed.
-  void _onDownvote;
+  // onClearVote stays part of the contract (header overflow "Clear vote"); unused in this row now
+  // that up/down both toggle-clear inline.
   void _onClearVote;
 
   const [confirmRepost, setConfirmRepost] = useState(false);
   const confirmRef = useRef<HTMLDivElement | null>(null);
 
-  const liked = viewer.myVote === "Up";
+  const up = viewer.myVote === "Up";
+  const down = viewer.myVote === "Down";
   const reposted = viewer.reposted;
   const notBound = gate.status === "not-identity-bound";
   const likePending = likeState === "pending";
@@ -79,12 +79,20 @@ export function PostCardActions({
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
 
-  const doLike = useCallback(
+  const doUp = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
-      onLike(post, !liked);
+      onLike(post, !up); // onLike toggles the UP vote (next=false clears it)
     },
-    [liked, onLike, post],
+    [up, onLike, post],
+  );
+
+  const doDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onDownvote(post, !down); // onDownvote toggles the DOWN vote (next=false clears it)
+    },
+    [down, onDownvote, post],
   );
 
   const doReply = useCallback(
@@ -150,8 +158,9 @@ export function PostCardActions({
 
   const replyCount = formatCount(post.replyCount);
   const repostCount = formatCount(post.repostCount);
-  // Quote count is hidden unless the seam provides it (no dedicated field today → omit).
-  const likeCount = formatCount(post.upCount);
+  // Net stake-weighted score (upWeight − downWeight); may be negative. The appchain vote model
+  // surfaced directly — ▲ score ▼ replaces the Twitter heart (user 2026-06-21).
+  const score = formatSignedWeight(post.score ?? 0n);
 
   return (
     <div className={`${styles.row} ${dense ? styles.dense : ""}`} onClick={stop}>
@@ -220,24 +229,43 @@ export function PostCardActions({
         </span>
       </button>
 
-      {/* Like == UP vote */}
-      <button
-        type="button"
-        className={`${styles.action} ${styles.like} ${liked ? styles.likeOn : ""}`}
-        aria-label={`Like${post.upCount ? `, ${post.upCount}` : ""}`}
-        aria-pressed={liked}
-        disabled={notBound || likePending}
-        title={notBound ? "Finish setup to like." : undefined}
-        onClick={doLike}
-      >
-        <span className={`${styles.iconWrap} ${liked ? styles.pop : ""}`}>
-          <IconLike
-            filled={liked}
-            style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }}
-          />
+      {/* Stake-weighted up / down vote (replaces the Twitter heart) */}
+      <div className={styles.voteGroup}>
+        <button
+          type="button"
+          className={`${styles.action} ${styles.up} ${up ? styles.upOn : ""}`}
+          aria-label={`Upvote${post.upCount ? `, ${post.upCount} up` : ""}`}
+          aria-pressed={up}
+          disabled={notBound || likePending}
+          title={notBound ? "Finish setup to vote." : "Upvote (stake-weighted)"}
+          onClick={doUp}
+        >
+          <span className={`${styles.iconWrap} ${up ? styles.pop : ""}`}>
+            <IconDownvote
+              style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)", transform: "rotate(180deg)" }}
+            />
+          </span>
+        </button>
+        <span
+          className={`${styles.score} ${up ? styles.scoreUp : ""} ${down ? styles.scoreDown : ""}`}
+          title="Net stake-weighted score"
+        >
+          {score}
         </span>
-        {likeCount && <span className={styles.count}>{likeCount}</span>}
-      </button>
+        <button
+          type="button"
+          className={`${styles.action} ${styles.down} ${down ? styles.downOn : ""}`}
+          aria-label={`Downvote${post.downCount ? `, ${post.downCount} down` : ""}`}
+          aria-pressed={down}
+          disabled={notBound || likePending}
+          title={notBound ? "Finish setup to vote." : "Downvote (stake-weighted)"}
+          onClick={doDown}
+        >
+          <span className={styles.iconWrap}>
+            <IconDownvote style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }} />
+          </span>
+        </button>
+      </div>
 
       {/* Share — trailing */}
       <button
