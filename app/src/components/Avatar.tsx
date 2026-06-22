@@ -63,6 +63,9 @@ export function Avatar({ address, src, size = "md", dim, name, onClick }: Avatar
     .join(" ");
 
   const inner = showImg ? (
+    // Deliberately a sandboxed <img>, not next/image: src is an arbitrary user-supplied URL/CID and
+    // this is a static export — next/image would need configured remote hosts and adds cost (see §13).
+    // eslint-disable-next-line @next/next/no-img-element
     <img
       className={styles.img}
       src={src as string}
