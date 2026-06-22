@@ -1,12 +1,12 @@
 "use client";
 
 // AppearanceSection — Settings §5 (doc 12). Theme (dark/light), persisted via useTheme (cg-theme).
-// A two-option segmented radiogroup backed by setTheme + the canonical ThemeToggle for the quick flip.
-// Private-mode degrades silently (useTheme swallows the storage error).
+// A single two-option segmented radiogroup backed by setTheme (the one canonical Settings control;
+// the quick flip lives in the right-rail footer next to About). Private-mode degrades silently
+// (useTheme swallows the storage error).
 
 import styles from "./AppearanceSection.module.css";
 import { useTheme, type Theme } from "@/hooks/useTheme";
-import { ThemeToggle } from "@/components/ThemeToggle";
 import { IconMoon, IconSun } from "@/components/icons";
 
 const OPTIONS: { value: Theme; label: string }[] = [
@@ -42,11 +42,6 @@ export function AppearanceSection() {
             </button>
           );
         })}
-      </div>
-
-      <div className={styles.quick}>
-        <span className={styles.quickLabel}>Quick toggle</span>
-        <ThemeToggle />
       </div>
     </div>
   );

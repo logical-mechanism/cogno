@@ -14,7 +14,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import styles from "./LeftNav.module.css";
 import { Account } from "../Account";
-import { ThemeToggle } from "../ThemeToggle";
 import { IconHome, IconSearch, IconProfile, IconSettings, IconCompose } from "../icons";
 import { useSession } from "../Providers";
 import { useModalStore } from "@/lib/modalStore";
@@ -99,9 +98,6 @@ export function LeftNav() {
 
       <div className={styles.footer}>
         <Account />
-        <div className={styles.themeRow}>
-          <ThemeToggle withLabel />
-        </div>
       </div>
     </nav>
   );
