@@ -12,7 +12,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./ConnectWalletButton.module.css";
 import { Spinner } from "./icons";
-import { useSigner } from "@/hooks/useSigner";
+import { useSession } from "./Providers";
+import { useToaster } from "./toast/ToasterProvider";
 import { listCardanoWallets } from "@/lib/cardano/cip8";
 import type { CardanoWalletInfo } from "@/lib/cardano/cip8";
 import type { ControlSize, Viewer } from "./kit";
@@ -25,7 +26,11 @@ export interface ConnectWalletButtonProps {
 }
 
 export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: ConnectWalletButtonProps) {
-  const { connectWallet, deriving, error } = useSigner();
+  // Use the SHARED session signer (Providers), NOT a fresh useSigner() — a second instance would
+  // derive into isolated state the rest of the app never sees ("connect does nothing").
+  const { signerCtl } = useSession();
+  const { connectWallet, deriving, error } = signerCtl;
+  const { toast } = useToaster();
   const [open, setOpen] = useState(false);
   const [wallets, setWallets] = useState<CardanoWalletInfo[]>([]);
   const [loadingWallets, setLoadingWallets] = useState(false);
@@ -61,9 +66,13 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
   const pick = useCallback(
     async (id: string) => {
       const ok = await connectWallet(id);
-      if (ok) setOpen(false);
+      if (ok) {
+        setOpen(false);
+        toast({ kind: "success", message: "Wallet connected" });
+      }
+      // failure surfaces inline via `error` and keeps the picker open for a retry.
     },
-    [connectWallet],
+    [connectWallet, toast],
   );
 
   if (viewer.status === "ready") return null;
