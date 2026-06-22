@@ -76,13 +76,15 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const me = viewer.address ?? null;
   const isSelf = me != null && me === address;
   const canFollow = source?.caps.follows === true;
-  const canProfiles = source?.caps.profiles === true;
+  const canProfiles = source?.caps.profiles === true; // display name / bio / avatar (node + indexer)
+  const canProfileTabs = source?.caps.profileTabs === true; // Replies + Likes reverse tabs (indexer)
   const paginationCapable = source?.caps.pagination === true;
 
   // ── active tab: client state synced to ?tab= (the static route stays /u/[address]). ──
   const [tab, setTab] = useState<ProfileTab>(() => parseTabParam(searchParams?.get("tab") ?? null));
-  // PAPI-direct can only serve Posts; coerce a persisted replies/likes back to posts.
-  const activeTab: ProfileTab = !canProfiles && tab !== "posts" ? "posts" : tab;
+  // The Replies/Likes tabs need the indexer; coerce a persisted replies/likes back to posts when
+  // the reader can't serve them (PAPI-direct). Display fields (name/bio/avatar) still show.
+  const activeTab: ProfileTab = !canProfileTabs && tab !== "posts" ? "posts" : tab;
 
   const onTabChange = useCallback(
     (next: ProfileTab) => {
@@ -256,7 +258,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
         showBack
         title={headerName}
         subtitle={`${postCount} ${postCount === 1 ? "post" : "posts"}`}
-        tabs={<ProfileTabs active={activeTab} onChange={onTabChange} showAll={canProfiles} />}
+        tabs={<ProfileTabs active={activeTab} onChange={onTabChange} showAll={canProfileTabs} />}
       />
 
       {cold ? (

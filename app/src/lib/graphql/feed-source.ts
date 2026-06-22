@@ -298,6 +298,7 @@ export function createGraphqlFeedSource(endpoint: string): FeedSource {
     tallies: true,
     follows: true,
     profiles: true,
+    profileTabs: true,
     whoToFollow: true,
   };
 

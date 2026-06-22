@@ -73,6 +73,12 @@ async function readFollowees(api: CognoApi, who: Ss58): Promise<Ss58[]> {
   return entries.map((e) => e.keyArgs[1] as Ss58);
 }
 
+/** Decode a pallet-profile `BoundedVec<u8>` field (PAPI Binary) to a trimmed string, or undefined. */
+function profileText(v: { asText: () => string } | undefined): string | undefined {
+  const s = v?.asText().trim();
+  return s ? s : undefined;
+}
+
 export function createPapiFeedSource(api: CognoApi): FeedSource {
   const caps: FeedCaps = {
     search: false,
@@ -85,8 +91,11 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     // the FollowerCount/FollowingCount counters). The reverse followers LIST it can't (no reverse
     // map), but no surface renders that list — only counts — so follows is honestly on.
     follows: true,
-    // display names / bios / avatars + ranked who-to-follow still need the indexer.
-    profiles: false,
+    // pallet-profile stores display name / bio / avatar / pinned on-chain → node-served.
+    profiles: true,
+    // the Replies + Likes reverse tabs (replies-/votes-by-author) still need the indexer.
+    profileTabs: false,
+    // ranked who-to-follow still needs the indexer.
     whoToFollow: false,
   };
 
@@ -215,13 +224,16 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       };
     }
 
-    const [ids, pkh, weight, followerCount, followingCount] = await Promise.all([
-      api.query.Microblog.ByAuthor.getValue(account),
-      api.query.CognoGate.PkhOf.getValue(account),
-      readWeight(api, account),
-      api.query.Microblog.FollowerCount.getValue(account),
-      api.query.Microblog.FollowingCount.getValue(account),
-    ]);
+    const [ids, pkh, weight, followerCount, followingCount, profileRec, pinned] =
+      await Promise.all([
+        api.query.Microblog.ByAuthor.getValue(account),
+        api.query.CognoGate.PkhOf.getValue(account),
+        readWeight(api, account),
+        api.query.Microblog.FollowerCount.getValue(account),
+        api.query.Microblog.FollowingCount.getValue(account),
+        api.query.Profile.Profiles.getValue(account),
+        api.query.Profile.PinnedPost.getValue(account),
+      ]);
     const banned = pkh === undefined;
     const identityHash =
       args.identityHash ??
@@ -242,8 +254,12 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       postCount: posts.length,
       banned,
       weight,
-      // displayName/bio/avatar stay indexer-only (caps.profiles:false); the follower/following
-      // counts ARE node-served (on-chain counters), so the profile header can show them.
+      // display fields + counts are ALL node-served now (pallet-profile + the follow counters);
+      // only the reverse Replies/Likes tabs still need the indexer (caps.profileTabs:false).
+      displayName: profileText(profileRec?.display_name),
+      bio: profileText(profileRec?.bio),
+      avatar: profileText(profileRec?.avatar),
+      pinnedPostId: pinned == null ? undefined : BigInt(pinned as unknown as bigint),
       followerCount: Number(followerCount ?? 0),
       followingCount: Number(followingCount ?? 0),
       page: {
