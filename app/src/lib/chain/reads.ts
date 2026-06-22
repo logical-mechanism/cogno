@@ -41,14 +41,32 @@ function toCognoPost(entry: RawPostEntry): CognoPost {
   };
 }
 
-/** A compact reference to the quoted post, resolved from another decoded post. */
+/** A compact reference to the quoted post, resolved from another decoded post (carries its name/avatar). */
 function quoteRefOf(quoted: CognoPost) {
   return {
     id: quoted.id,
     author: quoted.author,
     text: quoted.text,
     authorRevoked: quoted.authorRevoked === true,
+    displayName: quoted.authorDisplayName,
+    avatar: quoted.authorAvatar,
   };
+}
+
+/** A single `Profile.Profiles` entry (display name / bio / avatar are BoundedVec<u8> → Binary). */
+interface RawProfileEntry {
+  args: [string];
+  value: {
+    display_name: { asText: () => string };
+    bio: { asText: () => string };
+    avatar: { asText: () => string };
+  };
+}
+
+/** Decode a Binary profile field to a trimmed string, or undefined when empty/absent. */
+function binTextOpt(v?: { asText: () => string }): string | undefined {
+  const s = v?.asText().trim();
+  return s ? s : undefined;
 }
 
 /** Newest-first by id (bigint-safe comparator). */
@@ -64,23 +82,42 @@ function byIdDesc(a: CognoPost, b: CognoPost): number {
  * snapshot reflects.
  */
 export function watchFeed(api: CognoApi): Observable<FeedSnapshot> {
-  // Also watch Polls so we can flag poll-posts (a post is a poll iff a Polls[id] entry exists) and
-  // resolve quote refs — both from the same authoritative snapshot, no per-post round-trips.
+  // Watch Posts + Polls + Profiles together so each emission can flag poll-posts, stamp author
+  // display name/avatar, and resolve quote refs — all from the same authoritative snapshot, with no
+  // per-post round-trips. (Profiles regenerate the feed when a name/avatar changes, too.)
   const posts$ = api.query.Microblog.Posts.watchEntries();
   const polls$ = api.query.Microblog.Polls.watchEntries().pipe(
     startWith({ entries: [] as { args: [bigint] }[] }),
   );
-  return combineLatest([posts$, polls$]).pipe(
-    map(([pev, qev]): FeedSnapshot => {
+  const profiles$ = api.query.Profile.Profiles.watchEntries().pipe(
+    startWith({ entries: [] as RawProfileEntry[] }),
+  );
+  return combineLatest([posts$, polls$, profiles$]).pipe(
+    map(([pev, qev, prev]): FeedSnapshot => {
       const entries = pev.entries as unknown as RawPostEntry[];
       const pollIds = new Set(
         (qev.entries as unknown as { args: [bigint] }[]).map((e) => e.args[0]),
       );
+      const profileByAuthor = new Map<string, { displayName?: string; avatar?: string }>();
+      for (const e of prev.entries as unknown as RawProfileEntry[]) {
+        profileByAuthor.set(e.args[0], {
+          displayName: binTextOpt(e.value.display_name),
+          avatar: binTextOpt(e.value.avatar),
+        });
+      }
       const posts = entries.map(toCognoPost);
       const byId = new Map(posts.map((p) => [p.id, p] as const));
-      // Decorate each post with its poll flag + resolved quote ref (from the snapshot itself).
-      posts.forEach((p, i) => {
+      // Pass 1: poll flag + author display name/avatar.
+      posts.forEach((p) => {
         if (pollIds.has(p.id)) p.isPoll = true;
+        const prof = profileByAuthor.get(p.author);
+        if (prof) {
+          p.authorDisplayName = prof.displayName;
+          p.authorAvatar = prof.avatar;
+        }
+      });
+      // Pass 2: quote refs (authors already stamped above, so the embed shows their name/avatar too).
+      posts.forEach((p, i) => {
         const qid = entries[i].value.quote;
         if (qid != null) {
           const q = byId.get(BigInt(qid));
@@ -185,14 +222,21 @@ export async function getPost(
   const value = raw as unknown as RawPostEntry["value"];
   const post = toCognoPost({ args: [id], value });
 
-  // A post is a poll iff a Polls[id] entry exists; resolve a quoted post (one level) for the embed.
-  const [pollRec, quoted] = await Promise.all([
+  // A post is a poll iff a Polls[id] entry exists; resolve a quoted post (one level) for the embed;
+  // stamp the author's display name/avatar so the detail header shows the real name, not just a handle.
+  const [pollRec, quoted, prof] = await Promise.all([
     api.query.Microblog.Polls.getValue(id),
     value.quote != null
       ? api.query.Microblog.Posts.getValue(BigInt(value.quote))
       : Promise.resolve(undefined),
+    api.query.Profile.Profiles.getValue(post.author),
   ]);
   if (pollRec) post.isPoll = true;
+  if (prof) {
+    const p = prof as unknown as RawProfileEntry["value"];
+    post.authorDisplayName = binTextOpt(p.display_name);
+    post.authorAvatar = binTextOpt(p.avatar);
+  }
   if (value.quote != null) {
     post.quote = quoted
       ? quoteRefOf(toCognoPost({ args: [BigInt(value.quote)], value: quoted as unknown as RawPostEntry["value"] }))
