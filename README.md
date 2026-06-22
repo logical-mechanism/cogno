@@ -81,8 +81,14 @@ Two node roles:
 ```bash
 # System packages (Debian/Ubuntu):
 sudo apt-get update && sudo apt-get install -y \
-  clang protobuf-compiler cmake libssl-dev pkg-config make build-essential
+  clang llvm-dev libclang-dev protobuf-compiler cmake libssl-dev pkg-config make build-essential
 ```
+
+> `llvm-dev` + `libclang-dev` are required by `bindgen`/`librocksdb-sys`; without them the build
+> fails with an `llvm-config` execute error. On distros that ship these under versioned names only
+> (e.g. Ubuntu 24.04 → `llvm-config-18`, no plain `llvm-config` on `PATH`), either symlink it
+> (`sudo ln -sf "$(ls /usr/bin/llvm-config-* | sort -V | tail -1)" /usr/bin/llvm-config`) or export
+> `LLVM_CONFIG_PATH` at the versioned binary.
 
 Rust is pinned by [`rust-toolchain.toml`](rust-toolchain.toml) to **`channel = "1.90.0"`** (not
 rolling `stable` — current stable 1.96 breaks the `sp_io` wasm link). `cargo build` auto-selects it;
