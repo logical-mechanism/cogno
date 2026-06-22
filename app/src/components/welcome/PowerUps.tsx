@@ -54,6 +54,11 @@ export function PowerUps({
     <section className={styles.step} aria-labelledby="welcome-heading">
       <DoneBanner welcomeBack={welcomeBack} onGoToTimeline={onGoToTimeline} headingRef={headingRef} />
 
+      <div className={styles.optionalHeader}>
+        <p className={styles.optionalLabel}>Optional boosts</p>
+        <p className={styles.optionalSub}>You can post without these — add them now or anytime later.</p>
+      </div>
+
       <div className={styles.cards}>
         <VaultCard vault={vault} walletId={walletId} onOpenSettings={onOpenSettings} />
         <StakeCard stake={stake} walletId={walletId} />
@@ -112,7 +117,10 @@ function VaultCard({
 
   return (
     <div className={styles.card}>
-      <h2 className={styles.cardTitle}>Lock ADA to post more</h2>
+      <div className={styles.cardTitleRow}>
+        <h2 className={styles.cardTitle}>Lock ADA to post more</h2>
+        <span className={styles.optionalChip}>Optional</span>
+      </div>
       <p className={styles.cardBody}>
         Lock 100 ADA in the vault to raise your posting limit. You can unlock it anytime.
       </p>
@@ -203,7 +211,10 @@ function StakeCard({
 
   return (
     <div className={styles.card}>
-      <h2 className={styles.cardTitle}>Add voting power</h2>
+      <div className={styles.cardTitleRow}>
+        <h2 className={styles.cardTitle}>Add voting power</h2>
+        <span className={styles.optionalChip}>Optional</span>
+      </div>
       <p className={styles.cardBody}>Prove your wallet&apos;s stake to make your votes count.</p>
 
       {stake.stakeBound === true ? (

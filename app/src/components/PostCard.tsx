@@ -22,8 +22,9 @@ import { PostCardHeader } from "./PostCardHeader";
 import { PostBody } from "./PostBody";
 import { QuotedPostEmbed } from "./QuotedPostEmbed";
 import { PollCard } from "./PollCard";
+import { InlinePoll } from "./InlinePoll";
 import { PostCardActions } from "./PostCardActions";
-import { Spinner, IconDownvote, IconLink } from "./icons";
+import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
 import type {
   CognoPost,
@@ -31,7 +32,6 @@ import type {
   Viewer,
   PollView,
   AuthorRef,
-  OverflowMenuItem,
   PostActionCallbacks,
   PostCardVariant,
 } from "./kit";
@@ -88,11 +88,34 @@ export function PostCard({
   const dim = post.authorRevoked === true;
   const detail = variant === "detail";
   const isReply = post.parent != null;
+  // The detail (focal) card is the post you're already on → not a self-opening link; pending cards
+  // aren't navigable yet. Everything else is a clickable row.
+  const clickable = !pending && !detail;
 
-  const openRow = useCallback(() => {
-    if (pending) return; // pending optimistic cards aren't navigable yet
-    handlers.onOpen(post.id);
-  }, [handlers, post.id, pending]);
+  // The WHOLE card opens the post: any click that isn't on an interactive child (button / link /
+  // input) and isn't a text selection navigates. Replaces the old inset overlay button, which sat
+  // under the content and only caught the thin padding → users couldn't tell the card was clickable.
+  const onCardClick = useCallback(
+    (e: React.MouseEvent) => {
+      if ((e.target as HTMLElement).closest("a,button,input,textarea,select,label,[role='button']")) {
+        return;
+      }
+      if (window.getSelection()?.toString()) return; // don't hijack a text selection
+      handlers.onOpen(post.id);
+    },
+    [handlers, post.id],
+  );
+
+  const onCardKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.target !== e.currentTarget) return; // only when the card itself is focused
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handlers.onOpen(post.id);
+      }
+    },
+    [handlers, post.id],
+  );
 
   // Clearing a vote is expressed through the existing bundle (no dedicated onClearVote on the seam):
   // an Up vote clears via onLike(post,false); a Down vote clears via onDownvote(post,false).
@@ -104,39 +127,8 @@ export function PostCard({
     [handlers, viewer.myVote],
   );
 
-  // The header overflow menu (doc §2.1): the SECONDARY down-vote (+ clear) and copy-link. Mute /
-  // Block / Report / Delete are intentionally absent (no on-chain moderation; content permanent).
-  const menuItems = useMemo<OverflowMenuItem[]>(() => {
-    const downVoted = viewer.myVote === "Down";
-    const items: OverflowMenuItem[] = [
-      {
-        id: "downvote",
-        label: downVoted ? "Remove downvote" : "Downvote",
-        icon: (
-          <IconDownvote
-            filled={downVoted}
-            style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }}
-          />
-        ),
-        checked: downVoted,
-        onSelect: () => handlers.onDownvote(post, !downVoted),
-      },
-    ];
-    if (viewer.myVote != null) {
-      items.push({
-        id: "clear-vote",
-        label: "Clear vote",
-        onSelect: () => clearVote(post),
-      });
-    }
-    items.push({
-      id: "copy-link",
-      label: "Copy link to post",
-      icon: <IconLink style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }} />,
-      onSelect: () => handlers.onShare(post),
-    });
-    return items;
-  }, [handlers, post, viewer.myVote, clearVote]);
+  // No "···" overflow menu: every action it held (down-vote, clear-vote, copy-link) is a button in
+  // the action row below (down-vote ▼, tap-active-to-clear, Share = copy link), so it was redundant.
 
   const cls = [
     styles.card,
@@ -149,22 +141,20 @@ export function PostCard({
     .join(" ");
 
   return (
-    <article className={cls} data-post-id={String(post.id)} aria-busy={pending || undefined}>
-      {/* X-pattern: an overlay link covers the non-interactive area; inner controls stopPropagation. */}
-      {!pending && (
-        <button
-          type="button"
-          className={styles.rowLink}
-          aria-label="Open post"
-          tabIndex={-1}
-          onClick={openRow}
-        />
-      )}
-
+    <article
+      className={cls}
+      data-post-id={String(post.id)}
+      aria-busy={pending || undefined}
+      role={clickable ? "link" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      aria-label={clickable ? "Open post" : undefined}
+      onClick={clickable ? onCardClick : undefined}
+      onKeyDown={clickable ? onCardKeyDown : undefined}
+    >
       <div className={styles.inner}>
         <PostCardHeader
           author={author}
-          menuItems={pending ? undefined : menuItems}
+          at={post.at}
           onAuthorOpen={handlers.onAuthorOpen}
           detail={detail}
           headerExtra={
@@ -197,16 +187,22 @@ export function PostCard({
             />
           )}
 
-          {post.isPoll && poll && onPollVote && (
-            <PollCard
-              poll={poll}
-              myChoice={pollMyChoice ?? null}
-              onVote={onPollVote}
-              showResults={detail}
-              disabled={gate.status === "not-identity-bound"}
-              compact={!detail}
-            />
-          )}
+          {post.isPoll &&
+            (poll && onPollVote ? (
+              // Surface pre-wired the poll (ThreadView focal): use it directly.
+              <PollCard
+                poll={poll}
+                myChoice={pollMyChoice ?? null}
+                onVote={onPollVote}
+                showResults={detail}
+                disabled={gate.status === "not-identity-bound"}
+                compact={!detail}
+              />
+            ) : (
+              // List context (timeline/profile): self-fetch + render the votable poll inline so it
+              // isn't just a plain text post.
+              !pending && <InlinePoll postId={post.id} gate={gate} detail={detail} />
+            ))}
 
           <PostCardActions
             post={post}

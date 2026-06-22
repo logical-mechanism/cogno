@@ -154,6 +154,7 @@ query Thread($rootId: String!) {
         upWeight downWeight upCount downCount score repostCount
         author { id banned displayName avatar }
         quote { id text author { id banned displayName avatar } }
+        replies { totalCount }
       }
     }
   }

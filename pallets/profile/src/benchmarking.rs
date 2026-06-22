@@ -26,9 +26,12 @@ mod benchmarks {
 		let name = alloc::vec![0u8; T::MaxName::get() as usize];
 		let bio = alloc::vec![0u8; T::MaxBio::get() as usize];
 		let avatar = alloc::vec![0u8; T::MaxAvatar::get() as usize];
+		let banner = alloc::vec![0u8; T::MaxBanner::get() as usize];
+		let location = alloc::vec![0u8; T::MaxLocation::get() as usize];
+		let website = alloc::vec![0u8; T::MaxWebsite::get() as usize];
 
 		#[extrinsic_call]
-		_(RawOrigin::Signed(caller.clone()), name, bio, avatar);
+		_(RawOrigin::Signed(caller.clone()), name, bio, avatar, banner, location, website);
 
 		assert!(Profiles::<T>::contains_key(&caller));
 		Ok(())
@@ -43,7 +46,17 @@ mod benchmarks {
 			alloc::vec![0u8; 1].try_into().expect("1 < MaxName; qed");
 		let bio: BoundedVec<u8, T::MaxBio> = Default::default();
 		let avatar: BoundedVec<u8, T::MaxAvatar> = Default::default();
-		Profiles::<T>::insert(&caller, Profile::<T> { display_name: name, bio, avatar });
+		Profiles::<T>::insert(
+			&caller,
+			Profile::<T> {
+				display_name: name,
+				bio,
+				avatar,
+				banner: Default::default(),
+				location: Default::default(),
+				website: Default::default(),
+			},
+		);
 
 		#[extrinsic_call]
 		_(RawOrigin::Signed(caller.clone()));

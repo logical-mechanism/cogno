@@ -76,9 +76,11 @@ export function IconLike(p: IconProps) {
 }
 
 export function IconQuote(p: IconProps) {
+  // Solid double-quotation-mark glyph (Material "format_quote" silhouette) — a single clean closed
+  // path that stays legible at action-row sizes, where the old multi-piece outline broke up.
   return (
     <svg {...svgProps(p)}>
-      <path d="M19.708 6.075l-3.024 4.660h2.341v6.6c0 .551-.449 1-1 1h-3.65v2h3.65c1.654 0 3-1.346 3-3v-8.6h2.025l-3.342-2.66zM7.5 4.5h-3C2.846 4.5 1.5 5.846 1.5 7.5v6.6h2v3.66l3.342-2.66h.658v-2H6.184L4.5 14.435V7.5c0-.551.449-1 1-1h2v-2zm5 0h-3v2h3v-2z" />
+      <path d="M6 17h3l2-4V7H5v6h3l-2 4zm8 0h3l2-4V7h-6v6h3l-2 4z" />
     </svg>
   );
 }

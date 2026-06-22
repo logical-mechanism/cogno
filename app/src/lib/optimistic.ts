@@ -73,8 +73,14 @@ export function applyViewerPatch(
 /** Merge the overlay onto a feed snapshot: prepend pending cards, patch counts on existing rows. */
 export function mergeFeed(posts: CognoPost[], overlay: Overlay): CognoPost[] {
   const patched = posts.map((p) => applyCountPatch(p, overlay.counts[String(p.id)]));
+  // Suppress a pending card once its confirmed twin (same author + text) is already in the snapshot.
+  // Without this the optimistic→real handoff flickers: dropPending() can fire a beat before the feed
+  // poll lands the real row, so the card would briefly vanish then reappear. De-duping here makes the
+  // swap seamless regardless of which arrives first.
+  const realKeys = new Set(patched.map((p) => `${p.author}\n${p.text}`));
   const pendingCards = overlay.pending
     .filter((pp) => pp.status === "pending" && pp.parentId === undefined)
+    .filter((pp) => !realKeys.has(`${pp.post.author}\n${pp.post.text}`))
     .map((pp) => pp.post);
   return [...pendingCards, ...patched];
 }

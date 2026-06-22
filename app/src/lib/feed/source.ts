@@ -37,8 +37,10 @@ export interface FeedCaps {
   tallies: boolean;
   /** follow edges + follower/following counts. (indexer-only — reverse-index aggregation) */
   follows: boolean;
-  /** display name / bio / avatar / pinned. (indexer-only — denormalized on Author) */
+  /** display name / bio / avatar / pinned. (both — pallet-profile stores these on-chain) */
   profiles: boolean;
+  /** the profile Replies + Likes reverse tabs (replies-/votes-by-author). (indexer-only) */
+  profileTabs: boolean;
   /** ranked who-to-follow suggestion list. (indexer-only) */
   whoToFollow: boolean;
 }

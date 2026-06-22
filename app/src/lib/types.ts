@@ -183,9 +183,19 @@ export interface ProfileView {
   page: FeedPage;
 }
 
-/** A reconstructed thread: the root post + its direct replies, with the "replying to" parent. */
+/**
+ * A reconstructed thread: the focal `root` post, its connected ancestor chain (the parent posts
+ * above it), and its direct replies. Each direct reply carries its own `replyCount` so the UI can
+ * offer an inline "Show replies" expander instead of routing away to a fresh page.
+ */
 export interface ThreadView {
   root: CognoPost;
+  /**
+   * The ancestor chain above `root`, ordered top-down (the conversation root first, `root`'s
+   * immediate parent last). Empty when `root` is top-level. PAPI-direct walks the full chain from
+   * the snapshot; the indexer path currently supplies the immediate parent only.
+   */
+  ancestors: CognoPost[];
   replies: CognoPost[];
   replyCount: number;
   /** The post `root` replies to, for the "Replying to @…" context line (when known). */

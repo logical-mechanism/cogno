@@ -50,6 +50,9 @@ impl pallet_profile::Config for Test {
 	type MaxName = ConstU32<64>;
 	type MaxBio = ConstU32<256>;
 	type MaxAvatar = ConstU32<128>;
+	type MaxBanner = ConstU32<128>;
+	type MaxLocation = ConstU32<64>;
+	type MaxWebsite = ConstU32<128>;
 	type WeightInfo = ();
 }
 

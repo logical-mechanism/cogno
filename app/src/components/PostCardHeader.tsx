@@ -22,12 +22,15 @@ import styles from "./PostCardHeader.module.css";
 import { Avatar } from "./Avatar";
 import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
+import { PostTime } from "./PostTime";
 import { IconMore } from "./icons";
 import type { AuthorRef, OverflowMenuItem, AvatarSize } from "./kit";
 
 export interface PostCardHeaderProps {
   /** The post's author (derived from CognoPost's flattened author fields). */
   author: AuthorRef;
+  /** Post block height (CognoPost.at) → a relative "· 2h" age after the handle. Omit to hide. */
+  at?: number;
   /** Items for the "···" overflow menu (§2.1). Empty/omitted → no menu button. */
   menuItems?: OverflowMenuItem[];
   /** Navigate to the author's profile (/u/[address]/). Avatar/name/handle all route here. */
@@ -42,6 +45,7 @@ export interface PostCardHeaderProps {
 
 export function PostCardHeader({
   author,
+  at,
   menuItems,
   onAuthorOpen,
   detail,
@@ -130,6 +134,7 @@ export function PostCardHeader({
             />
           </button>
           <Handle address={author.address} />
+          {at != null && <PostTime at={at} />}
           {dim && (
             <span className={styles.restricted} title="This account's identity binding was revoked">
               This account has been restricted

@@ -220,9 +220,9 @@ export interface PostActionCallbacks {
   onQuote: (post: CognoPost) => void;
   /** toggle the heart (UP vote); next=true → like, next=false → clear. */
   onLike: (post: CognoPost, next: boolean) => void;
-  /** secondary down-vote (from the overflow menu); next=true → downvote, next=false → clear. */
+  /** down-vote (the ▼ in the action row); next=true → downvote, next=false → clear. */
   onDownvote: (post: CognoPost, next: boolean) => void;
-  /** permanent repost — the surface shows the confirm dialog before calling this. */
+  /** repost — submitted on a single click; no un-repost. */
   onRepost: (post: CognoPost) => void;
   /** copy /post/[id] link → success toast. */
   onShare: (post: CognoPost) => void;

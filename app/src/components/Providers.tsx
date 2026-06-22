@@ -22,6 +22,7 @@ import { useChain } from "@/hooks/useChain";
 import { useSigner, type UseSigner } from "@/hooks/useSigner";
 import { useIdentity, type UseIdentity } from "@/hooks/useIdentity";
 import { useFeedSource } from "@/hooks/useFeedSource";
+import { useHeads } from "@/hooks/useHeads";
 import { getGraphqlUrl } from "@/lib/config/endpoints";
 import { deriveSessionState, type SessionState } from "@/lib/session";
 import { ToasterProvider } from "@/components/toast/ToasterProvider";
@@ -55,6 +56,8 @@ export interface Session {
   viewer: Viewer;
   /** The feed reader seam (indexer when configured, else PAPI-direct). Null before connect. */
   source: FeedSource | null;
+  /** Live best-block number (one shared head subscription) — drives relative post times, capacity, etc. */
+  bestBlock: number | null;
 }
 
 const SessionContext = createContext<Session | null>(null);
@@ -87,6 +90,9 @@ function ChainProvider({ children }: { children: ReactNode }) {
   // URL here (SSG-safe; "" ⇒ PAPI-direct). A Settings change reloads the app, so we don't re-poll it.
   const graphqlUrl = useMemo(() => getGraphqlUrl() || null, []);
   const source = useFeedSource(api, graphqlUrl);
+
+  // One shared head subscription for all block-relative UI (post times, capacity, live profile).
+  const bestBlock = useHeads(client).best?.number ?? null;
 
   const sessionState = useMemo(
     () =>
@@ -142,8 +148,9 @@ function ChainProvider({ children }: { children: ReactNode }) {
       sessionState,
       viewer,
       source,
+      bestBlock,
     }),
-    [api, client, status, boot, wsUrl, reconnect, signer, signerCtl, identity, sessionState, viewer, source],
+    [api, client, status, boot, wsUrl, reconnect, signer, signerCtl, identity, sessionState, viewer, source, bestBlock],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

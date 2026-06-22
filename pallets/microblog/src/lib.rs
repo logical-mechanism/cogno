@@ -137,7 +137,7 @@ pub mod pallet {
 	/// The current storage version of pallet-microblog. v0 (implicit, pre-quote) → v1 adds the
 	/// `quote: Option<u64>` field to [`Post`]. Bumped in lockstep with the `migrations::v1`
 	/// migration; its `VersionedMigration` version-guard self-skips once the on-chain version is 1.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
 	#[pallet::pallet]
 	#[pallet::storage_version(STORAGE_VERSION)]
@@ -372,6 +372,21 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type VoteTally<T: Config> = StorageMap<_, Blake2_128Concat, u64, Tally, ValueQuery>;
 
+	/// Reverse "liked posts" index: `VotesByAccount[account][post] = ()` means `account` currently
+	/// UP-votes `post` (drives the profile Likes tab without a reverse scan). Maintained in lockstep by
+	/// `vote`/`clear_vote` (inserted on an Up vote, removed on a Down vote or a clear); backfilled from
+	/// the Up rows of `Votes` by migration v2.
+	#[pallet::storage]
+	pub type VotesByAccount<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		Blake2_128Concat,
+		u64,
+		(),
+		OptionQuery,
+	>;
+
 	/// Per-(post, account) repost edge. **Permanent** (treated like content — there is no `unrepost`);
 	/// a re-repost is rejected `AlreadyReposted`. `None` ⇒ that account has not reposted that post.
 	#[pallet::storage]
@@ -411,6 +426,20 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type FollowingCount<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u32, ValueQuery>;
+
+	/// Reverse follow index: `Followers[followee][follower] = ()` ⇒ `follower` follows `followee` —
+	/// the mirror of `Following`, so "who follows X" is a direct prefix iteration (no full-account
+	/// scan). Maintained in lockstep by `follow`/`unfollow`; backfilled from `Following` by migration v2.
+	#[pallet::storage]
+	pub type Followers<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		Blake2_128Concat,
+		T::AccountId,
+		(),
+		OptionQuery,
+	>;
 
 	/// Poll metadata keyed by the host post id. `None` ⇒ that post is not a poll.
 	#[pallet::storage]
@@ -814,6 +843,13 @@ pub mod pallet {
 				}
 			});
 			Votes::<T>::insert(post_id, &who, VoteRecord { dir, weight });
+			// Reverse liked-posts index (Up = liked); switching to Down clears the like.
+			match dir {
+				VoteDir::Up => VotesByAccount::<T>::insert(&who, post_id, ()),
+				VoteDir::Down => {
+					VotesByAccount::<T>::remove(&who, post_id);
+				},
+			}
 			Self::deposit_event(Event::Voted { id: post_id, who, dir, weight });
 			Ok(())
 		}
@@ -830,6 +866,7 @@ pub mod pallet {
 				return Err(Error::<T>::NotAllowed.into());
 			}
 			let prev = Votes::<T>::take(post_id, &who).ok_or(Error::<T>::NotVoted)?;
+			VotesByAccount::<T>::remove(&who, post_id); // clear any like in the reverse index
 			VoteTally::<T>::mutate(post_id, |t| match prev.dir {
 				VoteDir::Up => {
 					t.up_weight = t.up_weight.saturating_sub(prev.weight);
@@ -877,6 +914,7 @@ pub mod pallet {
 			ensure!(who != target, Error::<T>::SelfFollow);
 			ensure!(!Following::<T>::contains_key(&who, &target), Error::<T>::AlreadyFollowing);
 			Following::<T>::insert(&who, &target, ());
+			Followers::<T>::insert(&target, &who, ()); // reverse index, in lockstep
 			FollowingCount::<T>::mutate(&who, |c| *c = c.saturating_add(1));
 			FollowerCount::<T>::mutate(&target, |c| *c = c.saturating_add(1));
 			Self::deposit_event(Event::Followed { follower: who, followee: target });
@@ -894,6 +932,7 @@ pub mod pallet {
 				return Err(Error::<T>::NotAllowed.into());
 			}
 			ensure!(Following::<T>::take(&who, &target).is_some(), Error::<T>::NotFollowing);
+			Followers::<T>::remove(&target, &who); // reverse index, in lockstep
 			FollowingCount::<T>::mutate(&who, |c| *c = c.saturating_sub(1));
 			FollowerCount::<T>::mutate(&target, |c| *c = c.saturating_sub(1));
 			Self::deposit_event(Event::Unfollowed { follower: who, followee: target });

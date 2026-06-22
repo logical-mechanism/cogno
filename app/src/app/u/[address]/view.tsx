@@ -35,6 +35,7 @@ import { ProfileHeader } from "@/components/profile/ProfileHeader";
 import { ProfileTabs, type ProfileTab } from "@/components/profile/ProfileTabs";
 import { PinnedPostBlock } from "@/components/profile/PinnedPostBlock";
 import { useSession } from "@/components/Providers";
+import { useHeads } from "@/hooks/useHeads";
 import { useProfile } from "@/hooks/useProfile";
 import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -71,18 +72,21 @@ export function ProfileView() {
 function ProfileBody({ address }: { address: Ss58 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { api, signer, source, viewer, votingPower } = useSession();
+  const { api, client, signer, source, viewer, votingPower } = useSession();
+  const bestBlock = useHeads(client).best?.number ?? null;
 
   const me = viewer.address ?? null;
   const isSelf = me != null && me === address;
   const canFollow = source?.caps.follows === true;
-  const canProfiles = source?.caps.profiles === true;
+  const canProfiles = source?.caps.profiles === true; // display name / bio / avatar (node + indexer)
+  const canProfileTabs = source?.caps.profileTabs === true; // Replies + Likes reverse tabs (indexer)
   const paginationCapable = source?.caps.pagination === true;
 
   // ── active tab: client state synced to ?tab= (the static route stays /u/[address]). ──
   const [tab, setTab] = useState<ProfileTab>(() => parseTabParam(searchParams?.get("tab") ?? null));
-  // PAPI-direct can only serve Posts; coerce a persisted replies/likes back to posts.
-  const activeTab: ProfileTab = !canProfiles && tab !== "posts" ? "posts" : tab;
+  // The Replies/Likes tabs need the indexer; coerce a persisted replies/likes back to posts when
+  // the reader can't serve them (PAPI-direct). Display fields (name/bio/avatar) still show.
+  const activeTab: ProfileTab = !canProfileTabs && tab !== "posts" ? "posts" : tab;
 
   const onTabChange = useCallback(
     (next: ProfileTab) => {
@@ -102,7 +106,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
     () => ({ author: address, tab: tabArg(activeTab) }),
     [address, activeTab],
   );
-  const { profile, posts, loading, error } = useProfile(source, profileArgs);
+  const { profile, posts, loading, error } = useProfile(source, profileArgs, bestBlock);
 
   // ── follow graph + optimistic toggle (header). READ gated on caps.follows; WRITE always allowed. ──
   const follow = useFollow(api, signer, source, me);
@@ -256,7 +260,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
         showBack
         title={headerName}
         subtitle={`${postCount} ${postCount === 1 ? "post" : "posts"}`}
-        tabs={<ProfileTabs active={activeTab} onChange={onTabChange} showAll={canProfiles} />}
+        tabs={<ProfileTabs active={activeTab} onChange={onTabChange} showAll={canProfileTabs} />}
       />
 
       {cold ? (

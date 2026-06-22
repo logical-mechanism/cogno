@@ -44,8 +44,9 @@ function presetFor(v: EmptyStateVariant, query?: string, handle?: string): Prese
       };
     case "search-unavailable":
       return {
-        title: "Search needs the indexer.",
-        description: "Connect an indexer endpoint in Settings to search.",
+        title: "Full-text search is optional",
+        description:
+          "Browse the timeline and open any profile directly. Add an indexer in Settings to search post text.",
         icon: <IconSearch className={styles.glyph} />,
       };
     case "profile":

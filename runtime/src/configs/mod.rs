@@ -82,7 +82,14 @@ parameter_types! {
 /// `VersionedMigration` so it runs once (on-chain storage version 0 → 1) and self-skips thereafter.
 /// Leave it registered across the next few spec bumps (it's a no-op once applied), then drop it.
 #[allow(unused_parens)]
-type SingleBlockMigrations = (pallet_microblog::migrations::v1::MigrateV0ToV1<Runtime>,);
+type SingleBlockMigrations = (
+	// v1 is idempotent (self-skips once microblog is at storage version 1) — kept for fresh syncs.
+	pallet_microblog::migrations::v1::MigrateV0ToV1<Runtime>,
+	// spec 118: backfill the reverse Followers + VotesByAccount indexes.
+	pallet_microblog::migrations::v2::MigrateV1ToV2<Runtime>,
+	// spec 118: add banner / location / website to every Profile (defaulted empty).
+	pallet_profile::migrations::v1::MigrateV0ToV1<Runtime>,
+);
 
 /// The default types are being injected by [`derive_impl`](`frame_support::derive_impl`) from
 /// [`SoloChainDefaultConfig`](`struct@frame_system::config_preludes::SolochainDefaultConfig`),
@@ -581,5 +588,8 @@ impl pallet_profile::Config for Runtime {
 	type MaxName = ConstU32<64>;
 	type MaxBio = ConstU32<256>;
 	type MaxAvatar = ConstU32<128>;
+	type MaxBanner = ConstU32<256>;
+	type MaxLocation = ConstU32<64>;
+	type MaxWebsite = ConstU32<256>;
 	type WeightInfo = pallet_profile::weights::SubstrateWeight<Runtime>;
 }

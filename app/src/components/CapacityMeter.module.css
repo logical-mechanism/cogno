@@ -1,0 +1,38 @@
+/* CapacityMeter — a small talk-points bar + count for the composer toolbar. */
+
+.meter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+}
+
+.bar {
+  display: inline-block;
+  width: 44px;
+  height: 6px;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-bg-subtle);
+  border: 1px solid var(--cg-border);
+  overflow: hidden;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--cg-text-secondary);
+  border-radius: var(--cg-radius-pill);
+  transition: width var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+/* Running low — the one place a warning hue is allowed (inside the component, like the card accents). */
+.fill.low {
+  background: var(--cg-danger);
+}
+
+.label {
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

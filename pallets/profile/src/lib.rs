@@ -39,6 +39,8 @@ mod benchmarking;
 pub mod weights;
 pub use weights::*;
 
+pub mod migrations;
+
 /// Log target for this pallet's operator-facing diagnostics. Off-chain only; the on-chain audit
 /// trail is the event stream.
 pub const LOG_TARGET: &str = "runtime::profile";
@@ -52,7 +54,13 @@ pub mod pallet {
 	// The cross-pallet identity gate trait (defined in microblog to avoid a Cargo cycle).
 	use pallet_microblog::IsAllowed;
 
+	/// Storage version. Bumped 0 → 1 in spec 118: the `migrations::v1` re-encode adds the new
+	/// `banner` / `location` / `website` Profile fields; its `VersionedMigration` self-skips once the
+	/// on-chain version is 1.
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
 	#[pallet::pallet]
+	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
 
 	#[pallet::config]
@@ -73,6 +81,15 @@ pub mod pallet {
 		/// Maximum avatar-reference length in bytes (a URL / IPFS CID — NOT image bytes).
 		#[pallet::constant]
 		type MaxAvatar: Get<u32>;
+		/// Maximum banner-reference length in bytes (a URL / IPFS CID, NOT image bytes).
+		#[pallet::constant]
+		type MaxBanner: Get<u32>;
+		/// Maximum location length in bytes (free text).
+		#[pallet::constant]
+		type MaxLocation: Get<u32>;
+		/// Maximum website-reference length in bytes (a URL).
+		#[pallet::constant]
+		type MaxWebsite: Get<u32>;
 		/// Weight information for this pallet's dispatchables.
 		type WeightInfo: WeightInfo;
 	}
@@ -92,6 +109,14 @@ pub mod pallet {
 		pub bio: BoundedVec<u8, T::MaxBio>,
 		/// Avatar reference (URL / IPFS CID), bounded to `MaxAvatar` bytes.
 		pub avatar: BoundedVec<u8, T::MaxAvatar>,
+		/// Banner reference (URL / IPFS CID), bounded to `MaxBanner` bytes. Added in storage **v1**;
+		/// pre-v1 profiles are migrated to empty (see `migrations::v1`). Appended after `avatar` so the
+		/// migration is a clean tail-append.
+		pub banner: BoundedVec<u8, T::MaxBanner>,
+		/// Free-text location, bounded to `MaxLocation` bytes. Added in storage **v1**.
+		pub location: BoundedVec<u8, T::MaxLocation>,
+		/// Website reference (URL), bounded to `MaxWebsite` bytes. Added in storage **v1**.
+		pub website: BoundedVec<u8, T::MaxWebsite>,
 	}
 
 	/// Per-account profile. `OptionQuery` ⇒ `None` for an account that has never set one.
@@ -128,6 +153,12 @@ pub mod pallet {
 		BioTooLong,
 		/// The avatar reference exceeded `MaxAvatar`.
 		AvatarTooLong,
+		/// The banner reference exceeded `MaxBanner`.
+		BannerTooLong,
+		/// The location exceeded `MaxLocation`.
+		LocationTooLong,
+		/// The website reference exceeded `MaxWebsite`.
+		WebsiteTooLong,
 		/// `clear_profile` was called but the caller has no profile.
 		NoProfile,
 		/// `unpin_post` was called but the caller has nothing pinned.
@@ -141,12 +172,15 @@ pub mod pallet {
 		/// anti-spam for this low-frequency mutable overwrite. Requires a live identity binding.
 		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::set_profile())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _display_name: &Vec<u8>, _bio: &Vec<u8>, _avatar: &Vec<u8>| -> bool { true })]
+		#[pallet::feeless_if(|_origin: &OriginFor<T>, _display_name: &Vec<u8>, _bio: &Vec<u8>, _avatar: &Vec<u8>, _banner: &Vec<u8>, _location: &Vec<u8>, _website: &Vec<u8>| -> bool { true })]
 		pub fn set_profile(
 			origin: OriginFor<T>,
 			display_name: Vec<u8>,
 			bio: Vec<u8>,
 			avatar: Vec<u8>,
+			banner: Vec<u8>,
+			location: Vec<u8>,
+			website: Vec<u8>,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			if !T::IdentityGate::is_allowed(&who) {
@@ -158,7 +192,16 @@ pub mod pallet {
 			let bio: BoundedVec<u8, T::MaxBio> = bio.try_into().map_err(|_| Error::<T>::BioTooLong)?;
 			let avatar: BoundedVec<u8, T::MaxAvatar> =
 				avatar.try_into().map_err(|_| Error::<T>::AvatarTooLong)?;
-			Profiles::<T>::insert(&who, Profile { display_name, bio, avatar });
+			let banner: BoundedVec<u8, T::MaxBanner> =
+				banner.try_into().map_err(|_| Error::<T>::BannerTooLong)?;
+			let location: BoundedVec<u8, T::MaxLocation> =
+				location.try_into().map_err(|_| Error::<T>::LocationTooLong)?;
+			let website: BoundedVec<u8, T::MaxWebsite> =
+				website.try_into().map_err(|_| Error::<T>::WebsiteTooLong)?;
+			Profiles::<T>::insert(
+				&who,
+				Profile { display_name, bio, avatar, banner, location, website },
+			);
 			Self::deposit_event(Event::ProfileSet { who });
 			Ok(())
 		}
