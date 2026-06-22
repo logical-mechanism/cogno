@@ -60,10 +60,49 @@
   outline-offset: var(--cg-focus-ring-offset);
 }
 
+/* "Optional boosts" section header — reframes the cards below as non-required. */
+.optionalHeader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+}
+
+.optionalLabel {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  color: var(--cg-text);
+}
+
+.optionalSub {
+  margin: 0;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
 .cards {
   display: flex;
   flex-direction: column;
   gap: var(--cg-space-3);
+}
+
+/* Card title + "Optional" chip on one row. */
+.cardTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-2);
+}
+
+.optionalChip {
+  flex: none;
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text-secondary);
+  background: var(--cg-bg-subtle);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  padding: 2px var(--cg-space-2);
 }
 
 .card {

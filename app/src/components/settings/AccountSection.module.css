@@ -21,6 +21,31 @@
   color: var(--cg-text-secondary);
 }
 
+/* Canonical setup-status banner: the one place "am I all set?" is answered. */
+.statusCard {
+  gap: var(--cg-space-2);
+}
+
+.statusHeadline {
+  margin: 0;
+  font-size: var(--cg-fs-lg);
+  font-weight: var(--cg-fw-bold);
+  color: var(--cg-text);
+}
+
+.statusDetail {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}
+
+/* "Optional —" sublabel marking a non-required boost (voting power) so it never reads as a step. */
+.optionalNote {
+  margin: 0;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-muted);
+}
+
 .prompt {
   margin: 0;
   font-size: var(--cg-fs-md);

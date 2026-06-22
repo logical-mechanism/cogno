@@ -27,7 +27,9 @@ export function Account({ compact }: AccountProps) {
   const router = useRouter();
   const { viewer, signerCtl } = useSession();
   const me = viewer.address;
-  const connected = signerCtl.postingEnabled && !!me;
+  // The avatar chip means "fully set up" (identity-bound). A connected-but-unbound session is NOT
+  // done — it falls through to ConnectWalletButton, which shows the "Finish setup" nudge.
+  const ready = viewer.status === "ready" && !!me;
 
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -62,8 +64,10 @@ export function Account({ compact }: AccountProps) {
     signerCtl.disconnect();
   }, [signerCtl]);
 
-  // Not connected → the connect/finish-setup entry. Routes to /welcome to complete the bind.
-  if (!connected || !me) {
+  // Not fully set up (not connected, or connected but not identity-bound) → the connect/finish-setup
+  // entry. ConnectWalletButton picks "Connect wallet" vs "Finish setup" from viewer.status; the
+  // latter routes to /welcome to complete the bind.
+  if (!ready) {
     return (
       <div className={styles.root}>
         <ConnectWalletButton

@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/Skeleton";
 import { useSession } from "@/components/Providers";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { truncateSs58 } from "@/lib/ss58";
+import { setupStatus } from "@/lib/setup-status";
 
 /** lovelace → "N.N ADA" (voting power display); "—" when 0/null. */
 function formatAda(lovelace: bigint | null): string {
@@ -24,7 +25,7 @@ function formatAda(lovelace: bigint | null): string {
 }
 
 export function AccountSection() {
-  const { signerCtl, identity } = useSession();
+  const { signerCtl, identity, sessionState } = useSession();
   const { toast } = useToaster();
 
   const walletConnected = signerCtl.walletConnected;
@@ -68,9 +69,41 @@ export function AccountSection() {
 
   const loadingBound = identity.bound === null;
   const loadingVote = identity.votingPower === null;
+  const status = setupStatus(sessionState);
 
   return (
     <div className={styles.cards}>
+      {/* The single canonical setup status — one headline + the ONE next required step (when any).
+          Everything below is detail/optional, so "am I all set?" has a single answer here. */}
+      <div className={`${styles.card} ${styles.statusCard}`}>
+        <p className={styles.statusHeadline}>
+          {status.ready ? "✓ " : ""}
+          {status.headline}
+        </p>
+        <p className={styles.statusDetail}>{status.detail}</p>
+        {status.next?.kind === "bind" && (
+          <button
+            type="button"
+            className={styles.primaryBtn}
+            onClick={() => walletId && identity.bind(walletId)}
+            disabled={identity.binding || !walletId}
+          >
+            {identity.binding ? (
+              <>
+                <Spinner size="sm" label="Registering" /> Registering…
+              </>
+            ) : (
+              status.next.label
+            )}
+          </button>
+        )}
+        {identity.error && (
+          <p className={styles.error} role="alert">
+            {identity.error}
+          </p>
+        )}
+      </div>
+
       {/* Connected wallet card (only when a real wallet is connected, not a dev account) */}
       {walletConnected && walletId && (
         <div className={styles.card}>
@@ -105,7 +138,7 @@ export function AccountSection() {
           </button>
         </div>
 
-        {/* Identity */}
+        {/* Identity — display only; the status banner above owns the "Finish setup" action. */}
         <div className={styles.statRow}>
           <span className={styles.statLabel}>Identity</span>
           {loadingBound ? (
@@ -113,34 +146,16 @@ export function AccountSection() {
           ) : identity.bound ? (
             <span className={styles.statValue}>✓ Registered</span>
           ) : (
-            <div className={styles.statAction}>
-              <span className={styles.statMuted}>Not registered</span>
-              <button
-                type="button"
-                className={styles.primaryBtn}
-                onClick={() => walletId && identity.bind(walletId)}
-                disabled={identity.binding || !walletId}
-              >
-                {identity.binding ? (
-                  <>
-                    <Spinner size="sm" label="Registering" /> Registering…
-                  </>
-                ) : (
-                  "Finish setup"
-                )}
-              </button>
-            </div>
+            <span className={styles.statMuted}>Not registered yet</span>
           )}
         </div>
-        {identity.error && (
-          <p className={styles.error} role="alert">
-            {identity.error}
-          </p>
-        )}
 
-        {/* Voting power (only meaningful once registered) */}
+        {/* Voting power — OPTIONAL boost, only meaningful once registered. */}
         {identity.bound && (
           <>
+            <p className={styles.optionalNote}>
+              Optional — only affects how much weight your votes carry.
+            </p>
             <div className={styles.statRow}>
               <span className={styles.statLabel}>Voting power</span>
               {loadingVote ? (
