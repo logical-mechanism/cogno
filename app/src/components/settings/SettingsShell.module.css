@@ -1,0 +1,145 @@
+/* Desktop (≥1020px): master/detail two-pane. Below that: single-column drill-down (the `drilled`
+   class swaps which pane is visible). The center+right span is owned by AppShell; RightRail is
+   suppressed on /settings by the orchestrator so this fills the width. */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+}
+
+.master {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-3);
+  width: 100%;
+  min-height: 52px;
+  padding: 0 var(--cg-space-5);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--cg-border);
+  border-left: 4px solid transparent;
+  cursor: pointer;
+  color: var(--cg-text);
+  font-family: var(--cg-font-ui);
+  font-size: var(--cg-fs-md);
+  text-align: left;
+}
+
+.row:hover {
+  background: var(--cg-bg-hover);
+}
+
+.rowActive {
+  background: var(--cg-bg-hover);
+  border-left-color: var(--cg-accent);
+}
+
+.row:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: calc(-1 * var(--cg-focus-ring-width));
+}
+
+.rowLabel {
+  font-weight: var(--cg-fw-semibold);
+}
+
+.chevron {
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-lg);
+}
+
+.detail {
+  padding: var(--cg-space-5);
+  outline: none;
+}
+
+.detail:focus-visible {
+  outline: none;
+}
+
+/* Mobile/tablet-only back bar above the panel content (hidden on desktop, where both panes show). */
+.panelBar {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  margin-bottom: var(--cg-space-4);
+}
+
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--cg-text);
+  cursor: pointer;
+}
+
+.backBtn:hover {
+  background: var(--cg-bg-hover);
+}
+
+.backBtn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.panelHeading {
+  margin: 0;
+  font-size: var(--cg-fs-xl);
+  font-weight: var(--cg-fw-extrabold);
+  color: var(--cg-text);
+  outline: none;
+}
+
+/* ── Mobile / tablet (≤1019px): single-column drill-down ───────────────────────────────────── */
+@media (max-width: 1019px) {
+  /* Not drilled: show the master list, hide the detail. */
+  .shell:not(.drilled) .detail {
+    display: none;
+  }
+  /* Drilled into a section: hide the list, show the panel. */
+  .drilled .master {
+    display: none;
+  }
+}
+
+/* ── Desktop (≥1020px): master/detail side by side ─────────────────────────────────────────── */
+@media (min-width: 1020px) {
+  .shell {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .master {
+    flex: 0 0 290px;
+    width: 290px;
+    position: sticky;
+    top: var(--cg-header-h);
+    border-right: 1px solid var(--cg-border);
+    /* the desktop drill-down `drilled` flag is irrelevant here — both panes always show. */
+  }
+
+  .row .chevron {
+    display: none;
+  }
+
+  .detail {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  /* Both panes show on desktop — the panel back bar is mobile/tablet only. */
+  .panelBar {
+    display: none;
+  }
+}
