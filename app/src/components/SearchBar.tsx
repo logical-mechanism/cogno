@@ -41,7 +41,7 @@ export function SearchBar({
     [onSubmit, value],
   );
 
-  const disabledPlaceholder = "Search needs the indexer";
+  const disabledPlaceholder = "Add an indexer to search";
 
   return (
     <div className={styles.root} role="search">
@@ -58,7 +58,7 @@ export function SearchBar({
         aria-label={placeholder}
         disabled={!searchEnabled}
         aria-disabled={!searchEnabled || undefined}
-        title={searchEnabled ? undefined : "Search requires the indexer endpoint (Settings)."}
+        title={searchEnabled ? undefined : "Full-text search is optional — add an indexer in Settings."}
         autoFocus={autoFocus}
         spellCheck={false}
         autoComplete="off"

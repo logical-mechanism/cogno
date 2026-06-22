@@ -233,7 +233,7 @@ export function Timeline({
           <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />
         ) : null
       ) : (
-        <p className={styles.footer}>Connect an indexer to load more</p>
+        <p className={styles.footer}>That&apos;s the live feed · add an indexer in Settings for older posts</p>
       )}
     </div>
   );
