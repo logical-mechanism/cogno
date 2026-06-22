@@ -18,6 +18,7 @@
 import { useCallback, useRef, useState } from "react";
 import { ByteCounter, utf8Bytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
+import { CapacityMeter } from "./CapacityMeter";
 import { Avatar } from "./Avatar";
 import { Spinner, IconPoll } from "./icons";
 import styles from "./Composer.module.css";
@@ -289,6 +290,7 @@ export function Composer({
 
       <div className={styles.toolbar} id={`cg-composer-${mode}-meta`}>
         <div className={styles.toolbarLeft}>
+          {!sessionGated && <CapacityMeter />}
           {onTogglePoll && (mode === "post" || mode === "poll") && (
             <button
               type="button"
