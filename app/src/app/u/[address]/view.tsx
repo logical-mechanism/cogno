@@ -220,7 +220,10 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const hasProfile = !!(
     (profile?.displayName && profile.displayName.trim()) ||
     (profile?.bio && profile.bio.trim()) ||
-    (profile?.avatar && profile.avatar.trim())
+    (profile?.avatar && profile.avatar.trim()) ||
+    (profile?.banner && profile.banner.trim()) ||
+    (profile?.location && profile.location.trim()) ||
+    (profile?.website && profile.website.trim())
   );
   const headerName = profile?.displayName?.trim() || handleOf(address);
   const postCount = profile?.postCount ?? 0;
@@ -275,6 +278,9 @@ function ProfileBody({ address }: { address: Ss58 }) {
             displayName={profile?.displayName}
             bio={canProfiles ? profile?.bio : undefined}
             avatar={profile?.avatar}
+            banner={profile?.banner}
+            location={canProfiles ? profile?.location : undefined}
+            website={canProfiles ? profile?.website : undefined}
             banned={banned}
             isSelf={isSelf}
             hasProfile={hasProfile}

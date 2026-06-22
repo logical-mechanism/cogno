@@ -156,12 +156,10 @@ export function submitPollVote(
 // ── profile (FEELESS signed — D9 obsolete) ───────────────────────────────────────────────────
 
 /**
- * Set display name / bio / avatar (UTF-8 bytes: ≤ 64 / ≤ 256 / ≤ 128). Feeless + capacity-metered.
- *
- * spec-118 added `banner` / `location` / `website` to `set_profile`, which overwrites the WHOLE
- * Profile record. The editor doesn't collect those three yet (the "edit-profile restyle" backlog
- * item), so we send them empty — non-regressing because this frontend is the only writer and has
- * never set them. Once the form gains those inputs, thread them through here as parameters.
+ * Set the whole Profile record (spec-118): display name / bio / avatar / banner / location / website
+ * (UTF-8 bytes: ≤ 64 / 256 / 128 / 256 / 64 / 256). Feeless + capacity-metered. `set_profile`
+ * overwrites the WHOLE record, so every call must pass all six fields (the editor sends the current
+ * value for each, empty to clear).
  */
 export function submitSetProfile(
   api: CognoApi,
@@ -169,14 +167,17 @@ export function submitSetProfile(
   name: string,
   bio: string,
   avatar: string,
+  banner: string,
+  location: string,
+  website: string,
 ): Observable<TxUpdate> {
   const tx = api.tx.Profile.set_profile({
     display_name: Binary.fromText(name),
     bio: Binary.fromText(bio),
     avatar: Binary.fromText(avatar),
-    banner: Binary.fromText(""),
-    location: Binary.fromText(""),
-    website: Binary.fromText(""),
+    banner: Binary.fromText(banner),
+    location: Binary.fromText(location),
+    website: Binary.fromText(website),
   }) as unknown as Signable;
   return watchSigned(tx, signer);
 }

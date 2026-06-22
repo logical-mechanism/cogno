@@ -1,11 +1,12 @@
 "use client";
 
-// ProfileHeader — the profile chrome above the tabs (doc 07 §4): address-seeded accent banner →
-// overlapping xl Avatar → action button (Follow / Following / Edit profile / Set up profile) →
-// DisplayName + copyable Handle → linkified bio → FollowCounts → banned "restricted" note.
+// ProfileHeader — the profile chrome above the tabs (doc 07 §4): banner → overlapping xl Avatar →
+// action button (Follow / Following / Edit profile / Set up profile) → DisplayName + copyable Handle →
+// linkified bio → location / website meta → FollowCounts → banned "restricted" note.
 //
-// There is NO banner field on-chain (D1/§4.1): the banner is a deterministic CSS gradient seeded from
-// the address (a stable hue/angle offset per account), base colours --cg-accent → --cg-bg-subtle.
+// BANNER (spec-118): a `banner` URL/CID set on-chain renders as the header image behind a click-to-
+// reveal cover (no auto-fetch of an arbitrary host). With no banner set we fall back to a deterministic
+// CSS gradient seeded from the address (a stable hue/angle offset per account).
 //
 // The action button is the load-bearing self-vs-other switch (§4.4):
 //   • self + has-profile  → "Edit profile" (outline pill) → onEditProfile()
@@ -23,8 +24,24 @@ import { DisplayName } from "@/components/DisplayName";
 import { Handle } from "@/components/Handle";
 import { PostBody } from "@/components/PostBody";
 import { FollowButton } from "@/components/FollowButton";
+import { RevealImage } from "@/components/RevealImage";
+import { IconLink } from "@/components/icons";
 import { FollowCounts } from "./FollowCounts";
+import { resolveImageSrc } from "@/lib/media";
 import type { Ss58, Viewer } from "@/components/kit";
+
+/** Ensure a website value carries a scheme so the anchor href resolves (default https). */
+function websiteHref(raw: string): string {
+  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+}
+
+/** Display a website without scheme / leading www / trailing slash (X-style). */
+function websiteLabel(raw: string): string {
+  return raw
+    .replace(/^https?:\/\//i, "")
+    .replace(/^www\./i, "")
+    .replace(/\/+$/, "");
+}
 
 /** A stable 0..359 hue offset + 0..89 angle offset derived from the address (FNV-1a-ish). */
 function bannerStyle(address: string): React.CSSProperties {
@@ -48,6 +65,10 @@ export interface ProfileHeaderProps {
   displayName?: string;
   bio?: string;
   avatar?: string;
+  /** spec-118: banner reference (URL / IPFS CID), free-text location, website URL. */
+  banner?: string;
+  location?: string;
+  website?: string;
   banned: boolean;
   /** This is the viewer's own profile (self-view → Edit / Set-up, never FollowButton). */
   isSelf: boolean;
@@ -72,6 +93,9 @@ export function ProfileHeader({
   displayName,
   bio,
   avatar,
+  banner,
+  location,
+  website,
   banned,
   isSelf,
   hasProfile,
@@ -84,11 +108,26 @@ export function ProfileHeader({
   onToggleFollow,
 }: ProfileHeaderProps) {
   const bioText = bio?.trim() ?? "";
+  const bannerSrc = banner?.trim() ?? "";
+  const locationText = location?.trim() ?? "";
+  const websiteText = website?.trim() ?? "";
 
   return (
     <section className={styles.header} aria-label="Profile">
-      {/* Banner — deterministic accent gradient (no chain field, §4.1). Scrolls under the sticky hdr. */}
-      <div className={styles.banner} style={bannerStyle(address)} aria-hidden />
+      {/* Banner — the on-chain banner image behind a reveal cover, else a deterministic gradient. */}
+      {bannerSrc.length > 0 ? (
+        <div className={styles.banner}>
+          <RevealImage
+            src={resolveImageSrc(bannerSrc)}
+            alt="Profile banner"
+            fit="cover"
+            label="Show banner"
+            fallback={<span className={styles.bannerFallback} style={bannerStyle(address)} />}
+          />
+        </div>
+      ) : (
+        <div className={styles.banner} style={bannerStyle(address)} aria-hidden />
+      )}
 
       <div className={styles.body}>
         {/* avatar (overlapping the banner) on the left; the action button on the right (§2.1) */}
@@ -136,6 +175,23 @@ export function ProfileHeader({
         {bioText.length > 0 && (
           <div className={styles.bio}>
             <PostBody text={bioText} dim={banned} />
+          </div>
+        )}
+
+        {(locationText.length > 0 || websiteText.length > 0) && (
+          <div className={styles.meta}>
+            {locationText.length > 0 && <span className={styles.metaItem}>{locationText}</span>}
+            {websiteText.length > 0 && (
+              <a
+                className={styles.metaLink}
+                href={websiteHref(websiteText)}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+              >
+                <IconLink className={styles.metaIcon} aria-hidden />
+                <span>{websiteLabel(websiteText)}</span>
+              </a>
+            )}
           </div>
         )}
 
