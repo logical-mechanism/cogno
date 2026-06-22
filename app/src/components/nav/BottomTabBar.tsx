@@ -38,6 +38,9 @@ export function BottomTabBar() {
     { label: "Settings", href: "/settings/", Icon: IconSettings, match: (p) => p.startsWith("/settings") },
   ];
 
+  // The full-screen onboarding flow hides the bottom tabs (doc 11 §11).
+  if (pathname.startsWith("/welcome")) return null;
+
   return (
     <nav className={styles.bar} aria-label="Primary">
       {tabs.map(({ label, href, Icon, match }) => {

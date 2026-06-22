@@ -10,7 +10,7 @@
 //   3. Footer — ThemeToggle + an About link to /settings/. No trends, no premium upsell.
 
 import { useCallback, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import styles from "./RightRail.module.css";
 import { SearchBar } from "../SearchBar";
@@ -25,6 +25,7 @@ import { useFollow } from "@/hooks/useFollow";
 
 export function RightRail() {
   const router = useRouter();
+  const pathname = usePathname() ?? "/";
   const { api, signer, source, viewer } = useSession();
   const me = viewer.address ?? null;
 
@@ -55,16 +56,26 @@ export function RightRail() {
     [viewer.status, router, follow],
   );
 
+  // Suppress the whole rail where the surface owns the full content width: the
+  // centered onboarding flow (doc 11 §11) and the settings master/detail (doc 12 §1).
+  if (pathname.startsWith("/welcome") || pathname.startsWith("/settings")) return null;
+
+  // /explore owns its own header SearchBar — hide the rail's so there are not two
+  // competing inputs on that surface (doc 10 §5.1, the recommended choice).
+  const hideSearch = pathname.startsWith("/explore");
+
   return (
     <aside className={styles.rail} aria-label="Discover">
-      <div className={styles.searchSlot}>
-        <SearchBar
-          value={term}
-          onChange={setTerm}
-          onSubmit={submitSearch}
-          searchEnabled={searchEnabled}
-        />
-      </div>
+      {!hideSearch && (
+        <div className={styles.searchSlot}>
+          <SearchBar
+            value={term}
+            onChange={setTerm}
+            onSubmit={submitSearch}
+            searchEnabled={searchEnabled}
+          />
+        </div>
+      )}
 
       {showWhoToFollow && (
         <section className={styles.card} aria-label="Who to follow">
