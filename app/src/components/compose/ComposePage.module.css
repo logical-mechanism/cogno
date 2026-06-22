@@ -1,0 +1,84 @@
+/* ComposePage (surface 09 §3.1) — the FULL-PAGE composer fallback chrome.
+   A focused header (Cancel left + the mode title) over the composer body. NOT a dialog: no scrim,
+   no blurred sticky-timeline header, no focus trap. Every visual binds to a --cg-* token. The
+   accent is monochrome (near-white dark / near-black light) and only the Composer's own Post pill
+   uses it — this chrome stays text-colored. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* Focused header bar: Cancel (left) + the mode label. The actual Post CTA lives in the Composer
+   toolbar below (single source of truth for the validity / capacity / session gate — §4.3/§5.4). */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  min-height: var(--cg-header-h);
+  padding: 0 var(--cg-space-4);
+  background: color-mix(in srgb, var(--cg-bg) 85%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--cg-border);
+}
+
+/* Cancel — a plain text-colored button (no accent), generous hit area. */
+.cancel {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-md);
+  font-weight: 400;
+  padding: var(--cg-space-2) var(--cg-space-1);
+  margin-left: calc(-1 * var(--cg-space-1));
+  border-radius: var(--cg-radius-pill);
+  cursor: pointer;
+}
+
+.cancel:hover {
+  text-decoration: underline;
+}
+
+.cancel:focus-visible {
+  outline: 2px solid var(--cg-focus-ring);
+  outline-offset: 2px;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--cg-fs-lg);
+  font-weight: 700;
+  color: var(--cg-text);
+  line-height: 1.2;
+}
+
+/* The composer body fills the page below the header. */
+.body {
+  flex: 1;
+  padding: var(--cg-space-3) var(--cg-space-4) var(--cg-space-6);
+}
+
+/* The cold-deep-link reply/quote context loader placeholder. */
+.contextLoading {
+  min-height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cg-text-secondary);
+  padding: var(--cg-space-5) 0;
+}
+
+/* The muted "This post is unavailable." stub for a missing reply/quote target (§8). */
+.contextUnavailable {
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  margin-bottom: var(--cg-space-3);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-md);
+}
