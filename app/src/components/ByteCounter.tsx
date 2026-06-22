@@ -58,7 +58,6 @@ export function ByteCounter({ value, maxBytes, warnAt = 32, size = "md", onMeasu
       aria-valuemax={maxBytes}
       aria-valuenow={Math.min(bytes, maxBytes)}
       aria-label={`${bytes} of ${maxBytes} bytes used`}
-      aria-invalid={over || undefined}
     >
       <svg className={styles.ring} viewBox="0 0 24 24" aria-hidden focusable="false">
         <circle className={styles.track} cx="12" cy="12" r={R} fill="none" strokeWidth="2.5" />

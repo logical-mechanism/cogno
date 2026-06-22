@@ -126,7 +126,11 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
               {wallets.map((w) => (
                 <li key={w.id}>
                   <button type="button" className={styles.walletRow} onClick={() => pick(w.id)}>
-                    {w.icon && <img className={styles.walletIcon} src={w.icon} alt="" aria-hidden />}
+                    {w.icon && (
+                      // Wallet-supplied data-URI icon; a sandboxed <img> is correct here, not next/image.
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img className={styles.walletIcon} src={w.icon} alt="" aria-hidden />
+                    )}
                     <span>{w.name}</span>
                   </button>
                 </li>

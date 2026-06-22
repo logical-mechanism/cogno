@@ -93,7 +93,7 @@ export function PostCardHeader({
   // Focus the first item when the menu opens (roving focus thereafter).
   useEffect(() => {
     if (open) {
-      const first = menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]');
+      const first = menuRef.current?.querySelector<HTMLButtonElement>('[role^="menuitem"]');
       first?.focus();
     }
   }, [open]);
@@ -102,7 +102,7 @@ export function PostCardHeader({
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
     const items = Array.from(
-      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])') ?? [],
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]:not([disabled])') ?? [],
     );
     if (items.length === 0) return;
     const idx = items.findIndex((el) => el === document.activeElement);
@@ -176,10 +176,12 @@ export function PostCardHeader({
                 <button
                   key={item.id}
                   type="button"
-                  role="menuitem"
+                  // A checkable item (e.g. "Downvote" active) is a menuitemcheckbox — the only menu
+                  // role that supports aria-checked; plain actions stay role="menuitem".
+                  role={item.checked === undefined ? "menuitem" : "menuitemcheckbox"}
                   className={`${styles.menuItem} ${item.danger ? styles.danger : ""}`}
                   disabled={item.disabled}
-                  aria-checked={item.checked || undefined}
+                  aria-checked={item.checked}
                   onClick={(e) => {
                     e.stopPropagation();
                     setOpen(false);
