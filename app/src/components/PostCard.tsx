@@ -23,7 +23,7 @@ import { PostBody } from "./PostBody";
 import { QuotedPostEmbed } from "./QuotedPostEmbed";
 import { PollCard } from "./PollCard";
 import { PostCardActions } from "./PostCardActions";
-import { Spinner, IconDownvote, IconLink } from "./icons";
+import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
 import type {
   CognoPost,
@@ -31,7 +31,6 @@ import type {
   Viewer,
   PollView,
   AuthorRef,
-  OverflowMenuItem,
   PostActionCallbacks,
   PostCardVariant,
 } from "./kit";
@@ -104,39 +103,8 @@ export function PostCard({
     [handlers, viewer.myVote],
   );
 
-  // The header overflow menu (doc §2.1): the SECONDARY down-vote (+ clear) and copy-link. Mute /
-  // Block / Report / Delete are intentionally absent (no on-chain moderation; content permanent).
-  const menuItems = useMemo<OverflowMenuItem[]>(() => {
-    const downVoted = viewer.myVote === "Down";
-    const items: OverflowMenuItem[] = [
-      {
-        id: "downvote",
-        label: downVoted ? "Remove downvote" : "Downvote",
-        icon: (
-          <IconDownvote
-            filled={downVoted}
-            style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }}
-          />
-        ),
-        checked: downVoted,
-        onSelect: () => handlers.onDownvote(post, !downVoted),
-      },
-    ];
-    if (viewer.myVote != null) {
-      items.push({
-        id: "clear-vote",
-        label: "Clear vote",
-        onSelect: () => clearVote(post),
-      });
-    }
-    items.push({
-      id: "copy-link",
-      label: "Copy link to post",
-      icon: <IconLink style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }} />,
-      onSelect: () => handlers.onShare(post),
-    });
-    return items;
-  }, [handlers, post, viewer.myVote, clearVote]);
+  // No "···" overflow menu: every action it held (down-vote, clear-vote, copy-link) is a button in
+  // the action row below (down-vote ▼, tap-active-to-clear, Share = copy link), so it was redundant.
 
   const cls = [
     styles.card,
@@ -164,7 +132,6 @@ export function PostCard({
       <div className={styles.inner}>
         <PostCardHeader
           author={author}
-          menuItems={pending ? undefined : menuItems}
           onAuthorOpen={handlers.onAuthorOpen}
           detail={detail}
           headerExtra={
