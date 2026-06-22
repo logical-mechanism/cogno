@@ -1,0 +1,6 @@
+/* ProfileView (surface 07) — the route-level composition. The rich header/tabs/cards carry their own
+   modules; this only styles the tab-panel wrapper. */
+
+.panel {
+  display: block;
+}

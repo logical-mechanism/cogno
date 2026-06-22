@@ -1,0 +1,146 @@
+/* ProfileHeader — banner + overlapping avatar + name/handle/bio/counts + action button (doc 07 §4).
+   Monochrome: the only accent is the filled "Set up profile" CTA (the X-primary Post-CTA treatment)
+   + the focus ring. "Edit profile" is an outline pill. */
+
+.header {
+  display: block;
+}
+
+/* Banner — accent gradient seeded from the address (inline style sets `background`). 200px desktop. */
+.banner {
+  height: 200px;
+  width: 100%;
+}
+
+.body {
+  position: relative;
+  padding: 0 var(--cg-space-4) var(--cg-space-3);
+}
+
+/* Avatar overlaps the banner bottom by ~50% and the action button sits opposite it (X geometry). */
+.topRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cg-space-3);
+  /* pull the row up so the xl avatar straddles the banner edge */
+  margin-top: calc(var(--cg-avatar-xl) / -2);
+}
+
+.avatarRing {
+  display: inline-flex;
+  border-radius: var(--cg-radius-pill);
+  /* the --cg-bg ring cuts the avatar cleanly out of the banner */
+  background: var(--cg-bg);
+  padding: 4px;
+  box-shadow: 0 0 0 1px var(--cg-border);
+}
+
+.action {
+  /* push the button down so it aligns with the name area, not the overlapping avatar */
+  margin-top: calc(var(--cg-avatar-xl) / 2 + var(--cg-space-3));
+  flex: 0 0 auto;
+}
+
+/* "Edit profile" — outline pill (neutral; the X self-view treatment). */
+.editBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 var(--cg-space-4);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.editBtn:hover {
+  background: var(--cg-bg-hover);
+}
+
+/* "Set up profile" — filled accent pill (the stronger no-profile-yet nudge; X-primary CTA). */
+.setupBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 var(--cg-space-4);
+  border: none;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.setupBtn:hover {
+  background: var(--cg-accent-hover);
+}
+
+.editBtn:focus-visible,
+.setupBtn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--cg-space-2);
+}
+
+.identity > :first-child {
+  font-size: var(--cg-fs-xl);
+  font-weight: var(--cg-fw-extrabold);
+  line-height: var(--cg-lh-xl);
+}
+
+.bio {
+  margin-top: var(--cg-space-3);
+}
+
+.restricted {
+  margin-top: var(--cg-space-3);
+  color: var(--cg-text-muted);
+  font-size: var(--cg-fs-sm);
+}
+
+/* ── Tablet 688–1019px: slightly shorter banner + avatar. ── */
+@media (max-width: 1019px) {
+  .banner {
+    height: 160px;
+  }
+}
+
+/* ── Mobile <688px: 120px banner, 80px avatar. ── */
+@media (max-width: 687px) {
+  .banner {
+    height: 120px;
+  }
+
+  .avatarRing :global(span),
+  .avatarRing :global(button) {
+    width: 80px !important;
+    height: 80px !important;
+  }
+
+  .topRow {
+    margin-top: -40px;
+  }
+
+  .action {
+    margin-top: calc(40px + var(--cg-space-2));
+  }
+
+  .identity > :first-child {
+    font-size: var(--cg-fs-lg);
+  }
+}
