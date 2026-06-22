@@ -14,6 +14,7 @@ import type {
   ChainHeads,
   BlockRef,
   AnchorCheckpoint,
+  Ss58,
 } from "@/lib/types";
 
 /** A single live entry from `Posts.watchEntries()`: storage key + decoded value. */
@@ -23,6 +24,8 @@ interface RawPostEntry {
     author: string;
     text: { asText: () => string };
     parent?: bigint;
+    /** Quoted post id (`Post.quote: Option<u64>`, storage v1); undefined for plain posts/replies. */
+    quote?: bigint;
     at: number;
   };
 }
@@ -35,6 +38,16 @@ function toCognoPost(entry: RawPostEntry): CognoPost {
     text: entry.value.text.asText(),
     parent: entry.value.parent,
     at: entry.value.at,
+  };
+}
+
+/** A compact reference to the quoted post, resolved from another decoded post. */
+function quoteRefOf(quoted: CognoPost) {
+  return {
+    id: quoted.id,
+    author: quoted.author,
+    text: quoted.text,
+    authorRevoked: quoted.authorRevoked === true,
   };
 }
 
@@ -51,11 +64,33 @@ function byIdDesc(a: CognoPost, b: CognoPost): number {
  * snapshot reflects.
  */
 export function watchFeed(api: CognoApi): Observable<FeedSnapshot> {
-  return api.query.Microblog.Posts.watchEntries().pipe(
-    map((ev): FeedSnapshot => {
-      const entries = ev.entries as unknown as RawPostEntry[];
-      const posts = entries.map(toCognoPost).sort(byIdDesc);
-      return { posts, asOf: ev.block?.number ?? null };
+  // Also watch Polls so we can flag poll-posts (a post is a poll iff a Polls[id] entry exists) and
+  // resolve quote refs — both from the same authoritative snapshot, no per-post round-trips.
+  const posts$ = api.query.Microblog.Posts.watchEntries();
+  const polls$ = api.query.Microblog.Polls.watchEntries().pipe(
+    startWith({ entries: [] as { args: [bigint] }[] }),
+  );
+  return combineLatest([posts$, polls$]).pipe(
+    map(([pev, qev]): FeedSnapshot => {
+      const entries = pev.entries as unknown as RawPostEntry[];
+      const pollIds = new Set(
+        (qev.entries as unknown as { args: [bigint] }[]).map((e) => e.args[0]),
+      );
+      const posts = entries.map(toCognoPost);
+      const byId = new Map(posts.map((p) => [p.id, p] as const));
+      // Decorate each post with its poll flag + resolved quote ref (from the snapshot itself).
+      posts.forEach((p, i) => {
+        if (pollIds.has(p.id)) p.isPoll = true;
+        const qid = entries[i].value.quote;
+        if (qid != null) {
+          const q = byId.get(BigInt(qid));
+          p.quote = q
+            ? quoteRefOf(q)
+            : { id: BigInt(qid), author: "" as Ss58, text: "", authorRevoked: false };
+        }
+      });
+      posts.sort(byIdDesc);
+      return { posts, asOf: pev.block?.number ?? null };
     }),
   );
 }
@@ -145,7 +180,23 @@ export async function getPost(
   api: CognoApi,
   id: bigint,
 ): Promise<CognoPost | undefined> {
-  const value = await api.query.Microblog.Posts.getValue(id);
-  if (!value) return undefined;
-  return toCognoPost({ args: [id], value: value as unknown as RawPostEntry["value"] });
+  const raw = await api.query.Microblog.Posts.getValue(id);
+  if (!raw) return undefined;
+  const value = raw as unknown as RawPostEntry["value"];
+  const post = toCognoPost({ args: [id], value });
+
+  // A post is a poll iff a Polls[id] entry exists; resolve a quoted post (one level) for the embed.
+  const [pollRec, quoted] = await Promise.all([
+    api.query.Microblog.Polls.getValue(id),
+    value.quote != null
+      ? api.query.Microblog.Posts.getValue(BigInt(value.quote))
+      : Promise.resolve(undefined),
+  ]);
+  if (pollRec) post.isPoll = true;
+  if (value.quote != null) {
+    post.quote = quoted
+      ? quoteRefOf(toCognoPost({ args: [BigInt(value.quote)], value: quoted as unknown as RawPostEntry["value"] }))
+      : { id: BigInt(value.quote), author: "" as Ss58, text: "", authorRevoked: false };
+  }
+  return post;
 }
