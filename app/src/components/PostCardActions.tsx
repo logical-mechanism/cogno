@@ -5,19 +5,16 @@
 //   ⟲ Reply 12     ↻ Repost 4     ❝ Quote 1     ♥ 38              ↗ Share
 //   teal hover     green/perm     teal hover     LIKE=UP vote      copy→toast
 //
-// Spread across ~425px max (X parity) with Share pushed to the trailing edge. The HEART is the
-// primary action and == an on-chain UP vote (D2): its count is `upCount` (number of likers, NOT
-// weight); on like it fills --cg-like with the cg-like-pop animation. Repost is PERMANENT (D3):
-// first click opens a one-time confirm dialog ("Reposts are permanent and cannot be undone."), then
-// it turns filled green (--cg-repost), disabled, aria-pressed — there is NO un-repost. The SECONDARY
-// down-vote, clear-vote, and copy-link live in the header's "···" overflow (doc §2.1), NOT in this
-// row — but their callbacks are part of this component's contract (the PostCard wires the same bundle
-// to both). The weighted score / up-down weights are NOT shown here (detail-only, D2/D12).
+// Spread across ~425px max (X parity) with Share pushed to the trailing edge. The up-vote == an
+// on-chain UP vote (D2). Repost submits on a single click (everything on-chain is permanent, so we
+// don't call it out) → it turns filled green (--cg-repost), disabled, aria-pressed — there is no
+// un-repost. The clear-vote callback stays part of the contract (tap an active vote to clear). The
+// weighted score / up-down weights are NOT shown here (detail-only, D2/D12).
 //
 // Presentational + optimistic: every count/filled state is driven by props the surface
 // optimistically overrides; this row NEVER builds an extrinsic.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
 import styles from "./PostCardActions.module.css";
 import { IconReply, IconRepost, IconQuote, IconShare, IconDownvote } from "./icons";
 import { formatCount, formatSignedWeight } from "@/lib/format";
@@ -33,7 +30,7 @@ export interface PostCardActionsProps {
   onQuote: (post: CognoPost) => void;
   /** Toggle the heart (UP vote): next=true → like, next=false → clear. */
   onLike: (post: CognoPost, next: boolean) => void;
-  /** Permanent repost — confirmed here, then submitted. */
+  /** Repost — submitted on a single click; no un-repost. */
   onRepost: (post: CognoPost) => void;
   /** Secondary down-vote (surfaced in the header overflow): next=true → downvote, false → clear. */
   onDownvote: (post: CognoPost, next: boolean) => void;
@@ -66,9 +63,6 @@ export function PostCardActions({
   // onClearVote stays part of the contract (header overflow "Clear vote"); unused in this row now
   // that up/down both toggle-clear inline.
   void _onClearVote;
-
-  const [confirmRepost, setConfirmRepost] = useState(false);
-  const confirmRef = useRef<HTMLDivElement | null>(null);
 
   const up = viewer.myVote === "Up";
   const down = viewer.myVote === "Down";
@@ -119,41 +113,13 @@ export function PostCardActions({
     [onCopyLink, post],
   );
 
-  // close the confirm popover on click-out / Esc
-  useEffect(() => {
-    if (!confirmRepost) return;
-    const onDoc = (e: MouseEvent) => {
-      if (confirmRef.current && !confirmRef.current.contains(e.target as Node)) {
-        setConfirmRepost(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setConfirmRepost(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [confirmRepost]);
-
-  const onRepostClick = useCallback(
+  const doRepost = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
       if (reposted) return; // terminal — no un-repost
-      setConfirmRepost(true);
-    },
-    [reposted],
-  );
-
-  const confirmRepostNow = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      setConfirmRepost(false);
       onRepost(post);
     },
-    [onRepost, post],
+    [reposted, onRepost, post],
   );
 
   const replyCount = formatCount(post.replyCount);
@@ -179,41 +145,24 @@ export function PostCardActions({
         {replyCount && <span className={styles.count}>{replyCount}</span>}
       </button>
 
-      {/* Repost — PERMANENT */}
-      <div className={styles.repostWrap}>
-        <button
-          type="button"
-          className={`${styles.action} ${styles.repost} ${reposted ? styles.repostOn : ""}`}
-          aria-label={`Repost${post.repostCount ? `, ${post.repostCount}` : ""}`}
-          aria-pressed={reposted}
-          disabled={reposted || repostPending || notBound}
-          title={
-            reposted
-              ? "Reposted (permanent)"
-              : notBound
-                ? "Finish setup to repost."
-                : "Repost (permanent)"
-          }
-          onClick={onRepostClick}
-        >
-          <span className={styles.iconWrap}>
-            <IconRepost
-              filled={reposted}
-              style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }}
-            />
-          </span>
-          {repostCount && <span className={styles.count}>{repostCount}</span>}
-        </button>
-
-        {confirmRepost && (
-          <div className={styles.confirm} ref={confirmRef} role="dialog" aria-label="Confirm repost">
-            <p className={styles.confirmText}>Reposts are permanent and cannot be undone.</p>
-            <button type="button" className={styles.confirmBtn} onClick={confirmRepostNow}>
-              Repost
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Repost — single click submits (no un-repost) */}
+      <button
+        type="button"
+        className={`${styles.action} ${styles.repost} ${reposted ? styles.repostOn : ""}`}
+        aria-label={`Repost${post.repostCount ? `, ${post.repostCount}` : ""}`}
+        aria-pressed={reposted}
+        disabled={reposted || repostPending || notBound}
+        title={reposted ? "Reposted" : notBound ? "Finish setup to repost." : "Repost"}
+        onClick={doRepost}
+      >
+        <span className={styles.iconWrap}>
+          <IconRepost
+            filled={reposted}
+            style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }}
+          />
+        </span>
+        {repostCount && <span className={styles.count}>{repostCount}</span>}
+      </button>
 
       {/* Quote */}
       <button
