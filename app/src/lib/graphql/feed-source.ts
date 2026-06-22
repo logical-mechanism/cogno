@@ -83,6 +83,8 @@ interface SocialNode {
 /** A top-level feed/thread node (carries its own author object). */
 interface FeedNode extends SocialNode {
   author?: NodeAuthor | null;
+  /** Present on thread reply nodes — the reply's own direct-child count, for the inline expander. */
+  replies?: { totalCount: number } | null;
 }
 
 interface FeedResponse {
@@ -357,7 +359,9 @@ export function createGraphqlFeedSource(endpoint: string): FeedSource {
       throw new Error(`thread root #${rootId} not found on the indexer`);
     }
     const root = nodeToPost({ ...data.post, parentId: data.post.parentId ?? null });
-    const replies = data.post.replies.nodes.map(nodeToPost);
+    const replies = data.post.replies.nodes.map((n) =>
+      n.replies ? { ...nodeToPost(n), replyCount: n.replies.totalCount } : nodeToPost(n),
+    );
     const parent: QuotedRef | undefined = data.post.parent
       ? {
           id: BigInt(data.post.parent.id),
@@ -368,12 +372,28 @@ export function createGraphqlFeedSource(endpoint: string): FeedSource {
           avatar: data.post.parent.author?.avatar ?? undefined,
         }
       : undefined;
+    // Connected ancestor chain. The THREAD query resolves the immediate parent only, so the chain is
+    // one-deep on the indexer path (PAPI-direct walks the full chain from the snapshot).
+    const ancestors: CognoPost[] = parent
+      ? [
+          {
+            id: parent.id,
+            author: parent.author,
+            text: parent.text,
+            at: 0,
+            authorRevoked: parent.authorRevoked,
+            authorDisplayName: parent.displayName,
+            authorAvatar: parent.avatar,
+          },
+        ]
+      : [];
     const lastActivity = [root, ...replies].reduce(
       (max, p) => (p.at > max ? p.at : max),
       root.at,
     );
     return {
       root,
+      ancestors,
       replies,
       replyCount: data.post.replies.totalCount,
       parent,

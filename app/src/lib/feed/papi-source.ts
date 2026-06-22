@@ -130,15 +130,37 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       throw new Error(`thread root #${rootId} not found on the node`);
     }
     const index = buildThreadIndex(snap.posts);
+    const byId = new Map(snap.posts.map((p) => [p.id, p] as const));
+
+    // Ancestor chain: walk `parent` up from the focal, guarding against cycles (`seen`) and dangling
+    // parents (one outside the snapshot stops the walk). Collected deepest-first, returned top-down.
+    const ancestorsDeep: CognoPost[] = [];
+    const seen = new Set<bigint>([rootRaw.id]);
+    let cursor = rootRaw.parent;
+    while (cursor !== undefined && !seen.has(cursor)) {
+      seen.add(cursor);
+      const anc = byId.get(cursor);
+      if (!anc) break;
+      ancestorsDeep.push(anc);
+      cursor = anc.parent;
+    }
+    const ancestorsRaw = ancestorsDeep.reverse();
+
+    // Direct replies, oldest-first, each annotated with its OWN child count (drives the expander).
     const childrenRaw = (index.get(String(rootId)) ?? [])
       .slice()
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    const [root, ...replies] = await flagRevocations([rootRaw, ...childrenRaw]);
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((r) => ({ ...r, replyCount: index.get(String(r.id))?.length ?? 0 }));
+
+    const flagged = await flagRevocations([rootRaw, ...ancestorsRaw, ...childrenRaw]);
+    const root = flagged[0];
+    const ancestors = flagged.slice(1, 1 + ancestorsRaw.length);
+    const replies = flagged.slice(1 + ancestorsRaw.length);
     const lastActivity = [root, ...replies].reduce(
       (max, p) => (p.at > max ? p.at : max),
       root.at,
     );
-    return { root, replies, replyCount: replies.length, lastActivity };
+    return { root, ancestors, replies, replyCount: replies.length, lastActivity };
   }
 
   async function profile(args: ProfileArgs): Promise<ProfileView> {

@@ -84,10 +84,54 @@
   padding: var(--cg-space-2) var(--cg-space-4);
 }
 
+/* Connected ancestor chain above the focal post. */
+.ancestors {
+  display: flex;
+  flex-direction: column;
+}
+
 /* Direct replies list. */
 .replies {
   display: flex;
   flex-direction: column;
+}
+
+/* A reply and its inline-expanded sub-thread. */
+.replyNode {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Nested (expanded) sub-replies — a gentle indent for depth; the per-card thread line carries the
+   stronger connection cue, so the indent stays small to survive narrow viewports. */
+.subReplies {
+  margin-left: var(--cg-space-5);
+}
+
+/* "Show N replies" / "Show this thread →" inline expander — a text affordance under the reply gutter,
+   monochrome (no accent), underline on hover. */
+.showThread {
+  align-self: flex-start;
+  margin: 0 0 var(--cg-space-2);
+  padding: var(--cg-space-1) var(--cg-space-4);
+  margin-left: calc(var(--cg-avatar-md) + var(--cg-space-3));
+  background: none;
+  border: none;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  font-weight: var(--cg-fw-medium);
+  cursor: pointer;
+}
+
+.showThread:hover {
+  text-decoration: underline;
+}
+
+.showThread:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
 }
 
 .refetching {
