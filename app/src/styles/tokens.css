@@ -111,10 +111,13 @@
   --cg-text-secondary: #71767b;
   --cg-text-muted: #565a5e;
 
-  --cg-accent: #2ec4a6;
-  --cg-accent-hover: #46d3b7;
-  --cg-accent-contrast: #06140f;
-  --cg-accent-wash: rgba(46, 196, 166, 0.12);
+  /* Neutral X-primary accent: used ONLY on the Post CTA + focus ring; every other accent use
+   * (links, nav, wordmark, spinner, tab indicator, hover washes) collapses to monochrome. The
+   * old mint/verdigris teal is dropped (user, 2026-06-21). like-pink / repost-green stay. */
+  --cg-accent: #eff3f4;
+  --cg-accent-hover: #d7dbdc;
+  --cg-accent-contrast: #0f1419;
+  --cg-accent-wash: rgba(239, 243, 244, 0.1);
 
   --cg-like: #f91880;
   --cg-like-wash: rgba(249, 24, 128, 0.12);
@@ -147,10 +150,13 @@
   --cg-text: #e7e9ea;
   --cg-text-secondary: #71767b;
   --cg-text-muted: #565a5e;
-  --cg-accent: #2ec4a6;
-  --cg-accent-hover: #46d3b7;
-  --cg-accent-contrast: #06140f;
-  --cg-accent-wash: rgba(46, 196, 166, 0.12);
+  /* Neutral X-primary accent: used ONLY on the Post CTA + focus ring; every other accent use
+   * (links, nav, wordmark, spinner, tab indicator, hover washes) collapses to monochrome. The
+   * old mint/verdigris teal is dropped (user, 2026-06-21). like-pink / repost-green stay. */
+  --cg-accent: #eff3f4;
+  --cg-accent-hover: #d7dbdc;
+  --cg-accent-contrast: #0f1419;
+  --cg-accent-wash: rgba(239, 243, 244, 0.1);
   --cg-like: #f91880;
   --cg-like-wash: rgba(249, 24, 128, 0.12);
   --cg-repost: #00ba7c;
@@ -179,10 +185,11 @@
   --cg-text: #0f1419;
   --cg-text-secondary: #536471;
   --cg-text-muted: #8b98a5;
-  --cg-accent: #1f6f5e;
-  --cg-accent-hover: #18584b;
+  /* Neutral X-primary accent (light): near-black fill on the Post CTA + focus ring. */
+  --cg-accent: #0f1419;
+  --cg-accent-hover: #272c30;
   --cg-accent-contrast: #ffffff;
-  --cg-accent-wash: rgba(31, 111, 94, 0.1);
+  --cg-accent-wash: rgba(15, 20, 25, 0.1);
   --cg-like: #f91880;
   --cg-like-wash: rgba(249, 24, 128, 0.1);
   --cg-repost: #00ba7c;
