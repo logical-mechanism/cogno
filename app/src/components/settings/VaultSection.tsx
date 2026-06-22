@@ -7,13 +7,14 @@
 // granted weight (lags the lock by a few blocks). When no Cardano provider is configured the whole
 // lock/exit block is hidden with a one-line link to Network.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./VaultSection.module.css";
 import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
 import { ConnectWalletButton } from "@/components/ConnectWalletButton";
 import { useSession } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
+import { useActionToast } from "@/hooks/useActionToast";
 
 const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
 
@@ -28,6 +29,8 @@ function formatAda(lovelace: bigint | null): string {
 export function VaultSection({ onGoNetwork }: { onGoNetwork?: () => void }) {
   const { api, signerCtl } = useSession();
   const vault = useVault();
+  const { fail, ok } = useActionToast();
+  const actionRef = useRef<"lock" | "exit" | null>(null);
   const walletId = signerCtl.connectedWalletId;
   const ss58 = signerCtl.signer.ss58;
   const connected = signerCtl.walletConnected && !!walletId;
@@ -53,11 +56,30 @@ export function VaultSection({ onGoNetwork }: { onGoNetwork?: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, walletId]);
 
+  // Toast the slow Cardano lock/exit settle (the in-flight spinner already shows inline on the button).
+  useEffect(() => {
+    const action = actionRef.current;
+    if (!action) return;
+    if (vault.phase === "submitted") {
+      ok(action === "lock" ? "Lock submitted — posting power updates shortly" : "Exit submitted — updating shortly");
+      actionRef.current = null;
+    } else if (vault.phase === "error" && vault.error) {
+      fail(vault.error);
+      actionRef.current = null;
+    }
+  }, [vault.phase, vault.error, fail, ok]);
+
   const onLock = useCallback(() => {
-    if (walletId) vault.lock(walletId, LOCK_AMOUNT);
+    if (walletId) {
+      actionRef.current = "lock";
+      vault.lock(walletId, LOCK_AMOUNT);
+    }
   }, [vault, walletId]);
   const onExit = useCallback(() => {
-    if (walletId) vault.exit(walletId);
+    if (walletId) {
+      actionRef.current = "exit";
+      vault.exit(walletId);
+    }
   }, [vault, walletId]);
 
   const locked = vault.locked;
