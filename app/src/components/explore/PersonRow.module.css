@@ -1,0 +1,53 @@
+/* PersonRow — a single people-search result row. Hairline divider between rows (the list owns the
+   last-child trim); hover tint matches the post cards. Monochrome throughout. */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.row:hover {
+  background: var(--cg-bg-hover);
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.who:hover {
+  text-decoration: none;
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: var(--cg-lh-xs);
+  gap: 2px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.followers {
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+  white-space: nowrap;
+}
+
+.action {
+  flex: 0 0 auto;
+}

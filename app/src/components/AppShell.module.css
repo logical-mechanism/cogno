@@ -1,0 +1,159 @@
+/* The shell fills the viewport; the document/body never scrolls on desktop (the main column does). */
+.shell {
+  min-height: 100vh;
+}
+
+/* The centered max-width container; the three columns flex within it (doc 01 §5.2). */
+.container {
+  display: flex;
+  justify-content: center;
+  gap: 0;
+  max-width: var(--cg-content-max);
+  margin: 0 auto;
+}
+
+.leftCol {
+  flex: 0 0 auto;
+}
+
+/* main IS the scroll container on desktop: its own scrollbar, full viewport height, 600px cap. */
+.main {
+  flex: 1 1 var(--cg-col-feed);
+  max-width: var(--cg-col-feed);
+  min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
+  border-left: 1px solid var(--cg-border);
+  border-right: 1px solid var(--cg-border);
+}
+
+.rightCol {
+  flex: 0 0 auto;
+}
+
+/* ── Sticky blurred header (doc 01 §8) ── */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: var(--cg-z-sticky);
+  background: var(--cg-header-bg);
+  backdrop-filter: blur(var(--cg-header-blur));
+  -webkit-backdrop-filter: blur(var(--cg-header-blur));
+  border-bottom: 1px solid var(--cg-border);
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-4);
+  min-height: var(--cg-header-h);
+  padding: 0 var(--cg-space-4);
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--cg-avatar-md);
+  height: var(--cg-avatar-md);
+  margin-left: calc(var(--cg-space-2) * -1);
+  border: none;
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.back:hover {
+  background: var(--cg-bg-hover);
+}
+
+.headerTitles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  justify-content: center;
+}
+
+.headerTitle {
+  font-size: var(--cg-fs-lg);
+  font-weight: var(--cg-fw-extrabold);
+  letter-spacing: var(--cg-tracking-tight);
+  line-height: var(--cg-lh-md);
+}
+
+.headerSubtitle {
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
+.headerActions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+}
+
+.headerTabs {
+  display: flex;
+}
+
+.notFoundHome {
+  display: flex;
+  justify-content: center;
+  padding: var(--cg-space-6);
+}
+
+.homeLink {
+  padding: var(--cg-space-3) var(--cg-space-6);
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  font-weight: var(--cg-fw-bold);
+}
+
+.homeLink:hover {
+  background: var(--cg-accent-hover);
+  text-decoration: none;
+}
+
+/* ── Tablet (688–1019px): no RightRail; main fills, no 600 cap ── */
+@media (max-width: 1019px) {
+  .rightCol {
+    display: none;
+  }
+
+  .main {
+    max-width: none;
+    flex-basis: auto;
+  }
+}
+
+/* ── Mobile (<688px): no LeftNav; document scrolls; bottom-tab + FAB show ── */
+@media (max-width: 687px) {
+  .leftCol {
+    display: none;
+  }
+
+  .container {
+    display: block;
+  }
+
+  .main {
+    height: auto;
+    overflow-y: visible;
+    border-left: none;
+    border-right: none;
+    /* leave room for the fixed bottom tab bar */
+    padding-bottom: calc(var(--cg-header-h) + env(safe-area-inset-bottom, 0));
+  }
+}
+
+/* ── Desktop wide (≥1020px): the bottom tab + FAB are desktop-hidden ── */
+@media (min-width: 688px) {
+  .container {
+    display: flex;
+  }
+}

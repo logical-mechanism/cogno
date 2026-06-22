@@ -35,8 +35,11 @@ interface ChainEvent {
  */
 export function extractPostId(
   events: ChainEvent[] | undefined,
-  eventName: "PostCreated",
+  eventName?: "PostCreated",
 ): bigint | undefined {
+  // Only `PostCreated` carries a new id. vote/repost/follow/clear pass no event name (the id is
+  // already known to the caller), so there is nothing to extract.
+  if (!eventName) return undefined;
   if (!events) return undefined;
   for (const ev of events) {
     if (ev.type === "Microblog" && ev.value?.type === eventName) {
@@ -79,9 +82,10 @@ export function stringifyError(err: unknown): string {
     }
   }
   // The feeless-post spam gate (CheckCapacity → ExhaustsResources). The composer gates this
-  // proactively via the capacity battery, so this is the rare race; surface it honestly.
+  // proactively via the rate-limit pre-flight (no battery), so this is the rare race; surface
+  // the same Twitter-style rate-limit line.
   if (/ExhaustsResources/i.test(raw)) {
-    return "Out of talk capacity right now — wait for it to regenerate, or get more weight.";
+    return "You are over the rate limit. Try again shortly.";
   }
   return raw || "Transaction failed.";
 }
@@ -108,7 +112,7 @@ export function watchTx(
     error: (err: unknown) => void;
     complete: () => void;
   }) => { unsubscribe: () => void } },
-  eventName: "PostCreated",
+  eventName?: "PostCreated",
   fallbackId?: bigint,
 ): Observable<TxUpdate> {
   return new Observable<TxUpdate>((subscriber) => {
@@ -173,7 +177,7 @@ export function watchTx(
           // Signer rejection, validity error, or network drop — surface honestly AND log it
           // with context so a failed submission is debuggable (the UI only shows the message).
           // eslint-disable-next-line no-console
-          console.error(`cogno: ${eventName} submission failed (stream error):`, stringifyError(err), err);
+          console.error(`cogno: ${eventName ?? "tx"} submission failed (stream error):`, stringifyError(err), err);
           subscriber.next({ phase: "error", error: stringifyError(err) });
           subscriber.complete();
         },
@@ -185,7 +189,7 @@ export function watchTx(
       // Synchronous failure building/signing the tx — log it (a thrown tx-build error is
       // otherwise invisible beyond the one-line message the UI renders).
       // eslint-disable-next-line no-console
-      console.error(`cogno: ${eventName} submission threw while building/signing:`, stringifyError(err), err);
+      console.error(`cogno: ${eventName ?? "tx"} submission threw while building/signing:`, stringifyError(err), err);
       subscriber.next({ phase: "error", error: stringifyError(err) });
       subscriber.complete();
     }

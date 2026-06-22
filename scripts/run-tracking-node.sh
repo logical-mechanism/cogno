@@ -9,9 +9,16 @@
 #   │ (producer) │  :30333       │ (--no validator role) │                │            │
 #   └────────────┘               └──────────────────────┘                └────────────┘
 #
+# First-time setup (fresh box) is documented in docs/RELAY-NODE.md. In short:
+#   - Ubuntu build deps:  sudo apt-get install -y clang protobuf-compiler cmake libssl-dev pkg-config make build-essential
+#     (there is NO libp2p package — P2P is the sc-network crate, compiled into the binary by `cargo build --release`)
+#   - Rust toolchain via rustup (auto-selects the pinned 1.90.0 from rust-toolchain.toml)
+#
 # Prereqs:
 #   1. The node binary is built:               cargo build --release
-#   2. A genesis-matching raw spec exists:      node scripts/fetch-chainspec.mjs <rpc> --bootnode <ma> --out network/raw.json
+#   2. A genesis-matching raw spec exists:      chainspecs/cogno-raw.json is COMMITTED and used by default
+#      (the public DDNS bootnode is embedded — no --bootnodes flag needed). To run an operator-keyed
+#      spec with secrets instead, regenerate via scripts/gen-chainspec.mjs and set CHAINSPEC=network/raw.json.
 #   3. The validator's P2P port is reachable from here (it must accept inbound on :30333).
 #
 # This is a TRACKING node, by design:
@@ -23,7 +30,7 @@
 #
 # Tunables (env):
 #   NODE_BIN    path to the built node      [<repo>/target/release/cogno-chain-node]
-#   CHAINSPEC   raw chain spec to follow    [<repo>/network/raw.json]
+#   CHAINSPEC   raw chain spec to follow    [<repo>/chainspecs/cogno-raw.json]
 #   RELAY_BASE  base-path (chain DB; gitignored) [<repo>/.relay-data]
 #   RPC_PORT    ws/http RPC port (the app)  [9944]
 #   P2P_PORT    libp2p port                 [30333]
@@ -34,14 +41,14 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NODE_BIN="${NODE_BIN:-$REPO/target/release/cogno-chain-node}"
-CHAINSPEC="${CHAINSPEC:-$REPO/network/raw.json}"
+CHAINSPEC="${CHAINSPEC:-$REPO/chainspecs/cogno-raw.json}"
 RELAY_BASE="${RELAY_BASE:-$REPO/.relay-data}"
 RPC_PORT="${RPC_PORT:-9944}"
 P2P_PORT="${P2P_PORT:-30333}"
 RELAY_NAME="${RELAY_NAME:-cogno-relay-local}"
 
 [ -x "$NODE_BIN" ]   || { echo "✗ node binary not found/executable: $NODE_BIN  (run: cargo build --release)" >&2; exit 1; }
-[ -f "$CHAINSPEC" ]  || { echo "✗ chain spec not found: $CHAINSPEC  (run: node scripts/fetch-chainspec.mjs <rpc> --bootnode <ma> --out network/raw.json)" >&2; exit 1; }
+[ -f "$CHAINSPEC" ]  || { echo "✗ chain spec not found: $CHAINSPEC  (the committed default is chainspecs/cogno-raw.json; or regenerate via scripts/gen-chainspec.mjs and set CHAINSPEC=network/raw.json)" >&2; exit 1; }
 
 # Force the observer to abstain: never let an inherited DBSYNC_URL pull this tracking node into
 # re-deriving (and potentially fatally mismatching) the Cardano observation on import.

@@ -1,0 +1,79 @@
+/* Timeline — the Home feed list. Cards own their own hairline divider + hover tint; this owns the
+   roving keyboard-focus marker + the load-more tail + the PAPI-direct footer. */
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* a focus slot around each card; the keyboard-focused card gets a 2px accent left-border marker. */
+.cardSlot {
+  position: relative;
+  outline: none;
+}
+
+.focused {
+  box-shadow: inset 2px 0 0 0 var(--cg-accent);
+}
+
+.focused:focus-visible {
+  /* the slot is the roving tab target; pair the left marker with the standard ring */
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: calc(-1 * var(--cg-focus-ring-width));
+}
+
+/* infinite-scroll tail */
+.tail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--cg-space-8);
+  padding: var(--cg-space-5) 0;
+}
+
+/* quiet PAPI-direct footer (no honesty framing) */
+.footer {
+  padding: var(--cg-space-5) var(--cg-space-4);
+  text-align: center;
+  color: var(--cg-text-muted);
+  font-size: var(--cg-fs-sm);
+  border-top: 1px solid var(--cg-border);
+}
+
+/* passive read-error row + retry */
+.errorRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+  background: var(--cg-bg-subtle);
+}
+
+.errorText {
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+}
+
+.retry {
+  flex-shrink: 0;
+  padding: var(--cg-space-1) var(--cg-space-4);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+}
+
+.retry:hover {
+  background: var(--cg-bg-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focused {
+    transition: none;
+  }
+}

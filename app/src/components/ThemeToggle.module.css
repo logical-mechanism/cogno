@@ -1,0 +1,21 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-2);
+  border: none;
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.btn:hover {
+  background: var(--cg-bg-hover);
+}
+
+.label {
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-medium);
+}

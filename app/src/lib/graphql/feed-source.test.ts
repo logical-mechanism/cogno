@@ -141,19 +141,26 @@ describe("profile() — author mapping + empty shape", () => {
     expect(prof.postCount).toBe(0);
   });
 
-  it("maps a populated author: weight string -> bigint, posts inherit banned", async () => {
+  it("maps a populated author: weight string -> bigint, profile fields, posts inherit banned + social defaults", async () => {
     gqlRequest.mockResolvedValue({
       author: {
         id: "5Author",
         banned: true,
         identityHash: "0xabc",
-        postCount: 2,
         weight: "100000000000000000000", // > Number.MAX_SAFE_INTEGER
+        displayName: "Auth",
+        bio: "hi",
+        avatar: "https://x/y.png",
+        pinnedPostId: null,
+        postCount: 2,
+        followerCount: 3,
+        followingCount: 4,
         posts: {
           totalCount: 2,
+          pageInfo: { hasNextPage: false, endCursor: null },
           nodes: [
-            { id: "1", text: "a", parentId: null, blockHeight: 1, deleted: false },
-            { id: "2", text: "b", parentId: null, blockHeight: 2, deleted: true },
+            { id: "1", authorId: "5Author", text: "a", parentId: null, blockHeight: 1 },
+            { id: "2", authorId: "5Author", text: "b", parentId: null, blockHeight: 2 },
           ],
         },
       },
@@ -161,9 +168,13 @@ describe("profile() — author mapping + empty shape", () => {
     const prof = await source().profile({ author: "5Author" });
     expect(prof.weight).toBe(BigInt("100000000000000000000"));
     expect(prof.banned).toBe(true);
+    expect(prof.displayName).toBe("Auth");
+    expect(prof.followerCount).toBe(3);
     // Every post inherits the author's banned flag.
     expect(prof.page.posts.every((p) => p.authorRevoked === true)).toBe(true);
-    expect(prof.page.posts[1].deleted).toBe(true); // soft-deleted post is FLAGGED, not dropped
+    // No `deleted` field anymore; social tallies default to zero.
+    expect(prof.page.posts[1].upCount).toBe(0);
+    expect(prof.page.posts[1].score).toBe(0n);
     expect(prof.page.posts.map((p) => p.id)).toEqual([1n, 2n]);
   });
 
@@ -216,12 +227,13 @@ describe("thread() — reconstruction", () => {
     expect(t.replies.map((r) => r.id)).toEqual([2n, 3n]);
   });
 
-  it("keeps a soft-deleted root as the thread root (posts are flagged, never dropped)", async () => {
+  it("maps the thread root + its social defaults (no deleted field anymore)", async () => {
     gqlRequest.mockResolvedValue({
-      post: { id: "1", authorId: "A", text: "[deleted]", blockHeight: 3, deleted: true, author: { id: "A", banned: false, identityHash: null }, replies: { totalCount: 0, nodes: [] } },
+      post: { id: "1", authorId: "A", text: "root", parentId: null, blockHeight: 3, author: { id: "A", banned: false, identityHash: null }, replies: { totalCount: 0, nodes: [] } },
     });
     const t = await source().thread(1n);
     expect(t.root.id).toBe(1n);
-    expect(t.root.deleted).toBe(true);
+    expect(t.root.text).toBe("root");
+    expect(t.root.score).toBe(0n);
   });
 });

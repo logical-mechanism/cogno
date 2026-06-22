@@ -1,0 +1,30 @@
+/* FollowCounts — inline "N Following · M Followers" (doc 07 §4.5). Numbers bold/text, labels
+   secondary. Display-only; wraps on mobile. */
+
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--cg-space-2);
+  margin-top: var(--cg-space-3);
+  font-size: var(--cg-fs-sm);
+}
+
+.count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.value {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-bold);
+}
+
+.label {
+  color: var(--cg-text-secondary);
+}
+
+.dot {
+  color: var(--cg-text-secondary);
+}

@@ -1,0 +1,168 @@
+/* PostCardActions — X action row: Reply · Repost · Quote · Like · Share, spread to ~425px. */
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 425px;
+  margin-top: var(--cg-space-2);
+}
+
+.dense {
+  max-width: 320px;
+  margin-top: var(--cg-space-1);
+}
+
+/* each action: icon + optional count, with a circular hover wash behind the icon */
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cg-text-secondary);
+  cursor: pointer;
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+  transition: color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.action:focus-visible {
+  outline: none;
+}
+
+.action:focus-visible .iconWrap {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+/* the circular tint behind the icon (X's hover bubble) */
+.iconWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin: -7px;
+  border-radius: var(--cg-radius-pill);
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
+    color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+  min-width: 1ch;
+}
+
+/* ---- per-action hover tints ---- */
+
+.reply:hover:not(:disabled) {
+  color: var(--cg-accent);
+}
+.reply:hover:not(:disabled) .iconWrap {
+  background: var(--cg-accent-wash);
+}
+
+.repost:hover:not(:disabled) {
+  color: var(--cg-repost);
+}
+.repost:hover:not(:disabled) .iconWrap {
+  background: var(--cg-repost-wash);
+}
+
+/* reposted — terminal filled green */
+.repostOn,
+.repostOn:disabled {
+  color: var(--cg-repost);
+  opacity: 1;
+}
+
+.quote:hover:not(:disabled) {
+  color: var(--cg-accent);
+}
+.quote:hover:not(:disabled) .iconWrap {
+  background: var(--cg-accent-wash);
+}
+
+.like:hover:not(:disabled) {
+  color: var(--cg-like);
+}
+.like:hover:not(:disabled) .iconWrap {
+  background: var(--cg-like-wash);
+}
+
+/* liked — filled red heart */
+.likeOn,
+.likeOn:disabled {
+  color: var(--cg-like);
+  opacity: 1;
+}
+
+.share:hover:not(:disabled) {
+  color: var(--cg-accent);
+}
+.share:hover:not(:disabled) .iconWrap {
+  background: var(--cg-accent-wash);
+}
+
+/* like-pop animation when the heart becomes filled (keyframe in tokens.css; reduced-motion guarded) */
+.pop {
+  animation: cg-like-pop var(--cg-motion-base) var(--cg-ease-pop);
+}
+
+/* ---- repost confirm popover ---- */
+
+.repostWrap {
+  position: relative;
+}
+
+.confirm {
+  position: absolute;
+  top: calc(100% + var(--cg-space-2));
+  left: 0;
+  z-index: var(--cg-z-overlay);
+  width: 240px;
+  padding: var(--cg-space-4);
+  background: var(--cg-bg-elevated);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  box-shadow: var(--cg-shadow-menu);
+}
+
+.confirmText {
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text);
+  margin-bottom: var(--cg-space-3);
+}
+
+.confirmBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: var(--cg-space-2) var(--cg-space-4);
+  border: 0;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-repost);
+  color: var(--cg-accent-contrast);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  transition: opacity var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.confirmBtn:hover {
+  opacity: 0.9;
+}
+
+.confirmBtn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}

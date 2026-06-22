@@ -1,0 +1,88 @@
+.rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: var(--cg-col-right);
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-4);
+  padding: var(--cg-space-3) var(--cg-space-4) var(--cg-space-4);
+  overflow-y: auto;
+}
+
+/* The search input sticks to the top of the rail (X-exact). */
+.searchSlot {
+  position: sticky;
+  top: 0;
+  padding-top: var(--cg-space-2);
+  padding-bottom: var(--cg-space-2);
+  background: var(--cg-bg);
+  z-index: var(--cg-z-sticky);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-subtle);
+  overflow: hidden;
+}
+
+.cardTitle {
+  padding: var(--cg-space-3) var(--cg-space-4);
+  font-size: var(--cg-fs-lg);
+  font-weight: var(--cg-fw-extrabold);
+  letter-spacing: var(--cg-tracking-tight);
+}
+
+.person {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.person:hover {
+  background: var(--cg-bg-hover);
+}
+
+.personLink {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.personLink:hover {
+  text-decoration: none;
+}
+
+.personWho {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: var(--cg-lh-xs);
+}
+
+.showMore {
+  padding: var(--cg-space-3) var(--cg-space-4);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-accent);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-3);
+  padding: 0 var(--cg-space-2);
+  margin-top: auto;
+}
+
+.about {
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}

@@ -1,0 +1,165 @@
+/* Skeleton — shimmer placeholders. Shimmer = a token gradient sweep; static under reduced-motion. */
+
+.root {
+  display: block;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The shimmering block primitive. */
+.block {
+  display: block;
+  border-radius: var(--cg-radius-input);
+  background-color: var(--cg-bg-subtle);
+  background-image: linear-gradient(
+    90deg,
+    var(--cg-bg-subtle) 0%,
+    var(--cg-bg-hover-solid) 50%,
+    var(--cg-bg-subtle) 100%
+  );
+  background-size: 200% 100%;
+  animation: cg-shimmer 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .block {
+    animation: none;
+    background-image: none;
+  }
+}
+
+/* ── post row ── */
+.post {
+  display: flex;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+}
+
+.avatar {
+  flex: 0 0 auto;
+  width: var(--cg-avatar-md);
+  height: var(--cg-avatar-md);
+  border-radius: var(--cg-radius-pill);
+}
+
+.avatarXl {
+  width: var(--cg-avatar-xl);
+  height: var(--cg-avatar-xl);
+  border-radius: var(--cg-radius-pill);
+  margin-top: calc(-1 * var(--cg-space-7));
+}
+
+.postMain {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+}
+
+.headerRow {
+  display: flex;
+  gap: var(--cg-space-2);
+}
+
+.name {
+  height: var(--cg-lh-sm);
+  width: 30%;
+  border-radius: var(--cg-radius-input);
+}
+
+.handle {
+  height: var(--cg-lh-sm);
+  width: 24%;
+  border-radius: var(--cg-radius-input);
+}
+
+.bodyLine {
+  height: var(--cg-lh-sm);
+  width: 100%;
+}
+
+.bodyLineShort {
+  width: 65%;
+}
+
+.line {
+  height: var(--cg-lh-sm);
+  width: 100%;
+  margin: var(--cg-space-2) 0;
+}
+
+.actionRow {
+  display: flex;
+  gap: var(--cg-space-7);
+  margin-top: var(--cg-space-2);
+}
+
+.action {
+  height: var(--cg-icon-md);
+  width: var(--cg-icon-lg);
+  border-radius: var(--cg-radius-input);
+}
+
+/* ── profile header ── */
+.profileHeader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
+  padding-bottom: var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+}
+
+.banner {
+  height: 150px;
+  width: 100%;
+  border-radius: 0;
+}
+
+/* ── poll card ── */
+.pollCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-3) var(--cg-space-4);
+}
+
+.pollOption {
+  height: var(--cg-space-7);
+  width: 100%;
+  border-radius: var(--cg-radius-input);
+}
+
+/* ── person row (who-to-follow / people search) ── */
+.person {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) var(--cg-space-4);
+}
+
+.personMain {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+}
+
+.followPill {
+  flex: 0 0 auto;
+  height: var(--cg-space-7);
+  width: 84px;
+  border-radius: var(--cg-radius-pill);
+}

@@ -1,0 +1,45 @@
+/* ReplyComposer — parent preview + "Replying to @handle" context block above the textarea. */
+
+.context {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+}
+
+.parent {
+  display: flex;
+  gap: var(--cg-space-3);
+  align-items: flex-start;
+}
+
+.parentBody {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.parentHead {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+  flex-wrap: wrap;
+}
+
+.parentText {
+  margin: var(--cg-space-1) 0 0;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.replyingTo {
+  margin: 0;
+  padding-left: calc(var(--cg-avatar-md) + var(--cg-space-3));
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+}

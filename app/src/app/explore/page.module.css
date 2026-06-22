@@ -1,0 +1,31 @@
+/* Explore route (surface 10). The SearchBar sits in a sticky blurred header; the order toggle /
+   result tabs carry their own blurred backgrounds (their modules), so the whole header block stays
+   pinned while results scroll. */
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: var(--cg-z-sticky);
+}
+
+/* The SearchBar row — blurred header surface, full-width pill inside. */
+.searchRow {
+  padding: var(--cg-space-2) var(--cg-space-4);
+  background: var(--cg-header-bg);
+  backdrop-filter: blur(var(--cg-header-blur));
+  -webkit-backdrop-filter: blur(var(--cg-header-blur));
+  border-bottom: 1px solid var(--cg-border);
+}
+
+/* Visually-hidden live region for polite result-count announcements (§9). */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

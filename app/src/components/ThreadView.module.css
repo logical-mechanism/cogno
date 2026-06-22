@@ -1,0 +1,98 @@
+/* ThreadView — the /post/[id] conversation surface (surface 08).
+ *
+ * Monochrome: only the Post/Reply CTA + focus ring carry the accent (owned by Composer/PostCard).
+ * Links and the "Replying to" affordance are text-colored, never accent-colored. The score row is the
+ * single weighted-nature surface (D2/D12) — plain text, no colored chips.
+ */
+
+.thread {
+  display: flex;
+  flex-direction: column;
+}
+
+/* "Replying to @parent" ancestor-context line — tappable, routes to the parent. Text-colored. */
+.replyingTo {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--cg-space-3) var(--cg-space-4) 0;
+  background: none;
+  border: none;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  cursor: pointer;
+}
+
+.replyingTo:hover .replyTarget {
+  text-decoration: underline;
+}
+
+.replyingTo:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}
+
+.replyTarget {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-medium);
+}
+
+/* The focal post wrapper — anchors scroll-to-focal + SR focus; carries the detail stats row below. */
+.focal {
+  border-bottom: 1px solid var(--cg-border);
+  scroll-margin-top: var(--cg-header-h);
+}
+
+.focal:focus {
+  outline: none; /* programmatic focus target only (tabIndex -1); the card chrome carries visible state */
+}
+
+/* Detail stats / score row (detail-only — D2/D12). A single line: counts + signed score + weights. */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--cg-space-2) var(--cg-space-4);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  margin: 0 var(--cg-space-4);
+  border-top: 1px solid var(--cg-border);
+  border-bottom: 1px solid var(--cg-border);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-secondary);
+}
+
+.stat {
+  color: var(--cg-text-secondary);
+}
+
+.stat strong {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-semibold);
+}
+
+.statMuted {
+  color: var(--cg-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Inline reply composer slot, pinned under the focal post. */
+.composerSlot {
+  border-bottom: 1px solid var(--cg-border);
+  padding: var(--cg-space-2) var(--cg-space-4);
+}
+
+/* Direct replies list. */
+.replies {
+  display: flex;
+  flex-direction: column;
+}
+
+.refetching {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-5);
+}

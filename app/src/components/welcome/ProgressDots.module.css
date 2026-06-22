@@ -1,0 +1,28 @@
+.dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cg-space-2);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-border);
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
+    transform var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.done {
+  background: var(--cg-text);
+}
+
+.active {
+  background: var(--cg-accent);
+  transform: scale(1.25);
+}
+
+.pending {
+  background: var(--cg-border);
+}

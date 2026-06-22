@@ -1,0 +1,142 @@
+/* Toaster + Toast — bottom-center stack, accent-tinted per kind. */
+
+.toaster {
+  position: fixed;
+  left: 50%;
+  bottom: var(--cg-space-6);
+  transform: translateX(-50%);
+  z-index: var(--cg-z-toast);
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: var(--cg-space-2);
+  width: min(92vw, 420px);
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  width: 100%;
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-elevated);
+  border: 1px solid var(--cg-border);
+  color: var(--cg-text);
+  box-shadow: var(--cg-shadow-modal);
+  font-size: var(--cg-fs-sm);
+  animation: cg-toast-in var(--cg-motion-base) var(--cg-ease-out);
+}
+
+@keyframes cg-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}
+
+.iconWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--cg-icon-lg);
+  height: var(--cg-icon-lg);
+}
+
+.icon {
+  width: var(--cg-icon-md);
+  height: var(--cg-icon-md);
+}
+
+.glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--cg-icon-md);
+  height: var(--cg-icon-md);
+  font-weight: var(--cg-fw-bold);
+  font-size: var(--cg-fs-md);
+  line-height: 1;
+}
+
+.message {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.action {
+  flex: 0 0 auto;
+  background: none;
+  border: 0;
+  padding: var(--cg-space-1) var(--cg-space-2);
+  color: var(--cg-accent);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  border-radius: var(--cg-radius-input);
+}
+
+.action:hover {
+  background: var(--cg-accent-wash);
+}
+
+.close {
+  flex: 0 0 auto;
+  background: none;
+  border: 0;
+  padding: var(--cg-space-1);
+  color: var(--cg-text-secondary);
+  cursor: pointer;
+  border-radius: var(--cg-radius-pill);
+  line-height: 0;
+}
+
+.close:hover {
+  color: var(--cg-text);
+  background: var(--cg-bg-hover);
+}
+
+.action:focus-visible,
+.close:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+/* ── kind accents (the icon wrap takes the colour) ── */
+.success .iconWrap {
+  color: var(--cg-accent);
+}
+
+.error {
+  border-color: var(--cg-danger);
+}
+.error .iconWrap {
+  color: var(--cg-danger);
+}
+
+.rateLimit {
+  border-color: var(--cg-warning);
+}
+.rateLimit .iconWrap {
+  color: var(--cg-warning);
+}
+
+.pending .iconWrap {
+  color: var(--cg-text-secondary);
+}
+
+.info .iconWrap {
+  color: var(--cg-text-secondary);
+}

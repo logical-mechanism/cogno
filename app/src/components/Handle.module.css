@@ -1,0 +1,36 @@
+/* Handle — truncated ss58 in monospace, secondary tint. */
+
+.handle {
+  font-family: var(--cg-font-mono);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+a.handle:hover {
+  text-decoration: underline;
+}
+
+.copyBtn {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  line-height: inherit;
+}
+
+.copyBtn:hover {
+  color: var(--cg-accent);
+  text-decoration: underline;
+}
+
+.copyBtn:focus-visible,
+a.handle:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-input);
+}

@@ -1,31 +1,13 @@
-/* The reading shell: one centred column, held to a comfortable reading measure
-   plus gutters. No multi-column chrome — the text is the room. */
-.shell {
-  width: 100%;
-  max-width: 44rem;
-  margin: 0 auto;
-  padding: var(--space-5) var(--space-4) var(--space-6);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
+/* Home route (surface 06). The rich Timeline / TimelineTabs / NewPostsPill carry their own modules;
+   this only styles the home-level composition (the inline composer slot + its responsive hide). */
 
 .composerSlot {
-  margin-top: var(--space-1);
+  border-bottom: 1px solid var(--cg-border);
 }
 
-/* Honest read-path label: "reads: indexer" (GraphQL) vs "reads: direct node" (PAPI). Mono,
-   quiet — a chain-truth marginalia note, not chrome. Sits just above the ledger. */
-.readPath {
-  margin: var(--space-1) 0 calc(-1 * var(--space-3));
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  color: var(--ink-400);
-  text-align: right;
-}
-
-@media (min-width: 40rem) {
-  .shell {
-    padding-top: var(--space-6);
+/* Mobile (<688px): no inline composer — composing is the ComposeFab (doc 06 §2.3 / §10). */
+@media (max-width: 687px) {
+  .composerSlot {
+    display: none;
   }
 }

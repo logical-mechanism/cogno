@@ -1,0 +1,127 @@
+/* ConnectWalletButton — accent pill + a small wallet picker popover. */
+
+.root {
+  position: relative;
+  display: inline-block;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cg-space-2);
+  border: 0;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  font-weight: var(--cg-fw-bold);
+  font-size: var(--cg-fs-sm);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--cg-accent-hover);
+}
+
+.btn:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.btn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.md {
+  padding: var(--cg-space-3) var(--cg-space-6);
+}
+
+.sm {
+  padding: var(--cg-space-2) var(--cg-space-4);
+}
+
+/* ── picker popover ── */
+.picker {
+  position: absolute;
+  bottom: calc(100% + var(--cg-space-2));
+  left: 0;
+  z-index: var(--cg-z-dropdown);
+  min-width: 220px;
+  padding: var(--cg-space-2);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-elevated);
+  border: 1px solid var(--cg-border);
+  box-shadow: var(--cg-shadow-menu);
+}
+
+.pickerTitle {
+  padding: var(--cg-space-2) var(--cg-space-3);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text-secondary);
+}
+
+.pickerEmpty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-3);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+  text-align: center;
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.walletRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  width: 100%;
+  padding: var(--cg-space-3);
+  background: none;
+  border: 0;
+  border-radius: var(--cg-radius-sm);
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.walletRow:hover {
+  background: var(--cg-bg-hover);
+}
+
+.walletRow:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: calc(-1 * var(--cg-focus-ring-width));
+}
+
+.walletIcon {
+  width: var(--cg-icon-lg);
+  height: var(--cg-icon-lg);
+  border-radius: var(--cg-radius-input);
+}
+
+.error {
+  margin-top: var(--cg-space-2);
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-danger);
+}
+
+.retry {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--cg-accent);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+  text-decoration: underline;
+}

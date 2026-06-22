@@ -1,0 +1,130 @@
+/* PollCard — weighted % bars, viewer choice marked, static Open/Live-results chip (no countdown). */
+
+.poll {
+  margin-top: var(--cg-space-3);
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+}
+
+.compact .options {
+  gap: var(--cg-space-1);
+}
+
+.option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  width: 100%;
+  text-align: left;
+  padding: var(--cg-space-2) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-input);
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  cursor: pointer;
+  overflow: hidden;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
+    border-color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.compact .option {
+  padding: var(--cg-space-1) var(--cg-space-3);
+}
+
+/* pre-vote rows behave like radios; hover tints */
+.voteRow:hover:not(:disabled) {
+  background: var(--cg-accent-wash);
+  border-color: var(--cg-accent);
+}
+
+.option:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.option:disabled {
+  cursor: default;
+}
+
+/* result rows: the bar is the track fill behind the label */
+.resultRow {
+  background: var(--cg-bg-elevated);
+}
+
+.mine {
+  border-color: var(--cg-accent);
+}
+
+/* the weighted % fill */
+.bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--cg-accent-wash);
+  border-radius: var(--cg-radius-input);
+  transition: width var(--cg-motion-base) var(--cg-ease-out);
+  z-index: var(--cg-z-base);
+}
+
+/* the viewer's chosen option gets the full accent fill */
+.barMine {
+  background: var(--cg-accent);
+  opacity: 0.28;
+}
+
+.optLabel {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.optMeta {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.check {
+  color: var(--cg-accent);
+}
+
+.pct {
+  min-width: 2.5em;
+  text-align: right;
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+}
+
+.totals {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+  margin-top: var(--cg-space-2);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+}
+
+.dot {
+  color: var(--cg-text-muted);
+}
+
+.open {
+  color: var(--cg-text-secondary);
+}

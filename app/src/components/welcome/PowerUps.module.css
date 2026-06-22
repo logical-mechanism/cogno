@@ -1,0 +1,207 @@
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-6);
+}
+
+.banner {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--cg-space-4);
+  text-align: center;
+}
+
+.heading {
+  margin: 0;
+  font-size: var(--cg-fs-2xl);
+  line-height: var(--cg-lh-2xl);
+  font-weight: var(--cg-fw-extrabold);
+  letter-spacing: var(--cg-tracking-tight);
+  color: var(--cg-text);
+}
+
+.heading:focus {
+  outline: none;
+}
+
+.heading:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}
+
+.bannerLede {
+  margin: 0;
+  font-size: var(--cg-fs-md);
+  color: var(--cg-text-secondary);
+}
+
+.primary {
+  width: 100%;
+  min-height: 48px;
+  padding: var(--cg-space-3) var(--cg-space-5);
+  background: var(--cg-accent);
+  border: none;
+  border-radius: var(--cg-radius-pill);
+  color: var(--cg-accent-contrast);
+  font-size: var(--cg-fs-md);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.primary:hover {
+  background: var(--cg-accent-hover);
+}
+
+.primary:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-4);
+  background: var(--cg-bg-elevated);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  text-align: left;
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: var(--cg-fs-md);
+  font-weight: var(--cg-fw-bold);
+  color: var(--cg-text);
+}
+
+.cardBody {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-text-secondary);
+}
+
+.cardActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+}
+
+.cardRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  margin-top: var(--cg-space-1);
+}
+
+.cardCta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cg-space-2);
+  min-height: 38px;
+  padding: var(--cg-space-2) var(--cg-space-4);
+  background: var(--cg-bg-subtle);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.cardCta:hover:not(:disabled) {
+  background: var(--cg-bg-hover);
+}
+
+.cardCta:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cardCta:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.skip {
+  padding: var(--cg-space-1) var(--cg-space-2);
+  background: none;
+  border: none;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-medium);
+  cursor: pointer;
+  border-radius: var(--cg-radius-sm);
+}
+
+.skip:hover {
+  color: var(--cg-text);
+  text-decoration: underline;
+}
+
+.skip:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.cardOk {
+  margin: var(--cg-space-1) 0 0;
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+}
+
+.cardNote {
+  margin: 0;
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-secondary);
+}
+
+.cardError {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-danger);
+}
+
+.narration {
+  margin: var(--cg-space-1) 0 0;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
+.inlineLink {
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--cg-text);
+  font-size: inherit;
+  font-weight: var(--cg-fw-semibold);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.inlineLink:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.later {
+  margin: 0;
+  text-align: center;
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}

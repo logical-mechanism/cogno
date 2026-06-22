@@ -1,0 +1,94 @@
+"use client";
+
+// useFollow — the follow graph + optimistic toggle. The READ (edges + counts) is gated on
+// caps.follows (indexer-only; PAPI-direct returns empties). The WRITE (follow/unfollow) is NEVER
+// reader-gated — it is a chain extrinsic available to any bound account — so the toggle works even
+// on PAPI-direct; only the displayed counts are hidden there.
+
+import { useCallback, useEffect, useState } from "react";
+import { useMutation } from "./useMutation";
+import { submitFollow, submitUnfollow } from "@/lib/chain/mutations";
+import type { FeedSource } from "@/lib/feed/source";
+import type { CognoApi, PostingSigner, Ss58, FollowEdges } from "@/lib/types";
+
+export interface UseFollow {
+  isFollowing: (target: Ss58) => boolean;
+  follow: (target: Ss58) => void;
+  unfollow: (target: Ss58) => void;
+  followers: Ss58[];
+  following: Ss58[];
+  followerCount: number;
+  followingCount: number;
+  pending: boolean;
+}
+
+export function useFollow(
+  api: CognoApi | null,
+  signer: PostingSigner | null,
+  source: FeedSource | null,
+  who: Ss58 | null,
+): UseFollow {
+  const { run, pending } = useMutation();
+  const [edges, setEdges] = useState<FollowEdges | null>(null);
+  const [optimistic, setOptimistic] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!source || !who || !source.caps.follows) {
+      setEdges(null);
+      return;
+    }
+    let cancelled = false;
+    source
+      .followEdges(who)
+      .then((e) => {
+        if (!cancelled) setEdges(e);
+      })
+      .catch(() => {
+        if (!cancelled) setEdges(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [source, who]);
+
+  const isFollowing = useCallback(
+    (target: Ss58) => {
+      if (target in optimistic) return optimistic[target];
+      return edges?.following.includes(target) ?? false;
+    },
+    [optimistic, edges],
+  );
+
+  const follow = useCallback(
+    (target: Ss58) => {
+      if (!api || !signer) return;
+      setOptimistic((p) => ({ ...p, [target]: true }));
+      void run(submitFollow(api, signer, target), {
+        onError: () => setOptimistic((p) => ({ ...p, [target]: false })),
+      }).catch(() => {});
+    },
+    [api, signer, run],
+  );
+
+  const unfollow = useCallback(
+    (target: Ss58) => {
+      if (!api || !signer) return;
+      setOptimistic((p) => ({ ...p, [target]: false }));
+      void run(submitUnfollow(api, signer, target), {
+        onError: () => setOptimistic((p) => ({ ...p, [target]: true })),
+      }).catch(() => {});
+    },
+    [api, signer, run],
+  );
+
+  return {
+    isFollowing,
+    follow,
+    unfollow,
+    followers: edges?.followers ?? [],
+    following: edges?.following ?? [],
+    followerCount: edges?.followerCount ?? 0,
+    followingCount: edges?.followingCount ?? 0,
+    pending,
+  };
+}

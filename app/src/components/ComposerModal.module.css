@@ -1,0 +1,74 @@
+/* ComposerModal — scrim + centered dialog card (full-screen sheet on mobile). All var(--cg-*). */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--cg-z-overlay);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--cg-space-8) var(--cg-space-4);
+  background: var(--cg-overlay);
+  overflow-y: auto;
+}
+
+.card {
+  position: relative;
+  z-index: var(--cg-z-modal);
+  width: 100%;
+  max-width: var(--cg-col-feed);
+  background: var(--cg-bg-elevated);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  box-shadow: var(--cg-shadow-modal);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  min-height: var(--cg-header-h);
+  padding: var(--cg-space-2) var(--cg-space-3);
+}
+
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.close:hover {
+  background: var(--cg-bg-hover);
+}
+
+.close:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.content {
+  /* the hosted Composer carries its own padding */
+}
+
+/* Mobile: full-screen sheet (no centered card) */
+@media (max-width: 688px) {
+  .scrim {
+    padding: 0;
+    align-items: stretch;
+  }
+
+  .card {
+    max-width: none;
+    min-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}

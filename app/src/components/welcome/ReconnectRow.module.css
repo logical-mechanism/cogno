@@ -1,0 +1,35 @@
+.row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+  align-self: center;
+  padding: var(--cg-space-2) var(--cg-space-3);
+  background: none;
+  border: none;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-medium);
+  cursor: pointer;
+  border-radius: var(--cg-radius-sm);
+}
+
+.row:hover:not(:disabled) {
+  color: var(--cg-text);
+  text-decoration: underline;
+}
+
+.row:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.row:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.wallet {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-semibold);
+  text-transform: capitalize;
+}
