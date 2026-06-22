@@ -7,7 +7,8 @@
 //   not-identity-bound → "Finish setup" → onContinueSetup() (routes to /welcome's bind step).
 //   ready              → renders NOTHING (the LeftNav shows the account chip instead).
 // The actual bind extrinsic lives in /welcome; this button only initiates/continues. Reading always
-// works unauthenticated, so an error never blocks the app — it shows inline + a Retry.
+// works unauthenticated, so a decline never blocks the app — it surfaces as a toast and the user
+// can just tap Connect again (no inline Retry).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./ConnectWalletButton.module.css";
@@ -29,7 +30,7 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
   // Use the SHARED session signer (Providers), NOT a fresh useSigner() — a second instance would
   // derive into isolated state the rest of the app never sees ("connect does nothing").
   const { signerCtl } = useSession();
-  const { connectWallet, deriving, error } = signerCtl;
+  const { connectWallet, deriving } = signerCtl;
   const { toast } = useToaster();
   const [open, setOpen] = useState(false);
   const [wallets, setWallets] = useState<CardanoWalletInfo[]>([]);
@@ -66,11 +67,14 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
   const pick = useCallback(
     async (id: string) => {
       const ok = await connectWallet(id);
-      if (ok) {
-        setOpen(false);
-        toast({ kind: "success", message: "Wallet connected" });
-      }
-      // failure surfaces inline via `error` and keeps the picker open for a retry.
+      // Close the picker either way — a decline isn't an error wall; the toast tells the user they
+      // can just tap Connect again (no inline Retry).
+      setOpen(false);
+      toast(
+        ok
+          ? { kind: "success", message: "Wallet connected" }
+          : { kind: "info", message: "Connection cancelled — tap Connect to try again." },
+      );
     },
     [connectWallet, toast],
   );
@@ -132,14 +136,6 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
         </div>
       )}
 
-      {error && (
-        <p className={styles.error} role="alert">
-          {error}{" "}
-          <button type="button" className={styles.retry} onClick={openPicker}>
-            Retry
-          </button>
-        </p>
-      )}
     </div>
   );
 }
