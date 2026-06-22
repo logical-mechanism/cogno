@@ -35,6 +35,7 @@ import { ProfileHeader } from "@/components/profile/ProfileHeader";
 import { ProfileTabs, type ProfileTab } from "@/components/profile/ProfileTabs";
 import { PinnedPostBlock } from "@/components/profile/PinnedPostBlock";
 import { useSession } from "@/components/Providers";
+import { useHeads } from "@/hooks/useHeads";
 import { useProfile } from "@/hooks/useProfile";
 import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -71,7 +72,8 @@ export function ProfileView() {
 function ProfileBody({ address }: { address: Ss58 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { api, signer, source, viewer, votingPower } = useSession();
+  const { api, client, signer, source, viewer, votingPower } = useSession();
+  const bestBlock = useHeads(client).best?.number ?? null;
 
   const me = viewer.address ?? null;
   const isSelf = me != null && me === address;
@@ -104,7 +106,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
     () => ({ author: address, tab: tabArg(activeTab) }),
     [address, activeTab],
   );
-  const { profile, posts, loading, error } = useProfile(source, profileArgs);
+  const { profile, posts, loading, error } = useProfile(source, profileArgs, bestBlock);
 
   // ── follow graph + optimistic toggle (header). READ gated on caps.follows; WRITE always allowed. ──
   const follow = useFollow(api, signer, source, me);
