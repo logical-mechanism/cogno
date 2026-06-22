@@ -1,0 +1,48 @@
+/* icons — Spinner styles (the inline SVG icons are colour-inherited + need no CSS). */
+
+.spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cg-accent);
+  line-height: 0;
+}
+
+.spinnerSm {
+  width: var(--cg-icon-sm);
+  height: var(--cg-icon-sm);
+}
+
+.spinnerMd {
+  width: var(--cg-icon-lg);
+  height: var(--cg-icon-lg);
+}
+
+.spinnerSvg {
+  width: 100%;
+  height: 100%;
+  animation: cg-spin 0.7s linear infinite;
+}
+
+.spinnerTrack {
+  stroke: currentColor;
+  opacity: 0.2;
+  fill: none;
+}
+
+.spinnerHead {
+  stroke: currentColor;
+  fill: none;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

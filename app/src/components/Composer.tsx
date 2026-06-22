@@ -1,123 +1,243 @@
 "use client";
 
-// Composer — write a post (or a reply). Chrome, not page-body: the textarea is in
-// the UI font, not the reading serif. It is relentlessly honest about the tx
-// lifecycle: signing → in best block #N → finalized #N, with "signed ≠ included"
-// stated next to the button. The byte counter enforces the runtime MaxLength
-// (512 bytes, measured as UTF-8, NOT characters) and disables submit past it.
+// Composer (base) — the text-entry engine for every authoring flow (doc 03 §7, doc 09 §4).
+//
+// PRESENTATIONAL. It owns ONLY the draft text + the live byte measurement. It NEVER builds an
+// extrinsic and NEVER subscribes to a read/capacity hook: the surface owns `useCapacity` +
+// `useMutation` and hands the composer the *derived* gate state — `submitState` (the optimistic
+// ActionState), `viewer.status` (the session gate), and `rateLimited` (draftStatus !== 'ok', already
+// classified by the surface via @/lib/chain/capacity.draftStatus). On submit the composer hands back
+// a `ComposerDraft` via `onSubmit(draft)` and OPTIMISTICALLY clears its textarea instantly (doc 09
+// §6.1 — the surface closes the modal + inserts the pending card).
+//
+// Toolbar is stripped to chain-backed affordances (doc 09 §12): exactly the Poll toggle (top-level
+// post only) + an OPTIONAL text-only emoji insert helper. NO media / GIF / location / audience /
+// schedule / poll-duration. The ByteCounter ring (UTF-8 BYTES, D1) is the single source of truth the
+// CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
 
-import { useEffect, useMemo, useState } from "react";
-import type { PostingSigner, TxUpdate, BootGuard } from "@/lib/types";
-import { draftStatus, type CapacityConsts, type CapacityView } from "@/lib/chain/capacity";
-import { CapacityBattery } from "./CapacityBattery";
+import { useCallback, useRef, useState } from "react";
+import { ByteCounter, utf8Bytes } from "./ByteCounter";
+import { RateLimitNotice } from "./RateLimitNotice";
+import { Avatar } from "./Avatar";
+import { Spinner, IconPoll } from "./icons";
 import styles from "./Composer.module.css";
+import type {
+  Viewer,
+  ComposerMode,
+  ComposerDraft,
+  ActionState,
+  ByteMeasure,
+} from "./kit";
+import type { ReactNode } from "react";
 
-// Runtime Microblog::MaxLength (Vec<u8>, bytes). Counted as UTF-8 bytes.
-const MAX_BYTES = 512;
+/** Runtime Microblog::MaxLength (Vec<u8>), measured as UTF-8 BYTES (D1). */
+export const MAX_POST_BYTES = 512;
 
-function shortSs58(addr: string): string {
-  if (addr.length <= 12) return addr;
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
+const PLACEHOLDER: Record<ComposerMode, string> = {
+  post: "What's happening?",
+  reply: "Post your reply",
+  quote: "Add a comment",
+  poll: "Ask a question…",
+};
 
-function byteLen(s: string): number {
-  if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(s).length;
-  return unescape(encodeURIComponent(s)).length;
-}
-
-function statusView(state: TxUpdate | null): { text: string; tone: string } | null {
-  if (!state) return null;
-  switch (state.phase) {
-    case "signing":
-      return { text: "signing…", tone: styles.toneWork };
-    case "broadcast":
-      return { text: "broadcasting…", tone: styles.toneWork };
-    case "inBestBlock":
-      return {
-        text:
-          state.blockNumber != null
-            ? `in block #${state.blockNumber} (best — not yet final)`
-            : "in a best block (not yet final)",
-        tone: styles.toneWork,
-      };
-    case "finalized":
-      return {
-        text:
-          state.blockNumber != null
-            ? `finalized #${state.blockNumber}`
-            : "finalized",
-        tone: styles.toneOk,
-      };
-    case "invalid":
-      return { text: state.error ?? "rejected (invalid)", tone: styles.toneBad };
-    case "error":
-      return { text: state.error ?? "submission error", tone: styles.toneBad };
-    default:
-      return null;
-  }
-}
+const TEXTAREA_LABEL: Record<ComposerMode, string> = {
+  post: "Post text",
+  reply: "Your reply",
+  quote: "Add a comment",
+  poll: "Poll question",
+};
 
 export interface ComposerProps {
-  signer: PostingSigner;
-  boot: BootGuard | null;
-  /** in-flight tx state (from useSubmit). */
-  txState: TxUpdate | null;
-  busy: boolean;
-  /** the post id being replied to, if any. */
-  replyTo: bigint | null;
-  onClearReply: () => void;
-  onSubmit: (text: string) => void;
-  /** live talk-capacity view + constants for the active signer (advisory). */
-  capView: CapacityView | null;
-  capConsts: CapacityConsts | null;
-  /** whether the active posting key has a Cardano identity bound (M2). null = unknown. */
-  bound: boolean | null;
+  /** Avatar/name + the coarse write gate (`viewer.status`). */
+  viewer: Viewer;
+  /** Drives the CTA label + which extrinsic the surface wires. */
+  mode: ComposerMode;
+  /** Override the per-mode placeholder. */
+  placeholder?: string;
+  /** Byte cap for the textarea (default 512). PollComposer passes 512 for the question. */
+  maxBytes?: number;
+  /** Optimistic submit state (idle → pending → ok/error/rate-limited). */
+  submitState: ActionState;
+  /** Pre-flight capacity gate: true → CTA disabled + inline RateLimitNotice (D5). Surface-classified. */
+  rateLimited?: boolean;
+  /** Soft "try again in ~Ns" for the RateLimitNotice (never a meter/percent — D5). */
+  retryInSeconds?: number | null;
+  /** Context block above/below the textarea (reply preview / QuotedPostEmbed / poll options). */
+  contextAbove?: ReactNode;
+  contextBelow?: ReactNode;
+  /** Extra toolbar controls injected by the surface (rendered after the built-in Poll/emoji buttons). */
+  toolbarExtras?: ReactNode;
+  /**
+   * Toggle this composer into poll mode (top-level posts only — doc 09 §4.4). When provided AND
+   * mode='post', the toolbar shows the built-in IconPoll toggle; the surface owns the actual
+   * mode swap (post ↔ poll). `pollActive` highlights it when poll mode is on.
+   */
+  onTogglePoll?: () => void;
+  pollActive?: boolean;
+  /**
+   * Optional text-only emoji insert (doc 09 §4.1) — a plain UTF-8 insert into the textarea that
+   * still counts toward the byte budget; NOT a media affordance. Omit to hide the affordance.
+   */
+  emojiChoices?: string[];
+  /**
+   * Whether the CTA is enabled BEYOND this composer's own text validity. The surface ANDs in the
+   * poll-options validity (PollComposer) or a quote's non-empty rule. Default true.
+   */
+  extraValid?: boolean;
+  /** Controlled text (PollComposer drives the question through here); uncontrolled when omitted. */
+  text?: string;
+  onTextChange?: (text: string) => void;
+  /** Focus the textarea on mount (modal/sheet = true). */
+  autoFocus?: boolean;
+  /** Build a ComposerDraft and submit. The surface maps it to the right mutation. */
+  onSubmit: (draft: ComposerDraft) => void;
+  /** Modal/page close. */
+  onCancel?: () => void;
+  /** Surface-supplied extras the surface needs to assemble the ComposerDraft (parentId/quotedId/options). */
+  draftExtras?: Pick<ComposerDraft, "parentId" | "quotedId" | "pollOptions">;
+}
+
+/** CTA label per mode + session gate (doc 09 §4.3 / §5.3). */
+function ctaLabel(mode: ComposerMode, status: Viewer["status"]): string {
+  if (status === "not-connected") return "Connect wallet";
+  if (status === "not-identity-bound") return "Finish setup";
+  return mode === "reply" ? "Reply" : "Post";
 }
 
 export function Composer({
-  signer,
-  boot,
-  txState,
-  busy,
-  replyTo,
-  onClearReply,
+  viewer,
+  mode,
+  placeholder,
+  maxBytes = MAX_POST_BYTES,
+  submitState,
+  rateLimited,
+  retryInSeconds,
+  contextAbove,
+  contextBelow,
+  toolbarExtras,
+  onTogglePoll,
+  pollActive,
+  emojiChoices,
+  extraValid = true,
+  text: controlledText,
+  onTextChange,
+  autoFocus,
   onSubmit,
-  capView,
-  capConsts,
-  bound,
+  onCancel,
+  draftExtras,
 }: ComposerProps) {
-  const [text, setText] = useState("");
+  const [innerText, setInnerText] = useState("");
+  const isControlled = controlledText !== undefined;
+  const text = isControlled ? controlledText : innerText;
 
-  const bytes = useMemo(() => byteLen(text), [text]);
-  const overLimit = bytes > MAX_BYTES;
-  const empty = text.trim().length === 0;
-  const bootBlocked = boot != null && boot.ok === false;
-  // M2 identity gate: the chain rejects an unbound account (NotAllowed). Block only when we KNOW
-  // the account is unbound (false); when unknown (null) never block — the runtime is the authority.
-  const bindBlocked = bound === false;
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Advisory capacity gate: when the replay says this draft can't post yet, disable the
-  // button (the battery shows the reason). When capacity is unknown, never block — the
-  // runtime's CheckCapacity is the authority.
-  const cap = capView && capConsts ? draftStatus(capView, bytes, capConsts) : null;
-  const capacityBlocked = cap != null && cap.kind !== "ok" && !empty && !overLimit;
+  const setText = useCallback(
+    (next: string) => {
+      if (!isControlled) setInnerText(next);
+      onTextChange?.(next);
+    },
+    [isControlled, onTextChange],
+  );
 
-  // Clear the textarea as soon as the post lands in a best block (success), and
-  // drop the reply context too.
-  useEffect(() => {
-    if (txState?.phase === "inBestBlock") {
-      setText("");
-      onClearReply();
+  // Single source of truth for the byte measurement; the CTA gates off the SAME measure the ring shows.
+  const [measure, setMeasure] = useState<ByteMeasure>({ bytes: 0, remaining: maxBytes, over: false });
+
+  const pending = submitState === "pending";
+  const sessionGated = viewer.status !== "ready"; // relabel + reroute, not silently dead (doc 09 §5.3)
+
+  // Insert a plain UTF-8 emoji at the caret — counts toward the byte budget, clamped to maxBytes (D1).
+  const insertEmoji = useCallback(
+    (emoji: string) => {
+      const el = taRef.current;
+      const start = el?.selectionStart ?? text.length;
+      const end = el?.selectionEnd ?? text.length;
+      const candidate = text.slice(0, start) + emoji + text.slice(end);
+      const next = utf8Bytes(candidate) > maxBytes ? clampToBytes(candidate, maxBytes) : candidate;
+      setText(next);
+      // restore the caret after the inserted emoji on the next frame
+      requestAnimationFrame(() => {
+        if (!el) return;
+        const pos = start + emoji.length;
+        el.focus();
+        try {
+          el.setSelectionRange(pos, pos);
+        } catch {
+          /* selection may be unsupported in some envs */
+        }
+      });
+    },
+    [text, maxBytes, setText],
+  );
+
+  // Validity (doc 09 §5.4 precedence): for a quote the chain allows empty text but the UI requires a
+  // non-whitespace byte; reply/post require non-empty too; poll requires a non-empty question.
+  const nonEmpty = text.trim().length > 0;
+  const overLimit = measure.over;
+  const textValid = nonEmpty && !overLimit && extraValid;
+
+  // CTA disabled rules — §5.4 order: session(reroute) > validity > capacity > pending.
+  const disabled = sessionGated
+    ? false // session-gated CTA is ACTIVE (it reroutes), never greyed
+    : !textValid || rateLimited === true || pending;
+
+  // Auto-grow: let the textarea size to content (capped by CSS max-height → scroll).
+  const onTextareaInput = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const el = e.currentTarget;
+      // Hard-block past the byte boundary: clamp a paste to the last whole code point that fits (D1).
+      let next = el.value;
+      if (utf8Bytes(next) > maxBytes) {
+        next = clampToBytes(next, maxBytes);
+      }
+      setText(next);
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
+    },
+    [maxBytes, setText],
+  );
+
+  const buildDraft = useCallback(
+    (): ComposerDraft => ({
+      mode,
+      text,
+      parentId: draftExtras?.parentId,
+      quotedId: draftExtras?.quotedId,
+      pollOptions: draftExtras?.pollOptions,
+    }),
+    [mode, text, draftExtras],
+  );
+
+  const submit = useCallback(() => {
+    if (sessionGated) {
+      // Reroute is owned by onCancel/onSubmit at the surface; here we just hand back the draft so the
+      // surface can decide (it inspects viewer.status). For the gated case the surface routes /welcome.
+      onSubmit(buildDraft());
+      return;
     }
-  }, [txState?.phase, onClearReply]);
-
-  const disabled = busy || overLimit || empty || bootBlocked || capacityBlocked || bindBlocked;
-  const status = statusView(txState);
-
-  const submit = () => {
     if (disabled) return;
-    onSubmit(text);
-  };
+    onSubmit(buildDraft());
+    // OPTIMISTIC: clear the textarea instantly (doc 09 §6.1). Controlled drafts are cleared by the surface.
+    if (!isControlled) {
+      setInnerText("");
+      if (taRef.current) taRef.current.style.height = "auto";
+    }
+  }, [sessionGated, disabled, onSubmit, buildDraft, isControlled]);
+
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // ⌘/Ctrl+Enter submits; Enter is a newline (X parity, doc 09 §7.1).
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        submit();
+      }
+    },
+    [submit],
+  );
+
+  const label = ctaLabel(mode, viewer.status);
+  // Live-announce remaining only when ≤ 20 bytes left (avoid spam — doc 09 §11).
+  const announce = measure.remaining <= 20;
 
   return (
     <form
@@ -127,98 +247,151 @@ export function Composer({
         submit();
       }}
     >
-      <CapacityBattery view={capView} consts={capConsts} draftLen={bytes} />
+      {contextAbove}
 
-      {replyTo != null && (
-        <div className={styles.replyBar}>
-          <span className={styles.replyText}>
-            ↳ replying to <span className={styles.replyId}>#{String(replyTo)}</span>
-          </span>
-          <button
-            type="button"
-            className={styles.clearReply}
-            onClick={onClearReply}
-          >
-            clear reply
-          </button>
+      <div className={styles.body}>
+        <Avatar address={viewer.address ?? ""} src={viewer.avatar} size="md" name={viewer.displayName} />
+
+        <div className={styles.field}>
+          <label className={styles.srOnly} htmlFor={`cg-composer-${mode}`}>
+            {TEXTAREA_LABEL[mode]} — press Command or Control plus Enter to post
+          </label>
+          <textarea
+            id={`cg-composer-${mode}`}
+            ref={taRef}
+            className={styles.textarea}
+            placeholder={placeholder ?? PLACEHOLDER[mode]}
+            value={text}
+            rows={1}
+            readOnly={sessionGated}
+            autoFocus={autoFocus}
+            onChange={onTextareaInput}
+            onKeyDown={onKeyDown}
+            aria-describedby={`cg-composer-${mode}-meta`}
+          />
+          {contextBelow}
+        </div>
+      </div>
+
+      {sessionGated && (
+        <p className={styles.sessionPrompt} role="status">
+          {viewer.status === "not-connected"
+            ? "Connect a wallet to post."
+            : "Finish setting up your account to post."}
+        </p>
+      )}
+
+      {!sessionGated && rateLimited && (
+        <div className={styles.notice}>
+          <RateLimitNotice variant="inline" retryInSeconds={retryInSeconds} />
         </div>
       )}
 
-      <label className={styles.srOnly} htmlFor="cogno-composer">
-        Write a post
-      </label>
-      <textarea
-        id="cogno-composer"
-        className={styles.textarea}
-        placeholder={replyTo != null ? "Write a reply…" : "Write something. It lands in a block."}
-        value={text}
-        rows={3}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          // Cmd/Ctrl+Enter submits.
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault();
-            submit();
-          }
-        }}
-        aria-describedby="cogno-composer-meta"
-      />
-
-      <div className={styles.row} id="cogno-composer-meta">
-        <span className={styles.signingAs}>
-          signing as{" "}
-          <span className={styles.signId} title={signer.ss58}>
-            {shortSs58(signer.ss58)}
-          </span>{" "}
-          <span className={styles.signLabel}>· {signer.label}</span>
-        </span>
-
-        <span
-          className={`${styles.counter} ${overLimit ? styles.counterOver : ""}`}
-          aria-live="polite"
-        >
-          {bytes}/{MAX_BYTES} bytes
-        </span>
-      </div>
-
-      <div className={styles.actions}>
-        <div className={styles.statusArea} aria-live="polite">
-          {bootBlocked ? (
-            <span className={styles.toneBad}>
-              update required to post — node spec {boot?.nodeSpecVersion} differs from
-              this build
-              {boot?.reason ? ` (${boot.reason})` : ""}
-            </span>
-          ) : bindBlocked ? (
-            <span className={styles.toneBad}>
-              bind a Cardano identity to post — use the seal above (signs CIP-8 once)
-            </span>
-          ) : status ? (
-            <span className={status.tone}>{status.text}</span>
-          ) : (
-            <span className={styles.signedNote}>
-              signed ≠ included — a post is real only once it is in a block
-            </span>
+      <div className={styles.toolbar} id={`cg-composer-${mode}-meta`}>
+        <div className={styles.toolbarLeft}>
+          {onTogglePoll && (mode === "post" || mode === "poll") && (
+            <button
+              type="button"
+              className={`${styles.toolBtn} ${pollActive ? styles.toolBtnActive : ""}`}
+              onClick={onTogglePoll}
+              aria-pressed={pollActive || undefined}
+              aria-label={pollActive ? "Remove poll" : "Add poll"}
+              title={pollActive ? "Remove poll" : "Add poll"}
+              disabled={sessionGated}
+            >
+              <IconPoll size="var(--cg-icon-md)" />
+            </button>
           )}
+          {emojiChoices && emojiChoices.length > 0 && !sessionGated && (
+            <EmojiPicker choices={emojiChoices} onPick={insertEmoji} />
+          )}
+          {toolbarExtras}
         </div>
 
-        <button
-          type="submit"
-          className={styles.postBtn}
-          disabled={disabled}
-          title={
-            bootBlocked
-              ? "Update required to post"
-              : overLimit
-                ? "Too long — trim to 512 bytes"
-                : undefined
-          }
-        >
-          {busy ? "posting…" : replyTo != null ? "Reply" : "Post"}
-        </button>
+        <div className={styles.toolbarRight}>
+          {!sessionGated && (
+            <span aria-live={announce ? "polite" : "off"}>
+              <ByteCounter value={text} maxBytes={maxBytes} onMeasure={setMeasure} />
+            </span>
+          )}
+          <button
+            type="submit"
+            className={styles.cta}
+            aria-disabled={disabled || undefined}
+            disabled={disabled}
+            title={
+              sessionGated
+                ? undefined
+                : overLimit
+                  ? `Too long — trim to ${maxBytes} bytes`
+                  : !nonEmpty
+                    ? "Write something first"
+                    : rateLimited
+                      ? "You're over the rate limit"
+                      : undefined
+            }
+          >
+            {pending ? <Spinner size="sm" label="Posting" /> : label}
+          </button>
+        </div>
       </div>
     </form>
   );
+}
+
+/**
+ * A text-only emoji insert helper (doc 09 §4.1) — NOT a media affordance. A tiny popover of plain
+ * UTF-8 emoji; picking one inserts it at the caret (counted by the ByteCounter). No image/sticker.
+ */
+function EmojiPicker({ choices, onPick }: { choices: string[]; onPick: (e: string) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className={styles.emojiWrap}>
+      <button
+        type="button"
+        className={styles.toolBtn}
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-label="Insert emoji"
+        title="Insert emoji"
+      >
+        <span aria-hidden>☺</span>
+      </button>
+      {open && (
+        <div className={styles.emojiPopover} role="menu">
+          {choices.map((e) => (
+            <button
+              key={e}
+              type="button"
+              className={styles.emojiBtn}
+              role="menuitem"
+              onClick={() => {
+                onPick(e);
+                setOpen(false);
+              }}
+              aria-label={`Insert ${e}`}
+            >
+              {e}
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
+
+/** Clamp a string to at most `maxBytes` UTF-8 bytes WITHOUT splitting a multibyte code point (D1). */
+function clampToBytes(s: string, maxBytes: number): string {
+  // Walk code points (Array spread iterates by code point, not UTF-16 unit) and accumulate bytes.
+  let total = 0;
+  let out = "";
+  for (const ch of s) {
+    const b = utf8Bytes(ch);
+    if (total + b > maxBytes) break;
+    total += b;
+    out += ch;
+  }
+  return out;
 }
 
 export default Composer;

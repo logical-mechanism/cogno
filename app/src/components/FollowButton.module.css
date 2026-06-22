@@ -1,0 +1,62 @@
+/* FollowButton — accent-fill "Follow" / outline "Following" → red "Unfollow" on hover. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--cg-radius-pill);
+  font-weight: var(--cg-fw-bold);
+  font-size: var(--cg-fs-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
+    color var(--cg-motion-fast) var(--cg-ease-standard),
+    border-color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.md {
+  min-width: 100px;
+  padding: var(--cg-space-2) var(--cg-space-5);
+}
+
+.sm {
+  min-width: 84px;
+  padding: var(--cg-space-1) var(--cg-space-4);
+  font-size: var(--cg-fs-xs);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+/* not following — filled accent */
+.follow {
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  border: 1px solid var(--cg-accent);
+}
+
+.follow:hover:not(:disabled) {
+  background: var(--cg-accent-hover);
+  border-color: var(--cg-accent-hover);
+}
+
+/* following — outline */
+.following {
+  background: transparent;
+  color: var(--cg-text);
+  border: 1px solid var(--cg-border);
+}
+
+/* following + hover — red unfollow */
+.unfollow {
+  color: var(--cg-danger);
+  border-color: var(--cg-danger);
+  background: var(--cg-danger-wash);
+}

@@ -1,0 +1,42 @@
+/* PostBody — text-only post body. Auto-linked http(s) URLs in --cg-accent; no media/markdown.
+ * Inherits the global .post-body typographic surface (sans, 15px, pre-wrap, break-word) but as a
+ * CSS-Module-local class so the component is self-contained. */
+
+.body {
+  font-family: var(--cg-font-ui);
+  color: var(--cg-text);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.base {
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+}
+
+/* detail-variant body — larger reading size */
+.lg {
+  font-size: var(--cg-fs-md);
+  line-height: var(--cg-lh-md);
+}
+
+/* banned-author dimming (D10) */
+.dim {
+  color: var(--cg-text-muted);
+}
+
+.link {
+  color: var(--cg-accent);
+}
+
+.link:hover {
+  color: var(--cg-accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.link:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-input);
+}

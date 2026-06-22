@@ -1,191 +1,74 @@
-/* Account — the one wallet/identity/stake widget. Reading Room tokens only. */
-
-.card {
-  background: var(--surface-1);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-1);
-  padding: var(--space-4);
-  margin-block: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+.root {
+  position: relative;
+  width: 100%;
 }
 
-.lead {
-  margin: 0;
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui);
-  color: var(--ink-900);
-  line-height: 1.5;
-}
-
-.muted,
-.fine {
-  margin: 0;
-  font-family: var(--font-ui);
-  color: var(--ink-400);
-  line-height: 1.45;
-}
-.muted {
-  font-size: var(--fs-ui-sm);
-}
-.fine {
-  font-size: var(--fs-ui-sm);
-}
-
-.row {
+.trigger {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-
-.primary,
-.secondary {
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-4);
-  cursor: pointer;
-  transition: background var(--motion-fast), opacity var(--motion-fast);
-}
-.primary {
-  color: var(--surface-0);
-  background: var(--verdigris);
-  border: 1px solid var(--verdigris-ink);
-}
-.primary:hover:not(:disabled) {
-  background: var(--verdigris-ink);
-}
-.secondary {
-  color: var(--ink-900);
-  background: var(--surface-0);
-  border: 1px solid var(--hairline);
-}
-.secondary:hover:not(:disabled) {
-  border-color: var(--ink-400);
-}
-.primary:disabled,
-.secondary:disabled {
-  opacity: 0.55;
-  cursor: progress;
-}
-
-.link {
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui-sm);
-  color: var(--verdigris-ink);
-  background: none;
+  gap: var(--cg-space-3);
+  width: 100%;
+  padding: var(--cg-space-2);
   border: none;
-  padding: 0;
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
   cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.link:hover {
-  color: var(--verdigris);
+  text-align: left;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
 }
 
-.wallets {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-.walletBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui);
-  color: var(--ink-900);
-  background: var(--surface-0);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  cursor: pointer;
-  transition: border-color var(--motion-fast), background var(--motion-fast);
-}
-.walletBtn:hover {
-  border-color: var(--verdigris-soft);
-  background: var(--surface-1);
-}
-.icon {
-  border-radius: 3px;
+.trigger:hover {
+  background: var(--cg-bg-hover);
 }
 
-.identity {
-  display: flex;
-  align-items: center;
-  gap: var(--space-5);
-  flex-wrap: wrap;
-  padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--hairline);
+.compact {
+  width: auto;
+  justify-content: center;
+  padding: var(--cg-space-1);
 }
-.idCol {
+
+.who {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-.idLabel {
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui-sm);
-  color: var(--ink-400);
-}
-.mono {
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-900);
-  word-break: break-all;
-}
-.mono:is(a) {
-  color: var(--verdigris-ink);
-  text-decoration: none;
-  border-bottom: 1px solid var(--hairline-accent);
-}
-.mono:is(a):hover {
-  color: var(--verdigris);
+  min-width: 0;
+  line-height: var(--cg-lh-xs);
 }
 
-.stake {
+/* The menu floats above the trigger (the rail base is sticky to viewport bottom). */
+.menu {
+  position: absolute;
+  bottom: calc(100% + var(--cg-space-2));
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding-top: var(--space-1);
+  padding: var(--cg-space-2) 0;
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-elevated);
+  box-shadow: var(--cg-shadow-menu);
+  z-index: var(--cg-z-dropdown);
 }
 
-.ok {
-  margin: 0;
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui-sm);
-  color: var(--ink-600);
-  line-height: 1.5;
-}
-.err {
-  margin: 0;
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui-sm);
-  color: var(--cap-toolong);
-  line-height: 1.5;
-}
-
-.disconnect {
-  margin-left: auto;
+.menuItem {
+  display: block;
+  width: 100%;
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border: none;
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
 }
 
-@media (max-width: 40rem) {
-  .identity {
-    gap: var(--space-3);
-  }
-  .disconnect {
-    margin-left: 0;
-  }
-  .primary,
-  .secondary {
-    flex: 1 1 auto;
-  }
+.menuItem:hover {
+  background: var(--cg-bg-hover);
+}
+
+.danger {
+  color: var(--cg-danger);
 }

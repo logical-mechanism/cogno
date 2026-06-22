@@ -1,139 +1,158 @@
 "use client";
 
-// page.tsx — the reading room, product-shaped. One Cardano wallet runs everything: connecting
-// derives your posting key, registers it, and stakes ADA for talk-capacity (the Account widget).
-// The default view is just connect → stake → read/post; the trust posture, chain status, and
-// advanced config live behind the "about" link. There is ONE socket (useChain).
+// HomePage — the Home route '/' (doc 01 §1, doc 06). The FOUNDATION home stub: a sticky "Home" header,
+// an inline Composer, and a live feed of PostCards via useOptimisticFeed(source) + useViewerStates,
+// with Like/Repost wired through useVote/useRepost. The rich Timeline / TimelineTabs (For you /
+// Following) is surface 06 — this keeps it simple but REAL (snapshot → PostCards, optimistic, gated).
+// One socket: everything reads from useSession(); this page never instantiates a client.
 
-import { useMemo, useState } from "react";
-import { useChain } from "@/hooks/useChain";
-import { useFeed, useFeedPage } from "@/hooks/useFeed";
-import { useHeads } from "@/hooks/useHeads";
-import { useSigner } from "@/hooks/useSigner";
-import { useSubmit } from "@/hooks/useSubmit";
-import { useCapacity } from "@/hooks/useCapacity";
-import { useIdentity } from "@/hooks/useIdentity";
-import { useVault } from "@/hooks/useVault";
-import { useAnchor } from "@/hooks/useAnchor";
-import { makeFeedSource } from "@/lib/feed";
-import { getGraphqlUrl } from "@/lib/config/endpoints";
-import type { FeedSnapshot } from "@/lib/types";
-import { Masthead } from "@/components/Masthead";
-import { Account } from "@/components/Account";
-import { About } from "@/components/About";
-import { Composer } from "@/components/Composer";
-import { Feed } from "@/components/Feed";
-import { SearchBar } from "@/components/SearchBar";
+import { useCallback, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import styles from "./page.module.css";
+import { StickyHeader } from "@/components/AppShell";
+import { Composer } from "@/components/Composer";
+import { PostCard } from "@/components/PostCard";
+import { EmptyState } from "@/components/EmptyState";
+import { Spinner } from "@/components/icons";
+import { useSession } from "@/components/Providers";
+import { useOptimisticFeed } from "@/hooks/useOptimisticFeed";
+import { useViewerStates } from "@/hooks/useViewerStates";
+import { useVote } from "@/hooks/useVote";
+import { useRepost } from "@/hooks/useRepost";
+import { useOptimistic } from "@/hooks/useOptimistic";
+import { useMutation } from "@/hooks/useMutation";
+import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
+import { modalActions } from "@/lib/modalStore";
+import { submitPost } from "@/lib/chain/mutations";
+import type { CognoPost, ViewerPostState } from "@/lib/types";
+import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
 
-export default function Page() {
-  const { handle, api, status, boot, wsUrl, reconnect } = useChain();
+const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
 
-  // Bumped whenever the GraphQL endpoint changes in settings, so the source rebuilds.
-  const [gqlEpoch, setGqlEpoch] = useState(0);
-  const source = useMemo(
-    () => (api ? makeFeedSource(api, getGraphqlUrl() || null) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [api, gqlEpoch],
+function isRateLimit(message: string): boolean {
+  return /rate limit|ExhaustsResources/i.test(message);
+}
+
+export default function HomePage() {
+  const router = useRouter();
+  const { api, signer, source, viewer, votingPower } = useSession();
+
+  const { snapshot, ready } = useOptimisticFeed(source);
+  const posts = snapshot.posts;
+
+  const me = viewer.address ?? null;
+  const postIds = useMemo(() => posts.map((p) => p.id), [posts]);
+  const viewerStates = useViewerStates(source, postIds, me);
+
+  const vote = useVote(api, signer, votingPower ?? 0n);
+  const repost = useRepost(api, signer);
+  const { addPending, dropPending, failPending } = useOptimistic();
+  const { run } = useMutation();
+  const { toast } = useToaster();
+
+  // ── inline composer (top-level post) ──
+  const onComposePost = useCallback(
+    (draft: ComposerDraft) => {
+      if (viewer.status !== "ready") {
+        router.push("/welcome/");
+        return;
+      }
+      if (!api || !signer || draft.text.trim().length === 0) return;
+      const optimistic: CognoPost = {
+        id: -BigInt(Date.now()),
+        author: me ?? signer.ss58,
+        text: draft.text,
+        at: 0,
+        authorDisplayName: viewer.displayName,
+        authorAvatar: viewer.avatar,
+      };
+      const clientId = addPending(optimistic);
+      void run(submitPost(api, signer, draft.text), {
+        onConfirm: () => dropPending(clientId),
+        onError: (message) => {
+          failPending(clientId);
+          if (isRateLimit(message)) toast({ id: "rate-limit", kind: "rate-limit", message: RATE_LIMIT_COPY });
+          else toast({ kind: "error", message });
+        },
+      }).catch(() => {});
+    },
+    [viewer, api, signer, me, addPending, dropPending, failPending, run, toast, router],
   );
 
-  const { snapshot, ready, error: feedError } = useFeed(source);
-  const heads = useHeads(handle?.client ?? null);
+  // ── per-card action bundle ──
+  const handlers = useMemo<PostActionCallbacks>(
+    () => ({
+      onOpen: (id) => router.push(`/post/${id}/`),
+      onAuthorOpen: (address) => router.push(`/u/${address}/`),
+      onReply: (post) => (viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/")),
+      onQuote: (post) => (viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/")),
+      onLike: (post, next) => {
+        if (viewer.status !== "ready") return void router.push("/welcome/");
+        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
+        if (next) vote.like(post.id, cur);
+        else vote.unlike(post.id, cur);
+      },
+      onDownvote: (post, next) => {
+        if (viewer.status !== "ready") return void router.push("/welcome/");
+        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
+        if (next) vote.downvote(post.id, cur);
+        else vote.clear(post.id, cur);
+      },
+      onRepost: (post) => {
+        if (viewer.status !== "ready") return void router.push("/welcome/");
+        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
+        repost.repost(post.id, cur.reposted);
+      },
+      onShare: (post) => {
+        const url = `${typeof window !== "undefined" ? window.location.origin : ""}/post/${post.id}/`;
+        void navigator.clipboard
+          ?.writeText(url)
+          .then(() => toast({ kind: "success", message: "Link copied" }))
+          .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
+      },
+    }),
+    [router, viewer.status, viewerStates, vote, repost, toast],
+  );
 
-  const [search, setSearch] = useState("");
-  const searching = search.trim().length > 0;
-  const searchEnabled = source?.caps.search === true && searching;
-  const searchPage = useFeedPage(source, { search, first: 50 }, searchEnabled);
-
-  const signerCtl = useSigner();
-  const signer = signerCtl.signer;
-  const submit = useSubmit(api, signer, boot);
-  const capacity = useCapacity(api, signer.ss58, heads.best?.number ?? null);
-  const identity = useIdentity(api, handle?.client ?? null, signer);
-  const vault = useVault();
-  const anchor = useAnchor(api);
-
-  const [replyTo, setReplyTo] = useState<bigint | null>(null);
-  const [aboutOpen, setAboutOpen] = useState(false);
-
-  const onSubmitPost = (text: string) => {
-    submit.post(text, replyTo ?? undefined);
-  };
-
-  const feedSnapshot: FeedSnapshot = searchEnabled
-    ? { posts: searchPage.posts, asOf: snapshot.asOf }
-    : snapshot;
-  const feedReady = searchEnabled ? !searchPage.loading || searchPage.posts.length > 0 : ready;
-  const feedErr = searchEnabled ? searchPage.error : feedError;
+  const composeState: ActionState = "idle"; // the inline composer clears optimistically; per-tx state lives on the card
 
   return (
-    <main className={styles.shell}>
-      <Masthead onOpenAbout={() => setAboutOpen(true)} />
+    <>
+      <StickyHeader title="Home" />
 
-      <Account
-        signerCtl={signerCtl}
-        identity={identity}
-        vault={vault}
-        onOpenAbout={() => setAboutOpen(true)}
-      />
-
-      {signerCtl.postingEnabled && (
+      {viewer.status === "ready" && (
         <div className={styles.composerSlot}>
           <Composer
-            signer={signer}
-            boot={boot}
-            txState={submit.state}
-            busy={submit.busy}
-            replyTo={replyTo}
-            onClearReply={() => setReplyTo(null)}
-            onSubmit={onSubmitPost}
-            capView={capacity.view}
-            capConsts={capacity.consts}
-            bound={identity.bound}
+            viewer={viewer}
+            mode="post"
+            submitState={composeState}
+            onTogglePoll={() => modalActions.openPoll()}
+            onSubmit={onComposePost}
           />
         </div>
       )}
 
-      {source?.caps.search && (
-        <SearchBar
-          value={search}
-          onSearch={setSearch}
-          resultCount={searchEnabled ? searchPage.totalCount : undefined}
-        />
+      {!ready && posts.length === 0 ? (
+        <div className={styles.loading}>
+          <Spinner label="Loading the timeline" />
+        </div>
+      ) : posts.length === 0 ? (
+        <EmptyState variant="feed" />
+      ) : (
+        <div className={styles.feed}>
+          {posts.map((post) => (
+            <PostCard
+              key={String(post.id)}
+              post={post}
+              viewer={viewerStates.get(post.id) ?? NO_VIEWER}
+              gate={viewer}
+              handlers={handlers}
+              variant="timeline"
+              pending={post.id < 0n}
+            />
+          ))}
+        </div>
       )}
-
-      <Feed
-        snapshot={feedSnapshot}
-        ready={feedReady}
-        status={status}
-        mySs58={signer.ss58}
-        busy={submit.busy}
-        error={feedErr}
-        paginated={searchEnabled}
-        hasNextPage={searchEnabled ? searchPage.hasNextPage : false}
-        loadingMore={searchEnabled ? searchPage.loading : false}
-        onLoadMore={searchPage.loadMore}
-        onReply={(id) => {
-          setReplyTo(id);
-          if (typeof window !== "undefined") {
-            window.scrollTo({ top: 0, behavior: "smooth" });
-          }
-        }}
-      />
-
-      <About
-        open={aboutOpen}
-        onClose={() => setAboutOpen(false)}
-        signerCtl={signerCtl}
-        heads={heads}
-        status={status}
-        anchor={anchor}
-        onReconnect={(url) => reconnect(url)}
-        onGraphqlChange={() => {
-          setSearch("");
-          setGqlEpoch((n) => n + 1);
-        }}
-      />
-    </main>
+    </>
   );
 }

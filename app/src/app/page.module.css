@@ -1,31 +1,17 @@
-/* The reading shell: one centred column, held to a comfortable reading measure
-   plus gutters. No multi-column chrome — the text is the room. */
-.shell {
-  width: 100%;
-  max-width: 44rem;
-  margin: 0 auto;
-  padding: var(--space-5) var(--space-4) var(--space-6);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
+/* Home route — minimal foundation styles (the rich Timeline is surface 06). */
 
 .composerSlot {
-  margin-top: var(--space-1);
+  border-bottom: 1px solid var(--cg-border);
 }
 
-/* Honest read-path label: "reads: indexer" (GraphQL) vs "reads: direct node" (PAPI). Mono,
-   quiet — a chain-truth marginalia note, not chrome. Sits just above the ledger. */
-.readPath {
-  margin: var(--space-1) 0 calc(-1 * var(--space-3));
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  color: var(--ink-400);
-  text-align: right;
+.feed {
+  display: flex;
+  flex-direction: column;
 }
 
-@media (min-width: 40rem) {
-  .shell {
-    padding-top: var(--space-6);
-  }
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-8);
 }

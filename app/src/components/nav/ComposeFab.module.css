@@ -1,0 +1,29 @@
+.fab {
+  position: fixed;
+  right: var(--cg-space-4);
+  bottom: calc(var(--cg-header-h) + var(--cg-space-4) + env(safe-area-inset-bottom, 0));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--cg-avatar-lg);
+  height: var(--cg-avatar-lg);
+  border: none;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  box-shadow: var(--cg-shadow-menu);
+  cursor: pointer;
+  z-index: var(--cg-z-fab);
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.fab:hover {
+  background: var(--cg-accent-hover);
+}
+
+/* Mobile-only — the desktop/tablet "Post" pill lives in the LeftNav (doc 01 §5.4). */
+@media (min-width: 688px) {
+  .fab {
+    display: none;
+  }
+}

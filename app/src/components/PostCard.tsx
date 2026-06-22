@@ -1,0 +1,228 @@
+"use client";
+
+// PostCard — the load-bearing unit: one post in any list context (doc 03 §1).
+//
+// Composes PostCardHeader + an optional "Replying to" line + PostBody + an optional QuotedPostEmbed
+// OR PollCard + PostCardActions. Carries the optimistic-pending rendering (opacity 0.6, actions
+// disabled, no row nav) and the banned/authorRevoked dimming (D10 — content STAYS, we dim + chip,
+// never hide). Clicking anywhere on the row (outside an interactive child) navigates to /post/[id]/
+// via an X-style overlay <a> covering the non-interactive area, so the whole card is a real link
+// without nesting buttons inside an anchor; every inner control stopPropagation()s so it doesn't
+// trigger the row link.
+//
+// NO TIME / NO BLOCK MARGINALIA (locked decision + D11): CognoPost.at is a block height, never shown.
+// The weighted score + up/down weights are NOT rendered here (detail-only, D2/D12).
+//
+// Presentational + optimistic. It NEVER imports a reader and NEVER builds an extrinsic — every write
+// is a callback (the PostActionCallbacks bundle) supplied by the surface, optimistically overridden.
+
+import { useCallback, useMemo } from "react";
+import styles from "./PostCard.module.css";
+import { PostCardHeader } from "./PostCardHeader";
+import { PostBody } from "./PostBody";
+import { QuotedPostEmbed } from "./QuotedPostEmbed";
+import { PollCard } from "./PollCard";
+import { PostCardActions } from "./PostCardActions";
+import { Spinner, IconDownvote, IconLink } from "./icons";
+import { handleOf } from "@/lib/ss58";
+import type {
+  CognoPost,
+  ViewerPostState,
+  Viewer,
+  PollView,
+  AuthorRef,
+  OverflowMenuItem,
+  PostActionCallbacks,
+  PostCardVariant,
+} from "./kit";
+
+export interface PostCardProps {
+  /** The post (§0.4). */
+  post: CognoPost;
+  /** The viewer's relationship to this post — drives filled heart / disabled repost / poll choice. */
+  viewer: ViewerPostState;
+  /** Coarse write-gate state (§0.2) — supplied by AppShell, never computed here. */
+  gate: Viewer;
+  /** The shared callback bundle every list surface forwards (open / author / reply / quote / like / …). */
+  handlers: PostActionCallbacks;
+  /** dense timeline row / focused detail / threaded reply. */
+  variant?: PostCardVariant;
+  /** This card is an optimistic, not-yet-confirmed post → renders at opacity 0.6, actions disabled. */
+  pending?: boolean;
+  /** Draw the connecting vertical thread line (reply/thread context). */
+  showThreadLine?: boolean;
+  /** Surface-specific header slot (e.g. a "Pinned" marker on a profile). */
+  headerExtra?: React.ReactNode;
+  /** The poll attached to this post (when post.isPoll). Fetched separately by the surface. */
+  poll?: PollView | null;
+  /** The viewer's poll choice (option index), or null. */
+  pollMyChoice?: number | null;
+  /** Optimistic cast for the attached poll. */
+  onPollVote?: (option: number) => void;
+}
+
+/** Build the minimal author descriptor the header/embed need from a CognoPost's flattened fields. */
+function authorOf(post: CognoPost): AuthorRef {
+  return {
+    address: post.author,
+    displayName: post.authorDisplayName,
+    avatar: post.authorAvatar,
+    banned: post.authorRevoked === true,
+  };
+}
+
+export function PostCard({
+  post,
+  viewer,
+  gate,
+  handlers,
+  variant = "timeline",
+  pending,
+  showThreadLine,
+  headerExtra,
+  poll,
+  pollMyChoice,
+  onPollVote,
+}: PostCardProps) {
+  const author = useMemo(() => authorOf(post), [post]);
+  const dim = post.authorRevoked === true;
+  const detail = variant === "detail";
+  const isReply = post.parent != null;
+
+  const openRow = useCallback(() => {
+    if (pending) return; // pending optimistic cards aren't navigable yet
+    handlers.onOpen(post.id);
+  }, [handlers, post.id, pending]);
+
+  // Clearing a vote is expressed through the existing bundle (no dedicated onClearVote on the seam):
+  // an Up vote clears via onLike(post,false); a Down vote clears via onDownvote(post,false).
+  const clearVote = useCallback(
+    (p: CognoPost) => {
+      if (viewer.myVote === "Up") handlers.onLike(p, false);
+      else if (viewer.myVote === "Down") handlers.onDownvote(p, false);
+    },
+    [handlers, viewer.myVote],
+  );
+
+  // The header overflow menu (doc §2.1): the SECONDARY down-vote (+ clear) and copy-link. Mute /
+  // Block / Report / Delete are intentionally absent (no on-chain moderation; content permanent).
+  const menuItems = useMemo<OverflowMenuItem[]>(() => {
+    const downVoted = viewer.myVote === "Down";
+    const items: OverflowMenuItem[] = [
+      {
+        id: "downvote",
+        label: downVoted ? "Remove downvote" : "Downvote",
+        icon: (
+          <IconDownvote
+            filled={downVoted}
+            style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }}
+          />
+        ),
+        checked: downVoted,
+        onSelect: () => handlers.onDownvote(post, !downVoted),
+      },
+    ];
+    if (viewer.myVote != null) {
+      items.push({
+        id: "clear-vote",
+        label: "Clear vote",
+        onSelect: () => clearVote(post),
+      });
+    }
+    items.push({
+      id: "copy-link",
+      label: "Copy link to post",
+      icon: <IconLink style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }} />,
+      onSelect: () => handlers.onShare(post),
+    });
+    return items;
+  }, [handlers, post, viewer.myVote, clearVote]);
+
+  const cls = [
+    styles.card,
+    styles[variant],
+    pending ? styles.pending : "",
+    dim ? styles.dimmed : "",
+    showThreadLine ? styles.threadLine : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <article className={cls} data-post-id={String(post.id)} aria-busy={pending || undefined}>
+      {/* X-pattern: an overlay link covers the non-interactive area; inner controls stopPropagation. */}
+      {!pending && (
+        <button
+          type="button"
+          className={styles.rowLink}
+          aria-label="Open post"
+          tabIndex={-1}
+          onClick={openRow}
+        />
+      )}
+
+      <div className={styles.inner}>
+        <PostCardHeader
+          author={author}
+          menuItems={pending ? undefined : menuItems}
+          onAuthorOpen={handlers.onAuthorOpen}
+          detail={detail}
+          headerExtra={
+            <>
+              {headerExtra}
+              {pending && (
+                <span className={styles.pendingMark}>
+                  <Spinner size="sm" label="Posting" />
+                </span>
+              )}
+            </>
+          }
+        />
+
+        <div className={styles.column}>
+          {isReply && variant !== "thread" && (
+            <p className={styles.replyContext}>
+              Replying to{" "}
+              <span className={styles.replyTarget}>{handleOf(String(post.parent))}</span>
+            </p>
+          )}
+
+          <PostBody text={post.text} size={detail ? "lg" : "base"} dim={dim} />
+
+          {post.quote && (
+            <QuotedPostEmbed
+              quoted={post.quote}
+              onOpen={handlers.onOpen}
+              isPoll={false}
+            />
+          )}
+
+          {post.isPoll && poll && onPollVote && (
+            <PollCard
+              poll={poll}
+              myChoice={pollMyChoice ?? null}
+              onVote={onPollVote}
+              showResults={detail}
+              disabled={gate.status === "not-identity-bound"}
+              compact={!detail}
+            />
+          )}
+
+          <PostCardActions
+            post={post}
+            viewer={viewer}
+            gate={gate}
+            onReply={handlers.onReply}
+            onQuote={handlers.onQuote}
+            onLike={handlers.onLike}
+            onRepost={handlers.onRepost}
+            onDownvote={handlers.onDownvote}
+            onClearVote={clearVote}
+            onCopyLink={handlers.onShare}
+            dense={detail ? false : undefined}
+          />
+        </div>
+      </div>
+    </article>
+  );
+}

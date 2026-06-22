@@ -1,0 +1,156 @@
+/* The rail is sticky full-height; the inner grows, the footer pins to the base (doc 01 §5.2). */
+.nav {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  width: var(--cg-col-left);
+  padding: 0 var(--cg-space-2) var(--cg-space-3);
+  overflow-y: auto;
+}
+
+.inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+}
+
+.wordmark {
+  display: flex;
+  align-items: center;
+  height: var(--cg-header-h);
+  padding: 0 var(--cg-space-3);
+  margin-bottom: var(--cg-space-1);
+}
+
+.wordmark:hover {
+  text-decoration: none;
+}
+
+.wordmarkText {
+  font-size: var(--cg-fs-2xl);
+  font-weight: var(--cg-fw-extrabold);
+  letter-spacing: var(--cg-tracking-tight);
+  color: var(--cg-accent);
+}
+
+.items {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+  padding: 0;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-4);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-radius: var(--cg-radius-pill);
+  color: var(--cg-text);
+  width: fit-content;
+  max-width: 100%;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.item:hover {
+  background: var(--cg-bg-hover);
+  text-decoration: none;
+}
+
+.itemIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.itemLabel {
+  font-size: var(--cg-fs-lg);
+  font-weight: var(--cg-fw-regular);
+}
+
+.active .itemLabel {
+  font-weight: var(--cg-fw-bold);
+}
+
+/* The "Post" pill — full-width accent button. Icon-only on tablet (label hidden via the rail query). */
+.postBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin-top: var(--cg-space-4);
+  padding: var(--cg-space-4);
+  border: none;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  font-size: var(--cg-fs-md);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.postBtn:hover {
+  background: var(--cg-accent-hover);
+}
+
+.postIcon {
+  display: none;
+}
+
+.footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  padding-top: var(--cg-space-3);
+}
+
+.themeRow {
+  padding: 0 var(--cg-space-2);
+}
+
+/* ── Tablet (688–1019px): icon-only rail ── */
+@media (max-width: 1019px) {
+  .nav {
+    width: var(--cg-col-left-icononly);
+    align-items: center;
+  }
+
+  .wordmark {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .item {
+    justify-content: center;
+    gap: 0;
+    padding: var(--cg-space-3);
+  }
+
+  .itemLabel {
+    display: none;
+  }
+
+  .postBtn {
+    width: var(--cg-avatar-lg);
+    height: var(--cg-avatar-lg);
+    padding: 0;
+    border-radius: var(--cg-radius-pill);
+  }
+
+  .postLabel {
+    display: none;
+  }
+
+  .postIcon {
+    display: inline-flex;
+  }
+
+  .themeRow {
+    display: flex;
+    justify-content: center;
+  }
+}

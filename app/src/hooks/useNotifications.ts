@@ -24,9 +24,9 @@ export interface UseNotifications {
   enabled: boolean;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function useNotifications(_who: Ss58 | null): UseNotifications {
+export function useNotifications(who: Ss58 | null): UseNotifications {
   // HOOK: notifications — deferred. Wire to the indexer's vote/repost/follow/reply/quote edges
-  // targeting `_who` when this ships.
+  // targeting `who` when this ships.
+  void who; // referenced so the deferred-stub param isn't flagged unused
   return { notifications: [], unreadCount: 0, loading: false, enabled: false };
 }

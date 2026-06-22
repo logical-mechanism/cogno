@@ -1,0 +1,52 @@
+/* ByteCounter — count ring + near/over number. */
+
+.root {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+}
+
+.md .ring {
+  width: var(--cg-icon-lg);
+  height: var(--cg-icon-lg);
+}
+
+.sm .ring {
+  width: var(--cg-icon-md);
+  height: var(--cg-icon-md);
+}
+
+.ring {
+  transition: transform var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.track {
+  stroke: var(--cg-border);
+}
+
+.under {
+  stroke: var(--cg-accent);
+  transition: stroke-dashoffset var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.near {
+  stroke: var(--cg-warning);
+  transition: stroke-dashoffset var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.over {
+  stroke: var(--cg-danger);
+}
+
+.num {
+  font-size: var(--cg-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--cg-text-secondary);
+  min-width: 2ch;
+  text-align: right;
+}
+
+.numOver {
+  color: var(--cg-danger);
+  font-weight: var(--cg-fw-bold);
+}

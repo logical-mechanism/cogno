@@ -1,0 +1,75 @@
+/* QuotedPostEmbed — bordered, rounded nested card (X's quoted-tweet embed). No action row. */
+
+.box {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-top: var(--cg-space-3);
+  padding: var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
+    border-color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.box:hover {
+  background: var(--cg-bg-hover);
+  border-color: var(--cg-text-muted);
+}
+
+.box:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.dim {
+  opacity: 0.6;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  min-width: 0;
+}
+
+.restricted {
+  flex: 0 0 auto;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-muted);
+}
+
+.pollChip {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 var(--cg-space-2);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+  color: var(--cg-text-secondary);
+}
+
+/* clamp the quoted body to N lines (X-style truncation). */
+.bodyClamp {
+  margin-top: var(--cg-space-1);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--cg-clamp-lines, 6);
+  line-clamp: var(--cg-clamp-lines, 6);
+  overflow: hidden;
+}
+
+.stub {
+  margin-top: var(--cg-space-3);
+  padding: var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+}

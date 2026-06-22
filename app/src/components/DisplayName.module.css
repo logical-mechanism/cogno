@@ -1,0 +1,32 @@
+/* DisplayName — bold, --cg-text, truncatable, dimmed when revoked. */
+
+.name {
+  font-weight: var(--cg-fw-bold);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text);
+  text-decoration: none;
+  letter-spacing: var(--cg-tracking-tight);
+}
+
+a.name:hover {
+  text-decoration: underline;
+}
+
+.truncate {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.dim {
+  opacity: 0.55;
+}
+
+a.name:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-input);
+}

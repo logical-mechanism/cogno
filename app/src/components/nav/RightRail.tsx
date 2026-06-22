@@ -1,0 +1,104 @@
+"use client";
+
+// RightRail — the desktop (≥1020px) right column (doc 01 §5.2 / §6.3). Sticky full-height:
+//   1. SearchBar — submitting routes to /explore/ (the explore surface reads the term client-side).
+//      Gated on caps.search; when the active reader is PAPI-direct the input disables itself with the
+//      honest "needs the indexer" placeholder (SearchBar owns that), and submitting still lands on
+//      /explore where the inline note shows.
+//   2. "Who to follow" — up to 3 suggestions (useWhoToFollow; caps.whoToFollow), each with a
+//      FollowButton (optimistic, useFollow). Hidden entirely on PAPI-direct (no fake empties).
+//   3. Footer — ThemeToggle + an About link to /settings/. No trends, no premium upsell.
+
+import { useCallback, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import styles from "./RightRail.module.css";
+import { SearchBar } from "../SearchBar";
+import { Avatar } from "../Avatar";
+import { DisplayName } from "../DisplayName";
+import { Handle } from "../Handle";
+import { FollowButton } from "../FollowButton";
+import { ThemeToggle } from "../ThemeToggle";
+import { useSession } from "../Providers";
+import { useWhoToFollow } from "@/hooks/useWhoToFollow";
+import { useFollow } from "@/hooks/useFollow";
+
+export function RightRail() {
+  const router = useRouter();
+  const { api, signer, source, viewer } = useSession();
+  const me = viewer.address ?? null;
+
+  const [term, setTerm] = useState("");
+  const searchEnabled = source?.caps.search === true;
+
+  const submitSearch = useCallback(
+    (q: string) => {
+      const trimmed = q.trim();
+      router.push(trimmed.length > 0 ? `/explore/?q=${encodeURIComponent(trimmed)}` : "/explore/");
+    },
+    [router],
+  );
+
+  const { suggestions, loading } = useWhoToFollow(source, me, 3);
+  const follow = useFollow(api, signer, source, me);
+  const showWhoToFollow = source?.caps.whoToFollow === true && (loading || suggestions.length > 0);
+
+  const onToggleFollow = useCallback(
+    (target: string, next: boolean) => {
+      if (viewer.status !== "ready") {
+        router.push("/welcome/");
+        return;
+      }
+      if (next) follow.follow(target);
+      else follow.unfollow(target);
+    },
+    [viewer.status, router, follow],
+  );
+
+  return (
+    <aside className={styles.rail} aria-label="Discover">
+      <div className={styles.searchSlot}>
+        <SearchBar
+          value={term}
+          onChange={setTerm}
+          onSubmit={submitSearch}
+          searchEnabled={searchEnabled}
+        />
+      </div>
+
+      {showWhoToFollow && (
+        <section className={styles.card} aria-label="Who to follow">
+          <h2 className={styles.cardTitle}>Who to follow</h2>
+          {suggestions.map((s) => (
+            <div className={styles.person} key={s.author}>
+              <Link href={`/u/${s.author}/`} className={styles.personLink} aria-label={`Profile ${s.author}`}>
+                <Avatar address={s.author} src={s.avatar} size="md" name={s.displayName} />
+                <span className={styles.personWho}>
+                  <DisplayName address={s.author} displayName={s.displayName} truncate />
+                  <Handle address={s.author} />
+                </span>
+              </Link>
+              <FollowButton
+                target={s.author}
+                isFollowing={follow.isFollowing(s.author)}
+                viewer={viewer}
+                onToggle={onToggleFollow}
+                size="sm"
+              />
+            </div>
+          ))}
+          <Link href="/explore/" className={styles.showMore}>
+            Show more
+          </Link>
+        </section>
+      )}
+
+      <footer className={styles.footer}>
+        <ThemeToggle withLabel />
+        <Link href="/settings/" className={styles.about}>
+          About &amp; settings
+        </Link>
+      </footer>
+    </aside>
+  );
+}

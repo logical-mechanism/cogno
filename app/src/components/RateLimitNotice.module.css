@@ -1,0 +1,44 @@
+/* RateLimitNotice — slim inline banner, secondary text, amber accent edge. No battery. */
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-2) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-left: 3px solid var(--cg-warning);
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg-elevated);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+}
+
+.glyph {
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
+.text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.retry {
+  flex: 0 0 auto;
+  background: none;
+  border: 0;
+  padding: var(--cg-space-1) var(--cg-space-2);
+  color: var(--cg-accent);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+  border-radius: var(--cg-radius-input);
+}
+
+.retry:hover {
+  background: var(--cg-accent-wash);
+}
+
+.retry:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}

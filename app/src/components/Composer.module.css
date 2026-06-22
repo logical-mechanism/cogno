@@ -1,165 +1,203 @@
+/* Composer (base) — X-clone authoring chrome. Avatar gutter + autogrow textarea + toolbar (Poll
+ * toggle | ByteCounter ring | Post pill). All visual tokens via var(--cg-*); no raw literals. */
+
 .composer {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-4);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-4);
 }
 
-.replyBar {
+/* avatar gutter + growing field */
+.body {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  border-left: 2px solid var(--hairline-accent);
-  background: var(--surface-2);
-  border-radius: var(--radius-sm);
+  gap: var(--cg-space-3);
+  align-items: flex-start;
 }
-.replyText {
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui-sm);
-  color: var(--ink-600);
-}
-.replyId {
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  color: var(--ink-900);
-}
-.clearReply {
-  border: none;
-  background: transparent;
-  color: var(--ink-600);
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui-sm);
-  cursor: pointer;
-  text-decoration: underline;
-  text-decoration-style: dotted;
-  text-underline-offset: 2px;
-}
-.clearReply:hover {
-  color: var(--ink-900);
-}
-.clearReply:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+
+.field {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
 }
 
 .textarea {
   width: 100%;
-  padding: var(--space-3);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-sm);
-  background: var(--surface-0);
-  color: var(--ink-900);
-  /* Chrome: composing is UI, not the reading serif. */
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui);
-  line-height: 1.5;
-  resize: vertical;
-  min-height: 4.5rem;
+  border: 0;
+  margin: 0;
+  padding: var(--cg-space-2) 0;
+  background: transparent;
+  resize: none;
+  overflow: hidden;
+  color: var(--cg-text);
+  caret-color: var(--cg-accent);
+  font-family: var(--cg-font-ui);
+  font-size: var(--cg-fs-md);
+  line-height: var(--cg-lh-md);
+  min-height: var(--cg-lh-xl);
+  max-height: 60vh;
 }
+
 .textarea::placeholder {
-  color: var(--ink-400);
-}
-.textarea:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-  border-color: var(--hairline-accent);
+  color: var(--cg-text-muted);
 }
 
-.row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-3);
-  flex-wrap: wrap;
+.textarea:focus {
+  outline: none;
 }
 
-.signingAs {
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui-sm);
-  color: var(--ink-600);
-}
-.signId {
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  color: var(--ink-900);
-}
-.signLabel {
-  color: var(--ink-400);
+.textarea[readonly] {
+  opacity: 0.6;
+  cursor: default;
 }
 
-.counter {
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-400);
-}
-.counterOver {
-  /* `--cap-toolong` is the over-limit signal; degrade to ink-900 if undefined. */
-  color: var(--cap-toolong, var(--ink-900));
-  font-weight: 600;
+/* session-gated inline prompt (connect / finish setup) */
+.sessionPrompt {
+  margin: 0;
+  padding-left: calc(var(--cg-avatar-md) + var(--cg-space-3));
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
 }
 
-.actions {
+.notice {
+  /* hosts the RateLimitNotice slim banner above the toolbar */
+}
+
+/* hairline + toolbar */
+.toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  margin-top: var(--space-1);
+  gap: var(--cg-space-3);
+  padding-top: var(--cg-space-3);
+  border-top: 1px solid var(--cg-border);
 }
 
-.statusArea {
-  flex: 1 1 12rem;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  line-height: 1.4;
+.toolbarLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-1);
 }
 
-.signedNote {
-  color: var(--ink-400);
-}
-.toneWork {
-  color: var(--ink-600);
-}
-.toneOk {
-  color: var(--verdigris-ink);
-}
-.toneBad {
-  color: var(--ink-900);
-  font-weight: 600;
-}
-
-/* Primary action: greyscale body + an ACCENT HAIRLINE only — never a filled neon CTA. */
-.postBtn {
-  flex: 0 0 auto;
-  padding: var(--space-2) var(--space-5);
-  border: 1px solid var(--hairline-accent);
-  border-radius: var(--radius-sm);
-  background: var(--surface-0);
-  color: var(--ink-900);
-  font-family: var(--font-ui);
-  font-size: var(--fs-ui);
-  font-weight: 600;
+/* toolbar icon buttons (Poll toggle / emoji) — accent-tinted X-style round buttons */
+.toolBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-accent);
+  font-size: var(--cg-icon-md);
+  line-height: 1;
   cursor: pointer;
-  transition: background var(--motion-fast) ease;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
 }
-.postBtn:hover:not(:disabled) {
-  background: var(--surface-2);
+
+.toolBtn:hover:not(:disabled) {
+  background: var(--cg-accent-wash);
 }
-.postBtn:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-.postBtn:disabled {
-  cursor: not-allowed;
+
+.toolBtn:disabled {
   opacity: 0.5;
-  border-color: var(--hairline);
+  cursor: default;
+}
+
+.toolBtn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.toolBtnActive {
+  background: var(--cg-accent-wash);
+}
+
+/* emoji popover */
+.emojiWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.emojiPopover {
+  position: absolute;
+  bottom: calc(100% + var(--cg-space-1));
+  left: 0;
+  z-index: var(--cg-z-dropdown);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cg-space-1);
+  max-width: 240px;
+  padding: var(--cg-space-2);
+  background: var(--cg-bg-elevated);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-sm);
+  box-shadow: var(--cg-shadow-menu);
+}
+
+.emojiBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--cg-radius-input);
+  background: transparent;
+  font-size: var(--cg-fs-lg);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.emojiBtn:hover {
+  background: var(--cg-bg-hover);
+}
+
+.emojiBtn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.toolbarRight {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+}
+
+/* Post pill CTA — filled accent, accent-contrast label, pill radius */
+.cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: var(--cg-space-2) var(--cg-space-5);
+  border: 0;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  font-family: var(--cg-font-ui);
+  font-weight: var(--cg-fw-bold);
+  font-size: var(--cg-fs-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.cta:hover:not(:disabled) {
+  background: var(--cg-accent-hover);
+}
+
+.cta:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cta:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
 }
 
 .srOnly {
@@ -172,10 +210,4 @@
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .postBtn {
-    transition: none;
-  }
 }
