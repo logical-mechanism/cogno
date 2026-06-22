@@ -73,6 +73,12 @@ async function readFollowees(api: CognoApi, who: Ss58): Promise<Ss58[]> {
   return entries.map((e) => e.keyArgs[1] as Ss58);
 }
 
+/** The accounts following `who` — the reverse `Followers` double-map (key2 = follower; spec-118). */
+async function readFollowers(api: CognoApi, who: Ss58): Promise<Ss58[]> {
+  const entries = await api.query.Microblog.Followers.getEntries(who);
+  return entries.map((e) => e.keyArgs[1] as Ss58);
+}
+
 /** Decode a pallet-profile `BoundedVec<u8>` field (PAPI Binary) to a trimmed string, or undefined. */
 function profileText(v: { asText: () => string } | undefined): string | undefined {
   const s = v?.asText().trim();
@@ -87,16 +93,17 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     revocation: true,
     // The node serves the aggregate tally/poll/viewer maps directly → tallies on.
     tallies: true,
-    // The node serves the FORWARD follow graph directly (followees + follow-state + Following feed +
-    // the FollowerCount/FollowingCount counters). The reverse followers LIST it can't (no reverse
-    // map), but no surface renders that list — only counts — so follows is honestly on.
+    // The node serves the full follow graph directly: followees + followers (spec-118 Followers
+    // reverse map) + follow-state + the Following feed + the FollowerCount/FollowingCount counters.
     follows: true,
-    // pallet-profile stores display name / bio / avatar / pinned on-chain → node-served.
+    // pallet-profile stores display name / bio / avatar / banner / location / website / pinned → node.
     profiles: true,
-    // the Replies + Likes reverse tabs (replies-/votes-by-author) still need the indexer.
-    profileTabs: false,
-    // ranked who-to-follow still needs the indexer.
-    whoToFollow: false,
+    // the Replies reverse tab still needs the indexer (no reverse replies-by-author map on-chain).
+    profileReplies: false,
+    // the Likes reverse tab is node-served via the spec-118 VotesByAccount reverse index.
+    profileLikes: true,
+    // who-to-follow is ranked node-direct by the FollowerCount map (a popularity proxy; no SCORE).
+    whoToFollow: true,
   };
 
   /** One authoritative snapshot (the first watchFeed emission — entries is the full set). */
@@ -201,11 +208,10 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
   }
 
   async function profile(args: ProfileArgs): Promise<ProfileView> {
-    // Replies/Likes tabs need the indexer (reverse indexes) — the UI hides them on PAPI-direct.
-    if (args.tab === "replies" || args.tab === "likes") {
-      throw new UnsupportedQuery(
-        "the Replies/Likes tabs need the indexer — set a GraphQL endpoint.",
-      );
+    // The Replies tab needs the indexer (no reverse replies-by-author map on-chain) — the UI hides it
+    // node-direct. The Likes tab IS node-served below (spec-118 VotesByAccount reverse index).
+    if (args.tab === "replies") {
+      throw new UnsupportedQuery("the Replies tab needs the indexer — set a GraphQL endpoint.");
     }
     // Resolve to an account: directly, or via the reverse AccountOf[identityHash] map.
     let account: Ss58 | undefined = args.author;
@@ -239,23 +245,38 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       args.identityHash ??
       (pkh ? (pkh as unknown as { asHex: () => string }).asHex() : null);
 
+    // The author's own top-level posts → the Posts tab + the header "N posts" count.
     const postIds = (ids ?? []) as unknown as bigint[];
-    const fetched = await Promise.all(postIds.map((id) => getPost(api, id)));
-    const posts = fetched
+    const ownPosts = (await Promise.all(postIds.map((id) => getPost(api, id))))
       .filter((p): p is CognoPost => p !== undefined)
-      // Posts tab: top-level only (parentId null), matching the indexer Posts tab.
       .filter((p) => p.parent === undefined)
       .map((p) => ({ ...p, authorRevoked: banned }))
       .sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
 
+    // The Likes tab folds the posts this account up-voted (spec-118 VotesByAccount reverse index);
+    // every other tab is the author's own top-level posts. (Replies already threw above.)
+    let posts: CognoPost[];
+    if (args.tab === "likes") {
+      const likedIds = (await api.query.Microblog.VotesByAccount.getEntries(account)).map(
+        (e) => e.keyArgs[1] as bigint,
+      );
+      const likedPosts = (await Promise.all(likedIds.map((id) => getPost(api, id))))
+        .filter((p): p is CognoPost => p !== undefined)
+        .sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+      // Liked posts are by OTHER authors → flag each by its own author's revocation, not `account`.
+      posts = await flagRevocations(likedPosts);
+    } else {
+      posts = ownPosts;
+    }
+
     return {
       author: account,
       identityHash,
-      postCount: posts.length,
+      postCount: ownPosts.length,
       banned,
       weight,
-      // display fields + counts are ALL node-served now (pallet-profile + the follow counters);
-      // only the reverse Replies/Likes tabs still need the indexer (caps.profileTabs:false).
+      // display fields + counts are ALL node-served now (pallet-profile + the follow counters + the
+      // spec-118 reverse maps); only the Replies tab still needs the indexer (caps.profileReplies).
       displayName: profileText(profileRec?.display_name),
       bio: profileText(profileRec?.bio),
       avatar: profileText(profileRec?.avatar),
@@ -284,27 +305,51 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     return readViewerPostState(api, post, who);
   }
 
-  // ── follow graph: the FORWARD direction is node-served (caps.follows on) ──
+  // ── follow graph: both directions node-served (forward Following + reverse Followers, spec-118) ──
   async function followEdges(who: Ss58): Promise<FollowEdges> {
-    const [following, followerCount, followingCount] = await Promise.all([
+    const [following, followers, followerCount, followingCount] = await Promise.all([
       readFollowees(api, who),
+      readFollowers(api, who),
       api.query.Microblog.FollowerCount.getValue(who),
       api.query.Microblog.FollowingCount.getValue(who),
     ]);
     return {
       following,
-      // The reverse list (who follows `who`) needs an index the node lacks; only the COUNT is
-      // stored. No surface renders the followers list — just the count — so [] is honest here.
-      followers: [],
+      followers,
       followerCount: Number(followerCount ?? 0),
       followingCount: Number(followingCount ?? 0),
     };
   }
 
-  // ── indexer-only: caps say so; calling these is a logic slip ──
-  function whoToFollow(): Promise<Suggestion[]> {
-    throw new UnsupportedQuery("who-to-follow needs the indexer — set a GraphQL endpoint.");
+  // ── who-to-follow: ranked node-direct by the FollowerCount map (popularity proxy — the node has no
+  // SCORE). The hook filters out self + already-followed, so we just return the top-N by follower
+  // count with display fields. getEntries() scans the whole counter map — fine on a testnet; the
+  // indexer is the scalable path. ──
+  async function whoToFollow(_who: Ss58 | null, limit: number): Promise<Suggestion[]> {
+    const entries = await api.query.Microblog.FollowerCount.getEntries();
+    const ranked = entries
+      .map((e) => ({ account: e.keyArgs[0] as Ss58, count: Number(e.value ?? 0) }))
+      .filter((r) => r.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit);
+    return Promise.all(
+      ranked.map(async (r) => {
+        const [profileRec, weight] = await Promise.all([
+          api.query.Profile.Profiles.getValue(r.account),
+          readWeight(api, r.account),
+        ]);
+        return {
+          author: r.account,
+          displayName: profileText(profileRec?.display_name),
+          avatar: profileText(profileRec?.avatar),
+          weight,
+          followerCount: r.count,
+        };
+      }),
+    );
   }
+
+  // ── still indexer-only: caps say so; calling this is a logic slip ──
   function searchPeople(): Promise<Suggestion[]> {
     throw new UnsupportedQuery("people search needs the indexer — set a GraphQL endpoint.");
   }

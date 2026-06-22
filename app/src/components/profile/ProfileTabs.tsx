@@ -23,8 +23,10 @@ export type ProfileTab = "posts" | "replies" | "likes";
 export interface ProfileTabsProps {
   active: ProfileTab;
   onChange: (tab: ProfileTab) => void;
-  /** Render Replies + Likes. False on PAPI-direct (caps.profiles === false) → Posts only. */
-  showAll: boolean;
+  /** Show the Replies tab (indexer-only — no reverse replies-by-author map on-chain). */
+  showReplies: boolean;
+  /** Show the Likes tab (node-direct since spec-118's VotesByAccount reverse index). */
+  showLikes: boolean;
 }
 
 interface TabDef {
@@ -32,19 +34,14 @@ interface TabDef {
   label: string;
 }
 
-export function ProfileTabs({ active, onChange, showAll }: ProfileTabsProps) {
-  const tabs = useMemo<TabDef[]>(
-    () =>
-      showAll
-        ? [
-            { id: "posts", label: "Posts" },
-            { id: "replies", label: "Replies" },
-            { id: "likes", label: "Likes" },
-            // NOTE: no "Media" tab (D1) — the chain is text-only, so it would always be empty.
-          ]
-        : [{ id: "posts", label: "Posts" }],
-    [showAll],
-  );
+export function ProfileTabs({ active, onChange, showReplies, showLikes }: ProfileTabsProps) {
+  // Posts is always shown; Replies/Likes appear per their cap. (No "Media" tab, D1 — text-only chain.)
+  const tabs = useMemo<TabDef[]>(() => {
+    const list: TabDef[] = [{ id: "posts", label: "Posts" }];
+    if (showReplies) list.push({ id: "replies", label: "Replies" });
+    if (showLikes) list.push({ id: "likes", label: "Likes" });
+    return list;
+  }, [showReplies, showLikes]);
 
   const refs = useRef<Record<string, HTMLButtonElement | null>>({});
 

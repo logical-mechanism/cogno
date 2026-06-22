@@ -148,7 +148,7 @@ export function NetworkSection() {
       <EndpointField
         id="net-indexer"
         label="Indexer (GraphQL)"
-        hint="Search and the Following tab need the indexer."
+        hint="Search and the profile Replies tab need the indexer."
         initial={getGraphqlUrl()}
         placeholder="https://indexer.example/"
         save={(v) => setGraphqlUrl(v)}
