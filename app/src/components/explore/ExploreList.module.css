@@ -1,0 +1,11 @@
+/* ExploreList — the People-tab result column. Rows own their own dividers (PersonRow); the list is
+   just a vertical flow, trimming the final row's divider so the column ends clean. */
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.list > :last-child {
+  border-bottom: none;
+}
