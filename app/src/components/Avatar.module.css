@@ -37,3 +37,22 @@
   object-fit: cover;
   display: block;
 }
+
+/* click-to-reveal cover for a remote/IPFS avatar (no auto-fetch until tapped) */
+.cover {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--cg-bg-subtle);
+  color: var(--cg-text-secondary);
+  cursor: pointer;
+}
+
+.cover:hover {
+  color: var(--cg-text);
+}
+
+.coverIcon {
+  width: 55%;
+  height: 55%;
+}

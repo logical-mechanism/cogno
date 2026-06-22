@@ -230,6 +230,15 @@ export function IconLink(p: IconProps) {
   );
 }
 
+export function IconEye(p: IconProps) {
+  // Material "visibility" silhouette — the click-to-reveal cover affordance for gated images.
+  return (
+    <svg {...svgProps(p)}>
+      <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 13c-3.04 0-5.5-2.46-5.5-5.5S8.96 6.5 12 6.5s5.5 2.46 5.5 5.5-2.46 5.5-5.5 5.5zm0-9c-1.93 0-3.5 1.57-3.5 3.5s1.57 3.5 3.5 3.5 3.5-1.57 3.5-3.5-1.57-3.5-3.5-3.5z" />
+    </svg>
+  );
+}
+
 // ── Spinner (cg-spin keyframe lives in tokens.css) ──────────────────────────────────────────────
 
 export interface SpinnerProps {
