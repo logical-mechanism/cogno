@@ -1,11 +1,15 @@
 "use client";
 
-// PostDetailView — the client half of /post/[id]. Reads the live id from useParams() and validates
-// it (/^\d+$/); invalid → in-app not-found (NOT a hard 404). STUB: the full ThreadView is surface 08.
+// PostDetailView — the client half of /post/[id] (surface 08). Reads the live id from useParams()
+// and validates it (/^\d+$/); an invalid id (the static-export placeholder "_" or junk) → the in-app
+// not-found (NOT a hard 404 — the server is never reached). A valid id mounts the back-arrow "Post"
+// header + the ThreadView, which owns the focal/ancestor/replies composition + the inline reply
+// composer + scroll-to-focal. The unknown-but-valid id case (no such post / outside snapshot) is
+// handled inside ThreadView (→ NotFoundInline).
 
 import { useParams } from "next/navigation";
 import { StickyHeader, NotFoundInline } from "@/components/AppShell";
-import { EmptyState } from "@/components/EmptyState";
+import { ThreadView } from "@/components/ThreadView";
 
 export function PostDetailView() {
   const params = useParams<{ id: string }>();
@@ -16,7 +20,7 @@ export function PostDetailView() {
   return (
     <>
       <StickyHeader showBack title="Post" />
-      <EmptyState title="Post detail is coming soon" description={`Thread view for post #${id} lands here.`} />
+      <ThreadView rootId={BigInt(id)} />
     </>
   );
 }
