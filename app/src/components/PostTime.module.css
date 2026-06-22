@@ -1,0 +1,12 @@
+/* PostTime — the muted relative age after the handle. */
+
+.time {
+  color: var(--cg-text-muted);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  white-space: nowrap;
+}
+
+.dot {
+  margin: 0 var(--cg-space-1);
+}

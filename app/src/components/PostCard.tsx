@@ -154,6 +154,7 @@ export function PostCard({
       <div className={styles.inner}>
         <PostCardHeader
           author={author}
+          at={post.at}
           onAuthorOpen={handlers.onAuthorOpen}
           detail={detail}
           headerExtra={
