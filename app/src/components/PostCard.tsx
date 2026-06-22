@@ -87,11 +87,34 @@ export function PostCard({
   const dim = post.authorRevoked === true;
   const detail = variant === "detail";
   const isReply = post.parent != null;
+  // The detail (focal) card is the post you're already on → not a self-opening link; pending cards
+  // aren't navigable yet. Everything else is a clickable row.
+  const clickable = !pending && !detail;
 
-  const openRow = useCallback(() => {
-    if (pending) return; // pending optimistic cards aren't navigable yet
-    handlers.onOpen(post.id);
-  }, [handlers, post.id, pending]);
+  // The WHOLE card opens the post: any click that isn't on an interactive child (button / link /
+  // input) and isn't a text selection navigates. Replaces the old inset overlay button, which sat
+  // under the content and only caught the thin padding → users couldn't tell the card was clickable.
+  const onCardClick = useCallback(
+    (e: React.MouseEvent) => {
+      if ((e.target as HTMLElement).closest("a,button,input,textarea,select,label,[role='button']")) {
+        return;
+      }
+      if (window.getSelection()?.toString()) return; // don't hijack a text selection
+      handlers.onOpen(post.id);
+    },
+    [handlers, post.id],
+  );
+
+  const onCardKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.target !== e.currentTarget) return; // only when the card itself is focused
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handlers.onOpen(post.id);
+      }
+    },
+    [handlers, post.id],
+  );
 
   // Clearing a vote is expressed through the existing bundle (no dedicated onClearVote on the seam):
   // an Up vote clears via onLike(post,false); a Down vote clears via onDownvote(post,false).
@@ -117,18 +140,16 @@ export function PostCard({
     .join(" ");
 
   return (
-    <article className={cls} data-post-id={String(post.id)} aria-busy={pending || undefined}>
-      {/* X-pattern: an overlay link covers the non-interactive area; inner controls stopPropagation. */}
-      {!pending && (
-        <button
-          type="button"
-          className={styles.rowLink}
-          aria-label="Open post"
-          tabIndex={-1}
-          onClick={openRow}
-        />
-      )}
-
+    <article
+      className={cls}
+      data-post-id={String(post.id)}
+      aria-busy={pending || undefined}
+      role={clickable ? "link" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      aria-label={clickable ? "Open post" : undefined}
+      onClick={clickable ? onCardClick : undefined}
+      onKeyDown={clickable ? onCardKeyDown : undefined}
+    >
       <div className={styles.inner}>
         <PostCardHeader
           author={author}
