@@ -22,6 +22,7 @@ import { PostCardHeader } from "./PostCardHeader";
 import { PostBody } from "./PostBody";
 import { QuotedPostEmbed } from "./QuotedPostEmbed";
 import { PollCard } from "./PollCard";
+import { InlinePoll } from "./InlinePoll";
 import { PostCardActions } from "./PostCardActions";
 import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
@@ -185,16 +186,22 @@ export function PostCard({
             />
           )}
 
-          {post.isPoll && poll && onPollVote && (
-            <PollCard
-              poll={poll}
-              myChoice={pollMyChoice ?? null}
-              onVote={onPollVote}
-              showResults={detail}
-              disabled={gate.status === "not-identity-bound"}
-              compact={!detail}
-            />
-          )}
+          {post.isPoll &&
+            (poll && onPollVote ? (
+              // Surface pre-wired the poll (ThreadView focal): use it directly.
+              <PollCard
+                poll={poll}
+                myChoice={pollMyChoice ?? null}
+                onVote={onPollVote}
+                showResults={detail}
+                disabled={gate.status === "not-identity-bound"}
+                compact={!detail}
+              />
+            ) : (
+              // List context (timeline/profile): self-fetch + render the votable poll inline so it
+              // isn't just a plain text post.
+              !pending && <InlinePoll postId={post.id} gate={gate} detail={detail} />
+            ))}
 
           <PostCardActions
             post={post}
