@@ -10,7 +10,11 @@
 //
 // What it CANNOT do, honestly (caps say so; the UI hides these — it never greys-with-explanation):
 //   - substring search / cursor pagination (no indexer),
-//   - follow edges + counts, display names / bios / avatars, who-to-follow (reverse aggregation).
+//   - the reverse followers LIST + ranked who-to-follow + display names / bios / avatars (reverse-
+//     index aggregation / denormalized Author fields).
+// What it DOES now serve from chain storage (the forward follow graph): the viewer's followees, the
+// follow-state, the Following feed, and the FollowerCount / FollowingCount counters — so follows is
+// on. No surface renders the followers list (only the counts), so [] for followers stays honest.
 //
 // This file does NOT modify reads.ts — it only consumes it (+ social-reads.ts).
 
@@ -63,6 +67,12 @@ async function readWeight(api: CognoApi, account: Ss58): Promise<bigint | undefi
   return v == null ? undefined : BigInt(v as unknown as bigint);
 }
 
+/** The accounts `who` follows — the forward `Following` double-map (key2 = followee). */
+async function readFollowees(api: CognoApi, who: Ss58): Promise<Ss58[]> {
+  const entries = await api.query.Microblog.Following.getEntries(who);
+  return entries.map((e) => e.keyArgs[1] as Ss58);
+}
+
 export function createPapiFeedSource(api: CognoApi): FeedSource {
   const caps: FeedCaps = {
     search: false,
@@ -71,8 +81,11 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     revocation: true,
     // The node serves the aggregate tally/poll/viewer maps directly → tallies on.
     tallies: true,
-    // Reverse-index aggregation the node can't serve cheaply → off (the UI hides these).
-    follows: false,
+    // The node serves the FORWARD follow graph directly (followees + follow-state + Following feed +
+    // the FollowerCount/FollowingCount counters). The reverse followers LIST it can't (no reverse
+    // map), but no surface renders that list — only counts — so follows is honestly on.
+    follows: true,
+    // display names / bios / avatars + ranked who-to-follow still need the indexer.
     profiles: false,
     whoToFollow: false,
   };
@@ -103,10 +116,25 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
         "cursor pagination needs the indexer — the direct-node feed is a single live snapshot.",
       );
     }
-    if (q.tab === "following") {
-      throw new UnsupportedQuery(
-        "the Following timeline needs the indexer (follow edges) — set a GraphQL endpoint.",
-      );
+    // Following feed: posts authored by the accounts `followeeOf` follows. Served from the forward
+    // Following map + the live snapshot — first page only (no cursor; caps.pagination is off).
+    if (q.tab === "following" || q.followeeOf) {
+      const target = q.followeeOf ?? q.authorId;
+      if (!target) {
+        return { posts: [], endCursor: null, hasNextPage: false, totalCount: 0, asOf: null };
+      }
+      const [followees, snap] = await Promise.all([readFollowees(api, target), snapshot()]);
+      const set = new Set(followees);
+      const matched = snap.posts.filter((p) => set.has(p.author));
+      const first = q.first ?? DEFAULT_FIRST;
+      const sliced = await flagRevocations(matched.slice(0, first));
+      return {
+        posts: sliced,
+        endCursor: null,
+        hasNextPage: matched.length > first,
+        totalCount: matched.length,
+        asOf: snap.asOf,
+      };
     }
     const snap = await snapshot();
     let posts = snap.posts;
@@ -187,10 +215,12 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       };
     }
 
-    const [ids, pkh, weight] = await Promise.all([
+    const [ids, pkh, weight, followerCount, followingCount] = await Promise.all([
       api.query.Microblog.ByAuthor.getValue(account),
       api.query.CognoGate.PkhOf.getValue(account),
       readWeight(api, account),
+      api.query.Microblog.FollowerCount.getValue(account),
+      api.query.Microblog.FollowingCount.getValue(account),
     ]);
     const banned = pkh === undefined;
     const identityHash =
@@ -212,7 +242,10 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       postCount: posts.length,
       banned,
       weight,
-      // displayName/bio/avatar/follower counts are indexer-only (caps.profiles/follows:false).
+      // displayName/bio/avatar stay indexer-only (caps.profiles:false); the follower/following
+      // counts ARE node-served (on-chain counters), so the profile header can show them.
+      followerCount: Number(followerCount ?? 0),
+      followingCount: Number(followingCount ?? 0),
       page: {
         posts,
         endCursor: null,
@@ -232,10 +265,24 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     return readViewerPostState(api, post, who);
   }
 
-  // ── indexer-only: caps say so; calling these is a logic slip ──
-  function followEdges(): Promise<FollowEdges> {
-    throw new UnsupportedQuery("follow edges need the indexer — set a GraphQL endpoint.");
+  // ── follow graph: the FORWARD direction is node-served (caps.follows on) ──
+  async function followEdges(who: Ss58): Promise<FollowEdges> {
+    const [following, followerCount, followingCount] = await Promise.all([
+      readFollowees(api, who),
+      api.query.Microblog.FollowerCount.getValue(who),
+      api.query.Microblog.FollowingCount.getValue(who),
+    ]);
+    return {
+      following,
+      // The reverse list (who follows `who`) needs an index the node lacks; only the COUNT is
+      // stored. No surface renders the followers list — just the count — so [] is honest here.
+      followers: [],
+      followerCount: Number(followerCount ?? 0),
+      followingCount: Number(followingCount ?? 0),
+    };
   }
+
+  // ── indexer-only: caps say so; calling these is a logic slip ──
   function whoToFollow(): Promise<Suggestion[]> {
     throw new UnsupportedQuery("who-to-follow needs the indexer — set a GraphQL endpoint.");
   }
