@@ -9,9 +9,15 @@
 #   │ (producer) │  :30333       │ (--no validator role) │                │            │
 #   └────────────┘               └──────────────────────┘                └────────────┘
 #
+# First-time setup (fresh box) is documented in docs/RELAY-NODE.md. In short:
+#   - Ubuntu build deps:  sudo apt-get install -y clang protobuf-compiler cmake libssl-dev pkg-config make build-essential
+#     (there is NO libp2p package — P2P is the sc-network crate, compiled into the binary by `cargo build --release`)
+#   - Rust toolchain via rustup (auto-selects the pinned 1.90.0 from rust-toolchain.toml)
+#
 # Prereqs:
 #   1. The node binary is built:               cargo build --release
 #   2. A genesis-matching raw spec exists:      node scripts/fetch-chainspec.mjs <rpc> --bootnode <ma> --out network/raw.json
+#      (the committed network/raw.json already has DDNS + LAN bootNodes — no --bootnodes flag needed)
 #   3. The validator's P2P port is reachable from here (it must accept inbound on :30333).
 #
 # This is a TRACKING node, by design:
