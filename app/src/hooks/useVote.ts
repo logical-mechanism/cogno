@@ -10,6 +10,7 @@
 
 import { useCallback } from "react";
 import { useMutation } from "./useMutation";
+import { useActionToast } from "./useActionToast";
 import { useOptimistic } from "./useOptimistic";
 import { voteDelta } from "@/lib/optimistic";
 import { submitVote, submitClearVote } from "@/lib/chain/mutations";
@@ -34,6 +35,7 @@ export function useVote(
 ): UseVote {
   const { patchViewer, patchCounts, clearPost } = useOptimistic();
   const { run, pending } = useMutation();
+  const { fail } = useActionToast();
 
   const doVote = useCallback(
     (postId: bigint, current: ViewerPostState, next: "Up" | "Down" | null) => {
@@ -47,12 +49,15 @@ export function useVote(
           : submitVote(api, signer, postId, next);
       void run(stream, {
         onConfirm: () => clearPost(postId),
-        onError: () => clearPost(postId),
+        onError: (message) => {
+          clearPost(postId);
+          fail(message);
+        },
       }).catch(() => {
-        /* error already surfaced + rolled back via onError/clearPost */
+        /* failure surfaced via fail(); optimistic patch rolled back via clearPost */
       });
     },
-    [api, signer, myWeight, patchViewer, patchCounts, clearPost, run],
+    [api, signer, myWeight, patchViewer, patchCounts, clearPost, run, fail],
   );
 
   return {

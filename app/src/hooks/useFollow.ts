@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useMutation } from "./useMutation";
+import { useActionToast } from "./useActionToast";
 import { submitFollow, submitUnfollow } from "@/lib/chain/mutations";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, PostingSigner, Ss58, FollowEdges } from "@/lib/types";
@@ -29,6 +30,7 @@ export function useFollow(
   who: Ss58 | null,
 ): UseFollow {
   const { run, pending } = useMutation();
+  const { fail, ok } = useActionToast();
   const [edges, setEdges] = useState<FollowEdges | null>(null);
   const [optimistic, setOptimistic] = useState<Record<string, boolean>>({});
 
@@ -64,10 +66,14 @@ export function useFollow(
       if (!api || !signer) return;
       setOptimistic((p) => ({ ...p, [target]: true }));
       void run(submitFollow(api, signer, target), {
-        onError: () => setOptimistic((p) => ({ ...p, [target]: false })),
+        onConfirm: () => ok("Following"),
+        onError: (message) => {
+          setOptimistic((p) => ({ ...p, [target]: false }));
+          fail(message);
+        },
       }).catch(() => {});
     },
-    [api, signer, run],
+    [api, signer, run, fail, ok],
   );
 
   const unfollow = useCallback(
@@ -75,10 +81,14 @@ export function useFollow(
       if (!api || !signer) return;
       setOptimistic((p) => ({ ...p, [target]: false }));
       void run(submitUnfollow(api, signer, target), {
-        onError: () => setOptimistic((p) => ({ ...p, [target]: true })),
+        onConfirm: () => ok("Unfollowed"),
+        onError: (message) => {
+          setOptimistic((p) => ({ ...p, [target]: true }));
+          fail(message);
+        },
       }).catch(() => {});
     },
-    [api, signer, run],
+    [api, signer, run, fail, ok],
   );
 
   return {

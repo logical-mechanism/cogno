@@ -175,6 +175,10 @@ export interface ProfileView {
   displayName?: string;
   bio?: string;
   avatar?: string;
+  /** spec-118 pallet-profile: banner reference (URL / IPFS CID), free-text location, website URL. */
+  banner?: string;
+  location?: string;
+  website?: string;
   /** Pinned post id (a bare on-chain string id; not existence-validated). */
   pinnedPostId?: bigint;
   /** Follower/following counts (indexer-only; PAPI-direct omits — caps.follows:false). */

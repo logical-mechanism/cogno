@@ -6,10 +6,60 @@
   display: block;
 }
 
-/* Banner — accent gradient seeded from the address (inline style sets `background`). 200px desktop. */
+/* Banner — the on-chain banner image (RevealImage fills it) or an address-seeded gradient. 200px. */
 .banner {
   height: 200px;
   width: 100%;
+  overflow: hidden;
+}
+
+/* shown when a banner image fails to load — the deterministic gradient (inline style sets background) */
+.bannerFallback {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* location / website meta row (spec-118), below the bio */
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cg-space-1) var(--cg-space-4);
+  margin-top: var(--cg-space-2);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-secondary);
+}
+
+.metaItem {
+  display: inline-flex;
+  align-items: center;
+}
+
+.metaLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+  min-width: 0;
+  color: var(--cg-accent);
+}
+
+.metaLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.metaLink:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-input);
+}
+
+.metaIcon {
+  width: var(--cg-icon-sm);
+  height: var(--cg-icon-sm);
+  flex: 0 0 auto;
 }
 
 .body {

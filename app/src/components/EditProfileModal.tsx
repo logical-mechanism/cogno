@@ -32,6 +32,9 @@ import {
 const MAX_NAME = 64;
 const MAX_BIO = 256;
 const MAX_AVATAR = 128;
+const MAX_BANNER = 256;
+const MAX_LOCATION = 64;
+const MAX_WEBSITE = 256;
 
 /** A CheckCapacity pool rejection → the dedicated rate-limit copy (never a generic error). */
 function isRateLimit(message: string): boolean {
@@ -53,6 +56,9 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
   const [name, setName] = useState("");
   const [bio, setBio] = useState("");
   const [avatar, setAvatar] = useState("");
+  const [banner, setBanner] = useState("");
+  const [location, setLocation] = useState("");
+  const [website, setWebsite] = useState("");
   const [pinnedId, setPinnedId] = useState<bigint | null>(null);
   const [pinInput, setPinInput] = useState("");
 
@@ -75,6 +81,9 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
           setName(p.displayName ?? "");
           setBio(p.bio ?? "");
           setAvatar(p.avatar ?? "");
+          setBanner(p.banner ?? "");
+          setLocation(p.location ?? "");
+          setWebsite(p.website ?? "");
           setPinnedId(p.pinnedPostId ?? null);
         }
       } catch {
@@ -96,7 +105,16 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
   const nameBytes = useMemo(() => utf8Bytes(name), [name]);
   const bioBytes = useMemo(() => utf8Bytes(bio), [bio]);
   const avatarBytes = useMemo(() => utf8Bytes(avatar), [avatar]);
-  const overLimit = nameBytes > MAX_NAME || bioBytes > MAX_BIO || avatarBytes > MAX_AVATAR;
+  const bannerBytes = useMemo(() => utf8Bytes(banner), [banner]);
+  const locationBytes = useMemo(() => utf8Bytes(location), [location]);
+  const websiteBytes = useMemo(() => utf8Bytes(website), [website]);
+  const overLimit =
+    nameBytes > MAX_NAME ||
+    bioBytes > MAX_BIO ||
+    avatarBytes > MAX_AVATAR ||
+    bannerBytes > MAX_BANNER ||
+    locationBytes > MAX_LOCATION ||
+    websiteBytes > MAX_WEBSITE;
 
   const busy = saving !== null;
   const avatarSrc = avatar.trim().length > 0 ? avatar.trim() : null;
@@ -133,8 +151,21 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
 
   const onSave = useCallback(() => {
     if (!api || overLimit) return;
-    submit("save", submitSetProfile(api, signer, name.trim(), bio.trim(), avatar.trim()), "Profile updated");
-  }, [api, signer, name, bio, avatar, overLimit, submit]);
+    submit(
+      "save",
+      submitSetProfile(
+        api,
+        signer,
+        name.trim(),
+        bio.trim(),
+        avatar.trim(),
+        banner.trim(),
+        location.trim(),
+        website.trim(),
+      ),
+      "Profile updated",
+    );
+  }, [api, signer, name, bio, avatar, banner, location, website, overLimit, submit]);
 
   const onClear = useCallback(() => {
     if (!api) return;
@@ -233,6 +264,69 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                   </div>
                   <p className={styles.hint}>A link or IPFS CID, not an upload.</p>
                 </div>
+              </div>
+            </div>
+
+            {/* Banner URL/CID */}
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor="ep-banner">
+                Banner
+              </label>
+              <div className={styles.inputRow}>
+                <input
+                  id="ep-banner"
+                  className={styles.input}
+                  value={banner}
+                  onChange={(e) => setBanner(e.target.value)}
+                  placeholder="https://… or ipfs://…"
+                  maxLength={1024}
+                  disabled={busy}
+                  autoComplete="off"
+                  inputMode="url"
+                />
+                <ByteCounter value={banner} maxBytes={MAX_BANNER} size="sm" />
+              </div>
+              <p className={styles.hint}>A link or IPFS CID for your header image.</p>
+            </div>
+
+            {/* Location */}
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor="ep-location">
+                Location
+              </label>
+              <div className={styles.inputRow}>
+                <input
+                  id="ep-location"
+                  className={styles.input}
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  placeholder="Where you are"
+                  maxLength={256}
+                  disabled={busy}
+                  autoComplete="off"
+                />
+                <ByteCounter value={location} maxBytes={MAX_LOCATION} size="sm" />
+              </div>
+            </div>
+
+            {/* Website */}
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor="ep-website">
+                Website
+              </label>
+              <div className={styles.inputRow}>
+                <input
+                  id="ep-website"
+                  className={styles.input}
+                  value={website}
+                  onChange={(e) => setWebsite(e.target.value)}
+                  placeholder="https://…"
+                  maxLength={1024}
+                  disabled={busy}
+                  autoComplete="off"
+                  inputMode="url"
+                />
+                <ByteCounter value={website} maxBytes={MAX_WEBSITE} size="sm" />
               </div>
             </div>
 

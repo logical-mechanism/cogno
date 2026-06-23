@@ -35,13 +35,15 @@ export interface FeedCaps {
   // ── spec-113 social ──
   /** vote/poll weight tallies + counts + the viewer's own vote/repost state. (both — PAPI reads the aggregate maps) */
   tallies: boolean;
-  /** follow edges + follower/following counts. (indexer-only — reverse-index aggregation) */
+  /** follow edges + follower/following counts. (both — spec-118 Followers reverse map + counters) */
   follows: boolean;
   /** display name / bio / avatar / pinned. (both — pallet-profile stores these on-chain) */
   profiles: boolean;
-  /** the profile Replies + Likes reverse tabs (replies-/votes-by-author). (indexer-only) */
-  profileTabs: boolean;
-  /** ranked who-to-follow suggestion list. (indexer-only) */
+  /** the profile Replies reverse tab (replies-by-author). (indexer-only — no reverse replies map) */
+  profileReplies: boolean;
+  /** the profile Likes reverse tab (votes-by-author). (both — spec-118 VotesByAccount reverse map) */
+  profileLikes: boolean;
+  /** ranked who-to-follow suggestion list. (both — spec-118 FollowerCount ranking served node-direct) */
   whoToFollow: boolean;
 }
 

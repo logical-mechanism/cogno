@@ -14,7 +14,8 @@
 //
 // HONESTY PURGE (surface 11 §13): no verified badge, no trust labels, no "signed ≠ finalized", no block
 // numbers / finalized chips, no anchor UI, no capacity battery. The dual-key model surfaces only as
-// friendly copy. No dev-account UI here — //Alice lives in Settings → Advanced.
+// friendly copy. No dev-account UI here (the dev-account picker was removed — the //Alice path is now
+// programmatic-only via signerCtl.setDevAccount, not surfaced in Settings).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";

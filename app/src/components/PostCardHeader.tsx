@@ -23,6 +23,7 @@ import { Avatar } from "./Avatar";
 import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
 import { PostTime } from "./PostTime";
+import { ProfileHoverCard } from "./ProfileHoverCard";
 import { IconMore } from "./icons";
 import type { AuthorRef, OverflowMenuItem, AvatarSize } from "./kit";
 
@@ -115,24 +116,28 @@ export function PostCardHeader({
 
   return (
     <div className={`${styles.header} ${detail ? styles.detail : ""}`} ref={wrapRef}>
-      <Avatar
-        address={author.address}
-        src={author.avatar}
-        size={avatarSize}
-        dim={dim}
-        name={author.displayName}
-        onClick={() => onAuthorOpen(author.address)}
-      />
+      <ProfileHoverCard author={author}>
+        <Avatar
+          address={author.address}
+          src={author.avatar}
+          size={avatarSize}
+          dim={dim}
+          name={author.displayName}
+          onClick={() => onAuthorOpen(author.address)}
+        />
+      </ProfileHoverCard>
 
       <div className={styles.identity}>
         <span className={styles.nameLine}>
-          <button type="button" className={styles.nameBtn} onClick={openAuthor}>
-            <DisplayName
-              address={author.address}
-              displayName={author.displayName}
-              authorRevoked={dim}
-            />
-          </button>
+          <ProfileHoverCard author={author}>
+            <button type="button" className={styles.nameBtn} onClick={openAuthor}>
+              <DisplayName
+                address={author.address}
+                displayName={author.displayName}
+                authorRevoked={dim}
+              />
+            </button>
+          </ProfileHoverCard>
           <Handle address={author.address} />
           {at != null && <PostTime at={at} />}
           {dim && (

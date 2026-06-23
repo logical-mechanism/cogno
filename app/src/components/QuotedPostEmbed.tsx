@@ -53,6 +53,18 @@ export function QuotedPostEmbed({
     [missing, onOpen, quoted.id],
   );
 
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.target !== e.currentTarget) return; // only when the box itself is focused
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!missing) onOpen(quoted.id);
+      }
+    },
+    [missing, onOpen, quoted.id],
+  );
+
   if (missing) {
     return (
       <div className={styles.stub} aria-label="Quoted post unavailable">
@@ -64,10 +76,15 @@ export function QuotedPostEmbed({
   const dim = quoted.authorRevoked;
 
   return (
-    <button
-      type="button"
+    // A div role="link" (NOT a <button>) so the quoted body's image reveal-cover button and the
+    // avatar cover are valid descendants — interactive content may not nest inside a <button>. Mirrors
+    // PostCard's clickable-row pattern; every inner control stopPropagation()s.
+    <div
       className={`${styles.box} ${dim ? styles.dim : ""}`}
+      role="link"
+      tabIndex={0}
       onClick={open}
+      onKeyDown={onKeyDown}
       aria-label={`Quoted post by ${quoted.displayName?.trim() || quoted.author}`}
     >
       <div className={styles.header}>
@@ -85,6 +102,6 @@ export function QuotedPostEmbed({
       <div className={styles.bodyClamp} style={{ ["--cg-clamp-lines" as string]: String(maxLines) }}>
         <PostBody text={quoted.text} dim={dim} />
       </div>
-    </button>
+    </div>
   );
 }

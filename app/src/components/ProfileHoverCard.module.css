@@ -1,0 +1,115 @@
+/* ProfileHoverCard — the wrap is layout-neutral (just a hover region); the card is a portaled,
+ * fixed-positioned popover. */
+
+.wrap {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.card {
+  position: fixed;
+  z-index: var(--cg-z-dropdown);
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-4);
+  background: var(--cg-bg-elevated);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  box-shadow: var(--cg-shadow-modal);
+  animation: cg-hovercard-in var(--cg-motion-fast) var(--cg-ease-out);
+}
+
+@keyframes cg-hovercard-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.topRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cg-space-3);
+}
+
+.avatarBtn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+  border-radius: var(--cg-radius-pill);
+}
+
+.avatarBtn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.nameBtn {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cg-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.nameBtn:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.nameBtn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-input);
+}
+
+.bio {
+  margin: 0;
+  font-family: var(--cg-font-ui);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  /* clamp to 3 lines so the card stays compact */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.counts {
+  display: flex;
+  gap: var(--cg-space-4);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}
+
+.counts strong {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-bold);
+}
+
+.loading {
+  display: flex;
+  padding: var(--cg-space-1) 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    animation: none;
+  }
+}

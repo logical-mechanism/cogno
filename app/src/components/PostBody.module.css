@@ -25,6 +25,19 @@
   color: var(--cg-text-muted);
 }
 
+/* image link rendered behind a reveal cover — a constrained media card on its own line */
+.media {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  aspect-ratio: 16 / 9;
+  margin-top: var(--cg-space-2);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  overflow: hidden;
+  background-color: var(--cg-bg-subtle);
+}
+
 .link {
   color: var(--cg-accent);
 }

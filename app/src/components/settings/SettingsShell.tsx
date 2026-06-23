@@ -17,7 +17,7 @@ import { ProfileSection } from "./ProfileSection";
 import { VaultSection } from "./VaultSection";
 import { AppearanceSection } from "./AppearanceSection";
 import { NetworkSection } from "./NetworkSection";
-import { AdvancedSection } from "./AdvancedSection";
+import { DiagnosticsSection } from "./DiagnosticsSection";
 import { AboutSection } from "./AboutSection";
 
 export type SectionId =
@@ -26,7 +26,7 @@ export type SectionId =
   | "vault"
   | "appearance"
   | "network"
-  | "advanced"
+  | "diagnostics"
   | "about";
 
 export const SECTIONS: { id: SectionId; heading: string }[] = [
@@ -35,7 +35,7 @@ export const SECTIONS: { id: SectionId; heading: string }[] = [
   { id: "vault", heading: "Vault & posting power" },
   { id: "appearance", heading: "Appearance" },
   { id: "network", heading: "Network" },
-  { id: "advanced", heading: "Advanced" },
+  { id: "diagnostics", heading: "Diagnostics" },
   { id: "about", heading: "About" },
   // NOTE: Notifications preferences (reply/vote/repost/follow/quote) is a DEFERRED follow-up — see
   // doc 12 §11. No section is rendered for it in v1; leave this seam.
@@ -157,8 +157,8 @@ function renderSection(id: SectionId, onSelect: (id: SectionId) => void) {
       return <AppearanceSection />;
     case "network":
       return <NetworkSection />;
-    case "advanced":
-      return <AdvancedSection />;
+    case "diagnostics":
+      return <DiagnosticsSection />;
     case "about":
       return <AboutSection />;
   }

@@ -2,18 +2,22 @@
 
 // PostBody — render a post's text (doc 03 §4, D1).
 //
-// TEXT ONLY. We auto-link bare http(s) URLs and render NOTHING else specially:
-//   - NO media (images/video/GIF) — there is no media field on-chain.
+// TEXT ONLY, with one exception: an image LINK (an http(s)/ipfs:// URL ending in an image extension,
+// or a bare ipfs:// CID) renders behind a click-to-reveal cover (RevealImage) so the browser never
+// auto-fetches an arbitrary host — there is still no media FIELD on-chain. Everything else:
+//   - bare http(s)/ipfs:// URLs auto-link (ipfs:// resolved to a gateway).
 //   - NO @mention links — handles are non-unique truncated ss58, NOT addressable text, so a
 //     literal `@5CBE…` in a body is plain text (divergence from X, by design).
 //   - NO #hashtag links — there is no Topics surface (out of scope); a `#tag` is plain text.
 //   - NO markdown.
 // Line breaks are preserved (white-space: pre-wrap) and long unbroken strings wrap
 // (overflow-wrap: break-word). The node tree is built from PARSED SEGMENTS — never
-// dangerouslySetInnerHTML — so the text is XSS-safe; the only links we emit are http(s) anchors with
+// dangerouslySetInnerHTML — so the text is XSS-safe; the only links we emit are anchors with
 // rel="noopener noreferrer nofollow", target=_blank, styled in --cg-accent.
 
 import { Fragment, useMemo } from "react";
+import { isImageUrl, resolveImageSrc } from "@/lib/media";
+import { RevealImage } from "./RevealImage";
 import styles from "./PostBody.module.css";
 
 export interface PostBodyProps {
@@ -25,17 +29,17 @@ export interface PostBodyProps {
   dim?: boolean;
 }
 
-// Match http(s) URLs. Stop the run at whitespace; trailing sentence punctuation is trimmed below so a
-// URL at the end of a sentence ("see https://x.org.") doesn't swallow the period.
-const URL_RE = /https?:\/\/[^\s]+/gi;
+// Match http(s) AND ipfs:// URLs. Stop the run at whitespace; trailing sentence punctuation is
+// trimmed below so a URL at the end of a sentence ("see https://x.org.") doesn't swallow the period.
+const URL_RE = /(?:https?|ipfs):\/\/[^\s]+/gi;
 const TRAILING_PUNCT = /[.,!?:;)\]}'"»”’]+$/;
 
 interface Seg {
-  kind: "text" | "url";
+  kind: "text" | "url" | "image";
   value: string;
 }
 
-/** Split a body into plain-text + url segments (pure; no DOM). */
+/** Split a body into plain-text + url + image segments (pure; no DOM). */
 function segment(text: string): Seg[] {
   const segs: Seg[] = [];
   let last = 0;
@@ -46,7 +50,7 @@ function segment(text: string): Seg[] {
     const trail = url.match(TRAILING_PUNCT)?.[0] ?? "";
     if (trail) url = url.slice(0, url.length - trail.length);
     if (start > last) segs.push({ kind: "text", value: text.slice(last, start) });
-    segs.push({ kind: "url", value: url });
+    segs.push({ kind: isImageUrl(url) ? "image" : "url", value: url });
     if (trail) segs.push({ kind: "text", value: trail });
     last = start + m[0].length;
   }
@@ -54,11 +58,27 @@ function segment(text: string): Seg[] {
   return segs;
 }
 
+/** The href a (non-image) link segment opens — ipfs:// links resolve to a gateway so they work. */
+function linkHref(raw: string): string {
+  return /^ipfs:\/\//i.test(raw) ? resolveImageSrc(raw) : raw;
+}
+
+/** A short alt for a linked image — its filename, else a generic label (never the whole URL). */
+function imageAlt(raw: string): string {
+  const path = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
+  const slash = path.lastIndexOf("/");
+  return (slash >= 0 ? path.slice(slash + 1) : "") || "Linked image";
+}
+
 /**
  * X-style shortened LABEL for a long URL: host + first path segment + `…`. The full URL stays the
  * href; only the visible text is shortened. Short URLs render as-is (minus the scheme).
  */
 function urlLabel(raw: string): string {
+  if (/^ipfs:\/\//i.test(raw)) {
+    const cid = raw.replace(/^ipfs:\/\//i, "");
+    return cid.length > 18 ? `ipfs://${cid.slice(0, 16)}…` : raw;
+  }
   let u: URL;
   try {
     u = new URL(raw);
@@ -86,24 +106,33 @@ export function PostBody({ text, size = "base", dim }: PostBodyProps) {
 
   return (
     <div className={cls}>
-      {segs.map((s, i) =>
-        s.kind === "url" ? (
-          <a
-            key={i}
-            className={styles.link}
-            href={s.value}
-            target="_blank"
-            rel="noopener noreferrer nofollow"
-            // Links inside a clickable PostCard row must not also trigger the row navigation.
-            onClick={(e) => e.stopPropagation()}
-            title={s.value}
-          >
-            {urlLabel(s.value)}
-          </a>
-        ) : (
-          <Fragment key={i}>{s.value}</Fragment>
-        ),
-      )}
+      {segs.map((s, i) => {
+        if (s.kind === "image") {
+          const resolved = resolveImageSrc(s.value);
+          return (
+            <span key={i} className={styles.media}>
+              <RevealImage src={resolved} alt={imageAlt(s.value)} href={resolved} />
+            </span>
+          );
+        }
+        if (s.kind === "url") {
+          return (
+            <a
+              key={i}
+              className={styles.link}
+              href={linkHref(s.value)}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              // Links inside a clickable PostCard row must not also trigger the row navigation.
+              onClick={(e) => e.stopPropagation()}
+              title={s.value}
+            >
+              {urlLabel(s.value)}
+            </a>
+          );
+        }
+        return <Fragment key={i}>{s.value}</Fragment>;
+      })}
     </div>
   );
 }

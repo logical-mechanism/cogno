@@ -311,12 +311,14 @@ export default function HomePage() {
               ? "Follow people to see their posts"
               : followeesEmpty
                 ? "Not following anyone yet."
-                : undefined
+                : "No posts from people you follow yet"
           }
           emptyDescription={
             me == null
               ? "When you connect and follow accounts, their posts show up here."
-              : undefined
+              : followeesEmpty
+                ? undefined
+                : "When the accounts you follow post, it'll show up here."
           }
           emptyAction={
             me == null
