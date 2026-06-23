@@ -13,6 +13,9 @@
 next-env.d.ts
 *.tsbuildinfo
 
+# local env (copied from .env.example; may hold a real Blockfrost key — keep .env.example committed)
+.env*.local
+
 # misc
 .DS_Store
 *.log
