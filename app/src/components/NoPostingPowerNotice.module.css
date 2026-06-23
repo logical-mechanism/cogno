@@ -1,0 +1,45 @@
+/* NoPostingPowerNotice — slim inline banner, accent edge + a "Lock ADA" link. Distinct from the amber
+   RateLimitNotice: this is a permanent "lock to post" gate, not a transient cooldown. */
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  margin-top: var(--cg-space-2);
+  padding: var(--cg-space-2) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-left: 3px solid var(--cg-accent);
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg-elevated);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+}
+
+.glyph {
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
+.text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.action {
+  flex: 0 0 auto;
+  padding: var(--cg-space-1) var(--cg-space-2);
+  color: var(--cg-accent);
+  font-weight: var(--cg-fw-semibold);
+  text-decoration: none;
+  border-radius: var(--cg-radius-input);
+}
+
+.action:hover {
+  background: var(--cg-accent-wash);
+  text-decoration: underline;
+}
+
+.action:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}

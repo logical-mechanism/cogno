@@ -26,6 +26,7 @@ import { useModalStore } from "@/lib/modalStore";
 import { useMutation } from "@/hooks/useMutation";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { useThread } from "@/hooks/useThread";
+import { useCapacity } from "@/hooks/useCapacity";
 import { useToaster, RATE_LIMIT_COPY } from "../toast/ToasterProvider";
 import {
   submitPost,
@@ -67,10 +68,15 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 
 export function ModalRouteHost() {
   const { state, close } = useModalStore();
-  const { api, signer, source, viewer } = useSession();
+  const { api, signer, source, viewer, bestBlock } = useSession();
   const { addPending, dropPending, failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast, rateLimit } = useToaster();
+
+  // Zero locked ADA → no posting power: hard-disable the composer CTA (the self-contained
+  // NoPostingPowerNotice already shows the "Lock ADA to post" banner), matching HomePage/ComposePage.
+  const { view: capacityView } = useCapacity(api, viewer.address ?? null, bestBlock);
+  const noPostingPower = viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
 
   const [submitState, setSubmitState] = useState<ActionState>("idle");
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
@@ -222,13 +228,22 @@ export function ModalRouteHost() {
   return (
     <ComposerModal title={title} onClose={onClose}>
       {kind === "compose" && (
-        <Composer viewer={viewer} mode="post" submitState={submitState} autoFocus onSubmit={onPost} onCancel={onClose} />
+        <Composer
+          viewer={viewer}
+          mode="post"
+          submitState={submitState}
+          noPostingPower={noPostingPower}
+          autoFocus
+          onSubmit={onPost}
+          onCancel={onClose}
+        />
       )}
       {kind === "reply" && targetPost && (
         <ReplyComposer
           viewer={viewer}
           replyTo={targetPost}
           submitState={submitState}
+          noPostingPower={noPostingPower}
           autoFocus
           submitReply={onReply}
           onCancel={onClose}
@@ -239,6 +254,7 @@ export function ModalRouteHost() {
           viewer={viewer}
           quoted={targetPost}
           submitState={submitState}
+          noPostingPower={noPostingPower}
           autoFocus
           submitQuote={onQuote}
           onCancel={onClose}
@@ -250,6 +266,7 @@ export function ModalRouteHost() {
           pollDraft={pollDraft}
           onChange={setPollDraft}
           submitState={submitState}
+          noPostingPower={noPostingPower}
           autoFocus
           submitCreatePoll={onCreatePoll}
           onCancel={onClose}

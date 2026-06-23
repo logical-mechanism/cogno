@@ -148,7 +148,7 @@ export function SettingsShell({
 function renderSection(id: SectionId, onSelect: (id: SectionId) => void) {
   switch (id) {
     case "account":
-      return <AccountSection />;
+      return <AccountSection onGoVault={() => onSelect("vault")} />;
     case "profile":
       return <ProfileSection />;
     case "vault":

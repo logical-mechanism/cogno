@@ -22,6 +22,7 @@ export interface ReplyComposerProps {
   submitState: ActionState;
   rateLimited?: boolean;
   retryInSeconds?: number | null;
+  noPostingPower?: boolean;
   autoFocus?: boolean;
   /** Hand back the reply text; the surface calls mutations.submitReply(text, replyTo.id). */
   submitReply: (text: string) => void;
@@ -34,6 +35,7 @@ export function ReplyComposer({
   submitState,
   rateLimited,
   retryInSeconds,
+  noPostingPower,
   autoFocus,
   submitReply,
   onCancel,
@@ -79,6 +81,7 @@ export function ReplyComposer({
       submitState={submitState}
       rateLimited={rateLimited}
       retryInSeconds={retryInSeconds}
+      noPostingPower={noPostingPower}
       autoFocus={autoFocus}
       contextAbove={parentPreview}
       draftExtras={{ parentId: replyTo.id }}

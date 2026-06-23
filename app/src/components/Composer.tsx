@@ -6,7 +6,9 @@
 // extrinsic and NEVER subscribes to a read/capacity hook: the surface owns `useCapacity` +
 // `useMutation` and hands the composer the *derived* gate state — `submitState` (the optimistic
 // ActionState), `viewer.status` (the session gate), and `rateLimited` (draftStatus !== 'ok', already
-// classified by the surface via @/lib/chain/capacity.draftStatus). On submit the composer hands back
+// classified by the surface via @/lib/chain/capacity.draftStatus). The zero-locked-ADA "no posting
+// power" gate is surfaced by the self-contained NoPostingPowerNotice child (like CapacityMeter), with
+// `noPostingPower` hard-disabling the CTA where the surface knows it. On submit the composer hands back
 // a `ComposerDraft` via `onSubmit(draft)` and OPTIMISTICALLY clears its textarea instantly (doc 09
 // §6.1 — the surface closes the modal + inserts the pending card).
 //
@@ -18,6 +20,7 @@
 import { useCallback, useRef, useState } from "react";
 import { ByteCounter, utf8Bytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
+import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
 import { CapacityMeter } from "./CapacityMeter";
 import { Avatar } from "./Avatar";
 import { Spinner, IconPoll } from "./icons";
@@ -63,6 +66,12 @@ export interface ComposerProps {
   rateLimited?: boolean;
   /** Soft "try again in ~Ns" for the RateLimitNotice (never a meter/percent — D5). */
   retryInSeconds?: number | null;
+  /**
+   * Ready account with ZERO posting power (locked-ADA weight 0) → CTA disabled + the "Lock ADA to post"
+   * notice instead of the transient rate-limit one (waiting never helps). The notice ALSO renders
+   * self-contained on every surface; this prop only hard-disables the CTA where the surface knows it.
+   */
+  noPostingPower?: boolean;
   /** Context block above/below the textarea (reply preview / QuotedPostEmbed / poll options). */
   contextAbove?: ReactNode;
   contextBelow?: ReactNode;
@@ -113,6 +122,7 @@ export function Composer({
   submitState,
   rateLimited,
   retryInSeconds,
+  noPostingPower,
   contextAbove,
   contextBelow,
   toolbarExtras,
@@ -177,10 +187,11 @@ export function Composer({
   const overLimit = measure.over;
   const textValid = nonEmpty && !overLimit && extraValid;
 
-  // CTA disabled rules — §5.4 order: session(reroute) > validity > capacity > pending.
+  // CTA disabled rules — §5.4 order: session(reroute) > validity > capacity > pending. No posting
+  // power (zero locked ADA) is a hard capacity block, same as rate-limited.
   const disabled = sessionGated
     ? false // session-gated CTA is ACTIVE (it reroutes), never greyed
-    : !textValid || rateLimited === true || pending;
+    : !textValid || rateLimited === true || noPostingPower === true || pending;
 
   // Auto-grow: let the textarea size to content (capped by CSS max-height → scroll).
   const onTextareaInput = useCallback(
@@ -282,7 +293,11 @@ export function Composer({
         </p>
       )}
 
-      {!sessionGated && rateLimited && (
+      {/* No posting power (zero locked ADA) → the honest "Lock ADA to post" banner. Self-contained, so
+          it renders on every surface; it takes precedence over the transient rate-limit notice. */}
+      {!sessionGated && <NoPostingPowerNotice />}
+
+      {!sessionGated && !noPostingPower && rateLimited && (
         <div className={styles.notice}>
           <RateLimitNotice variant="inline" retryInSeconds={retryInSeconds} />
         </div>
@@ -324,13 +339,15 @@ export function Composer({
             title={
               sessionGated
                 ? undefined
-                : overLimit
-                  ? `Too long — trim to ${maxBytes} bytes`
-                  : !nonEmpty
-                    ? "Write something first"
-                    : rateLimited
-                      ? "You're over the rate limit"
-                      : undefined
+                : noPostingPower
+                  ? "Lock ADA to post"
+                  : overLimit
+                    ? `Too long — trim to ${maxBytes} bytes`
+                    : !nonEmpty
+                      ? "Write something first"
+                      : rateLimited
+                        ? "You're over the rate limit"
+                        : undefined
             }
           >
             {pending ? <Spinner size="sm" label="Posting" /> : label}

@@ -77,13 +77,13 @@ export function BindStep({
   return (
     <section className={styles.step} aria-labelledby="welcome-heading">
       <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
-        One more step to post
+        Register your account
       </h1>
 
       <p className={styles.body}>
-        Register <span className={styles.handle}>@{shortHandle}</span> so it can post. Your wallet
-        will sign once to prove this account is yours. It&apos;s free and there&apos;s no transaction
-        fee.
+        Register <span className={styles.handle}>@{shortHandle}</span> to claim this account. Your
+        wallet signs once to prove it&apos;s yours — it&apos;s free, with no transaction fee. You&apos;ll
+        add posting power next.
       </p>
 
       <button
