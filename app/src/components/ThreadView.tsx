@@ -37,6 +37,7 @@ import { useRepost } from "@/hooks/useRepost";
 import { usePoll } from "@/hooks/usePoll";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { useMutation } from "@/hooks/useMutation";
+import { useCapacity } from "@/hooks/useCapacity";
 import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitReply } from "@/lib/chain/mutations";
@@ -61,7 +62,12 @@ export interface ThreadViewProps {
 
 export function ThreadView({ rootId }: ThreadViewProps) {
   const router = useRouter();
-  const { api, signer, source, viewer, votingPower } = useSession();
+  const { api, signer, source, viewer, votingPower, bestBlock } = useSession();
+
+  // Zero locked ADA → no posting power: hard-disable the inline reply CTA (the Composer's
+  // self-contained NoPostingPowerNotice shows the "Lock ADA to post" banner), matching the other surfaces.
+  const { view: capacityView } = useCapacity(api, viewer.address ?? null, bestBlock);
+  const noPostingPower = viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
 
   const { thread, loading, error, addOptimisticReply } = useThread(source, rootId);
   // The focal's reply-context is rendered ONCE, as the tappable ancestor line above the card. We
@@ -429,6 +435,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           viewer={viewer}
           mode="reply"
           submitState={composeState}
+          noPostingPower={noPostingPower}
           onSubmit={onSubmitReply}
           draftExtras={{ parentId: rootId }}
         />

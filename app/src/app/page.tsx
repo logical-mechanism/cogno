@@ -159,9 +159,14 @@ export default function HomePage() {
       const probe = draftStatus(capacityView, 0, capacityConsts);
       return probe.kind === "charging" || probe.kind === "wait";
     }
-    const s = draftStatus(capacityView, byteLen, capacityConsts);
-    return s.kind !== "ok";
+    // Zero locked ADA (weight 0) is surfaced separately as "lock ADA to post", NOT as a rate limit.
+    // Any OTHER non-ok kind (incl. the weight>0 / rate==0 no_weight edge) still disables via rateLimited.
+    const k = draftStatus(capacityView, byteLen, capacityConsts).kind;
+    return k !== "ok" && !(k === "no_weight" && capacityView.weight === 0n);
   }, [viewer.status, capacityView, capacityConsts, composerText]);
+  // Ready account with zero posting power (locked-ADA weight 0) → the honest "lock ADA to post" gate.
+  const composerNoPower =
+    viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
 
   // ── inline composer (top-level post) ──────────────────────────────────────────────────────
   const onComposePost = useCallback(
@@ -285,6 +290,7 @@ export default function HomePage() {
             text={composerText}
             onTextChange={setComposerText}
             rateLimited={composerRateLimited}
+            noPostingPower={composerNoPower}
             onTogglePoll={() => modalActions.openPoll()}
             onSubmit={onComposePost}
           />

@@ -126,8 +126,14 @@ export function ComposePage() {
       const probe = draftStatus(capacityView, 0, capacityConsts);
       return probe.kind === "charging" || probe.kind === "wait";
     }
-    return draftStatus(capacityView, byteLen, capacityConsts).kind !== "ok";
+    // Zero locked ADA (weight 0) is surfaced separately as "lock ADA to post", NOT as a rate limit.
+    // Any OTHER non-ok kind (incl. the weight>0 / rate==0 no_weight edge) still disables via rateLimited.
+    const k = draftStatus(capacityView, byteLen, capacityConsts).kind;
+    return k !== "ok" && !(k === "no_weight" && capacityView.weight === 0n);
   }, [viewer.status, capacityView, capacityConsts, gateText]);
+  // Ready account with zero posting power (locked-ADA weight 0) → the honest "lock ADA to post" gate.
+  const noPostingPower =
+    viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
 
   // ── goBack: prefer in-app history; else land on Home (§6.1 step 3 / Cancel). ─────────────────
   const goBack = useCallback(() => {
@@ -261,6 +267,7 @@ export function ComposePage() {
             text={text}
             onTextChange={setText}
             rateLimited={rateLimited}
+            noPostingPower={noPostingPower}
             autoFocus
             onTogglePoll={() => router.push("/compose/?poll=1")}
             onSubmit={onPost}
@@ -278,6 +285,7 @@ export function ComposePage() {
               replyTo={targetPost}
               submitState={submitState}
               rateLimited={rateLimited}
+              noPostingPower={noPostingPower}
               autoFocus
               submitReply={onReply}
               onCancel={goBack}
@@ -292,6 +300,7 @@ export function ComposePage() {
                 text={text}
                 onTextChange={setText}
                 rateLimited={rateLimited}
+                noPostingPower={noPostingPower}
                 autoFocus
                 onSubmit={onPost}
                 onCancel={goBack}
@@ -307,6 +316,7 @@ export function ComposePage() {
               quoted={targetPost}
               submitState={submitState}
               rateLimited={rateLimited}
+              noPostingPower={noPostingPower}
               autoFocus
               submitQuote={onQuote}
               onCancel={goBack}
@@ -320,6 +330,7 @@ export function ComposePage() {
                 text={text}
                 onTextChange={setText}
                 rateLimited={rateLimited}
+                noPostingPower={noPostingPower}
                 autoFocus
                 onSubmit={onPost}
                 onCancel={goBack}
@@ -335,6 +346,7 @@ export function ComposePage() {
             onChange={setPollDraft}
             submitState={submitState}
             rateLimited={rateLimited}
+            noPostingPower={noPostingPower}
             autoFocus
             submitCreatePoll={onCreatePoll}
             onCancel={goBack}

@@ -1,8 +1,10 @@
 "use client";
 
-// WelcomePage — /welcome (surface 11). The connect → derive → CIP-8 bind onboarding stepper, plus two
-// optional power-ups (lock 100 ADA for posting capacity, bind the stake key for voting weight). It is
-// the canonical write-gate target for any write intent attempted while not connected / not bound.
+// WelcomePage — /welcome (surface 11). The connect → derive → CIP-8 bind onboarding stepper, then the
+// power-ups step: locking 100 ADA into the L1 vault is REQUIRED to post (it earns the talk-capacity
+// every post consumes — a bound account with zero locked ADA cannot post), while binding the stake key
+// for voting weight is the only genuinely optional boost. It is the canonical write-gate target for any
+// write intent attempted while not connected / not bound.
 //
 // The stepper is driven by session.sessionState (@/lib/session) + a local subStep within
 // connected_unbound (surface 11 §6.1):
@@ -75,6 +77,23 @@ export default function WelcomePage() {
 
   const [subStep, setSubStep] = useState<"account" | "bind">("account");
 
+  // Live posting power (TalkStake.AllowedStake = locked-ADA weight) for the active key. Drives whether
+  // the power-ups step says "you can post" (weight > 0) or "lock ADA to post". null while loading →
+  // treated as no-power-yet so we never falsely claim "all set" before the read resolves.
+  const [postingPower, setPostingPower] = useState<bigint | null>(null);
+  useEffect(() => {
+    if (!api) {
+      setPostingPower(null);
+      return;
+    }
+    const ss58 = signerCtl.signer.ss58;
+    const sub = api.query.TalkStake.AllowedStake.watchValue(ss58, "best").subscribe(
+      (w) => setPostingPower((w as bigint) ?? 0n),
+      () => setPostingPower(null),
+    );
+    return () => sub.unsubscribe();
+  }, [api, signerCtl.signer.ss58]);
+
   // Derive the active step (surface 11 §6.1).
   const welcomeStep: WelcomeStep =
     sessionState === "connecting"
@@ -112,12 +131,19 @@ export default function WelcomePage() {
   }, [signerCtl.error, toast]);
 
   // ── focus the step heading on each transition (a11y, §12) ────────────────────────────────────
+  // The powerups step swaps its own heading as on-chain state lands (checking → "Lock ADA" → "Almost
+  // there" → "You're all set"), all under welcomeStep==='powerups'. Key the focus on that sub-state too
+  // so focus follows (and screen readers re-announce) the new heading instead of dropping to <body>.
+  const powerupsBanner =
+    welcomeStep === "powerups"
+      ? `${(postingPower ?? 0n) > 0n}|${vault.phase === "submitted"}|${postingPower === null}`
+      : "";
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     // Defer to after paint so the new heading is mounted.
     const id = window.requestAnimationFrame(() => headingRef.current?.focus());
     return () => window.cancelAnimationFrame(id);
-  }, [welcomeStep]);
+  }, [welcomeStep, powerupsBanner]);
 
   // ── actions ──────────────────────────────────────────────────────────────────────────────────
   const onConnect = useCallback(
@@ -199,6 +225,7 @@ export default function WelcomePage() {
             votingPower: identity.votingPower,
             bindStake: identity.bindStake,
           }}
+          postingPower={postingPower}
           onGoToTimeline={goToTimeline}
           onOpenSettings={openSettings}
           headingRef={headingRef}

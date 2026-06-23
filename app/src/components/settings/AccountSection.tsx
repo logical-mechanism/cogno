@@ -5,7 +5,7 @@
 // bind status (Finish setup → identity.bind), and voting power (Add voting power → identity.bindStake).
 // Display + disconnect only — the binds reuse useIdentity exactly as /welcome does. NO honesty copy.
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import styles from "./AccountSection.module.css";
 import { Handle } from "@/components/Handle";
 import { Spinner } from "@/components/icons";
@@ -24,14 +24,30 @@ function formatAda(lovelace: bigint | null): string {
   return `${whole.toLocaleString()}.${frac} ADA`;
 }
 
-export function AccountSection() {
-  const { signerCtl, identity, sessionState } = useSession();
+export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
+  const { api, signerCtl, identity, sessionState } = useSession();
   const { toast } = useToaster();
 
   const walletConnected = signerCtl.walletConnected;
   const postingEnabled = signerCtl.postingEnabled;
   const ss58 = signerCtl.signer.ss58;
   const walletId = signerCtl.connectedWalletId;
+
+  // Posting power (TalkStake.AllowedStake = locked-ADA weight). Feeds the canonical setup status so the
+  // banner says "you can post" only once it's non-zero — a registered account with zero locked ADA has
+  // zero talk-capacity and cannot post. null while loading → a neutral "checking" verdict.
+  const [postingPower, setPostingPower] = useState<bigint | null>(null);
+  useEffect(() => {
+    if (!api) {
+      setPostingPower(null);
+      return;
+    }
+    const sub = api.query.TalkStake.AllowedStake.watchValue(ss58, "best").subscribe(
+      (w) => setPostingPower((w as bigint) ?? 0n),
+      () => setPostingPower(null),
+    );
+    return () => sub.unsubscribe();
+  }, [api, ss58]);
 
   const copyAddress = useCallback(async () => {
     try {
@@ -69,13 +85,14 @@ export function AccountSection() {
 
   const loadingBound = identity.bound === null;
   const loadingVote = identity.votingPower === null;
-  const status = setupStatus(sessionState);
+  const status = setupStatus(sessionState, postingPower);
 
   return (
     <div className={styles.cards}>
       {/* The single canonical setup status — one headline + the ONE next required step (when any).
-          Everything below is detail/optional, so "am I all set?" has a single answer here. */}
-      <div className={`${styles.card} ${styles.statusCard}`}>
+          Everything below is detail/optional, so "am I all set?" has a single answer here. The
+          posting-power read resolves async (checking → "Lock ADA"), so announce the verdict politely. */}
+      <div className={`${styles.card} ${styles.statusCard}`} aria-live="polite">
         <p className={styles.statusHeadline}>
           {status.ready ? "✓ " : ""}
           {status.headline}
@@ -95,6 +112,11 @@ export function AccountSection() {
             ) : (
               status.next.label
             )}
+          </button>
+        )}
+        {status.next?.kind === "lock" && onGoVault && (
+          <button type="button" className={styles.primaryBtn} onClick={onGoVault}>
+            {status.next.label}
           </button>
         )}
         {identity.error && (

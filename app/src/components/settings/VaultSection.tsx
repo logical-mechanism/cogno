@@ -98,7 +98,9 @@ export function VaultSection({ onGoNetwork }: { onGoNetwork?: () => void }) {
         ) : (
           <p className={styles.powerMuted}>No posting power yet</p>
         )}
-        <p className={styles.note}>Lock ADA below to start posting without hitting the rate limit.</p>
+        <p className={styles.note}>
+          Posting requires locked ADA. Lock below to get the talk-capacity every post consumes.
+        </p>
       </div>
 
       {/* Provider unavailable → hide lock/exit, link to Network */}
