@@ -1,7 +1,7 @@
 "use client";
 
 // AboutSection — Settings §8 (doc 12). A minimal, plain "About cogno-chain" card: name + one-liner +
-// an optional source link. NO honesty / trusted-follower / operator-run / anchor copy.
+// an optional source link + the copyright line. NO honesty / trusted-follower / operator-run / anchor copy.
 
 import styles from "./AboutSection.module.css";
 
@@ -15,6 +15,7 @@ export function AboutSection() {
       <a className={styles.link} href={SOURCE_URL} target="_blank" rel="noreferrer noopener">
         Source ↗
       </a>
+      <p className={styles.copyright}>© 2026 Logical Mechanism LLC</p>
     </div>
   );
 }

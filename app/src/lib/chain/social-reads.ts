@@ -12,7 +12,7 @@
 //   RepostCount(u64) -> u32                                                                       (ValueQuery)
 //   Votes(u64, who) -> VoteRecord { dir: VoteDir, weight:u128 } | None                            (OptionQuery)
 //   Reposts(u64, who) -> () | None                                                                (OptionQuery, UNIT value)
-//   Polls(u64) -> Poll { options: Vec<Vec<u8>> } | None                                           (OptionQuery)
+//   Polls(u64) -> Poll { options: Vec<Vec<u8>> } | None  ⚠ PAPI UNWRAPS the single field → Binary[] (OptionQuery)
 //   PollTally(u64, u8) -> OptionTally { weight:u128, count:u32 }                                  (ValueQuery, DoubleMap)
 //   PollVotes(u64, who) -> PollVoteRecord { option:u8, weight:u128 } | None                       (OptionQuery)
 
@@ -78,13 +78,22 @@ export async function readViewerPostState(
   return { myVote, reposted };
 }
 
-/** A poll's options + per-option stake-weighted tally, assembled from `Polls` + `PollTally`. */
+/**
+ * A poll's options + per-option stake-weighted tally, assembled from `Polls` + `PollTally`.
+ *
+ * ⚠ Shape gotcha: `Poll` is a SINGLE-FIELD struct (`{ options }`), and PAPI unwraps a single-field
+ * struct to its inner type — so `Polls.getValue` returns the options `Vec` DIRECTLY (a `Binary[]`),
+ * NOT a `{ options }` wrapper. Reading `.options` off the array yielded `undefined`, so `labels.map`
+ * threw, `usePoll` swallowed it, and EVERY poll rendered as a plain, unvotable post. Accept the bare
+ * array (and still tolerate a wrapper, in case the struct ever gains a second field).
+ */
 export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView> {
   const poll = (await api.query.Microblog.Polls.getValue(hostId)) as unknown as
+    | Array<{ asText: () => string }>
     | { options: Array<{ asText: () => string }> }
     | undefined;
   if (!poll) return { hostId, options: [], totalWeight: 0n, totalCount: 0 };
-  const labels = poll.options;
+  const labels = Array.isArray(poll) ? poll : poll.options;
   const tallies = await Promise.all(
     labels.map(
       (_, i) =>

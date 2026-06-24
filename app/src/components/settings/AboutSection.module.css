@@ -39,3 +39,9 @@
   outline-offset: var(--cg-focus-ring-offset);
   border-radius: var(--cg-radius-sm);
 }
+
+.copyright {
+  margin: var(--cg-space-2) 0 0;
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}

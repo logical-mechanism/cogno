@@ -23,33 +23,52 @@ function trim1(x: number): string {
   return s.endsWith(".0") ? s.slice(0, -2) : s;
 }
 
+/** Suffixes for compact magnitude notation, each ×1000 (ADA stakes get large). */
+const WEIGHT_UNITS = ["", "K", "M", "B", "T", "P"] as const;
+const LOVELACE_PER_ADA = 1_000_000n;
+
 /**
- * Render a weighted bigint (score / up-weight / down-weight) for post-DETAIL only. These are
- * lovelace-scale u128 differences and MAY be negative, so a leading sign is rendered for negatives.
- * Grouped with thin separators for readability.
+ * Compact a NON-NEGATIVE lovelace amount to a 1-decimal ADA magnitude: lovelace is divided to ADA
+ * FIRST (÷1e6), then reduced — so 32_000_000 lovelace (= 32 ADA) → "32", and 32e12 lovelace
+ * (= 32M ADA) → "32M". Stake weights are lovelace-scale u128, so the math stays in bigint. Drops a
+ * trailing ".0". Sub-0.1-ADA amounts round to "0".
+ */
+function compactAda(lovelace: bigint): string {
+  let unit = 0;
+  let divisor = LOVELACE_PER_ADA; // lovelace per one displayed unit (starts at 1 ADA)
+  while (unit < WEIGHT_UNITS.length - 1 && lovelace / (divisor * 1000n) > 0n) {
+    divisor *= 1000n;
+    unit += 1;
+  }
+  const tenths = (lovelace * 10n) / divisor; // value in the chosen unit, scaled ×10 for one decimal
+  const whole = tenths / 10n;
+  const frac = tenths % 10n;
+  const mantissa = frac === 0n ? whole.toString() : `${whole}.${frac}`;
+  return `${mantissa}${WEIGHT_UNITS[unit]}`;
+}
+
+/**
+ * Render a weighted bigint (score / up-weight / down-weight). These are lovelace-scale u128
+ * differences and MAY be negative, so a leading sign is rendered for negatives. Shown in ADA,
+ * compacted (32M, 1.5K) so a large stake stays readable.
  */
 export function formatWeight(w: bigint | null | undefined): string {
   if (w == null) return "";
   const neg = w < 0n;
   const abs = neg ? -w : w;
-  const grouped = groupDigits(abs.toString());
-  return neg ? `-${grouped}` : grouped;
+  return neg ? `-${compactAda(abs)}` : compactAda(abs);
 }
 
 /**
- * Like formatWeight but always shows an explicit sign (+/-) — used for the standalone "score" chip on
- * detail where the direction is the point.
+ * Like formatWeight but always shows an explicit sign (+/-) — used for the standalone "score" chip
+ * where the direction is the point. Shown in ADA, compacted (e.g. +32M, −1.5K).
  */
 export function formatSignedWeight(w: bigint | null | undefined): string {
   if (w == null) return "";
   if (w === 0n) return "0";
   const neg = w < 0n;
   const abs = neg ? -w : w;
-  return `${neg ? "−" : "+"}${groupDigits(abs.toString())}`;
-}
-
-function groupDigits(s: string): string {
-  return s.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${neg ? "−" : "+"}${compactAda(abs)}`;
 }
 
 /** A poll option's share of the total weight as a rounded percent (D4: results are % BY WEIGHT). */

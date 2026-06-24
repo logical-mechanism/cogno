@@ -227,13 +227,10 @@ export function Timeline({
         );
       })}
 
-      {/* tail */}
-      {paginationCapable ? (
-        hasMore ? (
-          <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />
-        ) : null
-      ) : (
-        <p className={styles.footer}>That&apos;s the live feed · add an indexer in Settings for older posts</p>
+      {/* tail — a "Load more" affordance only on a paginated source; the node-direct feed already
+          carries the full set, so it needs no footer. */}
+      {paginationCapable && hasMore && (
+        <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />
       )}
     </div>
   );
@@ -298,7 +295,7 @@ function PollHost({
   signer: PostingSigner | null;
 }) {
   const { source } = useSession();
-  const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer);
+  const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer, gate.address ?? null);
   return (
     <PostCard
       post={post}

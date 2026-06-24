@@ -181,6 +181,17 @@ query Poll($hostId: String!) {
   }
 }`;
 
+// ── the viewer's own choice on a single poll (drives the ✓ + results-after-vote on the poll card) ─
+// NOTE: `pollVotes` / `voterId` / `pollId` follow the spec-113 social indexer's FK-column naming
+// (same convention as VIEWER_STATES' `voterId`); confirm against the live `services/indexer` schema
+// if a field renames. The PAPI-direct path reads the same choice from `Microblog.PollVotes`.
+export const POLL_CHOICE = `
+query PollChoice($who: String!, $hostId: String!) {
+  pollVotes(filter: { voterId: { equalTo: $who }, pollId: { equalTo: $hostId } }) {
+    nodes { option }
+  }
+}`;
+
 // ── the viewer's own votes + reposts over a set of post ids (drives filled-heart / active-repost) ─
 export const VIEWER_STATES = `
 query ViewerStates($who: String!, $postIds: [String!]!) {

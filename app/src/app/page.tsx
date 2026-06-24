@@ -31,6 +31,7 @@ import { useOptimisticFeed } from "@/hooks/useOptimisticFeed";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
+import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { useMutation } from "@/hooks/useMutation";
@@ -140,8 +141,9 @@ export default function HomePage() {
 
   // ── write hooks ─────────────────────────────────────────────────────────────────────────────
   const vote = useVote(api, signer, votingPower ?? 0n);
+  const { pin } = usePinPost(api, signer);
   const repost = useRepost(api, signer);
-  const { addPending, dropPending, failPending } = useOptimistic();
+  const { addPending, failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
 
@@ -186,8 +188,9 @@ export default function HomePage() {
       };
       const clientId = addPending(optimistic);
       setComposerText("");
+      // No onConfirm dropPending: the pending card is retired when its real twin lands in the feed
+      // (useOptimisticFeed presence-reconcile), so the optimistic card never blinks out at confirm.
       void run(submitPost(api, signer, draft.text), {
-        onConfirm: () => dropPending(clientId),
         onError: (message) => {
           failPending(clientId);
           setComposerText(draft.text); // restore the draft for a retry
@@ -197,7 +200,7 @@ export default function HomePage() {
         },
       }).catch(() => {});
     },
-    [viewer, api, signer, me, addPending, dropPending, failPending, run, toast, router],
+    [viewer, api, signer, me, addPending, failPending, run, toast, router],
   );
 
   // ── new-posts pill flush ────────────────────────────────────────────────────────────────────
@@ -246,8 +249,9 @@ export default function HomePage() {
           .then(() => toast({ kind: "success", message: "Link copied" }))
           .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
       },
+      onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, toast],
+    [router, viewer.status, viewerStates, vote, repost, pin, toast],
   );
 
   const composeState: ActionState = "idle"; // inline composer clears optimistically; per-tx state lives on the card

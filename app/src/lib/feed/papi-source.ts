@@ -24,6 +24,7 @@ import { watchFeed, buildThreadIndex, getPost } from "@/lib/chain/reads";
 import {
   readPoll,
   readViewerPostState,
+  readViewerPollChoice,
 } from "@/lib/chain/social-reads";
 import type {
   CognoApi,
@@ -301,6 +302,10 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     return readPoll(api, hostId);
   }
 
+  function viewerPollChoice(hostId: bigint, who: Ss58): Promise<number | null> {
+    return readViewerPollChoice(api, hostId, who);
+  }
+
   function viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState> {
     return readViewerPostState(api, post, who);
   }
@@ -366,6 +371,7 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     thread,
     profile,
     poll,
+    viewerPollChoice,
     viewerPostState,
     followEdges,
     whoToFollow,

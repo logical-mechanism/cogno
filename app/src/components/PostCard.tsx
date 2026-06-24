@@ -32,6 +32,7 @@ import type {
   Viewer,
   PollView,
   AuthorRef,
+  OverflowMenuItem,
   PostActionCallbacks,
   PostCardVariant,
 } from "./kit";
@@ -127,8 +128,15 @@ export function PostCard({
     [handlers, viewer.myVote],
   );
 
-  // No "···" overflow menu: every action it held (down-vote, clear-vote, copy-link) is a button in
-  // the action row below (down-vote ▼, tap-active-to-clear, Share = copy link), so it was redundant.
+  // The "···" overflow menu now carries exactly one owner-only action: "Pin to profile" (the rest —
+  // down-vote, clear-vote, copy-link — are buttons in the action row). Shown only on YOUR OWN, already
+  // posted (non-pending) posts, and only when the surface wired onPin. Unpin lives in Settings → Profile.
+  const isOwnPost =
+    gate.status === "ready" && gate.address != null && gate.address === post.author;
+  const menuItems = useMemo<OverflowMenuItem[] | undefined>(() => {
+    if (pending || !isOwnPost || !handlers.onPin) return undefined;
+    return [{ id: "pin", label: "Pin to profile", onSelect: () => handlers.onPin!(post) }];
+  }, [pending, isOwnPost, handlers, post]);
 
   const cls = [
     styles.card,
@@ -155,6 +163,7 @@ export function PostCard({
         <PostCardHeader
           author={author}
           at={post.at}
+          menuItems={menuItems}
           onAuthorOpen={handlers.onAuthorOpen}
           detail={detail}
           headerExtra={

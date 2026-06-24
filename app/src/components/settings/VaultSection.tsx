@@ -5,13 +5,12 @@
 //
 // Reads useVault (Blockfrost) for lock/exit + the on-chain TalkStake.AllowedStake(ss58) watch for the
 // granted weight (lags the lock by a few blocks). When no Cardano provider is configured the whole
-// lock/exit block is hidden with a one-line link to Network.
+// lock/exit block is hidden with a one-line prompt to configure one.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./VaultSection.module.css";
 import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
-import { ConnectWalletButton } from "@/components/ConnectWalletButton";
 import { useSession } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
 import { useActionToast } from "@/hooks/useActionToast";
@@ -26,7 +25,7 @@ function formatAda(lovelace: bigint | null): string {
   return `${whole.toLocaleString()}.${frac} ADA`;
 }
 
-export function VaultSection({ onGoNetwork }: { onGoNetwork?: () => void }) {
+export function VaultSection() {
   const { api, signerCtl } = useSession();
   const vault = useVault();
   const { fail, ok } = useActionToast();
@@ -103,25 +102,14 @@ export function VaultSection({ onGoNetwork }: { onGoNetwork?: () => void }) {
         </p>
       </div>
 
-      {/* Provider unavailable → hide lock/exit, link to Network */}
+      {/* Provider unavailable → hide lock/exit, prompt to configure one */}
       {!vault.available ? (
         <div className={styles.card}>
-          <p className={styles.prompt}>
-            Set a Cardano provider in{" "}
-            {onGoNetwork ? (
-              <button type="button" className={styles.inlineLink} onClick={onGoNetwork}>
-                Network
-              </button>
-            ) : (
-              "Network"
-            )}{" "}
-            to lock ADA.
-          </p>
+          <p className={styles.prompt}>Set a Cardano provider to lock ADA.</p>
         </div>
       ) : !connected ? (
         <div className={styles.card}>
           <p className={styles.prompt}>Connect a wallet to lock ADA.</p>
-          <ConnectWalletButton viewer={{ status: "not-connected", hasVotingPower: false }} />
         </div>
       ) : (
         <div className={styles.card}>
