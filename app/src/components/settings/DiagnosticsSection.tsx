@@ -1,18 +1,16 @@
 "use client";
 
-// DiagnosticsSection — Settings (doc 12). A read-only, prod-safe snapshot of what the app is connected
-// to + the chain identity it sees. Replaces the old "Advanced" section: the dev-account picker is gone
-// (the consumer build posts only through a real wallet). NO secrets — the Blockfrost project id is
-// shown only as "configured" (it is client-side BY DESIGN for the in-browser vault, but is never
-// printed here), and nothing is editable. Block numbers appear ONLY here and in the Civic-Ledger strip.
+// DiagnosticsSection — Settings (doc 12). A read-only, prod-safe snapshot of the node connection + the
+// chain identity it sees. Replaces the old "Advanced" section: the dev-account picker is gone (the
+// consumer build posts only through a real wallet). NO secrets and nothing editable — just the
+// connection, genesis/runtime, and block heights. Block numbers appear ONLY here and in the
+// Civic-Ledger strip.
 
 import { useEffect, useState } from "react";
 import styles from "./DiagnosticsSection.module.css";
 import { useSession } from "@/components/Providers";
 import { useHeads } from "@/hooks/useHeads";
 import { getGenesisHex } from "@/lib/chain/identity";
-import { getGraphqlUrl, getBlockfrostProjectId } from "@/lib/config/endpoints";
-import { gqlRequest } from "@/lib/graphql/client";
 
 function shortHex(hex: string | null, head = 10): string {
   if (!hex) return "—";
@@ -20,7 +18,6 @@ function shortHex(hex: string | null, head = 10): string {
   return h.length > head + 2 ? `${h.slice(0, head)}…` : h;
 }
 
-type Reach = "checking" | "ok" | "unreachable" | "off";
 type Dot = "ok" | "pending" | "err";
 
 export function DiagnosticsSection() {
@@ -28,10 +25,6 @@ export function DiagnosticsSection() {
   const heads = useHeads(client);
   const [genesis, setGenesis] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<{ specV: number; txV: number } | null>(null);
-  const [indexerReach, setIndexerReach] = useState<Reach>("off");
-
-  const indexerUrl = getGraphqlUrl();
-  const blockfrostSet = getBlockfrostProjectId().length > 0;
 
   // Genesis hash — the chain's identity.
   useEffect(() => {
@@ -57,43 +50,9 @@ export function DiagnosticsSection() {
     };
   }, [api]);
 
-  // Indexer reachability — a tiny `{ __typename }` probe; "off" when none is configured.
-  useEffect(() => {
-    if (!indexerUrl) {
-      setIndexerReach("off");
-      return;
-    }
-    let cancelled = false;
-    const ac = new AbortController();
-    setIndexerReach("checking");
-    void gqlRequest<{ __typename: string }>(indexerUrl, "{ __typename }", undefined, ac.signal)
-      .then(() => !cancelled && setIndexerReach("ok"))
-      .catch((e) => {
-        if (!cancelled && !(e instanceof DOMException && e.name === "AbortError")) setIndexerReach("unreachable");
-      });
-    return () => {
-      cancelled = true;
-      ac.abort();
-    };
-  }, [indexerUrl]);
-
   const connDot: Dot = status === "connected" ? "ok" : status === "connecting" ? "pending" : "err";
   const connLabel =
     status === "connected" ? "connected" : status === "connecting" ? "connecting…" : "disconnected";
-  const indexerDot: Dot | undefined = !indexerUrl
-    ? undefined
-    : indexerReach === "ok"
-      ? "ok"
-      : indexerReach === "checking"
-        ? "pending"
-        : "err";
-  const indexerValue = !indexerUrl
-    ? "not configured — reading node-direct"
-    : indexerReach === "ok"
-      ? "reachable"
-      : indexerReach === "checking"
-        ? "checking…"
-        : "unreachable";
 
   return (
     <div className={styles.card}>
@@ -106,11 +65,6 @@ export function DiagnosticsSection() {
         label="Best / finalized"
         value={`${heads.best ? `#${heads.best.number}` : "—"} / ${heads.finalized ? `#${heads.finalized.number}` : "—"}`}
         mono
-      />
-      <Row label="Indexer" value={indexerValue} dot={indexerDot} />
-      <Row
-        label="Cardano provider"
-        value={blockfrostSet ? "Blockfrost configured (in-browser, preprod)" : "not configured"}
       />
     </div>
   );
