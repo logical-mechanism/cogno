@@ -295,7 +295,7 @@ function PollHost({
   signer: PostingSigner | null;
 }) {
   const { source } = useSession();
-  const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer);
+  const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer, gate.address ?? null);
   return (
     <PostCard
       post={post}

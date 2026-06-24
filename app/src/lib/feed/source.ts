@@ -76,6 +76,8 @@ export interface FeedSource {
   // ── spec-113 social ──
   /** Options + per-option stake-weighted tally for a poll host id. (gated on `caps.tallies`) */
   poll(hostId: bigint): Promise<PollView>;
+  /** The viewer's chosen option index for a poll, or null if they have not cast. (gated on `caps.tallies`) */
+  viewerPollChoice(hostId: bigint, who: Ss58): Promise<number | null>;
   /** The viewer's own vote/repost state on a post. (gated on `caps.tallies`) */
   viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState>;
   /** Followers/following ids + counts for an account. (gated on `caps.follows`) */

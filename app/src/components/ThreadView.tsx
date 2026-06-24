@@ -172,6 +172,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     focalIsPoll ? rootId : null,
     api,
     signer,
+    me,
   );
 
   // ── inline reply composer → submitReply(parent = focal) with the optimistic pending card (D11) ──
