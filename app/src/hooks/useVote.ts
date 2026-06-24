@@ -33,7 +33,7 @@ export function useVote(
   signer: PostingSigner | null,
   myWeight: bigint,
 ): UseVote {
-  const { patchViewer, patchCounts, clearPost } = useOptimistic();
+  const { patchViewer, patchCounts, confirmPost, clearPost } = useOptimistic();
   const { run, pending } = useMutation();
   const { fail } = useActionToast();
 
@@ -48,7 +48,11 @@ export function useVote(
           ? submitClearVote(api, signer, postId)
           : submitVote(api, signer, postId, next);
       void run(stream, {
-        onConfirm: () => clearPost(postId),
+        // On confirm DON'T tear the overlay down (the read hasn't re-observed the vote yet — that
+        // would flash the colour off and, on PAPI-direct, drop the score to 0). confirmPost hands the
+        // count to the feed's VoteTally and keeps the colour until a fresh read agrees; clearPost is
+        // for rollback only.
+        onConfirm: () => confirmPost(postId),
         onError: (message) => {
           clearPost(postId);
           fail(message);
@@ -57,7 +61,7 @@ export function useVote(
         /* failure surfaced via fail(); optimistic patch rolled back via clearPost */
       });
     },
-    [api, signer, myWeight, patchViewer, patchCounts, clearPost, run, fail],
+    [api, signer, myWeight, patchViewer, patchCounts, confirmPost, clearPost, run, fail],
   );
 
   return {

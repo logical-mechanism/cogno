@@ -53,6 +53,17 @@ function quoteRefOf(quoted: CognoPost) {
   };
 }
 
+/** A single `Microblog.VoteTally` entry: the denormalized stake-weighted tally for a post. */
+interface RawTallyEntry {
+  args: [bigint];
+  value: {
+    up_weight: bigint; // u128
+    down_weight: bigint; // u128
+    up_count: number; // u32
+    down_count: number; // u32
+  };
+}
+
 /** A single `Profile.Profiles` entry (display name / bio / avatar are BoundedVec<u8> → Binary). */
 interface RawProfileEntry {
   args: [string];
@@ -92,12 +103,22 @@ export function watchFeed(api: CognoApi): Observable<FeedSnapshot> {
   const profiles$ = api.query.Profile.Profiles.watchEntries().pipe(
     startWith({ entries: [] as RawProfileEntry[] }),
   );
-  return combineLatest([posts$, polls$, profiles$]).pipe(
-    map(([pev, qev, prev]): FeedSnapshot => {
+  // The stake-weighted vote tally lives in its own map (a vote writes ONLY VoteTally + Votes, not
+  // Posts), so it must be watched alongside Posts or the feed would carry no score and never re-emit
+  // when a vote lands. Empty until the first tally exists.
+  const tally$ = api.query.Microblog.VoteTally.watchEntries().pipe(
+    startWith({ entries: [] as RawTallyEntry[] }),
+  );
+  return combineLatest([posts$, polls$, profiles$, tally$]).pipe(
+    map(([pev, qev, prev, tev]): FeedSnapshot => {
       const entries = pev.entries as unknown as RawPostEntry[];
       const pollIds = new Set(
         (qev.entries as unknown as { args: [bigint] }[]).map((e) => e.args[0]),
       );
+      const tallyById = new Map<bigint, RawTallyEntry["value"]>();
+      for (const e of tev.entries as unknown as RawTallyEntry[]) {
+        tallyById.set(e.args[0], e.value);
+      }
       const profileByAuthor = new Map<string, { displayName?: string; avatar?: string }>();
       for (const e of prev.entries as unknown as RawProfileEntry[]) {
         profileByAuthor.set(e.args[0], {
@@ -107,7 +128,9 @@ export function watchFeed(api: CognoApi): Observable<FeedSnapshot> {
       }
       const posts = entries.map(toCognoPost);
       const byId = new Map(posts.map((p) => [p.id, p] as const));
-      // Pass 1: poll flag + author display name/avatar.
+      // Pass 1: poll flag + author display name/avatar + stake-weighted vote tally. Posts with no
+      // tally entry default to 0/0n so the score chip is a defined "0" (not blank) and the optimistic
+      // overlay always has a chain-truth value to reconcile against.
       posts.forEach((p) => {
         if (pollIds.has(p.id)) p.isPoll = true;
         const prof = profileByAuthor.get(p.author);
@@ -115,6 +138,14 @@ export function watchFeed(api: CognoApi): Observable<FeedSnapshot> {
           p.authorDisplayName = prof.displayName;
           p.authorAvatar = prof.avatar;
         }
+        const t = tallyById.get(p.id);
+        const upWeight = BigInt(t?.up_weight ?? 0n);
+        const downWeight = BigInt(t?.down_weight ?? 0n);
+        p.upWeight = upWeight;
+        p.downWeight = downWeight;
+        p.upCount = t?.up_count ?? 0;
+        p.downCount = t?.down_count ?? 0;
+        p.score = upWeight - downWeight;
       });
       // Pass 2: quote refs (authors already stamped above, so the embed shows their name/avatar too).
       posts.forEach((p, i) => {

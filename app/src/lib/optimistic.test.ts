@@ -3,6 +3,7 @@ import {
   voteDelta,
   applyCountPatch,
   applyViewerPatch,
+  viewerPatchSettled,
   mergeFeed,
   EMPTY_OVERLAY,
   type Overlay,
@@ -77,6 +78,33 @@ describe("applyViewerPatch", () => {
     expect(applyViewerPatch(base, { myVote: "Up" })).toEqual({ myVote: "Up", reposted: false });
     expect(applyViewerPatch(base, { reposted: true })).toEqual({ myVote: null, reposted: true });
     expect(applyViewerPatch(base, undefined)).toBe(base);
+  });
+});
+
+describe("viewerPatchSettled — reconcile a confirmed vote by fresh read", () => {
+  const up: ViewerPostState = { myVote: "Up", reposted: false };
+  const none: ViewerPostState = { myVote: null, reposted: false };
+
+  it("never settles an unconfirmed (not-expected) patch, even when the read agrees", () => {
+    expect(viewerPatchSettled(up, { myVote: "Up" })).toBe(false);
+  });
+
+  it("settles once a confirmed patch matches the fresh read", () => {
+    expect(viewerPatchSettled(up, { myVote: "Up", expected: true })).toBe(true);
+  });
+
+  it("keeps a confirmed patch while the read is still stale (gap not yet closed)", () => {
+    // Vote confirmed Up, but the re-read hasn't observed it yet → keep the optimistic colour.
+    expect(viewerPatchSettled(none, { myVote: "Up", expected: true })).toBe(false);
+  });
+
+  it("settles a clear (Up→null) only once the read shows the vote actually gone", () => {
+    expect(viewerPatchSettled(up, { myVote: null, expected: true })).toBe(false); // still shows Up
+    expect(viewerPatchSettled(none, { myVote: null, expected: true })).toBe(true); // now cleared
+  });
+
+  it("treats an undefined patch as not settled", () => {
+    expect(viewerPatchSettled(none, undefined)).toBe(false);
   });
 });
 

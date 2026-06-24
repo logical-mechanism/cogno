@@ -22,6 +22,12 @@ export interface CountPatch {
 export interface ViewerPatch {
   myVote?: "Up" | "Down" | null;
   reposted?: boolean;
+  /**
+   * Set once the write has CONFIRMED (inBestBlock). The patch is then kept — not cleared — until a
+   * FRESH read of the viewer's own vote agrees with it (see {@link viewerPatchSettled}), so the
+   * optimistic colour never drops to a stale read in the gap between confirm and re-observation.
+   */
+  expected?: boolean;
 }
 
 /** A pending (not-yet-confirmed) optimistic post — a new post / reply / quote. */
@@ -56,6 +62,20 @@ export function applyCountPatch(post: CognoPost, patch: CountPatch | undefined):
     repostCount: Math.max(0, (post.repostCount ?? 0) + (patch.repostCountDelta ?? 0)),
     score: upWeight - downWeight,
   };
+}
+
+/**
+ * Reconcile-by-fresh-read: a confirmed (`expected`) vote patch is redundant once an authoritative
+ * read of the viewer's own vote already agrees with it, and should then be retired. The CALLER must
+ * only evaluate this against a read taken AFTER the confirm (a fresh post-confirm refetch) — gating
+ * on freshness, not on value equality alone, is what stops a clear-to-null / zero-weight / coincident
+ * patch from retiring against a stale base (which would re-open the very gap this closes).
+ */
+export function viewerPatchSettled(
+  base: ViewerPostState,
+  patch: ViewerPatch | undefined,
+): boolean {
+  return patch?.expected === true && base.myVote === (patch.myVote ?? null);
 }
 
 /** Apply a viewer patch over a read ViewerPostState (undefined fields keep the base value). */
