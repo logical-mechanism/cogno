@@ -1,9 +1,9 @@
 "use client";
 
-// useFeed — subscribes to the active FeedSource's live `watch()` and exposes the FULL current
-// post set (authoritative, newest-first) as plain React state. The source may be PAPI-direct
-// (watchEntries-derived) or the GraphQL indexer (poll-derived); this hook does not care — it
-// only consumes the FeedSource seam.
+// useFeed — subscribes to a FeedSource's live `watch()` and exposes the snapshot as plain React
+// state. NOTE: the home/profile feeds now read via the id-paged `useLiveFeed` / `useFeedPage`; this
+// generic watch hook is retained for any consumer that wants the source's whole live window. Neither
+// source uses `watchEntries` (PAPI's `watch()` is NextPostId-driven; the indexer's is poll-driven).
 //
 // useFeedPage — for the paginated/search read path (indexer-only): fetches one page on demand,
 // supports cursor "load more" by appending, and surfaces a clear error state instead of

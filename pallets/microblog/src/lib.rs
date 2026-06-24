@@ -135,9 +135,11 @@ pub mod pallet {
 	use sp_runtime::{traits::Saturating, SaturatedConversion};
 
 	/// The current storage version of pallet-microblog. v0 (implicit, pre-quote) → v1 adds the
-	/// `quote: Option<u64>` field to [`Post`]. Bumped in lockstep with the `migrations::v1`
-	/// migration; its `VersionedMigration` version-guard self-skips once the on-chain version is 1.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+	/// `quote: Option<u64>` field to [`Post`]; v1 → v2 backfills the `Followers`/`VotesByAccount`
+	/// reverse indexes; v2 → v3 backfills the `ReplyCount`/`RepliesByParent` reply aggregates. Bumped
+	/// in lockstep with each `migrations::v*` migration; every `VersionedMigration` version-guard
+	/// self-skips once the on-chain version has advanced past it.
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
 
 	#[pallet::pallet]
 	#[pallet::storage_version(STORAGE_VERSION)]
@@ -403,6 +405,32 @@ pub mod pallet {
 	/// Per-post repost count (`ValueQuery` ⇒ default 0). Only ever increments (reposts are permanent).
 	#[pallet::storage]
 	pub type RepostCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
+
+	/// Per-parent reply count (`ValueQuery` ⇒ default 0): the number of direct replies a post has.
+	/// The denormalized aggregate mirroring [`RepostCount`] — lets a client read a post's reply count
+	/// with one keyed lookup instead of scanning every post for `parent == id`. Maintained in lockstep
+	/// with [`RepliesByParent`] on the reply-creation path. Content is append-only (`delete_post` was
+	/// removed in M0; `@1` is permanently vacant), so — exactly like `RepostCount` — it **only ever
+	/// increments**; there is no decrement path. Backfilled from existing `Posts` by migration v3.
+	#[pallet::storage]
+	pub type ReplyCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
+
+	/// Reverse parent → replies index: `RepliesByParent[parent][reply_id] = ()` ⇒ `reply_id` is a
+	/// direct reply of `parent`. The keyed reverse lookup mirroring [`Reposts`], so a thread reads only
+	/// ONE parent's children via `getEntries(parent)` (prefix iteration) instead of folding the whole
+	/// post set. A `DoubleMap` (not a `BoundedVec<u64>`) deliberately: it imposes no per-post reply cap
+	/// and supports prefix pagination. Maintained in lockstep with [`ReplyCount`] on the reply-creation
+	/// path; append-only (no removal), backfilled from existing `Posts` by migration v3.
+	#[pallet::storage]
+	pub type RepliesByParent<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		u64,
+		Blake2_128Concat,
+		u64,
+		(),
+		OptionQuery,
+	>;
 
 	/// The follow graph: `Following[follower][followee] = ()` ⇒ `follower` follows `followee`.
 	/// Toggleable (a relationship, not content): `unfollow` `take`s the edge. Followee is NOT
@@ -676,7 +704,13 @@ pub mod pallet {
 		/// inclusion. Fails `TooLong` if `text` exceeds `MaxLength`, or `TooManyPosts` if the
 		/// author's index is full.
 		#[pallet::call_index(0)]
-		#[pallet::weight(<T as Config>::WeightInfo::post_message(text.len() as u32))]
+		// The benchmarked `post_message` weight measures the top-level (`parent: None`) path. A reply
+		// (`parent: Some`) additionally reads+writes `ReplyCount` and writes `RepliesByParent` (the
+		// denormalized reply aggregates), so charge that worst case — 1 read + 2 writes — on top. A
+		// top-level post overpays slightly, which is the safe direction for the anti-spam weight
+		// backstop. (Adding storage maps does not change the benchmark, so this avoids a double-count.)
+		#[pallet::weight(<T as Config>::WeightInfo::post_message(text.len() as u32)
+			.saturating_add(T::DbWeight::get().reads_writes(1, 2)))]
 		#[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _parent: &Option<u64>| -> bool { true })]
 		pub fn post_message(
 			origin: OriginFor<T>,
@@ -708,6 +742,14 @@ pub mod pallet {
 			let at = frame_system::Pallet::<T>::block_number();
 			// `quote: None` — a plain post or a reply. Quote-posts go through `quote_post`.
 			Posts::<T>::insert(id, Post { author: who.clone(), text: bounded, parent, quote: None, at });
+			// Maintain the denormalized reply aggregates when this post is a reply (same lockstep
+			// pattern as `repost` → `RepostCount`/`Reposts`). `parent: Option<u64>` is `Copy`, so it is
+			// still readable after being moved into the `Post` above. Append-only content ⇒ increment
+			// only (there is no `delete`/decrement path).
+			if let Some(parent_id) = parent {
+				ReplyCount::<T>::mutate(parent_id, |c| *c = c.saturating_add(1));
+				RepliesByParent::<T>::insert(parent_id, id, ());
+			}
 			NextPostId::<T>::put(id.saturating_add(1));
 
 			Self::deposit_event(Event::PostCreated { id, author: who });
