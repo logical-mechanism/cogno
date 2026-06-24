@@ -11,7 +11,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./VaultSection.module.css";
 import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
-import { ConnectWalletButton } from "@/components/ConnectWalletButton";
 import { useSession } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
 import { useActionToast } from "@/hooks/useActionToast";
@@ -111,7 +110,6 @@ export function VaultSection() {
       ) : !connected ? (
         <div className={styles.card}>
           <p className={styles.prompt}>Connect a wallet to lock ADA.</p>
-          <ConnectWalletButton viewer={{ status: "not-connected", hasVotingPower: false }} />
         </div>
       ) : (
         <div className={styles.card}>

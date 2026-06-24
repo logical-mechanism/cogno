@@ -9,7 +9,6 @@ import { useCallback, useEffect, useState } from "react";
 import styles from "./AccountSection.module.css";
 import { Handle } from "@/components/Handle";
 import { Spinner } from "@/components/icons";
-import { ConnectWalletButton } from "@/components/ConnectWalletButton";
 import { Skeleton } from "@/components/Skeleton";
 import { useSession } from "@/components/Providers";
 import { useToaster } from "@/components/toast/ToasterProvider";
@@ -58,13 +57,13 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
     }
   }, [ss58, toast]);
 
-  // disconnected (no wallet, no dev account): a single empty card + the connect affordance.
+  // disconnected (no wallet, no dev account): a single card with a connect prompt. The connect button
+  // lives in the global Account control (bottom-left) — no need to duplicate it on every settings panel.
   if (!postingEnabled) {
     return (
       <div className={styles.cards}>
         <div className={styles.card}>
           <p className={styles.prompt}>Connect a Cardano wallet to post.</p>
-          <ConnectWalletButton viewer={{ status: "not-connected", hasVotingPower: false }} />
         </div>
       </div>
     );
