@@ -11,7 +11,7 @@ import styles from "./DiagnosticsSection.module.css";
 import { useSession } from "@/components/Providers";
 import { useHeads } from "@/hooks/useHeads";
 import { getGenesisHex } from "@/lib/chain/identity";
-import { getActiveWsUrl, getGraphqlUrl, getBlockfrostProjectId } from "@/lib/config/endpoints";
+import { getGraphqlUrl, getBlockfrostProjectId } from "@/lib/config/endpoints";
 import { gqlRequest } from "@/lib/graphql/client";
 
 function shortHex(hex: string | null, head = 10): string {
@@ -30,7 +30,6 @@ export function DiagnosticsSection() {
   const [runtime, setRuntime] = useState<{ specV: number; txV: number } | null>(null);
   const [indexerReach, setIndexerReach] = useState<Reach>("off");
 
-  const wsUrl = getActiveWsUrl();
   const indexerUrl = getGraphqlUrl();
   const blockfrostSet = getBlockfrostProjectId().length > 0;
 
@@ -88,12 +87,18 @@ export function DiagnosticsSection() {
       : indexerReach === "checking"
         ? "pending"
         : "err";
+  const indexerValue = !indexerUrl
+    ? "not configured — reading node-direct"
+    : indexerReach === "ok"
+      ? "reachable"
+      : indexerReach === "checking"
+        ? "checking…"
+        : "unreachable";
 
   return (
     <div className={styles.card}>
       <p className={styles.note}>Read-only.</p>
 
-      <Row label="Node (RPC)" value={wsUrl} mono />
       <Row label="Connection" value={connLabel} dot={connDot} />
       <Row label="Genesis" value={shortHex(genesis)} mono title={genesis ?? undefined} />
       <Row label="Runtime" value={runtime ? `spec ${runtime.specV} · tx ${runtime.txV}` : "—"} mono />
@@ -102,12 +107,7 @@ export function DiagnosticsSection() {
         value={`${heads.best ? `#${heads.best.number}` : "—"} / ${heads.finalized ? `#${heads.finalized.number}` : "—"}`}
         mono
       />
-      <Row
-        label="Indexer"
-        value={indexerUrl || "not configured — reading node-direct"}
-        mono={!!indexerUrl}
-        dot={indexerDot}
-      />
+      <Row label="Indexer" value={indexerValue} dot={indexerDot} />
       <Row
         label="Cardano provider"
         value={blockfrostSet ? "Blockfrost configured (in-browser, preprod)" : "not configured"}
