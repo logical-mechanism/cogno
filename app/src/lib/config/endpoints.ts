@@ -9,7 +9,6 @@
 // export can substitute them), letting a real deployment ship its own defaults while the localhost
 // values stay as the dev fallback. A user override in localStorage always wins over both.
 const ENV_WS = process.env.NEXT_PUBLIC_WS_URL || "";
-const ENV_FOLLOWER = process.env.NEXT_PUBLIC_FOLLOWER_URL || "";
 const ENV_GRAPHQL = process.env.NEXT_PUBLIC_GRAPHQL_URL || "";
 const ENV_BLOCKFROST = process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID || "";
 
@@ -70,36 +69,10 @@ export function getActiveWsUrl(): string {
   return getEndpoints()[0];
 }
 
-// ── Cogno-Follower endpoint (M2) ────────────────────────────────────────────────────────
-// The trusted v1 follower the bind flow POSTs the CIP-8 proof to. Config, like the WS
-// endpoints — but it buys ZERO route-around in v1 (one trusted follower; the badge says so).
-// HTTPS in any real deployment; plain http for the localhost dev showcase.
-
-/** The default follower the dev build binds through. */
-export const DEFAULT_FOLLOWER_URL = /^https?:\/\//.test(ENV_FOLLOWER) ? ENV_FOLLOWER : "http://127.0.0.1:8090";
-const FOLLOWER_STORAGE_KEY = "cogno.follower";
-
-/** The user-configured follower URL, or {@link DEFAULT_FOLLOWER_URL}. SSG-safe. */
-export function getFollowerUrl(): string {
-  if (typeof window === "undefined") return DEFAULT_FOLLOWER_URL;
-  try {
-    const raw = window.localStorage.getItem(FOLLOWER_STORAGE_KEY);
-    return raw && /^https?:\/\//.test(raw) ? raw : DEFAULT_FOLLOWER_URL;
-  } catch {
-    return DEFAULT_FOLLOWER_URL;
-  }
-}
-
-/** Persist the follower URL (http/https only). No-op without `window`. */
-export function setFollowerUrl(url: string): void {
-  if (!/^https?:\/\//.test(url)) throw new Error("Follower URL must be http:// or https://");
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(FOLLOWER_STORAGE_KEY, url);
-  } catch {
-    // Storage blocked — non-critical.
-  }
-}
+// (The trusted v1 Cogno-Follower endpoint was REMOVED: the node is the source of truth. The bind flow
+// no longer POSTs a CIP-8 proof to a follower — identity/stake binds are bare unsigned extrinsics
+// (spec 116+) and the bound talk-capacity weight is observed in-protocol by the node's cardano-observer
+// inherent, not granted by an off-chain follower.)
 
 // (The Sponsored-Bind Relay endpoint was REMOVED in spec 116: the CIP-8 identity / stake binds are now
 // FEELESS, submitted as bare unsigned extrinsics, so there is no fee to sponsor and no relay to point at.
@@ -108,7 +81,7 @@ export function setFollowerUrl(url: string): void {
 // ── SubQuery GraphQL indexer endpoint (M4) ──────────────────────────────────────────────
 // The optional indexer the app reads the feed/search/thread/profile views through. Empty =
 // read directly from the node (PAPI) — slower, no search, but always available. Like the WS
-// and follower endpoints, this is config: the reader picks who they trust to index for them.
+// endpoints, this is config: the reader picks who they trust to index for them.
 
 /** localStorage key for the indexer URL; default is empty ("" ⇒ read directly from the node). */
 const GRAPHQL_STORAGE_KEY = "cogno.graphql";
@@ -153,8 +126,8 @@ export function setGraphqlUrl(url: string): void {
 // The Cardano provider the in-browser vault lock/exit txs use (fetcher/submitter/evaluator +
 // live cost models). A preprod project id — exposed client-side by design so any visitor can
 // lock from their own wallet without a backend. Empty ⇒ the lock action is hidden. Config like
-// the WS/follower/indexer endpoints: NEXT_PUBLIC_BLOCKFROST_PROJECT_ID seeds the default, a
-// user override in localStorage wins.
+// the WS/indexer endpoints: NEXT_PUBLIC_BLOCKFROST_PROJECT_ID seeds the default, a user override
+// in localStorage wins.
 
 const BLOCKFROST_STORAGE_KEY = "cogno.blockfrost";
 
