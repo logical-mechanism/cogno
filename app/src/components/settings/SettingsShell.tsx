@@ -15,7 +15,6 @@ import { IconBack } from "@/components/icons";
 import { AccountSection } from "./AccountSection";
 import { ProfileSection } from "./ProfileSection";
 import { VaultSection } from "./VaultSection";
-import { AppearanceSection } from "./AppearanceSection";
 import { DiagnosticsSection } from "./DiagnosticsSection";
 import { AboutSection } from "./AboutSection";
 
@@ -23,7 +22,6 @@ export type SectionId =
   | "account"
   | "profile"
   | "vault"
-  | "appearance"
   | "diagnostics"
   | "about";
 
@@ -31,7 +29,6 @@ export const SECTIONS: { id: SectionId; heading: string }[] = [
   { id: "account", heading: "Account" },
   { id: "profile", heading: "Profile" },
   { id: "vault", heading: "Vault & posting power" },
-  { id: "appearance", heading: "Appearance" },
   { id: "diagnostics", heading: "Diagnostics" },
   { id: "about", heading: "About" },
   // NOTE: Notifications preferences (reply/vote/repost/follow/quote) is a DEFERRED follow-up — see
@@ -150,8 +147,6 @@ function renderSection(id: SectionId, onSelect: (id: SectionId) => void) {
       return <ProfileSection />;
     case "vault":
       return <VaultSection />;
-    case "appearance":
-      return <AppearanceSection />;
     case "diagnostics":
       return <DiagnosticsSection />;
     case "about":
