@@ -4,8 +4,7 @@
 // to + the chain identity it sees. Replaces the old "Advanced" section: the dev-account picker is gone
 // (the consumer build posts only through a real wallet). NO secrets — the Blockfrost project id is
 // shown only as "configured" (it is client-side BY DESIGN for the in-browser vault, but is never
-// printed here), and nothing is editable (endpoints live in Network). Block numbers appear ONLY here
-// and in the Civic-Ledger strip.
+// printed here), and nothing is editable. Block numbers appear ONLY here and in the Civic-Ledger strip.
 
 import { useEffect, useState } from "react";
 import styles from "./DiagnosticsSection.module.css";
@@ -92,9 +91,7 @@ export function DiagnosticsSection() {
 
   return (
     <div className={styles.card}>
-      <p className={styles.note}>
-        Read-only. Change endpoints in <strong>Network</strong>.
-      </p>
+      <p className={styles.note}>Read-only.</p>
 
       <Row label="Node (RPC)" value={wsUrl} mono />
       <Row label="Connection" value={connLabel} dot={connDot} />
