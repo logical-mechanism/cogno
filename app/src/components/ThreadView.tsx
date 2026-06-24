@@ -33,6 +33,7 @@ import { useSession } from "./Providers";
 import { useThread } from "@/hooks/useThread";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
+import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { usePoll } from "@/hooks/usePoll";
 import { useOptimistic } from "@/hooks/useOptimistic";
@@ -121,6 +122,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
 
   const vote = useVote(api, signer, votingPower ?? 0n);
   const repost = useRepost(api, signer);
+  const { pin } = usePinPost(api, signer);
   const { dropPending, failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
@@ -255,8 +257,9 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           .then(() => toast({ kind: "success", message: "Link copied" }))
           .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
       },
+      onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, toast],
+    [router, viewer.status, viewerStates, vote, repost, pin, toast],
   );
 
   // ── scroll-to-focal once per id (X behavior: focal lands just under the sticky header) ──

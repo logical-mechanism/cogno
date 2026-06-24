@@ -31,6 +31,7 @@ import { useOptimisticFeed } from "@/hooks/useOptimisticFeed";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
+import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { useMutation } from "@/hooks/useMutation";
@@ -140,6 +141,7 @@ export default function HomePage() {
 
   // ── write hooks ─────────────────────────────────────────────────────────────────────────────
   const vote = useVote(api, signer, votingPower ?? 0n);
+  const { pin } = usePinPost(api, signer);
   const repost = useRepost(api, signer);
   const { addPending, dropPending, failPending } = useOptimistic();
   const { run } = useMutation();
@@ -246,8 +248,9 @@ export default function HomePage() {
           .then(() => toast({ kind: "success", message: "Link copied" }))
           .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
       },
+      onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, toast],
+    [router, viewer.status, viewerStates, vote, repost, pin, toast],
   );
 
   const composeState: ActionState = "idle"; // inline composer clears optimistically; per-tx state lives on the card
