@@ -10,6 +10,7 @@
 
 import type { PolkadotClient } from "polkadot-api";
 import { Observable, combineLatest, map, startWith } from "rxjs";
+import { readPostTally, readRepostCount } from "./social-reads";
 import type {
   CognoApi,
   CognoPost,
@@ -61,14 +62,6 @@ function quoteRefOf(
   };
 }
 
-/** A single `Microblog.VoteTally` value: the denormalized stake-weighted tally for a post (ValueQuery). */
-interface RawTally {
-  up_weight: bigint; // u128
-  down_weight: bigint; // u128
-  up_count: number; // u32
-  down_count: number; // u32
-}
-
 /** A single `Profile.Profiles` value (display name / bio / avatar are BoundedVec<u8> → Binary). */
 interface RawProfile {
   display_name: { asText: () => string };
@@ -77,7 +70,7 @@ interface RawProfile {
 }
 
 /** Decode a Binary profile field to a trimmed string, or undefined when empty/absent. */
-function binTextOpt(v?: { asText: () => string }): string | undefined {
+export function binTextOpt(v?: { asText: () => string }): string | undefined {
   const s = v?.asText().trim();
   return s ? s : undefined;
 }
@@ -168,20 +161,20 @@ export async function enrichPosts(
   return Promise.all(
     raw.map(async (r) => {
       const post = toCognoPost(r.id, r.value);
+      // Reuse the single tally/repost decoders (social-reads.ts) so the feed score can never drift
+      // from a per-post read; ReplyCount + the poll flag are read alongside.
       const [tally, repostCount, replyCount, pollRec] = await Promise.all([
-        api.query.Microblog.VoteTally.getValue(r.id) as Promise<RawTally>,
-        api.query.Microblog.RepostCount.getValue(r.id) as Promise<number>,
+        readPostTally(api, r.id),
+        readRepostCount(api, r.id),
         api.query.Microblog.ReplyCount.getValue(r.id) as Promise<number>,
         api.query.Microblog.Polls.getValue(r.id),
       ]);
-      const upWeight = BigInt(tally?.up_weight ?? 0n);
-      const downWeight = BigInt(tally?.down_weight ?? 0n);
-      post.upWeight = upWeight;
-      post.downWeight = downWeight;
-      post.upCount = tally?.up_count ?? 0;
-      post.downCount = tally?.down_count ?? 0;
-      post.score = upWeight - downWeight;
-      post.repostCount = Number(repostCount ?? 0);
+      post.upWeight = tally.upWeight;
+      post.downWeight = tally.downWeight;
+      post.upCount = tally.upCount;
+      post.downCount = tally.downCount;
+      post.score = tally.score;
+      post.repostCount = repostCount;
       post.replyCount = Number(replyCount ?? 0);
       if (pollRec) post.isPoll = true;
       const prof = profileByAuthor.get(post.author);
@@ -222,6 +215,13 @@ async function readIdBlock(
 }
 
 const SCAN_BATCH = 32;
+/**
+ * Max ids a single `getGlobalFeedPage` call reads before yielding a continuation cursor. Bounds a
+ * sparse `keep`-filtered walk (the Following feed over low-volume accounts) so it CHUNKS the sweep
+ * across pages instead of blocking on a whole-chain scan; the global feed (dense with top-level
+ * posts) fills its page long before this. A hit is logged — no silent truncation.
+ */
+const MAX_SCAN_PER_PAGE = 1000;
 
 /**
  * One page of the GLOBAL feed: walk ids DESC from `beforeId` (default the latest post), keeping
@@ -245,27 +245,39 @@ export async function getGlobalFeedPage(
 
   const collected: RawPostWithId[] = [];
   let lastExamined: bigint | null = null;
+  let scanned = 0;
+  let budgetHit = false;
   let next = cursor;
   while (collected.length < limit && next >= 0n) {
     const block = await readIdBlock(api, next, SCAN_BATCH);
     for (const { id, value } of block) {
       lastExamined = id;
-      if (!value) continue; // absent id (append-only chain ⇒ normally never; defensive)
-      if (value.parent != null) continue; // replies are read in threads, not the home feed
-      if (opts.keep && !opts.keep(value)) continue;
-      collected.push({ id, value });
-      if (collected.length >= limit) break;
+      scanned += 1;
+      // Keep top-level posts (replies live in threads); skip absent ids; apply the optional filter.
+      if (value && value.parent == null && (!opts.keep || opts.keep(value))) {
+        collected.push({ id, value });
+        if (collected.length >= limit) break;
+      }
+      if (scanned >= MAX_SCAN_PER_PAGE) {
+        budgetHit = true;
+        break;
+      }
     }
-    if (block.length === 0) break;
+    if (block.length === 0 || budgetHit) break;
     next = block[block.length - 1].id - 1n;
   }
 
   const posts = await enrichPosts(api, collected);
-  // More pages iff we stopped above id 0; the next page starts just below the last id we examined.
+  // More pages iff we stopped above id 0 — because the page filled OR the scan budget capped it.
   const nextCursor =
-    lastExamined != null && lastExamined > 0n && collected.length >= limit
+    lastExamined != null && lastExamined > 0n && (collected.length >= limit || budgetHit)
       ? lastExamined - 1n
       : null;
+  if (budgetHit) {
+    console.warn(
+      `[getGlobalFeedPage] scan budget ${MAX_SCAN_PER_PAGE} reached with ${collected.length}/${limit} matches; resume below id ${lastExamined}`,
+    );
+  }
   return { posts, nextCursor };
 }
 
@@ -376,11 +388,9 @@ export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThre
     .map((id, i) => ({ id, value: replyValues[i] }))
     .filter((r): r is RawPostWithId => r.value !== undefined);
 
-  const replyCount = Number(
-    (await api.query.Microblog.ReplyCount.getValue(focalId)) as unknown as number,
-  );
-
-  // Enrich the whole thread in one batched pass, then split back into its parts.
+  // Enrich the whole thread in one batched pass, then split back into its parts. `enrichPosts` already
+  // stamps each post's keyed `ReplyCount`, so the focal's reply count comes off the enriched root — no
+  // separate `ReplyCount.getValue(focalId)` read.
   const enriched = await enrichPosts(api, [
     { id: focalId, value: focalVal },
     ...ancestorsRaw,
@@ -389,7 +399,7 @@ export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThre
   const root = enriched[0];
   const ancestors = enriched.slice(1, 1 + ancestorsRaw.length);
   const replies = enriched.slice(1 + ancestorsRaw.length);
-  return { root, ancestors, replies, replyCount };
+  return { root, ancestors, replies, replyCount: root.replyCount ?? 0 };
 }
 
 // ── head positions + Cardano anchor (unchanged from the load-all era) ─────────────────────────────

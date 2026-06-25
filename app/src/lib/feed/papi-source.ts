@@ -29,8 +29,10 @@ import {
   authorPostCount,
   getThread,
   watchLatestPostId,
+  binTextOpt,
   type IdPage,
 } from "@/lib/chain/reads";
+import { byIdDesc } from "@/lib/feed/live";
 import {
   readPoll,
   readViewerPostState,
@@ -90,11 +92,9 @@ async function readFollowers(api: CognoApi, who: Ss58): Promise<Ss58[]> {
   return entries.map((e) => e.keyArgs[1] as Ss58);
 }
 
-/** Decode a pallet-profile `BoundedVec<u8>` field (PAPI Binary) to a trimmed string, or undefined. */
-function profileText(v: { asText: () => string } | undefined): string | undefined {
-  const s = v?.asText().trim();
-  return s ? s : undefined;
-}
+/** Decode a pallet-profile `BoundedVec<u8>` field (PAPI Binary) to a trimmed string, or undefined.
+ *  The shared decoder (reads.ts `binTextOpt`) so feed + profile reads can't disagree on empty/trim. */
+const profileText = binTextOpt;
 
 export function createPapiFeedSource(api: CognoApi): FeedSource {
   const caps: FeedCaps = {
@@ -140,13 +140,14 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     };
   }
 
-  const EMPTY_PAGE: FeedPage = {
+  // A FRESH empty page each call (never a shared singleton a caller could mutate in place).
+  const emptyPage = (): FeedPage => ({
     posts: [],
     endCursor: null,
     hasNextPage: false,
     totalCount: 0,
     asOf: null,
-  };
+  });
 
   async function page(q: FeedQuery): Promise<FeedPage> {
     if (q.search) {
@@ -163,9 +164,9 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     // snapshot). Sparse followees ⇒ a longer walk, same cost class as the old full-set filter.
     if (q.tab === "following" || q.followeeOf) {
       const target = q.followeeOf ?? q.authorId;
-      if (!target) return EMPTY_PAGE;
+      if (!target) return emptyPage();
       const followees = new Set(await readFollowees(api, target));
-      if (followees.size === 0) return EMPTY_PAGE;
+      if (followees.size === 0) return emptyPage();
       return toFeedPage(
         await getGlobalFeedPage(api, {
           beforeId,
@@ -225,9 +226,12 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
 
     const [postCount, pkh, weight, followerCount, followingCount, profileRec, pinned] =
       await Promise.all([
-        // O(1) authored count (the ByAuthor index length) — the header "N posts". NOTE: this counts
-        // ALL the author's posts (replies included), not just top-level; the old top-level-only count
-        // required loading every post, which is exactly the full-set read this change removes.
+        // The header "N posts" = the ByAuthor index length: an O(1) count of ALL the author's posts
+        // (replies/quotes included). DELIBERATE TRADEOFF: the Posts tab below lists top-level only, so
+        // the header can exceed the visible top-level cards for an author who replies — but the exact
+        // top-level count has no O(1) source on-chain (it required loading every post, the full-set read
+        // this change removes). Total-authored is the honest, scalable stat; a precise top-level count
+        // would need a new on-chain counter. The indexer reader can still report its own count.
         authorPostCount(api, account),
         api.query.CognoGate.PkhOf.getValue(account),
         readWeight(api, account),
@@ -252,7 +256,7 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       );
       const likedPosts = (await Promise.all(likedIds.map((id) => getPost(api, id))))
         .filter((p): p is CognoPost => p !== undefined)
-        .sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+        .sort(byIdDesc);
       // Liked posts are by OTHER authors → flag each by its own author's revocation, not `account`.
       posts = await flagRevocations(likedPosts);
     } else {

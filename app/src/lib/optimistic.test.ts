@@ -5,10 +5,22 @@ import {
   applyViewerPatch,
   viewerPatchSettled,
   mergeFeed,
+  pendingKey,
   EMPTY_OVERLAY,
   type Overlay,
 } from "./optimistic";
 import type { CognoPost, ViewerPostState } from "./types";
+
+describe("pendingKey", () => {
+  it("keys an optimistic card to its chain twin by author + text (the only stable identity)", () => {
+    expect(pendingKey({ author: "alice", text: "gm" })).toBe("alice\ngm");
+    // Same author+text → same key (so mergeFeed dedup and the presence-reconcile agree).
+    expect(pendingKey({ author: "alice", text: "gm" })).toBe(pendingKey({ author: "alice", text: "gm" }));
+    // Different author OR text → different key.
+    expect(pendingKey({ author: "alice", text: "gm" })).not.toBe(pendingKey({ author: "bob", text: "gm" }));
+    expect(pendingKey({ author: "alice", text: "gm" })).not.toBe(pendingKey({ author: "alice", text: "yo" }));
+  });
+});
 
 function post(id: bigint, over: Partial<CognoPost> = {}): CognoPost {
   return {

@@ -13,6 +13,17 @@ export function byIdDesc(a: CognoPost, b: CognoPost): number {
 }
 
 /**
+ * How many top-level posts to re-read when the live head advanced by `gap` ids since the last read.
+ * `gap` (= newHead − lastHead) is an UPPER bound on the number of new top-level posts (it also counts
+ * replies), so reading `gap` top-level posts is guaranteed to cover every new one — clamped to
+ * `[1, max]` so a huge idle jump (tab asleep for hours) stays bounded. When the true gap exceeds
+ * `max`, the caller must surface that the tail of the gap was not bridged (no silent post loss).
+ */
+export function bridgeFetchSize(gap: number, max: number): number {
+  return Math.min(Math.max(Math.trunc(gap), 1), max);
+}
+
+/**
  * Union two post lists by id — `incoming` WINS on a collision (it carries the fresher tally/count) —
  * and return newest-first. Used to fold a refreshed/older page into the loaded list without dropping
  * or duplicating a row.

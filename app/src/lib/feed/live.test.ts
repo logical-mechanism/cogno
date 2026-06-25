@@ -4,7 +4,7 @@
 // stranger's new post buffers behind the pill while the viewer's own post injects directly.
 
 import { describe, it, expect } from "vitest";
-import { mergeById, partitionFresh } from "./live";
+import { bridgeFetchSize, mergeById, partitionFresh } from "./live";
 import type { CognoPost } from "@/lib/types";
 
 function post(id: bigint, author = "alice", score = 0n): CognoPost {
@@ -59,5 +59,16 @@ describe("partitionFresh", () => {
     const part = partitionFresh(fresh, new Set(), new Set(), null);
     expect(part.newOwn).toEqual([]);
     expect(part.newOthers.map((p) => p.id)).toEqual([5n, 4n]);
+  });
+});
+
+describe("bridgeFetchSize", () => {
+  it("reads enough to cover the gap, clamped to [1, max]", () => {
+    expect(bridgeFetchSize(0, 500)).toBe(1); // never read zero (a tick always re-reads ≥1)
+    expect(bridgeFetchSize(1, 500)).toBe(1);
+    expect(bridgeFetchSize(7, 500)).toBe(7); // a 7-id jump → read 7 (an upper bound on new top-level)
+    expect(bridgeFetchSize(800, 500)).toBe(500); // a huge idle jump is capped at max
+    expect(bridgeFetchSize(-4, 500)).toBe(1); // negative (shouldn't happen) floors at 1
+    expect(bridgeFetchSize(3.9, 500)).toBe(3); // truncates a non-integer gap
   });
 });

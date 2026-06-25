@@ -1,9 +1,13 @@
 "use client";
 
 // useProfile — fetch one author's profile + posts via the seam (tab-aware: Posts / Replies / Likes).
-// The seam returns the FIRST page (with a cursor); `loadMore` pages the Posts tab by post id via
+// The seam returns the FIRST page (with a cursor); on the Posts tab `loadMore` pages by post id via
 // `source.page({authorId, after})` and appends. Display fields (name/bio/avatar/counts) come back on
 // both readers now (pallet-profile + the spec-118 reverse maps); the Replies tab needs the indexer.
+//
+// Only the Posts tab paginates by id — the Likes/Replies tabs have no per-id cursor on the PAPI seam
+// (their first page is a reverse-index read), so `page({authorId})` would return the WRONG set; we
+// gate load-more to the Posts tab to avoid that.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { mergeById } from "@/lib/feed/live";
@@ -25,8 +29,8 @@ export interface UseProfile {
 /**
  * @param liveKey changing value (e.g. the best block number) that triggers a SILENT re-fetch — so a
  *   profile edit or a fresh post lands as soon as the block comes in, with no spinner/manual refresh.
- *   A silent refresh refreshes the first page IN PLACE (merged over any loaded-more pages) and does
- *   NOT reset the cursor, so it never clobbers "load more" progress.
+ *   A silent refresh MERGES the fresh first page over the existing one (so a post evicted from page 1
+ *   by a new author post isn't dropped) and does NOT reset the cursor, so it never clobbers load-more.
  */
 export function useProfile(
   source: FeedSource | null,
@@ -34,7 +38,8 @@ export function useProfile(
   liveKey?: number | null,
 ): UseProfile {
   const [profile, setProfile] = useState<ProfileView | null>(null);
-  // Pages fetched via load-more (page 2+); merged under the profile's first page for display.
+  // The first page (merged across silent refreshes) + the load-more pages (page 2+); shown together.
+  const [base, setBase] = useState<CognoPost[]>([]);
   const [appended, setAppended] = useState<CognoPost[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
@@ -45,10 +50,17 @@ export function useProfile(
   // Track which args we've already shown data for, so a liveKey tick is a silent refresh (no spinner,
   // no error clobber, no cursor reset) while a new args/source is a fresh load.
   const loadedKey = useRef<string | null>(null);
+  // Epoch: bumped on a fresh load (new source/args), so an in-flight load-more from a previous
+  // tab/author is ignored when it resolves after the switch.
+  const epochRef = useRef(0);
+  // Only the Posts tab pages by id (Likes/Replies are reverse-index reads — no per-id cursor).
+  const canPage = args.tab == null || args.tab === "forYou";
 
   useEffect(() => {
     if (!source || (!args.author && !args.identityHash)) {
+      epochRef.current += 1;
       setProfile(null);
+      setBase([]);
       setAppended([]);
       setCursor(null);
       setHasMore(false);
@@ -58,6 +70,7 @@ export function useProfile(
     let cancelled = false;
     const firstForKey = loadedKey.current !== key;
     if (firstForKey) {
+      epochRef.current += 1;
       setLoading(true);
       setError(null);
     }
@@ -67,12 +80,15 @@ export function useProfile(
         if (cancelled) return;
         setProfile(p);
         loadedKey.current = key;
-        // Only a FRESH load (re)seeds the cursor + clears loaded-more pages; a silent refresh keeps
-        // them so it can't undo "load more" or re-page the same cursor.
         if (firstForKey) {
+          setBase(p.page.posts);
           setAppended([]);
-          setCursor(p.page.endCursor);
-          setHasMore(p.page.hasNextPage);
+          setCursor(canPage ? p.page.endCursor : null);
+          setHasMore(canPage ? p.page.hasNextPage : false);
+        } else {
+          // Silent refresh: MERGE the fresh first page over the existing base so a post just evicted
+          // from page 1 (by a new author post) isn't lost; cursor + appended pages stay intact.
+          setBase((prev) => mergeById(prev, p.page.posts));
         }
       })
       .catch((e: unknown) => {
@@ -92,11 +108,14 @@ export function useProfile(
 
   const loadMore = useCallback(() => {
     const account = profile?.author;
-    if (!source || loadingMore || cursor == null || !account) return;
+    if (!source || loadingMore || cursor == null || !canPage || !account) return;
+    const epoch = epochRef.current;
     setLoadingMore(true);
+    // Posts tab only → page by author id (no `tab`: the seam's likes/replies have no per-id cursor).
     source
-      .page({ authorId: account, after: cursor, first: PAGE, tab: args.tab })
+      .page({ authorId: account, after: cursor, first: PAGE })
       .then((pg) => {
+        if (epochRef.current !== epoch) return; // tab/author switched mid-flight — drop the stale page
         setAppended((prev) => mergeById(prev, pg.posts));
         setCursor(pg.endCursor);
         setHasMore(pg.hasNextPage);
@@ -104,15 +123,14 @@ export function useProfile(
       .catch(() => {
         // A load-more failure is non-fatal — keep what's shown; the tail can retry on next intersect.
       })
-      .finally(() => setLoadingMore(false));
+      .finally(() => {
+        if (epochRef.current === epoch) setLoadingMore(false);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, loadingMore, cursor, profile, args.tab]);
+  }, [source, loadingMore, cursor, canPage, profile]);
 
-  // First page (from the profile) + any loaded-more pages, de-duped + newest-first.
-  const posts = useMemo(
-    () => mergeById(profile?.page.posts ?? [], appended),
-    [profile, appended],
-  );
+  // First page (merged across silent refreshes) + any loaded-more pages, de-duped + newest-first.
+  const posts = useMemo(() => mergeById(base, appended), [base, appended]);
 
   return { profile, posts, loading, error, hasMore, loadingMore, loadMore };
 }
