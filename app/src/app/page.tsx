@@ -34,6 +34,7 @@ import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
+import { usePostCardHandlers } from "@/hooks/usePostCardHandlers";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { useMutation } from "@/hooks/useMutation";
 import { useCapacity } from "@/hooks/useCapacity";
@@ -43,9 +44,8 @@ import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider"
 import { modalActions } from "@/lib/modalStore";
 import { submitPost } from "@/lib/chain/mutations";
 import type { CognoPost, ViewerPostState, FeedQuery } from "@/lib/types";
-import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
+import type { ActionState, ComposerDraft } from "@/components/kit";
 
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
 
 function isRateLimit(message: string): boolean {
   return /rate limit|ExhaustsResources/i.test(message);
@@ -198,42 +198,7 @@ export default function HomePage() {
   }, [forYou]);
 
   // ── per-card action bundle ──────────────────────────────────────────────────────────────────
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (address) => router.push(`/u/${address}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onRepost: (post) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        repost.repost(post.id, cur.reposted);
-      },
-      onShare: (post) => {
-        const url = `${typeof window !== "undefined" ? window.location.origin : ""}/post/${post.id}/`;
-        void navigator.clipboard
-          ?.writeText(url)
-          .then(() => toast({ kind: "success", message: "Link copied" }))
-          .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
-      },
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, repost, pin, toast],
-  );
+  const handlers = usePostCardHandlers({ router, viewer, viewerStates, vote, repost, pin });
 
   const composeState: ActionState = "idle"; // inline composer clears optimistically; per-tx state lives on the card
 

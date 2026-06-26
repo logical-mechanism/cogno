@@ -43,13 +43,12 @@ import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
+import { usePostCardHandlers } from "@/hooks/usePostCardHandlers";
 import { useFollow } from "@/hooks/useFollow";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import type { CognoPost, FeedQuery, Suggestion, ViewerPostState } from "@/lib/types";
-import type { PostActionCallbacks } from "@/components/kit";
 
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
 const SEARCH_DEBOUNCE_MS = 300;
 const PEOPLE_LIMIT = 20;
 const PAGE_SIZE = 25;
@@ -213,42 +212,7 @@ function ExploreView() {
   const { toast } = useToaster();
 
   // ── per-card action bundle (identical wiring to the home Timeline; surface 10 §3.5/§7.5) ─────
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (address) => router.push(`/u/${address}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onRepost: (post) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        repost.repost(post.id, cur.reposted);
-      },
-      onShare: (post) => {
-        const url = `${typeof window !== "undefined" ? window.location.origin : ""}/post/${post.id}/`;
-        void navigator.clipboard
-          ?.writeText(url)
-          .then(() => toast({ kind: "success", message: "Link copied" }))
-          .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
-      },
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, repost, pin, toast],
-  );
+  const handlers = usePostCardHandlers({ router, viewer, viewerStates, vote, repost, pin });
 
   // ── "/" global shortcut: focus the SearchBar (X parity, §9). Ignore while typing / a modal is open. ─
   useEffect(() => {

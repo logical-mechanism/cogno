@@ -35,6 +35,7 @@ import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
+import { usePostCardHandlers } from "@/hooks/usePostCardHandlers";
 import { usePoll } from "@/hooks/usePoll";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { useMutation } from "@/hooks/useMutation";
@@ -45,7 +46,7 @@ import { submitReply } from "@/lib/chain/mutations";
 import { formatCount, formatSignedWeight, formatWeight } from "@/lib/format";
 import { handleOf } from "@/lib/ss58";
 import type { CognoPost, ViewerPostState } from "@/lib/types";
-import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
+import type { ActionState, ComposerDraft } from "@/components/kit";
 
 const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
 
@@ -226,42 +227,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // ── the per-card action bundle (mirrors the home surface; D2 Like==up, D3 permanent repost) ──
   // NOTIFICATIONS SEAM (doc 08 §10): the Voted / Reposted / quote edges raised here targeting the
   // focal author are exactly what a future useNotifications(who) folds — deferred, seam left.
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (address) => router.push(`/u/${address}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onRepost: (post) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        repost.repost(post.id, cur.reposted);
-      },
-      onShare: (post) => {
-        const url = `${typeof window !== "undefined" ? window.location.origin : ""}/post/${post.id}/`;
-        void navigator.clipboard
-          ?.writeText(url)
-          .then(() => toast({ kind: "success", message: "Link copied" }))
-          .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
-      },
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, repost, pin, toast],
-  );
+  const handlers = usePostCardHandlers({ router, viewer, viewerStates, vote, repost, pin });
 
   // ── scroll-to-focal once per id (X behavior: focal lands just under the sticky header) ──
   const focalRef = useRef<HTMLDivElement | null>(null);
