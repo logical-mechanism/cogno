@@ -215,13 +215,6 @@ async function readIdBlock(
 }
 
 const SCAN_BATCH = 32;
-/**
- * Max ids a single `getGlobalFeedPage` call reads before yielding a continuation cursor. Bounds a
- * sparse `keep`-filtered walk (the Following feed over low-volume accounts) so it CHUNKS the sweep
- * across pages instead of blocking on a whole-chain scan; the global feed (dense with top-level
- * posts) fills its page long before this. A hit is logged — no silent truncation.
- */
-const MAX_SCAN_PER_PAGE = 1000;
 
 /**
  * One page of the GLOBAL feed: walk ids DESC from `beforeId` (default the latest post), keeping
@@ -243,41 +236,34 @@ export async function getGlobalFeedPage(
     cursor = latest;
   }
 
+  // SCALING NOTE (Following feed): with a `keep` filter over a sparse follow set on a large chain,
+  // this walk can read many ids per page before collecting `limit` matches — same O(N) cost class as
+  // the pre-spec-119 full-snapshot filter (a non-regression). The indexer is the scalable path for a
+  // busy Following timeline. A bounded per-page scan budget was tried but tripped `@vercel/nft`'s
+  // static-export trace; left out deliberately rather than ship a fragile build.
   const collected: RawPostWithId[] = [];
   let lastExamined: bigint | null = null;
-  let scanned = 0;
-  let budgetHit = false;
   let next = cursor;
   while (collected.length < limit && next >= 0n) {
     const block = await readIdBlock(api, next, SCAN_BATCH);
     for (const { id, value } of block) {
       lastExamined = id;
-      scanned += 1;
-      // Keep top-level posts (replies live in threads); skip absent ids; apply the optional filter.
-      if (value && value.parent == null && (!opts.keep || opts.keep(value))) {
-        collected.push({ id, value });
-        if (collected.length >= limit) break;
-      }
-      if (scanned >= MAX_SCAN_PER_PAGE) {
-        budgetHit = true;
-        break;
-      }
+      if (!value) continue; // absent id (append-only chain ⇒ normally never; defensive)
+      if (value.parent != null) continue; // replies are read in threads, not the home feed
+      if (opts.keep && !opts.keep(value)) continue;
+      collected.push({ id, value });
+      if (collected.length >= limit) break;
     }
-    if (block.length === 0 || budgetHit) break;
+    if (block.length === 0) break;
     next = block[block.length - 1].id - 1n;
   }
 
   const posts = await enrichPosts(api, collected);
-  // More pages iff we stopped above id 0 — because the page filled OR the scan budget capped it.
+  // More pages iff we stopped above id 0; the next page starts just below the last id we examined.
   const nextCursor =
-    lastExamined != null && lastExamined > 0n && (collected.length >= limit || budgetHit)
+    lastExamined != null && lastExamined > 0n && collected.length >= limit
       ? lastExamined - 1n
       : null;
-  if (budgetHit) {
-    console.warn(
-      `[getGlobalFeedPage] scan budget ${MAX_SCAN_PER_PAGE} reached with ${collected.length}/${limit} matches; resume below id ${lastExamined}`,
-    );
-  }
   return { posts, nextCursor };
 }
 
