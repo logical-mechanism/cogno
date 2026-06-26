@@ -22,12 +22,15 @@ describe("makeFeedSource — reader selection", () => {
   it("returns the PAPI source for null (no endpoint configured)", () => {
     const src = makeFeedSource(fakeApi, null);
     expect(src.kind).toBe("papi");
-    // The direct-node reader cannot search or cursor-paginate, and says so.
+    // The direct-node reader cannot SEARCH (no indexer), and says so…
     expect(src.caps.search).toBe(false);
-    expect(src.caps.pagination).toBe(false);
-    // …but it CAN do threads + revocation flagging, like the indexer.
+    // …but it now CURSOR-PAGINATES node-direct (spec-119: the feed pages by post id), and does
+    // threads + revocation flagging like the indexer.
+    expect(src.caps.pagination).toBe(true);
     expect(src.caps.threads).toBe(true);
     expect(src.caps.revocation).toBe(true);
+    // It also exposes the NextPostId liveness signal the home feed pages off.
+    expect(typeof src.liveHeadId).toBe("function");
   });
 
   it("returns the PAPI source for an empty string", () => {

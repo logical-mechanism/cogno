@@ -6,8 +6,9 @@
 // surfaced are a graceful rate-limit notice + a quiet failure toast. No honesty/block-number chrome.
 //
 // Two tabs (doc 06 §4):
-//   • For you   — useOptimisticFeed(source) LIVE snapshot. Fresh OTHER-author items buffer behind the
-//                 pill (the scroll never jumps); the viewer's OWN optimistic post injects directly.
+//   • For you   — useLiveFeed(source) id-paged live feed (NextPostId-driven; "load more" reads one
+//                 page at a time). Fresh OTHER-author items buffer behind the pill (the scroll never
+//                 jumps); the viewer's OWN optimistic post injects directly.
 //   • Following — useFeedPage(source, { tab:'following', followeeOf, first:30 }, enabled); skipped +
 //                 shows the follows empty-state when the viewer follows nobody / is disconnected.
 //   The Following tab is HIDDEN entirely on PAPI-direct (caps.follows === false) — never greyed (§5.5).
@@ -27,7 +28,7 @@ import { NewPostsPill } from "@/components/NewPostsPill";
 import { Timeline } from "@/components/Timeline";
 import { Composer } from "@/components/Composer";
 import { useSession } from "@/components/Providers";
-import { useOptimisticFeed } from "@/hooks/useOptimisticFeed";
+import { useLiveFeed } from "@/hooks/useLiveFeed";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
@@ -73,35 +74,15 @@ export default function HomePage() {
   const [tab, setTab] = useState<TimelineTab>("for-you");
   const activeTab: TimelineTab = tab === "following" && !canFollow ? "for-you" : tab;
 
-  // ── For you: live optimistic snapshot ──────────────────────────────────────────────────────
-  const { snapshot, ready, error: feedError } = useOptimisticFeed(source);
-  const livePosts = snapshot.posts;
-
-  // The new-posts pill buffers fresh OTHER-author items. `baseline` is the set of real ids the user
-  // has accepted into view; new real ids (not own) stay buffered until flush. The viewer's own
-  // optimistic post (id < 0n) and own confirmed posts inject directly.
-  const [baseline, setBaseline] = useState<Set<string>>(new Set());
-  const initialized = useRef(false);
-
-  useEffect(() => {
-    if (!initialized.current && ready) {
-      initialized.current = true;
-      setBaseline(new Set(livePosts.filter((p) => p.id >= 0n).map((p) => String(p.id))));
-    }
-  }, [ready, livePosts]);
-
-  const isOwn = useCallback((p: CognoPost) => me != null && p.author === me, [me]);
-
-  const { displayedForYou, bufferedCount } = useMemo(() => {
-    const shown: CognoPost[] = [];
-    let buffered = 0;
-    for (const p of livePosts) {
-      const pending = p.id < 0n;
-      if (pending || isOwn(p) || baseline.has(String(p.id))) shown.push(p);
-      else buffered += 1;
-    }
-    return { displayedForYou: shown, bufferedCount: buffered };
-  }, [livePosts, baseline, isOwn]);
+  // ── For you: id-paged live feed (NextPostId-driven; "load more" reads one page at a time) ────
+  // useLiveFeed owns the new-posts pill buffer (a fresh OTHER-author post waits behind the pill so
+  // the scroll never jumps; the viewer's own optimistic + confirmed post injects directly) AND the
+  // optimistic overlay + presence-reconcile. It pages by post id — NO full `watchEntries`.
+  const forYou = useLiveFeed(source, me);
+  const displayedForYou = forYou.posts;
+  const bufferedCount = forYou.newCount;
+  const ready = forYou.ready;
+  const feedError = forYou.error;
 
   // ── Following: paged followee feed ─────────────────────────────────────────────────────────
   // We resolve the followee set through the page seam's `followeeOf`. Skip the query (and show the
@@ -189,7 +170,7 @@ export default function HomePage() {
       const clientId = addPending(optimistic);
       setComposerText("");
       // No onConfirm dropPending: the pending card is retired when its real twin lands in the feed
-      // (useOptimisticFeed presence-reconcile), so the optimistic card never blinks out at confirm.
+      // (useLiveFeed presence-reconcile), so the optimistic card never blinks out at confirm.
       void run(submitPost(api, signer, draft.text), {
         onError: (message) => {
           failPending(clientId);
@@ -206,7 +187,7 @@ export default function HomePage() {
   // ── new-posts pill flush ────────────────────────────────────────────────────────────────────
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const flushPending = useCallback(() => {
-    setBaseline(new Set(livePosts.filter((p) => p.id >= 0n).map((p) => String(p.id))));
+    forYou.flush(); // accept the buffered new posts into view
     const scroller = scrollContainerOf(anchorRef.current);
     const reduce =
       typeof window !== "undefined" &&
@@ -214,7 +195,7 @@ export default function HomePage() {
     const behavior: ScrollBehavior = reduce ? "auto" : "smooth";
     if (scroller) scroller.scrollTo({ top: 0, behavior });
     else window.scrollTo({ top: 0, behavior });
-  }, [livePosts]);
+  }, [forYou]);
 
   // ── per-card action bundle ──────────────────────────────────────────────────────────────────
   const handlers = useMemo<PostActionCallbacks>(
@@ -348,7 +329,9 @@ export default function HomePage() {
           handlers={handlers}
           loading={forYouLoading}
           error={feedError}
-          hasMore={false}
+          hasMore={forYou.hasMore}
+          onLoadMore={forYou.loadMore}
+          loadingMore={forYou.loadingMore}
           paginationCapable={paginationCapable}
           emptyVariant="feed"
           emptyAction={{ label: "Explore", onClick: () => router.push("/explore/") }}

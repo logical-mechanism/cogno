@@ -109,7 +109,11 @@ function ProfileBody({ address }: { address: Ss58 }) {
     () => ({ author: address, tab: tabArg(activeTab) }),
     [address, activeTab],
   );
-  const { profile, posts, loading, error } = useProfile(source, profileArgs, bestBlock);
+  const { profile, posts, loading, error, hasMore, loadingMore, loadMore } = useProfile(
+    source,
+    profileArgs,
+    bestBlock,
+  );
 
   // ── follow graph + optimistic toggle (header). READ gated on caps.follows; WRITE always allowed. ──
   const follow = useFollow(api, signer, source, me);
@@ -335,7 +339,9 @@ function ProfileBody({ address }: { address: Ss58 }) {
                 loading={loading && listPosts.length === 0}
                 error={error}
                 onRetry={() => router.refresh()}
-                hasMore={false}
+                hasMore={hasMore}
+                onLoadMore={loadMore}
+                loadingMore={loadingMore}
                 paginationCapable={paginationCapable}
                 emptyTitle={emptyForTab.title}
                 onCompose={() =>

@@ -8,7 +8,8 @@
 
 use crate::{
 	mock::*, ByAuthor, Capacity, Error, Event, FollowerCount, Following, FollowingCount, NextPostId,
-	PollTally, PollVotes, Polls, Posts, RepostCount, Reposts, VoteDir, VoteTally, Votes,
+	PollTally, PollVotes, Polls, Posts, RepliesByParent, ReplyCount, RepostCount, Reposts, VoteDir,
+	VoteTally, Votes,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -56,6 +57,55 @@ fn replies_carry_parent() {
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(2), b"reply".to_vec(), Some(0)));
 		assert_eq!(Posts::<Test>::get(1).unwrap().parent, Some(0));
+	});
+}
+
+#[test]
+fn reply_bumps_reply_count_and_records_reverse_index() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// Root post 0, then two direct replies (ids 1, 2) and one reply-to-a-reply (id 3 under 1).
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(2), b"r1".to_vec(), Some(0)));
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(3), b"r2".to_vec(), Some(0)));
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(4), b"r1.1".to_vec(), Some(1)));
+
+		// Per-parent counts: 0 has two direct replies, 1 has one, 2/3 have none.
+		assert_eq!(ReplyCount::<Test>::get(0), 2);
+		assert_eq!(ReplyCount::<Test>::get(1), 1);
+		assert_eq!(ReplyCount::<Test>::get(2), 0);
+		assert_eq!(ReplyCount::<Test>::get(3), 0);
+
+		// Reverse index: getEntries(parent) yields exactly that parent's direct children.
+		let mut children_of_0: Vec<u64> = RepliesByParent::<Test>::iter_key_prefix(0).collect();
+		children_of_0.sort();
+		assert_eq!(children_of_0, vec![1, 2]);
+		let children_of_1: Vec<u64> = RepliesByParent::<Test>::iter_key_prefix(1).collect();
+		assert_eq!(children_of_1, vec![3]);
+		assert!(RepliesByParent::<Test>::iter_key_prefix(2).next().is_none());
+		assert!(RepliesByParent::<Test>::contains_key(0, 1));
+		assert!(RepliesByParent::<Test>::contains_key(0, 2));
+	});
+}
+
+#[test]
+fn top_level_and_quote_posts_do_not_touch_reply_aggregates() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		// A plain top-level post (parent None).
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
+		// A quote of post 0 — `quote = Some`, `parent = None`, so it is NOT a reply of 0.
+		assert_ok!(Microblog::quote_post(RuntimeOrigin::signed(2), b"q".to_vec(), 0));
+		// A poll — also a top-level post (parent None).
+		assert_ok!(Microblog::create_poll(
+			RuntimeOrigin::signed(3),
+			b"poll?".to_vec(),
+			vec![b"a".to_vec(), b"b".to_vec()],
+		));
+
+		// None of these are replies, so the reply aggregates stay empty.
+		assert_eq!(ReplyCount::<Test>::get(0), 0);
+		assert_eq!(RepliesByParent::<Test>::iter().count(), 0);
 	});
 }
 
@@ -1155,6 +1205,76 @@ mod migration_v1 {
 			// No posts: the migration still advances the version and translates zero rows.
 			let _ = MigrateV0ToV1::<Test>::on_runtime_upgrade();
 			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(1));
+		});
+	}
+}
+
+// ── storage migration v2 → v3 (backfill the reply aggregates) ────────────────────────────────────
+// Validates the backfill: write Posts rows DIRECTLY (bypassing `post_message`, so the live reply
+// maintenance never runs and ReplyCount/RepliesByParent start empty — the genuine pre-v3 state), pin
+// the on-chain version at 2, run the migration, and assert the aggregates are reconstructed from each
+// row's `parent`, the version advances to 3, and a second run is the version-guarded no-op.
+mod migration_v3 {
+	use super::*;
+	use crate::migrations::v3::MigrateV2ToV3;
+	use crate::{Pallet, Post};
+	use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+
+	/// Insert a Post row directly under the `Posts` prefix (bypassing `post_message`, so the reply
+	/// aggregates stay EMPTY — exactly the pre-v3 on-chain state the migration must backfill).
+	fn put_post(id: u64, author: u64, parent: Option<u64>) {
+		let post = Post::<Test> {
+			author,
+			text: b"x".to_vec().try_into().expect("fits MaxLength"),
+			parent,
+			quote: None,
+			at: 1,
+		};
+		Posts::<Test>::insert(id, post);
+	}
+
+	#[test]
+	fn v2_to_v3_backfills_reply_aggregates_and_is_idempotent() {
+		new_test_ext().execute_with(|| {
+			// Pre-v3 state: posts exist (some are replies), aggregates empty, on-chain version is 2.
+			StorageVersion::new(2).put::<Pallet<Test>>();
+			put_post(0, 1, None); // root
+			put_post(1, 2, Some(0)); // reply of 0
+			put_post(2, 3, Some(0)); // reply of 0
+			put_post(3, 4, Some(1)); // reply of 1
+			put_post(4, 5, None); // another top-level
+
+			// Nothing maintained the aggregates yet.
+			assert_eq!(ReplyCount::<Test>::get(0), 0);
+			assert_eq!(RepliesByParent::<Test>::iter().count(), 0);
+
+			let _w = MigrateV2ToV3::<Test>::on_runtime_upgrade();
+
+			// Version advanced and the aggregates are reconstructed from each row's parent.
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(3));
+			assert_eq!(ReplyCount::<Test>::get(0), 2);
+			assert_eq!(ReplyCount::<Test>::get(1), 1);
+			assert_eq!(ReplyCount::<Test>::get(4), 0);
+			let mut c0: Vec<u64> = RepliesByParent::<Test>::iter_key_prefix(0).collect();
+			c0.sort();
+			assert_eq!(c0, vec![1, 2]);
+			assert_eq!(RepliesByParent::<Test>::iter().count(), 3);
+
+			// Idempotency: a second run is the version-guarded no-op — counts unchanged, NOT doubled.
+			let _ = MigrateV2ToV3::<Test>::on_runtime_upgrade();
+			assert_eq!(ReplyCount::<Test>::get(0), 2);
+			assert_eq!(RepliesByParent::<Test>::iter().count(), 3);
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(3));
+		});
+	}
+
+	#[test]
+	fn v2_to_v3_on_empty_posts_is_safe() {
+		new_test_ext().execute_with(|| {
+			StorageVersion::new(2).put::<Pallet<Test>>();
+			let _ = MigrateV2ToV3::<Test>::on_runtime_upgrade();
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(3));
+			assert_eq!(RepliesByParent::<Test>::iter().count(), 0);
 		});
 	}
 }

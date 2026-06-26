@@ -1,167 +1,394 @@
-// Live reads: the feed, the head positions (best vs finalized), a thread index, and a
-// single-post fetch. All read paths are keyless — reading the Civic Ledger never needs a key.
+// Live + paged chain reads: id-paged feed pages, keyed thread reconstruction, the head positions
+// (best vs finalized), the Cardano anchor, and a single-post fetch. All read paths are keyless —
+// reading the Civic Ledger never needs a key.
 //
-// `watchFeed` rebuilds the WHOLE feed from `watchEntries().entries` on every emission:
-// `entries` is the authoritative full current set; `deltas` can be null and is NOT trusted
-// for correctness. Sorted newest-first by post id.
+// SCALING POSTURE (spec 119): the feed NEVER pulls the full `Posts` set. Posts have a sequential
+// `NextPostId` counter, so the global/author feeds PAGE by id with keyed `Posts.getValue(id)` reads
+// (O(page) memory + transfer), and threads read ONE parent's children via the `RepliesByParent`
+// reverse map (keyed `getEntries(parent)`) + the `ReplyCount` aggregate — never a full-snapshot scan.
+// Liveness rides `NextPostId.watchValue` (a new post bumps the counter), NOT `Posts.watchEntries()`.
 
 import type { PolkadotClient } from "polkadot-api";
 import { Observable, combineLatest, map, startWith } from "rxjs";
+import { readPostTally, readRepostCount } from "./social-reads";
 import type {
   CognoApi,
   CognoPost,
-  FeedSnapshot,
   ChainHeads,
   BlockRef,
   AnchorCheckpoint,
   Ss58,
 } from "@/lib/types";
 
-/** A single live entry from `Posts.watchEntries()`: storage key + decoded value. */
-interface RawPostEntry {
-  args: [bigint];
-  value: {
-    author: string;
-    text: { asText: () => string };
-    parent?: bigint;
-    /** Quoted post id (`Post.quote: Option<u64>`, storage v1); undefined for plain posts/replies. */
-    quote?: bigint;
-    at: number;
-  };
+/** A single decoded `Posts` storage value (PAPI shape; `text` is a Binary with `.asText()`). */
+interface RawPostValue {
+  author: string;
+  text: { asText: () => string };
+  parent?: bigint;
+  /** Quoted post id (`Post.quote: Option<u64>`, storage v1); undefined for plain posts/replies. */
+  quote?: bigint;
+  at: number;
 }
 
-/** Decode one raw storage entry into the shared CognoPost shape (text → UTF-8). */
-function toCognoPost(entry: RawPostEntry): CognoPost {
+/** A decoded post value paired with its storage-key id (the unit `enrichPosts` consumes). */
+interface RawPostWithId {
+  id: bigint;
+  value: RawPostValue;
+}
+
+/** Decode one raw storage value into the shared CognoPost shape (text → UTF-8). */
+function toCognoPost(id: bigint, value: RawPostValue): CognoPost {
   return {
-    id: entry.args[0],
-    author: entry.value.author,
-    text: entry.value.text.asText(),
-    parent: entry.value.parent,
-    at: entry.value.at,
+    id,
+    author: value.author,
+    text: value.text.asText(),
+    parent: value.parent,
+    at: value.at,
   };
 }
 
 /** A compact reference to the quoted post, resolved from another decoded post (carries its name/avatar). */
-function quoteRefOf(quoted: CognoPost) {
+function quoteRefOf(
+  quoted: CognoPost,
+  prof: { displayName?: string; avatar?: string } | undefined,
+) {
   return {
     id: quoted.id,
     author: quoted.author,
     text: quoted.text,
     authorRevoked: quoted.authorRevoked === true,
-    displayName: quoted.authorDisplayName,
-    avatar: quoted.authorAvatar,
+    displayName: prof?.displayName,
+    avatar: prof?.avatar,
   };
 }
 
-/** A single `Microblog.VoteTally` entry: the denormalized stake-weighted tally for a post. */
-interface RawTallyEntry {
-  args: [bigint];
-  value: {
-    up_weight: bigint; // u128
-    down_weight: bigint; // u128
-    up_count: number; // u32
-    down_count: number; // u32
-  };
-}
-
-/** A single `Profile.Profiles` entry (display name / bio / avatar are BoundedVec<u8> → Binary). */
-interface RawProfileEntry {
-  args: [string];
-  value: {
-    display_name: { asText: () => string };
-    bio: { asText: () => string };
-    avatar: { asText: () => string };
-  };
+/** A single `Profile.Profiles` value (display name / bio / avatar are BoundedVec<u8> → Binary). */
+interface RawProfile {
+  display_name: { asText: () => string };
+  bio: { asText: () => string };
+  avatar: { asText: () => string };
 }
 
 /** Decode a Binary profile field to a trimmed string, or undefined when empty/absent. */
-function binTextOpt(v?: { asText: () => string }): string | undefined {
+export function binTextOpt(v?: { asText: () => string }): string | undefined {
   const s = v?.asText().trim();
   return s ? s : undefined;
 }
 
 /** Newest-first by id (bigint-safe comparator). */
-function byIdDesc(a: CognoPost, b: CognoPost): number {
-  if (a.id < b.id) return 1;
-  if (a.id > b.id) return -1;
+function byIdDesc(a: bigint, b: bigint): number {
+  if (a < b) return 1;
+  if (a > b) return -1;
   return 0;
 }
 
+// ── liveness + the id cursor ────────────────────────────────────────────────────────────────────
+
 /**
- * The live feed: every `watchEntries` emission rebuilds the full post set (entries is
- * authoritative), decodes each post, and sorts newest-first. `asOf` is the block the
- * snapshot reflects.
+ * The id of the latest post, or null when the chain has none. `NextPostId` is the id that WILL be
+ * assigned next (`post_message` reads it, then `put(id + 1)`), so the newest existing id is
+ * `NextPostId - 1`. This is the cursor the global feed pages down from.
  */
-export function watchFeed(api: CognoApi): Observable<FeedSnapshot> {
-  // Watch Posts + Polls + Profiles together so each emission can flag poll-posts, stamp author
-  // display name/avatar, and resolve quote refs — all from the same authoritative snapshot, with no
-  // per-post round-trips. (Profiles regenerate the feed when a name/avatar changes, too.)
-  const posts$ = api.query.Microblog.Posts.watchEntries();
-  const polls$ = api.query.Microblog.Polls.watchEntries().pipe(
-    startWith({ entries: [] as { args: [bigint] }[] }),
-  );
-  const profiles$ = api.query.Profile.Profiles.watchEntries().pipe(
-    startWith({ entries: [] as RawProfileEntry[] }),
-  );
-  // The stake-weighted vote tally lives in its own map (a vote writes ONLY VoteTally + Votes, not
-  // Posts), so it must be watched alongside Posts or the feed would carry no score and never re-emit
-  // when a vote lands. Empty until the first tally exists.
-  const tally$ = api.query.Microblog.VoteTally.watchEntries().pipe(
-    startWith({ entries: [] as RawTallyEntry[] }),
-  );
-  return combineLatest([posts$, polls$, profiles$, tally$]).pipe(
-    map(([pev, qev, prev, tev]): FeedSnapshot => {
-      const entries = pev.entries as unknown as RawPostEntry[];
-      const pollIds = new Set(
-        (qev.entries as unknown as { args: [bigint] }[]).map((e) => e.args[0]),
-      );
-      const tallyById = new Map<bigint, RawTallyEntry["value"]>();
-      for (const e of tev.entries as unknown as RawTallyEntry[]) {
-        tallyById.set(e.args[0], e.value);
-      }
-      const profileByAuthor = new Map<string, { displayName?: string; avatar?: string }>();
-      for (const e of prev.entries as unknown as RawProfileEntry[]) {
-        profileByAuthor.set(e.args[0], {
-          displayName: binTextOpt(e.value.display_name),
-          avatar: binTextOpt(e.value.avatar),
-        });
-      }
-      const posts = entries.map(toCognoPost);
-      const byId = new Map(posts.map((p) => [p.id, p] as const));
-      // Pass 1: poll flag + author display name/avatar + stake-weighted vote tally. Posts with no
-      // tally entry default to 0/0n so the score chip is a defined "0" (not blank) and the optimistic
-      // overlay always has a chain-truth value to reconcile against.
-      posts.forEach((p) => {
-        if (pollIds.has(p.id)) p.isPoll = true;
-        const prof = profileByAuthor.get(p.author);
-        if (prof) {
-          p.authorDisplayName = prof.displayName;
-          p.authorAvatar = prof.avatar;
-        }
-        const t = tallyById.get(p.id);
-        const upWeight = BigInt(t?.up_weight ?? 0n);
-        const downWeight = BigInt(t?.down_weight ?? 0n);
-        p.upWeight = upWeight;
-        p.downWeight = downWeight;
-        p.upCount = t?.up_count ?? 0;
-        p.downCount = t?.down_count ?? 0;
-        p.score = upWeight - downWeight;
-      });
-      // Pass 2: quote refs (authors already stamped above, so the embed shows their name/avatar too).
-      posts.forEach((p, i) => {
-        const qid = entries[i].value.quote;
-        if (qid != null) {
-          const q = byId.get(BigInt(qid));
-          p.quote = q
-            ? quoteRefOf(q)
-            : { id: BigInt(qid), author: "" as Ss58, text: "", authorRevoked: false };
-        }
-      });
-      posts.sort(byIdDesc);
-      return { posts, asOf: pev.block?.number ?? null };
+export async function latestPostId(api: CognoApi): Promise<bigint | null> {
+  const next = (await api.query.Microblog.NextPostId.getValue()) as unknown as bigint;
+  const n = BigInt(next ?? 0n);
+  return n > 0n ? n - 1n : null;
+}
+
+/**
+ * Live head-id stream: emits the newest post id on every `NextPostId` change at the best head. A new
+ * post bumps the counter, so this is the liveness signal that drives the "N new posts" pill / prepend
+ * WITHOUT a full `watchEntries`. Emits null while the chain has no posts.
+ */
+export function watchLatestPostId(api: CognoApi): Observable<bigint | null> {
+  return api.query.Microblog.NextPostId.watchValue("best").pipe(
+    map((next): bigint | null => {
+      const n = BigInt((next ?? 0n) as bigint);
+      return n > 0n ? n - 1n : null;
     }),
   );
 }
+
+// ── per-post enrichment (batched, page-bounded) ──────────────────────────────────────────────────
+
+/**
+ * Stamp the social aggregates + author profile + quote ref onto a batch of decoded posts, reading
+ * each aggregate by KEY (never iterating a whole map). Profiles + quoted posts are de-duped across
+ * the page (one read per distinct author / quoted id); the per-post aggregates (VoteTally,
+ * RepostCount, ReplyCount, Polls flag) are read per id. Revocation is NOT stamped here — the PAPI
+ * source flags it once per distinct author via `CognoGate.PkhOf`.
+ */
+export async function enrichPosts(
+  api: CognoApi,
+  raw: RawPostWithId[],
+): Promise<CognoPost[]> {
+  if (raw.length === 0) return [];
+
+  // Resolve quoted posts (one level) so a quote embed carries the quoted author's name/avatar.
+  const quotedIds = Array.from(
+    new Set(raw.filter((r) => r.value.quote != null).map((r) => BigInt(r.value.quote!))),
+  );
+  const quotedById = new Map<bigint, CognoPost>();
+  await Promise.all(
+    quotedIds.map(async (qid) => {
+      const v = (await api.query.Microblog.Posts.getValue(qid)) as unknown as
+        | RawPostValue
+        | undefined;
+      if (v) quotedById.set(qid, toCognoPost(qid, v));
+    }),
+  );
+
+  // Distinct authors (page posts + quoted posts) → one Profile read each.
+  const authors = new Set<string>();
+  raw.forEach((r) => authors.add(r.value.author));
+  quotedById.forEach((q) => authors.add(q.author));
+  const profileByAuthor = new Map<string, { displayName?: string; avatar?: string }>();
+  await Promise.all(
+    Array.from(authors).map(async (a) => {
+      const prof = (await api.query.Profile.Profiles.getValue(a)) as unknown as
+        | RawProfile
+        | undefined;
+      if (prof) {
+        profileByAuthor.set(a, {
+          displayName: binTextOpt(prof.display_name),
+          avatar: binTextOpt(prof.avatar),
+        });
+      }
+    }),
+  );
+
+  // Per-post aggregates (keyed reads — never a map scan).
+  return Promise.all(
+    raw.map(async (r) => {
+      const post = toCognoPost(r.id, r.value);
+      // Reuse the single tally/repost decoders (social-reads.ts) so the feed score can never drift
+      // from a per-post read; ReplyCount + the poll flag are read alongside.
+      const [tally, repostCount, replyCount, pollRec] = await Promise.all([
+        readPostTally(api, r.id),
+        readRepostCount(api, r.id),
+        api.query.Microblog.ReplyCount.getValue(r.id) as Promise<number>,
+        api.query.Microblog.Polls.getValue(r.id),
+      ]);
+      post.upWeight = tally.upWeight;
+      post.downWeight = tally.downWeight;
+      post.upCount = tally.upCount;
+      post.downCount = tally.downCount;
+      post.score = tally.score;
+      post.repostCount = repostCount;
+      post.replyCount = Number(replyCount ?? 0);
+      if (pollRec) post.isPoll = true;
+      const prof = profileByAuthor.get(post.author);
+      if (prof) {
+        post.authorDisplayName = prof.displayName;
+        post.authorAvatar = prof.avatar;
+      }
+      if (r.value.quote != null) {
+        const q = quotedById.get(BigInt(r.value.quote));
+        post.quote = q
+          ? quoteRefOf(q, profileByAuthor.get(q.author))
+          : { id: BigInt(r.value.quote), author: "" as Ss58, text: "", authorRevoked: false };
+      }
+      return post;
+    }),
+  );
+}
+
+/** One page of feed posts + the cursor (a post id) for the next, older page (null when exhausted). */
+export interface IdPage {
+  posts: CognoPost[];
+  /** The highest id NOT yet returned — pass as `beforeId` for the next page. Null when at the end. */
+  nextCursor: bigint | null;
+}
+
+/** Read a contiguous descending block of `Posts` values [hi .. hi-count+1], clamped at id 0. */
+async function readIdBlock(
+  api: CognoApi,
+  hi: bigint,
+  count: number,
+): Promise<{ id: bigint; value: RawPostValue | undefined }[]> {
+  const ids: bigint[] = [];
+  for (let k = 0; k < count && hi - BigInt(k) >= 0n; k++) ids.push(hi - BigInt(k));
+  const values = await Promise.all(
+    ids.map((id) => api.query.Microblog.Posts.getValue(id) as Promise<RawPostValue | undefined>),
+  );
+  return ids.map((id, i) => ({ id, value: values[i] }));
+}
+
+const SCAN_BATCH = 32;
+
+/**
+ * One page of the GLOBAL feed: walk ids DESC from `beforeId` (default the latest post), keeping
+ * top-level posts only (replies live in threads), skipping any absent id, until `limit` posts are
+ * collected or id 0 is reached. Returns the enriched page + the cursor (last examined id − 1) for
+ * the next, older page. `keep` optionally filters further (e.g. a Following-feed author set).
+ */
+export async function getGlobalFeedPage(
+  api: CognoApi,
+  opts: { beforeId?: bigint; limit: number; keep?: (p: RawPostValue) => boolean },
+): Promise<IdPage> {
+  const limit = Math.max(1, opts.limit);
+  let cursor: bigint;
+  if (opts.beforeId != null) {
+    cursor = opts.beforeId;
+  } else {
+    const latest = await latestPostId(api);
+    if (latest == null) return { posts: [], nextCursor: null };
+    cursor = latest;
+  }
+
+  // SCALING NOTE (Following feed): with a `keep` filter over a sparse follow set on a large chain,
+  // this walk can read many ids per page before collecting `limit` matches — same O(N) cost class as
+  // the pre-spec-119 full-snapshot filter (a non-regression). The indexer is the scalable path for a
+  // busy Following timeline. A bounded per-page scan budget was tried but tripped `@vercel/nft`'s
+  // static-export trace; left out deliberately rather than ship a fragile build.
+  const collected: RawPostWithId[] = [];
+  let lastExamined: bigint | null = null;
+  let next = cursor;
+  while (collected.length < limit && next >= 0n) {
+    const block = await readIdBlock(api, next, SCAN_BATCH);
+    for (const { id, value } of block) {
+      lastExamined = id;
+      if (!value) continue; // absent id (append-only chain ⇒ normally never; defensive)
+      if (value.parent != null) continue; // replies are read in threads, not the home feed
+      if (opts.keep && !opts.keep(value)) continue;
+      collected.push({ id, value });
+      if (collected.length >= limit) break;
+    }
+    if (block.length === 0) break;
+    next = block[block.length - 1].id - 1n;
+  }
+
+  const posts = await enrichPosts(api, collected);
+  // More pages iff we stopped above id 0; the next page starts just below the last id we examined.
+  const nextCursor =
+    lastExamined != null && lastExamined > 0n && collected.length >= limit
+      ? lastExamined - 1n
+      : null;
+  return { posts, nextCursor };
+}
+
+/**
+ * One page of an AUTHOR's TOP-LEVEL posts (the profile Posts tab), newest-first. The author's id set
+ * is the `ByAuthor` BoundedVec (one keyed read); we page over it — `beforeId` continues below a prior
+ * page — reading each `Posts` value and keeping top-level only. No global scan.
+ */
+export async function getAuthorFeedPage(
+  api: CognoApi,
+  account: Ss58,
+  opts: { beforeId?: bigint; limit: number },
+): Promise<IdPage> {
+  const limit = Math.max(1, opts.limit);
+  const rawIds = (await api.query.Microblog.ByAuthor.getValue(account)) as unknown as
+    | bigint[]
+    | undefined;
+  const allDesc = (rawIds ?? []).map((x) => BigInt(x)).sort(byIdDesc);
+  const candidates =
+    opts.beforeId == null ? allDesc : allDesc.filter((id) => id < opts.beforeId!);
+
+  const collected: RawPostWithId[] = [];
+  let idx = 0;
+  while (idx < candidates.length && collected.length < limit) {
+    const window = candidates.slice(idx, idx + SCAN_BATCH);
+    const values = await Promise.all(
+      window.map((id) => api.query.Microblog.Posts.getValue(id) as Promise<RawPostValue | undefined>),
+    );
+    for (let k = 0; k < window.length; k++) {
+      idx++; // examined
+      const value = values[k];
+      if (!value) continue;
+      if (value.parent != null) continue; // top-level only (profile Posts tab)
+      collected.push({ id: window[k], value });
+      if (collected.length >= limit) break;
+    }
+  }
+
+  const posts = await enrichPosts(api, collected);
+  const hasMore = idx < candidates.length;
+  const lastExaminedId = idx > 0 ? candidates[idx - 1] : null;
+  return { posts, nextCursor: hasMore && lastExaminedId != null ? lastExaminedId : null };
+}
+
+/** The total number of posts an author has authored (the `ByAuthor` index length — one keyed read). */
+export async function authorPostCount(api: CognoApi, account: Ss58): Promise<number> {
+  const rawIds = (await api.query.Microblog.ByAuthor.getValue(account)) as unknown as
+    | bigint[]
+    | undefined;
+  return (rawIds ?? []).length;
+}
+
+// ── thread reconstruction (keyed reverse lookup — no full-snapshot scan) ──────────────────────────
+
+/** Max ancestors to walk up from a focal post (cycle/cost guard). */
+const MAX_ANCESTOR_DEPTH = 64;
+
+/** A reconstructed thread's raw parts: enriched focal + ancestor chain (top-down) + direct replies. */
+export interface RawThread {
+  root: CognoPost;
+  ancestors: CognoPost[];
+  replies: CognoPost[];
+  replyCount: number;
+}
+
+/**
+ * Reconstruct a thread by KEY: the focal post, its ancestor chain (walk `parent` up, depth/cycle
+ * guarded), and its direct replies from the `RepliesByParent[focal]` reverse map (`getEntries` over
+ * ONE parent's children) — never a full-`Posts` scan. `replyCount` is the keyed `ReplyCount[focal]`
+ * aggregate. All parts are enriched (tallies/counts/profile/quote); each reply also carries its OWN
+ * `replyCount` (stamped by `enrichPosts`) so the UI can offer an inline "Show replies" expander.
+ */
+export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThread> {
+  const focalVal = (await api.query.Microblog.Posts.getValue(focalId)) as unknown as
+    | RawPostValue
+    | undefined;
+  if (!focalVal) throw new Error(`thread root #${focalId} not found on the node`);
+
+  // Ancestor chain: walk `parent` up from the focal, guarding cycles + bounding depth. A dangling
+  // parent (absent on the node) stops the walk. Collected deepest-first, returned top-down.
+  const ancestorsRaw: RawPostWithId[] = [];
+  const seen = new Set<bigint>([focalId]);
+  let cursor = focalVal.parent;
+  let depth = 0;
+  while (cursor != null && !seen.has(cursor) && depth < MAX_ANCESTOR_DEPTH) {
+    seen.add(cursor);
+    depth++;
+    const v = (await api.query.Microblog.Posts.getValue(cursor)) as unknown as
+      | RawPostValue
+      | undefined;
+    if (!v) break;
+    ancestorsRaw.push({ id: cursor, value: v });
+    cursor = v.parent;
+  }
+  ancestorsRaw.reverse(); // top-down (conversation root first)
+
+  // Direct replies: ONE parent's children via the reverse map, then read each value.
+  const replyEntries = (await api.query.Microblog.RepliesByParent.getEntries(focalId)) as unknown as {
+    keyArgs: unknown[];
+  }[];
+  const replyIds = replyEntries
+    .map((e) => e.keyArgs[e.keyArgs.length - 1] as bigint)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)); // replies oldest-first
+  const replyValues = await Promise.all(
+    replyIds.map((id) => api.query.Microblog.Posts.getValue(id) as Promise<RawPostValue | undefined>),
+  );
+  const repliesRaw: RawPostWithId[] = replyIds
+    .map((id, i) => ({ id, value: replyValues[i] }))
+    .filter((r): r is RawPostWithId => r.value !== undefined);
+
+  // Enrich the whole thread in one batched pass, then split back into its parts. `enrichPosts` already
+  // stamps each post's keyed `ReplyCount`, so the focal's reply count comes off the enriched root — no
+  // separate `ReplyCount.getValue(focalId)` read.
+  const enriched = await enrichPosts(api, [
+    { id: focalId, value: focalVal },
+    ...ancestorsRaw,
+    ...repliesRaw,
+  ]);
+  const root = enriched[0];
+  const ancestors = enriched.slice(1, 1 + ancestorsRaw.length);
+  const replies = enriched.slice(1 + ancestorsRaw.length);
+  return { root, ancestors, replies, replyCount: root.replyCount ?? 0 };
+}
+
+// ── head positions + Cardano anchor (unchanged from the load-all era) ─────────────────────────────
 
 /** Project a PAPI BlockInfo into the minimal BlockRef the UI labels with. */
 function toBlockRef(info: { number: number; hash: string } | null): BlockRef | null {
@@ -218,60 +445,17 @@ export function watchAnchor(api: CognoApi): Observable<AnchorCheckpoint | null> 
   );
 }
 
-/** Key under which top-level posts (no parent) are grouped in the thread index. */
-export const THREAD_ROOT_KEY = "root";
-
 /**
- * Group posts into a parent → children index. Top-level posts (no `parent`) live under
- * {@link THREAD_ROOT_KEY}; replies live under `String(parentId)`. A post whose parent id is
- * not present in the set (dangling / the parent was deleted/tombstoned) is STILL grouped by
- * its parent key — it is never dropped — so the UI can render it under a "missing parent"
- * affordance and the conversation never silently loses a node.
+ * Fetch a single post by id, fully enriched (tallies/counts/replyCount/poll flag/profile/quote), or
+ * undefined if it does not exist. The canonical single-post read (the thread root, a liked post, a
+ * quote target). Revocation is flagged by the caller (PAPI source) per distinct author.
  */
-export function buildThreadIndex(posts: CognoPost[]): Map<string, CognoPost[]> {
-  const index = new Map<string, CognoPost[]>();
-  for (const post of posts) {
-    const key =
-      post.parent === undefined ? THREAD_ROOT_KEY : String(post.parent);
-    const bucket = index.get(key);
-    if (bucket) {
-      bucket.push(post);
-    } else {
-      index.set(key, [post]);
-    }
-  }
-  return index;
-}
-
-/** Fetch a single post by id, or undefined if it does not exist / was deleted. */
 export async function getPost(
   api: CognoApi,
   id: bigint,
 ): Promise<CognoPost | undefined> {
-  const raw = await api.query.Microblog.Posts.getValue(id);
+  const raw = (await api.query.Microblog.Posts.getValue(id)) as unknown as RawPostValue | undefined;
   if (!raw) return undefined;
-  const value = raw as unknown as RawPostEntry["value"];
-  const post = toCognoPost({ args: [id], value });
-
-  // A post is a poll iff a Polls[id] entry exists; resolve a quoted post (one level) for the embed;
-  // stamp the author's display name/avatar so the detail header shows the real name, not just a handle.
-  const [pollRec, quoted, prof] = await Promise.all([
-    api.query.Microblog.Polls.getValue(id),
-    value.quote != null
-      ? api.query.Microblog.Posts.getValue(BigInt(value.quote))
-      : Promise.resolve(undefined),
-    api.query.Profile.Profiles.getValue(post.author),
-  ]);
-  if (pollRec) post.isPoll = true;
-  if (prof) {
-    const p = prof as unknown as RawProfileEntry["value"];
-    post.authorDisplayName = binTextOpt(p.display_name);
-    post.authorAvatar = binTextOpt(p.avatar);
-  }
-  if (value.quote != null) {
-    post.quote = quoted
-      ? quoteRefOf(toCognoPost({ args: [BigInt(value.quote)], value: quoted as unknown as RawPostEntry["value"] }))
-      : { id: BigInt(value.quote), author: "" as Ss58, text: "", authorRevoked: false };
-  }
+  const [post] = await enrichPosts(api, [{ id, value: raw }]);
   return post;
 }

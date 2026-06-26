@@ -90,6 +90,16 @@ export function applyViewerPatch(
   };
 }
 
+/**
+ * The identity key used to match an optimistic pending card to its real chain twin (the chain assigns
+ * a fresh id, so a pending card — which has a placeholder negative id — can only be reconciled by
+ * author + text). The SINGLE source of this key, shared by {@link mergeFeed}'s dedup and the
+ * presence-reconcile in the live feed, so the two can never drift.
+ */
+export function pendingKey(post: { author: string; text: string }): string {
+  return `${post.author}\n${post.text}`;
+}
+
 /** Merge the overlay onto a feed snapshot: prepend pending cards, patch counts on existing rows. */
 export function mergeFeed(posts: CognoPost[], overlay: Overlay): CognoPost[] {
   const patched = posts.map((p) => applyCountPatch(p, overlay.counts[String(p.id)]));
@@ -97,10 +107,10 @@ export function mergeFeed(posts: CognoPost[], overlay: Overlay): CognoPost[] {
   // Without this the optimistic→real handoff flickers: dropPending() can fire a beat before the feed
   // poll lands the real row, so the card would briefly vanish then reappear. De-duping here makes the
   // swap seamless regardless of which arrives first.
-  const realKeys = new Set(patched.map((p) => `${p.author}\n${p.text}`));
+  const realKeys = new Set(patched.map(pendingKey));
   const pendingCards = overlay.pending
     .filter((pp) => pp.status === "pending" && pp.parentId === undefined)
-    .filter((pp) => !realKeys.has(`${pp.post.author}\n${pp.post.text}`))
+    .filter((pp) => !realKeys.has(pendingKey(pp.post)))
     .map((pp) => pp.post);
   return [...pendingCards, ...patched];
 }
