@@ -68,6 +68,17 @@ export interface CognoPost {
   authorAvatar?: string;
   /** Author posting power (lovelace); undefined until staked. */
   authorWeight?: bigint;
+
+  // ── viewer overlay (spec-120 node-served reads only) ──
+  /**
+   * The connected viewer's own vote/repost on this post, stamped node-side by the spec-120
+   * `MicroblogApi` (when a `viewer` was passed). PRESENT only on a `caps.nodeFeedApi`-served page;
+   * `undefined` on the keyed/indexer paths, where `useViewerStates` reads it per-card instead. When
+   * present, `useViewerStates` prefers it and SKIPS the per-card `Reposts.getEntries` viewer scan.
+   */
+  myVote?: "Up" | "Down" | null;
+  /** Companion to {@link myVote}: the viewer has reposted this post. Present iff `myVote` is. */
+  reposted?: boolean;
 }
 
 /** A 0-indexed poll option with its stake-weighted tally. */
@@ -158,6 +169,13 @@ export interface FeedQuery {
   tab?: "forYou" | "following" | "replies" | "likes";
   followeeOf?: Ss58; // "Following" timeline: posts by accounts this user follows
   order?: "recency" | "score"; // forYou default recency; "score" = top (indexer SCORE_DESC)
+  /**
+   * The connected account, when known. A `caps.nodeFeedApi` source threads it into the spec-120
+   * `MicroblogApi` so each returned post carries the viewer's `myVote`/`reposted` overlay, computed
+   * node-side in the same `state_call`. The keyed + indexer paths IGNORE it (the overlay is fetched
+   * separately via `useViewerStates`), so passing it is always safe and never changes those results.
+   */
+  viewer?: Ss58;
 }
 
 /** A single author's public profile + their (paginated) posts. */

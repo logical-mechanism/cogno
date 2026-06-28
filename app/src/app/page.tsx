@@ -38,6 +38,7 @@ import { useOptimistic } from "@/hooks/useOptimistic";
 import { useMutation } from "@/hooks/useMutation";
 import { useCapacity } from "@/hooks/useCapacity";
 import { useHeads } from "@/hooks/useHeads";
+import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { draftStatus } from "@/lib/chain/capacity";
 import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
@@ -108,7 +109,13 @@ export default function HomePage() {
   }, [source, canFollow, me]);
 
   const followingQuery = useMemo<FeedQuery>(
-    () => ({ tab: "following", followeeOf: me ?? undefined, first: 30, order: "recency" }),
+    () => ({
+      tab: "following",
+      followeeOf: me ?? undefined,
+      first: 30,
+      order: "recency",
+      viewer: me ?? undefined,
+    }),
     [me],
   );
   const followingEnabled =
@@ -118,7 +125,10 @@ export default function HomePage() {
   // ── the post-id set + viewer-relative state (filled heart / active repost) ──────────────────
   const visiblePosts = activeTab === "following" ? followingPage.posts : displayedForYou;
   const postIds = useMemo(() => visiblePosts.map((p) => p.id), [visiblePosts]);
-  const viewerStates = useViewerStates(source, postIds, me);
+  // A node-served page carries each post's myVote/reposted overlay → useViewerStates skips its
+  // per-card Reposts.getEntries scan for those ids (keyed-path posts have no overlay → per-card read).
+  const carriedStates = useMemo(() => carriedViewerStates(visiblePosts), [visiblePosts]);
+  const viewerStates = useViewerStates(source, postIds, me, carriedStates);
 
   // ── write hooks ─────────────────────────────────────────────────────────────────────────────
   const vote = useVote(api, signer, votingPower ?? 0n);

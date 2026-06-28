@@ -22,6 +22,7 @@
 
 import { type Observable, from, startWith, switchMap } from "rxjs";
 import { FixedSizeBinary } from "polkadot-api";
+import { CompatibilityLevel } from "polkadot-api";
 import {
   getPost,
   getGlobalFeedPage,
@@ -32,6 +33,12 @@ import {
   binTextOpt,
   type IdPage,
 } from "@/lib/chain/reads";
+import {
+  nodeGlobalFeedPage,
+  nodeAuthorFeedPage,
+  nodeFollowingFeedPage,
+  nodeThread,
+} from "@/lib/chain/node-reads";
 import { byIdDesc } from "@/lib/feed/live";
 import {
   readPoll,
@@ -96,7 +103,26 @@ async function readFollowers(api: CognoApi, who: Ss58): Promise<Ss58[]> {
  *  The shared decoder (reads.ts `binTextOpt`) so feed + profile reads can't disagree on empty/trim. */
 const profileText = binTextOpt;
 
+/**
+ * RUNTIME-DETECT whether the connected node serves the spec-120 `MicroblogApi` reads. PAPI's
+ * `isCompatible` compares the call against the node's live metadata: a pre-120 node (no `MicroblogApi`
+ * entry) reports `Incompatible` ⇒ `false` WITHOUT throwing, so the reader degrades to the keyed path.
+ * Any throw (transport blip, older PAPI) is caught ⇒ `false` (fail-closed onto the always-available
+ * keyed fallback). The result is memoized as a `Promise<boolean>` so the probe runs at most once per
+ * source; `page()`/`thread()`/`profile()` await it before choosing a read path.
+ */
+function detectNodeFeedApi(api: CognoApi): Promise<boolean> {
+  return api.apis.MicroblogApi.feed_page
+    .isCompatible(CompatibilityLevel.BackwardsCompatible)
+    .catch(() => false);
+}
+
 export function createPapiFeedSource(api: CognoApi): FeedSource {
+  // Lazy, memoized detection — the probe fires on the first read that consults it, not at construction
+  // (createPapiFeedSource stays synchronous, as the selector + tests expect).
+  let nodeFeedApi$: Promise<boolean> | undefined;
+  const nodeFeedApiReady = (): Promise<boolean> => (nodeFeedApi$ ??= detectNodeFeedApi(api));
+
   const caps: FeedCaps = {
     search: false,
     // The feed pages by post id now (keyed `Posts.getValue` walks down the `NextPostId` counter), so
@@ -117,6 +143,12 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     profileLikes: true,
     // who-to-follow is ranked node-direct by the FollowerCount map (a popularity proxy; no SCORE).
     whoToFollow: true,
+    // The PAPI-direct reader CAN serve enriched, viewer-aware pages via the spec-120 MicroblogApi —
+    // when the connected node supports it. This advertises the capability; whether the LIVE node
+    // actually has the API is detected per-source (`nodeFeedApiReady`) and falls back to the keyed
+    // reads on a pre-120 node. The overlay-bypass in useViewerStates keys on each post's `myVote`
+    // presence (data-driven), so a fallback page is handled correctly regardless of this flag.
+    nodeFeedApi: true,
   };
 
   /** Stamp the revocation flag onto a set of posts, reading PkhOf once per distinct author. */
@@ -158,13 +190,21 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     const first = q.first ?? DEFAULT_FIRST;
     // The cursor is the highest post id NOT yet returned (encoded decimal). Decode it to a beforeId.
     const beforeId = q.after != null ? BigInt(q.after) : undefined;
+    const viewer = q.viewer;
+    // Prefer the spec-120 MicroblogApi (one state_call, viewer overlay stamped node-side) when the
+    // connected node serves it; otherwise fall through to the keyed reads UNCHANGED.
+    const nodeApi = await nodeFeedApiReady();
 
-    // Following feed: top-level posts authored by the accounts `target` follows, paged down the id
-    // counter with a followee-set filter (the forward Following map + the keyed id walk — no full
-    // snapshot). Sparse followees ⇒ a longer walk, same cost class as the old full-set filter.
+    // Following feed: top-level posts authored by the accounts `target` follows.
     if (q.tab === "following" || q.followeeOf) {
       const target = q.followeeOf ?? q.authorId;
       if (!target) return emptyPage();
+      // Node path: the runtime merges ByAuthor over Following[target] node-side (no id-walk filter).
+      if (nodeApi) {
+        return toFeedPage(await nodeFollowingFeedPage(api, target, { beforeId, limit: first }));
+      }
+      // Keyed fallback: page down the id counter with a followee-set filter (forward Following map +
+      // the keyed id walk — no full snapshot). Sparse followees ⇒ a longer walk, same cost class.
       const followees = new Set(await readFollowees(api, target));
       if (followees.size === 0) return emptyPage();
       return toFeedPage(
@@ -176,20 +216,33 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       );
     }
 
-    // Author feed: one author's top-level posts, paged over their ByAuthor id list.
+    // Author feed: one author's top-level posts.
     if (q.authorId) {
+      if (nodeApi) {
+        return toFeedPage(
+          await nodeAuthorFeedPage(api, q.authorId, { beforeId, limit: first, viewer }),
+        );
+      }
+      // Keyed fallback: page over the author's ByAuthor id list.
       return toFeedPage(await getAuthorFeedPage(api, q.authorId, { beforeId, limit: first }));
     }
 
-    // Global feed (forYou / default): newest top-level posts, paged down the NextPostId counter.
+    // Global feed (forYou / default): newest top-level posts.
+    if (nodeApi) {
+      return toFeedPage(await nodeGlobalFeedPage(api, { beforeId, limit: first, viewer }));
+    }
+    // Keyed fallback: page down the NextPostId counter.
     return toFeedPage(await getGlobalFeedPage(api, { beforeId, limit: first }));
   }
 
-  async function thread(rootId: bigint): Promise<ThreadView> {
-    // Keyed thread read: focal + ancestor walk + the focal's direct replies from `RepliesByParent`
-    // (one parent's children) + the `ReplyCount` aggregate — no full-snapshot scan (reads.ts).
+  async function thread(rootId: bigint, viewer?: Ss58): Promise<ThreadView> {
+    // Node path (spec-120): focal + ancestors + replies enriched + viewer-overlaid in one state_call.
+    // Keyed fallback: focal + ancestor walk + the focal's direct replies from `RepliesByParent` (one
+    // parent's children) + the `ReplyCount` aggregate — no full-snapshot scan (reads.ts).
     const { root: rootRaw, ancestors: ancestorsRaw, replies: repliesRaw, replyCount } =
-      await getThread(api, rootId);
+      (await nodeFeedApiReady())
+        ? await nodeThread(api, rootId, viewer)
+        : await getThread(api, rootId);
     const flagged = await flagRevocations([rootRaw, ...ancestorsRaw, ...repliesRaw]);
     const root = flagged[0];
     const ancestors = flagged.slice(1, 1 + ancestorsRaw.length);
@@ -260,7 +313,12 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       // Liked posts are by OTHER authors → flag each by its own author's revocation, not `account`.
       posts = await flagRevocations(likedPosts);
     } else {
-      const pg = await getAuthorFeedPage(api, account, { limit: DEFAULT_FIRST });
+      // Posts tab: the author's top-level posts. Node path (spec-120) enriches + viewer-overlays in
+      // one state_call; the keyed path pages over the ByAuthor id list. `args.viewer` (the connected
+      // account) threads the overlay through when present.
+      const pg = (await nodeFeedApiReady())
+        ? await nodeAuthorFeedPage(api, account, { limit: DEFAULT_FIRST, viewer: args.viewer })
+        : await getAuthorFeedPage(api, account, { limit: DEFAULT_FIRST });
       // The author's own posts → stamp the author's revocation directly (all the same author).
       posts = pg.posts.map((p) => ({ ...p, authorRevoked: banned }));
       endCursor = pg.nextCursor != null ? String(pg.nextCursor) : null;

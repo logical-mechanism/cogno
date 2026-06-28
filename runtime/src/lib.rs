@@ -212,7 +212,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// 1 read + 2 writes). Encoding-affecting (new storage/metadata) — regen the PAPI descriptors.
 	// transaction_version is UNCHANGED (3): the `TxExtension` tuple + every Call encoding is byte-
 	// identical (the new storage is not reachable through any call-arg change).
-	spec_version: 119,
+	// 119 -> 120 (node-served reads): pallet-microblog GAINS a custom `sp_api` runtime read API
+	// (`MicroblogApi`: feed_page / author_feed_page / following_feed_page / thread) returning one
+	// enriched, viewer-aware page per `state_call` — folding the client's ~5-reads-per-post feed
+	// fan-out + the per-card `Reposts` scan into the runtime. NO new storage, NO call-arg change;
+	// the new API trait changes `RUNTIME_API_VERSIONS` (runtime metadata / api hash), so spec_version
+	// bumps while transaction_version stays 3. Regen the PAPI descriptors after deploying 120 so
+	// `api.apis.MicroblogApi` resolves.
+	spec_version: 120,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

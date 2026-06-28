@@ -22,6 +22,8 @@ frame-support = { workspace = true }
 frame-system = { workspace = true }
 log = { workspace = true }
 scale-info = { features = ["derive"], workspace = true }
+# The spec-120 `MicroblogApi` node-served read API (decl_runtime_apis! at the crate root).
+sp-api = { workspace = true }
 sp-runtime = { workspace = true }
 # Tight coupling: the capacity meter reads per-account weight from talk-stake (ECONOMICS §6.2).
 pallet-talk-stake = { workspace = true }
@@ -41,6 +43,7 @@ std = [
 	"log/std",
 	"pallet-talk-stake/std",
 	"scale-info/std",
+	"sp-api/std",
 	"sp-runtime/std",
 ]
 runtime-benchmarks = [

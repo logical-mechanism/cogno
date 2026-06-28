@@ -306,6 +306,9 @@ export function createGraphqlFeedSource(endpoint: string): FeedSource {
     profileReplies: true,
     profileLikes: true,
     whoToFollow: true,
+    // The indexer serves its own enriched pages over GraphQL — it does NOT route through the
+    // node's spec-120 MicroblogApi runtime read (that path is PAPI-direct only).
+    nodeFeedApi: false,
   };
 
   function orderBy(order: FeedQuery["order"]): string[] {

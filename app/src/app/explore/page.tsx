@@ -40,6 +40,7 @@ import { ExploreList } from "@/components/explore/ExploreList";
 import { useSession } from "@/components/Providers";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
+import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
@@ -139,8 +140,10 @@ function ExploreView() {
 
   // ── DEFAULT firehose / QUERY Latest feed (both via the page seam) ────────────────────────────
   const firehoseQuery = useMemo<FeedQuery>(
-    () => ({ first: PAGE_SIZE, order: effectiveOrder }),
-    [effectiveOrder],
+    // `viewer: me` lets a spec-120 node stamp the myVote/reposted overlay node-side (PAPI-direct
+    // firehose); the keyed + indexer paths ignore it.
+    () => ({ first: PAGE_SIZE, order: effectiveOrder, viewer: me ?? undefined }),
+    [effectiveOrder, me],
   );
   // The firehose renders in DEFAULT mode AND in NO-INDEXER mode (PAPI-direct still shows the live
   // window, §5.4) — only QUERY mode swaps it out for the result list.
@@ -157,7 +160,9 @@ function ExploreView() {
   // Which post list is on screen (firehose in DEFAULT + NO-INDEXER; Latest results in QUERY).
   const activePosts: CognoPost[] = mode === "query" ? latest.posts : firehose.posts;
   const postIds = useMemo(() => activePosts.map((p) => p.id), [activePosts]);
-  const viewerStates = useViewerStates(source, postIds, me);
+  // Node-served posts carry the overlay → skip the per-card Reposts scan for those ids.
+  const carriedStates = useMemo(() => carriedViewerStates(activePosts), [activePosts]);
+  const viewerStates = useViewerStates(source, postIds, me, carriedStates);
 
   // ── People search (indexer-only) ─────────────────────────────────────────────────────────────
   const [people, setPeople] = useState<Suggestion[]>([]);

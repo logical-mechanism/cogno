@@ -48,6 +48,7 @@ pub use weights::*;
 /// Storage migrations for this pallet (`v1` adds `Post.quote` — the project's first migration).
 pub mod migrations;
 
+use alloc::vec::Vec;
 use codec::{Decode, DecodeWithMemTracking, Encode};
 use frame_support::{
 	dispatch::{DispatchInfo, PostDispatchInfo},
@@ -1235,5 +1236,348 @@ where
 			crate::pallet::Pallet::<T>::consume(&who, now, pre.cost);
 		}
 		Ok(Weight::zero())
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// spec-120 node-served reads — the `MicroblogApi` runtime read API (docs/SCALE-NODE-READS.md).
+//
+// A feed page today costs the client ~5 keyed JSON-RPC reads PER POST (tally + repost + reply
+// count + poll + author profile) plus a per-card `Reposts.getEntries` scan — ~150 round-trips for
+// a 30-post page. The helpers below fold that whole loop into the runtime so ONE `state_call`
+// returns a fully enriched, viewer-aware page, atomic at a single block. The DTOs are transport
+// only: codec + `TypeInfo`, NOT `MaxEncodedLen` (they carry unbounded post text); they are generic
+// over `AccountId` alone, so the API trait + impl live free of `T`. Author profile fields
+// (`display_name`/`avatar`) are filled by the RUNTIME from pallet-profile — pallet-microblog stays
+// free of a profile dependency, the same no-Cargo-cycle posture as `IsAllowed`/`ForeignCapacityCost`.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+/// Hard cap on a page `limit` — clamped, never errored (the client may ask for fewer).
+pub const MAX_PAGE: u32 = 100;
+/// Per-call id-scan cap for the global / following feed: examine at most `limit · MAX_SCAN_FACTOR`
+/// post ids before handing back a `next_cursor` to continue from, so a reply-dense id range can
+/// never trigger an unbounded walk. (Feature 3's top-level index removes the over-scan at the source.)
+const MAX_SCAN_FACTOR: u32 = 8;
+/// Ancestor-chain depth cap for `thread` — matches the client's `MAX_ANCESTOR_DEPTH` so the
+/// node-served thread and the keyed-read fallback reconstruct the same breadcrumb. A visited-set
+/// (in `thread`) additionally breaks any cyclic `parent` chain (`parent` is unvalidated at creation).
+const MAX_THREAD_DEPTH: u32 = 64;
+
+/// A one-level quoted-post summary embedded in an [`EnrichedPost`]. The author display fields are
+/// filled by the runtime from pallet-profile (empty otherwise).
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct QuotedSummary<AccountId> {
+	/// The quoted post's id.
+	pub id: u64,
+	/// The quoted post's author.
+	pub author: AccountId,
+	/// The quoted post's body bytes.
+	pub text: Vec<u8>,
+	/// The quoted author's display name (runtime-filled from pallet-profile; empty if unset).
+	pub author_display_name: Vec<u8>,
+	/// The quoted author's avatar reference (runtime-filled; empty if unset).
+	pub author_avatar: Vec<u8>,
+}
+
+/// One enriched, viewer-aware post — everything a feed card renders, in a single shot.
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct EnrichedPost<AccountId> {
+	/// The post id.
+	pub id: u64,
+	/// The author account.
+	pub author: AccountId,
+	/// The post body bytes.
+	pub text: Vec<u8>,
+	/// The reply parent, if this is a reply.
+	pub parent: Option<u64>,
+	/// The quoted post id, if this is a quote.
+	pub quote: Option<u64>,
+	/// The block number the post was created at (`u32` — the chain's `BlockNumber`).
+	pub at: u32,
+	/// Sum of up-voters' stake-weight snapshots.
+	pub up_weight: u128,
+	/// Sum of down-voters' stake-weight snapshots.
+	pub down_weight: u128,
+	/// Up-vote count.
+	pub up_count: u32,
+	/// Down-vote count.
+	pub down_count: u32,
+	/// Permanent repost count.
+	pub repost_count: u32,
+	/// Direct-reply count.
+	pub reply_count: u32,
+	/// Whether this post hosts a poll.
+	pub is_poll: bool,
+	/// Viewer overlay: the viewer's own vote (`None` if not voted / no viewer supplied).
+	pub my_vote: Option<VoteDir>,
+	/// Viewer overlay: whether the viewer has reposted this post.
+	pub reposted: bool,
+	/// Author display name (runtime-filled from pallet-profile; empty if unset).
+	pub author_display_name: Vec<u8>,
+	/// Author avatar reference (runtime-filled; empty if unset).
+	pub author_avatar: Vec<u8>,
+	/// One-level resolved quoted-post summary (when `quote` is `Some` and the target exists).
+	pub quoted: Option<QuotedSummary<AccountId>>,
+}
+
+/// One page of enriched posts plus the cursor to continue below. `next_cursor == None` ⇒ the scan
+/// reached the end of the (examined) id space; otherwise pass it back as the next `before_id`.
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct FeedPage<AccountId> {
+	/// The page of enriched posts, newest-first.
+	pub posts: Vec<EnrichedPost<AccountId>>,
+	/// The `before_id` to pass for the next page, or `None` at the end of the feed.
+	pub next_cursor: Option<u64>,
+}
+
+/// A reconstructed thread: the focal post, its ancestor chain (root-first, depth-capped) and its
+/// direct replies (chronological) — all enriched and viewer-aware.
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct Thread<AccountId> {
+	/// The ancestor chain from the root down to the focal post's parent (root-first).
+	pub ancestors: Vec<EnrichedPost<AccountId>>,
+	/// The focal post, or `None` if it does not exist.
+	pub focal: Option<EnrichedPost<AccountId>>,
+	/// The focal post's direct replies, chronological (ascending id).
+	pub replies: Vec<EnrichedPost<AccountId>>,
+}
+
+impl<T: Config> Pallet<T> {
+	/// Clamp a requested page `limit` to `[1, MAX_PAGE]`.
+	fn clamp_limit(limit: u32) -> u32 {
+		limit.clamp(1, MAX_PAGE)
+	}
+
+	/// Build the enriched, viewer-aware view of an already-fetched `post`. Author-profile fields are
+	/// left empty — the runtime fills them from pallet-profile (no profile dependency here).
+	fn enrich(id: u64, post: Post<T>, viewer: Option<&T::AccountId>) -> EnrichedPost<T::AccountId> {
+		let Post { author, text, parent, at, quote } = post;
+		let tally = VoteTally::<T>::get(id);
+		let (my_vote, reposted) = match viewer {
+			Some(who) => (
+				Votes::<T>::get(id, who).map(|r| r.dir),
+				Reposts::<T>::contains_key(id, who),
+			),
+			None => (None, false),
+		};
+		// One-level quote resolution (the quoted author's profile is runtime-filled later).
+		let quoted = quote.and_then(|qid| {
+			Posts::<T>::get(qid).map(|qp| QuotedSummary {
+				id: qid,
+				author: qp.author,
+				text: qp.text.into_inner(),
+				author_display_name: Vec::new(),
+				author_avatar: Vec::new(),
+			})
+		});
+		EnrichedPost {
+			id,
+			author,
+			text: text.into_inner(),
+			parent,
+			quote,
+			at: at.saturated_into::<u32>(),
+			up_weight: tally.up_weight,
+			down_weight: tally.down_weight,
+			up_count: tally.up_count,
+			down_count: tally.down_count,
+			repost_count: RepostCount::<T>::get(id),
+			reply_count: ReplyCount::<T>::get(id),
+			is_poll: Polls::<T>::contains_key(id),
+			my_vote,
+			reposted,
+			author_display_name: Vec::new(),
+			author_avatar: Vec::new(),
+			quoted,
+		}
+	}
+
+	/// Fetch + enrich a post by id (`None` if it does not exist).
+	fn enriched_post(id: u64, viewer: Option<&T::AccountId>) -> Option<EnrichedPost<T::AccountId>> {
+		Posts::<T>::get(id).map(|post| Self::enrich(id, post, viewer))
+	}
+
+	/// Scan the global id space newest-first for TOP-LEVEL posts (`parent == None`) that also pass
+	/// `keep`, paged strictly below `before_id` (`None` ⇒ from the head). Bounds the scan at
+	/// `limit · MAX_SCAN_FACTOR` ids and returns `next_cursor` (the last id examined) so the client
+	/// continues without an unbounded walk. Shared by `feed_page` (keep-all) and `following_feed_page`
+	/// (keep authors the viewer follows).
+	fn scan_top_level<F>(
+		before_id: Option<u64>,
+		limit: u32,
+		viewer: Option<&T::AccountId>,
+		mut keep: F,
+	) -> FeedPage<T::AccountId>
+	where
+		F: FnMut(&Post<T>) -> bool,
+	{
+		let limit = Self::clamp_limit(limit);
+		let next_id = NextPostId::<T>::get();
+		// Highest candidate id strictly below `before_id` (or the head when `None`).
+		let mut id = match before_id {
+			Some(0) => return FeedPage { posts: Vec::new(), next_cursor: None },
+			Some(b) => core::cmp::min(b, next_id).saturating_sub(1),
+			None => match next_id.checked_sub(1) {
+				Some(top) => top,
+				None => return FeedPage { posts: Vec::new(), next_cursor: None },
+			},
+		};
+		let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
+		let mut posts = Vec::new();
+		let mut examined: u32 = 0;
+		loop {
+			// Stopped before exhausting the id space — hand back a cursor to continue strictly below
+			// the last id we consumed (`id` has already been decremented past it).
+			if posts.len() as u32 >= limit || examined >= max_scan {
+				return FeedPage { posts, next_cursor: Some(id.saturating_add(1)) };
+			}
+			examined = examined.saturating_add(1);
+			if let Some(post) = Posts::<T>::get(id) {
+				// Replies are served via `thread`; quotes (`parent == None`) DO appear in the feed.
+				if post.parent.is_none() && keep(&post) {
+					posts.push(Self::enrich(id, post, viewer));
+				}
+			}
+			if id == 0 {
+				// Reached the bottom of the id space — no more pages.
+				return FeedPage { posts, next_cursor: None };
+			}
+			id = id.saturating_sub(1);
+		}
+	}
+
+	/// Global "For-you" feed: top-level posts, newest-first, paged below `before_id`. `viewer` (when
+	/// `Some`) stamps `my_vote`/`reposted` per post. (Author profiles are runtime-filled.)
+	pub fn feed_page(
+		before_id: Option<u64>,
+		limit: u32,
+		viewer: Option<T::AccountId>,
+	) -> FeedPage<T::AccountId> {
+		Self::scan_top_level(before_id, limit, viewer.as_ref(), |_| true)
+	}
+
+	/// One author's top-level posts (the profile Posts tab), newest-first, paged below `before_id`.
+	/// Iterates the author's own `ByAuthor` index (no global scan), filtering to top-level posts.
+	pub fn author_feed_page(
+		author: T::AccountId,
+		before_id: Option<u64>,
+		limit: u32,
+		viewer: Option<T::AccountId>,
+	) -> FeedPage<T::AccountId> {
+		let limit = Self::clamp_limit(limit);
+		let ids = ByAuthor::<T>::get(&author);
+		let viewer_ref = viewer.as_ref();
+		let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
+		let mut posts = Vec::new();
+		let mut examined: u32 = 0;
+		let mut next_cursor = None;
+		// `ByAuthor` is append-ordered (ascending id); iterate it newest-first.
+		for &id in ids.iter().rev() {
+			if let Some(b) = before_id {
+				if id >= b {
+					continue;
+				}
+			}
+			if posts.len() as u32 >= limit || examined >= max_scan {
+				next_cursor = Some(id.saturating_add(1));
+				break;
+			}
+			examined = examined.saturating_add(1);
+			if let Some(post) = Posts::<T>::get(id) {
+				if post.parent.is_none() {
+					posts.push(Self::enrich(id, post, viewer_ref));
+				}
+			}
+		}
+		FeedPage { posts, next_cursor }
+	}
+
+	/// The Following timeline: top-level posts authored by accounts the `viewer` follows, newest-
+	/// first, paged below `before_id`. Reads the FULL followee set (parity with the keyed-read
+	/// fallback, which reads the whole follow graph — so no followee is ever silently dropped) then
+	/// reuses the bounded global scan — same clean cursor semantics as `feed_page` (no dropped posts;
+	/// a reply-dense range simply continues via the cursor).
+	pub fn following_feed_page(
+		viewer: T::AccountId,
+		before_id: Option<u64>,
+		limit: u32,
+	) -> FeedPage<T::AccountId> {
+		// The full followee set (bounded by the viewer's own following count, exactly as the
+		// fallback's `readFollowees` is) — no cap, so no followee's posts are silently dropped.
+		let followees: alloc::collections::BTreeSet<T::AccountId> =
+			Following::<T>::iter_key_prefix(&viewer).collect();
+		// A viewer who follows nobody has an empty timeline — short-circuit instead of scanning the
+		// whole id space to no effect (and handing back a misleading non-None cursor).
+		if followees.is_empty() {
+			return FeedPage { posts: Vec::new(), next_cursor: None };
+		}
+		Self::scan_top_level(before_id, limit, Some(&viewer), |p| followees.contains(&p.author))
+	}
+
+	/// A reconstructed thread for `focal`: its ancestor chain (root-first, depth-capped), the focal
+	/// post itself, and its direct replies (chronological) — all enriched and viewer-aware.
+	pub fn thread(focal: u64, viewer: Option<T::AccountId>) -> Thread<T::AccountId> {
+		let viewer_ref = viewer.as_ref();
+		let focal_post = Self::enriched_post(focal, viewer_ref);
+		// Walk `parent` up from the focal post, then reverse to root-first. `parent` is unvalidated at
+		// post creation, so guard against a cyclic / self-referential chain with a visited-set (seeded
+		// with the focal id) AND a depth cap — mirroring the client's `getThread` so the two agree.
+		let mut ancestors = Vec::new();
+		if let Some(fp) = focal_post.as_ref() {
+			let mut seen = alloc::collections::BTreeSet::new();
+			seen.insert(focal);
+			let mut parent = fp.parent;
+			let mut depth: u32 = 0;
+			while let Some(pid) = parent {
+				// Depth cap reached, or `pid` already visited (a cycle) — stop. `insert` returns false
+				// when `pid` is already present, which is exactly the revisit case.
+				if depth >= MAX_THREAD_DEPTH || !seen.insert(pid) {
+					break;
+				}
+				depth = depth.saturating_add(1);
+				match Self::enriched_post(pid, viewer_ref) {
+					Some(ap) => {
+						parent = ap.parent;
+						ancestors.push(ap);
+					},
+					// A dangling parent (target never existed / was a phantom id) — stop the walk.
+					None => break,
+				}
+			}
+			ancestors.reverse();
+		}
+		// ALL direct replies via the reverse index (prefix iteration), id-sorted (chronological) —
+		// parity with the keyed-read fallback, which also returns every direct reply. Bounded by the
+		// focal post's own reply count, exactly as the fallback's `RepliesByParent.getEntries(focal)`.
+		let mut replies: Vec<_> = RepliesByParent::<T>::iter_key_prefix(focal)
+			.filter_map(|reply_id| Self::enriched_post(reply_id, viewer_ref))
+			.collect();
+		replies.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+		Thread { ancestors, focal: focal_post, replies }
+	}
+}
+
+sp_api::decl_runtime_apis! {
+	/// Node-served reads (spec-120): one enriched, viewer-aware feed / thread / profile page per
+	/// `state_call`, atomic at a single block. Implemented in `runtime/src/apis.rs`, which also fills
+	/// each post's author profile from pallet-profile. See `docs/SCALE-NODE-READS.md`.
+	pub trait MicroblogApi<AccountId>
+	where
+		AccountId: codec::Codec,
+	{
+		/// Global "For-you" feed: top-level posts, newest-first, paged below `before_id`
+		/// (`None` ⇒ from the head). `viewer` (when `Some`) stamps `my_vote`/`reposted` per post.
+		fn feed_page(before_id: Option<u64>, limit: u32, viewer: Option<AccountId>) -> FeedPage<AccountId>;
+		/// One author's top-level posts (the profile Posts tab), same paging + viewer semantics.
+		fn author_feed_page(
+			author: AccountId,
+			before_id: Option<u64>,
+			limit: u32,
+			viewer: Option<AccountId>,
+		) -> FeedPage<AccountId>;
+		/// The Following timeline: top-level posts by the accounts `viewer` follows, newest-first.
+		fn following_feed_page(viewer: AccountId, before_id: Option<u64>, limit: u32) -> FeedPage<AccountId>;
+		/// A reconstructed thread: focal + ancestor chain (depth-capped) + direct replies, enriched.
+		fn thread(focal: u64, viewer: Option<AccountId>) -> Thread<AccountId>;
 	}
 }

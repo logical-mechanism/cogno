@@ -112,8 +112,9 @@ export function useProfile(
     const epoch = epochRef.current;
     setLoadingMore(true);
     // Posts tab only → page by author id (no `tab`: the seam's likes/replies have no per-id cursor).
+    // Thread the viewer through so a spec-120 node stamps the overlay on load-more pages too.
     source
-      .page({ authorId: account, after: cursor, first: PAGE })
+      .page({ authorId: account, after: cursor, first: PAGE, viewer: args.viewer })
       .then((pg) => {
         if (epochRef.current !== epoch) return; // tab/author switched mid-flight — drop the stale page
         setAppended((prev) => mergeById(prev, pg.posts));
@@ -127,7 +128,7 @@ export function useProfile(
         if (epochRef.current === epoch) setLoadingMore(false);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, loadingMore, cursor, canPage, profile]);
+  }, [source, loadingMore, cursor, canPage, profile, args.viewer]);
 
   // First page (merged across silent refreshes) + any loaded-more pages, de-duped + newest-first.
   const posts = useMemo(() => mergeById(base, appended), [base, appended]);

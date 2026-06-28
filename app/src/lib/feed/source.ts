@@ -57,6 +57,16 @@ export interface FeedCaps {
   profileLikes: boolean;
   /** ranked who-to-follow suggestion list. (both — spec-118 FollowerCount ranking served node-direct) */
   whoToFollow: boolean;
+  /**
+   * The connected node serves enriched, viewer-aware feed/thread/profile pages in ONE `state_call`
+   * via the spec-120 `MicroblogApi` runtime API (replacing the ~5-reads-per-post `enrichPosts`
+   * fan-out AND the per-card `Reposts.getEntries` viewer-state scan). PAPI-direct only, and
+   * RUNTIME-DETECTED: a pre-120 node (no `MicroblogApi` in its metadata) reports `false` and the
+   * reader degrades to the keyed `getGlobalFeedPage`/`getThread` path. The indexer reports `false`
+   * (it has its own GraphQL surface). When `true`, an API-served page already carries each post's
+   * `myVote`/`reposted` overlay, so `useViewerStates` skips its per-card `viewerPostState` read.
+   */
+  nodeFeedApi: boolean;
 }
 
 /** Arguments for {@link FeedSource.profile} — by account or by identity hash. */
@@ -65,6 +75,12 @@ export interface ProfileArgs {
   identityHash?: string;
   /** Which posts tab to fold into `page` (the indexer applies it as filter + orderBy). */
   tab?: "forYou" | "following" | "replies" | "likes";
+  /**
+   * The connected account, when known. A `caps.nodeFeedApi` source threads it into the Posts-tab
+   * `MicroblogApi` page so each post carries the viewer's `myVote`/`reposted` overlay. The keyed +
+   * indexer paths ignore it (the overlay is fetched per-card by `useViewerStates`).
+   */
+  viewer?: Ss58;
 }
 
 /**
@@ -87,8 +103,14 @@ export interface FeedSource {
   liveHeadId?(): Observable<bigint | null>;
   /** One page of the feed (global, search, author-scoped, or a home/profile tab). */
   page(q: FeedQuery): Promise<FeedPage>;
-  /** A reconstructed thread for `rootId`. (gated on `caps.threads`) */
-  thread(rootId: bigint): Promise<ThreadView>;
+  /**
+   * A reconstructed thread for `rootId`. (gated on `caps.threads`)
+   *
+   * `viewer` (the connected account, when known) lets a `caps.nodeFeedApi` source stamp each post's
+   * `myVote`/`reposted` overlay node-side in the same `state_call`; the keyed fallback ignores it
+   * (the overlay is fetched per-card by `useViewerStates`, exactly as before).
+   */
+  thread(rootId: bigint, viewer?: Ss58): Promise<ThreadView>;
   /** One author's profile + posts. (display fields gated on `caps.profiles`) */
   profile(args: ProfileArgs): Promise<ProfileView>;
   // ── spec-113 social ──

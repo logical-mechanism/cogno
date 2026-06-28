@@ -39,6 +39,7 @@ import { useHeads } from "@/hooks/useHeads";
 import { useProfile } from "@/hooks/useProfile";
 import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
+import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
@@ -106,8 +107,9 @@ function ProfileBody({ address }: { address: Ss58 }) {
 
   // ── profile + the active tab's posts (one round-trip per tab via the seam) ──
   const profileArgs = useMemo<ProfileArgs>(
-    () => ({ author: address, tab: tabArg(activeTab) }),
-    [address, activeTab],
+    // `viewer: me` lets a spec-120 node stamp the Posts-tab overlay node-side; keyed/indexer ignore it.
+    () => ({ author: address, tab: tabArg(activeTab), viewer: me ?? undefined }),
+    [address, activeTab, me],
   );
   const { profile, posts, loading, error, hasMore, loadingMore, loadMore } = useProfile(
     source,
@@ -154,7 +156,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
     }
     let cancelled = false;
     source
-      .thread(pinnedId)
+      .thread(pinnedId, me ?? undefined)
       .then((t) => {
         // Only render it if it resolved AND it's actually this author's post.
         if (!cancelled) setPinned(t.root.author === address ? t.root : null);
@@ -165,7 +167,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
     return () => {
       cancelled = true;
     };
-  }, [source, pinnedId, activeTab, address]);
+  }, [source, pinnedId, activeTab, address, me]);
 
   // De-dupe: if the pinned post is also in the first page, show it only as the pinned block.
   const listPosts = useMemo(() => {
@@ -179,7 +181,12 @@ function ProfileBody({ address }: { address: Ss58 }) {
     if (pinned) ids.unshift(pinned.id);
     return ids;
   }, [listPosts, pinned]);
-  const viewerStates = useViewerStates(source, postIds, me);
+  // Node-served posts (list + pinned) carry the overlay → skip the per-card Reposts scan for them.
+  const carriedStates = useMemo(
+    () => carriedViewerStates(pinned ? [pinned, ...listPosts] : listPosts),
+    [listPosts, pinned],
+  );
+  const viewerStates = useViewerStates(source, postIds, me, carriedStates);
 
   // ── per-card write hooks (mirrors the home surface; D2 Like==up, D3 permanent repost) ──
   const vote = useVote(api, signer, votingPower ?? 0n);

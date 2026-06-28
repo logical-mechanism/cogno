@@ -1,8 +1,18 @@
 # SCALE-NODE-READS — node-served reads (the spec-120 design)
 
-Status: **design / not yet implemented.** Target runtime `spec_version 120` (tx_version stays **3** — no
-extrinsic or signed-extension change; only the runtime-API surface + read storage change). Builds on the
-spec-119 reply aggregates ([feed paging](L4-reading.md)).
+Status: **Feature 1 implemented** (the `MicroblogApi` runtime read API + client wiring, `spec_version 120`,
+tx_version stays **3**). **Feature 2 intentionally skipped** (Feature 1 already returns a clean `reposted`,
+so the `Reposts` re-encode migration buys nothing). **Feature 3 pending** (the top-level-post index). Builds
+on the spec-119 reply aggregates ([feed paging](L4-reading.md)).
+
+> **Implementation note (Feature 1).** The pallet exposes `feed_page` / `author_feed_page` /
+> `following_feed_page` / `thread`, each returning one enriched, viewer-aware page; the runtime fills author
+> profiles from pallet-profile (keeping the pallet free of a profile dependency). The client (`node-reads.ts`)
+> runtime-detects the API (`isCompatible`), prefers it, and keeps the keyed reads as the pre-120 fallback,
+> chasing `next_cursor` to fill a page so the node path matches the keyed path's full-page semantics. An
+> adversarial review hardened four parity edges: a thread ancestor-cycle guard (mirrors the client), the full
+> followee set read (no silent `MAX_FOLLOWEES` drop), all direct replies in `thread` (parity with the client),
+> and an empty-followee short-circuit.
 
 ## Why (and why this is the *right* next scale step)
 

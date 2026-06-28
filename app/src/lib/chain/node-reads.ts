@@ -1,0 +1,250 @@
+// Node-served reads (spec-120): one enriched, viewer-aware feed / thread / profile page per
+// `state_call`, via the `MicroblogApi` runtime API. This REPLACES the ~5-reads-per-post `enrichPosts`
+// fan-out (reads.ts) AND the per-card `Reposts.getEntries` viewer-state scan (social-reads.ts) with a
+// SINGLE call that returns everything a card renders — tallies, counts, the poll flag, the author
+// profile snapshot, a one-level quote summary, and (when a `viewer` is passed) the viewer's own
+// vote/repost overlay — atomic at one block.
+//
+// This is the PREFERRED path on a spec-120 node; the PAPI-direct source RUNTIME-DETECTS support
+// (papi-source.ts `supportsNodeFeedApi`) and keeps the keyed `getGlobalFeedPage`/`getAuthorFeedPage`/
+// `getThread` reads (reads.ts) as the fallback for pre-120 nodes. The two paths MUST agree: the
+// mapping here mirrors `enrichPosts` exactly (same CognoPost shape; `score = upWeight - downWeight`,
+// the SAME derivation as `readPostTally`/`toCognoPost`), proven by the parity test in reads.test.ts.
+
+import { binTextOpt, type IdPage, type RawThread } from "./reads";
+import type { CognoApi, CognoPost, Ss58, QuotedRef, ViewerPostState } from "@/lib/types";
+
+const MAX_PAGE = 100;
+
+/** PAPI's byte type as the API returns it: a `Binary` with `.asText()`. */
+interface BinaryLike {
+  asText: () => string;
+}
+
+/** One `EnrichedPost` exactly as `api.apis.MicroblogApi.*` decodes it (snake_case; `text`/profile = Binary). */
+interface EnrichedPost {
+  id: bigint;
+  author: SS58Like;
+  text: BinaryLike;
+  parent?: bigint;
+  quote?: bigint;
+  at: number;
+  up_weight: bigint;
+  down_weight: bigint;
+  up_count: number;
+  down_count: number;
+  repost_count: number;
+  reply_count: number;
+  is_poll: boolean;
+  my_vote?: { type: "Up" | "Down" };
+  reposted: boolean;
+  author_display_name: BinaryLike;
+  author_avatar: BinaryLike;
+  quoted?: {
+    id: bigint;
+    author: SS58Like;
+    text: BinaryLike;
+    author_display_name: BinaryLike;
+    author_avatar: BinaryLike;
+  };
+}
+
+/** PAPI returns SS58 author fields as plain strings; alias for intent. */
+type SS58Like = Ss58;
+
+interface FeedPageRaw {
+  posts: EnrichedPost[];
+  next_cursor?: bigint;
+}
+
+interface ThreadRaw {
+  ancestors: EnrichedPost[];
+  focal?: EnrichedPost;
+  replies: EnrichedPost[];
+}
+
+/** The runtime-API surface this module calls (a subset of `api.apis.MicroblogApi`). */
+interface MicroblogApiCalls {
+  feed_page(beforeId: bigint | undefined, limit: number, viewer: Ss58 | undefined): Promise<FeedPageRaw>;
+  author_feed_page(
+    author: Ss58,
+    beforeId: bigint | undefined,
+    limit: number,
+    viewer: Ss58 | undefined,
+  ): Promise<FeedPageRaw>;
+  following_feed_page(viewer: Ss58, beforeId: bigint | undefined, limit: number): Promise<FeedPageRaw>;
+  thread(focal: bigint, viewer: Ss58 | undefined): Promise<ThreadRaw>;
+}
+
+/** The typed `MicroblogApi` off the api (present on a spec-120 node; detected before any call). */
+function microblogApi(api: CognoApi): MicroblogApiCalls {
+  return (api.apis as unknown as { MicroblogApi: MicroblogApiCalls }).MicroblogApi;
+}
+
+/** Map the API's one-level `quoted` summary to the client `QuotedRef` (author name/avatar carried). */
+function mapQuoted(q: EnrichedPost["quoted"]): QuotedRef | undefined {
+  if (!q) return undefined;
+  return {
+    id: q.id,
+    author: q.author,
+    text: q.text.asText(),
+    // The API does not return the quoted author's revocation (not enriched in the summary); the
+    // keyed path also leaves a resolved quote ref `authorRevoked:false` — matched here.
+    authorRevoked: false,
+    displayName: binTextOpt(q.author_display_name),
+    avatar: binTextOpt(q.author_avatar),
+  };
+}
+
+/**
+ * Map one `EnrichedPost` → the client `CognoPost`, the SAME shape `enrichPosts` produces: id/author/
+ * text/parent/quote/at + the tally (with `score = upWeight - downWeight`, identical to `readPostTally`)
+ * + repostCount/replyCount/isPoll + the author profile snapshot + the one-level quote ref. When a
+ * `viewer` was passed, `my_vote`/`reposted` come back per post → the `myVote`/`reposted` overlay.
+ */
+export function mapEnrichedPost(e: EnrichedPost): CognoPost {
+  const upWeight = BigInt(e.up_weight ?? 0n);
+  const downWeight = BigInt(e.down_weight ?? 0n);
+  const post: CognoPost = {
+    id: e.id,
+    author: e.author,
+    text: e.text.asText(),
+    parent: e.parent,
+    at: e.at,
+    upWeight,
+    downWeight,
+    upCount: e.up_count ?? 0,
+    downCount: e.down_count ?? 0,
+    score: upWeight - downWeight, // SAME derivation as readPostTally / toCognoPost
+    repostCount: e.repost_count ?? 0,
+    replyCount: e.reply_count ?? 0,
+    authorDisplayName: binTextOpt(e.author_display_name),
+    authorAvatar: binTextOpt(e.author_avatar),
+    // The viewer overlay, stamped node-side — lets useViewerStates skip its per-card Reposts scan.
+    myVote: e.my_vote ? e.my_vote.type : null,
+    reposted: e.reposted === true,
+  };
+  // Set `isPoll` only when true — mirror `enrichPosts` (`if (pollRec) post.isPoll = true`), which
+  // leaves it `undefined` on a non-poll, so the keyed + node CognoPost shapes stay byte-identical.
+  if (e.is_poll === true) post.isPoll = true;
+  if (e.quote != null) {
+    post.quote =
+      mapQuoted(e.quoted) ??
+      // The quoted post was unresolvable node-side (e.g. absent) — mirror the keyed path's stub.
+      { id: e.quote, author: "" as Ss58, text: "", authorRevoked: false };
+  }
+  return post;
+}
+
+/**
+ * Build the viewer-overlay map (id-string → {@link ViewerPostState}) `useViewerStates` consumes to
+ * SKIP its per-card `viewerPostState` read. Only posts carrying a node-stamped overlay (`myVote`
+ * defined — the spec-120 path passed a `viewer`) are included; keyed/indexer posts (`myVote`
+ * undefined) are omitted, so those ids fall back to the per-card read, unchanged.
+ */
+export function carriedViewerStates(posts: CognoPost[]): Map<string, ViewerPostState> {
+  const out = new Map<string, ViewerPostState>();
+  for (const p of posts) {
+    if (p.myVote !== undefined) {
+      out.set(String(p.id), { myVote: p.myVote, reposted: p.reposted === true });
+    }
+  }
+  return out;
+}
+
+/** Clamp a requested page size to the runtime's `MAX_PAGE` (the API clamps too; keep them in step). */
+function clampLimit(limit: number): number {
+  return Math.min(Math.max(1, Math.trunc(limit)), MAX_PAGE);
+}
+
+/** Hard backstop on cursor hops per page. The cursor strictly decreases each hop, so this is only
+ * reached on a pathologically reply-dense / sparse range — then we return a partial page + cursor. */
+const MAX_CHASE_HOPS = 64;
+
+/**
+ * Assemble one full page by following `next_cursor` until the page holds `limit` posts or the feed
+ * ends — so a node-served page matches the keyed path's FULL-page semantics. The runtime bounds each
+ * call's id-scan (`MAX_SCAN_FACTOR`) and may hand back a SHORT (even empty) page + a cursor on a
+ * reply-dense / sparse range; chasing the cursor coalesces those into one rendered page (no posts
+ * lost, and never an empty-page-with-a-cursor a UI can't advance past). Each hop requests only the
+ * REMAINING count, so the result never overshoots `limit` and the final `nextCursor` continues below
+ * the last kept post. Bounded: the cursor strictly decreases per hop, with `MAX_CHASE_HOPS` as a backstop.
+ */
+async function chasePage(
+  fetchPage: (beforeId: bigint | undefined, limit: number) => Promise<FeedPageRaw>,
+  beforeId: bigint | undefined,
+  limit: number,
+): Promise<IdPage> {
+  const target = clampLimit(limit);
+  const posts: CognoPost[] = [];
+  let cursor = beforeId;
+  let nextCursor: bigint | null = null;
+  for (let hop = 0; hop < MAX_CHASE_HOPS; hop++) {
+    const raw = await fetchPage(cursor, target - posts.length);
+    for (const e of raw.posts) posts.push(mapEnrichedPost(e));
+    nextCursor = raw.next_cursor != null ? BigInt(raw.next_cursor) : null;
+    if (nextCursor === null || posts.length >= target) break;
+    cursor = nextCursor;
+  }
+  return { posts, nextCursor };
+}
+
+/** The global "For-you" feed (top-level posts, newest-first), node-served + viewer-overlaid. */
+export async function nodeGlobalFeedPage(
+  api: CognoApi,
+  opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
+): Promise<IdPage> {
+  return chasePage(
+    (beforeId, limit) => microblogApi(api).feed_page(beforeId, limit, opts.viewer),
+    opts.beforeId,
+    opts.limit,
+  );
+}
+
+/** One author's top-level posts (the profile Posts tab), node-served + viewer-overlaid. */
+export async function nodeAuthorFeedPage(
+  api: CognoApi,
+  author: Ss58,
+  opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
+): Promise<IdPage> {
+  return chasePage(
+    (beforeId, limit) => microblogApi(api).author_feed_page(author, beforeId, limit, opts.viewer),
+    opts.beforeId,
+    opts.limit,
+  );
+}
+
+/** The Following timeline (posts by accounts `viewer` follows), node-served (viewer is the timeline owner). */
+export async function nodeFollowingFeedPage(
+  api: CognoApi,
+  viewer: Ss58,
+  opts: { beforeId?: bigint; limit: number },
+): Promise<IdPage> {
+  return chasePage(
+    (beforeId, limit) => microblogApi(api).following_feed_page(viewer, beforeId, limit),
+    opts.beforeId,
+    opts.limit,
+  );
+}
+
+/**
+ * Reconstruct a thread node-side: the focal post + its (depth-capped) ancestor chain + its direct
+ * replies, all enriched + viewer-overlaid. Mirrors the keyed `getThread` `RawThread` shape (root +
+ * top-down ancestors + replies + the focal's `replyCount`). Throws if the focal is absent, exactly
+ * as `getThread` does, so the thread hook's not-found handling is unchanged.
+ */
+export async function nodeThread(
+  api: CognoApi,
+  focalId: bigint,
+  viewer?: Ss58,
+): Promise<RawThread> {
+  const raw = await microblogApi(api).thread(focalId, viewer);
+  if (!raw.focal) throw new Error(`thread root #${focalId} not found on the node`);
+  const root = mapEnrichedPost(raw.focal);
+  return {
+    root,
+    ancestors: raw.ancestors.map(mapEnrichedPost), // already top-down from the runtime
+    replies: raw.replies.map(mapEnrichedPost),
+    replyCount: root.replyCount ?? 0,
+  };
+}
