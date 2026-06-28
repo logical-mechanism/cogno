@@ -140,7 +140,9 @@ pub mod pallet {
 	/// reverse indexes; v2 → v3 backfills the `ReplyCount`/`RepliesByParent` reply aggregates. Bumped
 	/// in lockstep with each `migrations::v*` migration; every `VersionedMigration` version-guard
 	/// self-skips once the on-chain version has advanced past it.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
+	// v3 -> v4 (spec 121): backfill the top-level-post index (`TopLevelPosts` / `TopLevelByAuthor` /
+	// `NextTopLevelSeq`) — see `migrations::v4`.
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
 
 	#[pallet::pallet]
 	#[pallet::storage_version(STORAGE_VERSION)]
@@ -498,6 +500,34 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
+	// ── Feature 3 (spec 121): the top-level-post index. A dense, reply-free sequence of top-level
+	//    (`parent == None`) post ids so `feed_page` reads EXACTLY N (no reply over-scan), plus a
+	//    per-author top-level index for exact-N profile paging and a correct top-level `postCount`
+	//    (fixing the count-counts-replies tradeoff at the source). Maintained O(1) on every top-level
+	//    creation site (`post_message`/`quote_post`/`create_poll`); backfilled by migration v4. ──
+
+	/// The next top-level sequence number — and, since top-level posts are append-only, the running
+	/// COUNT of all top-level posts ever created (the global top-level `postCount`).
+	#[pallet::storage]
+	pub type NextTopLevelSeq<T> = StorageValue<_, u64, ValueQuery>;
+
+	/// `TopLevelPosts[seq] = post_id` for each top-level post, in creation order (higher seq = newer =
+	/// higher id). The dense, reply-free spine `feed_page` pages over, so a page costs exactly one read
+	/// per returned post — never scanning past interleaved replies.
+	#[pallet::storage]
+	pub type TopLevelPosts<T: Config> = StorageMap<_, Blake2_128Concat, u64, u64, OptionQuery>;
+
+	/// Per-author top-level post ids (reply-free), bounded like [`ByAuthor`]. Drives exact-N profile
+	/// paging and a correct top-level post count (`decode_len`) without folding in the author's replies.
+	#[pallet::storage]
+	pub type TopLevelByAuthor<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		BoundedVec<u64, T::MaxPostsPerAuthor>,
+		ValueQuery,
+	>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -655,6 +685,21 @@ pub mod pallet {
 				_ => None,
 			}
 		}
+
+		/// Index a newly-created TOP-LEVEL post (`parent == None`) into the Feature 3 spine — the global
+		/// `TopLevelPosts` sequence and the per-author `TopLevelByAuthor` list. Called from every
+		/// top-level creation site (`post_message`/`quote_post`/`create_poll`). Returns `TooManyPosts` if
+		/// the author's top-level index is full — which cannot actually happen once `ByAuthor` (a
+		/// superset, pushed first) has succeeded, but the bound is honoured so the whole dispatch rolls
+		/// back cleanly even on the impossible case.
+		pub fn index_top_level(id: u64, author: &T::AccountId) -> DispatchResult {
+			TopLevelByAuthor::<T>::try_mutate(author, |ids| ids.try_push(id))
+				.map_err(|_| Error::<T>::TooManyPosts)?;
+			let seq = NextTopLevelSeq::<T>::get();
+			TopLevelPosts::<T>::insert(seq, id);
+			NextTopLevelSeq::<T>::put(seq.saturating_add(1));
+			Ok(())
+		}
 	}
 
 	/// The bind/revoke lifecycle hooks `pallet-cogno-gate` invokes (via its `OnBind` Config type),
@@ -709,9 +754,11 @@ pub mod pallet {
 		// (`parent: Some`) additionally reads+writes `ReplyCount` and writes `RepliesByParent` (the
 		// denormalized reply aggregates), so charge that worst case — 1 read + 2 writes — on top. A
 		// top-level post overpays slightly, which is the safe direction for the anti-spam weight
-		// backstop. (Adding storage maps does not change the benchmark, so this avoids a double-count.)
+		// backstop. spec 121 (Feature 3) additionally indexes a top-level post into the `TopLevelPosts`
+		// spine (`index_top_level`: 2 reads + 3 writes), which weights.rs has not yet re-benchmarked, so
+		// charge the per-post WORST case of the two paths — 2 reads + 3 writes — on top.
 		#[pallet::weight(<T as Config>::WeightInfo::post_message(text.len() as u32)
-			.saturating_add(T::DbWeight::get().reads_writes(1, 2)))]
+			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
 		#[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _parent: &Option<u64>| -> bool { true })]
 		pub fn post_message(
 			origin: OriginFor<T>,
@@ -750,6 +797,9 @@ pub mod pallet {
 			if let Some(parent_id) = parent {
 				ReplyCount::<T>::mutate(parent_id, |c| *c = c.saturating_add(1));
 				RepliesByParent::<T>::insert(parent_id, id, ());
+			} else {
+				// Top-level post — index it into the Feature 3 spine for exact-N feed/profile paging.
+				Self::index_top_level(id, &who)?;
 			}
 			NextPostId::<T>::put(id.saturating_add(1));
 
@@ -812,7 +862,10 @@ pub mod pallet {
 		/// Quote-post: create a post whose body is `text` and which references `quoted_id` via the
 		/// `Post.quote` field (distinct from a reply's `parent`). Feeless + capacity-metered.
 		#[pallet::call_index(3)]
-		#[pallet::weight(<T as Config>::WeightInfo::quote_post(text.len() as u32))]
+		// spec 121 (Feature 3): a quote is top-level, so it also runs `index_top_level` (2 reads +
+		// 3 writes), not yet re-benchmarked — charge it manually.
+		#[pallet::weight(<T as Config>::WeightInfo::quote_post(text.len() as u32)
+			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
 		#[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _quoted_id: &u64| -> bool { true })]
 		pub fn quote_post(origin: OriginFor<T>, text: Vec<u8>, quoted_id: u64) -> DispatchResult {
 			let who = ensure_signed(origin)?;
@@ -835,6 +888,8 @@ pub mod pallet {
 				id,
 				Post { author: who.clone(), text: bounded, parent: None, quote: Some(quoted_id), at },
 			);
+			// A quote is a top-level post — index it for exact-N feed/profile paging (Feature 3).
+			Self::index_top_level(id, &who)?;
 			NextPostId::<T>::put(id.saturating_add(1));
 
 			Self::deposit_event(Event::PostCreated { id, author: who });
@@ -986,7 +1041,10 @@ pub mod pallet {
 		/// quotes / reposts and shows in the feed); `options` (2..=`MaxPollOptions`, each
 		/// ≤`MaxPollOptionLen`) are stored alongside. Feeless + capacity-metered like a post.
 		#[pallet::call_index(9)]
-		#[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32))]
+		// spec 121 (Feature 3): a poll host is top-level, so it also runs `index_top_level` (2 reads +
+		// 3 writes), not yet re-benchmarked — charge it manually.
+		#[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32)
+			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
 		#[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>| -> bool { true })]
 		pub fn create_poll(
 			origin: OriginFor<T>,
@@ -1019,6 +1077,8 @@ pub mod pallet {
 			// The poll's question is an ordinary post (parent/quote None), so it lives in the feed.
 			Posts::<T>::insert(id, Post { author: who.clone(), text, parent: None, quote: None, at });
 			Polls::<T>::insert(id, Poll { options: bounded_options });
+			// A poll's host post is top-level — index it for exact-N feed/profile paging (Feature 3).
+			Self::index_top_level(id, &who)?;
 			NextPostId::<T>::put(id.saturating_add(1));
 
 			// PostCreated keeps poll-unaware indexers/feeds folding it as a post; PollCreated flags
@@ -1402,8 +1462,8 @@ impl<T: Config> Pallet<T> {
 	/// `limit · MAX_SCAN_FACTOR` ids and returns `next_cursor` (the last id examined) so the client
 	/// continues without an unbounded walk. Shared by `feed_page` (keep-all) and `following_feed_page`
 	/// (keep authors the viewer follows).
-	fn scan_top_level<F>(
-		before_id: Option<u64>,
+	fn scan_top_level_by_seq<F>(
+		before: Option<u64>,
 		limit: u32,
 		viewer: Option<&T::AccountId>,
 		mut keep: F,
@@ -1412,52 +1472,57 @@ impl<T: Config> Pallet<T> {
 		F: FnMut(&Post<T>) -> bool,
 	{
 		let limit = Self::clamp_limit(limit);
-		let next_id = NextPostId::<T>::get();
-		// Highest candidate id strictly below `before_id` (or the head when `None`).
-		let mut id = match before_id {
+		let next_seq = NextTopLevelSeq::<T>::get();
+		// Highest candidate seq strictly below the `before` cursor (or the head when `None`).
+		let mut seq = match before {
 			Some(0) => return FeedPage { posts: Vec::new(), next_cursor: None },
-			Some(b) => core::cmp::min(b, next_id).saturating_sub(1),
-			None => match next_id.checked_sub(1) {
+			Some(b) => core::cmp::min(b, next_seq).saturating_sub(1),
+			None => match next_seq.checked_sub(1) {
 				Some(top) => top,
 				None => return FeedPage { posts: Vec::new(), next_cursor: None },
 			},
 		};
+		// Feature 3: every seq maps to a top-level post, so the keep-all feed fills `limit` in exactly
+		// `limit` iterations (no reply over-scan). A filtered scan (Following) may skip non-matching
+		// seqs, so it is still bounded with `MAX_SCAN_FACTOR` + a cursor to continue.
 		let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
 		let mut posts = Vec::new();
 		let mut examined: u32 = 0;
 		loop {
-			// Stopped before exhausting the id space — hand back a cursor to continue strictly below
-			// the last id we consumed (`id` has already been decremented past it).
+			// Stopped before the head of the spine — hand back a cursor (the next seq to continue below).
 			if posts.len() as u32 >= limit || examined >= max_scan {
-				return FeedPage { posts, next_cursor: Some(id.saturating_add(1)) };
+				return FeedPage { posts, next_cursor: Some(seq.saturating_add(1)) };
 			}
 			examined = examined.saturating_add(1);
-			if let Some(post) = Posts::<T>::get(id) {
-				// Replies are served via `thread`; quotes (`parent == None`) DO appear in the feed.
-				if post.parent.is_none() && keep(&post) {
-					posts.push(Self::enrich(id, post, viewer));
+			// Resolve seq → post id → body (a dangling seq, which should not occur, is simply skipped).
+			if let Some(id) = TopLevelPosts::<T>::get(seq) {
+				if let Some(post) = Posts::<T>::get(id) {
+					if keep(&post) {
+						posts.push(Self::enrich(id, post, viewer));
+					}
 				}
 			}
-			if id == 0 {
-				// Reached the bottom of the id space — no more pages.
+			if seq == 0 {
+				// Reached the bottom of the spine — no more pages.
 				return FeedPage { posts, next_cursor: None };
 			}
-			id = id.saturating_sub(1);
+			seq = seq.saturating_sub(1);
 		}
 	}
 
-	/// Global "For-you" feed: top-level posts, newest-first, paged below `before_id`. `viewer` (when
-	/// `Some`) stamps `my_vote`/`reposted` per post. (Author profiles are runtime-filled.)
+	/// Global "For-you" feed: top-level posts, newest-first, paged below the `before` cursor (a
+	/// `TopLevelPosts` seq). Reads EXACTLY `limit` posts off the top-level spine — no reply over-scan.
+	/// `viewer` (when `Some`) stamps `my_vote`/`reposted` per post. (Author profiles are runtime-filled.)
 	pub fn feed_page(
-		before_id: Option<u64>,
+		before: Option<u64>,
 		limit: u32,
 		viewer: Option<T::AccountId>,
 	) -> FeedPage<T::AccountId> {
-		Self::scan_top_level(before_id, limit, viewer.as_ref(), |_| true)
+		Self::scan_top_level_by_seq(before, limit, viewer.as_ref(), |_| true)
 	}
 
-	/// One author's top-level posts (the profile Posts tab), newest-first, paged below `before_id`.
-	/// Iterates the author's own `ByAuthor` index (no global scan), filtering to top-level posts.
+	/// One author's top-level posts (the profile Posts tab), newest-first, paged below `before_id` (a
+	/// post id). Iterates the author's own reply-free `TopLevelByAuthor` index — exact-N, no over-scan.
 	pub fn author_feed_page(
 		author: T::AccountId,
 		before_id: Option<u64>,
@@ -1465,41 +1530,36 @@ impl<T: Config> Pallet<T> {
 		viewer: Option<T::AccountId>,
 	) -> FeedPage<T::AccountId> {
 		let limit = Self::clamp_limit(limit);
-		let ids = ByAuthor::<T>::get(&author);
+		let ids = TopLevelByAuthor::<T>::get(&author);
 		let viewer_ref = viewer.as_ref();
-		let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
 		let mut posts = Vec::new();
-		let mut examined: u32 = 0;
 		let mut next_cursor = None;
-		// `ByAuthor` is append-ordered (ascending id); iterate it newest-first.
+		// `TopLevelByAuthor` is append-ordered (ascending id) and reply-free; iterate it newest-first.
 		for &id in ids.iter().rev() {
 			if let Some(b) = before_id {
 				if id >= b {
 					continue;
 				}
 			}
-			if posts.len() as u32 >= limit || examined >= max_scan {
+			if posts.len() as u32 >= limit {
 				next_cursor = Some(id.saturating_add(1));
 				break;
 			}
-			examined = examined.saturating_add(1);
 			if let Some(post) = Posts::<T>::get(id) {
-				if post.parent.is_none() {
-					posts.push(Self::enrich(id, post, viewer_ref));
-				}
+				posts.push(Self::enrich(id, post, viewer_ref));
 			}
 		}
 		FeedPage { posts, next_cursor }
 	}
 
-	/// The Following timeline: top-level posts authored by accounts the `viewer` follows, newest-
-	/// first, paged below `before_id`. Reads the FULL followee set (parity with the keyed-read
-	/// fallback, which reads the whole follow graph — so no followee is ever silently dropped) then
-	/// reuses the bounded global scan — same clean cursor semantics as `feed_page` (no dropped posts;
-	/// a reply-dense range simply continues via the cursor).
+	/// The Following timeline: top-level posts authored by accounts the `viewer` follows, newest-first,
+	/// paged below the `before` cursor (a `TopLevelPosts` seq). Reads the FULL followee set (parity with
+	/// the keyed-read fallback, which reads the whole follow graph — so no followee is ever silently
+	/// dropped), then scans the top-level spine filtered to that set (never past replies), bounded with
+	/// a cursor to continue.
 	pub fn following_feed_page(
 		viewer: T::AccountId,
-		before_id: Option<u64>,
+		before: Option<u64>,
 		limit: u32,
 	) -> FeedPage<T::AccountId> {
 		// The full followee set (bounded by the viewer's own following count, exactly as the
@@ -1507,11 +1567,11 @@ impl<T: Config> Pallet<T> {
 		let followees: alloc::collections::BTreeSet<T::AccountId> =
 			Following::<T>::iter_key_prefix(&viewer).collect();
 		// A viewer who follows nobody has an empty timeline — short-circuit instead of scanning the
-		// whole id space to no effect (and handing back a misleading non-None cursor).
+		// whole spine to no effect (and handing back a misleading non-None cursor).
 		if followees.is_empty() {
 			return FeedPage { posts: Vec::new(), next_cursor: None };
 		}
-		Self::scan_top_level(before_id, limit, Some(&viewer), |p| followees.contains(&p.author))
+		Self::scan_top_level_by_seq(before, limit, Some(&viewer), |p| followees.contains(&p.author))
 	}
 
 	/// A reconstructed thread for `focal`: its ancestor chain (root-first, depth-capped), the focal
@@ -1555,29 +1615,44 @@ impl<T: Config> Pallet<T> {
 		replies.sort_unstable_by(|a, b| a.id.cmp(&b.id));
 		Thread { ancestors, focal: focal_post, replies }
 	}
+
+	/// The author's TOP-LEVEL post count (`TopLevelByAuthor` length) — the correct profile `postCount`
+	/// that excludes replies (fixes the count-counts-replies tradeoff). O(1) via `decode_len`.
+	pub fn top_level_post_count(author: &T::AccountId) -> u32 {
+		TopLevelByAuthor::<T>::decode_len(author).unwrap_or(0) as u32
+	}
 }
 
 sp_api::decl_runtime_apis! {
-	/// Node-served reads (spec-120): one enriched, viewer-aware feed / thread / profile page per
-	/// `state_call`, atomic at a single block. Implemented in `runtime/src/apis.rs`, which also fills
-	/// each post's author profile from pallet-profile. See `docs/SCALE-NODE-READS.md`.
+	/// Node-served reads (the read API landed in spec-120; the top-level index + `author_post_count`
+	/// in spec-121): one enriched, viewer-aware feed / thread / profile page per `state_call`, atomic
+	/// at a single block. Implemented in `runtime/src/apis.rs`, which also fills each post's author
+	/// profile from pallet-profile. See `docs/SCALE-NODE-READS.md`.
+	///
+	/// Paging cursors are OPAQUE continuation tokens and ENDPOINT-SCOPED: a `next_cursor` from one
+	/// method is only valid passed back to the SAME method. `feed_page` / `following_feed_page` page a
+	/// `TopLevelPosts` seq; `author_feed_page` pages a post id — never cross-wire them.
 	pub trait MicroblogApi<AccountId>
 	where
 		AccountId: codec::Codec,
 	{
-		/// Global "For-you" feed: top-level posts, newest-first, paged below `before_id`
+		/// Global "For-you" feed: top-level posts, newest-first, paged below the `before` cursor
 		/// (`None` ⇒ from the head). `viewer` (when `Some`) stamps `my_vote`/`reposted` per post.
-		fn feed_page(before_id: Option<u64>, limit: u32, viewer: Option<AccountId>) -> FeedPage<AccountId>;
-		/// One author's top-level posts (the profile Posts tab), same paging + viewer semantics.
+		fn feed_page(before: Option<u64>, limit: u32, viewer: Option<AccountId>) -> FeedPage<AccountId>;
+		/// One author's top-level posts (the profile Posts tab), paged below `before_id` (a post id),
+		/// same viewer semantics.
 		fn author_feed_page(
 			author: AccountId,
 			before_id: Option<u64>,
 			limit: u32,
 			viewer: Option<AccountId>,
 		) -> FeedPage<AccountId>;
-		/// The Following timeline: top-level posts by the accounts `viewer` follows, newest-first.
-		fn following_feed_page(viewer: AccountId, before_id: Option<u64>, limit: u32) -> FeedPage<AccountId>;
+		/// The Following timeline: top-level posts by the accounts `viewer` follows, newest-first,
+		/// paged below the `before` cursor.
+		fn following_feed_page(viewer: AccountId, before: Option<u64>, limit: u32) -> FeedPage<AccountId>;
 		/// A reconstructed thread: focal + ancestor chain (depth-capped) + direct replies, enriched.
 		fn thread(focal: u64, viewer: Option<AccountId>) -> Thread<AccountId>;
+		/// The author's TOP-LEVEL post count (replies excluded) — the correct profile `postCount`.
+		fn author_post_count(author: AccountId) -> u32;
 	}
 }

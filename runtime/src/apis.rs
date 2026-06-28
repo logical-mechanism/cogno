@@ -220,11 +220,11 @@ impl_runtime_apis! {
 	// the same no-Cargo-cycle posture as its cogno-gate seam). See `docs/SCALE-NODE-READS.md`.
 	impl pallet_microblog::MicroblogApi<Block, AccountId> for Runtime {
 		fn feed_page(
-			before_id: Option<u64>,
+			before: Option<u64>,
 			limit: u32,
 			viewer: Option<AccountId>,
 		) -> pallet_microblog::FeedPage<AccountId> {
-			let mut page = pallet_microblog::Pallet::<Runtime>::feed_page(before_id, limit, viewer);
+			let mut page = pallet_microblog::Pallet::<Runtime>::feed_page(before, limit, viewer);
 			enrich_author_profiles(&mut page.posts);
 			page
 		}
@@ -243,11 +243,11 @@ impl_runtime_apis! {
 
 		fn following_feed_page(
 			viewer: AccountId,
-			before_id: Option<u64>,
+			before: Option<u64>,
 			limit: u32,
 		) -> pallet_microblog::FeedPage<AccountId> {
 			let mut page =
-				pallet_microblog::Pallet::<Runtime>::following_feed_page(viewer, before_id, limit);
+				pallet_microblog::Pallet::<Runtime>::following_feed_page(viewer, before, limit);
 			enrich_author_profiles(&mut page.posts);
 			page
 		}
@@ -260,6 +260,11 @@ impl_runtime_apis! {
 			}
 			enrich_author_profiles(&mut t.replies);
 			t
+		}
+
+		// spec-121: the author's TOP-LEVEL post count (replies excluded) for a correct profile postCount.
+		fn author_post_count(author: AccountId) -> u32 {
+			pallet_microblog::Pallet::<Runtime>::top_level_post_count(&author)
 		}
 	}
 

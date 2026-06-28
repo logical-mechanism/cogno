@@ -74,6 +74,7 @@ interface MicroblogApiCalls {
   ): Promise<FeedPageRaw>;
   following_feed_page(viewer: Ss58, beforeId: bigint | undefined, limit: number): Promise<FeedPageRaw>;
   thread(focal: bigint, viewer: Ss58 | undefined): Promise<ThreadRaw>;
+  author_post_count(author: Ss58): Promise<number>;
 }
 
 /** The typed `MicroblogApi` off the api (present on a spec-120 node; detected before any call). */
@@ -247,4 +248,13 @@ export async function nodeThread(
     replies: raw.replies.map(mapEnrichedPost),
     replyCount: root.replyCount ?? 0,
   };
+}
+
+/**
+ * The author's TOP-LEVEL post count (replies excluded) — the correct profile `postCount`, served
+ * node-side from `TopLevelByAuthor` (spec-121). Replaces the keyed `authorPostCount` (which counts
+ * ALL of the author's posts, replies included) so the header matches the visible top-level cards.
+ */
+export async function nodeAuthorPostCount(api: CognoApi, author: Ss58): Promise<number> {
+  return microblogApi(api).author_post_count(author);
 }

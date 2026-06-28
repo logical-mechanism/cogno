@@ -8,8 +8,8 @@
 
 use crate::{
 	mock::*, ByAuthor, Capacity, Error, Event, FollowerCount, Following, FollowingCount, NextPostId,
-	PollTally, PollVotes, Polls, Posts, RepliesByParent, ReplyCount, RepostCount, Reposts, VoteDir,
-	VoteTally, Votes,
+	NextTopLevelSeq, PollTally, PollVotes, Polls, Posts, RepliesByParent, ReplyCount, RepostCount,
+	Reposts, TopLevelByAuthor, TopLevelPosts, VoteDir, VoteTally, Votes,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -1279,6 +1279,121 @@ mod migration_v3 {
 	}
 }
 
+mod migration_v4 {
+	use super::*;
+	use crate::migrations::v4::MigrateV3ToV4;
+	use crate::{NextTopLevelSeq, Pallet, Post, TopLevelByAuthor, TopLevelPosts};
+	use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+
+	/// Insert a Post row directly (bypassing the dispatch path, so the top-level index stays EMPTY —
+	/// exactly the pre-v4 on-chain state the migration must backfill).
+	fn put_post(id: u64, author: u64, parent: Option<u64>) {
+		let post = Post::<Test> {
+			author,
+			text: b"x".to_vec().try_into().expect("fits MaxLength"),
+			parent,
+			quote: None,
+			at: 1,
+		};
+		Posts::<Test>::insert(id, post);
+	}
+
+	#[test]
+	fn v3_to_v4_backfills_index_in_id_order_and_is_idempotent() {
+		new_test_ext().execute_with(|| {
+			// Pre-v4 state: a mix of top-level + reply posts at NON-CONTIGUOUS ids, index empty,
+			// on-chain version 3.
+			StorageVersion::new(3).put::<Pallet<Test>>();
+			put_post(10, 1, None); // top (author 1)
+			put_post(11, 2, Some(10)); // reply — excluded
+			put_post(20, 1, None); // top (author 1)
+			put_post(21, 3, None); // top (author 3)
+			put_post(22, 2, Some(20)); // reply — excluded
+
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 0);
+
+			let _w = MigrateV3ToV4::<Test>::on_runtime_upgrade();
+
+			// Version advanced; the spine is dense 0..3 mapping to the top-level ids in ASCENDING id
+			// order (10, 20, 21) — the reply ids 11/22 are excluded.
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(4));
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 3);
+			assert_eq!(TopLevelPosts::<Test>::get(0), Some(10));
+			assert_eq!(TopLevelPosts::<Test>::get(1), Some(20));
+			assert_eq!(TopLevelPosts::<Test>::get(2), Some(21));
+			assert_eq!(TopLevelPosts::<Test>::get(3), None);
+
+			// Per-author lists exclude replies: author 1 [10, 20], author 3 [21], author 2 none.
+			assert_eq!(TopLevelByAuthor::<Test>::get(1).to_vec(), vec![10, 20]);
+			assert_eq!(TopLevelByAuthor::<Test>::get(3).to_vec(), vec![21]);
+			assert!(TopLevelByAuthor::<Test>::get(2).is_empty());
+
+			// Idempotency: a second run is the version-guarded no-op — NOT doubled.
+			let _ = MigrateV3ToV4::<Test>::on_runtime_upgrade();
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 3);
+			assert_eq!(TopLevelPosts::<Test>::iter().count(), 3);
+			assert_eq!(TopLevelByAuthor::<Test>::get(1).to_vec(), vec![10, 20]);
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(4));
+		});
+	}
+
+	#[test]
+	fn v3_to_v4_matches_the_live_incremental_path() {
+		// The one-shot backfill must reproduce EXACTLY what the live `index_top_level` path builds.
+		// Build a reference index by replaying the same posts through the dispatch path, then assert
+		// the migration (from a raw `Posts` state) yields the identical spine + per-author lists.
+		let live = new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			// ids 0, 1(reply), 2(quote), 3(poll): author 1 top-level x3, author 2 one reply.
+			assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"a".to_vec(), None));
+			assert_ok!(Microblog::post_message(RuntimeOrigin::signed(2), b"r".to_vec(), Some(0)));
+			assert_ok!(Microblog::quote_post(RuntimeOrigin::signed(1), b"q".to_vec(), 0));
+			assert_ok!(Microblog::create_poll(
+				RuntimeOrigin::signed(1),
+				b"p".to_vec(),
+				vec![b"x".to_vec(), b"y".to_vec()],
+			));
+			let mut spine: Vec<(u64, u64)> = TopLevelPosts::<Test>::iter().collect();
+			spine.sort();
+			let mut by_author: Vec<(u64, Vec<u64>)> =
+				TopLevelByAuthor::<Test>::iter().map(|(a, ids)| (a, ids.to_vec())).collect();
+			by_author.sort();
+			(NextTopLevelSeq::<Test>::get(), spine, by_author)
+		});
+
+		new_test_ext().execute_with(|| {
+			// The same posts as raw rows + pre-v4 version, then the one-shot backfill.
+			StorageVersion::new(3).put::<Pallet<Test>>();
+			put_post(0, 1, None);
+			put_post(1, 2, Some(0));
+			put_post(2, 1, None);
+			put_post(3, 1, None);
+			let _ = MigrateV3ToV4::<Test>::on_runtime_upgrade();
+
+			let mut spine: Vec<(u64, u64)> = TopLevelPosts::<Test>::iter().collect();
+			spine.sort();
+			let mut by_author: Vec<(u64, Vec<u64>)> =
+				TopLevelByAuthor::<Test>::iter().map(|(a, ids)| (a, ids.to_vec())).collect();
+			by_author.sort();
+
+			assert_eq!(NextTopLevelSeq::<Test>::get(), live.0);
+			assert_eq!(spine, live.1, "backfilled spine must equal the live-path spine");
+			assert_eq!(by_author, live.2, "backfilled per-author lists must equal the live path");
+		});
+	}
+
+	#[test]
+	fn v3_to_v4_on_empty_posts_is_safe() {
+		new_test_ext().execute_with(|| {
+			StorageVersion::new(3).put::<Pallet<Test>>();
+			let _ = MigrateV3ToV4::<Test>::on_runtime_upgrade();
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(4));
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 0);
+			assert_eq!(TopLevelPosts::<Test>::iter().count(), 0);
+		});
+	}
+}
+
 // ── DR-06 property test ─────────────────────────────────────────────────────────────────────
 
 /// **DR-06 — clamp-latency ≤ grant-latency (the asymmetric-safety property).** The follower's
@@ -1569,24 +1684,48 @@ mod node_reads {
 	}
 
 	#[test]
-	fn feed_page_bounds_the_scan_and_continues_via_cursor() {
+	fn feed_page_reads_top_level_directly_past_replies() {
 		new_test_ext().execute_with(|| {
 			System::set_block_number(1);
-			// post 0 top-level, then 8 replies (ids 1..=8). With limit 1 the scan cap is 1·8 = 8, so
-			// the FIRST page spends its whole budget skipping the 8 replies and returns an empty page +
-			// a cursor; the SECOND page then finds the top-level post below the cursor (no unbounded walk).
+			// Feature 3: feed_page pages the reply-free `TopLevelPosts` spine, so a top-level post is
+			// returned DIRECTLY no matter how many replies sit between top-level posts in the id space.
 			let p0 = post(1, b"root");
 			for _ in 0..8 {
 				reply(2, b"r", p0);
 			}
 
-			let first = Microblog::feed_page(None, 1, None);
-			assert!(first.posts.is_empty(), "scan budget spent on replies");
-			let cursor = first.next_cursor.expect("a cursor to continue from");
+			let page = Microblog::feed_page(None, 1, None);
+			assert_eq!(ids(&page), vec![p0]);
+			assert_eq!(page.next_cursor, None);
+		});
+	}
 
-			let second = Microblog::feed_page(Some(cursor), 1, None);
-			assert_eq!(ids(&second), vec![p0]);
-			assert_eq!(second.next_cursor, None);
+	#[test]
+	fn top_level_index_excludes_replies_and_counts_per_author() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let p0 = post(1, b"root"); // 0 top (author 1)
+			let _r = reply(2, b"r", p0); // 1 reply (author 2) — NOT indexed
+			// a quote and a poll (both author 1) are top-level
+			let p2 = NextPostId::<Test>::get();
+			assert_ok!(Microblog::quote_post(RuntimeOrigin::signed(1), b"q".to_vec(), p0));
+			let p3 = NextPostId::<Test>::get();
+			assert_ok!(Microblog::create_poll(
+				RuntimeOrigin::signed(1),
+				b"poll?".to_vec(),
+				vec![b"a".to_vec(), b"b".to_vec()],
+			));
+
+			// Three top-level posts (root + quote + poll); the reply is excluded from the spine.
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 3);
+			assert_eq!(TopLevelPosts::<Test>::get(0), Some(p0));
+			assert_eq!(TopLevelPosts::<Test>::get(1), Some(p2));
+			assert_eq!(TopLevelPosts::<Test>::get(2), Some(p3));
+			assert_eq!(TopLevelPosts::<Test>::get(3), None);
+
+			// Per-author top-level list: author 1 has 3, author 2 has 0 (its only post was a reply).
+			assert_eq!(TopLevelByAuthor::<Test>::get(1).to_vec(), vec![p0, p2, p3]);
+			assert!(TopLevelByAuthor::<Test>::get(2).is_empty());
 		});
 	}
 

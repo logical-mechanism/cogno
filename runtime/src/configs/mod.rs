@@ -91,6 +91,8 @@ type SingleBlockMigrations = (
 	pallet_profile::migrations::v1::MigrateV0ToV1<Runtime>,
 	// spec 119: backfill the ReplyCount + RepliesByParent reply aggregates from existing Posts.
 	pallet_microblog::migrations::v3::MigrateV2ToV3<Runtime>,
+	// spec 121: backfill the top-level-post index (TopLevelPosts / TopLevelByAuthor / NextTopLevelSeq).
+	pallet_microblog::migrations::v4::MigrateV3ToV4<Runtime>,
 );
 
 /// The default types are being injected by [`derive_impl`](`frame_support::derive_impl`) from

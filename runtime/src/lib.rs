@@ -219,7 +219,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// the new API trait changes `RUNTIME_API_VERSIONS` (runtime metadata / api hash), so spec_version
 	// bumps while transaction_version stays 3. Regen the PAPI descriptors after deploying 120 so
 	// `api.apis.MicroblogApi` resolves.
-	spec_version: 120,
+	// 120 -> 121 (top-level-post index, Feature 3): pallet-microblog adds TopLevelPosts (seq -> id) +
+	// TopLevelByAuthor + NextTopLevelSeq so feed_page reads EXACTLY N top-level posts (no reply
+	// over-scan) and the profile postCount counts only top-level posts. ADDITIVE storage maps,
+	// maintained O(1) on every top-level creation site + a v3->v4 SingleBlockMigration backfill; the
+	// MicroblogApi feed cursor is now a TopLevelPosts seq (opaque to the client). NO call-arg change —
+	// encoding-affecting (new storage/metadata), so spec_version bumps, transaction_version stays 3.
+	// Regen the PAPI descriptors after deploying 121.
+	spec_version: 121,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

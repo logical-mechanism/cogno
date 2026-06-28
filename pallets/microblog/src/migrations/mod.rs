@@ -10,7 +10,12 @@
 //! `v3` backfills the reply aggregates added in spec 119 — `ReplyCount` + `RepliesByParent` (from the
 //! `parent` field of every `Posts` row) — so a thread reads a post's reply count + direct replies via
 //! keyed lookups instead of scanning the whole post set.
+//!
+//! `v4` backfills the top-level-post index added in spec 121 — `TopLevelPosts` + `NextTopLevelSeq` +
+//! `TopLevelByAuthor` (from the top-level `Posts` rows, in id order) — so `feed_page` reads exactly N
+//! top-level posts (no reply over-scan) and the profile post count counts only top-level posts.
 
 pub mod v1;
 pub mod v2;
 pub mod v3;
+pub mod v4;

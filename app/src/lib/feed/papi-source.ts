@@ -38,6 +38,7 @@ import {
   nodeAuthorFeedPage,
   nodeFollowingFeedPage,
   nodeThread,
+  nodeAuthorPostCount,
 } from "@/lib/chain/node-reads";
 import { byIdDesc } from "@/lib/feed/live";
 import {
@@ -277,15 +278,16 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       };
     }
 
+    const nodeApiForCount = await nodeFeedApiReady();
     const [postCount, pkh, weight, followerCount, followingCount, profileRec, pinned] =
       await Promise.all([
-        // The header "N posts" = the ByAuthor index length: an O(1) count of ALL the author's posts
-        // (replies/quotes included). DELIBERATE TRADEOFF: the Posts tab below lists top-level only, so
-        // the header can exceed the visible top-level cards for an author who replies — but the exact
-        // top-level count has no O(1) source on-chain (it required loading every post, the full-set read
-        // this change removes). Total-authored is the honest, scalable stat; a precise top-level count
-        // would need a new on-chain counter. The indexer reader can still report its own count.
-        authorPostCount(api, account),
+        // The header "N posts" is the author's TOP-LEVEL post count, matching the top-level cards in the
+        // Posts tab below. spec-121 added the on-chain `TopLevelByAuthor` counter, so the node serves an
+        // exact O(1) top-level count (`author_post_count`); on a pre-121 node we fall back to the keyed
+        // `authorPostCount` (the ByAuthor length = ALL posts incl. replies, the documented older tradeoff).
+        nodeApiForCount
+          ? nodeAuthorPostCount(api, account).catch(() => authorPostCount(api, account))
+          : authorPostCount(api, account),
         api.query.CognoGate.PkhOf.getValue(account),
         readWeight(api, account),
         api.query.Microblog.FollowerCount.getValue(account),

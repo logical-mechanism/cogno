@@ -1,9 +1,9 @@
 # SCALE-NODE-READS — node-served reads (the spec-120 design)
 
-Status: **Feature 1 implemented** (the `MicroblogApi` runtime read API + client wiring, `spec_version 120`,
-tx_version stays **3**). **Feature 2 intentionally skipped** (Feature 1 already returns a clean `reposted`,
-so the `Reposts` re-encode migration buys nothing). **Feature 3 pending** (the top-level-post index). Builds
-on the spec-119 reply aggregates ([feed paging](L4-reading.md)).
+Status: **Features 1 + 3 implemented.** Feature 1 — the `MicroblogApi` runtime read API + client wiring
+(`spec_version 120`). Feature 3 — the top-level-post index (`spec_version 121`). **Feature 2 intentionally
+skipped** (Feature 1 already returns a clean `reposted`, so the `Reposts` re-encode migration buys nothing).
+`transaction_version` stays **3** throughout. Builds on the spec-119 reply aggregates ([feed paging](L4-reading.md)).
 
 > **Implementation note (Feature 1).** The pallet exposes `feed_page` / `author_feed_page` /
 > `following_feed_page` / `thread`, each returning one enriched, viewer-aware page; the runtime fills author
@@ -13,6 +13,16 @@ on the spec-119 reply aggregates ([feed paging](L4-reading.md)).
 > adversarial review hardened four parity edges: a thread ancestor-cycle guard (mirrors the client), the full
 > followee set read (no silent `MAX_FOLLOWEES` drop), all direct replies in `thread` (parity with the client),
 > and an empty-followee short-circuit.
+
+> **Implementation note (Feature 3).** A reply-free top-level spine — `TopLevelPosts` (seq → post id),
+> `NextTopLevelSeq` (the counter / global top-level count) and `TopLevelByAuthor` — maintained O(1) on every
+> top-level creation site (`post_message` `parent==None` / `quote_post` / `create_poll`) and backfilled by
+> `MigrateV3ToV4`. `feed_page` / `following_feed_page` now page the seq spine (`feed_page` is exact-N: one read
+> per returned post, no reply over-scan); `author_feed_page` pages `TopLevelByAuthor`; a new `author_post_count`
+> runtime API gives the client the correct top-level profile `postCount` (keyed `ByAuthor` fallback pre-121).
+> The feed cursor is now a `TopLevelPosts` seq — opaque + endpoint-scoped (never cross-wire it with the
+> author cursor, a post id). An adversarial review added the migration backfill==live-path parity test, a
+> density/order `post_upgrade` invariant, and `index_top_level` weight accounting.
 
 ## Why (and why this is the *right* next scale step)
 
