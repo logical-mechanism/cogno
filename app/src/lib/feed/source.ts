@@ -22,6 +22,18 @@ import type {
   Ss58,
 } from "@/lib/types";
 
+/**
+ * A source that can stream the newest post id (the liveness signal). The PAPI-direct reader provides
+ * it via `NextPostId.watchValue` — a new post bumps the counter — so the home feed pages by id and
+ * prepends new posts / drives the "N new posts" pill from this WITHOUT a full `watchEntries`. The
+ * indexer reader does NOT implement it (it keeps its own poll-driven `watch()`); consumers feature-
+ * detect it and fall back to `watch()` when it is absent.
+ */
+export interface LiveHeadSource {
+  /** Emits the newest post id on every change (null while the chain has no posts). */
+  liveHeadId(): Observable<bigint | null>;
+}
+
 /** What a feed source can do — drives which UI affordances are shown (never faked). */
 export interface FeedCaps {
   /** case-insensitive substring search over post bodies. (indexer-only) */
@@ -65,8 +77,14 @@ export interface ProfileArgs {
 export interface FeedSource {
   kind: "papi" | "graphql";
   caps: FeedCaps;
-  /** The live feed — a continuously-updating full snapshot, newest-first. */
+  /** The live feed — a continuously-updating snapshot, newest-first. */
   watch(): Observable<FeedSnapshot>;
+  /**
+   * Optional liveness signal: the newest post id, on every change ({@link LiveHeadSource}). Present on
+   * the PAPI-direct reader (`NextPostId.watchValue`), absent on the indexer reader. The home feed uses
+   * it to page by id + prepend new posts; consumers fall back to {@link watch} when it is undefined.
+   */
+  liveHeadId?(): Observable<bigint | null>;
   /** One page of the feed (global, search, author-scoped, or a home/profile tab). */
   page(q: FeedQuery): Promise<FeedPage>;
   /** A reconstructed thread for `rootId`. (gated on `caps.threads`) */
@@ -76,6 +94,8 @@ export interface FeedSource {
   // ── spec-113 social ──
   /** Options + per-option stake-weighted tally for a poll host id. (gated on `caps.tallies`) */
   poll(hostId: bigint): Promise<PollView>;
+  /** The viewer's chosen option index for a poll, or null if they have not cast. (gated on `caps.tallies`) */
+  viewerPollChoice(hostId: bigint, who: Ss58): Promise<number | null>;
   /** The viewer's own vote/repost state on a post. (gated on `caps.tallies`) */
   viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState>;
   /** Followers/following ids + counts for an account. (gated on `caps.follows`) */

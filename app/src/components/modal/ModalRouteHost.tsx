@@ -129,7 +129,10 @@ export function ModalRouteHost() {
       onClose();
       void run(stream, {
         onConfirm: () => {
-          dropPending(clientId);
+          // Top-level posts/quotes are retired by the feed presence-reconcile when their real twin
+          // lands (no confirm-time blink). Replies live in a thread with no such reconcile, so they
+          // still hand off on confirm.
+          if (parentId != null) dropPending(clientId);
           setSubmitState("ok");
         },
         onError: (message: string) => {

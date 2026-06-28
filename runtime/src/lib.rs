@@ -202,7 +202,17 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// ENCODING change; pallet-microblog adds the reverse `Followers` + `VotesByAccount` storage maps;
 	// three `SingleBlockMigrations` re-encode/backfill them. Because the call args changed, BOTH
 	// spec_version AND transaction_version bump. Regen the PAPI descriptors after deploying 118.
-	spec_version: 118,
+	// 118 -> 119 (scalable feed): pallet-microblog adds the denormalized reply aggregates — `ReplyCount`
+	// (StorageMap u64 -> u32) + `RepliesByParent` (StorageDoubleMap parent -> reply_id -> ()) — so a
+	// thread reads a post's reply count + direct replies via keyed lookups (`getEntries(parent)`) and
+	// the feed pages by post id, instead of the client folding the full `Posts` snapshot. Maintained
+	// incrementally on the `post_message` reply path (increment-only; content is append-only) and
+	// backfilled by a v2->v3 `SingleBlockMigration`. ADDITIVE storage only (NO struct re-encode, NO
+	// call-arg change — `post_message`'s signature is unchanged; its weight gains the reply path's
+	// 1 read + 2 writes). Encoding-affecting (new storage/metadata) — regen the PAPI descriptors.
+	// transaction_version is UNCHANGED (3): the `TxExtension` tuple + every Call encoding is byte-
+	// identical (the new storage is not reachable through any call-arg change).
+	spec_version: 119,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

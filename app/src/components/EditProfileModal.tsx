@@ -3,15 +3,15 @@
 // EditProfileModal — the REAL on-chain profile editor (doc 07 §9 / doc 12 §3). Opens as an overlay
 // (ModalRouteHost) or via the /settings/ standalone fallback; ModalRouteHost passes `onClose`.
 //
-// COST MODEL (spec 117 — D9 OBSOLETE): set_profile / clear_profile / pin_post / unpin_post are FEELESS
-// + capacity-metered + OPTIMISTIC, built exactly like a post. There is NO funded-account gate, NO
-// balance/fee check, NO RateLimitNotice-only path here: on confirm we close + raise a brief "Profile
-// updated" success Toast; capacity exhaustion (ExhaustsResources) raises the rate-limit Toast. Nothing
-// in this file references a fee, a balance, or "fund your account" — those are gone.
+// COST MODEL (spec 117 — D9 OBSOLETE): set_profile / clear_profile are FEELESS + capacity-metered +
+// OPTIMISTIC, built exactly like a post. There is NO funded-account gate, NO balance/fee check, NO
+// RateLimitNotice-only path here: on confirm we close + raise a brief "Profile updated" success Toast;
+// capacity exhaustion (ExhaustsResources) raises the rate-limit Toast. Nothing in this file references
+// a fee, a balance, or "fund your account" — those are gone.
 //
 // Fields (UTF-8 BYTES, ByteCounter): display_name ≤ 64 / bio ≤ 256 / avatar ≤ 128. The avatar field
-// shows a live preview (the same sanitized <img> + identicon-onError as Avatar). A pinned-post control
-// lets the owner pin a post id or unpin the current one. Clear profile needs a confirm dialog.
+// shows a live preview (the same sanitized <img> + identicon-onError as Avatar). Clear profile needs a
+// confirm dialog. (Pinning a post lives on the post's own overflow menu; unpin lives in Settings → Profile.)
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./EditProfileModal.module.css";
@@ -22,12 +22,7 @@ import { Spinner } from "./icons";
 import { useSession } from "./Providers";
 import { useMutation } from "@/hooks/useMutation";
 import { useToaster, RATE_LIMIT_COPY } from "./toast/ToasterProvider";
-import {
-  submitSetProfile,
-  submitClearProfile,
-  submitPinPost,
-  submitUnpinPost,
-} from "@/lib/chain/mutations";
+import { submitSetProfile, submitClearProfile } from "@/lib/chain/mutations";
 
 const MAX_NAME = 64;
 const MAX_BIO = 256;
@@ -59,11 +54,9 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
   const [banner, setBanner] = useState("");
   const [location, setLocation] = useState("");
   const [website, setWebsite] = useState("");
-  const [pinnedId, setPinnedId] = useState<bigint | null>(null);
-  const [pinInput, setPinInput] = useState("");
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState<null | "save" | "clear" | "pin" | "unpin">(null);
+  const [saving, setSaving] = useState<null | "save" | "clear">(null);
   const [confirmClear, setConfirmClear] = useState(false);
 
   const headingRef = useRef<HTMLHeadingElement | null>(null);
@@ -84,7 +77,6 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
           setBanner(p.banner ?? "");
           setLocation(p.location ?? "");
           setWebsite(p.website ?? "");
-          setPinnedId(p.pinnedPostId ?? null);
         }
       } catch {
         /* leave blank — a missing/failed profile read just means an empty form */
@@ -123,7 +115,7 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
   // otherwise. Feeless + capacity-metered, exactly like a post (no funding/balance path).
   const submit = useCallback(
     (
-      kind: "save" | "clear" | "pin" | "unpin",
+      kind: "save" | "clear",
       stream: ReturnType<typeof submitSetProfile>,
       successCopy: string,
       onLocalApply?: () => void,
@@ -171,22 +163,6 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
     if (!api) return;
     submit("clear", submitClearProfile(api, signer), "Profile cleared");
   }, [api, signer, submit]);
-
-  const onPin = useCallback(() => {
-    if (!api) return;
-    const raw = pinInput.trim();
-    if (!/^[0-9]+$/.test(raw)) return;
-    const id = BigInt(raw);
-    submit("pin", submitPinPost(api, signer, id), "Post pinned", () => setPinnedId(id));
-  }, [api, signer, pinInput, submit]);
-
-  const onUnpin = useCallback(() => {
-    if (!api) return;
-    submit("unpin", submitUnpinPost(api, signer), "Post unpinned", () => setPinnedId(null));
-  }, [api, signer, submit]);
-
-  const pinInputValid = /^[0-9]+$/.test(pinInput.trim());
-  const ownPosts = pinInput.trim().length > 0 && !pinInputValid;
 
   return (
     <ComposerModal title="Edit profile" onClose={onClose}>
@@ -328,49 +304,6 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                 />
                 <ByteCounter value={website} maxBytes={MAX_WEBSITE} size="sm" />
               </div>
-            </div>
-
-            {/* Pinned post control */}
-            <div className={styles.field}>
-              <span className={styles.label}>Pinned post</span>
-              {pinnedId !== null ? (
-                <div className={styles.pinnedRow}>
-                  <span className={styles.pinnedId}>Post #{pinnedId.toString()}</span>
-                  <button
-                    type="button"
-                    className={styles.secondaryBtn}
-                    onClick={onUnpin}
-                    disabled={busy}
-                  >
-                    {saving === "unpin" ? <Spinner size="sm" label="Unpinning" /> : "Unpin"}
-                  </button>
-                </div>
-              ) : (
-                <div className={styles.pinnedRow}>
-                  <input
-                    className={styles.input}
-                    value={pinInput}
-                    onChange={(e) => setPinInput(e.target.value)}
-                    placeholder="Post id to pin"
-                    inputMode="numeric"
-                    disabled={busy}
-                    aria-label="Post id to pin"
-                  />
-                  <button
-                    type="button"
-                    className={styles.secondaryBtn}
-                    onClick={onPin}
-                    disabled={busy || !pinInputValid}
-                  >
-                    {saving === "pin" ? <Spinner size="sm" label="Pinning" /> : "Pin"}
-                  </button>
-                </div>
-              )}
-              {ownPosts && (
-                <p className={styles.warn} aria-live="polite">
-                  Enter a numeric post id.
-                </p>
-              )}
             </div>
 
             {overLimit && (

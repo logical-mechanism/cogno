@@ -86,6 +86,11 @@ export function useSigner(): UseSigner {
       }
       return true;
     } catch (e) {
+      // Surface the real failure — previously every connect error (wrong network, wallet-API failure,
+      // signData decline, etc.) was masked as a single generic "cancelled" toast with nothing logged,
+      // making it undiagnosable. Log the actual error so the cause is visible.
+      // eslint-disable-next-line no-console
+      console.error(`cogno: connectWallet("${walletId}") failed:`, e);
       setError(e instanceof Error ? e.message : String(e));
       return false;
     } finally {

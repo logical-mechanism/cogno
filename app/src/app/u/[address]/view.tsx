@@ -40,6 +40,7 @@ import { useProfile } from "@/hooks/useProfile";
 import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
+import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { modalActions } from "@/lib/modalStore";
 import { isPlausibleSs58, handleOf } from "@/lib/ss58";
@@ -108,7 +109,11 @@ function ProfileBody({ address }: { address: Ss58 }) {
     () => ({ author: address, tab: tabArg(activeTab) }),
     [address, activeTab],
   );
-  const { profile, posts, loading, error } = useProfile(source, profileArgs, bestBlock);
+  const { profile, posts, loading, error, hasMore, loadingMore, loadMore } = useProfile(
+    source,
+    profileArgs,
+    bestBlock,
+  );
 
   // ── follow graph + optimistic toggle (header). READ gated on caps.follows; WRITE always allowed. ──
   const follow = useFollow(api, signer, source, me);
@@ -179,6 +184,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
   // ── per-card write hooks (mirrors the home surface; D2 Like==up, D3 permanent repost) ──
   const vote = useVote(api, signer, votingPower ?? 0n);
   const repost = useRepost(api, signer);
+  const { pin } = usePinPost(api, signer);
 
   // NOTIFICATIONS SEAM (doc 07 §14): the Voted / Reposted / reply / quote edges raised here targeting
   // this profile's author are what a future useNotifications(author) folds — deferred, seam left.
@@ -214,8 +220,9 @@ function ProfileBody({ address }: { address: Ss58 }) {
           .then(() => undefined)
           .catch(() => undefined);
       },
+      onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost],
+    [router, viewer.status, viewerStates, vote, repost, pin],
   );
 
   // ── derived header bits ──
@@ -332,7 +339,9 @@ function ProfileBody({ address }: { address: Ss58 }) {
                 loading={loading && listPosts.length === 0}
                 error={error}
                 onRetry={() => router.refresh()}
-                hasMore={false}
+                hasMore={hasMore}
+                onLoadMore={loadMore}
+                loadingMore={loadingMore}
                 paginationCapable={paginationCapable}
                 emptyTitle={emptyForTab.title}
                 onCompose={() =>

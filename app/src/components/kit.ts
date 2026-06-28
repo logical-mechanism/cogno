@@ -226,4 +226,7 @@ export interface PostActionCallbacks {
   onRepost: (post: CognoPost) => void;
   /** copy /post/[id] link → success toast. */
   onShare: (post: CognoPost) => void;
+  /** Pin one of YOUR OWN posts to your profile (own-post overflow menu only). Optional: a surface
+   *  that doesn't wire it simply shows no pin item. */
+  onPin?: (post: CognoPost) => void;
 }

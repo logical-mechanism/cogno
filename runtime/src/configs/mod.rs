@@ -89,6 +89,8 @@ type SingleBlockMigrations = (
 	pallet_microblog::migrations::v2::MigrateV1ToV2<Runtime>,
 	// spec 118: add banner / location / website to every Profile (defaulted empty).
 	pallet_profile::migrations::v1::MigrateV0ToV1<Runtime>,
+	// spec 119: backfill the ReplyCount + RepliesByParent reply aggregates from existing Posts.
+	pallet_microblog::migrations::v3::MigrateV2ToV3<Runtime>,
 );
 
 /// The default types are being injected by [`derive_impl`](`frame_support::derive_impl`) from

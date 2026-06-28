@@ -22,6 +22,12 @@ export interface CountPatch {
 export interface ViewerPatch {
   myVote?: "Up" | "Down" | null;
   reposted?: boolean;
+  /**
+   * Set once the write has CONFIRMED (inBestBlock). The patch is then kept — not cleared — until a
+   * FRESH read of the viewer's own vote agrees with it (see {@link viewerPatchSettled}), so the
+   * optimistic colour never drops to a stale read in the gap between confirm and re-observation.
+   */
+  expected?: boolean;
 }
 
 /** A pending (not-yet-confirmed) optimistic post — a new post / reply / quote. */
@@ -58,6 +64,20 @@ export function applyCountPatch(post: CognoPost, patch: CountPatch | undefined):
   };
 }
 
+/**
+ * Reconcile-by-fresh-read: a confirmed (`expected`) vote patch is redundant once an authoritative
+ * read of the viewer's own vote already agrees with it, and should then be retired. The CALLER must
+ * only evaluate this against a read taken AFTER the confirm (a fresh post-confirm refetch) — gating
+ * on freshness, not on value equality alone, is what stops a clear-to-null / zero-weight / coincident
+ * patch from retiring against a stale base (which would re-open the very gap this closes).
+ */
+export function viewerPatchSettled(
+  base: ViewerPostState,
+  patch: ViewerPatch | undefined,
+): boolean {
+  return patch?.expected === true && base.myVote === (patch.myVote ?? null);
+}
+
 /** Apply a viewer patch over a read ViewerPostState (undefined fields keep the base value). */
 export function applyViewerPatch(
   base: ViewerPostState,
@@ -70,6 +90,16 @@ export function applyViewerPatch(
   };
 }
 
+/**
+ * The identity key used to match an optimistic pending card to its real chain twin (the chain assigns
+ * a fresh id, so a pending card — which has a placeholder negative id — can only be reconciled by
+ * author + text). The SINGLE source of this key, shared by {@link mergeFeed}'s dedup and the
+ * presence-reconcile in the live feed, so the two can never drift.
+ */
+export function pendingKey(post: { author: string; text: string }): string {
+  return `${post.author}\n${post.text}`;
+}
+
 /** Merge the overlay onto a feed snapshot: prepend pending cards, patch counts on existing rows. */
 export function mergeFeed(posts: CognoPost[], overlay: Overlay): CognoPost[] {
   const patched = posts.map((p) => applyCountPatch(p, overlay.counts[String(p.id)]));
@@ -77,10 +107,10 @@ export function mergeFeed(posts: CognoPost[], overlay: Overlay): CognoPost[] {
   // Without this the optimistic→real handoff flickers: dropPending() can fire a beat before the feed
   // poll lands the real row, so the card would briefly vanish then reappear. De-duping here makes the
   // swap seamless regardless of which arrives first.
-  const realKeys = new Set(patched.map((p) => `${p.author}\n${p.text}`));
+  const realKeys = new Set(patched.map(pendingKey));
   const pendingCards = overlay.pending
     .filter((pp) => pp.status === "pending" && pp.parentId === undefined)
-    .filter((pp) => !realKeys.has(`${pp.post.author}\n${pp.post.text}`))
+    .filter((pp) => !realKeys.has(pendingKey(pp.post)))
     .map((pp) => pp.post);
   return [...pendingCards, ...patched];
 }

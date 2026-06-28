@@ -1,7 +1,7 @@
 "use client";
 
 // SettingsShell — the master/detail (desktop ≥1020) + drill-down (mobile/tablet ≤1019) shell for the
-// seven Settings sections (doc 12 §1/§9). ONE React tree switched by CSS-Modules width classes — no
+// Settings sections (doc 12 §1/§9). ONE React tree switched by CSS-Modules width classes — no
 // per-section routes (the static export has no /settings/[section]). The same `active` state drives
 // both layouts; the parent (SettingsPage) owns the hash mirror.
 //
@@ -15,8 +15,6 @@ import { IconBack } from "@/components/icons";
 import { AccountSection } from "./AccountSection";
 import { ProfileSection } from "./ProfileSection";
 import { VaultSection } from "./VaultSection";
-import { AppearanceSection } from "./AppearanceSection";
-import { NetworkSection } from "./NetworkSection";
 import { DiagnosticsSection } from "./DiagnosticsSection";
 import { AboutSection } from "./AboutSection";
 
@@ -24,8 +22,6 @@ export type SectionId =
   | "account"
   | "profile"
   | "vault"
-  | "appearance"
-  | "network"
   | "diagnostics"
   | "about";
 
@@ -33,8 +29,6 @@ export const SECTIONS: { id: SectionId; heading: string }[] = [
   { id: "account", heading: "Account" },
   { id: "profile", heading: "Profile" },
   { id: "vault", heading: "Vault & posting power" },
-  { id: "appearance", heading: "Appearance" },
-  { id: "network", heading: "Network" },
   { id: "diagnostics", heading: "Diagnostics" },
   { id: "about", heading: "About" },
   // NOTE: Notifications preferences (reply/vote/repost/follow/quote) is a DEFERRED follow-up — see
@@ -152,11 +146,7 @@ function renderSection(id: SectionId, onSelect: (id: SectionId) => void) {
     case "profile":
       return <ProfileSection />;
     case "vault":
-      return <VaultSection onGoNetwork={() => onSelect("network")} />;
-    case "appearance":
-      return <AppearanceSection />;
-    case "network":
-      return <NetworkSection />;
+      return <VaultSection />;
     case "diagnostics":
       return <DiagnosticsSection />;
     case "about":

@@ -18,6 +18,7 @@ import {
   PROFILE_LIKES,
   THREAD,
   POLL,
+  POLL_CHOICE,
   VIEWER_STATES,
   FOLLOW_EDGES,
   WHO_TO_FOLLOW,
@@ -157,6 +158,10 @@ interface PollResponse {
     options: Array<{ index: number; label: string; weight: string | null; count: number | null }>;
     votes?: { totalCount: number } | null;
   } | null;
+}
+
+interface PollChoiceResponse {
+  pollVotes: { nodes: Array<{ option: number }> };
 }
 
 interface ViewerStatesResponse {
@@ -475,6 +480,15 @@ export function createGraphqlFeedSource(endpoint: string): FeedSource {
     return { hostId, options, totalWeight, totalCount };
   }
 
+  async function viewerPollChoice(hostId: bigint, who: Ss58): Promise<number | null> {
+    const data = await gqlRequest<PollChoiceResponse>(endpoint, POLL_CHOICE, {
+      who,
+      hostId: String(hostId),
+    });
+    const node = data.pollVotes.nodes[0];
+    return node ? node.option : null;
+  }
+
   async function viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState> {
     const data = await gqlRequest<ViewerStatesResponse>(endpoint, VIEWER_STATES, {
       who,
@@ -561,6 +575,7 @@ export function createGraphqlFeedSource(endpoint: string): FeedSource {
     thread,
     profile,
     poll,
+    viewerPollChoice,
     viewerPostState,
     followEdges,
     whoToFollow,

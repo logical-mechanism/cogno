@@ -41,6 +41,7 @@ import { useSession } from "@/components/Providers";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
+import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { useFollow } from "@/hooks/useFollow";
 import { useToaster } from "@/components/toast/ToasterProvider";
@@ -208,6 +209,7 @@ function ExploreView() {
   // ── write hooks for result/firehose cards ────────────────────────────────────────────────────
   const vote = useVote(api, signer, votingPower ?? 0n);
   const repost = useRepost(api, signer);
+  const { pin } = usePinPost(api, signer);
   const { toast } = useToaster();
 
   // ── per-card action bundle (identical wiring to the home Timeline; surface 10 §3.5/§7.5) ─────
@@ -243,8 +245,9 @@ function ExploreView() {
           .then(() => toast({ kind: "success", message: "Link copied" }))
           .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
       },
+      onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, toast],
+    [router, viewer.status, viewerStates, vote, repost, pin, toast],
   );
 
   // ── "/" global shortcut: focus the SearchBar (X parity, §9). Ignore while typing / a modal is open. ─
