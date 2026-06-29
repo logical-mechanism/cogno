@@ -41,6 +41,7 @@ import { useSession } from "@/components/Providers";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
+import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
@@ -53,7 +54,8 @@ import type { PostActionCallbacks } from "@/components/kit";
 const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
 const SEARCH_DEBOUNCE_MS = 300;
 const PEOPLE_LIMIT = 20;
-const PAGE_SIZE = 25;
+// The firehose + Latest-search page size (one node `state_call` per page since spec-120).
+const PAGE_SIZE = FEED_PAGE_SIZE;
 
 export default function ExploreRoute() {
   // useSearchParams() resolves client-side under the static export — wrap in Suspense (mirrors /compose).

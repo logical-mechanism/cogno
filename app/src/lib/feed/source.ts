@@ -5,8 +5,10 @@
 //
 // `caps` lets the UI light up ONLY the affordances a source can honestly serve. With the
 // honesty/trust layer dropped, the UI does NOT show a "reads: indexer" badge — it simply
-// HIDES (never greys-with-explanation) what a reader cannot serve (e.g. the Following tab,
-// who-to-follow rail, and profile counts vanish on PAPI-direct).
+// HIDES (never greys-with-explanation) what a reader cannot serve. Since spec-118/120 the
+// PAPI-direct reader serves the follow graph, profile counts/fields, the Following + Likes tabs,
+// and who-to-follow node-direct, so those no longer vanish; only substring SEARCH and the reverse
+// Replies tab remain indexer-only (hidden on the node path, served by the hybrid when configured).
 
 import type { Observable } from "rxjs";
 import type {
@@ -84,14 +86,15 @@ export interface ProfileArgs {
 }
 
 /**
- * A swappable reader for the feed/thread/profile/social views. `kind` is retained only for
- * internal diagnostics (NOT rendered — the trust layer is dropped); the rest is the read
- * surface. Every method beyond the original four is gated by a `caps` flag; calling a method a
- * reader cannot serve throws {@link UnsupportedQuery} (a logic-slip guard — the UI gates on
- * `caps` so it never gets there).
+ * A swappable reader for the feed/thread/profile/social views. `kind` is "papi" (node-direct),
+ * "graphql" (indexer), or "hybrid" (node-first: primaries node-direct, search/People/Replies via the
+ * indexer). It is not rendered; the only behavioural read is the explore score-order toggle (indexer-
+ * only ranking). The rest is the read surface. Every method beyond the original four is gated by a
+ * `caps` flag; calling a method a reader cannot serve throws {@link UnsupportedQuery} (a logic-slip
+ * guard — the UI gates on `caps` so it never gets there).
  */
 export interface FeedSource {
-  kind: "papi" | "graphql";
+  kind: "papi" | "graphql" | "hybrid";
   caps: FeedCaps;
   /** The live feed — a continuously-updating snapshot, newest-first. */
   watch(): Observable<FeedSnapshot>;

@@ -18,11 +18,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
 import { mergeFeed, pendingKey } from "@/lib/optimistic";
 import { byIdDesc, bridgeFetchSize, mergeById, partitionFresh } from "@/lib/feed/live";
+import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoPost, FeedQuery, Ss58 } from "@/lib/types";
 
-/** Posts per page (base load + each "load more"). */
-const PAGE = 30;
+/** Posts per page (base load + each "load more"). One node `state_call` per page since spec-120. */
+const PAGE = FEED_PAGE_SIZE;
 /** Upper bound on posts re-read to bridge a single head jump (caps work after a long idle). */
 const MAX_LIVE_FETCH = 500;
 

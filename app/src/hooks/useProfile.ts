@@ -11,10 +11,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { mergeById } from "@/lib/feed/live";
+import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import type { FeedSource, ProfileArgs } from "@/lib/feed/source";
 import type { CognoPost, ProfileView } from "@/lib/types";
 
-const PAGE = 30;
+// Posts-tab "load more" page size (the first page comes back from `source.profile()` at the seam
+// default). One node `state_call` per page since spec-120, so it tracks the shared feed page size.
+const PAGE = FEED_PAGE_SIZE;
 
 export interface UseProfile {
   profile: ProfileView | null;

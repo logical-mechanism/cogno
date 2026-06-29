@@ -1,7 +1,8 @@
 // Pure-logic tests for the read-path selector. The seam guarantee is: a configured GraphQL
-// endpoint routes to the indexer reader; anything empty/whitespace falls back to the always-
-// available PAPI-direct reader, so the indexer is never load-bearing. We only assert the choice
-// (kind + caps) — the readers themselves are tested where their mapping logic lives.
+// endpoint builds the NODE-FIRST HYBRID (primaries node-direct, search/Replies via the indexer);
+// anything empty/whitespace falls back to the pure PAPI-direct reader. Either way the indexer is
+// never load-bearing for the core surfaces. We only assert the choice (kind + caps) — the readers
+// (and the hybrid's per-method routing) are tested where their logic lives.
 
 import { describe, it, expect } from "vitest";
 import { makeFeedSource } from "./index";
@@ -11,14 +12,16 @@ import type { CognoApi } from "@/lib/types";
 const fakeApi = {} as unknown as CognoApi;
 
 describe("makeFeedSource — reader selection", () => {
-  it("returns the GRAPHQL source for a non-empty endpoint", () => {
+  it("returns the node-first HYBRID for a non-empty endpoint", () => {
     const src = makeFeedSource(fakeApi, "http://localhost:3000/");
-    expect(src.kind).toBe("graphql");
-    // The indexer reader honestly advertises search + pagination.
+    expect(src.kind).toBe("hybrid");
+    // The hybrid grafts the indexer's search + Replies tab onto the node reader…
     expect(src.caps.search).toBe(true);
+    expect(src.caps.profileReplies).toBe(true);
     expect(src.caps.pagination).toBe(true);
-    // It serves its own GraphQL pages — it does NOT route through the node's spec-120 MicroblogApi.
-    expect(src.caps.nodeFeedApi).toBe(false);
+    // …while KEEPING the node's spec-120 read path (primaries stay node-direct) + NextPostId liveness.
+    expect(src.caps.nodeFeedApi).toBe(true);
+    expect(typeof src.liveHeadId).toBe("function");
   });
 
   it("returns the PAPI source for null (no endpoint configured)", () => {
@@ -46,8 +49,8 @@ describe("makeFeedSource — reader selection", () => {
     expect(makeFeedSource(fakeApi, "\t\n ").kind).toBe("papi");
   });
 
-  it("TRIMS surrounding whitespace off a real endpoint (still routes to graphql)", () => {
+  it("TRIMS surrounding whitespace off a real endpoint (still routes to the hybrid)", () => {
     const src = makeFeedSource(fakeApi, "  http://localhost:3000/  ");
-    expect(src.kind).toBe("graphql");
+    expect(src.kind).toBe("hybrid");
   });
 });

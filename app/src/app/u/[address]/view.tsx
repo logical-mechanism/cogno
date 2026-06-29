@@ -16,9 +16,10 @@
 // any tab-card action surfaces via the shared rate-limit toast inside the optimistic hooks.
 //
 // Tabs (Posts / Replies / Likes; NO Media — D1, the chain is text-only) are CLIENT state synced to the
-// ?tab= query via history.pushState (the static route stays /u/[address]). On PAPI-direct
-// (caps.profiles === false) only the Posts tab + the bare ss58/identicon header show; counts + bio are
-// omitted.
+// ?tab= query via history.pushState (the static route stays /u/[address]). Since spec-118/120 the node
+// serves the profile header (name/bio/avatar/counts), the Posts tab, and the Likes tab directly
+// (pallet-profile + the reverse maps); only the reverse Replies tab needs the indexer (hidden on the
+// node path, served by the hybrid when an indexer is configured).
 //
 // NOTIFICATIONS SEAM (doc 07 §14, deferred): a Followed{ followee === viewer } is a "new follower"; the
 // Voted / Reposted edges raised from the tab cards targeting this author, and replies/quotes of this

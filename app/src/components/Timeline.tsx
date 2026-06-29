@@ -3,9 +3,9 @@
 // Timeline — the Home post list (doc 06 §3 / §7 / §8, doc 03 §22.1).
 //
 // Renders a column of `PostCard variant="timeline"` (the cards own their hairline divider + hover
-// tint), and handles the three list states: loading → Skeleton×8, empty → EmptyState, tail → Spinner
-// (when caps.pagination + onLoadMore) else the quiet "Connect an indexer to load more" footer on
-// PAPI-direct.
+// tint), and handles the three list states: loading → Skeleton×8, empty → EmptyState, tail →
+// infinite-scroll Spinner when the source cursor-paginates (caps.pagination — true on the node path
+// since spec-119) and another page exists.
 //
 // It OWNS the Home feed keyboard nav (doc 06 §8): j/k move focus between cards (roving tabIndex +
 // a 2px --cg-accent left-border focus marker), n composes, Enter/o opens the focused post, l likes,
@@ -45,7 +45,7 @@ export interface TimelineProps {
   onLoadMore?: () => void;
   /** Tail spinner while a load-more page is in flight. */
   loadingMore?: boolean;
-  /** PAPI-direct → quiet footer instead of infinite scroll. */
+  /** Source cursor-paginates (caps.pagination) → show the infinite-scroll tail. */
   paginationCapable: boolean;
   /** EmptyState variant for THIS tab (feed | follows). */
   emptyVariant?: "feed" | "follows";
@@ -227,8 +227,8 @@ export function Timeline({
         );
       })}
 
-      {/* tail — a "Load more" affordance only on a paginated source; the node-direct feed already
-          carries the full set, so it needs no footer. */}
+      {/* tail — the infinite-scroll "load more" sentinel, shown when the source paginates
+          (caps.pagination — true on the node path since spec-119) and another page exists. */}
       {paginationCapable && hasMore && (
         <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />
       )}

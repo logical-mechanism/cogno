@@ -1,9 +1,10 @@
 "use client";
 
 // useFeedSource — the single seam every other read hook consumes. Wraps `makeFeedSource`
-// (indexer when a GraphQL URL is set, else PAPI-direct) and memoizes on [api, graphqlUrl], so
-// the source is stable across renders and only rebuilt when the connection or endpoint changes.
-// Clearing the GraphQL endpoint silently degrades to PAPI-direct (caps shrink; affordances hide).
+// (the node-first HYBRID when a GraphQL URL is set — primaries node-direct, search/Replies via the
+// indexer — else pure PAPI-direct) and memoizes on [api, graphqlUrl], so the source is stable across
+// renders and only rebuilt when the connection or endpoint changes. Clearing the GraphQL endpoint
+// drops back to pure PAPI-direct (only search + the Replies tab disappear; the feed stays node-served).
 
 import { useMemo } from "react";
 import { makeFeedSource } from "@/lib/feed";

@@ -9,9 +9,10 @@
 //   • For you   — useLiveFeed(source) id-paged live feed (NextPostId-driven; "load more" reads one
 //                 page at a time). Fresh OTHER-author items buffer behind the pill (the scroll never
 //                 jumps); the viewer's OWN optimistic post injects directly.
-//   • Following — useFeedPage(source, { tab:'following', followeeOf, first:30 }, enabled); skipped +
-//                 shows the follows empty-state when the viewer follows nobody / is disconnected.
-//   The Following tab is HIDDEN entirely on PAPI-direct (caps.follows === false) — never greyed (§5.5).
+//   • Following — useFeedPage(source, { tab:'following', followeeOf, first }, enabled); skipped +
+//                 shows the follows empty-state when the viewer follows nobody / is disconnected. The
+//                 node serves the Following timeline directly (spec-120 following_feed_page), so the
+//                 tab shows on the PAPI-direct/hybrid path too; it only hides if caps.follows is false.
 //
 // One socket: everything reads from useSession(); this page never instantiates a client.
 //
@@ -39,6 +40,7 @@ import { useMutation } from "@/hooks/useMutation";
 import { useCapacity } from "@/hooks/useCapacity";
 import { useHeads } from "@/hooks/useHeads";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
+import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { draftStatus } from "@/lib/chain/capacity";
 import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
@@ -90,7 +92,9 @@ export default function HomePage() {
   // follows empty-state) when disconnected or the viewer follows nobody.
   const [followeesEmpty, setFolloweesEmpty] = useState(false);
   useEffect(() => {
-    if (!source || !canFollow || !me) {
+    // Only read the follow graph when the Following tab is actually active — a user who never opens
+    // Following shouldn't pay a Following+Followers+counters scan just to compute its empty-state.
+    if (!source || !canFollow || !me || activeTab !== "following") {
       setFolloweesEmpty(false);
       return;
     }
@@ -106,13 +110,13 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [source, canFollow, me]);
+  }, [source, canFollow, me, activeTab]);
 
   const followingQuery = useMemo<FeedQuery>(
     () => ({
       tab: "following",
       followeeOf: me ?? undefined,
-      first: 30,
+      first: FEED_PAGE_SIZE,
       order: "recency",
       viewer: me ?? undefined,
     }),
