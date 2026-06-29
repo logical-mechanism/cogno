@@ -8,8 +8,8 @@
 
 use crate::{
 	mock::*, ByAuthor, Capacity, Error, Event, FollowerCount, Following, FollowingCount, NextPostId,
-	PollTally, PollVotes, Polls, Posts, RepliesByParent, ReplyCount, RepostCount, Reposts, VoteDir,
-	VoteTally, Votes,
+	NextTopLevelSeq, PollTally, PollVotes, Polls, Posts, RepliesByParent, ReplyCount, RepostCount,
+	Reposts, TopLevelByAuthor, TopLevelPosts, VoteDir, VoteTally, Votes,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -1279,6 +1279,121 @@ mod migration_v3 {
 	}
 }
 
+mod migration_v4 {
+	use super::*;
+	use crate::migrations::v4::MigrateV3ToV4;
+	use crate::{NextTopLevelSeq, Pallet, Post, TopLevelByAuthor, TopLevelPosts};
+	use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+
+	/// Insert a Post row directly (bypassing the dispatch path, so the top-level index stays EMPTY —
+	/// exactly the pre-v4 on-chain state the migration must backfill).
+	fn put_post(id: u64, author: u64, parent: Option<u64>) {
+		let post = Post::<Test> {
+			author,
+			text: b"x".to_vec().try_into().expect("fits MaxLength"),
+			parent,
+			quote: None,
+			at: 1,
+		};
+		Posts::<Test>::insert(id, post);
+	}
+
+	#[test]
+	fn v3_to_v4_backfills_index_in_id_order_and_is_idempotent() {
+		new_test_ext().execute_with(|| {
+			// Pre-v4 state: a mix of top-level + reply posts at NON-CONTIGUOUS ids, index empty,
+			// on-chain version 3.
+			StorageVersion::new(3).put::<Pallet<Test>>();
+			put_post(10, 1, None); // top (author 1)
+			put_post(11, 2, Some(10)); // reply — excluded
+			put_post(20, 1, None); // top (author 1)
+			put_post(21, 3, None); // top (author 3)
+			put_post(22, 2, Some(20)); // reply — excluded
+
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 0);
+
+			let _w = MigrateV3ToV4::<Test>::on_runtime_upgrade();
+
+			// Version advanced; the spine is dense 0..3 mapping to the top-level ids in ASCENDING id
+			// order (10, 20, 21) — the reply ids 11/22 are excluded.
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(4));
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 3);
+			assert_eq!(TopLevelPosts::<Test>::get(0), Some(10));
+			assert_eq!(TopLevelPosts::<Test>::get(1), Some(20));
+			assert_eq!(TopLevelPosts::<Test>::get(2), Some(21));
+			assert_eq!(TopLevelPosts::<Test>::get(3), None);
+
+			// Per-author lists exclude replies: author 1 [10, 20], author 3 [21], author 2 none.
+			assert_eq!(TopLevelByAuthor::<Test>::get(1).to_vec(), vec![10, 20]);
+			assert_eq!(TopLevelByAuthor::<Test>::get(3).to_vec(), vec![21]);
+			assert!(TopLevelByAuthor::<Test>::get(2).is_empty());
+
+			// Idempotency: a second run is the version-guarded no-op — NOT doubled.
+			let _ = MigrateV3ToV4::<Test>::on_runtime_upgrade();
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 3);
+			assert_eq!(TopLevelPosts::<Test>::iter().count(), 3);
+			assert_eq!(TopLevelByAuthor::<Test>::get(1).to_vec(), vec![10, 20]);
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(4));
+		});
+	}
+
+	#[test]
+	fn v3_to_v4_matches_the_live_incremental_path() {
+		// The one-shot backfill must reproduce EXACTLY what the live `index_top_level` path builds.
+		// Build a reference index by replaying the same posts through the dispatch path, then assert
+		// the migration (from a raw `Posts` state) yields the identical spine + per-author lists.
+		let live = new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			// ids 0, 1(reply), 2(quote), 3(poll): author 1 top-level x3, author 2 one reply.
+			assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"a".to_vec(), None));
+			assert_ok!(Microblog::post_message(RuntimeOrigin::signed(2), b"r".to_vec(), Some(0)));
+			assert_ok!(Microblog::quote_post(RuntimeOrigin::signed(1), b"q".to_vec(), 0));
+			assert_ok!(Microblog::create_poll(
+				RuntimeOrigin::signed(1),
+				b"p".to_vec(),
+				vec![b"x".to_vec(), b"y".to_vec()],
+			));
+			let mut spine: Vec<(u64, u64)> = TopLevelPosts::<Test>::iter().collect();
+			spine.sort();
+			let mut by_author: Vec<(u64, Vec<u64>)> =
+				TopLevelByAuthor::<Test>::iter().map(|(a, ids)| (a, ids.to_vec())).collect();
+			by_author.sort();
+			(NextTopLevelSeq::<Test>::get(), spine, by_author)
+		});
+
+		new_test_ext().execute_with(|| {
+			// The same posts as raw rows + pre-v4 version, then the one-shot backfill.
+			StorageVersion::new(3).put::<Pallet<Test>>();
+			put_post(0, 1, None);
+			put_post(1, 2, Some(0));
+			put_post(2, 1, None);
+			put_post(3, 1, None);
+			let _ = MigrateV3ToV4::<Test>::on_runtime_upgrade();
+
+			let mut spine: Vec<(u64, u64)> = TopLevelPosts::<Test>::iter().collect();
+			spine.sort();
+			let mut by_author: Vec<(u64, Vec<u64>)> =
+				TopLevelByAuthor::<Test>::iter().map(|(a, ids)| (a, ids.to_vec())).collect();
+			by_author.sort();
+
+			assert_eq!(NextTopLevelSeq::<Test>::get(), live.0);
+			assert_eq!(spine, live.1, "backfilled spine must equal the live-path spine");
+			assert_eq!(by_author, live.2, "backfilled per-author lists must equal the live path");
+		});
+	}
+
+	#[test]
+	fn v3_to_v4_on_empty_posts_is_safe() {
+		new_test_ext().execute_with(|| {
+			StorageVersion::new(3).put::<Pallet<Test>>();
+			let _ = MigrateV3ToV4::<Test>::on_runtime_upgrade();
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(4));
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 0);
+			assert_eq!(TopLevelPosts::<Test>::iter().count(), 0);
+		});
+	}
+}
+
 // ── DR-06 property test ─────────────────────────────────────────────────────────────────────
 
 /// **DR-06 — clamp-latency ≤ grant-latency (the asymmetric-safety property).** The follower's
@@ -1327,4 +1442,324 @@ fn clamp_latency_at_most_grant_latency_property() {
 			assert!(clamp_latency <= grant_latency);
 		}
 	});
+}
+
+// ── spec-120 node-served reads: the `MicroblogApi` read helpers (feed / author / following / thread) ──
+//
+// These exercise the pure pallet read helpers directly (AccountId = u64). Author-profile fields
+// (`author_display_name`/`author_avatar`) are filled by the RUNTIME from pallet-profile, not the
+// pallet, so they stay empty here — covered by the runtime/client parity path, not these units.
+mod node_reads {
+	use super::*;
+	use crate::FeedPage;
+
+	/// Seed a top-level post by `author`; returns the id it was assigned.
+	fn post(author: u64, text: &[u8]) -> u64 {
+		let id = NextPostId::<Test>::get();
+		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(author), text.to_vec(), None));
+		id
+	}
+
+	/// Seed a reply to `parent` by `author`; returns the id it was assigned.
+	fn reply(author: u64, text: &[u8], parent: u64) -> u64 {
+		let id = NextPostId::<Test>::get();
+		assert_ok!(Microblog::post_message(
+			RuntimeOrigin::signed(author),
+			text.to_vec(),
+			Some(parent)
+		));
+		id
+	}
+
+	/// The post ids of a page, in returned order.
+	fn ids(page: &FeedPage<u64>) -> Vec<u64> {
+		page.posts.iter().map(|p| p.id).collect()
+	}
+
+	#[test]
+	fn feed_page_is_top_level_newest_first_and_skips_replies() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let p0 = post(1, b"root"); // 0 top-level
+			let _r = reply(2, b"reply", p0); // 1 reply — skipped
+			let p2 = post(1, b"second"); // 2 top-level
+			// a quote is top-level (parent None) and DOES appear in the feed
+			let p3 = NextPostId::<Test>::get();
+			assert_ok!(Microblog::quote_post(RuntimeOrigin::signed(3), b"q".to_vec(), p0));
+
+			let page = Microblog::feed_page(None, 10, None);
+			assert_eq!(ids(&page), vec![p3, p2, p0]);
+			assert_eq!(page.next_cursor, None);
+
+			let top = page.posts.iter().find(|p| p.id == p0).unwrap();
+			assert_eq!(top.author, 1);
+			assert_eq!(top.text, b"root".to_vec());
+			assert_eq!(top.parent, None);
+		});
+	}
+
+	#[test]
+	fn feed_page_pages_by_cursor() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			for _ in 0..6 {
+				post(1, b"x"); // ids 0..=5, all top-level
+			}
+
+			let p1 = Microblog::feed_page(None, 2, None);
+			assert_eq!(ids(&p1), vec![5, 4]);
+			let c1 = p1.next_cursor.expect("more to come");
+
+			let p2 = Microblog::feed_page(Some(c1), 2, None);
+			assert_eq!(ids(&p2), vec![3, 2]);
+			let c2 = p2.next_cursor.expect("more to come");
+
+			let p3 = Microblog::feed_page(Some(c2), 2, None);
+			assert_eq!(ids(&p3), vec![1, 0]);
+			assert_eq!(p3.next_cursor, None);
+		});
+	}
+
+	#[test]
+	fn feed_page_stamps_viewer_overlay() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let p0 = post(1, b"root");
+			// give voter 2 a non-zero voting power so the tally weight is observable, then Up-vote + repost
+			pallet_talk_stake::VotingPower::<Test>::insert(2u64, 500u128);
+			assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), p0, VoteDir::Up));
+			assert_ok!(Microblog::repost(RuntimeOrigin::signed(2), p0));
+
+			// the voter sees their own vote + repost; the tally reflects the snapshot weight
+			let seen = Microblog::feed_page(None, 10, Some(2));
+			let mine = &seen.posts[0];
+			assert_eq!(mine.my_vote, Some(VoteDir::Up));
+			assert!(mine.reposted);
+			assert_eq!(mine.up_count, 1);
+			assert_eq!(mine.up_weight, 500);
+			assert_eq!(mine.repost_count, 1);
+
+			// a different viewer has no overlay, but the aggregates are still present
+			let other = Microblog::feed_page(None, 10, Some(3));
+			assert_eq!(other.posts[0].my_vote, None);
+			assert!(!other.posts[0].reposted);
+			assert_eq!(other.posts[0].up_count, 1);
+
+			// no viewer ⇒ no overlay
+			let anon = Microblog::feed_page(None, 10, None);
+			assert_eq!(anon.posts[0].my_vote, None);
+			assert!(!anon.posts[0].reposted);
+		});
+	}
+
+	#[test]
+	fn feed_page_enriches_aggregates_poll_and_quote() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let p0 = post(1, b"root");
+			// a quote of p0 by author 2
+			let p1 = NextPostId::<Test>::get();
+			assert_ok!(Microblog::quote_post(RuntimeOrigin::signed(2), b"quoting".to_vec(), p0));
+			// engagement on p0: one repost + one reply
+			assert_ok!(Microblog::repost(RuntimeOrigin::signed(3), p0));
+			let _r = reply(4, b"re", p0);
+			// a poll (top-level) by author 5
+			let p3 = NextPostId::<Test>::get();
+			assert_ok!(Microblog::create_poll(
+				RuntimeOrigin::signed(5),
+				b"poll?".to_vec(),
+				vec![b"a".to_vec(), b"b".to_vec()],
+			));
+
+			let page = Microblog::feed_page(None, 10, None);
+			assert_eq!(ids(&page), vec![p3, p1, p0]);
+
+			let root = page.posts.iter().find(|p| p.id == p0).unwrap();
+			assert_eq!(root.repost_count, 1);
+			assert_eq!(root.reply_count, 1);
+			assert!(!root.is_poll);
+			assert_eq!(root.quoted, None);
+
+			// the quote carries a one-level resolved summary of its target
+			let q = page.posts.iter().find(|p| p.id == p1).unwrap();
+			assert_eq!(q.quote, Some(p0));
+			let qs = q.quoted.as_ref().expect("quote resolved");
+			assert_eq!(qs.id, p0);
+			assert_eq!(qs.author, 1);
+			assert_eq!(qs.text, b"root".to_vec());
+
+			let poll = page.posts.iter().find(|p| p.id == p3).unwrap();
+			assert!(poll.is_poll);
+		});
+	}
+
+	#[test]
+	fn author_feed_page_scopes_to_author_top_level() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let a0 = post(1, b"a-root"); // 0 author 1 top
+			let _b = post(2, b"b"); // 1 author 2 top
+			let _ar = reply(1, b"a-reply", a0); // 2 author 1 reply — skipped
+			let a3 = post(1, b"a-2"); // 3 author 1 top
+
+			let page = Microblog::author_feed_page(1, None, 10, None);
+			assert_eq!(ids(&page), vec![a3, a0]);
+			assert_eq!(page.next_cursor, None);
+
+			// author 2 sees only their own post
+			let p2 = Microblog::author_feed_page(2, None, 10, None);
+			assert_eq!(ids(&p2), vec![1]);
+		});
+	}
+
+	#[test]
+	fn following_feed_page_only_followees_top_level() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			// viewer 1 follows 2 and 3, not 4
+			assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 2));
+			assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 3));
+			let f0 = post(2, b"by2"); // 0 followee
+			let _f1 = post(4, b"by4"); // 1 not followed — skipped
+			let f2 = post(3, b"by3"); // 2 followee
+			let _f3 = reply(2, b"r", f0); // 3 reply by a followee — skipped (not top-level)
+
+			let page = Microblog::following_feed_page(1, None, 10);
+			assert_eq!(ids(&page), vec![f2, f0]);
+			assert_eq!(page.next_cursor, None);
+		});
+	}
+
+	#[test]
+	fn thread_reconstructs_ancestors_and_replies() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let root = post(1, b"root"); // 0
+			let mid = reply(2, b"mid", root); // 1 (reply of 0)
+			let focal = reply(3, b"focal", mid); // 2 (reply of 1)
+			let r_a = reply(4, b"ra", focal); // 3 (reply of 2)
+			let r_b = reply(5, b"rb", focal); // 4 (reply of 2)
+
+			let t = Microblog::thread(focal, None);
+			assert_eq!(t.focal.as_ref().map(|p| p.id), Some(focal));
+			// ancestors are root-first
+			assert_eq!(t.ancestors.iter().map(|p| p.id).collect::<Vec<_>>(), vec![root, mid]);
+			// direct replies are chronological (ascending id)
+			assert_eq!(t.replies.iter().map(|p| p.id).collect::<Vec<_>>(), vec![r_a, r_b]);
+
+			// a root has no ancestors and one direct reply
+			let troot = Microblog::thread(root, None);
+			assert!(troot.ancestors.is_empty());
+			assert_eq!(troot.replies.iter().map(|p| p.id).collect::<Vec<_>>(), vec![mid]);
+
+			// a missing focal ⇒ everything empty
+			let missing = Microblog::thread(999, None);
+			assert!(missing.focal.is_none());
+			assert!(missing.ancestors.is_empty());
+			assert!(missing.replies.is_empty());
+		});
+	}
+
+	#[test]
+	fn feed_page_empty_and_limit_clamp() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			// empty chain
+			let empty = Microblog::feed_page(None, 10, None);
+			assert!(empty.posts.is_empty());
+			assert_eq!(empty.next_cursor, None);
+
+			// before_id == 0 ⇒ nothing strictly below
+			post(1, b"x");
+			let below0 = Microblog::feed_page(Some(0), 10, None);
+			assert!(below0.posts.is_empty());
+			assert_eq!(below0.next_cursor, None);
+
+			// limit 0 clamps up to 1
+			post(1, b"y");
+			post(1, b"z");
+			let clamped = Microblog::feed_page(None, 0, None);
+			assert_eq!(clamped.posts.len(), 1);
+		});
+	}
+
+	#[test]
+	fn feed_page_reads_top_level_directly_past_replies() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			// Feature 3: feed_page pages the reply-free `TopLevelPosts` spine, so a top-level post is
+			// returned DIRECTLY no matter how many replies sit between top-level posts in the id space.
+			let p0 = post(1, b"root");
+			for _ in 0..8 {
+				reply(2, b"r", p0);
+			}
+
+			let page = Microblog::feed_page(None, 1, None);
+			assert_eq!(ids(&page), vec![p0]);
+			assert_eq!(page.next_cursor, None);
+		});
+	}
+
+	#[test]
+	fn top_level_index_excludes_replies_and_counts_per_author() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let p0 = post(1, b"root"); // 0 top (author 1)
+			let _r = reply(2, b"r", p0); // 1 reply (author 2) — NOT indexed
+			// a quote and a poll (both author 1) are top-level
+			let p2 = NextPostId::<Test>::get();
+			assert_ok!(Microblog::quote_post(RuntimeOrigin::signed(1), b"q".to_vec(), p0));
+			let p3 = NextPostId::<Test>::get();
+			assert_ok!(Microblog::create_poll(
+				RuntimeOrigin::signed(1),
+				b"poll?".to_vec(),
+				vec![b"a".to_vec(), b"b".to_vec()],
+			));
+
+			// Three top-level posts (root + quote + poll); the reply is excluded from the spine.
+			assert_eq!(NextTopLevelSeq::<Test>::get(), 3);
+			assert_eq!(TopLevelPosts::<Test>::get(0), Some(p0));
+			assert_eq!(TopLevelPosts::<Test>::get(1), Some(p2));
+			assert_eq!(TopLevelPosts::<Test>::get(2), Some(p3));
+			assert_eq!(TopLevelPosts::<Test>::get(3), None);
+
+			// Per-author top-level list: author 1 has 3, author 2 has 0 (its only post was a reply).
+			assert_eq!(TopLevelByAuthor::<Test>::get(1).to_vec(), vec![p0, p2, p3]);
+			assert!(TopLevelByAuthor::<Test>::get(2).is_empty());
+		});
+	}
+
+	#[test]
+	fn thread_ancestor_walk_breaks_on_a_cyclic_parent() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			// `parent` is unvalidated, so a post can target its own (about-to-be-assigned) id.
+			let self_id = NextPostId::<Test>::get();
+			assert_ok!(Microblog::post_message(
+				RuntimeOrigin::signed(1),
+				b"self".to_vec(),
+				Some(self_id)
+			));
+
+			// The cycle guard (visited-set seeded with the focal) stops the walk immediately — the
+			// post does NOT recurse into its own ancestors (mirrors the client's getThread `seen` set).
+			let t = Microblog::thread(self_id, None);
+			assert_eq!(t.focal.as_ref().map(|p| p.id), Some(self_id));
+			assert!(t.ancestors.is_empty(), "a self-parent must not recurse into ancestors");
+		});
+	}
+
+	#[test]
+	fn following_feed_page_with_no_followees_short_circuits() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			// top-level posts exist, but viewer 1 follows nobody
+			post(2, b"a");
+			post(3, b"b");
+			let page = Microblog::following_feed_page(1, None, 10);
+			assert!(page.posts.is_empty());
+			// no wasted scan + no misleading cursor: an empty follow set ends the feed cleanly
+			assert_eq!(page.next_cursor, None);
+		});
+	}
 }

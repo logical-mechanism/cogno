@@ -63,9 +63,12 @@ export function useLiveFeed(source: FeedSource | null, me: Ss58 | null): UseLive
   // Epoch: bumped on every source change so an in-flight load-more from the OLD source is ignored.
   const epochRef = useRef(0);
 
+  // `viewer: me` lets a spec-120 node stamp each post's myVote/reposted overlay node-side (one
+  // state_call); the keyed + indexer paths ignore it. Re-keyed on `me` so connecting mid-session
+  // re-pages with the overlay (the source-change effect below re-seeds on a new baseQuery identity).
   const baseQuery = useMemo<FeedQuery>(
-    () => ({ tab: "forYou", first: PAGE, order: "recency" }),
-    [],
+    () => ({ tab: "forYou", first: PAGE, order: "recency", viewer: me ?? undefined }),
+    [me],
   );
 
   // PAPI fold: ACCUMULATE — refresh existing rows in place, inject the viewer's own new posts, buffer

@@ -32,6 +32,7 @@ import { Spinner } from "./icons";
 import { useSession } from "./Providers";
 import { useThread } from "@/hooks/useThread";
 import { useViewerStates } from "@/hooks/useViewerStates";
+import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
@@ -64,13 +65,15 @@ export interface ThreadViewProps {
 export function ThreadView({ rootId }: ThreadViewProps) {
   const router = useRouter();
   const { api, signer, source, viewer, votingPower, bestBlock } = useSession();
+  const me = viewer.address ?? null;
 
   // Zero locked ADA → no posting power: hard-disable the inline reply CTA (the Composer's
   // self-contained NoPostingPowerNotice shows the "Lock ADA to post" banner), matching the other surfaces.
   const { view: capacityView } = useCapacity(api, viewer.address ?? null, bestBlock);
   const noPostingPower = viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
 
-  const { thread, loading, error, addOptimisticReply } = useThread(source, rootId);
+  // `me` threaded into the thread read so a spec-120 node stamps the myVote/reposted overlay node-side.
+  const { thread, loading, error, addOptimisticReply } = useThread(source, rootId, me);
   // The focal's reply-context is rendered ONCE, as the tappable ancestor line above the card. We
   // prefer thread.parent (the richer QuotedRef with a display name; indexer path); on PAPI-direct
   // thread.parent is absent but the focal still carries its parent id, so we fall back to a bare
@@ -98,7 +101,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const ancestors = useMemo<CognoPost[]>(() => thread?.ancestors ?? [], [thread?.ancestors]);
 
   // ── inline-thread expansion: which replies are open + their fetched direct children ──
-  const me = viewer.address ?? null;
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [childrenById, setChildrenById] = useState<Map<string, CognoPost[]>>(() => new Map());
   const [loadingIds, setLoadingIds] = useState<Set<string>>(() => new Set());
@@ -118,7 +120,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     walk(replies);
     return ids;
   }, [focal, ancestors, replies, expanded, childrenById]);
-  const viewerStates = useViewerStates(source, visibleIds, me);
+  // Every visible card's node-served overlay (focal + ancestors + replies + expanded children) →
+  // useViewerStates skips the per-card Reposts scan for ids it covers.
+  const carriedStates = useMemo(() => {
+    const all: CognoPost[] = [];
+    if (focal) all.push(focal);
+    all.push(...ancestors, ...replies);
+    for (const list of childrenById.values()) all.push(...list);
+    return carriedViewerStates(all);
+  }, [focal, ancestors, replies, childrenById]);
+  const viewerStates = useViewerStates(source, visibleIds, me, carriedStates);
 
   const vote = useVote(api, signer, votingPower ?? 0n);
   const repost = useRepost(api, signer);
@@ -143,7 +154,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       if (!childrenById.has(key) && source) {
         setLoadingIds((prev) => new Set(prev).add(key));
         try {
-          const sub = await source.thread(reply.id);
+          const sub = await source.thread(reply.id, me ?? undefined);
           setChildrenById((prev) => new Map(prev).set(key, sub.replies));
         } catch {
           toast({ kind: "error", message: "Couldn't load these replies" });
@@ -162,7 +173,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       }
       setExpanded((prev) => new Set(prev).add(key));
     },
-    [expanded, childrenById, source, toast],
+    [expanded, childrenById, source, toast, me],
   );
 
   // ── poll on the FOCAL post (always-show results on the detail surface, D4) ──

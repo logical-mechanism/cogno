@@ -17,6 +17,8 @@ describe("makeFeedSource — reader selection", () => {
     // The indexer reader honestly advertises search + pagination.
     expect(src.caps.search).toBe(true);
     expect(src.caps.pagination).toBe(true);
+    // It serves its own GraphQL pages — it does NOT route through the node's spec-120 MicroblogApi.
+    expect(src.caps.nodeFeedApi).toBe(false);
   });
 
   it("returns the PAPI source for null (no endpoint configured)", () => {
@@ -29,6 +31,8 @@ describe("makeFeedSource — reader selection", () => {
     expect(src.caps.pagination).toBe(true);
     expect(src.caps.threads).toBe(true);
     expect(src.caps.revocation).toBe(true);
+    // It CAN serve the spec-120 node-served reads (per-call runtime-detected against the live node).
+    expect(src.caps.nodeFeedApi).toBe(true);
     // It also exposes the NextPostId liveness signal the home feed pages off.
     expect(typeof src.liveHeadId).toBe("function");
   });

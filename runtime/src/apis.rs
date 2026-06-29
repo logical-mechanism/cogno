@@ -47,6 +47,30 @@ use super::{
 	RuntimeCall, RuntimeGenesisConfig, SessionKeys, System, TransactionPayment, VERSION,
 };
 
+// spec-120 node-served reads: fill one enriched post's author `display_name`/`avatar` (and its
+// one-level quoted author's) from pallet-profile — the cross-pallet enrichment pallet-microblog
+// deliberately leaves to the runtime so it carries no profile dependency (the same no-Cargo-cycle
+// posture as its cogno-gate seam). An unset profile keeps the empty default.
+fn enrich_author_profile(p: &mut pallet_microblog::EnrichedPost<AccountId>) {
+	if let Some(prof) = pallet_profile::Profiles::<Runtime>::get(&p.author) {
+		p.author_display_name = prof.display_name.into_inner();
+		p.author_avatar = prof.avatar.into_inner();
+	}
+	if let Some(q) = p.quoted.as_mut() {
+		if let Some(prof) = pallet_profile::Profiles::<Runtime>::get(&q.author) {
+			q.author_display_name = prof.display_name.into_inner();
+			q.author_avatar = prof.avatar.into_inner();
+		}
+	}
+}
+
+/// Fill author profiles across a slice of enriched posts (see [`enrich_author_profile`]).
+fn enrich_author_profiles(posts: &mut [pallet_microblog::EnrichedPost<AccountId>]) {
+	for p in posts.iter_mut() {
+		enrich_author_profile(p);
+	}
+}
+
 impl_runtime_apis! {
 	impl sp_api::Core<Block> for Runtime {
 		fn version() -> RuntimeVersion {
@@ -187,6 +211,60 @@ impl_runtime_apis! {
 		fn bound_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
 			use pallet_cardano_observer::BoundStakeCredentials;
 			crate::configs::BoundStakeCreds::bound_stake_credentials()
+		}
+	}
+
+	// spec-120 node-served reads: the runtime folds a whole enriched, viewer-aware feed / thread page
+	// into one `state_call`. The microblog pallet builds the page from its own storage; the runtime
+	// fills each post's author profile from pallet-profile here (no profile dependency in the pallet —
+	// the same no-Cargo-cycle posture as its cogno-gate seam). See `docs/SCALE-NODE-READS.md`.
+	impl pallet_microblog::MicroblogApi<Block, AccountId> for Runtime {
+		fn feed_page(
+			before: Option<u64>,
+			limit: u32,
+			viewer: Option<AccountId>,
+		) -> pallet_microblog::FeedPage<AccountId> {
+			let mut page = pallet_microblog::Pallet::<Runtime>::feed_page(before, limit, viewer);
+			enrich_author_profiles(&mut page.posts);
+			page
+		}
+
+		fn author_feed_page(
+			author: AccountId,
+			before_id: Option<u64>,
+			limit: u32,
+			viewer: Option<AccountId>,
+		) -> pallet_microblog::FeedPage<AccountId> {
+			let mut page =
+				pallet_microblog::Pallet::<Runtime>::author_feed_page(author, before_id, limit, viewer);
+			enrich_author_profiles(&mut page.posts);
+			page
+		}
+
+		fn following_feed_page(
+			viewer: AccountId,
+			before: Option<u64>,
+			limit: u32,
+		) -> pallet_microblog::FeedPage<AccountId> {
+			let mut page =
+				pallet_microblog::Pallet::<Runtime>::following_feed_page(viewer, before, limit);
+			enrich_author_profiles(&mut page.posts);
+			page
+		}
+
+		fn thread(focal: u64, viewer: Option<AccountId>) -> pallet_microblog::Thread<AccountId> {
+			let mut t = pallet_microblog::Pallet::<Runtime>::thread(focal, viewer);
+			enrich_author_profiles(&mut t.ancestors);
+			if let Some(focal_post) = t.focal.as_mut() {
+				enrich_author_profile(focal_post);
+			}
+			enrich_author_profiles(&mut t.replies);
+			t
+		}
+
+		// spec-121: the author's TOP-LEVEL post count (replies excluded) for a correct profile postCount.
+		fn author_post_count(author: AccountId) -> u32 {
+			pallet_microblog::Pallet::<Runtime>::top_level_post_count(&author)
 		}
 	}
 

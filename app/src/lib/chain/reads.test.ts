@@ -2,10 +2,16 @@
 // the cursor walks older pages to exhaustion; per-post enrichment stamps the social aggregates; and
 // a thread is reconstructed from the RepliesByParent reverse map + the ReplyCount aggregate — never a
 // full-`Posts` scan. A hand-rolled fake CognoApi backs the keyed storage reads the functions make.
+//
+// The fake also stubs `apis.MicroblogApi.*` (the spec-120 node-served reads, node-reads.ts) by folding
+// the SAME spec into the EnrichedPost shape the runtime returns. The PARITY suite at the bottom asserts
+// the node-served page maps to the SAME CognoPost the keyed reads produce — the design's acceptance
+// criterion that the two read paths cannot drift.
 
 import { describe, it, expect } from "vitest";
 import { getGlobalFeedPage, getAuthorFeedPage, getThread, latestPostId } from "./reads";
-import type { CognoApi } from "@/lib/types";
+import { nodeGlobalFeedPage, nodeAuthorFeedPage, nodeThread } from "./node-reads";
+import type { CognoApi, CognoPost } from "@/lib/types";
 
 interface FakePost {
   author: string;
@@ -21,6 +27,10 @@ interface FakeSpec {
   repliesByParent?: Map<bigint, bigint[]>;
   voteTally?: Map<bigint, { up_weight: bigint; down_weight: bigint; up_count: number; down_count: number }>;
   byAuthor?: Map<string, bigint[]>;
+  /** Viewer's votes: post id → direction (drives the node API's `my_vote` overlay). */
+  votesByAccount?: Map<string, Map<bigint, "Up" | "Down">>;
+  /** Viewer's reposts: account → set of post ids (drives the node API's `reposted` overlay). */
+  repostsByAccount?: Map<string, Set<bigint>>;
 }
 
 const ZERO_TALLY = { up_weight: 0n, down_weight: 0n, up_count: 0, down_count: 0 };
@@ -28,6 +38,62 @@ const ZERO_TALLY = { up_weight: 0n, down_weight: 0n, up_count: 0, down_count: 0 
 /** Wrap a FakePost into the PAPI-shaped value the reads decode (text is a Binary with `.asText()`). */
 function wrap(p: FakePost) {
   return { author: p.author, text: { asText: () => p.text }, parent: p.parent, quote: p.quote, at: p.at };
+}
+
+/** A Binary-like for the runtime-API stub (`.asText()`, matching PAPI's byte type). */
+function bin(s: string) {
+  return { asText: () => s };
+}
+
+/**
+ * Fold one post id from the spec into the `EnrichedPost` the spec-120 `MicroblogApi` returns — the
+ * runtime-side equivalent of `enrichPosts` (same tally aggregates, reply/repost counts, poll flag,
+ * profile snapshot, one-level quote, and the viewer overlay when `viewer` is given). This lets the
+ * fake serve the node-read path so the parity suite can pin it against the keyed path.
+ */
+function enrichFor(spec: FakeSpec, id: bigint, viewer?: string) {
+  const p = spec.posts.get(id)!;
+  const t = spec.voteTally?.get(id) ?? ZERO_TALLY;
+  const myDir = viewer ? spec.votesByAccount?.get(viewer)?.get(id) : undefined;
+  const reposted = viewer ? spec.repostsByAccount?.get(viewer)?.has(id) === true : false;
+  const quotedPost = p.quote != null ? spec.posts.get(p.quote) : undefined;
+  return {
+    id,
+    author: p.author,
+    text: bin(p.text),
+    parent: p.parent,
+    quote: p.quote,
+    at: p.at,
+    up_weight: t.up_weight,
+    down_weight: t.down_weight,
+    up_count: t.up_count,
+    down_count: t.down_count,
+    repost_count: 0,
+    reply_count: spec.replyCount?.get(id) ?? 0,
+    is_poll: false,
+    my_vote: myDir ? { type: myDir } : undefined,
+    reposted,
+    author_display_name: bin(""),
+    author_avatar: bin(""),
+    quoted:
+      p.quote != null && quotedPost
+        ? {
+            id: p.quote,
+            author: quotedPost.author,
+            text: bin(quotedPost.text),
+            author_display_name: bin(""),
+            author_avatar: bin(""),
+          }
+        : undefined,
+  };
+}
+
+/** The newest-first top-level ids in the spec (mirrors the keyed feed's selection). */
+function topLevelDesc(spec: FakeSpec): bigint[] {
+  return Array.from(spec.posts.entries())
+    .filter(([, p]) => p.parent == null)
+    .map(([id]) => id)
+    .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
 }
 
 function makeFakeApi(spec: FakeSpec): CognoApi {
@@ -59,6 +125,61 @@ function makeFakeApi(spec: FakeSpec): CognoApi {
         },
       },
       Profile: { Profiles: { getValue: () => Promise.resolve(undefined) } },
+    },
+    // ── spec-120 node-served reads: fold the SAME spec into the runtime's EnrichedPost/FeedPage shape ──
+    apis: {
+      MicroblogApi: {
+        feed_page: (beforeId: bigint | undefined, limit: number, viewer?: string) => {
+          const ids = topLevelDesc(spec).filter((id) => beforeId == null || id < beforeId);
+          const taken = ids.slice(0, limit);
+          const next = ids.length > taken.length ? taken[taken.length - 1] - 1n : undefined;
+          return Promise.resolve({
+            posts: taken.map((id) => enrichFor(spec, id, viewer)),
+            next_cursor: next,
+          });
+        },
+        author_feed_page: (author: string, beforeId: bigint | undefined, limit: number, viewer?: string) => {
+          const ids = topLevelDesc(spec).filter(
+            (id) => spec.posts.get(id)!.author === author && (beforeId == null || id < beforeId),
+          );
+          const taken = ids.slice(0, limit);
+          const next = ids.length > taken.length ? taken[taken.length - 1] - 1n : undefined;
+          return Promise.resolve({
+            posts: taken.map((id) => enrichFor(spec, id, viewer)),
+            next_cursor: next,
+          });
+        },
+        following_feed_page: (viewer: string, beforeId: bigint | undefined, limit: number) => {
+          // The fake's "Following" is simply the global feed (no follow graph in these specs); the
+          // viewer is the timeline owner, so its overlay is stamped.
+          const ids = topLevelDesc(spec).filter((id) => beforeId == null || id < beforeId).slice(0, limit);
+          return Promise.resolve({
+            posts: ids.map((id) => enrichFor(spec, id, viewer)),
+            next_cursor: undefined,
+          });
+        },
+        thread: (focal: bigint, viewer?: string) => {
+          if (!spec.posts.has(focal)) {
+            return Promise.resolve({ ancestors: [], focal: undefined, replies: [] });
+          }
+          // Top-down ancestor chain by walking `parent`.
+          const ancestors: bigint[] = [];
+          let cursor = spec.posts.get(focal)!.parent;
+          const seen = new Set<bigint>([focal]);
+          while (cursor != null && !seen.has(cursor) && spec.posts.has(cursor)) {
+            seen.add(cursor);
+            ancestors.push(cursor);
+            cursor = spec.posts.get(cursor)!.parent;
+          }
+          ancestors.reverse();
+          const replies = (spec.repliesByParent?.get(focal) ?? []).slice().sort((a, b) => (a < b ? -1 : 1));
+          return Promise.resolve({
+            ancestors: ancestors.map((id) => enrichFor(spec, id, viewer)),
+            focal: enrichFor(spec, focal, viewer),
+            replies: replies.map((id) => enrichFor(spec, id, viewer)),
+          });
+        },
+      },
     },
   } as unknown as CognoApi;
 }
@@ -147,5 +268,90 @@ describe("getThread — keyed reverse lookup, no full scan", () => {
     expect(thread.root.id).toBe(1n);
     expect(thread.ancestors.map((p) => p.id)).toEqual([0n]); // parent chain, top-down
     expect(thread.replies).toEqual([]); // the reply itself has no children here
+  });
+});
+
+// ── PARITY: the spec-120 node-served reads MUST equal the keyed reads ──────────────────────────────
+// The design's acceptance criterion: the API page and the keyed-read page agree on ids + aggregates +
+// (where the keyed path can compute it) the viewer overlay, so the fallback can never silently drift.
+// The keyed path does NOT stamp myVote/reposted (useViewerStates reads those per-card), so we compare
+// the SHARED render fields and assert the node path additionally carries the overlay.
+
+/** The fields both read paths produce for a card (everything but the node-only viewer overlay). */
+function sharedFields(p: CognoPost) {
+  return {
+    id: p.id,
+    author: p.author,
+    text: p.text,
+    parent: p.parent,
+    at: p.at,
+    upWeight: p.upWeight,
+    downWeight: p.downWeight,
+    upCount: p.upCount,
+    downCount: p.downCount,
+    score: p.score,
+    repostCount: p.repostCount,
+    replyCount: p.replyCount,
+    isPoll: p.isPoll,
+    quote: p.quote,
+  };
+}
+
+describe("node-served reads — parity with the keyed reads", () => {
+  it("nodeGlobalFeedPage matches getGlobalFeedPage (same ids, aggregates, cursor)", async () => {
+    const api = makeFakeApi(sampleSpec());
+    const keyed = await getGlobalFeedPage(api, { limit: 2 });
+    const node = await nodeGlobalFeedPage(api, { limit: 2 });
+    expect(node.posts.map((p) => p.id)).toEqual(keyed.posts.map((p) => p.id));
+    expect(node.nextCursor).toEqual(keyed.nextCursor);
+    expect(node.posts.map(sharedFields)).toEqual(keyed.posts.map(sharedFields));
+    // post 2's tally (up 5 / down 2 → score 3) flows through identically on the node path.
+    const p2 = node.posts.find((p) => p.id === 2n)!;
+    expect(p2.score).toBe(3n);
+    expect(p2.upWeight).toBe(5n);
+    // The keyed path NEVER stamps the viewer overlay (useViewerStates reads it per-card), and — with
+    // no `viewer` passed — neither does the node path. Both must leave the keys UNSET so that
+    // `carriedViewerStates` (which keys on `myVote !== undefined`) excludes them and the per-card read
+    // runs. A regression that stamped the overlay onto either no-viewer page would be caught here.
+    expect(keyed.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
+    expect(node.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
+  });
+
+  it("nodeAuthorFeedPage matches getAuthorFeedPage for an author's top-level posts", async () => {
+    const api = makeFakeApi(sampleSpec());
+    const keyed = await getAuthorFeedPage(api, "alice", { limit: 10 });
+    const node = await nodeAuthorFeedPage(api, "alice", { limit: 10 });
+    expect(node.posts.map((p) => p.id)).toEqual(keyed.posts.map((p) => p.id)); // [3n, 0n]
+    expect(node.posts.map(sharedFields)).toEqual(keyed.posts.map(sharedFields));
+  });
+
+  it("nodeThread matches getThread (focal + ancestors + replies + replyCount)", async () => {
+    const api = makeFakeApi(sampleSpec());
+    const keyed = await getThread(api, 0n);
+    const node = await nodeThread(api, 0n);
+    expect(node.root.id).toBe(keyed.root.id);
+    expect(sharedFields(node.root)).toEqual(sharedFields(keyed.root));
+    expect(node.ancestors.map((p) => p.id)).toEqual(keyed.ancestors.map((p) => p.id));
+    expect(node.replies.map((p) => p.id)).toEqual(keyed.replies.map((p) => p.id));
+    expect(node.replyCount).toBe(keyed.replyCount);
+  });
+
+  it("stamps the viewer overlay (myVote/reposted) node-side when a viewer is passed", async () => {
+    const spec = sampleSpec();
+    spec.votesByAccount = new Map([["dave", new Map([[2n, "Up"]])]]);
+    spec.repostsByAccount = new Map([["dave", new Set([3n])]]);
+    const api = makeFakeApi(spec);
+    const page = await nodeGlobalFeedPage(api, { limit: 5, viewer: "dave" });
+    const byId = new Map(page.posts.map((p) => [p.id, p]));
+    expect(byId.get(2n)!.myVote).toBe("Up");
+    expect(byId.get(2n)!.reposted).toBe(false);
+    expect(byId.get(3n)!.myVote).toBeNull();
+    expect(byId.get(3n)!.reposted).toBe(true);
+    // No viewer ⇒ NO overlay at all: the keys stay UNSET (undefined), not `null`/`false`. The runtime
+    // returns my_vote: None / reposted: false regardless of viewer, so the client must NOT stamp them
+    // when it passed no viewer — otherwise carriedViewerStates would wrongly trust a null overlay for a
+    // logged-in account and hide their real votes.
+    const anon = await nodeGlobalFeedPage(api, { limit: 5 });
+    expect(anon.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
   });
 });

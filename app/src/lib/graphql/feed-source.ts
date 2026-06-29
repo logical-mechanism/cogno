@@ -306,6 +306,9 @@ export function createGraphqlFeedSource(endpoint: string): FeedSource {
     profileReplies: true,
     profileLikes: true,
     whoToFollow: true,
+    // The indexer serves its own enriched pages over GraphQL — it does NOT route through the
+    // node's spec-120 MicroblogApi runtime read (that path is PAPI-direct only).
+    nodeFeedApi: false,
   };
 
   function orderBy(order: FeedQuery["order"]): string[] {
@@ -358,7 +361,9 @@ export function createGraphqlFeedSource(endpoint: string): FeedSource {
     };
   }
 
-  async function thread(rootId: bigint): Promise<ThreadView> {
+  // `_viewer` matches the FeedSource interface (the node path stamps the viewer overlay node-side);
+  // the indexer ignores it — its viewer-relative state is read per-card via `viewerPostState`.
+  async function thread(rootId: bigint, _viewer?: Ss58): Promise<ThreadView> {
     const data = await gqlRequest<ThreadResponse>(endpoint, THREAD, {
       rootId: String(rootId),
     });

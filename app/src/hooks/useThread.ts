@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
 import type { FeedSource } from "@/lib/feed/source";
-import type { CognoPost, ThreadView } from "@/lib/types";
+import type { CognoPost, ThreadView, Ss58 } from "@/lib/types";
 
 export interface UseThread {
   thread: ThreadView | null;
@@ -17,7 +17,13 @@ export interface UseThread {
   addOptimisticReply: (post: CognoPost) => string;
 }
 
-export function useThread(source: FeedSource | null, rootId: bigint | null): UseThread {
+export function useThread(
+  source: FeedSource | null,
+  rootId: bigint | null,
+  /** The connected account, when known — threaded into the seam so a spec-120 node stamps the
+   *  myVote/reposted overlay node-side (keyed/indexer paths ignore it). */
+  viewer?: Ss58 | null,
+): UseThread {
   const [thread, setThread] = useState<ThreadView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +38,7 @@ export function useThread(source: FeedSource | null, rootId: bigint | null): Use
     setLoading(true);
     setError(null);
     source
-      .thread(rootId)
+      .thread(rootId, viewer ?? undefined)
       .then((t) => {
         if (!cancelled) setThread(t);
       })
@@ -45,7 +51,7 @@ export function useThread(source: FeedSource | null, rootId: bigint | null): Use
     return () => {
       cancelled = true;
     };
-  }, [source, rootId]);
+  }, [source, rootId, viewer]);
 
   const merged = useMemo(() => {
     if (!thread || rootId == null) return thread;
