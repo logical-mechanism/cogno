@@ -30,6 +30,19 @@ beforeEach(() => {
 
 const source = () => createGraphqlFeedSource("http://localhost:3000/");
 
+describe("caps — the indexer's honest capabilities", () => {
+  it("advertises search + Replies and does NOT route through the node's spec-120 read API", () => {
+    const caps = source().caps;
+    // The indexer serves its OWN GraphQL pages — it never routes through the node's MicroblogApi
+    // (PAPI-direct only). The hybrid takes its `search`/`profileReplies` from HERE, so a regression
+    // flipping these would silently widen/narrow what the hybrid advertises — pin them directly.
+    expect(caps.nodeFeedApi).toBe(false);
+    expect(caps.search).toBe(true);
+    expect(caps.profileReplies).toBe(true);
+    expect(caps.pagination).toBe(true);
+  });
+});
+
 describe("page() — feed node mapping", () => {
   it("converts a u64 string id via BigInt, NEVER rounding through Number", async () => {
     // A value beyond Number.MAX_SAFE_INTEGER: if mapping went through Number it would corrupt.

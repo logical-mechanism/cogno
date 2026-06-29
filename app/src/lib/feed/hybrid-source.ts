@@ -50,8 +50,22 @@ export function createHybridFeedSource(node: FeedSource, indexer: FeedSource): F
     page: (q) => (q.search ? indexer.page(q) : node.page(q)),
     // Threads node-direct (one `state_call`; `node.thread` already keeps its own keyed fallback inside).
     thread: (rootId, viewer) => node.thread(rootId, viewer),
-    // Posts + Likes tabs are node-served; only the reverse Replies tab needs the indexer.
-    profile: (args) => (args.tab === "replies" ? indexer.profile(args) : node.profile(args)),
+    // Posts + Likes tabs are node-served. The reverse Replies tab needs the indexer for the reply LIST
+    // (no replies-by-author map on chain), but the profile HEADER (banner/location/website + the exact
+    // top-level count + fresh counts) is node-served — the indexer shell omits banner/location/website,
+    // so reading the whole profile from the indexer would drop them on Replies and flicker them back on
+    // Posts/Likes. Serve the header from the node and graft the indexer's replies page on, so the header
+    // is identical across tabs; a node hiccup degrades to the indexer header (the old behaviour).
+    profile: async (args) => {
+      if (args.tab !== "replies") return node.profile(args);
+      const [repliesView, nodeHeader] = await Promise.all([
+        indexer.profile(args),
+        node
+          .profile({ author: args.author, identityHash: args.identityHash, viewer: args.viewer })
+          .catch(() => null),
+      ]);
+      return nodeHeader ? { ...nodeHeader, page: repliesView.page } : repliesView;
+    },
     // Aggregates + the viewer's own state + the follow graph + who-to-follow are all node-served
     // (who-to-follow as the node's follower-count popularity proxy — keeps the indexer non-load-bearing).
     poll: (hostId) => node.poll(hostId),

@@ -92,9 +92,7 @@ export default function HomePage() {
   // follows empty-state) when disconnected or the viewer follows nobody.
   const [followeesEmpty, setFolloweesEmpty] = useState(false);
   useEffect(() => {
-    // Only read the follow graph when the Following tab is actually active — a user who never opens
-    // Following shouldn't pay a Following+Followers+counters scan just to compute its empty-state.
-    if (!source || !canFollow || !me || activeTab !== "following") {
+    if (!source || !canFollow || !me) {
       setFolloweesEmpty(false);
       return;
     }
@@ -110,7 +108,7 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [source, canFollow, me, activeTab]);
+  }, [source, canFollow, me]);
 
   const followingQuery = useMemo<FeedQuery>(
     () => ({

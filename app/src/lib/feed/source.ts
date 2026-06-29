@@ -88,9 +88,9 @@ export interface ProfileArgs {
 /**
  * A swappable reader for the feed/thread/profile/social views. `kind` is "papi" (node-direct),
  * "graphql" (indexer), or "hybrid" (node-first: primaries node-direct, search/People/Replies via the
- * indexer). It is not rendered; the only behavioural read is the explore score-order toggle (indexer-
- * only ranking). The rest is the read surface. Every method beyond the original four is gated by a
- * `caps` flag; calling a method a reader cannot serve throws {@link UnsupportedQuery} (a logic-slip
+ * indexer). It is diagnostic only — not rendered and not behaviourally read (every affordance gates on
+ * `caps`, never on `kind`). The rest is the read surface. Every method beyond the original four is gated
+ * by a `caps` flag; calling a method a reader cannot serve throws {@link UnsupportedQuery} (a logic-slip
  * guard — the UI gates on `caps` so it never gets there).
  */
 export interface FeedSource {

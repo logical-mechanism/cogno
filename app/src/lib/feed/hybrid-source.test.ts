@@ -36,7 +36,9 @@ function stub(tag: "node" | "indexer", caps: Partial<FeedCaps>, withLiveHead: bo
       : undefined,
     page: (q: FeedQuery) => sentinel({ q }) as never,
     thread: (rootId: bigint, viewer?: Ss58) => sentinel({ rootId, viewer }) as never,
-    profile: (args: ProfileArgs) => sentinel({ args }) as never,
+    // `page` is tagged too so the replies-tab MERGE (node header + indexer page) is observable.
+    profile: (args: ProfileArgs) =>
+      Promise.resolve({ from: tag, args, page: { from: tag } }) as never,
     poll: () => sentinel() as never,
     viewerPollChoice: () => Promise.resolve(null),
     viewerPostState: () => sentinel() as never,
@@ -76,10 +78,27 @@ describe("createHybridFeedSource — node-first routing", () => {
     expect(await servedBy(hybrid.thread(1n, WHO))).toBe("node");
   });
 
-  it("serves the Posts + Likes profile tabs from the NODE, the Replies tab from the INDEXER", async () => {
+  it("serves Posts + Likes from the NODE; Replies = node HEADER + indexer replies PAGE", async () => {
     expect(await servedBy(hybrid.profile({ author: WHO }))).toBe("node");
     expect(await servedBy(hybrid.profile({ author: WHO, tab: "likes" }))).toBe("node");
-    expect(await servedBy(hybrid.profile({ author: WHO, tab: "replies" }))).toBe("indexer");
+    // Replies: the header (banner/location/website + exact count) is node-served, the replies LIST is
+    // indexer-served, merged into one ProfileView — so the header doesn't flicker on tab switch.
+    const replies = (await hybrid.profile({ author: WHO, tab: "replies" })) as unknown as {
+      from: string;
+      page: { from: string };
+    };
+    expect(replies.from).toBe("node"); // header from the node
+    expect(replies.page.from).toBe("indexer"); // replies page from the indexer
+  });
+
+  it("Replies degrades to the indexer header when the node header read fails", async () => {
+    const failNode = stub("node", { nodeFeedApi: true }, true);
+    // Make the node's profile read reject so the hybrid falls back to the indexer header.
+    (failNode as unknown as { profile: () => Promise<unknown> }).profile = () =>
+      Promise.reject(new Error("node down"));
+    const h = createHybridFeedSource(failNode, indexer);
+    const replies = (await h.profile({ author: WHO, tab: "replies" })) as unknown as { from: string };
+    expect(replies.from).toBe("indexer"); // fell back to the indexer's own ProfileView
   });
 
   it("serves People search from the INDEXER", async () => {
