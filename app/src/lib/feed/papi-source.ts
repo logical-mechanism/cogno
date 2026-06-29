@@ -66,8 +66,11 @@ import {
   type ProfileArgs,
   UnsupportedQuery,
 } from "./source";
+import { FEED_PAGE_SIZE } from "./constants";
 
-const DEFAULT_FIRST = 50;
+// The seam's first-page / default window (profile Posts first page + global `page()` default + the
+// `watch()` live window). Shared with the hooks' "load more" size so first paint and load-more match.
+const DEFAULT_FIRST = FEED_PAGE_SIZE;
 
 function hexToBytes(hex: string): Uint8Array {
   const h = hex.replace(/^0x/, "");

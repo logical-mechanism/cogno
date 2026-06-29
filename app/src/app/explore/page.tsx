@@ -13,9 +13,9 @@
 // `draft` that debounces into `q` (300ms) while typing — router.replace (not push) so keystroke term
 // changes never stack history; Enter commits immediately; the clear ✕ → router.replace('/explore').
 //
-// The firehose + Latest both use useFeedPage(source, …) — it serves a single live window on PAPI-direct
-// (no search/after/following → no throw) and full cursor pagination on the indexer; the Timeline's
-// `paginationCapable` flag picks infinite-scroll vs the quiet "connect an indexer to load more" footer.
+// The firehose + Latest both use useFeedPage(source, …). The firehose routes NODE-DIRECT (the spec-120
+// feed_page — recency by id, cursor-paginated) on both the papi and hybrid sources; Latest routes to the
+// indexer (search). caps.pagination is true on both, so the Timeline shows infinite-scroll either way.
 // People search uses source.searchPeople (indexer-only). Every result-card write is optimistic and
 // funnels disconnected/unbound viewers to /welcome; capacity exhaustion → RateLimitNotice toast. No
 // honesty/block-number chrome anywhere.
@@ -41,6 +41,7 @@ import { useSession } from "@/components/Providers";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
+import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
@@ -53,7 +54,8 @@ import type { PostActionCallbacks } from "@/components/kit";
 const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
 const SEARCH_DEBOUNCE_MS = 300;
 const PEOPLE_LIMIT = 20;
-const PAGE_SIZE = 25;
+// The firehose + Latest-search page size (one node `state_call` per page since spec-120).
+const PAGE_SIZE = FEED_PAGE_SIZE;
 
 export default function ExploreRoute() {
   // useSearchParams() resolves client-side under the static export — wrap in Suspense (mirrors /compose).
@@ -73,7 +75,10 @@ function ExploreView() {
   const searchEnabled = source?.caps.search === true;
   const peopleEnabled = source?.caps.search === true && source?.caps.profiles === true;
   const paginationCapable = source?.caps.pagination === true;
-  const scoreOrderEnabled = source?.kind === "graphql"; // PAPI-direct has no score ordering
+  // Node-first: the firehose is node-served (recency, by id) on every source makeFeedSource builds
+  // (papi + hybrid). The node has no score index, so the score-ranked "Top" order is unavailable —
+  // the toggle below honestly shows "Most recent" as selected (a node-side score index would flip this).
+  const scoreOrderEnabled = false;
 
   // The committed term is the URL ?q=; the SearchBar value is a separate local draft.
   const committedQ = (searchParams.get("q") ?? "").trim();
@@ -129,8 +134,9 @@ function ExploreView() {
       : "default";
 
   // ── DEFAULT firehose order toggle ────────────────────────────────────────────────────────────
-  // Default to "Top" (score) on the indexer; force "recency" on PAPI-direct (no score order).
-  const [order, setOrder] = useState<FirehoseOrder>("score");
+  // Default to "Most recent"; "Top" (score) is only reachable when a source advertises score order
+  // (none today — see scoreOrderEnabled). effectiveOrder is what's actually served + shown selected.
+  const [order, setOrder] = useState<FirehoseOrder>("recency");
   const effectiveOrder: FirehoseOrder = scoreOrderEnabled ? order : "recency";
 
   // ── QUERY result-scope tab (default Latest) ──────────────────────────────────────────────────
@@ -309,7 +315,7 @@ function ExploreView() {
         </div>
         {mode === "default" && (
           <FirehoseOrderToggle
-            value={order}
+            value={effectiveOrder}
             onChange={setOrder}
             scoreEnabled={scoreOrderEnabled}
           />

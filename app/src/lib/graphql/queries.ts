@@ -160,17 +160,6 @@ query Thread($rootId: String!) {
   }
 }`;
 
-// ── a single post by id (pinned post, quote-target resolution) ───────────────────────────────
-export const ONE_POST = `
-query OnePost($id: String!) {
-  post(id: $id) {
-    id authorId text parentId blockHeight isPoll
-    upWeight downWeight upCount downCount score repostCount
-    author { id banned identityHash weight displayName avatar }
-    quote { id text author { id banned displayName avatar } }
-  }
-}`;
-
 // ── poll options + per-option stake-weighted tally for a host id ─────────────────────────────
 export const POLL = `
 query Poll($hostId: String!) {
