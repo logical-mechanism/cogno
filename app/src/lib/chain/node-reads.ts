@@ -100,10 +100,17 @@ function mapQuoted(q: EnrichedPost["quoted"]): QuotedRef | undefined {
 /**
  * Map one `EnrichedPost` → the client `CognoPost`, the SAME shape `enrichPosts` produces: id/author/
  * text/parent/quote/at + the tally (with `score = upWeight - downWeight`, identical to `readPostTally`)
- * + repostCount/replyCount/isPoll + the author profile snapshot + the one-level quote ref. When a
- * `viewer` was passed, `my_vote`/`reposted` come back per post → the `myVote`/`reposted` overlay.
+ * + repostCount/replyCount/isPoll + the author profile snapshot + the one-level quote ref.
+ *
+ * `hasViewer` says whether the request actually carried a `viewer`. The runtime returns
+ * `my_vote: None` / `reposted: false` REGARDLESS of whether a viewer was supplied, so the payload
+ * alone can't tell "no viewer" apart from "viewer, but no vote/repost". Only when `hasViewer` is true
+ * do we stamp the `myVote`/`reposted` overlay; otherwise we leave both keys UNSET (`undefined`, exactly
+ * as the keyed path does), so `carriedViewerStates` excludes the post and `useViewerStates` reads it
+ * per-card. Without this, a viewer-less node fetch for a logged-in account would carry a `myVote: null`
+ * that the overlay-bypass would wrongly trust, hiding the user's real votes/reposts.
  */
-export function mapEnrichedPost(e: EnrichedPost): CognoPost {
+export function mapEnrichedPost(e: EnrichedPost, hasViewer: boolean): CognoPost {
   const upWeight = BigInt(e.up_weight ?? 0n);
   const downWeight = BigInt(e.down_weight ?? 0n);
   const post: CognoPost = {
@@ -121,10 +128,13 @@ export function mapEnrichedPost(e: EnrichedPost): CognoPost {
     replyCount: e.reply_count ?? 0,
     authorDisplayName: binTextOpt(e.author_display_name),
     authorAvatar: binTextOpt(e.author_avatar),
-    // The viewer overlay, stamped node-side — lets useViewerStates skip its per-card Reposts scan.
-    myVote: e.my_vote ? e.my_vote.type : null,
-    reposted: e.reposted === true,
   };
+  // The viewer overlay, stamped node-side — lets useViewerStates skip its per-card Reposts scan.
+  // Only set it when a viewer was actually in the request (see the doc comment above).
+  if (hasViewer) {
+    post.myVote = e.my_vote ? e.my_vote.type : null;
+    post.reposted = e.reposted === true;
+  }
   // Set `isPoll` only when true — mirror `enrichPosts` (`if (pollRec) post.isPoll = true`), which
   // leaves it `undefined` on a non-poll, so the keyed + node CognoPost shapes stay byte-identical.
   if (e.is_poll === true) post.isPoll = true;
@@ -158,33 +168,43 @@ function clampLimit(limit: number): number {
   return Math.min(Math.max(1, Math.trunc(limit)), MAX_PAGE);
 }
 
-/** Hard backstop on cursor hops per page. The cursor strictly decreases each hop, so this is only
- * reached on a pathologically reply-dense / sparse range — then we return a partial page + cursor. */
+/** Backstop on cursor hops per page once the page is NON-empty (some posts collected): a partial
+ *  page + cursor is fine to surface, the UI advances past it. The cursor strictly decreases each hop. */
 const MAX_CHASE_HOPS = 64;
+/** Harder backstop while the page is STILL EMPTY (e.g. a sparse Following range whose followees have
+ *  no recent top-level posts). We chase further before yielding an empty page + cursor — which renders
+ *  as "nothing, but load more" and makes the user re-trigger the scan — so the pathology is rare. */
+const MAX_EMPTY_CHASE_HOPS = 256;
 
 /**
  * Assemble one full page by following `next_cursor` until the page holds `limit` posts or the feed
  * ends — so a node-served page matches the keyed path's FULL-page semantics. The runtime bounds each
- * call's id-scan (`MAX_SCAN_FACTOR`) and may hand back a SHORT (even empty) page + a cursor on a
- * reply-dense / sparse range; chasing the cursor coalesces those into one rendered page (no posts
- * lost, and never an empty-page-with-a-cursor a UI can't advance past). Each hop requests only the
- * REMAINING count, so the result never overshoots `limit` and the final `nextCursor` continues below
- * the last kept post. Bounded: the cursor strictly decreases per hop, with `MAX_CHASE_HOPS` as a backstop.
+ * call's scan (`MAX_SCAN_FACTOR`) and may hand back a SHORT (even empty) page + a cursor on a sparse
+ * (filtered) range; chasing the cursor coalesces those into one rendered page (no posts lost). Each
+ * hop requests only the REMAINING count, so the result never overshoots `limit` and the final
+ * `nextCursor` continues below the last kept post. Bounded: the cursor strictly decreases per hop. On
+ * a pathologically sparse Following range it can still return an empty page + a (strictly-smaller)
+ * cursor after `MAX_EMPTY_CHASE_HOPS` — the UI can always advance past it, since the cursor walks down
+ * to the end. (The deeper fix is a runtime-side k-way merge of `TopLevelByAuthor[followee]`.)
  */
 async function chasePage(
   fetchPage: (beforeId: bigint | undefined, limit: number) => Promise<FeedPageRaw>,
   beforeId: bigint | undefined,
   limit: number,
+  hasViewer: boolean,
 ): Promise<IdPage> {
   const target = clampLimit(limit);
   const posts: CognoPost[] = [];
   let cursor = beforeId;
   let nextCursor: bigint | null = null;
-  for (let hop = 0; hop < MAX_CHASE_HOPS; hop++) {
+  for (let hop = 0; ; hop++) {
     const raw = await fetchPage(cursor, target - posts.length);
-    for (const e of raw.posts) posts.push(mapEnrichedPost(e));
+    for (const e of raw.posts) posts.push(mapEnrichedPost(e, hasViewer));
     nextCursor = raw.next_cursor != null ? BigInt(raw.next_cursor) : null;
     if (nextCursor === null || posts.length >= target) break;
+    // Keep chasing rather than surface an empty page + cursor; allow more hops while still empty.
+    const cap = posts.length === 0 ? MAX_EMPTY_CHASE_HOPS : MAX_CHASE_HOPS;
+    if (hop + 1 >= cap) break;
     cursor = nextCursor;
   }
   return { posts, nextCursor };
@@ -199,6 +219,7 @@ export async function nodeGlobalFeedPage(
     (beforeId, limit) => microblogApi(api).feed_page(beforeId, limit, opts.viewer),
     opts.beforeId,
     opts.limit,
+    opts.viewer != null,
   );
 }
 
@@ -212,6 +233,7 @@ export async function nodeAuthorFeedPage(
     (beforeId, limit) => microblogApi(api).author_feed_page(author, beforeId, limit, opts.viewer),
     opts.beforeId,
     opts.limit,
+    opts.viewer != null,
   );
 }
 
@@ -225,6 +247,8 @@ export async function nodeFollowingFeedPage(
     (beforeId, limit) => microblogApi(api).following_feed_page(viewer, beforeId, limit),
     opts.beforeId,
     opts.limit,
+    // The Following timeline is always read AS its owner, so the overlay is always stamped.
+    true,
   );
 }
 
@@ -241,11 +265,12 @@ export async function nodeThread(
 ): Promise<RawThread> {
   const raw = await microblogApi(api).thread(focalId, viewer);
   if (!raw.focal) throw new Error(`thread root #${focalId} not found on the node`);
-  const root = mapEnrichedPost(raw.focal);
+  const hasViewer = viewer != null;
+  const root = mapEnrichedPost(raw.focal, hasViewer);
   return {
     root,
-    ancestors: raw.ancestors.map(mapEnrichedPost), // already top-down from the runtime
-    replies: raw.replies.map(mapEnrichedPost),
+    ancestors: raw.ancestors.map((e) => mapEnrichedPost(e, hasViewer)), // already top-down from the runtime
+    replies: raw.replies.map((e) => mapEnrichedPost(e, hasViewer)),
     replyCount: root.replyCount ?? 0,
   };
 }

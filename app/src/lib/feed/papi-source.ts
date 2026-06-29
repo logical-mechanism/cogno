@@ -113,9 +113,16 @@ const profileText = binTextOpt;
  * source; `page()`/`thread()`/`profile()` await it before choosing a read path.
  */
 function detectNodeFeedApi(api: CognoApi): Promise<boolean> {
-  return api.apis.MicroblogApi.feed_page
-    .isCompatible(CompatibilityLevel.BackwardsCompatible)
-    .catch(() => false);
+  try {
+    return api.apis.MicroblogApi.feed_page
+      .isCompatible(CompatibilityLevel.BackwardsCompatible)
+      .catch(() => false);
+  } catch {
+    // A SYNCHRONOUS throw (e.g. stale/mismatched descriptors with no `MicroblogApi` entry, where the
+    // property access itself is a TypeError) is not caught by `.catch`. Swallow it here so detection
+    // fails closed onto the keyed path rather than letting the error escape `nodeFeedApiReady`.
+    return Promise.resolve(false);
+  }
 }
 
 export function createPapiFeedSource(api: CognoApi): FeedSource {
@@ -240,10 +247,17 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     // Node path (spec-120): focal + ancestors + replies enriched + viewer-overlaid in one state_call.
     // Keyed fallback: focal + ancestor walk + the focal's direct replies from `RepliesByParent` (one
     // parent's children) + the `ReplyCount` aggregate — no full-snapshot scan (reads.ts).
-    const { root: rootRaw, ancestors: ancestorsRaw, replies: repliesRaw, replyCount } =
-      (await nodeFeedApiReady())
-        ? await nodeThread(api, rootId, viewer)
-        : await getThread(api, rootId);
+    //
+    // A thread read carries no cursor, so falling back is always position-safe: if the node-served
+    // call FAILS (e.g. a state_call hitting a resource limit on a viral post with tens of thousands of
+    // replies — `thread` enumerates them all in one shot), drop to the keyed per-card reads, which
+    // fetch incrementally and can succeed where one big state_call can't. (The feed paths are NOT
+    // wrapped this way: their node cursor is a `TopLevelPosts` seq but the keyed cursor is a post id,
+    // so a mid-page fallback would cross-wire the cursor — and a `feed_page` failure is far less likely.)
+    const raw = (await nodeFeedApiReady())
+      ? await nodeThread(api, rootId, viewer).catch(() => getThread(api, rootId))
+      : await getThread(api, rootId);
+    const { root: rootRaw, ancestors: ancestorsRaw, replies: repliesRaw, replyCount } = raw;
     const flagged = await flagRevocations([rootRaw, ...ancestorsRaw, ...repliesRaw]);
     const root = flagged[0];
     const ancestors = flagged.slice(1, 1 + ancestorsRaw.length);

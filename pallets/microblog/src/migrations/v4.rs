@@ -58,6 +58,10 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV3ToV4<T> {
 			// impossible failure (it would only drop an over-cap tail, never corrupt other state).
 			let _ = TopLevelByAuthor::<T>::try_mutate(author, |ids| ids.try_push(*id));
 			seq = seq.saturating_add(1);
+			// 1 read (the `try_mutate` reads the author's current vec) + 2 writes (the `TopLevelPosts`
+			// insert and the `TopLevelByAuthor` write). Counting the read keeps the migration weight from
+			// under-reporting on a large `Posts` set in this single-block upgrade.
+			reads = reads.saturating_add(1);
 			writes = writes.saturating_add(2);
 		}
 		NextTopLevelSeq::<T>::put(seq);

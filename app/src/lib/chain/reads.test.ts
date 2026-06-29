@@ -309,6 +309,12 @@ describe("node-served reads — parity with the keyed reads", () => {
     const p2 = node.posts.find((p) => p.id === 2n)!;
     expect(p2.score).toBe(3n);
     expect(p2.upWeight).toBe(5n);
+    // The keyed path NEVER stamps the viewer overlay (useViewerStates reads it per-card), and — with
+    // no `viewer` passed — neither does the node path. Both must leave the keys UNSET so that
+    // `carriedViewerStates` (which keys on `myVote !== undefined`) excludes them and the per-card read
+    // runs. A regression that stamped the overlay onto either no-viewer page would be caught here.
+    expect(keyed.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
+    expect(node.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
   });
 
   it("nodeAuthorFeedPage matches getAuthorFeedPage for an author's top-level posts", async () => {
@@ -341,8 +347,11 @@ describe("node-served reads — parity with the keyed reads", () => {
     expect(byId.get(2n)!.reposted).toBe(false);
     expect(byId.get(3n)!.myVote).toBeNull();
     expect(byId.get(3n)!.reposted).toBe(true);
-    // No viewer ⇒ a null/false overlay (the runtime returns my_vote: None / reposted: false).
+    // No viewer ⇒ NO overlay at all: the keys stay UNSET (undefined), not `null`/`false`. The runtime
+    // returns my_vote: None / reposted: false regardless of viewer, so the client must NOT stamp them
+    // when it passed no viewer — otherwise carriedViewerStates would wrongly trust a null overlay for a
+    // logged-in account and hide their real votes.
     const anon = await nodeGlobalFeedPage(api, { limit: 5 });
-    expect(anon.posts.every((p) => p.myVote === null && p.reposted === false)).toBe(true);
+    expect(anon.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
   });
 });
