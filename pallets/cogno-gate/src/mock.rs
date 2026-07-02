@@ -30,12 +30,10 @@ impl frame_system::Config for Test {
 	type Block = Block;
 }
 
+// talk-stake is a call-less observer-written ledger (just `RuntimeEvent`); tests drive `apply_weight` /
+// `apply_voting_power` directly.
 impl pallet_talk_stake::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
-	type SetStakeOrigin = EnsureRoot<u64>;
-	type MaxStakeWeight = ConstU128<100_000_000>;
-	type MaxVotingPower = ConstU128<45_000_000_000_000_000>;
-	type WeightInfo = ();
 }
 
 // Same small, legible capacity constants as the microblog mock.

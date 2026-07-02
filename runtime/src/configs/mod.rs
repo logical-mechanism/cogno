@@ -271,11 +271,11 @@ impl pallet_collective::Config<Instance1> for Runtime {
 /// The crown-jewel authority origin: a **3-of-5 supermajority** of the [`FollowerCommittee`]
 /// (`EnsureProportionAtLeast<3,5>`, `needed = ceil(n*3/5)` so it works at every size — 1→1, 3→2, 5→3,
 /// 7→5). cogno-chain is SUDO-FREE, so there is NO `EnsureRoot` fallback. Shared by the committee's own
-/// self-policing origins, `cogno-gate::FollowerOrigin`, `talk-stake::SetStakeOrigin` (until the observer
-/// cutover deletes it), `anchor::AnchorOrigin` (until anchoring is dropped), `microblog::ForceOrigin`,
-/// `validator-set::AddRemoveOrigin`, `cardano-observer::EnforceOrigin`, and
-/// `governed-upgrade::AuthorityOrigin` — so identity, weight, validators, upgrades, and force-capacity all
-/// sit behind ONE trust boundary (L2 §8.4, L3 §4.5).
+/// self-policing origins, `cogno-gate::FollowerOrigin`, `anchor::AnchorOrigin` (until anchoring is
+/// dropped), `microblog::ForceOrigin`, `validator-set::AddRemoveOrigin`, `cardano-observer::EnforceOrigin`
+/// (the weight-freeze control — the observer, not this origin, writes weight), and
+/// `governed-upgrade::AuthorityOrigin` — so identity, validators, upgrades, and force-capacity all sit
+/// behind ONE trust boundary (L2 §8.4, L3 §4.5).
 pub type AuthorityOrigin = EnsureProportionAtLeast<AccountId, Instance1, 3, 5>;
 
 // ── M6 (DR-26): MUTABLE Aura+GRANDPA authorities via pallet-session + pallet-validator-set ──
@@ -345,23 +345,12 @@ impl pallet_validator_set::Config for Runtime {
 	type WeightInfo = pallet_validator_set::weights::SubstrateWeight<Runtime>;
 }
 
-/// Configure pallet-talk-stake (M2c): the per-account weight source for the talk-capacity
-/// meter. v1 dev = the operator sets weight by sudo (`EnsureRoot`, the DR-07 escape hatch);
-/// Cardano-sourced weight via the follower is M2d, and the widen to a k-of-t FollowerOrigin
-/// is signature-free (it stays an `EnsureOrigin`).
+/// Configure pallet-talk-stake: the call-less per-account weight + voting-power ledger. It has NO
+/// extrinsic, NO origin, and NO cap — weight enters ONLY through the `cardano-observer` inherent (the
+/// sole writer), which applies its OWN `MaxStakeWeight`/`MaxVotingPower` skip-not-reject before calling
+/// talk-stake's internal `apply_weight`/`apply_voting_power`. So this Config is just `RuntimeEvent`.
 impl pallet_talk_stake::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
-	type SetStakeOrigin = AuthorityOrigin;
-	// stake-1: the max lockable lovelace — total ADA supply is 45e9 ADA = 45e15 lovelace, so no
-	// account can back more than 45_000_000_000_000_000. Bounds a follower/committee bug from
-	// writing an absurd weight (the capacity meter already saturates; this is defence-in-depth).
-	type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;
-	// Voting power = the total Cardano stake of a bound stake credential; its ceiling is also the
-	// whole ADA supply (45e15 lovelace). Distinct constant from MaxStakeWeight (which bounds one
-	// vault's lock) so the two weights can diverge without coupling.
-	type MaxVotingPower = ConstU128<45_000_000_000_000_000>;
-	type WeightInfo = pallet_talk_stake::weights::SubstrateWeight<Runtime>;
 }
 
 /// The feeless fee-waiver pallet: makes `#[pallet::feeless_if]` calls skip
@@ -557,16 +546,12 @@ parameter_types! {
 	];
 }
 
-/// Configure pallet-cardano-observer (in-protocol-observation, the D4 weight rung). Sets talk-stake
-/// weight from a consensus-verified Cardano observation INHERENT — every importing validator re-derives
-/// the read and rejects the block on mismatch — instead of the trusted off-chain `set_stake` write.
-///
-/// ADDITIVE / SHADOW until cutover: the node-side `InherentDataProvider` is wired (every block carries +
-/// `check_inherent`-verifies the Cardano read), but `EnforceWeight` defaults to `false` (shadow), so the
-/// verified observation is only PROJECTED into `cardanoObserver::ShadowStake` — it does not write
-/// `AllowedStake`. The committee `set_stake` path still drives weight; the off-chain shadow-diff
-/// (`services/committee/shadow-diff.mjs`) proves the two agree on real preprod data. Flipping
-/// `set_enforcement(true)` (the cutover) is gated on ≥3 independent producers (a later step).
+/// Configure pallet-cardano-observer (in-protocol-observation, the D4 weight rung). It is the **SOLE
+/// weight writer**: every block the node-side `InherentDataProvider` carries a Cardano observation,
+/// `check_inherent` re-derives + verifies it on every importer (reject on mismatch), and the Mandatory
+/// `observe` applies it to `AllowedStake`/`VotingPower`. There is no trusted off-chain `set_stake` path
+/// any more (talk-stake is call-less). `EnforceWeight` defaults to `true`; `set_enforcement(false)` is the
+/// emergency weight-freeze revert (verify but don't write), gated by the committee.
 ///
 /// ⚠ MAINNET PREREQUISITE: `check_inherent`'s "every producer re-derives" is load-bearing only with
 /// MULTIPLE independent producers — on a single operator this is "D4-SHAPED, not D4-TRUST"; and every
@@ -593,10 +578,10 @@ impl pallet_cardano_observer::Config for Runtime {
 	type StakeResolver = StakeLookup;
 	type WeightSink = WeightApply;
 	type VotingPowerSink = VotingPowerApply;
-	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee gates the enforce/shadow cutover flip — the same
-	// crown-jewel origin as set_stake/link_identity/anchor_ack. Default is SHADOW (EnforceWeight=false):
-	// the inherent verifies + projects but does not write weight; the committee set_stake stays the sole
-	// writer until the gated, multi-producer cutover (D4-SHAPED, IN-PROTOCOL-OBSERVATION.md §2/§9).
+	// The 3-of-5 FollowerCommittee (sudo-free) gates the emergency weight-FREEZE flip — the same crown-jewel
+	// origin as identity revoke / validator add-remove / authorize_upgrade. `EnforceWeight` defaults to
+	// `true` (the observer is the sole writer from genesis); `set_enforcement(false)` freezes weight (verify
+	// but don't write) as an emergency revert (D4-SHAPED on a single operator, IN-PROTOCOL-OBSERVATION.md §2/§9).
 	type EnforceOrigin = AuthorityOrigin;
 	// pallet-timestamp implements `UnixTime` — the block's consensus clock for the stability sanity bound.
 	type UnixTime = Timestamp;

@@ -170,7 +170,7 @@ fn vote_records_stake_weight_and_tally() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
-		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
+		TalkStake::apply_voting_power(&2, 100);
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
 		let t = VoteTally::<Test>::get(0);
 		assert_eq!(t.up_weight, 100);
@@ -198,11 +198,11 @@ fn revote_flip_reverses_stored_weight_not_current_stake() {
 		System::set_block_number(1);
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
 		// Vote Up at weight 100 …
-		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
+		TalkStake::apply_voting_power(&2, 100);
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
 		// … then stake changes to 300 and the voter flips to Down. The Up side must reverse by the
 		// STORED 100 (to zero), and the Down side apply the fresh 300 — no drift.
-		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 300));
+		TalkStake::apply_voting_power(&2, 300);
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Down));
 		let t = VoteTally::<Test>::get(0);
 		assert_eq!(t.up_weight, 0);
@@ -217,9 +217,9 @@ fn revote_same_direction_updates_weight_not_count() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
-		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
+		TalkStake::apply_voting_power(&2, 100);
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
-		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 300));
+		TalkStake::apply_voting_power(&2, 300);
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up)); // same dir, new weight
 		let t = VoteTally::<Test>::get(0);
 		assert_eq!(t.up_weight, 300, "weight replaced, not summed");
@@ -232,10 +232,10 @@ fn clear_vote_reverses_exact_stored_weight() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
 		assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"root".to_vec(), None));
-		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
+		TalkStake::apply_voting_power(&2, 100);
 		assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
 		// Stake balloons, then the vote is cleared — the reversal must use the stored 100, not 9999.
-		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 9999));
+		TalkStake::apply_voting_power(&2, 9999);
 		assert_ok!(Microblog::clear_vote(RuntimeOrigin::signed(2), 0));
 		let t = VoteTally::<Test>::get(0);
 		assert_eq!(t.up_weight, 0);
@@ -290,7 +290,7 @@ fn tally_fold_determinism_property() {
 			}
 			match action {
 				Some(dir) => {
-					assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), voter, weight));
+					TalkStake::apply_voting_power(&voter, weight);
 					assert_ok!(Microblog::vote(RuntimeOrigin::signed(voter), 0, dir));
 					match dir {
 						VoteDir::Up => { up_w = up_w.saturating_add(weight); up_c = up_c.saturating_add(1); }
@@ -488,7 +488,7 @@ fn cast_poll_vote_is_stake_weighted_and_deterministic_on_recast() {
 		System::set_block_number(1);
 		assert_ok!(Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(3)));
 		// Account 2 votes option 0 at weight 100.
-		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 100));
+		TalkStake::apply_voting_power(&2, 100);
 		assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 0));
 		assert_eq!(PollTally::<Test>::get(0, 0).weight, 100);
 		assert_eq!(PollTally::<Test>::get(0, 0).count, 1);
@@ -496,7 +496,7 @@ fn cast_poll_vote_is_stake_weighted_and_deterministic_on_recast() {
 
 		// Stake grows to 300, account 2 re-casts to option 1: option 0 reverses by the STORED 100
 		// (to zero), option 1 gets the fresh 300 — no drift.
-		assert_ok!(TalkStake::set_voting_power(RuntimeOrigin::root(), 2, 300));
+		TalkStake::apply_voting_power(&2, 300);
 		assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 1));
 		assert_eq!(PollTally::<Test>::get(0, 0).weight, 0);
 		assert_eq!(PollTally::<Test>::get(0, 0).count, 0);
@@ -557,7 +557,7 @@ fn too_many_posts_is_rejected_without_consuming_id() {
 fn first_touch_capacity_is_zero() {
 	new_test_ext().execute_with(|| {
 		// Weighted but never bound: cap is positive, but the bucket has no row yet → 0.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 100)); // cap would be 1000
+		TalkStake::apply_weight(&1, 100); // cap would be 1000
 		assert_eq!(Capacity::<Test>::get(1), None);
 		assert_eq!(Microblog::current_capacity(&1, 5), 0); // None ⇒ 0 (charges up from empty)
 	});
@@ -592,7 +592,7 @@ fn post_cost_saturates_safely_at_the_boundary() {
 fn capacity_regenerates_then_clamps_to_cap() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(10);
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 100)); // cap=1000, rate=100/block
+		TalkStake::apply_weight(&1, 100); // cap=1000, rate=100/block
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 0)); // empty, dated @10
 		assert_eq!(Microblog::current_capacity(&1, 10), 0);
 		// 3 blocks: regen = 100·1·3 = 300.
@@ -606,7 +606,7 @@ fn capacity_regenerates_then_clamps_to_cap() {
 fn zero_elapsed_blocks_no_regen() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(10);
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 100)); // rate 100/block
+		TalkStake::apply_weight(&1, 100); // rate 100/block
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 250)); // banked @10
 		// Reading at the SAME block as the last touch (elapsed == 0) returns cap_last verbatim —
 		// no regen tick is credited within a block (this is the same-block-post anti-burst guard).
@@ -618,7 +618,7 @@ fn zero_elapsed_blocks_no_regen() {
 fn capacity_regen_is_linear_per_block() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(10);
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 5)); // rate 5/block, cap min(50,5000)=50
+		TalkStake::apply_weight(&1, 5); // rate 5/block, cap min(50,5000)=50
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 0)); // empty, dated @10
 		// Exactly one block ⇒ exactly one regen tick of weight·RegenPerBlock = 5 (not a constant
 		// offset, not exponential): the curve is linear at the per-block rate.
@@ -637,7 +637,7 @@ fn capacity_regen_is_linear_per_block() {
 fn consume_reduces_banked_capacity() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(10);
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 100));
+		TalkStake::apply_weight(&1, 100);
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 1000)); // full
 		assert_eq!(Microblog::current_capacity(&1, 10), 1000);
 		// Spend a 5-byte post: cost = 100 + 5 = 105.
@@ -651,7 +651,7 @@ fn ceiling_caps_the_linear_curve() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
 		// weight 1000 → linear cap 10_000, but Ceiling = 5000 → cap = 5000.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 1000));
+		TalkStake::apply_weight(&1, 1000);
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 9999));
 		assert_eq!(Microblog::current_capacity(&1, 1), 5000); // clamped to the ceiling
 	});
@@ -661,12 +661,12 @@ fn ceiling_caps_the_linear_curve() {
 fn unlock_clamps_capacity_to_zero() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 100));
+		TalkStake::apply_weight(&1, 100);
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 1000));
 		assert_eq!(Microblog::current_capacity(&1, 1), 1000);
 		// Full unlock: weight → 0 makes cap = 0, so current clamps to min(0, …) = 0 — even though
 		// the banked cap_last is 1000 and the row is NOT deleted.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 0));
+		TalkStake::apply_weight(&1, 0);
 		assert_eq!(Microblog::current_capacity(&1, 5), 0);
 		assert!(Capacity::<Test>::get(1).is_some()); // row persists (relock-farm guard)
 	});
@@ -695,7 +695,7 @@ fn set_stake_does_not_credit_banked_capacity() {
 		System::set_block_number(10);
 		Microblog::on_first_bind(&1); // cap_last 0 @10
 		// Raising weight lifts the future cap/rate but must not retroactively credit cap_last.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 100));
+		TalkStake::apply_weight(&1, 100);
 		let row = Capacity::<Test>::get(1).expect("row exists");
 		assert_eq!(row.cap_last, 0); // going-forward-only
 		assert_eq!(row.last_block, 10);
@@ -723,7 +723,7 @@ fn force_set_capacity_clamps_to_stake_backed_ceiling() {
 		System::assert_last_event(Event::CapacityForced { who: 1, cap_last: 0 }.into());
 
 		// weight 100 ⇒ ceiling min(100·10, 5000) = 1000 ⇒ a force above it is clamped to 1000.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 2, 100));
+		TalkStake::apply_weight(&2, 100);
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 2, 9_999));
 		assert_eq!(Capacity::<Test>::get(2).unwrap().cap_last, 1_000);
 
@@ -789,7 +789,7 @@ fn bind_revoke_rebind_relock_farm_guard() {
 		assert_eq!(providers(1), base + 1, "bind takes a provider ref");
 
 		// Give the account real banked capacity (weight 100 ⇒ ceiling 1000).
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 100));
+		TalkStake::apply_weight(&1, 100);
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), 1, 1_000));
 		System::set_block_number(20);
 		assert!(Microblog::current_capacity(&1, 20) > 0, "banked capacity is live before revoke");
@@ -894,7 +894,7 @@ mod capacity_extension {
 	}
 
 	fn prime(who: u64, weight: u128, cap: u128) {
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), who, weight));
+		TalkStake::apply_weight(&who, weight);
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), who, cap));
 	}
 
@@ -1131,7 +1131,7 @@ mod capacity_extension {
 			// and the row is NOT deleted, but the ceiling drops to 0 so current_capacity clamps to 0.
 			prime(1, 100, 1_000);
 			assert_eq!(Microblog::current_capacity(&1, 10), 1_000);
-			assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), 1, 0)); // full unlock ⇒ ceiling 0
+			TalkStake::apply_weight(&1, 0); // full unlock ⇒ ceiling 0
 			assert!(Capacity::<Test>::get(1).is_some(), "row persists (relock-farm guard)");
 
 			// A post is now rejected at the pool with ExhaustsResources — NOT because the banked
@@ -1415,7 +1415,7 @@ fn clamp_latency_at_most_grant_latency_property() {
 			Microblog::on_first_bind(&who); // empty bucket, dated @ t0
 
 			// ── GRANT: raise weight from 0; usable capacity must NOT jump — it regenerates. ──
-			assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), who, weight));
+			TalkStake::apply_weight(&who, weight);
 			let cap = core::cmp::min(weight.saturating_mul(10), 5000);
 			assert!(cap > 0);
 			assert_eq!(Microblog::current_capacity(&who, t0), 0, "a grant is never instantaneous");
@@ -1430,7 +1430,7 @@ fn clamp_latency_at_most_grant_latency_property() {
 			let tf = t0 + grant_latency;
 			assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), who, cap));
 			assert_eq!(Microblog::current_capacity(&who, tf), cap);
-			assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), who, 0));
+			TalkStake::apply_weight(&who, 0);
 			let mut clamp_latency = 0u64;
 			while Microblog::current_capacity(&who, tf + clamp_latency) > 0 {
 				clamp_latency += 1;

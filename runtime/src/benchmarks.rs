@@ -33,8 +33,8 @@ frame_benchmarking::define_benchmarks!(
 	// `authorize_upgrade` call uses a fixed placeholder `WeightInfo = ()` (one storage write + one event),
 	// so there is no `#[benchmarks]` module to list here yet.
 	// ── cogno-chain app pallets (DR-05: real WeightInfo for the feeless+capacity anti-spam) ──
+	// NOTE: no pallet-talk-stake — it is now a call-less observer-written ledger (no dispatchables to bench).
 	[pallet_cogno_gate, CognoGate]
-	[pallet_talk_stake, TalkStake]
 	[pallet_microblog, Microblog]
 	[pallet_anchor, Anchor]
 	// Social-actions branch: the fee-bearing display-profile pallet.

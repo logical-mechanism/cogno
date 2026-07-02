@@ -36,10 +36,13 @@
 //! ## Honest posture (§2/§11)
 //! `check_inherent`'s "every producer re-derives" is load-bearing only with MULTIPLE independent block
 //! producers — on a single-operator stack this is **D4-SHAPED, not D4-TRUST** (it buys consensus-pinned
-//! auditability, not trust). Cutting `set_stake` over to inherent-only is co-sequenced with ≥3
-//! independent producers; until then this pallet runs in shadow — the runtime wiring + node IDP are
-//! LIVE, but `EnforceWeight` defaults to `false`, so the inherent only PROJECTS weight (it records
-//! `ShadowStake` without writing `talk_stake`'s `AllowedStake`). The cutover is the `set_enforcement` flip.
+//! auditability, not trust). In the all-Rust restart this inherent is the **SOLE weight writer**:
+//! `talk_stake::set_stake`/`set_voting_power` (the old trusted committee path) were DELETED, and
+//! `EnforceWeight` defaults to **`true`** from genesis, so the verified observation writes `AllowedStake`/
+//! `VotingPower` from block 0. [`Call::set_enforcement`]`(false)` is now an EMERGENCY GOVERNANCE REVERT
+//! (freeze weight, keep verifying) rather than a shadow default — see [`EnforceWeight`]. The single-
+//! operator honesty caveat is unchanged: enforcement being on is consensus-pinned auditability, and the
+//! trustlessness graduates automatically as validators federate (≥3 independent producers).
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -280,9 +283,9 @@ pub mod pallet {
 		type WeightSink: WeightSink<Self::AccountId>;
 		/// Apply voting power (talk-stake `apply_voting_power` adapter in the runtime).
 		type VotingPowerSink: VotingPowerSink<Self::AccountId>;
-		/// Origin allowed to flip the enforce/shadow flag ([`Call::set_enforcement`]) — the crown-jewel
-		/// cutover control. In the runtime this is `AuthorityOrigin` (root OR the 3-of-5 FollowerCommittee),
-		/// the same origin that gates `set_stake`/`link_identity`/`anchor_ack`.
+		/// Origin allowed to flip the enforce flag ([`Call::set_enforcement`]) — the emergency weight-freeze
+		/// control. In the runtime this is `AuthorityOrigin` (the 3-of-5 FollowerCommittee; sudo-free), the
+		/// same origin that gates identity `revoke`, validator add/remove, and `authorize_upgrade`.
 		type EnforceOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 		/// The block's consensus time (`pallet_timestamp` implements `UnixTime`).
 		type UnixTime: UnixTime;
@@ -301,34 +304,22 @@ pub mod pallet {
 	pub type LastObserved<T: Config> =
 		StorageValue<_, BoundedVec<(BeaconName, T::AccountId), T::MaxObserved>, ValueQuery>;
 
-	/// Whether the verified observation's weight is APPLIED to talk-stake/microblog (**enforce** mode)
-	/// or only projected into [`ShadowStake`] for side-by-side validation (**shadow** mode, the DEFAULT,
-	/// `false`). Flipped by [`Call::set_enforcement`] (gated by [`Config::EnforceOrigin`]). In shadow the
-	/// inherent still verifies the read ([`ProvideInherent::check_inherent`] is flag-INDEPENDENT) and
-	/// records the projection, but does **not** write `AllowedStake`/capacity — so the committee
-	/// `set_stake` path remains the sole weight writer and the two can be diffed. The cutover (enforce =
-	/// sole writer) is gated on ≥3 independent producers ("D4-SHAPED, not D4-TRUST", §2/§9) and is **not**
-	/// a pure flag flip for weight already on-chain: the committee-credited keyset must be reconciled to
-	/// the inherent's view first (see `docs/IN-PROTOCOL-OBSERVATION.md` §9 cutover note).
+	/// Whether the verified observation's weight is APPLIED to talk-stake/microblog. **DEFAULT: `true`** —
+	/// the observer is the SOLE weight writer from genesis (there is no committee `set_stake` fallback; that
+	/// path was deleted in the all-Rust restart). [`Call::set_enforcement`]`(false)` is the EMERGENCY
+	/// GOVERNANCE REVERT (gated by [`Config::EnforceOrigin`] = the 3-of-5 committee): it FREEZES weight —
+	/// the inherent still verifies the read cross-node ([`ProvideInherent::check_inherent`] is
+	/// flag-INDEPENDENT) but stops writing `AllowedStake`/`VotingPower`, so a determinism bug can be halted
+	/// before a bad observation corrupts weight, then fixed via a committee-governed runtime upgrade. In the
+	/// frozen state weight simply holds at its last values. ⚠ On a single-operator stack the "every
+	/// producer re-derives" property is still D4-SHAPED, not D4-TRUST (§2) — enforcement being on buys
+	/// consensus-pinned auditability, not trust, until ≥3 independent producers exist.
+	#[pallet::type_value]
+	pub fn DefaultEnforce<T: Config>() -> bool {
+		true
+	}
 	#[pallet::storage]
-	pub type EnforceWeight<T: Config> = StorageValue<_, bool, ValueQuery>;
-
-	/// The inherent's per-account PROJECTED weight, written EVERY block in BOTH modes — the
-	/// consensus-pinned shadow artifact. Mirrors talk-stake `AllowedStake`'s shape + semantics
-	/// (account-keyed, insert-0-on-unlock, never delete the row) so the off-chain shadow-diff can compare
-	/// `ShadowStake(account)` (what the inherent WOULD/DOES apply) against `AllowedStake(account)` (what
-	/// the committee actually wrote) apples-to-apples. In enforce mode it equals `AllowedStake` by
-	/// construction; in shadow mode their (eventual) agreement is the validation signal (§9).
-	#[pallet::storage]
-	pub type ShadowStake<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
-
-	/// The inherent's per-account PROJECTED VOTING POWER, written EVERY block in BOTH modes — the
-	/// voting-power shadow artifact (mirrors [`ShadowStake`]). In enforce mode it equals talk-stake
-	/// `VotingPower` by construction; in shadow mode it is the side-by-side comparison against whatever the
-	/// committee `set_voting_power` wrote.
-	#[pallet::storage]
-	pub type ShadowVotingPower<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, u128, ValueQuery>;
+	pub type EnforceWeight<T: Config> = StorageValue<_, bool, ValueQuery, DefaultEnforce<T>>;
 
 	/// The previously-credited `(stake_credential, account)` set — the voting-power unlock-clamp basis
 	/// (`LastObservedStake \ current` → 0), mirroring [`LastObserved`] for the vault weight.
@@ -339,19 +330,19 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		/// A verified observation was processed as-of `reference_slot`: `credited` identities had a
-		/// projected weight recorded, `cleared` had it zeroed (unlock clamp), `skipped` were observed but
-		/// dropped for exceeding `MaxStakeWeight` (§7 step 3). `enforced` is the mode: `true` ⇒ the
-		/// projection was APPLIED to `AllowedStake`/capacity; `false` ⇒ shadow (recorded in [`ShadowStake`]
-		/// only, the committee still drives weight).
+		/// A verified observation was processed as-of `reference_slot`: `credited` identities had weight
+		/// applied, `cleared` had it zeroed (unlock clamp), `skipped` were observed but dropped for
+		/// exceeding `MaxStakeWeight` (step 3). `enforced` is the mode: `true` (the default) means weight
+		/// was APPLIED to `AllowedStake`/capacity; `false` means frozen (emergency revert: verified but not
+		/// applied), so `credited`/`cleared` count what WOULD have been applied.
 		ObservationApplied { reference_slot: u64, credited: u32, cleared: u32, skipped: u32, enforced: bool },
-		/// The VOTING-POWER projection of the same verified observation: `credited` bound stake credentials
-		/// had a projected voting power recorded, `cleared` were zeroed (unlock clamp), `skipped` exceeded
-		/// `MaxVotingPower`. `enforced` mirrors [`Event::ObservationApplied`]: `true` ⇒ applied to talk-stake
-		/// `VotingPower`; `false` ⇒ shadow ([`ShadowVotingPower`] only).
+		/// The VOTING-POWER half of the same verified observation: `credited` bound stake credentials had
+		/// voting power applied, `cleared` were zeroed (unlock clamp), `skipped` exceeded `MaxVotingPower`.
+		/// `enforced` mirrors `ObservationApplied`: `true` means applied to talk-stake `VotingPower`;
+		/// `false` means frozen (not applied).
 		VotingPowerObserved { reference_slot: u64, credited: u32, cleared: u32, skipped: u32, enforced: bool },
-		/// The enforce/shadow flag was set via [`Call::set_enforcement`]. `enabled = true` ⇒ the verified
-		/// inherent now APPLIES weight (enforce / cutover); `false` ⇒ shadow (projection-only, the default).
+		/// The enforce flag was set via [`Call::set_enforcement`]. `enabled = true` (the default) means the
+		/// verified inherent APPLIES weight; `false` means frozen (emergency revert: verify but don't write).
 		EnforcementSet { enabled: bool },
 	}
 
@@ -401,10 +392,10 @@ pub mod pallet {
 			}
 
 			// Mode read ONCE (deterministic — every node reads the identical pre-state in execute_block).
-			// In shadow (`false`, the default) the projection is recorded but NOT applied to weight; only
-			// in enforce mode does `WeightSink` touch `AllowedStake`/capacity. Both `set_weight` call-sites
-			// (credit + clamp) are gated under this one flag — partial gating would corrupt committee-owned
-			// weight in shadow.
+			// Enforcing (`true`, the DEFAULT) ⇒ `WeightSink` touches `AllowedStake`/capacity; frozen
+			// (`false`, the emergency revert) ⇒ the read is still verified but no weight is written — it
+			// holds at its last value. Both `set_weight` call-sites (credit + clamp) are gated under this one
+			// flag — partial gating would corrupt weight in the frozen state.
 			let enforce = EnforceWeight::<T>::get();
 			let min_lock = T::MinLock::get();
 			let max_weight = T::MaxStakeWeight::get();
@@ -420,8 +411,8 @@ pub mod pallet {
 					None => continue,
 				};
 				// MIN_LOCK floor, then the MaxStakeWeight bound as SKIP-not-reject (§7 step 3). A skipped
-				// over-cap entry is counted (surfaced in the event + the shadow-diff) so it is not silently
-				// mis-read as agreement.
+				// over-cap entry is counted (surfaced in the `ObservationApplied` event) so it is not
+				// silently mis-read as agreement.
 				let weight = if *lovelace >= min_lock { *lovelace } else { 0u128 };
 				if weight > max_weight {
 					log::warn!(
@@ -431,8 +422,8 @@ pub mod pallet {
 					skipped = skipped.saturating_add(1);
 					continue;
 				}
-				// Record the projection ALWAYS (the shadow artifact); apply to weight ONLY in enforce mode.
-				ShadowStake::<T>::insert(&account, weight);
+				// Apply to weight when enforcing (the default). When frozen (`set_enforcement(false)`), the
+				// read is still verified but no `AllowedStake` write happens — weight holds at its last value.
 				if enforce {
 					T::WeightSink::set_weight(&account, weight);
 				}
@@ -443,14 +434,13 @@ pub mod pallet {
 				credited = credited.saturating_add(1);
 			}
 
-			// Unlock clamp (§7 step 6): a previously-credited account absent from the current set → 0.
-			// Recorded in the shadow projection ALWAYS (mirroring `AllowedStake`'s insert-0-never-delete);
-			// applied to weight ONLY in enforce mode.
+			// Unlock clamp (§7 step 6): a previously-credited account absent from the current set → 0
+			// (applied to weight only when enforcing; the counter + LastObserved basis are tracked
+			// regardless, so a later re-enable clamps from the right set).
 			let prev = LastObserved::<T>::get();
 			let mut cleared: u32 = 0;
 			for (beacon, account) in prev.iter() {
 				if !credited_set.iter().any(|(b, _)| b == beacon) {
-					ShadowStake::<T>::insert(account, 0u128);
 					if enforce {
 						T::WeightSink::set_weight(account, 0);
 					}
@@ -460,7 +450,7 @@ pub mod pallet {
 
 			LastObserved::<T>::put(credited_set);
 
-			// ── VOTING POWER (epoch_stake) projection — the same shadow/enforce discipline as the vault
+			// ── VOTING POWER (epoch_stake) — the same enforce/freeze discipline as the vault
 			// weight above, on the SAME verified observation. No MIN_LOCK floor (total stake counts at any
 			// size) and no largest-wins (the node supplies one total per credential); just resolve →
 			// cap-skip → project/apply → unlock-clamp.
@@ -482,7 +472,6 @@ pub mod pallet {
 					vp_skipped = vp_skipped.saturating_add(1);
 					continue;
 				}
-				ShadowVotingPower::<T>::insert(&account, *total);
 				if enforce {
 					T::VotingPowerSink::set_voting_power(&account, *total);
 				}
@@ -494,7 +483,6 @@ pub mod pallet {
 			let mut vp_cleared: u32 = 0;
 			for (stake_cred, account) in vp_prev.iter() {
 				if !vp_credited_set.iter().any(|(c, _)| c == stake_cred) {
-					ShadowVotingPower::<T>::insert(account, 0u128);
 					if enforce {
 						T::VotingPowerSink::set_voting_power(account, 0);
 					}
@@ -521,15 +509,16 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// Flip the enforce/shadow flag ([`EnforceWeight`]). `enabled = true` ⇒ the verified inherent
-		/// APPLIES weight to `AllowedStake`/capacity (the cutover); `false` ⇒ shadow (projection-only, the
-		/// default). Gated by [`Config::EnforceOrigin`] (root OR the 3-of-5 committee). NOT an inherent
-		/// (`is_inherent` matches only `observe`), so this is a normal pool-admissible governance call —
-		/// the §5.2 per-call mutual-exclusion invariant is preserved.
+		/// Flip the enforce flag ([`EnforceWeight`], **default `true`**). `enabled = true` ⇒ the verified
+		/// inherent APPLIES weight to `AllowedStake`/capacity (the normal state); `false` ⇒ FREEZE weight
+		/// (emergency revert — the read is still verified cross-node, but no weight is written, so a
+		/// determinism bug can be halted before a bad observation corrupts weight; fix it via a
+		/// committee-governed runtime upgrade, then re-enable). Gated by [`Config::EnforceOrigin`] (the
+		/// 3-of-5 committee; sudo-free). NOT an inherent (`is_inherent` matches only `observe`), so this is a
+		/// normal pool-admissible governance call — the §5.2 per-call mutual-exclusion invariant is preserved.
 		///
-		/// ⚠ Enabling on a single-operator stack is **D4-SHAPED, not D4-TRUST** (no independent verifier;
-		/// §2). The production cutover is gated on ≥3 independent producers AND is not a pure flip for
-		/// weight already on-chain (reconcile the committee-credited keyset to the inherent's view first).
+		/// ⚠ On a single-operator stack the "every producer re-derives" property is D4-SHAPED, not D4-TRUST
+		/// (no independent verifier; §2) — trustlessness graduates as validators federate (≥3 producers).
 		#[pallet::call_index(1)]
 		#[pallet::weight(T::WeightInfo::set_enforcement())]
 		pub fn set_enforcement(origin: OriginFor<T>, enabled: bool) -> DispatchResult {

@@ -450,13 +450,13 @@ mod runtime {
 	#[runtime::pallet_index(15)]
 	pub type Session = pallet_session;
 
-	// 16 = CardanoObserver (in-protocol-observation, the D4 weight rung): sets talk-stake weight from a
-	// consensus-verified Cardano observation INHERENT (`ProvideInherent`; every importing validator
-	// re-derives the read and rejects the block on mismatch) instead of the trusted off-chain
-	// `set_stake` write. Declared AFTER Timestamp (@1) and CognoGate (@8), which its Mandatory inherent
-	// reads (block time for the stability bound; `AccountOf` for beacon→account). ADDITIVE / shadow:
-	// inert until the node-side InherentDataProvider is wired (a later step); the committee `set_stake`
-	// path keeps driving weight until cutover. Next free index 17.
+	// 16 = CardanoObserver (in-protocol-observation, the D4 weight rung): the SOLE weight writer. Sets
+	// talk-stake weight/voting-power from a consensus-verified Cardano observation INHERENT
+	// (`ProvideInherent`; every importing validator re-derives the read and rejects the block on mismatch).
+	// There is no trusted off-chain `set_stake` path any more (talk-stake is call-less). Declared AFTER
+	// Timestamp (@1) and CognoGate (@8), which its Mandatory inherent reads (block time for the stability
+	// bound; `AccountOf` for beacon→account). `EnforceWeight` defaults to true (writes from block 0);
+	// `set_enforcement(false)` is the emergency weight-freeze revert. Next free index 17.
 	#[runtime::pallet_index(16)]
 	pub type CardanoObserver = pallet_cardano_observer;
 

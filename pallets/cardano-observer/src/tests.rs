@@ -45,18 +45,14 @@ fn put_obs(id: &mut InherentData, obs: &CardanoObservation) {
 	id.put_data(INHERENT_IDENTIFIER, obs).expect("encode observation");
 }
 
-/// Switch the pallet to ENFORCE mode (the verified observation is applied to weight), via the
-/// root-gated setter — the application tests run here so they can assert on the `WeightSink`.
+/// Enforce mode is the DEFAULT (`EnforceWeight` defaults to `true`), so this is now a no-op made explicit
+/// for the application tests — they assert on the `WeightSink`. Kept as a marker of intent.
 fn enforce() {
 	assert_ok!(CardanoObserver::set_enforcement(RuntimeOrigin::root(), true));
 }
-/// The per-account shadow projection the inherent recorded (what it WOULD/DOES apply).
-fn shadow_of(who: AccountId) -> u128 {
-	crate::ShadowStake::<Test>::get(who)
-}
-/// The per-account voting-power shadow projection.
-fn shadow_vp_of(who: AccountId) -> u128 {
-	crate::ShadowVotingPower::<Test>::get(who)
+/// FREEZE weight (the emergency-revert state): the read is still verified, but no weight is applied.
+fn freeze() {
+	assert_ok!(CardanoObserver::set_enforcement(RuntimeOrigin::root(), false));
 }
 
 // ── ProvideInherent (create_inherent / check_inherent) ─────────────────────────────────────────────
@@ -248,7 +244,6 @@ fn observe_applies_min_lock_floor() {
 		bind(A, ALICE);
 		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 1), COMMIT, entries(&[(A, MIN_LOCK - 1)]), no_stake()));
 		assert_eq!(weight_of(ALICE), 0, "below MIN_LOCK ⇒ weight 0");
-		assert_eq!(shadow_of(ALICE), 0, "the projection also floors to 0");
 	});
 }
 
@@ -260,7 +255,7 @@ fn observe_skips_over_max_stake_weight_without_bricking_the_block() {
 		bind(A, ALICE);
 		bind(B, BOB);
 		// A is fine; B is absurdly large (> MaxStakeWeight) ⇒ B is SKIPPED, the call still succeeds and
-		// the skip is COUNTED in the event (so it can't be mis-read as agreement by the shadow-diff).
+		// the skip is COUNTED in the event (so it can't be silently mis-read as agreement).
 		assert_ok!(CardanoObserver::observe(
 			RuntimeOrigin::none(),
 			cref(MAX_REFERENCE - 1),
@@ -270,7 +265,6 @@ fn observe_skips_over_max_stake_weight_without_bricking_the_block() {
 		));
 		assert_eq!(weight_of(ALICE), 200_000_000, "A still credited");
 		assert!(!was_written(BOB), "the over-cap entry is skipped, not consensus-pinned (block not bricked)");
-		assert_eq!(shadow_of(BOB), 0, "the skipped entry is not projected either");
 		System::assert_has_event(Event::ObservationApplied { reference_slot: MAX_REFERENCE - 1, credited: 1, cleared: 0, skipped: 1, enforced: true }.into());
 	});
 }
@@ -289,59 +283,58 @@ fn observe_clamps_accounts_that_dropped_out_to_zero() {
 		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 5), COMMIT, entries(&[(A, 200_000_000)]), no_stake()));
 		assert_eq!(weight_of(ALICE), 200_000_000, "A persists");
 		assert_eq!(weight_of(BOB), 0, "B (absent now) is clamped to 0 — the unlock path");
-		assert_eq!(shadow_of(BOB), 0, "the projection also clamps B to 0 (insert-0-never-delete)");
 	});
 }
 
-// ── SHADOW mode (the DEFAULT) — verify + project, but DO NOT touch weight ───────────────────────────
+// ── FROZEN mode (the emergency revert, `set_enforcement(false)`) — verify but DO NOT touch weight ────
 
 #[test]
-fn shadow_mode_records_projection_but_never_writes_weight() {
+fn frozen_mode_verifies_but_never_writes_weight() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
-		// EnforceWeight defaults to false (shadow) — no enforce() call.
+		freeze(); // emergency revert: default is enforce, so flip it OFF for this test
 		bind(A, ALICE);
 		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 1), COMMIT, entries(&[(A, 200_000_000)]), no_stake()));
-		// The WeightSink (talk-stake/microblog) is NEVER called in shadow — the committee owns AllowedStake.
-		assert!(!was_written(ALICE), "shadow mode must NOT apply weight (committee remains sole writer)");
-		// …but the projection IS recorded, so the off-chain diff can compare it against AllowedStake.
-		assert_eq!(shadow_of(ALICE), 200_000_000, "the inherent's projected weight is recorded in shadow");
+		// The WeightSink (talk-stake/microblog) is NEVER called while frozen — weight holds at its last value.
+		assert!(!was_written(ALICE), "frozen mode must NOT apply weight (the read is still verified)");
+		// The observation is still processed (counters + event), just not applied.
 		System::assert_has_event(Event::ObservationApplied { reference_slot: MAX_REFERENCE - 1, credited: 1, cleared: 0, skipped: 0, enforced: false }.into());
 	});
 }
 
 #[test]
-fn shadow_mode_clamp_zeroes_the_projection_only() {
+fn frozen_mode_clamp_still_writes_nothing() {
 	new_test_ext().execute_with(|| {
+		freeze();
 		bind(A, ALICE);
 		bind(B, BOB);
-		// Both observed (shadow) — projection recorded, weight untouched.
+		// Both observed while frozen — weight untouched.
 		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 10), COMMIT, entries(&[(A, 200_000_000), (B, 300_000_000)]), no_stake()));
-		assert_eq!(shadow_of(BOB), 300_000_000);
 		assert!(!was_written(BOB));
-		// B drops out: the projection clamps to 0, but the WeightSink is STILL never called.
+		// B drops out: the clamp path runs (counter tracked) but the WeightSink is STILL never called.
 		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 5), COMMIT, entries(&[(A, 200_000_000)]), no_stake()));
-		assert_eq!(shadow_of(BOB), 0, "the dropped account's projection is zeroed (visible to the diff)");
-		assert!(!was_written(BOB), "…but no AllowedStake write in shadow");
+		assert!(!was_written(BOB), "no AllowedStake write while frozen");
 	});
 }
 
-// ── the enforce/shadow flag setter ───────────────────────────────────────────────────────────────
+// ── the enforce flag setter ───────────────────────────────────────────────────────────────────────
 
 #[test]
 fn set_enforcement_is_gated_by_the_enforce_origin() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
-		// A signed (non-root) caller cannot flip the flag (EnforceOrigin = EnsureRoot in the mock).
-		assert!(CardanoObserver::set_enforcement(RuntimeOrigin::signed(ALICE), true).is_err());
-		assert!(!crate::EnforceWeight::<Test>::get(), "flag unchanged after a rejected call");
-		// Root can.
-		assert_ok!(CardanoObserver::set_enforcement(RuntimeOrigin::root(), true));
-		assert!(crate::EnforceWeight::<Test>::get(), "root flipped the flag to enforce");
-		System::assert_last_event(Event::EnforcementSet { enabled: true }.into());
-		// …and back to shadow.
+		// The flag DEFAULTS to true (enforce is the normal state; the observer is the sole writer).
+		assert!(crate::EnforceWeight::<Test>::get(), "EnforceWeight defaults to true");
+		// A signed (non-root) caller cannot flip it (EnforceOrigin = EnsureRoot in the mock).
+		assert!(CardanoObserver::set_enforcement(RuntimeOrigin::signed(ALICE), false).is_err());
+		assert!(crate::EnforceWeight::<Test>::get(), "flag unchanged after a rejected call");
+		// Root can FREEZE it (the emergency revert)…
 		assert_ok!(CardanoObserver::set_enforcement(RuntimeOrigin::root(), false));
-		assert!(!crate::EnforceWeight::<Test>::get());
+		assert!(!crate::EnforceWeight::<Test>::get(), "root froze weight");
+		System::assert_last_event(Event::EnforcementSet { enabled: false }.into());
+		// …and re-enable.
+		assert_ok!(CardanoObserver::set_enforcement(RuntimeOrigin::root(), true));
+		assert!(crate::EnforceWeight::<Test>::get());
 	});
 }
 
@@ -407,7 +400,6 @@ fn observe_applies_voting_power_to_bound_stake_creds_and_skips_unbound() {
 		// No MIN_LOCK floor: the full observed stake is the voting power.
 		assert_eq!(voting_power_of(ALICE), 800_000_000, "bound S1 → ALICE's voting power = its total stake");
 		assert!(!vp_was_written(BOB), "unbound S2 is skipped (bind precedes voting power)");
-		assert_eq!(shadow_vp_of(ALICE), 800_000_000, "and the projection is recorded");
 		System::assert_last_event(Event::VotingPowerObserved { reference_slot: MAX_REFERENCE - 1, credited: 1, cleared: 0, skipped: 0, enforced: true }.into());
 	});
 }
@@ -449,14 +441,13 @@ fn observe_clamps_dropped_stake_creds_to_zero() {
 }
 
 #[test]
-fn shadow_mode_projects_voting_power_but_never_writes_it() {
+fn frozen_mode_verifies_voting_power_but_never_writes_it() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
-		// EnforceWeight defaults to false (shadow) — no enforce() call.
+		freeze(); // emergency revert
 		bind_stake(S1, ALICE);
 		assert_ok!(CardanoObserver::observe(RuntimeOrigin::none(), cref(MAX_REFERENCE - 1), COMMIT, entries(&[]), stk(&[(S1, 800_000_000)])));
-		assert!(!vp_was_written(ALICE), "shadow mode must NOT apply voting power (committee remains sole writer)");
-		assert_eq!(shadow_vp_of(ALICE), 800_000_000, "…but the projection IS recorded for the diff");
+		assert!(!vp_was_written(ALICE), "frozen mode must NOT apply voting power");
 		System::assert_last_event(Event::VotingPowerObserved { reference_slot: MAX_REFERENCE - 1, credited: 1, cleared: 0, skipped: 0, enforced: false }.into());
 	});
 }

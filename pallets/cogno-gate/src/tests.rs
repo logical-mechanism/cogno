@@ -377,7 +377,7 @@ fn bind_revoke_rebind_keeps_provider_accounting_balanced() {
 		assert_eq!(providers(ALICE), base + 1, "bind takes a provider ref");
 
 		// Give ALICE real banked capacity, then revoke.
-		assert_ok!(TalkStake::set_stake(RuntimeOrigin::root(), ALICE, 100));
+		TalkStake::apply_weight(&ALICE, 100);
 		assert_ok!(Microblog::force_set_capacity(RuntimeOrigin::root(), ALICE, 1_000));
 		assert!(pallet_microblog::Capacity::<Test>::get(ALICE).unwrap().cap_last > 0);
 

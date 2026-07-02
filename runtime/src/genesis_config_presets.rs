@@ -17,7 +17,7 @@
 
 use crate::{
 	AccountId, BalancesConfig, FollowerCommitteeConfig, RuntimeGenesisConfig, SessionConfig,
-	SessionKeys, ValidatorSetConfig,
+	SessionKeys, TalkStakeConfig, ValidatorSetConfig,
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
@@ -38,6 +38,10 @@ fn testnet_genesis(
 	initial_authorities: Vec<(AccountId, AuraId, GrandpaId)>,
 	endowed_accounts: Vec<AccountId>,
 	committee: Vec<AccountId>,
+	// (account, allowed_stake, voting_power) triples to seed talk-stake at genesis. On preprod/mainnet this
+	// is EMPTY — the cardano-observer inherent credits real Cardano weight from block 0. On the no-Cardano
+	// dev/local chains it seeds posting weight so the app is usable without a lock.
+	initial_weights: Vec<(AccountId, u128, u128)>,
 ) -> Value {
 	build_struct_json_patch!(RuntimeGenesisConfig {
 		balances: BalancesConfig {
@@ -71,6 +75,9 @@ fn testnet_genesis(
 		// alone and a motion executes on propose). Members must be endowed (propose/vote/close are
 		// fee-bearing under the retained talk-capacity fee model); the caller passes committee ⊆ endowed.
 		follower_committee: FollowerCommitteeConfig { members: committee },
+		// Observer-is-sole-writer: talk-stake has no `set_stake` call, so the ONLY way weight enters a
+		// no-Cardano chain is this genesis seed. Empty on preprod/mainnet (the inherent credits real weight).
+		talk_stake: TalkStakeConfig { initial_weights },
 	})
 }
 
@@ -91,6 +98,24 @@ fn bob_authority() -> (AccountId, AuraId, GrandpaId) {
 		Sr25519Keyring::Bob.public().into(),
 		Ed25519Keyring::Bob.public().into(),
 	)
+}
+
+/// Dev/local talk-stake seed. Because the `cardano-observer` inherent is the SOLE weight writer and there
+/// is no Cardano on `--dev`/`local`, seed each well-known dev account with generous posting weight +
+/// voting power so the app is immediately usable without locking ADA. `(account, allowed_stake, voting)`.
+fn dev_weights() -> Vec<(AccountId, u128, u128)> {
+	const ALLOWED: u128 = 10_000_000_000; // 10k ADA of "locked" weight → generous posting capacity
+	const VOTING: u128 = 1_000_000_000_000; // 1M ADA of voting power
+	[
+		Sr25519Keyring::Alice,
+		Sr25519Keyring::Bob,
+		Sr25519Keyring::Charlie,
+		Sr25519Keyring::Dave,
+		Sr25519Keyring::Eve,
+	]
+	.iter()
+	.map(|k| (k.to_account_id(), ALLOWED, VOTING))
+	.collect::<Vec<_>>()
 }
 
 /// Return the development genesis config — the SUDO-FREE single-operator bootstrap: one authority
@@ -114,6 +139,8 @@ pub fn development_config_genesis() -> Value {
 		],
 		// A single committee seat (`//Alice`) — the founder-governs-alone bootstrap.
 		vec![Sr25519Keyring::Alice.to_account_id()],
+		// Seed posting weight + voting power (no Cardano on --dev; the observer is the only other writer).
+		dev_weights(),
 	)
 }
 
@@ -135,6 +162,7 @@ pub fn local_config_genesis() -> Value {
 			Sr25519Keyring::Dave.to_account_id(),
 			Sr25519Keyring::Eve.to_account_id(),
 		],
+		dev_weights(),
 	)
 }
 

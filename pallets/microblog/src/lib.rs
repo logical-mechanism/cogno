@@ -8,12 +8,12 @@
 //! the pool) and **consumes** capacity in `post_dispatch_details()` — never the reverse
 //! (`ECONOMICS.md` §4/§7, `L3-chain.md` §4.3/§5).
 //!
-//! Per-account weight comes from [`pallet_talk_stake::AllowedStake`] (`set_stake`, written
-//! by the follower / sudo in dev). The lazy token-bucket math (`current_capacity` /
-//! `on_first_bind` / `post_cost` / `consume`) is `ECONOMICS.md` §4.1 verbatim, computed
-//! O(1) on access — no per-block sweep. Cardano-sourced weight + the CIP-8 identity gate
-//! are still later milestones (M2 gate / M2d Cardano weight; in M2c the operator sets
-//! weight via `talk-stake::set_stake` + [`force_set_capacity`] under sudo).
+//! Per-account weight comes from [`pallet_talk_stake::AllowedStake`], written ONLY by the
+//! consensus-verified `cardano-observer` inherent (the sole weight writer — talk-stake is
+//! call-less). The lazy token-bucket math (`current_capacity` / `on_first_bind` / `post_cost` /
+//! `consume`) is `ECONOMICS.md` §4.1 verbatim, computed O(1) on access — no per-block sweep. On a
+//! no-Cardano `--dev`/`local` chain, weight is seeded at genesis (talk-stake `GenesisConfig`);
+//! [`force_set_capacity`] (committee `ForceOrigin`) remains an operator override.
 //!
 //! ## Anti-farm invariants (do not break)
 //! - **First touch starts at ZERO** (`current_capacity` `None ⇒ 0`): a new identity charges
