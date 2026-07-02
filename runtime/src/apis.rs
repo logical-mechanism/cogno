@@ -71,6 +71,31 @@ fn enrich_author_profiles(posts: &mut [pallet_microblog::EnrichedPost<AccountId>
 	}
 }
 
+// fork/all-rust P6: the people-search / who-to-follow reads iterate a whole pallet map (Option-1 linear
+// scan). Cap the candidates examined per `state_call` so a large corpus can't run the node's read budget
+// away; a `tantivy` node-side index is the documented graduation (`docs/SCALE-NODE-READS.md`).
+const MAX_PEOPLE_SCAN: u32 = 10_000;
+
+/// Cross-pallet fold: build a [`pallet_microblog::PersonSummary`] for `account` — display/avatar from
+/// pallet-profile, `weight` from talk-stake `AllowedStake`, `follower_count` from microblog. The runtime
+/// does these cross-pallet reads the microblog pallet deliberately cannot (no profile/talk-stake dep).
+fn person_summary(
+	account: AccountId,
+	prof: Option<&pallet_profile::Profile<Runtime>>,
+) -> pallet_microblog::PersonSummary<AccountId> {
+	let (display_name, avatar) = match prof {
+		Some(p) => (p.display_name.to_vec(), p.avatar.to_vec()),
+		None => (Vec::new(), Vec::new()),
+	};
+	pallet_microblog::PersonSummary {
+		weight: pallet_talk_stake::AllowedStake::<Runtime>::get(&account),
+		follower_count: pallet_microblog::FollowerCount::<Runtime>::get(&account),
+		display_name,
+		avatar,
+		account,
+	}
+}
+
 impl_runtime_apis! {
 	impl sp_api::Core<Block> for Runtime {
 		fn version() -> RuntimeVersion {
@@ -265,6 +290,148 @@ impl_runtime_apis! {
 		// spec-121: the author's TOP-LEVEL post count (replies excluded) for a correct profile postCount.
 		fn author_post_count(author: AccountId) -> u32 {
 			pallet_microblog::Pallet::<Runtime>::top_level_post_count(&author)
+		}
+
+		// ── fork/all-rust P6: the SubQuery indexer reads, folded into the node ──
+		// The post-returning reads run in the pallet, then the runtime fills author profiles (same
+		// no-Cargo-cycle seam as the feed reads); the people/profile/identity reads are cross-pallet, so
+		// the runtime does them here, reading pallet-profile / talk-stake / cogno-gate directly.
+		fn author_replies_page(
+			author: AccountId,
+			before_id: Option<u64>,
+			limit: u32,
+			viewer: Option<AccountId>,
+		) -> pallet_microblog::FeedPage<AccountId> {
+			let mut page =
+				pallet_microblog::Pallet::<Runtime>::author_replies_page(author, before_id, limit, viewer);
+			enrich_author_profiles(&mut page.posts);
+			page
+		}
+
+		fn likes_page(
+			who: AccountId,
+			before_id: Option<u64>,
+			limit: u32,
+			viewer: Option<AccountId>,
+		) -> pallet_microblog::FeedPage<AccountId> {
+			let mut page =
+				pallet_microblog::Pallet::<Runtime>::likes_page(who, before_id, limit, viewer);
+			enrich_author_profiles(&mut page.posts);
+			page
+		}
+
+		fn search_posts(
+			term: Vec<u8>,
+			before_id: Option<u64>,
+			limit: u32,
+			viewer: Option<AccountId>,
+		) -> pallet_microblog::FeedPage<AccountId> {
+			let mut page =
+				pallet_microblog::Pallet::<Runtime>::search_posts(term, before_id, limit, viewer);
+			enrich_author_profiles(&mut page.posts);
+			page
+		}
+
+		fn poll(host_id: u64) -> Option<pallet_microblog::PollView> {
+			pallet_microblog::Pallet::<Runtime>::poll(host_id)
+		}
+
+		fn poll_choice(who: AccountId, host_id: u64) -> Option<u8> {
+			pallet_microblog::Pallet::<Runtime>::poll_choice(who, host_id)
+		}
+
+		fn viewer_states(who: AccountId, ids: Vec<u64>) -> Vec<pallet_microblog::ViewerState> {
+			pallet_microblog::Pallet::<Runtime>::viewer_states(who, ids)
+		}
+
+		fn follow_edges(who: AccountId) -> pallet_microblog::FollowEdges<AccountId> {
+			pallet_microblog::Pallet::<Runtime>::follow_edges(who)
+		}
+
+		fn profile(who: AccountId) -> pallet_microblog::ProfileView<AccountId> {
+			// cogno-gate: the bound identity hash IS the live post gate (`is_allowed == PkhOf` present).
+			let identity_hash = pallet_cogno_gate::PkhOf::<Runtime>::get(&who);
+			let is_allowed = identity_hash.is_some();
+			// pallet-profile: presentation fields (empty when no profile row exists).
+			let (display_name, bio, avatar, banner, location, website) =
+				match pallet_profile::Profiles::<Runtime>::get(&who) {
+					Some(p) => (
+						p.display_name.into_inner(),
+						p.bio.into_inner(),
+						p.avatar.into_inner(),
+						p.banner.into_inner(),
+						p.location.into_inner(),
+						p.website.into_inner(),
+					),
+					None => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+				};
+			pallet_microblog::ProfileView {
+				identity_hash,
+				is_allowed,
+				weight: pallet_talk_stake::AllowedStake::<Runtime>::get(&who),
+				voting_power: pallet_talk_stake::VotingPower::<Runtime>::get(&who),
+				display_name,
+				bio,
+				avatar,
+				banner,
+				location,
+				website,
+				pinned_post_id: pallet_profile::PinnedPost::<Runtime>::get(&who),
+				post_count: pallet_microblog::Pallet::<Runtime>::top_level_post_count(&who),
+				follower_count: pallet_microblog::FollowerCount::<Runtime>::get(&who),
+				following_count: pallet_microblog::FollowingCount::<Runtime>::get(&who),
+				account: who,
+			}
+		}
+
+		fn resolve_identity(identity_hash: [u8; 32]) -> Option<AccountId> {
+			pallet_cogno_gate::AccountOf::<Runtime>::get(identity_hash)
+		}
+
+		fn search_people(term: Vec<u8>, limit: u32) -> Vec<pallet_microblog::PersonSummary<AccountId>> {
+			let limit = limit.clamp(1, pallet_microblog::MAX_PAGE) as usize;
+			let mut out = Vec::new();
+			let mut examined: u32 = 0;
+			for (account, prof) in pallet_profile::Profiles::<Runtime>::iter() {
+				if examined >= MAX_PEOPLE_SCAN {
+					break;
+				}
+				examined = examined.saturating_add(1);
+				// Only currently-bound people appear (the indexer's `banned == false` ⇒ is_allowed).
+				if !pallet_cogno_gate::PkhOf::<Runtime>::contains_key(&account) {
+					continue;
+				}
+				if !pallet_microblog::contains_ci(&prof.display_name, &term) {
+					continue;
+				}
+				out.push(person_summary(account, Some(&prof)));
+			}
+			out.sort_unstable_by(|a, b| b.follower_count.cmp(&a.follower_count));
+			out.truncate(limit);
+			out
+		}
+
+		fn who_to_follow(limit: u32) -> Vec<pallet_microblog::PersonSummary<AccountId>> {
+			let limit = limit.clamp(1, pallet_microblog::MAX_PAGE) as usize;
+			let mut out = Vec::new();
+			let mut examined: u32 = 0;
+			// ByAuthor membership IS `postCount > 0` (an author with ANY post — incl. replies/quotes/polls
+			// — matching the indexer's `postCount greaterThan 0`, which counts every PostCreated, not just
+			// top-level ones; a reply-only author is a valid suggestion and must not be missed).
+			for (account, _ids) in pallet_microblog::ByAuthor::<Runtime>::iter() {
+				if examined >= MAX_PEOPLE_SCAN {
+					break;
+				}
+				examined = examined.saturating_add(1);
+				if !pallet_cogno_gate::PkhOf::<Runtime>::contains_key(&account) {
+					continue;
+				}
+				let prof = pallet_profile::Profiles::<Runtime>::get(&account);
+				out.push(person_summary(account, prof.as_ref()));
+			}
+			out.sort_unstable_by(|a, b| b.follower_count.cmp(&a.follower_count));
+			out.truncate(limit);
+			out
 		}
 	}
 

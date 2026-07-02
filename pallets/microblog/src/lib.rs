@@ -1322,6 +1322,29 @@ const MAX_SCAN_FACTOR: u32 = 8;
 /// node-served thread and the keyed-read fallback reconstruct the same breadcrumb. A visited-set
 /// (in `thread`) additionally breaks any cyclic `parent` chain (`parent` is unvalidated at creation).
 const MAX_THREAD_DEPTH: u32 = 64;
+/// Cap on the follow-edge id lists `follow_edges` returns. The exact `follower_count`/`following_count`
+/// are ALWAYS accurate (read from the O(1) aggregates); only the returned id lists truncate past this —
+/// a whale's full edge set graduates to a paged/indexed read.
+const MAX_EDGES: usize = 1_000;
+/// Cap on the number of post ids `viewer_states` stamps in one call (about a page's worth; excess ids
+/// beyond this are dropped — the client asks per visible page).
+const MAX_VIEWER_IDS: usize = 256;
+
+/// ASCII-case-insensitive substring test — is `needle` a substring of `haystack` (an empty `needle`
+/// matches). The Option-1 in-runtime search primitive, shared by the linear-scan `search_posts` (post
+/// text) and the runtime's `search_people` (display name); a node-side `tantivy` inverted index + custom
+/// RPC is the documented graduation once corpus size demands it (`docs/SCALE-NODE-READS.md`).
+pub fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
+	if needle.is_empty() {
+		return true;
+	}
+	if needle.len() > haystack.len() {
+		return false;
+	}
+	haystack
+		.windows(needle.len())
+		.any(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
+}
 
 /// A one-level quoted-post summary embedded in an [`EnrichedPost`]. The author display fields are
 /// filled by the runtime from pallet-profile (empty otherwise).
@@ -1400,6 +1423,110 @@ pub struct Thread<AccountId> {
 	pub focal: Option<EnrichedPost<AccountId>>,
 	/// The focal post's direct replies, chronological (ascending id).
 	pub replies: Vec<EnrichedPost<AccountId>>,
+}
+
+/// A compact person row for the search / who-to-follow lists. The runtime fills `display_name`/`avatar`
+/// from pallet-profile and `weight`/`follower_count` from talk-stake / microblog (the pallet leaves them
+/// so it carries no profile/talk-stake dependency).
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct PersonSummary<AccountId> {
+	/// The account.
+	pub account: AccountId,
+	/// Display name (runtime-filled from pallet-profile; empty if unset).
+	pub display_name: Vec<u8>,
+	/// Avatar reference (runtime-filled; empty if unset).
+	pub avatar: Vec<u8>,
+	/// Posting-power weight (`pallet_talk_stake::AllowedStake`, buried lovelace) — the ranking scalar.
+	pub weight: u128,
+	/// Number of accounts following this person (the `FOLLOWER_COUNT_DESC` rank key).
+	pub follower_count: u32,
+}
+
+/// A full profile view — the header a profile page renders, assembled by the RUNTIME across pallet-profile
+/// (display/bio/avatar/banner/location/website + pinned post), talk-stake (`weight`/`voting_power`),
+/// cogno-gate (`identity_hash` + the `is_allowed` post gate) and microblog (top-level post + follow counts).
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct ProfileView<AccountId> {
+	/// The account.
+	pub account: AccountId,
+	/// The bound 32-byte Cardano identity hash (cogno-gate `PkhOf`), or `None` if unbound.
+	pub identity_hash: Option<[u8; 32]>,
+	/// The live post gate: `true` iff a 1:1 Cardano identity is currently bound (`is_allowed`). `false`
+	/// covers both never-bound and revoked (the frontend's `banned` flag is `!is_allowed`).
+	pub is_allowed: bool,
+	/// Posting-power weight (`AllowedStake`, buried lovelace).
+	pub weight: u128,
+	/// Stake-vote weight (`VotingPower`, total Cardano stake of the bound stake credential).
+	pub voting_power: u128,
+	/// Display name (empty if no profile set).
+	pub display_name: Vec<u8>,
+	/// Bio (empty if unset).
+	pub bio: Vec<u8>,
+	/// Avatar reference (empty if unset).
+	pub avatar: Vec<u8>,
+	/// Banner reference (empty if unset).
+	pub banner: Vec<u8>,
+	/// Location (empty if unset).
+	pub location: Vec<u8>,
+	/// Website reference (empty if unset).
+	pub website: Vec<u8>,
+	/// The pinned post id (`pallet_profile::PinnedPost`), or `None`.
+	pub pinned_post_id: Option<u64>,
+	/// TOP-LEVEL post count (replies excluded) — the profile `postCount`.
+	pub post_count: u32,
+	/// Accounts following this account.
+	pub follower_count: u32,
+	/// Accounts this account follows.
+	pub following_count: u32,
+}
+
+/// One poll option with its stake-weighted tally, for [`PollView`].
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct PollOptionView {
+	/// The 0-based option index (matches the on-chain option index).
+	pub index: u8,
+	/// The option label bytes.
+	pub label: Vec<u8>,
+	/// Sum of the weight snapshots of accounts currently choosing this option.
+	pub weight: u128,
+	/// Number of accounts currently choosing this option.
+	pub count: u32,
+}
+
+/// A poll's options + per-option tally + total current voters, for the poll card (`poll(host_id)`).
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct PollView {
+	/// The host post id (the poll's question is that post).
+	pub host_id: u64,
+	/// The options with their tallies, in on-chain index order.
+	pub options: Vec<PollOptionView>,
+	/// Total current voters (the sum of the per-option counts — each account has exactly one choice).
+	pub total_votes: u32,
+}
+
+/// One post's viewer overlay, for the `viewer_states` batch read (filled-heart / active-repost).
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct ViewerState {
+	/// The queried post id.
+	pub post_id: u64,
+	/// The viewer's own vote on it (`None` if not voted).
+	pub my_vote: Option<VoteDir>,
+	/// Whether the viewer has reposted it.
+	pub reposted: bool,
+}
+
+/// The follow edges + counts for one account (`follow_edges(who)`). The counts are exact; the id lists
+/// are truncated at [`MAX_EDGES`] (documented, not silently wrong — a whale graduates to a paged read).
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct FollowEdges<AccountId> {
+	/// Exact number of accounts following `who`.
+	pub follower_count: u32,
+	/// Exact number of accounts `who` follows.
+	pub following_count: u32,
+	/// Accounts `who` follows (the followee ids), truncated at [`MAX_EDGES`].
+	pub following: Vec<AccountId>,
+	/// Accounts following `who` (the follower ids), truncated at [`MAX_EDGES`].
+	pub followers: Vec<AccountId>,
 }
 
 impl<T: Config> Pallet<T> {
@@ -1621,6 +1748,168 @@ impl<T: Config> Pallet<T> {
 	pub fn top_level_post_count(author: &T::AccountId) -> u32 {
 		TopLevelByAuthor::<T>::decode_len(author).unwrap_or(0) as u32
 	}
+
+	/// One author's REPLIES (the profile Replies tab): their posts with `parent != None`, newest-first,
+	/// paged below `before_id` (a post id). Scans the author's own `ByAuthor` index (append-ordered,
+	/// ascending) in reverse — bounded by the author's own post count, no global scan. Top-level posts in
+	/// the index are skipped; the cursor advances only past returned replies.
+	pub fn author_replies_page(
+		author: T::AccountId,
+		before_id: Option<u64>,
+		limit: u32,
+		viewer: Option<T::AccountId>,
+	) -> FeedPage<T::AccountId> {
+		let limit = Self::clamp_limit(limit);
+		let ids = ByAuthor::<T>::get(&author);
+		let viewer_ref = viewer.as_ref();
+		let mut posts = Vec::new();
+		let mut next_cursor = None;
+		for &id in ids.iter().rev() {
+			if let Some(b) = before_id {
+				if id >= b {
+					continue;
+				}
+			}
+			let post = match Posts::<T>::get(id) {
+				Some(p) => p,
+				None => continue,
+			};
+			// Replies only — a top-level post is skipped without consuming the page or the cursor.
+			if post.parent.is_none() {
+				continue;
+			}
+			if posts.len() as u32 >= limit {
+				next_cursor = Some(id.saturating_add(1));
+				break;
+			}
+			posts.push(Self::enrich(id, post, viewer_ref));
+		}
+		FeedPage { posts, next_cursor }
+	}
+
+	/// The posts an account has UP-voted (the profile Likes tab), newest-liked-first (descending post id),
+	/// paged below `before_id`. Reads the `VotesByAccount` reverse "liked posts" index (down-votes / cleared
+	/// votes are not present), materializing the liked-id set to order it newest-first. `O(#likes)` — fine
+	/// at POC scale; a large liker graduates to a dedicated index (`docs/SCALE-NODE-READS.md`).
+	pub fn likes_page(
+		who: T::AccountId,
+		before_id: Option<u64>,
+		limit: u32,
+		viewer: Option<T::AccountId>,
+	) -> FeedPage<T::AccountId> {
+		let limit = Self::clamp_limit(limit);
+		let mut liked: Vec<u64> = VotesByAccount::<T>::iter_key_prefix(&who).collect();
+		liked.sort_unstable_by(|a, b| b.cmp(a)); // newest (highest id) first
+		let viewer_ref = viewer.as_ref();
+		let mut posts = Vec::new();
+		let mut next_cursor = None;
+		for id in liked {
+			if let Some(b) = before_id {
+				if id >= b {
+					continue;
+				}
+			}
+			if posts.len() as u32 >= limit {
+				next_cursor = Some(id.saturating_add(1));
+				break;
+			}
+			if let Some(post) = Posts::<T>::get(id) {
+				posts.push(Self::enrich(id, post, viewer_ref));
+			}
+		}
+		FeedPage { posts, next_cursor }
+	}
+
+	/// Full-text search over post bodies: an ASCII-case-insensitive substring match on `term`, newest-first,
+	/// paged below `before_id` (a post id). The Option-1 in-runtime linear scan — bounded at
+	/// `limit · MAX_SCAN_FACTOR` ids per call with a `next_cursor` to continue (no unbounded walk), so a
+	/// no-match dense range never runs away. Graduates to a `tantivy` node-side index later.
+	pub fn search_posts(
+		term: Vec<u8>,
+		before_id: Option<u64>,
+		limit: u32,
+		viewer: Option<T::AccountId>,
+	) -> FeedPage<T::AccountId> {
+		let limit = Self::clamp_limit(limit);
+		let next_id = NextPostId::<T>::get();
+		let mut id = match before_id {
+			Some(0) => return FeedPage { posts: Vec::new(), next_cursor: None },
+			Some(b) => core::cmp::min(b, next_id).saturating_sub(1),
+			None => match next_id.checked_sub(1) {
+				Some(top) => top,
+				None => return FeedPage { posts: Vec::new(), next_cursor: None },
+			},
+		};
+		let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
+		let viewer_ref = viewer.as_ref();
+		let mut posts = Vec::new();
+		let mut examined: u32 = 0;
+		loop {
+			// Stopped mid-scan (page full or scan cap hit) — hand back a cursor to continue below `id`.
+			if posts.len() as u32 >= limit || examined >= max_scan {
+				return FeedPage { posts, next_cursor: Some(id.saturating_add(1)) };
+			}
+			examined = examined.saturating_add(1);
+			if let Some(post) = Posts::<T>::get(id) {
+				if contains_ci(&post.text, &term) {
+					posts.push(Self::enrich(id, post, viewer_ref));
+				}
+			}
+			if id == 0 {
+				return FeedPage { posts, next_cursor: None };
+			}
+			id = id.saturating_sub(1);
+		}
+	}
+
+	/// A poll's options + per-option stake-weighted tally + total current voters, keyed by the host post
+	/// id. `None` if `host_id` is not a poll. `total_votes` is the sum of the per-option counts (each
+	/// account has exactly one live choice, so this equals the distinct-voter count).
+	pub fn poll(host_id: u64) -> Option<PollView> {
+		let poll = Polls::<T>::get(host_id)?;
+		let mut options = Vec::with_capacity(poll.options.len());
+		let mut total_votes: u32 = 0;
+		for (i, opt) in poll.options.iter().enumerate() {
+			let index = i as u8;
+			let tally = PollTally::<T>::get(host_id, index);
+			total_votes = total_votes.saturating_add(tally.count);
+			options.push(PollOptionView { index, label: opt.to_vec(), weight: tally.weight, count: tally.count });
+		}
+		Some(PollView { host_id, options, total_votes })
+	}
+
+	/// The viewer's own current choice in poll `host_id` (`None` if they have not voted / it is no poll).
+	pub fn poll_choice(who: T::AccountId, host_id: u64) -> Option<u8> {
+		PollVotes::<T>::get(host_id, &who).map(|r| r.option)
+	}
+
+	/// The viewer's overlay (own vote + reposted) over a batch of post ids — the node-side replacement for
+	/// the client's per-card `Votes.get` + `Reposts.getEntries` scan. Bounded at [`MAX_VIEWER_IDS`] ids.
+	pub fn viewer_states(who: T::AccountId, ids: Vec<u64>) -> Vec<ViewerState> {
+		ids.into_iter()
+			.take(MAX_VIEWER_IDS)
+			.map(|post_id| ViewerState {
+				post_id,
+				my_vote: Votes::<T>::get(post_id, &who).map(|r| r.dir),
+				reposted: Reposts::<T>::contains_key(post_id, &who),
+			})
+			.collect()
+	}
+
+	/// The follow edges + exact counts for `who`: the O(1) `FollowerCount`/`FollowingCount` aggregates
+	/// plus the (truncated at [`MAX_EDGES`]) followee / follower id lists via the reverse indexes.
+	pub fn follow_edges(who: T::AccountId) -> FollowEdges<T::AccountId> {
+		let following: Vec<T::AccountId> =
+			Following::<T>::iter_key_prefix(&who).take(MAX_EDGES).collect();
+		let followers: Vec<T::AccountId> =
+			Followers::<T>::iter_key_prefix(&who).take(MAX_EDGES).collect();
+		FollowEdges {
+			follower_count: FollowerCount::<T>::get(&who),
+			following_count: FollowingCount::<T>::get(&who),
+			following,
+			followers,
+		}
+	}
 }
 
 sp_api::decl_runtime_apis! {
@@ -1654,5 +1943,46 @@ sp_api::decl_runtime_apis! {
 		fn thread(focal: u64, viewer: Option<AccountId>) -> Thread<AccountId>;
 		/// The author's TOP-LEVEL post count (replies excluded) — the correct profile `postCount`.
 		fn author_post_count(author: AccountId) -> u32;
+
+		// ── the all-Rust restart: the indexer reads folded into the node (fork/all-rust, P6) ──
+		/// One author's REPLIES (the profile Replies tab): `parent != None`, newest-first, paged below
+		/// `before_id` (a post id).
+		fn author_replies_page(
+			author: AccountId,
+			before_id: Option<u64>,
+			limit: u32,
+			viewer: Option<AccountId>,
+		) -> FeedPage<AccountId>;
+		/// The posts `who` has UP-voted (the profile Likes tab), newest-liked-first, paged below `before_id`.
+		fn likes_page(
+			who: AccountId,
+			before_id: Option<u64>,
+			limit: u32,
+			viewer: Option<AccountId>,
+		) -> FeedPage<AccountId>;
+		/// Full-text search over post bodies (ASCII-case-insensitive substring on `term`), newest-first,
+		/// paged below `before_id` — the Option-1 in-runtime linear scan.
+		fn search_posts(
+			term: Vec<u8>,
+			before_id: Option<u64>,
+			limit: u32,
+			viewer: Option<AccountId>,
+		) -> FeedPage<AccountId>;
+		/// A poll's options + per-option tally + total voters, by host post id (`None` if not a poll).
+		fn poll(host_id: u64) -> Option<PollView>;
+		/// The viewer's own current choice in a poll (`None` if not voted / no poll).
+		fn poll_choice(who: AccountId, host_id: u64) -> Option<u8>;
+		/// The viewer's overlay (own vote + reposted) over a batch of post ids.
+		fn viewer_states(who: AccountId, ids: Vec<u64>) -> Vec<ViewerState>;
+		/// The follow edges + exact counts for one account.
+		fn follow_edges(who: AccountId) -> FollowEdges<AccountId>;
+		/// A full profile view (cross-pallet: profile + talk-stake + cogno-gate + microblog counters).
+		fn profile(who: AccountId) -> ProfileView<AccountId>;
+		/// Resolve a 32-byte Cardano identity hash to the account it is bound to (cogno-gate `AccountOf`).
+		fn resolve_identity(identity_hash: [u8; 32]) -> Option<AccountId>;
+		/// Search people by display-name substring (case-insensitive), ranked by follower count.
+		fn search_people(term: Vec<u8>, limit: u32) -> Vec<PersonSummary<AccountId>>;
+		/// Ranked who-to-follow suggestions: bound authors with ≥1 top-level post, by follower count.
+		fn who_to_follow(limit: u32) -> Vec<PersonSummary<AccountId>>;
 	}
 }

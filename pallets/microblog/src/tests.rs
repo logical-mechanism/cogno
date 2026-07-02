@@ -1762,4 +1762,168 @@ mod node_reads {
 			assert_eq!(page.next_cursor, None);
 		});
 	}
+
+	// ── fork/all-rust P6: the folded indexer reads (pallet-side helpers) ──
+
+	#[test]
+	fn author_replies_page_returns_only_replies_newest_first() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let root = post(9, b"root"); // 0, by 9
+			let _top = post(1, b"my top-level"); // 1, author 1 — top-level, NOT a reply
+			let r1 = reply(1, b"reply one", root); // 2, author 1 reply
+			let r2 = reply(1, b"reply two", root); // 3, author 1 reply
+
+			// only author 1's replies, newest-first — the top-level post is excluded
+			let page = Microblog::author_replies_page(1, None, 10, None);
+			assert_eq!(ids(&page), vec![r2, r1]);
+			assert_eq!(page.next_cursor, None);
+			assert!(page.posts.iter().all(|p| p.parent.is_some()));
+
+			// paging one at a time, cursor resumes correctly past the top-level post
+			let p1 = Microblog::author_replies_page(1, None, 1, None);
+			assert_eq!(ids(&p1), vec![r2]);
+			let c = p1.next_cursor.expect("more to come");
+			let p2 = Microblog::author_replies_page(1, Some(c), 1, None);
+			assert_eq!(ids(&p2), vec![r1]);
+			assert_eq!(p2.next_cursor, None);
+		});
+	}
+
+	#[test]
+	fn likes_page_returns_upvoted_posts_and_reflects_clear() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let a = post(1, b"a"); // 0
+			let b = post(1, b"b"); // 1
+			let c = post(1, b"c"); // 2
+			// account 5 up-votes a + c, down-votes b (a down-vote is NOT a like)
+			assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), a, VoteDir::Up));
+			assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), b, VoteDir::Down));
+			assert_ok!(Microblog::vote(RuntimeOrigin::signed(5), c, VoteDir::Up));
+
+			// newest-liked-first (highest id first): c then a; b (down-vote) excluded
+			let page = Microblog::likes_page(5, None, 10, None);
+			assert_eq!(ids(&page), vec![c, a]);
+
+			// clearing the up-vote on c drops it from the likes set
+			assert_ok!(Microblog::clear_vote(RuntimeOrigin::signed(5), c));
+			let page2 = Microblog::likes_page(5, None, 10, None);
+			assert_eq!(ids(&page2), vec![a]);
+		});
+	}
+
+	#[test]
+	fn search_posts_matches_substring_case_insensitively_newest_first() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let p0 = post(1, b"Hello Cardano world"); // 0
+			let _p1 = post(2, b"nothing here"); // 1 — no match
+			let p2 = post(3, b"cardano rocks"); // 2
+
+			// ASCII-case-insensitive substring "cardano" hits p0 + p2, newest-first
+			let page = Microblog::search_posts(b"CARDANO".to_vec(), None, 10, None);
+			assert_eq!(ids(&page), vec![p2, p0]);
+			assert_eq!(page.next_cursor, None);
+
+			// a term matching nothing returns an empty page
+			let empty = Microblog::search_posts(b"zzz".to_vec(), None, 10, None);
+			assert!(empty.posts.is_empty());
+			assert_eq!(empty.next_cursor, None);
+		});
+	}
+
+	#[test]
+	fn poll_returns_options_tally_and_total_voters() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			// a plain post is not a poll
+			let plain = post(1, b"not a poll");
+			assert!(Microblog::poll(plain).is_none());
+
+			let host = NextPostId::<Test>::get();
+			assert_ok!(Microblog::create_poll(
+				RuntimeOrigin::signed(1),
+				b"fav?".to_vec(),
+				vec![b"red".to_vec(), b"blue".to_vec()],
+			));
+			pallet_talk_stake::VotingPower::<Test>::insert(2u64, 300u128);
+			pallet_talk_stake::VotingPower::<Test>::insert(3u64, 200u128);
+			assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), host, 0)); // red
+			assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(3), host, 0)); // red
+
+			let view = Microblog::poll(host).expect("is a poll");
+			assert_eq!(view.host_id, host);
+			assert_eq!(view.options.len(), 2);
+			assert_eq!(view.options[0].index, 0);
+			assert_eq!(view.options[0].label, b"red".to_vec());
+			assert_eq!(view.options[0].weight, 500);
+			assert_eq!(view.options[0].count, 2);
+			assert_eq!(view.options[1].label, b"blue".to_vec());
+			assert_eq!(view.options[1].count, 0);
+			assert_eq!(view.total_votes, 2);
+
+			// a re-cast moves voter 3 red→blue: total voters stays 2, weights follow the snapshots
+			assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(3), host, 1));
+			let view2 = Microblog::poll(host).unwrap();
+			assert_eq!((view2.options[0].count, view2.options[0].weight), (1, 300));
+			assert_eq!((view2.options[1].count, view2.options[1].weight), (1, 200));
+			assert_eq!(view2.total_votes, 2);
+		});
+	}
+
+	#[test]
+	fn poll_choice_reflects_the_voters_current_option() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let host = NextPostId::<Test>::get();
+			assert_ok!(Microblog::create_poll(
+				RuntimeOrigin::signed(1),
+				b"q".to_vec(),
+				vec![b"x".to_vec(), b"y".to_vec()],
+			));
+			assert_eq!(Microblog::poll_choice(2, host), None); // not voted yet
+			assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), host, 1));
+			assert_eq!(Microblog::poll_choice(2, host), Some(1));
+		});
+	}
+
+	#[test]
+	fn viewer_states_stamps_vote_and_repost_per_id() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let a = post(1, b"a"); // 0
+			let b = post(1, b"b"); // 1
+			let c = post(1, b"c"); // 2
+			pallet_talk_stake::VotingPower::<Test>::insert(7u64, 100u128);
+			assert_ok!(Microblog::vote(RuntimeOrigin::signed(7), a, VoteDir::Up));
+			assert_ok!(Microblog::vote(RuntimeOrigin::signed(7), b, VoteDir::Down));
+			assert_ok!(Microblog::repost(RuntimeOrigin::signed(7), c));
+
+			let st = Microblog::viewer_states(7, vec![a, b, c]);
+			assert_eq!(st.len(), 3);
+			assert_eq!((st[0].post_id, st[0].my_vote, st[0].reposted), (a, Some(VoteDir::Up), false));
+			assert_eq!((st[1].my_vote, st[1].reposted), (Some(VoteDir::Down), false));
+			assert_eq!((st[2].my_vote, st[2].reposted), (None, true));
+		});
+	}
+
+	#[test]
+	fn follow_edges_reports_exact_counts_and_edge_lists() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			// 1 follows 2 + 3; 4 follows 1
+			assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 2));
+			assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 3));
+			assert_ok!(Microblog::follow(RuntimeOrigin::signed(4), 1));
+
+			let e = Microblog::follow_edges(1);
+			assert_eq!(e.following_count, 2);
+			assert_eq!(e.follower_count, 1);
+			let mut following = e.following.clone();
+			following.sort();
+			assert_eq!(following, vec![2, 3]);
+			assert_eq!(e.followers, vec![4]);
+		});
+	}
 }
