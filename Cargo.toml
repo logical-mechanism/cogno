@@ -9,6 +9,10 @@ resolver = "2"
 members = [
 	"node",
 	"runtime",
+	# The all-Rust operator/committee admin CLI (the cardano-cli analogue to the node daemon): typed
+	# RuntimeCall constructors + committee-governed writes, keys BY FILE PATH. Reuses the runtime's own
+	# on-wire types (RuntimeCall/TxExtension) so a call-index/extension change fails to COMPILE.
+	"cli",
 	# Shared no-node crates (the all-Rust consolidation): the deterministic Cardano db-sync reader +
 	# reduction reused byte-identically by the node inherent (writer) and the cogno-chain-cli (read-only),
 	# and the cardano-cli-style key-file format used by the CLI signer + node gen-chainspec / key insert-file.

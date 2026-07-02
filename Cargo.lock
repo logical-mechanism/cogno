@@ -1418,6 +1418,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "cogno-chain-cli"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "cogno-chain-runtime",
+ "cogno-dbsync",
+ "cogno-keyfile",
+ "frame-metadata-hash-extension",
+ "frame-support",
+ "frame-system",
+ "futures",
+ "hex",
+ "jsonrpsee",
+ "pallet-cardano-observer",
+ "pallet-cogno-gate",
+ "pallet-collective",
+ "pallet-governed-upgrade",
+ "pallet-microblog",
+ "pallet-session",
+ "pallet-skip-feeless-payment",
+ "pallet-talk-stake",
+ "pallet-transaction-payment",
+ "pallet-validator-set",
+ "parity-scale-codec",
+ "serde",
+ "serde_json",
+ "sp-core",
+ "sp-runtime",
+ "tokio",
+]
+
+[[package]]
 name = "cogno-chain-node"
 version = "0.1.0"
 dependencies = [
