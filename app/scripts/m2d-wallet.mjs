@@ -13,8 +13,8 @@
 import fs from "node:fs";
 import { MeshWallet, OgmiosProvider } from "@meshsdk/core";
 import * as cst from "@meshsdk/core-cst";
-import { statePaths, migrateStatePath, ensureParentDir } from "../../services/_shared/paths.mjs";
-import { dbsyncFetcher } from "../../services/committee/dbsync.mjs";
+import { statePaths, migrateStatePath, ensureParentDir } from "./lib/paths.mjs";
+import { dbsyncFetcher } from "./lib/dbsync.mjs";
 
 const { file: WALLET_FILE, legacy: WALLET_LEGACY } = statePaths("OWNER_FILE", "owner.json");
 // Brewing a fresh wallet is a deliberate, one-time act (first-time setup / dev) — gate it behind an

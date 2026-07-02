@@ -1,1 +1,0 @@
-{"name":"cogno-committee-tooling","private":true,"type":"module","description":"M6 reusable operator tooling: drive privileged calls through the 3-of-5 FollowerCommittee (propose->vote->close) or sudo. @polkadot/api dynamic metadata (no PAPI codegen). node_modules symlinked to ../indexer/node_modules."}
