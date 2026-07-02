@@ -9,7 +9,7 @@
 //! (`--allow-dev-keys` to opt out for a dev-keyed test spec).
 //!
 //! It seats only PUBLIC keys into genesis; the validator's Aura/GRANDPA SESSION secrets are inserted into
-//! the node keystore separately (`key insert-file`), and the committee/account secrets stay in their files
+//! the node keystore separately (`key insert`), and the committee/account secrets stay in their files
 //! for `cogno-chain-cli`.
 
 use std::path::{Path, PathBuf};
@@ -190,12 +190,12 @@ pub fn run(cmd: &GenChainSpecCmd) -> Result<(), String> {
 	eprintln!("NEXT — on the validator host, insert its SESSION secrets into the node keystore FROM the key");
 	eprintln!("files (the scheme is read from each envelope — no jq/--suri):");
 	eprintln!(
-		"  cogno-chain-node key insert-file --base-path <PATH> --chain {} --key-file {} --key-type aura",
+		"  cogno-chain-node key insert --base-path <PATH> --chain {} --key-file {} --key-type aura",
 		cmd.out_raw.display(),
 		cmd.validator_aura_key.display()
 	);
 	eprintln!(
-		"  cogno-chain-node key insert-file --base-path <PATH> --chain {} --key-file {} --key-type gran",
+		"  cogno-chain-node key insert --base-path <PATH> --chain {} --key-file {} --key-type gran",
 		cmd.out_raw.display(),
 		cmd.validator_grandpa_key.display()
 	);

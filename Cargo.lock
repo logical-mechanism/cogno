@@ -1424,7 +1424,6 @@ dependencies = [
  "anyhow",
  "clap",
  "cogno-chain-runtime",
- "cogno-dbsync",
  "cogno-keyfile",
  "frame-metadata-hash-extension",
  "frame-support",

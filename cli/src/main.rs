@@ -1,6 +1,6 @@
 //! `cogno-chain-cli` — the cogno-chain operator/committee admin CLI (the `cardano-cli` analogue to the
-//! `cogno-chain-node` daemon). Drives **committee-governed** extrinsics (propose/vote/close; sudo-free)
-//! with secret keys linked **by file path** (never seed phrases), the self-service **BARE** CIP-8 identity
+//! `cogno-chain-node` daemon). Drives **committee-governed** extrinsics (propose/vote/close)
+//! with secret keys linked **by file path**, the self-service **BARE** CIP-8 identity
 //! binds, plus read-only `query` diagnostics. It CANNOT set talk-stake weight — the observation inherent is
 //! the sole writer.
 //!
@@ -39,8 +39,8 @@ const DEFAULT_WS: &str = "ws://127.0.0.1:9944";
 #[command(
 	name = "cogno-chain-cli",
 	version,
-	about = "cogno-chain operator/committee admin CLI. Keys by file path (never a seed phrase). Cannot set \
-	         talk-stake weight — it is observed from Cardano, never set by a command."
+	about = "cogno-chain operator/committee admin CLI. Keys by file path. Cannot set talk-stake weight — it \
+	         is observed from Cardano, never set by a command."
 )]
 struct Cli {
 	#[command(subcommand)]
@@ -97,7 +97,7 @@ struct SeatOpts {
 
 #[derive(Subcommand)]
 enum Command {
-	/// Key-file utilities (offline; cardano-cli-style JSON envelopes, never a seed phrase).
+	/// Key-file utilities (offline; cardano-cli-style JSON envelopes).
 	Key {
 		#[command(subcommand)]
 		cmd: KeyCmd,
@@ -117,22 +117,12 @@ enum Command {
 		#[command(subcommand)]
 		cmd: CommitteeCmd,
 	},
-	/// Sudo-free runtime upgrade: committee `authorize` of a code hash + permissionless `apply`.
+	/// Runtime upgrade: committee `authorize` of a code hash + permissionless `apply`.
 	Upgrade {
 		#[command(subcommand)]
 		cmd: UpgradeCmd,
 	},
-	/// Identity gate: committee-governed `revoke` (the manual-operator ban path).
-	Gate {
-		#[command(subcommand)]
-		cmd: GateCmd,
-	},
-	/// Cardano observer: committee-governed `set-enforcement` (the emergency weight-freeze / re-enable).
-	Observer {
-		#[command(subcommand)]
-		cmd: ObserverCmd,
-	},
-	/// Self-service CIP-8 identity binding (the binds are BARE/unsigned — the wallet proof is the auth).
+	/// CIP-8 identity: self-service BARE binds, read-only resolvers, and the committee-governed `revoke`.
 	Identity {
 		#[command(subcommand)]
 		cmd: IdentityCmd,
@@ -141,7 +131,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum KeyCmd {
-	/// Generate a fresh signing-key file (cardano-cli-style JSON envelope; never a seed phrase).
+	/// Generate a fresh signing-key file (cardano-cli-style JSON envelope).
 	Gen {
 		/// Key scheme: sr25519 (accounts, committee, Aura) or ed25519 (GRANDPA).
 		#[arg(long)]
@@ -164,19 +154,12 @@ enum QueryCmd {
 		#[arg(long, default_value = DEFAULT_WS)]
 		ws: String,
 	},
-	/// Read-only: the on-chain talk-stake ledger (posting weight + voting power per account). With
-	/// `--dbsync`, also cross-check the vault weight against Cardano at the chain's last-observed slot.
+	/// Read-only: the on-chain talk-stake ledger (posting weight + voting power per account), read from the
+	/// node over RPC.
 	Weight {
 		/// Node RPC ws endpoint.
 		#[arg(long, default_value = DEFAULT_WS)]
 		ws: String,
-		/// Optional operator cross-check: a db-sync Postgres URL. When given, re-derive the vault weight
-		/// from Cardano at the chain's last-observed slot and compare it to the on-chain `AllowedStake`.
-		#[arg(long)]
-		dbsync: Option<String>,
-		/// Cross-check reference slot (default: the chain's last-observed slot). Only used with `--dbsync`.
-		#[arg(long)]
-		reference: Option<u64>,
 	},
 }
 
@@ -327,7 +310,7 @@ enum MembersCmd {
 
 #[derive(Subcommand)]
 enum UpgradeCmd {
-	/// Committee motion: authorize a SUDO-FREE runtime upgrade. The motion records the 32-byte code hash
+	/// Committee motion: authorize a runtime upgrade. The motion records the 32-byte code hash
 	/// on-chain; the WASM is uploaded afterwards with `upgrade apply`. Refuses a non-increasing spec_version
 	/// (enforced on-chain at apply time). Bundled, or `--propose` for multi-custody.
 	Authorize {
@@ -359,33 +342,6 @@ enum UpgradeCmd {
 		/// Assert the connected chain's genesis hash matches this 0x-hex (refuse the wrong chain).
 		#[arg(long)]
 		genesis: Option<String>,
-	},
-}
-
-#[derive(Subcommand)]
-enum GateCmd {
-	/// Committee motion: REVOKE an account's identity binding (the manual-operator-ban path). Flips
-	/// `is_allowed` to false so the account can no longer post. Bundled, or `--propose` for multi-custody.
-	Revoke {
-		/// The account (SS58) to revoke.
-		#[arg(long)]
-		account: String,
-		#[command(flatten)]
-		gov: GovOpts,
-	},
-}
-
-#[derive(Subcommand)]
-enum ObserverCmd {
-	/// Committee motion: set the observer enforcement flag. `--enabled true` credits weight (the normal
-	/// sole-writer mode); `--enabled false` FREEZES weight (keep verifying, stop crediting) as an emergency
-	/// governance revert. Bundled, or `--propose` for multi-custody.
-	SetEnforcement {
-		/// `true` = credit weight (normal); `false` = freeze weight (emergency revert).
-		#[arg(long, action = clap::ArgAction::Set)]
-		enabled: bool,
-		#[command(flatten)]
-		gov: GovOpts,
 	},
 }
 
@@ -448,6 +404,15 @@ enum IdentityCmd {
 		#[arg(long, default_value = DEFAULT_WS)]
 		ws: String,
 	},
+	/// Committee motion: REVOKE an account's identity binding (the manual-operator-ban path). Flips
+	/// `is_allowed` to false so the account can no longer post. Bundled, or `--propose` for multi-custody.
+	Revoke {
+		/// The account (SS58) to revoke.
+		#[arg(long)]
+		account: String,
+		#[command(flatten)]
+		gov: GovOpts,
+	},
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -470,9 +435,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 		},
 		Command::Query { cmd } => match cmd {
 			QueryCmd::State { ws } => query::run_state(&ws).await,
-			QueryCmd::Weight { ws, dbsync, reference } => {
-				query::run_weight(&ws, dbsync.as_deref(), reference).await
-			},
+			QueryCmd::Weight { ws } => query::run_weight(&ws).await,
 		},
 		Command::Validator { cmd } => match cmd {
 			ValidatorCmd::Add { validator, gov } => {
@@ -511,16 +474,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 				cmd_apply_upgrade(&account_key, &wasm, &ws, prod, genesis.as_deref()).await
 			},
 		},
-		Command::Gate { cmd } => match cmd {
-			GateCmd::Revoke { account, gov } => {
-				drive_governed(&gov, calls::revoke(calls::parse_account(&account)?)).await
-			},
-		},
-		Command::Observer { cmd } => match cmd {
-			ObserverCmd::SetEnforcement { enabled, gov } => {
-				drive_governed(&gov, calls::set_enforcement(enabled)).await
-			},
-		},
 		Command::Identity { cmd } => match cmd {
 			IdentityCmd::Prove { account, nonce, ws } => {
 				identity::run_prove(&account, nonce.as_deref(), &ws).await
@@ -532,6 +485,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 				identity::run_bind_stake(&cose_sign1, &cose_key, &ws, genesis.as_deref()).await
 			},
 			IdentityCmd::Show { account, ws } => identity::run_show(&account, &ws).await,
+			IdentityCmd::Revoke { account, gov } => {
+				drive_governed(&gov, calls::revoke(calls::parse_account(&account)?)).await
+			},
 		},
 	}
 }
@@ -835,7 +791,7 @@ async fn cmd_committee_submit(tx: &str, ws: &str, no_finalize: bool) -> anyhow::
 	Ok(())
 }
 
-/// Authorize a sudo-free committee-governed runtime upgrade: derive the 32-byte `code_hash` (from the
+/// Authorize a committee-governed runtime upgrade: derive the 32-byte `code_hash` (from the
 /// compiled WASM, or taken directly), then drive `GovernedUpgrade::authorize_upgrade` through the committee.
 async fn cmd_authorize_upgrade(
 	wasm: Option<&Path>,

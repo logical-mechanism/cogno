@@ -14,8 +14,8 @@ members = [
 	# on-wire types (RuntimeCall/TxExtension) so a call-index/extension change fails to COMPILE.
 	"cli",
 	# Shared no-node crates (the all-Rust consolidation): the deterministic Cardano db-sync reader +
-	# reduction reused byte-identically by the node inherent (writer) and the cogno-chain-cli (read-only),
-	# and the cardano-cli-style key-file format used by the CLI signer + node gen-chainspec / key insert-file.
+	# reduction used by the node observation inherent (the sole writer), and the cardano-cli-style key-file
+	# format used by the CLI signer + node gen-chainspec / key insert.
 	"cogno-dbsync",
 	"cogno-keyfile",
 	"pallets/microblog",
@@ -55,8 +55,8 @@ pallet-cardano-observer = { path = "pallets/cardano-observer", default-features 
 # Sudo-free governance: committee-authorized runtime upgrades (AuthorityOrigin-gated authorize_upgrade +
 # the permissionless frame_system::apply_authorized_upgrade). No sudo, no set_storage — least privilege.
 pallet-governed-upgrade = { path = "pallets/governed-upgrade", default-features = false }
-# The shared no-node deterministic Cardano db-sync reader + reduction (std-only). The node inherent is
-# the WRITER; the cogno-chain-cli `query weight --dbsync` reuses it read-only — both byte-identical.
+# The shared no-node deterministic Cardano db-sync reader + reduction (std-only). The node observation
+# inherent is the sole reader/writer; the CLI reads chain state over RPC only (no db-sync dependency).
 cogno-dbsync = { path = "cogno-dbsync" }
 # The shared cardano-cli-style key-file format (secret keys BY FILE PATH, never seed phrases).
 cogno-keyfile = { path = "cogno-keyfile" }

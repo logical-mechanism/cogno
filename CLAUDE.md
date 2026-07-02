@@ -41,7 +41,7 @@ Milestone history: M0–M10, all merged to `main`. M0–M8 each have a `docs/M*-
 ```bash
 # Node (heavy first compile; pinned rustc 1.90.0):
 cargo build --release
-./target/release/cogno-chain-node --dev        # single //Alice authority, Alice=sudo, WS :9944
+./target/release/cogno-chain-node run --dev    # single //Alice authority, WS :9944 (bare invoke prints help)
 cargo test                                      # the 5 pallets (100 #[test])
 
 # L1 contract — aiken errors are TTY-gated, wrap in `script` when capturing:

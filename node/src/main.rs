@@ -1,6 +1,9 @@
-//! Substrate Node Template CLI library.
+//! cogno-chain node CLI.
 #![warn(missing_docs)]
 
+// The benchmark builders are a dev/CI tool — compiled only with the `runtime-benchmarks` feature (the
+// `benchmark` subcommand that uses them is likewise feature-gated). See cli.rs / command.rs.
+#[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
 mod cardano_observer;
 mod chain_spec;

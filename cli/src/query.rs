@@ -1,26 +1,16 @@
 //! Read-only diagnostics behind the `query` group: `query state` (the chain inspector) and `query weight`
-//! (the talk-stake ledger view + an optional db-sync cross-check). **Neither writes anything** — there is
-//! no talk-stake write path anywhere in the CLI; weight is observer-written only.
+//! (the talk-stake ledger view). **Neither writes anything** — there is no talk-stake write path anywhere
+//! in the CLI; weight is observer-written only.
 //!
-//! `query weight` defaults to a **direct chain query** — it reads the on-chain `TalkStake@9` ledger
-//! (`AllowedStake` = posting weight, `VotingPower` = stake-vote weight) over RPC. That ledger is consensus
-//! state (the observe inherent's applier runs in `execute_block` on every node), so it is fully populated
-//! on ANY node you can reach — a relay / RPC node with no db-sync.
-//!
-//! Passing `--dbsync <url>` adds an **opt-in cross-check** (operator-only): re-derive the vault weight from
-//! Cardano with the SHARED reducer **at the exact slot the chain last observed**
-//! (`CardanoObserver::LastReference`) and compare it to the on-chain `AllowedStake` ledger byte-for-byte. A
-//! divergence at the same reference slot is a real problem (the CLI's manual analog of `check_inherent` —
-//! the Rust replacement for the retired `shadow-diff.mjs`).
+//! Both read EXCLUSIVELY from the node over RPC. `query weight` reads the on-chain `TalkStake@9` ledger
+//! (`AllowedStake` = posting weight, `VotingPower` = stake-vote weight). That ledger is consensus state
+//! (the observe inherent's applier runs in `execute_block` on every node), so it is fully populated on ANY
+//! node you can reach — a relay / RPC node is enough.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::Context;
 use codec::Decode;
-use cogno_dbsync::dbsync;
-use cogno_dbsync::reduction::{self, hex_encode};
-use pallet_cardano_observer::{CardanoRef, ObserverConfig};
-use sp_core::hashing::blake2_128;
+use pallet_cardano_observer::CardanoRef;
 use sp_core::H256;
 use sp_runtime::AccountId32;
 
@@ -76,24 +66,6 @@ async fn enforce_weight(rpc: &Rpc) -> anyhow::Result<bool> {
 		.storage_decode::<bool>(&storage_prefix("CardanoObserver", "EnforceWeight"), None)
 		.await?
 		.unwrap_or(true))
-}
-
-/// Fetch the consensus-pinned `ObserverConfig` FROM THE CHAIN via the `CardanoObserverApi` runtime API
-/// (never hardcoded — so the cross-check scans exactly the chain's target vault policy).
-pub async fn observer_config(rpc: &Rpc) -> anyhow::Result<ObserverConfig> {
-	let bytes = rpc
-		.state_call("CardanoObserverApi_observer_config", &[], None)
-		.await
-		.context("fetching observer config via runtime API")?;
-	ObserverConfig::decode(&mut &bytes[..]).context("decoding ObserverConfig")
-}
-
-/// Resolve a 32-byte Cardano beacon (the cogno-gate `AccountOf` key) → its bound account, or `None`.
-async fn beacon_account(rpc: &Rpc, beacon: &[u8; 32]) -> anyhow::Result<Option<AccountId32>> {
-	let mut key = storage_prefix("CognoGate", "AccountOf");
-	key.extend_from_slice(&blake2_128(beacon));
-	key.extend_from_slice(beacon);
-	rpc.storage_decode::<AccountId32>(&key, None).await
 }
 
 /// `query state` — read-only chain inspector: genesis/spec, committee, validators, observer enforcement +
@@ -162,10 +134,9 @@ pub async fn run_state(ws: &str) -> anyhow::Result<()> {
 	Ok(())
 }
 
-/// `query weight` — default: a direct chain query of the talk-stake ledger (posting weight + voting power
-/// per account). With `--dbsync`: also re-derive the vault weight from Cardano at the chain's last-observed
-/// slot and cross-check it against the on-chain `AllowedStake` ledger.
-pub async fn run_weight(ws: &str, dbsync: Option<&str>, reference: Option<u64>) -> anyhow::Result<()> {
+/// `query weight` — a direct chain query of the talk-stake ledger (posting weight + voting power per
+/// account), read over RPC from the on-chain `TalkStake@9` ledger. Reads, never writes.
+pub async fn run_weight(ws: &str) -> anyhow::Result<()> {
 	let rpc = Rpc::connect(ws).await?;
 	let allowed = read_weight_map(&rpc, "AllowedStake").await?;
 	let voting = read_weight_map(&rpc, "VotingPower").await?;
@@ -197,84 +168,5 @@ pub async fn run_weight(ws: &str, dbsync: Option<&str>, reference: Option<u64>) 
 			ada(voting.get(acct).copied().unwrap_or(0))
 		);
 	}
-
-	// ── Opt-in cross-check (operator-only): re-derive the vault weight from Cardano + compare AllowedStake.
-	if let Some(url) = dbsync {
-		let ref_slot = reference.or(last_ref.as_ref().map(|r| r.slot)).context(
-			"the chain has no LastReference yet and no --reference was given; pass --reference <slot>",
-		)?;
-		println!();
-		println!("cross-check vs db-sync as-of reference slot {ref_slot}:");
-		let derived = dbsync_allowed_stake(&rpc, url, ref_slot).await?;
-		println!("  re-derived {} bound vault weight(s) from Cardano", derived.len());
-		cross_check(&allowed, &derived)?;
-	}
 	Ok(())
-}
-
-/// Re-derive the per-account posting weight (`AllowedStake`) from db-sync as-of `ref_slot`, with the SHARED
-/// reducer — exactly what the node IDP feeds the inherent: read the vault matches, reduce to the canonical
-/// per-beacon largest-wins weight, and resolve each beacon → its bound account (cogno-gate `AccountOf`), so
-/// an unbound beacon contributes nothing (as the observer credits weight only to bound accounts).
-async fn dbsync_allowed_stake(
-	rpc: &Rpc,
-	dbsync_url: &str,
-	ref_slot: u64,
-) -> anyhow::Result<BTreeMap<AccountId32, u128>> {
-	let cfg = observer_config(rpc).await?;
-	let vault_hex = hex_encode(&cfg.vault_policy_id);
-	let read = dbsync::read_observation(dbsync_url, &vault_hex, ref_slot)
-		.await
-		.map_err(|e| anyhow::anyhow!("db-sync observation read failed: {e}"))?;
-	// The stable-block anchor only affects the sealed reference, not the vault entries; a zero hash is fine
-	// for the read-only weight re-derivation. `build_observation` runs the canonical largest-wins reduction.
-	let block_hash = read.anchor.map(|(_, h)| h).unwrap_or([0u8; 32]);
-	let reference = CardanoRef { slot: ref_slot, block_hash };
-	let obs = reduction::build_observation(reference, &read.matches, &vault_hex, Vec::new());
-	let mut out = BTreeMap::new();
-	for (beacon, weight) in obs.entries {
-		if let Some(account) = beacon_account(rpc, &beacon).await? {
-			// Impossible dup (two beacons → one account) would last-write-win; the observer credits per
-			// resolved account, so accumulate defensively.
-			let e = out.entry(account).or_insert(0u128);
-			*e = (*e).saturating_add(weight);
-		}
-	}
-	Ok(out)
-}
-
-/// Compare the on-chain `AllowedStake` ledger against the db-sync re-derivation (both at the same reference
-/// slot, so an exact match is expected). Prints per-account divergence and returns an error (non-zero exit)
-/// if ANY account differs — the CLI's manual analog of the node's `check_inherent`.
-fn cross_check(
-	chain: &BTreeMap<AccountId32, u128>,
-	derived: &BTreeMap<AccountId32, u128>,
-) -> anyhow::Result<()> {
-	let keys: BTreeSet<&AccountId32> = chain.keys().chain(derived.keys()).collect();
-	let mut diverged = 0usize;
-	let mut matched = 0usize;
-	for k in keys {
-		match (chain.get(k), derived.get(k)) {
-			(Some(c), Some(d)) if c == d => matched += 1,
-			(c, d) => {
-				diverged += 1;
-				println!(
-					"  ✗ {} DIVERGES — chain={} | cardano={}",
-					ss58(k),
-					c.map(|v| ada(*v)).unwrap_or_else(|| "<absent>".into()),
-					d.map(|v| ada(*v)).unwrap_or_else(|| "<absent>".into()),
-				);
-			},
-		}
-	}
-	if diverged == 0 {
-		println!("  ✓ {matched}/{matched} account(s) match the on-chain ledger exactly");
-		Ok(())
-	} else {
-		anyhow::bail!(
-			"cross-check FAILED: {diverged} account(s) diverge between the chain ledger and the db-sync \
-			 re-derivation at this reference slot (matched {matched}). The chain observation and your db-sync \
-			 disagree — check that db-sync is synced to the right network and is FULL/tx_in-enabled."
-		)
-	}
 }

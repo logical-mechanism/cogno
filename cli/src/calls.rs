@@ -6,12 +6,12 @@
 //! inherent is the sole writer), so the CLI literally cannot construct one.
 //!
 //! The committee path governs ONLY: validator add/remove, committee self-rotation (`set_members`),
-//! cogno-gate `revoke`, the observer enforcement freeze (`set_enforcement`), and the sudo-free
-//! runtime-upgrade authorization (`GovernedUpgrade::authorize_upgrade`). There is **no sudo** and **no raw
-//! `set_code`**: the committee authorizes only the 32-byte code hash, and the WASM is uploaded
-//! permissionlessly via the EXISTING `System::apply_authorized_upgrade` (which refuses a non-increasing
-//! `spec_version`). The two CIP-8 identity binds are **BARE/unsigned** — the proof is the authorization,
-//! so they are self-service, never a committee or self-signed call.
+//! cogno-gate `revoke`, and the committee-governed runtime-upgrade authorization
+//! (`GovernedUpgrade::authorize_upgrade`). There is **no raw `set_code`**: the
+//! committee authorizes only the 32-byte code hash, and the WASM is uploaded permissionlessly via the
+//! EXISTING `System::apply_authorized_upgrade` (which refuses a non-increasing `spec_version`). The two
+//! CIP-8 identity binds are **BARE/unsigned** — the proof is the authorization, so they are self-service,
+//! never a committee or self-signed call.
 
 use anyhow::Context;
 use cogno_chain_runtime::{Runtime, RuntimeCall, SessionKeys};
@@ -71,15 +71,8 @@ pub fn revoke(substrate_account: AccountId32) -> RuntimeCall {
 	RuntimeCall::CognoGate(pallet_cogno_gate::Call::<Runtime>::revoke { substrate_account })
 }
 
-/// `CardanoObserver::set_enforcement(enabled)` — the emergency weight-freeze (default enforcing). `false`
-/// FREEZES weight (keep verifying, stop crediting) as a governance revert; `true` re-enables. `EnforceOrigin`-
-/// gated (= the 3/5 committee), so it routes through `propose`.
-pub fn set_enforcement(enabled: bool) -> RuntimeCall {
-	RuntimeCall::CardanoObserver(pallet_cardano_observer::Call::<Runtime>::set_enforcement { enabled })
-}
-
-/// `GovernedUpgrade::authorize_upgrade(code_hash)` — the sudo-free committee-governed runtime-upgrade
-/// authorization. `AuthorityOrigin`-gated, so it routes through `propose`. The motion carries only the
+/// `GovernedUpgrade::authorize_upgrade(code_hash)` — the committee-governed runtime-upgrade authorization.
+/// `AuthorityOrigin`-gated, so it routes through `propose`. The motion carries only the
 /// 32-byte `code_hash` (= `blake2_256(wasm)`); the WASM itself is uploaded later, permissionlessly, via
 /// [`apply_authorized_upgrade`] (which refuses a non-increasing `spec_version`).
 pub fn authorize_upgrade(code_hash: H256) -> RuntimeCall {
@@ -232,13 +225,6 @@ mod tests {
 		// The COSE_Sign1 arg is bounded at 512 bytes; an oversized blob is rejected at construction.
 		assert!(link_identity_signed(vec![0u8; 513], vec![4, 5], None).is_err());
 		assert!(link_identity_signed(vec![1, 2], vec![0u8; 129], None).is_err());
-	}
-
-	#[test]
-	fn set_enforcement_encodes_at_observer_pallet_16_call_1() {
-		let bytes = set_enforcement(false).encode();
-		assert_eq!(bytes[0], 16, "CardanoObserver pallet index");
-		assert_eq!(bytes[1], 1, "set_enforcement call index");
 	}
 
 	#[test]

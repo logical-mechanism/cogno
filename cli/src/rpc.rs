@@ -143,26 +143,6 @@ impl Rpc {
 			.collect()
 	}
 
-	/// Invoke a runtime API read-only (`state_call`), returning the SCALE-encoded result bytes. Used for
-	/// `CardanoObserverApi_observer_config` so `query weight --dbsync` reads the scan config FROM the chain.
-	pub async fn state_call(
-		&self,
-		method: &str,
-		data: &[u8],
-		at: Option<H256>,
-	) -> anyhow::Result<Vec<u8>> {
-		let params = match at {
-			Some(h) => rpc_params![method, hex0x(data), hex0x(h.as_bytes())],
-			None => rpc_params![method, hex0x(data)],
-		};
-		let s: String = self
-			.client
-			.request("state_call", params)
-			.await
-			.with_context(|| format!("state_call {method} failed"))?;
-		unhex(&s)
-	}
-
 	/// Decode a typed value from a storage key, or `None` if the key is absent.
 	pub async fn storage_decode<T: Decode>(
 		&self,

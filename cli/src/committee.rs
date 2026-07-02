@@ -1,4 +1,4 @@
-//! The committee governance driver — `propose → vote×k → close` (sudo-free; cogno-chain has no root key).
+//! The committee governance driver — `propose → vote×k → close`.
 //!
 //! Invariants (do not lose these):
 //! - **`resolve_committee` threshold = `ceil(n·3/5)`** from LIVE on-chain `FollowerCommittee::Members` —

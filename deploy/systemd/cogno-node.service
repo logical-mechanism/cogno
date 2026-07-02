@@ -33,7 +33,7 @@ EnvironmentFile=-/etc/cogno/cogno.env
 # --force-authoring: REQUIRED for the single-validator default topology — a lone validator has no
 #   peers to confirm against and will not author without it. REMOVE it for a multi-validator network
 #   (authoring should begin only once peers connect).
-ExecStart=/usr/local/bin/cogno-chain-node \
+ExecStart=/usr/local/bin/cogno-chain-node run \
   --validator \
   --force-authoring \
   --name %H \

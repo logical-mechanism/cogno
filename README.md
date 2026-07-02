@@ -123,7 +123,7 @@ cargo test                       # pallet unit/boundary tests (see Development f
 ### Local quick-start (throwaway)
 
 ```bash
-./target/release/cogno-chain-node --dev          # one //Alice authority, Alice = sudo, WS :9944
+./target/release/cogno-chain-node run --dev      # one //Alice authority, WS :9944
 ```
 
 `--dev` is an ephemeral single-node chain on well-known dev keys (it also seats a `//Alice…//Eve`
