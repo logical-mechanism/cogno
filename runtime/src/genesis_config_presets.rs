@@ -17,7 +17,7 @@
 
 use crate::{
 	AccountId, BalancesConfig, FollowerCommitteeConfig, RuntimeGenesisConfig, SessionConfig,
-	SessionKeys, SudoConfig, ValidatorSetConfig,
+	SessionKeys, ValidatorSetConfig,
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
@@ -38,7 +38,6 @@ fn testnet_genesis(
 	initial_authorities: Vec<(AccountId, AuraId, GrandpaId)>,
 	endowed_accounts: Vec<AccountId>,
 	committee: Vec<AccountId>,
-	root: AccountId,
 ) -> Value {
 	build_struct_json_patch!(RuntimeGenesisConfig {
 		balances: BalancesConfig {
@@ -67,9 +66,10 @@ fn testnet_genesis(
 				.map(|(account, _, _)| account.clone())
 				.collect::<Vec<_>>(),
 		},
-		sudo: SudoConfig { key: Some(root) },
-		// DR-07: seat the initial FollowerCommittee (the 3-of-5 k-of-t authority). Members must be
-		// endowed (propose/vote are fee-bearing); the caller passes a committee ⊆ endowed_accounts.
+		// SUDO-FREE: no `SudoConfig` — there is no root key. Seat the initial FollowerCommittee (the SOLE
+		// governance authority; at 1 seat the 3/5 threshold is `ceil(1*3/5)=1`, so the founder governs
+		// alone and a motion executes on propose). Members must be endowed (propose/vote/close are
+		// fee-bearing under the retained talk-capacity fee model); the caller passes committee ⊆ endowed.
 		follower_committee: FollowerCommitteeConfig { members: committee },
 	})
 }
@@ -93,21 +93,16 @@ fn bob_authority() -> (AccountId, AuraId, GrandpaId) {
 	)
 }
 
-/// Return the development genesis config (a single authority, `//Alice`).
+/// Return the development genesis config — the SUDO-FREE single-operator bootstrap: one authority
+/// (`//Alice`) and a **single-seat committee** (`//Alice`). At 1 member the 3/5 threshold is
+/// `ceil(1*3/5)=1`, so the founder governs alone and a motion executes on propose, with no root key. The
+/// other dev accounts are endowed (not seated) so they can be voted into the committee / validator set
+/// later — the same centralized→federated→decentralized path a real operator genesis walks.
 pub fn development_config_genesis() -> Value {
-	// The 5 seats of the dev FollowerCommittee — the 3-of-5 k-of-t authority (DR-07/DR-26). All
-	// are well-known dev keys (`//Alice`…`//Eve`) so the committee path is drivable on `--dev`.
-	let committee = vec![
-		Sr25519Keyring::Alice.to_account_id(),
-		Sr25519Keyring::Bob.to_account_id(),
-		Sr25519Keyring::Charlie.to_account_id(),
-		Sr25519Keyring::Dave.to_account_id(),
-		Sr25519Keyring::Eve.to_account_id(),
-	];
 	testnet_genesis(
-		// M6: one genesis authority (`//Alice`); add more at runtime via `add_validator`.
+		// One genesis authority (`//Alice`); add more at runtime via `validator add` (committee-voted).
 		vec![alice_authority()],
-		// Endow the committee members (propose/vote are fee-bearing) plus the stashes.
+		// Endow the well-known dev accounts + stashes so they can pay fees and be voted in.
 		vec![
 			Sr25519Keyring::Alice.to_account_id(),
 			Sr25519Keyring::Bob.to_account_id(),
@@ -117,12 +112,14 @@ pub fn development_config_genesis() -> Value {
 			Sr25519Keyring::AliceStash.to_account_id(),
 			Sr25519Keyring::BobStash.to_account_id(),
 		],
-		committee,
-		Sr25519Keyring::Alice.to_account_id(),
+		// A single committee seat (`//Alice`) — the founder-governs-alone bootstrap.
+		vec![Sr25519Keyring::Alice.to_account_id()],
 	)
 }
 
-/// Return the local genesis config preset (two genesis authorities, `//Alice` + `//Bob`).
+/// Return the local genesis config preset — the PRE-FEDERATED rig: two authorities (`//Alice` + `//Bob`)
+/// and a **5-seat committee** (`//Alice`…`//Eve`) so the real 3-of-5 governance path (`ceil(5*3/5)=3`) is
+/// drivable locally without waiting to federate.
 pub fn local_config_genesis() -> Value {
 	testnet_genesis(
 		vec![alice_authority(), bob_authority()],
@@ -130,7 +127,7 @@ pub fn local_config_genesis() -> Value {
 			.filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
 			.map(|v| v.to_account_id())
 			.collect::<Vec<_>>(),
-		// Same 5-seat committee as dev (all are in the endowed set above).
+		// The 5-seat committee — exercises the real 3-of-5 path (all are in the endowed set above).
 		vec![
 			Sr25519Keyring::Alice.to_account_id(),
 			Sr25519Keyring::Bob.to_account_id(),
@@ -138,7 +135,6 @@ pub fn local_config_genesis() -> Value {
 			Sr25519Keyring::Dave.to_account_id(),
 			Sr25519Keyring::Eve.to_account_id(),
 		],
-		Sr25519Keyring::Alice.to_account_id(),
 	)
 }
 

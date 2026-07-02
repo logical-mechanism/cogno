@@ -226,7 +226,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// MicroblogApi feed cursor is now a TopLevelPosts seq (opaque to the client). NO call-arg change —
 	// encoding-affecting (new storage/metadata), so spec_version bumps, transaction_version stays 3.
 	// Regen the PAPI descriptors after deploying 121.
-	spec_version: 121,
+	// 121 -> 200 (the ALL-RUST RESTART, fork/all-rust): a fresh-genesis chain, so this is a clean restart
+	// marker (200), not an in-place upgrade of the 121 chain. Removes pallet-sudo@6 (SUDO-FREE from
+	// genesis) + pallet-anchor@12 (observe-only), adds GovernedUpgrade@7 (committee-governed upgrades),
+	// narrows AuthorityOrigin to the 3-of-5 committee only, makes cardano-observer the SOLE weight writer
+	// (talk-stake set_stake/set_voting_power deleted), and folds the SubQuery indexer reads into the node.
+	// The RuntimeCall enum changes (metadata/spec_version), but the `TxExtension` tuple is byte-identical,
+	// so transaction_version STAYS 3. Regen the PAPI descriptors after the restart.
+	spec_version: 200,
 	impl_version: 1,
 	apis: apis::RUNTIME_API_VERSIONS,
 	// Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -384,11 +391,15 @@ mod runtime {
 	#[runtime::pallet_index(5)]
 	pub type TransactionPayment = pallet_transaction_payment;
 
-	#[runtime::pallet_index(6)]
-	pub type Sudo = pallet_sudo;
+	// (Index 6 is permanently vacant: cogno-chain is SUDO-FREE from genesis — `pallet-sudo` was removed
+	// in the all-Rust restart. FRAME allows index gaps. There is no root/break-glass key; the 3-of-5
+	// FollowerCommittee is the SOLE governance authority.)
 
-	// (Index 7 is vacant: the M0 `pallet-template` scaffold was dropped in M7. FRAME allows index
-	// gaps, so vacating @7 leaves the on-wire indices 8..15 unchanged.)
+	// 7 = GovernedUpgrade: the sudo-free, committee-governed runtime-upgrade authorizer (fills the old
+	// `pallet-template` slot vacated in M7). `authorize_upgrade(code_hash)` is AuthorityOrigin-gated; the
+	// WASM is applied permissionlessly via `System::apply_authorized_upgrade` (spec-version checked).
+	#[runtime::pallet_index(7)]
+	pub type GovernedUpgrade = pallet_governed_upgrade;
 
 	// ── cogno-chain app pallets ──
 	// Indices are on-wire contracts (FRAME allows index gaps): 8 = CognoGate (M2, the CIP-8
@@ -412,13 +423,14 @@ mod runtime {
 	#[runtime::pallet_index(12)]
 	pub type Anchor = pallet_anchor;
 
-	// 13 = FollowerCommittee (M5, DR-07): the MUTABLE 3-of-5 k-of-t committee that backs the
-	// crown-jewel authority origins (cogno-gate FollowerOrigin / talk-stake SetStakeOrigin /
-	// anchor AnchorOrigin / microblog ForceOrigin) via `EnsureProportionAtLeast<3,5>`, with
-	// `EnsureRoot`/sudo retained as the v1 dev fallback (`EitherOfDiverse`). Members are mutable
-	// (rotation) via `Collective::set_members`; the proposal lifecycle events are the per-action
-	// audit log. One shared instance. The `EnsureOrigin` widen is signature-free (call signatures
-	// are unchanged). Next free index after Anchor.
+	// 13 = FollowerCommittee (M5, DR-07): the MUTABLE 3-of-5 k-of-t committee that is the SOLE
+	// governance authority — it backs the crown-jewel origins (cogno-gate FollowerOrigin / microblog
+	// ForceOrigin / validator-set AddRemoveOrigin / cardano-observer EnforceOrigin / governed-upgrade
+	// AuthorityOrigin) via `EnsureProportionAtLeast<3,5>`. cogno-chain is SUDO-FREE: there is NO
+	// `EnsureRoot`/sudo fallback. The committee also polices ITSELF (SetMembers/Disapprove/Kill all gated
+	// by the 3/5 origin); the `CognoCallFilter` brick-guard forbids emptying it. Members rotate via
+	// `Collective::set_members`; the proposal lifecycle events are the per-action audit log. One shared
+	// instance. Next free index after the (vacant) anchor slot.
 	#[runtime::pallet_index(13)]
 	pub type FollowerCommittee = pallet_collective<Instance1>;
 

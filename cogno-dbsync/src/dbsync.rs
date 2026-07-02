@@ -1,5 +1,5 @@
-//! Read-only Cardano **db-sync** client for the in-protocol observation (D4) — the on-node Cardano IO,
-//! kept separate from [`crate::cardano_observer`] (which holds the pure reduction).
+//! Read-only Cardano **db-sync** client for the in-protocol observation (D4) — the Cardano IO, kept
+//! separate from [`crate::reduction`] (the pure reduction).
 //!
 //! ONE read-only snapshot per block ([`read_observation`]) returns the three things the node-side
 //! `InherentDataProvider` needs, from a single consistent Postgres MVCC snapshot (so the tip, anchor and
@@ -21,7 +21,7 @@
 //!      the vault script address equals the beacon policy id (verified: 0 escaped beacons in all preprod
 //!      history; ADA-only-at-address UTxOs are excluded by the asset `EXISTS`).
 
-use crate::cardano_observer::hex32;
+use crate::reduction::hex32;
 use pallet_cardano_observer::{BeaconName, StakeCredential};
 use std::sync::OnceLock;
 use std::time::Duration;

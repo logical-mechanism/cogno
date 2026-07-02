@@ -6,6 +6,10 @@
 # at tag polkadot-stable2603-3 / commit e3737178ec726cffe506c907263aaaa417893fd0).
 /_sdk
 
+# Vendored study checkouts (read-only reference material — partner-chains, midnight-node,
+# and the iagon-partner-chain rebuild this fork ports back from). Never a build input.
+/_reference
+
 # Node deps (acceptance script / future app + indexer)
 node_modules/
 # The anchor-relayer reuses the app's deps via a node_modules SYMLINK (not a dir, so the

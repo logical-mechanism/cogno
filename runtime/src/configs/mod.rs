@@ -28,18 +28,17 @@ use frame_support::{
 	derive_impl,
 	dispatch::DispatchClass,
 	parameter_types,
-	traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, EitherOfDiverse, VariantCountOf},
+	traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, VariantCountOf},
 	weights::{
 		constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
 		IdentityFee, Weight,
 	},
 };
-// DR-07: the mutable k-of-t committee origin combinator + its default instance.
+// DR-07: the mutable k-of-t committee origin combinator + its default instance. cogno-chain is SUDO-FREE:
+// the FollowerCommittee is the SOLE governance authority, so there is no `frame_system::EnsureRoot` /
+// `EitherOfDiverse` root fallback anywhere in the runtime.
 use pallet_collective::{EnsureProportionAtLeast, Instance1};
-use frame_system::{
-	limits::{BlockLength, BlockWeights},
-	EnsureRoot,
-};
+use frame_system::limits::{BlockLength, BlockWeights};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use sp_runtime::{
@@ -74,26 +73,39 @@ parameter_types! {
 	pub const SS58Prefix: u8 = 42;
 }
 
-/// All migrations of the runtime, aside from the ones declared in the pallets. A tuple of types,
-/// each implementing `OnRuntimeUpgrade`. Run by the Executive (via `AllPalletsWithSystem`) BEFORE
-/// the per-pallet `on_runtime_upgrade` hooks, in the first block after a `setCode`.
+/// Runtime migrations (a tuple of `OnRuntimeUpgrade` types run by the Executive before the per-pallet
+/// hooks in the first block after a `setCode`). The all-Rust restart is a FRESH GENESIS, so there is no
+/// pre-200 storage to migrate: every pallet starts at its declared `STORAGE_VERSION` at genesis, so the
+/// old microblog/profile v0→v4 `VersionedMigration`s (still present in the pallets, self-skipping) are
+/// deliberately NOT registered here. Add a new migration only for a future in-place governed upgrade.
+type SingleBlockMigrations = ();
+
+/// The runtime base call filter — the sudo-free brick-guard. cogno-chain permits EVERY call except one:
+/// a `FollowerCommittee::set_members` that would EMPTY the committee. The committee is the SOLE governance
+/// authority (no sudo / `EnsureRoot` fallback), so an empty member set makes [`AuthorityOrigin`]
+/// (`EnsureProportionAtLeast<3,5>`) permanently unsatisfiable — bricking ALL governance (validator
+/// rotation, runtime upgrades, identity revoke, force-capacity) with no on-chain recovery, only a chain
+/// fork. A passed motion — or, at the 1-seat bootstrap where the threshold is 1, a single fat-finger /
+/// lost-key vote — could otherwise write `Members = []`. Rejecting an empty new set here makes such a
+/// motion fail on-chain (`CallFiltered`) instead of bricking the chain: the filter is enforced even on the
+/// collective's OWN proposal dispatch, because `RawOrigin::Members(..).into()` resets the origin filter to
+/// this `BaseCallFilter`. A non-empty floor is always satisfiable — the committee bootstraps at one member
+/// and only ever grows by vote.
 ///
-/// The project's FIRST migration: microblog `Post` v0 → v1 (adds the `quote` field), guarded by
-/// `VersionedMigration` so it runs once (on-chain storage version 0 → 1) and self-skips thereafter.
-/// Leave it registered across the next few spec bumps (it's a no-op once applied), then drop it.
-#[allow(unused_parens)]
-type SingleBlockMigrations = (
-	// v1 is idempotent (self-skips once microblog is at storage version 1) — kept for fresh syncs.
-	pallet_microblog::migrations::v1::MigrateV0ToV1<Runtime>,
-	// spec 118: backfill the reverse Followers + VotesByAccount indexes.
-	pallet_microblog::migrations::v2::MigrateV1ToV2<Runtime>,
-	// spec 118: add banner / location / website to every Profile (defaulted empty).
-	pallet_profile::migrations::v1::MigrateV0ToV1<Runtime>,
-	// spec 119: backfill the ReplyCount + RepliesByParent reply aggregates from existing Posts.
-	pallet_microblog::migrations::v3::MigrateV2ToV3<Runtime>,
-	// spec 121: backfill the top-level-post index (TopLevelPosts / TopLevelByAuthor / NextTopLevelSeq).
-	pallet_microblog::migrations::v4::MigrateV3ToV4<Runtime>,
-);
+/// ⚠ FEDERATION PREREQUISITE: once the committee is federated, raise this floor from "non-empty" to a real
+/// quorum (e.g. `>= 3`) so no motion can ever shrink the committee below a safe governance size.
+/// `set_members` is the ONLY committee-membership mutator (pallet-collective has no add/remove call), so
+/// guarding it covers every path to an empty set.
+pub struct CognoCallFilter;
+impl Contains<RuntimeCall> for CognoCallFilter {
+	fn contains(call: &RuntimeCall) -> bool {
+		!matches!(
+			call,
+			RuntimeCall::FollowerCommittee(pallet_collective::Call::set_members { new_members, .. })
+				if new_members.is_empty()
+		)
+	}
+}
 
 /// The default types are being injected by [`derive_impl`](`frame_support::derive_impl`) from
 /// [`SoloChainDefaultConfig`](`struct@frame_system::config_preludes::SolochainDefaultConfig`),
@@ -102,6 +114,9 @@ type SingleBlockMigrations = (
 impl frame_system::Config for Runtime {
 	/// The block type for the runtime.
 	type Block = Block;
+	/// The sudo-free committee-brick guard: rejects an empty `FollowerCommittee::set_members` on-chain
+	/// (overrides the `SolochainDefaultConfig` `Everything` filter). See [`CognoCallFilter`].
+	type BaseCallFilter = CognoCallFilter;
 	/// Block & extrinsics weights: base values and limits.
 	type BlockWeights = RuntimeBlockWeights;
 	/// The maximum length of a block (in bytes).
@@ -199,10 +214,13 @@ impl pallet_transaction_payment::Config for Runtime {
 	type WeightInfo = pallet_transaction_payment::weights::SubstrateWeight<Runtime>;
 }
 
-impl pallet_sudo::Config for Runtime {
+// Sudo-free governance: the committee-authorized runtime-upgrade shim (GovernedUpgrade@7). Gated by the
+// shared `AuthorityOrigin` (≥3/5 committee) — the one call `frame_system` cannot re-gate off `ensure_root`.
+// The WASM itself is applied by the permissionless `System::apply_authorized_upgrade` (spec-version checked).
+impl pallet_governed_upgrade::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	type RuntimeCall = RuntimeCall;
-	type WeightInfo = pallet_sudo::weights::SubstrateWeight<Runtime>;
+	type AuthorityOrigin = AuthorityOrigin;
+	type WeightInfo = ();
 }
 
 // ── DR-07: the FollowerCommittee — the mutable k-of-t authority behind the crown jewels ──
@@ -238,22 +256,27 @@ impl pallet_collective::Config<Instance1> for Runtime {
 	// Prime-member fallback vote; the prime is the tie-breaker for absentees.
 	type DefaultVote = pallet_collective::PrimeDefaultVote;
 	type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
-	// v1: root/sudo rotates the committee. Move this to the committee itself (self-rotation) or an
-	// Ariadne/SPO selection pallet at the D2/D3 graduation — a signature-free EnsureOrigin swap.
-	type SetMembersOrigin = EnsureRoot<AccountId>;
+	// SUDO-FREE: the committee polices ITSELF — rotation (`set_members`), disapprove, and kill are all
+	// gated by the same `AuthorityOrigin` (≥3/5 of the committee). There is no root fallback. At the
+	// D2/D3 graduation this becomes a signature-free `EnsureOrigin` swap to an Ariadne/SPO selection
+	// pallet. The `CognoCallFilter` brick-guard forbids a `set_members` that would empty the committee.
+	type SetMembersOrigin = AuthorityOrigin;
 	type MaxProposalWeight = MaxProposalWeight;
-	type DisapproveOrigin = EnsureRoot<AccountId>;
-	type KillOrigin = EnsureRoot<AccountId>;
+	type DisapproveOrigin = AuthorityOrigin;
+	type KillOrigin = AuthorityOrigin;
 	// No proposal deposit/consideration in v1 (the committee is permissioned, not open).
 	type Consideration = ();
 }
 
-/// The crown-jewel authority origin (DR-07): EITHER `EnsureRoot`/sudo (the v1 dev fallback) OR a
-/// **3-of-5 supermajority** of the [`FollowerCommittee`]. Shared by `cogno-gate::FollowerOrigin`,
-/// `talk-stake::SetStakeOrigin`, `anchor::AnchorOrigin`, and `microblog::ForceOrigin` so identity,
-/// weight, anchoring, and force-capacity all sit behind ONE trust boundary (L2 §8.4, L3 §4.5).
-pub type AuthorityOrigin =
-	EitherOfDiverse<EnsureRoot<AccountId>, EnsureProportionAtLeast<AccountId, Instance1, 3, 5>>;
+/// The crown-jewel authority origin: a **3-of-5 supermajority** of the [`FollowerCommittee`]
+/// (`EnsureProportionAtLeast<3,5>`, `needed = ceil(n*3/5)` so it works at every size — 1→1, 3→2, 5→3,
+/// 7→5). cogno-chain is SUDO-FREE, so there is NO `EnsureRoot` fallback. Shared by the committee's own
+/// self-policing origins, `cogno-gate::FollowerOrigin`, `talk-stake::SetStakeOrigin` (until the observer
+/// cutover deletes it), `anchor::AnchorOrigin` (until anchoring is dropped), `microblog::ForceOrigin`,
+/// `validator-set::AddRemoveOrigin`, `cardano-observer::EnforceOrigin`, and
+/// `governed-upgrade::AuthorityOrigin` — so identity, weight, validators, upgrades, and force-capacity all
+/// sit behind ONE trust boundary (L2 §8.4, L3 §4.5).
+pub type AuthorityOrigin = EnsureProportionAtLeast<AccountId, Instance1, 3, 5>;
 
 // ── M6 (DR-26): MUTABLE Aura+GRANDPA authorities via pallet-session + pallet-validator-set ──
 //

@@ -31,12 +31,12 @@ pallet-balances = { workspace = true }
 pallet-cardano-observer = { workspace = true }
 pallet-collective = { workspace = true }
 pallet-cogno-gate = { workspace = true }
+pallet-governed-upgrade = { workspace = true }
 pallet-grandpa = { workspace = true }
 pallet-microblog = { workspace = true }
 pallet-profile = { workspace = true }
 pallet-session = { workspace = true }
 pallet-skip-feeless-payment = { workspace = true }
-pallet-sudo = { workspace = true }
 pallet-talk-stake = { workspace = true }
 pallet-validator-set = { workspace = true }
 pallet-timestamp = { workspace = true }
@@ -80,12 +80,12 @@ std = [
 	"pallet-cardano-observer/std",
 	"pallet-collective/std",
 	"pallet-cogno-gate/std",
+	"pallet-governed-upgrade/std",
 	"pallet-grandpa/std",
 	"pallet-microblog/std",
 	"pallet-profile/std",
 	"pallet-session/std",
 	"pallet-skip-feeless-payment/std",
-	"pallet-sudo/std",
 	"pallet-talk-stake/std",
 	"pallet-timestamp/std",
 	"pallet-validator-set/std",
@@ -119,11 +119,11 @@ runtime-benchmarks = [
 	"pallet-cardano-observer/runtime-benchmarks",
 	"pallet-collective/runtime-benchmarks",
 	"pallet-cogno-gate/runtime-benchmarks",
+	"pallet-governed-upgrade/runtime-benchmarks",
 	"pallet-grandpa/runtime-benchmarks",
 	"pallet-microblog/runtime-benchmarks",
 	"pallet-profile/runtime-benchmarks",
 	"pallet-skip-feeless-payment/runtime-benchmarks",
-	"pallet-sudo/runtime-benchmarks",
 	"pallet-talk-stake/runtime-benchmarks",
 	"pallet-timestamp/runtime-benchmarks",
 	"pallet-validator-set/runtime-benchmarks",
@@ -141,12 +141,12 @@ try-runtime = [
 	"pallet-cardano-observer/try-runtime",
 	"pallet-collective/try-runtime",
 	"pallet-cogno-gate/try-runtime",
+	"pallet-governed-upgrade/try-runtime",
 	"pallet-grandpa/try-runtime",
 	"pallet-microblog/try-runtime",
 	"pallet-profile/try-runtime",
 	"pallet-session/try-runtime",
 	"pallet-skip-feeless-payment/try-runtime",
-	"pallet-sudo/try-runtime",
 	"pallet-talk-stake/try-runtime",
 	"pallet-timestamp/try-runtime",
 	"pallet-validator-set/try-runtime",

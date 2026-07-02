@@ -1424,6 +1424,7 @@ dependencies = [
  "async-trait",
  "clap",
  "cogno-chain-runtime",
+ "cogno-dbsync",
  "frame-benchmarking-cli",
  "frame-metadata-hash-extension",
  "frame-system",
@@ -1449,7 +1450,6 @@ dependencies = [
  "sc-telemetry",
  "sc-transaction-pool",
  "sc-transaction-pool-api",
- "serde_json",
  "sp-api",
  "sp-block-builder",
  "sp-blockchain",
@@ -1464,8 +1464,7 @@ dependencies = [
  "sp-timestamp",
  "substrate-build-script-utils",
  "substrate-frame-rpc-system",
- "tokio",
- "tokio-postgres",
+ "substrate-prometheus-endpoint",
 ]
 
 [[package]]
@@ -1486,12 +1485,12 @@ dependencies = [
  "pallet-cardano-observer",
  "pallet-cogno-gate",
  "pallet-collective",
+ "pallet-governed-upgrade",
  "pallet-grandpa",
  "pallet-microblog",
  "pallet-profile",
  "pallet-session",
  "pallet-skip-feeless-payment",
- "pallet-sudo",
  "pallet-talk-stake",
  "pallet-timestamp",
  "pallet-transaction-payment",
@@ -1515,6 +1514,32 @@ dependencies = [
  "sp-transaction-pool",
  "sp-version",
  "substrate-wasm-builder",
+]
+
+[[package]]
+name = "cogno-dbsync"
+version = "1.0.0"
+dependencies = [
+ "log",
+ "pallet-cardano-observer",
+ "parity-scale-codec",
+ "serde_json",
+ "sp-core",
+ "tokio",
+ "tokio-postgres",
+]
+
+[[package]]
+name = "cogno-keyfile"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "serde",
+ "serde_json",
+ "sp-core",
+ "sp-keyring",
+ "sp-runtime",
 ]
 
 [[package]]
@@ -6534,6 +6559,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-governed-upgrade"
+version = "1.0.0"
+dependencies = [
+ "frame-support",
+ "frame-system",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
 name = "pallet-grandpa"
 version = "46.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6696,22 +6734,6 @@ dependencies = [
  "sp-io",
  "sp-runtime",
  "sp-staking",
-]
-
-[[package]]
-name = "pallet-sudo"
-version = "46.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01818cacfcb6fd5b175faa6c822738081f63b945c7eb63d0bb5fba42d44cbe25"
-dependencies = [
- "docify",
- "frame-benchmarking",
- "frame-support",
- "frame-system",
- "parity-scale-codec",
- "scale-info",
- "sp-io",
- "sp-runtime",
 ]
 
 [[package]]

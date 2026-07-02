@@ -29,7 +29,9 @@ frame_benchmarking::define_benchmarks!(
 	[frame_system_extensions, SystemExtensionsBench::<Runtime>]
 	[pallet_balances, Balances]
 	[pallet_timestamp, Timestamp]
-	[pallet_sudo, Sudo]
+	// NOTE: no pallet-sudo (SUDO-FREE) and no pallet-governed-upgrade benchmark: the latter's single
+	// `authorize_upgrade` call uses a fixed placeholder `WeightInfo = ()` (one storage write + one event),
+	// so there is no `#[benchmarks]` module to list here yet.
 	// ── cogno-chain app pallets (DR-05: real WeightInfo for the feeless+capacity anti-spam) ──
 	[pallet_cogno_gate, CognoGate]
 	[pallet_talk_stake, TalkStake]

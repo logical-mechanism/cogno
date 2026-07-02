@@ -10,12 +10,13 @@ use sc_transaction_pool_api::OffchainTransactionPoolFactory;
 use cogno_chain_runtime::{self, apis::RuntimeApi, opaque::Block};
 use sp_consensus_aura::sr25519::AuthorityPair as AuraPair;
 use std::{sync::Arc, time::Duration};
-// in-protocol-observation (D4): the node-side Cardano-observation InherentDataProvider wiring.
-use crate::cardano_observer::{
-	build_observation, hex_encode, reference_slot, CardanoObservationInherentDataProvider,
-};
-use crate::dbsync;
-use pallet_cardano_observer::{CardanoObserverApi, CardanoRef};
+// in-protocol-observation (D4): the node-side Cardano-observation InherentDataProvider wiring. The
+// deterministic db-sync read + the pure reduction now live in the shared `cogno-dbsync` crate — the node
+// (writer) and the cogno-chain-cli (read-only diagnostic) go through byte-identical code.
+use crate::cardano_observer::CardanoObservationInherentDataProvider;
+use cogno_dbsync::dbsync;
+use cogno_dbsync::reduction::{build_observation, hex_encode, reference_slot};
+use pallet_cardano_observer::{CardanoObservation, CardanoObserverApi, CardanoRef};
 use sp_api::ProvideRuntimeApi;
 use sp_runtime::traits::Block as BlockT;
 
@@ -28,31 +29,55 @@ type FullBackend = sc_service::TFullBackend<Block>;
 type FullSelectChain = sc_consensus::LongestChain<FullBackend, Block>;
 
 /// Build the node-side Cardano-observation `InherentDataProvider` for a block whose parent is `parent`
-/// (in-protocol-observation, D4). Reads the consensus-pinned config via the `CardanoObserverApi` runtime
-/// API (single source of truth — node + runtime can't drift), derives the stable reference slot from the
-/// PARENT block's Aura slot (so author + every importer agree, design §5.1), and reads THIS node's own
-/// db-sync as-of that slot (ONE consistent snapshot: freshness tip + the deterministic stable-block
-/// anchor + the vault UTxOs). **Fail-closed:** any error (API / header / db-sync down or behind) ⇒ an
-/// empty observation — the author abstains (no inherent; the chain stays live) and an importer that can't
-/// read defers-accepts via the runtime's `CannotVerify` path. Used by BOTH the import and authoring CIDPs.
+/// (in-protocol-observation, D4). Thin wrapper over [`observe_for_parent`] that records exactly one
+/// observation/abstain into the observer-liveness metrics (authoring path only — those gauges track THIS
+/// node's own AUTHORED observations) and wraps the result. Used by BOTH the import and authoring CIDPs; the
+/// import path passes `None` for `metrics`.
 async fn build_cardano_idp(
 	client: Arc<FullClient>,
 	parent: <Block as BlockT>::Hash,
+	metrics: Option<Arc<crate::metrics::ObserverMetrics>>,
 ) -> CardanoObservationInherentDataProvider {
-	let empty = CardanoObservationInherentDataProvider { observation: None };
+	match observe_for_parent(client, parent).await {
+		Some(obs) => {
+			if let Some(m) = &metrics {
+				m.record_observation(obs.reference.slot, obs.entries.len(), obs.stake_entries.len());
+			}
+			CardanoObservationInherentDataProvider { observation: Some(obs) }
+		},
+		None => {
+			if let Some(m) = &metrics {
+				m.record_abstain();
+			}
+			CardanoObservationInherentDataProvider { observation: None }
+		},
+	}
+}
+
+/// The deterministic observation read — returns `Some(observation)` or `None` to ABSTAIN (fail-closed at
+/// every step). Reads the consensus-pinned config via the `CardanoObserverApi` runtime API (single source
+/// of truth — node + runtime can't drift), derives the stable reference slot from the PARENT block's Aura
+/// slot (so author + every importer agree, design §5.1), and reads THIS node's own db-sync as-of that slot
+/// (ONE consistent snapshot: freshness tip + the deterministic stable-block anchor + the vault UTxOs). Any
+/// error (API / header / db-sync down or behind) ⇒ `None` — the author abstains (no inherent; the chain
+/// stays live) and an importer that can't read defers-accepts via the runtime's `CannotVerify` path.
+async fn observe_for_parent(
+	client: Arc<FullClient>,
+	parent: <Block as BlockT>::Hash,
+) -> Option<CardanoObservation> {
 	// 1. consensus-pinned config (anchors, stability window, vault policy id).
 	let config = match client.runtime_api().observer_config(parent) {
 		Ok(c) => c,
 		Err(e) => {
 			log::warn!(target: "cardano-observer", "observer_config runtime API failed: {e:?} — abstaining");
-			return empty;
+			return None;
 		},
 	};
 	// 2. parent block's Aura slot → canonical unix time (slot × SLOT_DURATION). Genesis ⇒ slot 0 ⇒
 	//    pre-Shelley ⇒ abstain.
 	let header = match client.header(parent) {
 		Ok(Some(h)) => h,
-		_ => return empty,
+		_ => return None,
 	};
 	let parent_slot = match sc_consensus_aura::standalone::find_pre_digest::<
 		Block,
@@ -60,7 +85,7 @@ async fn build_cardano_idp(
 	>(&header)
 	{
 		Ok(s) => s,
-		Err(_) => return empty,
+		Err(_) => return None,
 	};
 	let parent_unix_s =
 		u64::from(parent_slot).saturating_mul(cogno_chain_runtime::SLOT_DURATION / 1000);
@@ -72,12 +97,12 @@ async fn build_cardano_idp(
 		config.stability_slots,
 	) {
 		Some(r) => r,
-		None => return empty,
+		None => return None,
 	};
 	let dbsync_url = std::env::var("DBSYNC_URL").or_else(|_| std::env::var("DBSYNC")).unwrap_or_default();
 	if dbsync_url.is_empty() {
 		log::warn!(target: "cardano-observer", "no DBSYNC_URL/DBSYNC set — abstaining (empty observation)");
-		return empty;
+		return None;
 	}
 	let vault_hex = hex_encode(&config.vault_policy_id);
 	// 4. ONE consistent-snapshot db-sync read: freshness tip + the deterministic stable-block anchor + the
@@ -87,7 +112,7 @@ async fn build_cardano_idp(
 		Ok(r) => r,
 		Err(e) => {
 			log::warn!(target: "cardano-observer", "db-sync read failed: {e} — abstaining (empty observation)");
-			return empty;
+			return None;
 		},
 	};
 	// 4a. point-existence guard (§5.4): only trust the read if THIS node's db-sync has indexed PAST the
@@ -99,7 +124,7 @@ async fn build_cardano_idp(
 			"db-sync tip slot {} < reference {ref_slot} — source behind, abstaining (defer/CannotVerify)",
 			read.tip_slot,
 		);
-		return empty;
+		return None;
 	}
 	// 4b. the SEALED stable block-hash anchor (in-protocol-observation §15.3, Midnight delta A.1): the
 	//     header hash of the latest stable Cardano block AT/UNDER the reference — the single `block` row at
@@ -115,7 +140,7 @@ async fn build_cardano_idp(
 				"no db-sync block at/under reference {ref_slot} (tip {}) — abstaining (defer/CannotVerify)",
 				read.tip_slot,
 			);
-			return empty;
+			return None;
 		},
 	};
 	// 5. the VOTING-POWER (epoch_stake) read: the bound stake credentials (from the parent block's state,
@@ -126,7 +151,7 @@ async fn build_cardano_idp(
 		Ok(c) => c,
 		Err(e) => {
 			log::warn!(target: "cardano-observer", "bound_stake_credentials runtime API failed: {e:?} — abstaining");
-			return empty;
+			return None;
 		},
 	};
 	let stake_entries = match dbsync::read_stake_observation(
@@ -140,7 +165,7 @@ async fn build_cardano_idp(
 		Ok(s) => s.entries,
 		Err(e) => {
 			log::warn!(target: "cardano-observer", "db-sync epoch_stake read failed: {e} — abstaining (empty observation)");
-			return empty;
+			return None;
 		},
 	};
 	// 6. reduce the db-sync matches (canonical largest-wins-per-beacon) + canonicalize the stake set.
@@ -155,7 +180,7 @@ async fn build_cardano_idp(
 		"observed {} vault + {} stake entrie(s) as-of slot {} ({} db-sync match(es), {} bound cred(s), anchor block {})",
 		obs.entries.len(), obs.stake_entries.len(), ref_slot, read.matches.len(), bound_creds.len(), hex_encode(&anchor_hash),
 	);
-	CardanoObservationInherentDataProvider { observation: Some(obs) }
+	Some(obs)
 }
 
 /// The minimum period of blocks on which justifications will be
@@ -246,8 +271,9 @@ pub fn new_partial(config: &Configuration) -> Result<Service, ServiceError> {
 						);
 
 					// D4: the importer re-derives its OWN Cardano observation at the parent-derived
-					// reference; the runtime's check_inherent compares it to the author's.
-					let cardano = build_cardano_idp(cidp_client.clone(), parent_hash).await;
+					// reference; the runtime's check_inherent compares it to the author's. No metrics on the
+					// import path — the observer-liveness gauges track THIS node's own AUTHORED observations.
+					let cardano = build_cardano_idp(cidp_client.clone(), parent_hash, None).await;
 
 					Ok((slot, timestamp, cardano))
 				}
@@ -357,6 +383,23 @@ pub fn new_full<
 	let enable_grandpa = !config.disable_grandpa;
 	let prometheus_registry = config.prometheus_registry().cloned();
 
+	// Register the cogno observer-liveness metrics on the node's Prometheus registry (if enabled). An
+	// abstaining observer still authors blocks, so the generic `substrate_*` liveness gauges stay green
+	// while weight goes stale — these `cogno_observer_*` gauges are the dedicated signal (fed from the
+	// authoring CIDP below). Registration failure is non-fatal: run without them.
+	let observer_metrics = prometheus_registry.as_ref().and_then(|registry| {
+		match crate::metrics::ObserverMetrics::register(registry) {
+			Ok(m) => Some(Arc::new(m)),
+			Err(e) => {
+				log::warn!(
+					target: "cardano-observer",
+					"failed to register observer Prometheus metrics: {e} — running without them"
+				);
+				None
+			},
+		}
+	});
+
 	let rpc_extensions_builder = {
 		let client = client.clone();
 		let pool = transaction_pool.clone();
@@ -407,6 +450,8 @@ pub fn new_full<
 		let slot_duration = sc_consensus_aura::slot_duration(&*client)?;
 			// D4: a client clone for the authoring CIDP (it produces this node's observation too).
 			let cardano_idp_client = client.clone();
+			// The observer-liveness metrics for the authoring path (cloned into the CIDP closure below).
+			let authoring_metrics = observer_metrics.clone();
 
 		let aura = sc_consensus_aura::start_aura::<AuraPair, _, _, _, _, _, _, _, _, _, _>(
 			StartAuraParams {
@@ -417,6 +462,7 @@ pub fn new_full<
 				proposer_factory,
 				create_inherent_data_providers: move |parent_hash, ()| {
 					let cardano_idp_client = cardano_idp_client.clone();
+					let metrics = authoring_metrics.clone();
 					async move {
 						let timestamp = sp_timestamp::InherentDataProvider::from_system_time();
 
@@ -426,8 +472,9 @@ pub fn new_full<
 								slot_duration,
 							);
 
-						// D4: the author proposes this node's observation as-of the parent-derived reference.
-						let cardano = build_cardano_idp(cardano_idp_client, parent_hash).await;
+						// D4: the author proposes this node's observation as-of the parent-derived reference,
+						// recording it into the observer-liveness metrics (authoring path only).
+						let cardano = build_cardano_idp(cardano_idp_client, parent_hash, metrics).await;
 
 						Ok((slot, timestamp, cardano))
 					}

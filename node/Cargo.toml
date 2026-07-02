@@ -23,15 +23,16 @@ clap = { features = ["derive"], workspace = true }
 async-trait = "0.1"
 log = { workspace = true }
 codec = { features = ["std"], workspace = true }
-serde_json = { features = ["std"], workspace = true }
 pallet-cardano-observer = { features = ["std"], workspace = true }
-# in-protocol-observation (D4): the per-node Cardano db-sync read (deterministic stable-block anchor +
-# vault UTxO observation). NoTls — cogno_reader is a read-only role on a private-LAN db-sync that also
-# allows plaintext; TLS is a MAINNET PREREQUISITE (keeps the node free of a TLS dependency stack). The
-# read is bounded by an in-IDP timeout so a slow/down db-sync can't stall authoring/import (fail-closed
-# → empty observation). db-sync gives a deterministic "block at/before slot S" anchor.
-tokio = { version = "1", default-features = false, features = ["rt", "time", "sync"] }
-tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+# in-protocol-observation (D4): the per-node Cardano db-sync read + reduction now lives in the shared
+# `cogno-dbsync` crate (folded out of the former node/src/dbsync.rs + node/src/cardano_observer.rs pure
+# half). The node is the WRITER (its inherent) and the cogno-chain-cli reuses the SAME crate read-only —
+# both byte-identical. It pulls tokio/tokio-postgres transitively; the node no longer depends on them
+# directly. NoTls — cogno_reader is a read-only role on a private-LAN db-sync; TLS is a MAINNET PREREQUISITE.
+cogno-dbsync = { workspace = true }
+# In-node observer-liveness Prometheus metrics — the `cogno_observer_*` gauges registered on the node's
+# `config.prometheus_registry()` (so chain-liveness alerts staying green can't mask a stale observer).
+substrate-prometheus-endpoint = { default-features = true, workspace = true }
 frame-benchmarking-cli = { default-features = true, workspace = true }
 frame-metadata-hash-extension = { default-features = true, workspace = true }
 frame-system = { default-features = true, workspace = true }

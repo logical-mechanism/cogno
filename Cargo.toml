@@ -9,6 +9,11 @@ resolver = "2"
 members = [
 	"node",
 	"runtime",
+	# Shared no-node crates (the all-Rust consolidation): the deterministic Cardano db-sync reader +
+	# reduction reused byte-identically by the node inherent (writer) and the cogno-chain-cli (read-only),
+	# and the cardano-cli-style key-file format used by the CLI signer + node gen-chainspec / key insert-file.
+	"cogno-dbsync",
+	"cogno-keyfile",
 	"pallets/microblog",
 	"pallets/talk-stake",
 	"pallets/cogno-gate",
@@ -16,6 +21,8 @@ members = [
 	"pallets/profile",
 	"pallets/validator-set",
 	"pallets/cardano-observer",
+	# Sudo-free governance: the committee-governed runtime-upgrade authorizer (fills the vacant index 7).
+	"pallets/governed-upgrade",
 ]
 
 [workspace.package]
@@ -43,6 +50,14 @@ pallet-profile = { path = "pallets/profile", default-features = false }
 pallet-validator-set = { path = "pallets/validator-set", default-features = false }
 # in-protocol-observation (D4): sets talk-stake weight from a consensus-verified Cardano inherent.
 pallet-cardano-observer = { path = "pallets/cardano-observer", default-features = false }
+# Sudo-free governance: committee-authorized runtime upgrades (AuthorityOrigin-gated authorize_upgrade +
+# the permissionless frame_system::apply_authorized_upgrade). No sudo, no set_storage — least privilege.
+pallet-governed-upgrade = { path = "pallets/governed-upgrade", default-features = false }
+# The shared no-node deterministic Cardano db-sync reader + reduction (std-only). The node inherent is
+# the WRITER; the cogno-chain-cli `query weight --dbsync` reuses it read-only — both byte-identical.
+cogno-dbsync = { path = "cogno-dbsync" }
+# The shared cardano-cli-style key-file format (secret keys BY FILE PATH, never seed phrases).
+cogno-keyfile = { path = "cogno-keyfile" }
 
 # ── codec / type info ──────────────────────────────────────────────────────────
 codec = { package = "parity-scale-codec", version = "3.7.5", default-features = false }
@@ -128,3 +143,6 @@ sp-version = { version = "44.0.0", default-features = false }
 substrate-build-script-utils = { version = "11.0.0" }
 substrate-frame-rpc-system = { version = "50.0.0", default-features = false }
 substrate-wasm-builder = { version = "32.0.0", default-features = false }
+# The Prometheus endpoint the SDK's built-in `substrate_*` metrics register on — the node registers its
+# own `cogno_observer_*` observer-liveness gauges on the same `config.prometheus_registry()`.
+substrate-prometheus-endpoint = { version = "0.17.7", default-features = false }
