@@ -17,7 +17,6 @@ members = [
 	"pallets/microblog",
 	"pallets/talk-stake",
 	"pallets/cogno-gate",
-	"pallets/anchor",
 	"pallets/profile",
 	"pallets/validator-set",
 	"pallets/cardano-observer",
@@ -41,7 +40,6 @@ cogno-chain-runtime = { path = "runtime", default-features = false }
 pallet-microblog = { path = "pallets/microblog", default-features = false }
 pallet-talk-stake = { path = "pallets/talk-stake", default-features = false }
 pallet-cogno-gate = { path = "pallets/cogno-gate", default-features = false }
-pallet-anchor = { path = "pallets/anchor", default-features = false }
 # Twitter-like social-actions branch: mutable per-account display profile (name/bio/avatar),
 # identity-gated via the microblog IsAllowed trait.
 pallet-profile = { path = "pallets/profile", default-features = false }

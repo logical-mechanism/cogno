@@ -38,7 +38,7 @@ Each phase must keep `cargo build --workspace`, `cargo test --workspace`, `cd ap
 | 2 | Node consumes `cogno-dbsync` + `node/src/metrics.rs` | ✅ done |
 | 3 | Sudo-free governance + `governed-upgrade@7` + genesis reshape | ✅ done |
 | 4 | Observer sole weight writer (delete `set_stake`, enforce) | ✅ done |
-| 5 | Drop anchoring | ⬜ todo |
+| 5 | Drop anchoring | ✅ done |
 | 6 | Fold reads into node (`MicroblogApi` + staged `search_*`) | ⬜ todo |
 | 7 | Build `cogno-chain-cli` + node subcommands | ⬜ todo |
 | 8 | Delete services + rewire frontend | ⬜ todo |

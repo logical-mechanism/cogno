@@ -271,8 +271,8 @@ impl pallet_collective::Config<Instance1> for Runtime {
 /// The crown-jewel authority origin: a **3-of-5 supermajority** of the [`FollowerCommittee`]
 /// (`EnsureProportionAtLeast<3,5>`, `needed = ceil(n*3/5)` so it works at every size — 1→1, 3→2, 5→3,
 /// 7→5). cogno-chain is SUDO-FREE, so there is NO `EnsureRoot` fallback. Shared by the committee's own
-/// self-policing origins, `cogno-gate::FollowerOrigin`, `anchor::AnchorOrigin` (until anchoring is
-/// dropped), `microblog::ForceOrigin`, `validator-set::AddRemoveOrigin`, `cardano-observer::EnforceOrigin`
+/// self-policing origins, `cogno-gate::FollowerOrigin`, `microblog::ForceOrigin`,
+/// `validator-set::AddRemoveOrigin`, `cardano-observer::EnforceOrigin`
 /// (the weight-freeze control — the observer, not this origin, writes weight), and
 /// `governed-upgrade::AuthorityOrigin` — so identity, validators, upgrades, and force-capacity all sit
 /// behind ONE trust boundary (L2 §8.4, L3 §4.5).
@@ -448,19 +448,6 @@ impl pallet_cogno_gate::Config for Runtime {
 	// The Cardano network the on-chain self-proof binds for: 0 = testnet (live preprod), 1 = mainnet.
 	type CardanoNetwork = ConstU8<0>;
 	type WeightInfo = pallet_cogno_gate::weights::SubstrateWeight<Runtime>;
-}
-
-/// Configure pallet-anchor (M3, Tier-A: the Cardano WRITE link). Records the Anchor Relayer's
-/// confirmed checkpoints (finalized state-root → Cardano metadata txhash) via `anchor_ack`. The
-/// `AnchorOrigin` is the trusted relayer; in v1 dev that authority is sudo (`EnsureRoot`, the
-/// DR-07 escape hatch), so the relayer can ack via `Sudo.sudo(anchor_ack {..})` exactly as the
-/// follower drives `set_stake`/`link_identity`. Evidence, not enforcement (DR-20); the
-/// `EnsureOrigin` shape keeps the widen to a k-of-t committee signature-free.
-impl pallet_anchor::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	// DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
-	type AnchorOrigin = AuthorityOrigin;
-	type WeightInfo = pallet_anchor::weights::SubstrateWeight<Runtime>;
 }
 
 /// Beacon → bound account adapter for pallet-cardano-observer: the beacon name IS the cogno-gate

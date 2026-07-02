@@ -36,7 +36,6 @@ frame_benchmarking::define_benchmarks!(
 	// NOTE: no pallet-talk-stake — it is now a call-less observer-written ledger (no dispatchables to bench).
 	[pallet_cogno_gate, CognoGate]
 	[pallet_microblog, Microblog]
-	[pallet_anchor, Anchor]
 	// Social-actions branch: the fee-bearing display-profile pallet.
 	[pallet_profile, Profile]
 	// M6 (DR-26): real WeightInfo for the mutable-authority add/remove extrinsics.

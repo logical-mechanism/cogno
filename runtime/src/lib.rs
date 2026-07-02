@@ -417,11 +417,10 @@ mod runtime {
 	#[runtime::pallet_index(11)]
 	pub type SkipFeelessPayment = pallet_skip_feeless_payment;
 
-	// 12 = Anchor (M3, the Tier-A Cardano WRITE link): records the relayer-confirmed
-	// finalized-state-root → Cardano-metadata-txhash checkpoints. Records only, never
-	// snapshots a root itself (PLAN §4.9). Next free index after SkipFeelessPayment.
-	#[runtime::pallet_index(12)]
-	pub type Anchor = pallet_anchor;
+	// (Index 12 is permanently vacant: anchoring was DROPPED in the all-Rust restart — the chain is
+	// observe-only, with no Cardano WRITE link / `pallet-anchor`. FRAME allows index gaps. The stable
+	// Cardano block reference is still SEALED into each block header by the `cobs` proposer, but that is
+	// the node-side consensus header seal (`node/src/consensus/`), unrelated to the removed pallet.)
 
 	// 13 = FollowerCommittee (M5, DR-07): the MUTABLE 3-of-5 k-of-t committee that is the SOLE
 	// governance authority — it backs the crown-jewel origins (cogno-gate FollowerOrigin / microblog
