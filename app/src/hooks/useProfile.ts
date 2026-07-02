@@ -2,12 +2,13 @@
 
 // useProfile — fetch one author's profile + posts via the seam (tab-aware: Posts / Replies / Likes).
 // The seam returns the FIRST page (with a cursor); on the Posts tab `loadMore` pages by post id via
-// `source.page({authorId, after})` and appends. Display fields (name/bio/avatar/counts) come back on
-// both readers now (pallet-profile + the spec-118 reverse maps); the Replies tab needs the indexer.
+// `source.page({authorId, after})` and appends. Everything is node-served now (pallet-profile + the
+// spec-118 reverse maps for the header/counts, and spec-200 `author_replies_page` for the Replies tab).
 //
-// Only the Posts tab paginates by id — the Likes/Replies tabs have no per-id cursor on the PAPI seam
-// (their first page is a reverse-index read), so `page({authorId})` would return the WRONG set; we
-// gate load-more to the Posts tab to avoid that.
+// Only the Posts tab paginates here. `loadMore` issues `page({authorId, after})` WITHOUT a `tab`, which
+// routes to the top-level author-feed branch — so enabling it for Replies/Likes would append the WRONG
+// set (the node DOES expose a replies cursor via `author_replies_page`, but this hook doesn't thread
+// `tab:"replies"` through load-more). We gate load-more to the Posts tab (`canPage`) to avoid that.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { mergeById } from "@/lib/feed/live";

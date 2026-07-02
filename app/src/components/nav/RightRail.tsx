@@ -2,11 +2,10 @@
 
 // RightRail — the desktop (≥1020px) right column (doc 01 §5.2 / §6.3). Sticky full-height:
 //   1. SearchBar — submitting routes to /explore/ (the explore surface reads the term client-side).
-//      Gated on caps.search; when the active reader is PAPI-direct the input disables itself with the
-//      honest "needs the indexer" placeholder (SearchBar owns that), and submitting still lands on
-//      /explore where the inline note shows.
+//      Gated on caps.search (node-served — true once connected); the input disables itself only before
+//      connect (SearchBar owns that placeholder), and submitting still lands on /explore.
 //   2. "Who to follow" — up to 3 suggestions (useWhoToFollow; caps.whoToFollow), each with a
-//      FollowButton (optimistic, useFollow). Hidden entirely on PAPI-direct (no fake empties).
+//      FollowButton (optimistic, useFollow). Node-served (FollowerCount ranking); hidden only when empty.
 //   3. Footer — ThemeToggle + an About link to /settings/. No trends, no premium upsell.
 
 import { useCallback, useState } from "react";

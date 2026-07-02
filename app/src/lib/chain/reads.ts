@@ -1,6 +1,6 @@
 // Live + paged chain reads: id-paged feed pages, keyed thread reconstruction, the head positions
-// (best vs finalized), the Cardano anchor, and a single-post fetch. All read paths are keyless —
-// reading the Civic Ledger never needs a key.
+// (best vs finalized), and a single-post fetch. All read paths are keyless — reading the Civic
+// Ledger never needs a key.
 //
 // SCALING POSTURE (spec 119): the feed NEVER pulls the full `Posts` set. Posts have a sequential
 // `NextPostId` counter, so the global/author feeds PAGE by id with keyed `Posts.getValue(id)` reads
@@ -16,7 +16,6 @@ import type {
   CognoPost,
   ChainHeads,
   BlockRef,
-  AnchorCheckpoint,
   Ss58,
 } from "@/lib/types";
 
@@ -388,7 +387,7 @@ export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThre
   return { root, ancestors, replies, replyCount: root.replyCount ?? 0 };
 }
 
-// ── head positions + Cardano anchor (unchanged from the load-all era) ─────────────────────────────
+// ── head positions (unchanged from the load-all era) ──────────────────────────────────────────────
 
 /** Project a PAPI BlockInfo into the minimal BlockRef the UI labels with. */
 function toBlockRef(info: { number: number; hash: string } | null): BlockRef | null {
@@ -412,36 +411,6 @@ export function watchHeads(client: PolkadotClient): Observable<ChainHeads> {
       best: toBlockRef(best),
       finalized: toBlockRef(finalized),
     })),
-  );
-}
-
-/** The raw `Anchor.LastCheckpoint` value as PAPI decodes it (snake_case struct fields). */
-interface RawCheckpoint {
-  block_number: number;
-  finalized_root: { asHex: () => string };
-  cardano_txhash: { asHex: () => string };
-  post_count: bigint;
-  timestamp: bigint;
-}
-
-/**
- * The live Cardano anchor checkpoint (`Anchor.LastCheckpoint`, M3 Tier-A). Emits `null` until the
- * relayer has anchored at least once, then the latest checkpoint on every change. Watched at the
- * best head so the UI updates the moment `anchor_ack` lands (it is a record, not consensus state).
- */
-export function watchAnchor(api: CognoApi): Observable<AnchorCheckpoint | null> {
-  return api.query.Anchor.LastCheckpoint.watchValue("best").pipe(
-    map((cp): AnchorCheckpoint | null => {
-      if (!cp) return null;
-      const c = cp as unknown as RawCheckpoint;
-      return {
-        blockNumber: c.block_number,
-        finalizedRoot: c.finalized_root.asHex(),
-        cardanoTxHash: c.cardano_txhash.asHex(),
-        postCount: c.post_count,
-        timestamp: c.timestamp,
-      };
-    }),
   );
 }
 

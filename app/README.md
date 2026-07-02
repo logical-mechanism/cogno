@@ -42,9 +42,7 @@ which wins over the localhost fallback.
 
 | Settings field | Build-time env | Default | What it is |
 |---|---|---|---|
-| WebSocket endpoint(s) | `NEXT_PUBLIC_WS_URL` | `ws://127.0.0.1:9944` | the app-chain node the SPA reads/writes through (PAPI) |
-| Follower URL | `NEXT_PUBLIC_FOLLOWER_URL` | `http://127.0.0.1:8090` | the trusted v1 cogno-follower the CIP-8 bind POSTs to |
-| GraphQL indexer URL | `NEXT_PUBLIC_GRAPHQL_URL` | *(empty)* | the optional SubQuery indexer for feed/search/threads; empty ⇒ read directly from the node (PAPI-direct) |
+| WebSocket endpoint(s) | `NEXT_PUBLIC_WS_URL` | `ws://127.0.0.1:9944` | the app-chain node the SPA reads/writes through (PAPI) — the SOLE read/write surface (feed / thread / profile / search served node-direct via the spec-200 MicroblogApi; no indexer or follower) |
 | Blockfrost project id | `NEXT_PUBLIC_BLOCKFROST_PROJECT_ID` | *(empty)* | the **preprod** Blockfrost project id the in-browser vault lock/exit txs use; empty ⇒ the lock action is hidden |
 
 The Blockfrost project id is exposed client-side **by design** — so any visitor can lock from their

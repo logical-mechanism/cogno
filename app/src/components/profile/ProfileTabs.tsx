@@ -9,9 +9,10 @@
 // field) — a Media tab would always be empty, so it is deliberately omitted. X's "Highlights" /
 // "Articles" tabs are likewise out.
 //
-// CAPS-DRIVEN VISIBILITY: when the active reader can't serve profiles (PAPI-direct,
-// caps.profiles === false), Replies + Likes need reverse indexes the PAPI path lacks, so only the
-// Posts tab is shown (never shown-then-errored — doc 07 §5.4). The surface passes `showAll`.
+// CAPS-DRIVEN VISIBILITY: each tab is gated on the reader advertising it (showReplies/showLikes). The
+// node serves all three now (Posts + Likes via the spec-118 reverse maps, Replies via spec-200
+// author_replies_page), so all show; a reader that couldn't would hide them (never shown-then-errored,
+// doc 07 §5.4).
 //
 // Presentational: the active tab is client state in the surface; this only renders + reports onChange.
 
@@ -23,7 +24,7 @@ export type ProfileTab = "posts" | "replies" | "likes";
 export interface ProfileTabsProps {
   active: ProfileTab;
   onChange: (tab: ProfileTab) => void;
-  /** Show the Replies tab (indexer-only — no reverse replies-by-author map on-chain). */
+  /** Show the Replies tab (node-served — spec-200 MicroblogApi.author_replies_page). */
   showReplies: boolean;
   /** Show the Likes tab (node-direct since spec-118's VotesByAccount reverse index). */
   showLikes: boolean;

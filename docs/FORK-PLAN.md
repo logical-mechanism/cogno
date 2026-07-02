@@ -41,6 +41,6 @@ Each phase must keep `cargo build --workspace`, `cargo test --workspace`, `cd ap
 | 5 | Drop anchoring | ✅ done |
 | 6 | Fold reads into node (`MicroblogApi` + staged `search_*`) | ✅ done |
 | 7 | Build `cogno-chain-cli` + node subcommands | ✅ done |
-| 8 | Delete services + rewire frontend | ⬜ todo |
+| 8 | Delete services + rewire frontend | ✅ done |
 | 9 | Ops + CI + docs + hygiene | ⬜ todo |
 | 10 | Fresh-genesis relaunch ceremony | ⬜ todo |

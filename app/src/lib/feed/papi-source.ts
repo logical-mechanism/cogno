@@ -13,10 +13,11 @@
 //   - weight is `TalkStake.AllowedStake[account]` (Cardano-sourced lovelace, M2d).
 //   - vote/poll tallies + the viewer's own state come from the aggregate maps (social-reads.ts).
 //
-// What it CANNOT do, honestly (caps say so; the UI hides these — it never greys-with-explanation):
-//   - substring search (no indexer),
-//   - the reverse followers LIST + ranked who-to-follow display names / bios / avatars beyond chain
-//     storage (reverse-index aggregation / denormalized Author fields).
+// Since the all-Rust restart (spec 200) there is NO indexer and NO remaining indexer-only capability:
+// the node serves EVERYTHING the SubQuery indexer used to. The last three folded in at P8b are
+// substring post search + people search (`MicroblogApi.search_posts` / `search_people`, the Option-1
+// in-runtime linear scan) and the reverse Replies tab (`author_replies_page`). Every `caps` flag is now
+// node-served (the spec-200 read API is runtime-detected per node — see `nodeFeedApiReady`).
 //
 // This file does NOT modify reads.ts — it only consumes it (+ social-reads.ts).
 
@@ -39,6 +40,9 @@ import {
   nodeFollowingFeedPage,
   nodeThread,
   nodeAuthorPostCount,
+  nodeSearchPosts,
+  nodeAuthorRepliesPage,
+  nodeSearchPeople,
 } from "@/lib/chain/node-reads";
 import { byIdDesc } from "@/lib/feed/live";
 import {
@@ -135,9 +139,11 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
   const nodeFeedApiReady = (): Promise<boolean> => (nodeFeedApi$ ??= detectNodeFeedApi(api));
 
   const caps: FeedCaps = {
-    search: false,
+    // Substring post search is node-served since the all-Rust restart (spec-200 MicroblogApi.search_posts,
+    // the Option-1 in-runtime linear scan) — the per-call path runtime-detects the API (nodeFeedApiReady).
+    search: true,
     // The feed pages by post id now (keyed `Posts.getValue` walks down the `NextPostId` counter), so
-    // cursor "load more" is served node-direct — no indexer needed. (Search still needs the indexer.)
+    // cursor "load more" is served node-direct — no indexer needed.
     pagination: true,
     threads: true,
     revocation: true,
@@ -148,8 +154,9 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     follows: true,
     // pallet-profile stores display name / bio / avatar / banner / location / website / pinned → node.
     profiles: true,
-    // the Replies reverse tab still needs the indexer (no reverse replies-by-author map on-chain).
-    profileReplies: false,
+    // the Replies reverse tab is node-served since the all-Rust restart (spec-200 author_replies_page
+    // scans the author's own ByAuthor index in reverse — parent != None only, no reverse map needed).
+    profileReplies: true,
     // the Likes reverse tab is node-served via the spec-118 VotesByAccount reverse index.
     profileLikes: true,
     // who-to-follow is ranked node-direct by the FollowerCount map (a popularity proxy; no SCORE).
@@ -193,18 +200,44 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
   });
 
   async function page(q: FeedQuery): Promise<FeedPage> {
-    if (q.search) {
-      throw new UnsupportedQuery(
-        "search needs the indexer — set a GraphQL endpoint, or read the live feed.",
-      );
-    }
     const first = q.first ?? DEFAULT_FIRST;
     // The cursor is the highest post id NOT yet returned (encoded decimal). Decode it to a beforeId.
     const beforeId = q.after != null ? BigInt(q.after) : undefined;
     const viewer = q.viewer;
-    // Prefer the spec-120 MicroblogApi (one state_call, viewer overlay stamped node-side) when the
+    // Prefer the spec-200 MicroblogApi (one state_call, viewer overlay stamped node-side) when the
     // connected node serves it; otherwise fall through to the keyed reads UNCHANGED.
     const nodeApi = await nodeFeedApiReady();
+
+    // Search: node-served ASCII-case-insensitive substring scan over post bodies (spec-200
+    // MicroblogApi.search_posts, the Option-1 in-runtime linear scan). Search has NO keyed fallback —
+    // there is no on-chain text index — so a pre-200 node throws; the caller gates on caps.search (the
+    // SearchBar/explore only query with a non-empty term). A whitespace-only term falls through to the
+    // global feed (matching the old `if (q.search)` empty-string behaviour, no throw).
+    if (q.search && q.search.trim().length > 0) {
+      if (!nodeApi) {
+        throw new UnsupportedQuery("search needs a spec-200 node (MicroblogApi.search_posts).");
+      }
+      return toFeedPage(
+        await nodeSearchPosts(api, q.search.trim(), { beforeId, limit: first, viewer }),
+      );
+    }
+
+    // Replies tab (profile): one author's replies (`parent != None`), newest-first, node-served
+    // (spec-200 MicroblogApi.author_replies_page). No keyed fallback (replies-by-author is a spec-200
+    // node read). DEFENSIVE + forward-compatible: today the Replies first page is built in profile()
+    // and useProfile gates replies load-more OFF (its load-more query omits `tab`), so no caller
+    // reaches here — but it is placed BEFORE the `q.authorId` author-feed branch so that IF a
+    // `{tab:"replies", authorId, after}` page is ever issued it routes to replies, not the author feed.
+    if (q.tab === "replies" && q.authorId) {
+      if (!nodeApi) {
+        throw new UnsupportedQuery(
+          "the Replies tab needs a spec-200 node (MicroblogApi.author_replies_page).",
+        );
+      }
+      return toFeedPage(
+        await nodeAuthorRepliesPage(api, q.authorId, { beforeId, limit: first, viewer }),
+      );
+    }
 
     // Following feed: top-level posts authored by the accounts `target` follows.
     if (q.tab === "following" || q.followeeOf) {
@@ -273,11 +306,8 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
   }
 
   async function profile(args: ProfileArgs): Promise<ProfileView> {
-    // The Replies tab needs the indexer (no reverse replies-by-author map on-chain) — the UI hides it
-    // node-direct. The Likes tab IS node-served below (spec-118 VotesByAccount reverse index).
-    if (args.tab === "replies") {
-      throw new UnsupportedQuery("the Replies tab needs the indexer — set a GraphQL endpoint.");
-    }
+    // Both reverse tabs are node-served since the all-Rust restart: Replies via the spec-200
+    // `author_replies_page` (below), Likes via the spec-118 `VotesByAccount` reverse index (below).
     // Resolve to an account: directly, or via the reverse AccountOf[identityHash] map.
     let account: Ss58 | undefined = args.author;
     if (!account && args.identityHash) {
@@ -331,6 +361,23 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
         .sort(byIdDesc);
       // Liked posts are by OTHER authors → flag each by its own author's revocation, not `account`.
       posts = await flagRevocations(likedPosts);
+    } else if (args.tab === "replies") {
+      // Replies tab: the author's own replies (`parent != None`), newest-first, node-served (spec-200
+      // author_replies_page). FIRST PAGE only here; useProfile gates load-more off for this tab (its
+      // load-more query omits `tab`, so it would route to the top-level author feed). No keyed fallback.
+      if (!(await nodeFeedApiReady())) {
+        throw new UnsupportedQuery(
+          "the Replies tab needs a spec-200 node (MicroblogApi.author_replies_page).",
+        );
+      }
+      const pg = await nodeAuthorRepliesPage(api, account, {
+        limit: DEFAULT_FIRST,
+        viewer: args.viewer,
+      });
+      // The author's own replies → stamp the author's revocation directly (all the same author).
+      posts = pg.posts.map((p) => ({ ...p, authorRevoked: banned }));
+      endCursor = pg.nextCursor != null ? String(pg.nextCursor) : null;
+      hasNextPage = pg.nextCursor != null;
     } else {
       // Posts tab: the author's top-level posts. Node path (spec-120) enriches + viewer-overlays in
       // one state_call; the keyed path pages over the ByAuthor id list. `args.viewer` (the connected
@@ -428,9 +475,14 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     );
   }
 
-  // ── still indexer-only: caps say so; calling this is a logic slip ──
-  function searchPeople(): Promise<Suggestion[]> {
-    throw new UnsupportedQuery("people search needs the indexer — set a GraphQL endpoint.");
+  // ── people search: node-served since the all-Rust restart (spec-200 MicroblogApi.search_people —
+  // display-name substring, ranked by follower count). Gated on caps.search (+ caps.profiles) by the
+  // caller; a pre-200 node throws (there is no on-chain name index to fall back to). ──
+  async function searchPeople(q: string, limit: number): Promise<Suggestion[]> {
+    if (!(await nodeFeedApiReady())) {
+      throw new UnsupportedQuery("people search needs a spec-200 node (MicroblogApi.search_people).");
+    }
+    return nodeSearchPeople(api, q, limit);
   }
 
   // The live feed snapshot, NextPostId-driven (NOT `watchEntries`): each counter change re-reads the
