@@ -65,6 +65,9 @@ pub fn run() -> sc_cli::Result<()> {
 				Ok((cmd.run(client, import_queue), task_manager))
 			})
 		},
+		Some(Subcommand::GenChainSpec(cmd)) => {
+			crate::gen_chainspec::run(cmd).map_err(|e| sc_cli::Error::Application(e.into()))
+		},
 		Some(Subcommand::ExportChainSpec(cmd)) => {
 			let chain_spec = cli.load_spec(&cmd.chain)?;
 			cmd.run(chain_spec)

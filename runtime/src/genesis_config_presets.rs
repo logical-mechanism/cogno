@@ -24,6 +24,7 @@ use frame_support::build_struct_json_patch;
 use serde_json::Value;
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use sp_consensus_grandpa::AuthorityId as GrandpaId;
+use sp_core::{ed25519, sr25519};
 use sp_genesis_builder::{self, PresetId};
 use sp_keyring::{Ed25519Keyring, Sr25519Keyring};
 
@@ -164,6 +165,46 @@ pub fn local_config_genesis() -> Value {
 		],
 		dev_weights(),
 	)
+}
+
+/// Build an **operator-keyed** genesis (the `cogno-chain-node gen-chainspec` subcommand): the same shape
+/// as [`development_config_genesis`] but with the validator authorities, committee, and endowment seeded
+/// from OPERATOR key FILES (via `cogno-keyfile`) instead of the well-known dev keys — the production-genesis
+/// gap, closed. It lives here (not in the node) so the genesis shape stays defined alongside the presets.
+/// Inputs are raw public-key bytes so the node need not depend on the `AuraId`/`GrandpaId` app-crypto types.
+///
+/// - `validators`: one `(account, aura_sr25519_pub, grandpa_ed25519_pub)` per genesis authority.
+/// - `committee`: the initial committee member accounts (the sole sudo-free governance authority).
+/// - `extra_endowed`: further accounts to fund (the validator + committee accounts are ALWAYS endowed so
+///   they can pay the fee-bearing governance calls).
+///
+/// Talk-stake weights are seeded EMPTY: on a real (preprod) chain the cardano-observer inherent is the sole
+/// weight writer and credits actual locked-ADA vault weight from block 0 (there is no `set_stake` call).
+pub fn operator_genesis(
+	validators: Vec<(AccountId, [u8; 32], [u8; 32])>,
+	committee: Vec<AccountId>,
+	extra_endowed: Vec<AccountId>,
+) -> Value {
+	let authorities: Vec<(AccountId, AuraId, GrandpaId)> = validators
+		.into_iter()
+		.map(|(account, aura, grandpa)| {
+			(
+				account,
+				AuraId::from(sr25519::Public::from_raw(aura)),
+				GrandpaId::from(ed25519::Public::from_raw(grandpa)),
+			)
+		})
+		.collect();
+	let mut endowed: Vec<AccountId> = authorities
+		.iter()
+		.map(|(a, _, _)| a.clone())
+		.chain(committee.iter().cloned())
+		.chain(extra_endowed)
+		.collect();
+	endowed.sort();
+	endowed.dedup();
+	// EMPTY initial weights: the observer credits real Cardano vault weight from block 0 (sole writer).
+	testnet_genesis(authorities, endowed, committee, Vec::new())
 }
 
 /// Provides the JSON representation of predefined genesis config for given `id`.

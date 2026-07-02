@@ -112,6 +112,9 @@ sc-consensus = { version = "0.55.0", default-features = false }
 sc-consensus-aura = { version = "0.56.0", default-features = false }
 sc-consensus-grandpa = { version = "0.41.0", default-features = false }
 sc-executor = { version = "0.48.0", default-features = false }
+# `key insert-file`: open the LocalKeystore + insert a session secret read (by file path) from a
+# cogno-keyfile envelope — the file-path analogue of the SDK's `--suri` `key insert`.
+sc-keystore = { version = "40.0.0", default-features = false }
 sc-network = { version = "0.56.1", default-features = false }
 sc-offchain = { version = "51.0.0", default-features = false }
 sc-service = { version = "0.57.0", default-features = false }
@@ -131,6 +134,8 @@ sp-genesis-builder = { version = "0.22.0", default-features = false }
 sp-inherents = { version = "41.0.0", default-features = false }
 sp-io = { version = "45.0.0", default-features = false }
 sp-keyring = { version = "46.0.0", default-features = false }
+# `key insert-file`: the Keystore trait + KeystorePtr the file-based session-key insert writes through.
+sp-keystore = { version = "0.46.0", default-features = false }
 sp-offchain = { version = "41.0.0", default-features = false }
 sp-runtime = { version = "46.0.0", default-features = false }
 sp-session = { version = "43.0.0", default-features = false }

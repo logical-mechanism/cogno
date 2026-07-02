@@ -314,6 +314,15 @@ pub fn new_full<
 		other: (block_import, grandpa_link, mut telemetry),
 	} = new_partial(&config)?;
 
+	// fork/all-rust P7: a one-shot, non-blocking startup config check — read the consensus-pinned observer
+	// config from the runtime + (if DBSYNC_URL is set) probe db-sync for the vault under the pinned policy.
+	// Logs only; never gates authoring (the chain produces + finalizes regardless of the outcome).
+	task_manager.spawn_handle().spawn(
+		"cogno-config-check",
+		None,
+		crate::config_check::run(client.clone()),
+	);
+
 	let mut net_config = sc_network::config::FullNetworkConfiguration::<
 		Block,
 		<Block as sp_runtime::traits::Block>::Hash,

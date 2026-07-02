@@ -30,6 +30,9 @@ pallet-cardano-observer = { features = ["std"], workspace = true }
 # both byte-identical. It pulls tokio/tokio-postgres transitively; the node no longer depends on them
 # directly. NoTls — cogno_reader is a read-only role on a private-LAN db-sync; TLS is a MAINNET PREREQUISITE.
 cogno-dbsync = { workspace = true }
+# gen-chainspec (reads operator PUBLIC keys for an operator-keyed genesis) + key insert-file (reads a
+# session secret from an envelope BY FILE PATH). Shared with the CLI signer, so the on-disk format can't drift.
+cogno-keyfile = { workspace = true }
 # In-node observer-liveness Prometheus metrics — the `cogno_observer_*` gauges registered on the node's
 # `config.prometheus_registry()` (so chain-liveness alerts staying green can't mask a stale observer).
 substrate-prometheus-endpoint = { default-features = true, workspace = true }
@@ -49,6 +52,8 @@ sc-consensus = { default-features = true, workspace = true }
 sc-consensus-aura = { default-features = true, workspace = true }
 sc-consensus-grandpa = { default-features = true, workspace = true }
 sc-executor = { default-features = true, workspace = true }
+# `key insert-file`: open the LocalKeystore + insert the file-derived session secret.
+sc-keystore = { default-features = true, workspace = true }
 sc-network = { default-features = true, workspace = true }
 sc-offchain = { default-features = true, workspace = true }
 sc-service = { default-features = true, workspace = true }
@@ -66,6 +71,8 @@ sp-genesis-builder = { default-features = true, workspace = true }
 sp-inherents = { default-features = true, workspace = true }
 sp-io = { default-features = true, workspace = true }
 sp-keyring = { default-features = true, workspace = true }
+# `key insert-file`: the Keystore trait + KeystorePtr the file-based session-key insert writes through.
+sp-keystore = { default-features = true, workspace = true }
 sp-runtime = { default-features = true, workspace = true }
 sp-timestamp = { default-features = true, workspace = true }
 substrate-frame-rpc-system = { default-features = true, workspace = true }

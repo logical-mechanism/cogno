@@ -10,9 +10,16 @@ pub struct Cli {
 #[derive(Debug, clap::Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub enum Subcommand {
-	/// Key management cli utilities
+	/// Key management: the SDK key utilities (flattened) + `insert-file` (insert a session secret from a
+	/// `cogno-chain-cli key gen` key FILE by path — no jq/`--suri`).
 	#[command(subcommand)]
-	Key(sc_cli::KeySubcommand),
+	Key(crate::key::KeyCmd),
+
+	/// Generate an OPERATOR-KEYED chain spec from `cogno-chain-cli key gen` key FILES: seats the validator
+	/// authority + committee + session keys from real keys (never dev keys / seed phrases). Writes a plain
+	/// + a raw spec; the raw one is what the node runs with `--chain`.
+	#[command(name = "gen-chainspec")]
+	GenChainSpec(crate::gen_chainspec::GenChainSpecCmd),
 
 	/// Build a chain specification.
 	/// DEPRECATED: `build-spec` command will be removed after 1/04/2026. Use `export-chain-spec`
