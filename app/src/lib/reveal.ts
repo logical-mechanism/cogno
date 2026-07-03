@@ -44,6 +44,15 @@ export function reveal(key: string): void {
   emit();
 }
 
+/** Re-cover `key` (put the reveal gate back) — the inverse of {@link reveal}. No-op if not revealed. */
+export function unreveal(key: string): void {
+  if (!revealed.has(key)) return;
+  const next = new Set(revealed);
+  next.delete(key);
+  revealed = next;
+  emit();
+}
+
 /** Subscribe a component to a single key's reveal state. Returns a stable boolean snapshot. */
 export function useRevealed(key: string): boolean {
   return useSyncExternalStore(

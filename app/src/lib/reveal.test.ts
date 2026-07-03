@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reveal, isRevealed } from "./reveal";
+import { reveal, unreveal, isRevealed } from "./reveal";
 
 // The store is a module singleton, so each test uses a distinct key (state accumulates within a file,
 // but vitest isolates modules per test file).
@@ -15,5 +15,19 @@ describe("reveal store — session reveal memory", () => {
     reveal("k1");
     expect(isRevealed("k1")).toBe(true);
     expect(isRevealed("k2")).toBe(false);
+  });
+
+  it("unreveal() re-covers a revealed key (the inverse of reveal), idempotently", () => {
+    reveal("u1");
+    expect(isRevealed("u1")).toBe(true);
+    unreveal("u1");
+    expect(isRevealed("u1")).toBe(false);
+    // idempotent + a no-op on a key that was never revealed
+    unreveal("u1");
+    unreveal("never");
+    expect(isRevealed("u1")).toBe(false);
+    // re-covering then revealing again works (round-trip)
+    reveal("u1");
+    expect(isRevealed("u1")).toBe(true);
   });
 });

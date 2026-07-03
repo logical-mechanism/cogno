@@ -11,8 +11,8 @@
 // The caller's box sets the size/shape (post-media card, banner, …); RevealImage fills it.
 
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { reveal, useRevealed } from "@/lib/reveal";
-import { IconEye } from "./icons";
+import { reveal, unreveal, useRevealed } from "@/lib/reveal";
+import { IconEye, IconEyeOff } from "./icons";
 import styles from "./RevealImage.module.css";
 
 export interface RevealImageProps {
@@ -25,6 +25,8 @@ export interface RevealImageProps {
   fit?: "cover" | "contain";
   /** Cover button label (a11y + visible unless `compact`). */
   label?: string;
+  /** Re-cover ("hide") button label — the affordance to undo a reveal (a11y + tooltip). */
+  hideLabel?: string;
   /** Icon-only cover (no visible label) — for tight boxes. */
   compact?: boolean;
   /** Rendered if the image fails to load. Defaults to a small "unavailable" note. */
@@ -42,6 +44,7 @@ export function RevealImage({
   revealKey,
   fit = "cover",
   label = "Show image",
+  hideLabel = "Hide image",
   compact = false,
   fallback,
   href,
@@ -96,25 +99,40 @@ export function RevealImage({
     />
   );
 
-  if (href) {
-    return (
-      <a
-        className={root}
-        style={style}
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer nofollow"
-        onClick={(e) => e.stopPropagation()}
-        title={alt}
-      >
-        {img}
-      </a>
-    );
-  }
+  // When href is set the image is a new-tab link; the hide button is a SIBLING of that link (never
+  // nested inside the <a>, which would be invalid + un-clickable) so re-covering always works.
+  const inner = href ? (
+    <a
+      className={styles.link}
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer nofollow"
+      onClick={(e) => e.stopPropagation()}
+      title={alt}
+    >
+      {img}
+    </a>
+  ) : (
+    img
+  );
 
   return (
     <span className={root} style={style}>
-      {img}
+      {inner}
+      {/* Re-cover: undo an accidental / unwanted reveal, restoring the gate. */}
+      <button
+        type="button"
+        className={styles.hideBtn}
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          unreveal(key);
+        }}
+        aria-label={hideLabel}
+        title={hideLabel}
+      >
+        <IconEyeOff className={styles.hideIcon} aria-hidden />
+      </button>
     </span>
   );
 }

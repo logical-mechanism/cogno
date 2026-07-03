@@ -122,6 +122,7 @@ export function ProfileHeader({
             alt="Profile banner"
             fit="cover"
             label="Show banner"
+            hideLabel="Hide banner"
             fallback={<span className={styles.bannerFallback} style={bannerStyle(address)} />}
           />
         </div>

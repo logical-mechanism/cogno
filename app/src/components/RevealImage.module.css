@@ -64,6 +64,68 @@
   font-weight: var(--cg-fw-medium);
 }
 
+/* the revealed image, wrapped as a new-tab link when href is set — fills the root box */
+.link {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* re-cover ("hide") button — a subtle floating chip in the corner of a revealed image that restores
+ * the reveal gate (undo an accidental / unwanted reveal). Appears on hover/focus of the box; always
+ * visible on touch (no hover to surface it). */
+.hideBtn {
+  position: absolute;
+  top: var(--cg-space-2);
+  right: var(--cg-space-2);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background-color: var(--cg-bg-elevated);
+  color: var(--cg-text-secondary);
+  box-shadow: var(--cg-shadow-menu);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--cg-motion-fast) var(--cg-ease-standard),
+    background-color var(--cg-motion-fast) var(--cg-ease-standard),
+    color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.root:hover .hideBtn,
+.root:focus-within .hideBtn {
+  opacity: 1;
+}
+
+.hideBtn:hover {
+  background-color: var(--cg-bg-hover-solid);
+  color: var(--cg-text);
+}
+
+.hideBtn:focus-visible {
+  opacity: 1;
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: 2px;
+}
+
+.hideIcon {
+  width: var(--cg-icon-sm);
+  height: var(--cg-icon-sm);
+}
+
+/* Touch / no-hover pointers: keep the affordance visible (there's no hover to surface it). */
+@media (hover: none) {
+  .hideBtn {
+    opacity: 1;
+  }
+}
+
 .broken {
   display: flex;
   align-items: center;
