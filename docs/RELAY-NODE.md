@@ -25,11 +25,12 @@ operator's validator.
    git clone <repo> cogno-chain && cd cogno-chain
    cargo build --release        # → ./target/release/cogno-chain-node  (libp2p is baked in here)
    ```
-3. **Chain spec** — the committed [`chainspecs/cogno-raw.json`](../chainspecs/cogno-raw.json) is the
-   genesis-matching live spec (the default `CHAINSPEC` in `scripts/run-tracking-node.sh`). Its
-   `bootNodes` already point at the validator over DDNS (`/dns4/…asuscomm.com/…`) plus a LAN fallback,
-   so a relay needs no `--bootnodes` flag. (To regenerate against a live RPC:
-   `node scripts/fetch-chainspec.mjs <rpc> --bootnode <multiaddr> --out chainspecs/cogno-raw.json`.)
+3. **Chain spec** — the committed [`chainspecs/preprod.raw.json`](../chainspecs/preprod.raw.json) is the
+   genesis-matching live spec (the default `CHAINSPEC` in `scripts/run-tracking-node.sh`). Its single
+   embedded bootnode points at the validator over DDNS (`/dns4/…asuscomm.com/…`), so a relay needs no
+   `--bootnodes` flag. (No operator keys? Reconstruct a genesis-identical spec from the validator's
+   read-only RPC instead — see
+   [`LOCAL-FRONTEND.md`](LOCAL-FRONTEND.md#1-build-a-genesis-matching-chain-spec).)
 
 ## Run
 

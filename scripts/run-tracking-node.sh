@@ -16,9 +16,9 @@
 #
 # Prereqs:
 #   1. The node binary is built:               cargo build --release
-#   2. A genesis-matching raw spec exists:      chainspecs/cogno-raw.json is COMMITTED and used by default
-#      (the public DDNS bootnode is embedded — no --bootnodes flag needed). To run an operator-keyed
-#      spec with secrets instead, regenerate via `cogno-chain-node gen-chainspec` and set CHAINSPEC=network/raw.json.
+#   2. A genesis-matching raw spec exists:      chainspecs/preprod.raw.json is COMMITTED and used by default
+#      (the operator's public DDNS bootnode is embedded — no --bootnodes flag needed). To run a
+#      different operator-keyed spec, regenerate via `cogno-chain-node gen-chainspec` and set CHAINSPEC.
 #   3. The validator's P2P port is reachable from here (it must accept inbound on :30333).
 #
 # This is a TRACKING node, by design:
@@ -30,7 +30,7 @@
 #
 # Tunables (env):
 #   NODE_BIN    path to the built node      [<repo>/target/release/cogno-chain-node]
-#   CHAINSPEC   raw chain spec to follow    [<repo>/chainspecs/cogno-raw.json]
+#   CHAINSPEC   raw chain spec to follow    [<repo>/chainspecs/preprod.raw.json]
 #   RELAY_BASE  base-path (chain DB; gitignored) [<repo>/.relay-data]
 #   RPC_PORT    ws/http RPC port (the app)  [9944]
 #   P2P_PORT    libp2p port                 [30333]
@@ -41,14 +41,14 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NODE_BIN="${NODE_BIN:-$REPO/target/release/cogno-chain-node}"
-CHAINSPEC="${CHAINSPEC:-$REPO/chainspecs/cogno-raw.json}"
+CHAINSPEC="${CHAINSPEC:-$REPO/chainspecs/preprod.raw.json}"
 RELAY_BASE="${RELAY_BASE:-$REPO/.relay-data}"
 RPC_PORT="${RPC_PORT:-9944}"
 P2P_PORT="${P2P_PORT:-30333}"
 RELAY_NAME="${RELAY_NAME:-cogno-relay-local}"
 
 [ -x "$NODE_BIN" ]   || { echo "✗ node binary not found/executable: $NODE_BIN  (run: cargo build --release)" >&2; exit 1; }
-[ -f "$CHAINSPEC" ]  || { echo "✗ chain spec not found: $CHAINSPEC  (the committed default is chainspecs/cogno-raw.json; or regenerate via 'cogno-chain-node gen-chainspec' and set CHAINSPEC=network/raw.json)" >&2; exit 1; }
+[ -f "$CHAINSPEC" ]  || { echo "✗ chain spec not found: $CHAINSPEC  (the committed default is chainspecs/preprod.raw.json; or regenerate via 'cogno-chain-node gen-chainspec' and set CHAINSPEC)" >&2; exit 1; }
 
 # Force the observer to abstain: never let an inherited DBSYNC_URL pull this tracking node into
 # re-deriving (and potentially fatally mismatching) the Cardano observation on import.
@@ -66,7 +66,7 @@ echo "    P2P      : :$P2P_PORT"
 [ -n "${BOOTNODE:-}" ] && echo "    +bootnode: $BOOTNODE"
 echo
 
-exec "$NODE_BIN" \
+exec "$NODE_BIN" run \
   --chain "$CHAINSPEC" \
   --base-path "$RELAY_BASE" \
   --name "$RELAY_NAME" \
