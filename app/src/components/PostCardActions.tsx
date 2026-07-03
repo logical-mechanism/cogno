@@ -220,7 +220,7 @@ export function PostCardActions({
       <button
         type="button"
         className={`${styles.action} ${styles.share}`}
-        aria-label="Share — copy link to post"
+        aria-label="Copy link to post"
         onClick={doShare}
       >
         <span className={styles.iconWrap}>

@@ -175,7 +175,7 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
         {identity.bound && (
           <>
             <p className={styles.optionalNote}>
-              Optional — only affects how much weight your votes carry.
+              Only affects how much weight your votes carry.
             </p>
             <div className={styles.statRow}>
               <span className={styles.statLabel}>Voting power</span>

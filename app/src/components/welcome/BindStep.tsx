@@ -47,12 +47,12 @@ function classifyError(raw: string): BindError {
     };
   }
   if (/could not produce|cip-8|proof|malformed|script payment|extended key|not a 32-byte|exceeds the/.test(m)) {
-    return { copy: `Couldn't create the proof — ${raw}.`, danger: false };
+    return { copy: `Couldn't create the proof: ${raw}`, danger: false };
   }
   if (/still shows your account unbound|didn'?t take|still unbound/.test(m)) {
-    return { copy: "Registration didn't take — please try again.", danger: false };
+    return { copy: "Registration didn't take. Try again.", danger: false };
   }
-  return { copy: `The network rejected the registration — ${raw}.`, danger: false };
+  return { copy: `The network rejected it: ${raw}`, danger: false };
 }
 
 export function BindStep({
@@ -68,7 +68,7 @@ export function BindStep({
   const bindError = useMemo(() => (error ? classifyError(error) : null), [error]);
 
   const disabledReason = !bootOk
-    ? "The app needs an update to register — reading still works."
+    ? "The app needs an update to register. Reading still works."
     : !chainReady
       ? "Connecting to the network…"
       : null;
@@ -82,8 +82,7 @@ export function BindStep({
 
       <p className={styles.body}>
         Register <span className={styles.handle}>@{shortHandle}</span> to claim this account. Your
-        wallet signs once to prove it&apos;s yours — it&apos;s free, with no transaction fee. You&apos;ll
-        add posting power next.
+        wallet signs once to prove it&apos;s yours. You&apos;ll add posting power next.
       </p>
 
       <button

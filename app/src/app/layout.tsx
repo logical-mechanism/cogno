@@ -16,7 +16,7 @@ void FONTS_LOADED;
 export const metadata: Metadata = {
   title: "cogno-chain",
   description:
-    "Post text, read text. A feeless social chain — posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
+    "Post text, read text. A feeless social chain where posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
   applicationName: "cogno-chain",
   robots: { index: false, follow: false },
 };

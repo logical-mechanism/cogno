@@ -60,7 +60,7 @@ export function VaultSection() {
     const action = actionRef.current;
     if (!action) return;
     if (vault.phase === "submitted") {
-      ok(action === "lock" ? "Lock submitted — posting power updates shortly" : "Exit submitted — updating shortly");
+      ok(action === "lock" ? "Lock submitted. Posting power updates shortly" : "Exit submitted. Updating shortly");
       actionRef.current = null;
     } else if (vault.phase === "error" && vault.error) {
       fail(vault.error);
@@ -159,7 +159,7 @@ export function VaultSection() {
           </div>
 
           {vault.phase === "submitted" && (
-            <p className={styles.submitted}>Submitted — updating shortly</p>
+            <p className={styles.submitted}>Submitted. Updating shortly</p>
           )}
           {vault.phase === "error" && vault.error && (
             <p className={styles.error} role="alert">

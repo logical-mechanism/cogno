@@ -109,7 +109,7 @@ export function PowerUps({
           One step left to post
         </h1>
         <p className={styles.bannerLede}>
-          You can read right now. To post, lock ADA for posting capacity — reading always stays open.
+          You can read right now. To post, lock ADA for posting capacity.
         </p>
       </div>
 
@@ -140,7 +140,7 @@ function DoneBanner({
 }) {
   const heading = justLocked ? "Almost there" : welcomeBack ? "Welcome back" : "You're all set";
   const lede = justLocked
-    ? "Locked — your posting capacity arrives in a moment. You can read in the meantime."
+    ? "Locked. Your posting capacity arrives shortly."
     : "You can post, reply, repost, and follow.";
   return (
     <div className={styles.banner}>
@@ -313,7 +313,7 @@ function StakeCard({
             <p className={styles.cardError} role="alert">
               {cantStakeSign
                 ? "This wallet can't prove its stake. Try Eternl or Lace."
-                : `Couldn't add voting power — ${stake.stakeError}.`}
+                : `Couldn't add voting power: ${stake.stakeError}`}
             </p>
           )}
         </>

@@ -73,7 +73,7 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
       toast(
         ok
           ? { kind: "success", message: "Wallet connected" }
-          : { kind: "info", message: "Connection cancelled — tap Connect to try again." },
+          : { kind: "info", message: "Connection cancelled. Tap Connect to try again." },
       );
     },
     [connectWallet, toast],

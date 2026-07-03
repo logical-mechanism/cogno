@@ -266,7 +266,7 @@ export function Composer({
 
         <div className={styles.field}>
           <label className={styles.srOnly} htmlFor={`cg-composer-${mode}`}>
-            {TEXTAREA_LABEL[mode]} — press Command or Control plus Enter to post
+            {TEXTAREA_LABEL[mode]}. Press Command or Control plus Enter to post
           </label>
           <textarea
             id={`cg-composer-${mode}`}
@@ -342,7 +342,7 @@ export function Composer({
                 : noPostingPower
                   ? "Lock ADA to post"
                   : overLimit
-                    ? `Too long — trim to ${maxBytes} bytes`
+                    ? `Too long. Trim to ${maxBytes} bytes`
                     : !nonEmpty
                       ? "Write something first"
                       : rateLimited
