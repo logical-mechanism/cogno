@@ -1,4 +1,5 @@
-/* The shell fills the viewport; the document/body never scrolls on desktop (the main column does). */
+/* The shell fills the viewport; the DOCUMENT scrolls (like mobile + X) so scrolling anywhere — over
+   the rails or the side margins — moves the feed. The rails stay put because they're sticky. */
 .shell {
   min-height: 100vh;
 }
@@ -22,13 +23,14 @@
   flex: 0 0 auto;
 }
 
-/* main IS the scroll container on desktop: its own scrollbar, full viewport height, 600px cap. */
+/* main FLOWS with the document (no own scroll container) so a wheel/touch scroll ANYWHERE — over the
+   sidebars or the margins — scrolls the page = the feed; the rails are sticky (LeftNav/RightRail) so
+   they stay in view. 600px cap; min-height keeps the column borders full-height on a short feed. */
 .main {
   flex: 1 1 var(--cg-col-feed);
   max-width: var(--cg-col-feed);
   min-width: 0;
-  height: 100vh;
-  overflow-y: auto;
+  min-height: 100vh;
   border-left: 1px solid var(--cg-border);
   border-right: 1px solid var(--cg-border);
 }
@@ -137,7 +139,7 @@
   }
 }
 
-/* ── Mobile (<688px): no LeftNav; document scrolls; bottom-tab + FAB show ── */
+/* ── Mobile (<688px): no LeftNav; bottom-tab + FAB show (the document already scrolls) ── */
 @media (max-width: 687px) {
   .leftCol {
     display: none;
@@ -148,8 +150,6 @@
   }
 
   .main {
-    height: auto;
-    overflow-y: visible;
     border-left: none;
     border-right: none;
     /* leave room for the fixed bottom tab bar */
