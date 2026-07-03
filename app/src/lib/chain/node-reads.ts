@@ -103,6 +103,16 @@ interface MicroblogApiCalls {
   ): Promise<FeedPageRaw>;
   /** People search by display-name substring (`term` ⇒ `Binary`), ranked by follower count. */
   search_people(term: Binary, limit: number): Promise<PersonSummaryRaw[]>;
+  /** Ranked who-to-follow suggestions (ByAuthor members, ranked by follower count — INCLUDES 0-follower
+   *  authors, so the panel is non-empty on a fresh-genesis chain). */
+  who_to_follow(limit: number): Promise<PersonSummaryRaw[]>;
+  /** The posts `who` has up-voted (the profile Likes tab), newest-first, paged below `beforeId`. */
+  likes_page(
+    who: Ss58,
+    beforeId: bigint | undefined,
+    limit: number,
+    viewer: Ss58 | undefined,
+  ): Promise<FeedPageRaw>;
 }
 
 /** The typed `MicroblogApi` off the api (present on a spec-120 node; detected before any call). */
@@ -367,11 +377,44 @@ export async function nodeSearchPeople(
   limit: number,
 ): Promise<Suggestion[]> {
   const rows = await microblogApi(api).search_people(Binary.fromText(term), limit);
-  return rows.map((r) => ({
+  return rows.map(personSummaryToSuggestion);
+}
+
+/** Map one `PersonSummary` → the client `Suggestion` (shared by people-search + who-to-follow). */
+function personSummaryToSuggestion(r: PersonSummaryRaw): Suggestion {
+  return {
     author: r.account,
     displayName: binTextOpt(r.display_name),
     avatar: binTextOpt(r.avatar),
     weight: r.weight > 0n ? r.weight : undefined,
     followerCount: r.follower_count,
-  }));
+  };
+}
+
+/**
+ * Ranked who-to-follow suggestions (`MicroblogApi.who_to_follow`): ByAuthor members ranked by follower
+ * count. Unlike the keyed `FollowerCount` scan it INCLUDES 0-follower authors, so the panel is non-empty
+ * on a fresh-genesis chain where nobody has followers yet. The hook filters out self + already-followed.
+ */
+export async function nodeWhoToFollow(api: CognoApi, limit: number): Promise<Suggestion[]> {
+  const rows = await microblogApi(api).who_to_follow(clampLimit(limit));
+  return rows.map(personSummaryToSuggestion);
+}
+
+/**
+ * The posts `who` has up-voted (the profile Likes tab), newest-first, node-served + viewer-overlaid
+ * (`MicroblogApi.likes_page`). Paged below `beforeId` via `chasePage` — replaces the unbounded
+ * `VotesByAccount.getEntries` + per-id `getPost` fan-out with one bounded page.
+ */
+export async function nodeLikesPage(
+  api: CognoApi,
+  who: Ss58,
+  opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
+): Promise<IdPage> {
+  return chasePage(
+    (beforeId, limit) => microblogApi(api).likes_page(who, beforeId, limit, opts.viewer),
+    opts.beforeId,
+    opts.limit,
+    opts.viewer != null,
+  );
 }

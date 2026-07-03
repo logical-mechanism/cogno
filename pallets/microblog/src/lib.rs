@@ -51,20 +51,20 @@ pub mod migrations;
 use alloc::vec::Vec;
 use codec::{Decode, DecodeWithMemTracking, Encode};
 use frame_support::{
-	dispatch::{DispatchInfo, PostDispatchInfo},
-	traits::{Get, IsSubType},
-	weights::Weight,
+    dispatch::{DispatchInfo, PostDispatchInfo},
+    traits::{Get, IsSubType},
+    weights::Weight,
 };
 use scale_info::TypeInfo;
 use sp_runtime::{
-	impl_tx_ext_default,
-	traits::{
-		DispatchInfoOf, Dispatchable, PostDispatchInfoOf, TransactionExtension, ValidateResult,
-	},
-	transaction_validity::{
-		InvalidTransaction, TransactionSource, TransactionValidityError, ValidTransaction,
-	},
-	SaturatedConversion,
+    impl_tx_ext_default,
+    traits::{
+        DispatchInfoOf, Dispatchable, PostDispatchInfoOf, TransactionExtension, ValidateResult,
+    },
+    transaction_validity::{
+        InvalidTransaction, TransactionSource, TransactionValidityError, ValidTransaction,
+    },
+    SaturatedConversion,
 };
 
 // ───────────────────────────────────────────────────────────────────────────────────────
@@ -79,30 +79,30 @@ use sp_runtime::{
 /// The identity gate microblog consults before accepting a post. Implemented by
 /// `pallet-cogno-gate` (M2); wired to microblog's `Config::IdentityGate` in the runtime.
 pub trait IsAllowed<AccountId> {
-	/// Whether `who` has a live 1:1 Cardano-identity binding (⇒ may post).
-	fn is_allowed(who: &AccountId) -> bool;
+    /// Whether `who` has a live 1:1 Cardano-identity binding (⇒ may post).
+    fn is_allowed(who: &AccountId) -> bool;
 
-	/// Benchmark-only setup hook (DR-05): force `who` into the allowed set so a subsequent
-	/// `is_allowed(who)` returns `true`. This lets `post_message` be benchmarked end-to-end
-	/// through the *real* runtime gate (`CognoGate`) — where the `whitelisted_caller` is
-	/// otherwise unbound and would be rejected `NotAllowed` — without the microblog crate
-	/// depending on cogno-gate. The real gate inserts a binding; the test mock is a no-op.
-	#[cfg(feature = "runtime-benchmarks")]
-	fn benchmark_set_allowed(who: &AccountId);
+    /// Benchmark-only setup hook (DR-05): force `who` into the allowed set so a subsequent
+    /// `is_allowed(who)` returns `true`. This lets `post_message` be benchmarked end-to-end
+    /// through the *real* runtime gate (`CognoGate`) — where the `whitelisted_caller` is
+    /// otherwise unbound and would be rejected `NotAllowed` — without the microblog crate
+    /// depending on cogno-gate. The real gate inserts a binding; the test mock is a no-op.
+    #[cfg(feature = "runtime-benchmarks")]
+    fn benchmark_set_allowed(who: &AccountId);
 }
 
 /// The bind/revoke lifecycle hooks `pallet-cogno-gate` calls (via its `OnBind` Config type).
 /// Implemented by microblog's own `Pallet` below. The two are symmetric (`gate-1`): `on_bind`
 /// takes a provider reference, `on_revoke` releases it, so a bind/revoke cycle nets to zero.
 pub trait OnIdentityBind<AccountId> {
-	/// Called when `who` is bound: primes the (relock-safe) capacity row and takes a provider
-	/// reference (so a feeless poster's first post is not rejected by `CheckNonce`, issue #3991).
-	fn on_bind(who: &AccountId);
+    /// Called when `who` is bound: primes the (relock-safe) capacity row and takes a provider
+    /// reference (so a feeless poster's first post is not rejected by `CheckNonce`, issue #3991).
+    fn on_bind(who: &AccountId);
 
-	/// Called when `who`'s binding is revoked: releases the provider reference taken at `on_bind`
-	/// and zeroes the banked capacity, but KEEPS the capacity row (the never-delete relock-farm
-	/// guard — a re-bind must not read a `None` first-touch and mint a fresh bucket).
-	fn on_revoke(who: &AccountId);
+    /// Called when `who`'s binding is revoked: releases the provider reference taken at `on_bind`
+    /// and zeroes the banked capacity, but KEEPS the capacity row (the never-delete relock-farm
+    /// guard — a re-bind must not read a `None` first-touch and mint a fresh bucket).
+    fn on_revoke(who: &AccountId);
 }
 
 /// Prices a feeless call that the [`CheckCapacity`] extension meters but that does **not** belong to
@@ -116,1011 +116,1117 @@ pub trait OnIdentityBind<AccountId> {
 /// returns `None` for `force_set_capacity`). It is only ever consulted for calls that are NOT this
 /// pallet's, so an impl can match purely on the foreign variants.
 pub trait ForeignCapacityCost<RuntimeCall> {
-	/// The talk-capacity cost of `call`, or `None` if this source does not price it.
-	fn cost(call: &RuntimeCall) -> Option<u128>;
+    /// The talk-capacity cost of `call`, or `None` if this source does not price it.
+    fn cost(call: &RuntimeCall) -> Option<u128>;
 }
 
 /// Default: meter nothing foreign. A runtime with no extra feeless pallets wires `type ForeignCost = ()`.
 impl<RuntimeCall> ForeignCapacityCost<RuntimeCall> for () {
-	fn cost(_call: &RuntimeCall) -> Option<u128> {
-		None
-	}
+    fn cost(_call: &RuntimeCall) -> Option<u128> {
+        None
+    }
 }
 
 #[frame_support::pallet]
 pub mod pallet {
-	use super::*;
-	use alloc::vec::Vec;
-	use frame_support::pallet_prelude::*;
-	use frame_system::pallet_prelude::*;
-	use sp_runtime::{traits::Saturating, SaturatedConversion};
+    use super::*;
+    use alloc::vec::Vec;
+    use frame_support::pallet_prelude::*;
+    use frame_system::pallet_prelude::*;
+    use sp_runtime::{traits::Saturating, SaturatedConversion};
 
-	/// The current storage version of pallet-microblog. v0 (implicit, pre-quote) → v1 adds the
-	/// `quote: Option<u64>` field to [`Post`]; v1 → v2 backfills the `Followers`/`VotesByAccount`
-	/// reverse indexes; v2 → v3 backfills the `ReplyCount`/`RepliesByParent` reply aggregates. Bumped
-	/// in lockstep with each `migrations::v*` migration; every `VersionedMigration` version-guard
-	/// self-skips once the on-chain version has advanced past it.
-	// v3 -> v4 (spec 121): backfill the top-level-post index (`TopLevelPosts` / `TopLevelByAuthor` /
-	// `NextTopLevelSeq`) — see `migrations::v4`.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
+    /// The current storage version of pallet-microblog. v0 (implicit, pre-quote) → v1 adds the
+    /// `quote: Option<u64>` field to [`Post`]; v1 → v2 backfills the `Followers`/`VotesByAccount`
+    /// reverse indexes; v2 → v3 backfills the `ReplyCount`/`RepliesByParent` reply aggregates. Bumped
+    /// in lockstep with each `migrations::v*` migration; every `VersionedMigration` version-guard
+    /// self-skips once the on-chain version has advanced past it.
+    // v3 -> v4 (spec 121): backfill the top-level-post index (`TopLevelPosts` / `TopLevelByAuthor` /
+    // `NextTopLevelSeq`) — see `migrations::v4`.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
 
-	#[pallet::pallet]
-	#[pallet::storage_version(STORAGE_VERSION)]
-	pub struct Pallet<T>(_);
+    #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
+    pub struct Pallet<T>(_);
 
-	/// The pallet's configuration trait. Tightly coupled to `pallet-talk-stake` (the weight
-	/// source the capacity meter reads).
-	#[pallet::config]
-	pub trait Config: frame_system::Config + pallet_talk_stake::Config {
-		/// The overarching runtime event type.
-		#[allow(deprecated)]
-		type RuntimeEvent: From<Event<Self>>
-			+ IsType<<Self as frame_system::Config>::RuntimeEvent>;
-		/// The Cardano-identity gate (M2): `post_message` is rejected with `NotAllowed` unless
-		/// `IdentityGate::is_allowed(&who)`. Wired to `CognoGate` in the runtime. This is the
-		/// authoritative on-chain Sybil gate; the capacity extension is separate spam control.
-		type IdentityGate: IsAllowed<Self::AccountId>;
-		/// Maximum length, in bytes, of a post's text. Bounds PoV / proof size. (DR-10b: 512.)
-		#[pallet::constant]
-		type MaxLength: Get<u32>;
-		/// Maximum number of posts tracked per author in the on-chain `ByAuthor` index.
-		/// (DR-10b: 10_000. Complete history beyond this is served by the off-chain indexer.)
-		#[pallet::constant]
-		type MaxPostsPerAuthor: Get<u32>;
+    /// The pallet's configuration trait. Tightly coupled to `pallet-talk-stake` (the weight
+    /// source the capacity meter reads).
+    #[pallet::config]
+    pub trait Config: frame_system::Config + pallet_talk_stake::Config {
+        /// The overarching runtime event type.
+        #[allow(deprecated)]
+        type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+        /// The Cardano-identity gate (M2): `post_message` is rejected with `NotAllowed` unless
+        /// `IdentityGate::is_allowed(&who)`. Wired to `CognoGate` in the runtime. This is the
+        /// authoritative on-chain Sybil gate; the capacity extension is separate spam control.
+        type IdentityGate: IsAllowed<Self::AccountId>;
+        /// Maximum length, in bytes, of a post's text. Bounds PoV / proof size. (DR-10b: 512.)
+        #[pallet::constant]
+        type MaxLength: Get<u32>;
+        /// Maximum number of posts tracked per author in the on-chain `ByAuthor` index.
+        /// (DR-10b: 10_000. Complete history beyond this is served by the off-chain indexer.)
+        #[pallet::constant]
+        type MaxPostsPerAuthor: Get<u32>;
 
-		// ── talk-capacity constants (ECONOMICS §4; all runtime-tunable, read from metadata
-		//    by the client capacity battery — never hardcode there) ─────────────────────────
-		/// Capacity ceiling per unit weight: `cap = min(weight · CapRatio, Ceiling)`
-		/// (micro-capacity units per lovelace).
-		#[pallet::constant]
-		type CapRatio: Get<u128>;
-		/// Regeneration per unit weight per block: `rate = weight · RegenPerBlock`
-		/// (micro-capacity units per lovelace per block).
-		#[pallet::constant]
-		type RegenPerBlock: Get<u128>;
-		/// Hard capacity ceiling (capped-linear curve, DR-11) — a single mega-whale cannot
-		/// dominate the mempool regardless of stake.
-		#[pallet::constant]
-		type Ceiling: Get<u128>;
-		/// Flat per-post cost: `need = BaseCost + PerByteCost · len` (micro-capacity units).
-		#[pallet::constant]
-		type BaseCost: Get<u128>;
-		/// Per-byte post cost (micro-capacity units per byte).
-		#[pallet::constant]
-		type PerByteCost: Get<u128>;
+        // ── talk-capacity constants (ECONOMICS §4; all runtime-tunable, read from metadata
+        //    by the client capacity battery — never hardcode there) ─────────────────────────
+        /// Capacity ceiling per unit weight: `cap = min(weight · CapRatio, Ceiling)`
+        /// (micro-capacity units per lovelace).
+        #[pallet::constant]
+        type CapRatio: Get<u128>;
+        /// Regeneration per unit weight per block: `rate = weight · RegenPerBlock`
+        /// (micro-capacity units per lovelace per block).
+        #[pallet::constant]
+        type RegenPerBlock: Get<u128>;
+        /// Hard capacity ceiling (capped-linear curve, DR-11) — a single mega-whale cannot
+        /// dominate the mempool regardless of stake.
+        #[pallet::constant]
+        type Ceiling: Get<u128>;
+        /// Flat per-post cost: `need = BaseCost + PerByteCost · len` (micro-capacity units).
+        #[pallet::constant]
+        type BaseCost: Get<u128>;
+        /// Per-byte post cost (micro-capacity units per byte).
+        #[pallet::constant]
+        type PerByteCost: Get<u128>;
 
-		// ── per-action capacity costs for the social engagement calls (all feeless + metered
-		//    through the SAME single talk-capacity battery as `post_message`/`quote_post`). Quote
-		//    reuses `post_cost` (it is a post); these flat costs price the lighter signal/relationship
-		//    actions. Toggle pairs (`clear_vote`, `unfollow`) meter at the SAME cost as their on-side
-		//    so there is no free-churn asymmetry. ─────────────────────────────────────────────────
-		/// Flat capacity cost of a `vote` or `clear_vote` (micro-capacity units).
-		#[pallet::constant]
-		type VoteCost: Get<u128>;
-		/// Flat capacity cost of a `repost` (micro-capacity units).
-		#[pallet::constant]
-		type RepostCost: Get<u128>;
-		/// Flat capacity cost of a `follow` or `unfollow` (micro-capacity units).
-		#[pallet::constant]
-		type FollowCost: Get<u128>;
+        // ── per-action capacity costs for the social engagement calls (all feeless + metered
+        //    through the SAME single talk-capacity battery as `post_message`/`quote_post`). Quote
+        //    reuses `post_cost` (it is a post); these flat costs price the lighter signal/relationship
+        //    actions. Toggle pairs (`clear_vote`, `unfollow`) meter at the SAME cost as their on-side
+        //    so there is no free-churn asymmetry. ─────────────────────────────────────────────────
+        /// Flat capacity cost of a `vote` or `clear_vote` (micro-capacity units).
+        #[pallet::constant]
+        type VoteCost: Get<u128>;
+        /// Flat capacity cost of a `repost` (micro-capacity units).
+        #[pallet::constant]
+        type RepostCost: Get<u128>;
+        /// Flat capacity cost of a `follow` or `unfollow` (micro-capacity units).
+        #[pallet::constant]
+        type FollowCost: Get<u128>;
 
-		/// Maximum number of options a poll may have. (`create_poll` rejects more; ≥2 required.)
-		#[pallet::constant]
-		type MaxPollOptions: Get<u32>;
-		/// Maximum length, in bytes, of a single poll option's label.
-		#[pallet::constant]
-		type MaxPollOptionLen: Get<u32>;
+        /// Maximum number of options a poll may have. (`create_poll` rejects more; ≥2 required.)
+        #[pallet::constant]
+        type MaxPollOptions: Get<u32>;
+        /// Maximum length, in bytes, of a single poll option's label.
+        #[pallet::constant]
+        type MaxPollOptionLen: Get<u32>;
 
-		/// Origin allowed to force a capacity row (operator/migration; **sudo in dev**). The
-		/// future `cogno-gate` `link_identity` will call [`Pallet::on_first_bind`] directly;
-		/// this dispatchable is the M2c stand-in that lets the operator prime/pre-charge an
-		/// account's battery without the Cardano side wired.
-		type ForceOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+        /// Origin allowed to force a capacity row (operator/migration; **sudo in dev**). The
+        /// future `cogno-gate` `link_identity` will call [`Pallet::on_first_bind`] directly;
+        /// this dispatchable is the M2c stand-in that lets the operator prime/pre-charge an
+        /// account's battery without the Cardano side wired.
+        type ForceOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
-		/// Prices feeless calls from OTHER pallets (e.g. `pallet-profile`) against this pallet's one
-		/// per-account capacity battery, so the whole app can be feeless while every write is still
-		/// pool-gated by [`CheckCapacity`]. The runtime supplies it (it can see every pallet's `Call`);
-		/// `()` meters nothing foreign. See [`ForeignCapacityCost`].
-		type ForeignCost: ForeignCapacityCost<<Self as frame_system::Config>::RuntimeCall>;
+        /// Prices feeless calls from OTHER pallets (e.g. `pallet-profile`) against this pallet's one
+        /// per-account capacity battery, so the whole app can be feeless while every write is still
+        /// pool-gated by [`CheckCapacity`]. The runtime supplies it (it can see every pallet's `Call`);
+        /// `()` meters nothing foreign. See [`ForeignCapacityCost`].
+        type ForeignCost: ForeignCapacityCost<<Self as frame_system::Config>::RuntimeCall>;
 
-		/// Weight information for this pallet's dispatchables.
-		type WeightInfo: WeightInfo;
-	}
+        /// Weight information for this pallet's dispatchables.
+        type WeightInfo: WeightInfo;
+    }
 
-	/// A single post.
-	///
-	/// `*NoBound` derives are used because `Post` is generic over `T: Config`; the plain
-	/// derives would wrongly require `T: Clone/Eq/Debug` (the fields only need `T::AccountId`).
-	#[derive(
-		Encode, Decode, CloneNoBound, PartialEqNoBound, EqNoBound, DebugNoBound, TypeInfo, MaxEncodedLen,
-	)]
-	#[scale_info(skip_type_params(T))]
-	pub struct Post<T: Config> {
-		/// The author's account id (the sr25519 posting key).
-		pub author: T::AccountId,
-		/// The post body, bounded to `MaxLength` bytes.
-		pub text: BoundedVec<u8, T::MaxLength>,
-		/// Optional parent post id, for replies / threading.
-		pub parent: Option<u64>,
-		/// The block number at which the post was created.
-		pub at: BlockNumberFor<T>,
-		/// Optional id of a quoted post (quote-posts). Added in storage **v1**; pre-v1 posts are
-		/// migrated to `None` (see [`crate::migrations::v1`]). A quote (`quote = Some`) is distinct
-		/// from a reply (`parent = Some`): a quote references a post without being threaded under it.
-		/// Appended LAST so the migration is a clean tail-append (`None` encodes as one `0x00` byte).
-		pub quote: Option<u64>,
-	}
+    /// A single post.
+    ///
+    /// `*NoBound` derives are used because `Post` is generic over `T: Config`; the plain
+    /// derives would wrongly require `T: Clone/Eq/Debug` (the fields only need `T::AccountId`).
+    #[derive(
+        Encode,
+        Decode,
+        CloneNoBound,
+        PartialEqNoBound,
+        EqNoBound,
+        DebugNoBound,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    #[scale_info(skip_type_params(T))]
+    pub struct Post<T: Config> {
+        /// The author's account id (the sr25519 posting key).
+        pub author: T::AccountId,
+        /// The post body, bounded to `MaxLength` bytes.
+        pub text: BoundedVec<u8, T::MaxLength>,
+        /// Optional parent post id, for replies / threading.
+        pub parent: Option<u64>,
+        /// The block number at which the post was created.
+        pub at: BlockNumberFor<T>,
+        /// Optional id of a quoted post (quote-posts). Added in storage **v1**; pre-v1 posts are
+        /// migrated to `None` (see [`crate::migrations::v1`]). A quote (`quote = Some`) is distinct
+        /// from a reply (`parent = Some`): a quote references a post without being threaded under it.
+        /// Appended LAST so the migration is a clean tail-append (`None` encodes as one `0x00` byte).
+        pub quote: Option<u64>,
+    }
 
-	/// The direction of a stake-weighted vote on a post.
-	#[derive(
-		Encode, Decode, DecodeWithMemTracking, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen,
-	)]
-	pub enum VoteDir {
-		/// An up-vote (endorsement).
-		Up,
-		/// A down-vote.
-		Down,
-	}
+    /// The direction of a stake-weighted vote on a post.
+    #[derive(
+        Encode,
+        Decode,
+        DecodeWithMemTracking,
+        Clone,
+        Copy,
+        PartialEq,
+        Eq,
+        Debug,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    pub enum VoteDir {
+        /// An up-vote (endorsement).
+        Up,
+        /// A down-vote.
+        Down,
+    }
 
-	/// One account's recorded vote on a post: its direction plus the voter's stake **weight snapshot
-	/// at vote time**. The snapshot is load-bearing: the denormalized [`VoteTally`] is adjusted by
-	/// reversing exactly this stored weight on a re-vote / clear (never by re-reading current stake),
-	/// so the tally cannot drift and an off-chain indexer folding the events reproduces it byte-exactly.
-	#[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
-	pub struct VoteRecord {
-		/// The vote direction.
-		pub dir: VoteDir,
-		/// The voter's `pallet_talk_stake::VotingPower` (total Cardano stake) at the moment the vote
-		/// was cast.
-		pub weight: u128,
-	}
+    /// One account's recorded vote on a post: its direction plus the voter's stake **weight snapshot
+    /// at vote time**. The snapshot is load-bearing: the denormalized [`VoteTally`] is adjusted by
+    /// reversing exactly this stored weight on a re-vote / clear (never by re-reading current stake),
+    /// so the tally cannot drift and an off-chain indexer folding the events reproduces it byte-exactly.
+    #[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
+    pub struct VoteRecord {
+        /// The vote direction.
+        pub dir: VoteDir,
+        /// The voter's `pallet_talk_stake::VotingPower` (total Cardano stake) at the moment the vote
+        /// was cast.
+        pub weight: u128,
+    }
 
-	/// The denormalized stake-weighted vote tally for one post. `ValueQuery` (default all-zero) so an
-	/// unvoted post reads cleanly with no `Option`/`Some(0)` ambiguity — the fold-determinism contract.
-	#[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, Default, TypeInfo, MaxEncodedLen)]
-	pub struct Tally {
-		/// Sum of up-voters' weight snapshots.
-		pub up_weight: u128,
-		/// Sum of down-voters' weight snapshots.
-		pub down_weight: u128,
-		/// Count of up-votes.
-		pub up_count: u32,
-		/// Count of down-votes.
-		pub down_count: u32,
-	}
+    /// The denormalized stake-weighted vote tally for one post. `ValueQuery` (default all-zero) so an
+    /// unvoted post reads cleanly with no `Option`/`Some(0)` ambiguity — the fold-determinism contract.
+    #[derive(
+        Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, Default, TypeInfo, MaxEncodedLen,
+    )]
+    pub struct Tally {
+        /// Sum of up-voters' weight snapshots.
+        pub up_weight: u128,
+        /// Sum of down-voters' weight snapshots.
+        pub down_weight: u128,
+        /// Count of up-votes.
+        pub up_count: u32,
+        /// Count of down-votes.
+        pub down_count: u32,
+    }
 
-	/// A poll attached to a post: the fixed set of options voters choose between. The poll's question
-	/// IS the host post's `text`, so a poll is a first-class post (it threads / quotes / reposts and
-	/// shows in the feed); only the options + the stake-weighted per-option tally live here.
-	#[derive(
-		Encode, Decode, CloneNoBound, PartialEqNoBound, EqNoBound, DebugNoBound, TypeInfo, MaxEncodedLen,
-	)]
-	#[scale_info(skip_type_params(T))]
-	pub struct Poll<T: Config> {
-		/// The selectable options (each bounded to `MaxPollOptionLen`, up to `MaxPollOptions`).
-		pub options: BoundedVec<BoundedVec<u8, T::MaxPollOptionLen>, T::MaxPollOptions>,
-	}
+    /// A poll attached to a post: the fixed set of options voters choose between. The poll's question
+    /// IS the host post's `text`, so a poll is a first-class post (it threads / quotes / reposts and
+    /// shows in the feed); only the options + the stake-weighted per-option tally live here.
+    #[derive(
+        Encode,
+        Decode,
+        CloneNoBound,
+        PartialEqNoBound,
+        EqNoBound,
+        DebugNoBound,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    #[scale_info(skip_type_params(T))]
+    pub struct Poll<T: Config> {
+        /// The selectable options (each bounded to `MaxPollOptionLen`, up to `MaxPollOptions`).
+        pub options: BoundedVec<BoundedVec<u8, T::MaxPollOptionLen>, T::MaxPollOptions>,
+    }
 
-	/// One account's recorded poll choice: the chosen option index + the voter's stake weight snapshot
-	/// at cast time. Same drift-free contract as [`VoteRecord`]: a re-cast reverses THIS stored weight.
-	#[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
-	pub struct PollVoteRecord {
-		/// The chosen option index (`< options.len()`).
-		pub option: u8,
-		/// The voter's `VotingPower` (total Cardano stake) weight at cast time.
-		pub weight: u128,
-	}
+    /// One account's recorded poll choice: the chosen option index + the voter's stake weight snapshot
+    /// at cast time. Same drift-free contract as [`VoteRecord`]: a re-cast reverses THIS stored weight.
+    #[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
+    pub struct PollVoteRecord {
+        /// The chosen option index (`< options.len()`).
+        pub option: u8,
+        /// The voter's `VotingPower` (total Cardano stake) weight at cast time.
+        pub weight: u128,
+    }
 
-	/// The stake-weighted tally for a single poll option. `ValueQuery` (default zero) keyed per option.
-	#[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, Default, TypeInfo, MaxEncodedLen)]
-	pub struct OptionTally {
-		/// Sum of the weight snapshots of accounts currently choosing this option.
-		pub weight: u128,
-		/// Number of accounts currently choosing this option.
-		pub count: u32,
-	}
+    /// The stake-weighted tally for a single poll option. `ValueQuery` (default zero) keyed per option.
+    #[derive(
+        Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, Default, TypeInfo, MaxEncodedLen,
+    )]
+    pub struct OptionTally {
+        /// Sum of the weight snapshots of accounts currently choosing this option.
+        pub weight: u128,
+        /// Number of accounts currently choosing this option.
+        pub count: u32,
+    }
 
-	/// The lazy token-bucket state for one identity (`ECONOMICS.md` §4.1).
-	///
-	/// `cap_last` is the banked micro-capacity at `last_block`; `current_capacity` regenerates
-	/// it on read. `OptionQuery` is load-bearing: `None` (a genuinely new identity) vs `Some`
-	/// IS the first-touch/relock anti-farm logic.
-	#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
-	pub struct CapacityState<BN> {
-		/// Banked micro-capacity units at the last touch.
-		pub cap_last: u128,
-		/// The block number of the last touch.
-		pub last_block: BN,
-	}
+    /// The lazy token-bucket state for one identity (`ECONOMICS.md` §4.1).
+    ///
+    /// `cap_last` is the banked micro-capacity at `last_block`; `current_capacity` regenerates
+    /// it on read. `OptionQuery` is load-bearing: `None` (a genuinely new identity) vs `Some`
+    /// IS the first-touch/relock anti-farm logic.
+    #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
+    pub struct CapacityState<BN> {
+        /// Banked micro-capacity units at the last touch.
+        pub cap_last: u128,
+        /// The block number of the last touch.
+        pub last_block: BN,
+    }
 
-	/// The id that will be assigned to the next post. `u64` (DR-21).
-	#[pallet::storage]
-	pub type NextPostId<T> = StorageValue<_, u64, ValueQuery>;
+    /// The id that will be assigned to the next post. `u64` (DR-21).
+    #[pallet::storage]
+    pub type NextPostId<T> = StorageValue<_, u64, ValueQuery>;
 
-	/// All posts, keyed by id.
-	#[pallet::storage]
-	pub type Posts<T: Config> = StorageMap<_, Blake2_128Concat, u64, Post<T>>;
+    /// All posts, keyed by id.
+    #[pallet::storage]
+    pub type Posts<T: Config> = StorageMap<_, Blake2_128Concat, u64, Post<T>>;
 
-	/// Per-author index of post ids, bounded to `MaxPostsPerAuthor`.
-	#[pallet::storage]
-	pub type ByAuthor<T: Config> = StorageMap<
-		_,
-		Blake2_128Concat,
-		T::AccountId,
-		BoundedVec<u64, T::MaxPostsPerAuthor>,
-		ValueQuery,
-	>;
+    /// Per-author index of post ids, bounded to `MaxPostsPerAuthor`.
+    #[pallet::storage]
+    pub type ByAuthor<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        BoundedVec<u64, T::MaxPostsPerAuthor>,
+        ValueQuery,
+    >;
 
-	/// Per-identity talk-capacity bucket. `None` ⇒ never-bound (first touch = 0); the row is
-	/// **never deleted** on unlock (relock-farm guard, `ECONOMICS.md` §6.1).
-	#[pallet::storage]
-	pub type Capacity<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, CapacityState<BlockNumberFor<T>>, OptionQuery>;
+    /// Per-identity talk-capacity bucket. `None` ⇒ never-bound (first touch = 0); the row is
+    /// **never deleted** on unlock (relock-farm guard, `ECONOMICS.md` §6.1).
+    #[pallet::storage]
+    pub type Capacity<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        CapacityState<BlockNumberFor<T>>,
+        OptionQuery,
+    >;
 
-	// ── social engagement storage (all ADDITIVE — empty at genesis, so they need NO migration;
-	//    only the `Post` re-encode does). ─────────────────────────────────────────────────────────
+    // ── social engagement storage (all ADDITIVE — empty at genesis, so they need NO migration;
+    //    only the `Post` re-encode does). ─────────────────────────────────────────────────────────
 
-	/// Per-(post, voter) vote record. `None` ⇒ that account has not voted on that post (exactly one
-	/// representation of "not voting" — `clear_vote` `take`s the row). The sole input to the tally.
-	#[pallet::storage]
-	pub type Votes<T: Config> = StorageDoubleMap<
-		_,
-		Blake2_128Concat,
-		u64,
-		Blake2_128Concat,
-		T::AccountId,
-		VoteRecord,
-		OptionQuery,
-	>;
+    /// Per-(post, voter) vote record. `None` ⇒ that account has not voted on that post (exactly one
+    /// representation of "not voting" — `clear_vote` `take`s the row). The sole input to the tally.
+    #[pallet::storage]
+    pub type Votes<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        u64,
+        Blake2_128Concat,
+        T::AccountId,
+        VoteRecord,
+        OptionQuery,
+    >;
 
-	/// Denormalized stake-weighted vote tally per post (`ValueQuery` ⇒ default all-zero).
-	#[pallet::storage]
-	pub type VoteTally<T: Config> = StorageMap<_, Blake2_128Concat, u64, Tally, ValueQuery>;
+    /// Denormalized stake-weighted vote tally per post (`ValueQuery` ⇒ default all-zero).
+    #[pallet::storage]
+    pub type VoteTally<T: Config> = StorageMap<_, Blake2_128Concat, u64, Tally, ValueQuery>;
 
-	/// Reverse "liked posts" index: `VotesByAccount[account][post] = ()` means `account` currently
-	/// UP-votes `post` (drives the profile Likes tab without a reverse scan). Maintained in lockstep by
-	/// `vote`/`clear_vote` (inserted on an Up vote, removed on a Down vote or a clear); backfilled from
-	/// the Up rows of `Votes` by migration v2.
-	#[pallet::storage]
-	pub type VotesByAccount<T: Config> = StorageDoubleMap<
-		_,
-		Blake2_128Concat,
-		T::AccountId,
-		Blake2_128Concat,
-		u64,
-		(),
-		OptionQuery,
-	>;
+    /// Reverse "liked posts" index: `VotesByAccount[account][post] = ()` means `account` currently
+    /// UP-votes `post` (drives the profile Likes tab without a reverse scan). Maintained in lockstep by
+    /// `vote`/`clear_vote` (inserted on an Up vote, removed on a Down vote or a clear); backfilled from
+    /// the Up rows of `Votes` by migration v2.
+    #[pallet::storage]
+    pub type VotesByAccount<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, T::AccountId, Blake2_128Concat, u64, (), OptionQuery>;
 
-	/// Per-(post, account) repost edge. **Permanent** (treated like content — there is no `unrepost`);
-	/// a re-repost is rejected `AlreadyReposted`. `None` ⇒ that account has not reposted that post.
-	#[pallet::storage]
-	pub type Reposts<T: Config> = StorageDoubleMap<
-		_,
-		Blake2_128Concat,
-		u64,
-		Blake2_128Concat,
-		T::AccountId,
-		(),
-		OptionQuery,
-	>;
+    /// Per-(post, account) repost edge. **Permanent** (treated like content — there is no `unrepost`);
+    /// a re-repost is rejected `AlreadyReposted`. `None` ⇒ that account has not reposted that post.
+    #[pallet::storage]
+    pub type Reposts<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, T::AccountId, (), OptionQuery>;
 
-	/// Per-post repost count (`ValueQuery` ⇒ default 0). Only ever increments (reposts are permanent).
-	#[pallet::storage]
-	pub type RepostCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
+    /// Per-post repost count (`ValueQuery` ⇒ default 0). Only ever increments (reposts are permanent).
+    #[pallet::storage]
+    pub type RepostCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
 
-	/// Per-parent reply count (`ValueQuery` ⇒ default 0): the number of direct replies a post has.
-	/// The denormalized aggregate mirroring [`RepostCount`] — lets a client read a post's reply count
-	/// with one keyed lookup instead of scanning every post for `parent == id`. Maintained in lockstep
-	/// with [`RepliesByParent`] on the reply-creation path. Content is append-only (`delete_post` was
-	/// removed in M0; `@1` is permanently vacant), so — exactly like `RepostCount` — it **only ever
-	/// increments**; there is no decrement path. Backfilled from existing `Posts` by migration v3.
-	#[pallet::storage]
-	pub type ReplyCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
+    /// Per-parent reply count (`ValueQuery` ⇒ default 0): the number of direct replies a post has.
+    /// The denormalized aggregate mirroring [`RepostCount`] — lets a client read a post's reply count
+    /// with one keyed lookup instead of scanning every post for `parent == id`. Maintained in lockstep
+    /// with [`RepliesByParent`] on the reply-creation path. Content is append-only (`delete_post` was
+    /// removed in M0; `@1` is permanently vacant), so — exactly like `RepostCount` — it **only ever
+    /// increments**; there is no decrement path. Backfilled from existing `Posts` by migration v3.
+    #[pallet::storage]
+    pub type ReplyCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
 
-	/// Reverse parent → replies index: `RepliesByParent[parent][reply_id] = ()` ⇒ `reply_id` is a
-	/// direct reply of `parent`. The keyed reverse lookup mirroring [`Reposts`], so a thread reads only
-	/// ONE parent's children via `getEntries(parent)` (prefix iteration) instead of folding the whole
-	/// post set. A `DoubleMap` (not a `BoundedVec<u64>`) deliberately: it imposes no per-post reply cap
-	/// and supports prefix pagination. Maintained in lockstep with [`ReplyCount`] on the reply-creation
-	/// path; append-only (no removal), backfilled from existing `Posts` by migration v3.
-	#[pallet::storage]
-	pub type RepliesByParent<T: Config> = StorageDoubleMap<
-		_,
-		Blake2_128Concat,
-		u64,
-		Blake2_128Concat,
-		u64,
-		(),
-		OptionQuery,
-	>;
+    /// Reverse parent → replies index: `RepliesByParent[parent][reply_id] = ()` ⇒ `reply_id` is a
+    /// direct reply of `parent`. The keyed reverse lookup mirroring [`Reposts`], so a thread reads only
+    /// ONE parent's children via `getEntries(parent)` (prefix iteration) instead of folding the whole
+    /// post set. A `DoubleMap` (not a `BoundedVec<u64>`) deliberately: it imposes no per-post reply cap
+    /// and supports prefix pagination. Maintained in lockstep with [`ReplyCount`] on the reply-creation
+    /// path; append-only (no removal), backfilled from existing `Posts` by migration v3.
+    #[pallet::storage]
+    pub type RepliesByParent<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, u64, (), OptionQuery>;
 
-	/// The follow graph: `Following[follower][followee] = ()` ⇒ `follower` follows `followee`.
-	/// Toggleable (a relationship, not content): `unfollow` `take`s the edge. Followee is NOT
-	/// existence-checked (mirrors the dangling-`parent` design — they may bind an identity later).
-	#[pallet::storage]
-	pub type Following<T: Config> = StorageDoubleMap<
-		_,
-		Blake2_128Concat,
-		T::AccountId,
-		Blake2_128Concat,
-		T::AccountId,
-		(),
-		OptionQuery,
-	>;
+    /// The follow graph: `Following[follower][followee] = ()` ⇒ `follower` follows `followee`.
+    /// Toggleable (a relationship, not content): `unfollow` `take`s the edge. Followee is NOT
+    /// existence-checked (mirrors the dangling-`parent` design — they may bind an identity later).
+    #[pallet::storage]
+    pub type Following<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        Blake2_128Concat,
+        T::AccountId,
+        (),
+        OptionQuery,
+    >;
 
-	/// Number of accounts following `who` (`ValueQuery` ⇒ default 0).
-	#[pallet::storage]
-	pub type FollowerCount<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u32, ValueQuery>;
+    /// Number of accounts following `who` (`ValueQuery` ⇒ default 0).
+    #[pallet::storage]
+    pub type FollowerCount<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, u32, ValueQuery>;
 
-	/// Number of accounts `who` follows (`ValueQuery` ⇒ default 0).
-	#[pallet::storage]
-	pub type FollowingCount<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, u32, ValueQuery>;
+    /// Number of accounts `who` follows (`ValueQuery` ⇒ default 0).
+    #[pallet::storage]
+    pub type FollowingCount<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, u32, ValueQuery>;
 
-	/// Reverse follow index: `Followers[followee][follower] = ()` ⇒ `follower` follows `followee` —
-	/// the mirror of `Following`, so "who follows X" is a direct prefix iteration (no full-account
-	/// scan). Maintained in lockstep by `follow`/`unfollow`; backfilled from `Following` by migration v2.
-	#[pallet::storage]
-	pub type Followers<T: Config> = StorageDoubleMap<
-		_,
-		Blake2_128Concat,
-		T::AccountId,
-		Blake2_128Concat,
-		T::AccountId,
-		(),
-		OptionQuery,
-	>;
+    /// Reverse follow index: `Followers[followee][follower] = ()` ⇒ `follower` follows `followee` —
+    /// the mirror of `Following`, so "who follows X" is a direct prefix iteration (no full-account
+    /// scan). Maintained in lockstep by `follow`/`unfollow`; backfilled from `Following` by migration v2.
+    #[pallet::storage]
+    pub type Followers<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        Blake2_128Concat,
+        T::AccountId,
+        (),
+        OptionQuery,
+    >;
 
-	/// Poll metadata keyed by the host post id. `None` ⇒ that post is not a poll.
-	#[pallet::storage]
-	pub type Polls<T: Config> = StorageMap<_, Blake2_128Concat, u64, Poll<T>, OptionQuery>;
+    /// Poll metadata keyed by the host post id. `None` ⇒ that post is not a poll.
+    #[pallet::storage]
+    pub type Polls<T: Config> = StorageMap<_, Blake2_128Concat, u64, Poll<T>, OptionQuery>;
 
-	/// Per-(poll, voter) recorded choice. `None` ⇒ that account has not voted in that poll.
-	#[pallet::storage]
-	pub type PollVotes<T: Config> = StorageDoubleMap<
-		_,
-		Blake2_128Concat,
-		u64,
-		Blake2_128Concat,
-		T::AccountId,
-		PollVoteRecord,
-		OptionQuery,
-	>;
+    /// Per-(poll, voter) recorded choice. `None` ⇒ that account has not voted in that poll.
+    #[pallet::storage]
+    pub type PollVotes<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        u64,
+        Blake2_128Concat,
+        T::AccountId,
+        PollVoteRecord,
+        OptionQuery,
+    >;
 
-	/// Stake-weighted tally per (poll, option). `ValueQuery` ⇒ default-zero per option.
-	#[pallet::storage]
-	pub type PollTally<T: Config> = StorageDoubleMap<
-		_,
-		Blake2_128Concat,
-		u64,
-		Blake2_128Concat,
-		u8,
-		OptionTally,
-		ValueQuery,
-	>;
+    /// Stake-weighted tally per (poll, option). `ValueQuery` ⇒ default-zero per option.
+    #[pallet::storage]
+    pub type PollTally<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, u8, OptionTally, ValueQuery>;
 
-	// ── Feature 3 (spec 121): the top-level-post index. A dense, reply-free sequence of top-level
-	//    (`parent == None`) post ids so `feed_page` reads EXACTLY N (no reply over-scan), plus a
-	//    per-author top-level index for exact-N profile paging and a correct top-level `postCount`
-	//    (fixing the count-counts-replies tradeoff at the source). Maintained O(1) on every top-level
-	//    creation site (`post_message`/`quote_post`/`create_poll`); backfilled by migration v4. ──
+    // ── Feature 3 (spec 121): the top-level-post index. A dense, reply-free sequence of top-level
+    //    (`parent == None`) post ids so `feed_page` reads EXACTLY N (no reply over-scan), plus a
+    //    per-author top-level index for exact-N profile paging and a correct top-level `postCount`
+    //    (fixing the count-counts-replies tradeoff at the source). Maintained O(1) on every top-level
+    //    creation site (`post_message`/`quote_post`/`create_poll`); backfilled by migration v4. ──
 
-	/// The next top-level sequence number — and, since top-level posts are append-only, the running
-	/// COUNT of all top-level posts ever created (the global top-level `postCount`).
-	#[pallet::storage]
-	pub type NextTopLevelSeq<T> = StorageValue<_, u64, ValueQuery>;
+    /// The next top-level sequence number — and, since top-level posts are append-only, the running
+    /// COUNT of all top-level posts ever created (the global top-level `postCount`).
+    #[pallet::storage]
+    pub type NextTopLevelSeq<T> = StorageValue<_, u64, ValueQuery>;
 
-	/// `TopLevelPosts[seq] = post_id` for each top-level post, in creation order (higher seq = newer =
-	/// higher id). The dense, reply-free spine `feed_page` pages over, so a page costs exactly one read
-	/// per returned post — never scanning past interleaved replies.
-	#[pallet::storage]
-	pub type TopLevelPosts<T: Config> = StorageMap<_, Blake2_128Concat, u64, u64, OptionQuery>;
+    /// `TopLevelPosts[seq] = post_id` for each top-level post, in creation order (higher seq = newer =
+    /// higher id). The dense, reply-free spine `feed_page` pages over, so a page costs exactly one read
+    /// per returned post — never scanning past interleaved replies.
+    #[pallet::storage]
+    pub type TopLevelPosts<T: Config> = StorageMap<_, Blake2_128Concat, u64, u64, OptionQuery>;
 
-	/// Per-author top-level post ids (reply-free), bounded like [`ByAuthor`]. Drives exact-N profile
-	/// paging and a correct top-level post count (`decode_len`) without folding in the author's replies.
-	#[pallet::storage]
-	pub type TopLevelByAuthor<T: Config> = StorageMap<
-		_,
-		Blake2_128Concat,
-		T::AccountId,
-		BoundedVec<u64, T::MaxPostsPerAuthor>,
-		ValueQuery,
-	>;
+    /// Per-author top-level post ids (reply-free), bounded like [`ByAuthor`]. Drives exact-N profile
+    /// paging and a correct top-level post count (`decode_len`) without folding in the author's replies.
+    #[pallet::storage]
+    pub type TopLevelByAuthor<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        BoundedVec<u64, T::MaxPostsPerAuthor>,
+        ValueQuery,
+    >;
 
-	#[pallet::event]
-	#[pallet::generate_deposit(pub(super) fn deposit_event)]
-	pub enum Event<T: Config> {
-		/// A post was created (a plain post, a reply, or a quote — the shape is read from storage).
-		PostCreated { id: u64, author: T::AccountId },
-		/// A capacity bucket was force-set by the `ForceOrigin` (operator/migration/dev).
-		CapacityForced { who: T::AccountId, cap_last: u128 },
-		/// `who` (stake-`weight`) cast or changed a `dir` vote on post `id`. `weight` is the snapshot
-		/// the tally was adjusted by — it lets an off-chain indexer fold the exact same tally.
-		Voted { id: u64, who: T::AccountId, dir: VoteDir, weight: u128 },
-		/// `who` cleared their vote on post `id` (the tally was adjusted by their stored weight).
-		VoteCleared { id: u64, who: T::AccountId },
-		/// `who` reposted post `id` (permanent — there is no un-repost).
-		Reposted { id: u64, who: T::AccountId },
-		/// `follower` started following `followee`.
-		Followed { follower: T::AccountId, followee: T::AccountId },
-		/// `follower` stopped following `followee`.
-		Unfollowed { follower: T::AccountId, followee: T::AccountId },
-		/// A poll was created (its question is the host post `id`'s text; options are in storage).
-		PollCreated { id: u64, author: T::AccountId },
-		/// `who` (stake-`weight`) cast or changed their vote on poll `id` to `option`.
-		PollVoted { id: u64, who: T::AccountId, option: u8, weight: u128 },
-	}
+    #[pallet::event]
+    #[pallet::generate_deposit(pub(super) fn deposit_event)]
+    pub enum Event<T: Config> {
+        /// A post was created (a plain post, a reply, or a quote — the shape is read from storage).
+        PostCreated { id: u64, author: T::AccountId },
+        /// A capacity bucket was force-set by the `ForceOrigin` (operator/migration/dev).
+        CapacityForced { who: T::AccountId, cap_last: u128 },
+        /// `who` (stake-`weight`) cast or changed a `dir` vote on post `id`. `weight` is the snapshot
+        /// the tally was adjusted by — it lets an off-chain indexer fold the exact same tally.
+        Voted {
+            id: u64,
+            who: T::AccountId,
+            dir: VoteDir,
+            weight: u128,
+        },
+        /// `who` cleared their vote on post `id` (the tally was adjusted by their stored weight).
+        VoteCleared { id: u64, who: T::AccountId },
+        /// `who` reposted post `id` (permanent — there is no un-repost).
+        Reposted { id: u64, who: T::AccountId },
+        /// `follower` started following `followee`.
+        Followed {
+            follower: T::AccountId,
+            followee: T::AccountId,
+        },
+        /// `follower` stopped following `followee`.
+        Unfollowed {
+            follower: T::AccountId,
+            followee: T::AccountId,
+        },
+        /// A poll was created (its question is the host post `id`'s text; options are in storage).
+        PollCreated { id: u64, author: T::AccountId },
+        /// `who` (stake-`weight`) cast or changed their vote on poll `id` to `option`.
+        PollVoted {
+            id: u64,
+            who: T::AccountId,
+            option: u8,
+            weight: u128,
+        },
+    }
 
-	#[pallet::error]
-	pub enum Error<T> {
-		/// The post text exceeded `MaxLength`.
-		TooLong,
-		/// No post exists with the given id (a vote / repost / quote target that does not exist).
-		NotFound,
-		/// The author has reached `MaxPostsPerAuthor` and cannot be indexed for another post.
-		TooManyPosts,
-		/// The caller has not bound a Cardano identity via the gate (`IdentityGate::is_allowed`
-		/// returned `false`). The M2 anti-Sybil gate (`L3-chain.md` §4.4/§5.1).
-		NotAllowed,
-		/// `clear_vote` was called but the caller has no vote on that post.
-		NotVoted,
-		/// `repost` was called but the caller has already reposted that post (reposts are permanent).
-		AlreadyReposted,
-		/// `follow` was called with the caller as the target.
-		SelfFollow,
-		/// `follow` was called but the caller already follows that target.
-		AlreadyFollowing,
-		/// `unfollow` was called but the caller does not follow that target.
-		NotFollowing,
-		/// `create_poll` was called with fewer than 2 options.
-		NotEnoughOptions,
-		/// `create_poll` was called with more than `MaxPollOptions` options.
-		TooManyOptions,
-		/// A poll option label exceeded `MaxPollOptionLen`.
-		OptionTooLong,
-		/// `cast_poll_vote` referenced a post that is not a poll.
-		PollNotFound,
-		/// `cast_poll_vote` referenced an option index outside the poll's options.
-		InvalidOption,
-	}
+    #[pallet::error]
+    pub enum Error<T> {
+        /// The post text exceeded `MaxLength`.
+        TooLong,
+        /// No post exists with the given id (a vote / repost / quote target that does not exist).
+        NotFound,
+        /// The author has reached `MaxPostsPerAuthor` and cannot be indexed for another post.
+        TooManyPosts,
+        /// The caller has not bound a Cardano identity via the gate (`IdentityGate::is_allowed`
+        /// returned `false`). The M2 anti-Sybil gate (`L3-chain.md` §4.4/§5.1).
+        NotAllowed,
+        /// `clear_vote` was called but the caller has no vote on that post.
+        NotVoted,
+        /// `repost` was called but the caller has already reposted that post (reposts are permanent).
+        AlreadyReposted,
+        /// `follow` was called with the caller as the target.
+        SelfFollow,
+        /// `follow` was called but the caller already follows that target.
+        AlreadyFollowing,
+        /// `unfollow` was called but the caller does not follow that target.
+        NotFollowing,
+        /// `create_poll` was called with fewer than 2 options.
+        NotEnoughOptions,
+        /// `create_poll` was called with more than `MaxPollOptions` options.
+        TooManyOptions,
+        /// A poll option label exceeded `MaxPollOptionLen`.
+        OptionTooLong,
+        /// `cast_poll_vote` referenced a post that is not a poll.
+        PollNotFound,
+        /// `cast_poll_vote` referenced an option index outside the poll's options.
+        InvalidOption,
+    }
 
-	impl<T: Config> Pallet<T> {
-		/// The stake-backed capacity ceiling for a stake `weight`: `min(weight·CapRatio, Ceiling)`
-		/// (capped-linear, DR-11). The SINGLE source of truth for the ceiling — both the live meter
-		/// ([`current_capacity`]) and the `force_set_capacity` clamp call this, so the
-		/// "voice == locked ADA" invariant can never drift between the two (`microblog-3`/CL1).
-		pub fn capacity_ceiling(weight: u128) -> u128 {
-			core::cmp::min(weight.saturating_mul(T::CapRatio::get()), T::Ceiling::get())
-		}
+    impl<T: Config> Pallet<T> {
+        /// The stake-backed capacity ceiling for a stake `weight`: `min(weight·CapRatio, Ceiling)`
+        /// (capped-linear, DR-11). The SINGLE source of truth for the ceiling — both the live meter
+        /// ([`current_capacity`]) and the `force_set_capacity` clamp call this, so the
+        /// "voice == locked ADA" invariant can never drift between the two (`microblog-3`/CL1).
+        pub fn capacity_ceiling(weight: u128) -> u128 {
+            core::cmp::min(weight.saturating_mul(T::CapRatio::get()), T::Ceiling::get())
+        }
 
-		/// Lazy regenerate-on-read (`ECONOMICS.md` §4.1). **Pure** — no writes — so it is safe
-		/// to call repeatedly inside `validate()`.
-		///
-		/// ⚑ `None ⇒ 0` (first-touch is empty, not full) and all arithmetic is `saturating_*`,
-		/// so an identity idle for years saturates into the `min(cap, …)` clamp, never wraps.
-		pub fn current_capacity(who: &T::AccountId, now: BlockNumberFor<T>) -> u128 {
-			let weight = pallet_talk_stake::AllowedStake::<T>::get(who); // 0 if unbound/unlocked
-			let cap = Self::capacity_ceiling(weight); // capped-linear (DR-11) — the stake-backed ceiling
-			match Capacity::<T>::get(who) {
-				None => 0, // first-touch = ZERO (charges up); closes the cheap-identity burst farm
-				Some(s) => {
-					let elapsed: u128 = now.saturating_sub(s.last_block).saturated_into();
-					let regen = weight
-						.saturating_mul(T::RegenPerBlock::get())
-						.saturating_mul(elapsed);
-					core::cmp::min(cap, s.cap_last.saturating_add(regen))
-				},
-			}
-		}
+        /// Lazy regenerate-on-read (`ECONOMICS.md` §4.1). **Pure** — no writes — so it is safe
+        /// to call repeatedly inside `validate()`.
+        ///
+        /// ⚑ `None ⇒ 0` (first-touch is empty, not full) and all arithmetic is `saturating_*`,
+        /// so an identity idle for years saturates into the `min(cap, …)` clamp, never wraps.
+        pub fn current_capacity(who: &T::AccountId, now: BlockNumberFor<T>) -> u128 {
+            let weight = pallet_talk_stake::AllowedStake::<T>::get(who); // 0 if unbound/unlocked
+            let cap = Self::capacity_ceiling(weight); // capped-linear (DR-11) — the stake-backed ceiling
+            match Capacity::<T>::get(who) {
+                None => 0, // first-touch = ZERO (charges up); closes the cheap-identity burst farm
+                Some(s) => {
+                    let elapsed: u128 = now.saturating_sub(s.last_block).saturated_into();
+                    let regen = weight
+                        .saturating_mul(T::RegenPerBlock::get())
+                        .saturating_mul(elapsed);
+                    core::cmp::min(cap, s.cap_last.saturating_add(regen))
+                }
+            }
+        }
 
-		/// Stamp the capacity bucket empty **and dated** if the row does not yet exist. Idempotent:
-		/// a no-op if a row already exists, so a relock cannot re-mint a fresh full-charging bucket.
-		///
-		/// ⚑ Row only — it does **not** touch the provider reference (that is the bind lifecycle's
-		/// job, [`OnIdentityBind::on_bind`] / `on_revoke`). A force-primed but unbound account can't
-		/// post (the identity gate rejects it) so it needs no provider ref.
-		pub fn on_first_bind(who: &T::AccountId) {
-			if !Capacity::<T>::contains_key(who) {
-				let now = frame_system::Pallet::<T>::block_number();
-				Capacity::<T>::insert(who, CapacityState { cap_last: 0, last_block: now });
-			}
-		}
+        /// Stamp the capacity bucket empty **and dated** if the row does not yet exist. Idempotent:
+        /// a no-op if a row already exists, so a relock cannot re-mint a fresh full-charging bucket.
+        ///
+        /// ⚑ Row only — it does **not** touch the provider reference (that is the bind lifecycle's
+        /// job, [`OnIdentityBind::on_bind`] / `on_revoke`). A force-primed but unbound account can't
+        /// post (the identity gate rejects it) so it needs no provider ref.
+        pub fn on_first_bind(who: &T::AccountId) {
+            if !Capacity::<T>::contains_key(who) {
+                let now = frame_system::Pallet::<T>::block_number();
+                Capacity::<T>::insert(
+                    who,
+                    CapacityState {
+                        cap_last: 0,
+                        last_block: now,
+                    },
+                );
+            }
+        }
 
-		/// The capacity cost of a post of `len` bytes (`ECONOMICS.md` §4.2).
-		pub fn post_cost(len: u32) -> u128 {
-			T::BaseCost::get().saturating_add(T::PerByteCost::get().saturating_mul(len as u128))
-		}
+        /// The capacity cost of a post of `len` bytes (`ECONOMICS.md` §4.2).
+        pub fn post_cost(len: u32) -> u128 {
+            T::BaseCost::get().saturating_add(T::PerByteCost::get().saturating_mul(len as u128))
+        }
 
-		/// Spend `cost` capacity for `who` at `now`. **The sole writer** of the bucket — called
-		/// only from `CheckCapacity::post_dispatch_details` (inclusion), never `validate()`.
-		/// `saturating_sub` floors at 0, so even an operator-forced over-budget post can only
-		/// zero the bucket, never underflow.
-		pub fn consume(who: &T::AccountId, now: BlockNumberFor<T>, cost: u128) {
-			let current = Self::current_capacity(who, now);
-			let remaining = current.saturating_sub(cost);
-			// Operator audit trail for the spam gate: every debit (and whether it floored at 0).
-			// debug, not an event — `consume` runs on inclusion and must not bloat the hot path.
-			if cost > current {
-				// An operator-forced over-budget post can floor the bucket at 0 (saturating_sub);
-				// surface that the debit was larger than the banked balance.
-				log::debug!(
-					target: LOG_TARGET,
-					"consume: {:?} debited cost={} from balance={} (floored to 0; over-budget)",
-					who, cost, current,
-				);
-			} else {
-				log::debug!(
-					target: LOG_TARGET,
-					"consume: {:?} debited cost={} ({} -> {})",
-					who, cost, current, remaining,
-				);
-			}
-			Capacity::<T>::insert(who, CapacityState { cap_last: remaining, last_block: now });
-		}
+        /// Spend `cost` capacity for `who` at `now`. **The sole writer** of the bucket — called
+        /// only from `CheckCapacity::post_dispatch_details` (inclusion), never `validate()`.
+        /// `saturating_sub` floors at 0, so even an operator-forced over-budget post can only
+        /// zero the bucket, never underflow.
+        pub fn consume(who: &T::AccountId, now: BlockNumberFor<T>, cost: u128) {
+            let current = Self::current_capacity(who, now);
+            let remaining = current.saturating_sub(cost);
+            // Operator audit trail for the spam gate: every debit (and whether it floored at 0).
+            // debug, not an event — `consume` runs on inclusion and must not bloat the hot path.
+            if cost > current {
+                // An operator-forced over-budget post can floor the bucket at 0 (saturating_sub);
+                // surface that the debit was larger than the banked balance.
+                log::debug!(
+                    target: LOG_TARGET,
+                    "consume: {:?} debited cost={} from balance={} (floored to 0; over-budget)",
+                    who, cost, current,
+                );
+            } else {
+                log::debug!(
+                    target: LOG_TARGET,
+                    "consume: {:?} debited cost={} ({} -> {})",
+                    who, cost, current, remaining,
+                );
+            }
+            Capacity::<T>::insert(
+                who,
+                CapacityState {
+                    cap_last: remaining,
+                    last_block: now,
+                },
+            );
+        }
 
-		/// The talk-capacity cost of a feeless social call, or `None` if the call is not metered.
-		///
-		/// This is the single source of truth the [`CheckCapacity`] extension uses to price EVERY
-		/// feeless action against the one per-account battery. **Pure** — it reads only `#[pallet::
-		/// constant]`s + the call's own bytes (no storage), so it is safe to evaluate in `validate()`.
-		/// A `None` (e.g. `force_set_capacity`) means the call is not capacity-metered and passes
-		/// through the extension untouched.
-		pub fn metered_cost(call: &Call<T>) -> Option<u128> {
-			match call {
-				// A post and a quote are both content priced by length.
-				Call::post_message { text, .. } | Call::quote_post { text, .. } => {
-					Some(Self::post_cost(text.len() as u32))
-				},
-				// Votes (and clearing a vote) are a flat signal cost.
-				Call::vote { .. } | Call::clear_vote { .. } => Some(T::VoteCost::get()),
-				// A repost is a flat amplification cost.
-				Call::repost { .. } => Some(T::RepostCost::get()),
-				// Follow / unfollow are a flat relationship cost (symmetric, no free-churn).
-				Call::follow { .. } | Call::unfollow { .. } => Some(T::FollowCost::get()),
-				// A poll is content priced by its question length; a poll vote is a flat signal cost.
-				Call::create_poll { question, .. } => Some(Self::post_cost(question.len() as u32)),
-				Call::cast_poll_vote { .. } => Some(T::VoteCost::get()),
-				// Everything else (force_set_capacity, the codec phantom) is unmetered.
-				_ => None,
-			}
-		}
+        /// The talk-capacity cost of a feeless social call, or `None` if the call is not metered.
+        ///
+        /// This is the single source of truth the [`CheckCapacity`] extension uses to price EVERY
+        /// feeless action against the one per-account battery. **Pure** — it reads only `#[pallet::
+        /// constant]`s + the call's own bytes (no storage), so it is safe to evaluate in `validate()`.
+        /// A `None` (e.g. `force_set_capacity`) means the call is not capacity-metered and passes
+        /// through the extension untouched.
+        pub fn metered_cost(call: &Call<T>) -> Option<u128> {
+            match call {
+                // A post and a quote are both content priced by length.
+                Call::post_message { text, .. } | Call::quote_post { text, .. } => {
+                    Some(Self::post_cost(text.len() as u32))
+                }
+                // Votes (and clearing a vote) are a flat signal cost.
+                Call::vote { .. } | Call::clear_vote { .. } => Some(T::VoteCost::get()),
+                // A repost is a flat amplification cost.
+                Call::repost { .. } => Some(T::RepostCost::get()),
+                // Follow / unfollow are a flat relationship cost (symmetric, no free-churn).
+                Call::follow { .. } | Call::unfollow { .. } => Some(T::FollowCost::get()),
+                // A poll is content priced by its question length; a poll vote is a flat signal cost.
+                Call::create_poll { question, .. } => Some(Self::post_cost(question.len() as u32)),
+                Call::cast_poll_vote { .. } => Some(T::VoteCost::get()),
+                // Everything else (force_set_capacity, the codec phantom) is unmetered.
+                _ => None,
+            }
+        }
 
-		/// Index a newly-created TOP-LEVEL post (`parent == None`) into the Feature 3 spine — the global
-		/// `TopLevelPosts` sequence and the per-author `TopLevelByAuthor` list. Called from every
-		/// top-level creation site (`post_message`/`quote_post`/`create_poll`). Returns `TooManyPosts` if
-		/// the author's top-level index is full — which cannot actually happen once `ByAuthor` (a
-		/// superset, pushed first) has succeeded, but the bound is honoured so the whole dispatch rolls
-		/// back cleanly even on the impossible case.
-		pub fn index_top_level(id: u64, author: &T::AccountId) -> DispatchResult {
-			TopLevelByAuthor::<T>::try_mutate(author, |ids| ids.try_push(id))
-				.map_err(|_| Error::<T>::TooManyPosts)?;
-			let seq = NextTopLevelSeq::<T>::get();
-			TopLevelPosts::<T>::insert(seq, id);
-			NextTopLevelSeq::<T>::put(seq.saturating_add(1));
-			Ok(())
-		}
-	}
+        /// Index a newly-created TOP-LEVEL post (`parent == None`) into the Feature 3 spine — the global
+        /// `TopLevelPosts` sequence and the per-author `TopLevelByAuthor` list. Called from every
+        /// top-level creation site (`post_message`/`quote_post`/`create_poll`). Returns `TooManyPosts` if
+        /// the author's top-level index is full — which cannot actually happen once `ByAuthor` (a
+        /// superset, pushed first) has succeeded, but the bound is honoured so the whole dispatch rolls
+        /// back cleanly even on the impossible case.
+        pub fn index_top_level(id: u64, author: &T::AccountId) -> DispatchResult {
+            TopLevelByAuthor::<T>::try_mutate(author, |ids| ids.try_push(id))
+                .map_err(|_| Error::<T>::TooManyPosts)?;
+            let seq = NextTopLevelSeq::<T>::get();
+            TopLevelPosts::<T>::insert(seq, id);
+            NextTopLevelSeq::<T>::put(seq.saturating_add(1));
+            Ok(())
+        }
+    }
 
-	/// The bind/revoke lifecycle hooks `pallet-cogno-gate` invokes (via its `OnBind` Config type),
-	/// kept symmetric (`gate-1`) without a Cargo dependency on cogno-gate.
-	impl<T: Config> super::OnIdentityBind<T::AccountId> for Pallet<T> {
-		fn on_bind(who: &T::AccountId) {
-			Self::on_first_bind(who); // ensure the (relock-safe) capacity row
-			// Take a provider reference so the bound account's first feeless post is not rejected by
-			// `CheckNonce` (issue #3991). `link_identity` only binds an unbound account, so this inc
-			// is balanced by exactly one `dec` in `on_revoke`. `inc_providers` is infallible (it
-			// returns Created/Existed, never an error) — the matching failable side is `dec_providers`.
-			let _ = frame_system::Pallet::<T>::inc_providers(who);
-		}
+    /// The bind/revoke lifecycle hooks `pallet-cogno-gate` invokes (via its `OnBind` Config type),
+    /// kept symmetric (`gate-1`) without a Cargo dependency on cogno-gate.
+    impl<T: Config> super::OnIdentityBind<T::AccountId> for Pallet<T> {
+        fn on_bind(who: &T::AccountId) {
+            Self::on_first_bind(who); // ensure the (relock-safe) capacity row
+                                      // Take a provider reference so the bound account's first feeless post is not rejected by
+                                      // `CheckNonce` (issue #3991). `link_identity` only binds an unbound account, so this inc
+                                      // is balanced by exactly one `dec` in `on_revoke`. `inc_providers` is infallible (it
+                                      // returns Created/Existed, never an error) — the matching failable side is `dec_providers`.
+            let _ = frame_system::Pallet::<T>::inc_providers(who);
+        }
 
-		fn on_revoke(who: &T::AccountId) {
-			// Release the provider reference taken at `on_bind` (gate-1). Best-effort: an outstanding
-			// consumer ref would make `dec_providers` fail, in which case the ref stays — no worse
-			// than the prior always-leak behaviour, but log so the leak is observable.
-			if let Err(e) = frame_system::Pallet::<T>::dec_providers(who) {
-				log::warn!(
-					target: LOG_TARGET,
-					"on_revoke: dec_providers failed for {:?}: {:?} — provider ref leaked (outstanding consumer ref?)",
-					who, e,
-				);
-			}
-			// Zero the banked capacity but KEEP the row (never delete — relock-farm guard).
-			if Capacity::<T>::contains_key(who) {
-				let now = frame_system::Pallet::<T>::block_number();
-				Capacity::<T>::insert(who, CapacityState { cap_last: 0, last_block: now });
-			} else {
-				// Revoke without a prior bind row: nothing to zero. Not an error (force-priming or
-				// a re-revoke), but worth a debug trail for a confused operator.
-				log::debug!(
-					target: LOG_TARGET,
-					"on_revoke: no capacity row for {:?} — nothing to zero (re-revoke or never primed)",
-					who,
-				);
-			}
-		}
-	}
+        fn on_revoke(who: &T::AccountId) {
+            // Release the provider reference taken at `on_bind` (gate-1). Best-effort: an outstanding
+            // consumer ref would make `dec_providers` fail, in which case the ref stays — no worse
+            // than the prior always-leak behaviour, but log so the leak is observable.
+            if let Err(e) = frame_system::Pallet::<T>::dec_providers(who) {
+                log::warn!(
+                    target: LOG_TARGET,
+                    "on_revoke: dec_providers failed for {:?}: {:?} — provider ref leaked (outstanding consumer ref?)",
+                    who, e,
+                );
+            }
+            // Zero the banked capacity but KEEP the row (never delete — relock-farm guard).
+            if Capacity::<T>::contains_key(who) {
+                let now = frame_system::Pallet::<T>::block_number();
+                Capacity::<T>::insert(
+                    who,
+                    CapacityState {
+                        cap_last: 0,
+                        last_block: now,
+                    },
+                );
+            } else {
+                // Revoke without a prior bind row: nothing to zero. Not an error (force-priming or
+                // a re-revoke), but worth a debug trail for a confused operator.
+                log::debug!(
+                    target: LOG_TARGET,
+                    "on_revoke: no capacity row for {:?} — nothing to zero (re-revoke or never primed)",
+                    who,
+                );
+            }
+        }
+    }
 
-	#[pallet::call]
-	impl<T: Config> Pallet<T> {
-		/// Create a post with the given `text` bytes and optional `parent` (reply target).
-		///
-		/// **Feeless** (`feeless_if` below + the runtime's `SkipCheckIfFeeless`); inclusion is
-		/// gated by the [`CheckCapacity`] extension at the pool, which also consumes capacity on
-		/// inclusion. Fails `TooLong` if `text` exceeds `MaxLength`, or `TooManyPosts` if the
-		/// author's index is full.
-		#[pallet::call_index(0)]
-		// The benchmarked `post_message` weight measures the top-level (`parent: None`) path. A reply
-		// (`parent: Some`) additionally reads+writes `ReplyCount` and writes `RepliesByParent` (the
-		// denormalized reply aggregates), so charge that worst case — 1 read + 2 writes — on top. A
-		// top-level post overpays slightly, which is the safe direction for the anti-spam weight
-		// backstop. spec 121 (Feature 3) additionally indexes a top-level post into the `TopLevelPosts`
-		// spine (`index_top_level`: 2 reads + 3 writes), which weights.rs has not yet re-benchmarked, so
-		// charge the per-post WORST case of the two paths — 2 reads + 3 writes — on top.
-		#[pallet::weight(<T as Config>::WeightInfo::post_message(text.len() as u32)
+    #[pallet::call]
+    impl<T: Config> Pallet<T> {
+        /// Create a post with the given `text` bytes and optional `parent` (reply target).
+        ///
+        /// **Feeless** (`feeless_if` below + the runtime's `SkipCheckIfFeeless`); inclusion is
+        /// gated by the [`CheckCapacity`] extension at the pool, which also consumes capacity on
+        /// inclusion. Fails `TooLong` if `text` exceeds `MaxLength`, or `TooManyPosts` if the
+        /// author's index is full.
+        #[pallet::call_index(0)]
+        // The benchmarked `post_message` weight measures the top-level (`parent: None`) path. A reply
+        // (`parent: Some`) additionally reads+writes `ReplyCount` and writes `RepliesByParent` (the
+        // denormalized reply aggregates), so charge that worst case — 1 read + 2 writes — on top. A
+        // top-level post overpays slightly, which is the safe direction for the anti-spam weight
+        // backstop. spec 121 (Feature 3) additionally indexes a top-level post into the `TopLevelPosts`
+        // spine (`index_top_level`: 2 reads + 3 writes), which weights.rs has not yet re-benchmarked, so
+        // charge the per-post WORST case of the two paths — 2 reads + 3 writes — on top.
+        #[pallet::weight(<T as Config>::WeightInfo::post_message(text.len() as u32)
 			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _parent: &Option<u64>| -> bool { true })]
-		pub fn post_message(
-			origin: OriginFor<T>,
-			text: Vec<u8>,
-			parent: Option<u64>,
-		) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			// ⚑ M2 identity gate (belt-and-suspenders): a weighted-but-unbound account (e.g. a
-			// sudo misconfig) is rejected here even though the capacity extension already rejects
-			// the unbound-because-unweighted case at the pool. Identity ≠ rate limit. No event is
-			// emitted on rejection (the call reverts), so log it for the operator's audit trail.
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(
-					target: LOG_TARGET,
-					"post_message rejected: identity not allowed for {:?} (no live Cardano binding)",
-					who,
-				);
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			let bounded: BoundedVec<u8, T::MaxLength> =
-				text.try_into().map_err(|_| Error::<T>::TooLong)?;
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _parent: &Option<u64>| -> bool { true })]
+        pub fn post_message(
+            origin: OriginFor<T>,
+            text: Vec<u8>,
+            parent: Option<u64>,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            // ⚑ M2 identity gate (belt-and-suspenders): a weighted-but-unbound account (e.g. a
+            // sudo misconfig) is rejected here even though the capacity extension already rejects
+            // the unbound-because-unweighted case at the pool. Identity ≠ rate limit. No event is
+            // emitted on rejection (the call reverts), so log it for the operator's audit trail.
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(
+                    target: LOG_TARGET,
+                    "post_message rejected: identity not allowed for {:?} (no live Cardano binding)",
+                    who,
+                );
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            let bounded: BoundedVec<u8, T::MaxLength> =
+                text.try_into().map_err(|_| Error::<T>::TooLong)?;
 
-			let id = NextPostId::<T>::get();
-			// Index into `ByAuthor` first: on overflow this returns `Err`, the whole dispatch
-			// rolls back (so the id is NOT consumed), and the caller sees a real `TooManyPosts`.
-			ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
-				.map_err(|_| Error::<T>::TooManyPosts)?;
+            let id = NextPostId::<T>::get();
+            // Index into `ByAuthor` first: on overflow this returns `Err`, the whole dispatch
+            // rolls back (so the id is NOT consumed), and the caller sees a real `TooManyPosts`.
+            ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
+                .map_err(|_| Error::<T>::TooManyPosts)?;
 
-			let at = frame_system::Pallet::<T>::block_number();
-			// `quote: None` — a plain post or a reply. Quote-posts go through `quote_post`.
-			Posts::<T>::insert(id, Post { author: who.clone(), text: bounded, parent, quote: None, at });
-			// Maintain the denormalized reply aggregates when this post is a reply (same lockstep
-			// pattern as `repost` → `RepostCount`/`Reposts`). `parent: Option<u64>` is `Copy`, so it is
-			// still readable after being moved into the `Post` above. Append-only content ⇒ increment
-			// only (there is no `delete`/decrement path).
-			if let Some(parent_id) = parent {
-				ReplyCount::<T>::mutate(parent_id, |c| *c = c.saturating_add(1));
-				RepliesByParent::<T>::insert(parent_id, id, ());
-			} else {
-				// Top-level post — index it into the Feature 3 spine for exact-N feed/profile paging.
-				Self::index_top_level(id, &who)?;
-			}
-			NextPostId::<T>::put(id.saturating_add(1));
+            let at = frame_system::Pallet::<T>::block_number();
+            // `quote: None` — a plain post or a reply. Quote-posts go through `quote_post`.
+            Posts::<T>::insert(
+                id,
+                Post {
+                    author: who.clone(),
+                    text: bounded,
+                    parent,
+                    quote: None,
+                    at,
+                },
+            );
+            // Maintain the denormalized reply aggregates when this post is a reply (same lockstep
+            // pattern as `repost` → `RepostCount`/`Reposts`). `parent: Option<u64>` is `Copy`, so it is
+            // still readable after being moved into the `Post` above. Append-only content ⇒ increment
+            // only (there is no `delete`/decrement path).
+            if let Some(parent_id) = parent {
+                ReplyCount::<T>::mutate(parent_id, |c| *c = c.saturating_add(1));
+                RepliesByParent::<T>::insert(parent_id, id, ());
+            } else {
+                // Top-level post — index it into the Feature 3 spine for exact-N feed/profile paging.
+                Self::index_top_level(id, &who)?;
+            }
+            NextPostId::<T>::put(id.saturating_add(1));
 
-			Self::deposit_event(Event::PostCreated { id, author: who });
-			Ok(())
-		}
+            Self::deposit_event(Event::PostCreated { id, author: who });
+            Ok(())
+        }
 
-		// call_index 1 is PERMANENTLY VACANT: the M0 `delete_post` was removed — content is
-		// append-only (no edit, no delete). The chain is a neutral permanent ledger; what a
-		// frontend shows is the frontend's policy. Never reuse index 1 (on-wire contract).
+        // call_index 1 is PERMANENTLY VACANT: the M0 `delete_post` was removed — content is
+        // append-only (no edit, no delete). The chain is a neutral permanent ledger; what a
+        // frontend shows is the frontend's policy. Never reuse index 1 (on-wire contract).
 
-		/// Force a capacity bucket for `who` to `cap_last` (dated at the current block), gated
-		/// by `ForceOrigin`. The **M2c operator/dev stand-in** for the future gate's first-bind
-		/// bookkeeping: it primes the capacity row (via [`Pallet::on_first_bind`]) and lets the
-		/// operator pre-charge a battery so the showcase is interactive immediately. (The provider
-		/// reference is taken at identity bind, not here — an unbound account can't post anyway.)
-		/// (Cardano-sourced weight + on-first-bind-at-`link_identity` are M2/M2d.)
-		///
-		/// `cap_last` is **clamped to the stake-backed ceiling** `min(weight·CapRatio, Ceiling)`
-		/// (microblog-3): the force can prime up to what the account's locked stake backs, but can
-		/// never mint capacity above it — preserving the "voice == locked ADA" invariant even
-		/// against a misconfigured/compromised authority origin. (The legitimate follower flow sets
-		/// `set_stake` first, then forces exactly `min(weight·CapRatio, Ceiling)`, so it is unaffected.)
-		#[pallet::call_index(2)]
-		#[pallet::weight(<T as Config>::WeightInfo::force_set_capacity())]
-		pub fn force_set_capacity(
-			origin: OriginFor<T>,
-			who: T::AccountId,
-			cap_last: u128,
-		) -> DispatchResult {
-			T::ForceOrigin::ensure_origin(origin)?;
-			Self::on_first_bind(&who); // ensure the (relock-safe) capacity row exists (no provider ref)
-			let now = frame_system::Pallet::<T>::block_number();
-			// Clamp to what the account's current weight backs — never pre-charge above the ceiling.
-			// Shares the single ceiling helper with `current_capacity` so the two can't drift (CL1).
-			let weight = pallet_talk_stake::AllowedStake::<T>::get(&who);
-			let ceiling = Self::capacity_ceiling(weight);
-			let requested = cap_last;
-			let cap_last = core::cmp::min(cap_last, ceiling);
-			// The CapacityForced event reports the STORED (clamped) value but not that clamping
-			// occurred — surface the silent operator clamp so a misconfigured prime is visible.
-			if requested > ceiling {
-				log::warn!(
-					target: LOG_TARGET,
-					"force_set_capacity: clamped requested cap_last={} to ceiling={} for {:?} (weight={})",
-					requested, ceiling, who, weight,
-				);
-			}
-			Capacity::<T>::insert(&who, CapacityState { cap_last, last_block: now });
-			Self::deposit_event(Event::CapacityForced { who, cap_last });
-			Ok(())
-		}
+        /// Force a capacity bucket for `who` to `cap_last` (dated at the current block), gated
+        /// by `ForceOrigin`. The **M2c operator/dev stand-in** for the future gate's first-bind
+        /// bookkeeping: it primes the capacity row (via [`Pallet::on_first_bind`]) and lets the
+        /// operator pre-charge a battery so the showcase is interactive immediately. (The provider
+        /// reference is taken at identity bind, not here — an unbound account can't post anyway.)
+        /// (Cardano-sourced weight + on-first-bind-at-`link_identity` are M2/M2d.)
+        ///
+        /// `cap_last` is **clamped to the stake-backed ceiling** `min(weight·CapRatio, Ceiling)`
+        /// (microblog-3): the force can prime up to what the account's locked stake backs, but can
+        /// never mint capacity above it — preserving the "voice == locked ADA" invariant even
+        /// against a misconfigured/compromised authority origin. (The legitimate follower flow sets
+        /// `set_stake` first, then forces exactly `min(weight·CapRatio, Ceiling)`, so it is unaffected.)
+        #[pallet::call_index(2)]
+        #[pallet::weight(<T as Config>::WeightInfo::force_set_capacity())]
+        pub fn force_set_capacity(
+            origin: OriginFor<T>,
+            who: T::AccountId,
+            cap_last: u128,
+        ) -> DispatchResult {
+            T::ForceOrigin::ensure_origin(origin)?;
+            Self::on_first_bind(&who); // ensure the (relock-safe) capacity row exists (no provider ref)
+            let now = frame_system::Pallet::<T>::block_number();
+            // Clamp to what the account's current weight backs — never pre-charge above the ceiling.
+            // Shares the single ceiling helper with `current_capacity` so the two can't drift (CL1).
+            let weight = pallet_talk_stake::AllowedStake::<T>::get(&who);
+            let ceiling = Self::capacity_ceiling(weight);
+            let requested = cap_last;
+            let cap_last = core::cmp::min(cap_last, ceiling);
+            // The CapacityForced event reports the STORED (clamped) value but not that clamping
+            // occurred — surface the silent operator clamp so a misconfigured prime is visible.
+            if requested > ceiling {
+                log::warn!(
+                    target: LOG_TARGET,
+                    "force_set_capacity: clamped requested cap_last={} to ceiling={} for {:?} (weight={})",
+                    requested, ceiling, who, weight,
+                );
+            }
+            Capacity::<T>::insert(
+                &who,
+                CapacityState {
+                    cap_last,
+                    last_block: now,
+                },
+            );
+            Self::deposit_event(Event::CapacityForced { who, cap_last });
+            Ok(())
+        }
 
-		// ── social engagement calls (all FEELESS + capacity-metered through the SAME single battery
-		//    as `post_message`; the [`CheckCapacity`] extension prices each via `metered_cost` and
-		//    consumes on inclusion). Each is identity-gated in its body (belt-and-suspenders, like
-		//    `post_message`). Content (quote) is permanent; signals/relationships (vote, repost,
-		//    follow) follow their own rule: votes/follows toggle, reposts are permanent. ───────────
+        // ── social engagement calls (all FEELESS + capacity-metered through the SAME single battery
+        //    as `post_message`; the [`CheckCapacity`] extension prices each via `metered_cost` and
+        //    consumes on inclusion). Each is identity-gated in its body (belt-and-suspenders, like
+        //    `post_message`). Content (quote) is permanent; signals/relationships (vote, repost,
+        //    follow) follow their own rule: votes/follows toggle, reposts are permanent. ───────────
 
-		/// Quote-post: create a post whose body is `text` and which references `quoted_id` via the
-		/// `Post.quote` field (distinct from a reply's `parent`). Feeless + capacity-metered.
-		#[pallet::call_index(3)]
-		// spec 121 (Feature 3): a quote is top-level, so it also runs `index_top_level` (2 reads +
-		// 3 writes), not yet re-benchmarked — charge it manually.
-		#[pallet::weight(<T as Config>::WeightInfo::quote_post(text.len() as u32)
+        /// Quote-post: create a post whose body is `text` and which references `quoted_id` via the
+        /// `Post.quote` field (distinct from a reply's `parent`). Feeless + capacity-metered.
+        #[pallet::call_index(3)]
+        // spec 121 (Feature 3): a quote is top-level, so it also runs `index_top_level` (2 reads +
+        // 3 writes), not yet re-benchmarked — charge it manually.
+        #[pallet::weight(<T as Config>::WeightInfo::quote_post(text.len() as u32)
 			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _quoted_id: &u64| -> bool { true })]
-		pub fn quote_post(origin: OriginFor<T>, text: Vec<u8>, quoted_id: u64) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "quote_post rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			// Unlike a reply's `parent` (intentionally unvalidated), a quote targets a real post —
-			// a quote of a phantom id has no body to ever render. One cheap `contains_key` read.
-			ensure!(Posts::<T>::contains_key(quoted_id), Error::<T>::NotFound);
-			let bounded: BoundedVec<u8, T::MaxLength> =
-				text.try_into().map_err(|_| Error::<T>::TooLong)?;
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _quoted_id: &u64| -> bool { true })]
+        pub fn quote_post(origin: OriginFor<T>, text: Vec<u8>, quoted_id: u64) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "quote_post rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            // Unlike a reply's `parent` (intentionally unvalidated), a quote targets a real post —
+            // a quote of a phantom id has no body to ever render. One cheap `contains_key` read.
+            ensure!(Posts::<T>::contains_key(quoted_id), Error::<T>::NotFound);
+            let bounded: BoundedVec<u8, T::MaxLength> =
+                text.try_into().map_err(|_| Error::<T>::TooLong)?;
 
-			let id = NextPostId::<T>::get();
-			ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
-				.map_err(|_| Error::<T>::TooManyPosts)?;
+            let id = NextPostId::<T>::get();
+            ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
+                .map_err(|_| Error::<T>::TooManyPosts)?;
 
-			let at = frame_system::Pallet::<T>::block_number();
-			Posts::<T>::insert(
-				id,
-				Post { author: who.clone(), text: bounded, parent: None, quote: Some(quoted_id), at },
-			);
-			// A quote is a top-level post — index it for exact-N feed/profile paging (Feature 3).
-			Self::index_top_level(id, &who)?;
-			NextPostId::<T>::put(id.saturating_add(1));
+            let at = frame_system::Pallet::<T>::block_number();
+            Posts::<T>::insert(
+                id,
+                Post {
+                    author: who.clone(),
+                    text: bounded,
+                    parent: None,
+                    quote: Some(quoted_id),
+                    at,
+                },
+            );
+            // A quote is a top-level post — index it for exact-N feed/profile paging (Feature 3).
+            Self::index_top_level(id, &who)?;
+            NextPostId::<T>::put(id.saturating_add(1));
 
-			Self::deposit_event(Event::PostCreated { id, author: who });
-			Ok(())
-		}
+            Self::deposit_event(Event::PostCreated { id, author: who });
+            Ok(())
+        }
 
-		/// Cast or change a **stake-weighted** vote on post `post_id`. The vote's weight is the
-		/// caller's `pallet_talk_stake::VotingPower` snapshot at call time — the total Cardano stake
-		/// of the caller's bound stake credential, NOT the posting deposit (`AllowedStake`). Re-voting
-		/// (changing direction or re-voting the same direction at a new weight) deterministically
-		/// reverses the PREVIOUSLY-STORED weight from the tally before applying the fresh one — so the
-		/// tally never drifts and an indexer folding the `Voted` events reproduces it byte-exactly. Feeless.
-		#[pallet::call_index(4)]
-		#[pallet::weight(<T as Config>::WeightInfo::vote())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _dir: &VoteDir| -> bool { true })]
-		pub fn vote(origin: OriginFor<T>, post_id: u64, dir: VoteDir) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "vote rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			ensure!(Posts::<T>::contains_key(post_id), Error::<T>::NotFound);
-			let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT vote time
-			VoteTally::<T>::mutate(post_id, |t| {
-				// 1. REVERSE the previously-stored record (if any) by its STORED weight — never by
-				//    re-reading current stake — so the tally cannot drift across a stake change.
-				if let Some(prev) = Votes::<T>::get(post_id, &who) {
-					match prev.dir {
-						VoteDir::Up => {
-							t.up_weight = t.up_weight.saturating_sub(prev.weight);
-							t.up_count = t.up_count.saturating_sub(1);
-						},
-						VoteDir::Down => {
-							t.down_weight = t.down_weight.saturating_sub(prev.weight);
-							t.down_count = t.down_count.saturating_sub(1);
-						},
-					}
-				}
-				// 2. APPLY the new vote with the freshly-snapshotted weight.
-				match dir {
-					VoteDir::Up => {
-						t.up_weight = t.up_weight.saturating_add(weight);
-						t.up_count = t.up_count.saturating_add(1);
-					},
-					VoteDir::Down => {
-						t.down_weight = t.down_weight.saturating_add(weight);
-						t.down_count = t.down_count.saturating_add(1);
-					},
-				}
-			});
-			Votes::<T>::insert(post_id, &who, VoteRecord { dir, weight });
-			// Reverse liked-posts index (Up = liked); switching to Down clears the like.
-			match dir {
-				VoteDir::Up => VotesByAccount::<T>::insert(&who, post_id, ()),
-				VoteDir::Down => {
-					VotesByAccount::<T>::remove(&who, post_id);
-				},
-			}
-			Self::deposit_event(Event::Voted { id: post_id, who, dir, weight });
-			Ok(())
-		}
+        /// Cast or change a **stake-weighted** vote on post `post_id`. The vote's weight is the
+        /// caller's `pallet_talk_stake::VotingPower` snapshot at call time — the total Cardano stake
+        /// of the caller's bound stake credential, NOT the posting deposit (`AllowedStake`). Re-voting
+        /// (changing direction or re-voting the same direction at a new weight) deterministically
+        /// reverses the PREVIOUSLY-STORED weight from the tally before applying the fresh one — so the
+        /// tally never drifts and an indexer folding the `Voted` events reproduces it byte-exactly. Feeless.
+        #[pallet::call_index(4)]
+        #[pallet::weight(<T as Config>::WeightInfo::vote())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _dir: &VoteDir| -> bool { true })]
+        pub fn vote(origin: OriginFor<T>, post_id: u64, dir: VoteDir) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "vote rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            ensure!(Posts::<T>::contains_key(post_id), Error::<T>::NotFound);
+            let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT vote time
+            VoteTally::<T>::mutate(post_id, |t| {
+                // 1. REVERSE the previously-stored record (if any) by its STORED weight — never by
+                //    re-reading current stake — so the tally cannot drift across a stake change.
+                if let Some(prev) = Votes::<T>::get(post_id, &who) {
+                    match prev.dir {
+                        VoteDir::Up => {
+                            t.up_weight = t.up_weight.saturating_sub(prev.weight);
+                            t.up_count = t.up_count.saturating_sub(1);
+                        }
+                        VoteDir::Down => {
+                            t.down_weight = t.down_weight.saturating_sub(prev.weight);
+                            t.down_count = t.down_count.saturating_sub(1);
+                        }
+                    }
+                }
+                // 2. APPLY the new vote with the freshly-snapshotted weight.
+                match dir {
+                    VoteDir::Up => {
+                        t.up_weight = t.up_weight.saturating_add(weight);
+                        t.up_count = t.up_count.saturating_add(1);
+                    }
+                    VoteDir::Down => {
+                        t.down_weight = t.down_weight.saturating_add(weight);
+                        t.down_count = t.down_count.saturating_add(1);
+                    }
+                }
+            });
+            Votes::<T>::insert(post_id, &who, VoteRecord { dir, weight });
+            // Reverse liked-posts index (Up = liked); switching to Down clears the like.
+            match dir {
+                VoteDir::Up => VotesByAccount::<T>::insert(&who, post_id, ()),
+                VoteDir::Down => {
+                    VotesByAccount::<T>::remove(&who, post_id);
+                }
+            }
+            Self::deposit_event(Event::Voted {
+                id: post_id,
+                who,
+                dir,
+                weight,
+            });
+            Ok(())
+        }
 
-		/// Clear the caller's vote on post `post_id`, reversing exactly the stored weight from the
-		/// tally (so the fold stays deterministic). Fails `NotVoted` if there is no vote. Feeless.
-		#[pallet::call_index(5)]
-		#[pallet::weight(<T as Config>::WeightInfo::clear_vote())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64| -> bool { true })]
-		pub fn clear_vote(origin: OriginFor<T>, post_id: u64) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "clear_vote rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			let prev = Votes::<T>::take(post_id, &who).ok_or(Error::<T>::NotVoted)?;
-			VotesByAccount::<T>::remove(&who, post_id); // clear any like in the reverse index
-			VoteTally::<T>::mutate(post_id, |t| match prev.dir {
-				VoteDir::Up => {
-					t.up_weight = t.up_weight.saturating_sub(prev.weight);
-					t.up_count = t.up_count.saturating_sub(1);
-				},
-				VoteDir::Down => {
-					t.down_weight = t.down_weight.saturating_sub(prev.weight);
-					t.down_count = t.down_count.saturating_sub(1);
-				},
-			});
-			Self::deposit_event(Event::VoteCleared { id: post_id, who });
-			Ok(())
-		}
+        /// Clear the caller's vote on post `post_id`, reversing exactly the stored weight from the
+        /// tally (so the fold stays deterministic). Fails `NotVoted` if there is no vote. Feeless.
+        #[pallet::call_index(5)]
+        #[pallet::weight(<T as Config>::WeightInfo::clear_vote())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64| -> bool { true })]
+        pub fn clear_vote(origin: OriginFor<T>, post_id: u64) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "clear_vote rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            let prev = Votes::<T>::take(post_id, &who).ok_or(Error::<T>::NotVoted)?;
+            VotesByAccount::<T>::remove(&who, post_id); // clear any like in the reverse index
+            VoteTally::<T>::mutate(post_id, |t| match prev.dir {
+                VoteDir::Up => {
+                    t.up_weight = t.up_weight.saturating_sub(prev.weight);
+                    t.up_count = t.up_count.saturating_sub(1);
+                }
+                VoteDir::Down => {
+                    t.down_weight = t.down_weight.saturating_sub(prev.weight);
+                    t.down_count = t.down_count.saturating_sub(1);
+                }
+            });
+            Self::deposit_event(Event::VoteCleared { id: post_id, who });
+            Ok(())
+        }
 
-		/// Repost post `post_id`. **Permanent** (treated like content — there is no un-repost);
-		/// a duplicate repost fails `AlreadyReposted`. Feeless + capacity-metered.
-		#[pallet::call_index(6)]
-		#[pallet::weight(<T as Config>::WeightInfo::repost())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64| -> bool { true })]
-		pub fn repost(origin: OriginFor<T>, post_id: u64) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "repost rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			ensure!(Posts::<T>::contains_key(post_id), Error::<T>::NotFound);
-			ensure!(!Reposts::<T>::contains_key(post_id, &who), Error::<T>::AlreadyReposted);
-			Reposts::<T>::insert(post_id, &who, ());
-			RepostCount::<T>::mutate(post_id, |c| *c = c.saturating_add(1));
-			Self::deposit_event(Event::Reposted { id: post_id, who });
-			Ok(())
-		}
+        /// Repost post `post_id`. **Permanent** (treated like content — there is no un-repost);
+        /// a duplicate repost fails `AlreadyReposted`. Feeless + capacity-metered.
+        #[pallet::call_index(6)]
+        #[pallet::weight(<T as Config>::WeightInfo::repost())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64| -> bool { true })]
+        pub fn repost(origin: OriginFor<T>, post_id: u64) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "repost rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            ensure!(Posts::<T>::contains_key(post_id), Error::<T>::NotFound);
+            ensure!(
+                !Reposts::<T>::contains_key(post_id, &who),
+                Error::<T>::AlreadyReposted
+            );
+            Reposts::<T>::insert(post_id, &who, ());
+            RepostCount::<T>::mutate(post_id, |c| *c = c.saturating_add(1));
+            Self::deposit_event(Event::Reposted { id: post_id, who });
+            Ok(())
+        }
 
-		/// Follow `target`. The caller (follower) must have a live identity binding; `target` is NOT
-		/// existence-checked (it may bind later). Fails `SelfFollow` / `AlreadyFollowing`. Feeless.
-		#[pallet::call_index(7)]
-		#[pallet::weight(<T as Config>::WeightInfo::follow())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _target: &T::AccountId| -> bool { true })]
-		pub fn follow(origin: OriginFor<T>, target: T::AccountId) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "follow rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			ensure!(who != target, Error::<T>::SelfFollow);
-			ensure!(!Following::<T>::contains_key(&who, &target), Error::<T>::AlreadyFollowing);
-			Following::<T>::insert(&who, &target, ());
-			Followers::<T>::insert(&target, &who, ()); // reverse index, in lockstep
-			FollowingCount::<T>::mutate(&who, |c| *c = c.saturating_add(1));
-			FollowerCount::<T>::mutate(&target, |c| *c = c.saturating_add(1));
-			Self::deposit_event(Event::Followed { follower: who, followee: target });
-			Ok(())
-		}
+        /// Follow `target`. The caller (follower) must have a live identity binding; `target` is NOT
+        /// existence-checked (it may bind later). Fails `SelfFollow` / `AlreadyFollowing`. Feeless.
+        #[pallet::call_index(7)]
+        #[pallet::weight(<T as Config>::WeightInfo::follow())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _target: &T::AccountId| -> bool { true })]
+        pub fn follow(origin: OriginFor<T>, target: T::AccountId) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "follow rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            ensure!(who != target, Error::<T>::SelfFollow);
+            ensure!(
+                !Following::<T>::contains_key(&who, &target),
+                Error::<T>::AlreadyFollowing
+            );
+            Following::<T>::insert(&who, &target, ());
+            Followers::<T>::insert(&target, &who, ()); // reverse index, in lockstep
+            FollowingCount::<T>::mutate(&who, |c| *c = c.saturating_add(1));
+            FollowerCount::<T>::mutate(&target, |c| *c = c.saturating_add(1));
+            Self::deposit_event(Event::Followed {
+                follower: who,
+                followee: target,
+            });
+            Ok(())
+        }
 
-		/// Unfollow `target`. Fails `NotFollowing` if the caller does not follow it. Feeless.
-		#[pallet::call_index(8)]
-		#[pallet::weight(<T as Config>::WeightInfo::unfollow())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _target: &T::AccountId| -> bool { true })]
-		pub fn unfollow(origin: OriginFor<T>, target: T::AccountId) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "unfollow rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			ensure!(Following::<T>::take(&who, &target).is_some(), Error::<T>::NotFollowing);
-			Followers::<T>::remove(&target, &who); // reverse index, in lockstep
-			FollowingCount::<T>::mutate(&who, |c| *c = c.saturating_sub(1));
-			FollowerCount::<T>::mutate(&target, |c| *c = c.saturating_sub(1));
-			Self::deposit_event(Event::Unfollowed { follower: who, followee: target });
-			Ok(())
-		}
+        /// Unfollow `target`. Fails `NotFollowing` if the caller does not follow it. Feeless.
+        #[pallet::call_index(8)]
+        #[pallet::weight(<T as Config>::WeightInfo::unfollow())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _target: &T::AccountId| -> bool { true })]
+        pub fn unfollow(origin: OriginFor<T>, target: T::AccountId) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "unfollow rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            ensure!(
+                Following::<T>::take(&who, &target).is_some(),
+                Error::<T>::NotFollowing
+            );
+            Followers::<T>::remove(&target, &who); // reverse index, in lockstep
+            FollowingCount::<T>::mutate(&who, |c| *c = c.saturating_sub(1));
+            FollowerCount::<T>::mutate(&target, |c| *c = c.saturating_sub(1));
+            Self::deposit_event(Event::Unfollowed {
+                follower: who,
+                followee: target,
+            });
+            Ok(())
+        }
 
-		/// Create a stake-weighted poll. The `question` becomes a normal post (so the poll threads /
-		/// quotes / reposts and shows in the feed); `options` (2..=`MaxPollOptions`, each
-		/// ≤`MaxPollOptionLen`) are stored alongside. Feeless + capacity-metered like a post.
-		#[pallet::call_index(9)]
-		// spec 121 (Feature 3): a poll host is top-level, so it also runs `index_top_level` (2 reads +
-		// 3 writes), not yet re-benchmarked — charge it manually.
-		#[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32)
+        /// Create a stake-weighted poll. The `question` becomes a normal post (so the poll threads /
+        /// quotes / reposts and shows in the feed); `options` (2..=`MaxPollOptions`, each
+        /// ≤`MaxPollOptionLen`) are stored alongside. Feeless + capacity-metered like a post.
+        #[pallet::call_index(9)]
+        // spec 121 (Feature 3): a poll host is top-level, so it also runs `index_top_level` (2 reads +
+        // 3 writes), not yet re-benchmarked — charge it manually.
+        #[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32)
 			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>| -> bool { true })]
-		pub fn create_poll(
-			origin: OriginFor<T>,
-			question: Vec<u8>,
-			options: Vec<Vec<u8>>,
-		) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "create_poll rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			ensure!(options.len() >= 2, Error::<T>::NotEnoughOptions);
-			let text: BoundedVec<u8, T::MaxLength> =
-				question.try_into().map_err(|_| Error::<T>::TooLong)?;
-			// Bound each option, then the option set. Distinct errors so the caller knows which bound.
-			let mut bounded_options: BoundedVec<BoundedVec<u8, T::MaxPollOptionLen>, T::MaxPollOptions> =
-				Default::default();
-			for opt in options {
-				let bounded_opt: BoundedVec<u8, T::MaxPollOptionLen> =
-					opt.try_into().map_err(|_| Error::<T>::OptionTooLong)?;
-				bounded_options
-					.try_push(bounded_opt)
-					.map_err(|_| Error::<T>::TooManyOptions)?;
-			}
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>| -> bool { true })]
+        pub fn create_poll(
+            origin: OriginFor<T>,
+            question: Vec<u8>,
+            options: Vec<Vec<u8>>,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "create_poll rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            ensure!(options.len() >= 2, Error::<T>::NotEnoughOptions);
+            let text: BoundedVec<u8, T::MaxLength> =
+                question.try_into().map_err(|_| Error::<T>::TooLong)?;
+            // Bound each option, then the option set. Distinct errors so the caller knows which bound.
+            let mut bounded_options: BoundedVec<
+                BoundedVec<u8, T::MaxPollOptionLen>,
+                T::MaxPollOptions,
+            > = Default::default();
+            for opt in options {
+                let bounded_opt: BoundedVec<u8, T::MaxPollOptionLen> =
+                    opt.try_into().map_err(|_| Error::<T>::OptionTooLong)?;
+                bounded_options
+                    .try_push(bounded_opt)
+                    .map_err(|_| Error::<T>::TooManyOptions)?;
+            }
 
-			let id = NextPostId::<T>::get();
-			ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
-				.map_err(|_| Error::<T>::TooManyPosts)?;
-			let at = frame_system::Pallet::<T>::block_number();
-			// The poll's question is an ordinary post (parent/quote None), so it lives in the feed.
-			Posts::<T>::insert(id, Post { author: who.clone(), text, parent: None, quote: None, at });
-			Polls::<T>::insert(id, Poll { options: bounded_options });
-			// A poll's host post is top-level — index it for exact-N feed/profile paging (Feature 3).
-			Self::index_top_level(id, &who)?;
-			NextPostId::<T>::put(id.saturating_add(1));
+            let id = NextPostId::<T>::get();
+            ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
+                .map_err(|_| Error::<T>::TooManyPosts)?;
+            let at = frame_system::Pallet::<T>::block_number();
+            // The poll's question is an ordinary post (parent/quote None), so it lives in the feed.
+            Posts::<T>::insert(
+                id,
+                Post {
+                    author: who.clone(),
+                    text,
+                    parent: None,
+                    quote: None,
+                    at,
+                },
+            );
+            Polls::<T>::insert(
+                id,
+                Poll {
+                    options: bounded_options,
+                },
+            );
+            // A poll's host post is top-level — index it for exact-N feed/profile paging (Feature 3).
+            Self::index_top_level(id, &who)?;
+            NextPostId::<T>::put(id.saturating_add(1));
 
-			// PostCreated keeps poll-unaware indexers/feeds folding it as a post; PollCreated flags
-			// that this post carries options.
-			Self::deposit_event(Event::PostCreated { id, author: who.clone() });
-			Self::deposit_event(Event::PollCreated { id, author: who });
-			Ok(())
-		}
+            // PostCreated keeps poll-unaware indexers/feeds folding it as a post; PollCreated flags
+            // that this post carries options.
+            Self::deposit_event(Event::PostCreated {
+                id,
+                author: who.clone(),
+            });
+            Self::deposit_event(Event::PollCreated { id, author: who });
+            Ok(())
+        }
 
-		/// Cast or change a **stake-weighted** vote in poll `post_id` for `option`. Weight is the
-		/// caller's `pallet_talk_stake::VotingPower` snapshot (total Cardano stake of the bound stake
-		/// credential, NOT the posting deposit); a re-cast reverses the PREVIOUSLY-STORED weight from
-		/// the per-option tally before applying the fresh one (same drift-free fold as [`vote`]). Feeless.
-		#[pallet::call_index(10)]
-		#[pallet::weight(<T as Config>::WeightInfo::cast_poll_vote())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _option: &u8| -> bool { true })]
-		pub fn cast_poll_vote(origin: OriginFor<T>, post_id: u64, option: u8) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "cast_poll_vote rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			let poll = Polls::<T>::get(post_id).ok_or(Error::<T>::PollNotFound)?;
-			ensure!((option as usize) < poll.options.len(), Error::<T>::InvalidOption);
-			let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT cast time
-			// 1. Reverse the previously-stored choice (if any) by its STORED weight — no drift.
-			if let Some(prev) = PollVotes::<T>::get(post_id, &who) {
-				PollTally::<T>::mutate(post_id, prev.option, |t| {
-					t.weight = t.weight.saturating_sub(prev.weight);
-					t.count = t.count.saturating_sub(1);
-				});
-			}
-			// 2. Apply the new choice with the freshly-snapshotted weight.
-			PollTally::<T>::mutate(post_id, option, |t| {
-				t.weight = t.weight.saturating_add(weight);
-				t.count = t.count.saturating_add(1);
-			});
-			PollVotes::<T>::insert(post_id, &who, PollVoteRecord { option, weight });
-			Self::deposit_event(Event::PollVoted { id: post_id, who, option, weight });
-			Ok(())
-		}
-	}
+        /// Cast or change a **stake-weighted** vote in poll `post_id` for `option`. Weight is the
+        /// caller's `pallet_talk_stake::VotingPower` snapshot (total Cardano stake of the bound stake
+        /// credential, NOT the posting deposit); a re-cast reverses the PREVIOUSLY-STORED weight from
+        /// the per-option tally before applying the fresh one (same drift-free fold as [`vote`]). Feeless.
+        #[pallet::call_index(10)]
+        #[pallet::weight(<T as Config>::WeightInfo::cast_poll_vote())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _option: &u8| -> bool { true })]
+        pub fn cast_poll_vote(origin: OriginFor<T>, post_id: u64, option: u8) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "cast_poll_vote rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            let poll = Polls::<T>::get(post_id).ok_or(Error::<T>::PollNotFound)?;
+            ensure!(
+                (option as usize) < poll.options.len(),
+                Error::<T>::InvalidOption
+            );
+            let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT cast time
+                                                                         // 1. Reverse the previously-stored choice (if any) by its STORED weight — no drift.
+            if let Some(prev) = PollVotes::<T>::get(post_id, &who) {
+                PollTally::<T>::mutate(post_id, prev.option, |t| {
+                    t.weight = t.weight.saturating_sub(prev.weight);
+                    t.count = t.count.saturating_sub(1);
+                });
+            }
+            // 2. Apply the new choice with the freshly-snapshotted weight.
+            PollTally::<T>::mutate(post_id, option, |t| {
+                t.weight = t.weight.saturating_add(weight);
+                t.count = t.count.saturating_add(1);
+            });
+            PollVotes::<T>::insert(post_id, &who, PollVoteRecord { option, weight });
+            Self::deposit_event(Event::PollVoted {
+                id: post_id,
+                who,
+                option,
+                weight,
+            });
+            Ok(())
+        }
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────────────────
@@ -1140,86 +1246,90 @@ pub mod pallet {
 pub struct CheckCapacity<T>(core::marker::PhantomData<T>);
 
 impl<T: Config + Send + Sync> CheckCapacity<T> {
-	/// Construct a new `CheckCapacity` extension.
-	pub fn new() -> Self {
-		Self(core::marker::PhantomData)
-	}
+    /// Construct a new `CheckCapacity` extension.
+    pub fn new() -> Self {
+        Self(core::marker::PhantomData)
+    }
 }
 
 impl<T: Config + Send + Sync> Default for CheckCapacity<T> {
-	fn default() -> Self {
-		Self::new()
-	}
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Config + Send + Sync> core::fmt::Debug for CheckCapacity<T> {
-	#[cfg(feature = "std")]
-	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-		write!(f, "CheckCapacity")
-	}
-	#[cfg(not(feature = "std"))]
-	fn fmt(&self, _: &mut core::fmt::Formatter) -> core::fmt::Result {
-		Ok(())
-	}
+    #[cfg(feature = "std")]
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(f, "CheckCapacity")
+    }
+    #[cfg(not(feature = "std"))]
+    fn fmt(&self, _: &mut core::fmt::Formatter) -> core::fmt::Result {
+        Ok(())
+    }
 }
 
 /// Carried from `validate` → `post_dispatch_details`: the resolved poster + capacity cost.
 /// `None` poster ⇒ this was not a signed `post_message` (nothing to consume).
 pub struct Pre<T: Config> {
-	who: Option<T::AccountId>,
-	cost: u128,
+    who: Option<T::AccountId>,
+    cost: u128,
 }
 
 impl<T: Config + Send + Sync> TransactionExtension<T::RuntimeCall> for CheckCapacity<T>
 where
-	T::RuntimeCall: Dispatchable<Info = DispatchInfo, PostInfo = PostDispatchInfo>
-		+ IsSubType<crate::pallet::Call<T>>,
+    T::RuntimeCall: Dispatchable<Info = DispatchInfo, PostInfo = PostDispatchInfo>
+        + IsSubType<crate::pallet::Call<T>>,
 {
-	const IDENTIFIER: &'static str = "CheckCapacity";
-	type Implicit = ();
-	type Val = Pre<T>;
-	type Pre = Pre<T>;
+    const IDENTIFIER: &'static str = "CheckCapacity";
+    type Implicit = ();
+    type Val = Pre<T>;
+    type Pre = Pre<T>;
 
-	// We implement validate / prepare / post_dispatch_details (and a REAL weight) below; the
-	// macro defaults nothing here.
-	impl_tx_ext_default!(T::RuntimeCall;);
+    // We implement validate / prepare / post_dispatch_details (and a REAL weight) below; the
+    // macro defaults nothing here.
+    impl_tx_ext_default!(T::RuntimeCall;);
 
-	/// The extension's weight is **real** (DR-05 / `L3-chain.md` §5.4), NOT zero: it covers the
-	/// `AllowedStake` + `Capacity` reads `validate()` performs (`current_capacity`) and the
-	/// `Capacity` write `consume()` performs in `post_dispatch`. Counting it here is what makes
-	/// the feeless post path's FULL cost — the `post_message` call body PLUS this capacity gate —
-	/// land in the block-weight backstop (`posts_per_block_max`); a zero here would understate
-	/// the only anti-spam and leave silent free-spam headroom. Benchmarked as `check_capacity`.
-	fn weight(&self, _call: &T::RuntimeCall) -> Weight {
-		<T as Config>::WeightInfo::check_capacity()
-	}
+    /// The extension's weight is **real** (DR-05 / `L3-chain.md` §5.4), NOT zero: it covers the
+    /// `AllowedStake` + `Capacity` reads `validate()` performs (`current_capacity`) and the
+    /// `Capacity` write `consume()` performs in `post_dispatch`. Counting it here is what makes
+    /// the feeless post path's FULL cost — the `post_message` call body PLUS this capacity gate —
+    /// land in the block-weight backstop (`posts_per_block_max`); a zero here would understate
+    /// the only anti-spam and leave silent free-spam headroom. Benchmarked as `check_capacity`.
+    fn weight(&self, _call: &T::RuntimeCall) -> Weight {
+        <T as Config>::WeightInfo::check_capacity()
+    }
 
-	fn validate(
-		&self,
-		origin: <T::RuntimeCall as Dispatchable>::RuntimeOrigin,
-		call: &T::RuntimeCall,
-		_info: &DispatchInfoOf<T::RuntimeCall>,
-		_len: usize,
-		_self_implicit: Self::Implicit,
-		_inherited_implication: &impl Encode,
-		_source: TransactionSource,
-	) -> ValidateResult<Self::Val, T::RuntimeCall> {
-		// Pass through anything that isn't a signed origin (inherents, unsigned, etc.).
-		let Ok(who) = frame_system::ensure_signed(origin.clone()) else {
-			return Ok((ValidTransaction::default(), Pre { who: None, cost: 0 }, origin));
-		};
-		// Price the call against the ONE per-account battery. A call from THIS pallet is priced by
-		// `metered_cost`; any OTHER feeless call (e.g. `pallet-profile`'s writes) is priced by the
-		// runtime-supplied `ForeignCost`. Both draw on the same battery and are gated here at the pool,
-		// so the whole app stays feeless without a second capacity extension. A `None` from the relevant
-		// source ⇒ not metered (e.g. `force_set_capacity`, or a foreign call the runtime does not price)
-		// ⇒ pass through and consume nothing.
-		let need = if let Some(inner) = call.is_sub_type() {
-			// O(1) over-length reject at the POOL (microblog-4) for the text-bearing calls: a body
-			// longer than `MaxLength` is guaranteed to fail `TooLong`, so metering + feeless-including
-			// it would only burn block weight on a doomed tx. `Call` (malformed) — NOT
-			// `ExhaustsResources` (which would be retried) — it must not be retried.
-			let over_len = match inner {
+    fn validate(
+        &self,
+        origin: <T::RuntimeCall as Dispatchable>::RuntimeOrigin,
+        call: &T::RuntimeCall,
+        _info: &DispatchInfoOf<T::RuntimeCall>,
+        _len: usize,
+        _self_implicit: Self::Implicit,
+        _inherited_implication: &impl Encode,
+        _source: TransactionSource,
+    ) -> ValidateResult<Self::Val, T::RuntimeCall> {
+        // Pass through anything that isn't a signed origin (inherents, unsigned, etc.).
+        let Ok(who) = frame_system::ensure_signed(origin.clone()) else {
+            return Ok((
+                ValidTransaction::default(),
+                Pre { who: None, cost: 0 },
+                origin,
+            ));
+        };
+        // Price the call against the ONE per-account battery. A call from THIS pallet is priced by
+        // `metered_cost`; any OTHER feeless call (e.g. `pallet-profile`'s writes) is priced by the
+        // runtime-supplied `ForeignCost`. Both draw on the same battery and are gated here at the pool,
+        // so the whole app stays feeless without a second capacity extension. A `None` from the relevant
+        // source ⇒ not metered (e.g. `force_set_capacity`, or a foreign call the runtime does not price)
+        // ⇒ pass through and consume nothing.
+        let need = if let Some(inner) = call.is_sub_type() {
+            // O(1) over-length reject at the POOL (microblog-4) for the text-bearing calls: a body
+            // longer than `MaxLength` is guaranteed to fail `TooLong`, so metering + feeless-including
+            // it would only burn block weight on a doomed tx. `Call` (malformed) — NOT
+            // `ExhaustsResources` (which would be retried) — it must not be retried.
+            let over_len = match inner {
 				crate::pallet::Call::post_message { text, .. }
 				| crate::pallet::Call::quote_post { text, .. }
 				// A poll's question is also length-bounded by MaxLength (it becomes a post body).
@@ -1228,75 +1338,88 @@ where
 				},
 				_ => false,
 			};
-			if over_len {
-				log::debug!(
-					target: crate::LOG_TARGET,
-					"CheckCapacity: call from {:?} rejected at pool: body len > MaxLength={} (malformed, not retried)",
-					who, T::MaxLength::get(),
-				);
-				return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
-			}
-			crate::pallet::Pallet::<T>::metered_cost(inner)
-		} else {
-			// Not one of this pallet's calls: ask the runtime-supplied foreign cost source. This seam
-			// lets `pallet-profile`'s feeless writes share the one battery without microblog depending
-			// on the profile crate (no Cargo cycle).
-			<T as Config>::ForeignCost::cost(call)
-		};
-		let Some(need) = need else {
-			return Ok((ValidTransaction::default(), Pre { who: None, cost: 0 }, origin));
-		};
-		let now = frame_system::Pallet::<T>::block_number();
-		let have = crate::pallet::Pallet::<T>::current_capacity(&who, now);
-		if have < need {
-			// POOL REJECT — bounds INCLUSION (the block author re-runs validate at build time and
-			// rejects over-budget calls). On a feeless chain this IS the spam gate. Off-chain only
-			// (the pool never touches storage): log so an operator can see who hit the gate.
-			log::debug!(
-				target: crate::LOG_TARGET,
-				"CheckCapacity: call from {:?} rejected at pool: have={} < need={}",
-				who, have, need,
-			);
-			return Err(TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources));
-		}
-		// Priority tied to remaining headroom + short longevity so over-budget bursts age
-		// out. u128 → u64 saturates (whale-scale headroom pins to u64::MAX; harmless).
-		let vt = ValidTransaction {
-			priority: have.saturating_sub(need).saturated_into::<u64>(),
-			longevity: 8,
-			propagate: true,
-			..Default::default()
-		};
-		Ok((vt, Pre { who: Some(who), cost: need }, origin))
-	}
+            if over_len {
+                log::debug!(
+                    target: crate::LOG_TARGET,
+                    "CheckCapacity: call from {:?} rejected at pool: body len > MaxLength={} (malformed, not retried)",
+                    who, T::MaxLength::get(),
+                );
+                return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
+            }
+            crate::pallet::Pallet::<T>::metered_cost(inner)
+        } else {
+            // Not one of this pallet's calls: ask the runtime-supplied foreign cost source. This seam
+            // lets `pallet-profile`'s feeless writes share the one battery without microblog depending
+            // on the profile crate (no Cargo cycle).
+            <T as Config>::ForeignCost::cost(call)
+        };
+        let Some(need) = need else {
+            return Ok((
+                ValidTransaction::default(),
+                Pre { who: None, cost: 0 },
+                origin,
+            ));
+        };
+        let now = frame_system::Pallet::<T>::block_number();
+        let have = crate::pallet::Pallet::<T>::current_capacity(&who, now);
+        if have < need {
+            // POOL REJECT — bounds INCLUSION (the block author re-runs validate at build time and
+            // rejects over-budget calls). On a feeless chain this IS the spam gate. Off-chain only
+            // (the pool never touches storage): log so an operator can see who hit the gate.
+            log::debug!(
+                target: crate::LOG_TARGET,
+                "CheckCapacity: call from {:?} rejected at pool: have={} < need={}",
+                who, have, need,
+            );
+            return Err(TransactionValidityError::Invalid(
+                InvalidTransaction::ExhaustsResources,
+            ));
+        }
+        // Priority tied to remaining headroom + short longevity so over-budget bursts age
+        // out. u128 → u64 saturates (whale-scale headroom pins to u64::MAX; harmless).
+        let vt = ValidTransaction {
+            priority: have.saturating_sub(need).saturated_into::<u64>(),
+            longevity: 8,
+            propagate: true,
+            ..Default::default()
+        };
+        Ok((
+            vt,
+            Pre {
+                who: Some(who),
+                cost: need,
+            },
+            origin,
+        ))
+    }
 
-	fn prepare(
-		self,
-		val: Self::Val,
-		_origin: &<T::RuntimeCall as Dispatchable>::RuntimeOrigin,
-		_call: &T::RuntimeCall,
-		_info: &DispatchInfoOf<T::RuntimeCall>,
-		_len: usize,
-	) -> Result<Self::Pre, TransactionValidityError> {
-		// Carry the resolved {who, cost} through to post-dispatch.
-		Ok(val)
-	}
+    fn prepare(
+        self,
+        val: Self::Val,
+        _origin: &<T::RuntimeCall as Dispatchable>::RuntimeOrigin,
+        _call: &T::RuntimeCall,
+        _info: &DispatchInfoOf<T::RuntimeCall>,
+        _len: usize,
+    ) -> Result<Self::Pre, TransactionValidityError> {
+        // Carry the resolved {who, cost} through to post-dispatch.
+        Ok(val)
+    }
 
-	fn post_dispatch_details(
-		pre: Self::Pre,
-		_info: &DispatchInfoOf<T::RuntimeCall>,
-		_post_info: &PostDispatchInfoOf<T::RuntimeCall>,
-		_len: usize,
-		_result: &sp_runtime::DispatchResult,
-	) -> Result<Weight, TransactionValidityError> {
-		// CONSUME here ONLY (inclusion), never in validate(). This is unspent-weight reporting
-		// (refund nothing) — NOT the fee waiver (that is feeless_if + SkipCheckIfFeeless).
-		if let Some(who) = pre.who {
-			let now = frame_system::Pallet::<T>::block_number();
-			crate::pallet::Pallet::<T>::consume(&who, now, pre.cost);
-		}
-		Ok(Weight::zero())
-	}
+    fn post_dispatch_details(
+        pre: Self::Pre,
+        _info: &DispatchInfoOf<T::RuntimeCall>,
+        _post_info: &PostDispatchInfoOf<T::RuntimeCall>,
+        _len: usize,
+        _result: &sp_runtime::DispatchResult,
+    ) -> Result<Weight, TransactionValidityError> {
+        // CONSUME here ONLY (inclusion), never in validate(). This is unspent-weight reporting
+        // (refund nothing) — NOT the fee waiver (that is feeless_if + SkipCheckIfFeeless).
+        if let Some(who) = pre.who {
+            let now = frame_system::Pallet::<T>::block_number();
+            crate::pallet::Pallet::<T>::consume(&who, now, pre.cost);
+        }
+        Ok(Weight::zero())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
@@ -1322,6 +1445,12 @@ const MAX_SCAN_FACTOR: u32 = 8;
 /// node-served thread and the keyed-read fallback reconstruct the same breadcrumb. A visited-set
 /// (in `thread`) additionally breaks any cyclic `parent` chain (`parent` is unvalidated at creation).
 const MAX_THREAD_DEPTH: u32 = 64;
+/// Cap on how many direct replies `thread` ENRICHES in one call. The per-reply enrichment (~5-8 storage
+/// reads each) is the expensive part of a `thread` state_call, so a viral post with tens of thousands of
+/// replies is bounded here (the oldest `MAX_THREAD_REPLIES`, chronological) rather than enriching every
+/// one. Consistent with the other capped node reads (`MAX_EDGES`/`MAX_VIEWER_IDS`); a whale thread
+/// graduates to a paged replies read (`docs/SCALE-NODE-READS.md`).
+const MAX_THREAD_REPLIES: usize = 512;
 /// Cap on the follow-edge id lists `follow_edges` returns. The exact `follower_count`/`following_count`
 /// are ALWAYS accurate (read from the O(1) aggregates); only the returned id lists truncate past this —
 /// a whale's full edge set graduates to a paged/indexed read.
@@ -1335,94 +1464,94 @@ const MAX_VIEWER_IDS: usize = 256;
 /// text) and the runtime's `search_people` (display name); a node-side `tantivy` inverted index + custom
 /// RPC is the documented graduation once corpus size demands it (`docs/SCALE-NODE-READS.md`).
 pub fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
-	if needle.is_empty() {
-		return true;
-	}
-	if needle.len() > haystack.len() {
-		return false;
-	}
-	haystack
-		.windows(needle.len())
-		.any(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
 /// A one-level quoted-post summary embedded in an [`EnrichedPost`]. The author display fields are
 /// filled by the runtime from pallet-profile (empty otherwise).
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct QuotedSummary<AccountId> {
-	/// The quoted post's id.
-	pub id: u64,
-	/// The quoted post's author.
-	pub author: AccountId,
-	/// The quoted post's body bytes.
-	pub text: Vec<u8>,
-	/// The quoted author's display name (runtime-filled from pallet-profile; empty if unset).
-	pub author_display_name: Vec<u8>,
-	/// The quoted author's avatar reference (runtime-filled; empty if unset).
-	pub author_avatar: Vec<u8>,
+    /// The quoted post's id.
+    pub id: u64,
+    /// The quoted post's author.
+    pub author: AccountId,
+    /// The quoted post's body bytes.
+    pub text: Vec<u8>,
+    /// The quoted author's display name (runtime-filled from pallet-profile; empty if unset).
+    pub author_display_name: Vec<u8>,
+    /// The quoted author's avatar reference (runtime-filled; empty if unset).
+    pub author_avatar: Vec<u8>,
 }
 
 /// One enriched, viewer-aware post — everything a feed card renders, in a single shot.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct EnrichedPost<AccountId> {
-	/// The post id.
-	pub id: u64,
-	/// The author account.
-	pub author: AccountId,
-	/// The post body bytes.
-	pub text: Vec<u8>,
-	/// The reply parent, if this is a reply.
-	pub parent: Option<u64>,
-	/// The quoted post id, if this is a quote.
-	pub quote: Option<u64>,
-	/// The block number the post was created at (`u32` — the chain's `BlockNumber`).
-	pub at: u32,
-	/// Sum of up-voters' stake-weight snapshots.
-	pub up_weight: u128,
-	/// Sum of down-voters' stake-weight snapshots.
-	pub down_weight: u128,
-	/// Up-vote count.
-	pub up_count: u32,
-	/// Down-vote count.
-	pub down_count: u32,
-	/// Permanent repost count.
-	pub repost_count: u32,
-	/// Direct-reply count.
-	pub reply_count: u32,
-	/// Whether this post hosts a poll.
-	pub is_poll: bool,
-	/// Viewer overlay: the viewer's own vote (`None` if not voted / no viewer supplied).
-	pub my_vote: Option<VoteDir>,
-	/// Viewer overlay: whether the viewer has reposted this post.
-	pub reposted: bool,
-	/// Author display name (runtime-filled from pallet-profile; empty if unset).
-	pub author_display_name: Vec<u8>,
-	/// Author avatar reference (runtime-filled; empty if unset).
-	pub author_avatar: Vec<u8>,
-	/// One-level resolved quoted-post summary (when `quote` is `Some` and the target exists).
-	pub quoted: Option<QuotedSummary<AccountId>>,
+    /// The post id.
+    pub id: u64,
+    /// The author account.
+    pub author: AccountId,
+    /// The post body bytes.
+    pub text: Vec<u8>,
+    /// The reply parent, if this is a reply.
+    pub parent: Option<u64>,
+    /// The quoted post id, if this is a quote.
+    pub quote: Option<u64>,
+    /// The block number the post was created at (`u32` — the chain's `BlockNumber`).
+    pub at: u32,
+    /// Sum of up-voters' stake-weight snapshots.
+    pub up_weight: u128,
+    /// Sum of down-voters' stake-weight snapshots.
+    pub down_weight: u128,
+    /// Up-vote count.
+    pub up_count: u32,
+    /// Down-vote count.
+    pub down_count: u32,
+    /// Permanent repost count.
+    pub repost_count: u32,
+    /// Direct-reply count.
+    pub reply_count: u32,
+    /// Whether this post hosts a poll.
+    pub is_poll: bool,
+    /// Viewer overlay: the viewer's own vote (`None` if not voted / no viewer supplied).
+    pub my_vote: Option<VoteDir>,
+    /// Viewer overlay: whether the viewer has reposted this post.
+    pub reposted: bool,
+    /// Author display name (runtime-filled from pallet-profile; empty if unset).
+    pub author_display_name: Vec<u8>,
+    /// Author avatar reference (runtime-filled; empty if unset).
+    pub author_avatar: Vec<u8>,
+    /// One-level resolved quoted-post summary (when `quote` is `Some` and the target exists).
+    pub quoted: Option<QuotedSummary<AccountId>>,
 }
 
 /// One page of enriched posts plus the cursor to continue below. `next_cursor == None` ⇒ the scan
 /// reached the end of the (examined) id space; otherwise pass it back as the next `before_id`.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct FeedPage<AccountId> {
-	/// The page of enriched posts, newest-first.
-	pub posts: Vec<EnrichedPost<AccountId>>,
-	/// The `before_id` to pass for the next page, or `None` at the end of the feed.
-	pub next_cursor: Option<u64>,
+    /// The page of enriched posts, newest-first.
+    pub posts: Vec<EnrichedPost<AccountId>>,
+    /// The `before_id` to pass for the next page, or `None` at the end of the feed.
+    pub next_cursor: Option<u64>,
 }
 
 /// A reconstructed thread: the focal post, its ancestor chain (root-first, depth-capped) and its
 /// direct replies (chronological) — all enriched and viewer-aware.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct Thread<AccountId> {
-	/// The ancestor chain from the root down to the focal post's parent (root-first).
-	pub ancestors: Vec<EnrichedPost<AccountId>>,
-	/// The focal post, or `None` if it does not exist.
-	pub focal: Option<EnrichedPost<AccountId>>,
-	/// The focal post's direct replies, chronological (ascending id).
-	pub replies: Vec<EnrichedPost<AccountId>>,
+    /// The ancestor chain from the root down to the focal post's parent (root-first).
+    pub ancestors: Vec<EnrichedPost<AccountId>>,
+    /// The focal post, or `None` if it does not exist.
+    pub focal: Option<EnrichedPost<AccountId>>,
+    /// The focal post's direct replies, chronological (ascending id).
+    pub replies: Vec<EnrichedPost<AccountId>>,
 }
 
 /// A compact person row for the search / who-to-follow lists. The runtime fills `display_name`/`avatar`
@@ -1430,16 +1559,16 @@ pub struct Thread<AccountId> {
 /// so it carries no profile/talk-stake dependency).
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct PersonSummary<AccountId> {
-	/// The account.
-	pub account: AccountId,
-	/// Display name (runtime-filled from pallet-profile; empty if unset).
-	pub display_name: Vec<u8>,
-	/// Avatar reference (runtime-filled; empty if unset).
-	pub avatar: Vec<u8>,
-	/// Posting-power weight (`pallet_talk_stake::AllowedStake`, buried lovelace) — the ranking scalar.
-	pub weight: u128,
-	/// Number of accounts following this person (the `FOLLOWER_COUNT_DESC` rank key).
-	pub follower_count: u32,
+    /// The account.
+    pub account: AccountId,
+    /// Display name (runtime-filled from pallet-profile; empty if unset).
+    pub display_name: Vec<u8>,
+    /// Avatar reference (runtime-filled; empty if unset).
+    pub avatar: Vec<u8>,
+    /// Posting-power weight (`pallet_talk_stake::AllowedStake`, buried lovelace) — the ranking scalar.
+    pub weight: u128,
+    /// Number of accounts following this person (the `FOLLOWER_COUNT_DESC` rank key).
+    pub follower_count: u32,
 }
 
 /// A full profile view — the header a profile page renders, assembled by the RUNTIME across pallet-profile
@@ -1447,542 +1576,604 @@ pub struct PersonSummary<AccountId> {
 /// cogno-gate (`identity_hash` + the `is_allowed` post gate) and microblog (top-level post + follow counts).
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct ProfileView<AccountId> {
-	/// The account.
-	pub account: AccountId,
-	/// The bound 32-byte Cardano identity hash (cogno-gate `PkhOf`), or `None` if unbound.
-	pub identity_hash: Option<[u8; 32]>,
-	/// The live post gate: `true` iff a 1:1 Cardano identity is currently bound (`is_allowed`). `false`
-	/// covers both never-bound and revoked (the frontend's `banned` flag is `!is_allowed`).
-	pub is_allowed: bool,
-	/// Posting-power weight (`AllowedStake`, buried lovelace).
-	pub weight: u128,
-	/// Stake-vote weight (`VotingPower`, total Cardano stake of the bound stake credential).
-	pub voting_power: u128,
-	/// Display name (empty if no profile set).
-	pub display_name: Vec<u8>,
-	/// Bio (empty if unset).
-	pub bio: Vec<u8>,
-	/// Avatar reference (empty if unset).
-	pub avatar: Vec<u8>,
-	/// Banner reference (empty if unset).
-	pub banner: Vec<u8>,
-	/// Location (empty if unset).
-	pub location: Vec<u8>,
-	/// Website reference (empty if unset).
-	pub website: Vec<u8>,
-	/// The pinned post id (`pallet_profile::PinnedPost`), or `None`.
-	pub pinned_post_id: Option<u64>,
-	/// TOP-LEVEL post count (replies excluded) — the profile `postCount`.
-	pub post_count: u32,
-	/// Accounts following this account.
-	pub follower_count: u32,
-	/// Accounts this account follows.
-	pub following_count: u32,
+    /// The account.
+    pub account: AccountId,
+    /// The bound 32-byte Cardano identity hash (cogno-gate `PkhOf`), or `None` if unbound.
+    pub identity_hash: Option<[u8; 32]>,
+    /// The live post gate: `true` iff a 1:1 Cardano identity is currently bound (`is_allowed`). `false`
+    /// covers both never-bound and revoked (the frontend's `banned` flag is `!is_allowed`).
+    pub is_allowed: bool,
+    /// Posting-power weight (`AllowedStake`, buried lovelace).
+    pub weight: u128,
+    /// Stake-vote weight (`VotingPower`, total Cardano stake of the bound stake credential).
+    pub voting_power: u128,
+    /// Display name (empty if no profile set).
+    pub display_name: Vec<u8>,
+    /// Bio (empty if unset).
+    pub bio: Vec<u8>,
+    /// Avatar reference (empty if unset).
+    pub avatar: Vec<u8>,
+    /// Banner reference (empty if unset).
+    pub banner: Vec<u8>,
+    /// Location (empty if unset).
+    pub location: Vec<u8>,
+    /// Website reference (empty if unset).
+    pub website: Vec<u8>,
+    /// The pinned post id (`pallet_profile::PinnedPost`), or `None`.
+    pub pinned_post_id: Option<u64>,
+    /// TOP-LEVEL post count (replies excluded) — the profile `postCount`.
+    pub post_count: u32,
+    /// Accounts following this account.
+    pub follower_count: u32,
+    /// Accounts this account follows.
+    pub following_count: u32,
 }
 
 /// One poll option with its stake-weighted tally, for [`PollView`].
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct PollOptionView {
-	/// The 0-based option index (matches the on-chain option index).
-	pub index: u8,
-	/// The option label bytes.
-	pub label: Vec<u8>,
-	/// Sum of the weight snapshots of accounts currently choosing this option.
-	pub weight: u128,
-	/// Number of accounts currently choosing this option.
-	pub count: u32,
+    /// The 0-based option index (matches the on-chain option index).
+    pub index: u8,
+    /// The option label bytes.
+    pub label: Vec<u8>,
+    /// Sum of the weight snapshots of accounts currently choosing this option.
+    pub weight: u128,
+    /// Number of accounts currently choosing this option.
+    pub count: u32,
 }
 
 /// A poll's options + per-option tally + total current voters, for the poll card (`poll(host_id)`).
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct PollView {
-	/// The host post id (the poll's question is that post).
-	pub host_id: u64,
-	/// The options with their tallies, in on-chain index order.
-	pub options: Vec<PollOptionView>,
-	/// Total current voters (the sum of the per-option counts — each account has exactly one choice).
-	pub total_votes: u32,
+    /// The host post id (the poll's question is that post).
+    pub host_id: u64,
+    /// The options with their tallies, in on-chain index order.
+    pub options: Vec<PollOptionView>,
+    /// Total current voters (the sum of the per-option counts — each account has exactly one choice).
+    pub total_votes: u32,
 }
 
 /// One post's viewer overlay, for the `viewer_states` batch read (filled-heart / active-repost).
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct ViewerState {
-	/// The queried post id.
-	pub post_id: u64,
-	/// The viewer's own vote on it (`None` if not voted).
-	pub my_vote: Option<VoteDir>,
-	/// Whether the viewer has reposted it.
-	pub reposted: bool,
+    /// The queried post id.
+    pub post_id: u64,
+    /// The viewer's own vote on it (`None` if not voted).
+    pub my_vote: Option<VoteDir>,
+    /// Whether the viewer has reposted it.
+    pub reposted: bool,
 }
 
 /// The follow edges + counts for one account (`follow_edges(who)`). The counts are exact; the id lists
 /// are truncated at [`MAX_EDGES`] (documented, not silently wrong — a whale graduates to a paged read).
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct FollowEdges<AccountId> {
-	/// Exact number of accounts following `who`.
-	pub follower_count: u32,
-	/// Exact number of accounts `who` follows.
-	pub following_count: u32,
-	/// Accounts `who` follows (the followee ids), truncated at [`MAX_EDGES`].
-	pub following: Vec<AccountId>,
-	/// Accounts following `who` (the follower ids), truncated at [`MAX_EDGES`].
-	pub followers: Vec<AccountId>,
+    /// Exact number of accounts following `who`.
+    pub follower_count: u32,
+    /// Exact number of accounts `who` follows.
+    pub following_count: u32,
+    /// Accounts `who` follows (the followee ids), truncated at [`MAX_EDGES`].
+    pub following: Vec<AccountId>,
+    /// Accounts following `who` (the follower ids), truncated at [`MAX_EDGES`].
+    pub followers: Vec<AccountId>,
 }
 
 impl<T: Config> Pallet<T> {
-	/// Clamp a requested page `limit` to `[1, MAX_PAGE]`.
-	fn clamp_limit(limit: u32) -> u32 {
-		limit.clamp(1, MAX_PAGE)
-	}
+    /// Clamp a requested page `limit` to `[1, MAX_PAGE]`.
+    fn clamp_limit(limit: u32) -> u32 {
+        limit.clamp(1, MAX_PAGE)
+    }
 
-	/// Build the enriched, viewer-aware view of an already-fetched `post`. Author-profile fields are
-	/// left empty — the runtime fills them from pallet-profile (no profile dependency here).
-	fn enrich(id: u64, post: Post<T>, viewer: Option<&T::AccountId>) -> EnrichedPost<T::AccountId> {
-		let Post { author, text, parent, at, quote } = post;
-		let tally = VoteTally::<T>::get(id);
-		let (my_vote, reposted) = match viewer {
-			Some(who) => (
-				Votes::<T>::get(id, who).map(|r| r.dir),
-				Reposts::<T>::contains_key(id, who),
-			),
-			None => (None, false),
-		};
-		// One-level quote resolution (the quoted author's profile is runtime-filled later).
-		let quoted = quote.and_then(|qid| {
-			Posts::<T>::get(qid).map(|qp| QuotedSummary {
-				id: qid,
-				author: qp.author,
-				text: qp.text.into_inner(),
-				author_display_name: Vec::new(),
-				author_avatar: Vec::new(),
-			})
-		});
-		EnrichedPost {
-			id,
-			author,
-			text: text.into_inner(),
-			parent,
-			quote,
-			at: at.saturated_into::<u32>(),
-			up_weight: tally.up_weight,
-			down_weight: tally.down_weight,
-			up_count: tally.up_count,
-			down_count: tally.down_count,
-			repost_count: RepostCount::<T>::get(id),
-			reply_count: ReplyCount::<T>::get(id),
-			is_poll: Polls::<T>::contains_key(id),
-			my_vote,
-			reposted,
-			author_display_name: Vec::new(),
-			author_avatar: Vec::new(),
-			quoted,
-		}
-	}
+    /// Build the enriched, viewer-aware view of an already-fetched `post`. Author-profile fields are
+    /// left empty — the runtime fills them from pallet-profile (no profile dependency here).
+    fn enrich(id: u64, post: Post<T>, viewer: Option<&T::AccountId>) -> EnrichedPost<T::AccountId> {
+        let Post {
+            author,
+            text,
+            parent,
+            at,
+            quote,
+        } = post;
+        let tally = VoteTally::<T>::get(id);
+        let (my_vote, reposted) = match viewer {
+            Some(who) => (
+                Votes::<T>::get(id, who).map(|r| r.dir),
+                Reposts::<T>::contains_key(id, who),
+            ),
+            None => (None, false),
+        };
+        // One-level quote resolution (the quoted author's profile is runtime-filled later).
+        let quoted = quote.and_then(|qid| {
+            Posts::<T>::get(qid).map(|qp| QuotedSummary {
+                id: qid,
+                author: qp.author,
+                text: qp.text.into_inner(),
+                author_display_name: Vec::new(),
+                author_avatar: Vec::new(),
+            })
+        });
+        EnrichedPost {
+            id,
+            author,
+            text: text.into_inner(),
+            parent,
+            quote,
+            at: at.saturated_into::<u32>(),
+            up_weight: tally.up_weight,
+            down_weight: tally.down_weight,
+            up_count: tally.up_count,
+            down_count: tally.down_count,
+            repost_count: RepostCount::<T>::get(id),
+            reply_count: ReplyCount::<T>::get(id),
+            is_poll: Polls::<T>::contains_key(id),
+            my_vote,
+            reposted,
+            author_display_name: Vec::new(),
+            author_avatar: Vec::new(),
+            quoted,
+        }
+    }
 
-	/// Fetch + enrich a post by id (`None` if it does not exist).
-	fn enriched_post(id: u64, viewer: Option<&T::AccountId>) -> Option<EnrichedPost<T::AccountId>> {
-		Posts::<T>::get(id).map(|post| Self::enrich(id, post, viewer))
-	}
+    /// Fetch + enrich a post by id (`None` if it does not exist).
+    fn enriched_post(id: u64, viewer: Option<&T::AccountId>) -> Option<EnrichedPost<T::AccountId>> {
+        Posts::<T>::get(id).map(|post| Self::enrich(id, post, viewer))
+    }
 
-	/// Scan the global id space newest-first for TOP-LEVEL posts (`parent == None`) that also pass
-	/// `keep`, paged strictly below `before_id` (`None` ⇒ from the head). Bounds the scan at
-	/// `limit · MAX_SCAN_FACTOR` ids and returns `next_cursor` (the last id examined) so the client
-	/// continues without an unbounded walk. Shared by `feed_page` (keep-all) and `following_feed_page`
-	/// (keep authors the viewer follows).
-	fn scan_top_level_by_seq<F>(
-		before: Option<u64>,
-		limit: u32,
-		viewer: Option<&T::AccountId>,
-		mut keep: F,
-	) -> FeedPage<T::AccountId>
-	where
-		F: FnMut(&Post<T>) -> bool,
-	{
-		let limit = Self::clamp_limit(limit);
-		let next_seq = NextTopLevelSeq::<T>::get();
-		// Highest candidate seq strictly below the `before` cursor (or the head when `None`).
-		let mut seq = match before {
-			Some(0) => return FeedPage { posts: Vec::new(), next_cursor: None },
-			Some(b) => core::cmp::min(b, next_seq).saturating_sub(1),
-			None => match next_seq.checked_sub(1) {
-				Some(top) => top,
-				None => return FeedPage { posts: Vec::new(), next_cursor: None },
-			},
-		};
-		// Feature 3: every seq maps to a top-level post, so the keep-all feed fills `limit` in exactly
-		// `limit` iterations (no reply over-scan). A filtered scan (Following) may skip non-matching
-		// seqs, so it is still bounded with `MAX_SCAN_FACTOR` + a cursor to continue.
-		let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
-		let mut posts = Vec::new();
-		let mut examined: u32 = 0;
-		loop {
-			// Stopped before the head of the spine — hand back a cursor (the next seq to continue below).
-			if posts.len() as u32 >= limit || examined >= max_scan {
-				return FeedPage { posts, next_cursor: Some(seq.saturating_add(1)) };
-			}
-			examined = examined.saturating_add(1);
-			// Resolve seq → post id → body (a dangling seq, which should not occur, is simply skipped).
-			if let Some(id) = TopLevelPosts::<T>::get(seq) {
-				if let Some(post) = Posts::<T>::get(id) {
-					if keep(&post) {
-						posts.push(Self::enrich(id, post, viewer));
-					}
-				}
-			}
-			if seq == 0 {
-				// Reached the bottom of the spine — no more pages.
-				return FeedPage { posts, next_cursor: None };
-			}
-			seq = seq.saturating_sub(1);
-		}
-	}
+    /// Scan the global id space newest-first for TOP-LEVEL posts (`parent == None`) that also pass
+    /// `keep`, paged strictly below `before_id` (`None` ⇒ from the head). Bounds the scan at
+    /// `limit · MAX_SCAN_FACTOR` ids and returns `next_cursor` (the last id examined) so the client
+    /// continues without an unbounded walk. Shared by `feed_page` (keep-all) and `following_feed_page`
+    /// (keep authors the viewer follows).
+    fn scan_top_level_by_seq<F>(
+        before: Option<u64>,
+        limit: u32,
+        viewer: Option<&T::AccountId>,
+        mut keep: F,
+    ) -> FeedPage<T::AccountId>
+    where
+        F: FnMut(&Post<T>) -> bool,
+    {
+        let limit = Self::clamp_limit(limit);
+        let next_seq = NextTopLevelSeq::<T>::get();
+        // Highest candidate seq strictly below the `before` cursor (or the head when `None`).
+        let mut seq = match before {
+            Some(0) => {
+                return FeedPage {
+                    posts: Vec::new(),
+                    next_cursor: None,
+                }
+            }
+            Some(b) => core::cmp::min(b, next_seq).saturating_sub(1),
+            None => match next_seq.checked_sub(1) {
+                Some(top) => top,
+                None => {
+                    return FeedPage {
+                        posts: Vec::new(),
+                        next_cursor: None,
+                    }
+                }
+            },
+        };
+        // Feature 3: every seq maps to a top-level post, so the keep-all feed fills `limit` in exactly
+        // `limit` iterations (no reply over-scan). A filtered scan (Following) may skip non-matching
+        // seqs, so it is still bounded with `MAX_SCAN_FACTOR` + a cursor to continue.
+        let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
+        let mut posts = Vec::new();
+        let mut examined: u32 = 0;
+        loop {
+            // Stopped before the head of the spine — hand back a cursor (the next seq to continue below).
+            if posts.len() as u32 >= limit || examined >= max_scan {
+                return FeedPage {
+                    posts,
+                    next_cursor: Some(seq.saturating_add(1)),
+                };
+            }
+            examined = examined.saturating_add(1);
+            // Resolve seq → post id → body (a dangling seq, which should not occur, is simply skipped).
+            if let Some(id) = TopLevelPosts::<T>::get(seq) {
+                if let Some(post) = Posts::<T>::get(id) {
+                    if keep(&post) {
+                        posts.push(Self::enrich(id, post, viewer));
+                    }
+                }
+            }
+            if seq == 0 {
+                // Reached the bottom of the spine — no more pages.
+                return FeedPage {
+                    posts,
+                    next_cursor: None,
+                };
+            }
+            seq = seq.saturating_sub(1);
+        }
+    }
 
-	/// Global "For-you" feed: top-level posts, newest-first, paged below the `before` cursor (a
-	/// `TopLevelPosts` seq). Reads EXACTLY `limit` posts off the top-level spine — no reply over-scan.
-	/// `viewer` (when `Some`) stamps `my_vote`/`reposted` per post. (Author profiles are runtime-filled.)
-	pub fn feed_page(
-		before: Option<u64>,
-		limit: u32,
-		viewer: Option<T::AccountId>,
-	) -> FeedPage<T::AccountId> {
-		Self::scan_top_level_by_seq(before, limit, viewer.as_ref(), |_| true)
-	}
+    /// Global "For-you" feed: top-level posts, newest-first, paged below the `before` cursor (a
+    /// `TopLevelPosts` seq). Reads EXACTLY `limit` posts off the top-level spine — no reply over-scan.
+    /// `viewer` (when `Some`) stamps `my_vote`/`reposted` per post. (Author profiles are runtime-filled.)
+    pub fn feed_page(
+        before: Option<u64>,
+        limit: u32,
+        viewer: Option<T::AccountId>,
+    ) -> FeedPage<T::AccountId> {
+        Self::scan_top_level_by_seq(before, limit, viewer.as_ref(), |_| true)
+    }
 
-	/// One author's top-level posts (the profile Posts tab), newest-first, paged below `before_id` (a
-	/// post id). Iterates the author's own reply-free `TopLevelByAuthor` index — exact-N, no over-scan.
-	pub fn author_feed_page(
-		author: T::AccountId,
-		before_id: Option<u64>,
-		limit: u32,
-		viewer: Option<T::AccountId>,
-	) -> FeedPage<T::AccountId> {
-		let limit = Self::clamp_limit(limit);
-		let ids = TopLevelByAuthor::<T>::get(&author);
-		let viewer_ref = viewer.as_ref();
-		let mut posts = Vec::new();
-		let mut next_cursor = None;
-		// `TopLevelByAuthor` is append-ordered (ascending id) and reply-free; iterate it newest-first.
-		for &id in ids.iter().rev() {
-			if let Some(b) = before_id {
-				if id >= b {
-					continue;
-				}
-			}
-			if posts.len() as u32 >= limit {
-				next_cursor = Some(id.saturating_add(1));
-				break;
-			}
-			if let Some(post) = Posts::<T>::get(id) {
-				posts.push(Self::enrich(id, post, viewer_ref));
-			}
-		}
-		FeedPage { posts, next_cursor }
-	}
+    /// One author's top-level posts (the profile Posts tab), newest-first, paged below `before_id` (a
+    /// post id). Iterates the author's own reply-free `TopLevelByAuthor` index — exact-N, no over-scan.
+    pub fn author_feed_page(
+        author: T::AccountId,
+        before_id: Option<u64>,
+        limit: u32,
+        viewer: Option<T::AccountId>,
+    ) -> FeedPage<T::AccountId> {
+        let limit = Self::clamp_limit(limit);
+        let ids = TopLevelByAuthor::<T>::get(&author);
+        let viewer_ref = viewer.as_ref();
+        let mut posts = Vec::new();
+        let mut next_cursor = None;
+        // `TopLevelByAuthor` is append-ordered (ascending id) and reply-free; iterate it newest-first.
+        for &id in ids.iter().rev() {
+            if let Some(b) = before_id {
+                if id >= b {
+                    continue;
+                }
+            }
+            if posts.len() as u32 >= limit {
+                next_cursor = Some(id.saturating_add(1));
+                break;
+            }
+            if let Some(post) = Posts::<T>::get(id) {
+                posts.push(Self::enrich(id, post, viewer_ref));
+            }
+        }
+        FeedPage { posts, next_cursor }
+    }
 
-	/// The Following timeline: top-level posts authored by accounts the `viewer` follows, newest-first,
-	/// paged below the `before` cursor (a `TopLevelPosts` seq). Reads the FULL followee set (parity with
-	/// the keyed-read fallback, which reads the whole follow graph — so no followee is ever silently
-	/// dropped), then scans the top-level spine filtered to that set (never past replies), bounded with
-	/// a cursor to continue.
-	pub fn following_feed_page(
-		viewer: T::AccountId,
-		before: Option<u64>,
-		limit: u32,
-	) -> FeedPage<T::AccountId> {
-		// The full followee set (bounded by the viewer's own following count, exactly as the
-		// fallback's `readFollowees` is) — no cap, so no followee's posts are silently dropped.
-		let followees: alloc::collections::BTreeSet<T::AccountId> =
-			Following::<T>::iter_key_prefix(&viewer).collect();
-		// A viewer who follows nobody has an empty timeline — short-circuit instead of scanning the
-		// whole spine to no effect (and handing back a misleading non-None cursor).
-		if followees.is_empty() {
-			return FeedPage { posts: Vec::new(), next_cursor: None };
-		}
-		Self::scan_top_level_by_seq(before, limit, Some(&viewer), |p| followees.contains(&p.author))
-	}
+    /// The Following timeline: top-level posts authored by accounts the `viewer` follows, newest-first,
+    /// paged below the `before` cursor (a `TopLevelPosts` seq). Reads the FULL followee set (parity with
+    /// the keyed-read fallback, which reads the whole follow graph — so no followee is ever silently
+    /// dropped), then scans the top-level spine filtered to that set (never past replies), bounded with
+    /// a cursor to continue.
+    pub fn following_feed_page(
+        viewer: T::AccountId,
+        before: Option<u64>,
+        limit: u32,
+    ) -> FeedPage<T::AccountId> {
+        // The full followee set (bounded by the viewer's own following count, exactly as the
+        // fallback's `readFollowees` is) — no cap, so no followee's posts are silently dropped.
+        let followees: alloc::collections::BTreeSet<T::AccountId> =
+            Following::<T>::iter_key_prefix(&viewer).collect();
+        // A viewer who follows nobody has an empty timeline — short-circuit instead of scanning the
+        // whole spine to no effect (and handing back a misleading non-None cursor).
+        if followees.is_empty() {
+            return FeedPage {
+                posts: Vec::new(),
+                next_cursor: None,
+            };
+        }
+        Self::scan_top_level_by_seq(before, limit, Some(&viewer), |p| {
+            followees.contains(&p.author)
+        })
+    }
 
-	/// A reconstructed thread for `focal`: its ancestor chain (root-first, depth-capped), the focal
-	/// post itself, and its direct replies (chronological) — all enriched and viewer-aware.
-	pub fn thread(focal: u64, viewer: Option<T::AccountId>) -> Thread<T::AccountId> {
-		let viewer_ref = viewer.as_ref();
-		let focal_post = Self::enriched_post(focal, viewer_ref);
-		// Walk `parent` up from the focal post, then reverse to root-first. `parent` is unvalidated at
-		// post creation, so guard against a cyclic / self-referential chain with a visited-set (seeded
-		// with the focal id) AND a depth cap — mirroring the client's `getThread` so the two agree.
-		let mut ancestors = Vec::new();
-		if let Some(fp) = focal_post.as_ref() {
-			let mut seen = alloc::collections::BTreeSet::new();
-			seen.insert(focal);
-			let mut parent = fp.parent;
-			let mut depth: u32 = 0;
-			while let Some(pid) = parent {
-				// Depth cap reached, or `pid` already visited (a cycle) — stop. `insert` returns false
-				// when `pid` is already present, which is exactly the revisit case.
-				if depth >= MAX_THREAD_DEPTH || !seen.insert(pid) {
-					break;
-				}
-				depth = depth.saturating_add(1);
-				match Self::enriched_post(pid, viewer_ref) {
-					Some(ap) => {
-						parent = ap.parent;
-						ancestors.push(ap);
-					},
-					// A dangling parent (target never existed / was a phantom id) — stop the walk.
-					None => break,
-				}
-			}
-			ancestors.reverse();
-		}
-		// ALL direct replies via the reverse index (prefix iteration), id-sorted (chronological) —
-		// parity with the keyed-read fallback, which also returns every direct reply. Bounded by the
-		// focal post's own reply count, exactly as the fallback's `RepliesByParent.getEntries(focal)`.
-		let mut replies: Vec<_> = RepliesByParent::<T>::iter_key_prefix(focal)
-			.filter_map(|reply_id| Self::enriched_post(reply_id, viewer_ref))
-			.collect();
-		replies.sort_unstable_by(|a, b| a.id.cmp(&b.id));
-		Thread { ancestors, focal: focal_post, replies }
-	}
+    /// A reconstructed thread for `focal`: its ancestor chain (root-first, depth-capped), the focal
+    /// post itself, and its direct replies (chronological) — all enriched and viewer-aware.
+    pub fn thread(focal: u64, viewer: Option<T::AccountId>) -> Thread<T::AccountId> {
+        let viewer_ref = viewer.as_ref();
+        let focal_post = Self::enriched_post(focal, viewer_ref);
+        // Walk `parent` up from the focal post, then reverse to root-first. `parent` is unvalidated at
+        // post creation, so guard against a cyclic / self-referential chain with a visited-set (seeded
+        // with the focal id) AND a depth cap — mirroring the client's `getThread` so the two agree.
+        let mut ancestors = Vec::new();
+        if let Some(fp) = focal_post.as_ref() {
+            let mut seen = alloc::collections::BTreeSet::new();
+            seen.insert(focal);
+            let mut parent = fp.parent;
+            let mut depth: u32 = 0;
+            while let Some(pid) = parent {
+                // Depth cap reached, or `pid` already visited (a cycle) — stop. `insert` returns false
+                // when `pid` is already present, which is exactly the revisit case.
+                if depth >= MAX_THREAD_DEPTH || !seen.insert(pid) {
+                    break;
+                }
+                depth = depth.saturating_add(1);
+                match Self::enriched_post(pid, viewer_ref) {
+                    Some(ap) => {
+                        parent = ap.parent;
+                        ancestors.push(ap);
+                    }
+                    // A dangling parent (target never existed / was a phantom id) — stop the walk.
+                    None => break,
+                }
+            }
+            ancestors.reverse();
+        }
+        // Direct replies via the reverse index, id-sorted (chronological). Collect the ids (cheap), sort,
+        // then ENRICH only the oldest `MAX_THREAD_REPLIES` — the per-reply enrichment (~5-8 storage reads
+        // each) is the expensive part, so a viral post can't run one `thread` state_call away. The exact
+        // `reply_count` on the focal post stays accurate; a whale thread graduates to a paged replies read.
+        let mut reply_ids: Vec<u64> = RepliesByParent::<T>::iter_key_prefix(focal).collect();
+        reply_ids.sort_unstable();
+        let replies: Vec<_> = reply_ids
+            .into_iter()
+            .take(MAX_THREAD_REPLIES)
+            .filter_map(|reply_id| Self::enriched_post(reply_id, viewer_ref))
+            .collect();
+        Thread {
+            ancestors,
+            focal: focal_post,
+            replies,
+        }
+    }
 
-	/// The author's TOP-LEVEL post count (`TopLevelByAuthor` length) — the correct profile `postCount`
-	/// that excludes replies (fixes the count-counts-replies tradeoff). O(1) via `decode_len`.
-	pub fn top_level_post_count(author: &T::AccountId) -> u32 {
-		TopLevelByAuthor::<T>::decode_len(author).unwrap_or(0) as u32
-	}
+    /// The author's TOP-LEVEL post count (`TopLevelByAuthor` length) — the correct profile `postCount`
+    /// that excludes replies (fixes the count-counts-replies tradeoff). O(1) via `decode_len`.
+    pub fn top_level_post_count(author: &T::AccountId) -> u32 {
+        TopLevelByAuthor::<T>::decode_len(author).unwrap_or(0) as u32
+    }
 
-	/// One author's REPLIES (the profile Replies tab): their posts with `parent != None`, newest-first,
-	/// paged below `before_id` (a post id). Scans the author's own `ByAuthor` index (append-ordered,
-	/// ascending) in reverse — bounded by the author's own post count, no global scan. Top-level posts in
-	/// the index are skipped; the cursor advances only past returned replies.
-	pub fn author_replies_page(
-		author: T::AccountId,
-		before_id: Option<u64>,
-		limit: u32,
-		viewer: Option<T::AccountId>,
-	) -> FeedPage<T::AccountId> {
-		let limit = Self::clamp_limit(limit);
-		let ids = ByAuthor::<T>::get(&author);
-		let viewer_ref = viewer.as_ref();
-		let mut posts = Vec::new();
-		let mut next_cursor = None;
-		for &id in ids.iter().rev() {
-			if let Some(b) = before_id {
-				if id >= b {
-					continue;
-				}
-			}
-			let post = match Posts::<T>::get(id) {
-				Some(p) => p,
-				None => continue,
-			};
-			// Replies only — a top-level post is skipped without consuming the page or the cursor.
-			if post.parent.is_none() {
-				continue;
-			}
-			if posts.len() as u32 >= limit {
-				next_cursor = Some(id.saturating_add(1));
-				break;
-			}
-			posts.push(Self::enrich(id, post, viewer_ref));
-		}
-		FeedPage { posts, next_cursor }
-	}
+    /// One author's REPLIES (the profile Replies tab): their posts with `parent != None`, newest-first,
+    /// paged below `before_id` (a post id). Scans the author's own `ByAuthor` index (append-ordered,
+    /// ascending) in reverse — bounded by the author's own post count, no global scan. Top-level posts in
+    /// the index are skipped; the cursor advances only past returned replies.
+    pub fn author_replies_page(
+        author: T::AccountId,
+        before_id: Option<u64>,
+        limit: u32,
+        viewer: Option<T::AccountId>,
+    ) -> FeedPage<T::AccountId> {
+        let limit = Self::clamp_limit(limit);
+        let ids = ByAuthor::<T>::get(&author);
+        let viewer_ref = viewer.as_ref();
+        let mut posts = Vec::new();
+        let mut next_cursor = None;
+        for &id in ids.iter().rev() {
+            if let Some(b) = before_id {
+                if id >= b {
+                    continue;
+                }
+            }
+            let post = match Posts::<T>::get(id) {
+                Some(p) => p,
+                None => continue,
+            };
+            // Replies only — a top-level post is skipped without consuming the page or the cursor.
+            if post.parent.is_none() {
+                continue;
+            }
+            if posts.len() as u32 >= limit {
+                next_cursor = Some(id.saturating_add(1));
+                break;
+            }
+            posts.push(Self::enrich(id, post, viewer_ref));
+        }
+        FeedPage { posts, next_cursor }
+    }
 
-	/// The posts an account has UP-voted (the profile Likes tab), newest-liked-first (descending post id),
-	/// paged below `before_id`. Reads the `VotesByAccount` reverse "liked posts" index (down-votes / cleared
-	/// votes are not present), materializing the liked-id set to order it newest-first. `O(#likes)` — fine
-	/// at POC scale; a large liker graduates to a dedicated index (`docs/SCALE-NODE-READS.md`).
-	pub fn likes_page(
-		who: T::AccountId,
-		before_id: Option<u64>,
-		limit: u32,
-		viewer: Option<T::AccountId>,
-	) -> FeedPage<T::AccountId> {
-		let limit = Self::clamp_limit(limit);
-		let mut liked: Vec<u64> = VotesByAccount::<T>::iter_key_prefix(&who).collect();
-		liked.sort_unstable_by(|a, b| b.cmp(a)); // newest (highest id) first
-		let viewer_ref = viewer.as_ref();
-		let mut posts = Vec::new();
-		let mut next_cursor = None;
-		for id in liked {
-			if let Some(b) = before_id {
-				if id >= b {
-					continue;
-				}
-			}
-			if posts.len() as u32 >= limit {
-				next_cursor = Some(id.saturating_add(1));
-				break;
-			}
-			if let Some(post) = Posts::<T>::get(id) {
-				posts.push(Self::enrich(id, post, viewer_ref));
-			}
-		}
-		FeedPage { posts, next_cursor }
-	}
+    /// The posts an account has UP-voted (the profile Likes tab), newest-liked-first (descending post id),
+    /// paged below `before_id`. Reads the `VotesByAccount` reverse "liked posts" index (down-votes / cleared
+    /// votes are not present), materializing the liked-id set to order it newest-first. `O(#likes)` — fine
+    /// at POC scale; a large liker graduates to a dedicated index (`docs/SCALE-NODE-READS.md`).
+    pub fn likes_page(
+        who: T::AccountId,
+        before_id: Option<u64>,
+        limit: u32,
+        viewer: Option<T::AccountId>,
+    ) -> FeedPage<T::AccountId> {
+        let limit = Self::clamp_limit(limit);
+        let mut liked: Vec<u64> = VotesByAccount::<T>::iter_key_prefix(&who).collect();
+        liked.sort_unstable_by(|a, b| b.cmp(a)); // newest (highest id) first
+        let viewer_ref = viewer.as_ref();
+        let mut posts = Vec::new();
+        let mut next_cursor = None;
+        for id in liked {
+            if let Some(b) = before_id {
+                if id >= b {
+                    continue;
+                }
+            }
+            if posts.len() as u32 >= limit {
+                next_cursor = Some(id.saturating_add(1));
+                break;
+            }
+            if let Some(post) = Posts::<T>::get(id) {
+                posts.push(Self::enrich(id, post, viewer_ref));
+            }
+        }
+        FeedPage { posts, next_cursor }
+    }
 
-	/// Full-text search over post bodies: an ASCII-case-insensitive substring match on `term`, newest-first,
-	/// paged below `before_id` (a post id). The Option-1 in-runtime linear scan — bounded at
-	/// `limit · MAX_SCAN_FACTOR` ids per call with a `next_cursor` to continue (no unbounded walk), so a
-	/// no-match dense range never runs away. Graduates to a `tantivy` node-side index later.
-	pub fn search_posts(
-		term: Vec<u8>,
-		before_id: Option<u64>,
-		limit: u32,
-		viewer: Option<T::AccountId>,
-	) -> FeedPage<T::AccountId> {
-		let limit = Self::clamp_limit(limit);
-		let next_id = NextPostId::<T>::get();
-		let mut id = match before_id {
-			Some(0) => return FeedPage { posts: Vec::new(), next_cursor: None },
-			Some(b) => core::cmp::min(b, next_id).saturating_sub(1),
-			None => match next_id.checked_sub(1) {
-				Some(top) => top,
-				None => return FeedPage { posts: Vec::new(), next_cursor: None },
-			},
-		};
-		let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
-		let viewer_ref = viewer.as_ref();
-		let mut posts = Vec::new();
-		let mut examined: u32 = 0;
-		loop {
-			// Stopped mid-scan (page full or scan cap hit) — hand back a cursor to continue below `id`.
-			if posts.len() as u32 >= limit || examined >= max_scan {
-				return FeedPage { posts, next_cursor: Some(id.saturating_add(1)) };
-			}
-			examined = examined.saturating_add(1);
-			if let Some(post) = Posts::<T>::get(id) {
-				if contains_ci(&post.text, &term) {
-					posts.push(Self::enrich(id, post, viewer_ref));
-				}
-			}
-			if id == 0 {
-				return FeedPage { posts, next_cursor: None };
-			}
-			id = id.saturating_sub(1);
-		}
-	}
+    /// Full-text search over post bodies: an ASCII-case-insensitive substring match on `term`, newest-first,
+    /// paged below `before_id` (a post id). The Option-1 in-runtime linear scan — bounded at
+    /// `limit · MAX_SCAN_FACTOR` ids per call with a `next_cursor` to continue (no unbounded walk), so a
+    /// no-match dense range never runs away. Graduates to a `tantivy` node-side index later.
+    pub fn search_posts(
+        term: Vec<u8>,
+        before_id: Option<u64>,
+        limit: u32,
+        viewer: Option<T::AccountId>,
+    ) -> FeedPage<T::AccountId> {
+        let limit = Self::clamp_limit(limit);
+        let next_id = NextPostId::<T>::get();
+        let mut id = match before_id {
+            Some(0) => {
+                return FeedPage {
+                    posts: Vec::new(),
+                    next_cursor: None,
+                }
+            }
+            Some(b) => core::cmp::min(b, next_id).saturating_sub(1),
+            None => match next_id.checked_sub(1) {
+                Some(top) => top,
+                None => {
+                    return FeedPage {
+                        posts: Vec::new(),
+                        next_cursor: None,
+                    }
+                }
+            },
+        };
+        let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
+        let viewer_ref = viewer.as_ref();
+        let mut posts = Vec::new();
+        let mut examined: u32 = 0;
+        loop {
+            // Stopped mid-scan (page full or scan cap hit) — hand back a cursor to continue below `id`.
+            if posts.len() as u32 >= limit || examined >= max_scan {
+                return FeedPage {
+                    posts,
+                    next_cursor: Some(id.saturating_add(1)),
+                };
+            }
+            examined = examined.saturating_add(1);
+            if let Some(post) = Posts::<T>::get(id) {
+                if contains_ci(&post.text, &term) {
+                    posts.push(Self::enrich(id, post, viewer_ref));
+                }
+            }
+            if id == 0 {
+                return FeedPage {
+                    posts,
+                    next_cursor: None,
+                };
+            }
+            id = id.saturating_sub(1);
+        }
+    }
 
-	/// A poll's options + per-option stake-weighted tally + total current voters, keyed by the host post
-	/// id. `None` if `host_id` is not a poll. `total_votes` is the sum of the per-option counts (each
-	/// account has exactly one live choice, so this equals the distinct-voter count).
-	pub fn poll(host_id: u64) -> Option<PollView> {
-		let poll = Polls::<T>::get(host_id)?;
-		let mut options = Vec::with_capacity(poll.options.len());
-		let mut total_votes: u32 = 0;
-		for (i, opt) in poll.options.iter().enumerate() {
-			let index = i as u8;
-			let tally = PollTally::<T>::get(host_id, index);
-			total_votes = total_votes.saturating_add(tally.count);
-			options.push(PollOptionView { index, label: opt.to_vec(), weight: tally.weight, count: tally.count });
-		}
-		Some(PollView { host_id, options, total_votes })
-	}
+    /// A poll's options + per-option stake-weighted tally + total current voters, keyed by the host post
+    /// id. `None` if `host_id` is not a poll. `total_votes` is the sum of the per-option counts (each
+    /// account has exactly one live choice, so this equals the distinct-voter count).
+    pub fn poll(host_id: u64) -> Option<PollView> {
+        let poll = Polls::<T>::get(host_id)?;
+        let mut options = Vec::with_capacity(poll.options.len());
+        let mut total_votes: u32 = 0;
+        for (i, opt) in poll.options.iter().enumerate() {
+            let index = i as u8;
+            let tally = PollTally::<T>::get(host_id, index);
+            total_votes = total_votes.saturating_add(tally.count);
+            options.push(PollOptionView {
+                index,
+                label: opt.to_vec(),
+                weight: tally.weight,
+                count: tally.count,
+            });
+        }
+        Some(PollView {
+            host_id,
+            options,
+            total_votes,
+        })
+    }
 
-	/// The viewer's own current choice in poll `host_id` (`None` if they have not voted / it is no poll).
-	pub fn poll_choice(who: T::AccountId, host_id: u64) -> Option<u8> {
-		PollVotes::<T>::get(host_id, &who).map(|r| r.option)
-	}
+    /// The viewer's own current choice in poll `host_id` (`None` if they have not voted / it is no poll).
+    pub fn poll_choice(who: T::AccountId, host_id: u64) -> Option<u8> {
+        PollVotes::<T>::get(host_id, &who).map(|r| r.option)
+    }
 
-	/// The viewer's overlay (own vote + reposted) over a batch of post ids — the node-side replacement for
-	/// the client's per-card `Votes.get` + `Reposts.getEntries` scan. Bounded at [`MAX_VIEWER_IDS`] ids.
-	pub fn viewer_states(who: T::AccountId, ids: Vec<u64>) -> Vec<ViewerState> {
-		ids.into_iter()
-			.take(MAX_VIEWER_IDS)
-			.map(|post_id| ViewerState {
-				post_id,
-				my_vote: Votes::<T>::get(post_id, &who).map(|r| r.dir),
-				reposted: Reposts::<T>::contains_key(post_id, &who),
-			})
-			.collect()
-	}
+    /// The viewer's overlay (own vote + reposted) over a batch of post ids — the node-side replacement for
+    /// the client's per-card `Votes.get` + `Reposts.getEntries` scan. Bounded at [`MAX_VIEWER_IDS`] ids.
+    pub fn viewer_states(who: T::AccountId, ids: Vec<u64>) -> Vec<ViewerState> {
+        ids.into_iter()
+            .take(MAX_VIEWER_IDS)
+            .map(|post_id| ViewerState {
+                post_id,
+                my_vote: Votes::<T>::get(post_id, &who).map(|r| r.dir),
+                reposted: Reposts::<T>::contains_key(post_id, &who),
+            })
+            .collect()
+    }
 
-	/// The follow edges + exact counts for `who`: the O(1) `FollowerCount`/`FollowingCount` aggregates
-	/// plus the (truncated at [`MAX_EDGES`]) followee / follower id lists via the reverse indexes.
-	pub fn follow_edges(who: T::AccountId) -> FollowEdges<T::AccountId> {
-		let following: Vec<T::AccountId> =
-			Following::<T>::iter_key_prefix(&who).take(MAX_EDGES).collect();
-		let followers: Vec<T::AccountId> =
-			Followers::<T>::iter_key_prefix(&who).take(MAX_EDGES).collect();
-		FollowEdges {
-			follower_count: FollowerCount::<T>::get(&who),
-			following_count: FollowingCount::<T>::get(&who),
-			following,
-			followers,
-		}
-	}
+    /// The follow edges + exact counts for `who`: the O(1) `FollowerCount`/`FollowingCount` aggregates
+    /// plus the (truncated at [`MAX_EDGES`]) followee / follower id lists via the reverse indexes.
+    pub fn follow_edges(who: T::AccountId) -> FollowEdges<T::AccountId> {
+        let following: Vec<T::AccountId> = Following::<T>::iter_key_prefix(&who)
+            .take(MAX_EDGES)
+            .collect();
+        let followers: Vec<T::AccountId> = Followers::<T>::iter_key_prefix(&who)
+            .take(MAX_EDGES)
+            .collect();
+        FollowEdges {
+            follower_count: FollowerCount::<T>::get(&who),
+            following_count: FollowingCount::<T>::get(&who),
+            following,
+            followers,
+        }
+    }
 }
 
 sp_api::decl_runtime_apis! {
-	/// Node-served reads (the read API landed in spec-120; the top-level index + `author_post_count`
-	/// in spec-121): one enriched, viewer-aware feed / thread / profile page per `state_call`, atomic
-	/// at a single block. Implemented in `runtime/src/apis.rs`, which also fills each post's author
-	/// profile from pallet-profile. See `docs/SCALE-NODE-READS.md`.
-	///
-	/// Paging cursors are OPAQUE continuation tokens and ENDPOINT-SCOPED: a `next_cursor` from one
-	/// method is only valid passed back to the SAME method. `feed_page` / `following_feed_page` page a
-	/// `TopLevelPosts` seq; `author_feed_page` pages a post id — never cross-wire them.
-	pub trait MicroblogApi<AccountId>
-	where
-		AccountId: codec::Codec,
-	{
-		/// Global "For-you" feed: top-level posts, newest-first, paged below the `before` cursor
-		/// (`None` ⇒ from the head). `viewer` (when `Some`) stamps `my_vote`/`reposted` per post.
-		fn feed_page(before: Option<u64>, limit: u32, viewer: Option<AccountId>) -> FeedPage<AccountId>;
-		/// One author's top-level posts (the profile Posts tab), paged below `before_id` (a post id),
-		/// same viewer semantics.
-		fn author_feed_page(
-			author: AccountId,
-			before_id: Option<u64>,
-			limit: u32,
-			viewer: Option<AccountId>,
-		) -> FeedPage<AccountId>;
-		/// The Following timeline: top-level posts by the accounts `viewer` follows, newest-first,
-		/// paged below the `before` cursor.
-		fn following_feed_page(viewer: AccountId, before: Option<u64>, limit: u32) -> FeedPage<AccountId>;
-		/// A reconstructed thread: focal + ancestor chain (depth-capped) + direct replies, enriched.
-		fn thread(focal: u64, viewer: Option<AccountId>) -> Thread<AccountId>;
-		/// The author's TOP-LEVEL post count (replies excluded) — the correct profile `postCount`.
-		fn author_post_count(author: AccountId) -> u32;
+    /// Node-served reads (the read API landed in spec-120; the top-level index + `author_post_count`
+    /// in spec-121): one enriched, viewer-aware feed / thread / profile page per `state_call`, atomic
+    /// at a single block. Implemented in `runtime/src/apis.rs`, which also fills each post's author
+    /// profile from pallet-profile. See `docs/SCALE-NODE-READS.md`.
+    ///
+    /// Paging cursors are OPAQUE continuation tokens and ENDPOINT-SCOPED: a `next_cursor` from one
+    /// method is only valid passed back to the SAME method. `feed_page` / `following_feed_page` page a
+    /// `TopLevelPosts` seq; `author_feed_page` pages a post id — never cross-wire them.
+    pub trait MicroblogApi<AccountId>
+    where
+        AccountId: codec::Codec,
+    {
+        /// Global "For-you" feed: top-level posts, newest-first, paged below the `before` cursor
+        /// (`None` ⇒ from the head). `viewer` (when `Some`) stamps `my_vote`/`reposted` per post.
+        fn feed_page(before: Option<u64>, limit: u32, viewer: Option<AccountId>) -> FeedPage<AccountId>;
+        /// One author's top-level posts (the profile Posts tab), paged below `before_id` (a post id),
+        /// same viewer semantics.
+        fn author_feed_page(
+            author: AccountId,
+            before_id: Option<u64>,
+            limit: u32,
+            viewer: Option<AccountId>,
+        ) -> FeedPage<AccountId>;
+        /// The Following timeline: top-level posts by the accounts `viewer` follows, newest-first,
+        /// paged below the `before` cursor.
+        fn following_feed_page(viewer: AccountId, before: Option<u64>, limit: u32) -> FeedPage<AccountId>;
+        /// A reconstructed thread: focal + ancestor chain (depth-capped) + direct replies, enriched.
+        fn thread(focal: u64, viewer: Option<AccountId>) -> Thread<AccountId>;
+        /// The author's TOP-LEVEL post count (replies excluded) — the correct profile `postCount`.
+        fn author_post_count(author: AccountId) -> u32;
 
-		// ── the all-Rust restart: the indexer reads folded into the node (fork/all-rust, P6) ──
-		/// One author's REPLIES (the profile Replies tab): `parent != None`, newest-first, paged below
-		/// `before_id` (a post id).
-		fn author_replies_page(
-			author: AccountId,
-			before_id: Option<u64>,
-			limit: u32,
-			viewer: Option<AccountId>,
-		) -> FeedPage<AccountId>;
-		/// The posts `who` has UP-voted (the profile Likes tab), newest-liked-first, paged below `before_id`.
-		fn likes_page(
-			who: AccountId,
-			before_id: Option<u64>,
-			limit: u32,
-			viewer: Option<AccountId>,
-		) -> FeedPage<AccountId>;
-		/// Full-text search over post bodies (ASCII-case-insensitive substring on `term`), newest-first,
-		/// paged below `before_id` — the Option-1 in-runtime linear scan.
-		fn search_posts(
-			term: Vec<u8>,
-			before_id: Option<u64>,
-			limit: u32,
-			viewer: Option<AccountId>,
-		) -> FeedPage<AccountId>;
-		/// A poll's options + per-option tally + total voters, by host post id (`None` if not a poll).
-		fn poll(host_id: u64) -> Option<PollView>;
-		/// The viewer's own current choice in a poll (`None` if not voted / no poll).
-		fn poll_choice(who: AccountId, host_id: u64) -> Option<u8>;
-		/// The viewer's overlay (own vote + reposted) over a batch of post ids.
-		fn viewer_states(who: AccountId, ids: Vec<u64>) -> Vec<ViewerState>;
-		/// The follow edges + exact counts for one account.
-		fn follow_edges(who: AccountId) -> FollowEdges<AccountId>;
-		/// A full profile view (cross-pallet: profile + talk-stake + cogno-gate + microblog counters).
-		fn profile(who: AccountId) -> ProfileView<AccountId>;
-		/// Resolve a 32-byte Cardano identity hash to the account it is bound to (cogno-gate `AccountOf`).
-		fn resolve_identity(identity_hash: [u8; 32]) -> Option<AccountId>;
-		/// Search people by display-name substring (case-insensitive), ranked by follower count.
-		fn search_people(term: Vec<u8>, limit: u32) -> Vec<PersonSummary<AccountId>>;
-		/// Ranked who-to-follow suggestions: bound authors with ≥1 top-level post, by follower count.
-		fn who_to_follow(limit: u32) -> Vec<PersonSummary<AccountId>>;
-	}
+        // ── the all-Rust restart: the indexer reads folded into the node (fork/all-rust, P6) ──
+        /// One author's REPLIES (the profile Replies tab): `parent != None`, newest-first, paged below
+        /// `before_id` (a post id).
+        fn author_replies_page(
+            author: AccountId,
+            before_id: Option<u64>,
+            limit: u32,
+            viewer: Option<AccountId>,
+        ) -> FeedPage<AccountId>;
+        /// The posts `who` has UP-voted (the profile Likes tab), newest-liked-first, paged below `before_id`.
+        fn likes_page(
+            who: AccountId,
+            before_id: Option<u64>,
+            limit: u32,
+            viewer: Option<AccountId>,
+        ) -> FeedPage<AccountId>;
+        /// Full-text search over post bodies (ASCII-case-insensitive substring on `term`), newest-first,
+        /// paged below `before_id` — the Option-1 in-runtime linear scan.
+        fn search_posts(
+            term: Vec<u8>,
+            before_id: Option<u64>,
+            limit: u32,
+            viewer: Option<AccountId>,
+        ) -> FeedPage<AccountId>;
+        /// A poll's options + per-option tally + total voters, by host post id (`None` if not a poll).
+        fn poll(host_id: u64) -> Option<PollView>;
+        /// The viewer's own current choice in a poll (`None` if not voted / no poll).
+        fn poll_choice(who: AccountId, host_id: u64) -> Option<u8>;
+        /// The viewer's overlay (own vote + reposted) over a batch of post ids.
+        fn viewer_states(who: AccountId, ids: Vec<u64>) -> Vec<ViewerState>;
+        /// The follow edges + exact counts for one account.
+        fn follow_edges(who: AccountId) -> FollowEdges<AccountId>;
+        /// A full profile view (cross-pallet: profile + talk-stake + cogno-gate + microblog counters).
+        fn profile(who: AccountId) -> ProfileView<AccountId>;
+        /// Resolve a 32-byte Cardano identity hash to the account it is bound to (cogno-gate `AccountOf`).
+        fn resolve_identity(identity_hash: [u8; 32]) -> Option<AccountId>;
+        /// Search people by display-name substring (case-insensitive), ranked by follower count.
+        fn search_people(term: Vec<u8>, limit: u32) -> Vec<PersonSummary<AccountId>>;
+        /// Ranked who-to-follow suggestions: bound authors with ≥1 top-level post, by follower count.
+        fn who_to_follow(limit: u32) -> Vec<PersonSummary<AccountId>>;
+    }
 }

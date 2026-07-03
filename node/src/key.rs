@@ -26,66 +26,66 @@ use sp_keystore::{Keystore, KeystorePtr};
 /// CLI (`cogno-chain-cli key gen`) and the p2p node key is auto-generated on `run`, so neither is here.
 #[derive(Debug, clap::Subcommand)]
 pub enum KeyCmd {
-	/// Insert a session secret (aura sr25519 / gran ed25519) into the node keystore from a
-	/// `cogno-chain-cli key gen` key FILE, by path — the scheme is read from the envelope (no jq/`--suri`).
-	Insert(InsertCmd),
+    /// Insert a session secret (aura sr25519 / gran ed25519) into the node keystore from a
+    /// `cogno-chain-cli key gen` key FILE, by path — the scheme is read from the envelope (no jq/`--suri`).
+    Insert(InsertCmd),
 
-	/// Inspect a p2p node-key file (the node's libp2p network identity — NOT a session/account key) and
-	/// print its peer ID.
-	InspectNodeKey(InspectNodeKeyCmd),
+    /// Inspect a p2p node-key file (the node's libp2p network identity — NOT a session/account key) and
+    /// print its peer ID.
+    InspectNodeKey(InspectNodeKeyCmd),
 }
 
 impl KeyCmd {
-	/// Dispatch a key subcommand.
-	pub fn run<C: SubstrateCli>(&self, cli: &C) -> Result<(), Error> {
-		match self {
-			KeyCmd::Insert(cmd) => cmd.run(cli),
-			KeyCmd::InspectNodeKey(cmd) => cmd.run(),
-		}
-	}
+    /// Dispatch a key subcommand.
+    pub fn run<C: SubstrateCli>(&self, cli: &C) -> Result<(), Error> {
+        match self {
+            KeyCmd::Insert(cmd) => cmd.run(cli),
+            KeyCmd::InspectNodeKey(cmd) => cmd.run(),
+        }
+    }
 }
 
 /// `key insert` — insert a session secret from a `cogno-chain-cli key gen` envelope by FILE PATH.
 #[derive(Debug, clap::Args)]
 pub struct InsertCmd {
-	/// The `cogno-chain-cli key gen` key FILE whose secret to insert (its scheme is read from the file).
-	#[arg(long, value_name = "PATH")]
-	pub key_file: PathBuf,
+    /// The `cogno-chain-cli key gen` key FILE whose secret to insert (its scheme is read from the file).
+    #[arg(long, value_name = "PATH")]
+    pub key_file: PathBuf,
 
-	/// The keystore key-type: `aura` (block sealing, sr25519) or `gran` (finality, ed25519). `grandpa` is
-	/// accepted as a friendly alias for `gran`.
-	#[arg(long, value_name = "TYPE")]
-	pub key_type: String,
+    /// The keystore key-type: `aura` (block sealing, sr25519) or `gran` (finality, ed25519). `grandpa` is
+    /// accepted as a friendly alias for `gran`.
+    #[arg(long, value_name = "TYPE")]
+    pub key_type: String,
 
-	#[allow(missing_docs)]
-	#[clap(flatten)]
-	pub shared_params: SharedParams,
+    #[allow(missing_docs)]
+    #[clap(flatten)]
+    pub shared_params: SharedParams,
 
-	#[allow(missing_docs)]
-	#[clap(flatten)]
-	pub keystore_params: KeystoreParams,
+    #[allow(missing_docs)]
+    #[clap(flatten)]
+    pub keystore_params: KeystoreParams,
 }
 
 impl InsertCmd {
-	/// Run the command — mirrors [`sc_cli::InsertKeyCmd::run`], substituting the envelope read for `--suri`.
-	pub fn run<C: SubstrateCli>(&self, cli: &C) -> Result<(), Error> {
-		// Canonical keystore key-type — four ASCII bytes the runtime's session machinery keys off. We accept
-		// `grandpa` as a friendly alias; `aura`/`gran` are wire values and are NOT renamed.
-		let key_type_str = match self.key_type.as_str() {
-			"grandpa" => "gran",
-			other => other,
-		};
+    /// Run the command — mirrors [`sc_cli::InsertKeyCmd::run`], substituting the envelope read for `--suri`.
+    pub fn run<C: SubstrateCli>(&self, cli: &C) -> Result<(), Error> {
+        // Canonical keystore key-type — four ASCII bytes the runtime's session machinery keys off. We accept
+        // `grandpa` as a friendly alias; `aura`/`gran` are wire values and are NOT renamed.
+        let key_type_str = match self.key_type.as_str() {
+            "grandpa" => "gran",
+            other => other,
+        };
 
-		// Read the SURI (0x-hex secret) + scheme from the envelope. The secret stays inside the audited
-		// cogno-keyfile crate; we re-derive the public key from the SURI below, exactly as `key insert`.
-		let (scheme, suri) = cogno_keyfile::load_secret_suri(&self.key_file)
-			.map_err(|e| Error::Input(format!("{e:#}")))?;
+        // Read the SURI (0x-hex secret) + scheme from the envelope. The secret stays inside the audited
+        // cogno-keyfile crate; we re-derive the public key from the SURI below, exactly as `key insert`.
+        let (scheme, suri) = cogno_keyfile::load_secret_suri(&self.key_file)
+            .map_err(|e| Error::Input(format!("{e:#}")))?;
 
-		// Guard the common mistake: the envelope's scheme must match the key-type's required scheme
-		// (aura ⇒ sr25519, gran ⇒ ed25519), or the keystore entry would be unusable.
-		if let Some(want) = required_scheme(key_type_str) {
-			if scheme != want {
-				return Err(Error::Input(format!(
+        // Guard the common mistake: the envelope's scheme must match the key-type's required scheme
+        // (aura ⇒ sr25519, gran ⇒ ed25519), or the keystore entry would be unusable.
+        if let Some(want) = required_scheme(key_type_str) {
+            if scheme != want {
+                return Err(Error::Input(format!(
 					"key file {} is {}, but --key-type {} needs {} — refusing to write an unusable keystore \
 					 entry",
 					self.key_file.display(),
@@ -93,69 +93,69 @@ impl InsertCmd {
 					self.key_type,
 					want.as_str()
 				)));
-			}
-		} else {
-			// Not one of this chain's session key-types (aura/gran): we can't validate the scheme, so a typo
-			// (e.g. `--key-type aur`) would silently insert an entry the node never reads. Warn loudly.
-			eprintln!(
+            }
+        } else {
+            // Not one of this chain's session key-types (aura/gran): we can't validate the scheme, so a typo
+            // (e.g. `--key-type aur`) would silently insert an entry the node never reads. Warn loudly.
+            eprintln!(
 				"warning: --key-type {} is not a known session key-type (expected `aura` or `gran`); \
 				 inserting a {} key WITHOUT scheme validation — double-check this is intended",
 				key_type_str,
 				scheme.as_str()
 			);
-		}
+        }
 
-		// Locate the keystore exactly as InsertKeyCmd does (base-path + chain → config dir → keystore).
-		let base_path = self
-			.shared_params
-			.base_path()?
-			.unwrap_or_else(|| BasePath::from_project("", "", &C::executable_name()));
-		let chain_id = self.shared_params.chain_id(self.shared_params.is_dev());
-		let chain_spec = cli.load_spec(&chain_id)?;
-		let config_dir = base_path.config_dir(chain_spec.id());
+        // Locate the keystore exactly as InsertKeyCmd does (base-path + chain → config dir → keystore).
+        let base_path = self
+            .shared_params
+            .base_path()?
+            .unwrap_or_else(|| BasePath::from_project("", "", &C::executable_name()));
+        let chain_id = self.shared_params.chain_id(self.shared_params.is_dev());
+        let chain_spec = cli.load_spec(&chain_id)?;
+        let config_dir = base_path.config_dir(chain_spec.id());
 
-		let (keystore, public) = match self.keystore_params.keystore_config(&config_dir)? {
-			KeystoreConfig::Path { path, password } => {
-				let public = match scheme {
-					Scheme::Sr25519 => sc_cli::commands::utils::pair_from_suri::<sp_core::sr25519::Pair>(
-						&suri,
-						password.clone(),
-					)?
-					.public()
-					.to_raw_vec(),
-					Scheme::Ed25519 => sc_cli::commands::utils::pair_from_suri::<sp_core::ed25519::Pair>(
-						&suri,
-						password.clone(),
-					)?
-					.public()
-					.to_raw_vec(),
-				};
-				let keystore: KeystorePtr = LocalKeystore::open(path, password)?.into();
-				(keystore, public)
-			},
-			_ => unreachable!("keystore_config always returns path and password; qed"),
-		};
+        let (keystore, public) = match self.keystore_params.keystore_config(&config_dir)? {
+            KeystoreConfig::Path { path, password } => {
+                let public = match scheme {
+                    Scheme::Sr25519 => sc_cli::commands::utils::pair_from_suri::<
+                        sp_core::sr25519::Pair,
+                    >(&suri, password.clone())?
+                    .public()
+                    .to_raw_vec(),
+                    Scheme::Ed25519 => sc_cli::commands::utils::pair_from_suri::<
+                        sp_core::ed25519::Pair,
+                    >(&suri, password.clone())?
+                    .public()
+                    .to_raw_vec(),
+                };
+                let keystore: KeystorePtr = LocalKeystore::open(path, password)?.into();
+                (keystore, public)
+            }
+            _ => unreachable!("keystore_config always returns path and password; qed"),
+        };
 
-		let key_type = KeyTypeId::try_from(key_type_str).map_err(|_| Error::KeyTypeInvalid)?;
+        let key_type = KeyTypeId::try_from(key_type_str).map_err(|_| Error::KeyTypeInvalid)?;
 
-		keystore.insert(key_type, &suri, &public[..]).map_err(|_| Error::KeystoreOperation)?;
+        keystore
+            .insert(key_type, &suri, &public[..])
+            .map_err(|_| Error::KeystoreOperation)?;
 
-		eprintln!(
-			"✓ inserted {} key (key-type {}) into the keystore from {}",
-			scheme.as_str(),
-			key_type_str,
-			self.key_file.display()
-		);
-		Ok(())
-	}
+        eprintln!(
+            "✓ inserted {} key (key-type {}) into the keystore from {}",
+            scheme.as_str(),
+            key_type_str,
+            self.key_file.display()
+        );
+        Ok(())
+    }
 }
 
 /// The keystore scheme a well-known session key-type requires, so a mismatched envelope is refused. `None`
 /// for key-types outside the chain's session set (they trust the envelope's scheme).
 fn required_scheme(key_type: &str) -> Option<Scheme> {
-	match key_type {
-		"aura" => Some(Scheme::Sr25519),
-		"gran" => Some(Scheme::Ed25519),
-		_ => None,
-	}
+    match key_type {
+        "aura" => Some(Scheme::Sr25519),
+        "gran" => Some(Scheme::Ed25519),
+        _ => None,
+    }
 }

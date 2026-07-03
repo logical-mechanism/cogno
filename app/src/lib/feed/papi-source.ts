@@ -43,6 +43,8 @@ import {
   nodeSearchPosts,
   nodeAuthorRepliesPage,
   nodeSearchPeople,
+  nodeWhoToFollow,
+  nodeLikesPage,
 } from "@/lib/chain/node-reads";
 import { byIdDesc } from "@/lib/feed/live";
 import {
@@ -121,7 +123,11 @@ const profileText = binTextOpt;
  */
 function detectNodeFeedApi(api: CognoApi): Promise<boolean> {
   try {
-    return api.apis.MicroblogApi.feed_page
+    // Probe the NEWEST method the flag authorizes (`search_posts`, spec-200) — NOT `feed_page` (spec-120).
+    // This one boolean gates feed_page AND the spec-200 search/replies/people methods, so it must probe the
+    // latest of them: a node with feed_page but not the P8b methods must report false (degrade to the keyed
+    // path) rather than true (which would throw a raw runtime-method error on the missing search/replies calls).
+    return api.apis.MicroblogApi.search_posts
       .isCompatible(CompatibilityLevel.BackwardsCompatible)
       .catch(() => false);
   } catch {
@@ -353,14 +359,24 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     let endCursor: string | null = null;
     let hasNextPage = false;
     if (args.tab === "likes") {
-      const likedIds = (await api.query.Microblog.VotesByAccount.getEntries(account)).map(
-        (e) => e.keyArgs[1] as bigint,
-      );
-      const likedPosts = (await Promise.all(likedIds.map((id) => getPost(api, id))))
-        .filter((p): p is CognoPost => p !== undefined)
-        .sort(byIdDesc);
-      // Liked posts are by OTHER authors → flag each by its own author's revocation, not `account`.
-      posts = await flagRevocations(likedPosts);
+      // Node-served Likes tab (spec-200 likes_page): one bounded, viewer-overlaid FIRST page — matching the
+      // Replies tab's first-page-only pattern (useProfile gates load-more off for reverse tabs) — instead of
+      // the unbounded VotesByAccount.getEntries + per-id getPost fan-out. Liked posts are by OTHER authors →
+      // flag each by its own author's revocation. Keyed fallback (pre-200) reads the reverse map directly.
+      if (await nodeFeedApiReady()) {
+        const pg = await nodeLikesPage(api, account, { limit: DEFAULT_FIRST, viewer: args.viewer });
+        posts = await flagRevocations(pg.posts);
+        endCursor = pg.nextCursor != null ? String(pg.nextCursor) : null;
+        hasNextPage = pg.nextCursor != null;
+      } else {
+        const likedIds = (await api.query.Microblog.VotesByAccount.getEntries(account)).map(
+          (e) => e.keyArgs[1] as bigint,
+        );
+        const likedPosts = (await Promise.all(likedIds.map((id) => getPost(api, id))))
+          .filter((p): p is CognoPost => p !== undefined)
+          .sort(byIdDesc);
+        posts = await flagRevocations(likedPosts);
+      }
     } else if (args.tab === "replies") {
       // Replies tab: the author's own replies (`parent != None`), newest-first, node-served (spec-200
       // author_replies_page). FIRST PAGE only here; useProfile gates load-more off for this tab (its
@@ -447,11 +463,15 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     };
   }
 
-  // ── who-to-follow: ranked node-direct by the FollowerCount map (popularity proxy — the node has no
-  // SCORE). The hook filters out self + already-followed, so we just return the top-N by follower
-  // count with display fields. getEntries() scans the whole counter map — fine on a testnet; the
-  // indexer is the scalable path. ──
+  // ── who-to-follow: node-served ranking (spec-200 `who_to_follow`) — ByAuthor members ranked by follower
+  // count, INCLUDING 0-follower authors, so the panel is non-empty on a fresh-genesis chain (where nobody
+  // has followers yet). The hook filters out self + already-followed. Falls back to the keyed FollowerCount
+  // scan only on a pre-200 node — which necessarily excludes 0-follower accounts (a pre-200 limitation,
+  // not the live spec-200 chain). ──
   async function whoToFollow(_who: Ss58 | null, limit: number): Promise<Suggestion[]> {
+    if (await nodeFeedApiReady()) {
+      return nodeWhoToFollow(api, limit);
+    }
     const entries = await api.query.Microblog.FollowerCount.getEntries();
     const ranked = entries
       .map((e) => ({ account: e.keyArgs[0] as Ss58, count: Number(e.value ?? 0) }))

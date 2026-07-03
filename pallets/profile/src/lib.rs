@@ -47,206 +47,223 @@ pub const LOG_TARGET: &str = "runtime::profile";
 
 #[frame_support::pallet]
 pub mod pallet {
-	use super::*;
-	use alloc::vec::Vec;
-	use frame_support::pallet_prelude::*;
-	use frame_system::pallet_prelude::*;
-	// The cross-pallet identity gate trait (defined in microblog to avoid a Cargo cycle).
-	use pallet_microblog::IsAllowed;
+    use super::*;
+    use alloc::vec::Vec;
+    use frame_support::pallet_prelude::*;
+    use frame_system::pallet_prelude::*;
+    // The cross-pallet identity gate trait (defined in microblog to avoid a Cargo cycle).
+    use pallet_microblog::IsAllowed;
 
-	/// Storage version. Bumped 0 → 1 in spec 118: the `migrations::v1` re-encode adds the new
-	/// `banner` / `location` / `website` Profile fields; its `VersionedMigration` self-skips once the
-	/// on-chain version is 1.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+    /// Storage version. Bumped 0 → 1 in spec 118: the `migrations::v1` re-encode adds the new
+    /// `banner` / `location` / `website` Profile fields; its `VersionedMigration` self-skips once the
+    /// on-chain version is 1.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
 
-	#[pallet::pallet]
-	#[pallet::storage_version(STORAGE_VERSION)]
-	pub struct Pallet<T>(_);
+    #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
+    pub struct Pallet<T>(_);
 
-	#[pallet::config]
-	pub trait Config: frame_system::Config {
-		/// The overarching runtime event type.
-		#[allow(deprecated)]
-		type RuntimeEvent: From<Event<Self>>
-			+ IsType<<Self as frame_system::Config>::RuntimeEvent>;
-		/// The Cardano-identity gate: only an account with a live 1:1 binding may set a profile.
-		/// Wired to `CognoGate` in the runtime (the same `IsAllowed` impl microblog posting uses).
-		type IdentityGate: IsAllowed<Self::AccountId>;
-		/// Maximum display-name length in bytes.
-		#[pallet::constant]
-		type MaxName: Get<u32>;
-		/// Maximum bio length in bytes.
-		#[pallet::constant]
-		type MaxBio: Get<u32>;
-		/// Maximum avatar-reference length in bytes (a URL / IPFS CID — NOT image bytes).
-		#[pallet::constant]
-		type MaxAvatar: Get<u32>;
-		/// Maximum banner-reference length in bytes (a URL / IPFS CID, NOT image bytes).
-		#[pallet::constant]
-		type MaxBanner: Get<u32>;
-		/// Maximum location length in bytes (free text).
-		#[pallet::constant]
-		type MaxLocation: Get<u32>;
-		/// Maximum website-reference length in bytes (a URL).
-		#[pallet::constant]
-		type MaxWebsite: Get<u32>;
-		/// Weight information for this pallet's dispatchables.
-		type WeightInfo: WeightInfo;
-	}
+    #[pallet::config]
+    pub trait Config: frame_system::Config {
+        /// The overarching runtime event type.
+        #[allow(deprecated)]
+        type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+        /// The Cardano-identity gate: only an account with a live 1:1 binding may set a profile.
+        /// Wired to `CognoGate` in the runtime (the same `IsAllowed` impl microblog posting uses).
+        type IdentityGate: IsAllowed<Self::AccountId>;
+        /// Maximum display-name length in bytes.
+        #[pallet::constant]
+        type MaxName: Get<u32>;
+        /// Maximum bio length in bytes.
+        #[pallet::constant]
+        type MaxBio: Get<u32>;
+        /// Maximum avatar-reference length in bytes (a URL / IPFS CID — NOT image bytes).
+        #[pallet::constant]
+        type MaxAvatar: Get<u32>;
+        /// Maximum banner-reference length in bytes (a URL / IPFS CID, NOT image bytes).
+        #[pallet::constant]
+        type MaxBanner: Get<u32>;
+        /// Maximum location length in bytes (free text).
+        #[pallet::constant]
+        type MaxLocation: Get<u32>;
+        /// Maximum website-reference length in bytes (a URL).
+        #[pallet::constant]
+        type MaxWebsite: Get<u32>;
+        /// Weight information for this pallet's dispatchables.
+        type WeightInfo: WeightInfo;
+    }
 
-	/// One account's display profile. Mutable presentation state (overwritten by `set_profile`).
-	///
-	/// `*NoBound` derives because `Profile` is generic over `T: Config` (the bounds are on
-	/// `T::MaxName`/`MaxBio`/`MaxAvatar`, not on `T` itself).
-	#[derive(
-		Encode, Decode, CloneNoBound, PartialEqNoBound, EqNoBound, DebugNoBound, TypeInfo, MaxEncodedLen,
-	)]
-	#[scale_info(skip_type_params(T))]
-	pub struct Profile<T: Config> {
-		/// Display name, bounded to `MaxName` bytes.
-		pub display_name: BoundedVec<u8, T::MaxName>,
-		/// Free-text bio, bounded to `MaxBio` bytes.
-		pub bio: BoundedVec<u8, T::MaxBio>,
-		/// Avatar reference (URL / IPFS CID), bounded to `MaxAvatar` bytes.
-		pub avatar: BoundedVec<u8, T::MaxAvatar>,
-		/// Banner reference (URL / IPFS CID), bounded to `MaxBanner` bytes. Added in storage **v1**;
-		/// pre-v1 profiles are migrated to empty (see `migrations::v1`). Appended after `avatar` so the
-		/// migration is a clean tail-append.
-		pub banner: BoundedVec<u8, T::MaxBanner>,
-		/// Free-text location, bounded to `MaxLocation` bytes. Added in storage **v1**.
-		pub location: BoundedVec<u8, T::MaxLocation>,
-		/// Website reference (URL), bounded to `MaxWebsite` bytes. Added in storage **v1**.
-		pub website: BoundedVec<u8, T::MaxWebsite>,
-	}
+    /// One account's display profile. Mutable presentation state (overwritten by `set_profile`).
+    ///
+    /// `*NoBound` derives because `Profile` is generic over `T: Config` (the bounds are on
+    /// `T::MaxName`/`MaxBio`/`MaxAvatar`, not on `T` itself).
+    #[derive(
+        Encode,
+        Decode,
+        CloneNoBound,
+        PartialEqNoBound,
+        EqNoBound,
+        DebugNoBound,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    #[scale_info(skip_type_params(T))]
+    pub struct Profile<T: Config> {
+        /// Display name, bounded to `MaxName` bytes.
+        pub display_name: BoundedVec<u8, T::MaxName>,
+        /// Free-text bio, bounded to `MaxBio` bytes.
+        pub bio: BoundedVec<u8, T::MaxBio>,
+        /// Avatar reference (URL / IPFS CID), bounded to `MaxAvatar` bytes.
+        pub avatar: BoundedVec<u8, T::MaxAvatar>,
+        /// Banner reference (URL / IPFS CID), bounded to `MaxBanner` bytes. Added in storage **v1**;
+        /// pre-v1 profiles are migrated to empty (see `migrations::v1`). Appended after `avatar` so the
+        /// migration is a clean tail-append.
+        pub banner: BoundedVec<u8, T::MaxBanner>,
+        /// Free-text location, bounded to `MaxLocation` bytes. Added in storage **v1**.
+        pub location: BoundedVec<u8, T::MaxLocation>,
+        /// Website reference (URL), bounded to `MaxWebsite` bytes. Added in storage **v1**.
+        pub website: BoundedVec<u8, T::MaxWebsite>,
+    }
 
-	/// Per-account profile. `OptionQuery` ⇒ `None` for an account that has never set one.
-	#[pallet::storage]
-	pub type Profiles<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, Profile<T>, OptionQuery>;
+    /// Per-account profile. `OptionQuery` ⇒ `None` for an account that has never set one.
+    #[pallet::storage]
+    pub type Profiles<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, Profile<T>, OptionQuery>;
 
-	/// The post id each account has pinned to the top of their profile. `None` ⇒ nothing pinned.
-	/// Stored as a bare id (not validated against microblog on-chain — the FE/indexer renders it; a
-	/// stale/foreign id simply shows nothing, mirroring the dangling-parent precedent).
-	#[pallet::storage]
-	pub type PinnedPost<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, u64, OptionQuery>;
+    /// The post id each account has pinned to the top of their profile. `None` ⇒ nothing pinned.
+    /// Stored as a bare id (not validated against microblog on-chain — the FE/indexer renders it; a
+    /// stale/foreign id simply shows nothing, mirroring the dangling-parent precedent).
+    #[pallet::storage]
+    pub type PinnedPost<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, u64, OptionQuery>;
 
-	#[pallet::event]
-	#[pallet::generate_deposit(pub(super) fn deposit_event)]
-	pub enum Event<T: Config> {
-		/// `who` set or replaced their profile (the body is read from storage by an indexer).
-		ProfileSet { who: T::AccountId },
-		/// `who` cleared their profile.
-		ProfileCleared { who: T::AccountId },
-		/// `who` pinned post `id` to the top of their profile.
-		PostPinned { who: T::AccountId, id: u64 },
-		/// `who` removed their pinned post.
-		PostUnpinned { who: T::AccountId },
-	}
+    #[pallet::event]
+    #[pallet::generate_deposit(pub(super) fn deposit_event)]
+    pub enum Event<T: Config> {
+        /// `who` set or replaced their profile (the body is read from storage by an indexer).
+        ProfileSet { who: T::AccountId },
+        /// `who` cleared their profile.
+        ProfileCleared { who: T::AccountId },
+        /// `who` pinned post `id` to the top of their profile.
+        PostPinned { who: T::AccountId, id: u64 },
+        /// `who` removed their pinned post.
+        PostUnpinned { who: T::AccountId },
+    }
 
-	#[pallet::error]
-	pub enum Error<T> {
-		/// The caller has no live Cardano-identity binding (`IdentityGate::is_allowed` returned false).
-		NotAllowed,
-		/// The display name exceeded `MaxName`.
-		NameTooLong,
-		/// The bio exceeded `MaxBio`.
-		BioTooLong,
-		/// The avatar reference exceeded `MaxAvatar`.
-		AvatarTooLong,
-		/// The banner reference exceeded `MaxBanner`.
-		BannerTooLong,
-		/// The location exceeded `MaxLocation`.
-		LocationTooLong,
-		/// The website reference exceeded `MaxWebsite`.
-		WebsiteTooLong,
-		/// `clear_profile` was called but the caller has no profile.
-		NoProfile,
-		/// `unpin_post` was called but the caller has nothing pinned.
-		NotPinned,
-	}
+    #[pallet::error]
+    pub enum Error<T> {
+        /// The caller has no live Cardano-identity binding (`IdentityGate::is_allowed` returned false).
+        NotAllowed,
+        /// The display name exceeded `MaxName`.
+        NameTooLong,
+        /// The bio exceeded `MaxBio`.
+        BioTooLong,
+        /// The avatar reference exceeded `MaxAvatar`.
+        AvatarTooLong,
+        /// The banner reference exceeded `MaxBanner`.
+        BannerTooLong,
+        /// The location exceeded `MaxLocation`.
+        LocationTooLong,
+        /// The website reference exceeded `MaxWebsite`.
+        WebsiteTooLong,
+        /// `clear_profile` was called but the caller has no profile.
+        NoProfile,
+        /// `unpin_post` was called but the caller has nothing pinned.
+        NotPinned,
+    }
 
-	#[pallet::call]
-	impl<T: Config> Pallet<T> {
-		/// Set (or overwrite) the caller's display profile. **Feeless**, metered against the caller's one
-		/// talk-capacity battery at a steep `ProfileCost` (≈10 posts) — the high capacity price is the
-		/// anti-spam for this low-frequency mutable overwrite. Requires a live identity binding.
-		#[pallet::call_index(0)]
-		#[pallet::weight(T::WeightInfo::set_profile())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _display_name: &Vec<u8>, _bio: &Vec<u8>, _avatar: &Vec<u8>, _banner: &Vec<u8>, _location: &Vec<u8>, _website: &Vec<u8>| -> bool { true })]
-		pub fn set_profile(
-			origin: OriginFor<T>,
-			display_name: Vec<u8>,
-			bio: Vec<u8>,
-			avatar: Vec<u8>,
-			banner: Vec<u8>,
-			location: Vec<u8>,
-			website: Vec<u8>,
-		) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "set_profile rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			let display_name: BoundedVec<u8, T::MaxName> =
-				display_name.try_into().map_err(|_| Error::<T>::NameTooLong)?;
-			let bio: BoundedVec<u8, T::MaxBio> = bio.try_into().map_err(|_| Error::<T>::BioTooLong)?;
-			let avatar: BoundedVec<u8, T::MaxAvatar> =
-				avatar.try_into().map_err(|_| Error::<T>::AvatarTooLong)?;
-			let banner: BoundedVec<u8, T::MaxBanner> =
-				banner.try_into().map_err(|_| Error::<T>::BannerTooLong)?;
-			let location: BoundedVec<u8, T::MaxLocation> =
-				location.try_into().map_err(|_| Error::<T>::LocationTooLong)?;
-			let website: BoundedVec<u8, T::MaxWebsite> =
-				website.try_into().map_err(|_| Error::<T>::WebsiteTooLong)?;
-			Profiles::<T>::insert(
-				&who,
-				Profile { display_name, bio, avatar, banner, location, website },
-			);
-			Self::deposit_event(Event::ProfileSet { who });
-			Ok(())
-		}
+    #[pallet::call]
+    impl<T: Config> Pallet<T> {
+        /// Set (or overwrite) the caller's display profile. **Feeless**, metered against the caller's one
+        /// talk-capacity battery at a steep `ProfileCost` (≈10 posts) — the high capacity price is the
+        /// anti-spam for this low-frequency mutable overwrite. Requires a live identity binding.
+        #[pallet::call_index(0)]
+        #[pallet::weight(T::WeightInfo::set_profile())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _display_name: &Vec<u8>, _bio: &Vec<u8>, _avatar: &Vec<u8>, _banner: &Vec<u8>, _location: &Vec<u8>, _website: &Vec<u8>| -> bool { true })]
+        pub fn set_profile(
+            origin: OriginFor<T>,
+            display_name: Vec<u8>,
+            bio: Vec<u8>,
+            avatar: Vec<u8>,
+            banner: Vec<u8>,
+            location: Vec<u8>,
+            website: Vec<u8>,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "set_profile rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            let display_name: BoundedVec<u8, T::MaxName> = display_name
+                .try_into()
+                .map_err(|_| Error::<T>::NameTooLong)?;
+            let bio: BoundedVec<u8, T::MaxBio> =
+                bio.try_into().map_err(|_| Error::<T>::BioTooLong)?;
+            let avatar: BoundedVec<u8, T::MaxAvatar> =
+                avatar.try_into().map_err(|_| Error::<T>::AvatarTooLong)?;
+            let banner: BoundedVec<u8, T::MaxBanner> =
+                banner.try_into().map_err(|_| Error::<T>::BannerTooLong)?;
+            let location: BoundedVec<u8, T::MaxLocation> = location
+                .try_into()
+                .map_err(|_| Error::<T>::LocationTooLong)?;
+            let website: BoundedVec<u8, T::MaxWebsite> =
+                website.try_into().map_err(|_| Error::<T>::WebsiteTooLong)?;
+            Profiles::<T>::insert(
+                &who,
+                Profile {
+                    display_name,
+                    bio,
+                    avatar,
+                    banner,
+                    location,
+                    website,
+                },
+            );
+            Self::deposit_event(Event::ProfileSet { who });
+            Ok(())
+        }
 
-		/// Clear the caller's profile. Feeless, capacity-metered at `ProfileCost` (same anti-spam as
-		/// `set_profile`; metering a doomed call is what stops free-spamming it). Fails `NoProfile` if
-		/// there is nothing to clear.
-		#[pallet::call_index(1)]
-		#[pallet::weight(T::WeightInfo::clear_profile())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>| -> bool { true })]
-		pub fn clear_profile(origin: OriginFor<T>) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			ensure!(Profiles::<T>::take(&who).is_some(), Error::<T>::NoProfile);
-			Self::deposit_event(Event::ProfileCleared { who });
-			Ok(())
-		}
+        /// Clear the caller's profile. Feeless, capacity-metered at `ProfileCost` (same anti-spam as
+        /// `set_profile`; metering a doomed call is what stops free-spamming it). Fails `NoProfile` if
+        /// there is nothing to clear.
+        #[pallet::call_index(1)]
+        #[pallet::weight(T::WeightInfo::clear_profile())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>| -> bool { true })]
+        pub fn clear_profile(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            ensure!(Profiles::<T>::take(&who).is_some(), Error::<T>::NoProfile);
+            Self::deposit_event(Event::ProfileCleared { who });
+            Ok(())
+        }
 
-		/// Pin post `id` to the top of the caller's profile (overwrites any prior pin). Feeless,
-		/// capacity-metered at `ProfileCost`; requires a live identity binding. The post id is not
-		/// validated on-chain (FE renders it).
-		#[pallet::call_index(2)]
-		#[pallet::weight(T::WeightInfo::pin_post())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>, _id: &u64| -> bool { true })]
-		pub fn pin_post(origin: OriginFor<T>, id: u64) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			if !T::IdentityGate::is_allowed(&who) {
-				log::debug!(target: LOG_TARGET, "pin_post rejected: identity not allowed for {who:?}");
-				return Err(Error::<T>::NotAllowed.into());
-			}
-			PinnedPost::<T>::insert(&who, id);
-			Self::deposit_event(Event::PostPinned { who, id });
-			Ok(())
-		}
+        /// Pin post `id` to the top of the caller's profile (overwrites any prior pin). Feeless,
+        /// capacity-metered at `ProfileCost`; requires a live identity binding. The post id is not
+        /// validated on-chain (FE renders it).
+        #[pallet::call_index(2)]
+        #[pallet::weight(T::WeightInfo::pin_post())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _id: &u64| -> bool { true })]
+        pub fn pin_post(origin: OriginFor<T>, id: u64) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "pin_post rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            PinnedPost::<T>::insert(&who, id);
+            Self::deposit_event(Event::PostPinned { who, id });
+            Ok(())
+        }
 
-		/// Remove the caller's pinned post. Feeless, capacity-metered at `ProfileCost`. Fails `NotPinned`
-		/// if nothing is pinned. No identity gate (a revoked account with capacity may still tidy up its
-		/// own state).
-		#[pallet::call_index(3)]
-		#[pallet::weight(T::WeightInfo::unpin_post())]
-		#[pallet::feeless_if(|_origin: &OriginFor<T>| -> bool { true })]
-		pub fn unpin_post(origin: OriginFor<T>) -> DispatchResult {
-			let who = ensure_signed(origin)?;
-			ensure!(PinnedPost::<T>::take(&who).is_some(), Error::<T>::NotPinned);
-			Self::deposit_event(Event::PostUnpinned { who });
-			Ok(())
-		}
-	}
+        /// Remove the caller's pinned post. Feeless, capacity-metered at `ProfileCost`. Fails `NotPinned`
+        /// if nothing is pinned. No identity gate (a revoked account with capacity may still tidy up its
+        /// own state).
+        #[pallet::call_index(3)]
+        #[pallet::weight(T::WeightInfo::unpin_post())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>| -> bool { true })]
+        pub fn unpin_post(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            ensure!(PinnedPost::<T>::take(&who).is_some(), Error::<T>::NotPinned);
+            Self::deposit_event(Event::PostUnpinned { who });
+            Ok(())
+        }
+    }
 }

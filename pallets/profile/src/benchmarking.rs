@@ -16,78 +16,90 @@ use crate::Pallet as ProfilePallet;
 
 #[benchmarks]
 mod benchmarks {
-	use super::*;
+    use super::*;
 
-	#[benchmark]
-	fn set_profile() -> Result<(), BenchmarkError> {
-		let caller: T::AccountId = whitelisted_caller();
-		// Admit the caller through the REAL gate (CognoGate in the runtime; no-op in the mock).
-		T::IdentityGate::benchmark_set_allowed(&caller);
-		let name = alloc::vec![0u8; T::MaxName::get() as usize];
-		let bio = alloc::vec![0u8; T::MaxBio::get() as usize];
-		let avatar = alloc::vec![0u8; T::MaxAvatar::get() as usize];
-		let banner = alloc::vec![0u8; T::MaxBanner::get() as usize];
-		let location = alloc::vec![0u8; T::MaxLocation::get() as usize];
-		let website = alloc::vec![0u8; T::MaxWebsite::get() as usize];
+    #[benchmark]
+    fn set_profile() -> Result<(), BenchmarkError> {
+        let caller: T::AccountId = whitelisted_caller();
+        // Admit the caller through the REAL gate (CognoGate in the runtime; no-op in the mock).
+        T::IdentityGate::benchmark_set_allowed(&caller);
+        let name = alloc::vec![0u8; T::MaxName::get() as usize];
+        let bio = alloc::vec![0u8; T::MaxBio::get() as usize];
+        let avatar = alloc::vec![0u8; T::MaxAvatar::get() as usize];
+        let banner = alloc::vec![0u8; T::MaxBanner::get() as usize];
+        let location = alloc::vec![0u8; T::MaxLocation::get() as usize];
+        let website = alloc::vec![0u8; T::MaxWebsite::get() as usize];
 
-		#[extrinsic_call]
-		_(RawOrigin::Signed(caller.clone()), name, bio, avatar, banner, location, website);
+        #[extrinsic_call]
+        _(
+            RawOrigin::Signed(caller.clone()),
+            name,
+            bio,
+            avatar,
+            banner,
+            location,
+            website,
+        );
 
-		assert!(Profiles::<T>::contains_key(&caller));
-		Ok(())
-	}
+        assert!(Profiles::<T>::contains_key(&caller));
+        Ok(())
+    }
 
-	#[benchmark]
-	fn clear_profile() -> Result<(), BenchmarkError> {
-		let caller: T::AccountId = whitelisted_caller();
-		T::IdentityGate::benchmark_set_allowed(&caller);
-		// Seed a profile to clear.
-		let name: BoundedVec<u8, T::MaxName> =
-			alloc::vec![0u8; 1].try_into().expect("1 < MaxName; qed");
-		let bio: BoundedVec<u8, T::MaxBio> = Default::default();
-		let avatar: BoundedVec<u8, T::MaxAvatar> = Default::default();
-		Profiles::<T>::insert(
-			&caller,
-			Profile::<T> {
-				display_name: name,
-				bio,
-				avatar,
-				banner: Default::default(),
-				location: Default::default(),
-				website: Default::default(),
-			},
-		);
+    #[benchmark]
+    fn clear_profile() -> Result<(), BenchmarkError> {
+        let caller: T::AccountId = whitelisted_caller();
+        T::IdentityGate::benchmark_set_allowed(&caller);
+        // Seed a profile to clear.
+        let name: BoundedVec<u8, T::MaxName> =
+            alloc::vec![0u8; 1].try_into().expect("1 < MaxName; qed");
+        let bio: BoundedVec<u8, T::MaxBio> = Default::default();
+        let avatar: BoundedVec<u8, T::MaxAvatar> = Default::default();
+        Profiles::<T>::insert(
+            &caller,
+            Profile::<T> {
+                display_name: name,
+                bio,
+                avatar,
+                banner: Default::default(),
+                location: Default::default(),
+                website: Default::default(),
+            },
+        );
 
-		#[extrinsic_call]
-		_(RawOrigin::Signed(caller.clone()));
+        #[extrinsic_call]
+        _(RawOrigin::Signed(caller.clone()));
 
-		assert!(!Profiles::<T>::contains_key(&caller));
-		Ok(())
-	}
+        assert!(!Profiles::<T>::contains_key(&caller));
+        Ok(())
+    }
 
-	#[benchmark]
-	fn pin_post() -> Result<(), BenchmarkError> {
-		let caller: T::AccountId = whitelisted_caller();
-		T::IdentityGate::benchmark_set_allowed(&caller);
+    #[benchmark]
+    fn pin_post() -> Result<(), BenchmarkError> {
+        let caller: T::AccountId = whitelisted_caller();
+        T::IdentityGate::benchmark_set_allowed(&caller);
 
-		#[extrinsic_call]
-		_(RawOrigin::Signed(caller.clone()), 7u64);
+        #[extrinsic_call]
+        _(RawOrigin::Signed(caller.clone()), 7u64);
 
-		assert_eq!(PinnedPost::<T>::get(&caller), Some(7u64));
-		Ok(())
-	}
+        assert_eq!(PinnedPost::<T>::get(&caller), Some(7u64));
+        Ok(())
+    }
 
-	#[benchmark]
-	fn unpin_post() -> Result<(), BenchmarkError> {
-		let caller: T::AccountId = whitelisted_caller();
-		PinnedPost::<T>::insert(&caller, 7u64);
+    #[benchmark]
+    fn unpin_post() -> Result<(), BenchmarkError> {
+        let caller: T::AccountId = whitelisted_caller();
+        PinnedPost::<T>::insert(&caller, 7u64);
 
-		#[extrinsic_call]
-		_(RawOrigin::Signed(caller.clone()));
+        #[extrinsic_call]
+        _(RawOrigin::Signed(caller.clone()));
 
-		assert!(!PinnedPost::<T>::contains_key(&caller));
-		Ok(())
-	}
+        assert!(!PinnedPost::<T>::contains_key(&caller));
+        Ok(())
+    }
 
-	impl_benchmark_test_suite!(ProfilePallet, crate::mock::new_test_ext(), crate::mock::Test);
+    impl_benchmark_test_suite!(
+        ProfilePallet,
+        crate::mock::new_test_ext(),
+        crate::mock::Test
+    );
 }

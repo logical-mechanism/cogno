@@ -12,22 +12,22 @@ use substrate_prometheus_endpoint::{register, Counter, Gauge, PrometheusError, R
 /// Observer-liveness metrics, registered on the node's Prometheus registry (`:9615/metrics`).
 #[derive(Clone)]
 pub struct ObserverMetrics {
-	/// Non-empty observations this node has proposed (a successful db-sync read → reduced ledger).
-	observations_total: Counter<U64>,
-	/// Abstentions: an empty observation (db-sync unset/down/behind, pre-Shelley, or a runtime-API error).
-	abstains_total: Counter<U64>,
-	/// The Cardano reference slot of the most recent non-empty observation (0 until the first).
-	last_reference_slot: Gauge<U64>,
-	/// Vault (locked-ADA weight) entry count in the most recent non-empty observation.
-	observed_vaults: Gauge<U64>,
-	/// Voting-power (epoch_stake) entry count in the most recent non-empty observation.
-	observed_voters: Gauge<U64>,
+    /// Non-empty observations this node has proposed (a successful db-sync read → reduced ledger).
+    observations_total: Counter<U64>,
+    /// Abstentions: an empty observation (db-sync unset/down/behind, pre-Shelley, or a runtime-API error).
+    abstains_total: Counter<U64>,
+    /// The Cardano reference slot of the most recent non-empty observation (0 until the first).
+    last_reference_slot: Gauge<U64>,
+    /// Vault (locked-ADA weight) entry count in the most recent non-empty observation.
+    observed_vaults: Gauge<U64>,
+    /// Voting-power (epoch_stake) entry count in the most recent non-empty observation.
+    observed_voters: Gauge<U64>,
 }
 
 impl ObserverMetrics {
-	/// Register the observer metrics on `registry`.
-	pub fn register(registry: &Registry) -> Result<Self, PrometheusError> {
-		Ok(Self {
+    /// Register the observer metrics on `registry`.
+    pub fn register(registry: &Registry) -> Result<Self, PrometheusError> {
+        Ok(Self {
 			observations_total: register(
 				Counter::new(
 					"cogno_observer_observations_total",
@@ -64,18 +64,18 @@ impl ObserverMetrics {
 				registry,
 			)?,
 		})
-	}
+    }
 
-	/// Record an abstention (empty observation).
-	pub fn record_abstain(&self) {
-		self.abstains_total.inc();
-	}
+    /// Record an abstention (empty observation).
+    pub fn record_abstain(&self) {
+        self.abstains_total.inc();
+    }
 
-	/// Record a non-empty observation produced at Cardano `ref_slot` with `vaults`/`voters` entries.
-	pub fn record_observation(&self, ref_slot: u64, vaults: usize, voters: usize) {
-		self.observations_total.inc();
-		self.last_reference_slot.set(ref_slot);
-		self.observed_vaults.set(vaults as u64);
-		self.observed_voters.set(voters as u64);
-	}
+    /// Record a non-empty observation produced at Cardano `ref_slot` with `vaults`/`voters` entries.
+    pub fn record_observation(&self, ref_slot: u64, vaults: usize, voters: usize) {
+        self.observations_total.inc();
+        self.last_reference_slot.set(ref_slot);
+        self.observed_vaults.set(vaults as u64);
+        self.observed_voters.set(voters as u64);
+    }
 }

@@ -47,98 +47,109 @@ pub type StakeWeight = u128;
 
 #[frame_support::pallet]
 pub mod pallet {
-	use super::*;
-	use frame_support::pallet_prelude::*;
+    use super::*;
+    use frame_support::pallet_prelude::*;
 
-	#[pallet::pallet]
-	pub struct Pallet<T>(_);
+    #[pallet::pallet]
+    pub struct Pallet<T>(_);
 
-	#[pallet::config]
-	pub trait Config: frame_system::Config {
-		/// The overarching runtime event type.
-		#[allow(deprecated)]
-		type RuntimeEvent: From<Event<Self>>
-			+ IsType<<Self as frame_system::Config>::RuntimeEvent>;
-	}
+    #[pallet::config]
+    pub trait Config: frame_system::Config {
+        /// The overarching runtime event type.
+        #[allow(deprecated)]
+        type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+    }
 
-	/// Per-account stake weight. `ValueQuery` → unbound/unlocked reads `0` (so `cap` and `rate` fall out
-	/// to zero with no special-casing). Written only by `apply_weight` (the observer inherent's sink).
-	#[pallet::storage]
-	pub type AllowedStake<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, StakeWeight, ValueQuery>;
+    /// Per-account stake weight. `ValueQuery` → unbound/unlocked reads `0` (so `cap` and `rate` fall out
+    /// to zero with no special-casing). Written only by `apply_weight` (the observer inherent's sink).
+    #[pallet::storage]
+    pub type AllowedStake<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, StakeWeight, ValueQuery>;
 
-	/// Per-account VOTING POWER — the total Cardano stake of the account's bound stake credential
-	/// (cogno-gate `StakeCredOf`), observed from `epoch_stake`. Distinct from [`AllowedStake`]: that (the
-	/// locked-ADA deposit) meters POSTING capacity; this drives stake-weighted VOTES and POLLS in
-	/// `pallet-microblog`. `ValueQuery` → an account with no stake bind / no stake reads `0` (its votes
-	/// carry no weight). Written only by `apply_voting_power` (the observer inherent's sink).
-	#[pallet::storage]
-	pub type VotingPower<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::AccountId, StakeWeight, ValueQuery>;
+    /// Per-account VOTING POWER — the total Cardano stake of the account's bound stake credential
+    /// (cogno-gate `StakeCredOf`), observed from `epoch_stake`. Distinct from [`AllowedStake`]: that (the
+    /// locked-ADA deposit) meters POSTING capacity; this drives stake-weighted VOTES and POLLS in
+    /// `pallet-microblog`. `ValueQuery` → an account with no stake bind / no stake reads `0` (its votes
+    /// carry no weight). Written only by `apply_voting_power` (the observer inherent's sink).
+    #[pallet::storage]
+    pub type VotingPower<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, StakeWeight, ValueQuery>;
 
-	#[pallet::event]
-	#[pallet::generate_deposit(pub(super) fn deposit_event)]
-	pub enum Event<T: Config> {
-		/// An account's stake weight was set (idempotent overwrite; reorg-safe re-derive).
-		StakeSet { who: T::AccountId, weight: StakeWeight },
-		/// An account's voting power (total observed Cardano stake) was set (idempotent overwrite).
-		VotingPowerSet { who: T::AccountId, weight: StakeWeight },
-	}
+    #[pallet::event]
+    #[pallet::generate_deposit(pub(super) fn deposit_event)]
+    pub enum Event<T: Config> {
+        /// An account's stake weight was set (idempotent overwrite; reorg-safe re-derive).
+        StakeSet {
+            who: T::AccountId,
+            weight: StakeWeight,
+        },
+        /// An account's voting power (total observed Cardano stake) was set (idempotent overwrite).
+        VotingPowerSet {
+            who: T::AccountId,
+            weight: StakeWeight,
+        },
+    }
 
-	/// Genesis seed for chains with no Cardano to observe (`--dev` / `local`). EMPTY on preprod/mainnet —
-	/// there the `cardano-observer` inherent credits real vault lovelace → `AllowedStake` and `epoch_stake`
-	/// → `VotingPower` from block 0. `(account, allowed_stake, voting_power)` triples. Genesis is NOT an
-	/// extrinsic, so this preserves the "the observer is the only runtime setter" invariant.
-	#[pallet::genesis_config]
-	#[derive(frame_support::DefaultNoBound)]
-	pub struct GenesisConfig<T: Config> {
-		pub initial_weights: alloc::vec::Vec<(T::AccountId, StakeWeight, StakeWeight)>,
-	}
+    /// Genesis seed for chains with no Cardano to observe (`--dev` / `local`). EMPTY on preprod/mainnet —
+    /// there the `cardano-observer` inherent credits real vault lovelace → `AllowedStake` and `epoch_stake`
+    /// → `VotingPower` from block 0. `(account, allowed_stake, voting_power)` triples. Genesis is NOT an
+    /// extrinsic, so this preserves the "the observer is the only runtime setter" invariant.
+    #[pallet::genesis_config]
+    #[derive(frame_support::DefaultNoBound)]
+    pub struct GenesisConfig<T: Config> {
+        pub initial_weights: alloc::vec::Vec<(T::AccountId, StakeWeight, StakeWeight)>,
+    }
 
-	#[pallet::genesis_build]
-	impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
-		fn build(&self) {
-			for (who, allowed, voting) in &self.initial_weights {
-				AllowedStake::<T>::insert(who, allowed);
-				VotingPower::<T>::insert(who, voting);
-			}
-		}
-	}
+    #[pallet::genesis_build]
+    impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+        fn build(&self) {
+            for (who, allowed, voting) in &self.initial_weights {
+                AllowedStake::<T>::insert(who, allowed);
+                VotingPower::<T>::insert(who, voting);
+            }
+        }
+    }
 
-	impl<T: Config> Pallet<T> {
-		/// Write `who`'s stake weight (insert `AllowedStake` + emit `StakeSet`). The sole entry point:
-		/// **pallet-cardano-observer** calls it from its verified Mandatory inherent (which applies its OWN
-		/// `MaxStakeWeight` skip-not-reject *before* calling, so a bad value is filtered out and never
-		/// reaches here). Writes **only** `AllowedStake` (the going-forward-only rule, `ECONOMICS.md` §6.1):
-		/// the lazy capacity meter reads this live, so a raise lifts the future `cap`/`rate` and
-		/// `weight = 0` collapses capacity on the next read — without touching the (relock-safe) capacity
-		/// row in `pallet-microblog`.
-		pub fn apply_weight(who: &T::AccountId, weight: StakeWeight) {
-			let previous = AllowedStake::<T>::get(who);
-			AllowedStake::<T>::insert(who, weight);
-			if weight == 0 {
-				log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} UNLOCKED (weight 0); previous={previous}");
-			} else if weight == previous {
-				log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} weight={weight} unchanged (idempotent re-derive)");
-			} else {
-				log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} weight {previous} -> {weight}");
-			}
-			Self::deposit_event(Event::StakeSet { who: who.clone(), weight });
-		}
+    impl<T: Config> Pallet<T> {
+        /// Write `who`'s stake weight (insert `AllowedStake` + emit `StakeSet`). The sole entry point:
+        /// **pallet-cardano-observer** calls it from its verified Mandatory inherent (which applies its OWN
+        /// `MaxStakeWeight` skip-not-reject *before* calling, so a bad value is filtered out and never
+        /// reaches here). Writes **only** `AllowedStake` (the going-forward-only rule, `ECONOMICS.md` §6.1):
+        /// the lazy capacity meter reads this live, so a raise lifts the future `cap`/`rate` and
+        /// `weight = 0` collapses capacity on the next read — without touching the (relock-safe) capacity
+        /// row in `pallet-microblog`.
+        pub fn apply_weight(who: &T::AccountId, weight: StakeWeight) {
+            let previous = AllowedStake::<T>::get(who);
+            AllowedStake::<T>::insert(who, weight);
+            if weight == 0 {
+                log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} UNLOCKED (weight 0); previous={previous}");
+            } else if weight == previous {
+                log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} weight={weight} unchanged (idempotent re-derive)");
+            } else {
+                log::debug!(target: LOG_TARGET, "apply_weight: who={who:?} weight {previous} -> {weight}");
+            }
+            Self::deposit_event(Event::StakeSet {
+                who: who.clone(),
+                weight,
+            });
+        }
 
-		/// Write `who`'s voting power (insert `VotingPower` + emit `VotingPowerSet`). The sole entry point:
-		/// the cardano-observer inherent calls it from its verified projection (after its own
-		/// `MaxVotingPower` skip). Writes ONLY `VotingPower` — microblog reads it live for vote/poll weight,
-		/// so a change lifts/drops future votes; existing recorded votes keep their stored snapshot.
-		pub fn apply_voting_power(who: &T::AccountId, weight: StakeWeight) {
-			let previous = VotingPower::<T>::get(who);
-			VotingPower::<T>::insert(who, weight);
-			if weight == previous {
-				log::debug!(target: LOG_TARGET, "apply_voting_power: who={who:?} weight={weight} unchanged");
-			} else {
-				log::debug!(target: LOG_TARGET, "apply_voting_power: who={who:?} weight {previous} -> {weight}");
-			}
-			Self::deposit_event(Event::VotingPowerSet { who: who.clone(), weight });
-		}
-	}
+        /// Write `who`'s voting power (insert `VotingPower` + emit `VotingPowerSet`). The sole entry point:
+        /// the cardano-observer inherent calls it from its verified projection (after its own
+        /// `MaxVotingPower` skip). Writes ONLY `VotingPower` — microblog reads it live for vote/poll weight,
+        /// so a change lifts/drops future votes; existing recorded votes keep their stored snapshot.
+        pub fn apply_voting_power(who: &T::AccountId, weight: StakeWeight) {
+            let previous = VotingPower::<T>::get(who);
+            VotingPower::<T>::insert(who, weight);
+            if weight == previous {
+                log::debug!(target: LOG_TARGET, "apply_voting_power: who={who:?} weight={weight} unchanged");
+            } else {
+                log::debug!(target: LOG_TARGET, "apply_voting_power: who={who:?} weight {previous} -> {weight}");
+            }
+            Self::deposit_event(Event::VotingPowerSet {
+                who: who.clone(),
+                weight,
+            });
+        }
+    }
 }

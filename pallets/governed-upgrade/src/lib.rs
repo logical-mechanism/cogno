@@ -36,60 +36,60 @@ pub use weights::*;
 
 #[frame_support::pallet]
 pub mod pallet {
-	use super::*;
-	use frame_support::pallet_prelude::*;
-	use frame_system::pallet_prelude::*;
+    use super::*;
+    use frame_support::pallet_prelude::*;
+    use frame_system::pallet_prelude::*;
 
-	#[pallet::pallet]
-	pub struct Pallet<T>(_);
+    #[pallet::pallet]
+    pub struct Pallet<T>(_);
 
-	#[pallet::config]
-	pub trait Config: frame_system::Config {
-		/// The overarching runtime event type.
-		#[allow(deprecated)]
-		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+    #[pallet::config]
+    pub trait Config: frame_system::Config {
+        /// The overarching runtime event type.
+        #[allow(deprecated)]
+        type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
-		/// The ONLY origin allowed to authorize a runtime upgrade. In cogno-chain this is the shared
-		/// `AuthorityOrigin` — a ≥3/5 `FollowerCommittee` supermajority (sudo-free; no `EnsureRoot`
-		/// fallback) — the same gate as `add_validator` / `set_members` / `revoke`.
-		type AuthorityOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+        /// The ONLY origin allowed to authorize a runtime upgrade. In cogno-chain this is the shared
+        /// `AuthorityOrigin` — a ≥3/5 `FollowerCommittee` supermajority (sudo-free; no `EnsureRoot`
+        /// fallback) — the same gate as `add_validator` / `set_members` / `revoke`.
+        type AuthorityOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
-		/// Dispatch weights.
-		type WeightInfo: WeightInfo;
-	}
+        /// Dispatch weights.
+        type WeightInfo: WeightInfo;
+    }
 
-	#[pallet::event]
-	#[pallet::generate_deposit(pub(super) fn deposit_event)]
-	pub enum Event<T: Config> {
-		/// A runtime upgrade to `code_hash` was authorized by an [`Config::AuthorityOrigin`] (≥3/5
-		/// committee) motion. The WASM is then uploaded permissionlessly via
-		/// `frame_system::apply_authorized_upgrade`, which enforces the `spec_version` increase. This is
-		/// the pallet-scoped audit marker for the sudo-free upgrade path (distinct from, and emitted
-		/// alongside, `frame_system`'s own `UpgradeAuthorized`).
-		UpgradeAuthorized { code_hash: T::Hash },
-	}
+    #[pallet::event]
+    #[pallet::generate_deposit(pub(super) fn deposit_event)]
+    pub enum Event<T: Config> {
+        /// A runtime upgrade to `code_hash` was authorized by an [`Config::AuthorityOrigin`] (≥3/5
+        /// committee) motion. The WASM is then uploaded permissionlessly via
+        /// `frame_system::apply_authorized_upgrade`, which enforces the `spec_version` increase. This is
+        /// the pallet-scoped audit marker for the sudo-free upgrade path (distinct from, and emitted
+        /// alongside, `frame_system`'s own `UpgradeAuthorized`).
+        UpgradeAuthorized { code_hash: T::Hash },
+    }
 
-	#[pallet::call]
-	impl<T: Config> Pallet<T> {
-		/// Authorize a runtime upgrade to `code_hash` — the sudo-free, committee-governed analogue of
-		/// `sudo(system.set_code(..))`. Gated by [`Config::AuthorityOrigin`] (≥3/5 committee).
-		///
-		/// Records the authorized hash in `frame_system` with version-checking **on**; the WASM itself is
-		/// supplied later by ANYONE via the permissionless `frame_system::apply_authorized_upgrade`, which
-		/// refuses a non-increasing `spec_version` / changed spec-name. There is deliberately no
-		/// `authorize_upgrade_without_checks` analogue — the sudo-free path is always version-checked.
-		///
-		/// `code_hash` is `blake2_256(wasm)` (the runtime `Hashing`); the CLI computes it from the compiled
-		/// `.wasm` so the committee can propose/vote/close on a 32-byte value, not the blob.
-		#[pallet::call_index(0)]
-		#[pallet::weight(<T as Config>::WeightInfo::authorize_upgrade())]
-		pub fn authorize_upgrade(origin: OriginFor<T>, code_hash: T::Hash) -> DispatchResult {
-			T::AuthorityOrigin::ensure_origin(origin)?;
-			// `check_version = true` → `apply_authorized_upgrade` later enforces spec_name unchanged +
-			// spec_version strictly increasing (`can_set_code`). This IS the sudo-free monotonicity guard.
-			frame_system::Pallet::<T>::do_authorize_upgrade(code_hash, true);
-			Self::deposit_event(Event::UpgradeAuthorized { code_hash });
-			Ok(())
-		}
-	}
+    #[pallet::call]
+    impl<T: Config> Pallet<T> {
+        /// Authorize a runtime upgrade to `code_hash` — the sudo-free, committee-governed analogue of
+        /// `sudo(system.set_code(..))`. Gated by [`Config::AuthorityOrigin`] (≥3/5 committee).
+        ///
+        /// Records the authorized hash in `frame_system` with version-checking **on**; the WASM itself is
+        /// supplied later by ANYONE via the permissionless `frame_system::apply_authorized_upgrade`, which
+        /// refuses a non-increasing `spec_version` / changed spec-name. There is deliberately no
+        /// `authorize_upgrade_without_checks` analogue — the sudo-free path is always version-checked.
+        ///
+        /// `code_hash` is `blake2_256(wasm)` (the runtime `Hashing`); the CLI computes it from the compiled
+        /// `.wasm` so the committee can propose/vote/close on a 32-byte value, not the blob.
+        #[pallet::call_index(0)]
+        #[pallet::weight(<T as Config>::WeightInfo::authorize_upgrade())]
+        pub fn authorize_upgrade(origin: OriginFor<T>, code_hash: T::Hash) -> DispatchResult {
+            T::AuthorityOrigin::ensure_origin(origin)?;
+            // `check_version = true` → `apply_authorized_upgrade` later enforces spec_name unchanged +
+            // spec_version strictly increasing (`can_set_code`). This IS the sudo-free monotonicity guard.
+            frame_system::Pallet::<T>::do_authorize_upgrade(code_hash, true);
+            Self::deposit_event(Event::UpgradeAuthorized { code_hash });
+            Ok(())
+        }
+    }
 }

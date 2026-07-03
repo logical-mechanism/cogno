@@ -28,32 +28,35 @@ use std::marker::PhantomData;
 /// Proposer factory for [`PartnerChainsProposer`]. Carries the `ID: InherentDigest` type parameter and
 /// wraps an inner `Environment` (the stock `sc_basic_authorship::ProposerFactory`).
 pub struct PartnerChainsProposerFactory<B: BlockT, E: Environment<B>, ID> {
-	env: E,
-	_phantom: PhantomData<(B, ID)>,
+    env: E,
+    _phantom: PhantomData<(B, ID)>,
 }
 
 impl<B: BlockT, E: Environment<B>, ID> PartnerChainsProposerFactory<B, E, ID> {
-	/// Wrap an inner proposer environment (e.g. `sc_basic_authorship::ProposerFactory`).
-	pub fn new(env: E) -> Self {
-		Self { env, _phantom: PhantomData }
-	}
+    /// Wrap an inner proposer environment (e.g. `sc_basic_authorship::ProposerFactory`).
+    pub fn new(env: E) -> Self {
+        Self {
+            env,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<B: BlockT, E: Environment<B>, ID: InherentDigest + Send + Sync + 'static> Environment<B>
-	for PartnerChainsProposerFactory<B, E, ID>
+    for PartnerChainsProposerFactory<B, E, ID>
 {
-	type Proposer = PartnerChainsProposer<B, E::Proposer, ID>;
-	type CreateProposer =
-		Box<dyn Future<Output = Result<Self::Proposer, Self::Error>> + Send + Unpin + 'static>;
-	type Error = <E as Environment<B>>::Error;
+    type Proposer = PartnerChainsProposer<B, E::Proposer, ID>;
+    type CreateProposer =
+        Box<dyn Future<Output = Result<Self::Proposer, Self::Error>> + Send + Unpin + 'static>;
+    type Error = <E as Environment<B>>::Error;
 
-	fn init(&mut self, parent_header: &<B as BlockT>::Header) -> Self::CreateProposer {
-		Box::new(
-			self.env
-				.init(parent_header)
-				.map(|res| res.map(PartnerChainsProposer::<B, E::Proposer, ID>::new)),
-		)
-	}
+    fn init(&mut self, parent_header: &<B as BlockT>::Header) -> Self::CreateProposer {
+        Box::new(
+            self.env
+                .init(parent_header)
+                .map(|res| res.map(PartnerChainsProposer::<B, E::Proposer, ID>::new)),
+        )
+    }
 }
 
 /// Wraps a `Proposer`. Appends the [`InherentDigest`]'s items to the block's header logs, then delegates
@@ -61,36 +64,39 @@ impl<B: BlockT, E: Environment<B>, ID: InherentDigest + Send + Sync + 'static> E
 /// pre-digest, the GRANDPA consensus digests, and the seal are untouched — the seal is a post-proposal
 /// digest added by the slot worker, never seen here).
 pub struct PartnerChainsProposer<B: BlockT, P: Proposer<B>, ID: InherentDigest> {
-	proposer: P,
-	_phantom: PhantomData<(B, ID)>,
+    proposer: P,
+    _phantom: PhantomData<(B, ID)>,
 }
 
 impl<B: BlockT, P: Proposer<B>, ID: InherentDigest> PartnerChainsProposer<B, P, ID> {
-	fn new(proposer: P) -> Self {
-		Self { proposer, _phantom: PhantomData }
-	}
+    fn new(proposer: P) -> Self {
+        Self {
+            proposer,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<B: BlockT, P: Proposer<B>, ID: InherentDigest> Proposer<B>
-	for PartnerChainsProposer<B, P, ID>
+    for PartnerChainsProposer<B, P, ID>
 {
-	type Error = <P as Proposer<B>>::Error;
-	type Proposal = <P as Proposer<B>>::Proposal;
+    type Error = <P as Proposer<B>>::Error;
+    type Proposal = <P as Proposer<B>>::Proposal;
 
-	fn propose(self, mut args: ProposeArgs<B>) -> Self::Proposal {
-		let mut logs: Vec<DigestItem> = Vec::from(args.inherent_digests.logs());
-		// Append the sealed header digest. Unlike upstream's `.expect()`, a failure here is LOGGED and the
-		// block is proposed WITHOUT the seal — `from_inherent_data` is total over missing inherent data
-		// (Ok(vec![]) on the db-sync-lag abstain path), and an Err only on genuinely-corrupt local data, which
-		// must still never wedge the essential authoring task.
-		match ID::from_inherent_data(&args.inherent_data) {
-			Ok(mut inherent_logs) => logs.append(&mut inherent_logs),
-			Err(e) => log::warn!(
-				target: "cardano-observer",
-				"InherentDigest::from_inherent_data failed ({e}) — proposing without the cobs header seal",
-			),
-		}
-		args.inherent_digests = Digest { logs };
-		self.proposer.propose(args)
-	}
+    fn propose(self, mut args: ProposeArgs<B>) -> Self::Proposal {
+        let mut logs: Vec<DigestItem> = Vec::from(args.inherent_digests.logs());
+        // Append the sealed header digest. Unlike upstream's `.expect()`, a failure here is LOGGED and the
+        // block is proposed WITHOUT the seal — `from_inherent_data` is total over missing inherent data
+        // (Ok(vec![]) on the db-sync-lag abstain path), and an Err only on genuinely-corrupt local data, which
+        // must still never wedge the essential authoring task.
+        match ID::from_inherent_data(&args.inherent_data) {
+            Ok(mut inherent_logs) => logs.append(&mut inherent_logs),
+            Err(e) => log::warn!(
+                target: "cardano-observer",
+                "InherentDigest::from_inherent_data failed ({e}) — proposing without the cobs header seal",
+            ),
+        }
+        args.inherent_digests = Digest { logs };
+        self.proposer.propose(args)
+    }
 }

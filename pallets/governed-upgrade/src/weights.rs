@@ -9,13 +9,13 @@
 use frame_support::weights::Weight;
 
 pub trait WeightInfo {
-	fn authorize_upgrade() -> Weight;
+    fn authorize_upgrade() -> Weight;
 }
 
 /// Placeholder: a fixed base covering one storage write + one event deposit. Replace with a benchmarked
 /// `SubstrateWeight<T>` in a later step.
 impl WeightInfo for () {
-	fn authorize_upgrade() -> Weight {
-		Weight::from_parts(10_000_000, 0)
-	}
+    fn authorize_upgrade() -> Weight {
+        Weight::from_parts(10_000_000, 0)
+    }
 }
