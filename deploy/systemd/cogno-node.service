@@ -10,7 +10,7 @@
 
 [Unit]
 Description=cogno-chain node (Aura+GRANDPA validator)
-Documentation=https://github.com/logical-mechanism/cogno
+Documentation=https://github.com/LogicalMechanism/cogno-chain/blob/main/deploy/README.md
 After=network-online.target
 Wants=network-online.target
 
@@ -28,9 +28,12 @@ EnvironmentFile=-/etc/cogno/cogno.env
 # --state-pruning/--blocks-pruning archive: the node serves ALL reads (feed / thread / search / profile)
 #   from its own runtime API, so it must retain history; and with a single validator the node DB is the
 #   sole copy of chain history (back it up — see deploy/README). A non-archive node can't answer them.
-# RPC/Prometheus bind to localhost by default; the frontend reads over 127.0.0.1. Public exposure
-#   (browser frontend, remote metrics) goes behind a TLS reverse proxy + --rpc-methods=safe —
-#   deferred to the security/observability phases, NOT enabled here.
+# RPC/Prometheus bind to localhost by default; the frontend reads over 127.0.0.1. `--rpc-methods safe`
+#   is ON below: even on a localhost bind, `auto` would still expose UNSAFE methods (author_insertKey,
+#   author_rotateKeys, peer manipulation) to any same-host browser page, and `--rpc-cors all` drops the
+#   origin guard — the static frontend needs only SAFE methods (state_*/chain_*/system_health/
+#   author_submitExtrinsic). Narrow `--rpc-cors` to your frontend origin(s) where you can, and put any
+#   public exposure (browser frontend, remote metrics) behind a TLS reverse proxy.
 # --force-authoring: REQUIRED for the single-validator default topology — a lone validator has no
 #   peers to confirm against and will not author without it. REMOVE it for a multi-validator network
 #   (authoring should begin only once peers connect).
@@ -44,6 +47,7 @@ ExecStart=/usr/local/bin/cogno-chain-node run \
   --blocks-pruning archive \
   --port 30333 \
   --rpc-port 9944 \
+  --rpc-methods safe \
   --rpc-cors all \
   --prometheus-port 9615 \
   --no-mdns
@@ -71,6 +75,23 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 RestrictNamespaces=true
 LockPersonality=true
+# Further low-cost surface reduction: a validator binds only high ports and needs no privileges or
+# devices. SystemCallFilter uses the @system-service baseline (wasmtime's W^X JIT works under it); if a
+# future release trips it, relax with `systemd-analyze security cogno-node` and re-check. Deny @privileged
+# only (NOT @resources — the async runtime may touch scheduler/affinity calls).
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+ProtectHostname=true
+ProtectClock=true
+ProtectProc=invisible
+ProcSubset=pid
+RemoveIPC=true
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

@@ -18,11 +18,13 @@
 //! Dev-key refusal is by **public-key identity** (a renamed dev-key file can't dodge a regex), against
 //! the well-known `//Alice..//Ferdie` (+ `//*/stash`) pubkeys, pinned below and re-derived in a test.
 
+use std::fmt;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sp_core::{crypto::Ss58Codec, ed25519, sr25519, Pair as _};
 use sp_runtime::{traits::IdentifyAccount, AccountId32, MultiSignature, MultiSigner};
+use zeroize::{Zeroize, Zeroizing};
 
 /// The SS58 address format for cogno-chain accounts (`SS58Prefix = 42`, the generic Substrate prefix —
 /// runtime/src/configs/mod.rs). Pinned so the CLI's printed/checked addresses match the chain.
@@ -56,7 +58,7 @@ impl Scheme {
 
 /// The on-disk key envelope (cardano-cli `type`/`cborHex` analogue; we use `secretHex` because the
 /// bytes are a raw 32-byte seed, not CBOR). `ss58` is advisory — recomputed on load.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct KeyEnvelope {
     /// `CognoSigningKey_sr25519` / `CognoSigningKey_ed25519` (informational).
     #[serde(rename = "type")]
@@ -72,6 +74,26 @@ pub struct KeyEnvelope {
     /// The 32-byte raw secret seed, lowercase hex (64 chars), no `0x`.
     #[serde(rename = "secretHex")]
     pub secret_hex: String,
+}
+
+// Hand-written so a stray `{:?}` or log line can never print the raw secret seed.
+impl fmt::Debug for KeyEnvelope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyEnvelope")
+            .field("kind", &self.kind)
+            .field("description", &self.description)
+            .field("scheme", &self.scheme)
+            .field("ss58", &self.ss58)
+            .field("secret_hex", &"<redacted>")
+            .finish()
+    }
+}
+
+// The envelope holds a raw secret seed (`secret_hex`); wipe it from memory when the envelope drops.
+impl Drop for KeyEnvelope {
+    fn drop(&mut self) {
+        self.secret_hex.zeroize();
+    }
 }
 
 /// A loaded signer: an `sp_core` keypair plus its scheme. Holds secret material — never logged.
@@ -188,9 +210,34 @@ fn signer_from_seed(scheme: Scheme, seed: &[u8]) -> anyhow::Result<Signer> {
 
 /// Read + JSON-parse a key-file PATH into its envelope. Shared by [`load_signer`] and
 /// [`load_secret_suri`] so the file/JSON layer (and its two error messages) has ONE definition.
+/// Warn (never fail) if a key file is group/other-accessible on unix. The write path creates keys
+/// `0600`, but a key copied, restored from a backup, or produced by another tool at the default umask
+/// may be world-readable — like ssh/gpg, flag a loose-permissioned key rather than signing silently.
+#[cfg(unix)]
+fn warn_if_key_file_permissive(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mode = meta.permissions().mode();
+        if mode & 0o077 != 0 {
+            eprintln!(
+                "warning: key file {} is group/other-accessible (mode {:o}); tighten it with `chmod 600 {}`",
+                path.display(),
+                mode & 0o7777,
+                path.display()
+            );
+        }
+    }
+}
+#[cfg(not(unix))]
+fn warn_if_key_file_permissive(_path: &Path) {}
+
 fn read_envelope(path: &Path) -> anyhow::Result<KeyEnvelope> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| anyhow::anyhow!("cannot read key file {}: {e}", path.display()))?;
+    warn_if_key_file_permissive(path);
+    // The raw file bytes contain the secret hex — wipe them from memory once parsed.
+    let bytes = Zeroizing::new(
+        std::fs::read(path)
+            .map_err(|e| anyhow::anyhow!("cannot read key file {}: {e}", path.display()))?,
+    );
     serde_json::from_slice(&bytes)
         .map_err(|e| anyhow::anyhow!("malformed key envelope {}: {e}", path.display()))
 }
@@ -203,8 +250,9 @@ pub fn load_signer(path: &Path) -> anyhow::Result<Signer> {
     let env = read_envelope(path)?;
     let scheme = Scheme::parse(&env.scheme)?;
     let hexstr = env.secret_hex.strip_prefix("0x").unwrap_or(&env.secret_hex);
-    let seed = hex::decode(hexstr)
-        .map_err(|e| anyhow::anyhow!("secretHex in {} is not valid hex: {e}", path.display()))?;
+    let seed = Zeroizing::new(hex::decode(hexstr).map_err(|e| {
+        anyhow::anyhow!("secretHex in {} is not valid hex: {e}", path.display())
+    })?);
     let signer = signer_from_seed(scheme, &seed)?;
 
     // Advisory ss58 cross-check (warn-only — the recomputed public is authoritative).
@@ -225,8 +273,9 @@ pub fn load_signer(path: &Path) -> anyhow::Result<Signer> {
 fn secret_suri_from_envelope(env: &KeyEnvelope) -> anyhow::Result<(Scheme, String)> {
     let scheme = Scheme::parse(&env.scheme)?;
     let hexstr = env.secret_hex.strip_prefix("0x").unwrap_or(&env.secret_hex);
-    let seed =
-        hex::decode(hexstr).map_err(|e| anyhow::anyhow!("secretHex is not valid hex: {e}"))?;
+    let seed = Zeroizing::new(
+        hex::decode(hexstr).map_err(|e| anyhow::anyhow!("secretHex is not valid hex: {e}"))?,
+    );
     // Validate the seed builds a real keypair for this scheme (the same check load_signer runs), so a
     // malformed file fails HERE rather than at first block authoring.
     let _ = signer_from_seed(scheme, &seed)?;
@@ -256,7 +305,7 @@ pub fn load_secret_suri(path: &Path) -> anyhow::Result<(Scheme, String)> {
 /// Generate a fresh random key (from the OS CSPRNG via `Pair::generate`) and return the signer plus its
 /// envelope. The seed is 32 random bytes; there is no import-from-phrase mode anywhere.
 pub fn generate(scheme: Scheme, description: &str) -> anyhow::Result<(Signer, KeyEnvelope)> {
-    let seed: [u8; 32] = match scheme {
+    let mut seed: [u8; 32] = match scheme {
         Scheme::Sr25519 => sr25519::Pair::generate().1,
         Scheme::Ed25519 => ed25519::Pair::generate().1,
     };
@@ -268,6 +317,7 @@ pub fn generate(scheme: Scheme, description: &str) -> anyhow::Result<(Signer, Ke
         ss58: signer.ss58(),
         secret_hex: hex::encode(seed),
     };
+    seed.zeroize();
     Ok((signer, env))
 }
 

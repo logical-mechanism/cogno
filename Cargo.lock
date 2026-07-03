@@ -1574,6 +1574,7 @@ dependencies = [
  "sp-core",
  "sp-keyring",
  "sp-runtime",
+ "zeroize",
 ]
 
 [[package]]

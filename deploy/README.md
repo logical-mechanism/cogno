@@ -131,7 +131,8 @@ see [`deploy/monitoring/README.md`](monitoring/README.md).
 ## Operating notes
 
 - **Durable state.** Everything stateful lives under `/var/lib/cogno`. With `MinAuthorities=1` the node DB
-  is the **sole copy** of chain history, and the operator `.skey` files are irreplaceable — back them up.
+  is the **sole copy** of chain history, and the operator `.skey` / `keys.json` files are irreplaceable —
+  see [Backup & restore](#backup--restore) below.
 - **Single-validator finality.** The default unit uses `--force-authoring` (a lone validator has no peers
   to confirm against). Drop it — and add `--bootnodes` — when you onboard more validators; GRANDPA needs
   ≥2/3 of authorities online to finalize.
@@ -142,4 +143,43 @@ see [`deploy/monitoring/README.md`](monitoring/README.md).
   (`cogno-chain-cli validator add` + the new validator's `validator set-keys`) from your operator machine —
   changes apply at a session boundary. Runtime upgrades are `cogno-chain-cli upgrade authorize` (committee)
   + a permissionless `upgrade apply` (spec-checked). There is no sudo path.
+
+## Backup & restore
+
+No backup daemon is shipped, and the node binary intentionally exposes no `export-blocks` / `export-state`
+subcommand — back up at the filesystem level. What to protect:
+
+| Asset | Where | Backup |
+|---|---|---|
+| Chain DB (history) | `/var/lib/cogno/node` | filesystem snapshot (below). At `MinAuthorities=1` there is no second archive node to re-sync from, so this is load-bearing. |
+| Operator secret keys | your offline `.skey` / `keys.json` envelopes | encrypted, offline, in ≥2 places — **never** on the node host. |
+| Genesis / chainspec | `/etc/cogno/chainspec.raw.json` | copy alongside the keys (must be byte-identical to rejoin). |
+| Session keys | `<base-path>/chains/<id>/keystore` | re-inserted from the `.skey` files on restore — no separate backup. |
+
+**Snapshot the DB (consistent copy):**
+
+```bash
+sudo systemctl stop cogno-node                                  # clean stop for a consistent copy
+sudo tar -C /var/lib/cogno -czf /backup/cogno-db-$(date +%F).tar.gz node
+sudo systemctl start cogno-node
 ```
+
+For zero-downtime, take an LVM/ZFS/btrfs snapshot of `/var/lib/cogno` and archive that instead. Rotate old
+archives off-host.
+
+**Restore drill** (rehearse once on a spare host, before you need it):
+
+```bash
+sudo systemctl stop cogno-node
+sudo tar -C /var/lib/cogno -xzf /backup/cogno-db-YYYY-MM-DD.tar.gz
+sudo chown -R cogno:cogno /var/lib/cogno
+# Re-insert the session keys from the offline .skey files (as at first boot):
+sudo -u cogno cogno-chain-node key insert --base-path /var/lib/cogno/node \
+  --chain /etc/cogno/chainspec.raw.json --key-file val-aura.skey    --key-type aura
+sudo -u cogno cogno-chain-node key insert --base-path /var/lib/cogno/node \
+  --chain /etc/cogno/chainspec.raw.json --key-file val-grandpa.skey --key-type gran
+sudo systemctl start cogno-node && journalctl -u cogno-node -f    # confirm it authors + finalizes
+```
+
+**Cap the journal** so an always-on archive node can't fill the disk: install the drop-in
+[`deploy/systemd/journald-cogno.conf`](systemd/journald-cogno.conf) (`SystemMaxUse` / `MaxRetentionSec`).
