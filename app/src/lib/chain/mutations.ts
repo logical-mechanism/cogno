@@ -14,27 +14,23 @@
 
 import { Binary, Enum } from "polkadot-api";
 import type { Observable } from "rxjs";
-import { watchTx, submitPost } from "@/lib/chain/post";
+import { signSubmitWatch, submitPost, type SignableTx } from "@/lib/chain/post";
 import type { CognoApi, PostingSigner, TxUpdate, Ss58 } from "@/lib/types";
 
 /** Minimal shape of a PAPI transaction we can sign + watch. */
-interface Signable {
-  signSubmitAndWatch(signer: unknown): unknown;
-}
+type Signable = SignableTx;
 
-/** Wrap a signed `signSubmitAndWatch` into the shared TxUpdate phase stream. */
+/**
+ * Sign a signed write with a client-managed nonce (see signSubmitWatch / lib/chain/nonce). Every
+ * signed mutation goes through here so rapid sequential writes never collide on nonce (`Invalid: Stale`).
+ */
 function watchSigned(
+  api: CognoApi,
   tx: Signable,
   signer: PostingSigner,
   eventName?: "PostCreated",
 ): Observable<TxUpdate> {
-  return watchTx(
-    () =>
-      tx.signSubmitAndWatch(signer.signer) as unknown as ReturnType<
-        Parameters<typeof watchTx>[0]
-      >,
-    eventName,
-  );
+  return signSubmitWatch(api, signer, tx, eventName);
 }
 
 // ── posts / threading ──────────────────────────────────────────────────────────────────────
@@ -60,7 +56,7 @@ export function submitQuote(
     text: Binary.fromText(text),
     quoted_id: quotedId,
   }) as unknown as Signable;
-  return watchSigned(tx, signer, "PostCreated");
+  return watchSigned(api, tx, signer, "PostCreated");
 }
 
 // ── votes ────────────────────────────────────────────────────────────────────────────────────
@@ -76,7 +72,7 @@ export function submitVote(
     post_id: postId,
     dir: Enum(dir),
   }) as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 /** Unlike / clear an existing vote. */
@@ -86,7 +82,7 @@ export function submitClearVote(
   postId: bigint,
 ): Observable<TxUpdate> {
   const tx = api.tx.Microblog.clear_vote({ post_id: postId }) as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 // ── reposts / follows ──────────────────────────────────────────────────────────────────────
@@ -98,7 +94,7 @@ export function submitRepost(
   postId: bigint,
 ): Observable<TxUpdate> {
   const tx = api.tx.Microblog.repost({ post_id: postId }) as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 export function submitFollow(
@@ -107,7 +103,7 @@ export function submitFollow(
   target: Ss58,
 ): Observable<TxUpdate> {
   const tx = api.tx.Microblog.follow({ target }) as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 export function submitUnfollow(
@@ -116,7 +112,7 @@ export function submitUnfollow(
   target: Ss58,
 ): Observable<TxUpdate> {
   const tx = api.tx.Microblog.unfollow({ target }) as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 // ── polls ──────────────────────────────────────────────────────────────────────────────────
@@ -136,7 +132,7 @@ export function submitCreatePoll(
     question: Binary.fromText(question),
     options: options.map((o) => Binary.fromText(o)),
   }) as unknown as Signable;
-  return watchSigned(tx, signer, "PostCreated");
+  return watchSigned(api, tx, signer, "PostCreated");
 }
 
 /** Cast / re-cast a poll vote (re-cast moves the voter's weight to the new option). */
@@ -150,7 +146,7 @@ export function submitPollVote(
     post_id: hostId,
     option,
   }) as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 // ── profile (FEELESS signed — D9 obsolete) ───────────────────────────────────────────────────
@@ -179,7 +175,7 @@ export function submitSetProfile(
     location: Binary.fromText(location),
     website: Binary.fromText(website),
   }) as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 export function submitClearProfile(
@@ -187,7 +183,7 @@ export function submitClearProfile(
   signer: PostingSigner,
 ): Observable<TxUpdate> {
   const tx = api.tx.Profile.clear_profile() as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 export function submitPinPost(
@@ -196,7 +192,7 @@ export function submitPinPost(
   id: bigint,
 ): Observable<TxUpdate> {
   const tx = api.tx.Profile.pin_post({ id }) as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 export function submitUnpinPost(
@@ -204,7 +200,7 @@ export function submitUnpinPost(
   signer: PostingSigner,
 ): Observable<TxUpdate> {
   const tx = api.tx.Profile.unpin_post() as unknown as Signable;
-  return watchSigned(tx, signer);
+  return watchSigned(api, tx, signer);
 }
 
 // ── re-exports ───────────────────────────────────────────────────────────────────────────────
