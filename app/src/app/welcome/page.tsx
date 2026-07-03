@@ -113,6 +113,23 @@ export default function WelcomePage() {
     if (sessionState === "disconnected") setSubStep("account");
   }, [sessionState]);
 
+  // ── returning-user fast path ───────────────────────────────────────────────────────────────────
+  // A new user passes through the account/bind steps (connected_unbound → binding) before reaching a
+  // bound state; a RETURNING user reconnects straight into a bound state, never touching them. Only the
+  // former needs the power-ups interstitial — the latter is already set up, so we drop them directly
+  // into the feed ("log in → see posts"). We latch "did we start onboarding this session?" and, when a
+  // bound session lands on power-ups without it, replace to Home.
+  const startedOnboarding = useRef(false);
+  useEffect(() => {
+    if (sessionState === "connected_unbound" || sessionState === "binding") {
+      startedOnboarding.current = true;
+    }
+    if (sessionState === "disconnected") startedOnboarding.current = false;
+  }, [sessionState]);
+  useEffect(() => {
+    if (welcomeStep === "powerups" && !startedOnboarding.current) router.replace("/");
+  }, [welcomeStep, router]);
+
   // ── connect-error routing (toast vs inline) ──────────────────────────────────────────────────
   const [connectInlineError, setConnectInlineError] = useState<string | null>(null);
   const lastHandledError = useRef<string | null>(null);

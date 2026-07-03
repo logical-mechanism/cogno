@@ -116,12 +116,36 @@ export function WalletPicker({
   }
 
   // ── idle / list ────────────────────────────────────────────────────────────────────────────
+  // A returning visitor (lastWalletId persisted) leads with a prominent one-tap reconnect; the full
+  // wallet list drops below a divider as the "use a different wallet" fallback. A first-time visitor
+  // gets the plain "Join the conversation" wallet list.
+  const returning = !!lastWalletId;
+  const hasWallets = wallets !== null && wallets.length > 0;
   return (
     <section className={styles.step} aria-labelledby="welcome-heading">
       <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
-        Join the conversation
+        {returning ? "Welcome back" : "Join the conversation"}
       </h1>
-      <p className={styles.lede}>Connect a Cardano wallet to start posting.</p>
+      <p className={styles.lede}>
+        {returning
+          ? "Reconnect to pick up where you left off."
+          : "Connect a Cardano wallet to start posting."}
+      </p>
+
+      {returning && (
+        <ReconnectRow
+          variant="primary"
+          walletId={lastWalletId}
+          name={nameFor(lastWalletId)}
+          onReconnect={reconnect}
+        />
+      )}
+
+      {returning && hasWallets && (
+        <div className={styles.divider} role="separator">
+          <span className={styles.dividerLabel}>or use a different wallet</span>
+        </div>
+      )}
 
       {wallets === null ? (
         <div className={styles.loading} aria-live="polite">
@@ -156,10 +180,6 @@ export function WalletPicker({
         <p className={styles.error} role="alert">
           {errorCopy}
         </p>
-      )}
-
-      {lastWalletId && (
-        <ReconnectRow walletId={lastWalletId} name={nameFor(lastWalletId)} onReconnect={reconnect} />
       )}
 
       <p className={styles.reassure}>

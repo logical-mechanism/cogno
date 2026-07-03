@@ -3,6 +3,12 @@
   min-height: 100vh;
 }
 
+/* The standalone welcome/onboarding canvas (logged-out landing): full viewport, no rails/chrome. The
+   WelcomeShell inside owns its own centering + background. */
+.standalone {
+  min-height: 100vh;
+}
+
 /* The centered max-width container; the three columns flex within it (doc 01 §5.2). */
 .container {
   display: flex;
