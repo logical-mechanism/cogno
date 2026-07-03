@@ -1,13 +1,14 @@
 "use client";
 
-// EditProfileModal — the REAL on-chain profile editor (doc 07 §9 / doc 12 §3). Opens as an overlay
-// (ModalRouteHost) or via the /settings/ standalone fallback; ModalRouteHost passes `onClose`.
+// EditProfileModal — the on-chain profile editor form (doc 07 §9 / doc 12 §3). PRESENTATIONAL: it owns
+// the six form fields + byte validation + the clear-confirm dialog, and hands the collected values UP
+// via onSaveProfile / onClearProfile. The persistent ModalRouteHost owns the actual write.
 //
 // COST MODEL (spec 117 — D9 OBSOLETE): set_profile / clear_profile are FEELESS + capacity-metered +
-// OPTIMISTIC, built exactly like a post. There is NO funded-account gate, NO balance/fee check, NO
-// RateLimitNotice-only path here: on confirm we close + raise a brief "Profile updated" success Toast;
-// capacity exhaustion (ExhaustsResources) raises the rate-limit Toast. Nothing in this file references
-// a fee, a balance, or "fund your account" — those are gone.
+// OPTIMISTIC, built exactly like a post. There is NO funded-account gate, NO balance/fee check. Saving
+// is CLOSE-INSTANTLY: the host applies the optimistic profile overlay (so the header/preview update at
+// once), closes this modal, and shows a "Saving…" → "Profile updated" toast; capacity exhaustion
+// (ExhaustsResources) surfaces as the rate-limit toast. Nothing here references a fee or a balance.
 //
 // Fields (UTF-8 BYTES, ByteCounter): display_name ≤ 64 / bio ≤ 256 / avatar ≤ 128. The avatar field
 // shows a live preview (the same sanitized <img> + identicon-onError as Avatar). Clear profile needs a
@@ -20,9 +21,7 @@ import { ByteCounter, utf8Bytes } from "./ByteCounter";
 import { Avatar } from "./Avatar";
 import { Spinner } from "./icons";
 import { useSession } from "./Providers";
-import { useMutation } from "@/hooks/useMutation";
-import { useToaster, RATE_LIMIT_COPY } from "./toast/ToasterProvider";
-import { submitSetProfile, submitClearProfile } from "@/lib/chain/mutations";
+import { useOptimistic } from "@/hooks/useOptimistic";
 
 const MAX_NAME = 64;
 const MAX_BIO = 256;
@@ -31,19 +30,27 @@ const MAX_BANNER = 256;
 const MAX_LOCATION = 64;
 const MAX_WEBSITE = 256;
 
-/** A CheckCapacity pool rejection → the dedicated rate-limit copy (never a generic error). */
-function isRateLimit(message: string): boolean {
-  return /rate limit|ExhaustsResources/i.test(message);
+/** The six profile display fields, already trimmed. `set_profile` overwrites the whole record. */
+export interface ProfileFields {
+  displayName: string;
+  bio: string;
+  avatar: string;
+  banner: string;
+  location: string;
+  website: string;
 }
 
 export interface EditProfileModalProps {
   onClose: () => void;
+  /** Save the (trimmed) fields — the host runs the optimistic write + toast + close. */
+  onSaveProfile: (fields: ProfileFields) => void;
+  /** Clear the whole profile — the host runs the optimistic write + toast + close. */
+  onClearProfile: () => void;
 }
 
-export function EditProfileModal({ onClose }: EditProfileModalProps) {
-  const { api, signer, source, signerCtl } = useSession();
-  const { run } = useMutation();
-  const { toast } = useToaster();
+export function EditProfileModal({ onClose, onSaveProfile, onClearProfile }: EditProfileModalProps) {
+  const { api, source, signerCtl } = useSession();
+  const { overlay } = useOptimistic();
 
   const ss58 = signerCtl.signer.ss58;
   const canWrite = !!api && signerCtl.postingEnabled;
@@ -56,16 +63,27 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
   const [website, setWebsite] = useState("");
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState<null | "save" | "clear">(null);
   const [confirmClear, setConfirmClear] = useState(false);
 
   const headingRef = useRef<HTMLHeadingElement | null>(null);
 
-  // Pre-fill from the viewer's current profile. With an indexer we read source.profile; otherwise the
-  // fields open blank (editing still works — submit reads nothing from chain). One-shot.
+  // Pre-fill from the viewer's current profile. An unretired optimistic patch (a save from moments ago,
+  // still confirming) is the freshest truth, so it wins over the chain read; otherwise read
+  // source.profile (or open blank when the reader can't serve profiles — submit reads nothing). One-shot.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    const patch = ss58 ? overlay.profiles[ss58] : undefined;
+    if (patch) {
+      setName(patch.displayName);
+      setBio(patch.bio);
+      setAvatar(patch.avatar);
+      setBanner(patch.banner);
+      setLocation(patch.location);
+      setWebsite(patch.website);
+      setLoading(false);
+      return;
+    }
     void (async () => {
       try {
         if (source && source.caps.profiles && ss58) {
@@ -87,6 +105,7 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, ss58]);
 
   // Move focus to the heading when the form is ready (a11y).
@@ -108,61 +127,26 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
     locationBytes > MAX_LOCATION ||
     websiteBytes > MAX_WEBSITE;
 
-  const busy = saving !== null;
   const avatarSrc = avatar.trim().length > 0 ? avatar.trim() : null;
 
-  // The shared optimistic submit: run(stream) → close + success toast on confirm; rate-limit/error toast
-  // otherwise. Feeless + capacity-metered, exactly like a post (no funding/balance path).
-  const submit = useCallback(
-    (
-      kind: "save" | "clear",
-      stream: ReturnType<typeof submitSetProfile>,
-      successCopy: string,
-      onLocalApply?: () => void,
-    ) => {
-      if (!canWrite || busy) return;
-      setSaving(kind);
-      void run(stream, {
-        onConfirm: () => {
-          onLocalApply?.();
-          setSaving(null);
-          toast({ kind: "success", message: successCopy });
-          onClose();
-        },
-        onError: (message: string) => {
-          setSaving(null);
-          if (isRateLimit(message)) toast({ id: "rate-limit", kind: "rate-limit", message: RATE_LIMIT_COPY });
-          else toast({ kind: "error", message });
-        },
-      }).catch(() => {
-        /* settled via onError */
-      });
-    },
-    [canWrite, busy, run, toast, onClose],
-  );
-
+  // Hand the collected fields UP. The host applies the optimistic overlay, closes this modal at once,
+  // and runs the feeless write to confirmation in the background (with the "Saving…" → done toast).
   const onSave = useCallback(() => {
-    if (!api || overLimit) return;
-    submit(
-      "save",
-      submitSetProfile(
-        api,
-        signer,
-        name.trim(),
-        bio.trim(),
-        avatar.trim(),
-        banner.trim(),
-        location.trim(),
-        website.trim(),
-      ),
-      "Profile updated",
-    );
-  }, [api, signer, name, bio, avatar, banner, location, website, overLimit, submit]);
+    if (!canWrite || overLimit) return;
+    onSaveProfile({
+      displayName: name.trim(),
+      bio: bio.trim(),
+      avatar: avatar.trim(),
+      banner: banner.trim(),
+      location: location.trim(),
+      website: website.trim(),
+    });
+  }, [canWrite, overLimit, name, bio, avatar, banner, location, website, onSaveProfile]);
 
   const onClear = useCallback(() => {
-    if (!api) return;
-    submit("clear", submitClearProfile(api, signer), "Profile cleared");
-  }, [api, signer, submit]);
+    if (!canWrite) return;
+    onClearProfile();
+  }, [canWrite, onClearProfile]);
 
   return (
     <ComposerModal title="Edit profile" onClose={onClose}>
@@ -189,9 +173,7 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Your name"
-                  maxLength={512}
-                  disabled={busy}
-                  autoComplete="off"
+                  maxLength={512}                  autoComplete="off"
                 />
                 <ByteCounter value={name} maxBytes={MAX_NAME} size="sm" />
               </div>
@@ -209,9 +191,7 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                   value={bio}
                   onChange={(e) => setBio(e.target.value)}
                   placeholder="Say something about yourself"
-                  rows={3}
-                  disabled={busy}
-                />
+                  rows={3}                />
                 <ByteCounter value={bio} maxBytes={MAX_BIO} size="sm" />
               </div>
             </div>
@@ -232,7 +212,6 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                       onChange={(e) => setAvatar(e.target.value)}
                       placeholder="https://… or ipfs://…"
                       maxLength={512}
-                      disabled={busy}
                       autoComplete="off"
                       inputMode="url"
                     />
@@ -255,9 +234,7 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                   value={banner}
                   onChange={(e) => setBanner(e.target.value)}
                   placeholder="https://… or ipfs://…"
-                  maxLength={1024}
-                  disabled={busy}
-                  autoComplete="off"
+                  maxLength={1024}                  autoComplete="off"
                   inputMode="url"
                 />
                 <ByteCounter value={banner} maxBytes={MAX_BANNER} size="sm" />
@@ -277,9 +254,7 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                   value={location}
                   onChange={(e) => setLocation(e.target.value)}
                   placeholder="Where you are"
-                  maxLength={256}
-                  disabled={busy}
-                  autoComplete="off"
+                  maxLength={256}                  autoComplete="off"
                 />
                 <ByteCounter value={location} maxBytes={MAX_LOCATION} size="sm" />
               </div>
@@ -297,9 +272,7 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                   value={website}
                   onChange={(e) => setWebsite(e.target.value)}
                   placeholder="https://…"
-                  maxLength={1024}
-                  disabled={busy}
-                  autoComplete="off"
+                  maxLength={1024}                  autoComplete="off"
                   inputMode="url"
                 />
                 <ByteCounter value={website} maxBytes={MAX_WEBSITE} size="sm" />
@@ -318,27 +291,20 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                 type="button"
                 className={styles.linkBtn}
                 onClick={() => setConfirmClear(true)}
-                disabled={busy}
               >
                 Clear profile
               </button>
               <div className={styles.actionsRight}>
-                <button type="button" className={styles.cancelBtn} onClick={onClose} disabled={busy}>
+                <button type="button" className={styles.cancelBtn} onClick={onClose}>
                   Cancel
                 </button>
                 <button
                   type="button"
                   className={styles.primaryBtn}
                   onClick={onSave}
-                  disabled={!canWrite || busy || overLimit}
+                  disabled={!canWrite || overLimit}
                 >
-                  {saving === "save" ? (
-                    <>
-                      <Spinner size="sm" label="Saving" /> Saving
-                    </>
-                  ) : (
-                    "Save"
-                  )}
+                  Save
                 </button>
               </div>
             </div>
@@ -352,7 +318,6 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                     type="button"
                     className={styles.cancelBtn}
                     onClick={() => setConfirmClear(false)}
-                    disabled={saving === "clear"}
                   >
                     Keep it
                   </button>
@@ -363,9 +328,8 @@ export function EditProfileModal({ onClose }: EditProfileModalProps) {
                       setConfirmClear(false);
                       onClear();
                     }}
-                    disabled={saving === "clear"}
                   >
-                    {saving === "clear" ? <Spinner size="sm" label="Clearing" /> : "Clear profile"}
+                    Clear profile
                   </button>
                 </div>
               </div>

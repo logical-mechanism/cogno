@@ -13,6 +13,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { mergeById } from "@/lib/feed/live";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
+import { useOptimistic } from "@/hooks/useOptimistic";
+import { applyProfilePatch } from "@/lib/optimistic";
 import type { FeedSource, ProfileArgs } from "@/lib/feed/source";
 import type { CognoPost, ProfileView } from "@/lib/types";
 
@@ -50,6 +52,10 @@ export function useProfile(
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Optimistic profile overlay: a just-saved edit shows instantly (merged below), retired once a fresh
+  // read agrees (reconcile) or after the store's TTL backstop.
+  const { overlay, reconcileProfile } = useOptimistic();
+  const profilePatch = args.author ? overlay.profiles[args.author] : undefined;
   const key = JSON.stringify(args);
   // Track which args we've already shown data for, so a liveKey tick is a silent refresh (no spinner,
   // no error clobber, no cursor reset) while a new args/source is a fresh load.
@@ -137,5 +143,18 @@ export function useProfile(
   // First page (merged across silent refreshes) + any loaded-more pages, de-duped + newest-first.
   const posts = useMemo(() => mergeById(base, appended), [base, appended]);
 
-  return { profile, posts, loading, error, hasMore, loadingMore, loadMore };
+  // Retire a confirmed optimistic profile patch once THIS read (chain truth) already carries it.
+  useEffect(() => {
+    if (profile && args.author && profilePatch?.expected) {
+      reconcileProfile(args.author, profile);
+    }
+  }, [profile, args.author, profilePatch, reconcileProfile]);
+
+  // Merge the optimistic overlay over the read profile so a just-saved edit renders instantly.
+  const mergedProfile = useMemo(
+    () => (profile ? applyProfilePatch(profile, profilePatch) : profile),
+    [profile, profilePatch],
+  );
+
+  return { profile: mergedProfile, posts, loading, error, hasMore, loadingMore, loadMore };
 }

@@ -33,9 +33,12 @@ import {
   submitReply,
   submitQuote,
   submitCreatePoll,
+  submitSetProfile,
+  submitClearProfile,
 } from "@/lib/chain/mutations";
 import type { ActionState, ComposerDraft, PollDraft, ModalKind } from "../kit";
 import type { CognoPost } from "@/lib/types";
+import type { ProfileFields } from "../EditProfileModal";
 
 /** The CheckCapacity pool rejection surfaces as the rate-limit copy (stringifyError maps it). */
 function isRateLimit(message: string): boolean {
@@ -69,7 +72,8 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 export function ModalRouteHost() {
   const { state, close } = useModalStore();
   const { api, signer, source, viewer, bestBlock } = useSession();
-  const { addPending, dropPending, failPending } = useOptimistic();
+  const { addPending, dropPending, failPending, patchProfile, confirmProfile, rollbackProfile } =
+    useOptimistic();
   const { run } = useMutation();
   const { toast, rateLimit } = useToaster();
 
@@ -210,13 +214,90 @@ export function ModalRouteHost() {
     [api, signer, runWrite, optimisticPost],
   );
 
+  // ── profile save/clear pipeline (feeless + capacity-metered, exactly like a post) ────────────────
+  // Owned HERE (the persistent host), not in EditProfileModal, so the modal can close INSTANTLY while
+  // this tx runs to confirmation in the background: apply the optimistic overlay → close + sticky
+  // "Saving…" toast → on confirm keep the overlay (retired by a fresh read) + swap to a success toast;
+  // on error roll the overlay back + surface the failure. The whole app reflects the edit at once.
+  const runProfileWrite = useCallback(
+    (
+      stream: ReturnType<typeof submitSetProfile>,
+      patch: ProfileFields,
+      pendingCopy: string,
+      successCopy: string,
+    ) => {
+      if (!api || !signer) return;
+      // Key the overlay by the account the profile view reads under (self-view: viewer.address === url).
+      const ss58 = viewer.address ?? signer.ss58;
+      patchProfile(ss58, patch);
+      toast({ id: "profile-save", kind: "pending", message: pendingCopy });
+      onClose();
+      void run(stream, {
+        onConfirm: () => {
+          confirmProfile(ss58);
+          toast({ id: "profile-save", kind: "success", message: successCopy });
+        },
+        onError: (message: string) => {
+          rollbackProfile(ss58);
+          if (isRateLimit(message)) toast({ id: "profile-save", kind: "rate-limit", message: RATE_LIMIT_COPY });
+          else toast({ id: "profile-save", kind: "error", message });
+        },
+      }).catch(() => {
+        /* settled + rolled back via onError */
+      });
+    },
+    [api, signer, viewer.address, patchProfile, confirmProfile, rollbackProfile, run, toast, onClose],
+  );
+
+  const onSaveProfile = useCallback(
+    (fields: ProfileFields) => {
+      if (!api || !signer) return;
+      runProfileWrite(
+        submitSetProfile(
+          api,
+          signer,
+          fields.displayName,
+          fields.bio,
+          fields.avatar,
+          fields.banner,
+          fields.location,
+          fields.website,
+        ),
+        fields,
+        "Saving your profile…",
+        "Profile updated",
+      );
+    },
+    [api, signer, runProfileWrite],
+  );
+
+  const onClearProfile = useCallback(() => {
+    if (!api || !signer) return;
+    const empty: ProfileFields = {
+      displayName: "",
+      bio: "",
+      avatar: "",
+      banner: "",
+      location: "",
+      website: "",
+    };
+    runProfileWrite(submitClearProfile(api, signer), empty, "Clearing your profile…", "Profile cleared");
+  }, [api, signer, runProfileWrite]);
+
   const title = useMemo(() => (kind ? TITLES[kind] : ""), [kind]);
 
   if (!kind) return null;
 
-  // edit-profile has its own modal chrome + write surface.
+  // edit-profile has its own modal chrome. The host owns the write (optimistic + toast + close), so the
+  // modal is presentational — it collects the fields and hands them up via onSaveProfile / onClearProfile.
   if (kind === "edit-profile") {
-    return <EditProfileModal onClose={onClose} />;
+    return (
+      <EditProfileModal
+        onClose={onClose}
+        onSaveProfile={onSaveProfile}
+        onClearProfile={onClearProfile}
+      />
+    );
   }
 
   // reply / quote wait for the target post before rendering the composer.

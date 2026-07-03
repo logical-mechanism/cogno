@@ -4,12 +4,15 @@ import {
   applyCountPatch,
   applyViewerPatch,
   viewerPatchSettled,
+  applyProfilePatch,
+  profilePatchSettled,
   mergeFeed,
   pendingKey,
   EMPTY_OVERLAY,
   type Overlay,
+  type ProfilePatch,
 } from "./optimistic";
-import type { CognoPost, ViewerPostState } from "./types";
+import type { CognoPost, ProfileView, ViewerPostState } from "./types";
 
 describe("pendingKey", () => {
   it("keys an optimistic card to its chain twin by author + text (the only stable identity)", () => {
@@ -129,6 +132,7 @@ describe("mergeFeed", () => {
       ],
       counts: { "1": { upCountDelta: 1, upWeightDelta: 5n } },
       viewer: {},
+      profiles: {},
     };
     const merged = mergeFeed([post(1n), post(2n)], overlay);
     expect(merged.map((p) => p.id)).toEqual([99n, 1n, 2n]); // pending top-level first; reply excluded
@@ -138,5 +142,73 @@ describe("mergeFeed", () => {
   it("EMPTY_OVERLAY is a no-op passthrough", () => {
     const posts = [post(1n), post(2n)];
     expect(mergeFeed(posts, EMPTY_OVERLAY).map((p) => p.id)).toEqual([1n, 2n]);
+  });
+});
+
+function pview(over: Partial<ProfileView> = {}): ProfileView {
+  return {
+    author: "5A",
+    identityHash: null,
+    postCount: 3,
+    banned: false,
+    page: { posts: [], endCursor: null, hasNextPage: false, asOf: null },
+    ...over,
+  };
+}
+
+function ppatch(over: Partial<ProfilePatch> = {}): ProfilePatch {
+  return {
+    displayName: "Alice",
+    bio: "gm",
+    avatar: "ipfs://a",
+    banner: "",
+    location: "",
+    website: "",
+    ...over,
+  };
+}
+
+describe("applyProfilePatch", () => {
+  it("returns the view untouched when there's no patch", () => {
+    const v = pview({ displayName: "Old" });
+    expect(applyProfilePatch(v, undefined)).toBe(v);
+  });
+
+  it("overwrites all six display fields (set_profile is a whole-record write); '' clears a field", () => {
+    const v = pview({ displayName: "Old", bio: "old bio", avatar: "old", location: "NYC" });
+    const merged = applyProfilePatch(v, ppatch({ displayName: "Alice", bio: "gm", avatar: "ipfs://a" }));
+    expect(merged.displayName).toBe("Alice");
+    expect(merged.bio).toBe("gm");
+    expect(merged.avatar).toBe("ipfs://a");
+    // empty patch fields clear the prior value (→ undefined), not keep it.
+    expect(merged.banner).toBeUndefined();
+    expect(merged.location).toBeUndefined();
+    expect(merged.website).toBeUndefined();
+  });
+
+  it("leaves counts / postCount / pinned untouched (not set_profile's to change)", () => {
+    const v = pview({ postCount: 7, pinnedPostId: 42n, followerCount: 9 });
+    const merged = applyProfilePatch(v, ppatch());
+    expect(merged.postCount).toBe(7);
+    expect(merged.pinnedPostId).toBe(42n);
+    expect(merged.followerCount).toBe(9);
+  });
+});
+
+describe("profilePatchSettled", () => {
+  it("never settles a still-pending (not-confirmed) patch", () => {
+    const v = pview({ displayName: "Alice", bio: "gm", avatar: "ipfs://a" });
+    expect(profilePatchSettled(v, ppatch({ expected: false }))).toBe(false);
+    expect(profilePatchSettled(v, undefined)).toBe(false);
+  });
+
+  it("settles once confirmed AND a fresh read carries the same six fields (absent === '')", () => {
+    const v = pview({ displayName: "Alice", bio: "gm", avatar: "ipfs://a" }); // banner/location/website undefined
+    expect(profilePatchSettled(v, ppatch({ expected: true }))).toBe(true);
+  });
+
+  it("does not settle while a field still differs from the read", () => {
+    const v = pview({ displayName: "Stale", bio: "gm", avatar: "ipfs://a" });
+    expect(profilePatchSettled(v, ppatch({ expected: true }))).toBe(false);
   });
 });
