@@ -12,7 +12,8 @@
 
 import { useMemo } from "react";
 import styles from "./BindStep.module.css";
-import { Spinner, IconCheck } from "@/components/icons";
+import { Spinner } from "@/components/icons";
+import { StepFlow } from "./StepFlow";
 import { truncateSs58 } from "@/lib/ss58";
 import type { BindPhase } from "@/hooks/useIdentity";
 
@@ -72,31 +73,6 @@ const BIND_NARRATION: Record<Exclude<BindPhase, "idle">, string> = {
   confirming: "Confirming on-chain…",
 };
 
-function BindProgress({ phase }: { phase: Exclude<BindPhase, "idle"> }) {
-  const activeIndex = BIND_STEPS.findIndex((s) => s.key === phase);
-  return (
-    <ol className={styles.steps} aria-label="Registration progress">
-      {BIND_STEPS.map((s, i) => {
-        const state = i < activeIndex ? "done" : i === activeIndex ? "active" : "pending";
-        return (
-          <li key={s.key} className={`${styles.stepRow} ${styles[state]}`}>
-            <span className={styles.stepMark} aria-hidden>
-              {state === "done" ? (
-                <IconCheck size="var(--cg-icon-sm)" />
-              ) : state === "active" ? (
-                <Spinner size="sm" />
-              ) : (
-                <span className={styles.stepDot} />
-              )}
-            </span>
-            <span className={styles.stepLabel}>{s.label}</span>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
 export function BindStep({
   ss58,
   binding,
@@ -148,7 +124,11 @@ export function BindStep({
 
       {binding && (
         <div className={styles.progress}>
-          <BindProgress phase={bindPhase === "idle" ? "signing" : bindPhase} />
+          <StepFlow
+            steps={BIND_STEPS}
+            active={BIND_STEPS.findIndex((s) => s.key === (bindPhase === "idle" ? "signing" : bindPhase))}
+            ariaLabel="Registration progress"
+          />
           <p className={styles.narration} aria-live="polite">
             {BIND_NARRATION[bindPhase === "idle" ? "signing" : bindPhase]}
           </p>

@@ -50,6 +50,9 @@ export interface UseIdentity {
   boundStakeCredHex: string | null;
   /** a stake bind is in flight (stake-key wallet sign → feeless on-chain `link_stake_signed`). */
   stakeBinding: boolean;
+  /** the phase of an in-flight stake bind (`idle` when not binding) — drives the step indicator.
+   *  Uses `signing` → `submitting` only (there is no post-submit readback like the payment bind). */
+  stakeBindPhase: BindPhase;
   /** error from the LAST stake-bind attempt (kept separate from the payment-bind `error`). */
   stakeError: string | null;
   /** Bind the wallet's stake key to enable stake-weighted voting. Requires the account to already
@@ -73,6 +76,7 @@ export function useIdentity(
   const [votingPower, setVotingPower] = useState<bigint | null>(null);
   const [boundStakeCredHex, setBoundStakeCredHex] = useState<string | null>(null);
   const [stakeBinding, setStakeBinding] = useState(false);
+  const [stakeBindPhase, setStakeBindPhase] = useState<BindPhase>("idle");
   const [stakeError, setStakeError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
@@ -191,6 +195,7 @@ export function useIdentity(
         return;
       }
       setStakeBinding(true);
+      setStakeBindPhase("signing");
       setStakeError(null);
       void (async () => {
         try {
@@ -205,6 +210,8 @@ export function useIdentity(
           // (3) submit the stake self-proof FEELESSLY, as a bare/unsigned extrinsic — same as the payment
           //     bind, no fee and no funded relay. The runtime requires the account already be payment-bound
           //     (NotPaymentBound), enforced at the pool too, so we submit this only once `bound === true`.
+          //     `client.submit` resolves on finalization, so the submit is the multi-second wait.
+          setStakeBindPhase("submitting");
           const res = await submitLinkStakeFeeless(client, api, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
             throw new Error(res.error || "the on-chain stake bind was rejected");
@@ -222,6 +229,7 @@ export function useIdentity(
           setStakeError(e instanceof Error ? e.message : String(e));
         } finally {
           setStakeBinding(false);
+          setStakeBindPhase("idle");
         }
       })();
     },
@@ -240,6 +248,7 @@ export function useIdentity(
     votingPower,
     boundStakeCredHex,
     stakeBinding,
+    stakeBindPhase,
     stakeError,
     bindStake,
   };

@@ -238,6 +238,7 @@ export default function WelcomePage() {
           stake={{
             stakeBound: identity.stakeBound,
             stakeBinding: identity.stakeBinding,
+            stakeBindPhase: identity.stakeBindPhase,
             stakeError: identity.stakeError,
             votingPower: identity.votingPower,
             bindStake: identity.bindStake,

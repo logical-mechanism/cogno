@@ -27,7 +27,31 @@
 import { useState } from "react";
 import styles from "./PowerUps.module.css";
 import { Spinner } from "@/components/icons";
-import type { UseVault } from "@/hooks/useVault";
+import { StepFlow } from "./StepFlow";
+import type { UseVault, VaultStep } from "@/hooks/useVault";
+import type { BindPhase } from "@/hooks/useIdentity";
+
+// ── shared step-flow configs (mirror the hook phases) ────────────────────────────────────────────
+
+const STAKE_STEPS: { key: Exclude<BindPhase, "idle" | "confirming">; label: string }[] = [
+  { key: "signing", label: "Sign in your wallet" },
+  { key: "submitting", label: "Submit voting power" },
+];
+const STAKE_NARRATION: Record<Exclude<BindPhase, "idle" | "confirming">, string> = {
+  signing: "Approve the stake signature in your wallet…",
+  submitting: "Submitting your voting power to the network…",
+};
+
+const VAULT_STEPS: { key: Exclude<VaultStep, "idle">; label: string }[] = [
+  { key: "preparing", label: "Prepare the transaction" },
+  { key: "signing", label: "Sign in your wallet" },
+  { key: "submitting", label: "Submit to Cardano" },
+];
+const VAULT_NARRATION: Record<Exclude<VaultStep, "idle">, string> = {
+  preparing: "Building the lock transaction…",
+  signing: "Confirm the transaction in your wallet…",
+  submitting: "Submitting to Cardano…",
+};
 
 export interface PowerUpsProps {
   vault: UseVault;
@@ -37,6 +61,7 @@ export interface PowerUpsProps {
   stake: {
     stakeBound: boolean | null;
     stakeBinding: boolean;
+    stakeBindPhase: BindPhase;
     stakeError: string | null;
     votingPower: bigint | null;
     bindStake: (walletId: string) => void;
@@ -231,9 +256,18 @@ function VaultCard({
       )}
 
       {vault.busy && (
-        <p className={styles.narration} aria-live="polite">
-          Confirm the transaction in your wallet…
-        </p>
+        <div className={styles.progress}>
+          <StepFlow
+            steps={VAULT_STEPS}
+            active={VAULT_STEPS.findIndex(
+              (s) => s.key === (vault.step === "idle" ? "preparing" : vault.step),
+            )}
+            ariaLabel="Lock progress"
+          />
+          <p className={styles.narration} aria-live="polite">
+            {VAULT_NARRATION[vault.step === "idle" ? "preparing" : vault.step]}
+          </p>
+        </div>
       )}
     </div>
   );
@@ -304,9 +338,18 @@ function StakeCard({
           </div>
 
           {stake.stakeBinding && (
-            <p className={styles.narration} aria-live="polite">
-              Approve the stake signature in your wallet…
-            </p>
+            <div className={styles.progress}>
+              <StepFlow
+                steps={STAKE_STEPS}
+                active={STAKE_STEPS.findIndex(
+                  (s) => s.key === (stake.stakeBindPhase === "submitting" ? "submitting" : "signing"),
+                )}
+                ariaLabel="Voting-power progress"
+              />
+              <p className={styles.narration} aria-live="polite">
+                {STAKE_NARRATION[stake.stakeBindPhase === "submitting" ? "submitting" : "signing"]}
+              </p>
+            </div>
           )}
 
           {stake.stakeError && !stake.stakeBinding && (

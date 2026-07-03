@@ -77,73 +77,13 @@
   color: var(--cg-text-secondary);
 }
 
-/* ── registration progress: the live step flow shown while binding ── */
+/* ── registration progress: wraps the shared StepFlow + a per-phase narration line ── */
 .progress {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--cg-space-3);
 }
-
-.steps {
-  display: flex;
-  flex-direction: column;
-  gap: var(--cg-space-3);
-  width: 100%;
-  max-width: 260px;
-  margin: 0;
-  padding: var(--cg-space-4);
-  list-style: none;
-  text-align: left;
-  background: var(--cg-bg-elevated);
-  border: 1px solid var(--cg-border);
-  border-radius: var(--cg-radius-sm);
-}
-
-.stepRow {
-  display: flex;
-  align-items: center;
-  gap: var(--cg-space-3);
-  min-height: var(--cg-icon-md);
-}
-
-.stepMark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: var(--cg-icon-md);
-  height: var(--cg-icon-md);
-}
-
-.stepDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--cg-border);
-}
-
-.stepLabel {
-  font-size: var(--cg-fs-sm);
-  color: var(--cg-text-muted);
-  transition: color var(--cg-motion-fast) var(--cg-ease-standard);
-}
-
-/* done — accent check + solid label */
-.done .stepMark {
-  color: var(--cg-accent);
-}
-.done .stepLabel {
-  color: var(--cg-text);
-}
-
-/* active — spinner (its own accent colour) + emphasised label */
-.active .stepLabel {
-  color: var(--cg-text);
-  font-weight: var(--cg-fw-semibold);
-}
-
-/* pending — dim dot + muted label (the defaults above) */
 
 .errorRow {
   display: flex;

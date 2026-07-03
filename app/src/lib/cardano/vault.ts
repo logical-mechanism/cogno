@@ -66,10 +66,15 @@ function pickCollateral(collateral: UTxO[], utxos: UTxO[]): UTxO {
   return c;
 }
 
+/** Progress phases for a lock/exit tx, so the UI can show a live step flow (the wallet sign and the
+ *  Cardano submit are distinct waits, and the submit after signing otherwise reads as "stuck"). */
+export type VaultTxPhase = "signing" | "submitting";
+
 /** Lock `lockLovelace` (default = min_lock) at the vault + mint the owner's beacon. */
 export async function lockIntoVault(
   walletId: string,
   lockLovelace: bigint = MIN_LOCK,
+  onPhase?: (p: VaultTxPhase) => void,
 ): Promise<{ txHash: string; info: VaultInfo }> {
   await assertBlueprintIntegrity();
   const { wallet, info } = await resolveVault(walletId);
@@ -100,13 +105,18 @@ export async function lockIntoVault(
     .changeAddress(info.owner.address)
     .selectUtxosFrom(utxos);
   await tx.complete();
+  onPhase?.("signing");
   const signed = await wallet.signTx(tx.txHex);
+  onPhase?.("submitting");
   const txHash = await wallet.submitTx(signed);
   return { txHash, info };
 }
 
 /** Full exit: spend the vault UTxO + burn the beacon (-1), reclaiming the locked ADA to the owner. */
-export async function exitVault(walletId: string): Promise<{ txHash: string; info: VaultInfo }> {
+export async function exitVault(
+  walletId: string,
+  onPhase?: (p: VaultTxPhase) => void,
+): Promise<{ txHash: string; info: VaultInfo }> {
   await assertBlueprintIntegrity();
   const { wallet, info } = await resolveVault(walletId);
   const { MeshTxBuilder } = await import("@meshsdk/core");
@@ -135,7 +145,9 @@ export async function exitVault(walletId: string): Promise<{ txHash: string; inf
     .changeAddress(info.owner.address)
     .selectUtxosFrom(utxos);
   await tx.complete();
+  onPhase?.("signing");
   const signed = await wallet.signTx(tx.txHex);
+  onPhase?.("submitting");
   const txHash = await wallet.submitTx(signed);
   return { txHash, info };
 }

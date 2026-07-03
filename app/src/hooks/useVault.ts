@@ -13,10 +13,17 @@ import { hasCardanoProvider } from "@/lib/cardano/provider";
 
 export type VaultPhase = "idle" | "working" | "submitted" | "error";
 
+/** The fine-grained sub-phase of the in-flight `working` tx, for a live step indicator. `preparing`
+ *  = building the tx (wallet enable + UTxO fetch + script eval), then the wallet sign, then the
+ *  Cardano submit. `idle` when no tx is in flight. */
+export type VaultStep = "idle" | "preparing" | "signing" | "submitting";
+
 export interface UseVault {
   /** a Cardano provider (Blockfrost) is configured ⇒ the lock/exit actions are usable. */
   available: boolean;
   phase: VaultPhase;
+  /** the in-flight sub-phase while `phase === "working"` (drives the step indicator). */
+  step: VaultStep;
   busy: boolean;
   error: string | null;
   txHash: string | null;
@@ -38,6 +45,7 @@ export function useVault(): UseVault {
   useEffect(() => setAvailable(hasCardanoProvider()), []);
 
   const [phase, setPhase] = useState<VaultPhase>("idle");
+  const [step, setStep] = useState<VaultStep>("idle");
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [info, setInfo] = useState<VaultInfo | null>(null);
@@ -66,6 +74,7 @@ export function useVault(): UseVault {
         if (p === "working") return p; // already running
         setError(null);
         setTxHash(null);
+        setStep("preparing");
         void (async () => {
           try {
             const res = await action();
@@ -77,6 +86,8 @@ export function useVault(): UseVault {
           } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
             setPhase("error");
+          } finally {
+            setStep("idle");
           }
         })();
         return "working";
@@ -86,15 +97,20 @@ export function useVault(): UseVault {
   );
 
   const lock = useCallback(
-    (walletId: string, lovelace?: bigint) => run(() => lockIntoVault(walletId, lovelace), walletId),
+    (walletId: string, lovelace?: bigint) =>
+      run(() => lockIntoVault(walletId, lovelace, (p) => setStep(p)), walletId),
     [run],
   );
-  const exit = useCallback((walletId: string) => run(() => exitVault(walletId), walletId), [run]);
+  const exit = useCallback(
+    (walletId: string) => run(() => exitVault(walletId, (p) => setStep(p)), walletId),
+    [run],
+  );
   const reset = useCallback(() => {
     setPhase("idle");
+    setStep("idle");
     setError(null);
     setTxHash(null);
   }, []);
 
-  return { available, phase, busy, error, txHash, info, locked, lockedKnown, inspect, lock, exit, reset };
+  return { available, phase, step, busy, error, txHash, info, locked, lockedKnown, inspect, lock, exit, reset };
 }
