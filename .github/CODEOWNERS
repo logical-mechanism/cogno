@@ -1,0 +1,9 @@
+# Default owner for everything in the repo.
+* @logicalmechanism
+
+# Consensus-critical / security-sensitive areas warrant extra care on review.
+/node/src/consensus/        @logicalmechanism
+/cogno-dbsync/              @logicalmechanism
+/pallets/cogno-gate/        @logicalmechanism
+/pallets/cardano-observer/  @logicalmechanism
+/contracts/                 @logicalmechanism
