@@ -198,7 +198,6 @@ export default function WelcomePage() {
       {welcomeStep === "connect" && (
         <WalletPicker
           deriving={signerCtl.deriving}
-          lastWalletId={signerCtl.lastWalletId}
           errorCopy={connectInlineError}
           onConnect={onConnect}
           onCancel={onCancelConnect}

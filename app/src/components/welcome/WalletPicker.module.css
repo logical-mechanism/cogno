@@ -38,28 +38,6 @@
   text-align: left;
 }
 
-/* "or use a different wallet" — a hairline rule with centered label (returning-visitor fallback). */
-.divider {
-  display: flex;
-  align-items: center;
-  gap: var(--cg-space-3);
-  margin: var(--cg-space-1) 0;
-  color: var(--cg-text-muted);
-}
-
-.divider::before,
-.divider::after {
-  content: "";
-  flex: 1 1 auto;
-  height: 1px;
-  background: var(--cg-border);
-}
-
-.dividerLabel {
-  font-size: var(--cg-fs-xs);
-  white-space: nowrap;
-}
-
 .loading {
   display: flex;
   align-items: center;
