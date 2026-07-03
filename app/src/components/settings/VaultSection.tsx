@@ -1,7 +1,10 @@
 "use client";
 
 // VaultSection — Settings §4 (doc 12). Lock / exit the 100-ADA L1 vault that earns POSTING POWER
-// (talk-capacity weight). Framed plainly as "posting power" — NEVER a battery, NO tx/block chrome.
+// (talk-capacity weight). Framed plainly as "posting power" — NEVER a battery, NO app-chain
+// block/finalization chrome. The ONE exception (by request): after a lock/exit submits, we link the
+// resulting Cardano transaction on Cardanoscan — it's a real L1 tx the user initiated, so it
+// shouldn't just vanish while the on-chain weight settles.
 //
 // Reads useVault (Blockfrost) for lock/exit + the on-chain TalkStake.AllowedStake(ss58) watch for the
 // granted weight (lags the lock by a few blocks). When no Cardano provider is configured the whole
@@ -11,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./VaultSection.module.css";
 import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
+import { CardanoTxLink } from "@/components/CardanoTxLink";
 import { useSession } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
 import { useActionToast } from "@/hooks/useActionToast";
@@ -159,7 +163,10 @@ export function VaultSection() {
           </div>
 
           {vault.phase === "submitted" && (
-            <p className={styles.submitted}>Submitted. Updating shortly</p>
+            <div className={styles.submittedRow}>
+              <p className={styles.submitted}>Submitted. Updating shortly</p>
+              {vault.txHash && <CardanoTxLink txHash={vault.txHash} />}
+            </div>
           )}
           {vault.phase === "error" && vault.error && (
             <p className={styles.error} role="alert">

@@ -92,6 +92,12 @@
   flex-wrap: wrap;
 }
 
+.submittedRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+}
+
 .submitted {
   margin: 0;
   font-size: var(--cg-fs-sm);

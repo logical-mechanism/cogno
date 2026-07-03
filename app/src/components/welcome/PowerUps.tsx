@@ -28,6 +28,7 @@ import { useState } from "react";
 import styles from "./PowerUps.module.css";
 import { Spinner } from "@/components/icons";
 import { StepFlow } from "./StepFlow";
+import { CardanoTxLink } from "@/components/CardanoTxLink";
 import type { UseVault, VaultStep } from "@/hooks/useVault";
 import type { BindPhase } from "@/hooks/useIdentity";
 
@@ -98,6 +99,7 @@ export function PowerUps({
         <DoneBanner
           welcomeBack={welcomeBack}
           justLocked={justLocked}
+          txHash={vault.txHash}
           onGoToTimeline={onGoToTimeline}
           headingRef={headingRef}
         />
@@ -155,11 +157,13 @@ export function PowerUps({
 function DoneBanner({
   welcomeBack,
   justLocked,
+  txHash,
   onGoToTimeline,
   headingRef,
 }: {
   welcomeBack?: boolean;
   justLocked: boolean;
+  txHash?: string | null;
   onGoToTimeline: () => void;
   headingRef?: React.Ref<HTMLHeadingElement>;
 }) {
@@ -173,6 +177,11 @@ function DoneBanner({
         {heading}
       </h1>
       <p className={styles.bannerLede}>{lede}</p>
+      {justLocked && txHash && (
+        <div className={styles.bannerTx}>
+          <CardanoTxLink txHash={txHash} label="Lock transaction" />
+        </div>
+      )}
       <button type="button" className={styles.primary} onClick={onGoToTimeline}>
         Go to your timeline
       </button>
@@ -210,7 +219,10 @@ function VaultCard({
       </p>
 
       {vault.phase === "submitted" ? (
-        <p className={styles.cardOk}>Locked. Your posting capacity arrives shortly.</p>
+        <>
+          <p className={styles.cardOk}>Locked. Your posting capacity arrives shortly.</p>
+          {vault.txHash && <CardanoTxLink txHash={vault.txHash} label="Lock transaction" />}
+        </>
       ) : !vault.available ? (
         <div className={styles.cardActions}>
           <button type="button" className={styles.cardCta} disabled aria-disabled>

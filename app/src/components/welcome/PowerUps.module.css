@@ -247,6 +247,12 @@
   margin-top: var(--cg-space-2);
 }
 
+/* centres the Cardanoscan tx link in the (stretch-aligned) done banner */
+.bannerTx {
+  display: flex;
+  justify-content: center;
+}
+
 .inlineLink {
   padding: 0;
   background: none;
