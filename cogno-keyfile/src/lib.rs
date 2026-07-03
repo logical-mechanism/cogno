@@ -250,9 +250,10 @@ pub fn load_signer(path: &Path) -> anyhow::Result<Signer> {
     let env = read_envelope(path)?;
     let scheme = Scheme::parse(&env.scheme)?;
     let hexstr = env.secret_hex.strip_prefix("0x").unwrap_or(&env.secret_hex);
-    let seed = Zeroizing::new(hex::decode(hexstr).map_err(|e| {
-        anyhow::anyhow!("secretHex in {} is not valid hex: {e}", path.display())
-    })?);
+    let seed =
+        Zeroizing::new(hex::decode(hexstr).map_err(|e| {
+            anyhow::anyhow!("secretHex in {} is not valid hex: {e}", path.display())
+        })?);
     let signer = signer_from_seed(scheme, &seed)?;
 
     // Advisory ss58 cross-check (warn-only — the recomputed public is authoritative).
