@@ -1,0 +1,53 @@
+cogno-chain
+Copyright 2026 LogicalMechanism <support@logicalmechanism.io>
+
+This product includes software developed at LogicalMechanism and by third
+parties as attributed below. It is licensed under the Apache License,
+Version 2.0 (see the LICENSE file).
+
+================================================================================
+Third-party attributions
+================================================================================
+
+1. Polkadot SDK / Substrate (Parity Technologies)
+   License: Apache-2.0
+   https://github.com/paritytech/polkadot-sdk
+
+   Several files derive from the Polkadot SDK `solochain-template` and the FRAME
+   weight templates. The generated `weights.rs` files under `pallets/*/src/` and
+   `runtime/src/` retain their upstream `SPDX-License-Identifier: Apache-2.0`
+   Parity copyright headers. `runtime/src/genesis_config_presets.rs` likewise
+   retains its upstream Apache-2.0 header.
+
+2. partner-chains — `sp-partner-chains-consensus-aura` (Input Output Global / IOG)
+   License: Apache-2.0
+   https://github.com/input-output-hk/partner-chains
+
+   `node/src/consensus/` (mod.rs, block_proposal.rs, inherent_digest.rs,
+   cardano_digest.rs) is an independent REIMPLEMENTATION of the upstream
+   `InherentDigest` trait and the `PartnerChainsProposerFactory` /
+   `PartnerChainsProposer` wrapper, pinned to this project's polkadot-stable2603-3
+   and adapted to cogno's single pinned Cardano vault. The upstream repository is
+   archived; it is studied as a reference, not depended upon. The upstream
+   proposer's `from_inherent_data` panic is intentionally replaced with a
+   logged-empty fallback (a deliberate behavioral change, noted in-source).
+
+3. substrate-validator-set (Gautam Dhameja)
+   License: Apache-2.0
+   https://github.com/gautamdhameja/substrate-validator-set
+
+   `pallets/validator-set/` is vendor-forked from this reference pallet and ported
+   to this project's `#[frame_support::pallet]` (frame v46) and the current
+   `pallet-session` API (Currency / KeyDeposit / HoldReason / DisablingStrategy).
+
+================================================================================
+Provenance notes (not third-party code)
+================================================================================
+
+- `CheckCapacity` (pallets/microblog/src/lib.rs) is an ORIGINAL implementation of
+  a standard lazy token-bucket rate limiter, written from this project's own
+  economic specification (docs/ECONOMICS.md §4.1) and built entirely around this
+  project's storage (`AllowedStake`, `Capacity`, `metered_cost`, `ForeignCost`).
+  It contains no third-party rate-limiting code and carries no external license
+  obligation. (An early planning note that speculated a GPL-3.0 derivation was
+  never reflected in the shipped code.)

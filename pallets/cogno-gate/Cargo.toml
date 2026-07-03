@@ -2,7 +2,7 @@
 name = "pallet-cogno-gate"
 description = "cogno-chain identity gate (M2) — the 1:1 Cardano-owner-Address ↔ Substrate-account binding (the anti-Sybil anchor), written by the FollowerOrigin (sudo in dev). Gates pallet-microblog posting on is_allowed."
 version = "0.1.0"
-license = "Unlicense"
+license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true

@@ -2,7 +2,7 @@
 name = "cogno-chain-cli"
 description = "The cogno-chain operator/committee admin CLI — the `cardano-cli` analogue to the `cogno-chain-node` daemon. Drives committee-governed extrinsics (propose/vote/close) with secret keys linked BY FILE PATH, plus read-only `query` diagnostics (`query state` / `query weight`) and the self-service BARE CIP-8 identity binds. It CANNOT set talk-stake weight — the observation inherent is the sole writer."
 version = "1.0.0"
-license = "Unlicense"
+license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true

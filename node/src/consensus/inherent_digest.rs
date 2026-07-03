@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 LogicalMechanism. Reimplemented from the Apache-2.0 partner-chains
+// `sp-partner-chains-consensus-aura` crate (see the repo NOTICE file for attribution).
 //! The `InherentDigest` trait: which parts of a block's inherent data are sealed into the block HEADER
 //! digest, and how to decode them back on import.
 //!

@@ -2,7 +2,7 @@
 name = "pallet-profile"
 description = "cogno-chain profile pallet — mutable per-account display profile (name/bio/avatar). Identity-gated via the microblog IsAllowed trait (CognoGate); set_profile is fee-bearing (low-frequency, so the tx fee is its own anti-spam — no second capacity extension)."
 version = "0.1.0"
-license = "Unlicense"
+license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true

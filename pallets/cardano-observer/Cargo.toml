@@ -2,7 +2,7 @@
 name = "pallet-cardano-observer"
 description = "cogno-chain cardano-observer pallet (in-protocol-observation, D4 weight rung) — sets talk-stake weight from a consensus-verified Substrate INHERENT carrying the deterministically-observed Cardano talk_vault state, replacing the trusted off-chain set_stake write. See docs/IN-PROTOCOL-OBSERVATION.md."
 version = "0.1.0"
-license = "Unlicense"
+license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true

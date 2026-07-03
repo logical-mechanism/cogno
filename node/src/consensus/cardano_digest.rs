@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 LogicalMechanism. Reimplemented from the Apache-2.0 partner-chains
+// `sp-partner-chains-consensus-aura` crate (see the repo NOTICE file for attribution).
 //! `CardanoObsInherentDigest`: seals the stable Cardano block anchor (`CardanoRef { slot, block_hash }`)
 //! into the block header as a `cobs` PreRuntime digest, and decodes it back on import.
 //!

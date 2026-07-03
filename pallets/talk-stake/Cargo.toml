@@ -2,7 +2,7 @@
 name = "pallet-talk-stake"
 description = "cogno-chain talk-stake pallet — a call-less per-account stake-weight + voting-power ledger, written ONLY by the cardano-observer inherent (the sole weight writer). Feeds the regenerating talk-capacity meter + stake-weighted votes in pallet-microblog."
 version = "0.1.0"
-license = "Unlicense"
+license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true

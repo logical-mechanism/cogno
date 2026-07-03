@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 LogicalMechanism. Reimplemented from the Apache-2.0 partner-chains
+// `sp-partner-chains-consensus-aura` crate (see the repo NOTICE file for attribution).
 //! `PartnerChainsProposerFactory`: wraps any `Environment` (here the stock
 //! `sc_basic_authorship::ProposerFactory`) and APPENDS an [`InherentDigest`]'s items to the proposed
 //! block's header. Passed to the STOCK `sc_consensus_aura::start_aura` (which is generic over the proposer

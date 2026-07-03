@@ -407,5 +407,13 @@ indices never shift. Talk-capacity is **folded into `microblog`** (no separate c
   storage migrations, enactment): [`docs/UPGRADES.md`](docs/UPGRADES.md).
 - **Design:** the system overview is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the economic
   model, the observation mechanism, and the identity gate have focused deep-dives in [`docs/`](docs/).
-- **Contributing in this repo:** see [`CLAUDE.md`](CLAUDE.md) for conventions and the gotchas that
-  bite (live contract hash, nvm-vs-snap node, committee-not-sudo, the rustc pin).
+- **Contributing:** see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the build/test matrix, the
+  branch-per-unit + PR-into-`main` flow, commit conventions, and the gotchas that bite (live contract
+  hash, nvm-vs-snap node, committee-not-sudo, the rustc pin). Please also read
+  [`SECURITY.md`](SECURITY.md) before reporting a vulnerability.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). Third-party code reused or reimplemented
+in this repository (the Polkadot SDK templates, the partner-chains consensus primitives, and the
+`substrate-validator-set` fork — all Apache-2.0) is attributed in [`NOTICE`](NOTICE).

@@ -2,7 +2,7 @@
 name = "cogno-dbsync"
 description = "The shared deterministic Cardano db-sync reader + node-keyed reduction for cogno-chain. Used by the node observation InherentDataProvider (the WRITER of the talk-stake weight ledger) and, read-only, by the cogno-chain-cli `query weight --dbsync` diagnostic. Pinned by the golden observation-equivalence fixture so both produce byte-identical observations. Folds the former node/src/dbsync.rs + node/src/cardano_observer.rs (pure half) + services/_shared/observation.mjs + services/cogno-follower/vault.py into ONE std-only crate."
 version = "1.0.0"
-license = "Unlicense"
+license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
