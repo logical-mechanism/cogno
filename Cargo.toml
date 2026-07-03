@@ -92,7 +92,7 @@ frame-try-runtime = { version = "0.52.0", default-features = false }
 pallet-aura = { version = "45.0.0", default-features = false }
 pallet-balances = { version = "47.0.0", default-features = false }
 # DR-07: the mutable k-of-t committee backing the crown-jewel origins (M5).
-pallet-collective = { version = "46.0.0", default-features = false }
+pallet-collective = { version = "49.0.0", default-features = false }
 pallet-grandpa = { version = "46.0.0", default-features = false }
 # M6 (DR-26): mutable authorities — pallet-session rotates Aura+GRANDPA from the validator-set
 # pallet's SessionManager each session, instead of from static genesis.
