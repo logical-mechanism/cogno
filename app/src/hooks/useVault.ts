@@ -7,7 +7,7 @@
 //
 // Purely Cardano-side — it needs no chain api. The wallet id comes from the wallet picker in the UI.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { lockIntoVault, exitVault, fetchVaultState, type VaultInfo } from "@/lib/cardano/vault";
 import { hasCardanoProvider } from "@/lib/cardano/provider";
 
@@ -52,6 +52,12 @@ export function useVault(): UseVault {
   const [locked, setLocked] = useState<bigint | null>(null);
   const [lockedKnown, setLockedKnown] = useState(false);
 
+  // Re-entrancy guard for a tx run. MUST NOT live inside a setState updater: React StrictMode
+  // double-invokes updater functions in dev, so launching the wallet interaction from there fired
+  // the tx twice — the second collided with the still-open wallet prompt and threw a spurious
+  // "user declined". A plain ref keeps the guard in the event-handler body (not double-invoked).
+  const inFlight = useRef(false);
+
   const busy = phase === "working";
 
   const inspect = useCallback((walletId: string) => {
@@ -70,28 +76,28 @@ export function useVault(): UseVault {
 
   const run = useCallback(
     (action: () => Promise<{ txHash: string; info: VaultInfo }>, walletId: string) => {
-      setPhase((p) => {
-        if (p === "working") return p; // already running
-        setError(null);
-        setTxHash(null);
-        setStep("preparing");
-        void (async () => {
-          try {
-            const res = await action();
-            setInfo(res.info);
-            setTxHash(res.txHash);
-            setPhase("submitted");
-            // the lock/exit takes a few blocks to settle; re-read the vault then.
-            setTimeout(() => inspect(walletId), 5000);
-          } catch (e) {
-            setError(e instanceof Error ? e.message : String(e));
-            setPhase("error");
-          } finally {
-            setStep("idle");
-          }
-        })();
-        return "working";
-      });
+      if (inFlight.current) return; // already running (double-click / re-render); never start twice
+      inFlight.current = true;
+      setError(null);
+      setTxHash(null);
+      setStep("preparing");
+      setPhase("working");
+      void (async () => {
+        try {
+          const res = await action();
+          setInfo(res.info);
+          setTxHash(res.txHash);
+          setPhase("submitted");
+          // the lock/exit takes a few blocks to settle; re-read the vault then.
+          setTimeout(() => inspect(walletId), 5000);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+          setPhase("error");
+        } finally {
+          setStep("idle");
+          inFlight.current = false;
+        }
+      })();
     },
     [inspect],
   );
@@ -110,6 +116,7 @@ export function useVault(): UseVault {
     setStep("idle");
     setError(null);
     setTxHash(null);
+    inFlight.current = false;
   }, []);
 
   return { available, phase, step, busy, error, txHash, info, locked, lockedKnown, inspect, lock, exit, reset };
