@@ -137,7 +137,7 @@ sp-keyring = { version = "46.0.0", default-features = false }
 # `key insert-file`: the Keystore trait + KeystorePtr the file-based session-key insert writes through.
 sp-keystore = { version = "0.46.0", default-features = false }
 sp-offchain = { version = "41.0.0", default-features = false }
-sp-runtime = { version = "46.0.0", default-features = false }
+sp-runtime = { version = "48.0.0", default-features = false }
 sp-session = { version = "43.0.0", default-features = false }
 # M6: sp-staking offence types — the dormant im-online ReportOffence sink in pallet-validator-set.
 sp-staking = { version = "43.0.0", default-features = false }
