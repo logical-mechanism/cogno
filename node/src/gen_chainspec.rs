@@ -232,8 +232,12 @@ pub fn run(cmd: &GenChainSpecCmd) -> Result<(), String> {
         cmd.out_raw.display(),
         cmd.validator_grandpa_key.display()
     );
+    eprintln!();
+    eprintln!("Then mint the validator's libp2p node (p2p) key — a --validator node will NOT auto-generate");
+    eprintln!("one (it fails with NetworkKeyNotFound); pass it to `run` with --node-key-file:");
+    eprintln!("  cogno-chain-cli key generate-node-key --out node-p2p.key");
     eprintln!(
-		"then run: cogno-chain-node run --chain {} --base-path <PATH> --validator --force-authoring",
+		"then run: cogno-chain-node run --chain {} --base-path <PATH> --validator --force-authoring --node-key-file node-p2p.key",
 		cmd.out_raw.display()
 	);
     Ok(())

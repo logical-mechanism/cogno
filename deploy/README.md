@@ -65,6 +65,7 @@ $CLI key gen --scheme sr25519 --out val-account.skey
 $CLI key gen --scheme sr25519 --out val-aura.skey
 $CLI key gen --scheme ed25519 --out val-grandpa.skey
 $CLI key gen --scheme sr25519 --out seat1.skey        # repeat --committee-key for more seats
+$CLI key generate-node-key   --out val-p2p.key        # the validator's libp2p node (p2p) key — see below
 
 cogno-chain-node gen-chainspec --base cogno-preprod \
   --validator-account-key val-account.skey \
@@ -80,7 +81,11 @@ the key files (`key insert` reads the SURI + scheme from each envelope — no jq
 ```bash
 sudo install -m 0644 chainspec.raw.json /etc/cogno/chainspec.raw.json
 
-# Insert into /var/lib/cogno/node to match the unit's --base-path.
+# The validator's libp2p node (p2p) key — the unit passes it via --node-key-file (see below). 0640
+# root:cogno so the `cogno` service user can read it but it is not world-readable.
+sudo install -m 0640 -o root -g cogno val-p2p.key /etc/cogno/node.key
+
+# Insert the SESSION secrets into /var/lib/cogno/node to match the unit's --base-path.
 sudo install -d -o cogno -g cogno -m 0700 /var/lib/cogno/node
 sudo -u cogno cogno-chain-node key insert --base-path /var/lib/cogno/node \
   --chain /etc/cogno/chainspec.raw.json --key-file val-aura.skey    --key-type aura   # authoring
@@ -89,8 +94,11 @@ sudo -u cogno cogno-chain-node key insert --base-path /var/lib/cogno/node \
 ```
 
 (The unit's `StateDirectory=cogno` creates `/var/lib/cogno` `0700 cogno:cogno`; the `install -d` above just
-lets you insert keys before the first start. The node's libp2p p2p key auto-generates + persists under the
-base-path on first run — read its peer id later with `cogno-chain-node key inspect-node-key`.)
+lets you insert keys before the first start. A `--validator` node does **not** auto-generate its p2p node
+key — the SDK refuses, so an authority can't silently adopt an unstable peer id, and it exits with
+`NetworkKeyNotFound` — so the unit supplies the step-1 `node.key` via `--node-key-file`. Read its peer id
+any time with `cogno-chain-node key inspect-node-key --file /etc/cogno/node.key`. Only a NON-validator
+tracking node auto-generates one under its base-path.)
 
 ## Config: the EnvironmentFile
 

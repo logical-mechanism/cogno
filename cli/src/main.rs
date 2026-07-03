@@ -147,6 +147,15 @@ enum KeyCmd {
         #[arg(long, default_value = "")]
         description: String,
     },
+    /// Generate a libp2p node (p2p) key file — the node's stable NETWORK identity (peer id), NOT a
+    /// session/account key. A `--validator` node REQUIRES one (it will not auto-mint it — the SDK
+    /// refuses, so an authority can't silently adopt an unstable peer id); pass the file to
+    /// `cogno-chain-node run --node-key-file <FILE>`. Prints the derived peer id + bootnode multiaddr.
+    GenerateNodeKey {
+        /// Output node-key file path (raw hex ed25519 secret; refuses to overwrite; written 0600).
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -440,6 +449,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 out,
                 description,
             } => cmd_key_gen(&scheme, &out, &description),
+            KeyCmd::GenerateNodeKey { out } => cmd_generate_node_key(&out),
         },
         Command::Query { cmd } => match cmd {
             QueryCmd::State { ws } => query::run_state(&ws).await,
@@ -596,6 +606,32 @@ fn cmd_key_gen(scheme: &str, out: &Path, description: &str) -> anyhow::Result<()
         "wrote {} key {} to {}",
         scheme.as_str(),
         signer.ss58(),
+        out.display()
+    );
+    Ok(())
+}
+
+/// `key generate-node-key` — mint a libp2p ed25519 node (p2p) key file (raw hex secret, 0600) and print
+/// its peer id + bootnode multiaddr. This is the node's stable NETWORK identity, NOT a session/account
+/// key: a `--validator` node will not auto-generate one (the SDK refuses, to avoid an authority silently
+/// adopting an unstable identity), so it is minted here — all key material in this workspace is minted by
+/// the CLI, by file — and consumed by the node via `run --node-key-file`. Mirrors the SDK's own
+/// `generate-node-key` (same `libp2p-identity` crate + on-disk hex format the node reads back).
+fn cmd_generate_node_key(out: &Path) -> anyhow::Result<()> {
+    use libp2p_identity::{ed25519, Keypair};
+    use zeroize::Zeroize;
+
+    let ed = ed25519::Keypair::generate();
+    let secret = ed.secret(); // owned SecretKey (borrows &self); zeroized on drop
+    let peer_id = Keypair::from(ed).public().to_peer_id();
+    let mut secret_hex = hex::encode(secret.as_ref()); // 64 lowercase hex chars, no 0x — what --node-key-file reads
+    key::write_secret_0600(out, secret_hex.as_bytes())?;
+    secret_hex.zeroize();
+    println!("wrote libp2p node key to {}", out.display());
+    println!("peer id:  {peer_id}");
+    println!("bootnode: /ip4/<PUBLIC_IP>/tcp/30333/p2p/{peer_id}");
+    println!(
+        "run it with:  cogno-chain-node run --validator … --node-key-file {}",
         out.display()
     );
     Ok(())

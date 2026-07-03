@@ -67,3 +67,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 hex = "0.4"
 anyhow = "1"
+# libp2p node (p2p) key generation for `key generate-node-key` — mints the validator's stable network
+# identity (ed25519 secret + peer id) by file, consumed by the node via `run --node-key-file`. Same crate
+# + features the SDK's own `generate-node-key` uses; `rand` is enabled explicitly so a standalone
+# `cargo build -p cogno-chain-cli` (without the node's feature-unification) still gets `Keypair::generate()`.
+libp2p-identity = { version = "0.2.9", features = ["ed25519", "peerid", "rand"] }
+# Zero the transient hex secret string after it is written to disk (the on-disk file is 0600; this closes
+# the in-memory residue), matching the workspace's zeroize-secrets posture.
+zeroize = { version = "1", features = ["alloc"] }
