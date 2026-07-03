@@ -36,7 +36,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The full polkadot-sdk debug build (node + runtime + pallets + cli, incl. RocksDB's C++) overflows
       # the ~14 GB free root disk on ubuntu-latest (`ar: No space left on device` on librocksdb.a, ~50 min
       # into the test build). Reclaim ~25-30 GB of preinstalled toolchains we never use (root → ~40 GB
@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: aiken-lang/setup-aiken@v1
         with:
           version: v1.1.22
@@ -111,7 +111,7 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22.12.0
@@ -140,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22.12.0
