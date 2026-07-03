@@ -31,11 +31,11 @@ impl frame_system::Config for Test {
 }
 
 thread_local! {
-	static BINDINGS: RefCell<BTreeMap<[u8; 32], AccountId>> = RefCell::new(BTreeMap::new());
-	static WEIGHTS: RefCell<BTreeMap<AccountId, u128>> = RefCell::new(BTreeMap::new());
-	static STAKE_BINDINGS: RefCell<BTreeMap<[u8; 28], AccountId>> = RefCell::new(BTreeMap::new());
-	static VOTING_POWERS: RefCell<BTreeMap<AccountId, u128>> = RefCell::new(BTreeMap::new());
-	static NOW_SECS: RefCell<u64> = RefCell::new(0);
+	static BINDINGS: RefCell<BTreeMap<[u8; 32], AccountId>> = const { RefCell::new(BTreeMap::new()) };
+	static WEIGHTS: RefCell<BTreeMap<AccountId, u128>> = const { RefCell::new(BTreeMap::new()) };
+	static STAKE_BINDINGS: RefCell<BTreeMap<[u8; 28], AccountId>> = const { RefCell::new(BTreeMap::new()) };
+	static VOTING_POWERS: RefCell<BTreeMap<AccountId, u128>> = const { RefCell::new(BTreeMap::new()) };
+	static NOW_SECS: RefCell<u64> = const { RefCell::new(0) };
 }
 
 /// cogno-gate `AccountOf` stand-in.

@@ -421,7 +421,7 @@ fn engagement_calls_require_identity_gate() {
 // ── stake-weighted polls ────────────────────────────────────────────────────────────────────────
 
 fn opts(n: usize) -> Vec<Vec<u8>> {
-	(0..n).map(|i| alloc_opt(i)).collect()
+	(0..n).map(alloc_opt).collect()
 }
 fn alloc_opt(i: usize) -> Vec<u8> {
 	vec![b'a' + i as u8]

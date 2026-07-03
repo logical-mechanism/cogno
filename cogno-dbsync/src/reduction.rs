@@ -105,7 +105,7 @@ pub fn observe_as_of(
 				if policy == vh {
 					vault_assets += 1;
 					if as_u64(qty) == Some(1) {
-						beacon = key.splitn(2, '.').nth(1).and_then(hex32);
+						beacon = key.split_once('.').map(|x| x.1).and_then(hex32);
 					}
 				}
 			}
@@ -175,7 +175,7 @@ pub fn candidate_tuples(
 				if policy == vh {
 					vault_assets += 1;
 					if as_u64(qty) == Some(1) {
-						beacon = key.splitn(2, '.').nth(1).and_then(hex32);
+						beacon = key.split_once('.').map(|x| x.1).and_then(hex32);
 					}
 				}
 			}
@@ -369,8 +369,8 @@ mod tests {
 	/// Loads the committed golden fixture (`src/fixtures/observation-equivalence.json`) and, for each case,
 	/// re-derives `observe_as_of` and SCALE-encodes the canonical `(reference_slot, entries)` structure,
 	/// asserting it equals the golden BYTE-FOR-BYTE. The golden was generated from the canonical
-	/// observation.mjs spec; after this consolidation, THIS crate is the canonical spec and the node writer
-	/// + the CLI reader both call these functions, so a divergence here is a chain FORK. The SCALE encoding
+	/// observation.mjs spec; after this consolidation, THIS crate is the canonical spec and the node writer +
+	/// the CLI reader both call these functions, so a divergence here is a chain FORK. The SCALE encoding
 	/// of `(u64, Vec<([u8;32], u128)>)` is `u64` LE ++ compact-len ++ per entry `[u8;32]` ++ `u128` LE.
 	#[test]
 	fn rust_matches_js_observation_equivalence_fixture() {

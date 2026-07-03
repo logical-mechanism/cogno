@@ -294,7 +294,7 @@ fn parse_unprotected(r: &mut Reader<'_>) -> Result<(), Cip8Error> {
 
 /// Parse the protected header map content. Returns `(optional KID bytes, address bytes)`. Requires
 /// `alg == -8` (EdDSA) present, `address` present exactly once; rejects duplicate/unknown keys.
-fn parse_protected<'a>(content: &'a [u8]) -> Result<(Option<&'a [u8]>, &'a [u8]), Cip8Error> {
+fn parse_protected(content: &[u8]) -> Result<(Option<&[u8]>, &[u8]), Cip8Error> {
 	let mut r = Reader::new(content);
 	let n = r.map_len()?;
 	let mut alg_seen = false;
@@ -477,10 +477,10 @@ fn parse_address<'a>(
 /// network; a SCRIPT reward address (`0b1111`) and every non-reward / wrong-network form is a
 /// fail-closed reject. The stake credential IS the voting-power identity, so the returned hash is
 /// later bound to `blake2b_224(stake_pubkey)` exactly as the payment path binds the payment cred.
-fn parse_reward_address<'a>(
-	addr: &'a [u8],
+fn parse_reward_address(
+	addr: &[u8],
 	expected_network: NetworkId,
-) -> Result<&'a [u8], Cip8Error> {
+) -> Result<&[u8], Cip8Error> {
 	let header = *addr.first().ok_or(Cip8Error::BadAddress)?;
 	let addr_type = header >> 4;
 	let network = header & 0x0f;

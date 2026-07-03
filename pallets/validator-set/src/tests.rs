@@ -2,8 +2,6 @@
 //! min-floor / origin gate) and the `SessionManager` hand-off. The queue→apply-at-a-session-boundary
 //! behaviour is exercised on a live multi-node `--dev` network in the M6 acceptance, not here.
 
-#![cfg(test)]
-
 use crate::{mock::*, Error, Event, Validators};
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;

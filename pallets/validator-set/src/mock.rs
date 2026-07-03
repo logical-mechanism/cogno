@@ -3,8 +3,6 @@
 //! API). Mirrors `_sdk/substrate/frame/session/src/mock.rs` for those fields. Genesis seats three
 //! validators `[1, 2, 3]`.
 
-#![cfg(test)]
-
 use crate as pallet_validator_set;
 use frame_support::{derive_impl, parameter_types, traits::Get};
 use frame_system::EnsureRoot;

@@ -112,7 +112,7 @@ pub async fn read_observation(
 ) -> Result<DbsyncRead, String> {
 	let read = async {
 		let mut slot = client_cell().lock().await;
-		if slot.as_ref().map_or(true, |c| c.is_closed()) {
+		if slot.as_ref().is_none_or(|c| c.is_closed()) {
 			*slot = Some(connect(url).await?);
 		}
 		let ref_i64 = i64::try_from(reference_slot).map_err(|_| "reference slot exceeds i64".to_string())?;
@@ -212,7 +212,7 @@ pub async fn read_stake_observation(
 	}
 	let read = async {
 		let mut slot = client_cell().lock().await;
-		if slot.as_ref().map_or(true, |c| c.is_closed()) {
+		if slot.as_ref().is_none_or(|c| c.is_closed()) {
 			*slot = Some(connect(url).await?);
 		}
 		let ref_i64 = i64::try_from(reference_slot).map_err(|_| "reference slot exceeds i64".to_string())?;
