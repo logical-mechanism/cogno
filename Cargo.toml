@@ -96,7 +96,7 @@ pallet-collective = { version = "46.0.0", default-features = false }
 pallet-grandpa = { version = "46.0.0", default-features = false }
 # M6 (DR-26): mutable authorities — pallet-session rotates Aura+GRANDPA from the validator-set
 # pallet's SessionManager each session, instead of from static genesis.
-pallet-session = { version = "46.0.0", default-features = false }
+pallet-session = { version = "49.0.0", default-features = false }
 pallet-skip-feeless-payment = { version = "21.0.0", default-features = false }
 pallet-sudo = { version = "46.0.0", default-features = false }
 pallet-timestamp = { version = "45.0.0", default-features = false }
