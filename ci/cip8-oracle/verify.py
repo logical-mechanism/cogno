@@ -1,11 +1,11 @@
-"""The CIP-8 bind verification — now the INDEPENDENT REFERENCE verifier (L2-follower.md §7).
+"""The CIP-8 bind verification — the INDEPENDENT REFERENCE verifier (a CI-only adversarial oracle).
 
-⚠ D1: this is NO LONGER on any production write path. Identity binding is the permissionless on-chain
-self-proof `cognoGate.link_identity_signed`, where the RUNTIME verifies the CIP-8 signature itself
+⚠ This is NOT on any production write path. Identity binding is the permissionless on-chain self-proof
+`cognoGate.link_identity_signed`, where the RUNTIME verifies the CIP-8 signature itself
 (`pallet_cogno_gate::cip8`). This module is KEPT as a second, independent implementation of the same
 checks, run in CI (`test_agreement.py`) against real MeshJS fixtures + adversarial negatives — a
-cross-impl agreement oracle for the unaudited on-chain crown-jewel verifier. Nothing here writes the
-chain; the follower (`follower.py`) is a read-only helper.
+cross-impl agreement oracle for the unaudited on-chain crown-jewel verifier. Nothing here reads or
+writes the chain; it is a pure verifier over the proof bytes.
 
 REUSES the proven `pycardano.cip.cip8.verify` path from cogno_v3 (verify_view.py) — it does NOT
 re-implement COSE_Sign1. `verify()` returns {verified, message, signing_address}; its `verified`
@@ -28,7 +28,7 @@ from beacon import beacon_name_hex
 
 
 class VerifyError(Exception):
-    """A binding proof failed a check. The HTTP layer maps this to 400 with the reason."""
+    """A binding proof failed a check; the reason is in the exception message."""
 
 
 def identity_hash_hex(addr: Address) -> str:
@@ -69,7 +69,7 @@ def verify_bind(
 
     # (2) v1: the payment credential must be a VerificationKey (DR-01) — this STRUCTURALLY rejects
     #     any script-payment address, including the L1 vault (type-1) address one must never sign
-    #     from. (L2-follower.md §7.4 — the wrong-address gotcha, structurally closed.)
+    #     from (the wrong-address gotcha, structurally closed).
     if not isinstance(addr.payment_part, VerificationKeyHash):
         raise VerifyError("payment credential is not a verification key (script/vault address rejected)")
 
@@ -80,7 +80,7 @@ def verify_bind(
         raise VerifyError(f"signing address network {addr.network} != follower network {expected_network}")
 
     # (3) The committed payload must match the pinned format and commit the right things.
-    fields = payload_mod.parse(res["message"])  # raises ValueError → caught by the HTTP layer
+    fields = payload_mod.parse(res["message"])  # raises ValueError → surfaced as a verification failure
 
     # (4) genesis — anti-cross-chain: a proof signed for another chain's genesis is rejected.
     if fields["genesis"] != expected_genesis:

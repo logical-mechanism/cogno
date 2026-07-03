@@ -15,6 +15,10 @@ on:
     branches: [main]
   pull_request:
 
+# Least-privilege token: this pipeline only builds + tests, it never writes repo contents.
+permissions:
+  contents: read
+
 # Cancel superseded runs on the same ref.
 concurrency:
   group: ci-${{ github.ref }}
@@ -23,6 +27,7 @@ concurrency:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       # rustc is pinned by rust-toolchain.toml to 1.90.0 (stable >= ~1.91 breaks the sp_io wasm link);
@@ -63,19 +68,28 @@ jobs:
 
   contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: aiken-lang/setup-aiken@v1
         with:
           version: v1.1.22
-      # Also the live-hash guard: the L1 talk_vault is deployed on preprod, so a production edit under
-      # contracts/ that moves the blueprint/applied hash must be caught in review — these tests gate it.
       - name: aiken check
         working-directory: contracts
         run: aiken check
+      # Live-hash guard: the L1 talk_vault is deployed on preprod, so a source change that moves the
+      # compiled blueprint hash must be an INTENTIONAL redeploy. `aiken check` does not rebuild
+      # plutus.json, so rebuild it here (pinned aiken v1.1.22 makes the build reproducible) and fail if
+      # the committed hash moved. If the change is intentional, commit the regenerated plutus.json.
+      - name: guard the live script hash
+        working-directory: contracts
+        run: |
+          aiken build
+          git diff --exit-code plutus.json
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: app
@@ -100,6 +114,7 @@ jobs:
     # shells out to a headless MeshJS fixture (app/scripts/m2-cip8-fixture.mjs) to generate REAL
     # wallet-signed proofs, so this job needs BOTH node (for the fixture + its app deps) and python.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -113,6 +128,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ci/cip8-oracle/requirements.txt
       - name: install oracle deps
         working-directory: ci/cip8-oracle
         run: pip install -r requirements.txt

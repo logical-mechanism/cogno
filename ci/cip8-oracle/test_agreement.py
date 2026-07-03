@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Cogno-Follower verification tests — the two-sided byte agreement (DONE-WHEN #3) + the negative
-tests (the wrong-address release gate). Generates REAL CIP-8 signatures with a
-headless MeshJS wallet (app/scripts/m2-cip8-fixture.mjs) and runs them through the actual
-verify.py path, so this proves the frontend's signData and the follower's pycardano verify agree
-on the exact bytes — and that a bad proof is rejected.
+"""CIP-8 agreement oracle tests — the two-sided byte agreement + the negative tests (the
+wrong-address release gate). Generates REAL CIP-8 signatures with a headless MeshJS wallet
+(app/scripts/m2-cip8-fixture.mjs) and runs them through the independent verify.py path, so this proves
+the frontend's signData and this Python pycardano verifier agree on the exact bytes — an adversarial
+cross-check of the on-chain Rust verifier (pallets/cogno-gate/src/cip8.rs) — and that a bad proof is
+rejected.
 
-Run with the cogno_v3 venv python (pinned pycardano 0.13.0):
-  cd services/cogno-follower && ../../<venv>/bin/python test_agreement.py
+Run from this directory with a venv that has the pinned deps (see requirements.txt):
+  cd ci/cip8-oracle && python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+  python test_agreement.py
 """
 import json
 import os
