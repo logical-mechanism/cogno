@@ -33,16 +33,16 @@ The single embedded bootnode is the operator's public DDNS node
 
 ## What is NOT here (and why)
 
-- **No secrets.** This raw spec contains only public data (balances, the sudo / authority /
-  committee **public** keys, the wasm). The operator's mnemonics live in `network/keys.json`,
-  which stays **gitignored** — see `scripts/gen-chainspec.mjs`.
+- **No secrets.** This raw spec contains only public data (balances, the authority / committee
+  **public** keys, the wasm). The operator's secret keys are the `.skey` files from
+  `cogno-chain-cli key gen`, kept offline — see [Regenerate](#regenerate-operator).
 - The private/LAN bootnode the generator embeds for local peering is trimmed from the committed
   copy (it leaks a LAN IP and is useless off-LAN). The operator's own `network/raw.json` keeps it.
 
 ## Regenerate (operator)
 
-`scripts/gen-chainspec.mjs` mints a fresh operator-keyed network into `network/` (gitignored):
-`raw.json` + `plain.json` + `keys.json` (secret) + `env.sh` + `NEXT-STEPS.md`. To publish a new
+`cogno-chain-node gen-chainspec` mints a fresh operator-keyed spec (`raw.json` + a plain, inspectable
+spec) from the `.skey` files produced by `cogno-chain-cli key gen` (kept offline). To publish a new
 genesis, copy `network/raw.json` here (trimming the LAN bootnode) and update the genesis hash above.
 
 > **Regenerating the network changes the genesis** — every account, identity bind, and post from the

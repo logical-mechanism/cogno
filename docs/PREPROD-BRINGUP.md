@@ -63,15 +63,24 @@ There is **no committed chainspec**; you mint one once and keep it. From a check
 binary:
 
 ```bash
-NODE_BIN=./target/release/cogno-chain-node VALIDATORS=1 COMMITTEE=5 \
-  CHAIN_NAME="Cogno" CHAIN_ID="cogno" node scripts/gen-chainspec.mjs   # use the nvm node v22
+CLI=./target/release/cogno-chain-cli
+$CLI key gen --scheme sr25519 --out val-account.skey
+$CLI key gen --scheme sr25519 --out val-aura.skey
+$CLI key gen --scheme ed25519 --out val-grandpa.skey
+$CLI key gen --scheme sr25519 --out seat1.skey
+
+./target/release/cogno-chain-node gen-chainspec --base cogno-preprod \
+  --validator-account-key val-account.skey \
+  --validator-aura-key val-aura.skey --validator-grandpa-key val-grandpa.skey \
+  --committee-key seat1.skey \
+  --out-raw network/raw.json
 ```
 
-This writes [`network/`](../scripts/gen-chainspec.mjs) (gitignored): `raw.json` (the spec — no secrets, safe
-to install/commit), `keys.json` (**all secret mnemonics — `chmod 600`, IRREPLACEABLE**), `env.sh`
-(`COMMITTEE_SEEDS` + `SUDO_SEED`), and `NEXT-STEPS.md`. **Archive the whole `network/` directory off-host**
-— re-running the generator mints *new* random keys and a *different* genesis, so this dir **is** your stable
-genesis. Never commit `keys.json`.
+This writes `network/raw.json` (the spec — no secrets, safe to install/commit) plus a plain,
+inspectable spec. The secret material is the `.skey` files from `key gen` (**`chmod 600`,
+IRREPLACEABLE — archive them off-host**). Re-running `key gen` mints *new* random keys and a
+*different* genesis, so those `.skey` files + `raw.json` **are** your stable genesis. Never commit the
+`.skey` files.
 
 ## Step 2 — Run the node persistently, **with `DBSYNC_URL`**
 

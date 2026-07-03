@@ -29,8 +29,8 @@ This is a permissioned, operator-run stack. Know what you're trusting before you
   set can **stall finality** if one node drops (GRANDPA needs `3f+1` to tolerate `f` faults).
 - **The Cardano follower is a trusted oracle.** A single off-chain service verifies CIP-8 proofs and
   writes each account's locked-ADA weight. A follower outage freezes weight updates.
-- **You run it with your own keys.** [`scripts/gen-chainspec.mjs`](scripts/gen-chainspec.mjs)
-  generates your validator, committee, and sudo keys and bakes them into a custom genesis — no
+- **You run it with your own keys.** `cogno-chain-cli key gen` mints your validator + committee keys
+  (by file path) and `cogno-chain-node gen-chainspec` bakes them into a custom genesis — no
   well-known dev keys anywhere (`//Alice` is only the local `--dev` quick-start). See
   [Run the chain](#run-the-chain).
 - **Privileged calls go through the committee** (`set_stake`, `anchor_ack`, `add/remove_validator`):
@@ -132,56 +132,69 @@ development only — the state and genesis are thrown away on restart.
 
 ### Your own network
 
-This is the real path: your keys, your genesis, one or more validators plus tracking nodes. It has
-**no Cardano dependency** — the chain runs on its own.
+This is the real path: your keys, your genesis, one validator to start (the set is mutable — grow it
+by on-chain vote), plus any tracking nodes. It has **no Cardano dependency** — the chain runs on its own.
 
-**1 — Generate your keys + chain spec.** The generator creates your validator / committee / sudo
-keys (no dev keys) and bakes them into a custom genesis:
+**1 — Generate your keys** with `cogno-chain-cli key gen` (cardano-cli-style JSON envelopes, written
+`0600`, keyed **by file path** — no seed phrases). You need a validator account key (sr25519), its two
+session keys (Aura sr25519 + GRANDPA ed25519), and at least one committee seat (sr25519):
 
 ```bash
-OUT=./network VALIDATORS=2 COMMITTEE=5 CHAIN_NAME="Cogno" CHAIN_ID="cogno" \
-  node scripts/gen-chainspec.mjs        # run with the nvm node
+CLI=./target/release/cogno-chain-cli
+$CLI key gen --scheme sr25519 --out val-account.skey
+$CLI key gen --scheme sr25519 --out val-aura.skey
+$CLI key gen --scheme ed25519 --out val-grandpa.skey
+$CLI key gen --scheme sr25519 --out seat1.skey        # repeat for more committee seats
 ```
 
-It writes `network/`: `raw.json` (the spec every node loads), `keys.json` (your secret mnemonics —
-**chmod 600, back it up, never commit**; gitignored), `env.sh` (the service key env — see below),
-and `NEXT-STEPS.md` (a runbook filled in with your accounts). Copy `raw.json` to every node — it must
-be **byte-identical** everywhere or nodes won't peer.
-
-**2 — Insert each validator's session keys** into its node keystore (two distinct schemes; mnemonics
-are in `keys.json`):
+**2 — Build your operator-keyed chain spec** from those key FILES (it reads only their PUBLIC keys and
+refuses dev keys). `--base cogno-preprod` (a live-observing chain) or `cogno-dev`:
 
 ```bash
-NODE=./target/release/cogno-chain-node; RAW=./network/raw.json
-$NODE key insert --base-path /var/lib/cogno/v1 --chain $RAW --scheme sr25519 --key-type aura --suri "<validator-1 mnemonic>"  # authoring
-$NODE key insert --base-path /var/lib/cogno/v1 --chain $RAW --scheme ed25519 --key-type gran --suri "<validator-1 mnemonic>"  # finality
+NODE=./target/release/cogno-chain-node
+$NODE gen-chainspec --base cogno-preprod \
+  --validator-account-key val-account.skey \
+  --validator-aura-key val-aura.skey --validator-grandpa-key val-grandpa.skey \
+  --committee-key seat1.skey \
+  --out-raw raw.json                    # + a plain, inspectable spec
 ```
 
-**3 — Give the boot validator a stable identity, then launch it:**
+Copy `raw.json` to every node — it must be **byte-identical** everywhere or nodes won't peer.
+`gen-chainspec` prints the exact `key insert` + `run` lines for the keys you passed.
+
+**3 — Insert the validator's session secrets** into its keystore, FROM the key files (the scheme is
+read from each envelope — no jq/`--suri`):
 
 ```bash
-$NODE key generate-node-key --file /var/lib/cogno/v1/node-key    # peer id → stderr
-$NODE key inspect-node-key  --file /var/lib/cogno/v1/node-key    # re-print it
-# bootnode multiaddr = /ip4/<BOOT_PUBLIC_IP>/tcp/30333/p2p/<PEER_ID>
+$NODE key insert --base-path /var/lib/cogno/v1 --chain raw.json --key-file val-aura.skey    --key-type aura  # authoring
+$NODE key insert --base-path /var/lib/cogno/v1 --chain raw.json --key-file val-grandpa.skey --key-type gran  # finality
+```
 
-$NODE --validator --name v1 --chain $RAW --base-path /var/lib/cogno/v1 \
-  --node-key-file /var/lib/cogno/v1/node-key \
+**4 — Launch the boot validator.** Its libp2p (p2p) node key auto-generates + persists under the
+base-path on first run; the node logs its peer id (`Local node identity is: …`), or read it later with
+`$NODE key inspect-node-key --file /var/lib/cogno/v1/chains/<id>/network/secret_ed25519`. The bootnode
+multiaddr is `/ip4/<BOOT_PUBLIC_IP>/tcp/30333/p2p/<PEER_ID>`.
+
+```bash
+# --force-authoring is single-validator only (a lone validator has no peers to confirm against).
+$NODE run --validator --name v1 --chain raw.json --base-path /var/lib/cogno/v1 \
+  --force-authoring \
   --port 30333 --rpc-port 9944 \
-  --state-pruning archive --blocks-pruning archive    # archive REQUIRED if it feeds the indexer (DR-08)
-  # add --force-authoring ONLY for a single-validator chain (it has no peers to confirm against)
+  --state-pruning archive --blocks-pruning archive
 ```
 
-**4 — Add more validators and/or tracking nodes** (they dial the boot node). On separate hosts keep
-the default ports; on one host give each a distinct `--port`/`--rpc-port`.
+**5 — Add more validators and/or tracking nodes** (they dial the boot node). On separate hosts keep
+the default ports; on one host give each a distinct `--port`/`--rpc-port`. Each node's p2p key
+auto-generates + persists under its own `--base-path`.
 
 ```bash
-# another validator (needs its own libp2p key: a --node-key-file, or --unsafe-force-node-key-generation):
-$NODE --validator --name v2 --chain $RAW --base-path /var/lib/cogno/v2 \
-  --port 30333 --rpc-port 9944 --unsafe-force-node-key-generation \
+# another validator (drop --force-authoring once it has a peer):
+$NODE run --validator --name v2 --chain raw.json --base-path /var/lib/cogno/v2 \
+  --port 30333 --rpc-port 9944 \
   --bootnodes /ip4/<BOOT_IP>/tcp/30333/p2p/<BOOT_PEER_ID>
 
-# a tracking (non-validator) full node — omit --validator; serves RPC for the frontend/indexer:
-$NODE --name track1 --chain $RAW --base-path /var/lib/cogno/track1 \
+# a tracking (non-validator) full node — omit --validator; serves RPC for the frontend:
+$NODE run --name track1 --chain raw.json --base-path /var/lib/cogno/track1 \
   --port 30333 --rpc-port 9944 \
   --bootnodes /ip4/<BOOT_IP>/tcp/30333/p2p/<BOOT_PEER_ID> \
   --state-pruning archive --blocks-pruning archive \
@@ -195,18 +208,17 @@ both up. `--rpc-external`/`--rpc-methods`/`--rpc-cors` control RPC exposure (loc
 default — put a filtering proxy in front before exposing anything). `--state-pruning` is fixed at
 first DB creation.
 
-> **Verified:** a 2-validator + 1-tracker network generated this way produces *and* finalizes blocks,
-> and the tracking node syncs the same chain — see the validation in the commit that added the
-> generator.
+> A 2-validator + 1-tracker network built this way produces *and* finalizes blocks, and the tracking
+> node syncs the same chain.
 
-**5 — Onboard a validator after genesis.** The set is mutable; you don't have to bake every
-validator into genesis. Generate + insert its keys (steps 1–2 / `key generate`), register them with
-`session.setKeys(keys, proof)` (a real proof-of-possession, built by the committee tooling — an
-empty proof is rejected), then admit it through the committee:
+**6 — Onboard a validator after genesis.** The set is mutable — you don't bake every validator into
+genesis. Generate + insert its keys (steps 1 + 3), have the new validator register its own session
+keys with `cogno-chain-cli validator set-keys` (a real proof-of-possession — an empty proof is
+rejected), then admit it through the committee:
 
 ```bash
-node services/committee/op.mjs --call validatorSet.addValidator --args '["<new-validator-SS58>"]' --via committee
-node services/committee/op.mjs --call validatorSet.removeValidator --args '["<SS58>"]' --via committee
+$CLI validator add    --validator <new-validator-SS58> --committee-signing-key-file seat1.skey --ws ws://<boot>:9944
+$CLI validator remove --validator <SS58>               --committee-signing-key-file seat1.skey --ws ws://<boot>:9944
 ```
 
 Changes apply at a **session boundary** (next-but-one session — ~2 min at the default `SessionPeriod`
@@ -338,10 +350,10 @@ sandboxing — see [`deploy/README.md`](deploy/README.md) for the full runbook. 
 the things that bite, whether you use the units or run by hand:
 
 1. **External Cardano** up and synced: `cardano-node` + Ogmios `:1337` + db-sync (read-only Postgres).
-2. **Chain:** `node scripts/gen-chainspec.mjs` to mint your keys + `raw.json`, then run your
+2. **Chain:** `cogno-chain-cli key gen` + `cogno-chain-node gen-chainspec` to mint your keys + `raw.json`, then run your
    validators with `--state-pruning archive --blocks-pruning archive` (the indexer/anchor-verifier
    need history) plus tracking nodes for RPC. Put `--base-path` on a real disk (not `/tmp`), and keep
-   `network/keys.json` backed up and offline.
+   your `.skey` key files backed up and offline.
 3. **Re-capture genesis after any (re)launch.** The genesis hash changes whenever you regenerate the
    spec, on a `spec_version` bump, and on a fresh `--dev`/`--tmp` rebuild. Capture it live
    (`chain_getBlockHash(0)`) and feed it to the indexer (`GENESIS`) and `GENESIS.txt` — never hardcode.
@@ -397,7 +409,7 @@ cogno-chain/
 ├─ app/                        # Next.js 14 static-export frontend (PAPI + MeshJS) — see app/README.md
 ├─ services/                   # cogno-follower · anchor-relayer · committee · indexer · _shared
 ├─ docs/                       # design specs (PLAN, ECONOMICS, L1–L5), DECISION-REGISTER, build logs
-└─ scripts/                    # gen-chainspec.mjs (own-keys genesis) + acceptance/ (headless test)
+└─ scripts/                    # fetch-chainspec.mjs + run-tracking-node.sh + acceptance/ (headless test)
 ```
 
 (`_sdk/` — a vendored polkadot-sdk checkout — is gitignored and omitted above.)

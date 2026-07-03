@@ -3,7 +3,7 @@
 # A PERSISTENT, operator-keyed node — NOT `--dev` (which is an ephemeral //Alice single-authority dev
 # chain). Session keys (aura sr25519 + grandpa ed25519) must be inserted into the keystore under
 # <base-path>/chains/<id>/keystore BEFORE first start — see deploy/README.md ("validator keys").
-# --chain points at the raw chainspec built by scripts/gen-chainspec.mjs (operator-owned genesis).
+# --chain points at the raw chainspec built by `cogno-chain-node gen-chainspec` (operator-owned genesis).
 #
 # Install: copy to /etc/systemd/system/, edit the literal paths/--name below to match your install,
 #          then `systemctl daemon-reload && systemctl enable --now cogno-node`.

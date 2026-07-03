@@ -48,9 +48,9 @@ node scripts/fetch-chainspec.mjs http://<validator-host>/rpc \
 
 It prints the genesis hash and writes `network/raw.json` (gitignored) with the bootnode embedded. The
 chain name + properties are read from the node; `--id`/`--protocol-id` must match what the network was
-generated with (the [`gen-chainspec.mjs`](../scripts/gen-chainspec.mjs) default is `cogno`).
+generated with (`cogno-chain-node gen-chainspec` derives the id from `--base`, e.g. `cogno` — or pass `--id`).
 
-> If you already have the operator's real `network/raw.json` (e.g. from `gen-chainspec.mjs`), use it
+> If you already have the operator's real `network/raw.json` (e.g. from `cogno-chain-node gen-chainspec`), use it
 > directly and skip this step — just make sure its `bootNodes` includes the validator, or pass
 > `BOOTNODE=…` at launch.
 

@@ -40,8 +40,9 @@ services/committee/node_modules
 # frontend can read live data. Re-syncable; never commit. (Override the dir with RELAY_BASE=.)
 /.relay-data
 
-# Operator-keyed network output from scripts/gen-chainspec.mjs — contains keys.json (secret
-# mnemonics) + env.sh + the generated chain spec. NEVER commit. (Override the dir with OUT=.)
+# Operator secret keys (`cogno-chain-cli key gen` envelopes) + operator-keyed genesis output
+# (`cogno-chain-node gen-chainspec`). NEVER commit the secrets.
+*.skey
 /network
 **/keys.json
 
