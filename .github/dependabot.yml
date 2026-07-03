@@ -16,6 +16,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(ci)"
+    ignore:
+      # The `dtolnay/rust-toolchain@<ver>` ref IS the rustc version, and rustc is pinned to 1.90.0
+      # (rust-toolchain.toml) — stable >= ~1.91 breaks the sp_io wasm link. Never auto-bump it.
+      - dependency-name: "dtolnay/rust-toolchain"
 
   # Frontend
   - package-ecosystem: npm
