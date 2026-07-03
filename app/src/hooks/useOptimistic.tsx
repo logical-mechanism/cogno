@@ -92,11 +92,8 @@ export function OptimisticProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const failPending = useCallback((clientId: string) => {
-    // Mark failed (for a brief styling beat if the surface wants it), then drop on the next tick.
-    setOverlay((o) => ({
-      ...o,
-      pending: o.pending.map((p) => (p.clientId === clientId ? { ...p, status: "failed" } : p)),
-    }));
+    // Roll back: drop the pending card. (No separate "failed" render beat — React 18 batches both
+    // updaters into one commit, so an intermediate status would never reach the DOM anyway.)
     setOverlay((o) => ({ ...o, pending: o.pending.filter((p) => p.clientId !== clientId) }));
   }, []);
 

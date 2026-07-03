@@ -32,7 +32,7 @@ function KindIcon({ kind }: { kind: ToastKind }) {
     case "pending":
       return <Spinner size="sm" />;
     case "error":
-      return <span className={styles.glyph}>!</span>;
+      return <span className={styles.glyph} aria-hidden>!</span>;
     case "rate-limit":
       return <span className={styles.glyph} aria-hidden>⏳</span>;
     case "info":

@@ -89,7 +89,9 @@ export default function WelcomePage() {
     const ss58 = signerCtl.signer.ss58;
     const sub = api.query.TalkStake.AllowedStake.watchValue(ss58, "best").subscribe(
       (w) => setPostingPower((w as bigint) ?? 0n),
-      () => setPostingPower(null),
+      // Subscription errored: fall through to the zero-power branch (lock CTA + read-only escape)
+      // rather than sit on the indefinite "Checking your posting power…" state forever.
+      () => setPostingPower(0n),
     );
     return () => sub.unsubscribe();
   }, [api, signerCtl.signer.ss58]);

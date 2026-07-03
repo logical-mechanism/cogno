@@ -27,7 +27,11 @@ export function StepFlow({ steps, active, ariaLabel }: StepFlowProps) {
       {steps.map((s, i) => {
         const state = i < active ? "done" : i === active ? "active" : "pending";
         return (
-          <li key={s.key} className={`${styles.stepRow} ${styles[state]}`}>
+          <li
+            key={s.key}
+            className={`${styles.stepRow} ${styles[state]}`}
+            aria-current={state === "active" ? "step" : undefined}
+          >
             <span className={styles.stepMark} aria-hidden>
               {state === "done" ? (
                 <IconCheck size="var(--cg-icon-sm)" />
@@ -38,6 +42,10 @@ export function StepFlow({ steps, active, ariaLabel }: StepFlowProps) {
               )}
             </span>
             <span className={styles.stepLabel}>{s.label}</span>
+            {/* The mark is aria-hidden, so give screen readers a text alternative for step state. */}
+            <span className={styles.srOnly}>
+              {state === "done" ? "Done" : state === "active" ? "In progress" : "Pending"}
+            </span>
           </li>
         );
       })}

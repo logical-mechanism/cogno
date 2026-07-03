@@ -145,6 +145,8 @@ export function PowerUps({
         <StakeCard stake={stake} walletId={walletId} />
       </div>
 
+      <p className={styles.later}>You can manage voting power anytime in Settings.</p>
+
       <button type="button" className={styles.readOnly} onClick={onGoToTimeline}>
         Browse the timeline (read-only)
       </button>

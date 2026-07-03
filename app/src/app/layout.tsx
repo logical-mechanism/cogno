@@ -32,7 +32,7 @@ const THEME_BOOT = `(function(){try{var t=localStorage.getItem('cg-theme');if(t!
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-theme="dark">
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
         <meta name="color-scheme" content="dark light" />
         {/* eslint-disable-next-line react/no-danger */}

@@ -10,8 +10,9 @@
 // without nesting buttons inside an anchor; every inner control stopPropagation()s so it doesn't
 // trigger the row link.
 //
-// NO TIME / NO BLOCK MARGINALIA (locked decision + D11): CognoPost.at is a block height, never shown.
-// The weighted score + up/down weights are NOT rendered here (detail-only, D2/D12).
+// TIME (D11): CognoPost.at is a block height, never a wall-clock timestamp; PostCardHeader surfaces
+// only a relative age from it via <PostTime> (e.g. "· 2h"), never the raw block number.
+// The up/down weight breakdown is NOT rendered here (detail-only, D2/D12) — the net score is.
 //
 // Presentational + optimistic. It NEVER imports a reader and NEVER builds an extrinsic — every write
 // is a callback (the PostActionCallbacks bundle) supplied by the surface, optimistically overridden.
@@ -118,16 +119,6 @@ export function PostCard({
     [handlers, post.id],
   );
 
-  // Clearing a vote is expressed through the existing bundle (no dedicated onClearVote on the seam):
-  // an Up vote clears via onLike(post,false); a Down vote clears via onDownvote(post,false).
-  const clearVote = useCallback(
-    (p: CognoPost) => {
-      if (viewer.myVote === "Up") handlers.onLike(p, false);
-      else if (viewer.myVote === "Down") handlers.onDownvote(p, false);
-    },
-    [handlers, viewer.myVote],
-  );
-
   // The "···" overflow menu now carries exactly one owner-only action: "Pin to profile" (the rest —
   // down-vote, clear-vote, copy-link — are buttons in the action row). Shown only on YOUR OWN, already
   // posted (non-pending) posts, and only when the surface wired onPin. Unpin lives in Settings → Profile.
@@ -222,7 +213,6 @@ export function PostCard({
             onLike={handlers.onLike}
             onRepost={handlers.onRepost}
             onDownvote={handlers.onDownvote}
-            onClearVote={clearVote}
             onCopyLink={handlers.onShare}
             dense={detail ? false : undefined}
           />

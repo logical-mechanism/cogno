@@ -10,7 +10,7 @@
 //
 // The caller's box sets the size/shape (post-media card, banner, …); RevealImage fills it.
 
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { reveal, unreveal, useRevealed } from "@/lib/reveal";
 import { IconEye, IconEyeOff } from "./icons";
 import styles from "./RevealImage.module.css";
@@ -62,6 +62,9 @@ export function RevealImage({
   // A trusted (eager) image is always shown — no cover, and (below) no re-cover affordance.
   const shown = useRevealed(key) || eager;
   const [broken, setBroken] = useState(false);
+  // A new src on the SAME instance (e.g. a banner edited to a valid URL after a prior load failure)
+  // must retry — clear a stale broken state so a good image isn't masked by the fallback.
+  useEffect(() => setBroken(false), [src]);
 
   const root = [styles.root, className].filter(Boolean).join(" ");
 

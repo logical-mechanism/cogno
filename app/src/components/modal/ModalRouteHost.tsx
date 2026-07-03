@@ -25,8 +25,10 @@ import { useSession } from "../Providers";
 import { useModalStore } from "@/lib/modalStore";
 import { useMutation } from "@/hooks/useMutation";
 import { useOptimistic } from "@/hooks/useOptimistic";
+import { nextPendingId } from "@/lib/optimistic";
 import { useThread } from "@/hooks/useThread";
 import { useCapacity } from "@/hooks/useCapacity";
+import { draftStatus } from "@/lib/chain/capacity";
 import { useToaster, RATE_LIMIT_COPY } from "../toast/ToasterProvider";
 import {
   submitPost,
@@ -79,11 +81,14 @@ export function ModalRouteHost() {
 
   // Zero locked ADA → no posting power: hard-disable the composer CTA (the self-contained
   // NoPostingPowerNotice already shows the "Lock ADA to post" banner), matching HomePage/ComposePage.
-  const { view: capacityView } = useCapacity(api, viewer.address ?? null, bestBlock);
+  const { view: capacityView, consts: capacityConsts } = useCapacity(api, viewer.address ?? null, bestBlock);
   const noPostingPower = viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
 
   const [submitState, setSubmitState] = useState<ActionState>("idle");
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
+  // Controlled text for the base compose mode so the capacity gate measures the live draft (reply /
+  // quote stay uncontrolled — their gate uses the empty-draft base-cost probe, exactly like ComposePage).
+  const [text, setText] = useState("");
 
   const kind = state.kind;
   const targetId = state.targetId ? BigInt(state.targetId) : null;
@@ -111,8 +116,24 @@ export function ModalRouteHost() {
   // Reset the per-open transient state whenever the modal kind changes.
   useEffect(() => {
     setSubmitState("idle");
+    setText("");
     if (kind === "poll") setPollDraft({ question: "", options: ["", ""] });
   }, [kind]);
+
+  // Pre-flight capacity gate — mirror ComposePage so the PRIMARY (overlay) compose path also disables
+  // the CTA + shows the inline RateLimitNotice before submit, instead of only surfacing a rate limit
+  // via the post-submit failure toast (D5).
+  const gateText = kind === "poll" ? pollDraft.question : text;
+  const rateLimited = useMemo(() => {
+    if (viewer.status !== "ready" || !capacityView || !capacityConsts) return false;
+    const byteLen = new TextEncoder().encode(gateText).length;
+    if (byteLen === 0) {
+      const probe = draftStatus(capacityView, 0, capacityConsts);
+      return probe.kind === "charging" || probe.kind === "wait";
+    }
+    const k = draftStatus(capacityView, byteLen, capacityConsts).kind;
+    return k !== "ok" && !(k === "no_weight" && capacityView.weight === 0n);
+  }, [viewer.status, capacityView, capacityConsts, gateText]);
 
   const onClose = useCallback(() => {
     // Pop the pushed URL (if any) then clear the store. The popstate handler also calls close(); the
@@ -155,7 +176,7 @@ export function ModalRouteHost() {
   // Build a minimal optimistic CognoPost for the pending card (the real row replaces it on confirm).
   const optimisticPost = useCallback(
     (text: string, extra: Partial<CognoPost> = {}): CognoPost => ({
-      id: -BigInt(Date.now()), // negative sentinel id — never collides with a real (positive) post id
+      id: nextPendingId(), // strictly-negative unique sentinel — never collides with a real post id
       author: viewer.address ?? signer.ss58,
       text,
       at: 0,
@@ -317,6 +338,9 @@ export function ModalRouteHost() {
           mode="post"
           submitState={submitState}
           noPostingPower={noPostingPower}
+          rateLimited={rateLimited}
+          text={text}
+          onTextChange={setText}
           autoFocus
           onSubmit={onPost}
           onCancel={onClose}
@@ -328,6 +352,7 @@ export function ModalRouteHost() {
           replyTo={targetPost}
           submitState={submitState}
           noPostingPower={noPostingPower}
+          rateLimited={rateLimited}
           autoFocus
           submitReply={onReply}
           onCancel={onClose}
@@ -339,6 +364,7 @@ export function ModalRouteHost() {
           quoted={targetPost}
           submitState={submitState}
           noPostingPower={noPostingPower}
+          rateLimited={rateLimited}
           autoFocus
           submitQuote={onQuote}
           onCancel={onClose}
@@ -351,6 +377,7 @@ export function ModalRouteHost() {
           onChange={setPollDraft}
           submitState={submitState}
           noPostingPower={noPostingPower}
+          rateLimited={rateLimited}
           autoFocus
           submitCreatePoll={onCreatePoll}
           onCancel={onClose}

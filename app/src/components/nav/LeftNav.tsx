@@ -88,7 +88,7 @@ export function LeftNav() {
           })}
         </ul>
 
-        <button type="button" className={styles.postBtn} onClick={onPost}>
+        <button type="button" className={styles.postBtn} onClick={onPost} aria-label="Post">
           <span className={styles.postLabel}>Post</span>
           <span className={styles.postIcon}>
             <IconCompose size="var(--cg-icon-md)" />

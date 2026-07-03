@@ -11,7 +11,7 @@
 
 import { useCallback, useMemo } from "react";
 import { Composer, MAX_POST_BYTES } from "./Composer";
-import { ByteCounter, utf8Bytes } from "./ByteCounter";
+import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { IconClose } from "./icons";
 import styles from "./PollComposer.module.css";
 import type { Viewer, PollDraft, ActionState, ComposerDraft } from "./kit";
@@ -172,19 +172,6 @@ export function PollComposer({
       onCancel={onCancel}
     />
   );
-}
-
-/** Clamp a string to at most `maxBytes` UTF-8 bytes without splitting a code point (D1). */
-function clampToBytes(s: string, maxBytes: number): string {
-  let total = 0;
-  let out = "";
-  for (const ch of s) {
-    const b = utf8Bytes(ch);
-    if (total + b > maxBytes) break;
-    total += b;
-    out += ch;
-  }
-  return out;
 }
 
 export default PollComposer;

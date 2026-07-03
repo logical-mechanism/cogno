@@ -252,20 +252,9 @@ export function useLiveFeed(
     setBuffered((prev) => prev.filter((p) => !promoted.has(String(p.id))));
   }, []);
 
-  // When the viewer connects mid-session, promote their OWN posts out of the pill buffer into view
-  // (they were classified as "others" while `me` was null).
-  useEffect(() => {
-    if (!me) return;
-    const mine = bufferedRef.current.filter((p) => p.author === me);
-    if (mine.length === 0) return;
-    const ids = new Set(mine.map((p) => String(p.id)));
-    mine.forEach((p) => {
-      loadedIds.current.add(String(p.id));
-      bufferedIds.current.delete(String(p.id));
-    });
-    setLoaded((prev) => mergeById(prev, mine));
-    setBuffered((prev) => prev.filter((p) => !ids.has(String(p.id))));
-  }, [me]);
+  // (A former mid-session "promote my own buffered posts" effect lived here; it was redundant — a `me`
+  // change re-keys baseQuery, which re-runs the reset effect above and re-seeds page-1 with the viewer
+  // stamped in node-side, so the viewer's newest own post returns already loaded.)
 
   // Overlay: prepend the pending optimistic cards + apply count patches over the loaded list.
   const posts = useMemo(() => mergeFeed(loaded, overlay), [loaded, overlay]);

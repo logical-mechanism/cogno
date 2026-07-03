@@ -14,14 +14,7 @@ import { useSession } from "@/components/Providers";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { truncateSs58 } from "@/lib/ss58";
 import { setupStatus } from "@/lib/setup-status";
-
-/** lovelace → "N.N ADA" (voting power display); "—" when 0/null. */
-function formatAda(lovelace: bigint | null): string {
-  if (lovelace == null || lovelace === 0n) return "—";
-  const whole = lovelace / 1_000_000n;
-  const frac = (lovelace % 1_000_000n) / 100_000n; // one decimal place
-  return `${whole.toLocaleString()}.${frac} ADA`;
-}
+import { formatAda } from "@/lib/format";
 
 export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
   const { api, signerCtl, identity, sessionState } = useSession();

@@ -1,7 +1,9 @@
 "use client";
 
 // Toaster — the singleton container (doc 03 §16). Mounted once by ToasterProvider; stacks up to 3
-// toasts, newest on top, bottom-center. aria-live="polite" so it's announced without stealing focus.
+// toasts, newest on top, bottom-center. Each Toast carries its OWN live role (status=polite /
+// alert=assertive), so the container is NOT itself a live region — nesting them makes NVDA/JAWS
+// double-announce.
 
 import styles from "./Toast.module.css";
 import { Toast } from "./Toast";
@@ -16,7 +18,7 @@ export interface ToasterProps {
 
 export function Toaster({ toasts, onDismiss, onPause, onResume }: ToasterProps) {
   return (
-    <div className={styles.toaster} aria-live="polite" aria-atomic="false">
+    <div className={styles.toaster}>
       {toasts.map((t) => (
         <Toast
           key={t.id}

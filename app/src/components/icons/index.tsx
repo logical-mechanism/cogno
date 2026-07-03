@@ -27,7 +27,10 @@ function svgProps(p: IconProps): SVGProps<SVGSVGElement> {
   const merged: CSSProperties = { width: dim, height: dim, ...style };
   return {
     viewBox: "0 0 24 24",
+    // Decorative by default (hidden); when a caller opts in with an aria-label, expose it AND set
+    // role="img" — a bare <svg aria-label> without role="img" is dropped by some screen readers.
     "aria-hidden": rest["aria-label"] ? undefined : true,
+    role: rest["aria-label"] ? "img" : undefined,
     focusable: false,
     fill: "currentColor",
     style: merged,

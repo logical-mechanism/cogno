@@ -18,7 +18,7 @@
 // CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
 
 import { useCallback, useRef, useState } from "react";
-import { ByteCounter, utf8Bytes } from "./ByteCounter";
+import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
 import { CapacityMeter } from "./CapacityMeter";
@@ -399,18 +399,5 @@ function EmojiPicker({ choices, onPick }: { choices: string[]; onPick: (e: strin
   );
 }
 
-/** Clamp a string to at most `maxBytes` UTF-8 bytes WITHOUT splitting a multibyte code point (D1). */
-function clampToBytes(s: string, maxBytes: number): string {
-  // Walk code points (Array spread iterates by code point, not UTF-16 unit) and accumulate bytes.
-  let total = 0;
-  let out = "";
-  for (const ch of s) {
-    const b = utf8Bytes(ch);
-    if (total + b > maxBytes) break;
-    total += b;
-    out += ch;
-  }
-  return out;
-}
 
 export default Composer;

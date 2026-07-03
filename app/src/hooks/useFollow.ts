@@ -53,6 +53,12 @@ export function useFollow(
     };
   }, [source, who]);
 
+  // Clear optimistic overrides when the viewer changes: a prior viewer's entries must not win over
+  // the freshly-fetched edges (isFollowing prefers `optimistic`) after an in-place wallet/account switch.
+  useEffect(() => {
+    setOptimistic({});
+  }, [who]);
+
   const isFollowing = useCallback(
     (target: Ss58) => {
       if (target in optimistic) return optimistic[target];

@@ -66,6 +66,7 @@ export function EditProfileModal({ onClose, onSaveProfile, onClearProfile }: Edi
   const [confirmClear, setConfirmClear] = useState(false);
 
   const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const confirmKeepRef = useRef<HTMLButtonElement | null>(null);
 
   // Pre-fill from the viewer's current profile. An unretired optimistic patch (a save from moments ago,
   // still confirming) is the freshest truth, so it wins over the chain read; otherwise read
@@ -112,6 +113,11 @@ export function EditProfileModal({ onClose, onSaveProfile, onClearProfile }: Edi
   useEffect(() => {
     if (!loading) headingRef.current?.focus();
   }, [loading]);
+
+  // Move focus into the clear-confirm when it opens so keyboard/AT users are taken to it.
+  useEffect(() => {
+    if (confirmClear) confirmKeepRef.current?.focus();
+  }, [confirmClear]);
 
   const nameBytes = useMemo(() => utf8Bytes(name), [name]);
   const bioBytes = useMemo(() => utf8Bytes(bio), [bio]);
@@ -311,11 +317,25 @@ export function EditProfileModal({ onClose, onSaveProfile, onClearProfile }: Edi
 
             {/* Clear confirm dialog */}
             {confirmClear && (
-              <div className={styles.confirm} role="alertdialog" aria-label="Clear your profile?">
+              <div
+                className={styles.confirm}
+                role="alertdialog"
+                aria-label="Clear your profile?"
+                // Escape dismisses only THIS confirm — stop it bubbling to ComposerModal's Escape
+                // handler, which would otherwise close the whole edit-profile modal.
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setConfirmClear(false);
+                  }
+                }}
+              >
                 <p className={styles.confirmText}>Clear your profile? Your posts stay.</p>
                 <div className={styles.confirmActions}>
                   <button
                     type="button"
+                    ref={confirmKeepRef}
                     className={styles.cancelBtn}
                     onClick={() => setConfirmClear(false)}
                   >

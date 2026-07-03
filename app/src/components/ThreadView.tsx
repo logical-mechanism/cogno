@@ -38,6 +38,7 @@ import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { usePoll } from "@/hooks/usePoll";
 import { useOptimistic } from "@/hooks/useOptimistic";
+import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
 import { useCapacity } from "@/hooks/useCapacity";
 import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
@@ -198,7 +199,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       }
       if (!api || !signer || draft.text.trim().length === 0) return;
       const optimistic: CognoPost = {
-        id: -BigInt(Date.now()),
+        id: nextPendingId(),
         author: me ?? signer.ss58,
         text: draft.text,
         parent: rootId,

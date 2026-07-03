@@ -29,7 +29,11 @@ export function CapacityMeter() {
     <div
       className={styles.meter}
       title={`Talk points: about ${posts} post${posts === 1 ? "" : "s"} ready (regenerates over time)`}
-      aria-label={`Talk points: about ${posts} posts ready`}
+      aria-label={
+        posts > 0
+          ? `Talk points: about ${posts} post${posts === 1 ? "" : "s"} ready`
+          : "Talk points: recharging"
+      }
     >
       <span className={styles.bar} aria-hidden>
         <span className={`${styles.fill} ${low ? styles.low : ""}`} style={{ width: `${pct}%` }} />

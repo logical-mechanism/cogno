@@ -96,7 +96,9 @@ export function SettingsShell({
               role="tab"
               id={`settings-tab-${s.id}`}
               aria-selected={isActive}
-              aria-controls={`settings-panel-${s.id}`}
+              // Only ONE tabpanel is rendered (id=settings-panel-<active>); point aria-controls at it
+              // solely from the active tab so the other tabs don't reference a non-existent element.
+              aria-controls={isActive ? `settings-panel-${s.id}` : undefined}
               tabIndex={isActive ? 0 : -1}
               data-section={s.id}
               className={`${styles.row} ${isActive ? styles.rowActive : ""}`}

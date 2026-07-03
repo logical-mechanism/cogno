@@ -232,7 +232,11 @@ export function signSubmitWatch(
     takeNonce(api, signer.ss58)
       .then((nonce) => {
         if (cancelled) {
-          settle();
+          // The teardown's guarded settle() already ran (clamped at 0, a no-op) BEFORE takeNonce
+          // resolved and did its `inflight += 1`. settle() here can't release that slot (settled is
+          // tripped), so decrement directly — otherwise inflight sticks at ≥1, settleNonce never hits 0,
+          // and next never resets to re-sync from chain.
+          settleNonce(signer.ss58);
           return;
         }
         const inner$ = watchTx(

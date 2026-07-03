@@ -53,6 +53,8 @@ export function ProfileTabs({ active, onChange, showReplies, showLikes }: Profil
       let nextIdx = idx;
       if (e.key === "ArrowRight") nextIdx = (idx + 1) % tabs.length;
       else if (e.key === "ArrowLeft") nextIdx = (idx - 1 + tabs.length) % tabs.length;
+      else if (e.key === "Home") nextIdx = 0;
+      else if (e.key === "End") nextIdx = tabs.length - 1;
       else return;
       e.preventDefault();
       const next = tabs[nextIdx];

@@ -160,6 +160,17 @@ export function pendingKey(post: { author: string; text: string }): string {
   return `${post.author}\n${post.text}`;
 }
 
+/**
+ * A monotonic, strictly-NEGATIVE placeholder id for an optimistic pending post. Negative so it never
+ * collides with a real (non-negative) chain post id — the load-bearing "pending" marker that Timeline
+ * and the inline-poll gate branch on (`post.id < 0n`) — and unique per call so two posts submitted in
+ * the SAME millisecond never share a React key (which the old `-BigInt(Date.now())` scheme could).
+ */
+let pendingIdSeq = 0;
+export function nextPendingId(): bigint {
+  return -BigInt(++pendingIdSeq);
+}
+
 /** Merge the overlay onto a feed snapshot: prepend pending cards, patch counts on existing rows. */
 export function mergeFeed(posts: CognoPost[], overlay: Overlay): CognoPost[] {
   const patched = posts.map((p) => applyCountPatch(p, overlay.counts[String(p.id)]));

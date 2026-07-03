@@ -226,7 +226,7 @@ export function ProfileSection() {
         </div>
 
         {confirmClear && (
-          <div className={styles.confirm} role="alertdialog" aria-label="Clear your profile?">
+          <div className={styles.confirm} role="alert">
             <p className={styles.confirmText}>Clear your profile? Your posts stay.</p>
             <div className={styles.confirmActions}>
               <button

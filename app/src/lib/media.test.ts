@@ -76,4 +76,12 @@ describe("resolveImageSrc — ipfs:// → gateway", () => {
   it("leaves a CID-less ipfs URI untouched instead of resolving to the gateway root", () => {
     expect(resolveImageSrc("ipfs://ipfs/")).toBe("ipfs://ipfs/");
   });
+
+  it("does not resolve a smuggled absolute URL to a foreign origin", () => {
+    // `new URL('https://attacker.example/x.png', gateway)` ignores the base and yields the attacker
+    // origin; the gateway-root guard must fall back to returning the raw input instead.
+    const out = resolveImageSrc("ipfs://https://attacker.example/x.png");
+    expect(out.startsWith("https://attacker.example")).toBe(false);
+    expect(out).toBe("ipfs://https://attacker.example/x.png");
+  });
 });

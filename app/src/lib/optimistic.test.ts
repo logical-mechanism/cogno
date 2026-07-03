@@ -8,11 +8,22 @@ import {
   profilePatchSettled,
   mergeFeed,
   pendingKey,
+  nextPendingId,
   EMPTY_OVERLAY,
   type Overlay,
   type ProfilePatch,
 } from "./optimistic";
 import type { CognoPost, ProfileView, ViewerPostState } from "./types";
+
+describe("nextPendingId", () => {
+  it("mints strictly-negative, unique ids (never 0, never colliding within a tick)", () => {
+    const ids = Array.from({ length: 100 }, () => nextPendingId());
+    // Every id is a load-bearing negative sentinel (Timeline / poll gate branch on post.id < 0n).
+    for (const id of ids) expect(id < 0n).toBe(true);
+    // No collisions even when many are minted in the same millisecond (the old Date.now scheme could).
+    expect(new Set(ids.map(String)).size).toBe(ids.length);
+  });
+});
 
 describe("pendingKey", () => {
   it("keys an optimistic card to its chain twin by author + text (the only stable identity)", () => {

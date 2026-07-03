@@ -73,17 +73,11 @@ import {
   UnsupportedQuery,
 } from "./source";
 import { FEED_PAGE_SIZE } from "./constants";
+import { hexToBytes } from "@/lib/util/hex";
 
 // The seam's first-page / default window (profile Posts first page + global `page()` default + the
 // `watch()` live window). Shared with the hooks' "load more" size so first paint and load-more match.
 const DEFAULT_FIRST = FEED_PAGE_SIZE;
-
-function hexToBytes(hex: string): Uint8Array {
-  const h = hex.replace(/^0x/, "");
-  const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
 
 /** Is this account's identity binding still live? `PkhOf` present ⇒ not revoked. */
 async function isRevoked(api: CognoApi, account: Ss58): Promise<boolean> {

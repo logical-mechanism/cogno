@@ -18,16 +18,9 @@ import { CardanoTxLink } from "@/components/CardanoTxLink";
 import { useSession } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
 import { useActionToast } from "@/hooks/useActionToast";
+import { formatAda } from "@/lib/format";
 
 const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
-
-/** lovelace → "N.N ADA"; "—" for 0/null. */
-function formatAda(lovelace: bigint | null): string {
-  if (lovelace == null || lovelace === 0n) return "—";
-  const whole = lovelace / 1_000_000n;
-  const frac = (lovelace % 1_000_000n) / 100_000n;
-  return `${whole.toLocaleString()}.${frac} ADA`;
-}
 
 export function VaultSection() {
   const { api, signerCtl } = useSession();

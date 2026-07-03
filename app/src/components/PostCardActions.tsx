@@ -8,8 +8,9 @@
 // Spread across ~425px max (X parity) with Share pushed to the trailing edge. The up-vote == an
 // on-chain UP vote (D2). Repost submits on a single click (everything on-chain is permanent, so we
 // don't call it out) → it turns filled green (--cg-repost), disabled, aria-pressed — there is no
-// un-repost. The clear-vote callback stays part of the contract (tap an active vote to clear). The
-// weighted score / up-down weights are NOT shown here (detail-only, D2/D12).
+// un-repost. Tapping an active up/down vote toggle-clears it inline. The net stake-weighted SCORE is
+// rendered inline between the up/down buttons; only the separate up/down weight breakdown stays
+// detail-only (D2/D12).
 //
 // Presentational + optimistic: every count/filled state is driven by props the surface
 // optimistically overrides; this row NEVER builds an extrinsic.
@@ -32,10 +33,8 @@ export interface PostCardActionsProps {
   onLike: (post: CognoPost, next: boolean) => void;
   /** Repost — submitted on a single click; no un-repost. */
   onRepost: (post: CognoPost) => void;
-  /** Secondary down-vote (surfaced in the header overflow): next=true → downvote, false → clear. */
+  /** Secondary down-vote: next=true → downvote, false → clear (tap the active ▼ to clear). */
   onDownvote: (post: CognoPost, next: boolean) => void;
-  /** Clear any vote (surfaced in the header overflow). */
-  onClearVote: (post: CognoPost) => void;
   /** Copy /post/[id] link → success toast (Share + the header "Copy link" item). */
   onCopyLink: (post: CognoPost) => void;
   /** Optimistic states for the Like + Repost buttons (spinner overlay until ok). */
@@ -54,16 +53,11 @@ export function PostCardActions({
   onLike,
   onRepost,
   onDownvote,
-  onClearVote: _onClearVote,
   onCopyLink,
   likeState = "idle",
   repostState = "idle",
   dense,
 }: PostCardActionsProps) {
-  // onClearVote stays part of the contract (header overflow "Clear vote"); unused in this row now
-  // that up/down both toggle-clear inline.
-  void _onClearVote;
-
   const up = viewer.myVote === "Up";
   const down = viewer.myVote === "Down";
   const reposted = viewer.reposted;

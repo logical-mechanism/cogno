@@ -81,6 +81,13 @@ export function useProfile(
     const firstForKey = loadedKey.current !== key;
     if (firstForKey) {
       epochRef.current += 1;
+      // Clear the previous key's post list so `posts` (mergeById(base, appended)) doesn't render the
+      // prior author's/tab's posts under the spinner during a same-mount switch (/u/A → /u/B, Posts →
+      // Replies). The profile record itself is kept to avoid blanking the header on a tab switch.
+      setBase([]);
+      setAppended([]);
+      setCursor(null);
+      setHasMore(false);
       setLoading(true);
       setError(null);
     }

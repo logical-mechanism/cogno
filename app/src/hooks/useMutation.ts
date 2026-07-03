@@ -26,6 +26,12 @@ export interface RunOptions {
   onConfirm?: (u: TxUpdate) => void;
   /** Fired once on `invalid` / `error` with the friendly message. */
   onError?: (message: string) => void;
+  /**
+   * Fired once if the run is still UNSETTLED when the hook unmounts (e.g. the card navigated away
+   * mid-flight). Use it to silently roll back an optimistic overlay — do NOT reuse onError, which
+   * would raise a spurious failure toast for a tx that may still land.
+   */
+  onCancel?: () => void;
 }
 
 export interface UseMutation {
@@ -46,13 +52,18 @@ export function useMutation(): UseMutation {
   const [phase, setPhase] = useState<MutationPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const subs = useRef<Set<Subscription>>(new Set());
+  const subs = useRef<Set<{ sub: Subscription; cancel: () => void }>>(new Set());
 
-  // Tear down any live subscriptions on unmount (a tx stream outliving the component is a leak).
+  // Tear down any live subscriptions on unmount (a tx stream outliving the component is a leak). Each
+  // still-unsettled run's cancel() runs first so the caller can silently roll its optimistic overlay
+  // back — otherwise a provider-scoped patch outlives the page-scoped hook and sticks forever.
   useEffect(() => {
     const set = subs.current;
     return () => {
-      set.forEach((s) => s.unsubscribe());
+      set.forEach((e) => {
+        e.cancel();
+        e.sub.unsubscribe();
+      });
       set.clear();
     };
   }, []);
@@ -77,14 +88,19 @@ export function useMutation(): UseMutation {
         resolve(u);
       };
       const settleErr = (message: string) => {
-        setPhase("error");
-        setError(message);
+        // Guard FIRST: a late invalid/error (or observable error) after inBestBlock already settled
+        // must not flip a confirmed tx's phase to "error".
         if (settled) return;
         settled = true;
+        setPhase("error");
+        setError(message);
         setPending(false);
         opts?.onError?.(message);
         reject(new Error(message));
       };
+      // `entry` is captured by complete() below; declared with `let` before subscribe() so a
+      // (theoretical) synchronous complete sees `undefined` (a harmless delete) rather than a TDZ throw.
+      let entry: { sub: Subscription; cancel: () => void } | undefined;
       const sub = stream$.subscribe({
         next: (u) => {
           switch (u.phase) {
@@ -111,10 +127,19 @@ export function useMutation(): UseMutation {
           settleErr(e instanceof Error ? e.message : String(e));
         },
         complete: () => {
-          subs.current.delete(sub);
+          if (entry) subs.current.delete(entry);
         },
       });
-      subs.current.add(sub);
+      entry = {
+        sub,
+        cancel: () => {
+          if (settled) return;
+          settled = true;
+          setPending(false);
+          opts?.onCancel?.();
+        },
+      };
+      subs.current.add(entry);
     });
   }, []);
 

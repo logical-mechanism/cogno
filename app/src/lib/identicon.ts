@@ -9,8 +9,7 @@
 // The PRNG is the xorshift128 used by the original `blockies` library — chosen because it is trivial,
 // dependency-free, and deterministic across engines. We seed it from the address string.
 
-const SIZE = 5; // 5×5 grid, X-mirrored → classic blockie
-const SCALE = 1; // unit cells; the SVG viewBox is SIZE×SIZE and the consumer scales it.
+const SIZE = 5; // 5×5 grid, X-mirrored → classic blockie; the SVG viewBox is SIZE×SIZE (consumer scales).
 
 interface Rng {
   rand: () => number; // [0,1)
@@ -87,5 +86,3 @@ export function identiconFor(address: string): Identicon {
 
   return { size: SIZE, bg: bgColor, cells };
 }
-
-export const IDENTICON_SCALE = SCALE;
