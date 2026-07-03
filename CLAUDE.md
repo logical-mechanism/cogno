@@ -23,10 +23,6 @@ GRANDPA equivocation, an independent CIP-8-verifier audit, prod key custody) are
 place as `MAINNET PREREQUISITE` comments — **do not "fix" them** unless explicitly asked; they are
 scoped-out testnet choices, not bugs.
 
-> This is the `fork/all-rust` restart: it deletes the old off-chain services (Python follower,
-> JS relayer/committee/indexer), drops anchoring, folds all reads into the node, and restarts the chain
-> at a fresh genesis. Phase tracker: [docs/FORK-PLAN.md](docs/FORK-PLAN.md).
-
 ## Layout
 
 | Path | What |
@@ -45,35 +41,20 @@ scoped-out testnet choices, not bugs.
 
 ## Build / run / test
 
+The full build/test matrix, toolchain pins, and CI gates are in
+[CONTRIBUTING.md](CONTRIBUTING.md). Quick reference for working here:
+
 ```bash
-# Node + workspace (heavy first compile; pinned rustc 1.90.0):
-cargo build --release
-./target/release/cogno-chain-node run --dev     # single //Alice authority, WS :9944 (bare invoke prints help)
-cargo test --workspace                           # pallets + cli + cogno-dbsync + cogno-keyfile
-
-# Fast iteration (skips the wasm runtime build):
-SKIP_WASM_BUILD=1 cargo check -p <crate>
-
-# L1 contract — aiken errors are TTY-gated, wrap in `script` when capturing:
-cd contracts && script -qec "aiken check" /dev/null   # property/fuzz + boundary tests
-aiken build                                     # regenerates plutus.json (blueprint + hash)
-node scripts/regen-vault.mjs                     # regenerates vault.json (applied hash + CBOR)
-
-# Frontend (USE THE NVM NODE — see gotcha):
-cd app && npm install                            # postinstall runs `papi` to gen descriptors
-npm run dev                                       # :3000, points at ws://127.0.0.1:9944
-npm run build                                      # static export -> app/out/
-npm test                                           # Vitest pure-logic units (MeshJS/PAPI mocked)
-
-# CIP-8 agreement oracle (CI-only adversarial check):
-cd ci/cip8-oracle && python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
-export NODE_BIN="$HOME/.nvm/versions/node/v22.12.0/bin/node"   # test_agreement shells out to a MeshJS fixture
-python test_beacon.py && python test_agreement.py
+cargo build --release && ./target/release/cogno-chain-node run --dev   # single //Alice, WS :9944
+cargo test --workspace
+SKIP_WASM_BUILD=1 cargo check -p <crate>                               # fast, skips the wasm build
+cd contracts && script -qec "aiken check" /dev/null                    # aiken errors are TTY-gated
 ```
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) gates: `rust` (clippy `-D warnings` +
-`cargo test --workspace` + build), `contracts` (`aiken check`), `frontend` (lint / vitest / build),
-and `cip8-oracle` (the Python agreement check).
+- **Regenerate contract artifacts** (only on an intentional redeploy — this MOVES the live hash, see
+  the gotcha below): `aiken build` (plutus.json) + `node scripts/regen-vault.mjs` (vault.json).
+- **After an encoding-affecting spec bump**, regenerate the frontend's PAPI descriptors:
+  `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
 
 ## Critical gotchas
 
@@ -116,9 +97,10 @@ and `cip8-oracle` (the Python agreement check).
 
 ## Conventions
 
-- **Commits:** `<scope>(<area>): <summary>`, e.g. `fork(app): …`, `fork(ci): …`; non-fork work uses a
-  plain scope like `docs:`. End commit messages with
-  `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
-- **Branch per unit of work**; PR into `main`. `Cargo.lock` is committed.
+Contribution workflow (branch-per-unit, PR-into-`main`, the commit-scope format, `Cargo.lock`
+committed) lives in [CONTRIBUTING.md](CONTRIBUTING.md). Agent-specific notes:
+
+- **Commits:** `<scope>(<area>): <summary>` (e.g. `feat(pallets): …`, `fix(node): …`, `docs: …`); end
+  AI-assisted commits with `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - **Pallet logging** uses the `log::` facade via each pallet's `LOG_TARGET` (no new Events) — keep it
   additive and encoding-neutral.

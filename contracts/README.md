@@ -55,7 +55,7 @@ never pay raw ADA to the vault address.**
 ## Build, test, benchmark
 
 ```sh
-aiken check          # 38 tests (incl. 5 property/fuzz tests, 100 samples each)
+aiken check          # unit + property/fuzz + boundary tests (property tests: 100 samples each)
 aiken build          # regenerates plutus.json (the script blueprint + hash)
 aiken bench          # CPU/mem baselines for the mint/spend hot paths
 ```
@@ -65,7 +65,9 @@ Test dependency note: `aiken-lang/fuzz` is used only by the property tests and b
 
 ## Audit
 
-See [`audits/`](./audits/) for the full Cardano smart-contract audit. The committed source closes
+See [`audits/`](./audits/) for an **automated / AI-assisted self-audit** (the `audit-machine` tool — a
+first-party multi-agent LLM review, **not** an independent third-party human audit; an independent
+audit remains a `MAINNET PREREQUISITE`). The committed source closes
 the audit's only on-chain finding (**L-01** — the spend continuation now pins
 `reference_script == None`, mirroring the mint arm) and adds the recommended negative, property,
 and benchmark coverage (I-01 through I-06).
@@ -74,6 +76,5 @@ and benchmark coverage (I-01 through I-06).
 `min_lock`-applied policy_id / vault address). This **orphans any previously-deployed vault**: the
 old UTxOs must be exited under the old script, and a fresh vault minted under the new one. The
 artifact that bakes the L1 hash for the off-chain tooling is the **`vault.json`** (vaultHash +
-applied CBOR) consumed by the MeshJS lock/unlock scripts and the follower/committee services — that
-must be regenerated. The frontend PAPI descriptors describe the Substrate runtime and carry **no**
+applied CBOR) consumed by the frontend's MeshJS lock/unlock scripts — that must be regenerated. The frontend PAPI descriptors describe the Substrate runtime and carry **no**
 L1 script hash, so they are unaffected.
