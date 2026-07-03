@@ -19,11 +19,18 @@ import {
 } from "@/lib/chain/identity";
 import { produceBindProof, produceBindProofStake } from "@/lib/cardano/cip8";
 
+/** The phase of an in-flight identity bind, so the UI can narrate the background steps instead of
+ *  showing one opaque "Registering…" spinner. `client.submit` resolves on FINALIZATION, so the
+ *  `submitting` phase is a genuine multi-second wait — the one that felt "stuck". */
+export type BindPhase = "idle" | "signing" | "submitting" | "confirming";
+
 export interface UseIdentity {
   /** true = bound (may post), false = unbound, null = unknown/loading. */
   bound: boolean | null;
   /** a bind is in flight (wallet sign → feeless on-chain submit → readback). */
   binding: boolean;
+  /** the phase of an in-flight bind (`idle` when not binding) — drives the step indicator. */
+  bindPhase: BindPhase;
   error: string | null;
   /** the Cardano address the bind was signed from, once bound (for display). */
   boundAddress: string | null;
@@ -57,6 +64,7 @@ export function useIdentity(
 ): UseIdentity {
   const [bound, setBound] = useState<boolean | null>(null);
   const [binding, setBinding] = useState(false);
+  const [bindPhase, setBindPhase] = useState<BindPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [boundAddress, setBoundAddress] = useState<string | null>(null);
 
@@ -120,6 +128,7 @@ export function useIdentity(
     (walletId: string) => {
       if (!api || !client || binding) return;
       setBinding(true);
+      setBindPhase("signing");
       setError(null);
       void (async () => {
         try {
@@ -133,12 +142,16 @@ export function useIdentity(
           // (3) submit the self-proof on-chain, FEELESSLY, as a bare/unsigned extrinsic. No fee, no
           //     funded relay — the CIP-8 proof is the authorization and the runtime is the sole verifier,
           //     so even a brand-new zero-balance derived account binds itself with no sponsor.
+          //     `client.submit` resolves on FINALIZATION → this is the multi-second wait, so the UI
+          //     shows a distinct "submitting" step rather than leaving the sign prompt up.
+          setBindPhase("submitting");
           const res = await submitLinkIdentityFeeless(client, api, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
             throw new Error(res.error || "the on-chain bind was rejected");
           }
           // (4) AccountOf readback (L5 §5.7): confirm the verified identity resolves to MY account, the
           //     belt-and-suspenders 1:1 check (the proof already commits my account cryptographically).
+          setBindPhase("confirming");
           if (res.identityHash) {
             const who = await readAccountOf(api, res.identityHash).catch(() => undefined);
             if (who && who !== signer.ss58) {
@@ -161,6 +174,7 @@ export function useIdentity(
           setError(e instanceof Error ? e.message : String(e));
         } finally {
           setBinding(false);
+          setBindPhase("idle");
         }
       })();
     },
@@ -217,6 +231,7 @@ export function useIdentity(
   return {
     bound,
     binding,
+    bindPhase,
     error,
     boundAddress,
     bind,

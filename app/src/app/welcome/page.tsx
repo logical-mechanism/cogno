@@ -222,6 +222,7 @@ export default function WelcomePage() {
         <BindStep
           ss58={signerCtl.signer.ss58}
           binding={identity.binding}
+          bindPhase={identity.bindPhase}
           error={identity.error}
           chainReady={chainReady}
           bootOk={bootOk}

@@ -12,12 +12,15 @@
 
 import { useMemo } from "react";
 import styles from "./BindStep.module.css";
-import { Spinner } from "@/components/icons";
+import { Spinner, IconCheck } from "@/components/icons";
 import { truncateSs58 } from "@/lib/ss58";
+import type { BindPhase } from "@/hooks/useIdentity";
 
 export interface BindStepProps {
   ss58: string;
   binding: boolean;
+  /** the phase of the in-flight bind — drives the background-step indicator. */
+  bindPhase: BindPhase;
   /** the LAST bind attempt's error string (useIdentity.error). null when clear. */
   error: string | null;
   /** api && client ready. */
@@ -55,9 +58,49 @@ function classifyError(raw: string): BindError {
   return { copy: `The network rejected it: ${raw}`, danger: false };
 }
 
+// The three background steps a bind actually runs (useIdentity.bind). Surfaced as a live step list so
+// the multi-second on-chain wait after signing doesn't read as "stuck".
+const BIND_STEPS: { key: Exclude<BindPhase, "idle">; label: string }[] = [
+  { key: "signing", label: "Sign in your wallet" },
+  { key: "submitting", label: "Submit registration" },
+  { key: "confirming", label: "Confirm on-chain" },
+];
+
+const BIND_NARRATION: Record<Exclude<BindPhase, "idle">, string> = {
+  signing: "Approve the signature in your wallet…",
+  submitting: "Submitting your registration to the network…",
+  confirming: "Confirming on-chain…",
+};
+
+function BindProgress({ phase }: { phase: Exclude<BindPhase, "idle"> }) {
+  const activeIndex = BIND_STEPS.findIndex((s) => s.key === phase);
+  return (
+    <ol className={styles.steps} aria-label="Registration progress">
+      {BIND_STEPS.map((s, i) => {
+        const state = i < activeIndex ? "done" : i === activeIndex ? "active" : "pending";
+        return (
+          <li key={s.key} className={`${styles.stepRow} ${styles[state]}`}>
+            <span className={styles.stepMark} aria-hidden>
+              {state === "done" ? (
+                <IconCheck size="var(--cg-icon-sm)" />
+              ) : state === "active" ? (
+                <Spinner size="sm" />
+              ) : (
+                <span className={styles.stepDot} />
+              )}
+            </span>
+            <span className={styles.stepLabel}>{s.label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 export function BindStep({
   ss58,
   binding,
+  bindPhase,
   error,
   chainReady,
   bootOk,
@@ -104,9 +147,12 @@ export function BindStep({
       </button>
 
       {binding && (
-        <p className={styles.narration} aria-live="polite">
-          Approve the signature in your wallet…
-        </p>
+        <div className={styles.progress}>
+          <BindProgress phase={bindPhase === "idle" ? "signing" : bindPhase} />
+          <p className={styles.narration} aria-live="polite">
+            {BIND_NARRATION[bindPhase === "idle" ? "signing" : bindPhase]}
+          </p>
+        </div>
       )}
 
       {disabledReason && !binding && (
