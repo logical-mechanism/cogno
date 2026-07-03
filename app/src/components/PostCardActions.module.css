@@ -143,9 +143,25 @@
   background: var(--cg-accent-wash);
 }
 
-/* like-pop animation when the heart becomes filled (keyframe in tokens.css; reduced-motion guarded) */
+/* like-pop animation when the heart becomes filled (reduced-motion guarded). Keyframe MUST be local:
+   css-loader scopes the animation-name reference, so a global-stylesheet keyframe never matches. */
 .pop {
   animation: cg-like-pop var(--cg-motion-base) var(--cg-ease-pop);
+}
+
+@keyframes cg-like-pop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.35);
+  }
+  70% {
+    transform: scale(0.9);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 /* ---- repost confirm popover ---- */
