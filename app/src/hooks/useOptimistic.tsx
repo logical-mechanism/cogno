@@ -130,18 +130,15 @@ export function OptimisticProvider({ children }: { children: React.ReactNode }) 
     (postId: bigint) => {
       const key = String(postId);
       setOverlay((o) => {
-        // Hand the vote's stake-weighted count delta to the chain read (the feed carries VoteTally
-        // now), but PRESERVE any co-pending repost count on the same post, and keep the viewer
-        // (colour) patch flagged `expected` so it survives until a fresh read re-observes the vote.
-        const counts = { ...o.counts };
-        const existing = counts[key];
-        if (existing) {
-          if (existing.repostCountDelta) counts[key] = { repostCountDelta: existing.repostCountDelta };
-          else delete counts[key];
-        }
+        // KEEP the count patch — do NOT hand it to the read yet. The home feed is head-id driven and a
+        // vote creates no new post, so it does NOT refetch on a vote; dropping the count here would snap
+        // the tally back to the pre-vote value (the "goes to 0" bug). Both the count AND viewer patches
+        // are retired TOGETHER (clearPost) once a fresh read actually reflects the vote — the feed's
+        // reconcile-refetch (useLiveFeed) or the per-card read (useViewerStates) does that. We only flag
+        // the viewer (colour) patch `expected` so the reconcile can fire; the TTL is the last-resort valve.
         const v = o.viewer[key];
-        const viewer = v ? { ...o.viewer, [key]: { ...v, expected: true } } : o.viewer;
-        return { ...o, counts, viewer };
+        if (!v) return o;
+        return { ...o, viewer: { ...o.viewer, [key]: { ...v, expected: true } } };
       });
       const prev = confirmTimers.current.get(key);
       if (prev) clearTimeout(prev);

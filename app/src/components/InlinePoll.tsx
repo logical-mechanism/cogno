@@ -21,8 +21,8 @@ export interface InlinePollProps {
 }
 
 export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
-  const { source, api, signer } = useSession();
-  const { poll, myChoice, castVote } = usePoll(source, postId, api, signer, gate.address ?? null);
+  const { source, api, signer, bestBlock } = useSession();
+  const { poll, myChoice, castVote } = usePoll(source, postId, api, signer, gate.address ?? null, bestBlock);
   if (!poll) return null; // still loading / no tallies — the post body already rendered above
   return (
     <PollCard

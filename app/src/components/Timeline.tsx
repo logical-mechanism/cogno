@@ -294,8 +294,8 @@ function PollHost({
   api: CognoApi | null;
   signer: PostingSigner | null;
 }) {
-  const { source } = useSession();
-  const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer, gate.address ?? null);
+  const { source, bestBlock } = useSession();
+  const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer, gate.address ?? null, bestBlock);
   return (
     <PostCard
       post={post}

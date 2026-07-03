@@ -184,6 +184,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     api,
     signer,
     me,
+    bestBlock,
   );
 
   // ── inline reply composer → submitReply(parent = focal) with the optimistic pending card (D11) ──

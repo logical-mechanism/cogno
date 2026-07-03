@@ -38,7 +38,6 @@ import { useRepost } from "@/hooks/useRepost";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { useMutation } from "@/hooks/useMutation";
 import { useCapacity } from "@/hooks/useCapacity";
-import { useHeads } from "@/hooks/useHeads";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { draftStatus } from "@/lib/chain/capacity";
@@ -67,7 +66,7 @@ function scrollContainerOf(el: HTMLElement | null): HTMLElement | null {
 
 export default function HomePage() {
   const router = useRouter();
-  const { api, client, signer, source, viewer, votingPower } = useSession();
+  const { api, signer, source, viewer, votingPower, bestBlock } = useSession();
 
   const me = viewer.address ?? null;
   const canFollow = source?.caps.follows === true;
@@ -81,7 +80,7 @@ export default function HomePage() {
   // useLiveFeed owns the new-posts pill buffer (a fresh OTHER-author post waits behind the pill so
   // the scroll never jumps; the viewer's own optimistic + confirmed post injects directly) AND the
   // optimistic overlay + presence-reconcile. It pages by post id — NO full `watchEntries`.
-  const forYou = useLiveFeed(source, me);
+  const forYou = useLiveFeed(source, me, bestBlock);
   const displayedForYou = forYou.posts;
   const bufferedCount = forYou.newCount;
   const ready = forYou.ready;
@@ -141,8 +140,6 @@ export default function HomePage() {
   const { toast } = useToaster();
 
   // ── inline composer capacity gate (doc 06 §9) ──────────────────────────────────────────────
-  const heads = useHeads(client);
-  const bestBlock = heads.best?.number ?? null;
   const { view: capacityView, consts: capacityConsts } = useCapacity(api, me, bestBlock);
   const [composerText, setComposerText] = useState("");
   const composerRateLimited = useMemo(() => {
