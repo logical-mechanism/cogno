@@ -167,8 +167,7 @@ $NODE gen-chainspec --base cogno-preprod \
 Copy `raw.json` to every node — it must be **byte-identical** everywhere or nodes won't peer.
 `gen-chainspec` prints the exact `key insert` + `run` lines for the keys you passed.
 
-**3 — Insert the validator's session secrets** into its keystore, FROM the key files (the scheme is
-read from each envelope — no jq/`--suri`):
+**3 — Insert the validator's session secrets** into its keystore, FROM the key files:
 
 ```bash
 $NODE key insert --base-path /var/lib/cogno/v1 --chain raw.json --key-file val-aura.skey    --key-type aura  # authoring
