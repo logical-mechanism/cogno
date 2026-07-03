@@ -9,4 +9,4 @@
 pycardano==0.13.0
 # Pin the major line: beacon.py's Plutus-Data CBOR must stay byte-identical to the Aiken beacon-name
 # (the LOCKED value in test_beacon.py is the guard). cbor2 6.x could change encoding behaviour.
-cbor2>=5.6,<6
+cbor2>=6.1.2,<7
