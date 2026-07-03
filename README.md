@@ -47,9 +47,8 @@ This is a permissioned, operator-run stack. Know what you're trusting before you
 The deeper, still-open hardening items — raising `MinAuthorities` above 1, wiring real GRANDPA
 equivocation/slashing, an independent CIP-8-verifier audit, and graduating past a single observer/producer
 — are deliberate **testnet** choices flagged as `MAINNET PREREQUISITE` in the source and detailed in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (Trust posture),
-[`docs/D2-custody-runbook.md`](docs/D2-custody-runbook.md), and
-[`docs/DECISION-REGISTER.md`](docs/DECISION-REGISTER.md).
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (Trust posture) and
+[`docs/D2-custody-runbook.md`](docs/D2-custody-runbook.md).
 
 ## Architecture — the stack
 

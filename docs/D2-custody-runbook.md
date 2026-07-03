@@ -1,33 +1,20 @@
-# DR-07 D2 — crown-jewel custody, rotation & audit-log runbook
+# Committee custody, rotation & audit-log runbook (the D2 rung)
 
-> **Partly historical — read this first.** The custody *policy* (a 3-of-5 committee across five
-> independent domains, key rotation, a public audit log) is still the model, but this doc predates the
-> all-Rust restart (`fork/all-rust`, spec 200) and its **commands + key inventory are stale**. Gone:
-> `sudo`/`set_code` and the `EnsureRoot` dev fallback (the chain is sudo-free — index 6 vacant; upgrades
-> go through `governed-upgrade` via `cogno-chain-cli upgrade authorize`/`apply`); the committee
-> `set_stake` and `anchor_ack` calls (the observer inherent is the SOLE weight writer, anchoring dropped
-> — index 12 vacant); the Cardano relayer/follower signing key (the node only READS db-sync, read-only);
-> and the JS tooling (`op.mjs`/`sync-weight.mjs`) + SubQuery indexer / `@polkadot/api` watcher (replaced
-> by the all-Rust `cogno-chain-cli committee` verbs + node-served PAPI reads). The links to the retired
-> layered specs (`L2-*`/`L3-*`) are dead. For the CURRENT operational how-to see
-> [`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md) (§6 federate-out) + [`../deploy/README.md`](../deploy/README.md);
-> for the current design see [`ARCHITECTURE.md`](ARCHITECTURE.md). Read the body below as *policy intent*,
-> not as runnable commands. (The "D2-shaped, not D2-trust" caveat still holds — it is about **committee**
-> custody, distinct from the observation "D4-shaped, not D4-trust" rung.)
-
-> **Status: RUNBOOK (M6).** The procedure for operating cogno-chain's privileged keys at **D2** — a
+> **Status: policy runbook.** The procedure for operating cogno-chain's privileged keys at **D2** — a
 > **3-of-5 k-of-t committee across five independent custody domains**, with a rotation procedure, an
-> on-chain committee-key update, and a public audit log. **DR-07 is a hard gate before any
-> mainnet / real-value run.**
+> on-chain committee-key update, and a public audit log. Reaching real D2 is a hard gate before any
+> mainnet / real-value run.
 >
-> M6 shipped the **mechanism** (the `FollowerCommittee`, the `EnsureProportionAtLeast<3,5>` origins,
-> the propose→vote→close tooling). This runbook is the **operational policy** that turns the mechanism
-> into actual D2 — the part that is people-and-process, not code.
+> The **mechanism** already exists from genesis (the `FollowerCommittee`, the
+> `EnsureProportionAtLeast<3,5>` origins, the propose→vote→close tooling in `cogno-chain-cli committee`).
+> This runbook is the **operational policy** that turns the mechanism into actual D2 — the part that is
+> people-and-process, not code.
 >
-> ⚠ **Honest status today: D2-SHAPED, not D2-TRUST.** On the single-operator preprod/dev stack ONE
-> operator holds all five committee keys. Every committee motion here exercises the exact on-chain
-> mechanism and origin of real D2, but the "five independent custody domains" do not yet exist. The
-> tooling prints this label on every run. §5 is the checklist to close the gap.
+> ⚠ **Honest status today: D2-SHAPED, not D2-TRUST.** On the single-operator stack ONE operator holds
+> all five committee keys. Every committee motion here exercises the exact on-chain mechanism and origin
+> of real D2, but the "five independent custody domains" do not yet exist. §5 is the checklist to close
+> the gap. For the current operational how-to see [`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md) (§6
+> federate-out) + [`../deploy/README.md`](../deploy/README.md); for the design, [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 
@@ -35,24 +22,27 @@
 
 | Key / origin | What it controls | Compromise = |
 |---|---|---|
-| **The 5 `FollowerCommittee` keys** (3-of-5) | `link_identity`/`revoke`, `set_stake`, `anchor_ack`, `force_set_capacity`, `add/remove_validator` | identity forgery + arbitrary posting weight + fake anchors + control of the validator set. The central crown jewel — **3 of 5 must collude.** |
-| **The Cardano relayer/follower signing key** | builds + submits the Cardano metadata/observation txs (anchor, vault reads) | can publish false Cardano-side evidence; cannot by itself move L3 state (that needs the committee). Keep in a **separate hot wallet with a native-script/multisig spend policy.** |
-| **`sudo` / `set_code`** (`EnsureRoot`) | the runtime-upgrade master key + the retained dev fallback on every origin | total control (can rewrite every rule). The **last** key to be retired (`L3-SPO-graduation.md` §3); until then it is the single largest risk and MUST live under the strongest custody of all. |
+| **The 5 `FollowerCommittee` keys** (3-of-5) | every privileged runtime call: the identity `revoke` moderation lever, `force_set_capacity`, the observer `set_enforcement` switch, `add/remove_validator`, and runtime upgrades (`governed-upgrade` `authorize_upgrade`) | control of moderation, the validator set, and the runtime code itself. The central crown jewel — **3 of 5 must collude.** There is **no sudo fallback** (the chain is sudo-free from genesis; index 6 vacant). |
+| **Each validator's session keys** (Aura sr25519 + GRANDPA ed25519) | block authoring + finality voting for that validator | can disrupt that validator's consensus participation. On the testnet there is no equivocation slashing (a `MAINNET PREREQUISITE`). Rotate both keys **in lockstep**. |
 
-The capacity/feeless anti-spam is **not** in this table — it gates *users*, not operators
-(`ECONOMICS.md` §8). Consensus + these keys are the trust boundary.
+Talk-capacity **weight** is deliberately **not** a custodial key: it is written by the `cardano-observer`
+inherent — a consensus output that every full node re-derives from db-sync (a divergence is a chain
+fork), not a value any operator can set. There is no off-chain follower, relayer, or Cardano signing key
+to protect: the node only **reads** db-sync (read-only), and L1 transactions are built and signed in the
+user's own wallet in the frontend. The capacity/feeless anti-spam is also out of scope here — it gates
+*users*, not operators (`ECONOMICS.md` §8). Consensus + the committee keys are the trust boundary.
 
 ---
 
-## 2. The four DR-07 requirements (and how each is met at D2)
+## 2. The four custody requirements (and how each is met at D2)
 
-DR-07 says: before any non-dev run, write down all four. Here they are.
+Before any non-dev run, write down all four. Here they are.
 
 ### 2.1 The k-of-t threshold — **3-of-5**
-`EnsureProportionAtLeast<AccountId, Instance1, 3, 5>` (DR-26). Three of five committee members must
-vote aye on a motion for it to execute. Rationale: tolerates **2** lost/compromised keys without loss
-of control AND **2** unavailable custodians without loss of liveness. (`MaxMembers = 7` leaves headroom
-for rotation overlap.)
+`EnsureProportionAtLeast<AccountId, Instance1, 3, 5>`. Three of five committee members must vote aye on a
+motion for it to execute. Rationale: tolerates **2** lost/compromised keys without loss of control AND
+**2** unavailable custodians without loss of liveness. (`MaxMembers = 7` leaves headroom for rotation
+overlap.)
 
 ### 2.2 The signer set — **five independent custody domains**
 "Independent" means a compromise of one domain gives an attacker **at most one** key. Diversify across
@@ -79,29 +69,28 @@ registry (NOT in this repo).
 
 ## 3. Rotation & revocation procedure
 
-Membership is mutable on-chain via `Collective::set_members` (gated by `SetMembersOrigin`, `EnsureRoot`
-in v1 → move to the committee itself / SPO selection at graduation, `L3-SPO-graduation.md` §5). To
-rotate a seat (planned roll, suspected compromise, or custodian departure):
+Membership is mutable on-chain via `Collective::set_members`, gated by the **committee itself** (the same
+3-of-5 `AuthorityOrigin` — there is no `EnsureRoot`, and an empty new-member set is rejected by the
+runtime brick-guard). To rotate a seat (planned roll, suspected compromise, or custodian departure):
 
 1. **Announce** out-of-band to all custodians: which seat, why, the new member's account, effective
    date. (For a *compromise*, skip the wait and treat as an emergency revocation — step 5.)
 2. **Pre-stage** the incoming custodian: generate the new key in its target custody domain, fund the
    account (propose/vote are fee-bearing), and verify it can sign a no-op test motion on a testnet.
-3. **Propose** the new member list via `set_members` (new prime, the swapped member, same or new size).
-   Until `SetMembersOrigin` is the committee itself, this is a sudo/governance action — log it (§4).
-4. **Enact + verify:** after the call lands, read `followerCommittee.members()` and confirm the new
-   set. The departing key is now powerless (collective reads membership live; in-flight motions the
+3. **Propose** the new member list via `set_members` (new prime, the swapped member, same or new size),
+   routed as a committee motion — log it (§4).
+4. **Enact + verify:** after the motion executes, read `followerCommittee.members()` and confirm the new
+   set. The departing key is now powerless (the collective reads membership live; in-flight motions the
    removed member voted on are re-tallied against the new set).
-5. **Emergency revocation (suspected compromise):** immediately `set_members` to drop the suspect seat
-   (3-of-the-remaining-4 can still operate, or temporarily drop to a 2-of-3 / 3-of-4 while re-staffing).
-   Rotate the **Cardano signing key** and **sudo** too if they shared any custody domain with the
-   suspect. Publish a post-mortem to the audit log.
+5. **Emergency revocation (suspected compromise):** immediately propose a `set_members` that drops the
+   suspect seat (3 of the remaining 4 can still operate, or temporarily drop to a 3-of-4 while
+   re-staffing). Publish a post-mortem to the audit log.
 6. **Periodic roll:** rotate at least one seat on a fixed cadence (e.g. every 6–12 months) so the
    rotation path is exercised and never rusty.
 
 > **Key-set lockstep reminder (consensus, not custody):** rotating a *validator's* session keys
 > (`session.setKeys`) is a different operation — Aura (sr25519) and GRANDPA (ed25519) are **distinct
-> keypairs**; update both together or finality silently breaks (`L3-chain.md` §8.1, M6 build §Gotchas).
+> keypairs**; update both together or finality silently breaks. See [`UPGRADES.md`](UPGRADES.md).
 
 ---
 
@@ -113,47 +102,42 @@ rotate a seat (planned roll, suspected compromise, or custodian departure):
   `Proposed{account, index, hash, threshold}` · `Voted{account, hash, voted, yes, no}` ·
   `Closed` · `Approved`/`Disapproved` · `Executed{result}`. Every privileged action is a motion, so
   **who proposed, who voted, and the outcome are all on-chain and public.**
-- **Per-action** (the target pallets): `StakeSet`, `IdentityLinked`/`Revoked`, `AnchorAcked`/`AckIgnored`,
-  `CapacityForced`, `ValidatorAdditionInitiated`/`ValidatorRemovalInitiated`.
+- **Per-action** (the target pallets): `IdentityLinked`/`Revoked`, `CapacityForced`, the observer's
+  enforcement toggle, and `ValidatorAdditionInitiated`/`ValidatorRemovalInitiated`.
 
 ### 4.1 The watchtower (monitoring policy)
-Run an independent watcher (anyone can — the data is public; this is the **D0 recomputer** of
-`L2-follower.md` §8) that subscribes to these events and alerts on:
+Run an independent watcher (anyone can — the data is public) that follows these events and alerts on:
 
-- **Cadence anomalies** — an `anchor_ack` gap longer than `ANCHOR_EVERY × block_time × N` (the relayer
-  died → tamper-evidence silently lapses, DR-22), or a burst of `set_stake` far above the observed
-  vault-lock rate (a possibly-compromised follower).
-- **Unexpected actors** — a `Proposed`/`Voted` from an account **not** in the published committee list,
-  or a `Sudid` (sudo was used on a path that should be committee-only).
+- **Unexpected actors** — a `Proposed`/`Voted` from an account **not** in the published committee list.
 - **Membership changes** — any `set_members` / change in `followerCommittee.members()` that was not
-  announced (§3.1) → treat as a compromise until proven otherwise.
-- **Selection integrity** (D0) — independently recompute what `set_stake`/`link_identity` *should* be
-  from public Cardano state and diff against what the committee actually wrote. A mismatch is provable
-  fraud (the whole point of the D0 auditability claim).
+  announced (§3) → treat as a compromise until proven otherwise.
+- **Enforcement changes** — any flip of the observer's `set_enforcement` switch.
+- **Observation integrity** — because the `cardano-observer` inherent is deterministic, every full node
+  already re-derives the weight and **rejects a block whose observation disagrees** (a divergence is a
+  chain fork). A watcher can additionally recompute the expected weight from public Cardano state and
+  compare against the on-chain `TalkStake` ledger.
 
-A minimal watcher can subscribe with the same `@polkadot/api` the M6 tooling uses (dynamic metadata,
-no codegen); the indexer (`services/indexer/`) already folds these events for the public feed.
+A minimal watcher can subscribe over the node's own PAPI/JSON-RPC (the node serves every read from its
+runtime API; there is no separate indexer).
 
 ---
 
 ## 5. Closing the gap: single-operator (today) → real D2
 
-The mechanism is done; this is the remaining people-and-process work, in order:
+The mechanism and the sudo-free origins are already done; this is the remaining people-and-process work,
+in order:
 
 1. **Recruit the five custodians** across genuinely independent domains (§2.2) — the hard,
    non-technical step.
 2. **Distribute the keys**: each custodian generates their own key in their own domain; the operator
    never sees seats 2–5. Seat the five accounts via `set_members`.
-3. **Run motions as true co-signs**: each custodian runs `vote` against the proposal hash with **their
-   own key on their own infra** — not one operator scripting all five (which is what the M6 tooling
-   does today, and what the honesty label flags). The `op.mjs`/`sync-weight.mjs` propose step stays
-   centralized (anyone can propose), but the **votes** must be independent.
-4. **Harden the two SPOF services** (DR-22): health checks + missed-`anchor_ack` alerting + a backfill
-   path; the Cardano signing key in a separate hot wallet with a native-script/multisig spend policy.
-5. **Stand up ≥2 independent watchtowers** (§4.1) run by different parties.
-6. **Migrate the ⚠ origins off `EnsureRoot`** (`set_members`, `set_code`) and **drop `pallet-sudo`**
-   (`L3-SPO-graduation.md` §3) — the point at which "3-of-5 controls the chain" becomes literally true
-   with no escape hatch.
+3. **Run motions as true co-signs**: each custodian runs `cogno-chain-cli committee vote` against the
+   proposal hash with **their own key on their own infra** — not one operator scripting all five (which
+   is what a single-operator stack does today, and what the honesty label flags). Anyone may *propose*;
+   the **votes** must be independent.
+4. **Stand up ≥2 independent watchtowers** (§4.1) run by different parties.
+5. **Raise the committee floor** from "non-empty" to a real quorum (e.g. ≥3) once the seats are
+   distributed (the runtime brick-guard currently only blocks the empty set — a `FEDERATION PREREQUISITE`).
 
 Until steps 1–3 are real, label every privileged action **"single-operator, D2-shaped, not D2-trust."**
 The tooling does this automatically; keep it in the user-facing honesty badges too.

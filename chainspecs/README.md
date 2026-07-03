@@ -7,6 +7,11 @@ Committed **raw chain specs** for cogno-chain networks — the file you pass a n
 |---|---|---|---|
 | `cogno-raw.json` | **Cogno** (operator-run preprod testnet, `id: cogno`, `chainType: Live`) | `0xde7a60b1675e2652cd40e8a329222a952d41d1597b219904e68b66a9dd0ff33c` | `cogno-chain-runtime` spec 117 |
 
+> **Note.** `cogno-raw.json` is the **pre-restart** genesis (spec 117). The `fork/all-rust` restart
+> relaunches the chain at a **fresh genesis** on the current `spec_version` 200 runtime — an operator
+> ceremony that has not run yet (see [`../docs/PREPROD-BRINGUP.md`](../docs/PREPROD-BRINGUP.md)). When it
+> does, regenerate this spec (below) and update the genesis-hash + spec row.
+
 These are **raw** specs: genesis is pre-encoded storage and embeds the runtime wasm
 (`:code`, ~480 KB), so the file is ~950 KB. That weight is the price of a node-ready,
 genesis-pinned spec anyone can sync against without rebuilding the runtime.
@@ -46,5 +51,4 @@ spec) from the `.skey` files produced by `cogno-chain-cli key gen` (kept offline
 genesis, copy `network/raw.json` here (trimming the LAN bootnode) and update the genesis hash above.
 
 > **Regenerating the network changes the genesis** — every account, identity bind, and post from the
-> previous genesis is gone, and the indexer's `services/indexer/GENESIS.txt` pin must be re-set to the
-> new hash before it will index the new chain.
+> previous genesis is gone. Point every node (and the frontend's RPC endpoint) at the new spec.

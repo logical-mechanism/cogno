@@ -1,23 +1,24 @@
 # cogno-chain — Economic Model: Stake-Weighted Talk Capacity
 
 > **Historical design doc.** This predates the all-Rust restart (`fork/all-rust`) and describes the
-> pre-restart design: it references the retired layered specs (`L1`–`L5`, `PLAN.md`), older spec
-> versions, and removed components (the off-chain follower, sudo). Kept for design rationale; the
-> **current** system overview is [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> pre-restart design. It references planning artifacts that are **not part of this repo** — the retired
+> `L1`–`L5` layered specs, `PLAN.md`, the `M*-build.md` notes, and an internal decision register cited
+> inline as `DR-NN` — plus older spec versions and removed components (the off-chain follower, sudo).
+> Kept for design rationale; the **current** system overview is [`ARCHITECTURE.md`](ARCHITECTURE.md), and
+> the runtime is now `spec_version` 200.
 
-> **Status: IMPLEMENTED through M8 (runtime spec 107).** This document is the original economic
-> design; see [`docs/M*-build.md`](docs/) (esp. M2c/M2d/M5) for what was built. It specifies the
-> model that replaces per-post fees. Pairs with `PLAN.md` (Approach A). Honest about caveats;
+> **Status: IMPLEMENTED (present in the current `spec_version` 200 runtime).** This document is the
+> original economic design. It specifies the model that replaces per-post fees. Honest about caveats;
 > numbers are illustrative and runtime-tunable, not consensus-critical magic.
 > **One-line thesis:** Your stake is your rate limit. Lock ADA on Cardano → it grants a regenerating "talk capacity" on the solochain → posting is feeless and consumes capacity → capacity refills over time. No money is spent per post.
 
-> **RECONCILED to docs/DECISION-REGISTER.md (2026-06-16).** The decisions below override this doc where they conflict; the inline text has been corrected to match.
+> **RECONCILED design decisions.** The decisions below (tracked during the build-out in a now-retired internal decision register, cited as `DR-NN`) override the older text where they conflict; the inline text has been corrected to match, and they are reflected in the code.
 > - **DR-13 — v1 has NO on-chain timelock / NO `lock_until`; commitment is enforced by L3 regen/clamp (clamp-only decay).** The repeated claim that the unstake cooldown **must live on Cardano in `talk-stake.ak`** as a `lock_until` datum field is **SUPERSEDED**. In v1 there is no `lock_until`, no Aiken validity-interval cooldown check, and no runtime timelock. The anti-toggle commitment is structural: talk capacity **starts at zero**, accrues **only while the lock stays parked**, and **clamps to zero on unlock** (clamp-only decay). An opt-in `lock_until` commitment-bonus is **DEFERRED** (if ever added: decay-toward-new-cap + re-tighten to the whole owner Address first). This supersedes **§1 caveat 5**, the **§4.4 "Note one exception" cooldown carve-out**, **§8 "Unstake / power-down handling"**, **§9 §6/§8 plan-deltas referencing the `lock_until` cooldown**, and **§10 Q6**.
 > - **DR-29 — reward distribution deferred to M5; v1 weight source = plain Lock read via db-sync (Ogmios submits).** The yield-bearing "lock-that-delegates" hybrid and any reward routing are **not** v1. v1 reads exact locked lovelace from a **plain Lock** via db-sync. This sharpens §5/§8/§9.
 > - **DR-01 — identity = the WHOLE owner Address (payment + stake credential), not `owner_pkh`.** The follower aggregates lock UTxOs and keys the 1:1 binding on the owner **Address** (and `blake2b_256(owner Address)` on L3), not a bare 28-byte `owner_pkh`. Read the inline `owner_pkh` references in §1/§2/§6/§8 as the owner **Address** per DR-01.
 > - **DR-10 / DR-10b / DR-11 — capacity constants:** regen window **~5h** (worked-example baseline 10 ADA → ~48 posts/day sustained, burst ~10) is the v1 baseline; **linear (capped-linear) + hard ceiling** ships in v1, **sqrt only later behind a proven gate**; `MaxLength = 512`, `MaxPostsPerAuthor = 10_000` (tunable). This decides **§10 Q1** (regen window ~5h) and **§10 Q2** (curve = capped-linear v1).
 > - **DR-12 / DR-08 (§10 Q8) — onboarding sweetener = accept a short charge-up** (copy-only; a new identity starts at 0). Decides **§10 Q8**.
-> - See **§10** for the per-question dispositions; the "Open questions for the owner" items below are **RESOLVED in docs/DECISION-REGISTER.md (2026-06-16)** — that doc is authoritative.
+> - See **§10** for the per-question dispositions; the "Open questions" items below were **RESOLVED** during the build-out — the resolutions are inlined here and reflected in the code.
 
 ---
 
@@ -418,7 +419,7 @@ Directly actionable edits, by section:
 
 ---
 
-## 10. Open questions for the owner
+## 10. Open questions (resolved during the build-out)
 
 > **RESOLVED in docs/DECISION-REGISTER.md (2026-06-16) — see that doc.** The dispositions are inlined per-question below; the original detail is preserved.
 

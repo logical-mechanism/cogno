@@ -85,6 +85,6 @@ hovering shows the plain-language detail. They encode the "usable ≠ trustless"
 | `capacity: follower-metered (v1)` | locking ADA earns capacity only **after** the trusted follower observes the lock on Cardano and writes your weight — a successful lock is "submitted", not "you can post now" |
 | `anchor: evidence, not enforcement` | the Cardano anchor lets a third party **detect** a silent history rewrite after the fact; it cannot prevent a bad block, fork, or censorship |
 
-These mirror the prose posture in the service READMEs and `docs/DECISION-REGISTER.md` (DR-07). The
+These mirror the trust posture documented in [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md). The
 3-of-5 committee path that backs the privileged calls is real but **D2-SHAPED, not D2-TRUST** on a
 single-operator stack.

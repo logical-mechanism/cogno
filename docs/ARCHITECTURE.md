@@ -2,8 +2,7 @@
 
 A single, current overview of the whole system. It replaces the older layered design specs
 (`L1`–`L5`) and the frontend spec, which were build-era design documents; their detail now lives in
-the code and in the focused per-mechanism docs linked below. For the *why* behind the big choices see
-[`DECISION-REGISTER.md`](DECISION-REGISTER.md).
+the code and in the focused per-mechanism docs linked below.
 
 ## What it is
 
