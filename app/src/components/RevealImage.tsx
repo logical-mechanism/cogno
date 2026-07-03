@@ -29,6 +29,12 @@ export interface RevealImageProps {
   hideLabel?: string;
   /** Icon-only cover (no visible label) — for tight boxes. */
   compact?: boolean;
+  /**
+   * Skip the click-to-reveal cover and load the image straight away — for a TRUSTED image (the
+   * viewer's OWN banner on their own profile). The gate exists to not auto-fetch an ARBITRARY host's
+   * image; your own image you chose is not that. No re-cover affordance when eager (nothing to restore).
+   */
+  eager?: boolean;
   /** Rendered if the image fails to load. Defaults to a small "unavailable" note. */
   fallback?: ReactNode;
   /** When set + revealed, the image is a new-tab link to the source (so it stays inspectable). */
@@ -46,13 +52,15 @@ export function RevealImage({
   label = "Show image",
   hideLabel = "Hide image",
   compact = false,
+  eager = false,
   fallback,
   href,
   className,
   style,
 }: RevealImageProps) {
   const key = revealKey ?? src;
-  const shown = useRevealed(key);
+  // A trusted (eager) image is always shown — no cover, and (below) no re-cover affordance.
+  const shown = useRevealed(key) || eager;
   const [broken, setBroken] = useState(false);
 
   const root = [styles.root, className].filter(Boolean).join(" ");
@@ -119,20 +127,23 @@ export function RevealImage({
   return (
     <span className={root} style={style}>
       {inner}
-      {/* Re-cover: undo an accidental / unwanted reveal, restoring the gate. */}
-      <button
-        type="button"
-        className={styles.hideBtn}
-        onClick={(e) => {
-          e.stopPropagation();
-          e.preventDefault();
-          unreveal(key);
-        }}
-        aria-label={hideLabel}
-        title={hideLabel}
-      >
-        <IconEyeOff className={styles.hideIcon} aria-hidden />
-      </button>
+      {/* Re-cover: undo an accidental / unwanted reveal, restoring the gate. Not for an eager
+          (trusted) image — it has no cover to go back to. */}
+      {!eager && (
+        <button
+          type="button"
+          className={styles.hideBtn}
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            unreveal(key);
+          }}
+          aria-label={hideLabel}
+          title={hideLabel}
+        >
+          <IconEyeOff className={styles.hideIcon} aria-hidden />
+        </button>
+      )}
     </span>
   );
 }
