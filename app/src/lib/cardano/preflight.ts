@@ -1,6 +1,6 @@
 // Client-side safety gate before submitting a lock — fail closed on anything that doesn't match
 // the contract's create rule, so a UI bug can't park funds in an unspendable shape. The validator
-// is the authority; this is belt-and-suspenders that mirrors its mint arm (docs/L5-frontend.md §7.7).
+// is the authority; this is belt-and-suspenders that mirrors its mint arm.
 import { MIN_LOCK } from "./blueprint";
 import { beaconNameHex } from "./beacon";
 

@@ -1,5 +1,10 @@
 # cogno-chain — Economic Model: Stake-Weighted Talk Capacity
 
+> **Historical design doc.** This predates the all-Rust restart (`fork/all-rust`) and describes the
+> pre-restart design: it references the retired layered specs (`L1`–`L5`, `PLAN.md`), older spec
+> versions, and removed components (the off-chain follower, sudo). Kept for design rationale; the
+> **current** system overview is [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 > **Status: IMPLEMENTED through M8 (runtime spec 107).** This document is the original economic
 > design; see [`docs/M*-build.md`](docs/) (esp. M2c/M2d/M5) for what was built. It specifies the
 > model that replaces per-post fees. Pairs with `PLAN.md` (Approach A). Honest about caveats;

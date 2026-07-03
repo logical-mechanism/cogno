@@ -1,12 +1,12 @@
 //! # Validator Set pallet (cogno-chain, M6)
 //!
 //! **The MUTABLE Aura + GRANDPA validator set** — the block-producing authorities are no longer
-//! frozen at genesis (`L3-chain.md` §8.2). This pallet is vendor-forked from
+//! frozen at genesis. This pallet is vendor-forked from
 //! `gautamdhameja/substrate-validator-set` (a reference pattern, tracked ~`polkadot-v1.13.0`) and
 //! ported to this SDK: `#[frame_support::pallet]` on frame v46 and the newer `pallet-session`
 //! (`Currency` / `KeyDeposit` / `HoldReason` / `DisablingStrategy`).
 //!
-//! ## How it drives consensus (the throw-nothing-away wiring, `L3-chain.md` §8.2)
+//! ## How it drives consensus (the throw-nothing-away wiring)
 //! - It is the [`pallet_session::SessionManager`]: each session rotation, `new_session` returns the
 //!   current [`Validators`] set, and `pallet-session` feeds that set to `pallet-aura` and
 //!   `pallet-grandpa` via their `OneSessionHandler` impls. **Aura and GRANDPA therefore derive their
@@ -18,13 +18,13 @@
 //!   one session, then enacts it the next (~2 sessions). It is never applied mid-session.
 //! - [`Config::MinAuthorities`] is the floor: `remove_validator` refuses to drop the active set below
 //!   it, so the operator cannot accidentally strand the chain with zero authorities. (On a 1–3
-//!   authority chain GRANDPA finality can still stall with one offline authority — `L3-chain.md`
-//!   §8.1; the floor only prevents *zero*.)
+//!   authority chain GRANDPA finality can still stall with one offline authority; the floor only
+//!   prevents *zero*.)
 //!
 //! ## The dormant im-online plumbing (NOT wired in v1)
 //! [`OfflineValidators`], `mark_for_removal`, `remove_offline_validators`, and the [`ReportOffence`]
 //! impl are ported from the fork so that wiring `pallet-im-online` later (auto-removing a provably
-//! offline authority before it crosses the 1/3 GRANDPA-stall line, `L3-chain.md` §8.2) is a
+//! offline authority before it crosses the 1/3 GRANDPA-stall line) is a
 //! runtime-only change. In v1 nothing reports offences, so this plumbing is inert.
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -70,12 +70,12 @@ pub mod pallet {
 		/// Origin allowed to add or remove a validator. In cogno-chain this is the shared
 		/// `AuthorityOrigin` (M5, DR-07): `EnsureRoot`/sudo OR a 3-of-5 `FollowerCommittee`
 		/// supermajority. It stays an `EnsureOrigin` so the graduation to an Ariadne/SPO
-		/// selection pallet (`L3-chain.md` §8.3) is a signature-free swap.
+		/// selection pallet is a signature-free swap.
 		type AddRemoveOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
 		/// Minimum number of validators the active set may never drop below on removal. The hard
 		/// floor that stops the operator stranding the chain at zero authorities (it does NOT make
-		/// finality safe at low counts — see the module docs / `L3-chain.md` §8.1).
+		/// finality safe at low counts — see the module docs).
 		#[pallet::constant]
 		type MinAuthorities: Get<u32>;
 
@@ -383,7 +383,7 @@ impl<T: Config> ValidatorSetWithIdentification<T::ValidatorId> for Pallet<T> {
 }
 
 /// The im-online offence sink (dormant in v1): a reported offender is queued for auto-removal at the
-/// next session. Wired only when `pallet-im-online` is added (`L3-chain.md` §8.2).
+/// next session. Wired only when `pallet-im-online` is added.
 impl<T: Config, O: Offence<(T::ValidatorId, T::ValidatorId)>>
 	ReportOffence<T::AccountId, (T::ValidatorId, T::ValidatorId), O> for Pallet<T>
 {

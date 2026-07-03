@@ -1,5 +1,11 @@
 # DR-07 D2 — crown-jewel custody, rotation & audit-log runbook
 
+> **Partly historical.** The committee-custody procedure is current, but this doc predates the all-Rust
+> restart (`fork/all-rust`) and still lists keys that no longer exist (`sudo`/`set_code`, the anchor
+> relayer, the follower) and references the retired layered specs. Treat the sudo/anchor rows as removed
+> (the chain is sudo-free; runtime upgrades go through `governed-upgrade`). Current overview:
+> [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 > **Status: RUNBOOK (M6).** The procedure for operating cogno-chain's privileged keys at **D2** — a
 > **3-of-5 k-of-t committee across five independent custody domains**, with a rotation procedure, an
 > on-chain committee-key update, and a public audit log. **DR-07 is a hard gate before any

@@ -79,7 +79,7 @@ The danger window is enacting while validators are still on an incompatible bina
 if **more than 1/3 of authorities** can't follow, **finality stalls** (blocks may still be produced,
 but nothing finalizes). On this chain that bites fast: `MinAuthorities = 1`, equivocation reporting
 is a no-op, and there is no slashing — coordination is purely operational. See
-[`L3-SPO-graduation.md`](L3-SPO-graduation.md).
+[`ARCHITECTURE.md`](ARCHITECTURE.md) (Trust posture).
 
 ## Encoding contracts (keep these stable)
 

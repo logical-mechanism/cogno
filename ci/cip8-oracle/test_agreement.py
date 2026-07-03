@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Cogno-Follower verification tests — the two-sided byte agreement (DONE-WHEN #3) + the negative
-tests (the wrong-address release gate, L2-follower.md §12). Generates REAL CIP-8 signatures with a
+tests (the wrong-address release gate). Generates REAL CIP-8 signatures with a
 headless MeshJS wallet (app/scripts/m2-cip8-fixture.mjs) and runs them through the actual
 verify.py path, so this proves the frontend's signData and the follower's pycardano verify agree
 on the exact bytes — and that a bad proof is rejected.

@@ -1,5 +1,5 @@
 # Pinned for polkadot-sdk templates/solochain @ polkadot-stable2603-3
-# (commit e3737178ec726cffe506c907263aaaa417893fd0). See docs/M0-build.md (DR-03).
+# (commit e3737178ec726cffe506c907263aaaa417893fd0).
 #
 # IMPORTANT: pinned to rustc 1.90.0 (NOT rolling "stable"). The current stable (1.96.0)
 # fails to build this SDK's WASM runtime — rust-lld reports every sp_io host function as an

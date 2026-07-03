@@ -31,7 +31,7 @@ use sp_keyring::{Ed25519Keyring, Sr25519Keyring};
 // Returns the genesis config presets populated with given parameters.
 //
 // M6 (DR-26): authorities are seated through `pallet-session`, NOT the aura/grandpa GenesisConfig
-// (the two are mutually exclusive — `L3-chain.md` §8.2). Each initial authority registers its
+// (the two are mutually exclusive). Each initial authority registers its
 // `(Aura, Grandpa)` session keys here; `pallet-validator-set` seats the same accounts as the
 // initial mutable validator set. The aura/grandpa pallets then derive their authorities from the
 // session at genesis (via `SessionHandler::on_genesis_session`) and at every rotation thereafter.

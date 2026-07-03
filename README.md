@@ -41,7 +41,7 @@ This is a permissioned, operator-run stack. Know what you're trusting before you
 The deeper, still-open hardening items — raising `MinAuthorities` above 1, wiring real GRANDPA
 equivocation/slashing, replacing the single trusted follower, and dropping sudo — are deliberate
 **testnet** choices flagged as `MAINNET PREREQUISITE` in the source and detailed in
-[`docs/L3-SPO-graduation.md`](docs/L3-SPO-graduation.md),
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (Trust posture),
 [`docs/D2-custody-runbook.md`](docs/D2-custody-runbook.md), and
 [`docs/DECISION-REGISTER.md`](docs/DECISION-REGISTER.md).
 
@@ -374,7 +374,7 @@ deeper mainnet prerequisites, by design): sudo retained as an escape hatch, `Min
 GRANDPA equivocation as a no-op (no slashing), the single trusted follower, and — until you split the
 committee seats across independent custodians — D2-*shaped* authority. See
 [`docs/D2-custody-runbook.md`](docs/D2-custody-runbook.md) and
-[`docs/L3-SPO-graduation.md`](docs/L3-SPO-graduation.md).
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ### Configuration reference
 
@@ -408,7 +408,7 @@ cogno-chain/
 ├─ contracts/                  # the Aiken L1 `talk_vault` validator (+ audits/)
 ├─ app/                        # Next.js 14 static-export frontend (PAPI + MeshJS) — see app/README.md
 ├─ services/                   # cogno-follower · anchor-relayer · committee · indexer · _shared
-├─ docs/                       # design specs (PLAN, ECONOMICS, L1–L5), DECISION-REGISTER, build logs
+├─ docs/                       # ARCHITECTURE.md + design deep-dives + operator runbooks
 └─ scripts/                    # fetch-chainspec.mjs + run-tracking-node.sh + acceptance/ (headless test)
 ```
 
@@ -446,8 +446,7 @@ pallet); `talk-stake` only supplies the weight the meter reads.
   `spec_version` only for encoding-affecting changes and regenerate PAPI descriptors afterward.
 - **Upgrading a live chain** (adding features, soft vs hard forks, the mixed-validator question,
   storage migrations, enactment): [`docs/UPGRADES.md`](docs/UPGRADES.md).
-- **Design & build history:** the full L1–L5 design, the economic model, and the canonical
-  [`DECISION-REGISTER.md`](docs/DECISION-REGISTER.md) live in [`docs/`](docs/), alongside per-milestone
-  build logs ([`docs/M*-build.md`](docs/)) recording how the stack was built incrementally (M0–M10).
+- **Design:** the system overview is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the economic
+  model, the observation mechanism, and the identity gate have focused deep-dives in [`docs/`](docs/).
 - **Contributing in this repo:** see [`CLAUDE.md`](CLAUDE.md) for conventions and the gotchas that
   bite (live contract hash, nvm-vs-snap node, committee-not-sudo, the rustc pin).

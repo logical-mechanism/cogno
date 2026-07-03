@@ -3,8 +3,7 @@
 //! **The anti-Sybil identity anchor (M2): a hard 1:1 binding between a Cardano owner
 //! Address and a Substrate posting account.** This is the "Cardano READ link" — the gate that
 //! turns an anonymous sr25519 key into a Cardano-anchored identity so that one Cardano owner
-//! Address maps to exactly one posting account, and back (`L3-chain.md` §4.1, `L2-follower.md`
-//! §7/§8, DR-01/DR-02/DR-07/DR-14).
+//! Address maps to exactly one posting account, and back (DR-01/DR-02/DR-07/DR-14).
 //!
 //! ## What is bound (DR-01)
 //! The key is the **32-byte `blake2b_256` of the serialized owner Cardano Address** (== the L1
@@ -37,7 +36,7 @@
 //! 3-of-5 committee signature-free) now gates ONLY [`Call::revoke`] — the manual-operator-ban moderation
 //! lever (DR-14), which tombstones an identity permanently. ⚠ The verifier itself is the anti-Sybil crown
 //! jewel — a bug forges any identity; it is hardened by an adversarial threat-model + tests but is NOT
-//! externally audited (MAINNET PREREQUISITE, see [`cip8`] + `docs/L2-follower.md` §7.2).
+//! externally audited (MAINNET PREREQUISITE, see [`cip8`]).
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -241,8 +240,8 @@ pub mod pallet {
 		/// `ed25519` verify it forces. See the PR's DoS analysis.
 		///
 		/// ⚠ The verifier is the anti-Sybil crown jewel — a bug forges any identity. It is hardened by an
-		/// adversarial threat-model + tests but has NOT had a formal external audit (`L2-follower.md`
-		/// §7.2): **MAINNET PREREQUISITE — independent verifier audit** before real value.
+		/// adversarial threat-model + tests but has NOT had a formal external audit:
+		/// **MAINNET PREREQUISITE — independent verifier audit** before real value.
 		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::link_identity_signed())]
 		pub fn link_identity_signed(

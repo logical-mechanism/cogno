@@ -1398,8 +1398,8 @@ mod migration_v4 {
 
 /// **DR-06 — clamp-latency ≤ grant-latency (the asymmetric-safety property).** The follower's
 /// failure modes are asymmetric: a slow GRANT is safe-but-stale, but a slow CLAMP leaves a
-/// stale-positive weight — voice no longer backed by locked ADA — which is the dangerous one
-/// (`L2-follower.md` §8.2). So a clamp (weight → 0 on unlock) must take effect no slower than a
+/// stale-positive weight — voice no longer backed by locked ADA — which is the dangerous one.
+/// So a clamp (weight → 0 on unlock) must take effect no slower than a
 /// grant. On L3 this falls out of the capacity math: a grant only raises the future ceiling and
 /// must regenerate over the window (latency > 0), whereas a clamp drops usable capacity to 0 on
 /// the very next read (latency 0). We measure both latencies directly across a sweep of weights

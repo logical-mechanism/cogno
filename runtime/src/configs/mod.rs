@@ -285,7 +285,7 @@ pub type AuthorityOrigin = EnsureProportionAtLeast<AccountId, Instance1, 3, 5>;
 // the session each rotation (their `OneSessionHandler` impls), NOT from static genesis — the two
 // are mutually exclusive (the aura/grandpa genesis is left empty; authorities are seated through
 // `SessionConfig`). A queued add/remove is applied at a session boundary (~2 sessions), never
-// mid-session (`L3-chain.md` §8.2).
+// mid-session.
 parameter_types! {
 	/// Session length in blocks. DEV-TUNED short (10 blocks ≈ 1 min at 6s/block) so an add/remove
 	/// becomes active quickly in the showcase; a queued change applies at the next-but-one boundary
@@ -320,8 +320,7 @@ impl pallet_session::Config for Runtime {
 /// Configure pallet-validator-set (M6, DR-26): the mutable Aura+GRANDPA validator set. `add_validator`
 /// / `remove_validator` are gated by the SAME `AuthorityOrigin` as the M5 crown jewels (sudo OR the
 /// 3-of-5 FollowerCommittee) — one operator committee governs identity, weight, anchoring, AND who
-/// produces blocks (the split into a separate validator committee is a documented graduation step,
-/// `L3-chain.md` §8.3).
+/// produces blocks (the split into a separate validator committee is a documented graduation step).
 ///
 /// ## `MinAuthorities` is a finality-safety parameter, not just an anti-zero guard
 /// The floor stops `remove_validator` ever stranding the chain at zero authorities — but it ALSO
@@ -329,7 +328,7 @@ impl pallet_session::Config for Runtime {
 /// single-/dual-operator preprod testnet (a higher floor would lock the operator out of removing a
 /// validator on a set already at the floor). It does NOT make finality safe at low counts: GRANDPA
 /// tolerates `f` faults only at `3f+1` authorities, so a 1–3 authority set can stall finality with one
-/// offline node (`L3-chain.md` §8.1).
+/// offline node.
 ///
 /// ⚠ MAINNET PREREQUISITE: a value-bearing / public multi-validator launch MUST raise this to at
 /// least `3f+1` for the target fault tolerance (≥`4` to tolerate one Byzantine/offline authority), in

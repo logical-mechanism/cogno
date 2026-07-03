@@ -6,7 +6,7 @@ Cardano-sourced talk capacity, and the Cardano anchor are all visible, not hidde
 app-chain with **PAPI** (`polkadot-api`) and to Cardano with **MeshJS** (CIP-30 wallet + Blockfrost).
 There is no backend and no telemetry — it self-hosts on any static host (`output: "export"`, see
 `next.config.mjs`). For the full project, see the top-level [`README.md`](../README.md); for the
-design, [`docs/L5-frontend.md`](../docs/L5-frontend.md).
+design, [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
 
 ## Run
 

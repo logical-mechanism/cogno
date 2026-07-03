@@ -1,5 +1,11 @@
 # cogno-chain — Consolidated Decision Register
 
+> **Historical design doc.** This predates the all-Rust restart (`fork/all-rust`) and records decisions
+> in the pre-restart idiom: it references the retired layered specs (`L1`–`L5`, `PLAN.md`), the
+> milestone (`M*`) scheme, and removed components (the off-chain follower, sudo, anchoring). Kept as the
+> rationale for *why* the settled decisions were made; the **current** system overview is
+> [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 > This is the single source of truth for the cogno-chain stack (L1 Cardano vault/beacon → L2 follower → L3 runtime → L4 reads → L5 frontend). It records **every settled decision** (so future sessions never re-litigate them) and **every open question**, each classified BLOCKING vs DEFERRABLE with an owner. It **supersedes the scattered per-doc "Open questions" sections** (`PLAN.md` §10, `ECONOMICS.md` §10, `L1` §11, `L2` §11, `L3` §11, `L4` §10, `L5` §13) as the canonical index — those sections remain as detail, this register is the entry point.
 >
 > **How to use it.** Starting a build session? Read §2 (the critical path) top-down and resolve the BLOCKING items in order. Picking up a layer? Jump to its settled-decisions theme (§4–§15, Part B) and its open rows (§3 for blocking, §16 for deferrable, Part B). Found something you think is undecided? Search here first — it is probably settled and cited.

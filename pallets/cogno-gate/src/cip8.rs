@@ -31,7 +31,7 @@
 //!
 //! ⚠ MAINNET PREREQUISITE: this verifier is the anti-Sybil crown jewel — a bug forges any identity. It is
 //! hardened by tests + a 4-agent adversarial threat-model, but it has NOT had a formal external audit
-//! (`docs/L2-follower.md` §7.2 "Wormhole-class"). Independent audit required before mainnet/real value.
+//! (a "Wormhole-class" forgery risk). Independent audit required before mainnet/real value.
 
 use alloc::vec::Vec;
 
