@@ -14,8 +14,8 @@ import { useMemo, useState } from "react";
 import styles from "./Avatar.module.css";
 import { identiconFor } from "@/lib/identicon";
 import { resolveImageSrc } from "@/lib/media";
-import { reveal, useRevealed } from "@/lib/reveal";
-import { IconEye } from "./icons";
+import { reveal, unreveal, useRevealed } from "@/lib/reveal";
+import { IconEye, IconEyeOff } from "./icons";
 import type { AvatarSize } from "./kit";
 
 export interface AvatarProps {
@@ -114,16 +114,39 @@ export function Avatar({ address, src, size = "md", dim, name, onClick }: Avatar
     <Identicon address={address} />
   );
 
+  // Re-cover ("hide") overlay for a REVEALED remote avatar — undo an unwanted reveal. Only on the
+  // prominent sizes (lg/xl) where it's legible + not noise on tiny feed avatars; the identicon has
+  // nothing to hide. A NON-interactive <span> (like the cover) so it can live inside a clickable
+  // parent/button; mouse-first (no keyboard path), mirroring the avatar's reveal affordance. On hover
+  // it previews the covered state (solid fill + eye-off); a tap re-covers the src everywhere.
+  const hideable = hasImg && (size === "lg" || size === "xl");
+  const hideOverlay = hideable ? (
+    <span
+      className={styles.hide}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        unreveal(resolvedSrc as string);
+      }}
+      aria-label={`Hide ${alt}`}
+      title={`Hide ${alt}`}
+    >
+      <IconEyeOff className={styles.hideIcon} aria-hidden />
+    </span>
+  ) : null;
+
   if (onClick) {
     return (
       <button type="button" className={cls} style={style} onClick={onClick} aria-label={alt}>
         {inner}
+        {hideOverlay}
       </button>
     );
   }
   return (
     <span className={cls} style={style} role="img" aria-label={alt}>
       {inner}
+      {hideOverlay}
     </span>
   );
 }

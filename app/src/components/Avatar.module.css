@@ -56,3 +56,33 @@
   width: 55%;
   height: 55%;
 }
+
+/* re-cover ("hide") overlay over a REVEALED avatar — appears on hover as a preview of the covered
+ * state (solid fill + eye-off); a tap restores the gate. Mouse-first (no touch/keyboard surface),
+ * matching the avatar's reveal affordance; RevealImage carries the keyboard/touch-accessible undo. */
+.hide {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--cg-bg-subtle);
+  color: var(--cg-text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--cg-motion-fast) var(--cg-ease-standard),
+    color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.avatar:hover .hide {
+  opacity: 1;
+}
+
+.hide:hover {
+  color: var(--cg-text);
+}
+
+.hideIcon {
+  width: 55%;
+  height: 55%;
+}
