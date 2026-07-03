@@ -10,17 +10,11 @@
 # and the iagon-partner-chain rebuild this fork ports back from). Never a build input.
 /_reference
 
-# Node deps (acceptance script / future app + indexer)
+# Node deps (app + the acceptance / CIP-8 fixture scripts)
 node_modules/
-# The anchor-relayer reuses the app's deps via a node_modules SYMLINK (not a dir, so the
-# pattern above misses it). Recreate locally: ln -sfn ../../app/node_modules node_modules
-services/anchor-relayer/node_modules
-# The M6 committee tooling does the same (symlink to the indexer's deps).
-# Recreate locally: ln -sfn ../indexer/node_modules services/committee/node_modules
-services/committee/node_modules
 
 # Secrets / local env (never commit real creds). The committed manifests are the
-# *.env.example files (root + services/indexer); the live .env / .env*.local files stay local.
+# *.env.example files; the live .env / .env*.local files stay local.
 .env
 **/.env
 .env*.local
@@ -40,18 +34,15 @@ services/committee/node_modules
 # frontend can read live data. Re-syncable; never commit. (Override the dir with RELAY_BASE=.)
 /.relay-data
 
-# Operator secret keys (`cogno-chain-cli key gen` envelopes) + operator-keyed genesis output
-# (`cogno-chain-node gen-chainspec`). NEVER commit the secrets.
+# Operator secret keys (`cogno-chain-cli key gen` envelopes). NEVER commit the secrets. The
+# operator-keyed genesis (`cogno-chain-node gen-chainspec`) bakes in only PUBLIC keys, so the raw
+# chainspec itself is not secret — but the .skey / keys.json envelopes that seed it are.
 *.skey
-/network
 **/keys.json
 
-# Stateful secrets the services write into the data dir (relayer wallet SEED + the anchor cursor) and a
-# filled-in systemd EnvironmentFile (signing seeds + DB_PASS). Defaults live OUTSIDE the repo, but
-# OWNER_FILE/COGNO_DATA_DIR/STATE_FILE can point inside a checkout — this is the backstop. NOTE: no bare
-# **/vault.json here — vault.json is a committed build artifact (app/src/lib/cardano/, contracts/).
-**/owner.json
-**/anchor-state.json
+# A filled-in systemd EnvironmentFile (DBSYNC_URL + any DB creds) is a local secret; the committed
+# manifest is cogno.env.example. (No bare **/vault.json ignore — vault.json is a committed build
+# artifact under app/src/lib/cardano/ and contracts/.)
 cogno.env
 **/cogno.env
 !**/cogno.env.example

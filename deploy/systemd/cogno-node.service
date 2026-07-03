@@ -25,10 +25,11 @@ Group=cogno
 # tx_in-enabled (see deploy/README.md + .env.example). Without this line the observer logs
 # "no DBSYNC_URL/DBSYNC set — abstaining" and credits nothing.
 EnvironmentFile=-/etc/cogno/cogno.env
-# --state-pruning/--blocks-pruning archive: the SubQuery indexer reads historical state, and with a
-#   single validator the node DB is the sole copy of chain history (back it up — see deploy/README).
-# RPC/Prometheus bind to localhost by default; the local services connect over 127.0.0.1. Public
-#   exposure (browser frontend, remote metrics) goes behind a TLS reverse proxy + --rpc-methods=safe —
+# --state-pruning/--blocks-pruning archive: the node serves ALL reads (feed / thread / search / profile)
+#   from its own runtime API, so it must retain history; and with a single validator the node DB is the
+#   sole copy of chain history (back it up — see deploy/README). A non-archive node can't answer them.
+# RPC/Prometheus bind to localhost by default; the frontend reads over 127.0.0.1. Public exposure
+#   (browser frontend, remote metrics) goes behind a TLS reverse proxy + --rpc-methods=safe —
 #   deferred to the security/observability phases, NOT enabled here.
 # --force-authoring: REQUIRED for the single-validator default topology — a lone validator has no
 #   peers to confirm against and will not author without it. REMOVE it for a multi-validator network
@@ -61,6 +62,15 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/cogno
+# Kernel / privilege-surface hardening. NOTE: deliberately NO MemoryDenyWriteExecute — the runtime is
+# executed by a JIT (wasmtime) that needs W^X pages, and denying W+X would break block execution.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target

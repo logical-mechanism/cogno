@@ -100,10 +100,12 @@ logging is off-limits while live (even a `trace` line bakes into the script and 
 The `cardano-observer` inherent is the **only** thing that writes weight. Every node runs the same
 reduction over the same Cardano state and must produce the same result:
 
-- **db-sync is the only source.** Both the node (writer, in its inherent-data provider) and the CLI
-  (`query weight --dbsync`, a read-only cross-check) go through the `cogno-dbsync` crate, byte-for-byte
-  identically. Ogmios still *submits* L1 transactions and serves cost models; the in-browser wallet uses
-  Blockfrost — but consensus-critical reads are db-sync only.
+- **db-sync is the only source.** The node reads it through the `cogno-dbsync` crate in two places —
+  its inherent-data provider (the consensus writer) and a non-blocking boot-time `config_check` probe —
+  and the golden fixture pins both to the same bytes. The CLI's `query weight` reads the resulting
+  on-chain `TalkStake` ledger over RPC (it does not read db-sync). Ogmios still *submits* L1 transactions
+  and serves cost models; the in-browser wallet uses Blockfrost — but consensus-critical reads are
+  db-sync only.
 - **Byte-identity invariants** (a divergence is a fork; pinned by a golden fixture in `cogno-dbsync`):
   spentness from `tx_in` (never the denormalized `consumed_by_tx_id`); coin/quantity amounts as `::text`
   (lovelace exceeds 2⁵³); the vault set driven from `tx_out.payment_cred = <script hash>`; a fail-closed
@@ -153,9 +155,10 @@ Build/run this against a real chain: [`LOCAL-FRONTEND.md`](LOCAL-FRONTEND.md).
 `cogno-chain-cli` is the all-Rust admin tool: typed `RuntimeCall` constructors only (so `set_stake`,
 sudo, `set_code`, and anchor calls **cannot be built** — a compile-time boundary), keys by file path,
 the committee lifecycle (propose / vote / close over `FollowerCommittee`), bare identity binds, and
-`query state` / `query weight --dbsync` (the read-only observation cross-check). The node grows the
-matching operator subcommands: `gen-chainspec` (operator-keyed, refuses dev keys), `key insert-file`,
-and `config_check`.
+`query state` / `query weight` (on-chain reads over RPC — the CLI does not read db-sync). The node
+grows the matching operator subcommands: `gen-chainspec` (operator-keyed, refuses dev keys),
+`export-chain-spec`, and `key insert` / `inspect-node-key` (by file); a one-shot db-sync `config_check`
+runs automatically at boot.
 
 ## Operating it
 

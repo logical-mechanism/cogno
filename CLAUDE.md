@@ -31,11 +31,11 @@ scoped-out testnet choices, not bugs.
 
 | Path | What |
 |---|---|
-| `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `key insert-file`, `config_check` |
+| `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
 | `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 200 / tx_version 3**) |
 | `pallets/` | `microblog` (10), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing), `profile` (17) |
-| `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query weight --dbsync`) |
-| `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (node writer + CLI reader use it identically) |
+| `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`query weight` over RPC) |
+| `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
 | `contracts/` | the Aiken (Plutus V3) L1 `talk_vault` validator + `audits/` — **LIVE on preprod, see gotcha below** |
 | `app/` | Next.js 14 static-export frontend (PAPI + MeshJS). See [app/README.md](app/README.md) |
@@ -84,10 +84,11 @@ and `cip8-oracle` (the Python agreement check).
   unchanged. **Contracts logging is off-limits while live** — even a `trace` line bakes into the script
   and moves the hash.
 - **Cardano is read EXCLUSIVELY through db-sync (consensus-critical determinism)** via the
-  `cogno-dbsync` crate. The node's inherent-data provider is the **writer**; the CLI `query weight
-  --dbsync` reuses the same crate **read-only** as a byte-identity cross-check — both go through
-  `DBSYNC_URL`. A divergence between the two is a **chain fork**, pinned by the golden fixture in
-  `cogno-dbsync`. **Preserve verbatim** the byte-identity invariants: spentness from **`tx_in`**
+  `cogno-dbsync` crate. The node's inherent-data provider is the sole consensus **writer**; the node's
+  boot-time `config_check` reuses the same crate **read-only** (a non-blocking startup probe) — both go
+  through `DBSYNC_URL`. Determinism is pinned by the golden fixture in `cogno-dbsync` (a divergence is a
+  **chain fork**); the CLI's `query weight` reads the resulting on-chain `TalkStake` ledger over RPC, not
+  db-sync. **Preserve verbatim** the byte-identity invariants: spentness from **`tx_in`**
   (never `consumed_by_tx_id`); coins/qty as **`::text`** (lovelace > 2⁵³); the vault set from
   **`tx_out.payment_cred = <script hash>`**; a fail-closed **abstain** when `tx_in` is absent;
   largest-UTxO-wins per identity (never summed). Ogmios still SUBMITS L1 txs + serves cost models; the

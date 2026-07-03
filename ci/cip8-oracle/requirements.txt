@@ -1,9 +1,10 @@
-# Cogno-Follower (M2) — Python deps. The CIP-8 verify path is REUSED from cogno_v3 (do not
-# reimplement): pycardano.cip.cip8.verify, pinned to the proven version. blake2b is stdlib
-# (hashlib); the HTTP server is stdlib (http.server). pycardano pulls cose/cbor2 transitively.
-#
-# Easiest: reuse cogno_v3's venv (already has these). Or a fresh venv:
+# cip8-oracle — the independent CIP-8 verifier's Python deps (CI-only, ci/cip8-oracle/).
+# The CIP-8 verify path is REUSED from cogno_v3 (do NOT reimplement): pycardano.cip.cip8.verify,
+# pinned to the proven version. blake2b is stdlib (hashlib); beacon.py imports cbor2 directly for the
+# Plutus-Data CBOR encoding of the owner Address (the L1 beacon-name / identity hash).
 #   python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#
+# (This is the all-Rust restart's CI oracle — there is no follower service, so the old psycopg
+# db-sync reader + http.server deps are gone; the node reads Cardano through the cogno-dbsync crate.)
 pycardano==0.13.0
-# M2d vault observation reads Cardano db-sync via psycopg 3 (Ogmios stays for L1 tx submission elsewhere):
-psycopg[binary]==3.2.*
+cbor2

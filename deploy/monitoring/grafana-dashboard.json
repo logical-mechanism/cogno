@@ -5,7 +5,7 @@
   "title": "cogno-chain",
   "uid": "cogno-chain",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "tags": ["cogno-chain"],
   "timezone": "",
   "time": { "from": "now-6h", "to": "now" },
@@ -34,74 +34,65 @@
     },
     {
       "id": 2,
-      "title": "Relayer — seconds since last anchor",
+      "title": "Observer — observations vs abstains (per s)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
-        { "expr": "cogno_relayer_seconds_since_last_anchor", "legendFormat": "since last anchor (s)" }
+        { "expr": "rate(cogno_observer_observations_total{job=\"cogno-node\"}[5m])", "legendFormat": "observations/s" },
+        { "expr": "rate(cogno_observer_abstains_total{job=\"cogno-node\"}[5m])", "legendFormat": "abstains/s" }
       ]
     },
     {
       "id": 3,
-      "title": "Services up",
+      "title": "Node up",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 },
       "targets": [
-        { "expr": "up{job=~\"cogno-.*\"}", "legendFormat": "{{job}}" }
+        { "expr": "up{job=\"cogno-node\"}", "legendFormat": "node" }
       ]
     },
     {
       "id": 4,
-      "title": "Relayer wallet (lovelace)",
+      "title": "Observed entries (vaults / voters)",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 },
       "targets": [
-        { "expr": "cogno_relayer_wallet_lovelace", "legendFormat": "lovelace" }
+        { "expr": "cogno_observer_observed_vaults{job=\"cogno-node\"}", "legendFormat": "vaults" },
+        { "expr": "cogno_observer_observed_voters{job=\"cogno-node\"}", "legendFormat": "voters" }
       ]
     },
     {
       "id": 5,
-      "title": "Relayer low funds",
+      "title": "Observer reference slot (Cardano)",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
       "targets": [
-        { "expr": "cogno_relayer_low_funds", "legendFormat": "low funds" }
+        { "expr": "cogno_observer_last_reference_slot{job=\"cogno-node\"}", "legendFormat": "reference slot" }
       ]
     },
     {
       "id": 6,
-      "title": "Relayer — pending / failed anchors",
+      "title": "Node peers",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "targets": [
-        { "expr": "cogno_relayer_pending_anchors", "legendFormat": "pending" },
-        { "expr": "cogno_relayer_failed_anchors", "legendFormat": "failed" }
+        { "expr": "substrate_sub_libp2p_peers_count{job=\"cogno-node\"}", "legendFormat": "peers" }
       ]
     },
     {
       "id": 7,
-      "title": "Follower health (node reachable / genesis ok)",
+      "title": "Observer — observed entries over time",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
       "targets": [
-        { "expr": "cogno_follower_node_reachable", "legendFormat": "node reachable" },
-        { "expr": "cogno_follower_genesis_ok", "legendFormat": "genesis ok" }
-      ]
-    },
-    {
-      "id": 8,
-      "title": "Node peers",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
-      "targets": [
-        { "expr": "substrate_sub_libp2p_peers_count{job=\"cogno-node\"}", "legendFormat": "peers" }
+        { "expr": "cogno_observer_observed_vaults{job=\"cogno-node\"}", "legendFormat": "vaults" },
+        { "expr": "cogno_observer_observed_voters{job=\"cogno-node\"}", "legendFormat": "voters" }
       ]
     }
   ]
