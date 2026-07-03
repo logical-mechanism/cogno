@@ -74,9 +74,31 @@
   color: var(--cg-text);
 }
 
-.walletAddr {
-  font-family: var(--cg-font-mono);
+.walletSep {
   color: var(--cg-text-secondary);
+}
+
+/* connected wallet address — click-to-copy (hover shows the full value via title), matching Handle */
+.walletAddr {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font-family: var(--cg-font-mono);
+  font-size: inherit;
+  color: var(--cg-text-secondary);
+  cursor: pointer;
+}
+
+.walletAddr:hover {
+  color: var(--cg-accent);
+  text-decoration: underline;
+}
+
+.walletAddr:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-input);
 }
 
 .statRow {

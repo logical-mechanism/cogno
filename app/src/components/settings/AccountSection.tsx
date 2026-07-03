@@ -57,6 +57,17 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
     }
   }, [ss58, toast]);
 
+  const copyWalletAddress = useCallback(async () => {
+    const addr = signerCtl.walletAddress;
+    if (!addr) return;
+    try {
+      await navigator.clipboard.writeText(addr);
+      toast({ kind: "success", message: "Copied" });
+    } catch {
+      toast({ kind: "error", message: "Couldn't copy address" });
+    }
+  }, [signerCtl.walletAddress, toast]);
+
   // disconnected (no wallet, no dev account): a single card with a connect prompt. The connect button
   // lives in the global Account control (bottom-left) — no need to duplicate it on every settings panel.
   if (!postingEnabled) {
@@ -133,7 +144,20 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
             <span className={styles.walletName}>
               {walletId}
               {signerCtl.walletAddress && (
-                <span className={styles.walletAddr}> · {truncateSs58(signerCtl.walletAddress)}</span>
+                <>
+                  <span className={styles.walletSep} aria-hidden>
+                    {" · "}
+                  </span>
+                  <button
+                    type="button"
+                    className={styles.walletAddr}
+                    onClick={copyWalletAddress}
+                    title={signerCtl.walletAddress}
+                    aria-label={`Copy wallet address ${signerCtl.walletAddress}`}
+                  >
+                    {truncateSs58(signerCtl.walletAddress)}
+                  </button>
+                </>
               )}
             </span>
             <button type="button" className={styles.outlineBtn} onClick={signerCtl.disconnect}>
