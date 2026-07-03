@@ -31,6 +31,11 @@ export interface UseIdentity {
   binding: boolean;
   /** the phase of an in-flight bind (`idle` when not binding) — drives the step indicator. */
   bindPhase: BindPhase;
+  /** the on-chain bound-read is in flight (a key just changed). Lets the UI show a neutral "deciding"
+   *  screen while we resolve onboarded-or-not, instead of flashing the wrong step. Goes false on
+   *  success, error, OR a timeout (BOUND_READ_TIMEOUT_MS), so a failed/hung read can never wedge that
+   *  screen. Set true DURING RENDER on a key change so the loader shows before the stale value paints. */
+  checkingBound: boolean;
   error: string | null;
   /** the Cardano address the bind was signed from, once bound (for display). */
   boundAddress: string | null;
@@ -60,6 +65,27 @@ export interface UseIdentity {
   bindStake: (walletId: string) => void;
 }
 
+// A hung node (half-open socket: TCP up, RPC silent, never resolves OR rejects) must not leave the
+// bound-read pending forever — that would wedge `checkingBound` true and pin the user on the neutral
+// "deciding" loader with no escape. Reject after this budget so the read falls through to bound=null.
+const BOUND_READ_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("bound read timed out")), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
 export function useIdentity(
   api: CognoApi | null,
   client: PolkadotClient | null,
@@ -68,6 +94,7 @@ export function useIdentity(
   const [bound, setBound] = useState<boolean | null>(null);
   const [binding, setBinding] = useState(false);
   const [bindPhase, setBindPhase] = useState<BindPhase>("idle");
+  const [checkingBound, setCheckingBound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [boundAddress, setBoundAddress] = useState<string | null>(null);
 
@@ -79,29 +106,36 @@ export function useIdentity(
   const [stakeBindPhase, setStakeBindPhase] = useState<BindPhase>("idle");
   const [stakeError, setStakeError] = useState<string | null>(null);
 
-  // The posting key the last bound-read was for. On a KEY switch we must clear `bound` to null (unknown)
-  // before the async re-read — otherwise the previous key's value lingers (e.g. `false` for the reverted
-  // //Alice key after a disconnect), and an in-app reconnect flaps through a phantom `connected_unbound`
-  // that mis-drives onboarding + "Finish setup" affordances. A mere socket (api) reconnect keeps the same
-  // key, so `bound` is NOT cleared there — that would needlessly bounce a logged-in user off the wall.
+  // The posting key the last bound-read was for. When the ACTIVE key changes we clear `bound` to null
+  // (unknown) so the previous key's value never lingers (e.g. `false` for the reverted //Alice key after
+  // a disconnect), which would otherwise flap an in-app reconnect through a phantom `connected_unbound`.
+  // We do this DURING RENDER, not in the effect: React re-renders before painting, so the stale value
+  // never flashes the wrong onboarding step for a frame (an effect runs post-paint, which would). The
+  // ref guard makes it one-shot per key. A bare socket (api) reconnect keeps the same key, so `bound` is
+  // NOT cleared there — that would needlessly bounce a logged-in user off the auth wall.
   const boundKeyRef = useRef<string | null>(null);
+  if (boundKeyRef.current !== signer.ss58) {
+    boundKeyRef.current = signer.ss58;
+    setBound(null);
+    setCheckingBound(true); // show the neutral "deciding" state until the effect's read resolves/times out
+  }
 
   const refresh = useCallback(() => {
     // boundAddress describes a bind PERFORMED for the current key this session; it is not re-derivable
     // from chain state. Clear it whenever the key/chain changes (this callback re-runs on [api, ss58])
     // so a stale signing-address can't survive a wallet switch to a different — already-bound — account.
     setBoundAddress(null);
-    if (boundKeyRef.current !== signer.ss58) {
-      boundKeyRef.current = signer.ss58;
-      setBound(null); // key changed → boundness unknown until re-read; never show the prior key's value
-    }
     if (!api) {
       setBound(null);
+      setCheckingBound(false);
       return;
     }
-    isAccountBound(api, signer.ss58)
+    // Time-bound the read so a hung node can't wedge `checkingBound`; on timeout/error we fall through to
+    // bound=null → the connect step, where the user keeps agency. (checkingBound was set true in render.)
+    withTimeout(isAccountBound(api, signer.ss58), BOUND_READ_TIMEOUT_MS)
       .then(setBound)
-      .catch(() => setBound(null));
+      .catch(() => setBound(null))
+      .finally(() => setCheckingBound(false));
   }, [api, signer.ss58]);
 
   // Re-check whenever the chain or the active posting key changes.
@@ -251,6 +285,7 @@ export function useIdentity(
     bound,
     binding,
     bindPhase,
+    checkingBound,
     error,
     boundAddress,
     bind,

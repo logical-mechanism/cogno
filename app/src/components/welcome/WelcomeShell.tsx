@@ -10,14 +10,18 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import styles from "./WelcomeShell.module.css";
 import { ProgressDots } from "./ProgressDots";
+import { Spinner } from "@/components/icons";
 
 export interface WelcomeShellProps {
-  /** 1-based active step for the progress dots (1..4). */
-  step: number;
-  children: ReactNode;
+  /** 1-based active step for the progress dots (1..4). Ignored while `loading`. */
+  step?: number;
+  /** Neutral "deciding" state: just the wordmark + a spinner, no stepper — shown while we resolve
+   *  whether a reconnecting key is already onboarded, so no wrong step flashes before we route. */
+  loading?: boolean;
+  children?: ReactNode;
 }
 
-export function WelcomeShell({ step, children }: WelcomeShellProps) {
+export function WelcomeShell({ step = 1, loading = false, children }: WelcomeShellProps) {
   return (
     <div className={styles.root}>
       <div className={styles.column}>
@@ -25,9 +29,17 @@ export function WelcomeShell({ step, children }: WelcomeShellProps) {
           <span className={styles.wordmarkText}>cogno</span>
         </Link>
 
-        <ProgressDots step={step} total={4} />
-
-        <div className={styles.slot}>{children}</div>
+        {loading ? (
+          <div className={styles.loading} role="status" aria-live="polite">
+            <Spinner />
+            <span className={styles.loadingLabel}>Signing you in…</span>
+          </div>
+        ) : (
+          <>
+            <ProgressDots step={step} total={4} />
+            <div className={styles.slot}>{children}</div>
+          </>
+        )}
       </div>
     </div>
   );

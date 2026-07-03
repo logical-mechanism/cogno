@@ -125,9 +125,13 @@ export default function WelcomePage() {
   useEffect(() => {
     if (sessionState === "disconnected") registeredThisSession.current = false;
   }, [sessionState]);
+  // A returning (already-onboarded) user lands on power-ups without having registered here → bounce
+  // to the feed. Computed once so the redirect and the loader below stay in lockstep (the loader hides
+  // the power-ups step for the one frame before the redirect lands, so nothing flashes).
+  const bouncingToFeed = welcomeStep === "powerups" && !registeredThisSession.current;
   useEffect(() => {
-    if (welcomeStep === "powerups" && !registeredThisSession.current) router.replace("/");
-  }, [welcomeStep, router]);
+    if (bouncingToFeed) router.replace("/");
+  }, [bouncingToFeed, router]);
 
   // ── connect-error routing (toast vs inline) ──────────────────────────────────────────────────
   const [connectInlineError, setConnectInlineError] = useState<string | null>(null);
@@ -194,7 +198,17 @@ export default function WelcomePage() {
   const chainReady = !!api && !!client;
   const bootOk = boot?.ok ?? true;
 
+  // Neutral "deciding" loader (surface 11 §6): shown while a reconnecting key's bound-read is in flight
+  // (checkingBound) — so the connect/account step never flashes, incl. the first post-derive frame since
+  // checkingBound is set during render, not an effect — or while we're bouncing an already-onboarded user
+  // to the feed (so power-ups never flashes). checkingBound flips false on error OR timeout, so a
+  // failed/hung read falls through to the connect step instead of wedging the loader on a blank screen.
+  const showLoader =
+    (signerCtl.postingEnabled && !signerCtl.deriving && identity.checkingBound) || bouncingToFeed;
+
   // ── render ─────────────────────────────────────────────────────────────────────────────────────
+  if (showLoader) return <WelcomeShell loading />;
+
   return (
     <WelcomeShell step={STEP_INDEX[welcomeStep]}>
       {welcomeStep === "connect" && (
