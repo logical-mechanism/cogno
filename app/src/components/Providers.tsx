@@ -23,6 +23,7 @@ import { useSigner, type UseSigner } from "@/hooks/useSigner";
 import { useIdentity, type UseIdentity } from "@/hooks/useIdentity";
 import { useFeedSource } from "@/hooks/useFeedSource";
 import { useHeads } from "@/hooks/useHeads";
+import { useSelfProfile } from "@/hooks/useSelfProfile";
 import { deriveSessionState, type SessionState } from "@/lib/session";
 import { ToasterProvider } from "@/components/toast/ToasterProvider";
 import { OptimisticProvider } from "@/hooks/useOptimistic";
@@ -92,6 +93,16 @@ function ChainProvider({ children }: { children: ReactNode }) {
   // One shared head subscription for all block-relative UI (post times, capacity, live profile).
   const bestBlock = useHeads(client).best?.number ?? null;
 
+  // The viewer's OWN profile (display name + avatar) for app chrome — the composer avatar/name, the
+  // account menu, optimistic pending-post authorship. Only for a real chosen account; live + overlay-
+  // merged so an edit shows instantly. Fed into the Viewer below.
+  const self = useSelfProfile(
+    source,
+    signerCtl.postingEnabled ? signer.ss58 : null,
+    signerCtl.postingEnabled,
+    bestBlock,
+  );
+
   const sessionState = useMemo(
     () =>
       deriveSessionState(
@@ -121,6 +132,8 @@ function ChainProvider({ children }: { children: ReactNode }) {
       address: signerCtl.postingEnabled ? signer.ss58 : undefined,
       identityHash: identity.bound ? (identity.boundStakeCredHex ?? undefined) : undefined,
       hasVotingPower: (identity.votingPower ?? 0n) > 0n,
+      displayName: self.displayName,
+      avatar: self.avatar,
     };
   }, [
     sessionState,
@@ -129,6 +142,8 @@ function ChainProvider({ children }: { children: ReactNode }) {
     identity.bound,
     identity.boundStakeCredHex,
     identity.votingPower,
+    self.displayName,
+    self.avatar,
   ]);
 
   const value = useMemo<Session>(

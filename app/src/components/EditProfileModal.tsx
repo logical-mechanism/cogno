@@ -202,7 +202,7 @@ export function EditProfileModal({ onClose, onSaveProfile, onClearProfile }: Edi
                 Avatar
               </label>
               <div className={styles.avatarRow}>
-                <Avatar address={ss58} src={avatarSrc} size="lg" name={name} />
+                <Avatar address={ss58} src={avatarSrc} size="lg" name={name} eager />
                 <div className={styles.avatarInput}>
                   <div className={styles.inputRow}>
                     <input

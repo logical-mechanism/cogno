@@ -29,6 +29,13 @@ export interface AvatarProps {
   dim?: boolean;
   /** Optional accessible name (display name); falls back to the address. */
   name?: string;
+  /**
+   * Skip the click-to-reveal cover and load the image straight away — for a TRUSTED avatar (the
+   * viewer's OWN, in app chrome: the composer, the account menu, the edit/settings previews). The gate
+   * exists to not auto-fetch an ARBITRARY host's image; your own avatar you chose is not that, and a
+   * cover over it in chrome reads as broken. Still a sandboxed <img> (no-referrer, identicon onError).
+   */
+  eager?: boolean;
   onClick?: () => void;
 }
 
@@ -57,14 +64,15 @@ function Identicon({ address }: { address: string }) {
   );
 }
 
-export function Avatar({ address, src, size = "md", dim, name, onClick }: AvatarProps) {
+export function Avatar({ address, src, size = "md", dim, name, eager, onClick }: AvatarProps) {
   const [broken, setBroken] = useState(false);
   const resolvedSrc = useMemo(() => (src ? resolveImageSrc(src) : null), [src]);
   const revealed = useRevealed(resolvedSrc ?? "");
   const dimension = typeof size === "number" ? `${size}px` : SIZE_VAR[size];
   const hasImg = !!resolvedSrc && !broken;
-  // A remote/IPFS avatar stays covered until tapped; the offline identicon needs no cover.
-  const gated = hasImg && !revealed;
+  // A remote/IPFS avatar stays covered until tapped; the offline identicon needs no cover. A `eager`
+  // (trusted, own) avatar skips the cover and loads straight away.
+  const gated = hasImg && !revealed && !eager;
   const alt = `${name?.trim() || address} avatar`;
 
   const cls = [styles.avatar, dim ? styles.dim : "", onClick ? styles.clickable : ""]
@@ -119,7 +127,8 @@ export function Avatar({ address, src, size = "md", dim, name, onClick }: Avatar
   // nothing to hide. A NON-interactive <span> (like the cover) so it can live inside a clickable
   // parent/button; mouse-first (no keyboard path), mirroring the avatar's reveal affordance. On hover
   // it previews the covered state (solid fill + eye-off); a tap re-covers the src everywhere.
-  const hideable = hasImg && (size === "lg" || size === "xl");
+  // Re-cover only applies to a GATED image (an eager/trusted avatar has no cover to restore).
+  const hideable = hasImg && !eager && (size === "lg" || size === "xl");
   const hideOverlay = hideable ? (
     <span
       className={styles.hide}

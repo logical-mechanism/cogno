@@ -89,7 +89,7 @@ export function Account({ compact }: AccountProps) {
         aria-expanded={open}
         aria-label="Account menu"
       >
-        <Avatar address={me} src={viewer.avatar} size="md" name={viewer.displayName} />
+        <Avatar address={me} src={viewer.avatar} size="md" name={viewer.displayName} eager />
         {!compact && (
           <span className={styles.who}>
             <DisplayName address={me} displayName={viewer.displayName} truncate />
