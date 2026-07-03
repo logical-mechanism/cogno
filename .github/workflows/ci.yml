@@ -35,7 +35,7 @@ jobs:
       # (with rust-src + the wasm targets the substrate wasm-builder needs — mirrors rust-toolchain.toml).
       # `cargo fmt --check` is intentionally NOT gated: the codebase predates a rustfmt config and is
       # tab-styled; enforcing a repo-wide reformat is out of scope.
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy, rust-src
           targets: wasm32v1-none, wasm32-unknown-unknown
