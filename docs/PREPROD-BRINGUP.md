@@ -67,6 +67,7 @@ $CLI key gen --scheme sr25519 --out val-account.skey
 $CLI key gen --scheme sr25519 --out val-aura.skey
 $CLI key gen --scheme ed25519 --out val-grandpa.skey
 $CLI key gen --scheme sr25519 --out seat1.skey
+$CLI key generate-node-key   --out val-p2p.key         # libp2p node (p2p) key — installed to /etc/cogno/node.key in Step 2
 
 ./target/release/cogno-chain-node gen-chainspec --base cogno-preprod \
   --validator-account-key val-account.skey \
@@ -77,8 +78,9 @@ $CLI key gen --scheme sr25519 --out seat1.skey
 
 This writes `chainspec.raw.json` (the sealed spec — only PUBLIC keys, safe to install/copy) plus a plain,
 inspectable spec (default `cogno-operator.plain.json`). Dev keys are **refused** unless `--allow-dev-keys`.
-The secret material is the `.skey` files from `key gen` (**`chmod 600`, IRREPLACEABLE — archive them
-off-host**). Re-running `key gen` mints *new* random keys and a *different* genesis, so those `.skey` files +
+The secret material is the `.skey` files from `key gen` plus `val-p2p.key` from `key generate-node-key`
+(**`chmod 600`, IRREPLACEABLE — archive them off-host**; a lost `val-p2p.key` just means a new peer id,
+not a lost genesis, but re-minting it changes the bootnode multiaddr). Re-running `key gen` mints *new* random keys and a *different* genesis, so those `.skey` files +
 `chainspec.raw.json` **are** your stable genesis. Never commit the `.skey` files. (When omitted, `--committee-key`
 defaults to the validator account — the single-operator bootstrap seats a one-seat committee.)
 

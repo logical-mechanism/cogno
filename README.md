@@ -141,7 +141,9 @@ by on-chain vote), plus any tracking nodes. It has **no Cardano dependency** —
 
 **1 — Generate your keys** with `cogno-chain-cli key gen` (cardano-cli-style JSON envelopes, written
 `0600`, keyed **by file path** — no seed phrases). You need a validator account key (sr25519), its two
-session keys (Aura sr25519 + GRANDPA ed25519), and at least one committee seat (sr25519):
+session keys (Aura sr25519 + GRANDPA ed25519), at least one committee seat (sr25519), and — because a
+`--validator` node will **not** auto-generate one (see step 4) — a libp2p **node (p2p) key** via `key
+generate-node-key` (a raw ed25519 secret; it prints the derived peer id):
 
 ```bash
 CLI=./target/release/cogno-chain-cli
@@ -149,6 +151,7 @@ $CLI key gen --scheme sr25519 --out val-account.skey
 $CLI key gen --scheme sr25519 --out val-aura.skey
 $CLI key gen --scheme ed25519 --out val-grandpa.skey
 $CLI key gen --scheme sr25519 --out seat1.skey        # repeat for more committee seats
+$CLI key generate-node-key   --out val-p2p.key        # the validator's p2p network identity (peer id)
 ```
 
 **2 — Build your operator-keyed chain spec** from those key FILES (it reads only their PUBLIC keys and
@@ -173,30 +176,37 @@ $NODE key insert --base-path /var/lib/cogno/v1 --chain raw.json --key-file val-a
 $NODE key insert --base-path /var/lib/cogno/v1 --chain raw.json --key-file val-grandpa.skey --key-type gran  # finality
 ```
 
-**4 — Launch the boot validator.** Its libp2p (p2p) node key auto-generates + persists under the
-base-path on first run; the node logs its peer id (`Local node identity is: …`), or read it later with
-`$NODE key inspect-node-key --file /var/lib/cogno/v1/chains/<id>/network/secret_ed25519`. The bootnode
-multiaddr is `/ip4/<BOOT_PUBLIC_IP>/tcp/30333/p2p/<PEER_ID>`.
+**4 — Launch the boot validator**, passing the step-1 p2p key with `--node-key-file`. A `--validator`
+node will **not** auto-generate a node key — the SDK refuses (an authority that silently adopts a new
+peer id becomes unreachable to peers who pinned the old one) and exits with `NetworkKeyNotFound` unless
+you supply one. `key generate-node-key` already printed the peer id; re-read it any time with `$NODE key
+inspect-node-key --file val-p2p.key`. The bootnode multiaddr is
+`/ip4/<BOOT_PUBLIC_IP>/tcp/30333/p2p/<PEER_ID>`.
 
 ```bash
 # --force-authoring is single-validator only (a lone validator has no peers to confirm against).
 $NODE run --validator --name v1 --chain raw.json --base-path /var/lib/cogno/v1 \
+  --node-key-file val-p2p.key \
   --force-authoring \
   --port 30333 --rpc-port 9944 \
   --state-pruning archive --blocks-pruning archive
 ```
 
 **5 — Add more validators and/or tracking nodes** (they dial the boot node). On separate hosts keep
-the default ports; on one host give each a distinct `--port`/`--rpc-port`. Each node's p2p key
-auto-generates + persists under its own `--base-path`.
+the default ports; on one host give each a distinct `--port`/`--rpc-port`. Each **validator** needs its
+**own** node key — mint one per validator with `$CLI key generate-node-key` and pass `--node-key-file`. A
+**tracking** (non-validator) node is not an authority, so it auto-generates + persists its own p2p key
+under its `--base-path` on first run (no step needed).
 
 ```bash
 # another validator (drop --force-authoring once it has a peer):
+$CLI key generate-node-key --out v2-p2p.key
 $NODE run --validator --name v2 --chain raw.json --base-path /var/lib/cogno/v2 \
+  --node-key-file v2-p2p.key \
   --port 30333 --rpc-port 9944 \
   --bootnodes /ip4/<BOOT_IP>/tcp/30333/p2p/<BOOT_PEER_ID>
 
-# a tracking (non-validator) full node — omit --validator; serves RPC for the frontend:
+# a tracking (non-validator) full node — omit --validator; auto-generates its p2p key; serves RPC:
 $NODE run --name track1 --chain raw.json --base-path /var/lib/cogno/track1 \
   --port 30333 --rpc-port 9944 \
   --bootnodes /ip4/<BOOT_IP>/tcp/30333/p2p/<BOOT_PEER_ID> \

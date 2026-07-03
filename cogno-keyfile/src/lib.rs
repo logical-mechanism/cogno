@@ -323,12 +323,20 @@ pub fn generate(scheme: Scheme, description: &str) -> anyhow::Result<(Signer, Ke
 }
 
 /// Write a key envelope to `path` as pretty JSON, with restrictive permissions (0600 on unix) — the
-/// file holds a raw secret seed. On unix the file is created restricted-FROM-BIRTH (`O_CREAT|O_EXCL`
-/// with mode 0600) so there is NO window in which the raw secret is readable at the default umask
-/// (typically 0644) before a later chmod; `O_EXCL` also makes the "refuse to overwrite" check atomic
-/// (no TOCTOU on a separate `path.exists()`).
+/// file holds a raw secret seed. Delegates to [`write_secret_0600`] for the restricted-from-birth,
+/// no-TOCTOU write.
 pub fn write_envelope(path: &Path, env: &KeyEnvelope) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(env)?;
+    write_secret_0600(path, json.as_bytes())
+}
+
+/// Write `bytes` to `path` as a secret file. On unix the file is created restricted-FROM-BIRTH
+/// (`O_CREAT|O_EXCL` with mode 0600) so there is NO window in which the secret is readable at the
+/// default umask (typically 0644) before a later chmod; `O_EXCL` also makes the "refuse to overwrite"
+/// check atomic (no TOCTOU on a separate `path.exists()`). Shared by [`write_envelope`] (the JSON key
+/// envelope) and the CLI's raw libp2p node-key writer (`key generate-node-key`), so every on-disk
+/// secret this workspace mints gets the same guarantees.
+pub fn write_secret_0600(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -344,7 +352,7 @@ pub fn write_envelope(path: &Path, env: &KeyEnvelope) -> anyhow::Result<()> {
                     path.display()
                 )
             })?;
-        f.write_all(json.as_bytes())
+        f.write_all(bytes)
             .map_err(|e| anyhow::anyhow!("cannot write key file {}: {e}", path.display()))?;
     }
     #[cfg(not(unix))]
@@ -354,7 +362,7 @@ pub fn write_envelope(path: &Path, env: &KeyEnvelope) -> anyhow::Result<()> {
             "refusing to overwrite existing key file {} (move it aside first)",
             path.display()
         );
-        std::fs::write(path, json.as_bytes())
+        std::fs::write(path, bytes)
             .map_err(|e| anyhow::anyhow!("cannot write key file {}: {e}", path.display()))?;
     }
     Ok(())

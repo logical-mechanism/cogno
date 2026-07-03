@@ -37,11 +37,16 @@ EnvironmentFile=-/etc/cogno/cogno.env
 # --force-authoring: REQUIRED for the single-validator default topology — a lone validator has no
 #   peers to confirm against and will not author without it. REMOVE it for a multi-validator network
 #   (authoring should begin only once peers connect).
+# --node-key-file: the libp2p node (p2p) key, minted by `cogno-chain-cli key generate-node-key` and
+#   installed at /etc/cogno/node.key (see deploy/README). A --validator node will NOT auto-generate one
+#   (the SDK refuses — an authority can't silently adopt an unstable peer id — and exits with
+#   NetworkKeyNotFound), so it MUST be supplied here; this also pins a stable peer id across restarts.
 ExecStart=/usr/local/bin/cogno-chain-node run \
   --validator \
   --force-authoring \
   --name %H \
   --chain /etc/cogno/chainspec.raw.json \
+  --node-key-file /etc/cogno/node.key \
   --base-path /var/lib/cogno/node \
   --state-pruning archive \
   --blocks-pruning archive \

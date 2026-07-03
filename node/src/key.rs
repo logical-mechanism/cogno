@@ -7,9 +7,12 @@
 //! no jq/`--suri`.
 //!
 //! `key inspect-node-key` (the SDK's) reads a **p2p node-key** file (the node's libp2p network identity —
-//! NOT a session/account key) and prints its peer ID. The p2p key itself is auto-generated + persisted
-//! under `<base-path>/…/network/secret_ed25519` on `run` (or pre-set with `run --node-key-file <file>`),
-//! so the node exposes no `generate-node-key` here.
+//! NOT a session/account key) and prints its peer ID. A NON-validator (tracking) node auto-generates +
+//! persists this key under `<base-path>/…/network/secret_ed25519` on `run`; a `--validator` node will
+//! NOT (the SDK refuses — an authority can't silently adopt an unstable identity — and fails with
+//! `NetworkKeyNotFound`). Mint it with `cogno-chain-cli key generate-node-key` and pass it via
+//! `run --node-key-file <file>`. Generation lives in the CLI (all key material is minted there, by file),
+//! so the node exposes only `inspect-node-key` here.
 
 use std::path::PathBuf;
 
@@ -23,7 +26,8 @@ use sp_keystore::{Keystore, KeystorePtr};
 
 /// The node's key subcommands: `insert` (a session secret from a `cogno-chain-cli key gen` FILE) and
 /// `inspect-node-key` (print a p2p node-key file's peer ID). Session/account key GENERATION lives in the
-/// CLI (`cogno-chain-cli key gen`) and the p2p node key is auto-generated on `run`, so neither is here.
+/// CLI (`cogno-chain-cli key gen`) and so does p2p node-key generation (`cogno-chain-cli key
+/// generate-node-key` — a `--validator` node won't auto-mint one), so neither is here.
 #[derive(Debug, clap::Subcommand)]
 pub enum KeyCmd {
     /// Insert a session secret (aura sr25519 / gran ed25519) into the node keystore from a
