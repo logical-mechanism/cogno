@@ -27,14 +27,19 @@ section, packaged for the local-dev loop with two helper scripts.
 - Use the **nvm node** for the `.mjs` helper (`~/.nvm/versions/node/v22.12.0/bin` on `PATH`) — the snap
   node swallows stdout (see [CLAUDE.md](../CLAUDE.md)).
 
-## 1. Build a genesis-matching chain spec
+## 1. Chain spec — the committed one already matches
 
 A tracking node must load the chain's **exact** genesis (same genesis block hash) or it forms a
-different chain and never peers. The authoritative `raw.json` lives on the validator host and embeds
-the ~500 KB genesis wasm, so instead of copying it, reconstruct it from the validator's **safe,
-read-only RPC** — [`scripts/fetch-chainspec.mjs`](../scripts/fetch-chainspec.mjs) enumerates every
-genesis storage key (`state_getKeysPaged`) and reads each value as-of genesis (`state_getStorage`),
-which reproduces the genesis state root byte-for-byte:
+different chain and never peers. **The repo ships a matching one:**
+[`chainspecs/preprod.raw.json`](../chainspecs/preprod.raw.json) is the live spec (id
+`cogno-preprod-operator`, genesis `0xe2e06d71…237623c0`, spec 200) with the validator's DDNS bootnode
+embedded, and it's the default `CHAINSPEC` in `run-tracking-node.sh`. **For the normal dev loop, skip
+to step 2** — no spec-building needed.
+
+**Only rebuild if the network was relaunched** and the committed copy is stale. Reconstruct it from the
+validator's **safe, read-only RPC** — [`scripts/fetch-chainspec.mjs`](../scripts/fetch-chainspec.mjs)
+enumerates every genesis storage key (`state_getKeysPaged`) and reads each value as-of genesis
+(`state_getStorage`), which reproduces the genesis state root byte-for-byte:
 
 ```bash
 # Point at the validator's HTTP JSON-RPC (a ws:// proxy usually also accepts HTTP POST on the same path).
@@ -42,13 +47,17 @@ which reproduces the genesis state root byte-for-byte:
 # or over RPC: system_localPeerId + system_localListenAddresses.
 node scripts/fetch-chainspec.mjs http://<validator-host>/rpc \
   --bootnode /ip4/<validator-ip>/tcp/30333/p2p/<peer-id> \
-  --id cogno --protocol-id cogno \
+  --id cogno-preprod-operator \
   --out network/raw.json
 ```
 
-It prints the genesis hash and writes `network/raw.json` (gitignored) with the bootnode embedded. The
-chain name + properties are read from the node; `--id`/`--protocol-id` must match what the network was
-generated with (`cogno-chain-node gen-chainspec` derives the id from `--base`, e.g. `cogno` — or pass `--id`).
+It prints the genesis hash and writes `network/raw.json` (gitignored) with the bootnode embedded; run
+the relay against it with `CHAINSPEC=network/raw.json ./scripts/run-tracking-node.sh`. The chain name +
+properties are read from the node, and **`--id` must match what the network was generated with**
+(`cogno-chain-node gen-chainspec` derives it from `--base`, here `cogno-preprod-operator`). Note: the
+script always sets a `protocolId` (defaulting to `--id`), whereas the operator spec configures **none**
+(the validator logs `default protocol ID "sup"`) — that gap can hurt peer discovery, so for a byte-exact
+match prefer the committed `preprod.raw.json` or the operator's real `network/raw.json`.
 
 > If you already have the operator's real `network/raw.json` (e.g. from `cogno-chain-node gen-chainspec`), use it
 > directly and skip this step — just make sure its `bootNodes` includes the validator, or pass
@@ -57,10 +66,11 @@ generated with (`cogno-chain-node gen-chainspec` derives the id from `--base`, e
 ## 2. Run the tracking node (relay)
 
 [`scripts/run-tracking-node.sh`](../scripts/run-tracking-node.sh) launches the node as a
-non-validator against `network/raw.json`, serving RPC on `127.0.0.1:9944`:
+non-validator against `chainspecs/preprod.raw.json` (its default `CHAINSPEC`), serving RPC on
+`127.0.0.1:9944`:
 
 ```bash
-./scripts/run-tracking-node.sh                 # uses network/raw.json + its embedded bootnode
+./scripts/run-tracking-node.sh                 # uses chainspecs/preprod.raw.json + its embedded bootnode
 # tunables (env): NODE_BIN, CHAINSPEC, RELAY_BASE, RPC_PORT, P2P_PORT, RELAY_NAME, BOOTNODE
 ./scripts/run-tracking-node.sh -l sync=debug   # extra node flags pass through
 ```
