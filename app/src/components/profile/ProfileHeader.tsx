@@ -122,6 +122,8 @@ export function ProfileHeader({
             alt="Profile banner"
             fit="cover"
             label="Show banner"
+            hideLabel="Hide banner"
+            eager={isSelf}
             fallback={<span className={styles.bannerFallback} style={bannerStyle(address)} />}
           />
         </div>
@@ -139,6 +141,7 @@ export function ProfileHeader({
               size="xl"
               dim={banned}
               name={displayName}
+              eager={isSelf}
             />
           </div>
 

@@ -89,7 +89,9 @@ export default function WelcomePage() {
     const ss58 = signerCtl.signer.ss58;
     const sub = api.query.TalkStake.AllowedStake.watchValue(ss58, "best").subscribe(
       (w) => setPostingPower((w as bigint) ?? 0n),
-      () => setPostingPower(null),
+      // Subscription errored: fall through to the zero-power branch (lock CTA + read-only escape)
+      // rather than sit on the indefinite "Checking your posting power…" state forever.
+      () => setPostingPower(0n),
     );
     return () => sub.unsubscribe();
   }, [api, signerCtl.signer.ss58]);
@@ -112,6 +114,26 @@ export default function WelcomePage() {
   useEffect(() => {
     if (sessionState === "disconnected") setSubStep("account");
   }, [sessionState]);
+
+  // ── returning-user fast path ───────────────────────────────────────────────────────────────────
+  // Only a user who just registered THIS session needs the power-ups interstitial; anyone already set
+  // up should land straight in the feed. We must NOT infer "did they onboard?" from session states:
+  // on an in-app reconnect the identity read is briefly stale (bound === false for the reverted
+  // //Alice key) before it resolves, so the session flaps through a PHANTOM `connected_unbound` that
+  // used to wrongly mark onboarding as started — leaving a returning user stuck on power-ups. Latch it
+  // on the actual Register action instead (set in onRegister), and reset on a real disconnect. A
+  // returning user reconnects into a bound state without ever registering here, so this stays false.
+  const registeredThisSession = useRef(false);
+  useEffect(() => {
+    if (sessionState === "disconnected") registeredThisSession.current = false;
+  }, [sessionState]);
+  // A returning (already-onboarded) user lands on power-ups without having registered here → bounce
+  // to the feed. Computed once so the redirect and the loader below stay in lockstep (the loader hides
+  // the power-ups step for the one frame before the redirect lands, so nothing flashes).
+  const bouncingToFeed = welcomeStep === "powerups" && !registeredThisSession.current;
+  useEffect(() => {
+    if (bouncingToFeed) router.replace("/");
+  }, [bouncingToFeed, router]);
 
   // ── connect-error routing (toast vs inline) ──────────────────────────────────────────────────
   const [connectInlineError, setConnectInlineError] = useState<string | null>(null);
@@ -162,6 +184,9 @@ export default function WelcomePage() {
 
   const onRegister = useCallback(() => {
     if (!signerCtl.connectedWalletId) return;
+    // Latch that onboarding started HERE this session, so the power-ups step isn't skipped for a
+    // genuine new registrant (see the returning-user fast path above).
+    registeredThisSession.current = true;
     identity.bind(signerCtl.connectedWalletId);
   }, [identity, signerCtl.connectedWalletId]);
 
@@ -175,13 +200,22 @@ export default function WelcomePage() {
   const chainReady = !!api && !!client;
   const bootOk = boot?.ok ?? true;
 
+  // Neutral "deciding" loader (surface 11 §6): shown while a reconnecting key's bound-read is in flight
+  // (checkingBound) — so the connect/account step never flashes, incl. the first post-derive frame since
+  // checkingBound is set during render, not an effect — or while we're bouncing an already-onboarded user
+  // to the feed (so power-ups never flashes). checkingBound flips false on error OR timeout, so a
+  // failed/hung read falls through to the connect step instead of wedging the loader on a blank screen.
+  const showLoader =
+    (signerCtl.postingEnabled && !signerCtl.deriving && identity.checkingBound) || bouncingToFeed;
+
   // ── render ─────────────────────────────────────────────────────────────────────────────────────
+  if (showLoader) return <WelcomeShell loading />;
+
   return (
     <WelcomeShell step={STEP_INDEX[welcomeStep]}>
       {welcomeStep === "connect" && (
         <WalletPicker
           deriving={signerCtl.deriving}
-          lastWalletId={signerCtl.lastWalletId}
           errorCopy={connectInlineError}
           onConnect={onConnect}
           onCancel={onCancelConnect}
@@ -206,6 +240,7 @@ export default function WelcomePage() {
         <BindStep
           ss58={signerCtl.signer.ss58}
           binding={identity.binding}
+          bindPhase={identity.bindPhase}
           error={identity.error}
           chainReady={chainReady}
           bootOk={bootOk}
@@ -221,6 +256,7 @@ export default function WelcomePage() {
           stake={{
             stakeBound: identity.stakeBound,
             stakeBinding: identity.stakeBinding,
+            stakeBindPhase: identity.stakeBindPhase,
             stakeError: identity.stakeError,
             votingPower: identity.votingPower,
             bindStake: identity.bindStake,

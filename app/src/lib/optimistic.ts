@@ -7,7 +7,7 @@
 // This module is pure (no React) and unit-testable: the apply/merge math (re-vote weight reversal,
 // count clamping, score recompute) lives here; useOptimistic.tsx wires it into a context.
 
-import type { CognoPost, ViewerPostState } from "@/lib/types";
+import type { CognoPost, ProfileView, ViewerPostState } from "@/lib/types";
 
 /** A delta over a post's aggregate tallies (applied on top of the read tally). */
 export interface CountPatch {
@@ -40,13 +40,73 @@ export interface PendingPost {
   status: "pending" | "failed";
 }
 
+/**
+ * An optimistic profile overwrite, keyed by ss58. `set_profile` replaces the WHOLE record, so a patch
+ * carries all six display fields (an empty string = a cleared field). `expected` is set once the write
+ * CONFIRMS (inBestBlock); the patch is then KEPT — not cleared — until a fresh read of the profile
+ * already agrees (see {@link profilePatchSettled}), so the header/preview never flash back to the
+ * pre-edit values in the gap between confirm and re-observation.
+ */
+export interface ProfilePatch {
+  displayName: string;
+  bio: string;
+  avatar: string;
+  banner: string;
+  location: string;
+  website: string;
+  expected?: boolean;
+}
+
 export interface Overlay {
   pending: PendingPost[];
   counts: Record<string, CountPatch>;
   viewer: Record<string, ViewerPatch>;
+  /** Optimistic profile overwrites, keyed by ss58 (set_profile / clear_profile). */
+  profiles: Record<string, ProfilePatch>;
 }
 
-export const EMPTY_OVERLAY: Overlay = { pending: [], counts: {}, viewer: {} };
+export const EMPTY_OVERLAY: Overlay = { pending: [], counts: {}, viewer: {}, profiles: {} };
+
+/** A read field (`undefined` | "") and a patch field ("") are equal-absent; trim for a stable compare. */
+function normProfileField(s: string | undefined): string {
+  return (s ?? "").trim();
+}
+
+/**
+ * Overlay a profile patch on a read ProfileView: `set_profile` overwrites all six DISPLAY fields (an
+ * empty string clears that field). Counts / postCount / pinnedPostId / banned are untouched — those
+ * aren't set_profile's to change.
+ */
+export function applyProfilePatch(view: ProfileView, patch: ProfilePatch | undefined): ProfileView {
+  if (!patch) return view;
+  return {
+    ...view,
+    displayName: normProfileField(patch.displayName) || undefined,
+    bio: normProfileField(patch.bio) || undefined,
+    avatar: normProfileField(patch.avatar) || undefined,
+    banner: normProfileField(patch.banner) || undefined,
+    location: normProfileField(patch.location) || undefined,
+    website: normProfileField(patch.website) || undefined,
+  };
+}
+
+/**
+ * Reconcile-by-fresh-read: a CONFIRMED (`expected`) profile patch is redundant once an authoritative
+ * read already carries the same six fields, and should then be retired. The CALLER must only evaluate
+ * this against a read taken AFTER the confirm (a fresh post-confirm refetch) — gating on the `expected`
+ * flag is what stops a still-pending patch from retiring against a not-yet-updated read.
+ */
+export function profilePatchSettled(view: ProfileView, patch: ProfilePatch | undefined): boolean {
+  if (!patch?.expected) return false;
+  return (
+    normProfileField(view.displayName) === normProfileField(patch.displayName) &&
+    normProfileField(view.bio) === normProfileField(patch.bio) &&
+    normProfileField(view.avatar) === normProfileField(patch.avatar) &&
+    normProfileField(view.banner) === normProfileField(patch.banner) &&
+    normProfileField(view.location) === normProfileField(patch.location) &&
+    normProfileField(view.website) === normProfileField(patch.website)
+  );
+}
 
 /** Apply a count patch to a post's tallies (counts clamp at 0; score recomputed from weights). */
 export function applyCountPatch(post: CognoPost, patch: CountPatch | undefined): CognoPost {
@@ -98,6 +158,17 @@ export function applyViewerPatch(
  */
 export function pendingKey(post: { author: string; text: string }): string {
   return `${post.author}\n${post.text}`;
+}
+
+/**
+ * A monotonic, strictly-NEGATIVE placeholder id for an optimistic pending post. Negative so it never
+ * collides with a real (non-negative) chain post id — the load-bearing "pending" marker that Timeline
+ * and the inline-poll gate branch on (`post.id < 0n`) — and unique per call so two posts submitted in
+ * the SAME millisecond never share a React key (which the old `-BigInt(Date.now())` scheme could).
+ */
+let pendingIdSeq = 0;
+export function nextPendingId(): bigint {
+  return -BigInt(++pendingIdSeq);
 }
 
 /** Merge the overlay onto a feed snapshot: prepend pending cards, patch counts on existing rows. */

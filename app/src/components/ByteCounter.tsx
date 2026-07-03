@@ -30,6 +30,22 @@ export function utf8Bytes(s: string): number {
   return unescape(encodeURIComponent(s)).length;
 }
 
+/**
+ * Clamp a string to at most `maxBytes` UTF-8 bytes WITHOUT splitting a multibyte code point (D1).
+ * Walks code points (for..of iterates by code point, not UTF-16 unit) and accumulates bytes.
+ */
+export function clampToBytes(s: string, maxBytes: number): string {
+  let total = 0;
+  let out = "";
+  for (const ch of s) {
+    const b = utf8Bytes(ch);
+    if (total + b > maxBytes) break;
+    total += b;
+    out += ch;
+  }
+  return out;
+}
+
 const R = 10; // ring radius in the 24-viewBox
 const CIRC = 2 * Math.PI * R;
 

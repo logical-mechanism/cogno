@@ -206,18 +206,12 @@
     0 8px 28px rgba(101, 119, 134, 0.25);
 }
 
-/* ===== KEYFRAMES (global, reduced-motion guarded) ===== */
-@keyframes cg-spin { to { transform: rotate(360deg); } }
-@keyframes cg-like-pop {
-  0% { transform: scale(1); }
-  35% { transform: scale(1.35); }
-  70% { transform: scale(0.9); }
-  100% { transform: scale(1); }
-}
-@keyframes cg-shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
+/* ===== ANIMATION (reduced-motion guard) =====
+   NOTE: component keyframes (cg-spin, cg-like-pop, cg-shimmer, …) are colocated in their own
+   *.module.css files, NOT here. A CSS-Modules file scopes its `animation:` name reference to a local
+   ident, so a keyframe declared in this GLOBAL stylesheet would never match — the animation would
+   silently do nothing. Keep each keyframe in the module that references it. The reduced-motion reset
+   below is a universal `*` rule, so it still governs those colocated animations. */
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

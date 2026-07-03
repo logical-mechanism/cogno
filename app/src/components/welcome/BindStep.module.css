@@ -77,6 +77,14 @@
   color: var(--cg-text-secondary);
 }
 
+/* ── registration progress: wraps the shared StepFlow + a per-phase narration line ── */
+.progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cg-space-3);
+}
+
 .errorRow {
   display: flex;
   align-items: center;

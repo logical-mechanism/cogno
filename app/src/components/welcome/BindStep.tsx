@@ -13,11 +13,15 @@
 import { useMemo } from "react";
 import styles from "./BindStep.module.css";
 import { Spinner } from "@/components/icons";
+import { StepFlow } from "./StepFlow";
 import { truncateSs58 } from "@/lib/ss58";
+import type { BindPhase } from "@/hooks/useIdentity";
 
 export interface BindStepProps {
   ss58: string;
   binding: boolean;
+  /** the phase of the in-flight bind — drives the background-step indicator. */
+  bindPhase: BindPhase;
   /** the LAST bind attempt's error string (useIdentity.error). null when clear. */
   error: string | null;
   /** api && client ready. */
@@ -47,17 +51,32 @@ function classifyError(raw: string): BindError {
     };
   }
   if (/could not produce|cip-8|proof|malformed|script payment|extended key|not a 32-byte|exceeds the/.test(m)) {
-    return { copy: `Couldn't create the proof — ${raw}.`, danger: false };
+    return { copy: `Couldn't create the proof: ${raw}`, danger: false };
   }
   if (/still shows your account unbound|didn'?t take|still unbound/.test(m)) {
-    return { copy: "Registration didn't take — please try again.", danger: false };
+    return { copy: "Registration didn't take. Try again.", danger: false };
   }
-  return { copy: `The network rejected the registration — ${raw}.`, danger: false };
+  return { copy: `The network rejected it: ${raw}`, danger: false };
 }
+
+// The three background steps a bind actually runs (useIdentity.bind). Surfaced as a live step list so
+// the multi-second on-chain wait after signing doesn't read as "stuck".
+const BIND_STEPS: { key: Exclude<BindPhase, "idle">; label: string }[] = [
+  { key: "signing", label: "Sign in your wallet" },
+  { key: "submitting", label: "Submit registration" },
+  { key: "confirming", label: "Confirm on-chain" },
+];
+
+const BIND_NARRATION: Record<Exclude<BindPhase, "idle">, string> = {
+  signing: "Approve the signature in your wallet…",
+  submitting: "Submitting your registration to the network…",
+  confirming: "Confirming on-chain…",
+};
 
 export function BindStep({
   ss58,
   binding,
+  bindPhase,
   error,
   chainReady,
   bootOk,
@@ -68,7 +87,7 @@ export function BindStep({
   const bindError = useMemo(() => (error ? classifyError(error) : null), [error]);
 
   const disabledReason = !bootOk
-    ? "The app needs an update to register — reading still works."
+    ? "The app needs an update to register. Reading still works."
     : !chainReady
       ? "Connecting to the network…"
       : null;
@@ -82,8 +101,7 @@ export function BindStep({
 
       <p className={styles.body}>
         Register <span className={styles.handle}>@{shortHandle}</span> to claim this account. Your
-        wallet signs once to prove it&apos;s yours — it&apos;s free, with no transaction fee. You&apos;ll
-        add posting power next.
+        wallet signs once to prove it&apos;s yours. You&apos;ll add posting power next.
       </p>
 
       <button
@@ -105,9 +123,16 @@ export function BindStep({
       </button>
 
       {binding && (
-        <p className={styles.narration} aria-live="polite">
-          Approve the signature in your wallet…
-        </p>
+        <div className={styles.progress}>
+          <StepFlow
+            steps={BIND_STEPS}
+            active={BIND_STEPS.findIndex((s) => s.key === (bindPhase === "idle" ? "signing" : bindPhase))}
+            ariaLabel="Registration progress"
+          />
+          <p className={styles.narration} aria-live="polite">
+            {BIND_NARRATION[bindPhase === "idle" ? "signing" : bindPhase]}
+          </p>
+        </div>
       )}
 
       {disabledReason && !binding && (

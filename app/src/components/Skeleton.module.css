@@ -31,6 +31,17 @@
   animation: cg-shimmer 1.4s ease-in-out infinite;
 }
 
+/* Keyframe MUST be local: css-loader scopes the animation-name reference, so a keyframe defined in a
+   global stylesheet (tokens.css) never matches and the block would sit static. */
+@keyframes cg-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .block {
     animation: none;

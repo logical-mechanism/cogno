@@ -71,6 +71,17 @@ export function formatSignedWeight(w: bigint | null | undefined): string {
   return `${neg ? "−" : "+"}${compactAda(abs)}`;
 }
 
+/**
+ * lovelace → "N.N ADA" with a thousands-separated whole part and one decimal place; "—" for 0/null.
+ * Used by the Settings vault / voting-power displays (shared so the two never drift).
+ */
+export function formatAda(lovelace: bigint | null): string {
+  if (lovelace == null || lovelace === 0n) return "—";
+  const whole = lovelace / 1_000_000n;
+  const frac = (lovelace % 1_000_000n) / 100_000n; // one decimal place
+  return `${whole.toLocaleString()}.${frac} ADA`;
+}
+
 /** A poll option's share of the total weight as a rounded percent (D4: results are % BY WEIGHT). */
 export function weightPercent(weight: bigint, totalWeight: bigint): number {
   if (totalWeight <= 0n) return 0;

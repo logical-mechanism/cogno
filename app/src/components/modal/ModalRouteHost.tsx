@@ -25,17 +25,22 @@ import { useSession } from "../Providers";
 import { useModalStore } from "@/lib/modalStore";
 import { useMutation } from "@/hooks/useMutation";
 import { useOptimistic } from "@/hooks/useOptimistic";
+import { nextPendingId } from "@/lib/optimistic";
 import { useThread } from "@/hooks/useThread";
 import { useCapacity } from "@/hooks/useCapacity";
+import { draftStatus } from "@/lib/chain/capacity";
 import { useToaster, RATE_LIMIT_COPY } from "../toast/ToasterProvider";
 import {
   submitPost,
   submitReply,
   submitQuote,
   submitCreatePoll,
+  submitSetProfile,
+  submitClearProfile,
 } from "@/lib/chain/mutations";
 import type { ActionState, ComposerDraft, PollDraft, ModalKind } from "../kit";
 import type { CognoPost } from "@/lib/types";
+import type { ProfileFields } from "../EditProfileModal";
 
 /** The CheckCapacity pool rejection surfaces as the rate-limit copy (stringifyError maps it). */
 function isRateLimit(message: string): boolean {
@@ -69,17 +74,21 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 export function ModalRouteHost() {
   const { state, close } = useModalStore();
   const { api, signer, source, viewer, bestBlock } = useSession();
-  const { addPending, dropPending, failPending } = useOptimistic();
+  const { addPending, dropPending, failPending, patchProfile, confirmProfile, rollbackProfile } =
+    useOptimistic();
   const { run } = useMutation();
   const { toast, rateLimit } = useToaster();
 
   // Zero locked ADA → no posting power: hard-disable the composer CTA (the self-contained
   // NoPostingPowerNotice already shows the "Lock ADA to post" banner), matching HomePage/ComposePage.
-  const { view: capacityView } = useCapacity(api, viewer.address ?? null, bestBlock);
+  const { view: capacityView, consts: capacityConsts } = useCapacity(api, viewer.address ?? null, bestBlock);
   const noPostingPower = viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
 
   const [submitState, setSubmitState] = useState<ActionState>("idle");
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
+  // Controlled text for the base compose mode so the capacity gate measures the live draft (reply /
+  // quote stay uncontrolled — their gate uses the empty-draft base-cost probe, exactly like ComposePage).
+  const [text, setText] = useState("");
 
   const kind = state.kind;
   const targetId = state.targetId ? BigInt(state.targetId) : null;
@@ -107,8 +116,24 @@ export function ModalRouteHost() {
   // Reset the per-open transient state whenever the modal kind changes.
   useEffect(() => {
     setSubmitState("idle");
+    setText("");
     if (kind === "poll") setPollDraft({ question: "", options: ["", ""] });
   }, [kind]);
+
+  // Pre-flight capacity gate — mirror ComposePage so the PRIMARY (overlay) compose path also disables
+  // the CTA + shows the inline RateLimitNotice before submit, instead of only surfacing a rate limit
+  // via the post-submit failure toast (D5).
+  const gateText = kind === "poll" ? pollDraft.question : text;
+  const rateLimited = useMemo(() => {
+    if (viewer.status !== "ready" || !capacityView || !capacityConsts) return false;
+    const byteLen = new TextEncoder().encode(gateText).length;
+    if (byteLen === 0) {
+      const probe = draftStatus(capacityView, 0, capacityConsts);
+      return probe.kind === "charging" || probe.kind === "wait";
+    }
+    const k = draftStatus(capacityView, byteLen, capacityConsts).kind;
+    return k !== "ok" && !(k === "no_weight" && capacityView.weight === 0n);
+  }, [viewer.status, capacityView, capacityConsts, gateText]);
 
   const onClose = useCallback(() => {
     // Pop the pushed URL (if any) then clear the store. The popstate handler also calls close(); the
@@ -151,7 +176,7 @@ export function ModalRouteHost() {
   // Build a minimal optimistic CognoPost for the pending card (the real row replaces it on confirm).
   const optimisticPost = useCallback(
     (text: string, extra: Partial<CognoPost> = {}): CognoPost => ({
-      id: -BigInt(Date.now()), // negative sentinel id — never collides with a real (positive) post id
+      id: nextPendingId(), // strictly-negative unique sentinel — never collides with a real post id
       author: viewer.address ?? signer.ss58,
       text,
       at: 0,
@@ -210,13 +235,90 @@ export function ModalRouteHost() {
     [api, signer, runWrite, optimisticPost],
   );
 
+  // ── profile save/clear pipeline (feeless + capacity-metered, exactly like a post) ────────────────
+  // Owned HERE (the persistent host), not in EditProfileModal, so the modal can close INSTANTLY while
+  // this tx runs to confirmation in the background: apply the optimistic overlay → close + sticky
+  // "Saving…" toast → on confirm keep the overlay (retired by a fresh read) + swap to a success toast;
+  // on error roll the overlay back + surface the failure. The whole app reflects the edit at once.
+  const runProfileWrite = useCallback(
+    (
+      stream: ReturnType<typeof submitSetProfile>,
+      patch: ProfileFields,
+      pendingCopy: string,
+      successCopy: string,
+    ) => {
+      if (!api || !signer) return;
+      // Key the overlay by the account the profile view reads under (self-view: viewer.address === url).
+      const ss58 = viewer.address ?? signer.ss58;
+      patchProfile(ss58, patch);
+      toast({ id: "profile-save", kind: "pending", message: pendingCopy });
+      onClose();
+      void run(stream, {
+        onConfirm: () => {
+          confirmProfile(ss58);
+          toast({ id: "profile-save", kind: "success", message: successCopy });
+        },
+        onError: (message: string) => {
+          rollbackProfile(ss58);
+          if (isRateLimit(message)) toast({ id: "profile-save", kind: "rate-limit", message: RATE_LIMIT_COPY });
+          else toast({ id: "profile-save", kind: "error", message });
+        },
+      }).catch(() => {
+        /* settled + rolled back via onError */
+      });
+    },
+    [api, signer, viewer.address, patchProfile, confirmProfile, rollbackProfile, run, toast, onClose],
+  );
+
+  const onSaveProfile = useCallback(
+    (fields: ProfileFields) => {
+      if (!api || !signer) return;
+      runProfileWrite(
+        submitSetProfile(
+          api,
+          signer,
+          fields.displayName,
+          fields.bio,
+          fields.avatar,
+          fields.banner,
+          fields.location,
+          fields.website,
+        ),
+        fields,
+        "Saving your profile…",
+        "Profile updated",
+      );
+    },
+    [api, signer, runProfileWrite],
+  );
+
+  const onClearProfile = useCallback(() => {
+    if (!api || !signer) return;
+    const empty: ProfileFields = {
+      displayName: "",
+      bio: "",
+      avatar: "",
+      banner: "",
+      location: "",
+      website: "",
+    };
+    runProfileWrite(submitClearProfile(api, signer), empty, "Clearing your profile…", "Profile cleared");
+  }, [api, signer, runProfileWrite]);
+
   const title = useMemo(() => (kind ? TITLES[kind] : ""), [kind]);
 
   if (!kind) return null;
 
-  // edit-profile has its own modal chrome + write surface.
+  // edit-profile has its own modal chrome. The host owns the write (optimistic + toast + close), so the
+  // modal is presentational — it collects the fields and hands them up via onSaveProfile / onClearProfile.
   if (kind === "edit-profile") {
-    return <EditProfileModal onClose={onClose} />;
+    return (
+      <EditProfileModal
+        onClose={onClose}
+        onSaveProfile={onSaveProfile}
+        onClearProfile={onClearProfile}
+      />
+    );
   }
 
   // reply / quote wait for the target post before rendering the composer.
@@ -236,6 +338,9 @@ export function ModalRouteHost() {
           mode="post"
           submitState={submitState}
           noPostingPower={noPostingPower}
+          rateLimited={rateLimited}
+          text={text}
+          onTextChange={setText}
           autoFocus
           onSubmit={onPost}
           onCancel={onClose}
@@ -247,6 +352,7 @@ export function ModalRouteHost() {
           replyTo={targetPost}
           submitState={submitState}
           noPostingPower={noPostingPower}
+          rateLimited={rateLimited}
           autoFocus
           submitReply={onReply}
           onCancel={onClose}
@@ -258,6 +364,7 @@ export function ModalRouteHost() {
           quoted={targetPost}
           submitState={submitState}
           noPostingPower={noPostingPower}
+          rateLimited={rateLimited}
           autoFocus
           submitQuote={onQuote}
           onCancel={onClose}
@@ -270,6 +377,7 @@ export function ModalRouteHost() {
           onChange={setPollDraft}
           submitState={submitState}
           noPostingPower={noPostingPower}
+          rateLimited={rateLimited}
           autoFocus
           submitCreatePoll={onCreatePoll}
           onCancel={onClose}

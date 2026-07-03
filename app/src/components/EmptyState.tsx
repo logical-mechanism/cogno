@@ -46,7 +46,7 @@ function presetFor(v: EmptyStateVariant, query?: string, handle?: string): Prese
       return {
         title: "Search isn't ready yet",
         description:
-          "Search runs on the node — connect to one to search posts and people. Check your endpoint in Settings.",
+          "Search runs on the node. Connect to search posts and people, or check your endpoint in Settings.",
         icon: <IconSearch className={styles.glyph} />,
       };
     case "profile":

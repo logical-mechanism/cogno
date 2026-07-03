@@ -72,19 +72,12 @@ cogno-chain separates **identity/stake** from **posting**, and the two are diffe
 
 The two keys are bound 1:1 by the M2 CIP-8 bind: one Cardano identity ⇒ one posting account.
 
-## The honesty badges
+## Trust posture
 
-The UI states its trust limits plainly, on-screen, as small bordered mono badges
-(`src/components/HonestyBadge.tsx`) — not alarming, not hidden. Each label is the on-screen claim;
-hovering shows the plain-language detail. They encode the "usable ≠ trustless" posture:
-
-| Badge | What it means |
-|---|---|
-| `chain: operator-run (v1)` | the app-chain is a single operator-run node — its safety is the operator's Aura/GRANDPA, not Cardano's finality |
-| `follower: trusted (v1)` | the cogno-follower is a single trusted party that both verifies the CIP-8 proof and writes the binding/weight |
-| `capacity: follower-metered (v1)` | locking ADA earns capacity only **after** the trusted follower observes the lock on Cardano and writes your weight — a successful lock is "submitted", not "you can post now" |
-| `anchor: evidence, not enforcement` | the Cardano anchor lets a third party **detect** a silent history rewrite after the fact; it cannot prevent a bad block, fork, or censorship |
-
-These mirror the trust posture documented in [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md). The
-3-of-5 committee path that backs the privileged calls is real but **D2-SHAPED, not D2-TRUST** on a
-single-operator stack.
+The earlier on-screen "honesty badges" were **dropped** (locked design decision — cogno-brand +
+Twitter-UX, chain-backed surfaces only). The posture they encoded still holds and is documented in
+[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md): the app-chain is a single operator-run node (its
+safety is the operator's Aura/GRANDPA, not Cardano's finality); locking ADA earns capacity only once
+the on-chain observer writes your weight, so a successful lock is "submitted", not "post now"; and the
+Cardano anchor is **evidence, not enforcement**. The 3-of-5 committee behind the privileged calls is
+real but **D2-SHAPED, not D2-TRUST** on a single-operator stack.

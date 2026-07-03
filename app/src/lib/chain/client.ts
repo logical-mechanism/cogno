@@ -13,7 +13,11 @@ import { cogno } from "@polkadot-api/descriptors";
 import { Observable, type Subscription } from "rxjs";
 import type { ChainHandle, ConnStatus, BootGuard, CognoApi } from "@/lib/types";
 
-/** The spec_name the descriptors were generated against (cogno-chain-runtime, spec_version 107). */
+/**
+ * The spec_name the descriptors were generated against (cogno-chain-runtime). The spec_version is
+ * embedded only in the descriptors' opaque metadata blob — see DESCRIPTOR_SPEC_VERSION below — so we
+ * gate solely on the name here and avoid re-introducing a version number that drifts.
+ */
 const EXPECTED_SPEC_NAME = "cogno-chain-runtime";
 
 /**
@@ -47,7 +51,6 @@ export function watchConnStatus(handle: ChainHandle): Observable<ConnStatus> {
   return new Observable<ConnStatus>((subscriber) => {
     subscriber.next("connecting");
 
-    let connected = false;
     let heartbeat: ReturnType<typeof setTimeout> | undefined;
     let blockSub: Subscription | undefined;
 
@@ -62,14 +65,14 @@ export function watchConnStatus(handle: ChainHandle): Observable<ConnStatus> {
     try {
       blockSub = handle.client.bestBlocks$.subscribe({
         next: () => {
-          if (!connected) {
-            connected = true;
-          }
           // Any (re)arriving block means the link is live again.
           subscriber.next("connected");
           armHeartbeat();
         },
         error: () => {
+          // Clear the armed heartbeat so it can't later flip a settled "error" back to
+          // "reconnecting" (this handler emits a value, not observable-error, so no teardown runs).
+          if (heartbeat) clearTimeout(heartbeat);
           subscriber.next("error");
         },
       });

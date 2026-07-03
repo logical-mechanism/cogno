@@ -1,0 +1,74 @@
+/* StepFlow — the shared step-indicator styles (register / lock ADA / voting power). */
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
+  width: 100%;
+  max-width: 280px;
+  margin: 0 auto;
+  padding: var(--cg-space-4);
+  list-style: none;
+  text-align: left;
+  background: var(--cg-bg-elevated);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-sm);
+}
+
+.stepRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  min-height: var(--cg-icon-md);
+}
+
+.stepMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--cg-icon-md);
+  height: var(--cg-icon-md);
+}
+
+.stepDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cg-border);
+}
+
+.stepLabel {
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-muted);
+  transition: color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+/* done — accent check + solid label */
+.done .stepMark {
+  color: var(--cg-accent);
+}
+.done .stepLabel {
+  color: var(--cg-text);
+}
+
+/* active — spinner (its own accent colour) + emphasised label */
+.active .stepLabel {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-semibold);
+}
+
+/* pending — dim dot + muted label (the defaults above) */
+
+/* Visually-hidden text alternative for the aria-hidden step mark (done/active/pending). */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

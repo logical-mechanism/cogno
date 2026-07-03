@@ -1,0 +1,28 @@
+.link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--cg-space-1);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+  text-decoration: none;
+}
+
+.link:hover {
+  color: var(--cg-text);
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}
+
+.hash {
+  font-family: var(--cg-font-mono);
+  color: var(--cg-text);
+}
+
+.arrow {
+  white-space: nowrap;
+}

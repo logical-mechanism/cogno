@@ -36,15 +36,21 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
   const [wallets, setWallets] = useState<CardanoWalletInfo[]>([]);
   const [loadingWallets, setLoadingWallets] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
 
-  // Close the picker on an outside click / Escape.
+  // Close the picker on an outside click / Escape. Escape returns focus to the trigger so a keyboard
+  // user isn't stranded on <body> when the role="dialog" popover unmounts.
   useEffect(() => {
     if (!open) return;
     const onDocClick = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     document.addEventListener("mousedown", onDocClick);
     document.addEventListener("keydown", onKey);
@@ -53,6 +59,14 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  // Move focus into the picker once it opens and its wallet rows have rendered, so the announced
+  // dialog actually receives focus (a11y: role="dialog" should not leave focus on the trigger behind it).
+  useEffect(() => {
+    if (open && !deriving && !loadingWallets) {
+      pickerRef.current?.querySelector<HTMLElement>("button, [tabindex]")?.focus();
+    }
+  }, [open, deriving, loadingWallets]);
 
   const openPicker = useCallback(async () => {
     setOpen(true);
@@ -73,7 +87,7 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
       toast(
         ok
           ? { kind: "success", message: "Wallet connected" }
-          : { kind: "info", message: "Connection cancelled — tap Connect to try again." },
+          : { kind: "info", message: "Connection cancelled. Tap Connect to try again." },
       );
     },
     [connectWallet, toast],
@@ -97,6 +111,7 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
     <div className={styles.root} ref={rootRef}>
       <button
         type="button"
+        ref={triggerRef}
         className={cls}
         onClick={open ? () => setOpen(false) : openPicker}
         disabled={deriving}
@@ -113,7 +128,7 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
       </button>
 
       {open && !deriving && (
-        <div className={styles.picker} role="dialog" aria-label="Choose a Cardano wallet">
+        <div ref={pickerRef} className={styles.picker} role="dialog" aria-label="Choose a Cardano wallet">
           <p className={styles.pickerTitle}>Choose a wallet</p>
           {loadingWallets ? (
             <div className={styles.pickerEmpty}>

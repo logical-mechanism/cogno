@@ -18,6 +18,13 @@
 
 import type { CognoApi, Ss58, PollView, ViewerPostState } from "@/lib/types";
 
+// Read at the BEST block, not the default (finalized). Writes confirm at `inBestBlock` — several blocks
+// before finalization — so a finalized read of a just-cast vote/poll is STALE, and the optimistic UI
+// can't reconcile until finalization (a vote appears to "revert" then re-appear on refresh). On this
+// single-producer chain best never reorgs, so best is both fresh and safe. Applies to every read that
+// a read-after-write reconciliation depends on (tallies + the viewer's own vote/repost/poll choice).
+const BEST = { at: "best" } as const;
+
 /** A storage entry as PAPI returns it from `getEntries` (full key tuple + decoded value). */
 interface StorageEntry {
   keyArgs: unknown[];
@@ -29,7 +36,7 @@ export async function readPostTally(
   api: CognoApi,
   id: bigint,
 ): Promise<{ upWeight: bigint; downWeight: bigint; upCount: number; downCount: number; score: bigint }> {
-  const t = (await api.query.Microblog.VoteTally.getValue(id)) as unknown as {
+  const t = (await api.query.Microblog.VoteTally.getValue(id, BEST)) as unknown as {
     up_weight: bigint;
     down_weight: bigint;
     up_count: number;
@@ -48,7 +55,7 @@ export async function readPostTally(
 
 /** The permanent repost count for a post (ValueQuery ⇒ default 0). */
 export async function readRepostCount(api: CognoApi, id: bigint): Promise<number> {
-  const n = (await api.query.Microblog.RepostCount.getValue(id)) as unknown as number;
+  const n = (await api.query.Microblog.RepostCount.getValue(id, BEST)) as unknown as number;
   return n ?? 0;
 }
 
@@ -66,10 +73,10 @@ export async function readViewerPostState(
   who: Ss58,
 ): Promise<ViewerPostState> {
   const [vote, repostEntries] = await Promise.all([
-    api.query.Microblog.Votes.getValue(id, who) as Promise<
+    api.query.Microblog.Votes.getValue(id, who, BEST) as Promise<
       { dir: { type: "Up" | "Down" }; weight: bigint } | undefined
     >,
-    api.query.Microblog.Reposts.getEntries(id) as unknown as Promise<StorageEntry[]>,
+    api.query.Microblog.Reposts.getEntries(id, BEST) as unknown as Promise<StorageEntry[]>,
   ]);
   const reposted = repostEntries.some(
     (e) => e.keyArgs[e.keyArgs.length - 1] === who,
@@ -88,7 +95,7 @@ export async function readViewerPostState(
  * array (and still tolerate a wrapper, in case the struct ever gains a second field).
  */
 export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView> {
-  const poll = (await api.query.Microblog.Polls.getValue(hostId)) as unknown as
+  const poll = (await api.query.Microblog.Polls.getValue(hostId, BEST)) as unknown as
     | Array<{ asText: () => string }>
     | { options: Array<{ asText: () => string }> }
     | undefined;
@@ -97,7 +104,7 @@ export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView>
   const tallies = await Promise.all(
     labels.map(
       (_, i) =>
-        api.query.Microblog.PollTally.getValue(hostId, i) as Promise<{
+        api.query.Microblog.PollTally.getValue(hostId, i, BEST) as Promise<{
           weight: bigint;
           count: number;
         }>,
@@ -120,7 +127,7 @@ export async function readViewerPollChoice(
   hostId: bigint,
   who: Ss58,
 ): Promise<number | null> {
-  const v = (await api.query.Microblog.PollVotes.getValue(hostId, who)) as unknown as
+  const v = (await api.query.Microblog.PollVotes.getValue(hostId, who, BEST)) as unknown as
     | { option: number }
     | undefined;
   return v ? v.option : null;

@@ -127,6 +127,11 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const followerCount = (profile?.followerCount ?? 0) + followDelta;
   const followingCount = profile?.followingCount ?? 0;
 
+  // Retire the optimistic delta once the reconciled base count catches up (so a landed follow isn't
+  // double-counted), and whenever the viewed profile changes — ProfileBody is NOT remounted across
+  // /u/A → /u/B, so a delta accrued on profile A must not leak onto B.
+  useEffect(() => setFollowDelta(0), [address, profile?.followerCount]);
+
   const onToggleFollow = useCallback(
     (target: Ss58, next: boolean) => {
       if (viewer.status !== "ready") {
@@ -292,7 +297,16 @@ function ProfileBody({ address }: { address: Ss58 }) {
       {cold ? (
         <div aria-busy="true">
           <Skeleton variant="profileHeader" />
-          <Skeleton variant="post" count={6} />
+          {/* Keep the tabpanel container in the DOM during cold load so ProfileTabs' aria-controls
+              target always exists. */}
+          <div
+            id="cg-profile-panel"
+            role="tabpanel"
+            aria-labelledby={`cg-ptab-${activeTab}`}
+            className={styles.panel}
+          >
+            <Skeleton variant="post" count={6} />
+          </div>
         </div>
       ) : (
         <>

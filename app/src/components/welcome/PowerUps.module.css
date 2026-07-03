@@ -238,6 +238,21 @@
   color: var(--cg-text-secondary);
 }
 
+/* wraps the shared StepFlow + its per-phase narration line (lock ADA / voting power) */
+.progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cg-space-3);
+  margin-top: var(--cg-space-2);
+}
+
+/* centres the Cardanoscan tx link in the (stretch-aligned) done banner */
+.bannerTx {
+  display: flex;
+  justify-content: center;
+}
+
 .inlineLink {
   padding: 0;
   background: none;

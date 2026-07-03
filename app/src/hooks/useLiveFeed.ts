@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
-import { mergeFeed, pendingKey } from "@/lib/optimistic";
+import { mergeFeed, pendingKey, viewerPatchSettled } from "@/lib/optimistic";
 import { byIdDesc, bridgeFetchSize, mergeById, partitionFresh } from "@/lib/feed/live";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import type { FeedSource } from "@/lib/feed/source";
@@ -43,8 +43,13 @@ export interface UseLiveFeed {
   flush: () => void;
 }
 
-export function useLiveFeed(source: FeedSource | null, me: Ss58 | null): UseLiveFeed {
-  const { overlay, dropPending } = useOptimistic();
+export function useLiveFeed(
+  source: FeedSource | null,
+  me: Ss58 | null,
+  /** Best-block number — ticks the vote/repost reconcile refetch (votes don't advance the head id). */
+  bestBlock?: number | null,
+): UseLiveFeed {
+  const { overlay, dropPending, clearPost } = useOptimistic();
 
   const [loaded, setLoaded] = useState<CognoPost[]>([]);
   const [buffered, setBuffered] = useState<CognoPost[]>([]);
@@ -61,6 +66,9 @@ export function useLiveFeed(source: FeedSource | null, me: Ss58 | null): UseLive
   meRef.current = me;
   const bufferedRef = useRef(buffered);
   bufferedRef.current = buffered;
+  // Latest overlay reachable inside the async reconcile-refetch callback (resolves after the closure).
+  const overlayRef = useRef(overlay);
+  overlayRef.current = overlay;
   // Epoch: bumped on every source change so an in-flight load-more from the OLD source is ignored.
   const epochRef = useRef(0);
 
@@ -244,20 +252,9 @@ export function useLiveFeed(source: FeedSource | null, me: Ss58 | null): UseLive
     setBuffered((prev) => prev.filter((p) => !promoted.has(String(p.id))));
   }, []);
 
-  // When the viewer connects mid-session, promote their OWN posts out of the pill buffer into view
-  // (they were classified as "others" while `me` was null).
-  useEffect(() => {
-    if (!me) return;
-    const mine = bufferedRef.current.filter((p) => p.author === me);
-    if (mine.length === 0) return;
-    const ids = new Set(mine.map((p) => String(p.id)));
-    mine.forEach((p) => {
-      loadedIds.current.add(String(p.id));
-      bufferedIds.current.delete(String(p.id));
-    });
-    setLoaded((prev) => mergeById(prev, mine));
-    setBuffered((prev) => prev.filter((p) => !ids.has(String(p.id))));
-  }, [me]);
+  // (A former mid-session "promote my own buffered posts" effect lived here; it was redundant — a `me`
+  // change re-keys baseQuery, which re-runs the reset effect above and re-seeds page-1 with the viewer
+  // stamped in node-side, so the viewer's newest own post returns already loaded.)
 
   // Overlay: prepend the pending optimistic cards + apply count patches over the loaded list.
   const posts = useMemo(() => mergeFeed(loaded, overlay), [loaded, overlay]);
@@ -273,6 +270,43 @@ export function useLiveFeed(source: FeedSource | null, me: Ss58 | null): UseLive
       if (realKeys.has(pendingKey(pp.post))) dropPending(pp.clientId);
     }
   }, [loaded, overlay.pending, dropPending]);
+
+  // Vote/repost reconcile refetch: a vote/repost writes VoteTally/Reposts but creates NO new post, so
+  // the head-id liveness never refetches it and the loaded row's tally + carried myVote stay frozen
+  // (the optimistic overlay would otherwise just TTL-expire back to the stale row). While a CONFIRMED
+  // (expected) vote/repost patch sits on a loaded post, re-read page-1 each block; retire the patches
+  // whose fresh (best-block) row now agrees — BEFORE folding the fresh row in, so the clear + the fold
+  // batch into one render (the tally hands off from overlay to chain truth with no double-count flash).
+  useEffect(() => {
+    if (!source) return;
+    const needs = Object.entries(overlay.viewer).some(
+      ([id, v]) => v.expected && loadedIds.current.has(id),
+    );
+    if (!needs) return;
+    let cancelled = false;
+    source
+      .page(baseQuery)
+      .then((pg) => {
+        if (cancelled) return;
+        const v = overlayRef.current.viewer;
+        for (const p of pg.posts) {
+          const patch = v[String(p.id)];
+          if (
+            patch?.expected &&
+            viewerPatchSettled({ myVote: p.myVote ?? null, reposted: p.reposted === true }, patch)
+          ) {
+            clearPost(p.id);
+          }
+        }
+        applyFresh(pg.posts);
+      })
+      .catch(() => {
+        // Transient refetch failure — the next block re-attempts (the patch is still expected).
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [source, baseQuery, bestBlock, overlay.viewer, applyFresh, clearPost]);
 
   return {
     posts,

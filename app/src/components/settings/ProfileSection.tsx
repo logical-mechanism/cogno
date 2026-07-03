@@ -8,7 +8,7 @@
 // gate (D9 obsolete). When the viewer is connected-but-unbound, the panel nudges them to finish setup
 // (reusing the same bind affordance) and Edit/Clear are hidden.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./ProfileSection.module.css";
 import { Avatar } from "@/components/Avatar";
 import { DisplayName } from "@/components/DisplayName";
@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/Skeleton";
 import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useMutation } from "@/hooks/useMutation";
+import { useOptimistic } from "@/hooks/useOptimistic";
 import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitClearProfile, submitUnpinPost } from "@/lib/chain/mutations";
@@ -36,8 +37,9 @@ interface ProfilePreview {
 }
 
 export function ProfileSection() {
-  const { api, signer, source, signerCtl, identity } = useSession();
+  const { api, signer, source, signerCtl, identity, bestBlock } = useSession();
   const { run } = useMutation();
+  const { overlay } = useOptimistic();
   const { toast } = useToaster();
 
   const ss58 = signerCtl.signer.ss58;
@@ -49,46 +51,60 @@ export function ProfileSection() {
   const [pinnedPost, setPinnedPost] = useState<CognoPost | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [working, setWorking] = useState<null | "clear" | "unpin">(null);
+  // Which (account, bound) we've already shown data for — a bestBlock tick is then a SILENT refresh (no
+  // skeleton, no pinned-post flash) so an edit saved elsewhere lands here on the next block.
+  const loadedKey = useRef<string | null>(null);
 
   // Load the viewer's own profile (node-served via the seam) for the preview — display name / bio /
-  // avatar / pinned. Editing still works regardless (the modal reads storage one-shot).
+  // avatar / pinned. Re-reads silently each block so a save (from the Edit modal) reconciles here too.
   useEffect(() => {
+    if (!(source && source.caps.profiles && bound)) {
+      setPreview({});
+      setPinnedPost(null);
+      setLoading(false);
+      loadedKey.current = null;
+      return;
+    }
     let cancelled = false;
-    setLoading(true);
-    setPinnedPost(null);
+    const readKey = `${ss58}|${bound}`;
+    const firstForKey = loadedKey.current !== readKey;
+    if (firstForKey) {
+      setLoading(true);
+      setPinnedPost(null);
+    }
     void (async () => {
       try {
-        if (source && source.caps.profiles && bound) {
-          const p = await source.profile({ author: ss58 });
-          if (cancelled) return;
-          setPreview({
-            displayName: p.displayName,
-            bio: p.bio,
-            avatar: p.avatar,
-            pinnedPostId: p.pinnedPostId,
-          });
-          // Resolve the pinned post (thread().root IS the one-post resolver). Silent on 404.
-          if (p.pinnedPostId != null) {
-            try {
-              const t = await source.thread(p.pinnedPostId);
-              if (!cancelled) setPinnedPost(t.root ?? null);
-            } catch {
-              if (!cancelled) setPinnedPost(null);
-            }
+        const p = await source.profile({ author: ss58 });
+        if (cancelled) return;
+        loadedKey.current = readKey;
+        setPreview({
+          displayName: p.displayName,
+          bio: p.bio,
+          avatar: p.avatar,
+          pinnedPostId: p.pinnedPostId,
+        });
+        // Resolve the pinned post (thread().root IS the one-post resolver). Silent on 404.
+        if (p.pinnedPostId != null) {
+          try {
+            const t = await source.thread(p.pinnedPostId);
+            if (!cancelled) setPinnedPost(t.root ?? null);
+          } catch {
+            if (!cancelled) setPinnedPost(null);
           }
-        } else {
-          if (!cancelled) setPreview({});
+        } else if (!cancelled) {
+          setPinnedPost(null);
         }
       } catch {
-        if (!cancelled) setPreview({});
+        // Only blank the preview on the initial load; a silent refresh failure keeps what's shown.
+        if (!cancelled && firstForKey) setPreview({});
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && firstForKey) setLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [source, ss58, bound]);
+  }, [source, ss58, bound, bestBlock]);
 
   const submit = useCallback(
     (kind: "clear" | "unpin", stream: ReturnType<typeof submitClearProfile>, success: string, onOk?: () => void) => {
@@ -166,16 +182,26 @@ export function ProfileSection() {
   }
 
   const p = preview ?? {};
-  const bioText = p.bio?.trim() ?? "";
+  // Merge the optimistic overlay so a just-saved edit (still confirming) shows instantly here too.
+  const patch = overlay.profiles[ss58];
+  const shown = patch
+    ? {
+        ...p,
+        displayName: patch.displayName.trim() || undefined,
+        bio: patch.bio.trim() || undefined,
+        avatar: patch.avatar.trim() || undefined,
+      }
+    : p;
+  const bioText = shown.bio?.trim() ?? "";
 
   return (
     <div className={styles.cards}>
       {/* Live preview */}
       <div className={styles.card}>
         <div className={styles.previewRow}>
-          <Avatar address={ss58} src={p.avatar ?? null} size="lg" name={p.displayName} />
+          <Avatar address={ss58} src={shown.avatar ?? null} size="lg" name={shown.displayName} eager />
           <div className={styles.previewText}>
-            <DisplayName address={ss58} displayName={p.displayName} truncate={false} />
+            <DisplayName address={ss58} displayName={shown.displayName} truncate={false} />
             <Handle address={ss58} truncate="middle" />
             {bioText.length > 0 && (
               <div className={styles.bio}>
@@ -200,7 +226,7 @@ export function ProfileSection() {
         </div>
 
         {confirmClear && (
-          <div className={styles.confirm} role="alertdialog" aria-label="Clear your profile?">
+          <div className={styles.confirm} role="alert">
             <p className={styles.confirmText}>Clear your profile? Your posts stay.</p>
             <div className={styles.confirmActions}>
               <button

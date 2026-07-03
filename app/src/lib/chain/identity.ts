@@ -13,13 +13,7 @@
 import { Binary, FixedSizeBinary, type PolkadotClient } from "polkadot-api";
 import type { CognoApi, Ss58 } from "@/lib/types";
 import { stringifyDispatchError, stringifyError } from "@/lib/chain/post";
-
-function hexToBytes(hex: string): Uint8Array {
-  const h = hex.replace(/^0x/, "");
-  const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
+import { hexToBytes } from "@/lib/util/hex";
 
 /**
  * THIS chain's genesis (block-0) hash as lowercase hex, no 0x — exactly what the on-chain verifier

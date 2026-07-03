@@ -6,8 +6,9 @@
 // Connected (postingEnabled): Avatar + DisplayName + Handle (truncated ss58, mono), opening a small
 // menu with "View profile" / "Settings" / "Disconnect". Not connected: a ConnectWalletButton that
 // derives the posting key (→ /welcome continues the identity bind). Reads everything from useSession();
-// it never instantiates a socket and never builds an extrinsic. On tablet (icon-only rail) the parent
-// renders this avatar-only via the `compact` flag.
+// it never instantiates a socket and never builds an extrinsic. On the tablet icon-only rail the
+// DisplayName/Handle block collapses away in CSS (Account.module.css @media ≤1019px) — same as the
+// rest of the rail.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -18,12 +19,7 @@ import { Handle } from "./Handle";
 import { ConnectWalletButton } from "./ConnectWalletButton";
 import { useSession } from "./Providers";
 
-export interface AccountProps {
-  /** Icon-only (tablet collapsed rail) — render just the avatar trigger. */
-  compact?: boolean;
-}
-
-export function Account({ compact }: AccountProps) {
+export function Account() {
   const router = useRouter();
   const { viewer, signerCtl } = useSession();
   const me = viewer.address;
@@ -33,15 +29,20 @@ export function Account({ compact }: AccountProps) {
 
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
-  // Close the menu on outside click / Escape.
+  // Close the menu on outside click / Escape. Escape returns focus to the trigger so a keyboard user
+  // who Escapes off a menu item isn't stranded on <body> when the menu unmounts.
   useEffect(() => {
     if (!open) return;
     const onDocClick = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     document.addEventListener("mousedown", onDocClick);
     document.addEventListener("keydown", onKey);
@@ -73,7 +74,7 @@ export function Account({ compact }: AccountProps) {
         <ConnectWalletButton
           viewer={viewer}
           onContinueSetup={() => router.push("/welcome/")}
-          size={compact ? "sm" : "md"}
+          size="md"
         />
       </div>
     );
@@ -83,19 +84,18 @@ export function Account({ compact }: AccountProps) {
     <div className={styles.root} ref={rootRef}>
       <button
         type="button"
-        className={`${styles.trigger} ${compact ? styles.compact : ""}`}
+        ref={triggerRef}
+        className={styles.trigger}
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Account menu"
       >
-        <Avatar address={me} src={viewer.avatar} size="md" name={viewer.displayName} />
-        {!compact && (
-          <span className={styles.who}>
-            <DisplayName address={me} displayName={viewer.displayName} truncate />
-            <Handle address={me} />
-          </span>
-        )}
+        <Avatar address={me} src={viewer.avatar} size="md" name={viewer.displayName} eager />
+        <span className={styles.who}>
+          <DisplayName address={me} displayName={viewer.displayName} truncate />
+          <Handle address={me} />
+        </span>
       </button>
 
       {open && (

@@ -3,9 +3,10 @@
 // This file is the DETERMINISTIC SEAM between the PAPI data layer (lib/chain, lib/signer)
 // and the React layer (hooks, components). The data layer IMPLEMENTS these shapes; the
 // React layer CONSUMES them. Nothing here imports React. Grounded against PAPI 1.x + the
-// descriptors generated from cogno-chain-runtime (spec_version 117 — the spec-113 social
-// pallet set + spec-117 feeless pallet-profile; the live shapes are confirmed against the
-// running node's metadata, not guessed).
+// descriptors generated from cogno-chain-runtime (spec_version 200 — the all-Rust restart:
+// the spec-113 social pallet set + spec-117 feeless pallet-profile, with feed/thread/profile
+// reads now served node-direct by the node's spec-200 MicroblogApi rather than a SubQuery
+// indexer; the live shapes are confirmed against the running node's metadata, not guessed).
 
 import type { PolkadotClient, TypedApi } from "polkadot-api";
 import type { PolkadotSigner } from "polkadot-api/signer";
@@ -23,9 +24,9 @@ export type Ss58 = string;
  * and the storage-key id attached.
  *
  * The social fields (quote/tallies/counts + author profile snapshot) are ADDITIVE and all
- * optional: the indexer reader fills them fully; the PAPI-direct reader fills only what
- * direct storage allows (gated by `FeedCaps`). Weight/score fields are `bigint` (u128 ⇒
- * lovelace-scale, may exceed 2^53; `score` may be negative).
+ * optional: the node-served MicroblogApi reader fills them fully; a bare PAPI-direct storage
+ * read fills only what direct storage allows (gated by `FeedCaps`). Weight/score fields are
+ * `bigint` (u128 ⇒ lovelace-scale, may exceed 2^53; `score` may be negative).
  */
 export interface CognoPost {
   /** Storage key (`NextPostId`-assigned u64). */

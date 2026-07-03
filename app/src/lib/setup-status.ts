@@ -77,7 +77,7 @@ export function setupStatus(state: SessionState, postingPower: bigint | null): S
         phase: "unbound",
         ready: false,
         headline: "Register your account",
-        detail: "Register your identity to claim this account — it's free and only takes a moment.",
+        detail: "Register your identity to claim this account.",
         next: { kind: "bind", label: "Finish setup" },
       };
     case "binding":
@@ -125,7 +125,7 @@ function boundStatus(postingPower: bigint | null): SetupStatus {
     phase: "needs_power",
     ready: false,
     headline: "One step left to post",
-    detail: "You're registered. Lock ADA to get posting capacity — reading is always open.",
+    detail: "You're registered. Lock ADA to get posting capacity.",
     next: { kind: "lock", label: "Lock ADA" },
   };
 }

@@ -36,6 +36,9 @@ export function useRepost(api: CognoApi | null, signer: PostingSigner | null): U
           clearPost(postId);
           fail(message);
         },
+        // Card unmounted mid-flight → silently drop the optimistic patch so it can't outlive the
+        // page-scoped hook and stick a permanent repost-count offset.
+        onCancel: () => clearPost(postId),
       }).catch(() => {
         /* surfaced via fail(); optimistic patch rolled back via clearPost */
       });

@@ -39,9 +39,11 @@ export function RightRail() {
     [router],
   );
 
-  const { suggestions, loading } = useWhoToFollow(source, me, 3);
+  const { suggestions } = useWhoToFollow(source, me, 3);
   const follow = useFollow(api, signer, source, me);
-  const showWhoToFollow = source?.caps.whoToFollow === true && (loading || suggestions.length > 0);
+  // Only show the card once real suggestions exist ("hidden only when empty") — rendering during the
+  // load window left a heading + "Show more" over an empty body, which reads as broken.
+  const showWhoToFollow = source?.caps.whoToFollow === true && suggestions.length > 0;
 
   const onToggleFollow = useCallback(
     (target: string, next: boolean) => {

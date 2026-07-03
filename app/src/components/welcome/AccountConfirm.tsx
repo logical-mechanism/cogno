@@ -40,8 +40,7 @@ export function AccountConfirm({
       </div>
 
       <p className={styles.note}>
-        Your posting key was created from your wallet signature. We don&apos;t store it — you&apos;ll
-        re-create it by connecting again next time.
+        Your posting key was created from your wallet signature.
       </p>
 
       <button type="button" className={styles.primary} onClick={onContinue}>

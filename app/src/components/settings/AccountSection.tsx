@@ -14,14 +14,7 @@ import { useSession } from "@/components/Providers";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { truncateSs58 } from "@/lib/ss58";
 import { setupStatus } from "@/lib/setup-status";
-
-/** lovelace → "N.N ADA" (voting power display); "—" when 0/null. */
-function formatAda(lovelace: bigint | null): string {
-  if (lovelace == null || lovelace === 0n) return "—";
-  const whole = lovelace / 1_000_000n;
-  const frac = (lovelace % 1_000_000n) / 100_000n; // one decimal place
-  return `${whole.toLocaleString()}.${frac} ADA`;
-}
+import { formatAda } from "@/lib/format";
 
 export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
   const { api, signerCtl, identity, sessionState } = useSession();
@@ -56,6 +49,17 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
       toast({ kind: "error", message: "Couldn't copy address" });
     }
   }, [ss58, toast]);
+
+  const copyWalletAddress = useCallback(async () => {
+    const addr = signerCtl.walletAddress;
+    if (!addr) return;
+    try {
+      await navigator.clipboard.writeText(addr);
+      toast({ kind: "success", message: "Copied" });
+    } catch {
+      toast({ kind: "error", message: "Couldn't copy address" });
+    }
+  }, [signerCtl.walletAddress, toast]);
 
   // disconnected (no wallet, no dev account): a single card with a connect prompt. The connect button
   // lives in the global Account control (bottom-left) — no need to duplicate it on every settings panel.
@@ -133,7 +137,20 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
             <span className={styles.walletName}>
               {walletId}
               {signerCtl.walletAddress && (
-                <span className={styles.walletAddr}> · {truncateSs58(signerCtl.walletAddress)}</span>
+                <>
+                  <span className={styles.walletSep} aria-hidden>
+                    {" · "}
+                  </span>
+                  <button
+                    type="button"
+                    className={styles.walletAddr}
+                    onClick={copyWalletAddress}
+                    title={signerCtl.walletAddress}
+                    aria-label={`Copy wallet address ${signerCtl.walletAddress}`}
+                  >
+                    {truncateSs58(signerCtl.walletAddress)}
+                  </button>
+                </>
               )}
             </span>
             <button type="button" className={styles.outlineBtn} onClick={signerCtl.disconnect}>
@@ -175,7 +192,7 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
         {identity.bound && (
           <>
             <p className={styles.optionalNote}>
-              Optional — only affects how much weight your votes carry.
+              Only affects how much weight your votes carry.
             </p>
             <div className={styles.statRow}>
               <span className={styles.statLabel}>Voting power</span>

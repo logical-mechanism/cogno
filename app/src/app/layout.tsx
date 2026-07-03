@@ -16,7 +16,7 @@ void FONTS_LOADED;
 export const metadata: Metadata = {
   title: "cogno-chain",
   description:
-    "Post text, read text. A feeless social chain — posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
+    "Post text, read text. A feeless social chain where posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
   applicationName: "cogno-chain",
   robots: { index: false, follow: false },
 };
@@ -32,7 +32,7 @@ const THEME_BOOT = `(function(){try{var t=localStorage.getItem('cg-theme');if(t!
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-theme="dark">
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
         <meta name="color-scheme" content="dark light" />
         {/* eslint-disable-next-line react/no-danger */}

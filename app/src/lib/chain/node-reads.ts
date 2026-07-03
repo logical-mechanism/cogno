@@ -74,17 +74,38 @@ interface PersonSummaryRaw {
   follower_count: number;
 }
 
+/**
+ * Read at the BEST block, not the runtime-API default (finalized). Writes confirm at `inBestBlock`,
+ * several blocks before finalization, so a finalized feed read of a just-cast vote/repost is STALE and
+ * the optimistic overlay can't reconcile until finalization (a vote appears to revert). This chain is
+ * single-producer (best never reorgs), so best is fresh AND safe. Passed to the tally-bearing feed
+ * reads (a read-after-write reconciliation depends on them); search / who-to-follow keep the default.
+ */
+const BEST = { at: "best" } as const;
+type AtBest = typeof BEST;
+
 /** The runtime-API surface this module calls (a subset of `api.apis.MicroblogApi`). */
 interface MicroblogApiCalls {
-  feed_page(beforeId: bigint | undefined, limit: number, viewer: Ss58 | undefined): Promise<FeedPageRaw>;
+  feed_page(
+    beforeId: bigint | undefined,
+    limit: number,
+    viewer: Ss58 | undefined,
+    opts?: AtBest,
+  ): Promise<FeedPageRaw>;
   author_feed_page(
     author: Ss58,
     beforeId: bigint | undefined,
     limit: number,
     viewer: Ss58 | undefined,
+    opts?: AtBest,
   ): Promise<FeedPageRaw>;
-  following_feed_page(viewer: Ss58, beforeId: bigint | undefined, limit: number): Promise<FeedPageRaw>;
-  thread(focal: bigint, viewer: Ss58 | undefined): Promise<ThreadRaw>;
+  following_feed_page(
+    viewer: Ss58,
+    beforeId: bigint | undefined,
+    limit: number,
+    opts?: AtBest,
+  ): Promise<FeedPageRaw>;
+  thread(focal: bigint, viewer: Ss58 | undefined, opts?: AtBest): Promise<ThreadRaw>;
   author_post_count(author: Ss58): Promise<number>;
   // ── the all-Rust restart: the SubQuery indexer reads folded into the node (fork/all-rust, P6) ──
   /** One author's REPLIES (`parent != None`), newest-first, paged below `beforeId` (a post id). */
@@ -93,6 +114,7 @@ interface MicroblogApiCalls {
     beforeId: bigint | undefined,
     limit: number,
     viewer: Ss58 | undefined,
+    opts?: AtBest,
   ): Promise<FeedPageRaw>;
   /** Full-text post search: ASCII-case-insensitive substring on `term` (a `Vec<u8>` ⇒ `Binary`). */
   search_posts(
@@ -112,6 +134,7 @@ interface MicroblogApiCalls {
     beforeId: bigint | undefined,
     limit: number,
     viewer: Ss58 | undefined,
+    opts?: AtBest,
   ): Promise<FeedPageRaw>;
 }
 
@@ -254,7 +277,7 @@ export async function nodeGlobalFeedPage(
   opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
 ): Promise<IdPage> {
   return chasePage(
-    (beforeId, limit) => microblogApi(api).feed_page(beforeId, limit, opts.viewer),
+    (beforeId, limit) => microblogApi(api).feed_page(beforeId, limit, opts.viewer, BEST),
     opts.beforeId,
     opts.limit,
     opts.viewer != null,
@@ -268,7 +291,7 @@ export async function nodeAuthorFeedPage(
   opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
 ): Promise<IdPage> {
   return chasePage(
-    (beforeId, limit) => microblogApi(api).author_feed_page(author, beforeId, limit, opts.viewer),
+    (beforeId, limit) => microblogApi(api).author_feed_page(author, beforeId, limit, opts.viewer, BEST),
     opts.beforeId,
     opts.limit,
     opts.viewer != null,
@@ -282,7 +305,7 @@ export async function nodeFollowingFeedPage(
   opts: { beforeId?: bigint; limit: number },
 ): Promise<IdPage> {
   return chasePage(
-    (beforeId, limit) => microblogApi(api).following_feed_page(viewer, beforeId, limit),
+    (beforeId, limit) => microblogApi(api).following_feed_page(viewer, beforeId, limit, BEST),
     opts.beforeId,
     opts.limit,
     // The Following timeline is always read AS its owner, so the overlay is always stamped.
@@ -301,7 +324,7 @@ export async function nodeThread(
   focalId: bigint,
   viewer?: Ss58,
 ): Promise<RawThread> {
-  const raw = await microblogApi(api).thread(focalId, viewer);
+  const raw = await microblogApi(api).thread(focalId, viewer, BEST);
   if (!raw.focal) throw new Error(`thread root #${focalId} not found on the node`);
   const hasViewer = viewer != null;
   const root = mapEnrichedPost(raw.focal, hasViewer);
@@ -357,7 +380,7 @@ export async function nodeAuthorRepliesPage(
   opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
 ): Promise<IdPage> {
   return chasePage(
-    (beforeId, limit) => microblogApi(api).author_replies_page(author, beforeId, limit, opts.viewer),
+    (beforeId, limit) => microblogApi(api).author_replies_page(author, beforeId, limit, opts.viewer, BEST),
     opts.beforeId,
     opts.limit,
     opts.viewer != null,
@@ -412,7 +435,7 @@ export async function nodeLikesPage(
   opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
 ): Promise<IdPage> {
   return chasePage(
-    (beforeId, limit) => microblogApi(api).likes_page(who, beforeId, limit, opts.viewer),
+    (beforeId, limit) => microblogApi(api).likes_page(who, beforeId, limit, opts.viewer, BEST),
     opts.beforeId,
     opts.limit,
     opts.viewer != null,

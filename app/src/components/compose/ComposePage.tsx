@@ -35,6 +35,7 @@ import { Spinner } from "@/components/icons";
 import { useSession } from "@/components/Providers";
 import { useThread } from "@/hooks/useThread";
 import { useOptimistic } from "@/hooks/useOptimistic";
+import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
 import { useCapacity } from "@/hooks/useCapacity";
 import { useHeads } from "@/hooks/useHeads";
@@ -97,6 +98,9 @@ export function ComposePage() {
   const { thread, loading: targetLoading } = useThread(source, needsTarget ? targetId : null);
   const targetPost: CognoPost | null = needsTarget ? thread?.root ?? null : null;
   const contextUnavailable = needsTarget && targetId != null && !targetLoading && !targetPost;
+  // When the reply/quote target can't be resolved the composer degrades to a top-level post, so the
+  // header must say "Post", not the stale "Reply"/"Quote".
+  const effectiveMode = contextUnavailable ? "post" : mode;
 
   // ── Write pipeline (mirror ModalRouteHost.runWrite) ──────────────────────────────────────────
   const { addPending, dropPending, failPending } = useOptimistic();
@@ -144,7 +148,7 @@ export function ComposePage() {
   // Build a minimal optimistic CognoPost for the pending card (the real row replaces it on confirm).
   const optimisticPost = useCallback(
     (body: string, extra: Partial<CognoPost> = {}): CognoPost => ({
-      id: -BigInt(Date.now()), // negative sentinel id — never collides with a real (positive) post id
+      id: nextPendingId(), // strictly-negative unique sentinel — never collides with a real post id
       author: viewer.address ?? signer.ss58,
       text: body,
       at: 0,
@@ -244,7 +248,7 @@ export function ComposePage() {
         <button type="button" className={styles.cancel} onClick={goBack}>
           Cancel
         </button>
-        <h1 className={styles.title}>{TITLES[mode]}</h1>
+        <h1 className={styles.title}>{TITLES[effectiveMode]}</h1>
       </header>
 
       <div className={styles.body}>

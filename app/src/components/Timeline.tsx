@@ -163,9 +163,11 @@ export function Timeline({
   );
 
   // ── loading (initial) ──
+  // Carry the same id/role/aria-label as the populated panel so the TimelineTabs' aria-controls
+  // relationship stays valid while the feed is loading or empty (only one branch renders at a time).
   if (loading && posts.length === 0) {
     return (
-      <div className={styles.list} aria-busy="true">
+      <div id="cg-timeline-panel" role="tabpanel" aria-label="Timeline" className={styles.list} aria-busy="true">
         <Skeleton variant="post" count={8} />
       </div>
     );
@@ -174,7 +176,7 @@ export function Timeline({
   // ── empty ──
   if (posts.length === 0) {
     return (
-      <div className={styles.list}>
+      <div id="cg-timeline-panel" role="tabpanel" aria-label="Timeline" className={styles.list}>
         {error && <ErrorRow message={error} onRetry={onRetry} />}
         <EmptyState
           variant={emptyVariant}
@@ -294,8 +296,8 @@ function PollHost({
   api: CognoApi | null;
   signer: PostingSigner | null;
 }) {
-  const { source } = useSession();
-  const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer, gate.address ?? null);
+  const { source, bestBlock } = useSession();
+  const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer, gate.address ?? null, bestBlock);
   return (
     <PostCard
       post={post}

@@ -1,7 +1,10 @@
 "use client";
 
 // VaultSection — Settings §4 (doc 12). Lock / exit the 100-ADA L1 vault that earns POSTING POWER
-// (talk-capacity weight). Framed plainly as "posting power" — NEVER a battery, NO tx/block chrome.
+// (talk-capacity weight). Framed plainly as "posting power" — NEVER a battery, NO app-chain
+// block/finalization chrome. The ONE exception (by request): after a lock/exit submits, we link the
+// resulting Cardano transaction on Cardanoscan — it's a real L1 tx the user initiated, so it
+// shouldn't just vanish while the on-chain weight settles.
 //
 // Reads useVault (Blockfrost) for lock/exit + the on-chain TalkStake.AllowedStake(ss58) watch for the
 // granted weight (lags the lock by a few blocks). When no Cardano provider is configured the whole
@@ -11,19 +14,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./VaultSection.module.css";
 import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
+import { CardanoTxLink } from "@/components/CardanoTxLink";
 import { useSession } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
 import { useActionToast } from "@/hooks/useActionToast";
+import { formatAda } from "@/lib/format";
 
 const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
-
-/** lovelace → "N.N ADA"; "—" for 0/null. */
-function formatAda(lovelace: bigint | null): string {
-  if (lovelace == null || lovelace === 0n) return "—";
-  const whole = lovelace / 1_000_000n;
-  const frac = (lovelace % 1_000_000n) / 100_000n;
-  return `${whole.toLocaleString()}.${frac} ADA`;
-}
 
 export function VaultSection() {
   const { api, signerCtl } = useSession();
@@ -60,7 +57,7 @@ export function VaultSection() {
     const action = actionRef.current;
     if (!action) return;
     if (vault.phase === "submitted") {
-      ok(action === "lock" ? "Lock submitted — posting power updates shortly" : "Exit submitted — updating shortly");
+      ok(action === "lock" ? "Lock submitted. Posting power updates shortly" : "Exit submitted. Updating shortly");
       actionRef.current = null;
     } else if (vault.phase === "error" && vault.error) {
       fail(vault.error);
@@ -159,7 +156,10 @@ export function VaultSection() {
           </div>
 
           {vault.phase === "submitted" && (
-            <p className={styles.submitted}>Submitted — updating shortly</p>
+            <div className={styles.submittedRow}>
+              <p className={styles.submitted}>Submitted. Updating shortly</p>
+              {vault.txHash && <CardanoTxLink txHash={vault.txHash} />}
+            </div>
           )}
           {vault.phase === "error" && vault.error && (
             <p className={styles.error} role="alert">

@@ -4,7 +4,7 @@
 // optimistic replies (addOptimisticReply) so a just-submitted reply shows instantly under the root.
 // v1 ThreadView is root + one level of direct replies (deeper replies open their own /post/[id]).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoPost, ThreadView, Ss58 } from "@/lib/types";
@@ -28,12 +28,18 @@ export function useThread(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { overlay, addPending } = useOptimistic();
+  const prevRootId = useRef<bigint | null>(null);
 
   useEffect(() => {
     if (!source || rootId == null) {
       setThread(null);
+      prevRootId.current = rootId;
       return;
     }
+    // Clear the stale thread only on a real root change (A→B nav), NOT on viewer/source re-runs with
+    // the same root — an unconditional clear would flash a skeleton over an already-loaded thread.
+    if (prevRootId.current !== rootId) setThread(null);
+    prevRootId.current = rootId;
     let cancelled = false;
     setLoading(true);
     setError(null);

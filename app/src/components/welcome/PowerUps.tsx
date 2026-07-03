@@ -27,7 +27,32 @@
 import { useState } from "react";
 import styles from "./PowerUps.module.css";
 import { Spinner } from "@/components/icons";
-import type { UseVault } from "@/hooks/useVault";
+import { StepFlow } from "./StepFlow";
+import { CardanoTxLink } from "@/components/CardanoTxLink";
+import type { UseVault, VaultStep } from "@/hooks/useVault";
+import type { BindPhase } from "@/hooks/useIdentity";
+
+// ── shared step-flow configs (mirror the hook phases) ────────────────────────────────────────────
+
+const STAKE_STEPS: { key: Exclude<BindPhase, "idle" | "confirming">; label: string }[] = [
+  { key: "signing", label: "Sign in your wallet" },
+  { key: "submitting", label: "Submit voting power" },
+];
+const STAKE_NARRATION: Record<Exclude<BindPhase, "idle" | "confirming">, string> = {
+  signing: "Approve the stake signature in your wallet…",
+  submitting: "Submitting your voting power to the network…",
+};
+
+const VAULT_STEPS: { key: Exclude<VaultStep, "idle">; label: string }[] = [
+  { key: "preparing", label: "Prepare the transaction" },
+  { key: "signing", label: "Sign in your wallet" },
+  { key: "submitting", label: "Submit to Cardano" },
+];
+const VAULT_NARRATION: Record<Exclude<VaultStep, "idle">, string> = {
+  preparing: "Building the lock transaction…",
+  signing: "Confirm the transaction in your wallet…",
+  submitting: "Submitting to Cardano…",
+};
 
 export interface PowerUpsProps {
   vault: UseVault;
@@ -37,6 +62,7 @@ export interface PowerUpsProps {
   stake: {
     stakeBound: boolean | null;
     stakeBinding: boolean;
+    stakeBindPhase: BindPhase;
     stakeError: string | null;
     votingPower: bigint | null;
     bindStake: (walletId: string) => void;
@@ -73,6 +99,7 @@ export function PowerUps({
         <DoneBanner
           welcomeBack={welcomeBack}
           justLocked={justLocked}
+          txHash={vault.txHash}
           onGoToTimeline={onGoToTimeline}
           headingRef={headingRef}
         />
@@ -109,7 +136,7 @@ export function PowerUps({
           One step left to post
         </h1>
         <p className={styles.bannerLede}>
-          You can read right now. To post, lock ADA for posting capacity — reading always stays open.
+          You can read right now. To post, lock ADA for posting capacity.
         </p>
       </div>
 
@@ -117,6 +144,8 @@ export function PowerUps({
         <VaultCard vault={vault} walletId={walletId} onOpenSettings={onOpenSettings} />
         <StakeCard stake={stake} walletId={walletId} />
       </div>
+
+      <p className={styles.later}>You can manage voting power anytime in Settings.</p>
 
       <button type="button" className={styles.readOnly} onClick={onGoToTimeline}>
         Browse the timeline (read-only)
@@ -130,17 +159,19 @@ export function PowerUps({
 function DoneBanner({
   welcomeBack,
   justLocked,
+  txHash,
   onGoToTimeline,
   headingRef,
 }: {
   welcomeBack?: boolean;
   justLocked: boolean;
+  txHash?: string | null;
   onGoToTimeline: () => void;
   headingRef?: React.Ref<HTMLHeadingElement>;
 }) {
   const heading = justLocked ? "Almost there" : welcomeBack ? "Welcome back" : "You're all set";
   const lede = justLocked
-    ? "Locked — your posting capacity arrives in a moment. You can read in the meantime."
+    ? "Locked. Your posting capacity arrives shortly."
     : "You can post, reply, repost, and follow.";
   return (
     <div className={styles.banner}>
@@ -148,6 +179,11 @@ function DoneBanner({
         {heading}
       </h1>
       <p className={styles.bannerLede}>{lede}</p>
+      {justLocked && txHash && (
+        <div className={styles.bannerTx}>
+          <CardanoTxLink txHash={txHash} label="Lock transaction" />
+        </div>
+      )}
       <button type="button" className={styles.primary} onClick={onGoToTimeline}>
         Go to your timeline
       </button>
@@ -185,7 +221,10 @@ function VaultCard({
       </p>
 
       {vault.phase === "submitted" ? (
-        <p className={styles.cardOk}>Locked. Your posting capacity arrives shortly.</p>
+        <>
+          <p className={styles.cardOk}>Locked. Your posting capacity arrives shortly.</p>
+          {vault.txHash && <CardanoTxLink txHash={vault.txHash} label="Lock transaction" />}
+        </>
       ) : !vault.available ? (
         <div className={styles.cardActions}>
           <button type="button" className={styles.cardCta} disabled aria-disabled>
@@ -231,9 +270,18 @@ function VaultCard({
       )}
 
       {vault.busy && (
-        <p className={styles.narration} aria-live="polite">
-          Confirm the transaction in your wallet…
-        </p>
+        <div className={styles.progress}>
+          <StepFlow
+            steps={VAULT_STEPS}
+            active={VAULT_STEPS.findIndex(
+              (s) => s.key === (vault.step === "idle" ? "preparing" : vault.step),
+            )}
+            ariaLabel="Lock progress"
+          />
+          <p className={styles.narration} aria-live="polite">
+            {VAULT_NARRATION[vault.step === "idle" ? "preparing" : vault.step]}
+          </p>
+        </div>
       )}
     </div>
   );
@@ -304,16 +352,25 @@ function StakeCard({
           </div>
 
           {stake.stakeBinding && (
-            <p className={styles.narration} aria-live="polite">
-              Approve the stake signature in your wallet…
-            </p>
+            <div className={styles.progress}>
+              <StepFlow
+                steps={STAKE_STEPS}
+                active={STAKE_STEPS.findIndex(
+                  (s) => s.key === (stake.stakeBindPhase === "submitting" ? "submitting" : "signing"),
+                )}
+                ariaLabel="Voting-power progress"
+              />
+              <p className={styles.narration} aria-live="polite">
+                {STAKE_NARRATION[stake.stakeBindPhase === "submitting" ? "submitting" : "signing"]}
+              </p>
+            </div>
           )}
 
           {stake.stakeError && !stake.stakeBinding && (
             <p className={styles.cardError} role="alert">
               {cantStakeSign
                 ? "This wallet can't prove its stake. Try Eternl or Lace."
-                : `Couldn't add voting power — ${stake.stakeError}.`}
+                : `Couldn't add voting power: ${stake.stakeError}`}
             </p>
           )}
         </>

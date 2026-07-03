@@ -7,7 +7,7 @@
 // readback. The wallet sign, the on-chain submit, and the readback are distinct steps, surfaced as one
 // `binding` flag here but narrated by the UI.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PolkadotClient } from "polkadot-api";
 import type { CognoApi, PostingSigner } from "@/lib/types";
 import {
@@ -19,11 +19,23 @@ import {
 } from "@/lib/chain/identity";
 import { produceBindProof, produceBindProofStake } from "@/lib/cardano/cip8";
 
+/** The phase of an in-flight identity bind, so the UI can narrate the background steps instead of
+ *  showing one opaque "Registering…" spinner. `client.submit` resolves on FINALIZATION, so the
+ *  `submitting` phase is a genuine multi-second wait — the one that felt "stuck". */
+export type BindPhase = "idle" | "signing" | "submitting" | "confirming";
+
 export interface UseIdentity {
   /** true = bound (may post), false = unbound, null = unknown/loading. */
   bound: boolean | null;
   /** a bind is in flight (wallet sign → feeless on-chain submit → readback). */
   binding: boolean;
+  /** the phase of an in-flight bind (`idle` when not binding) — drives the step indicator. */
+  bindPhase: BindPhase;
+  /** the on-chain bound-read is in flight (a key just changed). Lets the UI show a neutral "deciding"
+   *  screen while we resolve onboarded-or-not, instead of flashing the wrong step. Goes false on
+   *  success, error, OR a timeout (BOUND_READ_TIMEOUT_MS), so a failed/hung read can never wedge that
+   *  screen. Set true DURING RENDER on a key change so the loader shows before the stale value paints. */
+  checkingBound: boolean;
   error: string | null;
   /** the Cardano address the bind was signed from, once bound (for display). */
   boundAddress: string | null;
@@ -43,11 +55,35 @@ export interface UseIdentity {
   boundStakeCredHex: string | null;
   /** a stake bind is in flight (stake-key wallet sign → feeless on-chain `link_stake_signed`). */
   stakeBinding: boolean;
+  /** the phase of an in-flight stake bind (`idle` when not binding) — drives the step indicator.
+   *  Uses `signing` → `submitting` only (there is no post-submit readback like the payment bind). */
+  stakeBindPhase: BindPhase;
   /** error from the LAST stake-bind attempt (kept separate from the payment-bind `error`). */
   stakeError: string | null;
   /** Bind the wallet's stake key to enable stake-weighted voting. Requires the account to already
    *  be payment-bound (`bound === true`); the runtime rejects an unbound account (`NotPaymentBound`). */
   bindStake: (walletId: string) => void;
+}
+
+// A hung node (half-open socket: TCP up, RPC silent, never resolves OR rejects) must not leave the
+// bound-read pending forever — that would wedge `checkingBound` true and pin the user on the neutral
+// "deciding" loader with no escape. Reject after this budget so the read falls through to bound=null.
+const BOUND_READ_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("bound read timed out")), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
 }
 
 export function useIdentity(
@@ -57,6 +93,8 @@ export function useIdentity(
 ): UseIdentity {
   const [bound, setBound] = useState<boolean | null>(null);
   const [binding, setBinding] = useState(false);
+  const [bindPhase, setBindPhase] = useState<BindPhase>("idle");
+  const [checkingBound, setCheckingBound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [boundAddress, setBoundAddress] = useState<string | null>(null);
 
@@ -65,7 +103,22 @@ export function useIdentity(
   const [votingPower, setVotingPower] = useState<bigint | null>(null);
   const [boundStakeCredHex, setBoundStakeCredHex] = useState<string | null>(null);
   const [stakeBinding, setStakeBinding] = useState(false);
+  const [stakeBindPhase, setStakeBindPhase] = useState<BindPhase>("idle");
   const [stakeError, setStakeError] = useState<string | null>(null);
+
+  // The posting key the last bound-read was for. When the ACTIVE key changes we clear `bound` to null
+  // (unknown) so the previous key's value never lingers (e.g. `false` for the reverted //Alice key after
+  // a disconnect), which would otherwise flap an in-app reconnect through a phantom `connected_unbound`.
+  // We do this DURING RENDER, not in the effect: React re-renders before painting, so the stale value
+  // never flashes the wrong onboarding step for a frame (an effect runs post-paint, which would). The
+  // ref guard makes it one-shot per key. A bare socket (api) reconnect keeps the same key, so `bound` is
+  // NOT cleared there — that would needlessly bounce a logged-in user off the auth wall.
+  const boundKeyRef = useRef<string | null>(null);
+  if (boundKeyRef.current !== signer.ss58) {
+    boundKeyRef.current = signer.ss58;
+    setBound(null);
+    setCheckingBound(true); // show the neutral "deciding" state until the effect's read resolves/times out
+  }
 
   const refresh = useCallback(() => {
     // boundAddress describes a bind PERFORMED for the current key this session; it is not re-derivable
@@ -74,11 +127,15 @@ export function useIdentity(
     setBoundAddress(null);
     if (!api) {
       setBound(null);
+      setCheckingBound(false);
       return;
     }
-    isAccountBound(api, signer.ss58)
+    // Time-bound the read so a hung node can't wedge `checkingBound`; on timeout/error we fall through to
+    // bound=null → the connect step, where the user keeps agency. (checkingBound was set true in render.)
+    withTimeout(isAccountBound(api, signer.ss58), BOUND_READ_TIMEOUT_MS)
       .then(setBound)
-      .catch(() => setBound(null));
+      .catch(() => setBound(null))
+      .finally(() => setCheckingBound(false));
   }, [api, signer.ss58]);
 
   // Re-check whenever the chain or the active posting key changes.
@@ -120,6 +177,7 @@ export function useIdentity(
     (walletId: string) => {
       if (!api || !client || binding) return;
       setBinding(true);
+      setBindPhase("signing");
       setError(null);
       void (async () => {
         try {
@@ -133,12 +191,16 @@ export function useIdentity(
           // (3) submit the self-proof on-chain, FEELESSLY, as a bare/unsigned extrinsic. No fee, no
           //     funded relay — the CIP-8 proof is the authorization and the runtime is the sole verifier,
           //     so even a brand-new zero-balance derived account binds itself with no sponsor.
+          //     `client.submit` resolves on FINALIZATION → this is the multi-second wait, so the UI
+          //     shows a distinct "submitting" step rather than leaving the sign prompt up.
+          setBindPhase("submitting");
           const res = await submitLinkIdentityFeeless(client, api, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
             throw new Error(res.error || "the on-chain bind was rejected");
           }
           // (4) AccountOf readback (L5 §5.7): confirm the verified identity resolves to MY account, the
           //     belt-and-suspenders 1:1 check (the proof already commits my account cryptographically).
+          setBindPhase("confirming");
           if (res.identityHash) {
             const who = await readAccountOf(api, res.identityHash).catch(() => undefined);
             if (who && who !== signer.ss58) {
@@ -161,6 +223,7 @@ export function useIdentity(
           setError(e instanceof Error ? e.message : String(e));
         } finally {
           setBinding(false);
+          setBindPhase("idle");
         }
       })();
     },
@@ -177,6 +240,7 @@ export function useIdentity(
         return;
       }
       setStakeBinding(true);
+      setStakeBindPhase("signing");
       setStakeError(null);
       void (async () => {
         try {
@@ -191,6 +255,8 @@ export function useIdentity(
           // (3) submit the stake self-proof FEELESSLY, as a bare/unsigned extrinsic — same as the payment
           //     bind, no fee and no funded relay. The runtime requires the account already be payment-bound
           //     (NotPaymentBound), enforced at the pool too, so we submit this only once `bound === true`.
+          //     `client.submit` resolves on finalization, so the submit is the multi-second wait.
+          setStakeBindPhase("submitting");
           const res = await submitLinkStakeFeeless(client, api, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
             throw new Error(res.error || "the on-chain stake bind was rejected");
@@ -208,6 +274,7 @@ export function useIdentity(
           setStakeError(e instanceof Error ? e.message : String(e));
         } finally {
           setStakeBinding(false);
+          setStakeBindPhase("idle");
         }
       })();
     },
@@ -217,6 +284,8 @@ export function useIdentity(
   return {
     bound,
     binding,
+    bindPhase,
+    checkingBound,
     error,
     boundAddress,
     bind,
@@ -225,6 +294,7 @@ export function useIdentity(
     votingPower,
     boundStakeCredHex,
     stakeBinding,
+    stakeBindPhase,
     stakeError,
     bindStake,
   };

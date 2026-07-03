@@ -18,7 +18,7 @@
 // CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
 
 import { useCallback, useRef, useState } from "react";
-import { ByteCounter, utf8Bytes } from "./ByteCounter";
+import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
 import { CapacityMeter } from "./CapacityMeter";
@@ -262,11 +262,11 @@ export function Composer({
       {contextAbove}
 
       <div className={styles.body}>
-        <Avatar address={viewer.address ?? ""} src={viewer.avatar} size="md" name={viewer.displayName} />
+        <Avatar address={viewer.address ?? ""} src={viewer.avatar} size="md" name={viewer.displayName} eager />
 
         <div className={styles.field}>
           <label className={styles.srOnly} htmlFor={`cg-composer-${mode}`}>
-            {TEXTAREA_LABEL[mode]} — press Command or Control plus Enter to post
+            {TEXTAREA_LABEL[mode]}. Press Command or Control plus Enter to post
           </label>
           <textarea
             id={`cg-composer-${mode}`}
@@ -342,7 +342,7 @@ export function Composer({
                 : noPostingPower
                   ? "Lock ADA to post"
                   : overLimit
-                    ? `Too long — trim to ${maxBytes} bytes`
+                    ? `Too long. Trim to ${maxBytes} bytes`
                     : !nonEmpty
                       ? "Write something first"
                       : rateLimited
@@ -399,18 +399,5 @@ function EmojiPicker({ choices, onPick }: { choices: string[]; onPick: (e: strin
   );
 }
 
-/** Clamp a string to at most `maxBytes` UTF-8 bytes WITHOUT splitting a multibyte code point (D1). */
-function clampToBytes(s: string, maxBytes: number): string {
-  // Walk code points (Array spread iterates by code point, not UTF-16 unit) and accumulate bytes.
-  let total = 0;
-  let out = "";
-  for (const ch of s) {
-    const b = utf8Bytes(ch);
-    if (total + b > maxBytes) break;
-    total += b;
-    out += ch;
-  }
-  return out;
-}
 
 export default Composer;

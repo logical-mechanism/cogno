@@ -53,12 +53,14 @@ export function resolveImageSrc(url: string): string {
   const m = url.match(/^ipfs:\/\/(.+)$/i);
   if (!m) return url;
   // Strip an `ipfs/` prefix and any leading slash / dot-segment so a crafted path can't dangle
-  // outside the gateway's /ipfs/ root, then resolve against the gateway base (the fixed host means
-  // this can never be coerced to fetch a different origin — defense-in-depth, not load-bearing).
+  // outside the gateway's /ipfs/ root, then resolve against the gateway base and REQUIRE the result to
+  // stay under the gateway root — a crafted absolute path (e.g. a `scheme:` prefix smuggled in after
+  // `ipfs://`) would otherwise make new URL ignore the base and yield a foreign origin.
   const path = m[1].replace(/^ipfs\//i, "").replace(/^[./]+/, "").trim();
   if (!path) return url; // `ipfs://` / `ipfs://ipfs/` with no CID — leave untouched, don't hit the root
   try {
-    return new URL(path, IPFS_GATEWAY).toString();
+    const out = new URL(path, IPFS_GATEWAY).toString();
+    return out.startsWith(IPFS_GATEWAY) ? out : url;
   } catch {
     return url;
   }

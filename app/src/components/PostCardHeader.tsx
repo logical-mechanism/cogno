@@ -6,11 +6,10 @@
 //    ▲      ▲           ▲                                                  ▲
 //  Avatar  name        handle (truncated ss58, mono)              overflow menu
 //
-// IMPORTANT — NO TIME / NO BLOCK MARGINALIA (locked decision + D11): CognoPost.at is a BLOCK HEIGHT,
-// not a timestamp, and the trust/honesty layer is dropped, so we render NOTHING time-ish — no "· 2h",
-// no "· #1234". The doc's wireframe shows a "· 2h" marker, but with no real clock available the right
-// call here is to render nothing rather than a misleading block number or trust label. (If the seam
-// later carries a real timestamp, a <time> chip can slot in after the handle.)
+// TIME (D11): CognoPost.at is a BLOCK HEIGHT, not a wall-clock timestamp. There is no on-chain clock,
+// so we render a RELATIVE, approximate age after the handle via <PostTime> (age ≈ (bestBlock − at) ×
+// 6s) — e.g. "· 2h". We deliberately do NOT surface an absolute date, the raw block number ("· #1234"),
+// or any trust/honesty label (that layer is dropped). Omit the `at` prop to hide the age entirely.
 //
 // The "···" opens the overflow menu (doc 03 §2.1): Downvote / Remove downvote (the SECONDARY weighted
 // vote), Copy link, etc. — supplied as OverflowMenuItem[] by the PostCard. Mute/Block/Report/Delete

@@ -9,7 +9,13 @@
 
 import { Binary } from "polkadot-api";
 import { Observable } from "rxjs";
+import { takeNonce, settleNonce } from "@/lib/chain/nonce";
 import type { CognoApi, PostingSigner, TxUpdate } from "@/lib/types";
+
+/** A PAPI transaction we can sign + watch, with the nonce/at options we override. */
+export interface SignableTx {
+  signSubmitAndWatch(signer: unknown, options?: { nonce?: number; at?: "best" }): unknown;
+}
 
 /** One event emitted by `signSubmitAndWatch` (the subset of fields we read). */
 interface TxWatchEvent {
@@ -201,6 +207,85 @@ export function watchTx(
 }
 
 /**
+ * Sign + submit + watch a tx with a client-MANAGED nonce (see lib/chain/nonce). Every signed write
+ * goes through here so rapid sequential writes from the same key get monotonic nonces instead of
+ * colliding on PAPI's finalized-block default (which yields `Invalid: Stale`). Reserves a nonce, wires
+ * the phase stream, and releases the nonce once the tx reaches any terminal phase (or on unsubscribe).
+ */
+export function signSubmitWatch(
+  api: CognoApi,
+  signer: PostingSigner,
+  tx: SignableTx,
+  eventName?: "PostCreated",
+  fallbackId?: bigint,
+): Observable<TxUpdate> {
+  return new Observable<TxUpdate>((subscriber) => {
+    let innerSub: { unsubscribe: () => void } | undefined;
+    let cancelled = false;
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      settleNonce(signer.ss58);
+    };
+
+    takeNonce(api, signer.ss58)
+      .then((nonce) => {
+        if (cancelled) {
+          // The teardown's guarded settle() already ran (clamped at 0, a no-op) BEFORE takeNonce
+          // resolved and did its `inflight += 1`. settle() here can't release that slot (settled is
+          // tripped), so decrement directly — otherwise inflight sticks at ≥1, settleNonce never hits 0,
+          // and next never resets to re-sync from chain.
+          settleNonce(signer.ss58);
+          return;
+        }
+        const inner$ = watchTx(
+          () =>
+            tx.signSubmitAndWatch(signer.signer, { nonce, at: "best" }) as unknown as ReturnType<
+              Parameters<typeof watchTx>[0]
+            >,
+          eventName,
+          fallbackId,
+        );
+        innerSub = inner$.subscribe({
+          next: (u) => {
+            subscriber.next(u);
+            // First terminal phase releases the reserved nonce (best-block/invalid/finalized = the
+            // nonce is consumed; error = usually not, but freeing our in-flight slot is still correct).
+            if (
+              u.phase === "inBestBlock" ||
+              u.phase === "invalid" ||
+              u.phase === "finalized" ||
+              u.phase === "error"
+            ) {
+              settle();
+            }
+          },
+          error: (e) => {
+            settle();
+            subscriber.error(e);
+          },
+          complete: () => {
+            settle();
+            subscriber.complete();
+          },
+        });
+      })
+      .catch((e: unknown) => {
+        settle();
+        subscriber.next({ phase: "error", error: stringifyError(e) });
+        subscriber.complete();
+      });
+
+    return () => {
+      cancelled = true;
+      innerSub?.unsubscribe();
+      settle();
+    };
+  });
+}
+
+/**
  * Submit a new post (optionally as a reply to `parent`). Emits the full honest phase stream
  * from signing through finalization; on success the `postId` of the created post is attached
  * as soon as it lands in a best block.
@@ -215,11 +300,6 @@ export function submitPost(
     text: Binary.fromText(text),
     parent,
   });
-  return watchTx(
-    () => tx.signSubmitAndWatch(signer.signer) as unknown as ReturnType<
-      Parameters<typeof watchTx>[0]
-    >,
-    "PostCreated",
-  );
+  return signSubmitWatch(api, signer, tx as unknown as SignableTx, "PostCreated");
 }
 

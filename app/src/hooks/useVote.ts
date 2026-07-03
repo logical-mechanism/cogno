@@ -57,6 +57,9 @@ export function useVote(
           clearPost(postId);
           fail(message);
         },
+        // Card unmounted mid-flight (navigation) → silently drop the provider-scoped patch so it can't
+        // stick forever offsetting the count/colour; a later read reflects the vote if it landed.
+        onCancel: () => clearPost(postId),
       }).catch(() => {
         /* failure surfaced via fail(); optimistic patch rolled back via clearPost */
       });

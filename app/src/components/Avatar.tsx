@@ -14,8 +14,8 @@ import { useMemo, useState } from "react";
 import styles from "./Avatar.module.css";
 import { identiconFor } from "@/lib/identicon";
 import { resolveImageSrc } from "@/lib/media";
-import { reveal, useRevealed } from "@/lib/reveal";
-import { IconEye } from "./icons";
+import { reveal, unreveal, useRevealed } from "@/lib/reveal";
+import { IconEye, IconEyeOff } from "./icons";
 import type { AvatarSize } from "./kit";
 
 export interface AvatarProps {
@@ -29,6 +29,13 @@ export interface AvatarProps {
   dim?: boolean;
   /** Optional accessible name (display name); falls back to the address. */
   name?: string;
+  /**
+   * Skip the click-to-reveal cover and load the image straight away — for a TRUSTED avatar (the
+   * viewer's OWN, in app chrome: the composer, the account menu, the edit/settings previews). The gate
+   * exists to not auto-fetch an ARBITRARY host's image; your own avatar you chose is not that, and a
+   * cover over it in chrome reads as broken. Still a sandboxed <img> (no-referrer, identicon onError).
+   */
+  eager?: boolean;
   onClick?: () => void;
 }
 
@@ -57,14 +64,15 @@ function Identicon({ address }: { address: string }) {
   );
 }
 
-export function Avatar({ address, src, size = "md", dim, name, onClick }: AvatarProps) {
+export function Avatar({ address, src, size = "md", dim, name, eager, onClick }: AvatarProps) {
   const [broken, setBroken] = useState(false);
   const resolvedSrc = useMemo(() => (src ? resolveImageSrc(src) : null), [src]);
   const revealed = useRevealed(resolvedSrc ?? "");
   const dimension = typeof size === "number" ? `${size}px` : SIZE_VAR[size];
   const hasImg = !!resolvedSrc && !broken;
-  // A remote/IPFS avatar stays covered until tapped; the offline identicon needs no cover.
-  const gated = hasImg && !revealed;
+  // A remote/IPFS avatar stays covered until tapped; the offline identicon needs no cover. A `eager`
+  // (trusted, own) avatar skips the cover and loads straight away.
+  const gated = hasImg && !revealed && !eager;
   const alt = `${name?.trim() || address} avatar`;
 
   const cls = [styles.avatar, dim ? styles.dim : "", onClick ? styles.clickable : ""]
@@ -114,16 +122,40 @@ export function Avatar({ address, src, size = "md", dim, name, onClick }: Avatar
     <Identicon address={address} />
   );
 
+  // Re-cover ("hide") overlay for a REVEALED remote avatar — undo an unwanted reveal. Only on the
+  // prominent sizes (lg/xl) where it's legible + not noise on tiny feed avatars; the identicon has
+  // nothing to hide. A NON-interactive <span> (like the cover) so it can live inside a clickable
+  // parent/button; mouse-first (no keyboard path), mirroring the avatar's reveal affordance. On hover
+  // it previews the covered state (solid fill + eye-off); a tap re-covers the src everywhere.
+  // Re-cover only applies to a GATED image (an eager/trusted avatar has no cover to restore).
+  const hideable = hasImg && !eager && (size === "lg" || size === "xl");
+  const hideOverlay = hideable ? (
+    <span
+      className={styles.hide}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        unreveal(resolvedSrc as string);
+      }}
+      aria-label={`Hide ${alt}`}
+      title={`Hide ${alt}`}
+    >
+      <IconEyeOff className={styles.hideIcon} aria-hidden />
+    </span>
+  ) : null;
+
   if (onClick) {
     return (
       <button type="button" className={cls} style={style} onClick={onClick} aria-label={alt}>
         {inner}
+        {hideOverlay}
       </button>
     );
   }
   return (
     <span className={cls} style={style} role="img" aria-label={alt}>
       {inner}
+      {hideOverlay}
     </span>
   );
 }

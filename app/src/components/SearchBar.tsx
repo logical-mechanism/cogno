@@ -8,7 +8,7 @@
 
 import { useCallback } from "react";
 import styles from "./SearchBar.module.css";
-import { IconSearch, IconClose } from "./icons";
+import { IconSearch, IconClose, Spinner } from "./icons";
 
 export interface SearchBarProps {
   value: string;
@@ -63,7 +63,13 @@ export function SearchBar({
         spellCheck={false}
         autoComplete="off"
       />
-      {searchEnabled && value.length > 0 && !loading && (
+      {searchEnabled && loading ? (
+        // A query is in flight — show the promised in-field spinner (plain wrapper, not the filled
+        // clear pill). The ✕ returns as soon as results land.
+        <span className={styles.icon} aria-hidden>
+          <Spinner size="sm" />
+        </span>
+      ) : searchEnabled && value.length > 0 ? (
         <button
           type="button"
           className={styles.clear}
@@ -72,7 +78,7 @@ export function SearchBar({
         >
           <IconClose />
         </button>
-      )}
+      ) : null}
     </div>
   );
 }

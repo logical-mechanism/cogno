@@ -16,7 +16,7 @@
 //
 // Presentational only: it takes a PollView + myChoice + onVote and NEVER builds an extrinsic.
 
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import styles from "./PollCard.module.css";
 import { Spinner, IconCheck } from "./icons";
 import { weightPercent, formatWeight } from "@/lib/format";
@@ -52,6 +52,10 @@ export function PollCard({
   const results = showResults || voted;
   const noWeight = poll.totalWeight <= 0n;
 
+  // WAI-ARIA radiogroup: a single tab stop (the checked option, else the first) + arrow-key roving.
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const rovingPos = myChoice != null ? Math.max(0, poll.options.findIndex((o) => o.index === myChoice)) : 0;
+
   const click = useCallback(
     (e: React.MouseEvent, index: number) => {
       e.stopPropagation();
@@ -61,14 +65,37 @@ export function PollCard({
     [disabled, myChoice, onVote],
   );
 
+  // Arrow keys MOVE FOCUS ONLY between options — they never cast (a poll vote is an irreversible
+  // on-chain action, so casting stays on click / Enter / Space per the D4 comment above).
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (disabled) return; // disabled buttons aren't focusable, so nothing to rove
+      const dir =
+        e.key === "ArrowDown" || e.key === "ArrowRight"
+          ? 1
+          : e.key === "ArrowUp" || e.key === "ArrowLeft"
+            ? -1
+            : 0;
+      if (dir === 0) return;
+      e.preventDefault();
+      const btns = optionRefs.current;
+      const count = poll.options.length;
+      let cur = btns.findIndex((b) => b === document.activeElement);
+      if (cur < 0) cur = rovingPos;
+      btns[(cur + dir + count) % count]?.focus();
+    },
+    [disabled, poll.options.length, rovingPos],
+  );
+
   return (
     <div
       className={`${styles.poll} ${compact ? styles.compact : ""}`}
       role="radiogroup"
       aria-label="Poll"
+      onKeyDown={onKeyDown}
     >
       <div className={styles.options}>
-        {poll.options.map((opt) => {
+        {poll.options.map((opt, i) => {
           const pct = noWeight ? 0 : weightPercent(opt.weight, poll.totalWeight);
           const mine = opt.index === myChoice;
           const pending = pendingChoice === opt.index;
@@ -84,8 +111,12 @@ export function PollCard({
               key={opt.index}
               type="button"
               role="radio"
+              ref={(el) => {
+                optionRefs.current[i] = el;
+              }}
               aria-checked={mine}
               aria-label={ariaLabel}
+              tabIndex={i === rovingPos ? 0 : -1}
               className={`${styles.option} ${results ? styles.resultRow : styles.voteRow} ${
                 mine ? styles.mine : ""
               }`}

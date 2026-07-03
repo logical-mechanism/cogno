@@ -12,8 +12,8 @@
 // Also exports StickyHeader (the blurred per-surface header every page composes) and NotFoundInline
 // (the in-app not-found state for an invalid dynamic param / unknown route).
 
-import type { ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { type ReactNode, useEffect } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import styles from "./AppShell.module.css";
 import { LeftNav } from "./nav/LeftNav";
@@ -23,8 +23,39 @@ import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
 import { EmptyState } from "./EmptyState";
 import { IconBack } from "./icons";
+import { useSession } from "./Providers";
+
+/** /welcome is the standalone onboarding surface — it owns the whole canvas (no rails). */
+function isWelcomePath(pathname: string | null): boolean {
+  return !!pathname && (pathname === "/welcome" || pathname.startsWith("/welcome/"));
+}
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { viewer } = useSession();
+
+  // "Logged in" = an identity-bound session (a real account). A connected-but-unbound wallet is still
+  // mid-signup and lives inside the welcome flow, not the app.
+  const loggedIn = viewer.status === "ready";
+  const onWelcome = isWelcomePath(pathname);
+
+  // Hard auth wall (X-style): a logged-out visitor to ANY app route is bounced to the standalone
+  // welcome/join page. There is no persistent session — the posting key is re-derived from a wallet
+  // signature each visit and nothing is stored, so every fresh load starts logged-out. The welcome
+  // page is therefore the canonical landing; the feed only exists once you're bound.
+  useEffect(() => {
+    if (!loggedIn && !onWelcome) router.replace("/welcome/");
+  }, [loggedIn, onWelcome, router]);
+
+  // The welcome flow owns the full viewport — no LeftNav/RightRail/BottomTabBar/ComposeFab chrome.
+  if (onWelcome) {
+    return <div className={styles.standalone}>{children}</div>;
+  }
+
+  // Logged-out on an app route: render nothing while the redirect effect runs (never flash the feed).
+  if (!loggedIn) return null;
+
   return (
     <div className={styles.shell}>
       <div className={styles.container}>

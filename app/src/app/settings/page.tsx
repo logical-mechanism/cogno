@@ -1,7 +1,7 @@
 "use client";
 
 // SettingsPage — /settings (surface 12). The master/detail (desktop ≥1020) + drill-down (mobile/tablet
-// ≤1019) shell over the seven sections. Owns `activeSection` + the `drilled` flag (mobile only) + the
+// ≤1019) shell over the five sections. Owns `activeSection` + the `drilled` flag (mobile only) + the
 // hash mirror (history.replaceState('/settings#<id>')) so a row is deep-linkable and the back button is
 // sane. RightRail suppression on /settings is orchestrator-owned (nav) — not touched here.
 //
