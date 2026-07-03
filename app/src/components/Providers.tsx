@@ -13,8 +13,8 @@
 //   ToasterProvider     — the imperative toast bus (errors + rate-limit + sparse success)
 //   OptimisticProvider  — the app-wide optimistic overlay (write hooks patch, read hooks merge)
 //   ChainProvider       — owns the socket; derives the session + Viewer; exposes useSession()
-// FeedSource is derived inside ChainProvider (memoized on [api, graphqlUrl]) and handed out via the
-// same context, so a surface calls useSession() once instead of re-deriving the source per route.
+// FeedSource is derived inside ChainProvider (memoized on [api]) and handed out via the same context,
+// so a surface calls useSession() once instead of re-deriving the source per route.
 
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import type { PolkadotClient } from "polkadot-api";
@@ -23,7 +23,6 @@ import { useSigner, type UseSigner } from "@/hooks/useSigner";
 import { useIdentity, type UseIdentity } from "@/hooks/useIdentity";
 import { useFeedSource } from "@/hooks/useFeedSource";
 import { useHeads } from "@/hooks/useHeads";
-import { getGraphqlUrl } from "@/lib/config/endpoints";
 import { deriveSessionState, type SessionState } from "@/lib/session";
 import { ToasterProvider } from "@/components/toast/ToasterProvider";
 import { OptimisticProvider } from "@/hooks/useOptimistic";
@@ -54,7 +53,7 @@ export interface Session {
   sessionState: SessionState;
   /** The doc-03 Viewer (coarse status + avatar/name/identity) every kit component consumes. */
   viewer: Viewer;
-  /** The feed reader seam (indexer when configured, else PAPI-direct). Null before connect. */
+  /** The feed reader seam (the PAPI-direct node reader). Null before connect. */
   source: FeedSource | null;
   /** Live best-block number (one shared head subscription) — drives relative post times, capacity, etc. */
   bestBlock: number | null;
@@ -86,10 +85,9 @@ function ChainProvider({ children }: { children: ReactNode }) {
 
   const identity = useIdentity(api, client, signer);
 
-  // The feed reader seam — memoized on [api, graphqlUrl] inside the hook. Read the configured indexer
-  // URL here (SSG-safe; "" ⇒ PAPI-direct). A Settings change reloads the app, so we don't re-poll it.
-  const graphqlUrl = useMemo(() => getGraphqlUrl() || null, []);
-  const source = useFeedSource(api, graphqlUrl);
+  // The feed reader seam — the PAPI-direct node reader, memoized on [api] inside the hook (the node
+  // serves feed / thread / profile / search directly since the all-Rust restart; no indexer config).
+  const source = useFeedSource(api);
 
   // One shared head subscription for all block-relative UI (post times, capacity, live profile).
   const bestBlock = useHeads(client).best?.number ?? null;

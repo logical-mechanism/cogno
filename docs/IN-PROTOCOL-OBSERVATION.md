@@ -1,5 +1,13 @@
 # cogno-chain — In-Protocol Deterministic Observation of Cardano (the D4 weight rung)
 
+> **Historical design doc.** The mechanism it describes — deterministic db-sync observation as a
+> consensus inherent — is the current one, but this doc predates the all-Rust restart (`fork/all-rust`,
+> now `spec_version` 200) and its framing is stale: it references planning artifacts **not in this repo**
+> (the retired `L2-follower`/`L3-*` layered specs and an internal decision register cited as `DR-NN`) and
+> a *shadow / default-off* enforcement mode. In the restart the `cardano-observer` inherent is the
+> **sole** weight writer and **enforces from genesis**, and the reduction lives in the Rust
+> `cogno-dbsync` crate. Current overview: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 > **Status: IMPLEMENTED IN SHADOW (default-off enforcement) — proven live against preprod.**
 > Branch `in-protocol-observation` off `main` @170fb3c. The design (this doc) is approved and built
 > through **step 4**: the deterministic observation library (step 2), the `ProvideInherent` pallet +

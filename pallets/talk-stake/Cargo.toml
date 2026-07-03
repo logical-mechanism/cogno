@@ -1,8 +1,8 @@
 [package]
 name = "pallet-talk-stake"
-description = "cogno-chain talk-stake pallet — per-account stake weight, written by the FollowerOrigin (sudo in dev). Feeds the regenerating talk-capacity meter in pallet-microblog."
+description = "cogno-chain talk-stake pallet — a call-less per-account stake-weight + voting-power ledger, written ONLY by the cardano-observer inherent (the sole weight writer). Feeds the regenerating talk-capacity meter + stake-weighted votes in pallet-microblog."
 version = "0.1.0"
-license = "Unlicense"
+license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -17,7 +17,6 @@ workspace = true
 
 [dependencies]
 codec = { features = ["derive"], workspace = true }
-frame-benchmarking = { optional = true, workspace = true }
 frame-support = { workspace = true }
 frame-system = { workspace = true }
 log = { workspace = true }
@@ -32,14 +31,14 @@ sp-runtime = { default-features = true, workspace = true }
 default = ["std"]
 std = [
 	"codec/std",
-	"frame-benchmarking?/std",
 	"frame-support/std",
 	"frame-system/std",
 	"log/std",
 	"scale-info/std",
 ]
+# The pallet is call-less (observer-written) and has no benchmarks; the feature stays so the runtime's
+# `pallet-talk-stake/runtime-benchmarks` reference resolves, but it only forwards the frame deps.
 runtime-benchmarks = [
-	"frame-benchmarking/runtime-benchmarks",
 	"frame-support/runtime-benchmarks",
 	"frame-system/runtime-benchmarks",
 ]

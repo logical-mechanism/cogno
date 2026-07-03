@@ -1,16 +1,23 @@
 name: ci
 
-# Build + test the layers of cogno-chain on every push / PR:
-#   • contracts — the Aiken L1 talk_vault validator (aiken check: property/fuzz + boundary tests)
-#   • rust      — clippy + unit tests for the FRAME pallets (the full node/runtime wasm build is
-#                 heavy and left to the release path; the pallets are the logic)
-#   • frontend  — the Next.js static export (type-check + build) + lint + Vitest unit tests
-#   • services  — the off-chain JS relayer/committee/_shared helpers, the SubQuery indexer's pure
-#                 mapping logic, and the Python Cogno-Follower (hand-rolled suites, exit-on-fail)
+# Build + test the layers of the all-Rust cogno-chain on every push / PR:
+#   • rust        — clippy (-D warnings) + unit tests + a real-wasm workspace build, over the WHOLE
+#                   workspace: node, runtime, the FRAME pallets, cogno-chain-cli, and the shared
+#                   cogno-dbsync / cogno-keyfile crates. The cross-language observation golden fixture
+#                   (node-writer vs CLI-reader byte-identity) now lives Rust-only in `cargo test -p
+#                   cogno-dbsync` — a divergence there is a chain fork.
+#   • contracts   — the Aiken L1 talk_vault validator (aiken check: property/fuzz + boundary tests).
+#   • frontend    — the Next.js static export (lint + Vitest pure-logic units + build).
+#   • cip8-oracle — the independent pycardano CIP-8 verifier (ci/cip8-oracle/), kept as an adversarial
+#                   SECOND implementation of the on-chain verifier (pallets/cogno-gate/src/cip8.rs).
 on:
   push:
     branches: [main]
   pull_request:
+
+# Least-privilege token: this pipeline only builds + tests, it never writes repo contents.
+permissions:
+  contents: read
 
 # Cancel superseded runs on the same ref.
 concurrency:
@@ -18,8 +25,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      # rustc is pinned by rust-toolchain.toml to 1.90.0 (stable >= ~1.91 breaks the sp_io wasm link);
+      # dtolnay pins the same version. clippy is NOT in the pin's components, so request it explicitly
+      # (with rust-src + the wasm targets the substrate wasm-builder needs — mirrors rust-toolchain.toml).
+      # `cargo fmt --check` is intentionally NOT gated: the codebase predates a rustfmt config and is
+      # tab-styled; enforcing a repo-wide reformat is out of scope.
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: clippy, rust-src
+          targets: wasm32v1-none, wasm32-unknown-unknown
+      # librocksdb-sys compiles RocksDB (C++) via bindgen even for `cargo clippy`, and libp2p needs
+      # protoc — so the native toolchain deps are required before the workspace check, not just the build.
+      - name: system build deps (rocksdb/bindgen + protobuf)
+        run: >
+          sudo apt-get update &&
+          sudo apt-get install -y clang llvm-dev libclang-dev protobuf-compiler cmake libssl-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+      # Clippy over the whole workspace + all targets, denying warnings. SKIP_WASM_BUILD keeps this the
+      # fast native pass (the real runtime-wasm build is the `build` step below). `-A result_large_err`
+      # suppresses the SDK's large-error-enum lint on the node crate — sc_service / sc_cli error enums are
+      # large by construction and boxing them fights the SDK; it is a no-op for the FRAME pallets, whose
+      # DispatchError is small. Everything else is -D warnings.
+      - name: clippy (workspace, -D warnings)
+        env:
+          SKIP_WASM_BUILD: "1"
+        run: >
+          cargo clippy --workspace --all-targets --locked --
+          -D warnings -A clippy::result_large_err
+      - name: test (workspace)
+        run: cargo test --workspace --locked
+      # The `test` step above already builds the real runtime wasm (runtime/build.rs runs the substrate
+      # wasm-builder; SKIP_WASM_BUILD is set only on the clippy step). This is the final gate that the whole
+      # workspace — including the release-path node + cli binaries — links clean: a cheap incremental
+      # confirmation on top of the warmed artifacts.
+      - name: build (workspace)
+        run: cargo build --workspace --locked
+
   contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: aiken-lang/setup-aiken@v1
@@ -28,31 +77,19 @@ jobs:
       - name: aiken check
         working-directory: contracts
         run: aiken check
-
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # The repo pins rustc 1.90.0 (rust-toolchain.toml); clippy is not in that pin's components,
-      # so request it explicitly. (`cargo fmt --check` is intentionally NOT gated: the codebase
-      # predates a rustfmt config and is tab-styled; enforcing a repo-wide reformat is out of scope.)
-      - uses: dtolnay/rust-toolchain@1.90.0
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: clippy (pallets)
-        run: >
-          cargo clippy
-          -p pallet-microblog -p pallet-talk-stake -p pallet-cogno-gate
-          -p pallet-anchor -p pallet-validator-set
-      - name: test (pallets)
-        run: >
-          cargo test
-          -p pallet-microblog -p pallet-talk-stake -p pallet-cogno-gate
-          -p pallet-anchor -p pallet-validator-set
+      # Live-hash guard: the L1 talk_vault is deployed on preprod, so a source change that moves the
+      # compiled blueprint hash must be an INTENTIONAL redeploy. `aiken check` does not rebuild
+      # plutus.json, so rebuild it here (pinned aiken v1.1.22 makes the build reproducible) and fail if
+      # the committed hash moved. If the change is intentional, commit the regenerated plutus.json.
+      - name: guard the live script hash
+        working-directory: contracts
+        run: |
+          aiken build
+          git diff --exit-code plutus.json
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: app
@@ -63,7 +100,14 @@ jobs:
           node-version: 22.12.0
           cache: npm
           cache-dependency-path: app/package-lock.json
-      - run: npm ci
+      - name: install deps (retry transient npm network errors)
+        run: |
+          for i in 1 2 3; do
+            npm ci && exit 0
+            echo "npm ci attempt $i/3 failed; retrying in 15s"
+            sleep 15
+          done
+          exit 1
       - name: lint
         run: npm run lint
       - name: test (vitest — pure logic units)
@@ -71,49 +115,43 @@ jobs:
       - name: build (static export)
         run: npm run build
 
-  services:
+  cip8-oracle:
+    # The independent pycardano CIP-8 verifier is an adversarial second implementation of the on-chain
+    # verifier, kept precisely because it does NOT share the Rust verifier's lineage. test_agreement.py
+    # shells out to a headless MeshJS fixture (app/scripts/m2-cip8-fixture.mjs) to generate REAL
+    # wallet-signed proofs, so this job needs BOTH node (for the fixture + its app deps) and python.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22.12.0
-      # The committee tooling resolves @polkadot/api through a node_modules symlink to the
-      # indexer; the Cogno-Follower's CIP-8 agreement test shells out to a MeshJS fixture in app/.
-      - name: install indexer deps (committee symlinks here for @polkadot)
-        working-directory: services/indexer
-        run: npm ci
-      - name: install app deps (Cogno-Follower CIP-8 fixture + PAPI descriptors)
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: install app deps (the CIP-8 fixture's MeshJS deps)
         working-directory: app
-        run: npm ci
-      - name: recreate gitignored node_modules symlinks
         run: |
-          ln -sfn ../indexer/node_modules services/committee/node_modules
-          ln -sfn ../../app/node_modules services/anchor-relayer/node_modules
-      - name: js — anchor-relayer + _shared + committee
-        run: |
-          node services/anchor-relayer/relayer.test.mjs
-          node services/_shared/shared.test.mjs
-          node services/_shared/observation.test.mjs
-          node services/_shared/observation-equivalence.test.mjs
-          node services/committee/committee.test.mjs
-          node services/committee/shadow-diff.test.mjs
-      - name: indexer — pure mapping unit tests + typecheck
-        working-directory: services/indexer
-        run: |
-          npm run codegen   # generate src/types/ (gitignored SubQuery codegen output) so tsc resolves ../types
-          node --experimental-strip-types src/mappings/pure.test.ts
-          npx tsc --noEmit -p tsconfig.json
+          for i in 1 2 3; do
+            npm ci && exit 0
+            echo "npm ci attempt $i/3 failed; retrying in 15s"
+            sleep 15
+          done
+          exit 1
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - name: install Cogno-Follower deps
-        working-directory: services/cogno-follower
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ci/cip8-oracle/requirements.txt
+      - name: install oracle deps
+        working-directory: ci/cip8-oracle
         run: pip install -r requirements.txt
-      - name: python — Cogno-Follower (beacon / vault / http / CIP-8 agreement)
-        working-directory: services/cogno-follower
+      # NODE_BIN=node resolves to the setup-node v22.12.0 on PATH (test_agreement.py defaults to `node`
+      # but we set it explicitly to document the dependency — the snap node is unusable, see CLAUDE.md).
+      - name: cip8 agreement oracle (beacon derivation + two-sided byte agreement)
+        working-directory: ci/cip8-oracle
+        env:
+          NODE_BIN: node
         run: |
           python test_beacon.py
-          python test_vault.py
-          python test_http.py
           python test_agreement.py

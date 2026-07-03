@@ -50,8 +50,8 @@ export function ProfileSection() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [working, setWorking] = useState<null | "clear" | "unpin">(null);
 
-  // Load the viewer's own profile (indexer path) for the preview. PAPI-direct falls back to the ss58 +
-  // identicon (blank bio/avatar) — editing still works (the modal reads storage one-shot).
+  // Load the viewer's own profile (node-served via the seam) for the preview — display name / bio /
+  // avatar / pinned. Editing still works regardless (the modal reads storage one-shot).
   useEffect(() => {
     let cancelled = false;
     setLoading(true);

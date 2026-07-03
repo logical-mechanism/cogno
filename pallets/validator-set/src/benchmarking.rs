@@ -16,41 +16,41 @@ const SEED: u32 = 0;
 
 #[benchmarks]
 mod benchmarks {
-	use super::*;
+    use super::*;
 
-	#[benchmark]
-	fn add_validator() -> Result<(), BenchmarkError> {
-		let origin =
-			T::AddRemoveOrigin::try_successful_origin().map_err(|_| BenchmarkError::Weightless)?;
-		let validator: T::ValidatorId = account("validator", 0, SEED);
+    #[benchmark]
+    fn add_validator() -> Result<(), BenchmarkError> {
+        let origin =
+            T::AddRemoveOrigin::try_successful_origin().map_err(|_| BenchmarkError::Weightless)?;
+        let validator: T::ValidatorId = account("validator", 0, SEED);
 
-		#[extrinsic_call]
-		_(origin as T::RuntimeOrigin, validator.clone());
+        #[extrinsic_call]
+        _(origin as T::RuntimeOrigin, validator.clone());
 
-		assert!(Validators::<T>::get().contains(&validator));
-		Ok(())
-	}
+        assert!(Validators::<T>::get().contains(&validator));
+        Ok(())
+    }
 
-	#[benchmark]
-	fn remove_validator() -> Result<(), BenchmarkError> {
-		let origin =
-			T::AddRemoveOrigin::try_successful_origin().map_err(|_| BenchmarkError::Weightless)?;
-		// Seed MinAuthorities + 1 validators so removing one leaves exactly MinAuthorities (the
-		// removal passes the floor check, and the retain scans the full set — the worst case).
-		let min = T::MinAuthorities::get();
-		let raw: Vec<T::ValidatorId> =
-			(0..=min).map(|i| account("validator", i, SEED)).collect();
-		let target = raw[0].clone();
-		let validators: BoundedVec<T::ValidatorId, T::MaxValidators> =
-			raw.try_into().expect("MinAuthorities + 1 must be <= MaxValidators for this benchmark");
-		Validators::<T>::put(validators);
+    #[benchmark]
+    fn remove_validator() -> Result<(), BenchmarkError> {
+        let origin =
+            T::AddRemoveOrigin::try_successful_origin().map_err(|_| BenchmarkError::Weightless)?;
+        // Seed MinAuthorities + 1 validators so removing one leaves exactly MinAuthorities (the
+        // removal passes the floor check, and the retain scans the full set — the worst case).
+        let min = T::MinAuthorities::get();
+        let raw: Vec<T::ValidatorId> = (0..=min).map(|i| account("validator", i, SEED)).collect();
+        let target = raw[0].clone();
+        let validators: BoundedVec<T::ValidatorId, T::MaxValidators> = raw
+            .try_into()
+            .expect("MinAuthorities + 1 must be <= MaxValidators for this benchmark");
+        Validators::<T>::put(validators);
 
-		#[extrinsic_call]
-		_(origin as T::RuntimeOrigin, target.clone());
+        #[extrinsic_call]
+        _(origin as T::RuntimeOrigin, target.clone());
 
-		assert!(!Validators::<T>::get().contains(&target));
-		Ok(())
-	}
+        assert!(!Validators::<T>::get().contains(&target));
+        Ok(())
+    }
 
-	impl_benchmark_test_suite!(ValidatorSet, crate::mock::new_test_ext(), crate::mock::Test);
+    impl_benchmark_test_suite!(ValidatorSet, crate::mock::new_test_ext(), crate::mock::Test);
 }

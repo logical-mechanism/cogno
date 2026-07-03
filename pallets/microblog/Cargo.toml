@@ -1,8 +1,8 @@
 [package]
 name = "pallet-microblog"
-description = "cogno-chain microblog pallet — plain text posting (M0; identity gate + talk-capacity land in later milestones)."
+description = "cogno-chain microblog pallet — feeless, capacity-metered posting and social engagement (posts, quotes, votes, polls, reposts, follows), gated by the CheckCapacity extension and the CognoGate identity gate, with node-served reads via MicroblogApi."
 version = "0.1.0"
-license = "Unlicense"
+license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true

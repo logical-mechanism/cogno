@@ -24,29 +24,30 @@
 // For more information, please refer to <http://unlicense.org>
 
 frame_benchmarking::define_benchmarks!(
-	[frame_benchmarking, BaselineBench::<Runtime>]
-	[frame_system, SystemBench::<Runtime>]
-	[frame_system_extensions, SystemExtensionsBench::<Runtime>]
-	[pallet_balances, Balances]
-	[pallet_timestamp, Timestamp]
-	[pallet_sudo, Sudo]
-	// ── cogno-chain app pallets (DR-05: real WeightInfo for the feeless+capacity anti-spam) ──
-	[pallet_cogno_gate, CognoGate]
-	[pallet_talk_stake, TalkStake]
-	[pallet_microblog, Microblog]
-	[pallet_anchor, Anchor]
-	// Social-actions branch: the fee-bearing display-profile pallet.
-	[pallet_profile, Profile]
-	// M6 (DR-26): real WeightInfo for the mutable-authority add/remove extrinsics.
-	[pallet_validator_set, ValidatorSet]
-	// runtime-4: benchmark the FollowerCommittee (the path that EXECUTES every 3-of-5 privileged
-	// motion — its propose/close weight scales with proposal count/length, a block-fill/griefing
-	// surface). Now benchmarkable; pointing its `WeightInfo` at the generated module (instead of the
-	// upstream `SubstrateWeight` reference weights wired in configs/mod.rs) is a DEPLOY step — run
-	// `benchmark pallet` on representative production hardware, as the dev box's numbers would be wrong.
-	[pallet_collective, FollowerCommittee]
-	// NOTE: pallet-session is NOT listed — its set_keys/purge_keys benchmarks require
-	// `pallet_session::historical` wiring, which the runtime intentionally does not have yet. That is
-	// the SAME prerequisite as a real GRANDPA equivocation/offence path (runtime-5), so both graduate
-	// together when historical session is added for a public multi-validator network.
+    [frame_benchmarking, BaselineBench::<Runtime>]
+    [frame_system, SystemBench::<Runtime>]
+    [frame_system_extensions, SystemExtensionsBench::<Runtime>]
+    [pallet_balances, Balances]
+    [pallet_timestamp, Timestamp]
+    // NOTE: no pallet-sudo (SUDO-FREE) and no pallet-governed-upgrade benchmark: the latter's single
+    // `authorize_upgrade` call uses a fixed placeholder `WeightInfo = ()` (one storage write + one event),
+    // so there is no `#[benchmarks]` module to list here yet.
+    // ── cogno-chain app pallets (DR-05: real WeightInfo for the feeless+capacity anti-spam) ──
+    // NOTE: no pallet-talk-stake — it is now a call-less observer-written ledger (no dispatchables to bench).
+    [pallet_cogno_gate, CognoGate]
+    [pallet_microblog, Microblog]
+    // Social-actions branch: the fee-bearing display-profile pallet.
+    [pallet_profile, Profile]
+    // M6 (DR-26): real WeightInfo for the mutable-authority add/remove extrinsics.
+    [pallet_validator_set, ValidatorSet]
+    // runtime-4: benchmark the FollowerCommittee (the path that EXECUTES every 3-of-5 privileged
+    // motion — its propose/close weight scales with proposal count/length, a block-fill/griefing
+    // surface). Now benchmarkable; pointing its `WeightInfo` at the generated module (instead of the
+    // upstream `SubstrateWeight` reference weights wired in configs/mod.rs) is a DEPLOY step — run
+    // `benchmark pallet` on representative production hardware, as the dev box's numbers would be wrong.
+    [pallet_collective, FollowerCommittee]
+    // NOTE: pallet-session is NOT listed — its set_keys/purge_keys benchmarks require
+    // `pallet_session::historical` wiring, which the runtime intentionally does not have yet. That is
+    // the SAME prerequisite as a real GRANDPA equivocation/offence path (runtime-5), so both graduate
+    // together when historical session is added for a public multi-validator network.
 );

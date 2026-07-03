@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 LogicalMechanism. Reimplemented from the Apache-2.0 partner-chains
+// `sp-partner-chains-consensus-aura` crate (see the repo NOTICE file for attribution).
 //! Custom block proposer that seals the stable Cardano block anchor into the block HEADER as a `cobs`
 //! PreRuntime digest (in-protocol-observation §15.3 / Midnight delta A.1 — the partner-chains "McHash"
 //! header-seal pattern adapted to cogno's single pinned vault).

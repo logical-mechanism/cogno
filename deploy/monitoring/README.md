@@ -1,27 +1,29 @@
-# cogno-chain monitoring (prod-readiness Phase 2)
+# cogno-chain monitoring
 
-A lightweight, single-operator observability stack: **Prometheus** scrapes the node + services,
-**Alertmanager** pages on the conditions that break the product, and a starter **Grafana** dashboard
-shows health at a glance. This answers the question Phase 1 couldn't — *is the system actually
-healthy?* — without tailing logs by hand.
+A lightweight, single-operator observability stack: **Prometheus** scrapes the node, **Alertmanager**
+pages on the conditions that break the product, and a starter **Grafana** dashboard shows health at a
+glance. This answers *is the system actually healthy?* without tailing logs by hand.
+
+The all-Rust node is the whole deployment, so there is **one** scrape target. Its built-in
+`:9615/metrics` endpoint carries both the Substrate chain-health metrics AND the in-node Cardano-observer
+gauges (there is no relayer / follower / indexer / shadow-diff exporter — those services are gone).
 
 ## What's exposed
 
 | Target | Endpoint | Source |
 |---|---|---|
 | node | `:9615/metrics` | Substrate built-in Prometheus (`--prometheus-port 9615`) |
-| relayer | `:9101/metrics`, `:9101/healthz` | hand-rolled ([metrics.mjs](../../services/_shared/metrics.mjs)) |
-| follower | `:8090/metrics`, `:8090/health` (live probe) | hand-rolled |
-| indexer | `:3001` | @subql/node admin/health (`up` liveness) |
-| shadow-diff | `:9102/metrics`, `:9102/healthz` | hand-rolled (`shadow-diff.mjs --serve`; optional, D4 observation) |
 
-Key custom metrics: `cogno_relayer_seconds_since_last_anchor`, `cogno_relayer_wallet_lovelace`,
-`cogno_relayer_low_funds`, `cogno_relayer_pending_anchors` / `_failed_anchors`,
-`cogno_relayer_consecutive_errors`, `cogno_relayer_seconds_since_last_loop`;
-`cogno_follower_node_reachable`, `cogno_follower_genesis_ok` (the follower is a read-only helper in D1 —
-no `nonces_cached`, since the off-chain bind-WRITE was retired);
-`cogno_shadow_accounts_disagree`, `cogno_shadow_max_disagree_blocks`, `cogno_shadow_recompute_disagree`
-(in-protocol observation vs committee weight — convergence + an independent-recompute correctness leg).
+Key metrics:
+
+- **Chain health** (`substrate_*`, built in): `substrate_block_height{status="best"|"finalized"}`,
+  `substrate_sub_libp2p_peers_count`, plus the usual host/runtime series.
+- **Observer liveness** (`cogno_observer_*`, [node/src/metrics.rs](../../node/src/metrics.rs)):
+  `cogno_observer_observations_total` (non-empty observations proposed) /
+  `cogno_observer_abstains_total` (abstentions — db-sync unset/down/behind or pre-Shelley);
+  `cogno_observer_last_reference_slot` (Cardano slot of the latest non-empty observation);
+  `cogno_observer_observed_vaults` / `cogno_observer_observed_voters` (entry counts in the latest
+  observation). **These are updated only by the AUTHORING producer** — a tracking node leaves them at 0.
 
 ## Run it
 
@@ -40,22 +42,20 @@ alertmanager --config.file=alertmanager.yml    # routing, :9093
 > Uncomment + point its `webhook_configs`/`slack_configs` at your real notifier, or alerts fire in
 > Prometheus and silently go nowhere. Verify with `amtool config routes test` / the `:9093` UI.
 
-All targets bind `127.0.0.1`, so run Prometheus **on the same host**. For a remote Prometheus: start
-the node with `--prometheus-external` (it binds localhost otherwise), and reach the service `/metrics`
-over your private scrape network or a proxy — never expose them publicly.
+The target binds `127.0.0.1`, so run Prometheus **on the same host**. For a remote Prometheus: start the
+node with `--prometheus-external` (it binds localhost otherwise) and reach `:9615` over your private
+scrape network or a proxy — never expose it publicly.
 
 ## Alerts (see [alerts.yml](alerts.yml))
 
-`NodeDown`, `FinalityStalled`, `BlockProductionStalled` · `RelayerDown`, `RelayerLoopStalled`,
-`RelayerAnchorStalled`, `RelayerLowFunds`, `RelayerFailedAnchors`, `RelayerErrorLoop` · `FollowerDown`,
-`FollowerNodeUnreachable`, `FollowerGenesisMismatch` · `IndexerDown`.
+- **cogno-node:** `NodeDown`, `FinalityStalled`, `BlockProductionStalled` (+ `NodeNoPeers`, shipped
+  commented-out — a single `--force-authoring` validator runs at 0 peers by design).
+- **cogno-observer:** `ObserverAbstaining` (no non-empty observation in 15m — weight going stale),
+  `ObserverReferenceSlotStalled` (db-sync's Cardano tip frozen), `ObserverNoVaults` (observing, but the
+  locked-ADA vault set is empty — a broken vault scan on a live chain).
 
-Every rule has a `for:` window so a transient scrape miss doesn't page — the relayer's single-threaded
-event loop (which also serves `/metrics`) can be blocked for up to `OP_TIMEOUT_MS` (120s) by a
-synchronous committee ack, so `RelayerDown` uses `for: 3m` (> that). Tune `RelayerAnchorStalled` to your
-`ANCHOR_EVERY` × block-time × safety + `CONFIRM_DEPTH_SLOTS`. `NodeNoPeers` is shipped **commented out**
-(a single `--force-authoring` validator runs at 0 peers by design) — uncomment the whole block for a
-multi-validator network. Wire `alertmanager.yml`'s receiver to your real notifier (Slack/PagerDuty/webhook).
-
-> Scope: alert *delivery* and a reference watchtower are Phase 5 (Day-2 runbooks tying each alert to an
-> operator action). This phase ships the signals + rules.
+Every rule has a `for:` window so a transient scrape miss doesn't page. The observer group's gauges are
+updated **only by the authoring producer**, so in the default single-validator topology `job="cogno-node"`
+is exactly the producer; on a multi-node scrape, relabel so the observer rules evaluate only the producer
+(and note the observer abstains by design on a Cardano-less `--dev`/`cogno-dev` chain). Wire
+`alertmanager.yml`'s receiver to your real notifier (Slack/PagerDuty/webhook) before relying on any of it.

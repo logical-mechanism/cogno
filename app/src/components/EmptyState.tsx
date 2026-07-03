@@ -44,9 +44,9 @@ function presetFor(v: EmptyStateVariant, query?: string, handle?: string): Prese
       };
     case "search-unavailable":
       return {
-        title: "Full-text search is optional",
+        title: "Search isn't ready yet",
         description:
-          "Browse the timeline and open any profile directly. Add an indexer in Settings to search post text.",
+          "Search runs on the node — connect to one to search posts and people. Check your endpoint in Settings.",
         icon: <IconSearch className={styles.glyph} />,
       };
     case "profile":

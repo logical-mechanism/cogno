@@ -1,0 +1,69 @@
+[package]
+name = "cogno-chain-cli"
+description = "The cogno-chain operator/committee admin CLI — the `cardano-cli` analogue to the `cogno-chain-node` daemon. Drives committee-governed extrinsics (propose/vote/close) with secret keys linked BY FILE PATH, plus read-only `query` diagnostics (`query state` / `query weight`) and the self-service BARE CIP-8 identity binds. It CANNOT set talk-stake weight — the observation inherent is the sole writer."
+version = "1.0.0"
+license = "Apache-2.0"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cogno-chain-cli"
+path = "src/main.rs"
+
+[dependencies]
+# ── The on-wire single source of truth (reuse the runtime's OWN types, not subxt codegen) ──
+# RuntimeCall, the exact 12-slot TxExtension, UncheckedExtrinsic, SignedPayload, SessionKeys, Runtime,
+# Signature(=MultiSignature), Address — compile-time truth. If a call index or the TxExtension changes,
+# the CLI FAILS TO COMPILE (the feedback we want) instead of silently mis-encoding.
+cogno-chain-runtime = { workspace = true, features = ["std"] }
+# The shared cardano-cli-style key-file format (envelope load/recompute, key-gen, the --prod dev-key
+# denylist). Defined once here + reused by the node gen-chainspec / key insert, so the on-disk format
+# can't drift between writer and reader.
+cogno-keyfile = { workspace = true }
+
+# ── The pallets whose `Call` variants + TxExtension members the CLI constructs (typed, from source) ──
+frame-support = { features = ["std"], workspace = true }
+frame-system = { features = ["std"], workspace = true }
+pallet-collective = { features = ["std"], workspace = true }
+pallet-session = { features = ["std"], workspace = true }
+# Microblog's CheckCapacity transaction extension + skip-feeless-payment's SkipCheckIfFeeless wrapper —
+# both members of the runtime's TxExtension tuple the CLI builds in tx.rs (must match the runtime exactly).
+pallet-microblog = { features = ["std"], workspace = true }
+pallet-skip-feeless-payment = { default-features = true, workspace = true }
+pallet-validator-set = { features = ["std"], workspace = true }
+pallet-transaction-payment = { default-features = true, workspace = true }
+frame-metadata-hash-extension = { default-features = true, workspace = true }
+# CognoGate (the BARE link_identity_signed / link_stake_signed + committee-gated revoke + AccountOf/PkhOf
+# storage the identity resolvers read), CardanoObserver (the CardanoRef type + LastReference/EnforceWeight
+# reads, read-only), TalkStake (AllowedStake/VotingPower, read-only — the CLI never sets weight), and
+# GovernedUpgrade (the typed authorize_upgrade; the WASM upload reuses frame_system's applier).
+pallet-cogno-gate = { features = ["std"], workspace = true }
+pallet-cardano-observer = { features = ["std"], workspace = true }
+pallet-talk-stake = { features = ["std"], workspace = true }
+pallet-governed-upgrade = { features = ["std"], workspace = true }
+
+# ── SCALE + signing primitives (same pins as the node/runtime, so byte layouts can't drift) ──
+codec = { features = ["std", "derive"], workspace = true }
+sp-core = { default-features = true, workspace = true }
+sp-runtime = { default-features = true, workspace = true }
+
+# ── JSON-RPC ws client (submitAndWatch / subscribeFinalizedHeads / getRuntimeVersion / state_call) ──
+jsonrpsee = { features = ["ws-client", "macros"], workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+futures = { workspace = true }
+
+# ── CLI parsing + JSON envelope + hex + error ergonomics ──
+clap = { features = ["derive"], workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+hex = "0.4"
+anyhow = "1"

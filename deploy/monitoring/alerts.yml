@@ -1,8 +1,12 @@
-# cogno-chain Prometheus alert rules (prod-readiness Phase 2). These encode the product-health signals:
-# the chain finalizing, the relayer anchoring + funded, the follower up + on the right chain, and the
-# indexer alive. Every rule has a `for:` window so a transient scrape miss does not page — the relayer's
-# single-threaded event loop (which also serves /metrics) can be blocked for up to OP_TIMEOUT_MS (120s)
-# by a synchronous committee ack, so RelayerDown uses `for:` wider than that. Tune to your cadence.
+# cogno-chain Prometheus alert rules (all-Rust, observe-only). Two product-health signals:
+#   • the chain is producing + finalizing blocks (cogno-node, built-in substrate_* metrics), and
+#   • the node's Cardano OBSERVER is actually reading db-sync and crediting talk-stake weight every
+#     block, not silently abstaining (cogno-observer, the in-node cogno_observer_* gauges).
+# Every rule has a `for:` window so a transient scrape miss doesn't page. Tune to your cadence.
+#
+# There is no relayer / follower / indexer / shadow-diff any more — the all-Rust restart dropped
+# anchoring, folded the follower's read helper + all reads into the node, and made the observer the SOLE
+# weight writer (so the committee-vs-inherent "shadow diff" it used to compare no longer exists).
 groups:
   - name: cogno-node
     rules:
@@ -14,8 +18,7 @@ groups:
           summary: "cogno-node is down (Prometheus cannot scrape :9615)"
 
       - alert: FinalityStalled
-        # GRANDPA finalized height not advancing for 10m. The relayer anchors the FINALIZED head, so a
-        # finality stall halts anchoring + tamper-evidence. delta() (gauge), NOT increase() (counter):
+        # GRANDPA finalized height not advancing for 10m. delta() (gauge), NOT increase() (counter):
         # substrate_block_height is a GAUGE, and increase()'s counter-reset correction would HIDE a
         # finality REVERSION (height moving backwards) by reading it as positive progress.
         expr: delta(substrate_block_height{job="cogno-node",status="finalized"}[10m]) == 0
@@ -41,129 +44,46 @@ groups:
       #   annotations:
       #     summary: "cogno-node has 0 peers (expected only for a single-validator chain)"
 
-  - name: cogno-relayer
+  # The Cardano observer (in-protocol weight, D4). These gauges are updated ONLY by the AUTHORING
+  # producer (node/src/service.rs records exactly one observation/abstain per AUTHORED block) — a
+  # non-authoring tracking node registers them but leaves them at 0 forever. In the default
+  # single-validator topology the one cogno-node IS the producer, so `job="cogno-node"` is correct; on a
+  # multi-node scrape, relabel so this group evaluates ONLY the producer (or these will false-fire on the
+  # trackers). On a Cardano-less --dev/--chain cogno-dev node the observer abstains by design, so
+  # ObserverAbstaining would fire there too — don't run this group against a dev chain.
+  - name: cogno-observer
     rules:
-      - alert: RelayerDown
-        # for: > OP_TIMEOUT_MS (120s): a synchronous committee ack can block the relayer event loop — and
-        # thus the in-loop /metrics server — for up to that long, so a tighter window could false-page.
-        expr: up{job="cogno-relayer"} == 0
-        for: 3m
-        labels: { severity: critical }
-        annotations:
-          summary: "anchor relayer is down — finalized state-roots are no longer being anchored to Cardano"
-
-      - alert: RelayerLoopStalled
-        # The watch loop has not iterated in 5m (wedged), distinct from the process being down.
-        expr: cogno_relayer_seconds_since_last_loop > 300
-        for: 5m
-        labels: { severity: critical }
-        annotations:
-          summary: "relayer watch loop stalled (no iteration in >5m)"
-
-      - alert: RelayerAnchorStalled
-        # No successful anchor in 30m. Tune to ANCHOR_EVERY x block-time x a safety factor + your
-        # CONFIRM_DEPTH_SLOTS burial wait. -1 means "no anchor has ever succeeded" (the gauge is seeded
-        # across restarts from persisted state) and is excluded by the `> 1800` predicate.
-        expr: cogno_relayer_seconds_since_last_anchor > 1800
-        for: 10m
+      - alert: ObserverAbstaining
+        # No NON-EMPTY observation in 15m while the node keeps producing blocks → the observer is
+        # abstaining (DBSYNC_URL unset, db-sync down/behind, pre-Shelley, or a runtime-API error) and the
+        # talk-stake weight ledger is going stale. The counter is registered at 0 at boot, so `increase`
+        # reads a flatline correctly. Weight staleness degrades the product but doesn't halt the chain.
+        expr: increase(cogno_observer_observations_total{job="cogno-node"}[15m]) == 0
+        for: 2m
         labels: { severity: warning }
         annotations:
-          summary: "relayer has not anchored in >30m — check Cardano (db-sync/Ogmios) + committee"
+          summary: "cogno observer has produced no non-empty observation in 15m — talk-stake weight is going stale (db-sync unset/down/behind?)"
 
-      - alert: RelayerLowFunds
-        expr: cogno_relayer_low_funds == 1
-        for: 5m
+      - alert: ObserverReferenceSlotStalled
+        # The Cardano reference slot of the latest non-empty observation hasn't advanced in 30m — db-sync's
+        # Cardano tip is FROZEN (the observer may still be crediting a stale weight snapshot). Distinct from
+        # ObserverAbstaining: observations can keep succeeding against a stuck db-sync. `> 0` excludes the
+        # pre-first-observation state (the gauge is 0 until the first non-empty observation). delta() (gauge).
+        expr: cogno_observer_last_reference_slot{job="cogno-node"} > 0 and delta(cogno_observer_last_reference_slot{job="cogno-node"}[30m]) == 0
+        for: 2m
         labels: { severity: warning }
         annotations:
-          summary: "relayer Cardano wallet is low on funds — top up or anchoring will stop"
+          summary: "cogno observer reference slot frozen for 30m — db-sync's Cardano tip is stuck; weight is a stale snapshot"
 
-      - alert: RelayerFailedAnchors
-        expr: cogno_relayer_failed_anchors > 0
-        for: 5m
+      - alert: ObserverNoVaults
+        # The observer is reading db-sync SUCCESSFULLY (observations_total climbing) but the latest
+        # observation found ZERO locked-ADA vaults. On a live preprod chain (the deployed talk_vault holds
+        # locked ADA) this means the vault scan broke — a wrong script hash, or a db-sync that isn't
+        # tx_in-enabled / is pruned. `observations_total > 0` suppresses the genesis window before the
+        # first observation. (Expected 0 on a Cardano-less dev chain and on a fresh chain before anyone
+        # has locked — don't run this group against those.)
+        expr: cogno_observer_observations_total{job="cogno-node"} > 0 and cogno_observer_observed_vaults{job="cogno-node"} == 0
+        for: 30m
         labels: { severity: warning }
         annotations:
-          summary: "relayer has permanently-failed anchors (NonMonotonicAnchor) — chain/relayer state diverged"
-
-      - alert: RelayerErrorLoop
-        expr: cogno_relayer_consecutive_errors > 5
-        for: 5m
-        labels: { severity: warning }
-        annotations:
-          summary: "relayer watch loop is erroring repeatedly (node WS / Cardano stack unreachable?)"
-
-  - name: cogno-follower
-    rules:
-      # D1: the follower is a read-only helper (binding is the on-chain self-proof), so these are
-      # warnings, not critical — a follower outage no longer blocks identity binding.
-      - alert: FollowerDown
-        expr: up{job="cogno-follower"} == 0
-        for: 5m
-        labels: { severity: warning }
-        annotations:
-          summary: "follower read-only helper is down (/nonce + /health unavailable; on-chain binding still works)"
-
-      - alert: FollowerNodeUnreachable
-        expr: cogno_follower_node_reachable == 0
-        for: 5m
-        labels: { severity: warning }
-        annotations:
-          summary: "follower cannot reach the L3 node RPC"
-
-      - alert: FollowerGenesisMismatch
-        # The node's genesis no longer matches what the follower pinned at boot (a chain re-spin), so the
-        # /nonce helper would hand out a wrong-chain bind payload (rejected on-chain as WrongGenesis).
-        # Restart the follower against the current chain.
-        expr: cogno_follower_genesis_ok == 0
-        for: 5m
-        labels: { severity: warning }
-        annotations:
-          summary: "follower genesis mismatch — node was re-spun under the follower; restart it"
-
-  - name: cogno-indexer
-    rules:
-      - alert: IndexerDown
-        expr: up{job="cogno-indexer"} == 0
-        for: 5m
-        labels: { severity: warning }
-        annotations:
-          summary: "SubQuery indexer is down (Tier-B read layer — frontend falls back to PAPI-direct)"
-      # Indexer LAG alerting needs your @subql/node version's processing-height metric name; add a rule
-      # like `substrate_block_height{status="finalized"} - <subql processed height> > N` once confirmed.
-
-  # Shadow-diff — the in-protocol-observation D4 validation. The two writers it compares are ASYNCHRONOUS
-  # (the committee weight-sync lags the every-block inherent; the unlock clamp lags the full stability
-  # window), so a momentary committee-vs-inherent disagreement is EXPECTED at every lock/unlock and must
-  # NOT page. We alert only on (a) PERSISTENT committee divergence (a streak that never converges) and
-  # (b) ANY recompute divergence (the inherent disagreeing with an independent off-chain re-derivation —
-  # a real correctness defect, not a timing transient).
-  - name: cogno-shadow-diff
-    rules:
-      - alert: ShadowDiffDown
-        # Optional component: only fires if you actually scrape it (a node carrying the spec-109 observer).
-        expr: up{job="cogno-shadow-diff"} == 0
-        for: 10m
-        labels: { severity: warning }
-        annotations:
-          summary: "shadow-diff is down — the in-protocol observation is no longer being validated vs committee weight"
-
-      - alert: ShadowWeightPersistentDisagreement
-        # A committee-vs-inherent divergence streak that has NOT converged for many finalized blocks —
-        # past any normal committee-sync cadence. `max_disagree_blocks` is reset to 0 the moment an account
-        # re-converges, so a long streak means a STUCK divergence (a binding the committee never synced, a
-        # stale committee write, or a genuine read disagreement), not a lock/unlock transient. Tune the
-        # threshold to > your committee sync cadence in blocks.
-        expr: cogno_shadow_max_disagree_blocks > 200
-        for: 15m
-        labels: { severity: warning }
-        annotations:
-          summary: "inherent vs committee weight has disagreed for >200 finalized blocks without converging (investigate the shadow-diff /metrics)"
-
-      - alert: ShadowRecomputeDisagreement
-        # The on-chain inherent projection disagrees with an INDEPENDENT off-chain db-sync recompute at the
-        # SAME reference slot — the runtime computed something the deterministic library does not. This is
-        # a correctness defect (not async-writer skew), so it pages faster. Only meaningful when DBSYNC_URL is set.
-        expr: cogno_shadow_recompute_disagree > 0
-        for: 5m
-        labels: { severity: critical }
-        annotations:
-          summary: "in-protocol observation MISMATCHES an independent recompute — the inherent's computation is wrong (do NOT cut over)"
+          summary: "cogno observer sees 0 locked-ADA vaults while observing — vault scan broken (wrong script hash, or db-sync missing tx_in / pruned)?"

@@ -9,7 +9,6 @@
 // export can substitute them), letting a real deployment ship its own defaults while the localhost
 // values stay as the dev fallback. A user override in localStorage always wins over both.
 const ENV_WS = process.env.NEXT_PUBLIC_WS_URL || "";
-const ENV_GRAPHQL = process.env.NEXT_PUBLIC_GRAPHQL_URL || "";
 const ENV_BLOCKFROST = process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID || "";
 
 /** The default node the dev build speaks to. The only network call the app makes. */
@@ -78,49 +77,9 @@ export function getActiveWsUrl(): string {
 // FEELESS, submitted as bare unsigned extrinsics, so there is no fee to sponsor and no relay to point at.
 // See `lib/chain/identity.ts` + `docs/TRUSTLESS-IDENTITY.md`.)
 
-// ── SubQuery GraphQL indexer endpoint (M4) ──────────────────────────────────────────────
-// The optional indexer the app reads the feed/search/thread/profile views through. Empty =
-// read directly from the node (PAPI) — slower, no search, but always available. Like the WS
-// endpoints, this is config: the reader picks who they trust to index for them.
-
-/** localStorage key for the indexer URL; default is empty ("" ⇒ read directly from the node). */
-const GRAPHQL_STORAGE_KEY = "cogno.graphql";
-
-/**
- * The user-configured GraphQL indexer URL, or "" when unset (⇒ PAPI-direct reads). SSG-safe:
- * returns "" with no `window` and never throws; an invalid stored value is treated as unset.
- */
-export function getGraphqlUrl(): string {
-  if (typeof window === "undefined") return ENV_GRAPHQL;
-  try {
-    const raw = window.localStorage.getItem(GRAPHQL_STORAGE_KEY);
-    return raw && /^https?:\/\//.test(raw) ? raw : ENV_GRAPHQL;
-  } catch {
-    return ENV_GRAPHQL;
-  }
-}
-
-/**
- * Persist the indexer URL (http/https only), or clear it with an empty/blank string (⇒ fall
- * back to PAPI-direct reads). No-op without `window`. Throws on a non-empty, non-http value.
- */
-export function setGraphqlUrl(url: string): void {
-  const trimmed = url.trim();
-  if (typeof window === "undefined") return;
-  try {
-    if (trimmed.length === 0) {
-      window.localStorage.removeItem(GRAPHQL_STORAGE_KEY);
-      return;
-    }
-    if (!/^https?:\/\//.test(trimmed)) {
-      throw new Error("GraphQL endpoint must be http:// or https:// (or empty to read directly)");
-    }
-    window.localStorage.setItem(GRAPHQL_STORAGE_KEY, trimmed);
-  } catch (err) {
-    // Re-throw a validation error so the UI can report it; swallow storage-blocked errors.
-    if (err instanceof Error && err.message.startsWith("GraphQL endpoint")) throw err;
-  }
-}
+// (The SubQuery GraphQL indexer endpoint was REMOVED in the all-Rust restart: reads are served
+// EXCLUSIVELY by the node's spec-200 MicroblogApi (feed / thread / profile / search / people /
+// replies), so there is no indexer to point at. See `lib/feed/papi-source.ts`.)
 
 // ── Blockfrost provider (M8) ─────────────────────────────────────────────────────────────
 // The Cardano provider the in-browser vault lock/exit txs use (fetcher/submitter/evaluator +

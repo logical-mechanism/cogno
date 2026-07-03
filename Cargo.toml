@@ -9,13 +9,23 @@ resolver = "2"
 members = [
 	"node",
 	"runtime",
+	# The all-Rust operator/committee admin CLI (the cardano-cli analogue to the node daemon): typed
+	# RuntimeCall constructors + committee-governed writes, keys BY FILE PATH. Reuses the runtime's own
+	# on-wire types (RuntimeCall/TxExtension) so a call-index/extension change fails to COMPILE.
+	"cli",
+	# Shared no-node crates (the all-Rust consolidation): the deterministic Cardano db-sync reader +
+	# reduction used by the node observation inherent (the sole writer), and the cardano-cli-style key-file
+	# format used by the CLI signer + node gen-chainspec / key insert.
+	"cogno-dbsync",
+	"cogno-keyfile",
 	"pallets/microblog",
 	"pallets/talk-stake",
 	"pallets/cogno-gate",
-	"pallets/anchor",
 	"pallets/profile",
 	"pallets/validator-set",
 	"pallets/cardano-observer",
+	# Sudo-free governance: the committee-governed runtime-upgrade authorizer (fills the vacant index 7).
+	"pallets/governed-upgrade",
 ]
 
 [workspace.package]
@@ -23,7 +33,7 @@ authors = ["LogicalMechanism <support@logicalmechanism.io>"]
 edition = "2021"
 homepage = "https://github.com/LogicalMechanism/cogno-chain"
 repository = "https://github.com/LogicalMechanism/cogno-chain"
-license = "Unlicense"
+license = "Apache-2.0"
 
 [workspace.lints.rust]
 unused_extern_crates = "allow"
@@ -34,7 +44,6 @@ cogno-chain-runtime = { path = "runtime", default-features = false }
 pallet-microblog = { path = "pallets/microblog", default-features = false }
 pallet-talk-stake = { path = "pallets/talk-stake", default-features = false }
 pallet-cogno-gate = { path = "pallets/cogno-gate", default-features = false }
-pallet-anchor = { path = "pallets/anchor", default-features = false }
 # Twitter-like social-actions branch: mutable per-account display profile (name/bio/avatar),
 # identity-gated via the microblog IsAllowed trait.
 pallet-profile = { path = "pallets/profile", default-features = false }
@@ -43,6 +52,14 @@ pallet-profile = { path = "pallets/profile", default-features = false }
 pallet-validator-set = { path = "pallets/validator-set", default-features = false }
 # in-protocol-observation (D4): sets talk-stake weight from a consensus-verified Cardano inherent.
 pallet-cardano-observer = { path = "pallets/cardano-observer", default-features = false }
+# Sudo-free governance: committee-authorized runtime upgrades (AuthorityOrigin-gated authorize_upgrade +
+# the permissionless frame_system::apply_authorized_upgrade). No sudo, no set_storage — least privilege.
+pallet-governed-upgrade = { path = "pallets/governed-upgrade", default-features = false }
+# The shared no-node deterministic Cardano db-sync reader + reduction (std-only). The node observation
+# inherent is the sole reader/writer; the CLI reads chain state over RPC only (no db-sync dependency).
+cogno-dbsync = { path = "cogno-dbsync" }
+# The shared cardano-cli-style key-file format (secret keys BY FILE PATH, never seed phrases).
+cogno-keyfile = { path = "cogno-keyfile" }
 
 # ── codec / type info ──────────────────────────────────────────────────────────
 codec = { package = "parity-scale-codec", version = "3.7.5", default-features = false }
@@ -95,6 +112,9 @@ sc-consensus = { version = "0.55.0", default-features = false }
 sc-consensus-aura = { version = "0.56.0", default-features = false }
 sc-consensus-grandpa = { version = "0.41.0", default-features = false }
 sc-executor = { version = "0.48.0", default-features = false }
+# `key insert-file`: open the LocalKeystore + insert a session secret read (by file path) from a
+# cogno-keyfile envelope — the file-path analogue of the SDK's `--suri` `key insert`.
+sc-keystore = { version = "40.0.0", default-features = false }
 sc-network = { version = "0.56.1", default-features = false }
 sc-offchain = { version = "51.0.0", default-features = false }
 sc-service = { version = "0.57.0", default-features = false }
@@ -114,6 +134,8 @@ sp-genesis-builder = { version = "0.22.0", default-features = false }
 sp-inherents = { version = "41.0.0", default-features = false }
 sp-io = { version = "45.0.0", default-features = false }
 sp-keyring = { version = "46.0.0", default-features = false }
+# `key insert-file`: the Keystore trait + KeystorePtr the file-based session-key insert writes through.
+sp-keystore = { version = "0.46.0", default-features = false }
 sp-offchain = { version = "41.0.0", default-features = false }
 sp-runtime = { version = "46.0.0", default-features = false }
 sp-session = { version = "43.0.0", default-features = false }
@@ -128,3 +150,6 @@ sp-version = { version = "44.0.0", default-features = false }
 substrate-build-script-utils = { version = "11.0.0" }
 substrate-frame-rpc-system = { version = "50.0.0", default-features = false }
 substrate-wasm-builder = { version = "32.0.0", default-features = false }
+# The Prometheus endpoint the SDK's built-in `substrate_*` metrics register on — the node registers its
+# own `cogno_observer_*` observer-liveness gauges on the same `config.prometheus_registry()`.
+substrate-prometheus-endpoint = { version = "0.17.7", default-features = false }

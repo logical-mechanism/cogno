@@ -18,7 +18,7 @@
 #   1. The node binary is built:               cargo build --release
 #   2. A genesis-matching raw spec exists:      chainspecs/cogno-raw.json is COMMITTED and used by default
 #      (the public DDNS bootnode is embedded — no --bootnodes flag needed). To run an operator-keyed
-#      spec with secrets instead, regenerate via scripts/gen-chainspec.mjs and set CHAINSPEC=network/raw.json.
+#      spec with secrets instead, regenerate via `cogno-chain-node gen-chainspec` and set CHAINSPEC=network/raw.json.
 #   3. The validator's P2P port is reachable from here (it must accept inbound on :30333).
 #
 # This is a TRACKING node, by design:
@@ -48,7 +48,7 @@ P2P_PORT="${P2P_PORT:-30333}"
 RELAY_NAME="${RELAY_NAME:-cogno-relay-local}"
 
 [ -x "$NODE_BIN" ]   || { echo "✗ node binary not found/executable: $NODE_BIN  (run: cargo build --release)" >&2; exit 1; }
-[ -f "$CHAINSPEC" ]  || { echo "✗ chain spec not found: $CHAINSPEC  (the committed default is chainspecs/cogno-raw.json; or regenerate via scripts/gen-chainspec.mjs and set CHAINSPEC=network/raw.json)" >&2; exit 1; }
+[ -f "$CHAINSPEC" ]  || { echo "✗ chain spec not found: $CHAINSPEC  (the committed default is chainspecs/cogno-raw.json; or regenerate via 'cogno-chain-node gen-chainspec' and set CHAINSPEC=network/raw.json)" >&2; exit 1; }
 
 # Force the observer to abstain: never let an inherited DBSYNC_URL pull this tracking node into
 # re-deriving (and potentially fatally mismatching) the Cardano observation on import.

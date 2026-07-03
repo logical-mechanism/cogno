@@ -1,10 +1,10 @@
 "use client";
 
-// SearchBar — the global search input (doc 03 §21). Substring search over post bodies is INDEXER-ONLY
-// (gated on `searchEnabled` = feedSource.caps.search). Pill, --cg-bg-subtle. Controlled value; Enter
-// commits via onSubmit (nav to /explore?q= or run inline); a clear (✕) appears when there's text.
-// When search is unavailable (PAPI-direct), the input is disabled with the honest cap placeholder
-// ("Search needs the indexer") + a title explaining the dependency — NO fake client-side search.
+// SearchBar — the global search input (doc 03 §21). Substring search over post bodies is node-served
+// (spec-200 MicroblogApi.search_posts), gated on `searchEnabled` = feedSource.caps.search — which is
+// true once the node reader is ready, so the input is disabled only before connect (no `source` yet).
+// Pill, --cg-bg-subtle. Controlled value; Enter commits via onSubmit (nav to /explore?q= or run inline);
+// a clear (✕) appears when there's text. NO fake client-side search.
 
 import { useCallback } from "react";
 import styles from "./SearchBar.module.css";
@@ -41,7 +41,7 @@ export function SearchBar({
     [onSubmit, value],
   );
 
-  const disabledPlaceholder = "Add an indexer to search";
+  const disabledPlaceholder = "Connecting…";
 
   return (
     <div className={styles.root} role="search">
@@ -58,7 +58,7 @@ export function SearchBar({
         aria-label={placeholder}
         disabled={!searchEnabled}
         aria-disabled={!searchEnabled || undefined}
-        title={searchEnabled ? undefined : "Full-text search is optional — add an indexer in Settings."}
+        title={searchEnabled ? undefined : "Search is available once connected to a node."}
         autoFocus={autoFocus}
         spellCheck={false}
         autoComplete="off"

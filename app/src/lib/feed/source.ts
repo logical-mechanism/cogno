@@ -1,14 +1,13 @@
-// The data-layer SEAM for reading the social feed. Two readers implement it: the SubQuery
-// GraphQL indexer (search + cursor pagination + thread/profile/social aggregates) and the
-// always-available PAPI-direct fallback. The React layer only ever touches this interface,
-// never a concrete reader, so the read path is swappable with no call-site churn.
+// The data-layer SEAM for reading the social feed. Since the all-Rust restart there is exactly ONE
+// reader — the PAPI-direct node source — and the seam is retained only so the React layer touches an
+// interface, never a concrete reader (no call-site churn if a second reader is ever reintroduced).
 //
-// `caps` lets the UI light up ONLY the affordances a source can honestly serve. With the
-// honesty/trust layer dropped, the UI does NOT show a "reads: indexer" badge — it simply
-// HIDES (never greys-with-explanation) what a reader cannot serve. Since spec-118/120 the
-// PAPI-direct reader serves the follow graph, profile counts/fields, the Following + Likes tabs,
-// and who-to-follow node-direct, so those no longer vanish; only substring SEARCH and the reverse
-// Replies tab remain indexer-only (hidden on the node path, served by the hybrid when configured).
+// `caps` lets the UI light up ONLY the affordances a source can honestly serve. The node serves the
+// WHOLE surface now: feed / thread / profile, the follow graph, profile counts/fields, the Following /
+// Likes / Replies tabs, who-to-follow, AND substring post + people search — the last two (search,
+// profileReplies) folded into the spec-200 MicroblogApi at P6/P8b, retiring the SubQuery indexer. The
+// UI never shows a "reads: indexer" badge; it HIDES (never greys-with-explanation) anything a reader
+// cannot serve, which — on the node source — is now nothing.
 
 import type { Observable } from "rxjs";
 import type {
@@ -27,9 +26,9 @@ import type {
 /**
  * A source that can stream the newest post id (the liveness signal). The PAPI-direct reader provides
  * it via `NextPostId.watchValue` — a new post bumps the counter — so the home feed pages by id and
- * prepends new posts / drives the "N new posts" pill from this WITHOUT a full `watchEntries`. The
- * indexer reader does NOT implement it (it keeps its own poll-driven `watch()`); consumers feature-
- * detect it and fall back to `watch()` when it is absent.
+ * prepends new posts / drives the "N new posts" pill from this WITHOUT a full `watchEntries`. Kept an
+ * OPTIONAL method on the seam: consumers feature-detect it and fall back to `watch()` when it is absent
+ * (the sole reader today, the node source, always implements it).
  */
 export interface LiveHeadSource {
   /** Emits the newest post id on every change (null while the chain has no posts). */
@@ -38,35 +37,35 @@ export interface LiveHeadSource {
 
 /** What a feed source can do — drives which UI affordances are shown (never faked). */
 export interface FeedCaps {
-  /** case-insensitive substring search over post bodies. (indexer-only) */
+  /** case-insensitive substring search over post bodies. (node-served — spec-200 MicroblogApi.search_posts) */
   search: boolean;
-  /** cursor (`after`) pagination beyond the first page. (indexer-only) */
+  /** cursor (`after`) pagination beyond the first page. (node-served — the feed pages by post id) */
   pagination: boolean;
-  /** thread reconstruction (root + direct replies). (both) */
+  /** thread reconstruction (root + direct replies). (node-served) */
   threads: boolean;
-  /** author-revocation flagging on posts. (both) */
+  /** author-revocation flagging on posts. (node-served — `CognoGate.PkhOf` absence) */
   revocation: boolean;
   // ── spec-113 social ──
-  /** vote/poll weight tallies + counts + the viewer's own vote/repost state. (both — PAPI reads the aggregate maps) */
+  /** vote/poll weight tallies + counts + the viewer's own vote/repost state. (node-served — the aggregate maps) */
   tallies: boolean;
-  /** follow edges + follower/following counts. (both — spec-118 Followers reverse map + counters) */
+  /** follow edges + follower/following counts. (node-served — spec-118 Followers reverse map + counters) */
   follows: boolean;
-  /** display name / bio / avatar / pinned. (both — pallet-profile stores these on-chain) */
+  /** display name / bio / avatar / pinned. (node-served — pallet-profile stores these on-chain) */
   profiles: boolean;
-  /** the profile Replies reverse tab (replies-by-author). (indexer-only — no reverse replies map) */
+  /** the profile Replies reverse tab (replies-by-author). (node-served — spec-200 MicroblogApi.author_replies_page) */
   profileReplies: boolean;
-  /** the profile Likes reverse tab (votes-by-author). (both — spec-118 VotesByAccount reverse map) */
+  /** the profile Likes reverse tab (votes-by-author). (node-served — spec-118 VotesByAccount reverse map) */
   profileLikes: boolean;
-  /** ranked who-to-follow suggestion list. (both — spec-118 FollowerCount ranking served node-direct) */
+  /** ranked who-to-follow suggestion list. (node-served — spec-118 FollowerCount ranking) */
   whoToFollow: boolean;
   /**
-   * The connected node serves enriched, viewer-aware feed/thread/profile pages in ONE `state_call`
-   * via the spec-120 `MicroblogApi` runtime API (replacing the ~5-reads-per-post `enrichPosts`
-   * fan-out AND the per-card `Reposts.getEntries` viewer-state scan). PAPI-direct only, and
-   * RUNTIME-DETECTED: a pre-120 node (no `MicroblogApi` in its metadata) reports `false` and the
-   * reader degrades to the keyed `getGlobalFeedPage`/`getThread` path. The indexer reports `false`
-   * (it has its own GraphQL surface). When `true`, an API-served page already carries each post's
-   * `myVote`/`reposted` overlay, so `useViewerStates` skips its per-card `viewerPostState` read.
+   * The connected node serves enriched, viewer-aware feed/thread/profile pages (and search/replies) in
+   * ONE `state_call` via the `MicroblogApi` runtime API (replacing the ~5-reads-per-post `enrichPosts`
+   * fan-out AND the per-card `Reposts.getEntries` viewer-state scan). RUNTIME-DETECTED: a pre-120 node
+   * (no `MicroblogApi` in its metadata) reports `false` and the reader degrades to the keyed
+   * `getGlobalFeedPage`/`getThread` path (search/replies have no keyed fallback — they throw). When
+   * `true`, an API-served page already carries each post's `myVote`/`reposted` overlay, so
+   * `useViewerStates` skips its per-card `viewerPostState` read.
    */
   nodeFeedApi: boolean;
 }
@@ -75,26 +74,25 @@ export interface FeedCaps {
 export interface ProfileArgs {
   author?: string;
   identityHash?: string;
-  /** Which posts tab to fold into `page` (the indexer applies it as filter + orderBy). */
+  /** Which posts tab the profile view folds into `page` (Posts / Following / Replies / Likes). */
   tab?: "forYou" | "following" | "replies" | "likes";
   /**
    * The connected account, when known. A `caps.nodeFeedApi` source threads it into the Posts-tab
-   * `MicroblogApi` page so each post carries the viewer's `myVote`/`reposted` overlay. The keyed +
-   * indexer paths ignore it (the overlay is fetched per-card by `useViewerStates`).
+   * `MicroblogApi` page so each post carries the viewer's `myVote`/`reposted` overlay. The keyed
+   * fallback path ignores it (the overlay is fetched per-card by `useViewerStates`).
    */
   viewer?: Ss58;
 }
 
 /**
- * A swappable reader for the feed/thread/profile/social views. `kind` is "papi" (node-direct),
- * "graphql" (indexer), or "hybrid" (node-first: primaries node-direct, search/People/Replies via the
- * indexer). It is diagnostic only — not rendered and not behaviourally read (every affordance gates on
- * `caps`, never on `kind`). The rest is the read surface. Every method beyond the original four is gated
- * by a `caps` flag; calling a method a reader cannot serve throws {@link UnsupportedQuery} (a logic-slip
- * guard — the UI gates on `caps` so it never gets there).
+ * A swappable reader for the feed/thread/profile/social views. `kind` is "papi" (node-direct) — the
+ * sole reader since the all-Rust restart. It is diagnostic only — not rendered and not behaviourally
+ * read (every affordance gates on `caps`, never on `kind`). The rest is the read surface. Every method
+ * beyond the original four is gated by a `caps` flag; calling a method a reader cannot serve throws
+ * {@link UnsupportedQuery} (a logic-slip guard — the UI gates on `caps` so it never gets there).
  */
 export interface FeedSource {
-  kind: "papi" | "graphql" | "hybrid";
+  kind: "papi";
   caps: FeedCaps;
   /** The live feed — a continuously-updating snapshot, newest-first. */
   watch(): Observable<FeedSnapshot>;
@@ -132,9 +130,10 @@ export interface FeedSource {
 }
 
 /**
- * Thrown when a {@link FeedQuery} / social method asks for something a source cannot honestly
- * serve — e.g. search, cursor pagination, or follow edges on the PAPI-direct path. The UI gates
- * these on `caps`, so this is a guard against a logic slip, not an expected user-facing state.
+ * Thrown when a {@link FeedQuery} / social method asks for something the connected node cannot serve —
+ * e.g. substring search, people search, or the reverse Replies tab against a pre-spec-200 node (they
+ * have no keyed fallback). The UI gates these on `caps` (advertised `true` for the node reader), so on
+ * a spec-200 node this is a guard against a logic slip, not an expected user-facing state.
  */
 export class UnsupportedQuery extends Error {
   constructor(message: string) {

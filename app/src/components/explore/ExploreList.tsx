@@ -47,7 +47,7 @@ export function ExploreList({
         <EmptyState
           variant="generic"
           title="Couldn't run that search."
-          description="Something went wrong reaching the indexer."
+          description="Something went wrong reaching the node."
           action={onRetry ? { label: "Retry", onClick: onRetry } : undefined}
         />
       </div>

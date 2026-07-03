@@ -16,7 +16,7 @@ import fs from "node:fs";
 import { MeshTxBuilder, serializePlutusScript } from "@meshsdk/core";
 import { getOwnerWallet, dbsync, ogmios, fetchCostModels } from "./m2d-wallet.mjs";
 import { burnRedeemerCborHex } from "./m2d-beacon.mjs";
-import { readUnspentMatches } from "../../services/committee/dbsync.mjs";
+import { readUnspentMatches } from "./lib/dbsync.mjs";
 
 const DBSYNC_URL = process.env.DBSYNC_URL || process.env.DBSYNC || "postgres://cogno_reader@127.0.0.1:5432/cexplorer";
 const vaultMeta = JSON.parse(fs.readFileSync("/tmp/cogno-m2/vault.json", "utf8"));

@@ -7,6 +7,11 @@ Committed **raw chain specs** for cogno-chain networks — the file you pass a n
 |---|---|---|---|
 | `cogno-raw.json` | **Cogno** (operator-run preprod testnet, `id: cogno`, `chainType: Live`) | `0xde7a60b1675e2652cd40e8a329222a952d41d1597b219904e68b66a9dd0ff33c` | `cogno-chain-runtime` spec 117 |
 
+> **Note.** `cogno-raw.json` is the **pre-restart** genesis (spec 117). The `fork/all-rust` restart
+> relaunches the chain at a **fresh genesis** on the current `spec_version` 200 runtime — an operator
+> ceremony that has not run yet (see [`../docs/PREPROD-BRINGUP.md`](../docs/PREPROD-BRINGUP.md)). When it
+> does, regenerate this spec (below) and update the genesis-hash + spec row.
+
 These are **raw** specs: genesis is pre-encoded storage and embeds the runtime wasm
 (`:code`, ~480 KB), so the file is ~950 KB. That weight is the price of a node-ready,
 genesis-pinned spec anyone can sync against without rebuilding the runtime.
@@ -33,18 +38,17 @@ The single embedded bootnode is the operator's public DDNS node
 
 ## What is NOT here (and why)
 
-- **No secrets.** This raw spec contains only public data (balances, the sudo / authority /
-  committee **public** keys, the wasm). The operator's mnemonics live in `network/keys.json`,
-  which stays **gitignored** — see `scripts/gen-chainspec.mjs`.
+- **No secrets.** This raw spec contains only public data (balances, the authority / committee
+  **public** keys, the wasm). The operator's secret keys are the `.skey` files from
+  `cogno-chain-cli key gen`, kept offline — see [Regenerate](#regenerate-operator).
 - The private/LAN bootnode the generator embeds for local peering is trimmed from the committed
   copy (it leaks a LAN IP and is useless off-LAN). The operator's own `network/raw.json` keeps it.
 
 ## Regenerate (operator)
 
-`scripts/gen-chainspec.mjs` mints a fresh operator-keyed network into `network/` (gitignored):
-`raw.json` + `plain.json` + `keys.json` (secret) + `env.sh` + `NEXT-STEPS.md`. To publish a new
+`cogno-chain-node gen-chainspec` mints a fresh operator-keyed spec (`raw.json` + a plain, inspectable
+spec) from the `.skey` files produced by `cogno-chain-cli key gen` (kept offline). To publish a new
 genesis, copy `network/raw.json` here (trimming the LAN bootnode) and update the genesis hash above.
 
 > **Regenerating the network changes the genesis** — every account, identity bind, and post from the
-> previous genesis is gone, and the indexer's `services/indexer/GENESIS.txt` pin must be re-set to the
-> new hash before it will index the new chain.
+> previous genesis is gone. Point every node (and the frontend's RPC endpoint) at the new spec.

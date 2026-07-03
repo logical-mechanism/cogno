@@ -3,8 +3,8 @@
 # ⚠ AS SHIPPED THIS PAGES NOBODY. The `cogno-default` receiver below has every notifier commented out,
 # which is a VALID config that silently routes every alert to a blackhole — Alertmanager starts fine and
 # drops them. You MUST uncomment + point a `webhook_configs`/`slack_configs` at your real notifier, or
-# critical alerts (chain/relayer/follower down) fire in Prometheus and go nowhere. Verify the route with
-# `amtool config routes test` (or the :9093 UI) once wired.
+# critical alerts (the chain down / not finalizing) fire in Prometheus and go nowhere. Verify the route
+# with `amtool config routes test` (or the :9093 UI) once wired.
 #
 #   cd deploy/monitoring && alertmanager --config.file=alertmanager.yml   # listens :9093 (see prometheus.yml)
 
@@ -17,7 +17,7 @@ route:
   routes:
     - matchers: ['severity="critical"']
       receiver: cogno-default
-      repeat_interval: 1h   # page critical (chain/relayer/follower down) more often
+      repeat_interval: 1h   # page critical (chain down / not finalizing) more often
 
 receivers:
   - name: cogno-default

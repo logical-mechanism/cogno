@@ -11,8 +11,9 @@
 // mapping here mirrors `enrichPosts` exactly (same CognoPost shape; `score = upWeight - downWeight`,
 // the SAME derivation as `readPostTally`/`toCognoPost`), proven by the parity test in reads.test.ts.
 
+import { Binary } from "polkadot-api";
 import { binTextOpt, type IdPage, type RawThread } from "./reads";
-import type { CognoApi, CognoPost, Ss58, QuotedRef, ViewerPostState } from "@/lib/types";
+import type { CognoApi, CognoPost, Ss58, QuotedRef, ViewerPostState, Suggestion } from "@/lib/types";
 
 const MAX_PAGE = 100;
 
@@ -63,6 +64,16 @@ interface ThreadRaw {
   replies: EnrichedPost[];
 }
 
+/** One `PersonSummary` exactly as `MicroblogApi.search_people`/`who_to_follow` decodes it (snake_case;
+ *  `display_name`/`avatar` = Binary; `weight` = u128 bigint; `follower_count` = u32). */
+interface PersonSummaryRaw {
+  account: SS58Like;
+  display_name: BinaryLike;
+  avatar: BinaryLike;
+  weight: bigint;
+  follower_count: number;
+}
+
 /** The runtime-API surface this module calls (a subset of `api.apis.MicroblogApi`). */
 interface MicroblogApiCalls {
   feed_page(beforeId: bigint | undefined, limit: number, viewer: Ss58 | undefined): Promise<FeedPageRaw>;
@@ -75,6 +86,33 @@ interface MicroblogApiCalls {
   following_feed_page(viewer: Ss58, beforeId: bigint | undefined, limit: number): Promise<FeedPageRaw>;
   thread(focal: bigint, viewer: Ss58 | undefined): Promise<ThreadRaw>;
   author_post_count(author: Ss58): Promise<number>;
+  // ── the all-Rust restart: the SubQuery indexer reads folded into the node (fork/all-rust, P6) ──
+  /** One author's REPLIES (`parent != None`), newest-first, paged below `beforeId` (a post id). */
+  author_replies_page(
+    author: Ss58,
+    beforeId: bigint | undefined,
+    limit: number,
+    viewer: Ss58 | undefined,
+  ): Promise<FeedPageRaw>;
+  /** Full-text post search: ASCII-case-insensitive substring on `term` (a `Vec<u8>` ⇒ `Binary`). */
+  search_posts(
+    term: Binary,
+    beforeId: bigint | undefined,
+    limit: number,
+    viewer: Ss58 | undefined,
+  ): Promise<FeedPageRaw>;
+  /** People search by display-name substring (`term` ⇒ `Binary`), ranked by follower count. */
+  search_people(term: Binary, limit: number): Promise<PersonSummaryRaw[]>;
+  /** Ranked who-to-follow suggestions (ByAuthor members, ranked by follower count — INCLUDES 0-follower
+   *  authors, so the panel is non-empty on a fresh-genesis chain). */
+  who_to_follow(limit: number): Promise<PersonSummaryRaw[]>;
+  /** The posts `who` has up-voted (the profile Likes tab), newest-first, paged below `beforeId`. */
+  likes_page(
+    who: Ss58,
+    beforeId: bigint | undefined,
+    limit: number,
+    viewer: Ss58 | undefined,
+  ): Promise<FeedPageRaw>;
 }
 
 /** The typed `MicroblogApi` off the api (present on a spec-120 node; detected before any call). */
@@ -282,4 +320,101 @@ export async function nodeThread(
  */
 export async function nodeAuthorPostCount(api: CognoApi, author: Ss58): Promise<number> {
   return microblogApi(api).author_post_count(author);
+}
+
+// ── the all-Rust restart (fork/all-rust, P8b): the last three indexer-only caps, folded into the node ──
+
+/**
+ * Full-text post search (`MicroblogApi.search_posts`): an ASCII-case-insensitive substring match on
+ * `term`, newest-first, node-served + viewer-overlaid. `term` is a runtime `Vec<u8>`, passed as a
+ * `Binary`. The runtime bounds each call's scan (`limit · MAX_SCAN_FACTOR` ids) and hands back a
+ * `next_cursor` on a sparse-match range; `chasePage` follows it to fill a full page — the SAME
+ * cursor-chasing as the feeds, so a no-match dense stretch never yields an empty-but-more page early.
+ */
+export async function nodeSearchPosts(
+  api: CognoApi,
+  term: string,
+  opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
+): Promise<IdPage> {
+  const termBin = Binary.fromText(term);
+  return chasePage(
+    (beforeId, limit) => microblogApi(api).search_posts(termBin, beforeId, limit, opts.viewer),
+    opts.beforeId,
+    opts.limit,
+    opts.viewer != null,
+  );
+}
+
+/**
+ * One author's REPLIES (the profile Replies tab): their posts with `parent != None`, newest-first,
+ * node-served + viewer-overlaid (`MicroblogApi.author_replies_page`). Paged below `beforeId` (a post
+ * id) via `chasePage`, identical page semantics to the author feed — the runtime scans the author's
+ * own `ByAuthor` index in reverse (bounded by their post count), skipping top-level posts.
+ */
+export async function nodeAuthorRepliesPage(
+  api: CognoApi,
+  author: Ss58,
+  opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
+): Promise<IdPage> {
+  return chasePage(
+    (beforeId, limit) => microblogApi(api).author_replies_page(author, beforeId, limit, opts.viewer),
+    opts.beforeId,
+    opts.limit,
+    opts.viewer != null,
+  );
+}
+
+/**
+ * People search (`MicroblogApi.search_people`): a case-insensitive substring match on the display name,
+ * ranked by follower count. Maps each `PersonSummary` → the client `Suggestion` (the same shape the old
+ * indexer `searchPeople` returned): `display_name`/`avatar` Binary → trimmed string via `binTextOpt`,
+ * `weight` u128 → bigint (0 ⇒ `undefined`, matching the who-to-follow / indexer producers), the exact
+ * `follower_count`. `term` is a runtime `Vec<u8>`, passed as a `Binary`.
+ */
+export async function nodeSearchPeople(
+  api: CognoApi,
+  term: string,
+  limit: number,
+): Promise<Suggestion[]> {
+  const rows = await microblogApi(api).search_people(Binary.fromText(term), limit);
+  return rows.map(personSummaryToSuggestion);
+}
+
+/** Map one `PersonSummary` → the client `Suggestion` (shared by people-search + who-to-follow). */
+function personSummaryToSuggestion(r: PersonSummaryRaw): Suggestion {
+  return {
+    author: r.account,
+    displayName: binTextOpt(r.display_name),
+    avatar: binTextOpt(r.avatar),
+    weight: r.weight > 0n ? r.weight : undefined,
+    followerCount: r.follower_count,
+  };
+}
+
+/**
+ * Ranked who-to-follow suggestions (`MicroblogApi.who_to_follow`): ByAuthor members ranked by follower
+ * count. Unlike the keyed `FollowerCount` scan it INCLUDES 0-follower authors, so the panel is non-empty
+ * on a fresh-genesis chain where nobody has followers yet. The hook filters out self + already-followed.
+ */
+export async function nodeWhoToFollow(api: CognoApi, limit: number): Promise<Suggestion[]> {
+  const rows = await microblogApi(api).who_to_follow(clampLimit(limit));
+  return rows.map(personSummaryToSuggestion);
+}
+
+/**
+ * The posts `who` has up-voted (the profile Likes tab), newest-first, node-served + viewer-overlaid
+ * (`MicroblogApi.likes_page`). Paged below `beforeId` via `chasePage` — replaces the unbounded
+ * `VotesByAccount.getEntries` + per-id `getPost` fan-out with one bounded page.
+ */
+export async function nodeLikesPage(
+  api: CognoApi,
+  who: Ss58,
+  opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
+): Promise<IdPage> {
+  return chasePage(
+    (beforeId, limit) => microblogApi(api).likes_page(who, beforeId, limit, opts.viewer),
+    opts.beforeId,
+    opts.limit,
+    opts.viewer != null,
+  );
 }

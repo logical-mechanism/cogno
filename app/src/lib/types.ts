@@ -243,19 +243,6 @@ export interface ChainHeads {
 }
 
 /**
- * The latest Cardano anchor checkpoint (`Anchor.LastCheckpoint`, M3 Tier-A). Recorded by the
- * relayer; the UI no longer renders it (trust layer dropped). The read is kept (evidence,
- * not enforcement) but has no surface.
- */
-export interface AnchorCheckpoint {
-  blockNumber: number;
-  finalizedRoot: string;
-  cardanoTxHash: string;
-  postCount: bigint;
-  timestamp: bigint;
-}
-
-/**
  * A live feed snapshot. `posts` is the FULL current set (rebuilt from
  * `watchEntries().entries` every emission — `entries` is authoritative; deltas can be
  * null), sorted newest-first by `id`. `asOf` is the block the snapshot reflects.

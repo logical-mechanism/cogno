@@ -1,12 +1,13 @@
 # Running a relay (tracking) node — first-time setup
 
 A **relay / tracking node** is a non-validator full node: it syncs the live cogno-chain over libp2p
-P2P and serves RPC to a local frontend/indexer. It never authors blocks or votes finality, so it
-needs no validator keys and no Cardano db-sync. Stand one up on any box (this one or a remote one)
-to read real chain data and broadcast txs without touching the operator's validator.
+P2P and serves RPC to a local frontend. It never authors blocks or votes finality, so it needs no
+validator keys and no Cardano db-sync. Stand one up on any box (this one or a remote one) to read real
+chain data (the node serves all reads via its runtime API) and broadcast txs without touching the
+operator's validator.
 
 ```
- validator (producer) ──libp2p :30333──▶ this tracking node ──ws RPC :9944──▶ app / indexer
+ validator (producer) ──libp2p :30333──▶ this tracking node ──ws RPC :9944──▶ app (:3000)
 ```
 
 > **There is no "libp2p" to install.** P2P networking is the `sc-network` crate (which wraps
@@ -24,10 +25,11 @@ to read real chain data and broadcast txs without touching the operator's valida
    git clone <repo> cogno-chain && cd cogno-chain
    cargo build --release        # → ./target/release/cogno-chain-node  (libp2p is baked in here)
    ```
-3. **Chain spec** — the committed [`network/raw.json`](../network/raw.json) is the genesis-matching
-   live spec. Its `bootNodes` already point at the validator over DDNS (`/dns4/…asuscomm.com/…`)
-   plus a LAN fallback, so a relay needs no `--bootnodes` flag. (To regenerate against a live RPC:
-   `node scripts/fetch-chainspec.mjs <rpc> --bootnode <multiaddr> --out network/raw.json`.)
+3. **Chain spec** — the committed [`chainspecs/cogno-raw.json`](../chainspecs/cogno-raw.json) is the
+   genesis-matching live spec (the default `CHAINSPEC` in `scripts/run-tracking-node.sh`). Its
+   `bootNodes` already point at the validator over DDNS (`/dns4/…asuscomm.com/…`) plus a LAN fallback,
+   so a relay needs no `--bootnodes` flag. (To regenerate against a live RPC:
+   `node scripts/fetch-chainspec.mjs <rpc> --bootnode <multiaddr> --out chainspecs/cogno-raw.json`.)
 
 ## Run
 
@@ -55,7 +57,7 @@ Useful env overrides (see the script header for the full list): `RPC_PORT`, `P2P
   DDNS updater. See [README.md](../README.md) and `deploy/systemd/cogno-node.service`.)
 - **RPC stays on `127.0.0.1`** by default for a co-located app. To expose it off-box, add
   `--rpc-external --rpc-methods safe --rpc-cors '<origins>'` (behind TLS) — a separate concern from P2P.
-- **Archive pruning** (`--state-pruning/--blocks-pruning archive`, already in the script) is required
-  if this node feeds the SubQuery indexer (DR-08).
+- **Archive pruning** (`--state-pruning/--blocks-pruning archive`, already in the script) keeps full
+  history so the node can answer historical reads over its runtime API (DR-08's archival commitment).
 - The node abstains on the Cardano observer with no db-sync configured (`CannotVerify` is non-fatal),
   so it syncs the live chain regardless — the script unsets `DBSYNC_URL`/`DBSYNC` to guarantee this.

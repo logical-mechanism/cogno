@@ -1,12 +1,18 @@
 # Trustless identity (D1) — on-chain CIP-8 self-proof
 
+> **Note.** The mechanism (on-chain CIP-8 self-proof, `cip8.rs`) is current and present in the
+> `fork/all-rust` runtime (`spec_version` **200**). The spec numbers below (e.g. 116) are **pre-restart
+> build history**, a few cross-references point to the retired pre-restart layered specs (`L2-follower`,
+> `L3-SPO-graduation`), and the CI oracle cited as `services/cogno-follower/{verify,beacon}.py` now lives
+> at `ci/cip8-oracle/`. The current system overview is [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 **Status: DONE, proven live on a `--dev` node. The bind is now FEELESS (spec_version 116): the two CIP-8
 self-proofs — `link_identity_signed` (@2) and `link_stake_signed` (@3) — are submitted as BARE (unsigned)
 extrinsics and verified at transaction-pool admission (`#[pallet::validate_unsigned]`), so a brand-new
 zero-balance account binds with no fee and NO funded relay (the Sponsored-Bind Relay is removed). The
 crown-jewel verifier `cip8.rs` is byte-identical; only the origin (signed → none) and the spam gate (a fee
-→ pool-admission verify) changed.** This is the D1 rung of the identity trust ladder from
-[`L2-follower.md`](L2-follower.md) §7.2/§7.3: the trusted off-chain identity binding is **replaced** by an
+→ pool-admission verify) changed.** This is the D1 rung of the identity trust ladder: the trusted
+off-chain identity binding (an earlier design) is **replaced** by an
 on-chain cryptographic self-proof. It is **validator-independent** — it *removes* a trusted party (the
 follower's bind-write key) without adding one.
 

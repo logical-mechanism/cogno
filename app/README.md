@@ -6,7 +6,7 @@ Cardano-sourced talk capacity, and the Cardano anchor are all visible, not hidde
 app-chain with **PAPI** (`polkadot-api`) and to Cardano with **MeshJS** (CIP-30 wallet + Blockfrost).
 There is no backend and no telemetry — it self-hosts on any static host (`output: "export"`, see
 `next.config.mjs`). For the full project, see the top-level [`README.md`](../README.md); for the
-design, [`docs/L5-frontend.md`](../docs/L5-frontend.md).
+design, [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
 
 ## Run
 
@@ -42,9 +42,7 @@ which wins over the localhost fallback.
 
 | Settings field | Build-time env | Default | What it is |
 |---|---|---|---|
-| WebSocket endpoint(s) | `NEXT_PUBLIC_WS_URL` | `ws://127.0.0.1:9944` | the app-chain node the SPA reads/writes through (PAPI) |
-| Follower URL | `NEXT_PUBLIC_FOLLOWER_URL` | `http://127.0.0.1:8090` | the trusted v1 cogno-follower the CIP-8 bind POSTs to |
-| GraphQL indexer URL | `NEXT_PUBLIC_GRAPHQL_URL` | *(empty)* | the optional SubQuery indexer for feed/search/threads; empty ⇒ read directly from the node (PAPI-direct) |
+| WebSocket endpoint(s) | `NEXT_PUBLIC_WS_URL` | `ws://127.0.0.1:9944` | the app-chain node the SPA reads/writes through (PAPI) — the SOLE read/write surface (feed / thread / profile / search served node-direct via the spec-200 MicroblogApi; no indexer or follower) |
 | Blockfrost project id | `NEXT_PUBLIC_BLOCKFROST_PROJECT_ID` | *(empty)* | the **preprod** Blockfrost project id the in-browser vault lock/exit txs use; empty ⇒ the lock action is hidden |
 
 The Blockfrost project id is exposed client-side **by design** — so any visitor can lock from their
@@ -87,6 +85,6 @@ hovering shows the plain-language detail. They encode the "usable ≠ trustless"
 | `capacity: follower-metered (v1)` | locking ADA earns capacity only **after** the trusted follower observes the lock on Cardano and writes your weight — a successful lock is "submitted", not "you can post now" |
 | `anchor: evidence, not enforcement` | the Cardano anchor lets a third party **detect** a silent history rewrite after the fact; it cannot prevent a bad block, fork, or censorship |
 
-These mirror the prose posture in the service READMEs and `docs/DECISION-REGISTER.md` (DR-07). The
+These mirror the trust posture documented in [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md). The
 3-of-5 committee path that backs the privileged calls is real but **D2-SHAPED, not D2-TRUST** on a
 single-operator stack.

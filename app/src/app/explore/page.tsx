@@ -4,8 +4,10 @@
 // a sticky blurred header; below it two modes derived from the URL term `q` (read client-side via
 // useSearchParams) + feedSource.caps.search:
 //
-//   caps.search === false → NO-INDEXER  : SearchBar disabled + `search-unavailable` EmptyState in the
-//                                          results area; the firehose still renders (PAPI live window).
+//   caps.search === false → NO-SOURCE   : the reader isn't ready yet (no `source` before connect;
+//                                          search is node-served, so once connected caps.search is true) —
+//                                          SearchBar disabled + `search-unavailable` EmptyState; firehose
+//                                          still renders (the live window).
 //   caps.search === true, q === ''       → DEFAULT : firehose Timeline + FirehoseOrderToggle (Top|Recent).
 //   caps.search === true, q !== ''       → QUERY   : ResultTabStrip (People | Latest) + result list.
 //
@@ -13,10 +15,10 @@
 // `draft` that debounces into `q` (300ms) while typing — router.replace (not push) so keystroke term
 // changes never stack history; Enter commits immediately; the clear ✕ → router.replace('/explore').
 //
-// The firehose + Latest both use useFeedPage(source, …). The firehose routes NODE-DIRECT (the spec-120
-// feed_page — recency by id, cursor-paginated) on both the papi and hybrid sources; Latest routes to the
-// indexer (search). caps.pagination is true on both, so the Timeline shows infinite-scroll either way.
-// People search uses source.searchPeople (indexer-only). Every result-card write is optimistic and
+// The firehose + Latest both use useFeedPage(source, …), both NODE-DIRECT: the firehose via the spec-200
+// feed_page (recency by id, cursor-paginated), Latest via search_posts (the in-runtime substring scan).
+// caps.pagination is true, so the Timeline shows infinite-scroll for both. People search uses
+// source.searchPeople (node-served — search_people). Every result-card write is optimistic and
 // funnels disconnected/unbound viewers to /welcome; capacity exhaustion → RateLimitNotice toast. No
 // honesty/block-number chrome anywhere.
 //

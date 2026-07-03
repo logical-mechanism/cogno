@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/LogicalMechanism/cogno-chain/blob/main/SECURITY.md
+    about: Do not open a public issue for security bugs — follow the disclosure policy in SECURITY.md.
+  - name: Question / discussion
+    url: https://github.com/LogicalMechanism/cogno-chain/discussions
+    about: For usage questions and open-ended discussion, please use Discussions.

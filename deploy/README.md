@@ -1,51 +1,44 @@
 # Deploying cogno-chain (preprod-shaped production)
 
-This directory holds the **supervised, always-on** deployment layer for the cogno-chain stack:
-committed `systemd` units that run each service under `Restart=always`, with boot persistence,
-dependency ordering, durable state, and sandboxing. It turns "runs on the author's laptop in a
-foreground terminal" into "an operator runs it unattended, and it survives crashes and reboots."
+This directory holds the **supervised, always-on** deployment layer: a single committed `systemd` unit
+that runs the node under `Restart=always`, with boot persistence, durable state, and sandboxing. It turns
+"runs on the author's laptop in a foreground terminal" into "an operator runs it unattended, and it
+survives crashes and reboots."
+
+The all-Rust node is the **whole backend** — it authors + finalizes blocks AND serves every read (feed /
+thread / search / profile, via its runtime API) AND runs the Cardano observer in-protocol. There is no
+follower, relayer, indexer, or committee daemon: privileged calls are made ad hoc with `cogno-chain-cli`
+(keys by file, from an operator machine — not this host), and there is no sudo key anywhere.
 
 The default topology is the **single operator-keyed persistent validator** (the honest v1 posture) —
-not `--dev`, not throwaway `//Alice` keys — with the privileged write paths routed through the
-**3-of-5 committee** and `sudo` held **offline as break-glass**. The same units scale to a
-multi-validator network by editing a couple of flags (noted inline).
-
-> Scope: this is prod-readiness **Phase 1** (the survivability floor). Monitoring/alerting (Phase 2),
-> least-privilege follower + multi-custodian committee (Phase 3), CI/e2e (Phase 4) and backup/incident
-> runbooks (Phase 5) build on top of this. The deliberate testnet choices (`MinAuthorities=1`, GRANDPA
-> equivocation, independent-custody committee) remain scoped out — see the repo README/`docs/`.
+not `--dev`, not throwaway `//Alice` keys. It scales to a multi-validator network by editing a couple of
+flags (noted inline). The deliberate testnet choices (`MinAuthorities=1`, GRANDPA equivocation as a no-op,
+independent-custody committee) remain scoped out — see the repo README / `docs/`.
 
 ## What runs where
 
 | Unit | Process | Binds | Needs |
 |---|---|---|---|
-| `cogno-node` | the Substrate validator | p2p :30333, RPC :9944, Prometheus :9615 | **db-sync** (read-only; the observer) |
-| `cogno-relayer` | anchor relayer | — | node, **db-sync**, Ogmios |
-| `cogno-follower` | read-only identity helper (`/nonce`, `/health`; D1 — binding is on-chain) | HTTP :8090 | node |
-| `cogno-indexer` | SubQuery ingest | health :3001 | node, **Postgres** |
-| `cogno-query` | GraphQL feed | :3000 | indexer, Postgres |
+| `cogno-node` | the Substrate validator (Aura + GRANDPA) + observer + read RPC | p2p :30333, RPC :9944, Prometheus :9615 | **db-sync** (read-only; the observer) |
 
-**Not managed here** (external infrastructure you run separately): `cardano-node` + **db-sync** (the
-read-only Postgres the node's in-protocol observer **and** the anchor-relayer read, via `DBSYNC_URL`) +
-**Ogmios** (the anchor-relayer's L1 tx submit + cost models) and **Postgres 16** (the indexer). Add
-`After=`/`Wants=` lines for your db-sync/Ogmios/cardano units to `cogno-node.service` (db-sync) and
-`cogno-relayer.service` (db-sync, Ogmios) (names vary by install); the units already order after
-`postgresql.service` for the indexer/query. Every service fails closed and retries with
-backoff if a dependency is down, so strict ordering is a convenience, not a correctness requirement.
-(The in-browser CIP-30 vault uses a hosted Blockfrost key, not a service you run here.)
+**Not managed here** (external infrastructure you run separately): a synced `cardano-node` feeding a
+read-only **db-sync** (Postgres) that the node's in-protocol observer reads via `DBSYNC_URL`. Add
+`After=`/`Wants=` lines for your db-sync/cardano units to `cogno-node.service` if you want strict ordering
+(names vary by install) — but the observer fails closed (abstains) and the node keeps producing if db-sync
+is down, so ordering is a convenience, not a correctness requirement. (Ogmios / Blockfrost — L1 tx submit
++ cost models — are used by the CLI + the in-browser CIP-30 vault, not by anything on this host.)
 
-## Install layout (the paths the units assume)
+## Install layout (the paths the unit assumes)
 
 | Path | What |
 |---|---|
-| `/opt/cogno` | a checkout of this repo (the service code) |
 | `/usr/local/bin/cogno-chain-node` | the built node binary |
-| `/usr/local/bin/node` | a symlink to a **real, non-snap** Node v22 (see below) |
 | `/etc/cogno/chainspec.raw.json` | your operator-keyed raw chain spec |
-| `/etc/cogno/cogno.env` | the EnvironmentFile (secrets, `0640 root:cogno`) |
-| `/var/lib/cogno` | durable state (`StateDirectory`, `0700 cogno:cogno`) |
+| `/etc/cogno/cogno.env` | the EnvironmentFile (`DBSYNC_URL`, `0640 root:cogno`) |
+| `/var/lib/cogno` | durable state (`StateDirectory`, `0700 cogno:cogno`); the node DB lives in `node/` under it |
 
-Edit the literal paths in the units if your layout differs.
+Edit the literal paths in the unit if your layout differs. `cogno-chain-cli` (the admin tool) does **not**
+run on this host — keep it, and the committee `.skey` files, on a separate operator machine.
 
 ## One-time host setup
 
@@ -53,153 +46,140 @@ Edit the literal paths in the units if your layout differs.
 # 1. Service account (no login, no home).
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin cogno
 
-# 2. Code + node binary.
-sudo git clone https://github.com/logical-mechanism/cogno /opt/cogno
-sudo cp /opt/cogno/target/release/cogno-chain-node /usr/local/bin/cogno-chain-node
-
-# 3. A REAL node v22 at /usr/local/bin/node. The snap `node` writes stdout to /dev/null (silent
-#    failures), so DO NOT point the units at it. Symlink your nvm/system node:
-sudo ln -sf "$HOME/.nvm/versions/node/v22.12.0/bin/node" /usr/local/bin/node
-/usr/local/bin/node --version   # confirm v22.x and that it prints
-
-# 4. Service dependencies.
-( cd /opt/cogno/app && npm install )                 # PAPI/MeshJS deps the relayer+committee symlink to
-# The relayer + committee resolve their node deps via gitignored node_modules SYMLINKS that are NOT in a
-# fresh clone — recreate them (the relayer cannot start without the first, and the default committee
-# anchor path cannot run without the second):
-ln -sfn ../../app/node_modules /opt/cogno/services/anchor-relayer/node_modules
-ln -sfn ../indexer/node_modules /opt/cogno/services/committee/node_modules
-# Indexer + GraphQL (Tier-B read layer — OPTIONAL; the frontend falls back to PAPI-direct, so you may
-# leave cogno-indexer/cogno-query disabled). `npm install` does NOT generate the SubQuery manifest +
-# bundle — you must codegen+build, pinning GENESIS to YOUR chain's block-0 hash (the baked default is
-# the live preprod genesis and will refuse to index any other chain):
-( cd /opt/cogno/services/indexer && npm install \
-    && GENESIS="$(curl -s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"chain_getBlockHash","params":[0]}' http://127.0.0.1:9944 | sed 's/.*"result":"//;s/".*//')" \
-    CHAIN_ID=cogno npm run codegen && npm run build )
-# Follower venv:
-python3 -m venv /opt/cogno/services/cogno-follower/.venv
-/opt/cogno/services/cogno-follower/.venv/bin/pip install -r /opt/cogno/services/cogno-follower/requirements.txt
-
-# 5. Provision Postgres (role + db the indexer uses; see services/indexer/README.md).
+# 2. The node binary (built with a plain `cargo build --release` — default features).
+sudo install -m 0755 target/release/cogno-chain-node /usr/local/bin/cogno-chain-node
 ```
+
+That's it — no Node.js, no Python, no Postgres for the app itself. The only external dependency is the
+read-only Cardano db-sync the observer reads (which you run separately).
 
 ## Genesis + keys
 
-The genesis, validator session keys, committee seats and sudo key are generated by
-[`scripts/gen-chainspec.mjs`](../scripts/gen-chainspec.mjs) — **no `//Alice` dev keys anywhere**:
+Generate your keys with `cogno-chain-cli key gen` (cardano-cli-style envelopes, by file path — **no
+`//Alice` dev keys, no seed phrases**), then build an operator-keyed genesis with `cogno-chain-node
+gen-chainspec` (it reads only the PUBLIC keys and refuses dev keys):
 
 ```bash
-cd /opt/cogno
-NODE_BIN=/usr/local/bin/cogno-chain-node VALIDATORS=1 COMMITTEE=5 node scripts/gen-chainspec.mjs
+CLI=/usr/local/bin/cogno-chain-cli   # on your operator machine
+$CLI key gen --scheme sr25519 --out val-account.skey
+$CLI key gen --scheme sr25519 --out val-aura.skey
+$CLI key gen --scheme ed25519 --out val-grandpa.skey
+$CLI key gen --scheme sr25519 --out seat1.skey        # repeat --committee-key for more seats
+
+cogno-chain-node gen-chainspec --base cogno-preprod \
+  --validator-account-key val-account.skey \
+  --validator-aura-key val-aura.skey --validator-grandpa-key val-grandpa.skey \
+  --committee-key seat1.skey \
+  --out-raw chainspec.raw.json                        # + a plain, inspectable spec
 ```
 
-It writes `network/`: `raw.json` (the spec), `keys.json` (**all secret mnemonics — `chmod 600`, back
-it up, keep it offline**), `env.sh` (`COMMITTEE_SEEDS` + `SUDO_SEED`), and `NEXT-STEPS.md` (a launch
-runbook). Then:
+Keep the `.skey` files offline (`chmod 600`, back them up — the committee seats stay in their files for
+`cogno-chain-cli`). Install the raw spec on the node host and insert the validator's SESSION secrets FROM
+the key files (`key insert` reads the SURI + scheme from each envelope — no jq / `--suri`):
 
 ```bash
-sudo install -m 0644 network/raw.json /etc/cogno/chainspec.raw.json
+sudo install -m 0644 chainspec.raw.json /etc/cogno/chainspec.raw.json
 
-# Insert the validator's session keys into the node keystore — into /var/lib/cogno/node to match the
-# unit's --base-path. Replace <validator-1 mnemonic> with the value from network/keys.json.
-sudo -u cogno /usr/local/bin/cogno-chain-node key insert --base-path /var/lib/cogno/node \
-  --chain /etc/cogno/chainspec.raw.json --scheme sr25519 --key-type aura --suri "<validator-1 mnemonic>"
-sudo -u cogno /usr/local/bin/cogno-chain-node key insert --base-path /var/lib/cogno/node \
-  --chain /etc/cogno/chainspec.raw.json --scheme ed25519 --key-type gran --suri "<validator-1 mnemonic>"
+# Insert into /var/lib/cogno/node to match the unit's --base-path.
+sudo install -d -o cogno -g cogno -m 0700 /var/lib/cogno/node
+sudo -u cogno cogno-chain-node key insert --base-path /var/lib/cogno/node \
+  --chain /etc/cogno/chainspec.raw.json --key-file val-aura.skey    --key-type aura   # authoring
+sudo -u cogno cogno-chain-node key insert --base-path /var/lib/cogno/node \
+  --chain /etc/cogno/chainspec.raw.json --key-file val-grandpa.skey --key-type gran   # finality
 ```
 
-(`/var/lib/cogno` is created `0700 cogno:cogno` by the units' `StateDirectory=`; if you insert keys
-before first start, `sudo install -d -o cogno -g cogno -m 0700 /var/lib/cogno/node` first.)
+(The unit's `StateDirectory=cogno` creates `/var/lib/cogno` `0700 cogno:cogno`; the `install -d` above just
+lets you insert keys before the first start. The node's libp2p p2p key auto-generates + persists under the
+base-path on first run — read its peer id later with `cogno-chain-node key inspect-node-key`.)
 
 ## Config: the EnvironmentFile
 
 ```bash
 sudo install -d -m 0750 -o root -g cogno /etc/cogno
 sudo install -m 0640 -o root -g cogno deploy/systemd/cogno.env.example /etc/cogno/cogno.env
-sudoedit /etc/cogno/cogno.env     # fill in DBSYNC_URL (db-sync read-only; the node's observer) +
-                                  #          COMMITTEE_SEEDS (from network/env.sh) + DB_PASS
+sudoedit /etc/cogno/cogno.env     # fill in DBSYNC_URL (read-only db-sync); optionally RUST_LOG
 ```
 
-Once the node is producing blocks, **set `GENESIS`** in `/etc/cogno/cogno.env` to its block-0 hash
-(`curl -s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"chain_getBlockHash","params":[0]}' http://127.0.0.1:9944`)
-— the genesis pin makes the relayer + committee tooling + follower refuse to anchor/sign against the
-wrong chain. (`COGNO_PROFILE=prod`, already set in the template, additionally refuses the public dev keys.)
+The node reads **only** `DBSYNC_URL` (+ optional `RUST_LOG`) from this file. The unit's `EnvironmentFile=-`
+makes a missing file / unset `DBSYNC_URL` non-fatal — the observer simply abstains (the chain still
+produces + finalizes) and logs `no DBSYNC_URL set — abstaining`.
 
-**Authority model (committee-routed, sudo offline as break-glass):** put `COMMITTEE_SEEDS` into
-`/etc/cogno/cogno.env` and leave `SUDO_SEED` **commented out / off this host**. The relayer defaults to
-`ANCHOR_VIA=committee`; routine privileged writes never touch the sudo key. Bring `SUDO_SEED` online
-only for a deliberate emergency break-glass op, then remove it again.
-
-> **Follower (D1):** `cogno-follower` no longer writes bindings — identity binding is the permissionless
-> on-chain `cognoGate.link_identity_signed` self-proof, re-verified by every full node. The follower is a
-> read-only helper (`/health`, `/metrics`, `/nonce`); it needs **no** signing key, no `WS`, and no
-> committee/sudo seeds. (`COMMITTEE_SEEDS` is still used by the relayer for `anchor_ack` / `set_stake` /
-> validators / the gate `revoke` ban; `COGNO_PROFILE=prod` makes every privileged signer refuse the
-> public dev keys.)
-
-## Migrating an existing `/tmp/cogno-m2` deployment
-
-Earlier the relayer wallet, anchor cursor and committee vault defaulted to `/tmp/cogno-m2` (volatile +
-world-readable). The services now default to the durable data dir and **auto-migrate** an existing
-`/tmp/cogno-m2/*` file to it on first read (copy, `0600`). Under `systemd` the units set
-`COGNO_DATA_DIR=/var/lib/cogno` and run with `PrivateTmp=true`, so the auto-migration won't see your old
-`/tmp`. Do it once by hand **before enabling the units** so your funded wallet is preserved:
+## Install + enable the unit
 
 ```bash
-sudo install -d -o cogno -g cogno -m 0700 /var/lib/cogno
-sudo install -o cogno -g cogno -m 0600 /tmp/cogno-m2/owner.json        /var/lib/cogno/owner.json
-sudo install -o cogno -g cogno -m 0600 /tmp/cogno-m2/anchor-state.json /var/lib/cogno/anchor-state.json
-sudo install -o cogno -g cogno -m 0600 /tmp/cogno-m2/vault.json        /var/lib/cogno/vault.json   # if present
-shred -u /tmp/cogno-m2/owner.json    # remove the plaintext seed from /tmp
-```
-
-If you have **no** existing wallet (fresh deployment), the relayer will **refuse to silently brew** an
-empty one (which would make it stop anchoring). Deliberately create one, then fund the printed address:
-
-```bash
-sudo -u cogno COGNO_DATA_DIR=/var/lib/cogno COGNO_ALLOW_WALLET_BREW=1 \
-  /usr/local/bin/node /opt/cogno/app/scripts/m2d-wallet.mjs    # prints the address to fund
-```
-
-## Install + enable the units
-
-```bash
-sudo cp deploy/systemd/cogno-*.service /etc/systemd/system/
+sudo cp deploy/systemd/cogno-node.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now cogno-node
-# Bring up the rest once the node is producing + finalizing blocks:
-sudo systemctl enable --now cogno-indexer cogno-query cogno-follower cogno-relayer
 ```
 
 ## Verify
 
 ```bash
-systemctl status 'cogno-*'                       # all active (running)
+systemctl status cogno-node                      # active (running)
 journalctl -u cogno-node -f                      # "Imported #N", "finalized #M" advancing
-journalctl -u cogno-relayer -f                   # "watching finalized heads", "anchor_ack → AnchorAcked"
-curl -s localhost:9101/healthz                   # relayer liveness + anchor/funds summary (JSON)
-curl -s localhost:9101/metrics | head            # relayer Prometheus metrics
-curl -s localhost:8090/health                    # follower LIVE health (node reachable + genesis ok; 503 if not)
-curl -s localhost:3001/health                    # indexer health
-curl -s localhost:9615/metrics | head            # node Prometheus
+curl -s localhost:9615/metrics | grep cogno_observer   # observer liveness gauges (see monitoring/)
 ```
 
+Once the node is producing, capture its genesis hash (`chain_getBlockHash[0]`) and pin it wherever you run
+`cogno-chain-cli` — the CLI's genesis guard refuses to sign against the wrong chain.
+
 **Monitoring + alerting.** [`deploy/monitoring/`](monitoring/) ships a Prometheus scrape config, alert
-rules (finality stalled, relayer down / not anchoring / low funds, follower down / genesis mismatch,
-indexer down), an Alertmanager config, and a starter Grafana dashboard — see
-[`deploy/monitoring/README.md`](monitoring/README.md).
+rules (chain down / finality stalled / block production stalled, plus the observer group:
+abstaining / reference-slot frozen / no-vaults), an Alertmanager config, and a starter Grafana dashboard —
+see [`deploy/monitoring/README.md`](monitoring/README.md).
 
 ## Operating notes
 
-- **Restart safety.** `systemctl restart cogno-relayer` is safe: the relayer catches `SIGTERM`, finishes
-  the current cycle (**never mid-tx**), persists state atomically, and exits 0. `TimeoutStopSec=180`
-  gives an in-flight Cardano confirmation room to settle before `SIGKILL`.
-- **Single-instance lock.** The relayer takes an exclusive lock in the data dir; a second instance
-  against the same wallet/state refuses to start (it would double-spend + corrupt state). A stale lock
-  from a `SIGKILL`ed predecessor is reclaimed automatically.
-- **Durable state.** Everything stateful lives under `/var/lib/cogno`. With `MinAuthorities=1` the node
-  DB is the **sole copy** of chain history, and `keys.json` + `owner.json` are irreplaceable — back them
-  up (a real backup runbook is Phase 5).
-- **Single-validator finality.** The default unit uses `--force-authoring` (a lone validator has no
-  peers to confirm against). Remove it and drop `--force-authoring` when you add validators; GRANDPA
-  needs ≥2/3 of authorities online to finalize.
+- **Durable state.** Everything stateful lives under `/var/lib/cogno`. With `MinAuthorities=1` the node DB
+  is the **sole copy** of chain history, and the operator `.skey` / `keys.json` files are irreplaceable —
+  see [Backup & restore](#backup--restore) below.
+- **Single-validator finality.** The default unit uses `--force-authoring` (a lone validator has no peers
+  to confirm against). Drop it — and add `--bootnodes` — when you onboard more validators; GRANDPA needs
+  ≥2/3 of authorities online to finalize.
+- **Observer abstention is non-fatal.** If db-sync is unset / down / behind, the observer abstains and the
+  node keeps producing + finalizing; talk-stake weight just goes stale until db-sync is back. The
+  `ObserverAbstaining` alert catches a sustained abstention.
+- **Federating out.** Add committee seats (`cogno-chain-cli committee members add`, by vote) and validators
+  (`cogno-chain-cli validator add` + the new validator's `validator set-keys`) from your operator machine —
+  changes apply at a session boundary. Runtime upgrades are `cogno-chain-cli upgrade authorize` (committee)
+  + a permissionless `upgrade apply` (spec-checked). There is no sudo path.
+
+## Backup & restore
+
+No backup daemon is shipped, and the node binary intentionally exposes no `export-blocks` / `export-state`
+subcommand — back up at the filesystem level. What to protect:
+
+| Asset | Where | Backup |
+|---|---|---|
+| Chain DB (history) | `/var/lib/cogno/node` | filesystem snapshot (below). At `MinAuthorities=1` there is no second archive node to re-sync from, so this is load-bearing. |
+| Operator secret keys | your offline `.skey` / `keys.json` envelopes | encrypted, offline, in ≥2 places — **never** on the node host. |
+| Genesis / chainspec | `/etc/cogno/chainspec.raw.json` | copy alongside the keys (must be byte-identical to rejoin). |
+| Session keys | `<base-path>/chains/<id>/keystore` | re-inserted from the `.skey` files on restore — no separate backup. |
+
+**Snapshot the DB (consistent copy):**
+
+```bash
+sudo systemctl stop cogno-node                                  # clean stop for a consistent copy
+sudo tar -C /var/lib/cogno -czf /backup/cogno-db-$(date +%F).tar.gz node
+sudo systemctl start cogno-node
+```
+
+For zero-downtime, take an LVM/ZFS/btrfs snapshot of `/var/lib/cogno` and archive that instead. Rotate old
+archives off-host.
+
+**Restore drill** (rehearse once on a spare host, before you need it):
+
+```bash
+sudo systemctl stop cogno-node
+sudo tar -C /var/lib/cogno -xzf /backup/cogno-db-YYYY-MM-DD.tar.gz
+sudo chown -R cogno:cogno /var/lib/cogno
+# Re-insert the session keys from the offline .skey files (as at first boot):
+sudo -u cogno cogno-chain-node key insert --base-path /var/lib/cogno/node \
+  --chain /etc/cogno/chainspec.raw.json --key-file val-aura.skey    --key-type aura
+sudo -u cogno cogno-chain-node key insert --base-path /var/lib/cogno/node \
+  --chain /etc/cogno/chainspec.raw.json --key-file val-grandpa.skey --key-type gran
+sudo systemctl start cogno-node && journalctl -u cogno-node -f    # confirm it authors + finalizes
+```
+
+**Cap the journal** so an always-on archive node can't fill the disk: install the drop-in
+[`deploy/systemd/journald-cogno.conf`](systemd/journald-cogno.conf) (`SystemMaxUse` / `MaxRetentionSec`).

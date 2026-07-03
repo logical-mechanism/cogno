@@ -1,0 +1,12 @@
+# cip8-oracle — the independent CIP-8 verifier's Python deps (CI-only, ci/cip8-oracle/).
+# The CIP-8 verify path is REUSED from cogno_v3 (do NOT reimplement): pycardano.cip.cip8.verify,
+# pinned to the proven version. blake2b is stdlib (hashlib); beacon.py imports cbor2 directly for the
+# Plutus-Data CBOR encoding of the owner Address (the L1 beacon-name / identity hash).
+#   python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#
+# (This is the all-Rust restart's CI oracle — there is no follower service, so the old psycopg
+# db-sync reader + http.server deps are gone; the node reads Cardano through the cogno-dbsync crate.)
+pycardano==0.13.0
+# Pin the major line: beacon.py's Plutus-Data CBOR must stay byte-identical to the Aiken beacon-name
+# (the LOCKED value in test_beacon.py is the guard). cbor2 6.x could change encoding behaviour.
+cbor2>=5.6,<6

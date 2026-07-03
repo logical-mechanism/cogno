@@ -1,9 +1,14 @@
-# SCALE-NODE-READS — node-served reads (the spec-120 design)
+# SCALE-NODE-READS — node-served reads
+
+> **Note.** The `spec_version` numbers below (119/120/121) are **pre-restart build history**. On
+> `fork/all-rust` these features shipped into the fresh-genesis runtime and are present in
+> `spec_version` **200** (`transaction_version` stays **3**). Current overview:
+> [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Status: **Features 1 + 3 implemented.** Feature 1 — the `MicroblogApi` runtime read API + client wiring
 (`spec_version 120`). Feature 3 — the top-level-post index (`spec_version 121`). **Feature 2 intentionally
 skipped** (Feature 1 already returns a clean `reposted`, so the `Reposts` re-encode migration buys nothing).
-`transaction_version` stays **3** throughout. Builds on the spec-119 reply aggregates ([feed paging](L4-reading.md)).
+`transaction_version` stays **3** throughout. Builds on the spec-119 reply aggregates.
 
 > **Implementation note (Feature 1).** The pallet exposes `feed_page` / `author_feed_page` /
 > `following_feed_page` / `thread`, each returning one enriched, viewer-aware page; the runtime fills author
