@@ -114,20 +114,19 @@ export default function WelcomePage() {
   }, [sessionState]);
 
   // ── returning-user fast path ───────────────────────────────────────────────────────────────────
-  // A new user passes through the account/bind steps (connected_unbound → binding) before reaching a
-  // bound state; a RETURNING user reconnects straight into a bound state, never touching them. Only the
-  // former needs the power-ups interstitial — the latter is already set up, so we drop them directly
-  // into the feed ("log in → see posts"). We latch "did we start onboarding this session?" and, when a
-  // bound session lands on power-ups without it, replace to Home.
-  const startedOnboarding = useRef(false);
+  // Only a user who just registered THIS session needs the power-ups interstitial; anyone already set
+  // up should land straight in the feed. We must NOT infer "did they onboard?" from session states:
+  // on an in-app reconnect the identity read is briefly stale (bound === false for the reverted
+  // //Alice key) before it resolves, so the session flaps through a PHANTOM `connected_unbound` that
+  // used to wrongly mark onboarding as started — leaving a returning user stuck on power-ups. Latch it
+  // on the actual Register action instead (set in onRegister), and reset on a real disconnect. A
+  // returning user reconnects into a bound state without ever registering here, so this stays false.
+  const registeredThisSession = useRef(false);
   useEffect(() => {
-    if (sessionState === "connected_unbound" || sessionState === "binding") {
-      startedOnboarding.current = true;
-    }
-    if (sessionState === "disconnected") startedOnboarding.current = false;
+    if (sessionState === "disconnected") registeredThisSession.current = false;
   }, [sessionState]);
   useEffect(() => {
-    if (welcomeStep === "powerups" && !startedOnboarding.current) router.replace("/");
+    if (welcomeStep === "powerups" && !registeredThisSession.current) router.replace("/");
   }, [welcomeStep, router]);
 
   // ── connect-error routing (toast vs inline) ──────────────────────────────────────────────────
@@ -179,6 +178,9 @@ export default function WelcomePage() {
 
   const onRegister = useCallback(() => {
     if (!signerCtl.connectedWalletId) return;
+    // Latch that onboarding started HERE this session, so the power-ups step isn't skipped for a
+    // genuine new registrant (see the returning-user fast path above).
+    registeredThisSession.current = true;
     identity.bind(signerCtl.connectedWalletId);
   }, [identity, signerCtl.connectedWalletId]);
 

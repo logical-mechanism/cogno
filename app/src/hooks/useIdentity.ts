@@ -7,7 +7,7 @@
 // readback. The wallet sign, the on-chain submit, and the readback are distinct steps, surfaced as one
 // `binding` flag here but narrated by the UI.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PolkadotClient } from "polkadot-api";
 import type { CognoApi, PostingSigner } from "@/lib/types";
 import {
@@ -79,11 +79,22 @@ export function useIdentity(
   const [stakeBindPhase, setStakeBindPhase] = useState<BindPhase>("idle");
   const [stakeError, setStakeError] = useState<string | null>(null);
 
+  // The posting key the last bound-read was for. On a KEY switch we must clear `bound` to null (unknown)
+  // before the async re-read — otherwise the previous key's value lingers (e.g. `false` for the reverted
+  // //Alice key after a disconnect), and an in-app reconnect flaps through a phantom `connected_unbound`
+  // that mis-drives onboarding + "Finish setup" affordances. A mere socket (api) reconnect keeps the same
+  // key, so `bound` is NOT cleared there — that would needlessly bounce a logged-in user off the wall.
+  const boundKeyRef = useRef<string | null>(null);
+
   const refresh = useCallback(() => {
     // boundAddress describes a bind PERFORMED for the current key this session; it is not re-derivable
     // from chain state. Clear it whenever the key/chain changes (this callback re-runs on [api, ss58])
     // so a stale signing-address can't survive a wallet switch to a different — already-bound — account.
     setBoundAddress(null);
+    if (boundKeyRef.current !== signer.ss58) {
+      boundKeyRef.current = signer.ss58;
+      setBound(null); // key changed → boundness unknown until re-read; never show the prior key's value
+    }
     if (!api) {
       setBound(null);
       return;
