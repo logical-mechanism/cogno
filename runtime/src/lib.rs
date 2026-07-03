@@ -439,7 +439,7 @@ mod runtime {
     // 14 = ValidatorSet (M6, DR-26): the MUTABLE Aura+GRANDPA validator set (vendor-forked from
     // gautamdhameja/substrate-validator-set). It is pallet-session's SessionManager — each session
     // rotation it hands the current set to Aura/GRANDPA. `add_validator`/`remove_validator` are
-    // gated by the M5 `AuthorityOrigin` (sudo OR 3-of-5 FollowerCommittee) and queued to a session
+    // gated by the `AuthorityOrigin` (3-of-5 FollowerCommittee, sudo-free) and queued to a session
     // boundary. Declared BEFORE Session so its genesis seats `Validators` before Session's genesis
     // reads it via `SessionManager::new_session_genesis`.
     #[runtime::pallet_index(14)]

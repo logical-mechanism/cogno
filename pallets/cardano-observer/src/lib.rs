@@ -10,7 +10,7 @@
 //! ## What is inherent data vs on-chain logic (§4.1)
 //! The ONLY thing carried as inherent data is the raw observed `(beacon, lovelace)` set as-of a stable
 //! reference slot (the node-side `InherentDataProvider` does that IO, byte-identically across nodes
-//! via the shared logic mirrored from `services/_shared/observation.mjs`). Everything else is
+//! via the shared `cogno-dbsync` reduction logic). Everything else is
 //! deterministic on-chain logic that lives here: the `beacon → account` lookup
 //! ([`Config::BeaconResolver`] = cogno-gate `AccountOf` in the runtime), the MIN_LOCK floor, the
 //! `MaxStakeWeight` bound, weight application + capacity priming ([`Config::WeightSink`] = a
@@ -112,7 +112,7 @@ pub struct CardanoRef {
 
 /// The observation supplied as inherent DATA by the node (transport form: an unbounded `Vec`; the
 /// runtime `Call` bounds it to [`Config::MaxObserved`]). Entries are canonical-sorted ascending by the
-/// 32 beacon bytes — the SAME canonical order `services/_shared/observation.mjs` produces.
+/// 32 beacon bytes — the SAME canonical order the `cogno-dbsync` reduction produces.
 ///
 /// `inputs_commitment` is the `blake2_256` of the canonical SCALE encoding of the PRE-REDUCTION
 /// structural candidate set (every vault UTxO the as-of reduction consumes, before the time-filter /
@@ -583,7 +583,7 @@ pub mod pallet {
         /// The maximum legitimate reference slot for THIS block = `cardano_slot(now) − StabilitySlots`,
         /// or `None` when the block time predates the Shelley anchor (so the bound is skipped). All
         /// arithmetic is CHECKED (release WASM has overflow-checks off; a naive subtraction would WRAP,
-        /// not fail — §5.2). Mirrors `cardanoReferenceSlot` in `services/_shared/observation.mjs`.
+        /// not fail — §5.2). Mirrors `cardano_reference_slot` in the `cogno-dbsync` reduction.
         fn max_reference_for_now() -> Option<u64> {
             let now_s = T::UnixTime::now().as_secs();
             let t0 = T::ShelleyStartUnix::get();

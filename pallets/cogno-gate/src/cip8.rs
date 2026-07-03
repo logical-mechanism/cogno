@@ -1,6 +1,7 @@
 //! On-chain CIP-8 (COSE_Sign1) identity self-proof verifier — the trustless D1 core.
 //!
-//! Replaces the trusted off-chain follower (`services/cogno-follower/verify.py`): a user submits the
+//! Replaces the trusted off-chain follower with in-runtime verification (the Python original is kept as
+//! a CI cross-check oracle at `ci/cip8-oracle/verify.py`): a user submits the
 //! `signData` output their Cardano wallet produced over the pinned bind payload, and THIS runtime code
 //! cryptographically verifies it — no trusted writer. The whole verifier is a PURE function over byte
 //! slices ([`verify_bind_proof`]); the pallet wraps it with the genesis / tombstone / 1:1 checks.
@@ -12,7 +13,7 @@
 //! 3. The address is a VerificationKey-payment base/enterprise address on the configured network
 //!    (rejects script-payment, pointer, stake-only, Byron, wrong-network — verify.py:70/76).
 //! 4. The identity = `blake2b_256(plutus_data_cbor(owner Address))` reproduced BYTE-EXACT (the L1 beacon
-//!    name, `services/cogno-follower/beacon.py`) so a bind matches an observed vault.
+//!    name, `ci/cip8-oracle/beacon.py`) so a bind matches an observed vault.
 //! 5. The signed payload is exactly `cogno-chain/bind/v1;genesis=<64hex>;account=<64hex>;nonce=<32hex>`
 //!    (`payload.py`); the caller checks `genesis` == the chain genesis and binds the committed `account`.
 //!

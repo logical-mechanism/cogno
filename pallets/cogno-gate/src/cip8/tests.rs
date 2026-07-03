@@ -1,6 +1,6 @@
 //! Tests for the on-chain CIP-8 verifier. Two oracles:
 //!  • the cross-impl-LOCKED beacon-name vector (`6e2f65e9…`, asserted byte-identical in the Aiken
-//!    contract `talk_vault.ak::beacon_name_matches_follower` and `services/cogno-follower/test_beacon.py`)
+//!    contract `talk_vault.ak::beacon_name_matches_follower` and `ci/cip8-oracle/test_beacon.py`)
 //!    — proves the on-chain Plutus-CBOR identity matches the L1 join key;
 //!  • a REAL `MeshWallet.signData` fixture (`app/scripts/m2-cip8-fixture.mjs`) — proves end-to-end verify.
 //! Plus adversarial negatives (tampered sig, swapped key, wrong network, trailing bytes, extended key,

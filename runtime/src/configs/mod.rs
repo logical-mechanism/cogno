@@ -226,9 +226,10 @@ impl pallet_governed_upgrade::Config for Runtime {
 // ── DR-07: the FollowerCommittee — the mutable k-of-t authority behind the crown jewels ──
 //
 // `pallet-collective` (one shared `Instance1`) holds a MUTABLE member set (rotation via
-// `Collective::set_members`, gated by `SetMembersOrigin` = root/sudo in v1) and produces an
-// `EnsureProportionAtLeast<3,5>` origin when a motion carries a 3-of-5 supermajority. That origin
-// — OR `EnsureRoot`/sudo (the retained v1 dev escape hatch) — authorizes every privileged write.
+// `Collective::set_members`, gated by `SetMembersOrigin` = the committee's own `AuthorityOrigin`)
+// and produces an `EnsureProportionAtLeast<3,5>` origin when a motion carries a 3-of-5 supermajority.
+// That origin authorizes every privileged write — there is NO `EnsureRoot`/sudo fallback (sudo-free
+// from genesis; index 6 vacant).
 // The proposal lifecycle (`Proposed`/`Voted`/`Closed`/`Approved`/`Executed`) IS the per-action
 // audit log (DR-07's D0 requirement). Widening to k-of-t changed ZERO call signatures because the
 // underlying origins were already `EnsureOrigin` (L2 §8.4). The D2 gate before any mainnet run is
@@ -317,8 +318,8 @@ impl pallet_session::Config for Runtime {
 }
 
 /// Configure pallet-validator-set (M6, DR-26): the mutable Aura+GRANDPA validator set. `add_validator`
-/// / `remove_validator` are gated by the SAME `AuthorityOrigin` as the M5 crown jewels (sudo OR the
-/// 3-of-5 FollowerCommittee) — one operator committee governs identity, weight, anchoring, AND who
+/// / `remove_validator` are gated by the SAME `AuthorityOrigin` as the other crown jewels (the
+/// 3-of-5 FollowerCommittee, sudo-free) — one operator committee governs identity, weight, AND who
 /// produces blocks (the split into a separate validator committee is a documented graduation step).
 ///
 /// ## `MinAuthorities` is a finality-safety parameter, not just an anti-zero guard
@@ -396,7 +397,7 @@ impl pallet_microblog::ForeignCapacityCost<RuntimeCall> for ProfileCapacityCost 
 /// Configure pallet-microblog (M2c: feeless, capacity-metered posting; capacity folded in,
 /// DR-24). MaxLength = 512 / MaxPostsPerAuthor = 10_000 are the decided v1 baselines (DR-10b);
 /// post ids are u64 (DR-21). Real benchmarked WeightInfo is DR-05 (a later milestone). The
-/// `ForceOrigin` (sudo in dev) lets the operator prime/pre-charge a battery before the Cardano
+/// `ForceOrigin` (the 3-of-5 committee) lets the operator prime/pre-charge a battery before the Cardano
 /// weight source (M2d) is wired; the future gate's `link_identity` will call `on_first_bind`.
 impl pallet_microblog::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
@@ -416,7 +417,7 @@ impl pallet_microblog::Config for Runtime {
     // Poll bounds: up to 4 options, each up to 80 bytes (the question reuses MaxLength = 512).
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<80>;
-    // DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`).
+    // Gated by the 3-of-5 FollowerCommittee (sudo-free).
     type ForceOrigin = AuthorityOrigin;
     // M2: gate posting on a live Cardano-identity binding (the anti-Sybil anchor).
     type IdentityGate = CognoGate;
@@ -427,10 +428,9 @@ impl pallet_microblog::Config for Runtime {
 }
 
 /// Configure pallet-cogno-gate (M2): the 1:1 Cardano-owner-Address ↔ posting-account binding —
-/// the anti-Sybil identity anchor. `link_identity`/`revoke` are written by the trusted
-/// Cogno-Follower; in v1 dev that authority is sudo (`EnsureRoot`, the DR-07 escape hatch), so
-/// the showcase is fully drivable on-chain before the Cardano follower is wired. The
-/// `EnsureOrigin` shape means the widen to a k-of-t committee (D2) is signature-free. `OnBind`
+/// the anti-Sybil identity anchor. Binding is a PERMISSIONLESS on-chain CIP-8 self-proof (see the
+/// D1 note below); `FollowerOrigin` (the 3-of-5 committee, sudo-free) gates only `revoke`. The
+/// `EnsureOrigin` shape kept the widen to a k-of-t committee signature-free. `OnBind`
 /// is the first-bind hook into microblog (primes the capacity row + provider ref at link).
 ///
 /// D1 (trustless identity): `link_identity_signed` is the PERMISSIONLESS self-proof bind — the runtime
@@ -440,7 +440,7 @@ impl pallet_microblog::Config for Runtime {
 /// PREREQUISITE: the verifier has NOT had a formal external audit (see `cip8` module docs).
 impl pallet_cogno_gate::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
-    // DR-07: root/sudo OR the 3-of-5 FollowerCommittee (was bare `EnsureRoot`) — gates `revoke` only.
+    // Gated by the 3-of-5 FollowerCommittee (sudo-free) — gates `revoke` only.
     type FollowerOrigin = AuthorityOrigin;
     type OnBind = Microblog;
     // The Cardano network the on-chain self-proof binds for: 0 = testnet (live preprod), 1 = mainnet.
