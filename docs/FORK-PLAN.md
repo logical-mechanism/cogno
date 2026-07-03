@@ -43,4 +43,4 @@ Each phase must keep `cargo build --workspace`, `cargo test --workspace`, `cd ap
 | 7 | Build `cogno-chain-cli` + node subcommands | ✅ done |
 | 8 | Delete services + rewire frontend | ✅ done |
 | 9 | Ops + CI + docs + hygiene | ✅ done |
-| 10 | Fresh-genesis relaunch ceremony | ⬜ todo |
+| 10 | Fresh-genesis relaunch ceremony | 📝 runbook finalized + verified (PREPROD-BRINGUP / RELAY-NODE / UPGRADES / D2-custody); the live relaunch is operator-run |

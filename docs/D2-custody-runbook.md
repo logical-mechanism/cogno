@@ -1,10 +1,19 @@
 # DR-07 D2 — crown-jewel custody, rotation & audit-log runbook
 
-> **Partly historical.** The committee-custody procedure is current, but this doc predates the all-Rust
-> restart (`fork/all-rust`) and still lists keys that no longer exist (`sudo`/`set_code`, the anchor
-> relayer, the follower) and references the retired layered specs. Treat the sudo/anchor rows as removed
-> (the chain is sudo-free; runtime upgrades go through `governed-upgrade`). Current overview:
-> [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> **Partly historical — read this first.** The custody *policy* (a 3-of-5 committee across five
+> independent domains, key rotation, a public audit log) is still the model, but this doc predates the
+> all-Rust restart (`fork/all-rust`, spec 200) and its **commands + key inventory are stale**. Gone:
+> `sudo`/`set_code` and the `EnsureRoot` dev fallback (the chain is sudo-free — index 6 vacant; upgrades
+> go through `governed-upgrade` via `cogno-chain-cli upgrade authorize`/`apply`); the committee
+> `set_stake` and `anchor_ack` calls (the observer inherent is the SOLE weight writer, anchoring dropped
+> — index 12 vacant); the Cardano relayer/follower signing key (the node only READS db-sync, read-only);
+> and the JS tooling (`op.mjs`/`sync-weight.mjs`) + SubQuery indexer / `@polkadot/api` watcher (replaced
+> by the all-Rust `cogno-chain-cli committee` verbs + node-served PAPI reads). The links to the retired
+> layered specs (`L2-*`/`L3-*`) are dead. For the CURRENT operational how-to see
+> [`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md) (§6 federate-out) + [`../deploy/README.md`](../deploy/README.md);
+> for the current design see [`ARCHITECTURE.md`](ARCHITECTURE.md). Read the body below as *policy intent*,
+> not as runnable commands. (The "D2-shaped, not D2-trust" caveat still holds — it is about **committee**
+> custody, distinct from the observation "D4-shaped, not D4-trust" rung.)
 
 > **Status: RUNBOOK (M6).** The procedure for operating cogno-chain's privileged keys at **D2** — a
 > **3-of-5 k-of-t committee across five independent custody domains**, with a rotation procedure, an

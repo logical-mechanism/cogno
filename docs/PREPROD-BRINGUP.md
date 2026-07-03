@@ -1,20 +1,20 @@
 # Preprod single-observer bring-up runbook
 
 How to stand up a **real, persistent, single-operator** cogno-chain on Cardano **preprod** and exercise the
-full dapp loop (lock ADA → bind identity → earn talk-capacity → feeless post → read). This is the
-end-to-end companion to [deploy/README.md](../deploy/README.md) (which covers the `systemd` mechanics) and
+full dapp loop (lock ADA → bind identity → earn talk-capacity → feeless post → read), then **federate out**.
+This is the end-to-end companion to [deploy/README.md](../deploy/README.md) (the `systemd` mechanics) and
 [docs/IN-PROTOCOL-OBSERVATION.md](IN-PROTOCOL-OBSERVATION.md) (the observer design). It ties genesis → node →
-weight-sync → frontend into one sequence and calls out the pieces unique to a single-observer
-**shadow-mode** chain.
+observed weight → frontend → federation into one sequence.
 
 > ## Honest posture — read first
-> This is a **live, single-operator testnet proof-of-concept**, not a production or trustless system. The
-> in-protocol Cardano observer runs in **shadow** (`EnforceWeight = false`) and is **auditability, not
-> trust** — **D4-SHAPED, not D4-TRUST**. With one block producer, `check_inherent`'s "every importer
-> re-derives" is *not* load-bearing (there is no second producer to out-vote a bad author), and the chain
-> exercises no cross-node import at all. Trustless weight requires **≥3 independent producers each running
-> their own db-sync** plus the gated `set_enforcement(true)` cutover — both deliberately deferred. Label
-> every user-facing surface accordingly.
+> This is a **live, single-operator testnet**, not a production or trustless system. The in-protocol Cardano
+> observer **enforces from genesis** (`EnforceWeight = true`): it is the **sole** writer of talk-stake weight
+> — there is no `set_stake` extrinsic and no off-chain follower. But with **one** block producer,
+> `check_inherent`'s "every importer re-derives" is *not* load-bearing (there is no second producer to
+> out-vote a bad author), so this is **D4-SHAPED, not D4-TRUST**. Trustless weight requires **≥3 independent
+> producers each running their own db-sync** — deliberately deferred. Label every user-facing surface
+> accordingly. (`set_enforcement(false)` exists only as a committee-gated **emergency weight-freeze**, not a
+> routine mode.)
 
 ## What standing this up does / does not buy you
 
@@ -22,39 +22,38 @@ weight-sync → frontend into one sequence and calls out the pieces unique to a 
 |---|---|
 | A stable, committed genesis that survives restarts/rebuilds | Trust, decentralization, or any progress toward the mainnet flip |
 | Real uptime + real db-sync wiring against the live preprod vault | Cross-instance observation determinism (needs ≥2 db-syncs) |
-| Real CIP-8 binds + real L1 ADA locks/exits, end to end | Enforcement (posting is still gated by the committee weight-sync, see Step 4) |
-| A durable platform to iterate the dapp + UI | A second producer / GRANDPA fault tolerance (`MinAuthorities = 1`) |
+| Real CIP-8 binds + real L1 ADA locks/exits, end to end | GRANDPA fault tolerance (`MinAuthorities = 1`, one producer) |
+| Enforced, observer-credited weight (no trusted weight-setter) | Trustless enforcement (one producer's observation is unchecked) |
 
 ## Prerequisites (external infrastructure you run separately)
 
-- **Cardano `cardano-node` + db-sync (read-only), synced on preprod.** The observer reads db-sync. It
+- **Cardano `cardano-node` + db-sync (read-only), synced on preprod.** The node's observer reads db-sync. It
   **must** be FULL / non-pruned (retains history back to the reference) and **`tx_in`-enabled** (NOT
   `--consumed-tx-out` — spentness is read from `tx_in`; the read probes `EXISTS (SELECT 1 FROM tx_in)` and
   **abstains fail-closed** otherwise). Expose a read-only role (e.g. `cogno_reader`) as `DBSYNC_URL`.
   MAINNET PREREQUISITE: db-sync over TLS.
-- **Ogmios** — still needed for the **L1 write path** only (it submits the anchor-relayer's metadata tx and
-  serves Plutus cost models). Reads come from db-sync; the in-browser CIP-30 vault lock/exit uses Blockfrost.
-  Not used by the observation path. Optional for a first bring-up.
-- **Postgres 16** — only if you run the optional SubQuery indexer.
 - **The built node binary**, from a clean `cargo build --release` (pinned rustc 1.90.0). The **same** binary
   must generate the genesis and run the node — a `--features runtime-benchmarks` build embeds a runtime a
   normal node can't run, and a different build changes the genesis.
+- **Ogmios + Blockfrost** are needed only by the **frontend's** L1 lock/exit (tx submit + cost models). The
+  node never talks to them; skip for a first bring-up.
 
 ## The loop at a glance
 
 ```
    Cardano preprod (db-sync, read-only)
-            │  observe (deterministic, shadow → ShadowStake only)
+            │  observe (deterministic, every block)
             ▼
-   ┌──────────────────────┐     set_stake (committee)         ┌──────────────────────┐
-   │  cogno-chain node    │◀────── sync-weight.mjs ───────────│  services/committee  │
-   │  (Aura+GRANDPA, the  │        (LOAD-BEARING in shadow:    └──────────────────────┘
-   │   sole producer)     │         writes talkStake.AllowedStake)
-   │                      │◀────── feeless bare-unsigned binds (link_identity_signed / link_stake_signed),
-   └──────────┬───────────┘        verified at pool admission — submitted straight from the browser
+   ┌──────────────────────────────────────┐
+   │  cogno-chain-node (Aura+GRANDPA)      │   the cardano-observer inherent is the SOLE writer:
+   │    · observer inherent → credits      │   it credits talkStake.AllowedStake / VotingPower directly
+   │      talkStake.AllowedStake directly  │   (EnforceWeight = true from genesis — no committee sync-weight)
+   │    · feeless bare-unsigned CIP-8 binds │◀── link_identity_signed / link_stake_signed, verified at
+   │    · serves ALL reads (runtime API)   │    pool admission — submitted straight from the browser
+   └──────────┬───────────────────────────┘
               │ ws://…:9944 (PAPI)
               ▼
-   app/ (Next.js + MeshJS + PAPI)  ──L1 lock/exit──▶ Ogmios/Blockfrost
+   app/ (Next.js + MeshJS + PAPI)  ──L1 lock/exit──▶ Ogmios / Blockfrost
 ```
 
 ## Step 1 — Generate + archive the operator-keyed genesis
@@ -73,99 +72,93 @@ $CLI key gen --scheme sr25519 --out seat1.skey
   --validator-account-key val-account.skey \
   --validator-aura-key val-aura.skey --validator-grandpa-key val-grandpa.skey \
   --committee-key seat1.skey \
-  --out-raw network/raw.json
+  --out-raw chainspec.raw.json
 ```
 
-This writes `network/raw.json` (the spec — no secrets, safe to install/commit) plus a plain,
-inspectable spec. The secret material is the `.skey` files from `key gen` (**`chmod 600`,
-IRREPLACEABLE — archive them off-host**). Re-running `key gen` mints *new* random keys and a
-*different* genesis, so those `.skey` files + `raw.json` **are** your stable genesis. Never commit the
-`.skey` files.
+This writes `chainspec.raw.json` (the sealed spec — only PUBLIC keys, safe to install/copy) plus a plain,
+inspectable spec (default `cogno-operator.plain.json`). Dev keys are **refused** unless `--allow-dev-keys`.
+The secret material is the `.skey` files from `key gen` (**`chmod 600`, IRREPLACEABLE — archive them
+off-host**). Re-running `key gen` mints *new* random keys and a *different* genesis, so those `.skey` files +
+`chainspec.raw.json` **are** your stable genesis. Never commit the `.skey` files. (When omitted, `--committee-key`
+defaults to the validator account — the single-operator bootstrap seats a one-seat committee.)
 
 ## Step 2 — Run the node persistently, **with `DBSYNC_URL`**
 
 Follow [deploy/README.md](../deploy/README.md) for host setup, `key insert` (aura sr25519 + gran ed25519 into
 `/var/lib/cogno/node`), the EnvironmentFile, and `systemctl enable --now cogno-node`. Do **not** use `--dev`
-or `--tmp`.
+or `--tmp`. The committed [`cogno-node.service`](../deploy/systemd/cogno-node.service) already carries
+`EnvironmentFile=-/etc/cogno/cogno.env`; put your read-only `DBSYNC_URL` there
+([`cogno.env.example`](../deploy/systemd/cogno.env.example)). Without it the observer logs
+`no DBSYNC_URL/DBSYNC set — abstaining` and credits nothing (the chain still produces + finalizes).
 
-> **⚠ One wiring step deploy/README.md does not yet cover.** The committed
-> [`cogno-node.service`](../deploy/systemd/cogno-node.service) predates the db-sync consolidation: it has no
-> `EnvironmentFile=` and never passes `DBSYNC_URL`, so the observer would log `no DBSYNC_URL/DBSYNC set —
-> abstaining` and credit nothing. Give the node the read-only db-sync URL via a drop-in:
->
-> ```bash
-> sudo systemctl edit cogno-node      # creates an override.conf
-> ```
-> ```ini
-> [Service]
-> Environment=DBSYNC_URL=postgres://cogno_reader:****@127.0.0.1:5432/cexplorer
-> # optional: surface the observer's per-block read
-> Environment=RUST_LOG=info,cardano-observer=debug,runtime::cardano-observer=debug
-> ```
->
-> (Or add `EnvironmentFile=-/etc/cogno/cogno.env` to the unit and put `DBSYNC_URL=` there.) See "Follow-ups"
-> below — folding `DBSYNC_URL` into the node unit + env template is a worthwhile repo fix.
-
-## Step 3 — Confirm the observer is live (shadow)
+## Step 3 — Confirm the observer is live (enforcing)
 
 Once the node is producing + finalizing:
 
 ```bash
-journalctl -u cogno-node -f | grep -E "observed [0-9]+ vault entrie|ObservationApplied|abstaining"
+journalctl -u cogno-node -f                        # "Imported #N" / "finalized #M" advancing
+curl -s localhost:9615/metrics | grep cogno_observer
 ```
 
-You want `observed N vault entrie(s) as-of slot R (from M db-sync match(es), anchor block H)` from block #2
-onward (block #1's parent is genesis → pre-Shelley → a legitimate abstain). The on-chain audit trail is the
-`cardanoObserver.ObservationApplied` event (`enforced=false`, and `credited=0` until an account is bound +
-weighted — expected on a fresh chain). Each block #2+ header also carries the `cobs` `PreRuntime` digest
-(engine id `636f6273`) sealing the stable Cardano anchor. This is exactly the behaviour the §15.3 two-node
-live import test proved.
+You want `cogno_observer_observations_total` climbing, `cogno_observer_observed_vaults` reflecting the live
+vault set, and `cogno_observer_last_reference_slot` advancing with Cardano's tip. The on-chain audit trail is
+the `cardanoObserver.ObservationApplied` event (`enforced=true`; `credited=0` until an account is bound +
+weighted — expected on a fresh chain). Block #1's parent is genesis → pre-Shelley → a legitimate abstain;
+observation begins at block #2. Each block #2+ header also carries the `cobs` `PreRuntime` digest (engine id
+`636f6273`) sealing the stable Cardano anchor. If db-sync is unset/down, the observer abstains
+(non-fatal) — the `ObserverAbstaining` alert in [deploy/monitoring/](../deploy/monitoring/) catches a
+sustained abstention.
 
-## Step 4 — Run the weight-sync (REQUIRED for feeless posting in shadow)
+## Step 4 — Binds are feeless (no relay, no weight-sync to run)
 
-**This is the piece that makes the dapp work and is easy to miss.** In shadow mode the observer only
-*projects* weight into `cardanoObserver.ShadowStake`; it does **not** write `talkStake.AllowedStake`, which
-is what the `CheckCapacity` extension and the capacity meter actually read. So **nothing earns talk-capacity
-— and no feeless post is possible — unless the committee weight-sync runs.** It is the sole `AllowedStake`
-writer until the enforcement cutover.
-
-```bash
-# live mode: observe the vault via db-sync, largest-wins per identity, set_stake through the 3-of-5 committee
-source network/env.sh                       # COMMITTEE_SEEDS
-WS=ws://127.0.0.1:9944 DBSYNC_URL=postgres://cogno_reader:****@127.0.0.1:5432/cexplorer \
-COGNO_PROFILE=prod CONFIRM_DEPTH_SLOTS=600 \
-  node services/committee/sync-weight.mjs --via committee
-```
-
-Run it on a schedule (cron/timer) so new locks get credited. The read **fails closed** (a db-sync error
-aborts rather than writing a partial weight), and `CONFIRM_DEPTH_SLOTS` buries reorg-able UTxOs. (Dev
-shortcut with no Cardano: `WS=… node services/committee/sync-weight.mjs --account <ss58> --weight <lovelace>`.)
-
-## Step 5 — Binds are feeless (no relay to run)
+There is **no weight step to run**: the observer credits `talkStake.AllowedStake`/`VotingPower` directly, every
+block, as the sole writer. A new lock is credited on the next observed block — nothing off-chain to schedule.
 
 The CIP-8 binds (`cognoGate.link_identity_signed` for identity, `link_stake_signed` for voting power) are
 **feeless bare unsigned extrinsics**: the CIP-8 proof *is* the authorization, and the runtime verifies it at
 transaction-pool admission (`validate_unsigned`) and again at block inclusion, so junk + already-bound /
 tombstoned proofs are rejected before gossip. A freshly sign-to-derived, **zero-balance** browser account
-therefore binds itself directly — no fee payer, no nonce, no funded relay (the old sponsored-bind-relay is
-gone). Spam costs an attacker only the per-block-weight-bounded ed25519 verify and grants nothing actionable
-(posting capacity + voting power come from observed Cardano stake keyed on the bound credential); rate-limit
-feeless calls at the RPC ingress if needed.
+therefore binds itself directly — no fee payer, no nonce, no funded relay. Spam costs an attacker only the
+per-block-weight-bounded ed25519 verify and grants nothing actionable (capacity + voting power come from
+observed Cardano stake keyed on the bound credential); rate-limit feeless calls at the RPC ingress if needed.
+(A CLI equivalent of the browser bind is `cogno-chain-cli identity bind` / `bind-stake`, which build the same
+bare-unsigned extrinsic from a CIP-8 proof — see `identity prove`.)
 
-## Step 6 — Point the frontend at the chain
+## Step 5 — Point the frontend at the chain
 
-[app/](../app/README.md) is a static-export Next.js client. Set its endpoints to your node
-(`ws://<host>:9944`, behind TLS for anything public — see follow-ups) and, optionally, the indexer GraphQL;
-the frontend keeps a **PAPI-direct fallback**, so the indexer is never load-bearing. After any spec bump
-(this branch is **spec 111**), regenerate PAPI descriptors:
+[app/](../app/README.md) is a static-export Next.js client that reads **everything from the node** (feed /
+thread / search / profile via PAPI + the runtime read API — no indexer, no GraphQL). Set its endpoints to your
+node (`ws://<host>:9944`, behind TLS for anything public — see follow-ups). This branch is **spec 200**; after
+any spec bump regenerate PAPI descriptors:
 `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
 
-## Optional services
+## Step 6 — Federate out (grow past the single operator)
 
-- **anchor-relayer** — Tier-A *evidence* (finalized `state_root` → Cardano metadata submitted via Ogmios,
-  reads via db-sync → `anchor_ack`). Evidence, not enforcement; safe to add later.
-- **indexer + GraphQL** — richer L4 feed (paginated/searchable/threaded). Needs Postgres and a codegen build
-  pinned to **your** genesis hash (the baked default refuses any other chain). PAPI-direct is the fallback.
+Everything privileged goes through the committee — there is no sudo. Drive it with `cogno-chain-cli` from an
+operator machine (keys by file, **off** the node host). At one committee seat the 3/5 threshold is
+`ceil(1·3/5)=1`, so a bundled motion executes on propose; split the seats first, then it needs co-signers.
+
+```bash
+CLI=./target/release/cogno-chain-cli
+WS=ws://<host>:9944
+
+# 1) Seat more committee (by vote). --propose opens a motion for multi-custody co-signing instead.
+$CLI committee members add --member <SEAT2_SS58> --committee-signing-key-file seat1.skey --ws $WS
+
+# 2) Admit a validator: the NEW validator registers its own session keys (real proof-of-possession),
+#    then the committee admits its account. Changes apply at a session boundary.
+$CLI validator set-keys ...                                         # run by the new validator
+$CLI validator add --validator <NEW_VALIDATOR_SS58> --committee-signing-key-file seat1.skey --ws $WS
+#    Drop --force-authoring once ≥2 validators peer (GRANDPA needs ≥2/3 online to finalize).
+
+# 3) Runtime upgrade (sudo-free): committee authorizes the code hash, then anyone applies the WASM.
+$CLI upgrade authorize --wasm ./cogno_chain_runtime.compact.compressed.wasm --committee-signing-key-file seat1.skey --ws $WS
+$CLI upgrade apply --account-signing-key-file val-account.skey --wasm ./cogno_chain_runtime.compact.compressed.wasm --ws $WS
+```
+
+`upgrade apply` is **permissionless** (any account) and refuses a non-increasing `spec_version`. See
+[UPGRADES.md](UPGRADES.md) for the upgrade flow, [D2-custody-runbook.md](D2-custody-runbook.md) for splitting
+the committee across custodians, and [RELAY-NODE.md](RELAY-NODE.md) for onboarding tracking/relay nodes.
 
 ## The dapp loop, end to end
 
@@ -173,38 +166,39 @@ the frontend keeps a **PAPI-direct fallback**, so the indexer is never load-bear
    Ogmios/Blockfrost.
 2. **Bind identity**: sign the CIP-8 proof; the browser submits the feeless bare-unsigned
    `link_identity_signed` directly. → 1:1 owner-address ↔ account.
-3. The **weight-sync** (Step 4) observes the lock via db-sync and credits `talkStake.AllowedStake`. →
-   talk-capacity appears.
+3. The **observer** sees the lock via db-sync on the next block and credits `talkStake.AllowedStake`. →
+   talk-capacity appears (no manual step).
 4. **Post feelessly** — `microblog.post_message` passes `CheckCapacity` (Δbalance = 0).
-5. **Read** the feed (indexer GraphQL or PAPI-direct).
+5. **Read** the feed — served by the node's runtime API (PAPI).
 
 ## Do **not** touch (scoped-out testnet choices / live invariants)
 
-- **Do not flip `set_enforcement(true)`** — it is gated on ≥3 independent producers + a committee-keyset
-  reconciliation, not a pure flag flip.
+- **`set_enforcement` is already `true` (enforced from genesis).** `set_enforcement(false)` is a committee-gated
+  **emergency weight-freeze** (keep verifying, stop crediting) — not a routine toggle. The path to *trustless*
+  enforcement is **≥3 independent producers**, not a flag.
 - **Do not edit `contracts/`** — the live preprod vault hash (`168a9710…` applied, blueprint `49ffbfc6…`)
   must not move; any production edit recompiles and orphans the deployed vault.
 - **Keep `STABILITY_SLOTS_TESTNET` (600)** — the mainnet window (`129_600`) is a labeled MAINNET PREREQUISITE.
 - **`MinAuthorities = 1` + `--force-authoring`** is the intended single-authority posture — not a bug.
-- **Never renumber pallet indices** (on-wire contract; index 7 is permanently vacant).
+- **Never renumber pallet indices** (on-wire contract). Indices **6** (Sudo) and **12** (Anchor) are
+  permanently vacant; **7** is GovernedUpgrade.
 
-## Before you lean on it — close the Phase-5 ops gaps
+## Before you lean on it — close the ops gaps
 
-prod-readiness Phases 1–3 (supervision, monitoring, least-privilege) are in the repo; these were deferred to
-Phase 5 and are **config/runbook, not code blockers**:
+These are **config/runbook, not code blockers**:
 
 - **Back up `/var/lib/cogno`** (the node DB is the *sole* copy of chain history at `MinAuthorities = 1`) and
-  **`keys.json` / `owner.json`** (irreplaceable). No backup tooling ships yet.
+  the operator **`.skey` / `keys.json` files** (irreplaceable). No backup tooling ships yet.
 - **Cap journald** (`SystemMaxUse=` / `MaxRetentionSec=` drop-in) so logs can't fill the disk.
-- **Wire a real Alertmanager receiver** — the shipped config blackholes all alerts by default.
+- **Wire a real Alertmanager receiver** — the shipped config blackholes all alerts by default (see
+  [deploy/monitoring/](../deploy/monitoring/)).
 - **Harden the RPC** if exposing it: TLS reverse proxy + `--rpc-methods=safe` + firewall (the node binds
   localhost with `--rpc-cors all` today).
 
 ## What this proves (and what it doesn't)
 
 Running this proves the **mechanism and operations** end to end on real preprod data: deterministic db-sync
-observation, header-sealed anchors, shadow-mode projection, and the full lock→bind→weight→post→read loop. It
-does **not** prove cross-*instance* observation determinism or provide any trust/decentralization — that is
-the deferred validator-decentralization workstream (≥3 producers, Ariadne/SPO selection, the enforcement
-cutover, Mithril completeness). Treat this as a durable iteration platform, labeled **D4-SHAPED, not
-D4-TRUST**.
+observation, header-sealed anchors, enforced observer-credited weight, sudo-free committee governance, and the
+full lock→bind→weight→post→read loop. It does **not** prove cross-*instance* observation determinism or provide
+any trust/decentralization — that is the deferred validator-decentralization workstream (≥3 producers each with
+their own db-sync). Treat this as a durable iteration platform, labeled **D4-SHAPED, not D4-TRUST**.
