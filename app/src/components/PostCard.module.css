@@ -26,6 +26,43 @@
   z-index: 1;
 }
 
+/* Muted-author collapse stub: a non-clickable row with a "Show" reveal. */
+.mutedRow {
+  cursor: default;
+}
+
+.mutedRow:hover {
+  background: transparent;
+}
+
+.mutedStub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-3);
+}
+
+.mutedText {
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}
+
+.mutedShow {
+  flex: 0 0 auto;
+  padding: var(--cg-space-1) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+}
+
+.mutedShow:hover {
+  background: var(--cg-bg-hover);
+}
+
 /* avatar gutter (40px) + 12px gutter handled by the header's gap; the body column hangs under it. */
 .column {
   margin-left: calc(var(--cg-avatar-md) + var(--cg-space-3));
