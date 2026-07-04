@@ -16,10 +16,10 @@
     "acceptance:m2c": "node scripts/m2c-acceptance.mjs"
   },
   "dependencies": {
-    "@fontsource-variable/inter-tight": "^5.1.1",
-    "@fontsource-variable/source-serif-4": "^5.1.1",
-    "@fontsource/ibm-plex-mono": "^5.1.1",
-    "@meshsdk/core": "^1.9.0",
+    "@fontsource-variable/inter-tight": "^5.2.7",
+    "@fontsource-variable/source-serif-4": "^5.2.9",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@meshsdk/core": "^1.9.1",
     "@meshsdk/core-cst": "^1.9.1",
     "@polkadot-api/descriptors": "file:.papi/descriptors",
     "@polkadot-labs/hdkd": "^0.0.28",
@@ -31,7 +31,7 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
-    "@types/node": "^20.16.0",
+    "@types/node": "^22.20.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.4",
