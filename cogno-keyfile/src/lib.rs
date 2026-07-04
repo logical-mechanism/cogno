@@ -270,8 +270,10 @@ pub fn load_signer(path: &Path) -> anyhow::Result<Signer> {
 
 /// Extract the node-keystore SURI (`0x`-prefixed secret hex) + scheme from an already-parsed envelope,
 /// validating the secret exactly as [`load_signer`] does (hex decode + seed length/validity). Shared by
-/// [`load_secret_suri`]; split out so it is testable without file IO.
-fn secret_suri_from_envelope(env: &KeyEnvelope) -> anyhow::Result<(Scheme, String)> {
+/// [`load_secret_suri`]; split out so it is testable without file IO. The SURI is returned as a
+/// [`Zeroizing`] `String` — it IS the raw secret seed in hex, so it is wiped from memory when the caller
+/// drops it (keeping this crate's secret-hygiene invariant uniform).
+fn secret_suri_from_envelope(env: &KeyEnvelope) -> anyhow::Result<(Scheme, Zeroizing<String>)> {
     let scheme = Scheme::parse(&env.scheme)?;
     let hexstr = env.secret_hex.strip_prefix("0x").unwrap_or(&env.secret_hex);
     let seed = Zeroizing::new(
@@ -290,15 +292,19 @@ fn secret_suri_from_envelope(env: &KeyEnvelope) -> anyhow::Result<(Scheme, Strin
 		 `cogno-chain-cli key gen`, which always writes a 32-byte seed)",
 		seed.len()
 	);
-    Ok((scheme, format!("0x{}", hexstr.to_lowercase())))
+    // The lowercased-hex intermediate holds the secret too — zeroize it, and return the SURI itself
+    // wrapped so it is wiped when the caller (the node's `key insert-file`) drops it.
+    let lower = Zeroizing::new(hexstr.to_lowercase());
+    Ok((scheme, Zeroizing::new(format!("0x{}", lower.as_str()))))
 }
 
 /// Read a key-file PATH and return the node-keystore SURI (`0x`-prefixed secret hex) + its scheme, WITHOUT
 /// constructing a `Signer` for the caller. This is what `cogno-chain-node key insert-file` needs to insert
 /// a session secret into the keystore BY FILE PATH — mirroring the CLI's by-file signing, so an operator
 /// never extracts the secret by hand. The secret stays inside this one audited crate (the node re-derives
-/// the public key from the SURI, exactly as the SDK's `key insert` does).
-pub fn load_secret_suri(path: &Path) -> anyhow::Result<(Scheme, String)> {
+/// the public key from the SURI, exactly as the SDK's `key insert` does). The returned SURI is
+/// [`Zeroizing`] — wiped from memory when the caller drops it.
+pub fn load_secret_suri(path: &Path) -> anyhow::Result<(Scheme, Zeroizing<String>)> {
     let env = read_envelope(path)?;
     secret_suri_from_envelope(&env).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
@@ -497,7 +503,7 @@ mod tests {
             let (signer, env) = generate(scheme, "t").unwrap();
             let (got_scheme, suri) = secret_suri_from_envelope(&env).unwrap();
             assert_eq!(got_scheme, scheme);
-            assert!(suri.starts_with("0x"), "suri must be 0x-prefixed: {suri}");
+            assert!(suri.starts_with("0x"), "suri must be 0x-prefixed");
             let seed = hex::decode(suri.strip_prefix("0x").unwrap()).unwrap();
             let reloaded = signer_from_seed(scheme, &seed).unwrap();
             assert_eq!(
