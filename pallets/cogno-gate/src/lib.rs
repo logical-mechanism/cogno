@@ -549,6 +549,14 @@ pub mod pallet {
     /// proof. `provides` a per-credential tag so the pool dedupes repeats; a short `longevity` ages
     /// stragglers out. A bind grants nothing actionable without observed Cardano stake, so a flood of valid
     /// empty binds gains no posting/voting amplification — only the per-block-weight-bounded verify cost.
+    // MIGRATION (stable2606): `ValidateUnsigned` + `#[pallet::validate_unsigned]` are DEPRECATED (removal
+    // scheduled after April 2027) in favour of `#[pallet::authorize]` + `frame_system::AuthorizeCall`
+    // (Extrinsic Horizon phase 2, paritytech/polkadot-sdk#2415). We deliberately keep the deprecated-but-
+    // still-supported mechanism for this SDK bump: migrating to `AuthorizeCall` adds a transaction
+    // extension to the runtime's `TxExtension` tuple → it is ENCODING-AFFECTING (a tx_version bump + PAPI
+    // regen) and warrants its own PR + acceptance run, out of scope for a dependency upgrade. `#[allow(
+    // deprecated)]` suppresses the deprecation lint (which the `-D warnings` CI gate would otherwise fail).
+    #[allow(deprecated)]
     #[pallet::validate_unsigned]
     impl<T: Config> ValidateUnsigned for Pallet<T> {
         type Call = Call<T>;

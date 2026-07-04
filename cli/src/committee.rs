@@ -18,7 +18,8 @@ use cogno_chain_runtime::{RuntimeCall, RuntimeEvent};
 use frame_support::weights::Weight;
 use frame_system::EventRecord;
 use pallet_collective::{Event as CommitteeEvent, Instance1};
-use sp_core::{crypto::Ss58Codec, hashing::twox_128, H256};
+use sp_core::{crypto::Ss58Codec, H256};
+use sp_crypto_hashing::twox_128;
 use sp_runtime::{AccountId32, DispatchError, ModuleError};
 
 use crate::calls;

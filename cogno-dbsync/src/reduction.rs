@@ -240,7 +240,7 @@ pub fn candidate_bytes(matches: &[serde_json::Value], vault_hash: &str) -> Vec<u
 /// `selection_inputs_hash` analog). Carried in the inherent so `check_inherent` can distinguish "saw
 /// different Cardano data" (`Mismatch`) from "reduced the same data differently" (`ComputeDiverged`).
 pub fn inputs_commitment(matches: &[serde_json::Value], vault_hash: &str) -> [u8; 32] {
-    sp_core::hashing::blake2_256(&candidate_bytes(matches, vault_hash))
+    sp_crypto_hashing::blake2_256(&candidate_bytes(matches, vault_hash))
 }
 
 /// PURE: canonicalize the raw per-credential `epoch_stake` totals into the SAME ascending-by-28-bytes
