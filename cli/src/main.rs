@@ -174,6 +174,27 @@ enum QueryCmd {
         #[arg(long, default_value = DEFAULT_WS)]
         ws: String,
     },
+    /// Read-only: tally who authored blocks (the Aura validators) over a range. Derives each block's author
+    /// from its header (the `aura` slot digest → `Session::Validators[slot % n]`) — no runtime support
+    /// needed. Range is `[--from, --to]` block heights; `--from-time`/`--to-time` (unix SECONDS) resolve to
+    /// heights. Defaults: from block 1 to the latest finalized block.
+    Authors {
+        /// Range start block height (default: 1). Mutually exclusive with --from-time.
+        #[arg(long)]
+        from: Option<u32>,
+        /// Range end block height (default: the latest finalized block). Mutually exclusive with --to-time.
+        #[arg(long)]
+        to: Option<u32>,
+        /// Range start as a unix timestamp in SECONDS (resolved to a height). Mutually exclusive with --from.
+        #[arg(long)]
+        from_time: Option<i64>,
+        /// Range end as a unix timestamp in SECONDS (resolved to a height). Mutually exclusive with --to.
+        #[arg(long)]
+        to_time: Option<i64>,
+        /// Node RPC ws endpoint.
+        #[arg(long, default_value = DEFAULT_WS)]
+        ws: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -454,6 +475,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Query { cmd } => match cmd {
             QueryCmd::State { ws } => query::run_state(&ws).await,
             QueryCmd::Weight { ws } => query::run_weight(&ws).await,
+            QueryCmd::Authors {
+                from,
+                to,
+                from_time,
+                to_time,
+                ws,
+            } => query::run_authors(&ws, from, to, from_time, to_time).await,
         },
         Command::Validator { cmd } => match cmd {
             ValidatorCmd::Add { validator, gov } => {

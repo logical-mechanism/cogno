@@ -111,6 +111,61 @@ impl Rpc {
         to_h256(&s)
     }
 
+    /// The block hash at `number` (`chain_getBlockHash(n)`), or `None` when `number` is beyond the chain
+    /// tip. Used by `query authors` to walk a height range.
+    pub async fn block_hash(&self, number: u32) -> anyhow::Result<Option<H256>> {
+        let r: Option<String> = self
+            .client
+            .request("chain_getBlockHash", rpc_params![number])
+            .await
+            .with_context(|| format!("chain_getBlockHash({number}) failed"))?;
+        match r {
+            Some(s) => Ok(Some(to_h256(&s)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The latest FINALIZED block hash (`chain_getFinalizedHead`) — the re-org-safe range end for
+    /// `query authors` (attribute only settled history).
+    pub async fn finalized_hash(&self) -> anyhow::Result<H256> {
+        let s: String = self
+            .client
+            .request("chain_getFinalizedHead", rpc_params![])
+            .await
+            .context("chain_getFinalizedHead failed")?;
+        to_h256(&s)
+    }
+
+    /// A block header's `(number, digest logs)` (`chain_getHeader`): the block number and each digest log as
+    /// its raw SCALE `DigestItem` bytes. `query authors` recovers the Aura slot from the `aura` PreRuntime
+    /// log — deriving the author exactly as the node does on import, with no `sc-*` dependency.
+    pub async fn header(&self, at: H256) -> anyhow::Result<(u32, Vec<Vec<u8>>)> {
+        let v: serde_json::Value = self
+            .client
+            .request("chain_getHeader", rpc_params![hex0x(at.as_bytes())])
+            .await
+            .context("chain_getHeader failed")?;
+        let number_hex = v
+            .get("number")
+            .and_then(|x| x.as_str())
+            .context("chain_getHeader: missing number")?;
+        let number = u32::from_str_radix(number_hex.strip_prefix("0x").unwrap_or(number_hex), 16)
+            .context("chain_getHeader: block number is not hex")?;
+        let logs = v
+            .get("digest")
+            .and_then(|d| d.get("logs"))
+            .and_then(|l| l.as_array())
+            .context("chain_getHeader: missing digest.logs")?;
+        let logs = logs
+            .iter()
+            .map(|x| {
+                let s = x.as_str().context("digest log is not a hex string")?;
+                unhex(s)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok((number, logs))
+    }
+
     /// `(spec_version, transaction_version)` read live (`state_getRuntimeVersion`) — never hardcoded.
     pub async fn runtime_version(&self) -> anyhow::Result<(u32, u32)> {
         let v: serde_json::Value = self
