@@ -15,6 +15,7 @@
 // module.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { ComposerModal } from "../ComposerModal";
 import { Composer } from "../Composer";
 import { ReplyComposer } from "../ReplyComposer";
@@ -24,6 +25,7 @@ import { EditProfileModal } from "../EditProfileModal";
 import { useSession } from "../Providers";
 import { useModalStore } from "@/lib/modalStore";
 import { useMutation } from "@/hooks/useMutation";
+import { useActionToast } from "@/hooks/useActionToast";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useThread } from "@/hooks/useThread";
@@ -78,6 +80,8 @@ export function ModalRouteHost() {
     useOptimistic();
   const { run } = useMutation();
   const { toast, rateLimit } = useToaster();
+  const { phase } = useActionToast();
+  const router = useRouter();
 
   // Zero locked ADA → no posting power: hard-disable the composer CTA (the self-contained
   // NoPostingPowerNotice already shows the "Lock ADA to post" banner), matching HomePage/ComposePage.
@@ -144,33 +148,48 @@ export function ModalRouteHost() {
     close();
   }, [kind, close]);
 
-  // The shared submit pipeline: optimistic insert → run(stream) → close on confirm, rollback + toast on
-  // error (rate-limit gets the dedicated copy, per D5/D11). Feeless social writes are SILENT on success.
+  // The shared submit pipeline: optimistic insert → close → run(stream) with a phase() status toast
+  // (sticky "…ing" → "…ed" + "View →" at inBestBlock, or dismissed + fail() on error). Rollback on
+  // error/cancel. The modal host persists after close(), so the background run still upgrades the toast.
   const runWrite = useCallback(
-    (stream: ReturnType<typeof submitPost>, optimistic: CognoPost, parentId?: bigint) => {
+    (
+      stream: ReturnType<typeof submitPost>,
+      optimistic: CognoPost,
+      feedback: { pending: string; success: string },
+      parentId?: bigint,
+    ) => {
       if (!api || !signer) return;
       const clientId = addPending(optimistic, parentId);
       setSubmitState("pending");
       onClose();
-      void run(stream, {
-        onConfirm: () => {
-          // Top-level posts/quotes are retired by the feed presence-reconcile when their real twin
-          // lands (no confirm-time blink). Replies live in a thread with no such reconcile, so they
-          // still hand off on confirm.
-          if (parentId != null) dropPending(clientId);
-          setSubmitState("ok");
-        },
-        onError: (message: string) => {
-          failPending(clientId);
-          setSubmitState("error");
-          if (isRateLimit(message)) toast({ id: "rate-limit", kind: "rate-limit", message: RATE_LIMIT_COPY });
-          else toast({ kind: "error", message });
-        },
-      }).catch(() => {
+      void run(
+        stream,
+        phase({
+          id: clientId,
+          pending: feedback.pending,
+          success: feedback.success,
+          view: (u) =>
+            u.postId != null
+              ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
+              : undefined,
+          onConfirm: () => {
+            // Top-level posts/quotes are retired by the feed presence-reconcile when their real twin
+            // lands (no confirm-time blink). Replies live in a thread with no such reconcile, so they
+            // still hand off on confirm.
+            if (parentId != null) dropPending(clientId);
+            setSubmitState("ok");
+          },
+          onError: () => {
+            failPending(clientId);
+            setSubmitState("error");
+          },
+          onCancel: () => failPending(clientId),
+        }),
+      ).catch(() => {
         /* settled + rolled back via onError */
       });
     },
-    [api, signer, addPending, dropPending, failPending, run, toast, onClose],
+    [api, signer, addPending, dropPending, failPending, run, phase, router, onClose],
   );
 
   // Build a minimal optimistic CognoPost for the pending card (the real row replaces it on confirm).
@@ -190,7 +209,10 @@ export function ModalRouteHost() {
   const onPost = useCallback(
     (draft: ComposerDraft) => {
       if (!api || !signer || draft.text.trim().length === 0) return;
-      runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text));
+      runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text), {
+        pending: "Posting…",
+        success: "Posted",
+      });
     },
     [api, signer, runWrite, optimisticPost],
   );
@@ -201,6 +223,7 @@ export function ModalRouteHost() {
       runWrite(
         submitReply(api, signer, text, targetPost.id),
         optimisticPost(text, { parent: targetPost.id }),
+        { pending: "Replying…", success: "Replied" },
         targetPost.id,
       );
     },
@@ -222,6 +245,7 @@ export function ModalRouteHost() {
             avatar: targetPost.authorAvatar,
           },
         }),
+        { pending: "Quoting…", success: "Quoted" },
       );
     },
     [api, signer, targetPost, runWrite, optimisticPost],
@@ -230,7 +254,10 @@ export function ModalRouteHost() {
   const onCreatePoll = useCallback(
     (question: string, options: string[]) => {
       if (!api || !signer || question.trim().length === 0) return;
-      runWrite(submitCreatePoll(api, signer, question, options), optimisticPost(question, { isPoll: true }));
+      runWrite(submitCreatePoll(api, signer, question, options), optimisticPost(question, { isPoll: true }), {
+        pending: "Creating poll…",
+        success: "Poll created",
+      });
     },
     [api, signer, runWrite, optimisticPost],
   );

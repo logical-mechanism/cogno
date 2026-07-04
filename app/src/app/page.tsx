@@ -38,21 +38,18 @@ import { useRepost } from "@/hooks/useRepost";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
+import { useActionToast } from "@/hooks/useActionToast";
 import { useCapacity } from "@/hooks/useCapacity";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { draftStatus } from "@/lib/chain/capacity";
-import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
+import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitPost } from "@/lib/chain/mutations";
 import type { CognoPost, ViewerPostState, FeedQuery } from "@/lib/types";
 import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
 
 const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
-
-function isRateLimit(message: string): boolean {
-  return /rate limit|ExhaustsResources/i.test(message);
-}
 
 /** Walk up to the closest scrollable ancestor (the center column on desktop, document on mobile). */
 function scrollContainerOf(el: HTMLElement | null): HTMLElement | null {
@@ -139,6 +136,7 @@ export default function HomePage() {
   const { addPending, failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
+  const { phase } = useActionToast();
 
   // ── inline composer capacity gate (doc 06 §9) ──────────────────────────────────────────────
   const { view: capacityView, consts: capacityConsts } = useCapacity(api, me, bestBlock);
@@ -179,19 +177,29 @@ export default function HomePage() {
       };
       const clientId = addPending(optimistic);
       setComposerText("");
-      // No onConfirm dropPending: the pending card is retired when its real twin lands in the feed
-      // (useLiveFeed presence-reconcile), so the optimistic card never blinks out at confirm.
-      void run(submitPost(api, signer, draft.text), {
-        onError: (message) => {
-          failPending(clientId);
-          setComposerText(draft.text); // restore the draft for a retry
-          if (isRateLimit(message))
-            toast({ id: "rate-limit", kind: "rate-limit", message: RATE_LIMIT_COPY });
-          else toast({ kind: "error", message });
-        },
-      }).catch(() => {});
+      // Status toast (sticky "Posting…" → "Posted" + "View →"), but NO onConfirm dropPending: the
+      // pending card is retired when its real twin lands in the feed (useLiveFeed presence-reconcile),
+      // so the optimistic card never blinks out at confirm. onCancel drops the sticky toast if Home
+      // unmounts mid-flight; onError rolls the card back + restores the draft (phase() surfaces the fail).
+      void run(
+        submitPost(api, signer, draft.text),
+        phase({
+          id: clientId,
+          pending: "Posting…",
+          success: "Posted",
+          view: (u) =>
+            u.postId != null
+              ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
+              : undefined,
+          onError: () => {
+            failPending(clientId);
+            setComposerText(draft.text); // restore the draft for a retry
+          },
+          onCancel: () => failPending(clientId),
+        }),
+      ).catch(() => {});
     },
-    [viewer, api, signer, me, addPending, failPending, run, toast, router],
+    [viewer, api, signer, me, addPending, failPending, run, phase, router],
   );
 
   // ── new-posts pill flush ────────────────────────────────────────────────────────────────────

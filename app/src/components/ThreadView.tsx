@@ -2,25 +2,28 @@
 
 // ThreadView — the conversation composite for /post/[id] (surface 08, doc 03 §22.5).
 //
-// Renders, top-down: the "Replying to @parent" ancestor-context line (from thread.parent, a shallow
-// QuotedRef → tappable, routes to /post/<parent>/) → the FOCAL post as `PostCard variant='detail'`
-// (enlarged body; the weighted score + up/down weight STATS ROW is shown HERE and only here — D2/D12;
-// the focal carries its PollCard-with-results when isPoll and its QuotedPostEmbed when it quotes) →
-// the inline ReplyComposer ("Post your reply", wired to submitReply + addOptimisticReply for the
-// optimistic pending reply card) → the list of direct replies as `PostCard variant='reply'` with the
-// connecting thread line.
+// Focal-navigation ("true Twitter") model. One screen renders, top-down: the connected ANCESTOR chain
+// above the focal (root→focal, each a tappable PostCard; a shallow "Replying to @parent" fallback line
+// when the chain can't be resolved) → the FOCAL post as `PostCard variant='detail'` (enlarged body; the
+// weighted score + up/down weight STATS ROW is shown HERE and only here — D2/D12; the focal carries its
+// PollCard-with-results when isPoll and its QuotedPostEmbed when it quotes) → the inline ReplyComposer
+// ("Post your reply", wired to submitReply(parent=focal) + addOptimisticReply for the optimistic pending
+// card) → the flat list of the focal's DIRECT replies as `PostCard variant='thread'`.
 //
-// v1 ThreadView = root + ONE level of direct replies (deeper replies open their own /post/[id]/ — the
-// recursive-tree is a deferred follow-up). It owns the session/feed wiring: one socket via useSession.
+// Depth is UNBOUNDED and consistent: tapping any reply (or its "N replies →" affordance) navigates to
+// /post/<replyId>/, making it the new focal — the same three-part screen re-renders one level down. There
+// is NO inline sub-thread nesting; descending is just a fresh source.thread(newRoot) via navigation. A
+// reply's own Reply button focuses the inline composer when it targets the focal, else descends-to-focus
+// (/post/<id>/?reply=1) — so every reply is authored where parentId===rootId and shows optimistically.
 //
 // Cardinal constraints: D1 512-byte replies (the Composer's ByteCounter enforces); D2 Like==up-vote +
 // the weighted score IS surfaced on this detail surface (may be negative → formatSignedWeight renders
 // the leading sign); D3 permanent repost; D4 polls never expire ("Live results"); D5 capacity →
 // RateLimitNotice (reactive ExhaustsResources → error toast, never a battery); D10 banned authors are
-// dimmed not hidden (PostCard owns the dim+chip); D11 optimistic reply (pending opacity 0.6, silent
-// success, rollback + toast on error). No honesty/block-number chrome.
+// dimmed not hidden (PostCard owns the dim+chip); D11 optimistic reply (pending opacity 0.6, phase toast
+// submit→posted, rollback + toast on error). No honesty/block-number chrome.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import styles from "./ThreadView.module.css";
 import { PostCard } from "./PostCard";
@@ -40,8 +43,9 @@ import { usePoll } from "@/hooks/usePoll";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
+import { useActionToast } from "@/hooks/useActionToast";
 import { useCapacity } from "@/hooks/useCapacity";
-import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
+import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitReply } from "@/lib/chain/mutations";
 import { formatCount, formatSignedWeight, formatWeight } from "@/lib/format";
@@ -50,13 +54,6 @@ import type { CognoPost, ViewerPostState } from "@/lib/types";
 import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
 
 const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
-
-// How many reply levels expand inline before a branch routes to its own /post/[id] page.
-const MAX_INLINE_DEPTH = 2;
-
-function isRateLimit(message: string): boolean {
-  return /rate limit|ExhaustsResources/i.test(message);
-}
 
 export interface ThreadViewProps {
   /** The root/focal post id read from /post/[id] (already validated /^\d+$/ by the route). */
@@ -101,35 +98,23 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const replies = useMemo<CognoPost[]>(() => thread?.replies ?? [], [thread?.replies]);
   const ancestors = useMemo<CognoPost[]>(() => thread?.ancestors ?? [], [thread?.ancestors]);
 
-  // ── inline-thread expansion: which replies are open + their fetched direct children ──
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const [childrenById, setChildrenById] = useState<Map<string, CognoPost[]>>(() => new Map());
-  const [loadingIds, setLoadingIds] = useState<Set<string>>(() => new Set());
-
-  // Every card on screen (focal + ancestor chain + replies + any expanded descendants) drives the
-  // viewer's vote/repost state, so a like reflects instantly anywhere in the tree.
+  // Every card on screen (focal + ancestor chain + direct replies) drives the viewer's vote/repost
+  // state, so a like reflects instantly anywhere on the screen.
   const visibleIds = useMemo(() => {
     const ids: bigint[] = [];
     if (focal) ids.push(focal.id);
     for (const a of ancestors) ids.push(a.id);
-    const walk = (list: CognoPost[]) => {
-      for (const r of list) {
-        ids.push(r.id);
-        if (expanded.has(String(r.id))) walk(childrenById.get(String(r.id)) ?? []);
-      }
-    };
-    walk(replies);
+    for (const r of replies) ids.push(r.id);
     return ids;
-  }, [focal, ancestors, replies, expanded, childrenById]);
-  // Every visible card's node-served overlay (focal + ancestors + replies + expanded children) →
-  // useViewerStates skips the per-card Reposts scan for ids it covers.
+  }, [focal, ancestors, replies]);
+  // Every visible card's node-served overlay (focal + ancestors + replies) → useViewerStates skips the
+  // per-card Reposts scan for ids it covers.
   const carriedStates = useMemo(() => {
     const all: CognoPost[] = [];
     if (focal) all.push(focal);
     all.push(...ancestors, ...replies);
-    for (const list of childrenById.values()) all.push(...list);
     return carriedViewerStates(all);
-  }, [focal, ancestors, replies, childrenById]);
+  }, [focal, ancestors, replies]);
   const viewerStates = useViewerStates(source, visibleIds, me, carriedStates);
 
   const vote = useVote(api, signer, votingPower ?? 0n);
@@ -138,44 +123,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const { dropPending, failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
+  const { phase } = useActionToast();
 
-  // Toggle a reply's inline sub-thread: collapse if open, else fetch its direct children once
-  // (source.thread reuses the same reader) and expand. Children are cached so a re-open is instant.
-  const toggleExpand = useCallback(
-    async (reply: CognoPost) => {
-      const key = String(reply.id);
-      if (expanded.has(key)) {
-        setExpanded((prev) => {
-          const next = new Set(prev);
-          next.delete(key);
-          return next;
-        });
-        return;
-      }
-      if (!childrenById.has(key) && source) {
-        setLoadingIds((prev) => new Set(prev).add(key));
-        try {
-          const sub = await source.thread(reply.id, me ?? undefined);
-          setChildrenById((prev) => new Map(prev).set(key, sub.replies));
-        } catch {
-          toast({ kind: "error", message: "Couldn't load these replies" });
-          setLoadingIds((prev) => {
-            const next = new Set(prev);
-            next.delete(key);
-            return next;
-          });
-          return;
-        }
-        setLoadingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(key);
-          return next;
-        });
-      }
-      setExpanded((prev) => new Set(prev).add(key));
-    },
-    [expanded, childrenById, source, toast, me],
-  );
+  // The inline reply composer slot — the focus target for "reply to the focal" and the ?reply=1 descend.
+  const composerSlotRef = useRef<HTMLDivElement | null>(null);
+  const focusComposer = useCallback(() => {
+    const slot = composerSlotRef.current;
+    if (!slot) return;
+    slot.scrollIntoView({ block: "center" });
+    slot.querySelector("textarea")?.focus();
+  }, []);
 
   // ── poll on the FOCAL post (always-show results on the detail surface, D4) ──
   const focalIsPoll = focal?.isPoll === true;
@@ -208,16 +165,24 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         authorAvatar: viewer.avatar,
       };
       // addOptimisticReply pins the pending card under THIS thread (parentId = rootId) so it surfaces
-      // at the bottom of the replies list via useThread's merge.
+      // at the bottom of the replies list via useThread's merge — always, since every reply is a
+      // reply-to-focal (the focal-nav model routes deeper replies to their own /post/[id]/ first).
       const clientId = addOptimisticReply(optimistic);
-      void run(submitReply(api, signer, draft.text, rootId), {
-        onConfirm: () => dropPending(clientId),
-        onError: (message) => {
-          failPending(clientId);
-          if (isRateLimit(message)) toast({ id: "rate-limit", kind: "rate-limit", message: RATE_LIMIT_COPY });
-          else toast({ kind: "error", message });
-        },
-      }).catch(() => {});
+      void run(
+        submitReply(api, signer, draft.text, rootId),
+        phase({
+          id: clientId,
+          pending: "Replying…",
+          success: "Replied",
+          view: (u) =>
+            u.postId != null
+              ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
+              : undefined,
+          onConfirm: () => dropPending(clientId),
+          onError: () => failPending(clientId),
+          onCancel: () => failPending(clientId),
+        }),
+      ).catch(() => {});
     },
     [
       viewer.status,
@@ -229,9 +194,9 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       rootId,
       addOptimisticReply,
       run,
+      phase,
       dropPending,
       failPending,
-      toast,
       router,
     ],
   );
@@ -243,8 +208,14 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     () => ({
       onOpen: (id) => router.push(`/post/${id}/`),
       onAuthorOpen: (address) => router.push(`/u/${address}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
+      // Focal-nav reply: the focal's Reply focuses the inline composer in place; a non-focal reply
+      // descends to that reply's own focal (?reply=1 auto-focuses its composer) so the reply is always
+      // authored where parentId===rootId and shows optimistically.
+      onReply: (post) => {
+        if (viewer.status !== "ready") return void router.push("/welcome/");
+        if (post.id === rootId) focusComposer();
+        else router.push(`/post/${post.id}/?reply=1`);
+      },
       onQuote: (post) =>
         viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
       onLike: (post, next) => {
@@ -273,7 +244,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       },
       onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, pin, toast],
+    [router, viewer.status, viewerStates, vote, repost, pin, toast, rootId, focusComposer],
   );
 
   // ── scroll-to-focal once per id (X behavior: focal lands just under the sticky header) ──
@@ -290,6 +261,18 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       el.focus({ preventScroll: true });
     });
   }, [focal, rootId]);
+
+  // ── descend-to-reply auto-focus: when we arrived via a reply card (/post/<id>/?reply=1), focus the
+  //    inline composer once so the user can type immediately. Reads location.search directly to avoid
+  //    the useSearchParams Suspense-boundary requirement under next `output:'export'`. ──
+  const autofocusedFor = useRef<bigint | null>(null);
+  useEffect(() => {
+    if (!focal || autofocusedFor.current === rootId) return;
+    if (typeof window === "undefined") return;
+    if (new URLSearchParams(window.location.search).get("reply") !== "1") return;
+    autofocusedFor.current = rootId;
+    requestAnimationFrame(() => focusComposer());
+  }, [focal, rootId, focusComposer]);
 
   // ── states (§6.2 / §6.3) — the route already guarded an invalid id; here we cover load/error/missing ──
   if (loading && !thread) {
@@ -319,56 +302,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   }
 
   const composeState: ActionState = "idle"; // the composer clears optimistically; per-tx state lives on the pending card
-
-  // One reply + its inline-expanded sub-thread. Up to MAX_INLINE_DEPTH levels expand in place;
-  // deeper branches offer "Show this thread →" which routes to that reply's own page (X behavior).
-  const renderReply = (reply: CognoPost, depth: number): ReactNode => {
-    const key = String(reply.id);
-    const isOpen = expanded.has(key);
-    const isLoading = loadingIds.has(key);
-    const kids = childrenById.get(key) ?? [];
-    const childCount = reply.replyCount ?? 0;
-    const expandable = childCount > 0 && depth < MAX_INLINE_DEPTH && reply.id >= 0n;
-    return (
-      <div key={key} className={styles.replyNode}>
-        <PostCard
-          post={reply}
-          viewer={viewerStates.get(reply.id) ?? NO_VIEWER}
-          gate={viewer}
-          handlers={handlers}
-          variant="thread"
-          showThreadLine
-          pending={reply.id < 0n}
-        />
-        {expandable && (
-          <button
-            type="button"
-            className={styles.showThread}
-            onClick={() => void toggleExpand(reply)}
-            aria-expanded={isOpen}
-          >
-            {isLoading
-              ? "Loading replies…"
-              : isOpen
-                ? "Hide replies"
-                : `Show ${formatCount(childCount)} ${childCount === 1 ? "reply" : "replies"}`}
-          </button>
-        )}
-        {childCount > 0 && depth >= MAX_INLINE_DEPTH && reply.id >= 0n && (
-          <button
-            type="button"
-            className={styles.showThread}
-            onClick={() => router.push(`/post/${reply.id}/`)}
-          >
-            Show this thread →
-          </button>
-        )}
-        {isOpen && kids.length > 0 && (
-          <div className={styles.subReplies}>{kids.map((k) => renderReply(k, depth + 1))}</div>
-        )}
-      </div>
-    );
-  };
 
   return (
     <section className={styles.thread} aria-label="Conversation">
@@ -445,9 +378,9 @@ export function ThreadView({ rootId }: ThreadViewProps) {
 
       {/* Inline ReplyComposer — pinned under the focal, "Post your reply". On submit it clears + stays
           open (X "reply again"); the optimistic pending card appears at the bottom of the replies list
-          and reconciles on inBestBlock (D11). When session-gated the Composer renders its own
-          finish-setup / connect prompt (§6.1). */}
-      <div className={styles.composerSlot}>
+          and reconciles on inBestBlock (D11), with a submit→posted phase toast. When session-gated the
+          Composer renders its own finish-setup / connect prompt (§6.1). */}
+      <div ref={composerSlotRef} className={styles.composerSlot}>
         <Composer
           viewer={viewer}
           mode="reply"
@@ -458,15 +391,35 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         />
       </div>
 
-      {/* Direct replies (oldest-first) as connected thread cards. A reply with its own replies offers
-          an inline "Show N replies" expander (renderReply recurses up to MAX_INLINE_DEPTH; deeper
-          branches route to their own page). While the thread refetches we keep the rendered replies; a
-          pending optimistic reply is merged in by useThread (id<0 → opacity 0.6, actions disabled). */}
+      {/* The focal's DIRECT replies as connected thread cards (flat — no inline nesting). A reply with
+          its own replies offers a subtle "N replies →" descend link; tapping the card or the link
+          navigates to that reply's own /post/[id]/ focal. While the thread refetches we keep the
+          rendered replies; a pending optimistic reply is merged in by useThread (id<0 → opacity 0.6). */}
       <div className={styles.replies}>
         {replies.length === 0 ? (
           <EmptyState variant="replies" />
         ) : (
-          replies.map((reply) => renderReply(reply, 0))
+          replies.map((reply) => (
+            <div key={String(reply.id)} className={styles.replyNode}>
+              <PostCard
+                post={reply}
+                viewer={viewerStates.get(reply.id) ?? NO_VIEWER}
+                gate={viewer}
+                handlers={handlers}
+                variant="thread"
+                pending={reply.id < 0n}
+              />
+              {(reply.replyCount ?? 0) > 0 && reply.id >= 0n && (
+                <button
+                  type="button"
+                  className={styles.showThread}
+                  onClick={() => router.push(`/post/${reply.id}/`)}
+                >
+                  {formatCount(reply.replyCount)} {reply.replyCount === 1 ? "reply" : "replies"} →
+                </button>
+              )}
+            </div>
+          ))
         )}
         {loading && thread && (
           <div className={styles.refetching}>

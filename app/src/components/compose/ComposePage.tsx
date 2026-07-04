@@ -37,10 +37,10 @@ import { useThread } from "@/hooks/useThread";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
+import { useActionToast } from "@/hooks/useActionToast";
 import { useCapacity } from "@/hooks/useCapacity";
 import { useHeads } from "@/hooks/useHeads";
 import { draftStatus } from "@/lib/chain/capacity";
-import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
 import {
   submitPost,
   submitReply,
@@ -49,11 +49,6 @@ import {
 } from "@/lib/chain/mutations";
 import type { ActionState, ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
 import type { CognoPost } from "@/lib/types";
-
-/** The CheckCapacity pool rejection surfaces as the rate-limit copy (stringifyError maps it). */
-function isRateLimit(message: string): boolean {
-  return /rate limit|ExhaustsResources/i.test(message);
-}
 
 /** Only a canonical decimal u64 is a valid reply/quote target; reject anything else (no BigInt throw). */
 function parseTargetId(raw: string | null): bigint | null {
@@ -105,7 +100,7 @@ export function ComposePage() {
   // ── Write pipeline (mirror ModalRouteHost.runWrite) ──────────────────────────────────────────
   const { addPending, dropPending, failPending } = useOptimistic();
   const { run } = useMutation();
-  const { toast } = useToaster();
+  const { phase } = useActionToast();
   const [submitState, setSubmitState] = useState<ActionState>("idle");
 
   // The poll draft lives here (controlled by PollComposer) — same shape ModalRouteHost seeds.
@@ -159,33 +154,48 @@ export function ComposePage() {
     [viewer.address, viewer.displayName, viewer.avatar, signer.ss58],
   );
 
-  // The shared submit pipeline: optimistic insert → navigate away → run(stream) → silent confirm,
-  // rollback + toast on error (rate-limit gets the dedicated copy). Feeless writes are SILENT on ok.
+  // The shared submit pipeline: optimistic insert → navigate away → run(stream) with a phase() status
+  // toast (sticky "…ing" → "…ed" + "View →" at inBestBlock, or dismissed + fail() on error). Rollback
+  // on error/cancel — this page can unmount on navigation, so onCancel drops the sticky pending too.
   const runWrite = useCallback(
-    (stream: ReturnType<typeof submitPost>, optimistic: CognoPost, parentId?: bigint) => {
+    (
+      stream: ReturnType<typeof submitPost>,
+      optimistic: CognoPost,
+      feedback: { pending: string; success: string },
+      parentId?: bigint,
+    ) => {
       if (!api || !signer) return;
       const clientId = addPending(optimistic, parentId);
       setSubmitState("pending");
       goBack();
-      void run(stream, {
-        onConfirm: () => {
-          // Top-level posts/quotes are retired by the feed presence-reconcile when their real twin
-          // lands (no confirm-time blink). Replies live in a thread with no such reconcile, so they
-          // still hand off on confirm.
-          if (parentId != null) dropPending(clientId);
-          setSubmitState("ok");
-        },
-        onError: (message: string) => {
-          failPending(clientId);
-          setSubmitState("error");
-          if (isRateLimit(message)) toast({ id: "rate-limit", kind: "rate-limit", message: RATE_LIMIT_COPY });
-          else toast({ kind: "error", message });
-        },
-      }).catch(() => {
+      void run(
+        stream,
+        phase({
+          id: clientId,
+          pending: feedback.pending,
+          success: feedback.success,
+          view: (u) =>
+            u.postId != null
+              ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
+              : undefined,
+          onConfirm: () => {
+            // Top-level posts/quotes are retired by the feed presence-reconcile when their real twin
+            // lands (no confirm-time blink). Replies live in a thread with no such reconcile, so they
+            // still hand off on confirm.
+            if (parentId != null) dropPending(clientId);
+            setSubmitState("ok");
+          },
+          onError: () => {
+            failPending(clientId);
+            setSubmitState("error");
+          },
+          onCancel: () => failPending(clientId),
+        }),
+      ).catch(() => {
         /* settled + rolled back via onError */
       });
     },
-    [api, signer, addPending, dropPending, failPending, run, toast, goBack],
+    [api, signer, addPending, dropPending, failPending, run, phase, router, goBack],
   );
 
   // ── Per-mode submit handlers ─────────────────────────────────────────────────────────────────
@@ -194,7 +204,10 @@ export function ComposePage() {
       // Session-gated submit reroutes to /welcome (the Composer relabels the CTA; §5.3).
       if (viewer.status !== "ready") return void router.push("/welcome/");
       if (!api || !signer || draft.text.trim().length === 0) return;
-      runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text));
+      runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text), {
+        pending: "Posting…",
+        success: "Posted",
+      });
     },
     [viewer.status, api, signer, runWrite, optimisticPost, router],
   );
@@ -206,6 +219,7 @@ export function ComposePage() {
       runWrite(
         submitReply(api, signer, replyText, targetPost.id),
         optimisticPost(replyText, { parent: targetPost.id }),
+        { pending: "Replying…", success: "Replied" },
         targetPost.id,
       );
     },
@@ -228,6 +242,7 @@ export function ComposePage() {
             avatar: targetPost.authorAvatar,
           },
         }),
+        { pending: "Quoting…", success: "Quoted" },
       );
     },
     [viewer.status, api, signer, targetPost, runWrite, optimisticPost, router],
@@ -237,7 +252,10 @@ export function ComposePage() {
     (question: string, options: string[]) => {
       if (viewer.status !== "ready") return void router.push("/welcome/");
       if (!api || !signer || question.trim().length === 0) return;
-      runWrite(submitCreatePoll(api, signer, question, options), optimisticPost(question, { isPoll: true }));
+      runWrite(submitCreatePoll(api, signer, question, options), optimisticPost(question, { isPoll: true }), {
+        pending: "Creating poll…",
+        success: "Poll created",
+      });
     },
     [viewer.status, api, signer, runWrite, optimisticPost, router],
   );

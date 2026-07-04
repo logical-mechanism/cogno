@@ -2,7 +2,9 @@
 
 // useThread — fetch a thread (root + "replying to" parent + direct replies) and merge any pending
 // optimistic replies (addOptimisticReply) so a just-submitted reply shows instantly under the root.
-// v1 ThreadView is root + one level of direct replies (deeper replies open their own /post/[id]).
+// Focal-nav model: a screen is one focal (root) + its ancestors + direct replies; deeper replies open
+// their own /post/[id]/ focal. Every reply is authored as a reply-to-focal (parentId === rootId), so
+// the pending merge below (filtered on parentId === rootId) surfaces ALL optimistic replies.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
