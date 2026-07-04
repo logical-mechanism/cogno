@@ -9,10 +9,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use anyhow::Context;
 use codec::Decode;
 use pallet_cardano_observer::CardanoRef;
 use sp_core::H256;
-use sp_runtime::AccountId32;
+use sp_runtime::{AccountId32, DigestItem};
 
 use crate::committee::storage_prefix;
 use crate::rpc::Rpc;
@@ -204,4 +205,197 @@ pub async fn run_weight(ws: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// The 4-byte Aura consensus engine id — the `aura` PreRuntime digest a block author seals into every
+/// (non-genesis) header, carrying the `u64` slot the block was produced in.
+const AURA_ENGINE_ID: [u8; 4] = *b"aura";
+
+/// Recover the Aura slot from a block header's digest logs: find the `aura` PreRuntime item and decode its
+/// payload as the `u64` slot (`Slot` SCALE-encodes as a bare little-endian `u64`). `None` for a header with
+/// no such item (the genesis block). This mirrors what the node does on import
+/// (`sc_consensus_aura::standalone::find_pre_digest`) but decodes the raw `DigestItem` directly, so the CLI
+/// needs no `sc-*`/`sp-consensus-aura` dependency.
+fn aura_slot(logs: &[Vec<u8>]) -> Option<u64> {
+    for raw in logs {
+        if let Ok(DigestItem::PreRuntime(id, data)) = DigestItem::decode(&mut &raw[..]) {
+            if id == AURA_ENGINE_ID {
+                return u64::decode(&mut &data[..]).ok();
+            }
+        }
+    }
+    None
+}
+
+/// The block timestamp (`pallet_timestamp::Now`, unix MILLIS) as of `hash`. `0` if absent (pre-first-set).
+async fn block_time_ms(rpc: &Rpc, hash: H256) -> anyhow::Result<u64> {
+    Ok(rpc
+        .storage_decode::<u64>(&storage_prefix("Timestamp", "Now"), Some(hash))
+        .await?
+        .unwrap_or(0))
+}
+
+/// The lowest block number in `[1, tip]` whose timestamp is `>= target_ms` (a `lower_bound` over the
+/// monotonically-increasing block times), or `tip + 1` when every block is older than the target. Used to
+/// resolve a wall-clock `--from-time`/`--to-time` to a block height by binary search (O(log tip) reads).
+async fn first_block_at_or_after(rpc: &Rpc, target_ms: u64, tip: u32) -> anyhow::Result<u32> {
+    let (mut lo, mut hi) = (1u32, tip + 1); // hi is exclusive; hi == tip + 1 means "not found"
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let hash = rpc
+            .block_hash(mid)
+            .await?
+            .with_context(|| format!("block {mid} has no hash (chain shorter than tip {tip}?)"))?;
+        if block_time_ms(rpc, hash).await? >= target_ms {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    Ok(lo)
+}
+
+/// `query authors` — tally cogno-chain (Aura) block authors over a range, read over RPC. Each block's
+/// author is derived exactly as the node does: the `aura` PreRuntime digest carries the slot, and the author
+/// is `Session::Validators[slot % n]` as of that block (the active validator set is index-aligned with the
+/// Aura authorities, [`pallet_session`] deriving both from the same queued-keys list). Read-only; needs no
+/// runtime support. The range is `[from, to]` block heights; `--from-time`/`--to-time` (unix SECONDS)
+/// resolve to heights by binary search. Defaults: `from = 1` (block 0 is genesis, not Aura-authored),
+/// `to = the latest finalized block`.
+pub async fn run_authors(
+    ws: &str,
+    from: Option<u32>,
+    to: Option<u32>,
+    from_time: Option<i64>,
+    to_time: Option<i64>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !(from.is_some() && from_time.is_some()),
+        "pass at most one of --from / --from-time"
+    );
+    anyhow::ensure!(
+        !(to.is_some() && to_time.is_some()),
+        "pass at most one of --to / --to-time"
+    );
+    let to_ms = |secs: i64| -> anyhow::Result<u64> {
+        u64::try_from(secs)
+            .ok()
+            .and_then(|s| s.checked_mul(1000))
+            .context("time (unix seconds) is out of range")
+    };
+
+    let rpc = Rpc::connect(ws).await?;
+    let tip = rpc.header(rpc.finalized_hash().await?).await?.0;
+
+    // Resolve the [from, to] height window (explicit height > resolved time > default).
+    let from = match (from, from_time) {
+        (Some(n), _) => n.max(1),
+        (None, Some(secs)) => first_block_at_or_after(&rpc, to_ms(secs)?, tip).await?,
+        (None, None) => 1,
+    };
+    let to = match (to, to_time) {
+        (Some(n), _) => n,
+        // last block at/before the time = (first block strictly after it) − 1.
+        (None, Some(secs)) => first_block_at_or_after(&rpc, to_ms(secs)? + 1, tip)
+            .await?
+            .saturating_sub(1),
+        (None, None) => tip,
+    };
+    anyhow::ensure!(
+        from >= 1 && from <= to,
+        "empty range: resolved [from={from}, to={to}] (finalized tip is {tip})"
+    );
+
+    // Walk the range, deriving each author. Cache the active validator set per session index — it only
+    // changes at a session boundary, so a whole session's blocks read `Session::Validators` once.
+    let mut counts: BTreeMap<AccountId32, u64> = BTreeMap::new();
+    let mut counted: u64 = 0;
+    let mut unattributed: u64 = 0;
+    let mut last_seen = from.saturating_sub(1);
+    let mut cur_session: Option<u32> = None;
+    let mut cur_validators: Vec<AccountId32> = Vec::new();
+
+    for n in from..=to {
+        let hash = match rpc.block_hash(n).await? {
+            Some(h) => h,
+            None => break, // walked past the chain tip (an explicit --to beyond the finalized head)
+        };
+        last_seen = n;
+        let (_, logs) = rpc.header(hash).await?;
+        let slot = match aura_slot(&logs) {
+            Some(s) => s,
+            None => {
+                unattributed += 1; // genesis / no aura pre-digest
+                continue;
+            }
+        };
+        let session = rpc
+            .storage_decode::<u32>(&storage_prefix("Session", "CurrentIndex"), Some(hash))
+            .await?
+            .unwrap_or(0);
+        if cur_session != Some(session) {
+            cur_validators = rpc
+                .storage_decode::<Vec<AccountId32>>(
+                    &storage_prefix("Session", "Validators"),
+                    Some(hash),
+                )
+                .await?
+                .unwrap_or_default();
+            cur_session = Some(session);
+        }
+        if cur_validators.is_empty() {
+            unattributed += 1; // no active validator set to attribute to (should not happen on a live chain)
+            continue;
+        }
+        let idx = (slot % cur_validators.len() as u64) as usize;
+        *counts.entry(cur_validators[idx].clone()).or_default() += 1;
+        counted += 1;
+    }
+
+    println!(
+        "block authors over [{from}, {last_seen}] via {ws} — {counted} block(s) attributed to {} author(s) \
+         (finalized tip {tip})",
+        counts.len()
+    );
+    if unattributed > 0 {
+        println!("  {unattributed} block(s) not attributed (genesis / no Aura pre-digest)");
+    }
+    println!();
+    println!("{:<52}  {:>10}  {:>8}", "validator (author)", "blocks", "share");
+    let mut rows: Vec<(&AccountId32, u64)> = counts.iter().map(|(a, c)| (a, *c)).collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    for (acct, c) in rows {
+        let share = if counted > 0 {
+            c as f64 * 100.0 / counted as f64
+        } else {
+            0.0
+        };
+        println!("{:<52}  {:>10}  {:>7.2}%", ss58(acct), c, share);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codec::Encode;
+
+    /// The author-derivation hinge: `aura_slot` must read the slot from the `aura` PreRuntime digest and
+    /// ignore every other log — notably the cogno `cobs` anchor (a DIFFERENT PreRuntime engine) and the Aura
+    /// `Seal` (same engine id, different digest VARIANT) — returning `None` only for a header with no aura
+    /// pre-digest (the genesis block).
+    #[test]
+    fn aura_slot_reads_the_pre_digest_and_ignores_other_logs() {
+        let slot: u64 = 297_198_954;
+        let aura = DigestItem::PreRuntime(*b"aura", slot.encode()).encode();
+        let cobs = DigestItem::PreRuntime(*b"cobs", vec![1, 2, 3]).encode(); // cogno anchor — not aura
+        let seal = DigestItem::Seal(*b"aura", vec![9u8; 64]).encode(); // Seal, not PreRuntime
+        assert_eq!(
+            aura_slot(&[cobs.clone(), aura, seal.clone()]),
+            Some(slot),
+            "the aura PreRuntime slot is decoded regardless of surrounding logs"
+        );
+        assert_eq!(aura_slot(&[cobs, seal]), None, "no aura pre-digest ⇒ None");
+        assert_eq!(aura_slot(&[]), None, "genesis (no logs) ⇒ None");
+    }
 }
