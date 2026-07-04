@@ -161,7 +161,8 @@ function ProfileBody({ address }: { address: Ss58 }) {
     downvote: downvoteAccount,
     merge: mergeAccountVote,
     reset: resetAccountVote,
-    pending: accountVotePending,
+    isOptimistic: isAccountVoteOptimistic,
+    pending: accountVotePendingRaw,
   } = accountVoteHook;
   const accountVoteBase = useMemo(
     () => ({
@@ -180,15 +181,36 @@ function ProfileBody({ address }: { address: Ss58 }) {
     ],
   );
   const shownAccountVote = mergeAccountVote(address, accountVoteBase);
-  // Retire the optimistic override once a fresh read of the viewer's OWN vote reflects it. Key on
-  // `myAccountVote` (viewer-owned), NOT the shared `accountScore`: a THIRD party's vote moves the score
-  // but not this, so the viewer's highlighted arrow never drops early on someone else's vote. The
-  // cleanup clears this address's override on a profile switch too (ProfileBody is reused across
-  // /u/A → /u/B), so a not-yet-reconciled override can't leak back when navigating away and returning.
+  // Scope the pending-disable to THIS profile: `pending` is shared across the reused ProfileBody, so a
+  // vote in flight on /u/A must not disable /u/B's arrows — only when THIS target carries the override.
+  const accountVotePending = accountVotePendingRaw && isAccountVoteOptimistic(address);
+  // Retire a SETTLED override once a fresh read of the viewer's OWN vote matches what we show (merge
+  // already renders the base when settled, so this only keeps the record + `isOptimistic` clean). The
+  // separate cleanup below drops this address's override on a profile switch (ProfileBody is reused
+  // across /u/A → /u/B) so a not-yet-reconciled override can't leak back on return.
   useEffect(() => {
-    resetAccountVote(address);
+    // Only retire once NO tx is in flight: a net-zero re-vote (Up then clear) transiently makes
+    // `o.myVote === base.myVote` while both txs are still pending, and dropping the override then would
+    // expose an intermediate read (a brief "Up" flash before the clear lands). Waiting for `!pending`
+    // keeps the override holding the intended end-state until the chain has fully caught up.
+    if (
+      !accountVotePendingRaw &&
+      isAccountVoteOptimistic(address) &&
+      (profile?.myAccountVote ?? null) === shownAccountVote.myVote
+    ) {
+      resetAccountVote(address);
+    }
+  }, [
+    accountVotePendingRaw,
+    address,
+    profile?.myAccountVote,
+    shownAccountVote.myVote,
+    isAccountVoteOptimistic,
+    resetAccountVote,
+  ]);
+  useEffect(() => {
     return () => resetAccountVote(address);
-  }, [address, profile?.myAccountVote, resetAccountVote]);
+  }, [address, resetAccountVote]);
 
   const onAccountUp = useCallback(() => {
     if (viewer.status !== "ready") return void router.push("/welcome/");

@@ -417,8 +417,9 @@ function personSummaryToSuggestion(r: PersonSummaryRaw): Suggestion {
     avatar: binTextOpt(r.avatar),
     weight: r.weight > 0n ? r.weight : undefined,
     followerCount: r.follower_count,
-    // Net stake-weighted reputation (up − down); the row shows it only when non-zero.
-    accountScore: BigInt(t?.up_weight ?? 0n) - BigInt(t?.down_weight ?? 0n),
+    // Net stake-weighted reputation (up − down); the row shows it only when non-zero. `undefined` when
+    // the node omits `account_tally` (a pre-spec-202 node) — "unknown", NOT a genuine net-zero score.
+    accountScore: t ? BigInt(t.up_weight) - BigInt(t.down_weight) : undefined,
   };
 }
 

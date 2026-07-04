@@ -352,8 +352,11 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
         api.query.Profile.Profiles.getValue(account),
         api.query.Profile.PinnedPost.getValue(account),
         // spec-202 account reputation tally + (when a viewer is known) their own vote on this account.
+        // No viewer ⇒ `undefined` (unknown), NOT `null` (which means "known viewer, has not voted").
         readAccountVoteTally(api, account),
-        args.viewer ? readViewerAccountVote(api, account, args.viewer) : Promise.resolve(null),
+        args.viewer
+          ? readViewerAccountVote(api, account, args.viewer)
+          : Promise.resolve<"Up" | "Down" | null | undefined>(undefined),
       ]);
     const banned = pkh === undefined;
     // PAPI v2: PkhOf's `[u8;32]` value decodes to a 0x-hex string, not a Binary with `.asHex()`.
