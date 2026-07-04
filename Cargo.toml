@@ -31,6 +31,8 @@ members = [
 ]
 
 [workspace.package]
+# Single source of truth for every workspace member's package version — bump here (not per-crate).
+version = "1.0.0"
 authors = ["LogicalMechanism <support@logicalmechanism.io>"]
 edition = "2021"
 homepage = "https://github.com/LogicalMechanism/cogno-chain"

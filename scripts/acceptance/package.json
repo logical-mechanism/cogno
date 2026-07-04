@@ -2,7 +2,7 @@
   "name": "cogno-chain-m0-acceptance",
   "private": true,
   "type": "module",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "M0 acceptance: submit a signed Microblog.post_message and read it back over WS.",
   "scripts": {
     "test": "node acceptance.mjs"

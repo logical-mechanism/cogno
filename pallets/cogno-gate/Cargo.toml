@@ -1,7 +1,7 @@
 [package]
 name = "pallet-cogno-gate"
 description = "cogno-chain identity gate — the 1:1 Cardano-owner-Address ↔ Substrate-account binding (the anti-Sybil anchor), established by a permissionless on-chain CIP-8 self-proof; the 3-of-5 committee gates only revoke. Gates pallet-microblog posting on is_allowed."
-version = "0.1.0"
+version.workspace = true
 license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true

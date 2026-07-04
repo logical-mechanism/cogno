@@ -1,7 +1,7 @@
 [package]
 name = "pallet-governed-upgrade"
 description = "cogno-chain governed-upgrade pallet — SUDO-FREE committee-governed runtime upgrades (index 7). A single AuthorityOrigin-gated `authorize_upgrade(code_hash)` that records the authorized hash in frame_system (version-check on); the WASM is supplied later, permissionlessly, via `frame_system::apply_authorized_upgrade`, which refuses a non-increasing spec_version. The sudo-free analogue of the classic `sudo(system.set_code(..))` upgrade path."
-version = "1.0.0"
+version.workspace = true
 license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true

@@ -1,7 +1,7 @@
 [package]
 name = "pallet-validator-set"
 description = "cogno-chain validator-set pallet (M6) — vendor-forked from gautamdhameja/substrate-validator-set and ported to this SDK (frame v46, #[frame_support::runtime], the newer pallet-session Currency/KeyDeposit/HoldReason API). Holds the MUTABLE Aura+GRANDPA validator set behind pallet-session: add_validator/remove_validator are gated by the AddRemoveOrigin (the M5 3-of-5 FollowerCommittee) and a change is QUEUED then applied at a session boundary (~2 sessions). The im-online auto-removal plumbing (OfflineValidators + ReportOffence) is ported and dormant — NOT wired in v1 (L3 §8.2)."
-version = "0.1.0"
+version.workspace = true
 license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true
