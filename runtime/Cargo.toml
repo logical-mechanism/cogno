@@ -1,7 +1,7 @@
 [package]
 name = "cogno-chain-runtime"
 description = "The cogno-chain runtime (forked from polkadot-sdk solochain-template @ stable2603-3)."
-version = "0.1.0"
+version.workspace = true
 license = "Apache-2.0"
 authors.workspace = true
 homepage.workspace = true

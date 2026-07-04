@@ -1,6 +1,6 @@
 {
   "name": "cogno-chain-app",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "cogno-chain M1 frontend — Next.js static-export SPA + PAPI post/read loop (Reading Room / Civic Ledger)",
   "scripts": {
