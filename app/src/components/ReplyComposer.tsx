@@ -27,6 +27,7 @@ export interface ReplyComposerProps {
   /** Hand back the reply text; the surface calls mutations.submitReply(text, replyTo.id). */
   submitReply: (text: string) => void;
   onCancel?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 export function ReplyComposer({
@@ -39,6 +40,7 @@ export function ReplyComposer({
   autoFocus,
   submitReply,
   onCancel,
+  onDirtyChange,
 }: ReplyComposerProps) {
   const onSubmit = useCallback(
     (draft: ComposerDraft) => submitReply(draft.text),
@@ -87,6 +89,7 @@ export function ReplyComposer({
       draftExtras={{ parentId: replyTo.id }}
       onSubmit={onSubmit}
       onCancel={onCancel}
+      onDirtyChange={onDirtyChange}
     />
   );
 }

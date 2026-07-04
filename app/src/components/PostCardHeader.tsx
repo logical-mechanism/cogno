@@ -11,10 +11,11 @@
 // 6s) — e.g. "· 2h". We deliberately do NOT surface an absolute date, the raw block number ("· #1234"),
 // or any trust/honesty label (that layer is dropped). Omit the `at` prop to hide the age entirely.
 //
-// The "···" opens the overflow menu (doc 03 §2.1): Downvote / Remove downvote (the SECONDARY weighted
-// vote), Copy link, etc. — supplied as OverflowMenuItem[] by the PostCard. Mute/Block/Report/Delete
-// are intentionally absent (no on-chain moderation; content permanent). The menu is a real
-// role="menu" with click-out + Esc close and arrow-key roving focus.
+// The "···" opens the overflow menu (doc 03 §2.1) — items supplied as OverflowMenuItem[] by the
+// PostCard: owner-only "Pin to profile", and a client-local "Mute/Unmute @handle" (device-only; it
+// collapses that author's posts for THIS viewer — the only recourse on a permanent, no-moderation
+// chain, and NOT global moderation). Block/Report/Delete stay absent (no on-chain moderation; content
+// permanent). The menu is a real role="menu" with click-out + Esc close and arrow-key roving focus.
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import styles from "./PostCardHeader.module.css";

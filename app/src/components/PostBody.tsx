@@ -8,7 +8,8 @@
 //   - bare http(s)/ipfs:// URLs auto-link (ipfs:// resolved to a gateway).
 //   - NO @mention links — handles are non-unique truncated ss58, NOT addressable text, so a
 //     literal `@5CBE…` in a body is plain text (divergence from X, by design).
-//   - NO #hashtag links — there is no Topics surface (out of scope); a `#tag` is plain text.
+//   - #hashtag links — a `#tag` links to /explore/?q=%23tag (a case-insensitive substring search).
+//     There is still no Topics surface; the link just runs the search that `#tag` matches.
 //   - NO markdown.
 // Line breaks are preserved (white-space: pre-wrap) and long unbroken strings wrap
 // (overflow-wrap: break-word). The node tree is built from PARSED SEGMENTS — never
@@ -16,6 +17,7 @@
 // rel="noopener noreferrer nofollow", target=_blank, styled in --cg-accent.
 
 import { Fragment, useMemo } from "react";
+import Link from "next/link";
 import { isImageUrl, resolveImageSrc } from "@/lib/media";
 import { RevealImage } from "./RevealImage";
 import styles from "./PostBody.module.css";
@@ -33,13 +35,28 @@ export interface PostBodyProps {
 // trimmed below so a URL at the end of a sentence ("see https://x.org.") doesn't swallow the period.
 const URL_RE = /(?:https?|ipfs):\/\/[^\s]+/gi;
 const TRAILING_PUNCT = /[.,!?:;)\]}'"»”’]+$/;
+// A #hashtag: '#' + Unicode letters/numbers/underscore. Scanned ONLY inside plain-text runs (never
+// inside a matched URL), so a fragment like `https://x.org/#section` is never re-linkified.
+const HASHTAG_RE = /#[\p{L}\p{N}_]+/gu;
 
 interface Seg {
-  kind: "text" | "url" | "image";
+  kind: "text" | "url" | "image" | "hashtag";
   value: string;
 }
 
-/** Split a body into plain-text + url + image segments (pure; no DOM). */
+/** Push a plain-text run onto `segs`, further split into text + #hashtag segments. */
+function pushText(segs: Seg[], text: string): void {
+  let last = 0;
+  for (const m of text.matchAll(HASHTAG_RE)) {
+    const start = m.index ?? 0;
+    if (start > last) segs.push({ kind: "text", value: text.slice(last, start) });
+    segs.push({ kind: "hashtag", value: m[0] });
+    last = start + m[0].length;
+  }
+  if (last < text.length) segs.push({ kind: "text", value: text.slice(last) });
+}
+
+/** Split a body into plain-text + url + image + hashtag segments (pure; no DOM). */
 function segment(text: string): Seg[] {
   const segs: Seg[] = [];
   let last = 0;
@@ -49,12 +66,12 @@ function segment(text: string): Seg[] {
     // Re-attach trailing sentence punctuation that isn't part of the URL to the following text run.
     const trail = url.match(TRAILING_PUNCT)?.[0] ?? "";
     if (trail) url = url.slice(0, url.length - trail.length);
-    if (start > last) segs.push({ kind: "text", value: text.slice(last, start) });
+    if (start > last) pushText(segs, text.slice(last, start));
     segs.push({ kind: isImageUrl(url) ? "image" : "url", value: url });
     if (trail) segs.push({ kind: "text", value: trail });
     last = start + m[0].length;
   }
-  if (last < text.length) segs.push({ kind: "text", value: text.slice(last) });
+  if (last < text.length) pushText(segs, text.slice(last));
   return segs;
 }
 
@@ -129,6 +146,19 @@ export function PostBody({ text, size = "base", dim }: PostBodyProps) {
             >
               {urlLabel(s.value)}
             </a>
+          );
+        }
+        if (s.kind === "hashtag") {
+          return (
+            <Link
+              key={i}
+              className={styles.link}
+              href={`/explore/?q=${encodeURIComponent(s.value)}`}
+              // Inside a clickable PostCard row — don't also trigger the row navigation.
+              onClick={(e) => e.stopPropagation()}
+            >
+              {s.value}
+            </Link>
           );
         }
         return <Fragment key={i}>{s.value}</Fragment>;

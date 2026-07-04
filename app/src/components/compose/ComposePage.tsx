@@ -24,10 +24,11 @@
 // so the reply/quote edges a future useNotifications(who) would fold are created here already. Not
 // built in v1 — this note keeps the flow notification-friendly.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import styles from "./ComposePage.module.css";
 import { Composer } from "@/components/Composer";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ReplyComposer } from "@/components/ReplyComposer";
 import { QuoteComposer } from "@/components/QuoteComposer";
 import { PollComposer } from "@/components/PollComposer";
@@ -108,6 +109,9 @@ export function ComposePage() {
 
   // Controlled text so the capacity gate measures the live draft (and a rollback can restore it).
   const [text, setText] = useState("");
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // Uncontrolled reply/quote drafts report dirtiness here so Cancel can confirm before discarding.
+  const composerDirtyRef = useRef(false);
 
   // ── Capacity gate (§5.1) — mirror HomePage.composerRateLimited. Profile is irrelevant; every
   //    write here is feeless + capacity-metered, so capacity exhaustion is the only gate. ──
@@ -139,6 +143,28 @@ export function ComposePage() {
     if (typeof window !== "undefined" && window.history.length > 1) router.back();
     else router.push("/");
   }, [router]);
+
+  const onComposerDirty = useCallback((dirty: boolean) => {
+    composerDirtyRef.current = dirty;
+  }, []);
+
+  // Dirty = the composer holds non-whitespace text. reply/quote WITH a resolved target use the
+  // uncontrolled composers (→ composerDirtyRef); everything else (post, poll question, and the
+  // reply/quote fallbacks) lives in host state (text / pollDraft).
+  const isDirty = useCallback(() => {
+    if (mode === "poll") {
+      return pollDraft.question.trim() !== "" || pollDraft.options.some((o) => o.trim() !== "");
+    }
+    if ((mode === "reply" || mode === "quote") && targetPost) return composerDirtyRef.current;
+    return text.trim() !== "";
+  }, [mode, pollDraft, targetPost, text]);
+
+  // Cancel / back with a dirty draft → confirm first. A successful submit navigates via the raw
+  // goBack (runWrite) after clearing the draft, so it never asks.
+  const requestBack = useCallback(() => {
+    if (isDirty()) setConfirmDiscard(true);
+    else goBack();
+  }, [isDirty, goBack]);
 
   // Build a minimal optimistic CognoPost for the pending card (the real row replaces it on confirm).
   const optimisticPost = useCallback(
@@ -263,7 +289,7 @@ export function ComposePage() {
   return (
     <div className={styles.page}>
       <header className={styles.header}>
-        <button type="button" className={styles.cancel} onClick={goBack}>
+        <button type="button" className={styles.cancel} onClick={requestBack}>
           Cancel
         </button>
         <h1 className={styles.title}>{TITLES[effectiveMode]}</h1>
@@ -296,7 +322,7 @@ export function ComposePage() {
             autoFocus
             onTogglePoll={() => router.push("/compose/?poll=1")}
             onSubmit={onPost}
-            onCancel={goBack}
+            onCancel={requestBack}
           />
         )}
 
@@ -313,7 +339,8 @@ export function ComposePage() {
               noPostingPower={noPostingPower}
               autoFocus
               submitReply={onReply}
-              onCancel={goBack}
+              onCancel={requestBack}
+              onDirtyChange={onComposerDirty}
             />
           ) : (
             !targetLoading && (
@@ -328,7 +355,7 @@ export function ComposePage() {
                 noPostingPower={noPostingPower}
                 autoFocus
                 onSubmit={onPost}
-                onCancel={goBack}
+                onCancel={requestBack}
               />
             )
           )
@@ -344,7 +371,8 @@ export function ComposePage() {
               noPostingPower={noPostingPower}
               autoFocus
               submitQuote={onQuote}
-              onCancel={goBack}
+              onCancel={requestBack}
+              onDirtyChange={onComposerDirty}
             />
           ) : (
             !targetLoading && (
@@ -358,7 +386,7 @@ export function ComposePage() {
                 noPostingPower={noPostingPower}
                 autoFocus
                 onSubmit={onPost}
-                onCancel={goBack}
+                onCancel={requestBack}
               />
             )
           )
@@ -374,10 +402,25 @@ export function ComposePage() {
             noPostingPower={noPostingPower}
             autoFocus
             submitCreatePoll={onCreatePoll}
-            onCancel={goBack}
+            onCancel={requestBack}
           />
         )}
       </div>
+
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard this draft?"
+          body="Your unsent text will be lost."
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          danger
+          onConfirm={() => {
+            setConfirmDiscard(false);
+            goBack();
+          }}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      )}
     </div>
   );
 }

@@ -17,7 +17,7 @@
 // Presentational + optimistic. It NEVER imports a reader and NEVER builds an extrinsic — every write
 // is a callback (the PostActionCallbacks bundle) supplied by the surface, optimistically overridden.
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import styles from "./PostCard.module.css";
 import { PostCardHeader } from "./PostCardHeader";
 import { PostBody } from "./PostBody";
@@ -27,6 +27,7 @@ import { InlinePoll } from "./InlinePoll";
 import { PostCardActions } from "./PostCardActions";
 import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
+import { useMuted, muteActions } from "@/lib/muteStore";
 import type {
   CognoPost,
   ViewerPostState,
@@ -124,10 +125,46 @@ export function PostCard({
   // posted (non-pending) posts, and only when the surface wired onPin. Unpin lives in Settings → Profile.
   const isOwnPost =
     gate.status === "ready" && gate.address != null && gate.address === post.author;
+  // Client-local mute (device-only, no chain state): collapse another account's posts everywhere.
+  const muted = useMuted(post.author);
+  const [revealed, setRevealed] = useState(false);
   const menuItems = useMemo<OverflowMenuItem[] | undefined>(() => {
-    if (pending || !isOwnPost || !handlers.onPin) return undefined;
-    return [{ id: "pin", label: "Pin to profile", onSelect: () => handlers.onPin!(post) }];
-  }, [pending, isOwnPost, handlers, post]);
+    if (pending) return undefined;
+    const items: OverflowMenuItem[] = [];
+    if (isOwnPost && handlers.onPin) {
+      items.push({ id: "pin", label: "Pin to profile", onSelect: () => handlers.onPin!(post) });
+    }
+    if (!isOwnPost) {
+      const handle = handleOf(post.author);
+      items.push({
+        id: "mute",
+        label: muted ? `Unmute ${handle}` : `Mute ${handle}`,
+        onSelect: () => muteActions.toggle(post.author),
+      });
+    }
+    return items.length > 0 ? items : undefined;
+  }, [pending, isOwnPost, handlers, post, muted]);
+
+  // A muted author's post collapses to a "Show" stub everywhere EXCEPT the detail focal (you opened it
+  // on purpose). Revealing is local + reversible; the full card keeps its "Unmute" in the ··· menu.
+  const collapsed = muted && !detail && !isOwnPost && !pending && !revealed;
+  if (collapsed) {
+    return (
+      <article
+        className={[styles.card, styles[variant], styles.mutedRow, showThreadLine ? styles.threadLine : ""]
+          .filter(Boolean)
+          .join(" ")}
+        data-post-id={String(post.id)}
+      >
+        <div className={styles.mutedStub}>
+          <span className={styles.mutedText}>Post from a muted account</span>
+          <button type="button" className={styles.mutedShow} onClick={() => setRevealed(true)}>
+            Show
+          </button>
+        </div>
+      </article>
+    );
+  }
 
   const cls = [
     styles.card,

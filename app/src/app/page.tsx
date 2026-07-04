@@ -46,6 +46,7 @@ import { draftStatus } from "@/lib/chain/capacity";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitPost } from "@/lib/chain/mutations";
+import { copyToClipboard, postLink } from "@/lib/share";
 import type { CognoPost, ViewerPostState, FeedQuery } from "@/lib/types";
 import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
 
@@ -242,17 +243,13 @@ export default function HomePage() {
         repost.repost(post.id, cur.reposted);
       },
       onShare: (post) => {
-        const url = `${typeof window !== "undefined" ? window.location.origin : ""}/post/${post.id}/`;
-        // navigator.clipboard is undefined in insecure contexts / some in-app browsers; guard so the
-        // user always gets feedback instead of a silent no-op (an optional chain would swallow both toasts).
-        if (!navigator.clipboard) {
-          toast({ kind: "error", message: "Couldn't copy the link" });
-          return;
-        }
-        void navigator.clipboard
-          .writeText(url)
-          .then(() => toast({ kind: "success", message: "Link copied" }))
-          .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
+        void copyToClipboard(postLink(post.id)).then((ok) =>
+          toast(
+            ok
+              ? { kind: "success", message: "Link copied" }
+              : { kind: "error", message: "Couldn't copy the link" },
+          ),
+        );
       },
       onPin: (post) => pin(post.id),
     }),

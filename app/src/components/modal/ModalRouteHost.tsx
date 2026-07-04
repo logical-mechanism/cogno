@@ -14,9 +14,10 @@
 // renders the EditProfileModal (its own modal chrome). It NEVER builds an extrinsic outside the mutations
 // module.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ComposerModal } from "../ComposerModal";
+import { ConfirmDialog } from "../ConfirmDialog";
 import { Composer } from "../Composer";
 import { ReplyComposer } from "../ReplyComposer";
 import { QuoteComposer } from "../QuoteComposer";
@@ -93,6 +94,9 @@ export function ModalRouteHost() {
   // Controlled text for the base compose mode so the capacity gate measures the live draft (reply /
   // quote stay uncontrolled — their gate uses the empty-draft base-cost probe, exactly like ComposePage).
   const [text, setText] = useState("");
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // Uncontrolled reply/quote drafts report dirtiness here so a close can confirm before discarding.
+  const composerDirtyRef = useRef(false);
 
   const kind = state.kind;
   const targetId = state.targetId ? BigInt(state.targetId) : null;
@@ -117,10 +121,12 @@ export function ModalRouteHost() {
     return () => window.removeEventListener("popstate", onPop);
   }, [kind, close]);
 
-  // Reset the per-open transient state whenever the modal kind changes.
+  // Reset the per-open transient state whenever the modal kind changes (also on close → kind null).
   useEffect(() => {
     setSubmitState("idle");
     setText("");
+    setConfirmDiscard(false);
+    composerDirtyRef.current = false;
     if (kind === "poll") setPollDraft({ question: "", options: ["", ""] });
   }, [kind]);
 
@@ -147,6 +153,25 @@ export function ModalRouteHost() {
     }
     close();
   }, [kind, close]);
+
+  const onComposerDirty = useCallback((dirty: boolean) => {
+    composerDirtyRef.current = dirty;
+  }, []);
+
+  // A draft is "dirty" when the composer holds non-whitespace text (poll: the question or any option).
+  const isDirty = useCallback(() => {
+    if (kind === "poll") {
+      return pollDraft.question.trim() !== "" || pollDraft.options.some((o) => o.trim() !== "");
+    }
+    return composerDirtyRef.current;
+  }, [kind, pollDraft]);
+
+  // User-initiated close (Esc / ✕ / dim-click / Cancel): confirm before discarding a dirty draft. A
+  // successful submit closes via the raw onClose (runWrite) after clearing the draft, so it never asks.
+  const onRequestClose = useCallback(() => {
+    if (isDirty()) setConfirmDiscard(true);
+    else onClose();
+  }, [isDirty, onClose]);
 
   // The shared submit pipeline: optimistic insert → close → run(stream) with a phase() status toast
   // (sticky "…ing" → "…ed" + "View →" at inBestBlock, or dismissed + fail() on error). Rollback on
@@ -351,65 +376,84 @@ export function ModalRouteHost() {
   // reply / quote wait for the target post before rendering the composer.
   if (needsTarget && !targetPost) {
     return (
-      <ComposerModal title={title} onClose={onClose}>
+      <ComposerModal title={title} onClose={onRequestClose}>
         <div style={{ minHeight: "120px" }} aria-busy />
       </ComposerModal>
     );
   }
 
   return (
-    <ComposerModal title={title} onClose={onClose}>
-      {kind === "compose" && (
-        <Composer
-          viewer={viewer}
-          mode="post"
-          submitState={submitState}
-          noPostingPower={noPostingPower}
-          rateLimited={rateLimited}
-          text={text}
-          onTextChange={setText}
-          autoFocus
-          onSubmit={onPost}
-          onCancel={onClose}
+    <>
+      <ComposerModal title={title} onClose={onRequestClose}>
+        {kind === "compose" && (
+          <Composer
+            viewer={viewer}
+            mode="post"
+            submitState={submitState}
+            noPostingPower={noPostingPower}
+            rateLimited={rateLimited}
+            text={text}
+            onTextChange={setText}
+            autoFocus
+            onSubmit={onPost}
+            onCancel={onRequestClose}
+            onDirtyChange={onComposerDirty}
+          />
+        )}
+        {kind === "reply" && targetPost && (
+          <ReplyComposer
+            viewer={viewer}
+            replyTo={targetPost}
+            submitState={submitState}
+            noPostingPower={noPostingPower}
+            rateLimited={rateLimited}
+            autoFocus
+            submitReply={onReply}
+            onCancel={onRequestClose}
+            onDirtyChange={onComposerDirty}
+          />
+        )}
+        {kind === "quote" && targetPost && (
+          <QuoteComposer
+            viewer={viewer}
+            quoted={targetPost}
+            submitState={submitState}
+            noPostingPower={noPostingPower}
+            rateLimited={rateLimited}
+            autoFocus
+            submitQuote={onQuote}
+            onCancel={onRequestClose}
+            onDirtyChange={onComposerDirty}
+          />
+        )}
+        {kind === "poll" && (
+          <PollComposer
+            viewer={viewer}
+            pollDraft={pollDraft}
+            onChange={setPollDraft}
+            submitState={submitState}
+            noPostingPower={noPostingPower}
+            rateLimited={rateLimited}
+            autoFocus
+            submitCreatePoll={onCreatePoll}
+            onCancel={onRequestClose}
+          />
+        )}
+      </ComposerModal>
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard this draft?"
+          body="Your unsent text will be lost."
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          danger
+          onConfirm={() => {
+            setConfirmDiscard(false);
+            onClose();
+          }}
+          onCancel={() => setConfirmDiscard(false)}
         />
       )}
-      {kind === "reply" && targetPost && (
-        <ReplyComposer
-          viewer={viewer}
-          replyTo={targetPost}
-          submitState={submitState}
-          noPostingPower={noPostingPower}
-          rateLimited={rateLimited}
-          autoFocus
-          submitReply={onReply}
-          onCancel={onClose}
-        />
-      )}
-      {kind === "quote" && targetPost && (
-        <QuoteComposer
-          viewer={viewer}
-          quoted={targetPost}
-          submitState={submitState}
-          noPostingPower={noPostingPower}
-          rateLimited={rateLimited}
-          autoFocus
-          submitQuote={onQuote}
-          onCancel={onClose}
-        />
-      )}
-      {kind === "poll" && (
-        <PollComposer
-          viewer={viewer}
-          pollDraft={pollDraft}
-          onChange={setPollDraft}
-          submitState={submitState}
-          noPostingPower={noPostingPower}
-          rateLimited={rateLimited}
-          autoFocus
-          submitCreatePoll={onCreatePoll}
-          onCancel={onClose}
-        />
-      )}
-    </ComposerModal>
+    </>
   );
 }
