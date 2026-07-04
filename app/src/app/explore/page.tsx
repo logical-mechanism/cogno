@@ -50,6 +50,7 @@ import { useRepost } from "@/hooks/useRepost";
 import { useFollow } from "@/hooks/useFollow";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
+import { copyToClipboard, postLink } from "@/lib/share";
 import type { CognoPost, FeedQuery, Suggestion, ViewerPostState } from "@/lib/types";
 import type { PostActionCallbacks } from "@/components/kit";
 
@@ -252,11 +253,13 @@ function ExploreView() {
         repost.repost(post.id, cur.reposted);
       },
       onShare: (post) => {
-        const url = `${typeof window !== "undefined" ? window.location.origin : ""}/post/${post.id}/`;
-        void navigator.clipboard
-          ?.writeText(url)
-          .then(() => toast({ kind: "success", message: "Link copied" }))
-          .catch(() => toast({ kind: "error", message: "Couldn't copy the link" }));
+        void copyToClipboard(postLink(post.id)).then((ok) =>
+          toast(
+            ok
+              ? { kind: "success", message: "Link copied" }
+              : { kind: "error", message: "Couldn't copy the link" },
+          ),
+        );
       },
       onPin: (post) => pin(post.id),
     }),
@@ -315,7 +318,10 @@ function ExploreView() {
             loading={mode === "query" && (latest.loading || peopleLoading)}
           />
         </div>
-        {mode === "default" && (
+        {/* Score ("Top") order isn't served yet (scoreOrderEnabled=false → the only reachable state is
+            "Most recent"), so hide the toggle rather than show a permanently-disabled control. Flip
+            scoreOrderEnabled back to true to restore it — no other change needed. */}
+        {mode === "default" && scoreOrderEnabled && (
           <FirehoseOrderToggle
             value={effectiveOrder}
             onChange={setOrder}

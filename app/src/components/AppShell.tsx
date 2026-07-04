@@ -58,12 +58,18 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className={styles.shell}>
+      {/* First focusable element: a keyboard user can jump the nav straight to the feed (a11y). */}
+      <a href="#cg-main" className={styles.skipLink}>
+        Skip to content
+      </a>
       <div className={styles.container}>
         <div className={styles.leftCol}>
           <LeftNav />
         </div>
 
-        <main className={styles.main}>{children}</main>
+        <main id="cg-main" tabIndex={-1} className={styles.main}>
+          {children}
+        </main>
 
         <div className={styles.rightCol}>
           <RightRail />

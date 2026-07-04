@@ -37,6 +37,16 @@ import type { ReactNode } from "react";
 /** Runtime Microblog::MaxLength (Vec<u8>), measured as UTF-8 BYTES (D1). */
 export const MAX_POST_BYTES = 512;
 
+/**
+ * Default text-only emoji for the insert helper (doc 09 §4.1) — plain UTF-8 that counts toward the
+ * byte budget; NOT a media affordance. A surface can override via the `emojiChoices` prop, or pass
+ * `[]` to hide the affordance entirely.
+ */
+const DEFAULT_EMOJI = [
+  "😀", "😂", "🥹", "😍", "🤔", "😎", "😭", "🔥",
+  "✨", "🎉", "👍", "🙏", "👀", "💯", "❤️", "🚀",
+];
+
 const PLACEHOLDER: Record<ComposerMode, string> = {
   post: "What's happening?",
   reply: "Post your reply",
@@ -128,7 +138,7 @@ export function Composer({
   toolbarExtras,
   onTogglePoll,
   pollActive,
-  emojiChoices,
+  emojiChoices = DEFAULT_EMOJI,
   extraValid = true,
   text: controlledText,
   onTextChange,

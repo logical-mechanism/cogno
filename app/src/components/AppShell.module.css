@@ -4,6 +4,26 @@
   min-height: 100vh;
 }
 
+/* Skip-to-content link: off-screen until it receives keyboard focus, then a visible pill at top-left
+   so a keyboard user can bypass the nav and jump straight into the feed (a11y). */
+.skipLink {
+  position: absolute;
+  left: var(--cg-space-3);
+  top: -100%;
+  z-index: var(--cg-z-sticky);
+  padding: var(--cg-space-2) var(--cg-space-4);
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-medium);
+  text-decoration: none;
+}
+
+.skipLink:focus {
+  top: var(--cg-space-3);
+}
+
 /* The standalone welcome/onboarding canvas (logged-out landing): full viewport, no rails/chrome. The
    WelcomeShell inside owns its own centering + background. */
 .standalone {

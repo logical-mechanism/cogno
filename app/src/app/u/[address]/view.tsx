@@ -45,6 +45,8 @@ import { useAccountVote } from "@/hooks/useAccountVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { modalActions } from "@/lib/modalStore";
+import { useToaster } from "@/components/toast/ToasterProvider";
+import { copyToClipboard, postLink } from "@/lib/share";
 import { isPlausibleSs58, handleOf } from "@/lib/ss58";
 import type { ProfileArgs } from "@/lib/feed/source";
 import type { CognoPost, ViewerPostState, Ss58, PostActionCallbacks } from "@/components/kit";
@@ -268,6 +270,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const vote = useVote(api, signer, votingPower ?? 0n);
   const repost = useRepost(api, signer);
   const { pin } = usePinPost(api, signer);
+  const { toast } = useToaster();
 
   // NOTIFICATIONS SEAM (doc 07 §14): the Voted / Reposted / reply / quote edges raised here targeting
   // this profile's author are what a future useNotifications(author) folds — deferred, seam left.
@@ -297,15 +300,17 @@ function ProfileBody({ address }: { address: Ss58 }) {
         repost.repost(post.id, cur.reposted);
       },
       onShare: (post) => {
-        const url = `${typeof window !== "undefined" ? window.location.origin : ""}/post/${post.id}/`;
-        void navigator.clipboard
-          ?.writeText(url)
-          .then(() => undefined)
-          .catch(() => undefined);
+        void copyToClipboard(postLink(post.id)).then((ok) =>
+          toast(
+            ok
+              ? { kind: "success", message: "Link copied" }
+              : { kind: "error", message: "Couldn't copy the link" },
+          ),
+        );
       },
       onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, pin],
+    [router, viewer.status, viewerStates, vote, repost, pin, toast],
   );
 
   // ── derived header bits ──
