@@ -8,6 +8,12 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # jsonrpsee is pinned to the 0.24.x line the polkadot-sdk stable2606 RPC layer
+      # (sc-rpc / substrate-frame-rpc-system) is built against — see the note at Cargo.toml.
+      # crates.io ships 0.26.x but its API is incompatible with the SDK's RPC traits, so it
+      # must move with the SDK train, not float to latest. Don't auto-bump it.
+      - dependency-name: "jsonrpsee"
 
   # GitHub Actions (keeps the SHA-pinned actions current)
   - package-ecosystem: github-actions
@@ -30,6 +36,14 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # eslint is held on the 9.x line: eslint-config-next@16 (Next 16's flat config) bundles
+      # eslint-plugin-react / -import / -jsx-a11y whose peer range caps at `eslint ^9`, and
+      # eslint 10 removed `scopeManager.addGlobals`, which those plugins call — so `eslint .`
+      # dies with `TypeError: scopeManager.addGlobals is not a function` under 10.x. Stay on 9.x
+      # until eslint-config-next ships eslint-10-ready plugins; patches/minors within 9.x still flow.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
 
   # CIP-8 adversarial oracle (pinned Python deps)
   - package-ecosystem: pip
