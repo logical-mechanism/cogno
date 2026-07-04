@@ -79,7 +79,7 @@ futures = { version = "0.3.31" }
 # Kept on the 0.24.x line the SDK's sc-rpc / substrate-frame-rpc-system are built against
 # (stable2606 pins jsonrpsee 0.24.11). crates.io ships 0.26.x but its API is incompatible
 # with the SDK's RPC layer — do NOT bump past 0.24.x until the SDK does.
-jsonrpsee = { version = "0.24.11" }
+jsonrpsee = { version = "0.26.0" }
 serde_json = { version = "1.0.132", default-features = false }
 
 # ── FRAME ──────────────────────────────────────────────────────────────────────
