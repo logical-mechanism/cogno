@@ -96,20 +96,14 @@
   flex-direction: column;
 }
 
-/* A reply and its inline-expanded sub-thread. */
+/* A direct reply and its "N replies →" descend link (flat — no inline nesting). */
 .replyNode {
   display: flex;
   flex-direction: column;
 }
 
-/* Nested (expanded) sub-replies — a gentle indent for depth; the per-card thread line carries the
-   stronger connection cue, so the indent stays small to survive narrow viewports. */
-.subReplies {
-  margin-left: var(--cg-space-5);
-}
-
-/* "Show N replies" / "Show this thread →" inline expander — a text affordance under the reply gutter,
-   monochrome (no accent), underline on hover. */
+/* "N replies →" descend link — a text affordance under the reply's body gutter that routes to that
+   reply's own /post/[id]/ focal. Monochrome (no accent), underline on hover. */
 .showThread {
   align-self: flex-start;
   margin: 0 0 var(--cg-space-2);
