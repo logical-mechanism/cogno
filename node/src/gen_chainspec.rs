@@ -63,7 +63,8 @@ pub struct GenChainSpecCmd {
     /// Chain spec human name (default: derived from --base).
     #[arg(long)]
     pub name: Option<String>,
-    /// Chain spec id / protocol id (default: derived from --base).
+    /// Chain spec id — the on-disk identifier used for the data/keystore dir (default: derived from
+    /// --base). This is NOT the libp2p protocol id, which this tool does not set.
     #[arg(long)]
     pub id: Option<String>,
 

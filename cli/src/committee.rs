@@ -215,10 +215,14 @@ pub async fn resolve_committee(
             t
         }
     };
+    // Dedup by on-chain account: two key files for the SAME member account must not both count toward the
+    // threshold (they would pass this check, then fail at vote time with DuplicateVote). Keep the first
+    // local seat index per distinct member account.
+    let mut seen = std::collections::BTreeSet::new();
     let eligible: Vec<usize> = local_signers
         .iter()
         .enumerate()
-        .filter(|(_, s)| onchain.contains(&s.account_id()))
+        .filter(|(_, s)| onchain.contains(&s.account_id()) && seen.insert(s.account_id()))
         .map(|(i, _)| i)
         .collect();
     anyhow::ensure!(

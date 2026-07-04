@@ -169,8 +169,9 @@ pub async fn run_weight(ws: &str) -> anyhow::Result<()> {
         .fold(0, |a, b| a.saturating_add(b));
     let sv: u128 = voting.values().copied().fold(0, |a, b| a.saturating_add(b));
     println!(
-        "on-chain talk-stake ledger via {ws} — {} account(s) with weight",
-        allowed.len()
+        "on-chain talk-stake ledger via {ws} — {} account(s) with posting weight, {} with voting power",
+        allowed.len(),
+        voting.len()
     );
     match &last_ref {
         Some(r) => println!(
