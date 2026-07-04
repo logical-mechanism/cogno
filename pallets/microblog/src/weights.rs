@@ -60,6 +60,8 @@ pub trait WeightInfo {
 	fn quote_post(s: u32, ) -> Weight;
 	fn vote() -> Weight;
 	fn clear_vote() -> Weight;
+	fn vote_account() -> Weight;
+	fn clear_account_vote() -> Weight;
 	fn repost() -> Weight;
 	fn follow() -> Weight;
 	fn unfollow() -> Weight;
@@ -142,6 +144,33 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		//  Measured:  `449`
 		//  Estimated: `3554`
 		// Minimum execution time: 20_498_000 picoseconds.
+		Weight::from_parts(23_335_000, 3554)
+			.saturating_add(T::DbWeight::get().reads(3_u64))
+			.saturating_add(T::DbWeight::get().writes(2_u64))
+	}
+	/// Storage: `CognoGate::PkhOf` (r:2 w:0)
+	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
+	/// Storage: `TalkStake::VotingPower` (r:1 w:0)
+	/// Proof: `TalkStake::VotingPower` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	/// Storage: `Microblog::AccountVoteTally` (r:1 w:1)
+	/// Proof: `Microblog::AccountVoteTally` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	/// Storage: `Microblog::AccountVotes` (r:1 w:1)
+	/// Proof: `Microblog::AccountVotes` (`max_values`: None, `max_size`: Some(113), added: 2588, mode: `MaxEncodedLen`)
+	fn vote_account() -> Weight {
+		// Placeholder mirroring `vote` (re-vote flip: 2 gate reads + VotingPower + tally + record).
+		// Regenerate with the `vote_account` benchmark before mainnet.
+		Weight::from_parts(33_098_000, 4057)
+			.saturating_add(T::DbWeight::get().reads(5_u64))
+			.saturating_add(T::DbWeight::get().writes(2_u64))
+	}
+	/// Storage: `CognoGate::PkhOf` (r:1 w:0)
+	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
+	/// Storage: `Microblog::AccountVotes` (r:1 w:1)
+	/// Proof: `Microblog::AccountVotes` (`max_values`: None, `max_size`: Some(113), added: 2588, mode: `MaxEncodedLen`)
+	/// Storage: `Microblog::AccountVoteTally` (r:1 w:1)
+	/// Proof: `Microblog::AccountVoteTally` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	fn clear_account_vote() -> Weight {
+		// Placeholder mirroring `clear_vote`. Regenerate with the benchmark before mainnet.
 		Weight::from_parts(23_335_000, 3554)
 			.saturating_add(T::DbWeight::get().reads(3_u64))
 			.saturating_add(T::DbWeight::get().writes(2_u64))
@@ -338,6 +367,30 @@ impl WeightInfo for () {
 		//  Measured:  `449`
 		//  Estimated: `3554`
 		// Minimum execution time: 20_498_000 picoseconds.
+		Weight::from_parts(23_335_000, 3554)
+			.saturating_add(RocksDbWeight::get().reads(3_u64))
+			.saturating_add(RocksDbWeight::get().writes(2_u64))
+	}
+	/// Storage: `CognoGate::PkhOf` (r:2 w:0)
+	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
+	/// Storage: `TalkStake::VotingPower` (r:1 w:0)
+	/// Proof: `TalkStake::VotingPower` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	/// Storage: `Microblog::AccountVoteTally` (r:1 w:1)
+	/// Proof: `Microblog::AccountVoteTally` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	/// Storage: `Microblog::AccountVotes` (r:1 w:1)
+	/// Proof: `Microblog::AccountVotes` (`max_values`: None, `max_size`: Some(113), added: 2588, mode: `MaxEncodedLen`)
+	fn vote_account() -> Weight {
+		Weight::from_parts(33_098_000, 4057)
+			.saturating_add(RocksDbWeight::get().reads(5_u64))
+			.saturating_add(RocksDbWeight::get().writes(2_u64))
+	}
+	/// Storage: `CognoGate::PkhOf` (r:1 w:0)
+	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
+	/// Storage: `Microblog::AccountVotes` (r:1 w:1)
+	/// Proof: `Microblog::AccountVotes` (`max_values`: None, `max_size`: Some(113), added: 2588, mode: `MaxEncodedLen`)
+	/// Storage: `Microblog::AccountVoteTally` (r:1 w:1)
+	/// Proof: `Microblog::AccountVoteTally` (`max_values`: None, `max_size`: Some(64), added: 2539, mode: `MaxEncodedLen`)
+	fn clear_account_vote() -> Weight {
 		Weight::from_parts(23_335_000, 3554)
 			.saturating_add(RocksDbWeight::get().reads(3_u64))
 			.saturating_add(RocksDbWeight::get().writes(2_u64))

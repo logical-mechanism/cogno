@@ -241,7 +241,16 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // and the PAPI descriptors must be regenerated against the new runtime. transaction_version STAYS 3:
     // the on-wire extrinsic/extension ENCODING is byte-identical (pr_7035's `ExtensionOtherVersions`
     // defaults to the version-0-only pipeline; the `TxExtension` tuple + every Call encoding are unchanged).
-    spec_version: 201,
+    // 201 -> 202 (account reputation votes): pallet-microblog adds stake-weighted up/down voting ON
+    // ACCOUNTS (the community anti-Sybil / anti-impersonation signal) — two new calls `vote_account`
+    // (idx 11) / `clear_account_vote` (idx 12), two new storage maps `AccountVotes` /
+    // `AccountVoteTally`, two new events `AccountVoted` / `AccountVoteCleared`, and an `account_tally`
+    // field on the `ProfileView` / `PersonSummary` runtime-API DTOs. Weight is the voter's
+    // `TalkStake::VotingPower` snapshot (same Sybil-resistant source as post votes); feeless +
+    // capacity-metered at the existing `VoteCost`. ADDITIVE (new calls/storage/events/metadata), so
+    // spec_version bumps; transaction_version STAYS 3 (new signed extrinsics, the `TxExtension` tuple
+    // is byte-identical). Fresh-genesis restart ⇒ no migration. Regen the PAPI descriptors after 202.
+    spec_version: 202,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`

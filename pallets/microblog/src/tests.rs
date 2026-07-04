@@ -7,9 +7,10 @@
 //! test the pure bucket math + `force_set_capacity` + the anti-farm invariants.
 
 use crate::{
-    mock::*, ByAuthor, Capacity, Error, Event, FollowerCount, Following, FollowingCount,
-    NextPostId, NextTopLevelSeq, PollTally, PollVotes, Polls, Posts, RepliesByParent, ReplyCount,
-    RepostCount, Reposts, TopLevelByAuthor, TopLevelPosts, VoteDir, VoteTally, Votes,
+    mock::*, AccountVoteTally, AccountVotes, ByAuthor, Capacity, Error, Event, FollowerCount,
+    Following, FollowingCount, NextPostId, NextTopLevelSeq, PollTally, PollVotes, Polls, Posts,
+    RepliesByParent, ReplyCount, RepostCount, Reposts, TopLevelByAuthor, TopLevelPosts, VoteDir,
+    VoteTally, Votes,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -392,6 +393,219 @@ fn tally_fold_determinism_property() {
             }
         }
         let t = VoteTally::<Test>::get(0);
+        assert_eq!(
+            (t.up_weight, t.down_weight, t.up_count, t.down_count),
+            (up_w, dn_w, up_c, dn_c)
+        );
+    });
+}
+
+// ── account reputation votes (stake-weighted up/down ON accounts) ───────────────────────────────
+
+#[test]
+fn account_vote_records_stake_weight_and_tally() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        TalkStake::apply_voting_power(&2, 100);
+        assert_ok!(Microblog::vote_account(
+            RuntimeOrigin::signed(2),
+            3,
+            VoteDir::Up
+        ));
+        let t = AccountVoteTally::<Test>::get(3);
+        assert_eq!(t.up_weight, 100);
+        assert_eq!(t.up_count, 1);
+        assert_eq!(t.down_weight, 0);
+        assert_eq!(AccountVotes::<Test>::get(3, 2).expect("record").weight, 100);
+        System::assert_last_event(
+            Event::AccountVoted {
+                target: 3,
+                who: 2,
+                dir: VoteDir::Up,
+                weight: 100,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn cannot_account_vote_self() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_noop!(
+            Microblog::vote_account(RuntimeOrigin::signed(2), 2, VoteDir::Up),
+            Error::<Test>::SelfAccountVote
+        );
+    });
+}
+
+#[test]
+fn account_vote_on_unbound_target_is_rejected() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        deny_identity(3); // the target has no bound identity
+        assert_noop!(
+            Microblog::vote_account(RuntimeOrigin::signed(2), 3, VoteDir::Up),
+            Error::<Test>::TargetNotAllowed
+        );
+    });
+}
+
+#[test]
+fn account_vote_requires_voter_identity() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        deny_identity(2); // the voter is not identity-bound
+        assert_noop!(
+            Microblog::vote_account(RuntimeOrigin::signed(2), 3, VoteDir::Up),
+            Error::<Test>::NotAllowed
+        );
+    });
+}
+
+#[test]
+fn account_revote_flip_reverses_stored_weight_not_current_stake() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        TalkStake::apply_voting_power(&2, 100);
+        assert_ok!(Microblog::vote_account(
+            RuntimeOrigin::signed(2),
+            3,
+            VoteDir::Up
+        ));
+        // Stake changes to 300 and the voter flips to Down: the Up side reverses by the STORED 100
+        // (to zero) and the Down side applies the fresh 300 — no drift.
+        TalkStake::apply_voting_power(&2, 300);
+        assert_ok!(Microblog::vote_account(
+            RuntimeOrigin::signed(2),
+            3,
+            VoteDir::Down
+        ));
+        let t = AccountVoteTally::<Test>::get(3);
+        assert_eq!(t.up_weight, 0);
+        assert_eq!(t.up_count, 0);
+        assert_eq!(t.down_weight, 300);
+        assert_eq!(t.down_count, 1);
+    });
+}
+
+#[test]
+fn account_revote_same_direction_updates_weight_not_count() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        TalkStake::apply_voting_power(&2, 100);
+        assert_ok!(Microblog::vote_account(
+            RuntimeOrigin::signed(2),
+            3,
+            VoteDir::Up
+        ));
+        TalkStake::apply_voting_power(&2, 300);
+        assert_ok!(Microblog::vote_account(
+            RuntimeOrigin::signed(2),
+            3,
+            VoteDir::Up
+        )); // same dir, new weight
+        let t = AccountVoteTally::<Test>::get(3);
+        assert_eq!(t.up_weight, 300, "weight replaced, not summed");
+        assert_eq!(t.up_count, 1, "count not double-incremented");
+    });
+}
+
+#[test]
+fn clear_account_vote_reverses_exact_stored_weight() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        TalkStake::apply_voting_power(&2, 100);
+        assert_ok!(Microblog::vote_account(
+            RuntimeOrigin::signed(2),
+            3,
+            VoteDir::Up
+        ));
+        // Stake balloons, then the vote is cleared — the reversal must use the stored 100, not 9999.
+        TalkStake::apply_voting_power(&2, 9999);
+        assert_ok!(Microblog::clear_account_vote(RuntimeOrigin::signed(2), 3));
+        let t = AccountVoteTally::<Test>::get(3);
+        assert_eq!(t.up_weight, 0);
+        assert_eq!(t.up_count, 0);
+        assert!(AccountVotes::<Test>::get(3, 2).is_none());
+        System::assert_last_event(Event::AccountVoteCleared { target: 3, who: 2 }.into());
+    });
+}
+
+#[test]
+fn clear_account_vote_without_a_vote_is_rejected() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_noop!(
+            Microblog::clear_account_vote(RuntimeOrigin::signed(2), 3),
+            Error::<Test>::NotVoted
+        );
+    });
+}
+
+/// The account-vote analog of [`tally_fold_determinism_property`]: an independent fold of the
+/// `AccountVoted`/`AccountVoteCleared` events must reproduce `AccountVoteTally` byte-for-byte.
+#[test]
+fn account_tally_fold_determinism_property() {
+    use std::collections::BTreeMap;
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let target = 9u64; // the account under reputation (bound by default in the mock)
+        // (voter, weight, action) — action: Some(dir) = vote, None = clear.
+        let steps: &[(u64, u128, Option<VoteDir>)] = &[
+            (2, 100, Some(VoteDir::Up)),
+            (3, 50, Some(VoteDir::Down)),
+            (2, 250, Some(VoteDir::Up)),   // same-dir reweight
+            (4, 70, Some(VoteDir::Up)),
+            (3, 50, Some(VoteDir::Up)),    // flip Down -> Up
+            (2, 250, None),                // clear
+            (4, 999, Some(VoteDir::Down)), // flip Up -> Down at new weight
+        ];
+        let mut seen: BTreeMap<u64, (VoteDir, u128)> = BTreeMap::new();
+        let (mut up_w, mut dn_w, mut up_c, mut dn_c) = (0u128, 0u128, 0u32, 0u32);
+        for &(voter, weight, action) in steps {
+            if let Some((dir, w)) = seen.remove(&voter) {
+                match dir {
+                    VoteDir::Up => {
+                        up_w = up_w.saturating_sub(w);
+                        up_c = up_c.saturating_sub(1);
+                    }
+                    VoteDir::Down => {
+                        dn_w = dn_w.saturating_sub(w);
+                        dn_c = dn_c.saturating_sub(1);
+                    }
+                }
+            }
+            match action {
+                Some(dir) => {
+                    TalkStake::apply_voting_power(&voter, weight);
+                    assert_ok!(Microblog::vote_account(
+                        RuntimeOrigin::signed(voter),
+                        target,
+                        dir
+                    ));
+                    match dir {
+                        VoteDir::Up => {
+                            up_w = up_w.saturating_add(weight);
+                            up_c = up_c.saturating_add(1);
+                        }
+                        VoteDir::Down => {
+                            dn_w = dn_w.saturating_add(weight);
+                            dn_c = dn_c.saturating_add(1);
+                        }
+                    }
+                    seen.insert(voter, (dir, weight));
+                }
+                None => {
+                    assert_ok!(Microblog::clear_account_vote(
+                        RuntimeOrigin::signed(voter),
+                        target
+                    ));
+                }
+            }
+        }
+        let t = AccountVoteTally::<Test>::get(target);
         assert_eq!(
             (t.up_weight, t.down_weight, t.up_count, t.down_count),
             (up_w, dn_w, up_c, dn_c)
