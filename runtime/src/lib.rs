@@ -233,11 +233,20 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // (talk-stake set_stake/set_voting_power deleted), and folds the SubQuery indexer reads into the node.
     // The RuntimeCall enum changes (metadata/spec_version), but the `TxExtension` tuple is byte-identical,
     // so transaction_version STAYS 3. Regen the PAPI descriptors after the restart.
-    spec_version: 200,
+    // 200 -> 201 (polkadot-sdk stable2603-3 -> stable2606, whole-workspace SDK upgrade): the runtime is
+    // recompiled against frame-support/system 48, sp-runtime 48, sp-io 48, pallet-* 48/49/50, etc.
+    // (rustc 1.90 -> 1.93). This is ENCODING-AFFECTING via metadata: pr_11804 makes
+    // `frame_system::Event::CodeUpdated` a struct variant `{ hash }`, and pr_7035 records transaction-
+    // extension VERSIONS in the extrinsic metadata — both change the metadata blob, so spec_version bumps
+    // and the PAPI descriptors must be regenerated against the new runtime. transaction_version STAYS 3:
+    // the on-wire extrinsic/extension ENCODING is byte-identical (pr_7035's `ExtensionOtherVersions`
+    // defaults to the version-0-only pipeline; the `TxExtension` tuple + every Call encoding are unchanged).
+    spec_version: 201,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
-    // (the signed-extension set changed → the extrinsic format version changes).
+    // (the signed-extension set changed → the extrinsic format version changes). Held at 3 across the
+    // stable2606 SDK upgrade — the extrinsic/extension byte encoding is unchanged (see the spec note above).
     transaction_version: 3,
     system_version: 1,
 };
