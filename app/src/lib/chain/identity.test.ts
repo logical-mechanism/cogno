@@ -14,13 +14,14 @@ const SIGN1 = "ab".repeat(80); // 80-byte cose_sign1 (within the 512 bound)
 const KEY = "cd".repeat(40); // 40-byte cose_key (within the 128 bound)
 const BARE_TX = "0x05deadbeef"; // a stand-in bare (unsigned, v5) extrinsic hex
 
+// PAPI v2: fixed-size [u8;N] event fields decode to a 0x-hex string (not a Binary with `.asHex()`).
 const LINKED_EVENT = {
   type: "CognoGate",
-  value: { type: "IdentityLinked", value: { identity: { asHex: () => "0xfeed" } } },
+  value: { type: "IdentityLinked", value: { identity: "0xfeed" } },
 };
 const STAKE_LINKED_EVENT = {
   type: "CognoGate",
-  value: { type: "StakeLinked", value: { who: "5GxAccount", stake_cred: { asHex: () => "0xc1c1c1" } } },
+  value: { type: "StakeLinked", value: { who: "5GxAccount", stake_cred: "0xc1c1c1" } },
 };
 
 /** A mock typed api whose `tx.CognoGate.<call>(...).getBareTx()` resolves to {@link BARE_TX}. */

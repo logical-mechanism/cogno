@@ -156,15 +156,17 @@ export function useIdentity(
       setBoundStakeCredHex(null);
       return;
     }
-    const s1 = api.query.CognoGate.StakeCredOf.watchValue(signer.ss58, "best").subscribe(
-      (cred) => {
+    // PAPI v2: watchValue takes an options object and emits { block, value } (not the bare value); a
+    // fixed-size [u8;28] credential decodes to a 0x-hex string (no `.asHex()`).
+    const s1 = api.query.CognoGate.StakeCredOf.watchValue(signer.ss58, { at: "best" }).subscribe(
+      ({ value: cred }) => {
         setStakeBound(cred !== undefined);
-        setBoundStakeCredHex(cred ? cred.asHex() : null);
+        setBoundStakeCredHex(cred ?? null);
       },
       () => setStakeBound(null),
     );
-    const s2 = api.query.TalkStake.VotingPower.watchValue(signer.ss58, "best").subscribe(
-      (w) => setVotingPower((w as bigint) ?? 0n),
+    const s2 = api.query.TalkStake.VotingPower.watchValue(signer.ss58, { at: "best" }).subscribe(
+      ({ value: w }) => setVotingPower((w as bigint) ?? 0n),
       () => setVotingPower(null),
     );
     return () => {

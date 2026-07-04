@@ -22,8 +22,7 @@
 // This file does NOT modify reads.ts — it only consumes it (+ social-reads.ts).
 
 import { type Observable, from, startWith, switchMap } from "rxjs";
-import { FixedSizeBinary } from "polkadot-api";
-import { CompatibilityLevel } from "polkadot-api";
+import { CompatibilityLevel, type SizedHex } from "polkadot-api";
 import {
   getPost,
   getGlobalFeedPage,
@@ -73,7 +72,6 @@ import {
   UnsupportedQuery,
 } from "./source";
 import { FEED_PAGE_SIZE } from "./constants";
-import { hexToBytes } from "@/lib/util/hex";
 
 // The seam's first-page / default window (profile Posts first page + global `page()` default + the
 // `watch()` live window). Shared with the hooks' "load more" size so first paint and load-more match.
@@ -116,20 +114,22 @@ const profileText = binTextOpt;
  * source; `page()`/`thread()`/`profile()` await it before choosing a read path.
  */
 function detectNodeFeedApi(api: CognoApi): Promise<boolean> {
-  try {
-    // Probe the NEWEST method the flag authorizes (`search_posts`, spec-200) — NOT `feed_page` (spec-120).
-    // This one boolean gates feed_page AND the spec-200 search/replies/people methods, so it must probe the
-    // latest of them: a node with feed_page but not the P8b methods must report false (degrade to the keyed
-    // path) rather than true (which would throw a raw runtime-method error on the missing search/replies calls).
-    return api.apis.MicroblogApi.search_posts
-      .isCompatible(CompatibilityLevel.BackwardsCompatible)
-      .catch(() => false);
-  } catch {
-    // A SYNCHRONOUS throw (e.g. stale/mismatched descriptors with no `MicroblogApi` entry, where the
-    // property access itself is a TypeError) is not caught by `.catch`. Swallow it here so detection
-    // fails closed onto the keyed path rather than letting the error escape `nodeFeedApiReady`.
-    return Promise.resolve(false);
-  }
+  // Probe the NEWEST method the flag authorizes (`search_posts`, spec-200) — NOT `feed_page` (spec-120).
+  // This one boolean gates feed_page AND the spec-200 search/replies/people methods, so it must probe the
+  // latest of them: a node with feed_page but not the P8b methods must report false (degrade to the keyed
+  // path) rather than true (which would throw a raw runtime-method error on the missing search/replies calls).
+  //
+  // PAPI v2 moved the per-call compat check off the RuntimeCall and onto the static-apis snapshot:
+  // `getStaticApis()` pulls the node's live metadata, then `.compat.apis.MicroblogApi.search_posts
+  // .isCompatible(level)` is a SYNCHRONOUS boolean. A pre-200 node (no `MicroblogApi` entry) reports
+  // Incompatible ⇒ false WITHOUT throwing; any throw (transport blip, stale descriptors) is caught ⇒
+  // false, failing closed onto the always-available keyed fallback.
+  return api
+    .getStaticApis()
+    .then((s) =>
+      s.compat.apis.MicroblogApi.search_posts.isCompatible(CompatibilityLevel.BackwardsCompatible),
+    )
+    .catch(() => false);
 }
 
 export function createPapiFeedSource(api: CognoApi): FeedSource {
@@ -311,9 +311,8 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     // Resolve to an account: directly, or via the reverse AccountOf[identityHash] map.
     let account: Ss58 | undefined = args.author;
     if (!account && args.identityHash) {
-      account = await api.query.CognoGate.AccountOf.getValue(
-        FixedSizeBinary.fromBytes(hexToBytes(args.identityHash)),
-      );
+      // PAPI v2: the `[u8;32]` storage key is supplied as a 0x-hex string (SizedHex<32>), not a FixedSizeBinary.
+      account = await api.query.CognoGate.AccountOf.getValue(args.identityHash as SizedHex<32>);
     }
     if (!account) {
       return {
@@ -343,9 +342,8 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
         api.query.Profile.PinnedPost.getValue(account),
       ]);
     const banned = pkh === undefined;
-    const identityHash =
-      args.identityHash ??
-      (pkh ? (pkh as unknown as { asHex: () => string }).asHex() : null);
+    // PAPI v2: PkhOf's `[u8;32]` value decodes to a 0x-hex string, not a Binary with `.asHex()`.
+    const identityHash = args.identityHash ?? pkh ?? null;
 
     // Posts tab: the author's own top-level posts, FIRST PAGE only (load-more continues via
     // `page({authorId, after})`). Likes tab: the posts this account up-voted (spec-118 reverse map).

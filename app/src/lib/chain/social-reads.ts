@@ -16,6 +16,7 @@
 //   PollTally(u64, u8) -> OptionTally { weight:u128, count:u32 }                                  (ValueQuery, DoubleMap)
 //   PollVotes(u64, who) -> PollVoteRecord { option:u8, weight:u128 } | None                       (OptionQuery)
 
+import { Binary } from "polkadot-api";
 import type { CognoApi, Ss58, PollView, ViewerPostState } from "@/lib/types";
 
 // Read at the BEST block, not the default (finalized). Writes confirm at `inBestBlock` — several blocks
@@ -96,8 +97,8 @@ export async function readViewerPostState(
  */
 export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView> {
   const poll = (await api.query.Microblog.Polls.getValue(hostId, BEST)) as unknown as
-    | Array<{ asText: () => string }>
-    | { options: Array<{ asText: () => string }> }
+    | Uint8Array[]
+    | { options: Uint8Array[] }
     | undefined;
   if (!poll) return { hostId, options: [], totalWeight: 0n, totalCount: 0 };
   const labels = Array.isArray(poll) ? poll : poll.options;
@@ -112,7 +113,7 @@ export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView>
   );
   const options = labels.map((b, i) => ({
     index: i,
-    label: b.asText(),
+    label: Binary.toText(b),
     weight: BigInt(tallies[i]?.weight ?? 0n),
     count: tallies[i]?.count ?? 0,
   }));

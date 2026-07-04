@@ -12,9 +12,9 @@ import { Observable } from "rxjs";
 import { takeNonce, settleNonce } from "@/lib/chain/nonce";
 import type { CognoApi, PostingSigner, TxUpdate } from "@/lib/types";
 
-/** A PAPI transaction we can sign + watch, with the nonce/at options we override. */
+/** A PAPI transaction we can sign + watch, with the client-managed nonce we override. */
 export interface SignableTx {
-  signSubmitAndWatch(signer: unknown, options?: { nonce?: number; at?: "best" }): unknown;
+  signSubmitAndWatch(signer: unknown, options?: { nonce?: number }): unknown;
 }
 
 /** One event emitted by `signSubmitAndWatch` (the subset of fields we read). */
@@ -240,8 +240,11 @@ export function signSubmitWatch(
           return;
         }
         const inner$ = watchTx(
+          // PAPI v2: TxOptions.at is a pinned block-HASH only (no "best"/"finalized"); passing "best"
+          // now throws at runtime. Drop it — the extrinsic builds against the latest block; the
+          // client-managed `nonce` (still passed) is what keeps rapid sequential writes from colliding.
           () =>
-            tx.signSubmitAndWatch(signer.signer, { nonce, at: "best" }) as unknown as ReturnType<
+            tx.signSubmitAndWatch(signer.signer, { nonce }) as unknown as ReturnType<
               Parameters<typeof watchTx>[0]
             >,
           eventName,
