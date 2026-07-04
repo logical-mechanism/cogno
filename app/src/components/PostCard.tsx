@@ -29,6 +29,7 @@ import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
 import { useMuted, muteActions } from "@/lib/muteStore";
 import { useBookmarked, bookmarkActions } from "@/lib/bookmarkStore";
+import { useToaster } from "./toast/ToasterProvider";
 import type {
   CognoPost,
   ViewerPostState,
@@ -130,6 +131,9 @@ export function PostCard({
   const muted = useMuted(post.author);
   // Client-local bookmark (device-only, no chain state): save any post to the /bookmarks shortlist.
   const bookmarked = useBookmarked(post.id);
+  // Bookmarking lives only in the ··· menu (which closes on select) → toast so the save is confirmed,
+  // mirroring the "Link copied" feedback on the sibling copy-link action.
+  const { toast } = useToaster();
   const [revealed, setRevealed] = useState(false);
   const menuItems = useMemo<OverflowMenuItem[] | undefined>(() => {
     if (pending) return undefined;
@@ -141,7 +145,14 @@ export function PostCard({
     items.push({
       id: "bookmark",
       label: bookmarked ? "Remove bookmark" : "Bookmark",
-      onSelect: () => bookmarkActions.toggle(post.id),
+      onSelect: () => {
+        bookmarkActions.toggle(post.id);
+        toast(
+          bookmarked
+            ? { kind: "info", message: "Removed from bookmarks" }
+            : { kind: "success", message: "Saved to bookmarks" },
+        );
+      },
     });
     if (!isOwnPost) {
       const handle = handleOf(post.author);
@@ -152,7 +163,7 @@ export function PostCard({
       });
     }
     return items.length > 0 ? items : undefined;
-  }, [pending, isOwnPost, handlers, post, muted, bookmarked]);
+  }, [pending, isOwnPost, handlers, post, muted, bookmarked, toast]);
 
   // A muted author's post collapses to a "Show" stub everywhere EXCEPT the detail focal (you opened it
   // on purpose). Revealing is local + reversible; the full card keeps its "Unmute" in the ··· menu.

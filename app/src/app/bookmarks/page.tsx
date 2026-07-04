@@ -42,14 +42,21 @@ export default function BookmarksPage() {
   const idsKey = useMemo(() => bookmarkIds.map(String).sort().join(","), [bookmarkIds]);
 
   // ── resolve saved ids → live posts (newest-first) ─────────────────────────────────────────────
-  // A per-id cache (post OR null-for-unresolvable) so removing one bookmark reorders from cache with
-  // NO refetch/skeleton flash, and a permanently-missing id isn't retried each change. Dropped whole
-  // on an account switch (the node stamps the viewer overlay onto root, so it's `me`-specific).
-  const resolvedRef = useRef<Map<string, CognoPost | null>>(new Map());
+  // A per-id cache of RESOLVED posts so removing one bookmark reorders from cache with NO refetch /
+  // skeleton flash. Only SUCCESSES are cached — a failed thread() read (a transient RPC/WS blip and a
+  // genuine miss are indistinguishable here) is left UNCACHED so it re-resolves on the next id change
+  // or a Timeline retry, and a read failure surfaces an error row instead of silently dropping a saved
+  // post / showing a misleading empty state. The cache is dropped whole on an account switch (the node
+  // stamps the viewer overlay onto root, so it's `me`-specific), clearing `posts` too so the previous
+  // viewer's overlay never flashes on the new one.
+  const resolvedRef = useRef<Map<string, CognoPost>>(new Map());
   const meRef = useRef<string | null>(me);
   const [posts, setPosts] = useState<CognoPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by the Timeline retry row to re-attempt the ids that failed to resolve.
+  const [retryNonce, setRetryNonce] = useState(0);
+  const onRetry = useCallback(() => setRetryNonce((n) => n + 1), []);
 
   useEffect(() => {
     if (!source) return; // wait for the reader
@@ -58,6 +65,8 @@ export default function BookmarksPage() {
     if (meRef.current !== me) {
       meRef.current = me;
       resolvedRef.current = new Map();
+      setPosts([]); // drop the previous viewer's cards so their overlay can't flash on the new viewer
+      setLoading(true); // let the skeleton mask the viewer-correct refetch
     }
 
     const ids = [...bookmarkIds].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)); // newest-first
@@ -89,16 +98,24 @@ export default function BookmarksPage() {
       missing.map((id) =>
         source
           .thread(id, me ?? undefined)
-          .then((t) => ({ id, post: t.root as CognoPost | null }))
-          .catch(() => ({ id, post: null as CognoPost | null })),
+          .then((t) => ({ id, post: t.root, ok: true as const }))
+          .catch(() => ({ id, post: null, ok: false as const })),
       ),
     )
       .then((results) => {
         if (cancelled) return;
-        results.forEach(({ id, post }) => resolvedRef.current.set(String(id), post));
+        // Cache ONLY successful resolves; a failed id stays uncached (→ retryable), never a poisoned null.
+        results.forEach((r) => {
+          if (r.ok && r.post) resolvedRef.current.set(String(r.id), r.post);
+        });
         rebuild();
         setLoading(false);
-        setError(null);
+        const failed = results.filter((r) => !r.ok).length;
+        setError(
+          failed > 0
+            ? `Couldn't load ${failed} bookmark${failed === 1 ? "" : "s"} — check your connection.`
+            : null,
+        );
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -109,9 +126,9 @@ export default function BookmarksPage() {
     return () => {
       cancelled = true;
     };
-    // bookmarkIds is captured via idsKey (its stable content hash); me + source complete the deps.
+    // bookmarkIds is captured via idsKey (its stable content hash); me/source/retryNonce complete it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, idsKey, me]);
+  }, [source, idsKey, me, retryNonce]);
 
   // ── viewer-relative state (filled heart / active repost) ──────────────────────────────────────
   const postIds = useMemo(() => posts.map((p) => p.id), [posts]);
@@ -174,6 +191,7 @@ export default function BookmarksPage() {
         handlers={handlers}
         loading={loading && posts.length === 0}
         error={error}
+        onRetry={onRetry}
         hasMore={false}
         paginationCapable={false}
         emptyVariant="feed"
