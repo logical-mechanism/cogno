@@ -125,6 +125,7 @@ fn person_summary(
     pallet_microblog::PersonSummary {
         weight: pallet_talk_stake::AllowedStake::<Runtime>::get(&account),
         follower_count: pallet_microblog::FollowerCount::<Runtime>::get(&account),
+        account_tally: pallet_microblog::AccountVoteTally::<Runtime>::get(&account),
         display_name,
         avatar,
         account,
@@ -405,6 +406,7 @@ impl_runtime_apis! {
                 is_allowed,
                 weight: pallet_talk_stake::AllowedStake::<Runtime>::get(&who),
                 voting_power: pallet_talk_stake::VotingPower::<Runtime>::get(&who),
+                account_tally: pallet_microblog::AccountVoteTally::<Runtime>::get(&who),
                 display_name,
                 bio,
                 avatar,

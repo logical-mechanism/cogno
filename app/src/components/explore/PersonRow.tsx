@@ -13,7 +13,7 @@ import { Avatar } from "@/components/Avatar";
 import { DisplayName } from "@/components/DisplayName";
 import { Handle } from "@/components/Handle";
 import { FollowButton } from "@/components/FollowButton";
-import { formatCount } from "@/lib/format";
+import { formatCount, formatSignedWeight } from "@/lib/format";
 import type { Suggestion, Viewer } from "@/components/kit";
 
 export interface PersonRowProps {
@@ -29,6 +29,13 @@ export function PersonRow({ person, viewer, isFollowing, onToggleFollow }: Perso
     person.followerCount > 0
       ? `${count} ${person.followerCount === 1 ? "follower" : "followers"}`
       : null;
+  // Community reputation (stake-weighted up/down ON this account). Shown only when non-zero; a
+  // negative net score (down-voted / disputed) is flagged red.
+  const rep =
+    person.accountScore != null && person.accountScore !== 0n
+      ? formatSignedWeight(person.accountScore)
+      : null;
+  const repNeg = person.accountScore != null && person.accountScore < 0n;
 
   return (
     <div className={styles.row}>
@@ -43,6 +50,14 @@ export function PersonRow({ person, viewer, isFollowing, onToggleFollow }: Perso
           <span className={styles.meta}>
             <Handle address={person.author} />
             {followers && <span className={styles.followers}>{followers}</span>}
+            {rep && (
+              <span
+                className={`${styles.rep} ${repNeg ? styles.repDown : ""}`}
+                title="Community reputation (stake-weighted)"
+              >
+                {rep}
+              </span>
+            )}
           </span>
         </span>
       </Link>

@@ -41,6 +41,7 @@ import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
+import { useAccountVote } from "@/hooks/useAccountVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { modalActions } from "@/lib/modalStore";
@@ -80,6 +81,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const me = viewer.address ?? null;
   const isSelf = me != null && me === address;
   const canFollow = source?.caps.follows === true;
+  const canAccountVote = source?.caps.tallies === true; // reputation votes ON this account (spec-202)
   const canProfiles = source?.caps.profiles === true; // display name / bio / avatar (node + indexer)
   const canReplies = source?.caps.profileReplies === true; // replies-by-author tab (node — author_replies_page)
   const canLikes = source?.caps.profileLikes === true; // likes tab (node-direct since spec-118)
@@ -149,6 +151,75 @@ function ProfileBody({ address }: { address: Ss58 }) {
     },
     [viewer.status, follow, router],
   );
+
+  // ── account reputation (header): stake-weighted up/down votes ON this account (spec-202). The base
+  // tally + the viewer's own vote come from the profile read; useAccountVote layers a local optimistic
+  // override (single-target, single-surface — it never touches the app-wide overlay). ──
+  const accountVoteHook = useAccountVote(api, signer, votingPower ?? 0n);
+  const {
+    upvote: upvoteAccount,
+    downvote: downvoteAccount,
+    merge: mergeAccountVote,
+    reset: resetAccountVote,
+    isOptimistic: isAccountVoteOptimistic,
+    pending: accountVotePendingRaw,
+  } = accountVoteHook;
+  const accountVoteBase = useMemo(
+    () => ({
+      myVote: profile?.myAccountVote ?? null,
+      upWeight: profile?.accountUpWeight ?? 0n,
+      downWeight: profile?.accountDownWeight ?? 0n,
+      upCount: profile?.accountUpCount ?? 0,
+      downCount: profile?.accountDownCount ?? 0,
+    }),
+    [
+      profile?.myAccountVote,
+      profile?.accountUpWeight,
+      profile?.accountDownWeight,
+      profile?.accountUpCount,
+      profile?.accountDownCount,
+    ],
+  );
+  const shownAccountVote = mergeAccountVote(address, accountVoteBase);
+  // Scope the pending-disable to THIS profile: `pending` is shared across the reused ProfileBody, so a
+  // vote in flight on /u/A must not disable /u/B's arrows — only when THIS target carries the override.
+  const accountVotePending = accountVotePendingRaw && isAccountVoteOptimistic(address);
+  // Retire a SETTLED override once a fresh read of the viewer's OWN vote matches what we show (merge
+  // already renders the base when settled, so this only keeps the record + `isOptimistic` clean). The
+  // separate cleanup below drops this address's override on a profile switch (ProfileBody is reused
+  // across /u/A → /u/B) so a not-yet-reconciled override can't leak back on return.
+  useEffect(() => {
+    // Only retire once NO tx is in flight: a net-zero re-vote (Up then clear) transiently makes
+    // `o.myVote === base.myVote` while both txs are still pending, and dropping the override then would
+    // expose an intermediate read (a brief "Up" flash before the clear lands). Waiting for `!pending`
+    // keeps the override holding the intended end-state until the chain has fully caught up.
+    if (
+      !accountVotePendingRaw &&
+      isAccountVoteOptimistic(address) &&
+      (profile?.myAccountVote ?? null) === shownAccountVote.myVote
+    ) {
+      resetAccountVote(address);
+    }
+  }, [
+    accountVotePendingRaw,
+    address,
+    profile?.myAccountVote,
+    shownAccountVote.myVote,
+    isAccountVoteOptimistic,
+    resetAccountVote,
+  ]);
+  useEffect(() => {
+    return () => resetAccountVote(address);
+  }, [address, resetAccountVote]);
+
+  const onAccountUp = useCallback(() => {
+    if (viewer.status !== "ready") return void router.push("/welcome/");
+    upvoteAccount(address, shownAccountVote.myVote);
+  }, [viewer.status, router, upvoteAccount, address, shownAccountVote.myVote]);
+  const onAccountDown = useCallback(() => {
+    if (viewer.status !== "ready") return void router.push("/welcome/");
+    downvoteAccount(address, shownAccountVote.myVote);
+  }, [viewer.status, router, downvoteAccount, address, shownAccountVote.myVote]);
 
   // ── pinned post: resolve the single id via source.thread(id).root (the seam's one-post resolver). ──
   // Silently omit on 404 / throw / author-mismatch (doc 07 §5.1 / §11). Only on the Posts tab.
@@ -328,6 +399,11 @@ function ProfileBody({ address }: { address: Ss58 }) {
             isFollowing={isFollowing}
             onEditProfile={onEditProfile}
             onToggleFollow={onToggleFollow}
+            canAccountVote={canAccountVote}
+            accountVote={shownAccountVote}
+            accountVotePending={accountVotePending}
+            onAccountUp={onAccountUp}
+            onAccountDown={onAccountDown}
           />
 
           <div

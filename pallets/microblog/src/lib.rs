@@ -416,6 +416,32 @@ pub mod pallet {
     pub type VotesByAccount<T: Config> =
         StorageDoubleMap<_, Blake2_128Concat, T::AccountId, Blake2_128Concat, u64, (), OptionQuery>;
 
+    // ── account reputation storage (stake-weighted up/down votes on ACCOUNTS — the community
+    //    anti-Sybil / anti-impersonation signal). Mirrors the post-vote tally verbatim, re-keyed from
+    //    a `post_id` to a target `AccountId`. ADDITIVE (empty at genesis), so no migration. ───────────
+
+    /// Per-(target, voter) account-vote record. `None` ⇒ that voter has not voted on that account
+    /// (one representation of "not voting" — `clear_account_vote` `take`s the row). The sole input to
+    /// [`AccountVoteTally`]. Mirror of [`Votes`], target-keyed. NB: unlike the post side there is
+    /// deliberately NO reverse "voted-for" index — no surface consumes one (`VotesByAccount` exists
+    /// only for the Likes tab); it can be added additively later if an "endorsements given" view is specced.
+    #[pallet::storage]
+    pub type AccountVotes<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        Blake2_128Concat,
+        T::AccountId,
+        VoteRecord,
+        OptionQuery,
+    >;
+
+    /// Denormalized stake-weighted reputation tally per target account (`ValueQuery` ⇒ default
+    /// all-zero). Mirror of [`VoteTally`], target-keyed; the net score is `up_weight − down_weight`.
+    #[pallet::storage]
+    pub type AccountVoteTally<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, Tally, ValueQuery>;
+
     /// Per-(post, account) repost edge. **Permanent** (treated like content — there is no `unrepost`);
     /// a re-repost is rejected `AlreadyReposted`. `None` ⇒ that account has not reposted that post.
     #[pallet::storage]
@@ -549,6 +575,19 @@ pub mod pallet {
         },
         /// `who` cleared their vote on post `id` (the tally was adjusted by their stored weight).
         VoteCleared { id: u64, who: T::AccountId },
+        /// `who` (stake-`weight`) cast or changed a `dir` reputation vote on account `target`.
+        /// `weight` is the snapshot the tally was adjusted by — same fold-determinism contract as [`Voted`].
+        AccountVoted {
+            target: T::AccountId,
+            who: T::AccountId,
+            dir: VoteDir,
+            weight: u128,
+        },
+        /// `who` cleared their reputation vote on account `target` (adjusted by their stored weight).
+        AccountVoteCleared {
+            target: T::AccountId,
+            who: T::AccountId,
+        },
         /// `who` reposted post `id` (permanent — there is no un-repost).
         Reposted { id: u64, who: T::AccountId },
         /// `follower` started following `followee`.
@@ -603,6 +642,11 @@ pub mod pallet {
         PollNotFound,
         /// `cast_poll_vote` referenced an option index outside the poll's options.
         InvalidOption,
+        /// `vote_account` was called with the caller as the target (you cannot vote your own account).
+        SelfAccountVote,
+        /// `vote_account` target is not identity-bound (`is_allowed` false) — reputation votes only
+        /// apply to real, 1:1 Cardano-bound identities.
+        TargetNotAllowed,
     }
 
     impl<T: Config> Pallet<T> {
@@ -706,6 +750,8 @@ pub mod pallet {
                 }
                 // Votes (and clearing a vote) are a flat signal cost.
                 Call::vote { .. } | Call::clear_vote { .. } => Some(T::VoteCost::get()),
+                // Account reputation votes are the same flat signal cost (reuse `VoteCost`).
+                Call::vote_account { .. } | Call::clear_account_vote { .. } => Some(T::VoteCost::get()),
                 // A repost is a flat amplification cost.
                 Call::repost { .. } => Some(T::RepostCost::get()),
                 // Follow / unfollow are a flat relationship cost (symmetric, no free-churn).
@@ -1040,6 +1086,95 @@ pub mod pallet {
                 }
             });
             Self::deposit_event(Event::VoteCleared { id: post_id, who });
+            Ok(())
+        }
+
+        /// Cast or change a **stake-weighted** reputation vote on account `target` — the community
+        /// anti-Sybil / anti-impersonation signal. Weight is the caller's `pallet_talk_stake::
+        /// VotingPower` snapshot at call time (total Cardano stake of the caller's bound stake
+        /// credential), identical to a post vote. Re-voting deterministically reverses the
+        /// PREVIOUSLY-STORED weight before applying the fresh one, so [`AccountVoteTally`] never drifts
+        /// and an indexer folding `AccountVoted` reproduces it byte-exactly. The target must itself be
+        /// identity-bound and cannot be the caller. Feeless + capacity-metered.
+        #[pallet::call_index(11)]
+        #[pallet::weight(<T as Config>::WeightInfo::vote_account())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _target: &T::AccountId, _dir: &VoteDir| -> bool { true })]
+        pub fn vote_account(
+            origin: OriginFor<T>,
+            target: T::AccountId,
+            dir: VoteDir,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "vote_account rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            ensure!(who != target, Error::<T>::SelfAccountVote);
+            ensure!(
+                T::IdentityGate::is_allowed(&target),
+                Error::<T>::TargetNotAllowed
+            );
+            let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT vote time
+            AccountVoteTally::<T>::mutate(&target, |t| {
+                // 1. REVERSE the previously-stored record (if any) by its STORED weight — never by
+                //    re-reading current stake — so the tally cannot drift across a stake change.
+                if let Some(prev) = AccountVotes::<T>::get(&target, &who) {
+                    match prev.dir {
+                        VoteDir::Up => {
+                            t.up_weight = t.up_weight.saturating_sub(prev.weight);
+                            t.up_count = t.up_count.saturating_sub(1);
+                        }
+                        VoteDir::Down => {
+                            t.down_weight = t.down_weight.saturating_sub(prev.weight);
+                            t.down_count = t.down_count.saturating_sub(1);
+                        }
+                    }
+                }
+                // 2. APPLY the new vote with the freshly-snapshotted weight.
+                match dir {
+                    VoteDir::Up => {
+                        t.up_weight = t.up_weight.saturating_add(weight);
+                        t.up_count = t.up_count.saturating_add(1);
+                    }
+                    VoteDir::Down => {
+                        t.down_weight = t.down_weight.saturating_add(weight);
+                        t.down_count = t.down_count.saturating_add(1);
+                    }
+                }
+            });
+            AccountVotes::<T>::insert(&target, &who, VoteRecord { dir, weight });
+            Self::deposit_event(Event::AccountVoted {
+                target,
+                who,
+                dir,
+                weight,
+            });
+            Ok(())
+        }
+
+        /// Clear the caller's reputation vote on account `target`, reversing exactly the stored weight
+        /// from the tally (so the fold stays deterministic). Fails `NotVoted` if there is no vote. Feeless.
+        #[pallet::call_index(12)]
+        #[pallet::weight(<T as Config>::WeightInfo::clear_account_vote())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _target: &T::AccountId| -> bool { true })]
+        pub fn clear_account_vote(origin: OriginFor<T>, target: T::AccountId) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "clear_account_vote rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            let prev = AccountVotes::<T>::take(&target, &who).ok_or(Error::<T>::NotVoted)?;
+            AccountVoteTally::<T>::mutate(&target, |t| match prev.dir {
+                VoteDir::Up => {
+                    t.up_weight = t.up_weight.saturating_sub(prev.weight);
+                    t.up_count = t.up_count.saturating_sub(1);
+                }
+                VoteDir::Down => {
+                    t.down_weight = t.down_weight.saturating_sub(prev.weight);
+                    t.down_count = t.down_count.saturating_sub(1);
+                }
+            });
+            Self::deposit_event(Event::AccountVoteCleared { target, who });
             Ok(())
         }
 
@@ -1569,6 +1704,9 @@ pub struct PersonSummary<AccountId> {
     pub weight: u128,
     /// Number of accounts following this person (the `FOLLOWER_COUNT_DESC` rank key).
     pub follower_count: u32,
+    /// The person's community reputation tally (stake-weighted up/down votes ON this account); the
+    /// net score = `up_weight − down_weight`. Lets discovery rows show a reputation chip.
+    pub account_tally: Tally,
 }
 
 /// A full profile view — the header a profile page renders, assembled by the RUNTIME across pallet-profile
@@ -1587,6 +1725,9 @@ pub struct ProfileView<AccountId> {
     pub weight: u128,
     /// Stake-vote weight (`VotingPower`, total Cardano stake of the bound stake credential).
     pub voting_power: u128,
+    /// The account's community reputation tally: stake-weighted up/down votes cast ON this account
+    /// (net score = `up_weight − down_weight`). The anti-Sybil / anti-impersonation signal.
+    pub account_tally: Tally,
     /// Display name (empty if no profile set).
     pub display_name: Vec<u8>,
     /// Bio (empty if unset).

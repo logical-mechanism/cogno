@@ -1,0 +1,124 @@
+/* AccountVoteControl — the profile-header reputation vote group. Self-contained (kept separate from
+   PostCardActions.module.css so the primary post vote UI is never touched), mirroring the same
+   ▲ score ▼ visual language: green endorse / red dispute, tabular score between the arrows. */
+
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  margin-top: var(--cg-space-2);
+}
+
+.label {
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
+.voteGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+/* each action: icon with a circular hover wash (mirrors PostCardActions .action / .iconWrap) */
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cg-text-secondary);
+  cursor: pointer;
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+  transition: color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.action:focus-visible {
+  outline: none;
+}
+
+.action:focus-visible .iconWrap {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.iconWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin: -7px;
+  border-radius: var(--cg-radius-pill);
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
+    color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+/* endorse (up) — green */
+.up:hover:not(:disabled) {
+  color: var(--cg-repost);
+}
+.up:hover:not(:disabled) .iconWrap {
+  background: var(--cg-repost-wash);
+}
+.upOn,
+.upOn:disabled {
+  color: var(--cg-repost);
+  opacity: 1;
+}
+
+/* dispute (down) — red */
+.down:hover:not(:disabled) {
+  color: var(--cg-danger);
+}
+.down:hover:not(:disabled) .iconWrap {
+  background: var(--cg-danger-wash);
+}
+.downOn,
+.downOn:disabled {
+  color: var(--cg-danger);
+  opacity: 1;
+}
+
+/* the net stake-weighted score between the arrows */
+.score {
+  min-width: 2ch;
+  text-align: center;
+  font-size: var(--cg-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--cg-text-secondary);
+}
+.scoreUp {
+  color: var(--cg-repost);
+}
+.scoreDown {
+  color: var(--cg-danger);
+}
+
+/* like-pop when the endorse becomes active (reduced-motion is handled globally). Keyframe MUST be
+   local — css-loader scopes the animation-name reference, so a global keyframe would never match. */
+.pop {
+  animation: cg-rep-pop var(--cg-motion-base) var(--cg-ease-pop);
+}
+
+@keyframes cg-rep-pop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.35);
+  }
+  70% {
+    transform: scale(0.9);
+  }
+  100% {
+    transform: scale(1);
+  }
+}

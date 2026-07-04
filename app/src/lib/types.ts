@@ -131,6 +131,8 @@ export interface Suggestion {
   avatar?: string;
   weight?: bigint;
   followerCount: number;
+  /** spec-202: net stake-weighted reputation score (up − down; may be negative). Undefined when unknown. */
+  accountScore?: bigint;
 }
 
 // ── M4: the indexer-backed feed seam ────────────────────────────────────────────────────
@@ -203,6 +205,15 @@ export interface ProfileView {
   /** Follower/following counts (indexer-only; PAPI-direct omits — caps.follows:false). */
   followerCount?: number;
   followingCount?: number;
+  // ── spec-202 account reputation (stake-weighted up/down votes ON this account) ──
+  /** Net stake-weighted reputation score (`accountUpWeight − accountDownWeight`; may be negative). */
+  accountScore?: bigint;
+  accountUpWeight?: bigint;
+  accountDownWeight?: bigint;
+  accountUpCount?: number;
+  accountDownCount?: number;
+  /** The connected viewer's own vote on this account (null = not voted; undefined = no viewer / unknown). */
+  myAccountVote?: "Up" | "Down" | null;
   page: FeedPage;
 }
 

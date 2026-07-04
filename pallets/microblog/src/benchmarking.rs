@@ -86,7 +86,8 @@ mod benchmarks {
         let caller: T::AccountId = whitelisted_caller();
         T::IdentityGate::benchmark_set_allowed(&caller);
         seed_post::<T>(&caller);
-        pallet_talk_stake::AllowedStake::<T>::insert(&caller, 2_000u128);
+        // `vote` snapshots `VotingPower` (total Cardano stake), NOT `AllowedStake` (posting deposit).
+        pallet_talk_stake::VotingPower::<T>::insert(&caller, 2_000u128);
         // Pre-existing Up vote (so `vote(Down)` exercises both the reverse and the apply branches).
         Votes::<T>::insert(
             0u64,
@@ -143,6 +144,77 @@ mod benchmarks {
         _(RawOrigin::Signed(caller.clone()), 0u64);
 
         assert!(Votes::<T>::get(0u64, &caller).is_none());
+        Ok(())
+    }
+
+    /// `vote_account` — worst case is the RE-VOTE flip path on an account target (an existing record
+    /// is reversed, then the new direction applied), with a non-zero `VotingPower` so the weight
+    /// snapshot is real. Both caller AND target go through the real identity gate — the target gate is
+    /// a load-bearing read (`vote_account` rejects an unbound target `TargetNotAllowed`).
+    #[benchmark]
+    fn vote_account() -> Result<(), BenchmarkError> {
+        let caller: T::AccountId = whitelisted_caller();
+        T::IdentityGate::benchmark_set_allowed(&caller);
+        let target: T::AccountId = account("target", 0, 0);
+        T::IdentityGate::benchmark_set_allowed(&target);
+        pallet_talk_stake::VotingPower::<T>::insert(&caller, 2_000u128);
+        // Pre-existing Up vote (so `vote_account(Down)` exercises both the reverse and apply branches).
+        AccountVotes::<T>::insert(
+            &target,
+            &caller,
+            VoteRecord {
+                dir: VoteDir::Up,
+                weight: 1_000u128,
+            },
+        );
+        AccountVoteTally::<T>::insert(
+            &target,
+            Tally {
+                up_weight: 1_000,
+                down_weight: 0,
+                up_count: 1,
+                down_count: 0,
+            },
+        );
+
+        #[extrinsic_call]
+        _(RawOrigin::Signed(caller.clone()), target.clone(), VoteDir::Down);
+
+        let t = AccountVoteTally::<T>::get(&target);
+        assert_eq!(t.up_count, 0);
+        assert_eq!(t.down_count, 1);
+        Ok(())
+    }
+
+    /// `clear_account_vote` of an existing account vote (seeded), reversing its stored weight from the
+    /// target's tally. Only the caller is gated (clear does not re-check the target).
+    #[benchmark]
+    fn clear_account_vote() -> Result<(), BenchmarkError> {
+        let caller: T::AccountId = whitelisted_caller();
+        T::IdentityGate::benchmark_set_allowed(&caller);
+        let target: T::AccountId = account("target", 0, 0);
+        AccountVotes::<T>::insert(
+            &target,
+            &caller,
+            VoteRecord {
+                dir: VoteDir::Up,
+                weight: 1_000u128,
+            },
+        );
+        AccountVoteTally::<T>::insert(
+            &target,
+            Tally {
+                up_weight: 1_000,
+                down_weight: 0,
+                up_count: 1,
+                down_count: 0,
+            },
+        );
+
+        #[extrinsic_call]
+        _(RawOrigin::Signed(caller.clone()), target.clone());
+
+        assert!(AccountVotes::<T>::get(&target, &caller).is_none());
         Ok(())
     }
 
