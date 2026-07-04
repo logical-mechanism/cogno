@@ -9,7 +9,16 @@ signed-extension set changes). The chain has not yet cut a tagged public release
 
 ## [Unreleased]
 
-Current runtime: **`spec_version` 200 / `transaction_version` 3**.
+Current runtime: **`spec_version` 201 / `transaction_version` 3**.
+
+### Toolchain / dependencies (polkadot-sdk `stable2606`)
+
+- **Upgraded the whole Rust workspace to polkadot-sdk `stable2606`** (from `stable2603-3`) and the
+  pinned toolchain to **rustc 1.93.0** (from 1.90.0) — the toolchain Parity builds the `stable2606`
+  release train against. The runtime `spec_version` bumped **200 → 201**; `transaction_version`
+  stays **3** (extrinsic/extension encoding is byte-identical). The old "stable ≥ ~1.91 breaks the
+  `sp_io` wasm link" pin caution no longer applies: it was specific to stable2603's sp-io 45.0.0, and
+  stable2606's sp-io 48.0.0 links cleanly under 1.93.0.
 
 ### All-Rust restart (fresh genesis)
 

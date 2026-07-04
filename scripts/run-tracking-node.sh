@@ -12,7 +12,7 @@
 # First-time setup (fresh box) is documented in docs/RELAY-NODE.md. In short:
 #   - Ubuntu build deps:  sudo apt-get install -y clang protobuf-compiler cmake libssl-dev pkg-config make build-essential
 #     (there is NO libp2p package — P2P is the sc-network crate, compiled into the binary by `cargo build --release`)
-#   - Rust toolchain via rustup (auto-selects the pinned 1.90.0 from rust-toolchain.toml)
+#   - Rust toolchain via rustup (auto-selects the pinned 1.93.0 from rust-toolchain.toml)
 #
 # Prereqs:
 #   1. The node binary is built:               cargo build --release

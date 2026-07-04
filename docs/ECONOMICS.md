@@ -5,9 +5,9 @@
 > `L1`–`L5` layered specs, `PLAN.md`, the `M*-build.md` notes, and an internal decision register cited
 > inline as `DR-NN` — plus older spec versions and removed components (the off-chain follower, sudo).
 > Kept for design rationale; the **current** system overview is [`ARCHITECTURE.md`](ARCHITECTURE.md), and
-> the runtime is now `spec_version` 200.
+> the runtime is now `spec_version` 201.
 
-> **Status: IMPLEMENTED (present in the current `spec_version` 200 runtime).** This document is the
+> **Status: IMPLEMENTED (present in the current `spec_version` 201 runtime).** This document is the
 > original economic design. It specifies the model that replaces per-post fees. Honest about caveats;
 > numbers are illustrative and runtime-tunable, not consensus-critical magic.
 > **One-line thesis:** Your stake is your rate limit. Lock ADA on Cardano → it grants a regenerating "talk capacity" on the solochain → posting is feeless and consumes capacity → capacity refills over time. No money is spent per post.

@@ -2,7 +2,7 @@
 
 > **Note.** The `spec_version` numbers below (119/120/121) are **pre-restart build history**. On
 > `fork/all-rust` these features shipped into the fresh-genesis runtime and are present in
-> `spec_version` **200** (`transaction_version` stays **3**). Current overview:
+> `spec_version` **201** (`transaction_version` stays **3**). Current overview:
 > [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Status: **Features 1 + 3 implemented.** Feature 1 — the `MicroblogApi` runtime read API + client wiring
@@ -141,7 +141,7 @@ migration (same shape as `MigrateV2ToV3`).
   empty/None cases, `limit`/scan caps.
 - A Rust↔TS parity check: the API page must equal the existing keyed-read page (same ids, same
   aggregates) so the fallback path can't drift from the API path.
-- `cargo test` (pallet) + `cargo build --release` (wasm links under rustc 1.90.0) + `app` gates
+- `cargo test` (pallet) + `cargo build --release` (wasm links under rustc 1.93.0) + `app` gates
   (`tsc`/`lint`/`vitest`) + the static-export `npm run build` (the only check that catches the
   `@vercel/nft` BigInt trap) before any push.
 

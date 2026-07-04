@@ -48,7 +48,7 @@ message passing, and (since the all-Rust restart) no metadata anchoring back to 
 
 ```
 node/            cogno-chain-node — the Aura+GRANDPA node + the cobs header-seal proposer
-runtime/         cogno-chain-runtime — #[frame_support::runtime], spec_version 200 / tx_version 3
+runtime/         cogno-chain-runtime — #[frame_support::runtime], spec_version 201 / tx_version 3
 pallets/         microblog, talk-stake, cogno-gate, profile, validator-set,
                  cardano-observer, governed-upgrade
 cli/             cogno-chain-cli — the all-Rust admin CLI (typed calls, keys-by-file)
@@ -169,7 +169,9 @@ runs automatically at boot.
 
 ## Toolchain
 
-Pinned to **rustc 1.90.0** (`rust-toolchain.toml`) — stable ≥ ~1.91 breaks the `sp_io` wasm link. The
+Pinned to **rustc 1.93.0** (`rust-toolchain.toml`) — the toolchain Parity builds the polkadot-sdk
+`stable2606` train against; stay on it (the old ≥ ~1.91 `sp_io` wasm-link break was specific to
+stable2603's sp-io 45.0.0, and no longer applies under stable2606's sp-io 48.0.0). The
 frontend uses **nvm node v22.12.0** (the snap node writes stdout to `/dev/null`, and MeshJS's
 `core-cst` redirects stdio). Encoding-affecting runtime changes bump `spec_version` and require
 regenerating the PAPI descriptors.

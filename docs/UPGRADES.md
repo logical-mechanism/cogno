@@ -39,7 +39,7 @@ functions; the new runtime runs on existing validator binaries unchanged.
 ## Soft path — forkless runtime upgrade
 
 1. Build the feature (new pallet at a **new** `pallet_index`, or changes to existing pallets).
-2. Bump **`spec_version`** in [`../runtime/src/lib.rs`](../runtime/src/lib.rs) (e.g. 200 → 201) and
+2. Bump **`spec_version`** in [`../runtime/src/lib.rs`](../runtime/src/lib.rs) (e.g. 201 → 202) and
    add a changelog comment like the existing ones. Bump **`transaction_version`** *only* if the
    extrinsic **encoding** changed (a new `TransactionExtension`, or changed call args) — adding a new
    call does **not** change it.
@@ -95,7 +95,7 @@ is a no-op, and there is no slashing — coordination is purely operational. See
 
 ## Encoding contracts (keep these stable)
 
-- **`spec_version`** — bump on any logic/metadata change (currently **200**).
+- **`spec_version`** — bump on any logic/metadata change (currently **201**).
 - **`transaction_version`** — bump *only* on extrinsic-encoding changes. Keeping it stable means
   in-flight signed txs and signing tooling don't break. (It is **3**: bumped 1→2 when the
   `CheckCapacity` extension was added, then 2→3 at spec 118 when `pallet-profile`'s `set_profile`
@@ -145,7 +145,7 @@ mechanics above are the easy part.
 ## Worked example: adding a "bookmarks" pallet
 
 1. New `pallet-bookmarks` at a new index (e.g. 18); its own (initially empty) storage → **no migration**.
-2. `spec_version` 200 → 201; `transaction_version` stays 3 (a new call is not an encoding change).
+2. `spec_version` 201 → 202; `transaction_version` stays 3 (a new call is not an encoding change).
 3. `cargo build --release` (clean). No new host functions → **soft**: existing validator binaries run
    it unchanged, no coordinated node upgrade.
 4. `try-runtime` against a preprod snapshot.

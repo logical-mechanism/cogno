@@ -17,9 +17,9 @@ operator's validator.
 ## One-time setup (fresh box)
 
 1. **System deps + Rust toolchain** — see [README.md](../README.md#prerequisites): the `apt-get`
-   build deps, then `rustup` (it auto-selects the pinned `1.90.0` from
-   [`rust-toolchain.toml`](../rust-toolchain.toml); do **not** use rolling `stable` — 1.96 breaks the
-   `sp_io` wasm link).
+   build deps, then `rustup` (it auto-selects the pinned `1.93.0` from
+   [`rust-toolchain.toml`](../rust-toolchain.toml); do **not** roll to plain `stable` — stay on the
+   toolchain the pinned SDK release is verified against).
 2. **Clone + build** (heavy first compile):
    ```bash
    git clone <repo> cogno-chain && cd cogno-chain
