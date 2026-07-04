@@ -103,7 +103,6 @@ pallet-grandpa = { version = "49.0.0", default-features = false }
 # pallet's SessionManager each session, instead of from static genesis.
 pallet-session = { version = "49.0.0", default-features = false }
 pallet-skip-feeless-payment = { version = "23.0.0", default-features = false }
-pallet-sudo = { version = "49.0.0", default-features = false }
 pallet-timestamp = { version = "48.0.0", default-features = false }
 pallet-transaction-payment = { version = "49.0.0", default-features = false }
 pallet-transaction-payment-rpc = { version = "52.0.0", default-features = false }

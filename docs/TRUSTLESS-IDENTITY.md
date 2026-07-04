@@ -1,7 +1,7 @@
 # Trustless identity (D1) — on-chain CIP-8 self-proof
 
 > **Note.** The mechanism (on-chain CIP-8 self-proof, `cip8.rs`) is current and present in the
-> `fork/all-rust` runtime (`spec_version` **200**). The spec numbers below (e.g. 116) are **pre-restart
+> `fork/all-rust` runtime (`spec_version` **201**). The spec numbers below (e.g. 116) are **pre-restart
 > build history**, a few cross-references point to the retired pre-restart layered specs (`L2-follower`,
 > `L3-SPO-graduation`), and the CI oracle cited as `services/cogno-follower/{verify,beacon}.py` now lives
 > at `ci/cip8-oracle/`. The current system overview is [`ARCHITECTURE.md`](ARCHITECTURE.md).

@@ -48,14 +48,14 @@ message passing, and (since the all-Rust restart) no metadata anchoring back to 
 
 ```
 node/            cogno-chain-node — the Aura+GRANDPA node + the cobs header-seal proposer
-runtime/         cogno-chain-runtime — #[frame_support::runtime], spec_version 200 / tx_version 3
+runtime/         cogno-chain-runtime — #[frame_support::runtime], spec_version 201 / tx_version 3
 pallets/         microblog, talk-stake, cogno-gate, profile, validator-set,
                  cardano-observer, governed-upgrade
 cli/             cogno-chain-cli — the all-Rust admin CLI (typed calls, keys-by-file)
 cogno-dbsync/    shared crate: the deterministic db-sync reader + Cardano-state reduction
 cogno-keyfile/   shared crate: the cardano-cli-style JSON key envelope
 contracts/       the Aiken (Plutus V3) L1 talk_vault validator — LIVE on preprod (never move its hash)
-app/             Next.js 14 static-export frontend (PAPI + MeshJS)
+app/             Next.js 16 static-export frontend (PAPI + MeshJS)
 ci/cip8-oracle/  an independent Python CIP-8 verifier, kept as a CI adversarial oracle
 deploy/          systemd unit + monitoring (Prometheus/Grafana/Alertmanager)
 docs/            this file + the per-mechanism docs + operator runbooks
@@ -141,7 +141,7 @@ node-side `tantivy` index: [`SCALE-NODE-READS.md`](SCALE-NODE-READS.md).
 
 ## The frontend
 
-`app/` is a Next.js 14 **static export**. It reads and writes the chain node-direct through PAPI
+`app/` is a Next.js 16 **static export**. It reads and writes the chain node-direct through PAPI
 (reads via `MicroblogApi`, writes as ordinary or bare-unsigned extrinsics — CIP-8 binds are bare, the
 proof is the authorization). It uses MeshJS for the CIP-30 browser wallet and the L1 `talk_vault`
 lock/exit (Cardano txs submitted via Blockfrost, with live Ogmios cost models). It is the only
@@ -169,7 +169,9 @@ runs automatically at boot.
 
 ## Toolchain
 
-Pinned to **rustc 1.90.0** (`rust-toolchain.toml`) — stable ≥ ~1.91 breaks the `sp_io` wasm link. The
+Pinned to **rustc 1.93.0** (`rust-toolchain.toml`) — the toolchain Parity builds the polkadot-sdk
+`stable2606` train against; stay on it (the old ≥ ~1.91 `sp_io` wasm-link break was specific to
+stable2603's sp-io 45.0.0, and no longer applies under stable2606's sp-io 48.0.0). The
 frontend uses **nvm node v22.12.0** (the snap node writes stdout to `/dev/null`, and MeshJS's
 `core-cst` redirects stdio). Encoding-affecting runtime changes bump `spec_version` and require
 regenerating the PAPI descriptors.

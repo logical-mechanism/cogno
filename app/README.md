@@ -1,12 +1,16 @@
-# cogno-chain frontend — the Reading Room / Civic Ledger
+# cogno-chain frontend — a feeless social client
 
-The Next.js 14 **static-export** SPA for cogno-chain: a "post text / read text" interface styled as
-a **Reading Room** (the feed) over a **Civic Ledger** (the on-chain provenance — identity binding,
-Cardano-sourced talk capacity, and the Cardano anchor are all visible, not hidden). It talks to the
-app-chain with **PAPI** (`polkadot-api`) and to Cardano with **MeshJS** (CIP-30 wallet + Blockfrost).
-There is no backend and no telemetry — it self-hosts on any static host (`output: "export"`, see
-`next.config.mjs`). For the full project, see the top-level [`README.md`](../README.md); for the
-design, [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
+The Next.js 16 **static-export** SPA for cogno-chain — a dark-first, Twitter-style social client
+(**post text / read text**): a home feed, explore/search, compose, post threads, and user profiles.
+Posting and voting are **feeless**, metered by Cardano-sourced **talk-capacity** (lock ADA on Cardano
+→ earn capacity), not per-action fees; identity is a one-time **CIP-8 bind** (one Cardano owner
+Address ⇒ one app-chain account). It reads **everything node-direct** — feed / thread / profile /
+search over **PAPI** (`polkadot-api`) + the runtime read API, no indexer and no follower — and reaches
+Cardano with **MeshJS** (CIP-30 wallet + Blockfrost) for the L1 vault lock/exit. The chain is
+**observe-only**: it reads Cardano, never writes back (no anchor). There is no backend and no
+telemetry — it self-hosts on any static host (`output: "export"`, see `next.config.mjs`). For the
+full project, see the top-level [`README.md`](../README.md); for the design,
+[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
 
 ## Run
 
@@ -42,7 +46,7 @@ which wins over the localhost fallback.
 
 | Settings field | Build-time env | Default | What it is |
 |---|---|---|---|
-| WebSocket endpoint(s) | `NEXT_PUBLIC_WS_URL` | `ws://127.0.0.1:9944` | the app-chain node the SPA reads/writes through (PAPI) — the SOLE read/write surface (feed / thread / profile / search served node-direct via the spec-200 MicroblogApi; no indexer or follower) |
+| WebSocket endpoint(s) | `NEXT_PUBLIC_WS_URL` | `ws://127.0.0.1:9944` | the app-chain node the SPA reads/writes through (PAPI) — the SOLE read/write surface (feed / thread / profile / search served node-direct via the node's MicroblogApi read API; no indexer or follower) |
 | Blockfrost project id | `NEXT_PUBLIC_BLOCKFROST_PROJECT_ID` | *(empty)* | the **preprod** Blockfrost project id the in-browser vault lock/exit txs use; empty ⇒ the lock action is hidden |
 
 The Blockfrost project id is exposed client-side **by design** — so any visitor can lock from their
@@ -78,6 +82,7 @@ The earlier on-screen "honesty badges" were **dropped** (locked design decision 
 Twitter-UX, chain-backed surfaces only). The posture they encoded still holds and is documented in
 [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md): the app-chain is a single operator-run node (its
 safety is the operator's Aura/GRANDPA, not Cardano's finality); locking ADA earns capacity only once
-the on-chain observer writes your weight, so a successful lock is "submitted", not "post now"; and the
-Cardano anchor is **evidence, not enforcement**. The 3-of-5 committee behind the privileged calls is
+the on-chain observer writes your weight, so a successful lock is "submitted", not "post now"; and
+Cardano is **observed, not bridged** — the chain reads it (identity, weight, block clock) but never
+writes back and inherits none of its security. The 3-of-5 committee behind the privileged calls is
 real but **D2-SHAPED, not D2-TRUST** on a single-operator stack.

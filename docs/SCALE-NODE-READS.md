@@ -2,7 +2,7 @@
 
 > **Note.** The `spec_version` numbers below (119/120/121) are **pre-restart build history**. On
 > `fork/all-rust` these features shipped into the fresh-genesis runtime and are present in
-> `spec_version` **200** (`transaction_version` stays **3**). Current overview:
+> `spec_version` **201** (`transaction_version` stays **3**). Current overview:
 > [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Status: **Features 1 + 3 implemented.** Feature 1 — the `MicroblogApi` runtime read API + client wiring
@@ -45,7 +45,7 @@ point-read over PAPI. That is the scaling ceiling now: latency × round-trips, n
 
 This spec moves the read loop **into the runtime** so a whole enriched, viewer-aware page comes back in
 **one `state_call`**, atomic at one block. It is the move that makes "the node serves the feed" literally
-true, and it does **not** depend on the indexer (the follow graph + all aggregates already live on chain).
+true, and it needs no external indexer (the follow graph + all aggregates already live on chain).
 
 ## Feature 1 (PRIMARY) — a `MicroblogApi` read Runtime API
 
@@ -141,15 +141,15 @@ migration (same shape as `MigrateV2ToV3`).
   empty/None cases, `limit`/scan caps.
 - A Rust↔TS parity check: the API page must equal the existing keyed-read page (same ids, same
   aggregates) so the fallback path can't drift from the API path.
-- `cargo test` (pallet) + `cargo build --release` (wasm links under rustc 1.90.0) + `app` gates
+- `cargo test` (pallet) + `cargo build --release` (wasm links under rustc 1.93.0) + `app` gates
   (`tsc`/`lint`/`vitest`) + the static-export `npm run build` (the only check that catches the
   `@vercel/nft` BigInt trap) before any push.
 
 ## Non-goals / guardrails
 
 - **Do not touch `contracts/`** (Aiken vault is live on preprod — any edit moves its hash).
-- **Do not renumber pallet indices** (index 7 permanently vacant).
+- **Do not renumber pallet indices** (indices 6 and 12 permanently vacant; 7 is GovernedUpgrade).
 - This is a **read** API — no privileged calls, no committee path involved.
-- Keep the indexer (SubQuery) as the path for cross-account aggregations it's actually better at
-  (who-to-follow, search); this spec is about the node serving the *primary feed/thread/profile reads*
-  itself, which it now can.
+- Cross-account aggregations (who-to-follow, search) are node-served too now — the external SubQuery
+  indexer that formerly handled them has since been removed; this spec covers the *primary
+  feed/thread/profile reads*, which the node likewise serves itself.

@@ -32,7 +32,7 @@ observed weight → frontend → federation into one sequence.
   `--consumed-tx-out` — spentness is read from `tx_in`; the read probes `EXISTS (SELECT 1 FROM tx_in)` and
   **abstains fail-closed** otherwise). Expose a read-only role (e.g. `cogno_reader`) as `DBSYNC_URL`.
   MAINNET PREREQUISITE: db-sync over TLS.
-- **The built node binary**, from a clean `cargo build --release` (pinned rustc 1.90.0). The **same** binary
+- **The built node binary**, from a clean `cargo build --release` (pinned rustc 1.93.0). The **same** binary
   must generate the genesis and run the node — a `--features runtime-benchmarks` build embeds a runtime a
   normal node can't run, and a different build changes the genesis.
 - **Ogmios + Blockfrost** are needed only by the **frontend's** L1 lock/exit (tx submit + cost models). The
@@ -130,7 +130,7 @@ bare-unsigned extrinsic from a CIP-8 proof — see `identity prove`.)
 
 [app/](../app/README.md) is a static-export Next.js client that reads **everything from the node** (feed /
 thread / search / profile via PAPI + the runtime read API — no indexer, no GraphQL). Set its endpoints to your
-node (`ws://<host>:9944`, behind TLS for anything public — see follow-ups). This branch is **spec 200**; after
+node (`ws://<host>:9944`, behind TLS for anything public — see follow-ups). This branch is **spec 201**; after
 any spec bump regenerate PAPI descriptors:
 `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
 

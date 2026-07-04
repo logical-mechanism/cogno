@@ -95,10 +95,11 @@ sudo apt-get update && sudo apt-get install -y \
 > (`sudo ln -sf "$(ls /usr/bin/llvm-config-* | sort -V | tail -1)" /usr/bin/llvm-config`) or export
 > `LLVM_CONFIG_PATH` at the versioned binary.
 
-Rust is pinned by [`rust-toolchain.toml`](rust-toolchain.toml) to **`channel = "1.90.0"`** (not
-rolling `stable` — current stable 1.96 breaks the `sp_io` wasm link). `cargo build` auto-selects it;
-just have `rustup` installed. Pinned upstream (DR-03): polkadot-sdk **`polkadot-stable2603-3`**
-(commit `e3737178ec726cffe506c907263aaaa417893fd0`); `Cargo.lock` is committed — don't regenerate it.
+Rust is pinned by [`rust-toolchain.toml`](rust-toolchain.toml) to **`channel = "1.93.0"`** (not
+rolling `stable` — stay on the toolchain the pinned SDK release is verified against). `cargo build`
+auto-selects it; just have `rustup` installed. Pinned upstream (DR-03): polkadot-sdk **`stable2606`**
+(release tag `polkadot-stable2606-rc4`; forked from `templates/solochain` at `polkadot-stable2603-3`,
+commit `e3737178ec726cffe506c907263aaaa417893fd0`); `Cargo.lock` is committed — don't regenerate it.
 
 **To run the rest of the stack** (only what you use):
 
@@ -356,16 +357,16 @@ The node's systemd EnvironmentFile template is
 
 ```
 cogno-chain/
-├─ Cargo.toml / Cargo.lock     # workspace, pinned to stable2603-3; Cargo.lock committed
-├─ rust-toolchain.toml         # channel = 1.90.0; targets = [wasm32v1-none, wasm32-unknown-unknown]
+├─ Cargo.toml / Cargo.lock     # workspace, pinned to stable2606; Cargo.lock committed
+├─ rust-toolchain.toml         # channel = 1.93.0; targets = [wasm32v1-none, wasm32-unknown-unknown]
 ├─ node/                       # cogno-chain-node (Aura + GRANDPA + cardano-observer + read RPC)
-├─ runtime/                    # cogno-chain-runtime (#[frame_support::runtime], spec 200 / tx 3)
+├─ runtime/                    # cogno-chain-runtime (#[frame_support::runtime], spec 201 / tx 3)
 ├─ pallets/                    # microblog, talk-stake, cogno-gate, governed-upgrade, validator-set,
 │                              #   cardano-observer, profile
 ├─ cli/                        # cogno-chain-cli (all-Rust admin tool; typed RuntimeCall, keys by file)
 ├─ cogno-dbsync/ cogno-keyfile/ # shared no-node crates (deterministic db-sync reader; key envelope)
 ├─ contracts/                  # the Aiken L1 `talk_vault` validator (+ audits/)
-├─ app/                        # Next.js 14 static-export frontend (PAPI + MeshJS) — see app/README.md
+├─ app/                        # Next.js 16 static-export frontend (PAPI + MeshJS) — see app/README.md
 ├─ ci/cip8-oracle/             # the independent pycardano CIP-8 verifier (CI adversarial oracle)
 ├─ deploy/                     # one systemd unit + monitoring (Prometheus/Grafana/Alertmanager)
 ├─ docs/                       # ARCHITECTURE.md + design deep-dives + operator runbooks
@@ -409,7 +410,7 @@ indices never shift. Talk-capacity is **folded into `microblog`** (no separate c
 - **Acceptance:** with a `--dev` node, `cd scripts/acceptance && npm install && WS=ws://127.0.0.1:9944
   node acceptance.mjs` (asserts the running chain exposes no sudo / `set_stake` / anchor extrinsic).
 - **Encoding discipline:** pallet indices and `transaction_version` are on-wire contracts; bump
-  `spec_version` (currently 200) only for encoding-affecting changes and regenerate PAPI descriptors
+  `spec_version` (currently 201) only for encoding-affecting changes and regenerate PAPI descriptors
   afterward.
 - **Upgrading a live chain** (adding features, soft vs hard forks, the mixed-validator question,
   storage migrations, enactment): [`docs/UPGRADES.md`](docs/UPGRADES.md).

@@ -28,13 +28,13 @@ scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 200 / tx_version 3**) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 201 / tx_version 3**) |
 | `pallets/` | `microblog` (10), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing), `profile` (17) |
 | `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`query weight` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
 | `contracts/` | the Aiken (Plutus V3) L1 `talk_vault` validator + `audits/` — **LIVE on preprod, see gotcha below** |
-| `app/` | Next.js 14 static-export frontend (PAPI + MeshJS). See [app/README.md](app/README.md) |
+| `app/` | Next.js 16 static-export frontend (PAPI + MeshJS). See [app/README.md](app/README.md) |
 | `ci/cip8-oracle/` | an independent Python CIP-8 verifier (a second implementation), kept as a CI adversarial oracle — do **not** port to Rust |
 | `deploy/` | one systemd unit + monitoring (Prometheus/Grafana/Alertmanager) |
 | `_sdk/` | **gitignored** vendored polkadot-sdk checkout |
@@ -82,11 +82,13 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index;
   gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **200**); after a bump, regenerate PAPI descriptors:
+  `spec_version` (currently **201**); after a bump, regenerate PAPI descriptors:
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   Non-encoding changes (bounds, logging, tests) must **not** bump it.
-- **Toolchain is pinned to rustc 1.90.0.** Stable ≥ ~1.91 breaks the `sp_io` wasm link (`undefined
-  symbol` for every host fn). Don't bump `rust-toolchain.toml`.
+- **Toolchain is pinned to rustc 1.93.0** — the toolchain Parity builds the polkadot-sdk `stable2606`
+  train against. The old "stable ≥ ~1.91 breaks the `sp_io` wasm link" ceiling was specific to
+  stable2603's sp-io 45.0.0; stable2606's sp-io 48.0.0 links cleanly under 1.93.0. Stay on the
+  toolchain the pinned SDK release is verified against — don't drift `rust-toolchain.toml` off it.
 - **Privileged calls go through the 3-of-5 committee — there is no sudo.** Use `cogno-chain-cli
   committee …` (propose / vote / close over `FollowerCommittee`). Runtime upgrades are
   `upgrade authorize` (committee) + a permissionless `upgrade apply` (spec-checked).

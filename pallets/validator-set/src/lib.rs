@@ -3,7 +3,7 @@
 //! **The MUTABLE Aura + GRANDPA validator set** — the block-producing authorities are no longer
 //! frozen at genesis. This pallet is vendor-forked from
 //! `gautamdhameja/substrate-validator-set` (a reference pattern, tracked ~`polkadot-v1.13.0`) and
-//! ported to this SDK: `#[frame_support::pallet]` on frame v46 and the newer `pallet-session`
+//! ported to this SDK: `#[frame_support::pallet]` on frame v48 and the newer `pallet-session`
 //! (`Currency` / `KeyDeposit` / `HoldReason` / `DisablingStrategy`).
 //!
 //! ## How it drives consensus (the throw-nothing-away wiring)

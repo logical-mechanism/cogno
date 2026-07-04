@@ -17,8 +17,9 @@ updates:
     commit-message:
       prefix: "chore(ci)"
     ignore:
-      # The `dtolnay/rust-toolchain@<ver>` ref IS the rustc version, and rustc is pinned to 1.90.0
-      # (rust-toolchain.toml) — stable >= ~1.91 breaks the sp_io wasm link. Never auto-bump it.
+      # The `dtolnay/rust-toolchain@<ver>` ref IS the rustc version, and rustc is pinned to 1.93.0
+      # (rust-toolchain.toml) — the toolchain the polkadot-sdk stable2606 train is built against.
+      # Never auto-bump it; it must track the SDK release, not float to latest stable.
       - dependency-name: "dtolnay/rust-toolchain"
 
   # Frontend

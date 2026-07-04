@@ -2,7 +2,7 @@
 
 > **Historical design doc.** The mechanism it describes — deterministic db-sync observation as a
 > consensus inherent — is the current one, but this doc predates the all-Rust restart (`fork/all-rust`,
-> now `spec_version` 200) and its framing is stale: it references planning artifacts **not in this repo**
+> now `spec_version` 201) and its framing is stale: it references planning artifacts **not in this repo**
 > (the retired `L2-follower`/`L3-*` layered specs and an internal decision register cited as `DR-NN`) and
 > a *shadow / default-off* enforcement mode. In the restart the `cardano-observer` inherent is the
 > **sole** weight writer and **enforces from genesis**, and the reduction lives in the Rust
@@ -521,7 +521,7 @@ hardening pass, §15):
 ⚠ **The `try_handle_error` must branch on the decoded variant.** The obvious lazy implementation — a
 blanket `Some(Ok(()))` — would swallow `Mismatch` too and silently turn the entire consensus check into a
 no-op on every node. State this as a hard implementation rule. "Defer" here means **a final accept**, not
-a re-check-later: stable2603 has **no** automatic inherent re-queue (the `Deferred` requeue is Aura's
+a re-check-later: stable2606 has **no** automatic inherent re-queue (the `Deferred` requeue is Aura's
 *header*-time path, unrelated); once a node accepts on `CannotVerify`, it is done with that block.
 
 **The safety this trades on (state it plainly).** "Accept on can't-verify" means a bad block is caught
