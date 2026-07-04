@@ -7,8 +7,8 @@
 //! `show` resolves a bound account → its 32-byte identity hash + 28-byte stake credential.
 
 use anyhow::Context;
-use sp_core::hashing::blake2_128;
 use sp_core::H256;
+use sp_crypto_hashing::blake2_128;
 use sp_runtime::AccountId32;
 
 use crate::calls;

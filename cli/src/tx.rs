@@ -13,7 +13,8 @@
 
 use codec::Encode;
 use cogno_chain_runtime::{Runtime, RuntimeCall, SignedPayload, TxExtension, UncheckedExtrinsic};
-use sp_core::{hashing::blake2_256, H256};
+use sp_core::H256;
+use sp_crypto_hashing::blake2_256;
 use sp_runtime::{generic::Era, MultiAddress};
 
 use crate::key::Signer;

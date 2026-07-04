@@ -978,7 +978,7 @@ async fn cmd_authorize_upgrade(
             let code = std::fs::read(path)
                 .with_context(|| format!("reading runtime WASM {}", path.display()))?;
             anyhow::ensure!(!code.is_empty(), "runtime WASM {} is empty", path.display());
-            let h = H256::from(sp_core::hashing::blake2_256(&code));
+            let h = H256::from(sp_crypto_hashing::blake2_256(&code));
             eprintln!(
                 "upgrade authorize: code_hash {h:#x} (blake2_256 of {} bytes from {})",
                 code.len(),
@@ -1015,7 +1015,7 @@ async fn cmd_apply_upgrade(
     let code =
         std::fs::read(wasm).with_context(|| format!("reading runtime WASM {}", wasm.display()))?;
     anyhow::ensure!(!code.is_empty(), "runtime WASM {} is empty", wasm.display());
-    let hash = H256::from(sp_core::hashing::blake2_256(&code));
+    let hash = H256::from(sp_crypto_hashing::blake2_256(&code));
 
     let (rpc, ctx) = connect_and_ctx(ws, genesis).await?;
     let nonce = rpc.account_nonce(&account.ss58()).await?;
@@ -1054,7 +1054,7 @@ async fn cmd_apply_upgrade(
     let enacted = events.iter().any(|ev| {
         matches!(
             ev,
-            cogno_chain_runtime::RuntimeEvent::System(frame_system::Event::CodeUpdated)
+            cogno_chain_runtime::RuntimeEvent::System(frame_system::Event::CodeUpdated { .. })
         )
     });
     anyhow::ensure!(

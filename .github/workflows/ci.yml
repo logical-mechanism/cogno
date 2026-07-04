@@ -47,12 +47,12 @@ jobs:
                       /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
           sudo docker image prune --all --force || true
           df -h /
-      # rustc is pinned by rust-toolchain.toml to 1.90.0 (stable >= ~1.91 breaks the sp_io wasm link);
-      # dtolnay pins the same version. clippy is NOT in the pin's components, so request it explicitly
-      # (with rust-src + the wasm targets the substrate wasm-builder needs — mirrors rust-toolchain.toml).
-      # `cargo fmt --check` is intentionally NOT gated: the codebase predates a rustfmt config and is
-      # tab-styled; enforcing a repo-wide reformat is out of scope.
-      - uses: dtolnay/rust-toolchain@1.90.0
+      # rustc is pinned by rust-toolchain.toml to 1.93.0 (the toolchain the polkadot-sdk stable2606
+      # train is built against); dtolnay pins the same version. clippy is NOT in the pin's components,
+      # so request it explicitly (with rust-src + the wasm targets the substrate wasm-builder needs —
+      # mirrors rust-toolchain.toml). `cargo fmt --check` is intentionally NOT gated: the codebase
+      # predates a rustfmt config and is tab-styled; enforcing a repo-wide reformat is out of scope.
+      - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: clippy, rust-src
           targets: wasm32v1-none, wasm32-unknown-unknown

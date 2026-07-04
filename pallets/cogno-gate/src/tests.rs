@@ -11,6 +11,10 @@
 //! the feeless/capacity gate is exercised end-to-end by the node acceptance harness. These
 //! tests isolate the *identity* gate.
 
+// stable2606 deprecated `ValidateUnsigned` (see lib.rs) — these tests exercise that still-supported
+// pool-admission path directly, so allow the deprecation lint module-wide under the `-D warnings` gate.
+#![allow(deprecated)]
+
 use crate::{
     mock::*, AccountOf, AccountOfStakeCred, Call, Error, Event, IdentityHash, PkhOf, StakeCredOf,
     StakeCredential, ThreadOf, Tombstoned, TombstonedStakeCred,

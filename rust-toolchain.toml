@@ -1,12 +1,14 @@
-# Pinned for polkadot-sdk templates/solochain @ polkadot-stable2603-3
-# (commit e3737178ec726cffe506c907263aaaa417893fd0).
+# Pinned for the polkadot-sdk stable2606 release train (tag polkadot-stable2606-rc4),
+# which the whole workspace was upgraded to (from stable2603-3).
 #
-# IMPORTANT: pinned to rustc 1.90.0 (NOT rolling "stable"). The current stable (1.96.0)
-# fails to build this SDK's WASM runtime — rust-lld reports every sp_io host function as an
-# `undefined symbol` (the runtime-interface import machinery in sp-io 45.0.0 is incompatible
-# with rustc >= ~1.91). 1.90.0 is the version the M0 de-risk build verified end-to-end.
+# IMPORTANT: pinned to rustc 1.93.0 — the exact rustc the stable2606 train builds against
+# (`docker.io/paritytech/ci-unified:bullseye-1.93.0-…`, i.e. the toolchain Parity compiles
+# the 2606 wasm runtimes with). The old 1.90.0 pin existed because sp-io 45.0.0 (stable2603)
+# failed to wasm-link under rustc >= ~1.91 (`undefined symbol` for every sp_io host fn); the
+# stable2606 sp-io (48.0.0) is built and shipped by Parity under 1.93.0, so that link is fixed.
+# Do NOT roll to plain "stable" — stay on the version the SDK release is verified against.
 [toolchain]
-channel = "1.90.0"
+channel = "1.93.0"
 components = [
 	"cargo",
 	"rustc",
