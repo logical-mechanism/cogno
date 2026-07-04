@@ -1,9 +1,11 @@
 # cogno-chain — Rust workspace (M0 scaffold)
 #
 # Forked from the polkadot-sdk `templates/solochain` at tag polkadot-stable2603-3
-# (commit e3737178ec726cffe506c907263aaaa417893fd0). Dependency versions below are the
-# exact crates.io versions that ship in that release (harvested from the tag's Cargo.lock).
-# Pin is locked further by the committed Cargo.lock. See docs/M0-build.md (DR-03).
+# (commit e3737178ec726cffe506c907263aaaa417893fd0), then upgraded wholesale to the
+# polkadot-sdk stable2606 release train (tag polkadot-stable2606-rc4). Dependency versions
+# below are the exact crates.io versions that ship in that release (harvested from the tag's
+# Cargo.lock; cross-checked against crates.io max_stable_version). Pin is locked further by
+# the committed Cargo.lock. See docs/M0-build.md (DR-03).
 [workspace]
 resolver = "2"
 members = [
@@ -69,87 +71,93 @@ scale-info = { version = "2.11.6", default-features = false }
 # `log` facade for node-operator-visible diagnostics on the error/edge paths in the
 # pallets (M10). no_std-compatible (default-features = false); each pallet adds
 # "log/std" to its own std feature. Pinned to the version already in Cargo.lock.
-log = { version = "0.4.22", default-features = false }
+log = { version = "0.4.29", default-features = false }
 
 # ── external (node, std-only) ──────────────────────────────────────────────────
 clap = { version = "4.5.48" }
 futures = { version = "0.3.31" }
-jsonrpsee = { version = "0.24.10" }
+# Kept on the 0.24.x line the SDK's sc-rpc / substrate-frame-rpc-system are built against
+# (stable2606 pins jsonrpsee 0.24.11). crates.io ships 0.26.x but its API is incompatible
+# with the SDK's RPC layer — do NOT bump past 0.24.x until the SDK does.
+jsonrpsee = { version = "0.24.11" }
 serde_json = { version = "1.0.132", default-features = false }
 
 # ── FRAME ──────────────────────────────────────────────────────────────────────
-frame-benchmarking = { version = "46.0.0", default-features = false }
-frame-benchmarking-cli = { version = "54.0.0", default-features = false }
-frame-executive = { version = "46.0.0", default-features = false }
-frame-metadata-hash-extension = { version = "0.14.0", default-features = false }
-frame-support = { version = "46.0.1", default-features = false }
-frame-system = { version = "46.0.0", default-features = false }
-frame-system-benchmarking = { version = "46.0.0", default-features = false }
-frame-system-rpc-runtime-api = { version = "41.0.0", default-features = false }
-frame-try-runtime = { version = "0.52.0", default-features = false }
+frame-benchmarking = { version = "49.0.0", default-features = false }
+frame-benchmarking-cli = { version = "58.0.0", default-features = false }
+frame-executive = { version = "48.0.0", default-features = false }
+frame-metadata-hash-extension = { version = "0.16.0", default-features = false }
+frame-support = { version = "48.0.0", default-features = false }
+frame-system = { version = "48.0.0", default-features = false }
+frame-system-benchmarking = { version = "49.0.0", default-features = false }
+frame-system-rpc-runtime-api = { version = "43.0.0", default-features = false }
+frame-try-runtime = { version = "0.54.0", default-features = false }
 
 # ── pallets (stock) ────────────────────────────────────────────────────────────
-pallet-aura = { version = "45.0.0", default-features = false }
-pallet-balances = { version = "47.0.0", default-features = false }
+pallet-aura = { version = "48.0.0", default-features = false }
+pallet-balances = { version = "50.0.0", default-features = false }
 # DR-07: the mutable k-of-t committee backing the crown-jewel origins (M5).
-pallet-collective = { version = "46.0.0", default-features = false }
-pallet-grandpa = { version = "46.0.0", default-features = false }
+pallet-collective = { version = "49.0.0", default-features = false }
+pallet-grandpa = { version = "49.0.0", default-features = false }
 # M6 (DR-26): mutable authorities — pallet-session rotates Aura+GRANDPA from the validator-set
 # pallet's SessionManager each session, instead of from static genesis.
-pallet-session = { version = "46.0.0", default-features = false }
-pallet-skip-feeless-payment = { version = "21.0.0", default-features = false }
-pallet-sudo = { version = "46.0.0", default-features = false }
-pallet-timestamp = { version = "45.0.0", default-features = false }
-pallet-transaction-payment = { version = "46.0.0", default-features = false }
-pallet-transaction-payment-rpc = { version = "49.0.0", default-features = false }
-pallet-transaction-payment-rpc-runtime-api = { version = "46.0.0", default-features = false }
+pallet-session = { version = "49.0.0", default-features = false }
+pallet-skip-feeless-payment = { version = "23.0.0", default-features = false }
+pallet-sudo = { version = "49.0.0", default-features = false }
+pallet-timestamp = { version = "48.0.0", default-features = false }
+pallet-transaction-payment = { version = "49.0.0", default-features = false }
+pallet-transaction-payment-rpc = { version = "52.0.0", default-features = false }
+pallet-transaction-payment-rpc-runtime-api = { version = "49.0.0", default-features = false }
 
 # ── client (sc-*) ──────────────────────────────────────────────────────────────
-sc-basic-authorship = { version = "0.54.0", default-features = false }
-sc-cli = { version = "0.58.0", default-features = false }
-sc-client-api = { version = "45.0.0", default-features = false }
-sc-consensus = { version = "0.55.0", default-features = false }
-sc-consensus-aura = { version = "0.56.0", default-features = false }
-sc-consensus-grandpa = { version = "0.41.0", default-features = false }
-sc-executor = { version = "0.48.0", default-features = false }
+sc-basic-authorship = { version = "0.56.0", default-features = false }
+sc-cli = { version = "0.61.0", default-features = false }
+sc-client-api = { version = "47.0.0", default-features = false }
+sc-consensus = { version = "0.57.0", default-features = false }
+sc-consensus-aura = { version = "0.58.0", default-features = false }
+sc-consensus-grandpa = { version = "0.43.0", default-features = false }
+sc-executor = { version = "0.50.0", default-features = false }
 # `key insert-file`: open the LocalKeystore + insert a session secret read (by file path) from a
 # cogno-keyfile envelope — the file-path analogue of the SDK's `--suri` `key insert`.
-sc-keystore = { version = "40.0.0", default-features = false }
-sc-network = { version = "0.56.1", default-features = false }
-sc-offchain = { version = "51.0.0", default-features = false }
-sc-service = { version = "0.57.0", default-features = false }
-sc-telemetry = { version = "30.0.1", default-features = false }
-sc-transaction-pool = { version = "45.0.0", default-features = false }
-sc-transaction-pool-api = { version = "44.0.0", default-features = false }
+sc-keystore = { version = "42.0.0", default-features = false }
+sc-network = { version = "0.58.0", default-features = false }
+sc-offchain = { version = "53.0.0", default-features = false }
+sc-service = { version = "0.60.0", default-features = false }
+sc-telemetry = { version = "33.0.0", default-features = false }
+sc-transaction-pool = { version = "47.0.0", default-features = false }
+sc-transaction-pool-api = { version = "46.0.0", default-features = false }
 
 # ── primitives (sp-*) ──────────────────────────────────────────────────────────
-sp-api = { version = "41.0.0", default-features = false }
-sp-block-builder = { version = "41.0.0", default-features = false }
-sp-blockchain = { version = "44.0.0", default-features = false }
-sp-consensus = { version = "0.47.0", default-features = false }
-sp-consensus-aura = { version = "0.47.0", default-features = false }
-sp-consensus-grandpa = { version = "28.0.0", default-features = false }
-sp-core = { version = "40.0.0", default-features = false }
-sp-genesis-builder = { version = "0.22.0", default-features = false }
-sp-inherents = { version = "41.0.0", default-features = false }
-sp-io = { version = "45.0.0", default-features = false }
-sp-keyring = { version = "46.0.0", default-features = false }
+sp-api = { version = "43.0.0", default-features = false }
+sp-block-builder = { version = "43.0.0", default-features = false }
+sp-blockchain = { version = "46.0.0", default-features = false }
+sp-consensus = { version = "0.49.0", default-features = false }
+sp-consensus-aura = { version = "0.49.0", default-features = false }
+sp-consensus-grandpa = { version = "30.0.0", default-features = false }
+sp-core = { version = "43.0.0", default-features = false }
+# stable2606 removed sp-core's `hashing` module; the hashing fns (blake2_256 etc.) now live in this
+# dedicated crate. Used by cogno-dbsync for the consensus-critical inputs_commitment (byte-identical).
+sp-crypto-hashing = { version = "0.1.0", default-features = false }
+sp-genesis-builder = { version = "0.24.0", default-features = false }
+sp-inherents = { version = "43.0.0", default-features = false }
+sp-io = { version = "48.0.0", default-features = false }
+sp-keyring = { version = "48.0.0", default-features = false }
 # `key insert-file`: the Keystore trait + KeystorePtr the file-based session-key insert writes through.
-sp-keystore = { version = "0.46.0", default-features = false }
-sp-offchain = { version = "41.0.0", default-features = false }
-sp-runtime = { version = "46.0.0", default-features = false }
-sp-session = { version = "43.0.0", default-features = false }
+sp-keystore = { version = "0.49.0", default-features = false }
+sp-offchain = { version = "43.0.0", default-features = false }
+sp-runtime = { version = "48.0.0", default-features = false }
+sp-session = { version = "45.0.0", default-features = false }
 # M6: sp-staking offence types — the dormant im-online ReportOffence sink in pallet-validator-set.
-sp-staking = { version = "43.0.0", default-features = false }
-sp-storage = { version = "23.0.0", default-features = false }
-sp-timestamp = { version = "41.0.0", default-features = false }
-sp-transaction-pool = { version = "41.0.0", default-features = false }
-sp-version = { version = "44.0.0", default-features = false }
+sp-staking = { version = "45.0.0", default-features = false }
+sp-storage = { version = "25.0.0", default-features = false }
+sp-timestamp = { version = "43.0.0", default-features = false }
+sp-transaction-pool = { version = "43.0.0", default-features = false }
+sp-version = { version = "46.0.0", default-features = false }
 
 # ── substrate build/rpc utils ──────────────────────────────────────────────────
-substrate-build-script-utils = { version = "11.0.0" }
-substrate-frame-rpc-system = { version = "50.0.0", default-features = false }
-substrate-wasm-builder = { version = "32.0.0", default-features = false }
+substrate-build-script-utils = { version = "11.0.3" }
+substrate-frame-rpc-system = { version = "53.0.0", default-features = false }
+substrate-wasm-builder = { version = "34.0.0", default-features = false }
 # The Prometheus endpoint the SDK's built-in `substrate_*` metrics register on — the node registers its
 # own `cogno_observer_*` observer-liveness gauges on the same `config.prometheus_registry()`.
 substrate-prometheus-endpoint = { version = "0.17.7", default-features = false }

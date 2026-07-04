@@ -54,6 +54,9 @@ pallet-governed-upgrade = { features = ["std"], workspace = true }
 # ── SCALE + signing primitives (same pins as the node/runtime, so byte layouts can't drift) ──
 codec = { features = ["std", "derive"], workspace = true }
 sp-core = { default-features = true, workspace = true }
+# stable2606 removed sp-core's `hashing` module (blake2_128/blake2_256/twox_128 etc.); they now live
+# in the dedicated `sp-crypto-hashing` crate. Byte-identical — same pins as node/runtime.
+sp-crypto-hashing = { workspace = true, features = ["std"] }
 sp-runtime = { default-features = true, workspace = true }
 
 # ── JSON-RPC ws client (submitAndWatch / subscribeFinalizedHeads / getRuntimeVersion / state_call) ──

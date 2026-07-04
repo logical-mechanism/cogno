@@ -27,8 +27,11 @@ tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
 serde_json = { features = ["std"], workspace = true }
 # SCALE encode of the reduced records + the candidate-set commitment pre-image.
 codec = { features = ["std"], workspace = true }
-# `sp_core::hashing::blake2_256` for the inputs_commitment (the Mismatch-vs-ComputeDiverged basis).
-sp-core = { default-features = true, workspace = true }
+# `sp_crypto_hashing::blake2_256` for the inputs_commitment (the Mismatch-vs-ComputeDiverged basis).
+# Was `sp_core::hashing::blake2_256`; stable2606 removed sp-core's `hashing` module — the hashing fns
+# moved to the dedicated `sp-crypto-hashing` crate. blake2_256 is byte-identical (same blake2b impl),
+# so the golden observation-equivalence fixture is unaffected.
+sp-crypto-hashing = { workspace = true, features = ["std"] }
 # `BeaconName`/`StakeCredential`/`CardanoObservation`/`CardanoRef` — the node-keyed on-wire observation
 # types the reduced records produce (std for the native host build).
 pallet-cardano-observer = { features = ["std"], workspace = true }
