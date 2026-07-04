@@ -73,7 +73,12 @@ async function main() {
   console.log("\n[5] MicroblogApi.who_to_follow(10) → PersonSummary[] carries account_tally");
   const people = await api.apis.MicroblogApi.who_to_follow(10);
   if (!Array.isArray(people)) bad(`who_to_follow did not return an array: ${JSON.stringify(people)}`);
-  else if (people.length === 0) ok("returned [] (fresh dev chain has no bound authors — expected, no decode error)");
+  else if (people.length === 0)
+    // NOTE: a fresh dev chain has no bound authors, so no PersonSummary row is decoded here — this
+    // only proves the method is callable with the new return type. The PersonSummary.account_tally
+    // field is the SAME `Tally` decoded in check [4] (ProfileView.account_tally), so its shape IS
+    // exercised; this branch is a skip, not a full verification of the per-row decode.
+    console.log("  ⓘ returned [] (no bound authors on dev) — per-row decode not exercised; Tally shape covered by [4]");
   else people[0].account_tally && "up_weight" in people[0].account_tally
     ? ok(`PersonSummary.account_tally present on ${people.length} row(s)`)
     : bad(`PersonSummary.account_tally missing: ${JSON.stringify(people[0])}`);
@@ -82,12 +87,15 @@ async function main() {
   console.log("\n[6] submit vote_account as unbound //Alice → must be REJECTED");
   try {
     const r = await api.tx.Microblog.vote_account({ target: bob.ss58, dir: Enum("Up") }).signAndSubmit(alice.signer);
-    if (r.ok) bad("vote_account SUCCEEDED for an unbound voter (guard missing!)");
-    else {
+    // Pass ONLY on an explicit dispatch rejection (r.ok === false); anything else (incl. a success or a
+    // malformed/undefined result) is a regression, so the guard-missing case can't slip through as green.
+    if (r.ok === false) {
       const err = r.dispatchError?.value?.type ?? r.dispatchError?.type ?? JSON.stringify(r.dispatchError);
       err === "NotAllowed"
         ? ok("rejected NotAllowed at dispatch — the identity guard fired end-to-end")
         : ok(`rejected at dispatch (${err}) — reaches the runtime`);
+    } else {
+      bad(`expected an explicit dispatch rejection, got ok=${JSON.stringify(r.ok)}`);
     }
   } catch (e) {
     // A pool-level reject (ExhaustsResources / Invalid) also proves the call is wired + metered.

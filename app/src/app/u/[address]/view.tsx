@@ -180,11 +180,15 @@ function ProfileBody({ address }: { address: Ss58 }) {
     ],
   );
   const shownAccountVote = mergeAccountVote(address, accountVoteBase);
-  // Retire the optimistic override once a fresh read reflects the vote (mirrors followDelta), and on any
-  // profile switch (ProfileBody is NOT remounted across /u/A → /u/B, so an override must not leak).
+  // Retire the optimistic override once a fresh read of the viewer's OWN vote reflects it. Key on
+  // `myAccountVote` (viewer-owned), NOT the shared `accountScore`: a THIRD party's vote moves the score
+  // but not this, so the viewer's highlighted arrow never drops early on someone else's vote. The
+  // cleanup clears this address's override on a profile switch too (ProfileBody is reused across
+  // /u/A → /u/B), so a not-yet-reconciled override can't leak back when navigating away and returning.
   useEffect(() => {
     resetAccountVote(address);
-  }, [address, profile?.accountScore, profile?.myAccountVote, resetAccountVote]);
+    return () => resetAccountVote(address);
+  }, [address, profile?.myAccountVote, resetAccountVote]);
 
   const onAccountUp = useCallback(() => {
     if (viewer.status !== "ready") return void router.push("/welcome/");
