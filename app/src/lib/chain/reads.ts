@@ -8,8 +8,8 @@
 // reverse map (keyed `getEntries(parent)`) + the `ReplyCount` aggregate — never a full-snapshot scan.
 // Liveness rides `NextPostId.watchValue` (a new post bumps the counter), NOT `Posts.watchEntries()`.
 
-import type { PolkadotClient } from "polkadot-api";
-import { Observable, combineLatest, map, startWith } from "rxjs";
+import { Binary, type PolkadotClient } from "polkadot-api";
+import { Observable, combineLatest, distinctUntilChanged, map, startWith } from "rxjs";
 import { readPostTally, readRepostCount } from "./social-reads";
 import type {
   CognoApi,
@@ -19,10 +19,10 @@ import type {
   Ss58,
 } from "@/lib/types";
 
-/** A single decoded `Posts` storage value (PAPI shape; `text` is a Binary with `.asText()`). */
+/** A single decoded `Posts` storage value (PAPI v2 shape; `text` is a `Vec<u8>` → `Uint8Array`). */
 interface RawPostValue {
   author: string;
-  text: { asText: () => string };
+  text: Uint8Array;
   parent?: bigint;
   /** Quoted post id (`Post.quote: Option<u64>`, storage v1); undefined for plain posts/replies. */
   quote?: bigint;
@@ -40,7 +40,7 @@ function toCognoPost(id: bigint, value: RawPostValue): CognoPost {
   return {
     id,
     author: value.author,
-    text: value.text.asText(),
+    text: Binary.toText(value.text),
     parent: value.parent,
     at: value.at,
   };
@@ -61,16 +61,16 @@ function quoteRefOf(
   };
 }
 
-/** A single `Profile.Profiles` value (display name / bio / avatar are BoundedVec<u8> → Binary). */
+/** A single `Profile.Profiles` value (display name / bio / avatar are BoundedVec<u8> → Uint8Array). */
 interface RawProfile {
-  display_name: { asText: () => string };
-  bio: { asText: () => string };
-  avatar: { asText: () => string };
+  display_name: Uint8Array;
+  bio: Uint8Array;
+  avatar: Uint8Array;
 }
 
-/** Decode a Binary profile field to a trimmed string, or undefined when empty/absent. */
-export function binTextOpt(v?: { asText: () => string }): string | undefined {
-  const s = v?.asText().trim();
+/** Decode a `Vec<u8>` profile field (PAPI v2 Uint8Array) to a trimmed UTF-8 string, or undefined when empty/absent. */
+export function binTextOpt(v?: Uint8Array): string | undefined {
+  const s = v != null ? Binary.toText(v).trim() : undefined;
   return s ? s : undefined;
 }
 
@@ -100,11 +100,14 @@ export async function latestPostId(api: CognoApi): Promise<bigint | null> {
  * WITHOUT a full `watchEntries`. Emits null while the chain has no posts.
  */
 export function watchLatestPostId(api: CognoApi): Observable<bigint | null> {
-  return api.query.Microblog.NextPostId.watchValue("best").pipe(
-    map((next): bigint | null => {
+  return api.query.Microblog.NextPostId.watchValue({ at: "best" }).pipe(
+    map(({ value: next }): bigint | null => {
       const n = BigInt((next ?? 0n) as bigint);
       return n > 0n ? n - 1n : null;
     }),
+    // PAPI v2 watchValue emits every poll (not only on change); dedupe so a new post — not every
+    // block — drives the "N new posts" prepend / feed re-page (preserves the v1 emit-on-change semantics).
+    distinctUntilChanged(),
   );
 }
 

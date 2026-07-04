@@ -17,10 +17,8 @@ import type { CognoApi, CognoPost, Ss58, QuotedRef, ViewerPostState, Suggestion 
 
 const MAX_PAGE = 100;
 
-/** PAPI's byte type as the API returns it: a `Binary` with `.asText()`. */
-interface BinaryLike {
-  asText: () => string;
-}
+/** PAPI v2's byte type as the API returns it: a `Vec<u8>` decodes to a `Uint8Array` (decode via `Binary.toText`). */
+type BinaryLike = Uint8Array;
 
 /** One `EnrichedPost` exactly as `api.apis.MicroblogApi.*` decodes it (snake_case; `text`/profile = Binary). */
 interface EnrichedPost {
@@ -116,15 +114,15 @@ interface MicroblogApiCalls {
     viewer: Ss58 | undefined,
     opts?: AtBest,
   ): Promise<FeedPageRaw>;
-  /** Full-text post search: ASCII-case-insensitive substring on `term` (a `Vec<u8>` ⇒ `Binary`). */
+  /** Full-text post search: ASCII-case-insensitive substring on `term` (a `Vec<u8>` ⇒ `Uint8Array`). */
   search_posts(
-    term: Binary,
+    term: Uint8Array,
     beforeId: bigint | undefined,
     limit: number,
     viewer: Ss58 | undefined,
   ): Promise<FeedPageRaw>;
-  /** People search by display-name substring (`term` ⇒ `Binary`), ranked by follower count. */
-  search_people(term: Binary, limit: number): Promise<PersonSummaryRaw[]>;
+  /** People search by display-name substring (`term` ⇒ `Uint8Array`), ranked by follower count. */
+  search_people(term: Uint8Array, limit: number): Promise<PersonSummaryRaw[]>;
   /** Ranked who-to-follow suggestions (ByAuthor members, ranked by follower count — INCLUDES 0-follower
    *  authors, so the panel is non-empty on a fresh-genesis chain). */
   who_to_follow(limit: number): Promise<PersonSummaryRaw[]>;
@@ -149,7 +147,7 @@ function mapQuoted(q: EnrichedPost["quoted"]): QuotedRef | undefined {
   return {
     id: q.id,
     author: q.author,
-    text: q.text.asText(),
+    text: Binary.toText(q.text),
     // The API does not return the quoted author's revocation (not enriched in the summary); the
     // keyed path also leaves a resolved quote ref `authorRevoked:false` — matched here.
     authorRevoked: false,
@@ -177,7 +175,7 @@ export function mapEnrichedPost(e: EnrichedPost, hasViewer: boolean): CognoPost 
   const post: CognoPost = {
     id: e.id,
     author: e.author,
-    text: e.text.asText(),
+    text: Binary.toText(e.text),
     parent: e.parent,
     at: e.at,
     upWeight,

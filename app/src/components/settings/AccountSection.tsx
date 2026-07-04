@@ -34,8 +34,9 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
       setPostingPower(null);
       return;
     }
-    const sub = api.query.TalkStake.AllowedStake.watchValue(ss58, "best").subscribe(
-      (w) => setPostingPower((w as bigint) ?? 0n),
+    // PAPI v2: watchValue takes an options object and emits { block, value } (destructure .value).
+    const sub = api.query.TalkStake.AllowedStake.watchValue(ss58, { at: "best" }).subscribe(
+      ({ value: w }) => setPostingPower((w as bigint) ?? 0n),
       () => setPostingPower(null),
     );
     return () => sub.unsubscribe();

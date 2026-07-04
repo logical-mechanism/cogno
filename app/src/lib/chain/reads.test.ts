@@ -9,6 +9,7 @@
 // criterion that the two read paths cannot drift.
 
 import { describe, it, expect } from "vitest";
+import { Binary } from "polkadot-api";
 import { getGlobalFeedPage, getAuthorFeedPage, getThread, latestPostId } from "./reads";
 import { nodeGlobalFeedPage, nodeAuthorFeedPage, nodeThread } from "./node-reads";
 import type { CognoApi, CognoPost } from "@/lib/types";
@@ -35,14 +36,14 @@ interface FakeSpec {
 
 const ZERO_TALLY = { up_weight: 0n, down_weight: 0n, up_count: 0, down_count: 0 };
 
-/** Wrap a FakePost into the PAPI-shaped value the reads decode (text is a Binary with `.asText()`). */
+/** Wrap a FakePost into the PAPI v2-shaped value the reads decode (text is a `Vec<u8>` → Uint8Array). */
 function wrap(p: FakePost) {
-  return { author: p.author, text: { asText: () => p.text }, parent: p.parent, quote: p.quote, at: p.at };
+  return { author: p.author, text: Binary.fromText(p.text), parent: p.parent, quote: p.quote, at: p.at };
 }
 
-/** A Binary-like for the runtime-API stub (`.asText()`, matching PAPI's byte type). */
+/** A Uint8Array for the runtime-API stub (matching PAPI v2's `Vec<u8>` byte type; decode via Binary.toText). */
 function bin(s: string) {
-  return { asText: () => s };
+  return Binary.fromText(s);
 }
 
 /**

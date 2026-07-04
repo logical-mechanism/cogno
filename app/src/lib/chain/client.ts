@@ -8,7 +8,7 @@
 // stay best-effort. This module only REPORTS `ok`; the UI enforces the block.
 
 import { createClient, type PolkadotClient } from "polkadot-api";
-import { getWsProvider } from "polkadot-api/ws-provider/web";
+import { getWsProvider } from "polkadot-api/ws";
 import { cogno } from "@polkadot-api/descriptors";
 import { Observable, type Subscription } from "rxjs";
 import type { ChainHandle, ConnStatus, BootGuard, CognoApi } from "@/lib/types";

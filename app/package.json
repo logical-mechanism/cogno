@@ -7,7 +7,7 @@
     "postinstall": "papi",
     "dev": "next dev -p 3000",
     "build": "next build",
-    "lint": "next lint",
+    "lint": "eslint .",
     "papi:add": "papi add cogno -w ws://127.0.0.1:9944",
     "papi": "papi",
     "test": "vitest run",
@@ -16,27 +16,27 @@
     "acceptance:m2c": "node scripts/m2c-acceptance.mjs"
   },
   "dependencies": {
-    "@fontsource-variable/inter-tight": "^5.1.1",
-    "@fontsource-variable/source-serif-4": "^5.1.1",
-    "@fontsource/ibm-plex-mono": "^5.1.1",
-    "@meshsdk/core": "^1.9.0",
+    "@fontsource-variable/inter-tight": "^5.2.7",
+    "@fontsource-variable/source-serif-4": "^5.2.9",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@meshsdk/core": "^1.9.1",
     "@meshsdk/core-cst": "^1.9.1",
     "@polkadot-api/descriptors": "file:.papi/descriptors",
-    "@polkadot-labs/hdkd": "^0.0.21",
-    "@polkadot-labs/hdkd-helpers": "^0.0.21",
+    "@polkadot-labs/hdkd": "^0.0.28",
+    "@polkadot-labs/hdkd-helpers": "^0.0.30",
     "blakejs": "^1.2.1",
-    "next": "^14.2.15",
-    "polkadot-api": "^1.9.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "next": "^16.2.10",
+    "polkadot-api": "^2.1.7",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
-    "@types/node": "^20.16.0",
-    "@types/react": "^18.3.0",
-    "@types/react-dom": "^18.3.0",
-    "eslint": "^8.57.1",
-    "eslint-config-next": "^14.2.15",
-    "typescript": "^5.6.0",
+    "@types/node": "^22.20.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.10",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.9"
   }
 }

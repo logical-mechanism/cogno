@@ -64,11 +64,12 @@ export function useCapacity(
     const push = () => {
       if (started) setInputs({ weight, bucket });
     };
-    const s1 = api.query.TalkStake.AllowedStake.watchValue(ss58, "best").subscribe((w) => {
+    // PAPI v2: watchValue takes an options object and emits { block, value } (destructure .value).
+    const s1 = api.query.TalkStake.AllowedStake.watchValue(ss58, { at: "best" }).subscribe(({ value: w }) => {
       weight = (w as bigint) ?? 0n;
       push();
     });
-    const s2 = api.query.Microblog.Capacity.watchValue(ss58, "best").subscribe((row) => {
+    const s2 = api.query.Microblog.Capacity.watchValue(ss58, { at: "best" }).subscribe(({ value: row }) => {
       bucket = row ? { capLast: row.cap_last, lastBlock: row.last_block } : null;
       push();
     });

@@ -87,8 +87,9 @@ export default function WelcomePage() {
       return;
     }
     const ss58 = signerCtl.signer.ss58;
-    const sub = api.query.TalkStake.AllowedStake.watchValue(ss58, "best").subscribe(
-      (w) => setPostingPower((w as bigint) ?? 0n),
+    // PAPI v2: watchValue takes an options object and emits { block, value } (destructure .value).
+    const sub = api.query.TalkStake.AllowedStake.watchValue(ss58, { at: "best" }).subscribe(
+      ({ value: w }) => setPostingPower((w as bigint) ?? 0n),
       // Subscription errored: fall through to the zero-power branch (lock CTA + read-only escape)
       // rather than sit on the indefinite "Checking your posting power…" state forever.
       () => setPostingPower(0n),

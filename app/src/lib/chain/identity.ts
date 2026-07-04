@@ -10,7 +10,7 @@
 // is the one the proof cryptographically commits, so no one can bind a victim's key. Pure PAPI: the bare
 // (unsigned) extrinsic is built with `tx.getBareTx()` and broadcast with the low-level `client.submit`.
 
-import { Binary, FixedSizeBinary, type PolkadotClient } from "polkadot-api";
+import type { PolkadotClient, SizedHex } from "polkadot-api";
 import type { CognoApi, Ss58 } from "@/lib/types";
 import { stringifyDispatchError, stringifyError } from "@/lib/chain/post";
 import { hexToBytes } from "@/lib/util/hex";
@@ -21,8 +21,9 @@ import { hexToBytes } from "@/lib/util/hex";
  * must commit this, so a proof for another chain is rejected (anti-cross-chain).
  */
 export async function getGenesisHex(api: CognoApi): Promise<string> {
+  // PAPI v2: a fixed-size `[u8;32]` decodes to a 0x-hex string (SizedHex<32>), not a Binary object.
   const h = await api.query.System.BlockHash.getValue(0);
-  return h.asHex().replace(/^0x/, "");
+  return h.replace(/^0x/, "");
 }
 
 /** Outcome of submitting a CIP-8 identity self-proof on-chain. */
@@ -43,18 +44,19 @@ export interface StakeLinkResult {
 
 /** Build the `cognoGate.link_identity_signed` tx (the call data; submitted bare/unsigned). */
 function buildLinkIdentityTx(api: CognoApi, coseSign1Hex: string, coseKeyHex: string, threadHex?: string) {
+  // PAPI v2: `Vec<u8>` fields take a raw Uint8Array (`Binary.fromBytes` is gone). hexToBytes → Uint8Array.
   return api.tx.CognoGate.link_identity_signed({
-    cose_sign1: Binary.fromBytes(hexToBytes(coseSign1Hex)),
-    cose_key: Binary.fromBytes(hexToBytes(coseKeyHex)),
-    thread_pointer: threadHex ? Binary.fromBytes(hexToBytes(threadHex)) : undefined,
+    cose_sign1: hexToBytes(coseSign1Hex),
+    cose_key: hexToBytes(coseKeyHex),
+    thread_pointer: threadHex ? hexToBytes(threadHex) : undefined,
   });
 }
 
 /** Build the `cognoGate.link_stake_signed` tx — takes ONLY the two COSE blobs (NO thread pointer). */
 function buildLinkStakeTx(api: CognoApi, coseSign1Hex: string, coseKeyHex: string) {
   return api.tx.CognoGate.link_stake_signed({
-    cose_sign1: Binary.fromBytes(hexToBytes(coseSign1Hex)),
-    cose_key: Binary.fromBytes(hexToBytes(coseKeyHex)),
+    cose_sign1: hexToBytes(coseSign1Hex),
+    cose_key: hexToBytes(coseKeyHex),
   });
 }
 
@@ -79,9 +81,10 @@ export async function submitLinkIdentityFeeless(
     if (!res.ok) {
       return { ok: false, error: stringifyDispatchError(res.dispatchError) };
     }
-    const ev = (res.events as Array<{ type: string; value?: { type: string; value?: { identity?: { asHex: () => string } } } }>)
+    // PAPI v2: the event's `identity` ([u8;32]) decodes to a 0x-hex string, not a Binary with `.asHex()`.
+    const ev = (res.events as Array<{ type: string; value?: { type: string; value?: { identity?: string } } }>)
       .find((e) => e.type === "CognoGate" && e.value?.type === "IdentityLinked");
-    return { ok: true, identityHash: ev?.value?.value?.identity?.asHex() };
+    return { ok: true, identityHash: ev?.value?.value?.identity };
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error("cogno: feeless link_identity_signed submission failed:", stringifyError(e), e);
@@ -110,9 +113,10 @@ export async function submitLinkStakeFeeless(
     if (!res.ok) {
       return { ok: false, error: stringifyDispatchError(res.dispatchError) };
     }
-    const ev = (res.events as Array<{ type: string; value?: { type: string; value?: { stake_cred?: { asHex: () => string } } } }>)
+    // PAPI v2: the event's `stake_cred` ([u8;28]) decodes to a 0x-hex string, not a Binary with `.asHex()`.
+    const ev = (res.events as Array<{ type: string; value?: { type: string; value?: { stake_cred?: string } } }>)
       .find((e) => e.type === "CognoGate" && e.value?.type === "StakeLinked");
-    return { ok: true, stakeCredHex: ev?.value?.value?.stake_cred?.asHex() };
+    return { ok: true, stakeCredHex: ev?.value?.value?.stake_cred };
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error("cogno: feeless link_stake_signed submission failed:", stringifyError(e), e);
@@ -132,5 +136,6 @@ export async function isAccountBound(api: CognoApi, ss58: Ss58): Promise<boolean
  * against a wrong-key bind (the committed payload PREVENTS it; this DETECTS it).
  */
 export async function readAccountOf(api: CognoApi, idHashHex: string): Promise<Ss58 | undefined> {
-  return api.query.CognoGate.AccountOf.getValue(FixedSizeBinary.fromBytes(hexToBytes(idHashHex)));
+  // PAPI v2: the `[u8;32]` storage key is supplied as a 0x-hex string (SizedHex<32>), not a FixedSizeBinary.
+  return api.query.CognoGate.AccountOf.getValue(idHashHex as SizedHex<32>);
 }
