@@ -27,6 +27,7 @@ import { FollowButton } from "@/components/FollowButton";
 import { RevealImage } from "@/components/RevealImage";
 import { IconLink } from "@/components/icons";
 import { FollowCounts } from "./FollowCounts";
+import { AccountVoteControl, type AccountVoteView } from "./AccountVoteControl";
 import { resolveImageSrc } from "@/lib/media";
 import type { Ss58, Viewer } from "@/components/kit";
 
@@ -86,6 +87,16 @@ export interface ProfileHeaderProps {
   onEditProfile: () => void;
   /** Follow/unfollow toggle (others); the surface gates to /welcome when not ready. */
   onToggleFollow: (target: Ss58, next: boolean) => void;
+  // ── spec-202 account reputation (stake-weighted up/down votes ON this account) ──
+  /** Show the reputation control (caps.tallies). Omit the control entirely when false. */
+  canAccountVote: boolean;
+  /** The merged reputation view (base tally + optimistic override), from useAccountVote.merge. */
+  accountVote?: AccountVoteView;
+  accountVotePending?: boolean;
+  /** Toggle the endorse (up) vote; the surface gates to /welcome when not ready. */
+  onAccountUp: () => void;
+  /** Toggle the dispute (down) vote; the surface gates to /welcome when not ready. */
+  onAccountDown: () => void;
 }
 
 export function ProfileHeader({
@@ -106,6 +117,11 @@ export function ProfileHeader({
   isFollowing,
   onEditProfile,
   onToggleFollow,
+  canAccountVote,
+  accountVote,
+  accountVotePending,
+  onAccountUp,
+  onAccountDown,
 }: ProfileHeaderProps) {
   const bioText = bio?.trim() ?? "";
   const bannerSrc = banner?.trim() ?? "";
@@ -207,6 +223,20 @@ export function ProfileHeader({
         {/* Counts omitted entirely on PAPI-direct (caps.follows === false) — never "0 Followers". */}
         {showCounts && (
           <FollowCounts following={followingCount} followers={followerCount} />
+        )}
+
+        {/* Community reputation: stake-weighted up/down votes ON this account (spec-202). Omitted
+            entirely when the reader can't serve tallies (never a fake "0" score). */}
+        {canAccountVote && accountVote && (
+          <AccountVoteControl
+            vote={accountVote}
+            gate={viewer}
+            isSelf={isSelf}
+            votable={!banned}
+            pending={accountVotePending}
+            onUp={onAccountUp}
+            onDown={onAccountDown}
+          />
         )}
       </div>
     </section>

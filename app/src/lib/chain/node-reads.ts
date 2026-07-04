@@ -70,6 +70,13 @@ interface PersonSummaryRaw {
   avatar: BinaryLike;
   weight: bigint;
   follower_count: number;
+  /** spec-202: the account's reputation tally (stake-weighted up/down votes ON it). */
+  account_tally: {
+    up_weight: bigint;
+    down_weight: bigint;
+    up_count: number;
+    down_count: number;
+  };
 }
 
 /**
@@ -403,12 +410,15 @@ export async function nodeSearchPeople(
 
 /** Map one `PersonSummary` → the client `Suggestion` (shared by people-search + who-to-follow). */
 function personSummaryToSuggestion(r: PersonSummaryRaw): Suggestion {
+  const t = r.account_tally;
   return {
     author: r.account,
     displayName: binTextOpt(r.display_name),
     avatar: binTextOpt(r.avatar),
     weight: r.weight > 0n ? r.weight : undefined,
     followerCount: r.follower_count,
+    // Net stake-weighted reputation (up − down); the row shows it only when non-zero.
+    accountScore: BigInt(t?.up_weight ?? 0n) - BigInt(t?.down_weight ?? 0n),
   };
 }
 

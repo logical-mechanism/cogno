@@ -50,6 +50,8 @@ import {
   readPoll,
   readViewerPostState,
   readViewerPollChoice,
+  readAccountVoteTally,
+  readViewerAccountVote,
 } from "@/lib/chain/social-reads";
 import type {
   CognoApi,
@@ -325,8 +327,17 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     }
 
     const nodeApiForCount = await nodeFeedApiReady();
-    const [postCount, pkh, weight, followerCount, followingCount, profileRec, pinned] =
-      await Promise.all([
+    const [
+      postCount,
+      pkh,
+      weight,
+      followerCount,
+      followingCount,
+      profileRec,
+      pinned,
+      accountTally,
+      myAccountVote,
+    ] = await Promise.all([
         // The header "N posts" is the author's TOP-LEVEL post count, matching the top-level cards in the
         // Posts tab below. spec-121 added the on-chain `TopLevelByAuthor` counter, so the node serves an
         // exact O(1) top-level count (`author_post_count`); on a pre-121 node we fall back to the keyed
@@ -340,6 +351,9 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
         api.query.Microblog.FollowingCount.getValue(account),
         api.query.Profile.Profiles.getValue(account),
         api.query.Profile.PinnedPost.getValue(account),
+        // spec-202 account reputation tally + (when a viewer is known) their own vote on this account.
+        readAccountVoteTally(api, account),
+        args.viewer ? readViewerAccountVote(api, account, args.viewer) : Promise.resolve(null),
       ]);
     const banned = pkh === undefined;
     // PAPI v2: PkhOf's `[u8;32]` value decodes to a 0x-hex string, not a Binary with `.asHex()`.
@@ -416,6 +430,13 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       pinnedPostId: pinned == null ? undefined : BigInt(pinned as unknown as bigint),
       followerCount: Number(followerCount ?? 0),
       followingCount: Number(followingCount ?? 0),
+      // spec-202 account reputation: the tally + the viewer's own vote (drives the header control).
+      accountScore: accountTally.score,
+      accountUpWeight: accountTally.upWeight,
+      accountDownWeight: accountTally.downWeight,
+      accountUpCount: accountTally.upCount,
+      accountDownCount: accountTally.downCount,
+      myAccountVote,
       page: {
         posts,
         endCursor,

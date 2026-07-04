@@ -115,6 +115,36 @@ export function submitUnfollow(
   return watchSigned(api, tx, signer);
 }
 
+// ── account reputation votes (stake-weighted up/down ON an account) ──────────────────────────
+
+/**
+ * Cast / change a stake-weighted reputation vote ON `target`'s account — the community anti-Sybil /
+ * anti-impersonation signal. Feeless + capacity-metered like a post vote. `VoteDir` encodes as
+ * `Enum("Up"|"Down")`; a re-vote replaces (the chain reverses the prior weight first).
+ */
+export function submitVoteAccount(
+  api: CognoApi,
+  signer: PostingSigner,
+  target: Ss58,
+  dir: "Up" | "Down",
+): Observable<TxUpdate> {
+  const tx = api.tx.Microblog.vote_account({
+    target,
+    dir: Enum(dir),
+  }) as unknown as Signable;
+  return watchSigned(api, tx, signer);
+}
+
+/** Clear the caller's reputation vote on `target`. */
+export function submitClearAccountVote(
+  api: CognoApi,
+  signer: PostingSigner,
+  target: Ss58,
+): Observable<TxUpdate> {
+  const tx = api.tx.Microblog.clear_account_vote({ target }) as unknown as Signable;
+  return watchSigned(api, tx, signer);
+}
+
 // ── polls ──────────────────────────────────────────────────────────────────────────────────
 
 /**

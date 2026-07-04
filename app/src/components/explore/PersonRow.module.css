@@ -48,6 +48,17 @@
   white-space: nowrap;
 }
 
+/* stake-weighted reputation chip (shown only when non-zero); red when net-negative (disputed) */
+.rep {
+  font-size: var(--cg-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--cg-text-secondary);
+  white-space: nowrap;
+}
+.repDown {
+  color: var(--cg-danger);
+}
+
 .action {
   flex: 0 0 auto;
 }

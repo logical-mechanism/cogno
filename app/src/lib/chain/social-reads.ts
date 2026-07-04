@@ -54,6 +54,46 @@ export async function readPostTally(
   };
 }
 
+/**
+ * The denormalized stake-weighted REPUTATION tally for an account (`AccountVoteTally`, ValueQuery ⇒
+ * default all-zero). The account analog of {@link readPostTally}; `score = up − down` (may be negative).
+ */
+export async function readAccountVoteTally(
+  api: CognoApi,
+  target: Ss58,
+): Promise<{ upWeight: bigint; downWeight: bigint; upCount: number; downCount: number; score: bigint }> {
+  const t = (await api.query.Microblog.AccountVoteTally.getValue(target, BEST)) as unknown as {
+    up_weight: bigint;
+    down_weight: bigint;
+    up_count: number;
+    down_count: number;
+  };
+  const upWeight = BigInt(t.up_weight ?? 0n);
+  const downWeight = BigInt(t.down_weight ?? 0n);
+  return {
+    upWeight,
+    downWeight,
+    upCount: t.up_count ?? 0,
+    downCount: t.down_count ?? 0,
+    score: upWeight - downWeight,
+  };
+}
+
+/**
+ * The viewer's own reputation vote on `target`. Unlike `Reposts`, `AccountVotes` carries a non-unit
+ * `VoteRecord`, so `getValue` distinguishes Some/None cleanly — a plain point read (no getEntries hack).
+ */
+export async function readViewerAccountVote(
+  api: CognoApi,
+  target: Ss58,
+  who: Ss58,
+): Promise<"Up" | "Down" | null> {
+  const vote = (await api.query.Microblog.AccountVotes.getValue(target, who, BEST)) as unknown as
+    | { dir: { type: "Up" | "Down" }; weight: bigint }
+    | undefined;
+  return vote ? (vote.dir.type === "Down" ? "Down" : "Up") : null;
+}
+
 /** The permanent repost count for a post (ValueQuery ⇒ default 0). */
 export async function readRepostCount(api: CognoApi, id: bigint): Promise<number> {
   const n = (await api.query.Microblog.RepostCount.getValue(id, BEST)) as unknown as number;
