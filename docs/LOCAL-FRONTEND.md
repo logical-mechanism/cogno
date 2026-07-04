@@ -101,7 +101,7 @@ A user can still override the endpoint at runtime in the UI (Endpoint Settings �
 `localStorage`), which always wins over the build default.
 
 > **Reads vs. writes.** Browsing the feed needs only the relay (reads). The full post/bind/lock flow
-> additionally needs the follower / Blockfrost (see [app/README.md](../app/README.md)) — those are
+> additionally needs Blockfrost (the in-browser CIP-30 vault; see [app/README.md](../app/README.md)) — those are
 > independent of this tracking-node setup. The CIP-8 binds are feeless (bare unsigned, verified at
 > pool admission), so the browser submits them directly — no bind relay needed.
 

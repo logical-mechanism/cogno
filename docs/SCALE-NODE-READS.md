@@ -45,7 +45,7 @@ point-read over PAPI. That is the scaling ceiling now: latency × round-trips, n
 
 This spec moves the read loop **into the runtime** so a whole enriched, viewer-aware page comes back in
 **one `state_call`**, atomic at one block. It is the move that makes "the node serves the feed" literally
-true, and it does **not** depend on the indexer (the follow graph + all aggregates already live on chain).
+true, and it needs no external indexer (the follow graph + all aggregates already live on chain).
 
 ## Feature 1 (PRIMARY) — a `MicroblogApi` read Runtime API
 
@@ -148,8 +148,8 @@ migration (same shape as `MigrateV2ToV3`).
 ## Non-goals / guardrails
 
 - **Do not touch `contracts/`** (Aiken vault is live on preprod — any edit moves its hash).
-- **Do not renumber pallet indices** (index 7 permanently vacant).
+- **Do not renumber pallet indices** (indices 6 and 12 permanently vacant; 7 is GovernedUpgrade).
 - This is a **read** API — no privileged calls, no committee path involved.
-- Keep the indexer (SubQuery) as the path for cross-account aggregations it's actually better at
-  (who-to-follow, search); this spec is about the node serving the *primary feed/thread/profile reads*
-  itself, which it now can.
+- Cross-account aggregations (who-to-follow, search) are node-served too now — the external SubQuery
+  indexer that formerly handled them has since been removed; this spec covers the *primary
+  feed/thread/profile reads*, which the node likewise serves itself.

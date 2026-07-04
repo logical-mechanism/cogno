@@ -55,7 +55,7 @@ cli/             cogno-chain-cli — the all-Rust admin CLI (typed calls, keys-b
 cogno-dbsync/    shared crate: the deterministic db-sync reader + Cardano-state reduction
 cogno-keyfile/   shared crate: the cardano-cli-style JSON key envelope
 contracts/       the Aiken (Plutus V3) L1 talk_vault validator — LIVE on preprod (never move its hash)
-app/             Next.js 14 static-export frontend (PAPI + MeshJS)
+app/             Next.js 16 static-export frontend (PAPI + MeshJS)
 ci/cip8-oracle/  an independent Python CIP-8 verifier, kept as a CI adversarial oracle
 deploy/          systemd unit + monitoring (Prometheus/Grafana/Alertmanager)
 docs/            this file + the per-mechanism docs + operator runbooks
@@ -141,7 +141,7 @@ node-side `tantivy` index: [`SCALE-NODE-READS.md`](SCALE-NODE-READS.md).
 
 ## The frontend
 
-`app/` is a Next.js 14 **static export**. It reads and writes the chain node-direct through PAPI
+`app/` is a Next.js 16 **static export**. It reads and writes the chain node-direct through PAPI
 (reads via `MicroblogApi`, writes as ordinary or bare-unsigned extrinsics — CIP-8 binds are bare, the
 proof is the authorization). It uses MeshJS for the CIP-30 browser wallet and the L1 `talk_vault`
 lock/exit (Cardano txs submitted via Blockfrost, with live Ogmios cost models). It is the only

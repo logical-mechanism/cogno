@@ -34,7 +34,7 @@ scoped-out testnet choices, not bugs.
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
 | `contracts/` | the Aiken (Plutus V3) L1 `talk_vault` validator + `audits/` — **LIVE on preprod, see gotcha below** |
-| `app/` | Next.js 14 static-export frontend (PAPI + MeshJS). See [app/README.md](app/README.md) |
+| `app/` | Next.js 16 static-export frontend (PAPI + MeshJS). See [app/README.md](app/README.md) |
 | `ci/cip8-oracle/` | an independent Python CIP-8 verifier (a second implementation), kept as a CI adversarial oracle — do **not** port to Rust |
 | `deploy/` | one systemd unit + monitoring (Prometheus/Grafana/Alertmanager) |
 | `_sdk/` | **gitignored** vendored polkadot-sdk checkout |

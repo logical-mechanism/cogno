@@ -366,7 +366,7 @@ cogno-chain/
 ├─ cli/                        # cogno-chain-cli (all-Rust admin tool; typed RuntimeCall, keys by file)
 ├─ cogno-dbsync/ cogno-keyfile/ # shared no-node crates (deterministic db-sync reader; key envelope)
 ├─ contracts/                  # the Aiken L1 `talk_vault` validator (+ audits/)
-├─ app/                        # Next.js 14 static-export frontend (PAPI + MeshJS) — see app/README.md
+├─ app/                        # Next.js 16 static-export frontend (PAPI + MeshJS) — see app/README.md
 ├─ ci/cip8-oracle/             # the independent pycardano CIP-8 verifier (CI adversarial oracle)
 ├─ deploy/                     # one systemd unit + monitoring (Prometheus/Grafana/Alertmanager)
 ├─ docs/                       # ARCHITECTURE.md + design deep-dives + operator runbooks

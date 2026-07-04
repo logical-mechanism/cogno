@@ -1,6 +1,6 @@
 # cogno-chain frontend — the Reading Room / Civic Ledger
 
-The Next.js 14 **static-export** SPA for cogno-chain: a "post text / read text" interface styled as
+The Next.js 16 **static-export** SPA for cogno-chain: a "post text / read text" interface styled as
 a **Reading Room** (the feed) over a **Civic Ledger** (the on-chain provenance — identity binding,
 Cardano-sourced talk capacity, and the Cardano anchor are all visible, not hidden). It talks to the
 app-chain with **PAPI** (`polkadot-api`) and to Cardano with **MeshJS** (CIP-30 wallet + Blockfrost).
