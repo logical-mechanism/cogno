@@ -382,7 +382,7 @@ enum IdentityCmd {
         /// The COSE_Key bytes (hex, 0x-optional) your wallet's signData returned (its `key`).
         #[arg(long)]
         cose_key: String,
-        /// Optional cogno_v3 thread pointer (hex, 0x-optional).
+        /// Optional cogno_v3 thread pointer (hex, 0x-optional; at most 10 bytes on-chain).
         #[arg(long)]
         thread: Option<String>,
         /// Node RPC ws endpoint.
@@ -680,6 +680,7 @@ fn load_committee_signers(paths: &[PathBuf], prod: bool) -> anyhow::Result<Vec<S
     for p in paths {
         let s = load_signer(p)?;
         key::assert_not_dev_key(&s, prod)?;
+        key::assert_key_file_secure(p, prod)?;
         signers.push(s);
     }
     Ok(signers)
@@ -855,6 +856,7 @@ async fn cmd_members(gov: &GovOpts, action: MemberAction<'_>) -> anyhow::Result<
 fn load_seat_signer(seat: &SeatOpts) -> anyhow::Result<Signer> {
     let signer = load_signer(&seat.committee_key)?;
     key::assert_not_dev_key(&signer, seat.prod)?;
+    key::assert_key_file_secure(&seat.committee_key, seat.prod)?;
     Ok(signer)
 }
 
@@ -1012,6 +1014,7 @@ async fn cmd_apply_upgrade(
 ) -> anyhow::Result<()> {
     let account = load_signer(account_key)?;
     key::assert_not_dev_key(&account, prod)?;
+    key::assert_key_file_secure(account_key, prod)?;
     let code =
         std::fs::read(wasm).with_context(|| format!("reading runtime WASM {}", wasm.display()))?;
     anyhow::ensure!(!code.is_empty(), "runtime WASM {} is empty", wasm.display());
@@ -1076,12 +1079,15 @@ async fn cmd_set_keys(
 ) -> anyhow::Result<()> {
     let account = load_signer(account_key)?;
     key::assert_not_dev_key(&account, prod)?;
+    key::assert_key_file_secure(account_key, prod)?;
     let aura = load_signer(aura_key)?;
     let grandpa = load_signer(grandpa_key)?;
     // Dev-key-check the SESSION keys too: the registered aura key seals blocks and the grandpa key signs
     // finality votes — a dev session key is a publicly known authority key, exactly what --prod must refuse.
     key::assert_not_dev_key(&aura, prod)?;
     key::assert_not_dev_key(&grandpa, prod)?;
+    key::assert_key_file_secure(aura_key, prod)?;
+    key::assert_key_file_secure(grandpa_key, prod)?;
     let aura_pub = aura.require_sr25519_public()?;
     let grandpa_pub = grandpa.require_ed25519_public()?;
 

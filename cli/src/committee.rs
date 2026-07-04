@@ -215,10 +215,14 @@ pub async fn resolve_committee(
             t
         }
     };
+    // Dedup by on-chain account: two key files for the SAME member account must not both count toward the
+    // threshold (they would pass this check, then fail at vote time with DuplicateVote). Keep the first
+    // local seat index per distinct member account.
+    let mut seen = std::collections::BTreeSet::new();
     let eligible: Vec<usize> = local_signers
         .iter()
         .enumerate()
-        .filter(|(_, s)| onchain.contains(&s.account_id()))
+        .filter(|(_, s)| onchain.contains(&s.account_id()) && seen.insert(s.account_id()))
         .map(|(i, _)| i)
         .collect();
     anyhow::ensure!(
@@ -281,10 +285,11 @@ fn decode_module_error(index: u8, error: &[u8; 4]) -> Option<String> {
     Some(name)
 }
 
-/// `ensure_executed` — scan a block's events for the committee `Executed` of our motion and FAIL if the
-/// wrapped inner call reverted. `proposal_hash == None` matches any `Executed` (the threshold==1 path, where
-/// exactly one executed). A motion can "succeed" (Approved) while the inner call returns `Err`; this is the
-/// single most important correctness check.
+/// `ensure_executed` — scan a block's events for the committee `Executed` of our motion (matched by
+/// `proposal_hash`) and FAIL if the wrapped inner call reverted. `proposal_hash == None` is a match-any
+/// fallback with no current caller — both the threshold-1 propose and the close paths pass the precise
+/// motion hash. A motion can "succeed" (Approved) while the inner call returns `Err`; this is the single
+/// most important correctness check.
 pub fn ensure_executed(
     events: &[RuntimeEvent],
     proposal_hash: Option<H256>,
@@ -424,7 +429,9 @@ pub async fn propose_motion(
         );
         let block = rpc.submit_and_watch(&xt, true, "propose").await?;
         let events = events_at(rpc, block).await?;
-        ensure_executed(&events, None, "propose")?;
+        // Match OUR motion's Executed by hash (not None/any) — precise even in the impossible case of a
+        // second committee Executed in the same block. phash == pallet_collective's hash_of(&proposal).
+        ensure_executed(&events, Some(phash), "propose")?;
         eprintln!("✓ executed on propose (finalized in {block:#x})");
         return Ok(ProposeOutcome::ExecutedOnPropose { block });
     }

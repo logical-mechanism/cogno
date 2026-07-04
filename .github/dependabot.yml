@@ -52,3 +52,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # cbor2 is held on the 5.x line: beacon.py's Plutus-Data CBOR of the owner Address must stay
+      # byte-identical to the Aiken beacon-name / identity hash (the LOCKED value in test_beacon.py
+      # is the guard), and cbor2 6.x could change encoding behaviour. Requirements pin `>=5.6,<6`;
+      # stay there until a 6.x bump is verified byte-for-byte. Patches/minors within 5.x still flow.
+      - dependency-name: "cbor2"
+        update-types: ["version-update:semver-major"]

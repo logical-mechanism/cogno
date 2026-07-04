@@ -96,7 +96,9 @@ where
                 log::info!(
                     target: LOG,
                     "✓ db-sync reachable + synced (tip slot {} ≥ reference slot {ref_slot}); {} vault UTxO(s) \
-                     under the pinned policy, {anchor}",
+                     under the pinned policy, {anchor}. NOTE: this probes the VAULT read + tip freshness only \
+                     — the voting-power (epoch_stake) read is exercised per-block once stake keys are bound; \
+                     watch `cogno_observer_abstains_total` for a stake-read failure",
                     read.tip_slot,
                     read.matches.len(),
                 );

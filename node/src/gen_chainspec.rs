@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::chain_spec::ChainSpec; // the `GenericChainSpec` alias (resolves the generic params)
 use cogno_chain_runtime::{genesis_config_presets::operator_genesis, AccountId, WASM_BINARY};
-use cogno_keyfile::{assert_not_dev_key, load_signer, Signer};
+use cogno_keyfile::{assert_key_file_secure, assert_not_dev_key, load_signer, Signer};
 use sc_service::config::MultiaddrWithPeerId;
 use sc_service::{ChainType, Properties};
 use sp_core::crypto::Ss58Codec;
@@ -63,7 +63,8 @@ pub struct GenChainSpecCmd {
     /// Chain spec human name (default: derived from --base).
     #[arg(long)]
     pub name: Option<String>,
-    /// Chain spec id / protocol id (default: derived from --base).
+    /// Chain spec id — the on-disk identifier used for the data/keystore dir (default: derived from
+    /// --base). This is NOT the libp2p protocol id, which this tool does not set.
     #[arg(long)]
     pub id: Option<String>,
 
@@ -79,10 +80,12 @@ pub struct GenChainSpecCmd {
     pub allow_dev_keys: bool,
 }
 
-/// Load a key file and refuse a dev key unless `--allow-dev-keys`.
+/// Load a key file and refuse a dev key (and, unless `--allow-dev-keys`, a group/other-accessible key
+/// file) — an operator chain spec must use real keys stored 0600.
 fn load(path: &Path, allow_dev: bool) -> Result<Signer, String> {
     let s = load_signer(path).map_err(|e| e.to_string())?;
     assert_not_dev_key(&s, !allow_dev).map_err(|e| e.to_string())?;
+    assert_key_file_secure(path, !allow_dev).map_err(|e| e.to_string())?;
     Ok(s)
 }
 

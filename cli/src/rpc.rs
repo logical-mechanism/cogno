@@ -10,6 +10,13 @@ use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use sp_core::H256;
+use std::time::Duration;
+
+/// Upper bound on how long [`Rpc::submit_and_watch`] waits for a terminal transaction status before
+/// giving up. A tx that never reaches a terminal state (e.g. stuck in the `Future` queue behind a nonce
+/// gap, or a finalization stall) would otherwise block the CLI forever — bound it so a governed op fails
+/// with a clear message instead of hanging. Generous, since a `finalize = true` wait spans GRANDPA.
+const SUBMIT_WATCH_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// A connected ws client to a node's RPC endpoint.
 pub struct Rpc {
@@ -31,6 +38,57 @@ fn to_h256(s: &str) -> anyhow::Result<H256> {
 /// `0x`-prefixed lowercase hex for an RPC argument.
 pub fn hex0x(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
+}
+
+/// The action a single `TransactionStatus` update implies for the [`Rpc::submit_and_watch`] loop.
+enum WatchStep {
+    /// A non-terminal status ("ready"/"future"/"broadcast"/"retracted", or `inBlock` while awaiting
+    /// finalization) — keep watching.
+    KeepWatching,
+    /// The tx reached the target terminal state — the hash of the block it landed in (`inBlock` when not
+    /// finalizing, else `finalized`).
+    Landed(H256),
+    /// A terminal REJECT (dropped/invalid/usurped/finalityTimeout) — the wait ends in an error.
+    Rejected(String),
+}
+
+/// Classify one `author_submitAndWatchExtrinsic` status update.
+///
+/// `TransactionStatus` (sc-transaction-pool-api, `rename_all = "camelCase"`) arrives as EITHER a bare
+/// string (the UNIT variants: `"ready"`, `"future"`, and the TERMINAL `"dropped"` / `"invalid"`) OR a
+/// single-key object (the DATA variants: `{"broadcast":[..]}`, `{"inBlock":"0x.."}`,
+/// `{"retracted":"0x.."}`, `{"usurped":"0x.."}`, `{"finalityTimeout":"0x.."}`, `{"finalized":"0x.."}`).
+/// `Dropped`/`Invalid` are unit variants, so they come as bare strings and MUST be matched in the string
+/// arm — an `obj.contains_key("dropped"/"invalid")` check would never fire.
+fn classify_tx_status(status: &serde_json::Value, finalize: bool) -> anyhow::Result<WatchStep> {
+    if let Some(s) = status.as_str() {
+        return Ok(match s {
+            "dropped" | "invalid" => WatchStep::Rejected(format!("tx {s} (never included/finalized)")),
+            _ => WatchStep::KeepWatching, // "ready" / "future"
+        });
+    }
+    if let Some(obj) = status.as_object() {
+        if let Some(h) = obj.get("inBlock").and_then(|v| v.as_str()) {
+            // Landed in a block; terminal only for the non-finalizing wait.
+            return Ok(if finalize {
+                WatchStep::KeepWatching
+            } else {
+                WatchStep::Landed(to_h256(h)?)
+            });
+        }
+        if let Some(h) = obj.get("finalized").and_then(|v| v.as_str()) {
+            return Ok(WatchStep::Landed(to_h256(h)?));
+        }
+        for terminal in ["usurped", "finalityTimeout"] {
+            if obj.contains_key(terminal) {
+                return Ok(WatchStep::Rejected(format!(
+                    "tx {terminal} (never included/finalized): {status}"
+                )));
+            }
+        }
+    }
+    // "broadcast" / "retracted" and any other non-terminal object status.
+    Ok(WatchStep::KeepWatching)
 }
 
 impl Rpc {
@@ -180,36 +238,110 @@ impl Rpc {
             .await
             .with_context(|| format!("{label}: author_submitAndWatchExtrinsic failed"))?;
 
-        while let Some(item) = sub.next().await {
-            let status = item.with_context(|| format!("{label}: subscription error"))?;
-            // TransactionStatus is either a string ("ready", "broadcast", "future"…) or a single-key object
-            // ({"inBlock":"0x.."}, {"finalized":"0x.."}, {"dropped":..}, {"invalid":..}, …).
-            if status.as_str().is_some() {
-                // "ready"/"broadcast"/"future" — non-terminal; keep watching.
-                continue;
+        let watch = async {
+            while let Some(item) = sub.next().await {
+                let status = item.with_context(|| format!("{label}: subscription error"))?;
+                match classify_tx_status(&status, finalize)? {
+                    WatchStep::KeepWatching => continue,
+                    WatchStep::Landed(hash) => return Ok(hash),
+                    WatchStep::Rejected(why) => anyhow::bail!("{label}: {why}"),
+                }
             }
-            if let Some(obj) = status.as_object() {
-                if let Some(h) = obj.get("inBlock").and_then(|v| v.as_str()) {
-                    if !finalize {
-                        return to_h256(h);
-                    }
-                    // else keep watching for finalization
-                    continue;
-                }
-                if let Some(h) = obj.get("finalized").and_then(|v| v.as_str()) {
-                    return to_h256(h);
-                }
-                for terminal in ["dropped", "invalid", "usurped", "finalityTimeout"] {
-                    if obj.contains_key(terminal) {
-                        anyhow::bail!(
-                            "{label}: tx {terminal} (never included/finalized): {status}"
-                        );
-                    }
-                }
-                // "retracted" and other non-terminal object statuses — keep watching.
-                continue;
-            }
+            anyhow::bail!("{label}: subscription ended before a terminal status")
+        };
+
+        // Bound the whole watch so a tx that never reaches a terminal state can't hang the CLI forever.
+        match tokio::time::timeout(SUBMIT_WATCH_TIMEOUT, watch).await {
+            Ok(res) => res,
+            Err(_) => anyhow::bail!(
+                "{label}: no terminal status within {}s — the tx may still be pending; check the chain \
+                 state before retrying (a resubmit reuses the same nonce)",
+                SUBMIT_WATCH_TIMEOUT.as_secs()
+            ),
         }
-        anyhow::bail!("{label}: subscription ended before a terminal status")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn hash0x(byte: u8) -> String {
+        hex0x(&[byte; 32])
+    }
+
+    /// The bug this guards: `Dropped`/`Invalid` are UNIT variants, so they arrive as bare JSON strings,
+    /// NOT `{"dropped":..}` objects — they must classify as terminal rejects, not be skipped as "some
+    /// string ⇒ non-terminal".
+    #[test]
+    fn dropped_and_invalid_are_bare_strings_and_terminal() {
+        assert!(matches!(
+            classify_tx_status(&json!("dropped"), true).unwrap(),
+            WatchStep::Rejected(_)
+        ));
+        assert!(matches!(
+            classify_tx_status(&json!("invalid"), false).unwrap(),
+            WatchStep::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn ready_and_future_strings_are_non_terminal() {
+        assert!(matches!(
+            classify_tx_status(&json!("ready"), true).unwrap(),
+            WatchStep::KeepWatching
+        ));
+        assert!(matches!(
+            classify_tx_status(&json!("future"), true).unwrap(),
+            WatchStep::KeepWatching
+        ));
+    }
+
+    #[test]
+    fn inblock_lands_only_when_not_finalizing() {
+        let s = json!({ "inBlock": hash0x(0xab) });
+        // finalize = false ⇒ inBlock is the terminal we want.
+        assert!(matches!(
+            classify_tx_status(&s, false).unwrap(),
+            WatchStep::Landed(_)
+        ));
+        // finalize = true ⇒ keep watching for the finalized status.
+        assert!(matches!(
+            classify_tx_status(&s, true).unwrap(),
+            WatchStep::KeepWatching
+        ));
+    }
+
+    #[test]
+    fn finalized_object_lands() {
+        assert!(matches!(
+            classify_tx_status(&json!({ "finalized": hash0x(0xcd) }), true).unwrap(),
+            WatchStep::Landed(_)
+        ));
+    }
+
+    #[test]
+    fn usurped_and_finality_timeout_objects_are_terminal_rejects() {
+        assert!(matches!(
+            classify_tx_status(&json!({ "usurped": hash0x(0xef) }), true).unwrap(),
+            WatchStep::Rejected(_)
+        ));
+        assert!(matches!(
+            classify_tx_status(&json!({ "finalityTimeout": hash0x(0x01) }), true).unwrap(),
+            WatchStep::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn broadcast_and_retracted_objects_keep_watching() {
+        assert!(matches!(
+            classify_tx_status(&json!({ "broadcast": ["peer1", "peer2"] }), true).unwrap(),
+            WatchStep::KeepWatching
+        ));
+        assert!(matches!(
+            classify_tx_status(&json!({ "retracted": hash0x(0x02) }), true).unwrap(),
+            WatchStep::KeepWatching
+        ));
     }
 }

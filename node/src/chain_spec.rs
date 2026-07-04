@@ -18,7 +18,7 @@ pub fn development_chain_spec() -> Result<ChainSpec, String> {
 
 pub fn local_chain_spec() -> Result<ChainSpec, String> {
     Ok(ChainSpec::builder(
-        WASM_BINARY.ok_or_else(|| "Development wasm not available".to_string())?,
+        WASM_BINARY.ok_or_else(|| "Local testnet wasm not available".to_string())?,
         None,
     )
     .with_name("Local Testnet")

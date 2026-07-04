@@ -120,6 +120,13 @@ pub fn link_identity_signed(
     cose_key: Vec<u8>,
     thread_pointer: Option<Vec<u8>>,
 ) -> anyhow::Result<RuntimeCall> {
+    if let Some(t) = &thread_pointer {
+        anyhow::ensure!(
+            t.len() <= 10,
+            "thread pointer exceeds the 10-byte on-chain bound (BoundedVec<u8, 10>), got {} bytes",
+            t.len()
+        );
+    }
     Ok(RuntimeCall::CognoGate(
         pallet_cogno_gate::Call::<Runtime>::link_identity_signed {
             cose_sign1: cose_sign1

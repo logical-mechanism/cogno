@@ -26,7 +26,7 @@ Third-party attributions
    `node/src/consensus/` (mod.rs, block_proposal.rs, inherent_digest.rs,
    cardano_digest.rs) is an independent REIMPLEMENTATION of the upstream
    `InherentDigest` trait and the `PartnerChainsProposerFactory` /
-   `PartnerChainsProposer` wrapper, pinned to this project's polkadot-stable2603-3
+   `PartnerChainsProposer` wrapper, pinned to this project's polkadot-stable2606
    and adapted to cogno's single pinned Cardano vault. The upstream repository is
    archived; it is studied as a reference, not depended upon. The upstream
    proposer's `from_inherent_data` panic is intentionally replaced with a

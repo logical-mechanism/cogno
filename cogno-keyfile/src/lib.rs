@@ -270,8 +270,10 @@ pub fn load_signer(path: &Path) -> anyhow::Result<Signer> {
 
 /// Extract the node-keystore SURI (`0x`-prefixed secret hex) + scheme from an already-parsed envelope,
 /// validating the secret exactly as [`load_signer`] does (hex decode + seed length/validity). Shared by
-/// [`load_secret_suri`]; split out so it is testable without file IO.
-fn secret_suri_from_envelope(env: &KeyEnvelope) -> anyhow::Result<(Scheme, String)> {
+/// [`load_secret_suri`]; split out so it is testable without file IO. The SURI is returned as a
+/// [`Zeroizing`] `String` — it IS the raw secret seed in hex, so it is wiped from memory when the caller
+/// drops it (keeping this crate's secret-hygiene invariant uniform).
+fn secret_suri_from_envelope(env: &KeyEnvelope) -> anyhow::Result<(Scheme, Zeroizing<String>)> {
     let scheme = Scheme::parse(&env.scheme)?;
     let hexstr = env.secret_hex.strip_prefix("0x").unwrap_or(&env.secret_hex);
     let seed = Zeroizing::new(
@@ -290,15 +292,19 @@ fn secret_suri_from_envelope(env: &KeyEnvelope) -> anyhow::Result<(Scheme, Strin
 		 `cogno-chain-cli key gen`, which always writes a 32-byte seed)",
 		seed.len()
 	);
-    Ok((scheme, format!("0x{}", hexstr.to_lowercase())))
+    // The lowercased-hex intermediate holds the secret too — zeroize it, and return the SURI itself
+    // wrapped so it is wiped when the caller (the node's `key insert-file`) drops it.
+    let lower = Zeroizing::new(hexstr.to_lowercase());
+    Ok((scheme, Zeroizing::new(format!("0x{}", lower.as_str()))))
 }
 
 /// Read a key-file PATH and return the node-keystore SURI (`0x`-prefixed secret hex) + its scheme, WITHOUT
 /// constructing a `Signer` for the caller. This is what `cogno-chain-node key insert-file` needs to insert
 /// a session secret into the keystore BY FILE PATH — mirroring the CLI's by-file signing, so an operator
 /// never extracts the secret by hand. The secret stays inside this one audited crate (the node re-derives
-/// the public key from the SURI, exactly as the SDK's `key insert` does).
-pub fn load_secret_suri(path: &Path) -> anyhow::Result<(Scheme, String)> {
+/// the public key from the SURI, exactly as the SDK's `key insert` does). The returned SURI is
+/// [`Zeroizing`] — wiped from memory when the caller drops it.
+pub fn load_secret_suri(path: &Path) -> anyhow::Result<(Scheme, Zeroizing<String>)> {
     let env = read_envelope(path)?;
     secret_suri_from_envelope(&env).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
@@ -440,6 +446,43 @@ pub fn assert_not_dev_key(signer: &Signer, prod: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Fail-closed key-file PERMISSION guard: under `--prod`, REFUSE a secret key file that is
+/// group/other-accessible on unix (`mode & 0o077 != 0`), mirroring ssh's `StrictModes`. No-op when `prod`
+/// is false (the load path still WARNS on loose perms — see [`load_signer`]) and on non-unix. Paired with
+/// [`assert_not_dev_key`] at every `--prod` signing entry point: a production signing key must be neither a
+/// well-known dev key NOR readable by other local users.
+#[cfg(unix)]
+pub fn assert_key_file_secure(path: &Path, prod: bool) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if !prod {
+        return Ok(());
+    }
+    let mode = std::fs::metadata(path)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "--prod: cannot stat key file {} to verify its permissions: {e}",
+                path.display()
+            )
+        })?
+        .permissions()
+        .mode();
+    anyhow::ensure!(
+        mode & 0o077 == 0,
+        "--prod: refusing to use key file {} — it is group/other-accessible (mode {:o}); tighten it with \
+         `chmod 600 {}` (a production signing key must not be readable by other local users)",
+        path.display(),
+        mode & 0o7777,
+        path.display()
+    );
+    Ok(())
+}
+
+/// Non-unix has no POSIX mode bits — accept (parity with the warn-only load path).
+#[cfg(not(unix))]
+pub fn assert_key_file_secure(_path: &Path, _prod: bool) -> anyhow::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,7 +540,7 @@ mod tests {
             let (signer, env) = generate(scheme, "t").unwrap();
             let (got_scheme, suri) = secret_suri_from_envelope(&env).unwrap();
             assert_eq!(got_scheme, scheme);
-            assert!(suri.starts_with("0x"), "suri must be 0x-prefixed: {suri}");
+            assert!(suri.starts_with("0x"), "suri must be 0x-prefixed");
             let seed = hex::decode(suri.strip_prefix("0x").unwrap()).unwrap();
             let reloaded = signer_from_seed(scheme, &seed).unwrap();
             assert_eq!(
@@ -561,5 +604,43 @@ mod tests {
             assert_not_dev_key(&fresh, true).is_ok(),
             "prod allows a fresh key"
         );
+    }
+
+    /// Under `--prod`, a group/other-accessible key file is REFUSED; a `0600` file is accepted; non-prod
+    /// never refuses (it only warns on the load path).
+    #[cfg(unix)]
+    #[test]
+    fn prod_refuses_group_or_other_readable_key_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir()
+            .join(format!("cogno-keyfile-permtest-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        // Created restricted-from-birth (0600) — accepted under prod.
+        write_secret_0600(&path, b"{}").unwrap();
+        assert!(
+            assert_key_file_secure(&path, true).is_ok(),
+            "0600 must pass under prod"
+        );
+
+        // World-readable (0644) — refused under prod, allowed under non-prod.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            assert_key_file_secure(&path, true).is_err(),
+            "0644 must be refused under prod"
+        );
+        assert!(
+            assert_key_file_secure(&path, false).is_ok(),
+            "non-prod never refuses"
+        );
+
+        // Group-read only (0640) is also refused under prod (mode & 0o077 != 0).
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(
+            assert_key_file_secure(&path, true).is_err(),
+            "0640 must be refused under prod"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }
