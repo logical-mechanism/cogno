@@ -446,6 +446,43 @@ pub fn assert_not_dev_key(signer: &Signer, prod: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Fail-closed key-file PERMISSION guard: under `--prod`, REFUSE a secret key file that is
+/// group/other-accessible on unix (`mode & 0o077 != 0`), mirroring ssh's `StrictModes`. No-op when `prod`
+/// is false (the load path still WARNS on loose perms — see [`load_signer`]) and on non-unix. Paired with
+/// [`assert_not_dev_key`] at every `--prod` signing entry point: a production signing key must be neither a
+/// well-known dev key NOR readable by other local users.
+#[cfg(unix)]
+pub fn assert_key_file_secure(path: &Path, prod: bool) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if !prod {
+        return Ok(());
+    }
+    let mode = std::fs::metadata(path)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "--prod: cannot stat key file {} to verify its permissions: {e}",
+                path.display()
+            )
+        })?
+        .permissions()
+        .mode();
+    anyhow::ensure!(
+        mode & 0o077 == 0,
+        "--prod: refusing to use key file {} — it is group/other-accessible (mode {:o}); tighten it with \
+         `chmod 600 {}` (a production signing key must not be readable by other local users)",
+        path.display(),
+        mode & 0o7777,
+        path.display()
+    );
+    Ok(())
+}
+
+/// Non-unix has no POSIX mode bits — accept (parity with the warn-only load path).
+#[cfg(not(unix))]
+pub fn assert_key_file_secure(_path: &Path, _prod: bool) -> anyhow::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,5 +604,43 @@ mod tests {
             assert_not_dev_key(&fresh, true).is_ok(),
             "prod allows a fresh key"
         );
+    }
+
+    /// Under `--prod`, a group/other-accessible key file is REFUSED; a `0600` file is accepted; non-prod
+    /// never refuses (it only warns on the load path).
+    #[cfg(unix)]
+    #[test]
+    fn prod_refuses_group_or_other_readable_key_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir()
+            .join(format!("cogno-keyfile-permtest-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        // Created restricted-from-birth (0600) — accepted under prod.
+        write_secret_0600(&path, b"{}").unwrap();
+        assert!(
+            assert_key_file_secure(&path, true).is_ok(),
+            "0600 must pass under prod"
+        );
+
+        // World-readable (0644) — refused under prod, allowed under non-prod.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            assert_key_file_secure(&path, true).is_err(),
+            "0644 must be refused under prod"
+        );
+        assert!(
+            assert_key_file_secure(&path, false).is_ok(),
+            "non-prod never refuses"
+        );
+
+        // Group-read only (0640) is also refused under prod (mode & 0o077 != 0).
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(
+            assert_key_file_secure(&path, true).is_err(),
+            "0640 must be refused under prod"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }
