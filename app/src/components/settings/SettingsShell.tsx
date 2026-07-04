@@ -17,6 +17,7 @@ import { ProfileSection } from "./ProfileSection";
 import { VaultSection } from "./VaultSection";
 import { DiagnosticsSection } from "./DiagnosticsSection";
 import { MutedSection } from "./MutedSection";
+import { BookmarksSection } from "./BookmarksSection";
 import { AppearanceSection } from "./AppearanceSection";
 import { AboutSection } from "./AboutSection";
 
@@ -25,6 +26,7 @@ export type SectionId =
   | "profile"
   | "vault"
   | "muted"
+  | "bookmarks"
   | "diagnostics"
   | "appearance"
   | "about";
@@ -34,6 +36,7 @@ export const SECTIONS: { id: SectionId; heading: string }[] = [
   { id: "profile", heading: "Profile" },
   { id: "vault", heading: "Vault & posting power" },
   { id: "muted", heading: "Muted accounts" },
+  { id: "bookmarks", heading: "Bookmarks" },
   { id: "diagnostics", heading: "Diagnostics" },
   { id: "appearance", heading: "Appearance" },
   { id: "about", heading: "About" },
@@ -157,6 +160,8 @@ function renderSection(id: SectionId, onSelect: (id: SectionId) => void) {
       return <VaultSection />;
     case "muted":
       return <MutedSection />;
+    case "bookmarks":
+      return <BookmarksSection />;
     case "diagnostics":
       return <DiagnosticsSection />;
     case "appearance":
