@@ -79,6 +79,9 @@ export interface ProfileHeaderProps {
   showCounts: boolean;
   followingCount: number;
   followerCount: number;
+  /** Tapping a figure opens the Following / Followers list (FollowsPanel). Omit → static figures. */
+  onOpenFollowing?: () => void;
+  onOpenFollowers?: () => void;
   /** The viewer (gate state for FollowButton). */
   viewer: Viewer;
   /** Edge state for FollowButton (from useFollow). */
@@ -113,6 +116,8 @@ export function ProfileHeader({
   showCounts,
   followingCount,
   followerCount,
+  onOpenFollowing,
+  onOpenFollowers,
   viewer,
   isFollowing,
   onEditProfile,
@@ -222,7 +227,12 @@ export function ProfileHeader({
 
         {/* Counts omitted entirely on PAPI-direct (caps.follows === false) — never "0 Followers". */}
         {showCounts && (
-          <FollowCounts following={followingCount} followers={followerCount} />
+          <FollowCounts
+            following={followingCount}
+            followers={followerCount}
+            onOpenFollowing={onOpenFollowing}
+            onOpenFollowers={onOpenFollowers}
+          />
         )}
 
         {/* Community reputation: stake-weighted up/down votes ON this account (spec-202). Omitted

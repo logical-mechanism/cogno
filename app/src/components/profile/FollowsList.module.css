@@ -1,0 +1,5 @@
+/* FollowsList — a plain vertical stack of PersonRow (each row owns its own divider + padding). */
+.list {
+  display: flex;
+  flex-direction: column;
+}

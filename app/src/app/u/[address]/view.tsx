@@ -33,6 +33,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Timeline } from "@/components/Timeline";
 import { ProfileHeader } from "@/components/profile/ProfileHeader";
 import { ProfileTabs, type ProfileTab } from "@/components/profile/ProfileTabs";
+import { FollowsPanel } from "@/components/profile/FollowsPanel";
 import { PinnedPostBlock } from "@/components/profile/PinnedPostBlock";
 import { useSession } from "@/components/Providers";
 import { useHeads } from "@/hooks/useHeads";
@@ -150,6 +151,67 @@ function ProfileBody({ address }: { address: Ss58 }) {
         follow.unfollow(target);
         setFollowDelta((d) => d - 1);
       }
+    },
+    [viewer.status, follow, router],
+  );
+
+  // ── followers / following lists: a full-screen sub-view synced to ?follows=followers|following. ──
+  // Tapping a follow count opens it (pushState → the header back-arrow / browser Back closes it, via
+  // popstate below); switching sides inside replaces (no history stacking). caps.follows already gates
+  // the counts, so this is only reachable when the reader serves the follow graph.
+  const [follows, setFollows] = useState<"followers" | "following" | null>(() => {
+    const v = searchParams?.get("follows");
+    return v === "followers" || v === "following" ? v : null;
+  });
+  useEffect(() => {
+    const onPop = () => {
+      const v = new URLSearchParams(window.location.search).get("follows");
+      setFollows(v === "followers" || v === "following" ? v : null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  const openFollows = useCallback((which: "followers" | "following") => {
+    setFollows(which);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("follows", which);
+    window.history.pushState(null, "", url.toString()); // Back / the header ← closes it
+  }, []);
+  const switchFollows = useCallback((which: "followers" | "following") => {
+    setFollows(which);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("follows", which);
+    window.history.replaceState(null, "", url.toString()); // side-switch: no history stacking
+  }, []);
+
+  // `follows` belongs to the address it was opened on. ProfileBody is REUSED (not remounted) across
+  // /u/A → /u/B, and a soft nav to another profile — e.g. tapping a PersonRow's <Link> inside the list
+  // — changes `address` but does NOT fire popstate, so without this the previous account's follow panel
+  // would render under the new /u/<b>/ URL. Re-derive `follows` from the new URL DURING render (React's
+  // "adjust state on a prop change" pattern — no wrong-surface flash); the popstate listener above still
+  // covers browser back/forward on the SAME profile.
+  const [followsAddr, setFollowsAddr] = useState(address);
+  if (followsAddr !== address) {
+    setFollowsAddr(address);
+    const v =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get("follows")
+        : null;
+    setFollows(v === "followers" || v === "following" ? v : null);
+  }
+
+  // A list FollowButton just follows/unfollows (no header follower-count delta — that's for THIS
+  // profile's own counter, driven by onToggleFollow above). Optimism lives in the useFollow hook.
+  const onListToggleFollow = useCallback(
+    (target: Ss58, next: boolean) => {
+      if (viewer.status !== "ready") {
+        router.push("/welcome/");
+        return;
+      }
+      if (next) follow.follow(target);
+      else follow.unfollow(target);
     },
     [viewer.status, follow, router],
   );
@@ -354,6 +416,26 @@ function ProfileBody({ address }: { address: Ss58 }) {
   // ── cold load: header skeleton + post skeletons, no layout shift when data lands ──
   const cold = loading && !profile;
 
+  // Followers / Following sub-view (X-exact): while active it REPLACES the profile chrome. Gated on
+  // canFollow so a stale ?follows= deep-link on a reader that can't serve the graph falls back to the
+  // profile. The profile hooks above stay mounted, so closing it doesn't refetch the profile.
+  if (canFollow && follows) {
+    return (
+      <FollowsPanel
+        address={address}
+        name={headerName}
+        side={follows}
+        followerCount={followerCount}
+        followingCount={followingCount}
+        source={source}
+        viewer={viewer}
+        isFollowing={follow.isFollowing}
+        onToggleFollow={onListToggleFollow}
+        onSwitch={switchFollows}
+      />
+    );
+  }
+
   return (
     <>
       <StickyHeader
@@ -400,6 +482,8 @@ function ProfileBody({ address }: { address: Ss58 }) {
             showCounts={canFollow}
             followingCount={followingCount}
             followerCount={followerCount}
+            onOpenFollowing={() => openFollows("following")}
+            onOpenFollowers={() => openFollows("followers")}
             viewer={viewer}
             isFollowing={isFollowing}
             onEditProfile={onEditProfile}
