@@ -15,7 +15,7 @@
 //! not D4-TRUST").
 //!
 //! Reimplemented (DR-26: study, don't depend — the upstream repo is archived) from the partner-chains
-//! Apache-2.0 `sp-partner-chains-consensus-aura` crate, pinned to cogno's polkadot-stable2603-3: the
+//! Apache-2.0 `sp-partner-chains-consensus-aura` crate, pinned to cogno's polkadot-stable2606: the
 //! [`InherentDigest`] trait + the [`PartnerChainsProposerFactory`]/`PartnerChainsProposer` wrapper. The
 //! upstream proposer's `from_inherent_data` panic is replaced with a logged-empty fallback so a
 //! db-sync-lagging author that legitimately abstains can never wedge the essential authoring task.

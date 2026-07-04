@@ -7,7 +7,7 @@
 //! factory), so NO `start_aura`/`import_queue`/verifier fork is needed (Architecture A).
 //!
 //! Reimplemented from the Apache-2.0 partner-chains `sp-partner-chains-consensus-aura` primitives and
-//! PINNED to cogno's polkadot-stable2603-3 `sp-consensus` 0.47.0, whose `Proposer` trait differs from the
+//! PINNED to cogno's polkadot-stable2606 `sp-consensus` 0.49.0, whose `Proposer` trait differs from the
 //! archived upstream: `propose` takes a single `ProposeArgs<B>` (not 4 positional args) and the trait no
 //! longer has `ProofRecording`/`Proof` associated types (proof recording moved into
 //! `ProposeArgs::storage_proof_recorder`). ONE deliberate behavioural change from upstream: the
