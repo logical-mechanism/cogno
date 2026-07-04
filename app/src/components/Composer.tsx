@@ -17,7 +17,7 @@
 // schedule / poll-duration. The ByteCounter ring (UTF-8 BYTES, D1) is the single source of truth the
 // CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
@@ -113,6 +113,8 @@ export interface ComposerProps {
   onSubmit: (draft: ComposerDraft) => void;
   /** Modal/page close. */
   onCancel?: () => void;
+  /** Report draft dirtiness (non-empty text) so the surface can confirm a discard on close. */
+  onDirtyChange?: (dirty: boolean) => void;
   /** Surface-supplied extras the surface needs to assemble the ComposerDraft (parentId/quotedId/options). */
   draftExtras?: Pick<ComposerDraft, "parentId" | "quotedId" | "pollOptions">;
 }
@@ -145,6 +147,7 @@ export function Composer({
   autoFocus,
   onSubmit,
   onCancel,
+  onDirtyChange,
   draftExtras,
 }: ComposerProps) {
   const [innerText, setInnerText] = useState("");
@@ -196,6 +199,12 @@ export function Composer({
   const nonEmpty = text.trim().length > 0;
   const overLimit = measure.over;
   const textValid = nonEmpty && !overLimit && extraValid;
+
+  // Report dirtiness up so the surface can confirm a discard on close (uncontrolled reply/quote text
+  // lives only in this component, so the surface can't see it any other way).
+  useEffect(() => {
+    onDirtyChange?.(nonEmpty);
+  }, [nonEmpty, onDirtyChange]);
 
   // CTA disabled rules — §5.4 order: session(reroute) > validity > capacity > pending. No posting
   // power (zero locked ADA) is a hard capacity block, same as rate-limited.

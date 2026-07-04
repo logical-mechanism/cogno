@@ -1,0 +1,76 @@
+/* Layers above the ComposerModal (scrim cg-z-overlay / card cg-z-modal). */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--cg-z-modal) + 10);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-4);
+  background: var(--cg-overlay);
+}
+
+.card {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-5);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-elevated);
+  box-shadow: var(--cg-shadow-modal);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--cg-fs-lg);
+  font-weight: var(--cg-fw-extrabold);
+  color: var(--cg-text);
+}
+
+.body {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-secondary);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--cg-space-3);
+  margin-top: var(--cg-space-2);
+}
+
+.cancel,
+.confirm,
+.danger {
+  padding: var(--cg-space-2) var(--cg-space-4);
+  border-radius: var(--cg-radius-pill);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+}
+
+.cancel {
+  border: 1px solid var(--cg-border);
+  background: transparent;
+  color: var(--cg-text);
+}
+
+.cancel:hover {
+  background: var(--cg-bg-hover);
+}
+
+.confirm {
+  border: none;
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+}
+
+.danger {
+  border: none;
+  background: var(--cg-danger);
+  color: #fff;
+}
