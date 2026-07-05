@@ -5,9 +5,9 @@
 > `L1`–`L5` layered specs, `PLAN.md`, the `M*-build.md` notes, and an internal decision register cited
 > inline as `DR-NN` — plus older spec versions and removed components (the off-chain follower, sudo).
 > Kept for design rationale; the **current** system overview is [`ARCHITECTURE.md`](ARCHITECTURE.md), and
-> the runtime is now `spec_version` 201.
+> the runtime is now `spec_version` 203.
 
-> **Status: IMPLEMENTED (present in the current `spec_version` 201 runtime).** This document is the
+> **Status: IMPLEMENTED (present in the current `spec_version` 203 runtime).** This document is the
 > original economic design. It specifies the model that replaces per-post fees. Honest about caveats;
 > numbers are illustrative and runtime-tunable, not consensus-critical magic.
 > **One-line thesis:** Your stake is your rate limit. Lock ADA on Cardano → it grants a regenerating "talk capacity" on the solochain → posting is feeless and consumes capacity → capacity refills over time. No money is spent per post.
@@ -353,7 +353,7 @@ can post.*
 | Meters | posting / voting / engagement | `set_keys`, committee propose/vote/close |
 | Granted by | the Cardano observer (locked-ADA weight) | the 3-of-5 committee (`set_allowance`) |
 | Regenerates | lazily, per block, scaled by stake weight | by an `on_initialize` hook, toward a standing allowance |
-| Transferable? | no (identity-bound virtual meter) | **no** (base call filter blocks `Balances::transfer*`) |
+| Transferable? | no (identity-bound virtual meter) | **no** (base call filter blocks the entire `pallet-balances` call surface, not just `transfer*`) |
 | Can it post? | it *is* the posting right | **never** — the social layer never reads `Balances` |
 | Revoked by | `CognoGate::revoke` (identity ban) | `GovernanceFuel::revoke` (drop allowance + claw back) |
 
@@ -375,6 +375,14 @@ has no utility surface (can't post, can't be sold if non-transferable, isn't vot
 1-member-1-vote — isn't consensus-weight — Aura is set-gated), and a 3-of-5 quorum that could abuse minting
 already holds runtime-upgrade authority (strictly more power). There is a per-call `MaxAllowance` cap (bounds
 a fat-finger) but deliberately **no cumulative issuance cap** (that would reintroduce the depletion brick).
+
+**Fuel is also a seating prerequisite, not just a fee source.** The runtime *gates seating* on fuel: an
+account must already hold a committee-granted allowance before it can be seated as a validator
+(`ValidatorSet::add_validator` rejects an unfunded account with `NotFunded`) or added to the committee
+(a `set_members` that seats a new, unfunded member is `CallFiltered` by the base call filter). So the
+onboarding order is fixed — fuel `set_allowance` **then** `set-keys` / `members add` **then** `add_validator`
+— because an unfunded member would only dilute the `EnsureProportionAtLeast` denominator (raising the
+threshold) without adding votable capacity.
 
 **Spam & offboarding.** A funded member's admin-spam is naturally bounded — per period they can spend at
 most their allowance, and `FollowerMaxProposals`/block-weight bound throughput regardless. `revoke(who)`
@@ -461,18 +469,18 @@ Directly actionable edits, by section:
   - ONBOARD: extend `link_identity` / `AllowedKeys` to also record the user's **stake/lock binding** (the whole owner **Address** is reused per DR-01; add the lock-UTxO observation), and **enforce a hard 1:1 owner-Address → Substrate account map** — reject binding a second account to a bound Address (the anti-Sybil invariant, §8; L3 keys this on `blake2b_256(owner Address)`). The follower gains a second job: index the lock validator, **aggregate all of an owner Address's lock UTxOs into one weight**, and submit `set_stake` to that one account. Stamp the capacity bucket empty (`{0, now}`) at first bind (§6.2).
   - POST (step 6): **remove** "takes a refundable `Hold` deposit (`BaseDeposit + ByteDeposit*len`)"; **replace** with "capacity checked in `validate()` (`ExhaustsResources` if over budget), consumed in `post_dispatch`; fee waived (`Weight::zero()`)." The gate becomes **metered capacity**, not a binary allow.
 - **§5 (posts pallet):** This is the biggest change. Per the §6.3 table above: delete `HoldReason::PostDeposit`, the `MutateHold`/`Currency`/`BaseDeposit`/`ByteDeposit` config items, the `hold(...)` in `post_message`, and the `release(...)` in `delete_post`. Add the `Capacity` storage map, `CapacityState`, `current_capacity`/`post_cost`/`consume`, and the new capacity config constants. Rewrite the "Anti-spam summary" (line 264) from "refundable Hold" to "stake-weighted regenerating capacity, checked at the pool layer."
-- **§6 (monorepo layout):** Under `pallets/` add `talk-stake/` (capacity logic is folded into `pallet-microblog`, DR-24). Under `cardano/` add the lock validator (sibling to `thread.ak`) — ⛔ per DR-13 it carries **NO `lock_until` datum field and NO validity-interval cooldown** in v1 (the commitment is enforced by L3 clamp-only decay, §8); the v1 datum is `VaultDatum { owner: Address }` (DR-01). (Per DR-18 the strict-beacon design merges mint+spend into a single `talk_vault(min_lock)` validator — see docs/DECISION-REGISTER.md / the L1 doc.) Under `services/cogno-follower/` note the added responsibility (index the lock validator, **aggregate all of an owner Address's unspent lock coins into one weight**, drive `set_stake` to the single bound account). The capacity `TransactionExtension` lives in the runtime's extension tuple.
+- **§6 (monorepo layout):** Under `pallets/` add `talk-stake/` (capacity logic is folded into `pallet-microblog`, DR-24). Under `cardano/` add the lock validator (sibling to `thread.ak`) — ⛔ per DR-13 it carries **NO `lock_until` datum field and NO validity-interval cooldown** in v1 (the commitment is enforced by L3 clamp-only decay, §8); the v1 datum is `VaultDatum { owner: Address }` (DR-01). (Per DR-18 the strict-beacon design merges mint+spend into a single `talk_vault(min_lock)` validator.) Under `services/cogno-follower/` note the added responsibility (index the lock validator, **aggregate all of an owner Address's unspent lock coins into one weight**, drive `set_stake` to the single bound account). The capacity `TransactionExtension` lives in the runtime's extension tuple.
 - **§7 (how to interact):** Add a "Lock ADA to get talk capacity" step before posting; the UI should show current capacity, the sustained rate, and a regen countdown ("you have X, need Y, full again in Z"). For pure-Substrate demos, `sudo`-call `set_stake` to grant weight.
 - **§8 (roadmap):** Insert a **new milestone** between M2/M2b and M3 — **"M2c — Talk capacity (feeless metered posting)"**: add `pallet-talk-stake`, the `CheckCapacity` TransactionExtension, the lazy bucket (capacity folded into `pallet-microblog`, DR-24); remove the Hold; demo feeless posting gated by an operator-set weight. Then **"M2d — Cardano-sourced weight (Lock)"**: deploy the lock validator — ⛔ per DR-13 **WITHOUT any on-chain `lock_until` cooldown** (PLAN.md §8 M2d's "deploy … with an on-chain `lock_until` cooldown" is **SUPERSEDED**; the anti-toggle defense is L3 clamp-only decay, not an L1 timelock). Extend the follower to read locks, aggregate per owner Address (DR-01), and drive `set_stake` to the single bound account. Fold the type-1 hybrid (yield-bearing lock) **and reward distribution into M5** (DR-29) as the "target design." Update **M0/M5** notes: M5 must benchmark `post_message` to a *real* weight (it now backs the *only* anti-spam mechanism, not just fees).
 - **§9 (risks):** Add the §8 risks here: capacity-as-sole-security, the `validate()`-vs-`ensure!` requirement, toggle-farming defenses, reward-distribution policy. The revocation-gap discussion now also covers **weight** revocation (Lock path: event-driven via `spent_at`, strictly better than the wallet-only story).
-- **§10 (open questions):** Add the §10 items below (regen window, curve choice, lock-vs-hybrid, decay policy, reward policy) — but note most are now RESOLVED in docs/DECISION-REGISTER.md (2026-06-16), and there is **no on-chain cooldown** in v1 (DR-13).
+- **§10 (open questions):** Add the §10 items below (regen window, curve choice, lock-vs-hybrid, decay policy, reward policy) — but note most were **RESOLVED** during the build-out (the decisions are inlined here; the internal register is not part of this repo), and there is **no on-chain cooldown** in v1 (DR-13).
 - **§11 (first step):** Unchanged — M0 stands up the chain. The capacity work is M2c onward.
 
 ---
 
 ## 10. Open questions (resolved during the build-out)
 
-> **RESOLVED in docs/DECISION-REGISTER.md (2026-06-16) — see that doc.** The dispositions are inlined per-question below; the original detail is preserved.
+> **RESOLVED during the build-out.** The dispositions are inlined per-question below (the internal decision register is not part of this repo); the original detail is preserved.
 
 1. **Regen window. — DECIDED: ~5h (DR-10).** The v1 regen window is **~5 hours** (the worked-example baseline: 10 ADA → ~48 posts/day sustained, burst ~10) — faster than Hive's 5 days / Midnight's ~7 days so casual posters aren't locked out. This single constant defines the UX; other capacity constants stay tunable (proposed at M2c). *(Original question: how fast should an empty bucket refill?)*
 2. **Curve & whale policy. — DECIDED: linear (capped-linear) + hard ceiling in v1; sqrt only later behind a proven gate (DR-11).** Ship linear/capped-linear with a hard ceiling for v1 (split-neutral, does not amplify a gate weakness). Graduate to sqrt only once the CIP-8 gate (keyed on the whole owner Address, DR-01; ideally M2b thread-ownership) is proven. *(Original question: linear vs anti-whale curve, and what ceiling?)*

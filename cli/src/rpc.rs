@@ -63,7 +63,9 @@ enum WatchStep {
 fn classify_tx_status(status: &serde_json::Value, finalize: bool) -> anyhow::Result<WatchStep> {
     if let Some(s) = status.as_str() {
         return Ok(match s {
-            "dropped" | "invalid" => WatchStep::Rejected(format!("tx {s} (never included/finalized)")),
+            "dropped" | "invalid" => {
+                WatchStep::Rejected(format!("tx {s} (never included/finalized)"))
+            }
             _ => WatchStep::KeepWatching, // "ready" / "future"
         });
     }

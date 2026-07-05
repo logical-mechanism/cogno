@@ -97,7 +97,11 @@ fn set_allowance_is_a_topup_toward_the_new_ceiling() {
     new_test_ext().execute_with(|| {
         // Start below MAX, spend (staying above ED so the account survives), then raise the ceiling —
         // the second `set_allowance` mints only the shortfall up to the new max.
-        assert_ok!(GovernanceFuel::set_allowance(RuntimeOrigin::root(), 2, 500_000));
+        assert_ok!(GovernanceFuel::set_allowance(
+            RuntimeOrigin::root(),
+            2,
+            500_000
+        ));
         assert_eq!(bal(2), 500_000);
         spend(2, 100_000);
         assert_eq!(bal(2), 400_000);
@@ -157,7 +161,11 @@ fn set_allowance_rejects_past_the_funded_bound() {
     new_test_ext().execute_with(|| {
         // Fill the 64-entry bound with cheap ED allowances.
         for who in 0u64..64 {
-            assert_ok!(GovernanceFuel::set_allowance(RuntimeOrigin::root(), who, ED));
+            assert_ok!(GovernanceFuel::set_allowance(
+                RuntimeOrigin::root(),
+                who,
+                ED
+            ));
         }
         assert_noop!(
             GovernanceFuel::set_allowance(RuntimeOrigin::root(), 64, ED),
@@ -180,7 +188,13 @@ fn revoke_drops_allowance_and_claws_back_and_reaps() {
         assert_eq!(bal(2), 0, "account reaped");
         assert_eq!(allowance_of(2), None, "regeneration stopped");
         assert_eq!(TotalRevoked::<Test>::get(), MAX);
-        System::assert_has_event(Event::AllowanceRevoked { who: 2, burned: MAX }.into());
+        System::assert_has_event(
+            Event::AllowanceRevoked {
+                who: 2,
+                burned: MAX,
+            }
+            .into(),
+        );
     });
 }
 

@@ -2,7 +2,7 @@
 
 > **Note.** The `spec_version` numbers below (119/120/121) are **pre-restart build history**. On
 > `fork/all-rust` these features shipped into the fresh-genesis runtime and are present in
-> `spec_version` **201** (`transaction_version` stays **3**). Current overview:
+> `spec_version` **203** (`transaction_version` stays **3**). Current overview:
 > [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Status: **Features 1 + 3 implemented.** Feature 1 — the `MicroblogApi` runtime read API + client wiring
@@ -11,7 +11,11 @@ skipped** (Feature 1 already returns a clean `reposted`, so the `Reposts` re-enc
 `transaction_version` stays **3** throughout. Builds on the spec-119 reply aggregates.
 
 > **Implementation note (Feature 1).** The pallet exposes `feed_page` / `author_feed_page` /
-> `following_feed_page` / `thread`, each returning one enriched, viewer-aware page; the runtime fills author
+> `following_feed_page` / `thread`, each returning one enriched, viewer-aware page, plus — folded in as
+> later profile / follower-list / account-reputation work landed — `author_post_count`,
+> `author_replies_page`, `likes_page`, `search_posts`, `poll` / `poll_choice`, `viewer_states`,
+> `follow_edges`, `profile` (its `ProfileView` carries `account_tally`, the account-reputation-vote surface),
+> `resolve_identity`, `search_people`, and `who_to_follow`; the runtime fills author
 > profiles from pallet-profile (keeping the pallet free of a profile dependency). The client (`node-reads.ts`)
 > runtime-detects the API (`isCompatible`), prefers it, and keeps the keyed reads as the pre-120 fallback,
 > chasing `next_cursor` to fill a page so the node path matches the keyed path's full-page semantics. An
@@ -50,8 +54,8 @@ true, and it needs no external indexer (the follow graph + all aggregates alread
 ## Feature 1 (PRIMARY) — a `MicroblogApi` read Runtime API
 
 A custom `sp_api` Runtime API on `pallet-microblog`, implemented in `runtime/src/apis.rs`. The in-repo
-template is `pallet_cardano_observer::CardanoObserverApi` (`pallets/cardano-observer/src/lib.rs` →
-`sp_api::decl_runtime_apis!`, wired at `runtime/src/apis.rs:183`).
+template is `pallet_cardano_observer::CardanoObserverApi` (`pallets/cardano-observer/src/lib.rs:225` →
+`sp_api::decl_runtime_apis!`, wired at `runtime/src/apis.rs:268`).
 
 ### Surface (sketch — finalize during implementation)
 

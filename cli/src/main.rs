@@ -551,11 +551,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         },
         Command::Fuel { cmd } => match cmd {
-            FuelCmd::SetAllowance {
-                account,
-                max,
-                gov,
-            } => {
+            FuelCmd::SetAllowance { account, max, gov } => {
                 drive_governed(
                     &gov,
                     calls::set_allowance(

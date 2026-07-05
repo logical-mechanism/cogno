@@ -751,7 +751,9 @@ pub mod pallet {
                 // Votes (and clearing a vote) are a flat signal cost.
                 Call::vote { .. } | Call::clear_vote { .. } => Some(T::VoteCost::get()),
                 // Account reputation votes are the same flat signal cost (reuse `VoteCost`).
-                Call::vote_account { .. } | Call::clear_account_vote { .. } => Some(T::VoteCost::get()),
+                Call::vote_account { .. } | Call::clear_account_vote { .. } => {
+                    Some(T::VoteCost::get())
+                }
                 // A repost is a flat amplification cost.
                 Call::repost { .. } => Some(T::RepostCost::get()),
                 // Follow / unfollow are a flat relationship cost (symmetric, no free-churn).

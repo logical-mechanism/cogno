@@ -30,7 +30,7 @@ operator's validator.
    embedded bootnode points at the validator over DDNS (`/dns4/…asuscomm.com/…`), so a relay needs no
    `--bootnodes` flag. (No operator keys? Reconstruct a genesis-identical spec from the validator's
    read-only RPC instead — see
-   [`LOCAL-FRONTEND.md`](LOCAL-FRONTEND.md#1-build-a-genesis-matching-chain-spec).)
+   [`LOCAL-FRONTEND.md`](LOCAL-FRONTEND.md#1-chain-spec--the-committed-one-already-matches).)
 
 ## Run
 

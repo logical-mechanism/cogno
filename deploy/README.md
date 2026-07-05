@@ -139,7 +139,7 @@ see [`deploy/monitoring/README.md`](monitoring/README.md).
 ## Operating notes
 
 - **Durable state.** Everything stateful lives under `/var/lib/cogno`. With `MinAuthorities=1` the node DB
-  is the **sole copy** of chain history, and the operator `.skey` / `keys.json` files are irreplaceable —
+  is the **sole copy** of chain history, and the operator `.skey` key envelopes are irreplaceable —
   see [Backup & restore](#backup--restore) below.
 - **Single-validator finality.** The default unit uses `--force-authoring` (a lone validator has no peers
   to confirm against). Drop it — and add `--bootnodes` — when you onboard more validators; GRANDPA needs
@@ -147,10 +147,16 @@ see [`deploy/monitoring/README.md`](monitoring/README.md).
 - **Observer abstention is non-fatal.** If db-sync is unset / down / behind, the observer abstains and the
   node keeps producing + finalizing; talk-stake weight just goes stale until db-sync is back. The
   `ObserverAbstaining` alert catches a sustained abstention.
-- **Federating out.** Add committee seats (`cogno-chain-cli committee members add`, by vote) and validators
-  (`cogno-chain-cli validator add` + the new validator's `validator set-keys`) from your operator machine —
-  changes apply at a session boundary. Runtime upgrades are `cogno-chain-cli upgrade authorize` (committee)
-  + a permissionless `upgrade apply` (spec-checked). There is no sudo path.
+- **Federating out.** Seating is gated on governance-fuel: the committee must grant an account a standing
+  (regenerating) fuel allowance **before** it can be seated. New committee seat: `cogno-chain-cli fuel
+  set-allowance --account <SEAT>` then `committee members add --member <SEAT>` (by vote) — seating a member
+  with no allowance is rejected on-chain (`CallFiltered`). New validator: `fuel set-allowance --account
+  <VAL>`, then the new validator runs `validator set-keys` (registers its session keys), then the committee
+  runs `validator add --validator <VAL>` (`add_validator` refuses with `NotFunded` / `NoSessionKeys`
+  otherwise). Changes apply at a session boundary; fuel regenerates toward the allowance each period, and
+  `fuel revoke` cuts an account off — see [`docs/PREPROD-BRINGUP.md`](../docs/PREPROD-BRINGUP.md) Step 6.
+  Runtime upgrades are `cogno-chain-cli upgrade authorize` (committee) + a permissionless `upgrade apply`
+  (spec-checked). There is no sudo path.
 
 ## Backup & restore
 
@@ -160,7 +166,7 @@ subcommand — back up at the filesystem level. What to protect:
 | Asset | Where | Backup |
 |---|---|---|
 | Chain DB (history) | `/var/lib/cogno/node` | filesystem snapshot (below). At `MinAuthorities=1` there is no second archive node to re-sync from, so this is load-bearing. |
-| Operator secret keys | your offline `.skey` / `keys.json` envelopes | encrypted, offline, in ≥2 places — **never** on the node host. |
+| Operator secret keys | your offline `.skey` key envelopes | encrypted, offline, in ≥2 places — **never** on the node host. |
 | Genesis / chainspec | `/etc/cogno/chainspec.raw.json` | copy alongside the keys (must be byte-identical to rejoin). |
 | Session keys | `<base-path>/chains/<id>/keystore` | re-inserted from the `.skey` files on restore — no separate backup. |
 

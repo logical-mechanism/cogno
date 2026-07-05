@@ -109,11 +109,8 @@ pub mod pallet {
     /// loop weight is provable (mirrors `pallet-validator-set`'s bounded `Validators`). An entry is
     /// added/updated by [`Call::set_allowance`] and removed by [`Call::revoke`].
     #[pallet::storage]
-    pub type Allowances<T: Config> = StorageValue<
-        _,
-        BoundedVec<(T::AccountId, BalanceOf<T>), T::MaxFundedAccounts>,
-        ValueQuery,
-    >;
+    pub type Allowances<T: Config> =
+        StorageValue<_, BoundedVec<(T::AccountId, BalanceOf<T>), T::MaxFundedAccounts>, ValueQuery>;
 
     /// Cumulative gross fuel minted (via `set_allowance` top-ups + regeneration). Audit counter — the
     /// first post-genesis mint path in a chain whose supply was otherwise monotone-decreasing, so a
@@ -147,10 +144,7 @@ pub mod pallet {
         /// The regeneration hook minted `minted` fuel this tick, topping up `accounts` funded accounts that
         /// were below their ceiling (accounts already at/above their ceiling are NOT counted). Only emitted
         /// when `minted > 0` (a quiet no-op tick emits nothing).
-        FuelRegenerated {
-            accounts: u32,
-            minted: BalanceOf<T>,
-        },
+        FuelRegenerated { accounts: u32, minted: BalanceOf<T> },
     }
 
     #[pallet::error]
@@ -201,7 +195,10 @@ pub mod pallet {
             max: BalanceOf<T>,
         ) -> DispatchResult {
             T::GrantOrigin::ensure_origin(origin)?;
-            ensure!(max <= T::MaxAllowance::get(), Error::<T>::AllowanceExceedsMax);
+            ensure!(
+                max <= T::MaxAllowance::get(),
+                Error::<T>::AllowanceExceedsMax
+            );
             ensure!(
                 max >= T::Currency::minimum_balance(),
                 Error::<T>::AllowanceBelowExistentialDeposit
@@ -318,7 +315,10 @@ pub mod pallet {
             }
             if !minted.is_zero() {
                 TotalMinted::<T>::mutate(|t| *t = t.saturating_add(minted));
-                Self::deposit_event(Event::FuelRegenerated { accounts: refilled, minted });
+                Self::deposit_event(Event::FuelRegenerated {
+                    accounts: refilled,
+                    minted,
+                });
             }
             (scanned, minted)
         }

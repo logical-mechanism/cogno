@@ -361,7 +361,10 @@ pub async fn run_authors(
         println!("  {unattributed} block(s) not attributed (genesis / no Aura pre-digest)");
     }
     println!();
-    println!("{:<52}  {:>10}  {:>8}", "validator (author)", "blocks", "share");
+    println!(
+        "{:<52}  {:>10}  {:>8}",
+        "validator (author)", "blocks", "share"
+    );
     let mut rows: Vec<(&AccountId32, u64)> = counts.iter().map(|(a, c)| (a, *c)).collect();
     rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     for (acct, c) in rows {

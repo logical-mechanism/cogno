@@ -22,7 +22,7 @@
 
 | Key / origin | What it controls | Compromise = |
 |---|---|---|
-| **The 5 `FollowerCommittee` keys** (3-of-5) | every privileged runtime call: the identity `revoke` moderation lever, `force_set_capacity`, the observer `set_enforcement` switch, `add/remove_validator`, and runtime upgrades (`governed-upgrade` `authorize_upgrade`) | control of moderation, the validator set, and the runtime code itself. The central crown jewel — **3 of 5 must collude.** There is **no sudo fallback** (the chain is sudo-free from genesis; index 6 vacant). |
+| **The 5 `FollowerCommittee` keys** (3-of-5) | every privileged runtime call: the identity `revoke` moderation lever, `force_set_capacity`, the observer `set_enforcement` switch, `add/remove_validator`, runtime upgrades (`governed-upgrade` `authorize_upgrade`), and the governance-fuel budget (`governance-fuel` `set_allowance`/`revoke` — the native-FUEL mint/claw-back lever) | control of moderation, the validator set, and the runtime code itself. The central crown jewel — **3 of 5 must collude.** There is **no sudo fallback** (the chain is sudo-free from genesis; index 6 vacant). |
 | **Each validator's session keys** (Aura sr25519 + GRANDPA ed25519) | block authoring + finality voting for that validator | can disrupt that validator's consensus participation. On the testnet there is no equivocation slashing (a `MAINNET PREREQUISITE`). Rotate both keys **in lockstep**. |
 
 Talk-capacity **weight** is deliberately **not** a custodial key: it is written by the `cardano-observer`
@@ -95,7 +95,8 @@ runtime brick-guard). To rotate a seat (planned roll, suspected compromise, or c
 
 > **Key-set lockstep reminder (consensus, not custody):** rotating a *validator's* session keys
 > (`session.setKeys`) is a different operation — Aura (sr25519) and GRANDPA (ed25519) are **distinct
-> keypairs**; update both together or finality silently breaks. See [`UPGRADES.md`](UPGRADES.md).
+> keypairs**; update both together or finality silently breaks. See
+> [`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md) (§6, `validator set-keys` / `key insert`).
 
 ---
 
@@ -108,7 +109,8 @@ runtime brick-guard). To rotate a seat (planned roll, suspected compromise, or c
   `Closed` · `Approved`/`Disapproved` · `Executed{result}`. Every privileged action is a motion, so
   **who proposed, who voted, and the outcome are all on-chain and public.**
 - **Per-action** (the target pallets): `IdentityLinked`/`Revoked`, `CapacityForced`, the observer's
-  enforcement toggle, and `ValidatorAdditionInitiated`/`ValidatorRemovalInitiated`.
+  enforcement toggle, `ValidatorAdditionInitiated`/`ValidatorRemovalInitiated`, and
+  `AllowanceSet`/`AllowanceRevoked` (plus the periodic `FuelRegenerated`) from `governance-fuel`.
 
 ### 4.1 The watchtower (monitoring policy)
 Run an independent watcher (anyone can — the data is public) that follows these events and alerts on:
@@ -117,6 +119,9 @@ Run an independent watcher (anyone can — the data is public) that follows thes
 - **Membership changes** — any `set_members` / change in `followerCommittee.members()` that was not
   announced (§3) → treat as a compromise until proven otherwise.
 - **Enforcement changes** — any flip of the observer's `set_enforcement` switch.
+- **Fuel / minting changes** — any `AllowanceSet`/`AllowanceRevoked` (native-FUEL mint/claw-back, the
+  first post-genesis supply-inflation path — no cumulative issuance cap) not tied to an announced seat
+  rotation → investigate as a possible committee compromise.
 - **Observation integrity** — because the `cardano-observer` inherent is deterministic, every full node
   already re-derives the weight and **rejects a block whose observation disagrees** (a divergence is a
   chain fork). A watcher can additionally recompute the expected weight from public Cardano state and
@@ -135,7 +140,9 @@ in order:
 1. **Recruit the five custodians** across genuinely independent domains (§2.2) — the hard,
    non-technical step.
 2. **Distribute the keys**: each custodian generates their own key in their own domain; the operator
-   never sees seats 2–5. Seat the five accounts via `set_members`.
+   never sees seats 2–5. Fund each incoming account with a standing fuel allowance
+   (`cogno-chain-cli fuel set-allowance`, a committee motion) **first** — seating an unfunded member is
+   rejected on-chain (`CallFiltered`, see §3 step 2) — then seat the five accounts via `set_members`.
 3. **Run motions as true co-signs**: each custodian runs `cogno-chain-cli committee vote` against the
    proposal hash with **their own key on their own infra** — not one operator scripting all five (which
    is what a single-operator stack does today, and what the honesty label flags). Anyone may *propose*;
