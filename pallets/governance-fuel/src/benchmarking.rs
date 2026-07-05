@@ -52,6 +52,10 @@ mod benchmarks {
         Ok(())
     }
 
+    // ⚠ The Linear upper bound MUST equal the runtime `MaxFundedAccounts` (currently ConstU32<64>) and the
+    // mock's bound — a `Linear` needs a literal, so this can't reference `T::MaxFundedAccounts::get()`. If
+    // you raise `MaxFundedAccounts`, raise this 64 too, or the generated `regenerate` weight will
+    // under-cover the real (Mandatory) on_initialize loop for the accounts above 64.
     #[benchmark]
     fn regenerate(n: Linear<0, 64>) -> Result<(), BenchmarkError> {
         // Seed n funded accounts, each with a full allowance but ZERO balance — the worst case where

@@ -94,15 +94,18 @@ type SingleBlockMigrations = ();
 ///    resets the origin filter to this `BaseCallFilter`. A non-empty floor is always satisfiable — the
 ///    committee bootstraps at one member and only ever grows by vote.
 ///
-/// 2. any value-moving `Balances` transfer (`transfer_allow_death` / `transfer_keep_alive` /
-///    `transfer_all`). The native token is **governance FUEL**, not money: it exists only to pay the
-///    fee-bearing admin extrinsics and is minted/regenerated/clawed-back exclusively by the committee via
-///    `GovernanceFuel` (index 18). Blocking user transfers makes fuel a pure committee-administered budget
-///    and makes `GovernanceFuel::revoke` **escape-proof** (a rogue can't sweep balance to a fresh account
-///    to dodge a clawback), and routes ALL funding through the audited 3-of-5 path. Ordinary social users
-///    are feeless and never transfer, so nothing legitimate is lost. `force_transfer` /
-///    `force_set_balance` are already unreachable (root-gated, and cogno-chain is sudo-free). NOTE: this is
-///    a call-ACCEPTANCE change, not an encoding change — `transaction_version` is unaffected.
+/// 2. ANY `pallet-balances` call. The native token is **governance FUEL**, not money: it exists only to
+///    pay the fee-bearing admin extrinsics and is minted/regenerated/clawed-back exclusively by the
+///    committee via `GovernanceFuel` (index 18). No signed user ever needs a `Balances` extrinsic (funding
+///    is committee-only), so blocking the WHOLE pallet surface — not just today's `transfer_allow_death` /
+///    `transfer_keep_alive` / `transfer_all` — is deliberate: a per-variant match would silently miss a
+///    future SDK train's new value-moving variant and re-open a sweep path that defeats the escape-proof
+///    `GovernanceFuel::revoke`. `force_*` are already unreachable (root-gated, and cogno-chain is
+///    sudo-free). This makes fuel a pure committee-administered budget and routes ALL funding through the
+///    audited 3-of-5 path; ordinary social users are feeless and never transfer, so nothing legitimate is
+///    lost. NOTE: a call-ACCEPTANCE change, not an encoding change — `transaction_version` is unaffected.
+///    SKIPPED under `runtime-benchmarks` so the node's `benchmark extrinsic` `TransferKeepAliveBuilder`
+///    (node/src/benchmarking.rs) can still exercise a real transfer.
 ///
 /// ⚠ FEDERATION PREREQUISITE: once the committee is federated, raise the committee floor from "non-empty"
 /// to a real quorum (e.g. `>= 3`) so no motion can ever shrink the committee below a safe governance size.
@@ -111,18 +114,71 @@ type SingleBlockMigrations = ();
 pub struct CognoCallFilter;
 impl Contains<RuntimeCall> for CognoCallFilter {
     fn contains(call: &RuntimeCall) -> bool {
-        !matches!(
+        // Brick-guard: never allow a motion that would empty the committee (see doc above).
+        if matches!(
             call,
             RuntimeCall::FollowerCommittee(pallet_collective::Call::set_members { new_members, .. })
                 if new_members.is_empty()
-        ) && !matches!(
-            call,
-            RuntimeCall::Balances(
-                pallet_balances::Call::transfer_allow_death { .. }
-                    | pallet_balances::Call::transfer_keep_alive { .. }
-                    | pallet_balances::Call::transfer_all { .. }
-            )
-        )
+        ) {
+            return false;
+        }
+        // Fuel is non-transferable: block the entire pallet-balances call surface (future-proof vs. new
+        // SDK transfer variants). Skipped under runtime-benchmarks so `benchmark extrinsic` still works.
+        #[cfg(not(feature = "runtime-benchmarks"))]
+        if matches!(call, RuntimeCall::Balances(..)) {
+            return false;
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod call_filter_tests {
+    use super::*;
+    use frame_support::traits::Contains;
+
+    fn addr() -> crate::Address {
+        sp_runtime::MultiAddress::Id(AccountId::from([1u8; 32]))
+    }
+
+    #[test]
+    fn blocks_every_balances_transfer_variant() {
+        // The load-bearing "fuel is non-transferable / revoke is escape-proof" invariant. Runs in the
+        // normal (non-benchmarks) build where the Balances block is active.
+        assert!(!CognoCallFilter::contains(&RuntimeCall::Balances(
+            pallet_balances::Call::transfer_keep_alive { dest: addr(), value: 1 }
+        )));
+        assert!(!CognoCallFilter::contains(&RuntimeCall::Balances(
+            pallet_balances::Call::transfer_allow_death { dest: addr(), value: 1 }
+        )));
+        assert!(!CognoCallFilter::contains(&RuntimeCall::Balances(
+            pallet_balances::Call::transfer_all { dest: addr(), keep_alive: false }
+        )));
+    }
+
+    #[test]
+    fn blocks_emptying_the_committee_but_allows_a_nonempty_set() {
+        assert!(!CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
+            pallet_collective::Call::set_members { new_members: Default::default(), prime: None, old_count: 0 }
+        )));
+        assert!(CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
+            pallet_collective::Call::set_members {
+                new_members: vec![AccountId::from([2u8; 32])],
+                prime: None,
+                old_count: 1,
+            }
+        )));
+    }
+
+    #[test]
+    fn allows_a_normal_signed_call() {
+        // A committee-gated fuel grant and an ordinary system call are NOT filtered.
+        assert!(CognoCallFilter::contains(&RuntimeCall::System(
+            frame_system::Call::remark { remark: Default::default() }
+        )));
+        assert!(CognoCallFilter::contains(&RuntimeCall::GovernanceFuel(
+            pallet_governance_fuel::Call::set_allowance { who: AccountId::from([3u8; 32]), max: 1 }
+        )));
     }
 }
 
@@ -249,8 +305,14 @@ impl pallet_governed_upgrade::Config for Runtime {
 // standing allowance every `FuelRegenPeriod`, so fuel REGENERATES (a drained member auto-recovers → no
 // self-refund deadlock) and the supply floats with mint-on-demand (this is the FIRST post-genesis mint
 // path — it deliberately breaks the old monotone-decreasing-supply property; nothing keys security off
-// `TotalIssuance`). Fuel is non-transferable (`CognoCallFilter` blocks `Balances::transfer*`) and can
+// `TotalIssuance`). Fuel is non-transferable (`CognoCallFilter` blocks every `Balances` call) and can
 // NEVER post (the social layer never reads `Balances`) — the admin-side analogue of talk-capacity.
+//
+// Regeneration covers accounts the committee has funded via `set_allowance` (the post-genesis onboarding
+// path). The GENESIS committee + validators are NOT seeded into `Allowances` — they are endowed a large
+// one-time balance (`genesis_config_presets.rs`) that is drain-proof against the tiny `IdentityFee` admin
+// fees, so they need no standing allowance to stay live. (A committee may `set_allowance` them anyway to
+// put them on the regenerating path; there is deliberately no pallet genesis config.)
 parameter_types! {
     /// DEV-TUNED per-account fuel allowance ceiling (runtime-tunable). Bounds a single fat-fingered
     /// `set_allowance` and the per-`FuelRegenPeriod` admin spend a funded account can sustain. There is

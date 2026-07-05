@@ -137,14 +137,16 @@ pub mod pallet {
             minted: BalanceOf<T>,
         },
         /// Fuel was revoked: the standing allowance was dropped (regeneration stops) and `burned` native
-        /// tokens were clawed back (reaping the account). Idempotent — `burned` is 0 for an
-        /// already-drained / never-funded target.
+        /// tokens were clawed back — all *reducible* balance, which reaps the account unless it holds a
+        /// provider/consumer reference (e.g. a validator with registered session keys keeps the
+        /// existential deposit). Idempotent — `burned` is 0 for an already-drained / never-funded target.
         AllowanceRevoked {
             who: T::AccountId,
             burned: BalanceOf<T>,
         },
-        /// The regeneration hook minted `minted` fuel across `accounts` funded accounts this tick. Only
-        /// emitted when `minted > 0` (a quiet no-op tick emits nothing).
+        /// The regeneration hook minted `minted` fuel this tick, topping up `accounts` funded accounts that
+        /// were below their ceiling (accounts already at/above their ceiling are NOT counted). Only emitted
+        /// when `minted > 0` (a quiet no-op tick emits nothing).
         FuelRegenerated {
             accounts: u32,
             minted: BalanceOf<T>,
@@ -173,7 +175,9 @@ pub mod pallet {
             let period = T::RegenPeriod::get();
             // Guard the modulo against a zero period (would panic) — a zero period disables regeneration.
             if period.is_zero() || !(now % period).is_zero() {
-                return T::WeightInfo::regenerate(0);
+                // Off-cadence: only a const `Get` read + a modulo — NO storage access. Charge nothing so
+                // the ~9-in-10 non-cadence blocks don't each pay `regenerate(0)`'s phantom read+write.
+                return Weight::zero();
             }
             let (accounts, _minted) = Self::do_regenerate();
             T::WeightInfo::regenerate(accounts)
@@ -235,11 +239,15 @@ pub mod pallet {
         /// Revoke `who`'s fuel — the committee's hard cut for a spamming / offboarded member. Gated by
         /// [`Config::GrantOrigin`] (≥3/5 committee).
         ///
-        /// Drops the standing allowance (regeneration stops) and burns all reducible balance (reaping the
-        /// account — sub-ED dust is burned, since `DustRemoval = ()`). Idempotent: revoking a
-        /// never-funded / already-drained account succeeds with `burned = 0`. Pair with
-        /// `ValidatorSet::remove_validator` / `FollowerCommittee::set_members` to strip the role too — a
-        /// member removed from the committee can't propose/vote regardless of fuel.
+        /// Drops the standing allowance (regeneration stops) and burns all *reducible* balance. For an
+        /// account with no provider/consumer reference this reaps it (sub-ED dust burned, since
+        /// `DustRemoval = ()`); for one that holds a reference — notably a validator with registered
+        /// session keys (`set_keys` takes a consumer ref) — the existential deposit stays untouchable, so
+        /// ~ED of non-regenerating fuel remains and the account is not reaped. Idempotent: revoking a
+        /// never-funded / already-drained account succeeds with `burned = 0`. Because fuel is
+        /// non-transferable the residual can't be swept, and it no longer regenerates; strip the role too
+        /// with `ValidatorSet::remove_validator` / `FollowerCommittee::set_members` — a member removed from
+        /// the committee can't propose/vote regardless of any remaining fuel.
         #[pallet::call_index(1)]
         #[pallet::weight(<T as Config>::WeightInfo::revoke())]
         pub fn revoke(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
@@ -276,19 +284,31 @@ pub mod pallet {
 
     impl<T: Config> Pallet<T> {
         /// Mint every funded account back up toward its standing allowance. Returns
-        /// `(accounts_scanned, total_minted)` and emits [`Event::FuelRegenerated`] when anything was
-        /// minted. Factored out of [`on_initialize`](Hooks::on_initialize) so the benchmark can drive it
-        /// directly. A per-account `mint_into` failure is logged and skipped (never aborts the tick).
+        /// `(accounts_scanned, total_minted)` — `accounts_scanned` (the full [`Allowances`] length) is what
+        /// [`on_initialize`](Hooks::on_initialize) bills the weight against (every entry is read), while the
+        /// [`Event::FuelRegenerated`] `accounts` field reports only those actually TOPPED UP. Factored out
+        /// so the benchmark can drive it directly. A per-account `mint_into` failure is logged and skipped
+        /// (never aborts the tick).
+        ///
+        /// Note: the top-up is sized from `balance()` (free), which is the balance that pays fees, so a
+        /// member drained to zero is restored to a full `max` of *spendable* fuel. While the session
+        /// `KeyDeposit` is 0 that equals `total_balance`; if a future testnet enables a held `KeyDeposit`,
+        /// an account's total (free `max` + held deposit) will exceed `max` by the held amount — acceptable
+        /// (held funds can't pay fees), but revisit if `max` is meant to bound total holdings.
         pub(crate) fn do_regenerate() -> (u32, BalanceOf<T>) {
             let list = Allowances::<T>::get();
-            let accounts = list.len() as u32;
+            let scanned = list.len() as u32;
             let mut minted: BalanceOf<T> = Zero::zero();
+            let mut refilled: u32 = 0;
             for (who, max) in list.iter() {
                 let bal = T::Currency::balance(who);
                 if bal < *max {
                     let shortfall = max.saturating_sub(bal);
                     match T::Currency::mint_into(who, shortfall) {
-                        Ok(_) => minted = minted.saturating_add(shortfall),
+                        Ok(_) => {
+                            minted = minted.saturating_add(shortfall);
+                            refilled = refilled.saturating_add(1);
+                        }
                         Err(e) => log::warn!(
                             target: LOG_TARGET,
                             "regenerate: mint_into failed for a funded account (shortfall skipped): {e:?}",
@@ -298,9 +318,9 @@ pub mod pallet {
             }
             if !minted.is_zero() {
                 TotalMinted::<T>::mutate(|t| *t = t.saturating_add(minted));
-                Self::deposit_event(Event::FuelRegenerated { accounts, minted });
+                Self::deposit_event(Event::FuelRegenerated { accounts: refilled, minted });
             }
-            (accounts, minted)
+            (scanned, minted)
         }
     }
 }

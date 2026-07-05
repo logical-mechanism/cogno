@@ -184,8 +184,12 @@ pub fn run(cmd: &GenChainSpecCmd) -> Result<(), String> {
     };
     let chain_type_label = format!("{chain_type:?}");
     let mut props = Properties::new();
-    // ADA/lovelace is 6-decimal (the on-chain weight is buried lovelace).
-    props.insert("tokenDecimals".into(), 6.into());
+    // The native token is governance FUEL — 12-decimal, matching the runtime `UNIT = 1e12` /
+    // `EXISTENTIAL_DEPOSIT = 1e9`. This is the display scale wallets/polkadot-js apply to the NATIVE
+    // (FUEL) balance; it must be log10(UNIT) = 12 or every fuel balance/allowance renders off by a power of
+    // ten. (The Cardano-observed talk-stake weight is buried lovelace / 6-decimal, but that is a separate
+    // TalkStake ledger read via the CLI, NOT the native token these properties govern.)
+    props.insert("tokenDecimals".into(), 12.into());
     // The native token is governance FUEL — a non-transferable, committee-granted, REGENERATING budget
     // that pays the fee-bearing admin extrinsics (Session::set_keys, committee propose/vote/close). It is
     // NOT money and NOT vote-weight (the committee is 1-member-1-vote) and can NEVER post (the social layer
