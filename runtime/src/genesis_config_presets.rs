@@ -122,13 +122,15 @@ fn dev_weights() -> Vec<(AccountId, u128, u128)> {
 /// Return the development genesis config — the SUDO-FREE single-operator bootstrap: one authority
 /// (`//Alice`) and a **single-seat committee** (`//Alice`). At 1 member the 3/5 threshold is
 /// `ceil(1*3/5)=1`, so the founder governs alone and a motion executes on propose, with no root key. The
-/// other dev accounts are endowed (not seated) so they can be voted into the committee / validator set
-/// later — the same centralized→federated→decentralized path a real operator genesis walks.
+/// other dev accounts are endowed (not seated); voting one into the committee / validator set later needs
+/// a committee-granted governance-fuel allowance first (the seating gates require it) — the same
+/// centralized→federated→decentralized path a real operator genesis walks.
 pub fn development_config_genesis() -> Value {
     testnet_genesis(
         // One genesis authority (`//Alice`); add more at runtime via `validator add` (committee-voted).
         vec![alice_authority()],
-        // Endow the well-known dev accounts + stashes so they can pay fees and be voted in.
+        // Endow the well-known dev accounts + stashes; voting one into a seat later also needs a committee
+        // `fuel set-allowance` (the fund-before-seat gate), not just this endowment.
         vec![
             Sr25519Keyring::Alice.to_account_id(),
             Sr25519Keyring::Bob.to_account_id(),

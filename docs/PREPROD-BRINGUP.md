@@ -144,7 +144,10 @@ operator machine (keys by file, **off** the node host). At one committee seat th
 CLI=./target/release/cogno-chain-cli
 WS=ws://<host>:9944
 
-# 1) Seat more committee (by vote). --propose opens a motion for multi-custody co-signing instead.
+# 1) Seat more committee (by vote). The committee first funds the new seat with a standing (regenerating)
+#    fuel allowance so it can pay the fee-bearing propose/vote/close — seating a member with no fuel
+#    allowance is rejected on-chain (`CallFiltered`). --propose opens a motion for multi-custody co-signing.
+$CLI fuel set-allowance --account <SEAT2_SS58> --max 1000000000000000 --committee-signing-key-file seat1.skey --ws $WS
 $CLI committee members add --member <SEAT2_SS58> --committee-signing-key-file seat1.skey --ws $WS
 
 # 2) Admit a validator: the committee first funds the account with a standing (regenerating) fuel
