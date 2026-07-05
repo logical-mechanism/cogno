@@ -52,7 +52,7 @@ use super::{
     AccountId, Aura, Balance, Balances, Block, BlockNumber, CognoGate, Hash, Microblog, Nonce,
     PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
     RuntimeOrigin, RuntimeTask, SessionKeys, System, Timestamp, ValidatorSet, DAYS,
-    EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
+    EXISTENTIAL_DEPOSIT, MINUTES, SLOT_DURATION, UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -80,30 +80,120 @@ parameter_types! {
 /// deliberately NOT registered here. Add a new migration only for a future in-place governed upgrade.
 type SingleBlockMigrations = ();
 
-/// The runtime base call filter — the sudo-free brick-guard. cogno-chain permits EVERY call except one:
-/// a `FollowerCommittee::set_members` that would EMPTY the committee. The committee is the SOLE governance
-/// authority (no sudo / `EnsureRoot` fallback), so an empty member set makes [`AuthorityOrigin`]
-/// (`EnsureProportionAtLeast<3,5>`) permanently unsatisfiable — bricking ALL governance (validator
-/// rotation, runtime upgrades, identity revoke, force-capacity) with no on-chain recovery, only a chain
-/// fork. A passed motion — or, at the 1-seat bootstrap where the threshold is 1, a single fat-finger /
-/// lost-key vote — could otherwise write `Members = []`. Rejecting an empty new set here makes such a
-/// motion fail on-chain (`CallFiltered`) instead of bricking the chain: the filter is enforced even on the
-/// collective's OWN proposal dispatch, because `RawOrigin::Members(..).into()` resets the origin filter to
-/// this `BaseCallFilter`. A non-empty floor is always satisfiable — the committee bootstraps at one member
-/// and only ever grows by vote.
+/// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
+/// cogno-chain permits EVERY call except:
 ///
-/// ⚠ FEDERATION PREREQUISITE: once the committee is federated, raise this floor from "non-empty" to a real
-/// quorum (e.g. `>= 3`) so no motion can ever shrink the committee below a safe governance size.
+/// 1. a `FollowerCommittee::set_members` that would EMPTY the committee. The committee is the SOLE
+///    governance authority (no sudo / `EnsureRoot` fallback), so an empty member set makes
+///    [`AuthorityOrigin`] (`EnsureProportionAtLeast<3,5>`) permanently unsatisfiable — bricking ALL
+///    governance (validator rotation, runtime upgrades, identity revoke, force-capacity) with no on-chain
+///    recovery, only a chain fork. A passed motion — or, at the 1-seat bootstrap where the threshold is 1,
+///    a single fat-finger / lost-key vote — could otherwise write `Members = []`. Rejecting an empty new
+///    set here makes such a motion fail on-chain (`CallFiltered`) instead of bricking the chain: the filter
+///    is enforced even on the collective's OWN proposal dispatch, because `RawOrigin::Members(..).into()`
+///    resets the origin filter to this `BaseCallFilter`. A non-empty floor is always satisfiable — the
+///    committee bootstraps at one member and only ever grows by vote.
+///
+/// 2. ANY `pallet-balances` call. The native token is **governance FUEL**, not money: it exists only to
+///    pay the fee-bearing admin extrinsics and is minted/regenerated/clawed-back exclusively by the
+///    committee via `GovernanceFuel` (index 18). No signed user ever needs a `Balances` extrinsic (funding
+///    is committee-only), so blocking the WHOLE pallet surface — not just today's `transfer_allow_death` /
+///    `transfer_keep_alive` / `transfer_all` — is deliberate: a per-variant match would silently miss a
+///    future SDK train's new value-moving variant and re-open a sweep path that defeats the escape-proof
+///    `GovernanceFuel::revoke`. `force_*` are already unreachable (root-gated, and cogno-chain is
+///    sudo-free). This makes fuel a pure committee-administered budget and routes ALL funding through the
+///    audited 3-of-5 path; ordinary social users are feeless and never transfer, so nothing legitimate is
+///    lost. NOTE: a call-ACCEPTANCE change, not an encoding change — `transaction_version` is unaffected.
+///    SKIPPED under `runtime-benchmarks` so the node's `benchmark extrinsic` `TransferKeepAliveBuilder`
+///    (node/src/benchmarking.rs) can still exercise a real transfer.
+///
+/// ⚠ FEDERATION PREREQUISITE: once the committee is federated, raise the committee floor from "non-empty"
+/// to a real quorum (e.g. `>= 3`) so no motion can ever shrink the committee below a safe governance size.
 /// `set_members` is the ONLY committee-membership mutator (pallet-collective has no add/remove call), so
 /// guarding it covers every path to an empty set.
 pub struct CognoCallFilter;
 impl Contains<RuntimeCall> for CognoCallFilter {
     fn contains(call: &RuntimeCall) -> bool {
-        !matches!(
-            call,
-            RuntimeCall::FollowerCommittee(pallet_collective::Call::set_members { new_members, .. })
-                if new_members.is_empty()
-        )
+        if let RuntimeCall::FollowerCommittee(pallet_collective::Call::set_members {
+            new_members,
+            ..
+        }) = call
+        {
+            // Brick-guard: never allow a motion that would empty the committee (see doc above).
+            if new_members.is_empty() {
+                return false;
+            }
+            // Footgun-guard: every NEWLY-added member must already hold a governance-fuel allowance, so it
+            // can pay to `propose`/`vote` — an unfunded member only dilutes the `EnsureProportionAtLeast`
+            // denominator (raising the threshold) without adding voting capacity. EXISTING members (delta
+            // = new_members \ current `Members`) are exempt, so genesis seats (endowed, no allowance) and
+            // sitting members re-listed in a rotation pass. Skipped under runtime-benchmarks so the
+            // `pallet_collective` benchmark's `set_members` isn't blocked.
+            #[cfg(not(feature = "runtime-benchmarks"))]
+            {
+                let current = pallet_collective::Members::<Runtime, Instance1>::get();
+                let allowances = pallet_governance_fuel::Allowances::<Runtime>::get();
+                for m in new_members.iter() {
+                    if !current.contains(m) && !allowances.iter().any(|(a, _)| a == m) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        // Fuel is non-transferable: block the entire pallet-balances call surface (future-proof vs. new
+        // SDK transfer variants). Skipped under runtime-benchmarks so `benchmark extrinsic` still works.
+        #[cfg(not(feature = "runtime-benchmarks"))]
+        if matches!(call, RuntimeCall::Balances(..)) {
+            return false;
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod call_filter_tests {
+    use super::*;
+    use frame_support::traits::Contains;
+
+    fn addr() -> crate::Address {
+        sp_runtime::MultiAddress::Id(AccountId::from([1u8; 32]))
+    }
+
+    #[test]
+    fn blocks_every_balances_transfer_variant() {
+        // The load-bearing "fuel is non-transferable / revoke is escape-proof" invariant. Runs in the
+        // normal (non-benchmarks) build where the Balances block is active.
+        assert!(!CognoCallFilter::contains(&RuntimeCall::Balances(
+            pallet_balances::Call::transfer_keep_alive { dest: addr(), value: 1 }
+        )));
+        assert!(!CognoCallFilter::contains(&RuntimeCall::Balances(
+            pallet_balances::Call::transfer_allow_death { dest: addr(), value: 1 }
+        )));
+        assert!(!CognoCallFilter::contains(&RuntimeCall::Balances(
+            pallet_balances::Call::transfer_all { dest: addr(), keep_alive: false }
+        )));
+    }
+
+    #[test]
+    fn blocks_emptying_the_committee() {
+        // The empty-set brick-guard is checked BEFORE any storage read, so it holds without
+        // externalities. (The non-empty case now reads `Members`/`Allowances` for the fuel-delta gate —
+        // that path is covered end-to-end in the acceptance script, which runs against real storage.)
+        assert!(!CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
+            pallet_collective::Call::set_members { new_members: Default::default(), prime: None, old_count: 0 }
+        )));
+    }
+
+    #[test]
+    fn allows_a_normal_signed_call() {
+        // A committee-gated fuel grant and an ordinary system call are NOT filtered.
+        assert!(CognoCallFilter::contains(&RuntimeCall::System(
+            frame_system::Call::remark { remark: Default::default() }
+        )));
+        assert!(CognoCallFilter::contains(&RuntimeCall::GovernanceFuel(
+            pallet_governance_fuel::Call::set_allowance { who: AccountId::from([3u8; 32]), max: 1 }
+        )));
     }
 }
 
@@ -223,6 +313,50 @@ impl pallet_governed_upgrade::Config for Runtime {
     type WeightInfo = ();
 }
 
+// Sudo-free governance: the committee-administered REGENERATING admin-fuel budget (GovernanceFuel@18).
+// Fuel (native `Balances`) pays the fee-bearing admin extrinsics — a new validator's self-signed
+// `Session::set_keys` and committee propose/vote/close. `set_allowance`/`revoke` are gated by the shared
+// `AuthorityOrigin` (≥3/5 committee); an `on_initialize` hook mints each funded account back toward its
+// standing allowance every `FuelRegenPeriod`, so fuel REGENERATES (a drained member auto-recovers → no
+// self-refund deadlock) and the supply floats with mint-on-demand (this is the FIRST post-genesis mint
+// path — it deliberately breaks the old monotone-decreasing-supply property; nothing keys security off
+// `TotalIssuance`). Fuel is non-transferable (`CognoCallFilter` blocks every `Balances` call) and can
+// NEVER post (the social layer never reads `Balances`) — the admin-side analogue of talk-capacity.
+//
+// Regeneration covers accounts the committee has funded via `set_allowance` (the post-genesis onboarding
+// path). The GENESIS committee + validators are NOT seeded into `Allowances` — they are endowed a large
+// one-time balance (`genesis_config_presets.rs`) that is drain-proof against the tiny `IdentityFee` admin
+// fees, so they need no standing allowance to stay live. (A committee may `set_allowance` them anyway to
+// put them on the regenerating path; there is deliberately no pallet genesis config.)
+parameter_types! {
+    /// DEV-TUNED per-account fuel allowance ceiling (runtime-tunable). Bounds a single fat-fingered
+    /// `set_allowance` and the per-`FuelRegenPeriod` admin spend a funded account can sustain. There is
+    /// deliberately NO cumulative cap on issuance (mint-on-demand — governance never runs dry). Sized far
+    /// above the tiny `IdentityFee` fees of a handful of admin extrinsics.
+    pub const MaxFuelAllowance: Balance = 1_000 * UNIT;
+    /// Regeneration cadence: refill funded accounts toward their allowance once a minute (10 blocks at
+    /// 6s/block). DEV-TUNED snappy so a drained member recovers quickly in the showcase; a longer cadence
+    /// is a runtime-tunable constant change. The funded set is tiny (≤ MaxFundedAccounts), so the periodic
+    /// mint loop is cheap.
+    pub const FuelRegenPeriod: BlockNumber = MINUTES;
+}
+
+impl pallet_governance_fuel::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    // The same 3-of-5 FollowerCommittee gate as every other crown-jewel call (sudo-free).
+    type GrantOrigin = AuthorityOrigin;
+    // Mint/burn the native token (Balances@4; implements `fungible::Mutate<AccountId, Balance = u128>`).
+    type Currency = Balances;
+    type MaxAllowance = MaxFuelAllowance;
+    // Comfortably covers MaxValidators (32) + FollowerMaxMembers (7) with headroom.
+    type MaxFundedAccounts = ConstU32<64>;
+    type RegenPeriod = FuelRegenPeriod;
+    // Placeholder weights (like GovernedUpgrade): conservative DB-weight estimates so the on_initialize
+    // regeneration hook never under-charges. Graduating to a benchmarked `SubstrateWeight<Runtime>` (run
+    // `benchmark pallet --pallet pallet_governance_fuel`) is a deploy step.
+    type WeightInfo = ();
+}
+
 // ── DR-07: the FollowerCommittee — the mutable k-of-t authority behind the crown jewels ──
 //
 // `pallet-collective` (one shared `Instance1`) holds a MUTABLE member set (rotation via
@@ -333,6 +467,39 @@ impl pallet_session::Config for Runtime {
 /// ⚠ MAINNET PREREQUISITE: a value-bearing / public multi-validator launch MUST raise this to at
 /// least `3f+1` for the target fault tolerance (≥`4` to tolerate one Byzantine/offline authority), in
 /// lockstep with the im-online auto-removal wiring. Do not ship `1` to a network meant to be BFT.
+/// `add_validator` footgun-guard: an account may only be seated once it holds a standing governance-fuel
+/// allowance (so it can pay for its own `set_keys` / re-keying and won't be seated unable to function).
+/// Reads `GovernanceFuel::Allowances`. Allow-all under `runtime-benchmarks` so the `pallet_validator_set`
+/// benchmark (which seeds a bare account) isn't blocked.
+pub struct HasFuelAllowance;
+impl Contains<AccountId> for HasFuelAllowance {
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    fn contains(who: &AccountId) -> bool {
+        pallet_governance_fuel::Allowances::<Runtime>::get()
+            .iter()
+            .any(|(a, _)| a == who)
+    }
+    #[cfg(feature = "runtime-benchmarks")]
+    fn contains(_who: &AccountId) -> bool {
+        true
+    }
+}
+
+/// `add_validator` footgun-guard: an account may only be seated once it has registered session keys (else
+/// it is in the set but authors nothing — inert empty slots). Reads `Session::NextKeys`. Allow-all under
+/// `runtime-benchmarks`.
+pub struct HasSessionKeys;
+impl Contains<AccountId> for HasSessionKeys {
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    fn contains(who: &AccountId) -> bool {
+        pallet_session::NextKeys::<Runtime>::contains_key(who)
+    }
+    #[cfg(feature = "runtime-benchmarks")]
+    fn contains(_who: &AccountId) -> bool {
+        true
+    }
+}
+
 impl pallet_validator_set::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type AddRemoveOrigin = AuthorityOrigin;
@@ -341,6 +508,10 @@ impl pallet_validator_set::Config for Runtime {
     // validators-3: MUST equal (or be below) aura/grandpa `MaxAuthorities` (= 32) so a full set never
     // gets silently truncated at a session rotation. `add_validator` rejects growth past this.
     type MaxValidators = ConstU32<32>;
+    // Onboarding footgun-guards: refuse to seat a validator that isn't fuel-funded + keyed (enforces the
+    // `fuel set-allowance` → `set-keys` → `add_validator` order on-chain).
+    type FuelGate = HasFuelAllowance;
+    type KeysGate = HasSessionKeys;
     type WeightInfo = pallet_validator_set::weights::SubstrateWeight<Runtime>;
 }
 

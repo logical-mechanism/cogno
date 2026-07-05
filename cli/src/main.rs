@@ -131,6 +131,11 @@ enum Command {
         #[command(subcommand)]
         cmd: IdentityCmd,
     },
+    /// Governance fuel: the committee-administered REGENERATING admin-fee budget (`set-allowance`/`revoke`).
+    Fuel {
+        #[command(subcommand)]
+        cmd: FuelCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -236,6 +241,34 @@ enum ValidatorCmd {
         /// Assert the connected chain's genesis hash matches this 0x-hex (refuse the wrong chain).
         #[arg(long)]
         genesis: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum FuelCmd {
+    /// Committee motion: set an account's standing REGENERATING fuel allowance (fund / top-up / regulate).
+    /// Mints the account up to `max` now and regenerates it toward `max` each period. Bundled, or
+    /// `--propose` for multi-custody.
+    SetAllowance {
+        /// The account to fund (SS58) — a validator candidate, or a committee member.
+        #[arg(long)]
+        account: String,
+        /// The standing allowance ceiling, in base units (planck). Must be ≤ the runtime `MaxAllowance`
+        /// and ≥ the existential deposit.
+        #[arg(long)]
+        max: String,
+        #[command(flatten)]
+        gov: GovOpts,
+    },
+    /// Committee motion: revoke an account's fuel — drop its allowance (stop regeneration) and claw back
+    /// its balance. The hard cut for a spamming / offboarded member. Bundled, or `--propose` for
+    /// multi-custody.
+    Revoke {
+        /// The account to cut off (SS58).
+        #[arg(long)]
+        account: String,
+        #[command(flatten)]
+        gov: GovOpts,
     },
 }
 
@@ -515,6 +548,25 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     genesis.as_deref(),
                 )
                 .await
+            }
+        },
+        Command::Fuel { cmd } => match cmd {
+            FuelCmd::SetAllowance {
+                account,
+                max,
+                gov,
+            } => {
+                drive_governed(
+                    &gov,
+                    calls::set_allowance(
+                        calls::parse_account(&account)?,
+                        calls::parse_balance(&max)?,
+                    ),
+                )
+                .await
+            }
+            FuelCmd::Revoke { account, gov } => {
+                drive_governed(&gov, calls::revoke_fuel(calls::parse_account(&account)?)).await
             }
         },
         Command::Committee { cmd } => match cmd {

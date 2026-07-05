@@ -138,6 +138,12 @@ pub fn describe_call(call: &RuntimeCall) -> String {
         RuntimeCall::GovernedUpgrade(pallet_governed_upgrade::Call::authorize_upgrade {
             code_hash,
         }) => format!("GovernedUpgrade.authorize_upgrade(code_hash={code_hash:#x})"),
+        RuntimeCall::GovernanceFuel(pallet_governance_fuel::Call::set_allowance { who, max }) => {
+            format!("GovernanceFuel.set_allowance({}, max={max})", ss58(who))
+        }
+        RuntimeCall::GovernanceFuel(pallet_governance_fuel::Call::revoke { who }) => {
+            format!("GovernanceFuel.revoke({})", ss58(who))
+        }
         other => {
             let b = other.encode();
             format!(

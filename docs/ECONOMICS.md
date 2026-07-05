@@ -339,6 +339,57 @@ The `ensure!(T::CognoGate::is_allowed(&who), …)` identity gate stays (it is th
 
 ---
 
+### 6.4 The native governance-fuel token
+
+Everything above is about **talk-capacity** — the *social* rate-limit. There is a second, entirely separate
+resource: the **native token**, which exists only to pay the handful of fee-bearing **admin** extrinsics an
+operator ever submits — a new validator's self-signed `Session::set_keys`, and committee
+`propose`/`vote`/`close`. We call it **fuel**. The two tokens are deliberately symmetric — *both are
+non-transferable, non-purchasable, governance-granted regenerating rate-limits; neither is money; neither
+can post.*
+
+| | **talk-capacity** (social) | **governance fuel** (admin) |
+|---|---|---|
+| Meters | posting / voting / engagement | `set_keys`, committee propose/vote/close |
+| Granted by | the Cardano observer (locked-ADA weight) | the 3-of-5 committee (`set_allowance`) |
+| Regenerates | lazily, per block, scaled by stake weight | by an `on_initialize` hook, toward a standing allowance |
+| Transferable? | no (identity-bound virtual meter) | **no** (base call filter blocks `Balances::transfer*`) |
+| Can it post? | it *is* the posting right | **never** — the social layer never reads `Balances` |
+| Revoked by | `CognoGate::revoke` (identity ban) | `GovernanceFuel::revoke` (drop allowance + claw back) |
+
+**The invariant that keeps them separate.** Posting/voting eligibility flows *only* from
+Cardano-observed stake → `TalkStake::AllowedStake` → microblog capacity, gated by a cogno-gate identity
+binding. None of `microblog` / `cogno-gate` / `talk-stake` / `profile` depends on `pallet-balances` or
+reads a free balance. **Granting fuel therefore confers zero posting power.** A future change that made a
+social call fee-bearing would break this — don't.
+
+**Why regenerating, and why mint-on-demand.** Fees are **burned** (`FungibleAdapter<Balances, ()>`), so a
+fixed genesis supply is monotonically decreasing — left alone, governance eventually **bricks itself** when
+it runs down. Worse, because `vote`/`close` refund `Pays::No` only *post*-dispatch, a member drained to
+zero can't even vote to approve their own top-up (a self-refund deadlock). The regeneration hook dissolves
+both problems: `set_allowance(who, max)` sets a per-account standing budget (and mints them up to it now);
+each `RegenPeriod` the hook mints every funded account back up toward its ceiling. So a drained member
+**auto-recovers next period** (no deadlock), and the supply **floats** with mint-on-demand (never depletes).
+This is the first — and only — post-genesis mint path in the runtime; it is safe precisely *because* fuel
+has no utility surface (can't post, can't be sold if non-transferable, isn't vote-weight — the committee is
+1-member-1-vote — isn't consensus-weight — Aura is set-gated), and a 3-of-5 quorum that could abuse minting
+already holds runtime-upgrade authority (strictly more power). There is a per-call `MaxAllowance` cap (bounds
+a fat-finger) but deliberately **no cumulative issuance cap** (that would reintroduce the depletion brick).
+
+**Spam & offboarding.** A funded member's admin-spam is naturally bounded — per period they can spend at
+most their allowance, and `FollowerMaxProposals`/block-weight bound throughput regardless. `revoke(who)`
+drops the allowance (regeneration stops) **and** claws back the balance (escape-proof, since fuel is
+non-transferable); pair it with `remove_validator` / `set_members` to strip the role. Because members carry
+a standing allowance by default, the natural state is "everyone funded" — you'd have to *actively* revoke
+to strand a seat, and that itself needs a quorum. **Operational invariant:** don't revoke the fuel of
+committee members you still need for quorum.
+
+> **Weights / naming.** `set_allowance`/`revoke` ship with placeholder `WeightInfo = ()` (conservative
+> DB-weight estimates; graduating to a benchmarked `SubstrateWeight` is a deploy step, like
+> `pallet-governed-upgrade`). The chainspec sets `tokenSymbol = "FUEL"` (display-only; consensus-neutral).
+
+---
+
 ## 7. Feeless transactions & the new security surface
 
 ### How posts become feeless in FRAME

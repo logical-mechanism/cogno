@@ -4,8 +4,12 @@
 //! validators `[1, 2, 3]`.
 
 use crate as pallet_validator_set;
-use frame_support::{derive_impl, parameter_types, traits::Get};
+use frame_support::{
+    derive_impl, parameter_types,
+    traits::{Contains, Get},
+};
 use frame_system::EnsureRoot;
+use std::collections::BTreeSet;
 use pallet_balances::AccountData;
 use sp_runtime::{
     testing::UintAuthorityId, traits::OpaqueKeys, BuildStorage, KeyTypeId, Perbill,
@@ -86,11 +90,45 @@ pub fn set_min_authorities(min: u32) {
     MIN_AUTHORITIES.with(|m| m.set(min));
 }
 
+thread_local! {
+    /// The accounts considered "funded" / "keyed" by the `FuelGate` / `KeysGate` for the current test.
+    /// `None` (the default) means ALLOW ALL — so tests that don't care about the gates pass unchanged;
+    /// `Some(set)` restricts to exactly those accounts.
+    static FUNDED: core::cell::RefCell<Option<BTreeSet<u64>>> = const { core::cell::RefCell::new(None) };
+    static KEYED: core::cell::RefCell<Option<BTreeSet<u64>>> = const { core::cell::RefCell::new(None) };
+}
+
+/// Restrict the `FuelGate` to `Some(list)`, or `None` to allow all.
+pub fn set_funded(list: Option<Vec<u64>>) {
+    FUNDED.with(|f| *f.borrow_mut() = list.map(|v| v.into_iter().collect()));
+}
+/// Restrict the `KeysGate` to `Some(list)`, or `None` to allow all.
+pub fn set_keyed(list: Option<Vec<u64>>) {
+    KEYED.with(|k| *k.borrow_mut() = list.map(|v| v.into_iter().collect()));
+}
+
+/// `Contains` shim for the fuel-allowance gate (reads the thread-local `FUNDED`).
+pub struct FuelGate;
+impl Contains<u64> for FuelGate {
+    fn contains(who: &u64) -> bool {
+        FUNDED.with(|f| f.borrow().as_ref().map_or(true, |s| s.contains(who)))
+    }
+}
+/// `Contains` shim for the session-keys gate (reads the thread-local `KEYED`).
+pub struct KeysGate;
+impl Contains<u64> for KeysGate {
+    fn contains(who: &u64) -> bool {
+        KEYED.with(|k| k.borrow().as_ref().map_or(true, |s| s.contains(who)))
+    }
+}
+
 impl pallet_validator_set::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type AddRemoveOrigin = EnsureRoot<Self::AccountId>;
     type MinAuthorities = MinAuthorities;
     type MaxValidators = MaxValidators;
+    type FuelGate = FuelGate;
+    type KeysGate = KeysGate;
     type WeightInfo = ();
 }
 
@@ -142,8 +180,10 @@ impl pallet_session::Config for Test {
 
 /// Genesis: three validators `[1, 2, 3]`, each endowed and with registered (mock) session keys.
 pub fn new_test_ext() -> sp_io::TestExternalities {
-    // Reset the per-thread floor in case a prior test on this thread lowered it.
+    // Reset the per-thread floor + gate overrides in case a prior test on this thread changed them.
     set_min_authorities(2);
+    set_funded(None);
+    set_keyed(None);
     let mut t = frame_system::GenesisConfig::<Test>::default()
         .build_storage()
         .unwrap();
@@ -181,6 +221,8 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 /// boundary (removing the last validator -> target 0 < 1) can be exercised directly.
 pub fn single_validator_ext() -> sp_io::TestExternalities {
     set_min_authorities(1);
+    set_funded(None);
+    set_keyed(None);
     let mut t = frame_system::GenesisConfig::<Test>::default()
         .build_storage()
         .unwrap();

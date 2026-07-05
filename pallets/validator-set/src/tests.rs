@@ -48,6 +48,44 @@ fn add_validator_rejects_duplicate() {
 }
 
 #[test]
+fn add_validator_rejects_an_unfunded_account() {
+    new_test_ext().execute_with(|| {
+        // Only 1/2/3 have a fuel allowance; 5 does not → refused before it can be seated unfunded.
+        set_funded(Some(vec![1, 2, 3]));
+        assert_noop!(
+            ValidatorSet::add_validator(RuntimeOrigin::root(), 5),
+            Error::<Test>::NotFunded
+        );
+        assert_eq!(Validators::<Test>::get().to_vec(), vec![1, 2, 3]);
+    });
+}
+
+#[test]
+fn add_validator_rejects_an_account_without_session_keys() {
+    new_test_ext().execute_with(|| {
+        // Funded (allow-all) but 5 has no registered session keys → refused (would author nothing).
+        set_keyed(Some(vec![1, 2, 3]));
+        assert_noop!(
+            ValidatorSet::add_validator(RuntimeOrigin::root(), 5),
+            Error::<Test>::NoSessionKeys
+        );
+        assert_eq!(Validators::<Test>::get().to_vec(), vec![1, 2, 3]);
+    });
+}
+
+#[test]
+fn add_validator_succeeds_when_funded_and_keyed() {
+    new_test_ext().execute_with(|| {
+        // The correct onboarding order: 5 has both a fuel allowance and session keys → seated.
+        set_funded(Some(vec![5]));
+        set_keyed(Some(vec![5]));
+        assert_ok!(ValidatorSet::add_validator(RuntimeOrigin::root(), 5));
+        assert_eq!(Validators::<Test>::get().to_vec(), vec![1, 2, 3, 5]);
+        assert_eq!(last_event(), Event::ValidatorAdditionInitiated(5));
+    });
+}
+
+#[test]
 fn remove_validator_works_and_emits_event() {
     new_test_ext().execute_with(|| {
         assert_ok!(ValidatorSet::remove_validator(RuntimeOrigin::root(), 3));

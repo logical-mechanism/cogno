@@ -1454,6 +1454,7 @@ dependencies = [
  "pallet-cardano-observer",
  "pallet-cogno-gate",
  "pallet-collective",
+ "pallet-governance-fuel",
  "pallet-governed-upgrade",
  "pallet-microblog",
  "pallet-session",
@@ -1541,6 +1542,7 @@ dependencies = [
  "pallet-cardano-observer",
  "pallet-cogno-gate",
  "pallet-collective",
+ "pallet-governance-fuel",
  "pallet-governed-upgrade",
  "pallet-grandpa",
  "pallet-microblog",
@@ -6753,6 +6755,22 @@ dependencies = [
  "frame-support",
  "frame-system",
  "log",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
+name = "pallet-governance-fuel"
+version = "1.0.0"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "pallet-balances",
  "parity-scale-codec",
  "scale-info",
  "sp-core",

@@ -127,9 +127,14 @@ Full detail: [`IN-PROTOCOL-OBSERVATION.md`](IN-PROTOCOL-OBSERVATION.md). db-sync
   finalized Cardano block anchor into each header as a `cobs` PreRuntime digest. This is what makes the
   observation deterministic; it is **not** the (removed) metadata-anchoring.
 - **Fee model:** the social hot path is feeless and metered by talk-capacity via the `CheckCapacity`
-  transaction extension (slot 9) + `SkipFeelessPayment`. Governance calls stay ordinary fee-bearing; the
-  operator genesis endows the committee seats + validators so they can pay. See
-  [`ECONOMICS.md`](ECONOMICS.md).
+  transaction extension (slot 9) + `SkipFeelessPayment`. Governance/admin calls (`set_keys`, committee
+  propose/vote/close) stay ordinary fee-bearing, paid in the native token — **governance fuel**. Genesis
+  endows the founding committee + validators; thereafter the committee funds new/short members through
+  `pallet-governance-fuel` (index 18): a `set_allowance` sets a per-account standing budget and an
+  `on_initialize` hook mints it back up each period, so fuel **regenerates** (a drained member can never be
+  locked out) and the supply floats with mint-on-demand rather than burning down to a governance brick.
+  Fuel is **non-transferable** (the base call filter blocks `Balances::transfer*`) and cannot post (the
+  social layer never reads balances). See [`ECONOMICS.md`](ECONOMICS.md).
 
 ## Reads — folded into the node
 
