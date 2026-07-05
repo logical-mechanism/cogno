@@ -28,6 +28,8 @@ import { PostCardActions } from "./PostCardActions";
 import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
 import { useMuted, muteActions } from "@/lib/muteStore";
+import { useBookmarked, bookmarkActions } from "@/lib/bookmarkStore";
+import { useToaster } from "./toast/ToasterProvider";
 import type {
   CognoPost,
   ViewerPostState,
@@ -127,6 +129,11 @@ export function PostCard({
     gate.status === "ready" && gate.address != null && gate.address === post.author;
   // Client-local mute (device-only, no chain state): collapse another account's posts everywhere.
   const muted = useMuted(post.author);
+  // Client-local bookmark (device-only, no chain state): save any post to the /bookmarks shortlist.
+  const bookmarked = useBookmarked(post.id);
+  // Bookmarking lives only in the ··· menu (which closes on select) → toast so the save is confirmed,
+  // mirroring the "Link copied" feedback on the sibling copy-link action.
+  const { toast } = useToaster();
   const [revealed, setRevealed] = useState(false);
   const menuItems = useMemo<OverflowMenuItem[] | undefined>(() => {
     if (pending) return undefined;
@@ -134,6 +141,19 @@ export function PostCard({
     if (isOwnPost && handlers.onPin) {
       items.push({ id: "pin", label: "Pin to profile", onSelect: () => handlers.onPin!(post) });
     }
+    // Bookmark is available on EVERY post (your own included) — a personal, device-local save.
+    items.push({
+      id: "bookmark",
+      label: bookmarked ? "Remove bookmark" : "Bookmark",
+      onSelect: () => {
+        bookmarkActions.toggle(post.id);
+        toast(
+          bookmarked
+            ? { kind: "info", message: "Removed from bookmarks" }
+            : { kind: "success", message: "Saved to bookmarks" },
+        );
+      },
+    });
     if (!isOwnPost) {
       const handle = handleOf(post.author);
       items.push({
@@ -143,7 +163,7 @@ export function PostCard({
       });
     }
     return items.length > 0 ? items : undefined;
-  }, [pending, isOwnPost, handlers, post, muted]);
+  }, [pending, isOwnPost, handlers, post, muted, bookmarked, toast]);
 
   // A muted author's post collapses to a "Show" stub everywhere EXCEPT the detail focal (you opened it
   // on purpose). Revealing is local + reversible; the full card keeps its "Unmute" in the ··· menu.
