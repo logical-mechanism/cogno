@@ -16,6 +16,30 @@
   gap: 4px;
 }
 
+/* Interactive variant (the Followers/Following lists surface): the figure is a button — reset the
+   chrome, hover/focus underlines the number (X-exact affordance). */
+.tappable {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+  color: inherit;
+}
+
+.tappable:hover .value,
+.tappable:focus-visible .value {
+  text-decoration: underline;
+}
+
+.tappable:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--cg-radius-input);
+}
+
 .value {
   color: var(--cg-text);
   font-weight: var(--cg-fw-bold);
