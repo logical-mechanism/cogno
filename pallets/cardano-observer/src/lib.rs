@@ -220,6 +220,12 @@ pub struct ObserverConfig {
     /// uses for leader election (CIP-1694 voting power); the node resolves the reference slot's epoch from
     /// db-sync's `block.epoch_no` (network-agnostic — no slots-per-epoch arithmetic) and subtracts this.
     pub stake_epoch_lookback: u64,
+    /// The [`Config::MaxObserved`] ceiling, surfaced to the node so it can ALARM before the observation
+    /// overruns it. An observation whose vault OR stake set exceeds this abstains in `create_inherent`
+    /// (the whole inherent drops to `None`), silently FREEZING the sole weight writer — so the node logs
+    /// a WARN as it approaches this and an ERROR at/over it. Single source of truth (node + runtime read
+    /// the same ceiling), so a monitoring rule can key off it without a hard-coded duplicate.
+    pub max_observed: u32,
 }
 
 sp_api::decl_runtime_apis! {
@@ -465,10 +471,15 @@ pub mod pallet {
             // DURING a freeze stays in the basis and is clamped to 0 on the first enforcing block after
             // re-enable. Advancing the basis while frozen would evict such an account before it was ever
             // zeroed, stranding a stale-positive `AllowedStake` forever (voice not backed by locked ADA).
+            // O(N) clamp: index the current beacons in a BTreeSet so the "absent from the current set" test
+            // is a log-N lookup, not a nested linear scan. The old `credited_set.iter().any(..)` made this
+            // loop O(N^2) — the binding per-block cost that capped how far `MaxObserved` could be raised.
+            let current_beacons: alloc::collections::BTreeSet<BeaconName> =
+                credited_set.iter().map(|(b, _)| *b).collect();
             let prev = LastObserved::<T>::get();
             let mut cleared: u32 = 0;
             for (beacon, account) in prev.iter() {
-                if !credited_set.iter().any(|(b, _)| b == beacon) {
+                if !current_beacons.contains(beacon) {
                     if enforce {
                         T::WeightSink::set_weight(account, 0);
                     }
@@ -515,10 +526,13 @@ pub mod pallet {
             // freeze discipline as the vault path: hold the `LastObservedStake` basis while frozen (advance
             // only when enforcing, below) so a credential that unbinds/unstakes DURING a freeze is clamped
             // on re-enable rather than evicted-unzeroed into a stale-positive `VotingPower`.
+            // O(N) clamp (as the vault path above): BTreeSet lookup, not a nested linear scan.
+            let current_creds: alloc::collections::BTreeSet<StakeCredential> =
+                vp_credited_set.iter().map(|(c, _)| *c).collect();
             let vp_prev = LastObservedStake::<T>::get();
             let mut vp_cleared: u32 = 0;
             for (stake_cred, account) in vp_prev.iter() {
-                if !vp_credited_set.iter().any(|(c, _)| c == stake_cred) {
+                if !current_creds.contains(stake_cred) {
                     if enforce {
                         T::VotingPowerSink::set_voting_power(account, 0);
                     }
@@ -577,6 +591,7 @@ pub mod pallet {
                 stability_slots: T::StabilitySlots::get(),
                 vault_policy_id: T::VaultPolicyId::get().to_vec(),
                 stake_epoch_lookback: T::StakeEpochLookback::get(),
+                max_observed: T::MaxObserved::get(),
             }
         }
 

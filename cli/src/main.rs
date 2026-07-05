@@ -362,14 +362,12 @@ enum MembersCmd {
         gov: GovOpts,
     },
     /// Committee motion: SET the whole committee (bulk `set_members`; the decentralization path). Bundled,
-    /// or `--propose` for multi-custody.
+    /// or `--propose` for multi-custody. The federation jump is 1 -> 3+ (a 2-seat committee is a unanimity
+    /// trap and is rejected on-chain). No `--prime`: the runtime uses abstain-as-nay, so a prime is inert.
     Set {
         /// Comma-separated new member accounts (SS58).
         #[arg(long)]
         members: String,
-        /// Optional prime member (SS58).
-        #[arg(long)]
-        prime: Option<String>,
         #[command(flatten)]
         gov: GovOpts,
     },
@@ -606,19 +604,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 MembersCmd::Remove { member, gov } => {
                     cmd_members(&gov, MemberAction::Remove(&member)).await
                 }
-                MembersCmd::Set {
-                    members,
-                    prime,
-                    gov,
-                } => {
-                    cmd_members(
-                        &gov,
-                        MemberAction::Set {
-                            members: &members,
-                            prime: prime.as_deref(),
-                        },
-                    )
-                    .await
+                MembersCmd::Set { members, gov } => {
+                    cmd_members(&gov, MemberAction::Set { members: &members }).await
                 }
             },
         },
@@ -865,11 +852,8 @@ enum MemberAction<'a> {
     Add(&'a str),
     /// Remove one member (`current \ {m}`).
     Remove(&'a str),
-    /// Replace the whole set with `members` (comma-separated SS58), optional `prime`.
-    Set {
-        members: &'a str,
-        prime: Option<&'a str>,
-    },
+    /// Replace the whole set with `members` (comma-separated SS58). No prime (abstain-as-nay makes it inert).
+    Set { members: &'a str },
 }
 
 /// Propose/drive a committee-membership change as a `set_members` motion. The new set is computed
@@ -885,7 +869,7 @@ async fn cmd_members(gov: &GovOpts, action: MemberAction<'_>) -> anyhow::Result<
     );
     // `set_members` needs `old_count` = the CURRENT membership size (advisory weight hint).
     let old_count = members.len() as u32;
-    let (new_members, prime) = match action {
+    let new_members = match action {
         MemberAction::Add(m) => {
             let target = calls::parse_account(m)?;
             anyhow::ensure!(
@@ -893,7 +877,7 @@ async fn cmd_members(gov: &GovOpts, action: MemberAction<'_>) -> anyhow::Result<
                 "{m} is already a committee member."
             );
             members.push(target);
-            (members, None)
+            members
         }
         MemberAction::Remove(m) => {
             let target = calls::parse_account(m)?;
@@ -904,12 +888,9 @@ async fn cmd_members(gov: &GovOpts, action: MemberAction<'_>) -> anyhow::Result<
                 !members.is_empty(),
                 "refusing to remove the last committee member (would brick governance)."
             );
-            (members, None)
+            members
         }
-        MemberAction::Set {
-            members: list,
-            prime,
-        } => {
+        MemberAction::Set { members: list } => {
             let new = list
                 .split(',')
                 .map(|s| s.trim())
@@ -920,11 +901,19 @@ async fn cmd_members(gov: &GovOpts, action: MemberAction<'_>) -> anyhow::Result<
 				!new.is_empty(),
 				"--members must list at least one account (an empty committee would brick governance)."
 			);
-            let prime = prime.map(calls::parse_account).transpose()?;
-            (new, prime)
+            new
         }
     };
-    let inner = calls::set_members(new_members, prime, old_count);
+    // Reject a 2-seat committee: `ceil(2*3/5)=2` = unanimity with ZERO fault tolerance, and recovery from a
+    // lost seat needs that very seat's vote — an irreversible brick. The runtime enforces this too
+    // (CognoCallFilter), but fail early with guidance. Federate 1 -> 3+ in one `committee members set`.
+    anyhow::ensure!(
+        new_members.len() != 2,
+        "a 2-seat committee is a unanimity trap (one lost key bricks governance with no recovery). \
+         Federate straight to 3+ with `committee members set --members A,B,C`, or keep the single seat."
+    );
+    // Abstain-as-nay makes the prime inert; always pass None.
+    let inner = calls::set_members(new_members, None, old_count);
     drive_inner(&rpc, &ctx, inner, &signers, gov.propose, gov.threshold).await
 }
 

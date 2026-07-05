@@ -263,6 +263,16 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // all call-ACCEPTANCE/behaviour changes, NOT call ENCODING changes. ADDITIVE (new pallet/calls/storage/
     // events/errors/metadata), so spec_version bumps; transaction_version STAYS 3 (the `TxExtension` tuple +
     // every Call encoding is byte-identical). Fresh-genesis ⇒ no migration. Regen the PAPI descriptors after 203.
+    //
+    // 203 pre-deploy governance/validator footgun hardening (folded IN-PLACE — 203 is unshipped, fresh
+    // genesis, so no new spec version / no upgrade): (a) DefaultVote is now `AbstainAsNay`, NOT
+    // `PrimeDefaultVote` — a set prime can no longer fold absentees into a supermajority (the "3 nays to
+    // STOP" inversion); (b) `GovernanceFuel::revoke` refuses a still-seated committee member (new
+    // `StillSeated` error) so de-funding can't dilute the quorum to a brick; (c) `CognoCallFilter` also
+    // blocks a 2-seat `set_members` (unanimity trap) and `Session::purge_keys` (keyless-phantom
+    // floor-bypass); (d) `MaxObserved` 1024 -> 4096 with an O(N) unlock-clamp + a node freeze-alarm
+    // (`ObserverConfig::max_observed`). All call-ACCEPTANCE/behaviour/const changes (new `StillSeated` error
+    // is additive metadata); transaction_version STAYS 3.
     spec_version: 203,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,

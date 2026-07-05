@@ -22,6 +22,12 @@ pub struct ObserverMetrics {
     observed_vaults: Gauge<U64>,
     /// Voting-power (epoch_stake) entry count in the most recent non-empty observation.
     observed_voters: Gauge<U64>,
+    /// The runtime's `MaxObserved` ceiling (from `ObserverConfig`). Exposed so an alert rule can compare
+    /// `observed_vaults`/`observed_voters` against it without hard-coding the limit.
+    max_observed: Gauge<U64>,
+    /// Observations whose vault OR stake set EXCEEDED `MaxObserved` — the SILENT-FREEZE condition
+    /// (`create_inherent` abstains, so weight stops updating). A non-zero rate here is a page.
+    observations_oversize_total: Counter<U64>,
 }
 
 impl ObserverMetrics {
@@ -63,6 +69,20 @@ impl ObserverMetrics {
 				)?,
 				registry,
 			)?,
+			max_observed: register(
+				Gauge::new(
+					"cogno_observer_max_observed",
+					"Runtime MaxObserved ceiling; an observation reaching it freezes the weight writer",
+				)?,
+				registry,
+			)?,
+			observations_oversize_total: register(
+				Counter::new(
+					"cogno_observer_observations_oversize_total",
+					"Observations exceeding MaxObserved (the silent-freeze condition: create_inherent abstains)",
+				)?,
+				registry,
+			)?,
 		})
     }
 
@@ -77,5 +97,16 @@ impl ObserverMetrics {
         self.last_reference_slot.set(ref_slot);
         self.observed_vaults.set(vaults as u64);
         self.observed_voters.set(voters as u64);
+    }
+
+    /// Publish the runtime's `MaxObserved` ceiling so alert rules can key off it without a duplicate const.
+    pub fn set_max_observed(&self, max_observed: u32) {
+        self.max_observed.set(u64::from(max_observed));
+    }
+
+    /// Record that an observation EXCEEDED `MaxObserved` — the silent-freeze condition
+    /// (`create_inherent` will abstain, so the sole weight writer stops updating).
+    pub fn record_oversize(&self) {
+        self.observations_oversize_total.inc();
     }
 }

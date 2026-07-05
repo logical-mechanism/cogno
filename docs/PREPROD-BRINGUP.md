@@ -144,11 +144,15 @@ operator machine (keys by file, **off** the node host). At one committee seat th
 CLI=./target/release/cogno-chain-cli
 WS=ws://<host>:9944
 
-# 1) Seat more committee (by vote). The committee first funds the new seat with a standing (regenerating)
-#    fuel allowance so it can pay the fee-bearing propose/vote/close — seating a member with no fuel
-#    allowance is rejected on-chain (`CallFiltered`). --propose opens a motion for multi-custody co-signing.
+# 1) Seat more committee (by vote). Federate the single founder seat straight to THREE — never to two:
+#    `ceil(2·3/5)=2` is unanimity, so a 2-seat committee has zero fault tolerance and one lost key bricks
+#    governance with no recovery (the runtime rejects a 2-seat `set_members` as `CallFiltered`). Fund each
+#    new seat FIRST with a standing (regenerating) fuel allowance so it can pay the fee-bearing
+#    propose/vote/close — seating a member with no allowance is rejected on-chain. This bundled `members set`
+#    executes on the founder's lone aye (threshold 1) and lands a fault-tolerant 3-of-5-shaped set at once.
 $CLI fuel set-allowance --account <SEAT2_SS58> --max 1000000000000000 --committee-signing-key-file seat1.skey --ws $WS
-$CLI committee members add --member <SEAT2_SS58> --committee-signing-key-file seat1.skey --ws $WS
+$CLI fuel set-allowance --account <SEAT3_SS58> --max 1000000000000000 --committee-signing-key-file seat1.skey --ws $WS
+$CLI committee members set --members <SEAT1_SS58>,<SEAT2_SS58>,<SEAT3_SS58> --committee-signing-key-file seat1.skey --ws $WS
 
 # 2) Admit a validator: the committee first funds the account with a standing (regenerating) fuel
 #    allowance so it can pay the fee-bearing `set-keys`; the NEW validator then registers its own session

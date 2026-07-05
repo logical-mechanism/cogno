@@ -82,8 +82,9 @@ runtime brick-guard). To rotate a seat (planned roll, suspected compromise, or c
    `set_members` that seats them — and note this is now **enforced on-chain**: a `set_members` that adds a
    member with no fuel allowance is rejected (`CallFiltered`), so a seated member can always vote from
    block one.
-3. **Propose** the new member list via `set_members` (new prime, the swapped member, same or new size),
-   routed as a committee motion — log it (§4).
+3. **Propose** the new member list via `set_members` (the swapped member; size stays `1` or `>= 3` — the
+   runtime rejects a 2-seat committee, and a prime is not set: the runtime uses abstain-as-nay so a prime is
+   inert and setting one is a foot-gun on the sole authority), routed as a committee motion — log it (§4).
 4. **Enact + verify:** after the motion executes, read `followerCommittee.members()` and confirm the new
    set. The departing key is now powerless (the collective reads membership live; in-flight motions the
    removed member voted on are re-tallied against the new set).
@@ -148,8 +149,11 @@ in order:
    is what a single-operator stack does today, and what the honesty label flags). Anyone may *propose*;
    the **votes** must be independent.
 4. **Stand up ≥2 independent watchtowers** (§4.1) run by different parties.
-5. **Raise the committee floor** from "non-empty" to a real quorum (e.g. ≥3) once the seats are
-   distributed (the runtime brick-guard currently only blocks the empty set — a `FEDERATION PREREQUISITE`).
+5. **Keep loss-tolerance headroom.** The runtime brick-guard already enforces a `1 || ≥3` floor (it
+   rejects both the empty set and the fault-intolerant 2-seat committee), so federation jumps 1 → 3+
+   directly. Beyond that, size the committee so it survives lost keys without bricking — a 5-seat set
+   tolerates 2 lost keys (`ceil(5·3/5)=3`), a 3-seat set tolerates 1; pair it with a written
+   key-custody/rotation runbook, because there is no sudo break-glass if `ceil(3n/5)` live keys are lost.
 
 Until steps 1–3 are real, label every privileged action **"single-operator, D2-shaped, not D2-trust."**
 The tooling does this automatically; keep it in the user-facing honesty badges too.

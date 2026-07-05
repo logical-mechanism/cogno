@@ -42,9 +42,19 @@ parameter_types! {
     pub const RegenPeriod: u64 = 5;
 }
 
+/// Mock "seated committee member" set: account 99 stands in for a seated member (the real runtime reads
+/// `pallet_collective::Members`). Lets the `revoke`-still-seated guard be exercised without a collective.
+pub struct SeatedIsNinetyNine;
+impl frame_support::traits::Contains<u64> for SeatedIsNinetyNine {
+    fn contains(who: &u64) -> bool {
+        *who == 99
+    }
+}
+
 impl pallet_governance_fuel::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type GrantOrigin = EnsureRoot<Self::AccountId>;
+    type Seated = SeatedIsNinetyNine;
     type Currency = Balances;
     type MaxAllowance = MaxAllowance;
     type MaxFundedAccounts = ConstU32<64>;
