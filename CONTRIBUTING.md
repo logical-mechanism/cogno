@@ -23,7 +23,7 @@ The backend is **all-Rust** and **sudo-free from genesis**: every privileged cal
 | Rust | **1.93.0** (pinned in [`rust-toolchain.toml`](rust-toolchain.toml) — installed automatically by rustup). Stay on the toolchain the pinned polkadot-sdk release (`stable2606`) is verified against; the old ≥ ~1.91 `sp_io` wasm-link break was specific to stable2603's sp-io 45.0.0 and no longer applies. |
 | Aiken (contracts) | **v1.1.22** (pinned in `contracts/aiken.toml` and CI) — required to reproduce the committed blueprint hash. |
 | Node.js (frontend + fixtures) | **v22.12.0** via nvm. Do **not** use the snap `node` (it silently drops stdout). |
-| Python (CIP-8 oracle) | 3.10+ with the pinned `ci/cip8-oracle/requirements.txt`. |
+| Python (CIP-8 oracle) | **3.12** (the version CI pins) with the pinned `ci/cip8-oracle/requirements.txt`. |
 
 ## Build, run, test
 
@@ -31,7 +31,7 @@ The backend is **all-Rust** and **sudo-free from genesis**: every privileged cal
 # Node + workspace (heavy first compile):
 cargo build --release
 ./target/release/cogno-chain-node run --dev      # single //Alice authority, WS :9944
-cargo test --workspace                            # pallets + cli + cogno-dbsync + cogno-keyfile
+cargo test --workspace                            # node + runtime + all pallets + cli + cogno-dbsync + cogno-keyfile
 
 # Fast iteration (skips the wasm runtime build):
 SKIP_WASM_BUILD=1 cargo check -p <crate>
@@ -68,7 +68,7 @@ gates pass locally before opening a PR.
   (even a `trace` line moves the hash).
 - **Pallet indices and `transaction_version` are on-wire contracts — never renumber.** Indices 6
   (Sudo, removed) and 12 (Anchor, removed) are permanently vacant; adding a pallet uses a new index.
-- **Spec-bump discipline.** Bump `spec_version` (currently **201**) *only* for encoding-affecting
+- **Spec-bump discipline.** Bump `spec_version` (currently **203**) *only* for encoding-affecting
   runtime changes (calls/storage/events/extensions); after a bump, regenerate the frontend's PAPI
   descriptors. Non-encoding changes (bounds, logging, docs, tests) must **not** bump it.
 - **Cardano is read exclusively through db-sync** via the `cogno-dbsync` crate, and its byte-identity

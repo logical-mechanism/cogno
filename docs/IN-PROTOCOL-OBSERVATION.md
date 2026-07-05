@@ -2,21 +2,23 @@
 
 > **Historical design doc.** The mechanism it describes — deterministic db-sync observation as a
 > consensus inherent — is the current one, but this doc predates the all-Rust restart (`fork/all-rust`,
-> now `spec_version` 201) and its framing is stale: it references planning artifacts **not in this repo**
+> now `spec_version` 203, `transaction_version` 3) and its framing is stale: it references planning artifacts **not in this repo**
 > (the retired `L2-follower`/`L3-*` layered specs and an internal decision register cited as `DR-NN`) and
 > a *shadow / default-off* enforcement mode. In the restart the `cardano-observer` inherent is the
 > **sole** weight writer and **enforces from genesis**, and the reduction lives in the Rust
 > `cogno-dbsync` crate. Current overview: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-> **Status: IMPLEMENTED IN SHADOW (default-off enforcement) — proven live against preprod.**
-> Branch `in-protocol-observation` off `main` @170fb3c. The design (this doc) is approved and built
-> through **step 4**: the deterministic observation library (step 2), the `ProvideInherent` pallet +
-> node IDP (step 3), and the shadow-validation layer (step 4: a default-off enforce/shadow flag, the
-> shadow-diff observability tool, and the db-sync point-existence guard). The inherent runs **every block,
-> verified cross-node**, but `EnforceWeight` defaults to `false` so it only PROJECTS weight — the trusted
-> committee `set_stake` path still drives `AllowedStake`. **Cutover** (enforce = sole writer) is gated on
-> ≥3 independent producers and is the only remaining step; until then this is **D4-SHAPED, not D4-TRUST**
-> (§2). See **§14** for the landed-state summary + live evidence.
+> **Status: IMPLEMENTED AND ENFORCING FROM BLOCK 0 — proven live against preprod.**
+> The design (this doc) is built out: the deterministic observation library, the `ProvideInherent`
+> pallet + node IDP, and the db-sync point-existence guard. In the all-Rust restart the
+> `cardano-observer` inherent runs **every block, verified cross-node**, and `EnforceWeight` defaults to
+> **`true`** (the `DefaultEnforce` genesis constant), so the verified observation is the **sole** writer
+> of both `AllowedStake` (posting weight) and `VotingPower` (voting power) — there is **no** shadow /
+> default-off mode and **no** committee `set_stake` path (TalkStake is call-less). `set_enforcement(false)`
+> is now the **emergency weight-FREEZE** (keep verifying cross-node, stop writing), not a cutover flip.
+> On a single operator the sole author is still the only checker, so this remains **D4-SHAPED, not
+> D4-TRUST** (§2) until ≥3 independent producers exist. §14/§15 below are the historical branch record
+> (landed in *shadow* at spec 108–111, superseded by the restart).
 
 > **One sentence.** Today the Cardano→chain *weight* path is a **trusted off-chain oracle** (the
 > follower reads the `talk_vault` UTxO set and *injects* the result via a privileged
@@ -58,10 +60,12 @@ Read these before implementing (this doc summarizes, it does not supersede them)
 applied vault policy id / validator hash `168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7`
 (`contracts/vault.json`), unapplied blueprint hash `49ffbfc6…` (`contracts/plutus.json`);
 `min_lock = 100_000_000` lovelace; identity key = the 32-byte beacon `token_name` =
-`blake2b_256(plutus_data_cbor(owner Address))` (`services/cogno-follower/beacon.py`); dev capacity
+`blake2b_256(plutus_data_cbor(owner Address))` (on-chain in `pallets/cogno-gate/src/cip8.rs`; independent
+CI oracle `ci/cip8-oracle/beacon.py`); dev capacity
 constants `CapRatio=50`, `RegenPerBlock=2`, `Ceiling=5_000_000_000_000`, `MaxStakeWeight=45e15`
-(`runtime/src/configs/mod.rs`). Runtime is **spec_version 107 / tx_version 2**; next free pallet
-index is **16** (7 is permanently vacant; 8–15 used). cogno-chain block time
+(`runtime/src/configs/mod.rs`). Runtime is **spec_version 203 / tx_version 3**; `CardanoObserver` now
+holds pallet index **16** (the permanently-vacant indices are **6** (Sudo) and **12** (Anchor); the
+highest pallet index is **18**, GovernanceFuel). cogno-chain block time
 `MILLI_SECS_PER_BLOCK = 6000` (`runtime/src/lib.rs`), so 1 Aura slot = 6 s.
 
 **Verified preprod Cardano anchor** (we are live on preprod; from the preprod genesis):
@@ -750,7 +754,8 @@ Consistent with the repo's grep-enforced honest posture ("usable ≠ trustless /
 `node/src/service.rs:94-110/261-270` (the two CIDP closures), `runtime/src/apis.rs:94-104`
 (`inherent_extrinsics` / `check_inherents`); the path to replace —
 `services/committee/sync-weight.mjs` + `services/cogno-follower/vault.py`;
-`services/cogno-follower/beacon.py` (the bind-time beacon derivation — stays off-chain).
+`ci/cip8-oracle/beacon.py` (the bind-time beacon derivation, now an independent CI oracle — the
+production derivation is on-chain in `pallets/cogno-gate/src/cip8.rs`).
 
 **Substrate:** `_sdk/substrate/frame/support/src/inherent.rs:76-79` (`ProvideInherent`; check_inherent "not
 guaranteed to be run by all full nodes"), `_sdk/substrate/primitives/{inherents,block-builder}/src/client_side.rs`

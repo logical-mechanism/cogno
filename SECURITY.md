@@ -17,6 +17,10 @@ Genuine security-relevant areas we *do* want to hear about include:
   re-derivation (a consensus divergence).
 - The **committee-governed upgrade path** (`pallet-governed-upgrade` + `FollowerCommittee`) — any way
   to bypass the 3-of-5 origin or brick the authority set.
+- The **governance-fuel mint path** (`pallet-governance-fuel` + the runtime `CognoCallFilter`) — the
+  sole committee-gated native mint path; anything that mints fuel without the 3-of-5 `GrantOrigin`,
+  defeats fuel non-transferability, lets fuel be spent on posting, or seats an unfunded account as a
+  validator or committee member.
 - **Key handling** in `cogno-chain-cli` / `cogno-keyfile` and the operator ceremony.
 - The L1 **`talk_vault`** Aiken validator (custodies real preprod ADA) — see `contracts/audits/`.
 

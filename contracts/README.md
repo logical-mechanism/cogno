@@ -58,6 +58,8 @@ never pay raw ADA to the vault address.**
 aiken check          # unit + property/fuzz + boundary tests (property tests: 100 samples each)
 aiken build          # regenerates plutus.json (the script blueprint + hash)
 aiken bench          # CPU/mem baselines for the mint/spend hot paths
+
+node scripts/regen-vault.mjs   # redeploy only: rebuilds vault.json (applied hash + CBOR) from plutus.json
 ```
 
 Test dependency note: `aiken-lang/fuzz` is used only by the property tests and benchmarks; it is
@@ -76,5 +78,10 @@ and benchmark coverage (I-01 through I-06).
 `min_lock`-applied policy_id / vault address). This **orphans any previously-deployed vault**: the
 old UTxOs must be exited under the old script, and a fresh vault minted under the new one. The
 artifact that bakes the L1 hash for the off-chain tooling is the **`vault.json`** (vaultHash +
-applied CBOR) consumed by the frontend's MeshJS lock/unlock scripts — that must be regenerated. The frontend PAPI descriptors describe the Substrate runtime and carry **no**
+applied CBOR) consumed by the frontend's MeshJS lock/unlock scripts — regenerate it by running
+`node scripts/regen-vault.mjs` (from `contracts/`) after `aiken build`, which rewrites
+`contracts/vault.json` and syncs the frontend's pinned copy at `app/src/lib/cardano/vault.json`.
+Never hand-edit the hash — the applied `policy_id` must be recomputed through the script's
+`{ int: … }` param form (a bare number silently yields a different, unspendable hash). The frontend
+PAPI descriptors describe the Substrate runtime and carry **no**
 L1 script hash, so they are unaffected.

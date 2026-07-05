@@ -39,8 +39,9 @@ This is a permissioned, operator-run stack. Know what you're trusting before you
   well-known dev keys anywhere (`//Alice` is only the local `--dev` quick-start). See
   [Run the chain](#run-the-chain).
 - **There is no sudo.** Every privileged call (`add/remove_validator`, observer enforcement, the gate
-  `revoke` ban, runtime upgrades) goes through the **3-of-5 FollowerCommittee**, which exists from
-  block 0 and can start single-seat and federate out by vote. The mechanism is real, but with one
+  `revoke` ban, granting/revoking governance-fuel allowances, runtime upgrades) goes through the
+  **3-of-5 FollowerCommittee**, which exists from block 0 and can start single-seat and federate out by
+  vote. The mechanism is real, but with one
   operator holding all the seats it is **D2-*shaped*, not D2-*trust*** until they are split across
   independent custodians.
 
@@ -60,7 +61,7 @@ equivocation/slashing, an independent CIP-8-verifier audit, and graduating past 
    talk_vault contract + beacon NFT                  credits locked-ADA + stake → talk-capacity weight
                                                     · Aura + GRANDPA · 3-of-5 committee (no sudo)
    Ogmios :1337 · Blockfrost      ◀──L1 tx───       · runtime: microblog · talk-stake · cogno-gate ·
-     (L1 lock/exit, from frontend)    submit           profile · validator-set
+     (L1 lock/exit, from frontend)    submit           profile · validator-set · governance-fuel
                                                     · serves ALL reads via its runtime API
 
         frontend (Next.js static SPA) ──PAPI :9944──▶ node
@@ -131,8 +132,9 @@ cargo test                       # pallet unit/boundary tests (see Development f
 ./target/release/cogno-chain-node run --dev      # one //Alice authority, WS :9944
 ```
 
-`--dev` is an ephemeral single-node chain on well-known dev keys (it also seats a `//Alice…//Eve`
-committee so the 3-of-5 path is drivable, and sets `--force-authoring`). Use it for local
+`--dev` is an ephemeral single-node chain on well-known dev keys (it seats a single-seat `//Alice`
+committee — the founder-governs-alone bootstrap where a motion executes on propose — and sets
+`--force-authoring`). Use it for local
 development only — the state and genesis are thrown away on restart.
 
 ### Your own network
@@ -370,9 +372,9 @@ cogno-chain/
 ├─ Cargo.toml / Cargo.lock     # workspace, pinned to stable2606; Cargo.lock committed
 ├─ rust-toolchain.toml         # channel = 1.93.0; targets = [wasm32v1-none, wasm32-unknown-unknown]
 ├─ node/                       # cogno-chain-node (Aura + GRANDPA + cardano-observer + read RPC)
-├─ runtime/                    # cogno-chain-runtime (#[frame_support::runtime], spec 201 / tx 3)
+├─ runtime/                    # cogno-chain-runtime (#[frame_support::runtime], spec 203 / tx 3)
 ├─ pallets/                    # microblog, talk-stake, cogno-gate, governed-upgrade, validator-set,
-│                              #   cardano-observer, profile
+│                              #   cardano-observer, profile, governance-fuel
 ├─ cli/                        # cogno-chain-cli (all-Rust admin tool; typed RuntimeCall, keys by file)
 ├─ cogno-dbsync/ cogno-keyfile/ # shared no-node crates (deterministic db-sync reader; key envelope)
 ├─ contracts/                  # the Aiken L1 `talk_vault` validator (+ audits/)
@@ -398,7 +400,7 @@ The chain restarted at a fresh genesis (`fork/all-rust`), so the index map is:
 | 4 | Balances | 15 | Session |
 | 5 | TransactionPayment | 16 | CardanoObserver (sole weight writer, enforcing) |
 | *6* | *vacant* (Sudo removed) | 17 | Profile |
-| 7 | GovernedUpgrade (sudo-free upgrades) | | |
+| 7 | GovernedUpgrade (sudo-free upgrades) | 18 | GovernanceFuel (committee-set regenerating admin-fuel budget) |
 | 8 | CognoGate (CIP-8 identity gate) | | |
 | 9 | TalkStake (observer-written ledger) | | |
 | 10 | Microblog (posts + folded capacity) | | |
@@ -420,7 +422,7 @@ indices never shift. Talk-capacity is **folded into `microblog`** (no separate c
 - **Acceptance:** with a `--dev` node, `cd scripts/acceptance && npm install && WS=ws://127.0.0.1:9944
   node acceptance.mjs` (asserts the running chain exposes no sudo / `set_stake` / anchor extrinsic).
 - **Encoding discipline:** pallet indices and `transaction_version` are on-wire contracts; bump
-  `spec_version` (currently 201) only for encoding-affecting changes and regenerate PAPI descriptors
+  `spec_version` (currently 203) only for encoding-affecting changes and regenerate PAPI descriptors
   afterward.
 - **Upgrading a live chain** (adding features, soft vs hard forks, the mixed-validator question,
   storage migrations, enactment): [`docs/UPGRADES.md`](docs/UPGRADES.md).

@@ -48,9 +48,9 @@ message passing, and (since the all-Rust restart) no metadata anchoring back to 
 
 ```
 node/            cogno-chain-node — the Aura+GRANDPA node + the cobs header-seal proposer
-runtime/         cogno-chain-runtime — #[frame_support::runtime], spec_version 201 / tx_version 3
+runtime/         cogno-chain-runtime — #[frame_support::runtime], spec_version 203 / tx_version 3
 pallets/         microblog, talk-stake, cogno-gate, profile, validator-set,
-                 cardano-observer, governed-upgrade
+                 cardano-observer, governed-upgrade, governance-fuel
 cli/             cogno-chain-cli — the all-Rust admin CLI (typed calls, keys-by-file)
 cogno-dbsync/    shared crate: the deterministic db-sync reader + Cardano-state reduction
 cogno-keyfile/   shared crate: the cardano-cli-style JSON key envelope
@@ -73,14 +73,15 @@ no-node crates. The frontend is the only non-Rust surface. There are no off-chai
 | 7 | **GovernedUpgrade** | committee-authorized runtime upgrades (no root) |
 | 8 | **CognoGate** | CIP-8 1:1 identity: `owner-Address ↔ account`, on-chain verify (`cip8.rs`) |
 | 9 | **TalkStake** | the observer-written weight ledger (`AllowedStake`, `VotingPower`) — call-less |
-| 10 | **Microblog** | posts + folded talk-capacity + social (votes/polls/reposts/quotes/follows) + the node read API |
+| 10 | **Microblog** | posts + folded talk-capacity + social (post votes / account-reputation votes / polls / reposts / quotes / follows) + the node read API |
 | 11 | SkipFeelessPayment | the tx-extension that makes metered social calls feeless |
 | 12 | *(vacant)* | Anchor removed |
 | 13 | **FollowerCommittee** | `pallet-collective<Instance1>` — the 3-of-5 authority origin |
 | 14 | **ValidatorSet** | mutable Aura+GRANDPA authorities (session-boundary add/remove) |
 | 15 | Session | authority-set rotation |
 | 16 | **CardanoObserver** | the in-protocol Cardano-weight observation inherent (sole weight writer, enforcing) |
-| 17 | **Profile** | display name / bio / avatar / banner / pinned — feeless, capacity-metered |
+| 17 | **Profile** | display name / bio / avatar / banner / location / website / pinned — feeless, capacity-metered |
+| 18 | **GovernanceFuel** | committee-administered REGENERATING native-fuel budget for admin/governance fees (`set_allowance`/`revoke` + an `on_initialize` regen hook); non-transferable, cannot post |
 
 ## L1 — the Cardano `talk_vault` (observed, never bridged)
 
@@ -120,7 +121,11 @@ Full detail: [`IN-PROTOCOL-OBSERVATION.md`](IN-PROTOCOL-OBSERVATION.md). db-sync
 
 - **Consensus:** Aura produces blocks, GRANDPA finalizes. The authority set is **mutable**
   (`pallet-session` + a forked `pallet-validator-set`): the committee adds/removes producers at session
-  boundaries. At low authority counts GRANDPA finality is fragile by design — the honest floor is a
+  boundaries. Seating a new producer or committee member first requires a governance-fuel allowance
+  (validators also need registered session keys); the onboarding order is `set_allowance` → `set_keys` →
+  `add`, and an unfunded/keyless add is rejected on-chain (`NotFunded` / `NoSessionKeys` for a validator,
+  `CallFiltered` for an unfunded committee seat). See [`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md) Step 6.
+  At low authority counts GRANDPA finality is fragile by design — the honest floor is a
   documented prerequisite, and `MinAuthorities` is left low for testnet.
 - **The `cobs` header seal:** `node/src/consensus/` is a custom block proposer (a reimplemented,
   Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable,
@@ -133,8 +138,8 @@ Full detail: [`IN-PROTOCOL-OBSERVATION.md`](IN-PROTOCOL-OBSERVATION.md). db-sync
   `pallet-governance-fuel` (index 18): a `set_allowance` sets a per-account standing budget and an
   `on_initialize` hook mints it back up each period, so fuel **regenerates** (a drained member can never be
   locked out) and the supply floats with mint-on-demand rather than burning down to a governance brick.
-  Fuel is **non-transferable** (the base call filter blocks `Balances::transfer*`) and cannot post (the
-  social layer never reads balances). See [`ECONOMICS.md`](ECONOMICS.md).
+  Fuel is **non-transferable** (the base call filter blocks every `Balances` call, not just transfers)
+  and cannot post (the social layer never reads balances). See [`ECONOMICS.md`](ECONOMICS.md).
 
 ## Reads — folded into the node
 

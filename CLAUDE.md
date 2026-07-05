@@ -82,7 +82,7 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index;
   gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **202**); after a bump, regenerate PAPI descriptors:
+  `spec_version` (currently **203**); after a bump, regenerate PAPI descriptors:
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   Non-encoding changes (bounds, logging, tests) must **not** bump it.
 - **Toolchain is pinned to rustc 1.93.0** — the toolchain Parity builds the polkadot-sdk `stable2606`
@@ -92,6 +92,11 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
 - **Privileged calls go through the 3-of-5 committee — there is no sudo.** Use `cogno-chain-cli
   committee …` (propose / vote / close over `FollowerCommittee`). Runtime upgrades are
   `upgrade authorize` (committee) + a permissionless `upgrade apply` (spec-checked).
+- **Federating out is fund-before-seat (spec 203).** Seating gates now require a committee-granted
+  governance-fuel allowance (and, for validators, registered session keys): a `fuel set-allowance
+  --account <X>` must precede `committee members add` / `validator add`, and a new validator must
+  `validator set-keys` first. Seating an unfunded/keyless account is rejected on-chain (`CallFiltered`
+  for a committee seat, `NotFunded` / `NoSessionKeys` for a validator). See docs/PREPROD-BRINGUP.md Step 6.
 - **Cardano cost models:** inject live Ogmios cost models via `setCostModels` when building L1 txs —
   MeshJS's stale defaults produce a bad script-integrity hash.
 - **Never `next build` while `next dev` is running** (they share `.next/`). Run the frontend dev server

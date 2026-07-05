@@ -39,7 +39,7 @@ functions; the new runtime runs on existing validator binaries unchanged.
 ## Soft path — forkless runtime upgrade
 
 1. Build the feature (new pallet at a **new** `pallet_index`, or changes to existing pallets).
-2. Bump **`spec_version`** in [`../runtime/src/lib.rs`](../runtime/src/lib.rs) (e.g. 201 → 202) and
+2. Bump **`spec_version`** in [`../runtime/src/lib.rs`](../runtime/src/lib.rs) (e.g. 203 → 204) and
    add a changelog comment like the existing ones. Bump **`transaction_version`** *only* if the
    extrinsic **encoding** changed (a new `TransactionExtension`, or changed call args) — adding a new
    call does **not** change it.
@@ -76,6 +76,15 @@ brand-new chain changes it.
 > execution **halts the chain**. That's why step 5 (`try-runtime`) is non-negotiable for anything
 > touching storage. `apply` itself refuses a non-increasing `spec_version` on-chain.
 
+> **Fuel prerequisite (spec 203+).** Fees for these calls are paid in **governance fuel** — the
+> non-transferable native `Balances` token administered by `pallet-governance-fuel@18`. The committee
+> seat(s) that carry the `upgrade authorize` motion and the account that runs `upgrade apply` each pay
+> from fuel, so each must hold a standing (regenerating) allowance. Genesis validator/committee accounts
+> are pre-endowed; for any account added **post-genesis**, the committee must first grant one via
+> `cogno-chain-cli fuel set-allowance --account <SS58> --max <planck>` (3-of-5 `GrantOrigin`). A newly
+> seated committee member with no `GovernanceFuel::Allowances` entry is additionally blocked by
+> `CognoCallFilter`.
+
 ## Hard path — coordinated node upgrade
 
 When the new runtime needs new host functions or you changed consensus, old binaries **stop
@@ -95,7 +104,7 @@ is a no-op, and there is no slashing — coordination is purely operational. See
 
 ## Encoding contracts (keep these stable)
 
-- **`spec_version`** — bump on any logic/metadata change (currently **201**).
+- **`spec_version`** — bump on any logic/metadata change (currently **203**).
 - **`transaction_version`** — bump *only* on extrinsic-encoding changes. Keeping it stable means
   in-flight signed txs and signing tooling don't break. (It is **3**: bumped 1→2 when the
   `CheckCapacity` extension was added, then 2→3 at spec 118 when `pallet-profile`'s `set_profile`
@@ -144,8 +153,9 @@ mechanics above are the easy part.
 
 ## Worked example: adding a "bookmarks" pallet
 
-1. New `pallet-bookmarks` at a new index (e.g. 18); its own (initially empty) storage → **no migration**.
-2. `spec_version` 201 → 202; `transaction_version` stays 3 (a new call is not an encoding change).
+1. New `pallet-bookmarks` at a new index (e.g. 19 — the next free one; 18 is now GovernanceFuel); its
+   own (initially empty) storage → **no migration**.
+2. `spec_version` 203 → 204; `transaction_version` stays 3 (a new call is not an encoding change).
 3. `cargo build --release` (clean). No new host functions → **soft**: existing validator binaries run
    it unchanged, no coordinated node upgrade.
 4. `try-runtime` against a preprod snapshot.

@@ -14,7 +14,7 @@ full node — that syncs the real chain over P2P and serves RPC to your dev fron
 
 The validator stays the **sole block producer and source of truth**. The relay only follows it and
 answers reads (and broadcasts the posts you submit) — it can't author, equivocate, or affect
-consensus. This is the same "tracking node" from the [README's "Your own network"](../README.md#run-the-chain)
+consensus. This is the same "tracking node" from the [README's "Your own network"](../README.md#your-own-network)
 section, packaged for the local-dev loop with two helper scripts.
 
 ## Prerequisites
@@ -32,9 +32,12 @@ section, packaged for the local-dev loop with two helper scripts.
 A tracking node must load the chain's **exact** genesis (same genesis block hash) or it forms a
 different chain and never peers. **The repo ships a matching one:**
 [`chainspecs/preprod.raw.json`](../chainspecs/preprod.raw.json) is the live spec (id
-`cogno-preprod-operator`, genesis `0xe2e06d71…237623c0`, spec 200) with the validator's DDNS bootnode
+`cogno-preprod-operator`, genesis `0xe2e06d71…237623c0`, spec 200 — the pre-governance-fuel restart;
+the runtime source is now spec 203) with the validator's DDNS bootnode
 embedded, and it's the default `CHAINSPEC` in `run-tracking-node.sh`. **For the normal dev loop, skip
-to step 2** — no spec-building needed.
+to step 2** — no spec-building needed. Once the chain is relaunched at spec 203 the genesis changes;
+regenerate this spec (the step 1 fallback below) and re-check the genesis hash before relying on the
+committed copy.
 
 **Only rebuild if the network was relaunched** and the committed copy is stale. Reconstruct it from the
 validator's **safe, read-only RPC** — [`scripts/fetch-chainspec.mjs`](../scripts/fetch-chainspec.mjs)
@@ -96,6 +99,13 @@ Then run the dev server as usual — it reads live chain data through the relay:
 ```bash
 cd app && npm run dev          # :3000  (use the nvm node)
 ```
+
+> **Descriptors must match the live runtime.** The app's bundled `@polkadot-api/descriptors` are
+> generated from a stored metadata snapshot at `npm install`. If the live chain the relay follows runs
+> a different runtime than the descriptors were built against (e.g. the committed spec-200 chain vs. the
+> spec-203 code, or vice-versa after the restart), decode/encode fails. Regenerate them against the
+> relay — from `app/`: `rm .papi/descriptors/generated.json && npx papi add cogno -w ws://127.0.0.1:9944`
+> (then re-run `npm run dev`).
 
 A user can still override the endpoint at runtime in the UI (Endpoint Settings → persisted in
 `localStorage`), which always wins over the build default.

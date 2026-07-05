@@ -130,7 +130,7 @@ bare-unsigned extrinsic from a CIP-8 proof — see `identity prove`.)
 
 [app/](../app/README.md) is a static-export Next.js client that reads **everything from the node** (feed /
 thread / search / profile via PAPI + the runtime read API — no indexer, no GraphQL). Set its endpoints to your
-node (`ws://<host>:9944`, behind TLS for anything public — see follow-ups). This branch is **spec 201**; after
+node (`ws://<host>:9944`, behind TLS for anything public — see follow-ups). This branch is **spec 203**; after
 any spec bump regenerate PAPI descriptors:
 `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
 

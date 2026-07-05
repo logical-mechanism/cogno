@@ -1,12 +1,13 @@
 # Trustless identity (D1) — on-chain CIP-8 self-proof
 
 > **Note.** The mechanism (on-chain CIP-8 self-proof, `cip8.rs`) is current and present in the
-> `fork/all-rust` runtime (`spec_version` **201**). The spec numbers below (e.g. 116) are **pre-restart
+> `fork/all-rust` runtime (`spec_version` **203**). The spec numbers below (e.g. 116) are **pre-restart
 > build history**, a few cross-references point to the retired pre-restart layered specs (`L2-follower`,
 > `L3-SPO-graduation`), and the CI oracle cited as `services/cogno-follower/{verify,beacon}.py` now lives
 > at `ci/cip8-oracle/`. The current system overview is [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-**Status: DONE, proven live on a `--dev` node. The bind is now FEELESS (spec_version 116): the two CIP-8
+**Status: DONE, proven live on a `--dev` node. The bind is now FEELESS (made feeless in spec 116; current
+runtime spec 203): the two CIP-8
 self-proofs — `link_identity_signed` (@2) and `link_stake_signed` (@3) — are submitted as BARE (unsigned)
 extrinsics and verified at transaction-pool admission (`#[pallet::validate_unsigned]`), so a brand-new
 zero-balance account binds with no fee and NO funded relay (the Sponsored-Bind Relay is removed). The
@@ -24,12 +25,12 @@ follower's bind-write key) without adding one.
 | Who writes the binding | the follower, via `FollowerOrigin`-gated `link_identity` | **anyone**, via permissionless `link_identity_signed` |
 | Trust in the binding's correctness | the follower's key (compromise ⇒ forge any identity) | **none** — re-verified from the user's own wallet signature |
 | `FollowerOrigin` now gates | `link_identity` + `revoke` | **only `revoke`** (the moderation ban) |
-| The Cogno-Follower service | trusted verifier + sole writer | **read-only helper** (`/health`, `/metrics`, `/nonce`) — writes nothing |
+| The Cogno-Follower service | trusted verifier + sole writer | **removed entirely** — no follower service; `verify.py`/`beacon.py` survive only as a CI-only agreement oracle in `ci/cip8-oracle/` (writes nothing, serves nothing) |
 
 The trusted `link_identity` dispatchable is **removed**; its `call_index(0)` is permanently vacant
 (on-wire call indices are a contract). `link_identity_signed` (`call_index(2)`) is the only bind path.
 
-## The on-chain flow (`pallet_cogno_gate`) — FEELESS, unsigned (spec 116)
+## The on-chain flow (`pallet_cogno_gate`) — FEELESS, unsigned (made feeless in spec 116; current spec 203)
 
 ```
 link_identity_signed(origin: None, cose_sign1: BoundedVec<u8,512>, cose_key: BoundedVec<u8,128>,
@@ -111,7 +112,7 @@ The identity derivation is independently implemented **three** ways and they mus
 
 - the on-chain Rust verifier (`cip8.rs`), with a locked cross-impl vector in `cip8/tests.rs`
   (`6e2f65e9…`) + a real `MeshWallet.signData` fixture + adversarial negatives;
-- the off-chain Python reference (`services/cogno-follower/verify.py` + `beacon.py`), run in CI by
+- the off-chain Python reference (`ci/cip8-oracle/verify.py` + `beacon.py`), run in CI by
   `test_agreement.py` against real MeshJS fixtures + adversarial negatives (kept *only* as this oracle —
   it writes nothing);
 - the frontend (`@meshsdk/core-cst`).
@@ -120,7 +121,7 @@ The live `d1-acceptance.mjs` run confirmed the on-chain identity (beacon name
 `9a8cdaa7df32352a…` for the fixture address) equals the Python reference's output — independent
 implementations agreeing on real bytes.
 
-## Weight / DoS posture (feeless — spec 116)
+## Weight / DoS posture (feeless — made feeless in spec 116; current spec 203)
 
 The fee is **gone**; the compute-DoS it defended is moved EARLIER, to **pool admission**. The whole
 defence is now `#[pallet::validate_unsigned]`. The FRAME-benchmarked dispatch weight is unchanged
@@ -192,7 +193,7 @@ live genesis; the proof was submitted as a **bare (unsigned) extrinsic** — no 
 ## ⚠ MAINNET PREREQUISITE — independent verifier audit
 
 The verifier is the **anti-Sybil crown jewel**: a bug forges *any* identity (Wormhole-class — Wormhole's
-$325M loss was a signature-verifier bug, not a quorum break, `L2-follower.md` §7.2). It is hardened by a
+$325M loss was a signature-verifier bug, not a quorum break). It is hardened by a
 4-agent adversarial threat-model + unit/cross-impl tests, but it has **NOT had a formal external audit**.
 This ships **enabled on testnet** as an honestly-labelled proof-of-concept; an independent audit of
 `cip8.rs` is required before mainnet / real value. Do not weaken any check in `cip8.rs`.
@@ -202,11 +203,11 @@ This ships **enabled on testnet** as an honestly-labelled proof-of-concept; an i
 - **External audit** of the verifier (the prerequisite above).
 - **Committed nonce.** The payload nonce is now **format-checked only** — replay is prevented by the 1:1
   maps + the permanent tombstone, not by a server nonce cache (the follower's nonce cache is removed).
-- **Ariadne / SPO-graduation** for the *weight* path is separate (see `L3-SPO-graduation.md`); identity
+- **Ariadne / SPO-graduation** for the *weight* path is separate (see
+  [`IN-PROTOCOL-OBSERVATION.md`](IN-PROTOCOL-OBSERVATION.md)); identity
   binding needs no Cardano observation at all (it is a pure signature — no db-sync/Ogmios).
-- **Trust-ladder / merge note:** the **in-protocol weight observation** branch (PR #10) also targeted
-  spec 108 and merged to `main` first. This branch merged second, so the combined runtime (the trustless
-  gate **and** the `cardanoObserver` pallet @16) bumped to **spec 109** and the PAPI descriptors were
-  regenerated against it. The observer's `obs-shadow-demo.mjs` used to bind the live vault beacon via the
-  old `link_identity`/sudo — which D1 removed — so it now **requires the beacon to be pre-bound** via the
-  trustless self-proof (`link_identity_signed`); it no longer binds (there is no operator/sudo bind).
+- **Trust-ladder / observer note:** the **in-protocol weight observation** now ships as the
+  `cardanoObserver` pallet (@16), **enforcing from block 0** (the sole writer of the weight ledger via a
+  consensus-verified inherent). The observer never binds identities: it credits weight only to a vault
+  beacon whose owner has already **pre-bound** via the trustless self-proof (`link_identity_signed`) —
+  there is no operator/sudo bind path (D1 removed the old `link_identity`).

@@ -1,10 +1,16 @@
 # cogno-chain frontend — a feeless social client
 
 The Next.js 16 **static-export** SPA for cogno-chain — a dark-first, Twitter-style social client
-(**post text / read text**): a home feed, explore/search, compose, post threads, and user profiles.
-Posting and voting are **feeless**, metered by Cardano-sourced **talk-capacity** (lock ADA on Cardano
-→ earn capacity), not per-action fees; identity is a one-time **CIP-8 bind** (one Cardano owner
-Address ⇒ one app-chain account). It reads **everything node-direct** — feed / thread / profile /
+(**post text / read text**): a home feed, explore/search, compose, post threads, quotes and permanent
+reposts, polls, user profiles (with pinned posts and Posts / Replies / Likes / Following tabs), follows
+with follower/following lists and tappable follow counts, who-to-follow, and account-reputation votes (a
+stake-weighted anti-Sybil / anti-impersonation signal ON accounts, shown on profiles and People rows).
+Posting, voting (on posts **and** on accounts), reposting, quoting, following, and polls are all
+**feeless**, metered by Cardano-sourced **talk-capacity** (lock ADA on Cardano → earn capacity), not
+per-action fees; identity is a one-time **CIP-8 bind** (one Cardano owner Address ⇒ one app-chain
+account), with an optional second **stake bind** that unlocks stake-weighted voting/poll power.
+Bookmarks (device-local, `/bookmarks`), mute/hide, and a Diagnostics settings panel round it out. It
+reads **everything node-direct** — feed / thread / profile /
 search over **PAPI** (`polkadot-api`) + the runtime read API, no indexer and no follower — and reaches
 Cardano with **MeshJS** (CIP-30 wallet + Blockfrost) for the L1 vault lock/exit. The chain is
 **observe-only**: it reads Cardano, never writes back (no anchor). There is no backend and no
@@ -58,10 +64,13 @@ own wallet without a backend — and must be a **preprod** key. Config lives in
 cogno-chain separates **identity/stake** from **posting**, and the two are different keys:
 
 - **Cardano CIP-30 wallet** (the identity + stake key). Connected in the browser. It signs the
-  one-time **CIP-8 bind** (proving control of the owner Address → the 1:1 app-chain identity) and
-  the L1 **lock / exit** transactions that put ADA into / pull ADA out of the `talk_vault`. Locking
-  ADA is what earns talk capacity. The ADA never leaves the owner's control — the vault is
-  owner-reclaimable and exit is one click.
+  one-time **CIP-8 identity bind** (proving control of the owner Address → the 1:1 app-chain identity),
+  an optional second **CIP-8 stake bind** (proving control of the Cardano stake credential), and the L1
+  **lock / exit** transactions that put ADA into / pull ADA out of the `talk_vault`. The two
+  Cardano-sourced weights are distinct: locking ADA in the vault earns **posting capacity**
+  (`AllowedStake`), while the stake bind grants **voting/poll power** (`VotingPower` = the total Cardano
+  stake of that credential). The ADA never leaves the owner's control — the vault is owner-reclaimable
+  and exit is one click.
 - **sr25519 posting key** (the spend key for the chain). Signs **every feeless post**. Since M8 it
   is **sign-to-derive — nothing is stored**: the Cardano wallet signs one fixed, domain-separated
   CIP-8 message; that signature (deterministic Ed25519) is `blake2b_256`'d into the seed for the
