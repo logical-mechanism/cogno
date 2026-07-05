@@ -34,7 +34,9 @@ use alloc::vec::Vec;
 
 use frame_support::{
     pallet_prelude::*,
-    traits::{EstimateNextSessionRotation, Get, ValidatorSet, ValidatorSetWithIdentification},
+    traits::{
+        Contains, EstimateNextSessionRotation, Get, ValidatorSet, ValidatorSetWithIdentification,
+    },
     weights::Weight,
     DefaultNoBound,
 };
@@ -86,6 +88,18 @@ pub mod pallet {
         #[pallet::constant]
         type MaxValidators: Get<u32>;
 
+        /// Footgun-guard: the account being added must have a standing **governance-fuel allowance** so
+        /// it can pay the fee-bearing `Session::set_keys` (and future re-keying) and won't be seated
+        /// unfunded. Wired in the runtime to `GovernanceFuel::Allowances`; the onboarding order is
+        /// `fuel set-allowance` → `set-keys` → `add_validator`, so this simply enforces "fund before
+        /// seat". Set to `Everything` to disable (e.g. a chain without the fuel pallet).
+        type FuelGate: Contains<Self::ValidatorId>;
+
+        /// Footgun-guard: the account being added must have **registered session keys** (else it is
+        /// seated but authors nothing — inert empty slots). Wired in the runtime to `Session::NextKeys`;
+        /// enforces `set-keys` before `add_validator`. Set to `Everything` to disable.
+        type KeysGate: Contains<Self::ValidatorId>;
+
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
     }
@@ -129,6 +143,12 @@ pub mod pallet {
         /// Adding the validator would push the set above [`Config::MaxValidators`] (the consensus
         /// `MaxAuthorities` bound), which would silently truncate the authority set (`validators-3`).
         TooManyValidators,
+        /// The account has no standing governance-fuel allowance ([`Config::FuelGate`]) — fund it with
+        /// `fuel set-allowance` before adding it, or it would be seated unable to pay for `set_keys`.
+        NotFunded,
+        /// The account has no registered session keys ([`Config::KeysGate`]) — it must run
+        /// `validator set-keys` before being added, or it would be seated but author nothing.
+        NoSessionKeys,
     }
 
     #[pallet::genesis_config]
@@ -197,6 +217,25 @@ impl<T: Config> Pallet<T> {
     }
 
     fn do_add_validator(validator_id: T::ValidatorId) -> DispatchResult {
+        // Footgun-guards (enforce the "fund + set-keys BEFORE seat" onboarding order): refuse to seat a
+        // validator with no standing fuel allowance (it couldn't pay for `set_keys` / re-keying) or no
+        // registered session keys (it would author nothing — inert empty slots, and would dilute the set).
+        // Both default to `Everything` off-chain / under runtime-benchmarks, so this is a no-op there.
+        if !T::FuelGate::contains(&validator_id) {
+            log::warn!(
+                target: LOG_TARGET,
+                "add_validator rejected: {validator_id:?} has no governance-fuel allowance (fund it first)",
+            );
+            return Err(Error::<T>::NotFunded.into());
+        }
+        if !T::KeysGate::contains(&validator_id) {
+            log::warn!(
+                target: LOG_TARGET,
+                "add_validator rejected: {validator_id:?} has no registered session keys (set-keys first)",
+            );
+            return Err(Error::<T>::NoSessionKeys.into());
+        }
+
         let mut validators = Validators::<T>::get();
         if validators.contains(&validator_id) {
             // Idempotent rejection: the caller asked to add an already-seated validator. Visible

@@ -114,13 +114,32 @@ type SingleBlockMigrations = ();
 pub struct CognoCallFilter;
 impl Contains<RuntimeCall> for CognoCallFilter {
     fn contains(call: &RuntimeCall) -> bool {
-        // Brick-guard: never allow a motion that would empty the committee (see doc above).
-        if matches!(
-            call,
-            RuntimeCall::FollowerCommittee(pallet_collective::Call::set_members { new_members, .. })
-                if new_members.is_empty()
-        ) {
-            return false;
+        if let RuntimeCall::FollowerCommittee(pallet_collective::Call::set_members {
+            new_members,
+            ..
+        }) = call
+        {
+            // Brick-guard: never allow a motion that would empty the committee (see doc above).
+            if new_members.is_empty() {
+                return false;
+            }
+            // Footgun-guard: every NEWLY-added member must already hold a governance-fuel allowance, so it
+            // can pay to `propose`/`vote` — an unfunded member only dilutes the `EnsureProportionAtLeast`
+            // denominator (raising the threshold) without adding voting capacity. EXISTING members (delta
+            // = new_members \ current `Members`) are exempt, so genesis seats (endowed, no allowance) and
+            // sitting members re-listed in a rotation pass. Skipped under runtime-benchmarks so the
+            // `pallet_collective` benchmark's `set_members` isn't blocked.
+            #[cfg(not(feature = "runtime-benchmarks"))]
+            {
+                let current = pallet_collective::Members::<Runtime, Instance1>::get();
+                let allowances = pallet_governance_fuel::Allowances::<Runtime>::get();
+                for m in new_members.iter() {
+                    if !current.contains(m) && !allowances.iter().any(|(a, _)| a == m) {
+                        return false;
+                    }
+                }
+            }
+            return true;
         }
         // Fuel is non-transferable: block the entire pallet-balances call surface (future-proof vs. new
         // SDK transfer variants). Skipped under runtime-benchmarks so `benchmark extrinsic` still works.
@@ -157,16 +176,12 @@ mod call_filter_tests {
     }
 
     #[test]
-    fn blocks_emptying_the_committee_but_allows_a_nonempty_set() {
+    fn blocks_emptying_the_committee() {
+        // The empty-set brick-guard is checked BEFORE any storage read, so it holds without
+        // externalities. (The non-empty case now reads `Members`/`Allowances` for the fuel-delta gate —
+        // that path is covered end-to-end in the acceptance script, which runs against real storage.)
         assert!(!CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
             pallet_collective::Call::set_members { new_members: Default::default(), prime: None, old_count: 0 }
-        )));
-        assert!(CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
-            pallet_collective::Call::set_members {
-                new_members: vec![AccountId::from([2u8; 32])],
-                prime: None,
-                old_count: 1,
-            }
         )));
     }
 
@@ -452,6 +467,39 @@ impl pallet_session::Config for Runtime {
 /// ⚠ MAINNET PREREQUISITE: a value-bearing / public multi-validator launch MUST raise this to at
 /// least `3f+1` for the target fault tolerance (≥`4` to tolerate one Byzantine/offline authority), in
 /// lockstep with the im-online auto-removal wiring. Do not ship `1` to a network meant to be BFT.
+/// `add_validator` footgun-guard: an account may only be seated once it holds a standing governance-fuel
+/// allowance (so it can pay for its own `set_keys` / re-keying and won't be seated unable to function).
+/// Reads `GovernanceFuel::Allowances`. Allow-all under `runtime-benchmarks` so the `pallet_validator_set`
+/// benchmark (which seeds a bare account) isn't blocked.
+pub struct HasFuelAllowance;
+impl Contains<AccountId> for HasFuelAllowance {
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    fn contains(who: &AccountId) -> bool {
+        pallet_governance_fuel::Allowances::<Runtime>::get()
+            .iter()
+            .any(|(a, _)| a == who)
+    }
+    #[cfg(feature = "runtime-benchmarks")]
+    fn contains(_who: &AccountId) -> bool {
+        true
+    }
+}
+
+/// `add_validator` footgun-guard: an account may only be seated once it has registered session keys (else
+/// it is in the set but authors nothing — inert empty slots). Reads `Session::NextKeys`. Allow-all under
+/// `runtime-benchmarks`.
+pub struct HasSessionKeys;
+impl Contains<AccountId> for HasSessionKeys {
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    fn contains(who: &AccountId) -> bool {
+        pallet_session::NextKeys::<Runtime>::contains_key(who)
+    }
+    #[cfg(feature = "runtime-benchmarks")]
+    fn contains(_who: &AccountId) -> bool {
+        true
+    }
+}
+
 impl pallet_validator_set::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type AddRemoveOrigin = AuthorityOrigin;
@@ -460,6 +508,10 @@ impl pallet_validator_set::Config for Runtime {
     // validators-3: MUST equal (or be below) aura/grandpa `MaxAuthorities` (= 32) so a full set never
     // gets silently truncated at a session rotation. `add_validator` rejects growth past this.
     type MaxValidators = ConstU32<32>;
+    // Onboarding footgun-guards: refuse to seat a validator that isn't fuel-funded + keyed (enforces the
+    // `fuel set-allowance` → `set-keys` → `add_validator` order on-chain).
+    type FuelGate = HasFuelAllowance;
+    type KeysGate = HasSessionKeys;
     type WeightInfo = pallet_validator_set::weights::SubstrateWeight<Runtime>;
 }
 

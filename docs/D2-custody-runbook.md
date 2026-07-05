@@ -78,8 +78,10 @@ runtime brick-guard). To rotate a seat (planned roll, suspected compromise, or c
 2. **Pre-stage** the incoming custodian: generate the new key in its target custody domain, **fund it
    with a standing fuel allowance** — `cogno-chain-cli fuel set-allowance --account <new-SS58> --max <units>`
    (a committee motion; propose/vote/close are fee-bearing, and the allowance then *regenerates* so the
-   seat never drains to zero), and verify it can sign a no-op test motion on a testnet. Order matters:
-   fund **before** the `set_members` that seats them, so they can vote from block one.
+   seat never drains to zero), and verify it can sign a no-op test motion on a testnet. Fund **before** the
+   `set_members` that seats them — and note this is now **enforced on-chain**: a `set_members` that adds a
+   member with no fuel allowance is rejected (`CallFiltered`), so a seated member can always vote from
+   block one.
 3. **Propose** the new member list via `set_members` (new prime, the swapped member, same or new size),
    routed as a committee motion — log it (§4).
 4. **Enact + verify:** after the motion executes, read `followerCommittee.members()` and confirm the new

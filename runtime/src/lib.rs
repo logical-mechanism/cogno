@@ -255,11 +255,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // `revoke` (idx 1), an `on_initialize` regeneration hook, `Allowances`/`TotalMinted`/`TotalRevoked`
     // storage, and `AllowanceSet`/`AllowanceRevoked`/`FuelRegenerated` events. This is the FIRST
     // post-genesis native-token MINT path (regeneration + top-up mint), deliberately breaking the old
-    // monotone-decreasing-supply property. Also extends `CognoCallFilter` to block `Balances::transfer*`
-    // (fuel is non-transferable) — a call-ACCEPTANCE/behaviour change, NOT a call ENCODING change. ADDITIVE
-    // (new calls/storage/events/metadata), so spec_version bumps; transaction_version STAYS 3 (the
-    // `TxExtension` tuple + every Call encoding is byte-identical). Fresh-genesis ⇒ no migration. Regen the
-    // PAPI descriptors after 203.
+    // monotone-decreasing-supply property. Also extends `CognoCallFilter` to block the ENTIRE
+    // `pallet-balances` call surface (fuel is non-transferable; future-proof vs. new SDK transfer variants)
+    // and adds two onboarding footgun-guards — `pallet-validator-set::add_validator` now refuses an account
+    // with no governance-fuel allowance (`NotFunded`) or no registered session keys (`NoSessionKeys`), and
+    // the call filter refuses a `set_members` that seats a NEW committee member with no fuel allowance —
+    // all call-ACCEPTANCE/behaviour changes, NOT call ENCODING changes. ADDITIVE (new pallet/calls/storage/
+    // events/errors/metadata), so spec_version bumps; transaction_version STAYS 3 (the `TxExtension` tuple +
+    // every Call encoding is byte-identical). Fresh-genesis ⇒ no migration. Regen the PAPI descriptors after 203.
     spec_version: 203,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,

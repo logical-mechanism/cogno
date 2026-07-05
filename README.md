@@ -230,7 +230,10 @@ genesis. Generate + insert its keys (steps 1 + 3), **fund the account with a sta
 can pay the fee-bearing `set-keys`** (fuel is the native token; it then *regenerates* toward the allowance
 each period, so the account never drains — see [ECONOMICS.md](docs/ECONOMICS.md#64-the-native-governance-fuel-token)), have the new validator
 register its own session keys with `cogno-chain-cli validator set-keys` (a real proof-of-possession — an
-empty proof is rejected), then admit it through the committee:
+empty proof is rejected), then admit it through the committee. **This order is enforced on-chain**:
+`validator add` rejects an account with no fuel allowance (`NotFunded`) or no session keys
+(`NoSessionKeys`), and `committee members add` rejects seating a committee member with no fuel allowance —
+so you can't accidentally seat a role that can't function.
 
 ```bash
 # Fund first (committee motion): a standing, regenerating fuel allowance for the new account.
