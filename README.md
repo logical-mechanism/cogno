@@ -226,13 +226,20 @@ first DB creation.
 > node syncs the same chain.
 
 **6 — Onboard a validator after genesis.** The set is mutable — you don't bake every validator into
-genesis. Generate + insert its keys (steps 1 + 3), have the new validator register its own session
-keys with `cogno-chain-cli validator set-keys` (a real proof-of-possession — an empty proof is
-rejected), then admit it through the committee:
+genesis. Generate + insert its keys (steps 1 + 3), **fund the account with a standing fuel allowance so it
+can pay the fee-bearing `set-keys`** (fuel is the native token; it then *regenerates* toward the allowance
+each period, so the account never drains — see [ECONOMICS.md](docs/ECONOMICS.md#64-the-native-governance-fuel-token)), have the new validator
+register its own session keys with `cogno-chain-cli validator set-keys` (a real proof-of-possession — an
+empty proof is rejected), then admit it through the committee:
 
 ```bash
+# Fund first (committee motion): a standing, regenerating fuel allowance for the new account.
+$CLI fuel set-allowance --account <new-validator-SS58> --max 1000000000000000 --committee-signing-key-file seat1.skey --ws ws://<boot>:9944
+# … new validator runs `validator set-keys` (self-signed) …
 $CLI validator add    --validator <new-validator-SS58> --committee-signing-key-file seat1.skey --ws ws://<boot>:9944
 $CLI validator remove --validator <SS58>               --committee-signing-key-file seat1.skey --ws ws://<boot>:9944
+# Cut off a spamming / departed account (drop allowance + claw back balance):
+$CLI fuel revoke      --account <SS58>                  --committee-signing-key-file seat1.skey --ws ws://<boot>:9944
 ```
 
 Changes apply at a **session boundary** (next-but-one session — ~2 min at the default `SessionPeriod`

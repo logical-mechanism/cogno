@@ -38,6 +38,10 @@ frame_benchmarking::define_benchmarks!(
     [pallet_microblog, Microblog]
     // Social-actions branch: the fee-bearing display-profile pallet.
     [pallet_profile, Profile]
+    // The regenerating admin-fuel budget: set_allowance/revoke + the on_initialize regeneration hook.
+    // Ships with a placeholder `WeightInfo = ()` (see configs/mod.rs); listed here so `benchmark pallet`
+    // can generate real weights (fund/revoke are O(1); regenerate is linear in the funded-set size).
+    [pallet_governance_fuel, GovernanceFuel]
     // M6 (DR-26): real WeightInfo for the mutable-authority add/remove extrinsics.
     [pallet_validator_set, ValidatorSet]
     // runtime-4: benchmark the FollowerCommittee (the path that EXECUTES every 3-of-5 privileged

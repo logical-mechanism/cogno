@@ -50,6 +50,9 @@ pallet-cogno-gate = { features = ["std"], workspace = true }
 pallet-cardano-observer = { features = ["std"], workspace = true }
 pallet-talk-stake = { features = ["std"], workspace = true }
 pallet-governed-upgrade = { features = ["std"], workspace = true }
+# The committee-governed regenerating admin-fuel budget: the typed set_allowance/revoke calls the `fuel`
+# verbs construct + drive through the committee propose/vote/close path.
+pallet-governance-fuel = { features = ["std"], workspace = true }
 
 # ── SCALE + signing primitives (same pins as the node/runtime, so byte layouts can't drift) ──
 codec = { features = ["std", "derive"], workspace = true }

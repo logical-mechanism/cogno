@@ -52,7 +52,7 @@ use super::{
     AccountId, Aura, Balance, Balances, Block, BlockNumber, CognoGate, Hash, Microblog, Nonce,
     PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
     RuntimeOrigin, RuntimeTask, SessionKeys, System, Timestamp, ValidatorSet, DAYS,
-    EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
+    EXISTENTIAL_DEPOSIT, MINUTES, SLOT_DURATION, UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -80,20 +80,32 @@ parameter_types! {
 /// deliberately NOT registered here. Add a new migration only for a future in-place governed upgrade.
 type SingleBlockMigrations = ();
 
-/// The runtime base call filter — the sudo-free brick-guard. cogno-chain permits EVERY call except one:
-/// a `FollowerCommittee::set_members` that would EMPTY the committee. The committee is the SOLE governance
-/// authority (no sudo / `EnsureRoot` fallback), so an empty member set makes [`AuthorityOrigin`]
-/// (`EnsureProportionAtLeast<3,5>`) permanently unsatisfiable — bricking ALL governance (validator
-/// rotation, runtime upgrades, identity revoke, force-capacity) with no on-chain recovery, only a chain
-/// fork. A passed motion — or, at the 1-seat bootstrap where the threshold is 1, a single fat-finger /
-/// lost-key vote — could otherwise write `Members = []`. Rejecting an empty new set here makes such a
-/// motion fail on-chain (`CallFiltered`) instead of bricking the chain: the filter is enforced even on the
-/// collective's OWN proposal dispatch, because `RawOrigin::Members(..).into()` resets the origin filter to
-/// this `BaseCallFilter`. A non-empty floor is always satisfiable — the committee bootstraps at one member
-/// and only ever grows by vote.
+/// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
+/// cogno-chain permits EVERY call except:
 ///
-/// ⚠ FEDERATION PREREQUISITE: once the committee is federated, raise this floor from "non-empty" to a real
-/// quorum (e.g. `>= 3`) so no motion can ever shrink the committee below a safe governance size.
+/// 1. a `FollowerCommittee::set_members` that would EMPTY the committee. The committee is the SOLE
+///    governance authority (no sudo / `EnsureRoot` fallback), so an empty member set makes
+///    [`AuthorityOrigin`] (`EnsureProportionAtLeast<3,5>`) permanently unsatisfiable — bricking ALL
+///    governance (validator rotation, runtime upgrades, identity revoke, force-capacity) with no on-chain
+///    recovery, only a chain fork. A passed motion — or, at the 1-seat bootstrap where the threshold is 1,
+///    a single fat-finger / lost-key vote — could otherwise write `Members = []`. Rejecting an empty new
+///    set here makes such a motion fail on-chain (`CallFiltered`) instead of bricking the chain: the filter
+///    is enforced even on the collective's OWN proposal dispatch, because `RawOrigin::Members(..).into()`
+///    resets the origin filter to this `BaseCallFilter`. A non-empty floor is always satisfiable — the
+///    committee bootstraps at one member and only ever grows by vote.
+///
+/// 2. any value-moving `Balances` transfer (`transfer_allow_death` / `transfer_keep_alive` /
+///    `transfer_all`). The native token is **governance FUEL**, not money: it exists only to pay the
+///    fee-bearing admin extrinsics and is minted/regenerated/clawed-back exclusively by the committee via
+///    `GovernanceFuel` (index 18). Blocking user transfers makes fuel a pure committee-administered budget
+///    and makes `GovernanceFuel::revoke` **escape-proof** (a rogue can't sweep balance to a fresh account
+///    to dodge a clawback), and routes ALL funding through the audited 3-of-5 path. Ordinary social users
+///    are feeless and never transfer, so nothing legitimate is lost. `force_transfer` /
+///    `force_set_balance` are already unreachable (root-gated, and cogno-chain is sudo-free). NOTE: this is
+///    a call-ACCEPTANCE change, not an encoding change — `transaction_version` is unaffected.
+///
+/// ⚠ FEDERATION PREREQUISITE: once the committee is federated, raise the committee floor from "non-empty"
+/// to a real quorum (e.g. `>= 3`) so no motion can ever shrink the committee below a safe governance size.
 /// `set_members` is the ONLY committee-membership mutator (pallet-collective has no add/remove call), so
 /// guarding it covers every path to an empty set.
 pub struct CognoCallFilter;
@@ -103,6 +115,13 @@ impl Contains<RuntimeCall> for CognoCallFilter {
             call,
             RuntimeCall::FollowerCommittee(pallet_collective::Call::set_members { new_members, .. })
                 if new_members.is_empty()
+        ) && !matches!(
+            call,
+            RuntimeCall::Balances(
+                pallet_balances::Call::transfer_allow_death { .. }
+                    | pallet_balances::Call::transfer_keep_alive { .. }
+                    | pallet_balances::Call::transfer_all { .. }
+            )
         )
     }
 }
@@ -220,6 +239,44 @@ impl pallet_transaction_payment::Config for Runtime {
 impl pallet_governed_upgrade::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type AuthorityOrigin = AuthorityOrigin;
+    type WeightInfo = ();
+}
+
+// Sudo-free governance: the committee-administered REGENERATING admin-fuel budget (GovernanceFuel@18).
+// Fuel (native `Balances`) pays the fee-bearing admin extrinsics — a new validator's self-signed
+// `Session::set_keys` and committee propose/vote/close. `set_allowance`/`revoke` are gated by the shared
+// `AuthorityOrigin` (≥3/5 committee); an `on_initialize` hook mints each funded account back toward its
+// standing allowance every `FuelRegenPeriod`, so fuel REGENERATES (a drained member auto-recovers → no
+// self-refund deadlock) and the supply floats with mint-on-demand (this is the FIRST post-genesis mint
+// path — it deliberately breaks the old monotone-decreasing-supply property; nothing keys security off
+// `TotalIssuance`). Fuel is non-transferable (`CognoCallFilter` blocks `Balances::transfer*`) and can
+// NEVER post (the social layer never reads `Balances`) — the admin-side analogue of talk-capacity.
+parameter_types! {
+    /// DEV-TUNED per-account fuel allowance ceiling (runtime-tunable). Bounds a single fat-fingered
+    /// `set_allowance` and the per-`FuelRegenPeriod` admin spend a funded account can sustain. There is
+    /// deliberately NO cumulative cap on issuance (mint-on-demand — governance never runs dry). Sized far
+    /// above the tiny `IdentityFee` fees of a handful of admin extrinsics.
+    pub const MaxFuelAllowance: Balance = 1_000 * UNIT;
+    /// Regeneration cadence: refill funded accounts toward their allowance once a minute (10 blocks at
+    /// 6s/block). DEV-TUNED snappy so a drained member recovers quickly in the showcase; a longer cadence
+    /// is a runtime-tunable constant change. The funded set is tiny (≤ MaxFundedAccounts), so the periodic
+    /// mint loop is cheap.
+    pub const FuelRegenPeriod: BlockNumber = MINUTES;
+}
+
+impl pallet_governance_fuel::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    // The same 3-of-5 FollowerCommittee gate as every other crown-jewel call (sudo-free).
+    type GrantOrigin = AuthorityOrigin;
+    // Mint/burn the native token (Balances@4; implements `fungible::Mutate<AccountId, Balance = u128>`).
+    type Currency = Balances;
+    type MaxAllowance = MaxFuelAllowance;
+    // Comfortably covers MaxValidators (32) + FollowerMaxMembers (7) with headroom.
+    type MaxFundedAccounts = ConstU32<64>;
+    type RegenPeriod = FuelRegenPeriod;
+    // Placeholder weights (like GovernedUpgrade): conservative DB-weight estimates so the on_initialize
+    // regeneration hook never under-charges. Graduating to a benchmarked `SubstrateWeight<Runtime>` (run
+    // `benchmark pallet --pallet pallet_governance_fuel`) is a deploy step.
     type WeightInfo = ();
 }
 

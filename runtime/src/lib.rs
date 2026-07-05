@@ -250,7 +250,17 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // capacity-metered at the existing `VoteCost`. ADDITIVE (new calls/storage/events/metadata), so
     // spec_version bumps; transaction_version STAYS 3 (new signed extrinsics, the `TxExtension` tuple
     // is byte-identical). Fresh-genesis restart ⇒ no migration. Regen the PAPI descriptors after 202.
-    spec_version: 202,
+    // 202 -> 203 (regenerating governance-fuel): adds GovernanceFuel@18 — the committee-administered
+    // REGENERATING admin-fee budget. Two AuthorityOrigin-gated calls `set_allowance` (idx 0) /
+    // `revoke` (idx 1), an `on_initialize` regeneration hook, `Allowances`/`TotalMinted`/`TotalRevoked`
+    // storage, and `AllowanceSet`/`AllowanceRevoked`/`FuelRegenerated` events. This is the FIRST
+    // post-genesis native-token MINT path (regeneration + top-up mint), deliberately breaking the old
+    // monotone-decreasing-supply property. Also extends `CognoCallFilter` to block `Balances::transfer*`
+    // (fuel is non-transferable) — a call-ACCEPTANCE/behaviour change, NOT a call ENCODING change. ADDITIVE
+    // (new calls/storage/events/metadata), so spec_version bumps; transaction_version STAYS 3 (the
+    // `TxExtension` tuple + every Call encoding is byte-identical). Fresh-genesis ⇒ no migration. Regen the
+    // PAPI descriptors after 203.
+    spec_version: 203,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bumped 1 -> 2: the `CheckCapacity` transaction extension was added to `TxExtension`
@@ -487,4 +497,16 @@ mod runtime {
     // security-sensitive identity verifier and the feeless hot path lean. Next free index 18.
     #[runtime::pallet_index(17)]
     pub type Profile = pallet_profile;
+
+    // 18 = GovernanceFuel: the sudo-free, committee-administered REGENERATING admin-fuel budget. Fuel
+    // (native `Balances`) pays the fee-bearing admin extrinsics (`Session::set_keys`, committee
+    // propose/vote/close). `set_allowance`/`revoke` are AuthorityOrigin-gated (3-of-5, sudo-free); an
+    // `on_initialize` hook mints each funded account back toward its committee-set standing allowance so
+    // the supply never depletes (mint-on-demand — the FIRST post-genesis mint path) and a drained member
+    // auto-recovers (no self-refund deadlock). Fuel is non-transferable (the `CognoCallFilter` blocks
+    // `Balances::transfer*`) and can NEVER post (the social layer never reads `Balances`) — the admin-side
+    // analogue of talk-capacity. Additive (new calls/storage/events/metadata): spec_version bumps,
+    // transaction_version STAYS 3 (the `TxExtension` tuple is byte-identical). Next free index 19.
+    #[runtime::pallet_index(18)]
+    pub type GovernanceFuel = pallet_governance_fuel;
 }

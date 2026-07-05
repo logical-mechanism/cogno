@@ -75,8 +75,11 @@ runtime brick-guard). To rotate a seat (planned roll, suspected compromise, or c
 
 1. **Announce** out-of-band to all custodians: which seat, why, the new member's account, effective
    date. (For a *compromise*, skip the wait and treat as an emergency revocation — step 5.)
-2. **Pre-stage** the incoming custodian: generate the new key in its target custody domain, fund the
-   account (propose/vote are fee-bearing), and verify it can sign a no-op test motion on a testnet.
+2. **Pre-stage** the incoming custodian: generate the new key in its target custody domain, **fund it
+   with a standing fuel allowance** — `cogno-chain-cli fuel set-allowance --account <new-SS58> --max <units>`
+   (a committee motion; propose/vote/close are fee-bearing, and the allowance then *regenerates* so the
+   seat never drains to zero), and verify it can sign a no-op test motion on a testnet. Order matters:
+   fund **before** the `set_members` that seats them, so they can vote from block one.
 3. **Propose** the new member list via `set_members` (new prime, the swapped member, same or new size),
    routed as a committee motion — log it (§4).
 4. **Enact + verify:** after the motion executes, read `followerCommittee.members()` and confirm the new

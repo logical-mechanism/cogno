@@ -186,6 +186,12 @@ pub fn run(cmd: &GenChainSpecCmd) -> Result<(), String> {
     let mut props = Properties::new();
     // ADA/lovelace is 6-decimal (the on-chain weight is buried lovelace).
     props.insert("tokenDecimals".into(), 6.into());
+    // The native token is governance FUEL — a non-transferable, committee-granted, REGENERATING budget
+    // that pays the fee-bearing admin extrinsics (Session::set_keys, committee propose/vote/close). It is
+    // NOT money and NOT vote-weight (the committee is 1-member-1-vote) and can NEVER post (the social layer
+    // never reads Balances). Naming it makes tooling (polkadot-js) render balances legibly instead of a
+    // nameless unit. tokenSymbol/tokenDecimals are non-consensus chainspec `properties` (display only).
+    props.insert("tokenSymbol".into(), "FUEL".into());
 
     let spec = ChainSpec::builder(wasm, None)
         .with_name(&name)

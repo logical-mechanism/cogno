@@ -26,6 +26,15 @@ pub fn parse_account(s: &str) -> anyhow::Result<AccountId32> {
         .map_err(|e| anyhow::anyhow!("invalid SS58 account {s:?}: {e:?}"))
 }
 
+/// Parse a native-token amount (an integer number of base units / planck, `Balance = u128`). Used by the
+/// `fuel set-allowance` verb. Underscores are allowed as digit separators (e.g. `1_000_000_000_000`).
+pub fn parse_balance(s: &str) -> anyhow::Result<u128> {
+    let cleaned: String = s.trim().chars().filter(|c| *c != '_').collect();
+    cleaned
+        .parse::<u128>()
+        .map_err(|e| anyhow::anyhow!("invalid balance amount {s:?} (expected base units): {e}"))
+}
+
 /// Parse a 32-byte hash from hex (`0x`-optional) into an `H256`. Used by `authorize_upgrade` for the
 /// runtime `code_hash` (= `blake2_256(wasm)`).
 pub fn parse_hash32(s: &str) -> anyhow::Result<H256> {
@@ -73,6 +82,20 @@ pub fn set_members(
 /// (= the 3/5 committee), so it routes through `propose`. Flips `is_allowed` to false for the account.
 pub fn revoke(substrate_account: AccountId32) -> RuntimeCall {
     RuntimeCall::CognoGate(pallet_cogno_gate::Call::<Runtime>::revoke { substrate_account })
+}
+
+/// `GovernanceFuel::set_allowance(who, max)` — set an account's standing REGENERATING fuel allowance (the
+/// committee's fund / top-up / regulate lever). `GrantOrigin`-gated (= the 3/5 committee), so it routes
+/// through `propose`. Mints `who` up to `max` immediately and regenerates them toward `max` each period.
+pub fn set_allowance(who: AccountId32, max: u128) -> RuntimeCall {
+    RuntimeCall::GovernanceFuel(pallet_governance_fuel::Call::<Runtime>::set_allowance { who, max })
+}
+
+/// `GovernanceFuel::revoke(who)` — drop an account's fuel allowance (stop regeneration) and claw back its
+/// balance. The committee's hard cut for a spamming / offboarded member. `GrantOrigin`-gated, so it routes
+/// through `propose`. Idempotent (a never-funded / drained account burns 0).
+pub fn revoke_fuel(who: AccountId32) -> RuntimeCall {
+    RuntimeCall::GovernanceFuel(pallet_governance_fuel::Call::<Runtime>::revoke { who })
 }
 
 /// `GovernedUpgrade::authorize_upgrade(code_hash)` — the committee-governed runtime-upgrade authorization.
@@ -261,5 +284,27 @@ mod tests {
     fn apply_authorized_upgrade_encodes_at_system_pallet_0() {
         let bytes = apply_authorized_upgrade(vec![1, 2, 3]).encode();
         assert_eq!(bytes[0], 0, "System pallet index");
+    }
+
+    #[test]
+    fn set_allowance_encodes_at_governance_fuel_pallet_18_call_0() {
+        let bytes = set_allowance(AccountId32::new([5u8; 32]), 1_000_000_000_000).encode();
+        assert_eq!(bytes[0], 18, "GovernanceFuel pallet index");
+        assert_eq!(bytes[1], 0, "set_allowance call index");
+        assert_eq!(&bytes[2..34], &[5u8; 32], "the target account");
+    }
+
+    #[test]
+    fn revoke_fuel_encodes_at_governance_fuel_pallet_18_call_1() {
+        let bytes = revoke_fuel(AccountId32::new([6u8; 32])).encode();
+        assert_eq!(bytes[0], 18, "GovernanceFuel pallet index");
+        assert_eq!(bytes[1], 1, "revoke call index");
+    }
+
+    #[test]
+    fn parse_balance_accepts_underscores() {
+        assert_eq!(parse_balance("1_000_000").unwrap(), 1_000_000);
+        assert_eq!(parse_balance(" 42 ").unwrap(), 42);
+        assert!(parse_balance("not-a-number").is_err());
     }
 }

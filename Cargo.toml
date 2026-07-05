@@ -28,6 +28,8 @@ members = [
 	"pallets/cardano-observer",
 	# Sudo-free governance: the committee-governed runtime-upgrade authorizer (fills the vacant index 7).
 	"pallets/governed-upgrade",
+	# Sudo-free governance: the committee-administered REGENERATING admin-fuel budget (index 18).
+	"pallets/governance-fuel",
 ]
 
 [workspace.package]
@@ -59,6 +61,10 @@ pallet-cardano-observer = { path = "pallets/cardano-observer", default-features 
 # Sudo-free governance: committee-authorized runtime upgrades (AuthorityOrigin-gated authorize_upgrade +
 # the permissionless frame_system::apply_authorized_upgrade). No sudo, no set_storage — least privilege.
 pallet-governed-upgrade = { path = "pallets/governed-upgrade", default-features = false }
+# Sudo-free governance: the committee-administered REGENERATING admin-fuel budget (set_allowance/revoke +
+# an on_initialize regeneration hook). Non-transferable, mint-on-demand; the admin-side analogue of
+# talk-capacity. No sudo — AuthorityOrigin-gated. Index 18.
+pallet-governance-fuel = { path = "pallets/governance-fuel", default-features = false }
 # The shared no-node deterministic Cardano db-sync reader + reduction (std-only). The node observation
 # inherent is the sole reader/writer; the CLI reads chain state over RPC only (no db-sync dependency).
 cogno-dbsync = { path = "cogno-dbsync" }
