@@ -405,12 +405,30 @@ parameter_types! {
     /// deliberately NO cumulative cap on issuance (mint-on-demand — governance never runs dry). Sized far
     /// above the tiny `IdentityFee` fees of a handful of admin extrinsics.
     pub const MaxFuelAllowance: Balance = 1_000 * UNIT;
+    /// Per-account PAYABILITY FLOOR: a `set_allowance` must fund at least the existential deposit PLUS fee
+    /// headroom, so a granted seat can actually pay the fee-bearing admin extrinsics (propose/vote/close/
+    /// set_keys). Fee withdrawal is `Preservation::Preserve` (reducible = balance − ED), so a grant of
+    /// exactly the ED is unpayable yet still creates an allowance row — an unpayable seat that dilutes the
+    /// governance quorum. `ED + 1 UNIT` (≈ 1000× the ED) buys many propose/vote/close cycles per
+    /// `FuelRegenPeriod`; far below `MaxFuelAllowance`, so no legitimate small grant is blocked.
+    pub const MinFuelAllowance: Balance = EXISTENTIAL_DEPOSIT + UNIT;
     /// Regeneration cadence: refill funded accounts toward their allowance once a minute (10 blocks at
     /// 6s/block). DEV-TUNED snappy so a drained member recovers quickly in the showcase; a longer cadence
     /// is a runtime-tunable constant change. The funded set is tiny (≤ MaxFundedAccounts), so the periodic
     /// mint loop is cheap.
     pub const FuelRegenPeriod: BlockNumber = MINUTES;
 }
+
+// Config invariants (compile-time): the payability floor must sit at/above the ED and at/below the ceiling,
+// else `set_allowance` is either unsatisfiable (Min > Max) or fails to guarantee payability (Min < ED).
+const _: () = assert!(
+    MinFuelAllowance::get() >= EXISTENTIAL_DEPOSIT,
+    "MinFuelAllowance must be >= the existential deposit",
+);
+const _: () = assert!(
+    MinFuelAllowance::get() <= MaxFuelAllowance::get(),
+    "MinFuelAllowance must be <= MaxFuelAllowance (else no allowance is grantable)",
+);
 
 /// `revoke` footgun-guard: an account still seated in the `FollowerCommittee` must not be de-funded — it
 /// would leave an unpayable seat in the `EnsureProportionAtLeast<3,5>` denominator (raising the threshold;
@@ -438,6 +456,9 @@ impl pallet_governance_fuel::Config for Runtime {
     // Mint/burn the native token (Balances@4; implements `fungible::Mutate<AccountId, Balance = u128>`).
     type Currency = Balances;
     type MaxAllowance = MaxFuelAllowance;
+    // Payability floor: a grant must cover the ED + fee headroom, so a seated member can always pay
+    // (an exactly-ED grant would seat an unpayable member that dilutes the quorum).
+    type MinAllowance = MinFuelAllowance;
     // Comfortably covers MaxValidators (32) + FollowerMaxMembers (7) with headroom.
     type MaxFundedAccounts = ConstU32<64>;
     type RegenPeriod = FuelRegenPeriod;
@@ -555,8 +576,13 @@ impl pallet_session::Config for Runtime {
     type DisablingStrategy = pallet_session::disabling::UpToLimitWithReEnablingDisablingStrategy;
     type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
     type Currency = Balances;
-    // Dev: no key deposit. A real testnet sets this above the ED so registering session keys
-    // (`set_keys`) costs something — anti-spam on the validator-candidate registry.
+    // KeyDeposit MUST stay 0 while `CognoCallFilter` blocks `Session::purge_keys` (the keyless-phantom
+    // floor-bypass guard). `purge_keys` is the ONLY path that releases a held key deposit and drops the
+    // consumer ref, so a `KeyDeposit > 0` would permanently strand the deposit + consumer ref of any
+    // committee-`remove_validator`'d or registered-but-never-seated account. To ever charge a deposit
+    // (anti-spam on the validator-candidate registry), FIRST rework the floor: unblock purge and compute
+    // `MinAuthorities` over `Validators ∩ Session::NextKeys` in `validator-set::do_remove_validator`
+    // (its note sketches this), so the phantom bypass stays closed without an unconditional purge block.
     type KeyDeposit = ConstU128<0>;
 }
 

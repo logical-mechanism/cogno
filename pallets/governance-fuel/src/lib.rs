@@ -97,6 +97,16 @@ pub mod pallet {
         #[pallet::constant]
         type MaxAllowance: Get<BalanceOf<Self>>;
 
+        /// Per-account LOWER bound on a standing allowance — a **payability floor**. A grant must cover the
+        /// existential deposit PLUS enough headroom to actually pay the fee-bearing admin extrinsics
+        /// (propose/vote/close/set_keys), because fee withdrawal uses `Preservation::Preserve` (reducible =
+        /// balance − ED). A grant of exactly the ED mints an account that can NEVER pay a fee, yet still
+        /// creates an allowance row — so it would pass an existence-only seating gate and seat a member that
+        /// can never vote (diluting the governance quorum toward a brick). This floor makes every allowance
+        /// provably payable. MUST be `>=` the currency's `minimum_balance()` and `<=` [`Config::MaxAllowance`].
+        #[pallet::constant]
+        type MinAllowance: Get<BalanceOf<Self>>;
+
         /// Max number of funded accounts (the length bound on [`Allowances`]). Bounds the regeneration
         /// loop's weight. Comfortably covers the validator set (`MaxValidators`) + committee
         /// (`FollowerMaxMembers`).
@@ -160,9 +170,10 @@ pub mod pallet {
     pub enum Error<T> {
         /// The requested allowance exceeds [`Config::MaxAllowance`].
         AllowanceExceedsMax,
-        /// The requested allowance is below the existential deposit, so a fresh account could not be
-        /// created. Set an allowance of at least the ED.
-        AllowanceBelowExistentialDeposit,
+        /// The requested allowance is below [`Config::MinAllowance`] — the payability floor (existential
+        /// deposit plus fee headroom). A grant at/below the ED would seat an account that can never pay a
+        /// fee. Set an allowance of at least `MinAllowance`.
+        AllowanceBelowMinimum,
         /// Adding a new funded account would exceed [`Config::MaxFundedAccounts`]. Revoke an existing
         /// allowance first, or raise the bound.
         TooManyFundedAccounts,
@@ -198,7 +209,8 @@ pub mod pallet {
         ///
         /// Upserts the allowance (so `who` regenerates toward `max` each [`Config::RegenPeriod`]) and
         /// **immediately** mints `who` up to `max` so they are usable now, not only next period. `max`
-        /// must be ≤ [`Config::MaxAllowance`] and ≥ the existential deposit. Use [`Call::revoke`] to stop
+        /// must be ≤ [`Config::MaxAllowance`] and ≥ [`Config::MinAllowance`] (the payability floor — a grant
+        /// at/below the ED would seat an account that can never pay a fee). Use [`Call::revoke`] to stop
         /// regeneration and claw back.
         #[pallet::call_index(0)]
         #[pallet::weight(<T as Config>::WeightInfo::set_allowance())]
@@ -212,9 +224,14 @@ pub mod pallet {
                 max <= T::MaxAllowance::get(),
                 Error::<T>::AllowanceExceedsMax
             );
+            // Payability floor: reject a grant below MinAllowance (ED + fee headroom). A grant of exactly
+            // the ED mints an account with zero reducible balance (fees use Preservation::Preserve) — an
+            // unpayable seat that still creates an allowance row and would dilute the governance quorum. The
+            // runtime enforces MinAllowance >= minimum_balance(), so the mint-into-fresh-account ED floor
+            // below is still satisfied.
             ensure!(
-                max >= T::Currency::minimum_balance(),
-                Error::<T>::AllowanceBelowExistentialDeposit
+                max >= T::MinAllowance::get(),
+                Error::<T>::AllowanceBelowMinimum
             );
 
             // Upsert into the bounded allowance list (source of truth for regeneration). Reject a NEW
