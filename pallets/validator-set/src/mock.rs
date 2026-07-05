@@ -9,7 +9,6 @@ use frame_support::{
     traits::{Contains, Get},
 };
 use frame_system::EnsureRoot;
-use std::collections::BTreeSet;
 use pallet_balances::AccountData;
 use sp_runtime::{
     testing::UintAuthorityId, traits::OpaqueKeys, BuildStorage, KeyTypeId, Perbill,
@@ -19,6 +18,7 @@ use sp_staking::{
     offence::{Kind, Offence},
     SessionIndex,
 };
+use std::collections::BTreeSet;
 
 type Block = frame_system::mocking::MockBlock<Test>;
 
@@ -111,14 +111,14 @@ pub fn set_keyed(list: Option<Vec<u64>>) {
 pub struct FuelGate;
 impl Contains<u64> for FuelGate {
     fn contains(who: &u64) -> bool {
-        FUNDED.with(|f| f.borrow().as_ref().map_or(true, |s| s.contains(who)))
+        FUNDED.with(|f| f.borrow().as_ref().is_none_or(|s| s.contains(who)))
     }
 }
 /// `Contains` shim for the session-keys gate (reads the thread-local `KEYED`).
 pub struct KeysGate;
 impl Contains<u64> for KeysGate {
     fn contains(who: &u64) -> bool {
-        KEYED.with(|k| k.borrow().as_ref().map_or(true, |s| s.contains(who)))
+        KEYED.with(|k| k.borrow().as_ref().is_none_or(|s| s.contains(who)))
     }
 }
 

@@ -552,11 +552,11 @@ fn account_tally_fold_determinism_property() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         let target = 9u64; // the account under reputation (bound by default in the mock)
-        // (voter, weight, action) — action: Some(dir) = vote, None = clear.
+                           // (voter, weight, action) — action: Some(dir) = vote, None = clear.
         let steps: &[(u64, u128, Option<VoteDir>)] = &[
             (2, 100, Some(VoteDir::Up)),
             (3, 50, Some(VoteDir::Down)),
-            (2, 250, Some(VoteDir::Up)),   // same-dir reweight
+            (2, 250, Some(VoteDir::Up)), // same-dir reweight
             (4, 70, Some(VoteDir::Up)),
             (3, 50, Some(VoteDir::Up)),    // flip Down -> Up
             (2, 250, None),                // clear

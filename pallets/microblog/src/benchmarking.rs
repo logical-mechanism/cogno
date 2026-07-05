@@ -178,7 +178,11 @@ mod benchmarks {
         );
 
         #[extrinsic_call]
-        _(RawOrigin::Signed(caller.clone()), target.clone(), VoteDir::Down);
+        _(
+            RawOrigin::Signed(caller.clone()),
+            target.clone(),
+            VoteDir::Down,
+        );
 
         let t = AccountVoteTally::<T>::get(&target);
         assert_eq!(t.up_count, 0);

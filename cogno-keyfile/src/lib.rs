@@ -612,8 +612,10 @@ mod tests {
     #[test]
     fn prod_refuses_group_or_other_readable_key_file() {
         use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir()
-            .join(format!("cogno-keyfile-permtest-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "cogno-keyfile-permtest-{}.json",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path);
 
         // Created restricted-from-birth (0600) — accepted under prod.

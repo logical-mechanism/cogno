@@ -165,13 +165,22 @@ mod call_filter_tests {
         // The load-bearing "fuel is non-transferable / revoke is escape-proof" invariant. Runs in the
         // normal (non-benchmarks) build where the Balances block is active.
         assert!(!CognoCallFilter::contains(&RuntimeCall::Balances(
-            pallet_balances::Call::transfer_keep_alive { dest: addr(), value: 1 }
+            pallet_balances::Call::transfer_keep_alive {
+                dest: addr(),
+                value: 1
+            }
         )));
         assert!(!CognoCallFilter::contains(&RuntimeCall::Balances(
-            pallet_balances::Call::transfer_allow_death { dest: addr(), value: 1 }
+            pallet_balances::Call::transfer_allow_death {
+                dest: addr(),
+                value: 1
+            }
         )));
         assert!(!CognoCallFilter::contains(&RuntimeCall::Balances(
-            pallet_balances::Call::transfer_all { dest: addr(), keep_alive: false }
+            pallet_balances::Call::transfer_all {
+                dest: addr(),
+                keep_alive: false
+            }
         )));
     }
 
@@ -181,7 +190,11 @@ mod call_filter_tests {
         // externalities. (The non-empty case now reads `Members`/`Allowances` for the fuel-delta gate —
         // that path is covered end-to-end in the acceptance script, which runs against real storage.)
         assert!(!CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
-            pallet_collective::Call::set_members { new_members: Default::default(), prime: None, old_count: 0 }
+            pallet_collective::Call::set_members {
+                new_members: Default::default(),
+                prime: None,
+                old_count: 0
+            }
         )));
     }
 
@@ -189,10 +202,15 @@ mod call_filter_tests {
     fn allows_a_normal_signed_call() {
         // A committee-gated fuel grant and an ordinary system call are NOT filtered.
         assert!(CognoCallFilter::contains(&RuntimeCall::System(
-            frame_system::Call::remark { remark: Default::default() }
+            frame_system::Call::remark {
+                remark: Default::default()
+            }
         )));
         assert!(CognoCallFilter::contains(&RuntimeCall::GovernanceFuel(
-            pallet_governance_fuel::Call::set_allowance { who: AccountId::from([3u8; 32]), max: 1 }
+            pallet_governance_fuel::Call::set_allowance {
+                who: AccountId::from([3u8; 32]),
+                max: 1
+            }
         )));
     }
 }
