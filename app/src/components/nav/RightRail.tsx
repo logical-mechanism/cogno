@@ -22,6 +22,7 @@ import { useSession } from "../Providers";
 import { useWhoToFollow } from "@/hooks/useWhoToFollow";
 import { useFollow } from "@/hooks/useFollow";
 import { profileRouteForQuery } from "@/lib/ss58";
+import { normalizeQuery } from "@/lib/search";
 
 export function RightRail() {
   const router = useRouter();
@@ -34,13 +35,13 @@ export function RightRail() {
 
   const submitSearch = useCallback(
     (q: string) => {
-      const trimmed = q.trim();
+      // Normalize to match Explore's committed term (one URL / result set for "a  b" vs "a b").
+      const next = normalizeQuery(q);
       // A checksum-valid account address jumps straight to that profile rather than a fruitless
       // body/display-name search (users click-to-copy ss58 addresses across the app).
-      const accountRoute = profileRouteForQuery(trimmed);
+      const accountRoute = profileRouteForQuery(next);
       router.push(
-        accountRoute ??
-          (trimmed.length > 0 ? `/explore/?q=${encodeURIComponent(trimmed)}` : "/explore/"),
+        accountRoute ?? (next.length > 0 ? `/explore/?q=${encodeURIComponent(next)}` : "/explore/"),
       );
     },
     [router],

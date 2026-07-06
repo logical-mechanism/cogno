@@ -52,6 +52,7 @@ import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { copyToClipboard, postLink } from "@/lib/share";
 import { profileRouteForQuery } from "@/lib/ss58";
+import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
 import type { CognoPost, FeedQuery, Suggestion, ViewerPostState } from "@/lib/types";
 import type { PostActionCallbacks } from "@/components/kit";
 
@@ -84,8 +85,9 @@ function ExploreView() {
   // the toggle below honestly shows "Most recent" as selected (a node-side score index would flip this).
   const scoreOrderEnabled = false;
 
-  // The committed term is the URL ?q=; the SearchBar value is a separate local draft.
-  const committedQ = (searchParams.get("q") ?? "").trim();
+  // The committed term is the URL ?q= (normalized so "a  b"/"a b"/NFD accents share one URL + result
+  // set); the SearchBar value is a separate local draft.
+  const committedQ = normalizeQuery(searchParams.get("q") ?? "");
   const [draft, setDraft] = useState(committedQ);
 
   // The last term THIS input wrote to the URL. The sync effect uses it to tell our own debounce commits
@@ -117,13 +119,19 @@ function ExploreView() {
   // Debounce draft → committed term (router.replace, no history stacking). Skip when search is off.
   useEffect(() => {
     if (!searchEnabled) return;
-    const next = draft.trim();
+    const next = normalizeQuery(draft);
     if (next === committedQ) return;
     const t = setTimeout(() => {
       // A checksum-valid account address jumps straight to that profile (text search never matches a
       // raw ss58 address); push (not replace) so Back returns to /explore.
       const accountRoute = profileRouteForQuery(next);
       if (accountRoute) return void router.push(accountRoute);
+      // Below the min length: don't run a scan for near-everything — drop any committed term and stay
+      // in DEFAULT (the "keep typing" hint shows).
+      if (isQueryTooShort(next)) {
+        if (committedQ.length > 0) writeTerm("");
+        return;
+      }
       writeTerm(next);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
@@ -132,13 +140,17 @@ function ExploreView() {
 
   const commitNow = useCallback(
     (value: string) => {
-      const next = value.trim();
+      const next = normalizeQuery(value);
       // Enter on a valid account address → jump to that profile (see the debounce effect above).
       const accountRoute = profileRouteForQuery(next);
       if (accountRoute) return void router.push(accountRoute);
+      if (isQueryTooShort(next)) {
+        if (committedQ.length > 0) writeTerm("");
+        return;
+      }
       writeTerm(next);
     },
-    [router, writeTerm],
+    [router, writeTerm, committedQ],
   );
 
   const onChangeDraft = useCallback(
@@ -150,12 +162,20 @@ function ExploreView() {
     [writeTerm, committedQ],
   );
 
-  // Mode: NO-INDEXER overrides everything; else DEFAULT (empty term) vs QUERY (term present).
+  // Mode: NO-INDEXER overrides everything; else DEFAULT vs QUERY. A term below MIN_QUERY_LEN (only
+  // reachable from an external ?q= — our own writes gate it) stays in DEFAULT rather than running a
+  // 1-char scan for near-everything.
   const mode: "no-indexer" | "default" | "query" = !searchEnabled
     ? "no-indexer"
-    : committedQ.length > 0
+    : committedQ.length >= MIN_QUERY_LEN
       ? "query"
       : "default";
+
+  // "Keep typing" hint: the box has a below-min term (and it isn't a pasted address about to route to
+  // a profile), so nothing is searched yet — say so rather than silently showing the firehose.
+  const draftNorm = normalizeQuery(draft);
+  const showTooShortHint =
+    searchEnabled && isQueryTooShort(draftNorm) && !profileRouteForQuery(draftNorm);
 
   // ── DEFAULT firehose order toggle ────────────────────────────────────────────────────────────
   // Default to "Most recent"; "Top" (score) is only reachable when a source advertises score order
@@ -354,6 +374,11 @@ function ExploreView() {
         )}
         {mode === "query" && peopleEnabled && (
           <ResultTabStrip active={activeResultTab} onChange={setResultTab} />
+        )}
+        {showTooShortHint && (
+          <p className={styles.tooShortHint} role="status">
+            Keep typing to search — at least {MIN_QUERY_LEN} characters.
+          </p>
         )}
       </header>
 
