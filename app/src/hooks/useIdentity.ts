@@ -13,6 +13,7 @@ import type { CognoApi, PostingSigner } from "@/lib/types";
 import {
   getGenesisHex,
   isAccountBound,
+  isStakeBound,
   readAccountOf,
   submitLinkIdentityFeeless,
   submitLinkStakeFeeless,
@@ -56,7 +57,8 @@ export interface UseIdentity {
   /** a stake bind is in flight (stake-key wallet sign → feeless on-chain `link_stake_signed`). */
   stakeBinding: boolean;
   /** the phase of an in-flight stake bind (`idle` when not binding) — drives the step indicator.
-   *  Uses `signing` → `submitting` only (there is no post-submit readback like the payment bind). */
+   *  `signing` → `submitting` → `confirming`, symmetric with the payment bind: the `confirming` phase
+   *  is a `StakeCredOf` readback that confirms the bind landed before we declare voting power added. */
   stakeBindPhase: BindPhase;
   /** error from the LAST stake-bind attempt (kept separate from the payment-bind `error`). */
   stakeError: string | null;
@@ -262,6 +264,17 @@ export function useIdentity(
           const res = await submitLinkStakeFeeless(client, api, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
             throw new Error(res.error || "the on-chain stake bind was rejected");
+          }
+          // (4) StakeCredOf readback — symmetric with the payment bind's confirm step: don't declare
+          //     "voting power added" until the chain actually shows a stake credential bound to this key.
+          setStakeBindPhase("confirming");
+          const nowStakeBound = await isStakeBound(api, signer.ss58).catch(() => false);
+          if (!nowStakeBound) {
+            // eslint-disable-next-line no-console
+            console.error(
+              `cogno: stake bind submitted but the chain shows ${signer.ss58.slice(0, 8)}… with no stake bound (wallet "${walletId}")`,
+            );
+            throw new Error("voting-power bind submitted, but the chain still shows no stake bound");
           }
           // The live watch (above) flips stakeBound and surfaces the voting power once observed; seed
           // boundStakeCredHex from the LOCALLY-PROVEN credential (what the runtime binds) so the UI

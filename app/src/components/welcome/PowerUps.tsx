@@ -34,13 +34,17 @@ import type { BindPhase } from "@/hooks/useIdentity";
 
 // ── shared step-flow configs (mirror the hook phases) ────────────────────────────────────────────
 
-const STAKE_STEPS: { key: Exclude<BindPhase, "idle" | "confirming">; label: string }[] = [
+// Same three-phase shape as the register bind (BIND_STEPS) — both are the one feeless app-chain bind
+// tx (sign → submit-to-finalization → on-chain readback), so they read identically in the UI.
+const STAKE_STEPS: { key: Exclude<BindPhase, "idle">; label: string }[] = [
   { key: "signing", label: "Sign in your wallet" },
   { key: "submitting", label: "Submit voting power" },
+  { key: "confirming", label: "Confirm on-chain" },
 ];
-const STAKE_NARRATION: Record<Exclude<BindPhase, "idle" | "confirming">, string> = {
+const STAKE_NARRATION: Record<Exclude<BindPhase, "idle">, string> = {
   signing: "Approve the stake signature in your wallet…",
   submitting: "Submitting your voting power to the network…",
+  confirming: "Confirming on-chain…",
 };
 
 const VAULT_STEPS: { key: Exclude<VaultStep, "idle">; label: string }[] = [
@@ -315,7 +319,12 @@ function StakeCard({
     <div className={styles.card}>
       <div className={styles.cardTitleRow}>
         <h2 className={styles.cardTitle}>Add voting power</h2>
-        <span className={styles.optionalChip}>Optional</span>
+        <span
+          className={styles.optionalChip}
+          title="You can post without this. Voting power lets your votes and polls carry weight in Cogno — without it, they count for zero."
+        >
+          Optional
+        </span>
       </div>
       <p className={styles.cardBody}>Prove your wallet&apos;s stake to make your votes count.</p>
 
@@ -356,12 +365,12 @@ function StakeCard({
               <StepFlow
                 steps={STAKE_STEPS}
                 active={STAKE_STEPS.findIndex(
-                  (s) => s.key === (stake.stakeBindPhase === "submitting" ? "submitting" : "signing"),
+                  (s) => s.key === (stake.stakeBindPhase === "idle" ? "signing" : stake.stakeBindPhase),
                 )}
                 ariaLabel="Voting-power progress"
               />
               <p className={styles.narration} aria-live="polite">
-                {STAKE_NARRATION[stake.stakeBindPhase === "submitting" ? "submitting" : "signing"]}
+                {STAKE_NARRATION[stake.stakeBindPhase === "idle" ? "signing" : stake.stakeBindPhase]}
               </p>
             </div>
           )}
