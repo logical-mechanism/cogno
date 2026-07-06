@@ -176,7 +176,10 @@ impl Contains<RuntimeCall> for CognoCallFilter {
         // `Validators ∩ NextKeys`), which re-opens a self-purge-to-halt liveness hole. The clean rework
         // (allow purge, floor over the keyed set, prune keyless ids in `new_session`) is a MAINNET-path
         // item, co-sequenced with the im-online wiring; see validator-set::do_remove_validator.
-        if matches!(call, RuntimeCall::Session(pallet_session::Call::purge_keys { .. })) {
+        if matches!(
+            call,
+            RuntimeCall::Session(pallet_session::Call::purge_keys { .. })
+        ) {
             return false;
         }
         // Fuel is non-transferable: block the entire pallet-balances call surface (future-proof vs. new

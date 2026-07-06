@@ -217,7 +217,11 @@ fn revoke_drops_allowance_and_claws_back_and_reaps() {
 fn revoke_rejects_a_still_seated_committee_member() {
     new_test_ext().execute_with(|| {
         // Account 99 is "seated" in the mock. It may be FUNDED (a seated member needs fuel to vote)...
-        assert_ok!(GovernanceFuel::set_allowance(RuntimeOrigin::root(), 99, MAX));
+        assert_ok!(GovernanceFuel::set_allowance(
+            RuntimeOrigin::root(),
+            99,
+            MAX
+        ));
         assert_eq!(bal(99), MAX);
         // ...but revoke is refused while seated (unseat first, else it dilutes the quorum → brick).
         assert_noop!(
