@@ -17,7 +17,7 @@
 // schedule / poll-duration. The ByteCounter ring (UTF-8 BYTES, D1) is the single source of truth the
 // CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
@@ -32,20 +32,19 @@ import type {
   ActionState,
   ByteMeasure,
 } from "./kit";
-import type { ReactNode } from "react";
+import type { ReactNode, CSSProperties } from "react";
 
 /** Runtime Microblog::MaxLength (Vec<u8>), measured as UTF-8 BYTES (D1). */
 export const MAX_POST_BYTES = 512;
 
-/**
- * Default text-only emoji for the insert helper (doc 09 §4.1) — plain UTF-8 that counts toward the
- * byte budget; NOT a media affordance. A surface can override via the `emojiChoices` prop, or pass
- * `[]` to hide the affordance entirely.
- */
-const DEFAULT_EMOJI = [
-  "😀", "😂", "🥹", "😍", "🤔", "😎", "😭", "🔥",
-  "✨", "🎉", "👍", "🙏", "👀", "💯", "❤️", "🚀",
-];
+// The searchable emoji board (doc 09 §4.1). Lazy so its emoji dataset (~570KB) downloads as its own
+// chunk only when a user first opens the picker — it never touches the main composer bundle. Emoji are
+// still inserted as plain UTF-8 that counts toward the byte budget; this is NOT a media affordance.
+const EmojiPickerPanel = lazy(() => import("./emoji/EmojiPickerPanel"));
+
+// Desired picker size; the anchor caps these to the viewport at open time (see EmojiPicker).
+const EMOJI_PANEL_W = 340;
+const EMOJI_PANEL_MAX_H = 420;
 
 const PLACEHOLDER: Record<ComposerMode, string> = {
   post: "What's happening?",
@@ -95,10 +94,11 @@ export interface ComposerProps {
   onTogglePoll?: () => void;
   pollActive?: boolean;
   /**
-   * Optional text-only emoji insert (doc 09 §4.1) — a plain UTF-8 insert into the textarea that
-   * still counts toward the byte budget; NOT a media affordance. Omit to hide the affordance.
+   * Show the emoji picker in the toolbar (doc 09 §4.1) — a searchable native-emoji board whose picks
+   * are inserted as plain UTF-8 into the textarea (byte-counted); NOT a media affordance. Default true;
+   * pass false to hide the affordance.
    */
-  emojiChoices?: string[];
+  emoji?: boolean;
   /**
    * Whether the CTA is enabled BEYOND this composer's own text validity. The surface ANDs in the
    * poll-options validity (PollComposer) or a quote's non-empty rule. Default true.
@@ -140,7 +140,7 @@ export function Composer({
   toolbarExtras,
   onTogglePoll,
   pollActive,
-  emojiChoices = DEFAULT_EMOJI,
+  emoji = true,
   extraValid = true,
   text: controlledText,
   onTextChange,
@@ -335,12 +335,10 @@ export function Composer({
               title={pollActive ? "Remove poll" : "Add poll"}
               disabled={sessionGated}
             >
-              <IconPoll size="var(--cg-icon-md)" />
+              <IconPoll size="var(--cg-icon-lg)" />
             </button>
           )}
-          {emojiChoices && emojiChoices.length > 0 && !sessionGated && (
-            <EmojiPicker choices={emojiChoices} onPick={insertEmoji} />
-          )}
+          {emoji && !sessionGated && <EmojiPicker onPick={insertEmoji} />}
           {toolbarExtras}
         </div>
 
@@ -381,11 +379,90 @@ export function Composer({
  * A text-only emoji insert helper (doc 09 §4.1) — NOT a media affordance. A tiny popover of plain
  * UTF-8 emoji; picking one inserts it at the caret (counted by the ByteCounter). No image/sticker.
  */
-function EmojiPicker({ choices, onPick }: { choices: string[]; onPick: (e: string) => void }) {
+function EmojiPicker({ onPick }: { onPick: (e: string) => void }) {
   const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+
+  // Anchor the panel to the button and keep it fully on-screen. The panel has KNOWN dimensions
+  // (EMOJI_PANEL_W × up-to-EMOJI_PANEL_MAX_H), so we place it from the trigger's position alone — no need
+  // to measure the lazily-loaded content (which would race the Suspense fallback swap): flip above/below
+  // toward the side with room, cap the height to that side (the board scrolls inside), and nudge it
+  // horizontally so a wide panel near a screen edge can't spill off. Hidden for the one frame before this
+  // lands so it never flashes off-screen.
+  const [place, setPlace] = useState<{
+    up: boolean;
+    shiftX: number;
+    width: number;
+    maxH: number;
+    ready: boolean;
+  }>({ up: false, shiftX: 0, width: EMOJI_PANEL_W, maxH: EMOJI_PANEL_MAX_H, ready: false });
+  useEffect(() => {
+    if (!open) {
+      setPlace((p) => ({ ...p, ready: false }));
+      return;
+    }
+    const trig = triggerRef.current;
+    if (!trig) return;
+    const MARGIN = 8; // clearance from every viewport edge
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    const t = trig.getBoundingClientRect();
+    const width = Math.min(EMOJI_PANEL_W, vw - 2 * MARGIN);
+    const roomAbove = t.top - MARGIN;
+    const roomBelow = vh - t.bottom - MARGIN;
+    // Open downward by default (the composer sits near the top of the modal); flip up only when below is
+    // too tight for the panel and above is roomier (e.g. an inline reply composer near the viewport bottom).
+    const up = roomBelow < EMOJI_PANEL_MAX_H && roomAbove > roomBelow;
+    const maxH = Math.min(EMOJI_PANEL_MAX_H, Math.max(up ? roomAbove : roomBelow, 0));
+    let shiftX = 0;
+    const rightEdge = t.left + width;
+    if (rightEdge > vw - MARGIN) shiftX = vw - MARGIN - rightEdge; // overruns right → nudge left
+    if (t.left + shiftX < MARGIN) shiftX = MARGIN - t.left; // …but never off the left edge
+    setPlace({ up, shiftX, width, maxH, ready: true });
+  }, [open]);
+
+  // Twitter-style dismissal: a pointer press anywhere outside the picker closes it.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  // Escape closes ONLY the picker — stop it bubbling to the surrounding ComposerModal's own Escape
+  // handler (which would otherwise close the whole modal too) — and return focus to the trigger.
+  const onPanelKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
+    }
+  }, []);
+
+  const pick = useCallback(
+    (e: string) => {
+      onPick(e);
+      setOpen(false); // close on select (X-style — the caret returns to the textarea)
+    },
+    [onPick],
+  );
+
+  const anchorStyle: CSSProperties = {
+    width: place.width,
+    maxHeight: place.maxH,
+    transform: place.shiftX ? `translateX(${place.shiftX}px)` : undefined,
+    visibility: place.ready ? undefined : "hidden",
+    top: place.up ? "auto" : "calc(100% + var(--cg-space-1))",
+    bottom: place.up ? "calc(100% + var(--cg-space-1))" : "auto",
+  };
+
   return (
-    <span className={styles.emojiWrap}>
+    <span className={styles.emojiWrap} ref={wrapRef}>
       <button
+        ref={triggerRef}
         type="button"
         className={styles.toolBtn}
         onClick={() => setOpen((o) => !o)}
@@ -396,22 +473,16 @@ function EmojiPicker({ choices, onPick }: { choices: string[]; onPick: (e: strin
         <span aria-hidden>☺</span>
       </button>
       {open && (
-        <div className={styles.emojiPopover} role="menu">
-          {choices.map((e) => (
-            <button
-              key={e}
-              type="button"
-              className={styles.emojiBtn}
-              role="menuitem"
-              onClick={() => {
-                onPick(e);
-                setOpen(false);
-              }}
-              aria-label={`Insert ${e}`}
-            >
-              {e}
-            </button>
-          ))}
+        <div className={styles.emojiPanel} style={anchorStyle} onKeyDown={onPanelKeyDown}>
+          <Suspense
+            fallback={
+              <div className={styles.emojiPanelLoading}>
+                <Spinner size="sm" />
+              </div>
+            }
+          >
+            <EmojiPickerPanel onPick={pick} />
+          </Suspense>
         </div>
       )}
     </span>

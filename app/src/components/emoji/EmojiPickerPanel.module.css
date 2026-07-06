@@ -1,0 +1,133 @@
+/* EmojiPickerPanel — search bar + scrollable categorized board + category tabs. The outer positioning,
+   size cap, and card chrome are supplied by the Composer's .panelAnchor; this fills it as a flex column
+   whose middle board scrolls. All var(--cg-*). */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.searchRow {
+  flex: none;
+  padding: var(--cg-space-2);
+  border-bottom: 1px solid var(--cg-border);
+}
+
+.search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--cg-space-2) var(--cg-space-3);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text);
+  background: var(--cg-bg-subtle);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  outline: none;
+}
+
+.search::placeholder {
+  color: var(--cg-text-muted);
+}
+
+.search:focus-visible {
+  border-color: var(--cg-accent);
+}
+
+.board {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--cg-space-2);
+}
+
+/* Let the browser skip layout/paint for off-screen category sections (perf with ~1900 emoji). */
+.section {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+
+.heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: var(--cg-space-1) var(--cg-space-1) var(--cg-space-1);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cg-text-muted);
+  background: var(--cg-bg-elevated);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  margin-bottom: var(--cg-space-2);
+}
+
+.emoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cg-radius-sm);
+  background: transparent;
+  font-size: var(--cg-fs-xl);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.emoji:hover {
+  background: var(--cg-bg-hover);
+}
+
+.emoji:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: -2px;
+}
+
+.empty {
+  margin: 0;
+  padding: var(--cg-space-6) var(--cg-space-4);
+  text-align: center;
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-muted);
+}
+
+.tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: var(--cg-space-1);
+  border-top: 1px solid var(--cg-border);
+}
+
+.tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  border: 0;
+  border-radius: var(--cg-radius-sm);
+  background: transparent;
+  font-size: var(--cg-fs-md);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tab:hover {
+  background: var(--cg-bg-hover);
+}
+
+.tab:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: -2px;
+}

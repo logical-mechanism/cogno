@@ -81,7 +81,8 @@
   gap: var(--cg-space-1);
 }
 
-/* toolbar icon buttons (Poll toggle / emoji) — accent-tinted X-style round buttons */
+/* toolbar icon buttons (Poll toggle / emoji) — accent-tinted X-style round buttons. font-size drives
+   the emoji trigger glyph (☺, a text dingbat); the Poll icon is an explicitly-sized SVG. */
 .toolBtn {
   display: inline-flex;
   align-items: center;
@@ -92,7 +93,7 @@
   border-radius: var(--cg-radius-pill);
   background: transparent;
   color: var(--cg-accent);
-  font-size: var(--cg-icon-md);
+  font-size: var(--cg-icon-lg);
   line-height: 1;
   cursor: pointer;
   transition: background var(--cg-motion-fast) var(--cg-ease-standard);
@@ -122,43 +123,29 @@
   display: inline-flex;
 }
 
-.emojiPopover {
+/* emoji picker anchor — position (left:0 by the button) + size cap + card chrome; the width/maxHeight/
+   top-or-bottom/transform are set inline by EmojiPicker so it stays fully on-screen. The hosted
+   EmojiPickerPanel fills it as a flex column with its own scrolling board. */
+.emojiPanel {
   position: absolute;
-  bottom: calc(100% + var(--cg-space-1));
   left: 0;
   z-index: var(--cg-z-dropdown);
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--cg-space-1);
-  max-width: 240px;
-  padding: var(--cg-space-2);
+  flex-direction: column;
+  overflow: hidden;
   background: var(--cg-bg-elevated);
   border: 1px solid var(--cg-border);
   border-radius: var(--cg-radius-sm);
   box-shadow: var(--cg-shadow-menu);
 }
 
-.emojiBtn {
-  display: inline-flex;
+.emojiPanelLoading {
+  display: flex;
+  flex: 1;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border: 0;
-  border-radius: var(--cg-radius-input);
-  background: transparent;
-  font-size: var(--cg-fs-lg);
-  line-height: 1;
-  cursor: pointer;
-}
-
-.emojiBtn:hover {
-  background: var(--cg-bg-hover);
-}
-
-.emojiBtn:focus-visible {
-  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
-  outline-offset: var(--cg-focus-ring-offset);
+  min-height: 120px;
+  padding: var(--cg-space-4);
 }
 
 .toolbarRight {
