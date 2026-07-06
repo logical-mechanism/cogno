@@ -38,15 +38,29 @@ impl pallet_balances::Config for Test {
 parameter_types! {
     /// Per-account allowance ceiling for the mock.
     pub const MaxAllowance: u64 = 1_000_000;
+    /// Per-account payability floor for the mock — deliberately ABOVE the ED (1_000) so the "an
+    /// ED-only grant is rejected" behaviour is exercised.
+    pub const MinAllowance: u64 = 2_000;
     /// Regeneration cadence in blocks.
     pub const RegenPeriod: u64 = 5;
+}
+
+/// Mock "seated committee member" set: account 99 stands in for a seated member (the real runtime reads
+/// `pallet_collective::Members`). Lets the `revoke`-still-seated guard be exercised without a collective.
+pub struct SeatedIsNinetyNine;
+impl frame_support::traits::Contains<u64> for SeatedIsNinetyNine {
+    fn contains(who: &u64) -> bool {
+        *who == 99
+    }
 }
 
 impl pallet_governance_fuel::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type GrantOrigin = EnsureRoot<Self::AccountId>;
+    type Seated = SeatedIsNinetyNine;
     type Currency = Balances;
     type MaxAllowance = MaxAllowance;
+    type MinAllowance = MinAllowance;
     type MaxFundedAccounts = ConstU32<64>;
     type RegenPeriod = RegenPeriod;
     type WeightInfo = ();

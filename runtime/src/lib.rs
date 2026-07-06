@@ -263,6 +263,24 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // all call-ACCEPTANCE/behaviour changes, NOT call ENCODING changes. ADDITIVE (new pallet/calls/storage/
     // events/errors/metadata), so spec_version bumps; transaction_version STAYS 3 (the `TxExtension` tuple +
     // every Call encoding is byte-identical). Fresh-genesis ⇒ no migration. Regen the PAPI descriptors after 203.
+    //
+    // 203 pre-deploy governance/validator footgun hardening (folded IN-PLACE — 203 is unshipped, fresh
+    // genesis, so no new spec version / no upgrade): (a) DefaultVote is now `AbstainAsNay`, NOT
+    // `PrimeDefaultVote` — a set prime can no longer fold absentees into a supermajority (the "3 nays to
+    // STOP" inversion); (b) `GovernanceFuel::revoke` refuses a still-seated committee member (new
+    // `StillSeated` error) so de-funding can't dilute the quorum to a brick; (c) `CognoCallFilter` also
+    // blocks a 2-seat `set_members` (unanimity trap) and `Session::purge_keys` (keyless-phantom
+    // floor-bypass); (d) `MaxObserved` 1024 -> 4096 with an O(N) unlock-clamp + a node freeze-alarm
+    // (`ObserverConfig::max_observed`). Round-2 (same branch): (e) `set_allowance` now floors grants at a
+    // payability minimum (`Config::MinAllowance` = `MinFuelAllowance` = ED + 1 UNIT; `AllowanceBelowMinimum`
+    // renames the old below-ED error) so a committee can't seat an unpayable (exactly-ED) member that
+    // dilutes the quorum — closing the unguarded `set_allowance` mirror of the round-1 `revoke` guard; (f) a
+    // genesis brick-guard rejects an empty or 2-seat FollowerCommittee (the dispatch-path `1 || >=3` rule
+    // does not run at genesis) in both `testnet_genesis` and `gen-chainspec`; (g) `KeyDeposit` doc-coupled to
+    // the purge_keys block (must stay 0). All call-ACCEPTANCE/behaviour/const changes (new `StillSeated` /
+    // renamed `AllowanceBelowMinimum` errors are additive metadata); transaction_version STAYS 3.
+    // (D-1 proposal-queue flooding is NOT closed here: a fuel-hold deposit is defeated by fuel regen, so a
+    // real guard needs total-capped regen or a per-member counter — deferred as a deliberate decision.)
     spec_version: 203,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,

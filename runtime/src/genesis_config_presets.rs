@@ -44,6 +44,19 @@ fn testnet_genesis(
     // dev/local chains it seeds posting weight so the app is usable without a lock.
     initial_weights: Vec<(AccountId, u128, u128)>,
 ) -> Value {
+    // Brick-guard for the FollowerCommittee genesis seat. The `CognoCallFilter` `1 || >=3` rule guards the
+    // runtime DISPATCH path (`set_members`) but does NOT run at genesis, so this is the genesis-side mirror:
+    // seat 1 (founder bootstrap, threshold `ceil(1*3/5)=1`) or >=3 (fault-tolerant). An empty set has no
+    // governance authority, and a 2-seat set is a unanimity trap (`ceil(2*3/5)=2`) that one lost/dark key
+    // permanently bricks — `EnsureProportionAtLeast<3,5>` becomes unsatisfiable and `set_members` (the only
+    // mutator) can never repair it, with no sudo recovery. dev(1)/local(5) are safe; this catches a
+    // hand-rolled or two-operator `gen-chainspec` slip before it births an unrecoverable chain.
+    assert!(
+        committee.len() == 1 || committee.len() >= 3,
+        "FollowerCommittee genesis must seat 1 (founder bootstrap) or >=3 (fault-tolerant); an empty or \
+         2-seat committee bricks governance with no sudo recovery — got {}",
+        committee.len(),
+    );
     build_struct_json_patch!(RuntimeGenesisConfig {
         balances: BalancesConfig {
             balances: endowed_accounts
@@ -229,4 +242,39 @@ pub fn preset_names() -> Vec<PresetId> {
         PresetId::from(sp_genesis_builder::DEV_RUNTIME_PRESET),
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn acc(n: u8) -> AccountId {
+        AccountId::from([n; 32])
+    }
+
+    #[test]
+    #[should_panic(expected = "bricks governance")]
+    fn testnet_genesis_rejects_a_two_seat_committee() {
+        // A 2-seat committee is a unanimity trap (ceil(2*3/5)=2, zero fault tolerance); the genesis
+        // brick-guard must reject it (the CognoCallFilter dispatch-path guard does not run at genesis).
+        let _ = testnet_genesis(Vec::new(), Vec::new(), vec![acc(1), acc(2)], Vec::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "bricks governance")]
+    fn testnet_genesis_rejects_an_empty_committee() {
+        let _ = testnet_genesis(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    }
+
+    #[test]
+    fn testnet_genesis_accepts_one_and_three_seats() {
+        // 1 (founder bootstrap) and >=3 (fault-tolerant) must not panic on the committee-size guard.
+        let _ = testnet_genesis(Vec::new(), Vec::new(), vec![acc(1)], Vec::new());
+        let _ = testnet_genesis(
+            Vec::new(),
+            Vec::new(),
+            vec![acc(1), acc(2), acc(3)],
+            Vec::new(),
+        );
+    }
 }

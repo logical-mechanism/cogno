@@ -83,18 +83,29 @@ type SingleBlockMigrations = ();
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
 /// cogno-chain permits EVERY call except:
 ///
-/// 1. a `FollowerCommittee::set_members` that would EMPTY the committee. The committee is the SOLE
-///    governance authority (no sudo / `EnsureRoot` fallback), so an empty member set makes
-///    [`AuthorityOrigin`] (`EnsureProportionAtLeast<3,5>`) permanently unsatisfiable — bricking ALL
-///    governance (validator rotation, runtime upgrades, identity revoke, force-capacity) with no on-chain
-///    recovery, only a chain fork. A passed motion — or, at the 1-seat bootstrap where the threshold is 1,
-///    a single fat-finger / lost-key vote — could otherwise write `Members = []`. Rejecting an empty new
-///    set here makes such a motion fail on-chain (`CallFiltered`) instead of bricking the chain: the filter
-///    is enforced even on the collective's OWN proposal dispatch, because `RawOrigin::Members(..).into()`
-///    resets the origin filter to this `BaseCallFilter`. A non-empty floor is always satisfiable — the
-///    committee bootstraps at one member and only ever grows by vote.
+/// 1. a `FollowerCommittee::set_members` that would EMPTY the committee, or land it at exactly TWO seats.
+///    The committee is the SOLE governance authority (no sudo / `EnsureRoot` fallback), so an empty member
+///    set makes [`AuthorityOrigin`] (`EnsureProportionAtLeast<3,5>`) permanently unsatisfiable — bricking
+///    ALL governance (validator rotation, runtime upgrades, identity revoke, force-capacity) with no
+///    on-chain recovery, only a chain fork. A passed motion — or, at the 1-seat bootstrap where the
+///    threshold is 1, a single fat-finger / lost-key vote — could otherwise write `Members = []`. A TWO-seat
+///    set is the other trap: `ceil(2*3/5)=2` = unanimity, so it has ZERO fault tolerance AND recovery from
+///    one lost/dark seat needs that very seat's vote (irreversible brick). So the allowed sizes are 1 (the
+///    founder bootstrap) and `>= 3` (fault-tolerant): the federation jump is 1 -> 3+ directly, and a 3 -> 2
+///    shrink is also rejected (never sit at the fragile 2). Rejecting these here makes such a motion fail
+///    on-chain (`CallFiltered`) instead of bricking the chain: the filter is enforced even on the
+///    collective's OWN proposal dispatch, because `RawOrigin::Members(..).into()` resets the origin filter
+///    to this `BaseCallFilter`. (The `1 || >= 3` floor is always satisfiable from any legal state.)
 ///
-/// 2. ANY `pallet-balances` call. The native token is **governance FUEL**, not money: it exists only to
+/// 2. `Session::purge_keys`. It is permissionless + self-signed, so a SEATED validator could purge its own
+///    session keys and become a keyless "phantom" — dropped from the live Aura/GRANDPA authorities
+///    (`QueuedKeys`) yet still counted in `Validators::len()`, which is what `MinAuthorities` guards. Enough
+///    phantoms let the committee remove the last REAL validator while the floor still reads satisfied → zero
+///    live authorities. Blocking purge keeps `Validators` and the keyed set in lockstep (so the len-based
+///    floor stays correct). Deregistration is via committee `remove_validator`, not self-purge; `set_keys`
+///    still rotates keys; a leftover `NextKeys` entry for an unseated account is harmless.
+///
+/// 3. ANY `pallet-balances` call. The native token is **governance FUEL**, not money: it exists only to
 ///    pay the fee-bearing admin extrinsics and is minted/regenerated/clawed-back exclusively by the
 ///    committee via `GovernanceFuel` (index 18). No signed user ever needs a `Balances` extrinsic (funding
 ///    is committee-only), so blocking the WHOLE pallet surface — not just today's `transfer_allow_death` /
@@ -107,10 +118,11 @@ type SingleBlockMigrations = ();
 ///    SKIPPED under `runtime-benchmarks` so the node's `benchmark extrinsic` `TransferKeepAliveBuilder`
 ///    (node/src/benchmarking.rs) can still exercise a real transfer.
 ///
-/// ⚠ FEDERATION PREREQUISITE: once the committee is federated, raise the committee floor from "non-empty"
-/// to a real quorum (e.g. `>= 3`) so no motion can ever shrink the committee below a safe governance size.
+/// ⚠ FEDERATION PREREQUISITE: the `1 || >= 3` floor stops the fragile sizes, but a value-bearing launch
+/// should also carry loss-tolerance headroom (a 5-seat committee tolerates 2 lost keys) plus a written
+/// key-custody/rotation runbook — there is no sudo break-glass if `ceil(3n/5)` live keys are ever lost.
 /// `set_members` is the ONLY committee-membership mutator (pallet-collective has no add/remove call), so
-/// guarding it covers every path to an empty set.
+/// guarding it covers every path to a bricked committee.
 pub struct CognoCallFilter;
 impl Contains<RuntimeCall> for CognoCallFilter {
     fn contains(call: &RuntimeCall) -> bool {
@@ -121,6 +133,13 @@ impl Contains<RuntimeCall> for CognoCallFilter {
         {
             // Brick-guard: never allow a motion that would empty the committee (see doc above).
             if new_members.is_empty() {
+                return false;
+            }
+            // Brick-guard: reject a 2-seat committee. `ceil(2*3/5)=2` = unanimity — ZERO fault tolerance,
+            // and recovery from ONE lost/dark seat needs that very seat's vote (an irreversible brick, no
+            // sudo). Allowed sizes are 1 (the founder bootstrap) and >= 3 (fault-tolerant); federate 1 -> 3+
+            // directly. This also blocks a 3 -> 2 shrink, which is intended (never sit at the fragile 2).
+            if new_members.len() == 2 {
                 return false;
             }
             // Footgun-guard: every NEWLY-added member must already hold a governance-fuel allowance, so it
@@ -140,6 +159,25 @@ impl Contains<RuntimeCall> for CognoCallFilter {
                 }
             }
             return true;
+        }
+        // Validator floor-bypass guard: block `Session::purge_keys`. It is permissionless + self-signed, so
+        // a SEATED validator could purge its own session keys and become a keyless "phantom" — filtered out
+        // of the live Aura/GRANDPA authorities (`QueuedKeys`) yet still counted in `Validators::len()`, which
+        // is what `MinAuthorities` checks. Enough phantoms let the committee remove the last REAL validator
+        // while the floor still reads satisfied → zero live authorities. Blocking purge keeps `Validators`
+        // and the keyed set in lockstep (so the len-based floor stays correct); a validator is deregistered
+        // by committee `remove_validator`, not self-purge, and `set_keys` still rotates keys.
+        //
+        // ACCEPTED COST (bounded state leak): `purge_keys` is the ONLY path that drops the consumer ref
+        // `set_keys` takes (`dec_consumers`). Blocking it means a removed / never-seated validator account
+        // keeps its `NextKeys` row AND its consumer ref forever, so `GovernanceFuel::revoke` cannot reap it
+        // (an ~ED dust account lingers). This is BOUNDED — one leak per ever-removed validator on a small
+        // committee-managed set — and preferred over the alternative (allow purge + floor over
+        // `Validators ∩ NextKeys`), which re-opens a self-purge-to-halt liveness hole. The clean rework
+        // (allow purge, floor over the keyed set, prune keyless ids in `new_session`) is a MAINNET-path
+        // item, co-sequenced with the im-online wiring; see validator-set::do_remove_validator.
+        if matches!(call, RuntimeCall::Session(pallet_session::Call::purge_keys { .. })) {
+            return false;
         }
         // Fuel is non-transferable: block the entire pallet-balances call surface (future-proof vs. new
         // SDK transfer variants). Skipped under runtime-benchmarks so `benchmark extrinsic` still works.
@@ -195,6 +233,29 @@ mod call_filter_tests {
                 prime: None,
                 old_count: 0
             }
+        )));
+    }
+
+    #[test]
+    fn blocks_a_two_seat_committee() {
+        // `ceil(2*3/5)=2` = unanimity with ZERO fault tolerance; one lost seat is an irreversible brick.
+        // Checked before any storage read (like the empty-set guard), so it holds without externalities.
+        let two = [AccountId::from([1u8; 32]), AccountId::from([2u8; 32])].to_vec();
+        assert!(!CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
+            pallet_collective::Call::set_members {
+                new_members: two,
+                prime: None,
+                old_count: 1
+            }
+        )));
+    }
+
+    #[test]
+    fn blocks_session_purge_keys() {
+        // purge_keys would let a seated validator self-demote to a keyless phantom, bypassing the
+        // MinAuthorities floor (which counts `Validators::len()`, not the live keyed set).
+        assert!(!CognoCallFilter::contains(&RuntimeCall::Session(
+            pallet_session::Call::purge_keys {}
         )));
     }
 
@@ -352,6 +413,13 @@ parameter_types! {
     /// deliberately NO cumulative cap on issuance (mint-on-demand — governance never runs dry). Sized far
     /// above the tiny `IdentityFee` fees of a handful of admin extrinsics.
     pub const MaxFuelAllowance: Balance = 1_000 * UNIT;
+    /// Per-account PAYABILITY FLOOR: a `set_allowance` must fund at least the existential deposit PLUS fee
+    /// headroom, so a granted seat can actually pay the fee-bearing admin extrinsics (propose/vote/close/
+    /// set_keys). Fee withdrawal is `Preservation::Preserve` (reducible = balance − ED), so a grant of
+    /// exactly the ED is unpayable yet still creates an allowance row — an unpayable seat that dilutes the
+    /// governance quorum. `ED + 1 UNIT` (≈ 1000× the ED) buys many propose/vote/close cycles per
+    /// `FuelRegenPeriod`; far below `MaxFuelAllowance`, so no legitimate small grant is blocked.
+    pub const MinFuelAllowance: Balance = EXISTENTIAL_DEPOSIT + UNIT;
     /// Regeneration cadence: refill funded accounts toward their allowance once a minute (10 blocks at
     /// 6s/block). DEV-TUNED snappy so a drained member recovers quickly in the showcase; a longer cadence
     /// is a runtime-tunable constant change. The funded set is tiny (≤ MaxFundedAccounts), so the periodic
@@ -359,13 +427,48 @@ parameter_types! {
     pub const FuelRegenPeriod: BlockNumber = MINUTES;
 }
 
+// Config invariants (compile-time): the payability floor must sit at/above the ED and at/below the ceiling,
+// else `set_allowance` is either unsatisfiable (Min > Max) or fails to guarantee payability (Min < ED).
+const _: () = assert!(
+    MinFuelAllowance::get() > EXISTENTIAL_DEPOSIT,
+    "MinFuelAllowance must be STRICTLY above the ED — an exactly-ED grant has zero reducible balance \
+     (fees use Preservation::Preserve), so it could never pay a propose/vote/close fee (the very \
+     unpayable-seat bug this floor exists to prevent)",
+);
+const _: () = assert!(
+    MinFuelAllowance::get() <= MaxFuelAllowance::get(),
+    "MinFuelAllowance must be <= MaxFuelAllowance (else no allowance is grantable)",
+);
+
+/// `revoke` footgun-guard: an account still seated in the `FollowerCommittee` must not be de-funded — it
+/// would leave an unpayable seat in the `EnsureProportionAtLeast<3,5>` denominator (raising the threshold;
+/// brick on enough of them, no sudo recovery). The mirror of the add-path `HasFuelAllowance`/set_members
+/// fuel guard. Reads `pallet_collective::Members`. Returns `false` under `runtime-benchmarks` so the
+/// governance-fuel `revoke` benchmark (a non-member target) isn't blocked.
+pub struct IsCommitteeMember;
+impl Contains<AccountId> for IsCommitteeMember {
+    #[cfg(not(feature = "runtime-benchmarks"))]
+    fn contains(who: &AccountId) -> bool {
+        pallet_collective::Members::<Runtime, Instance1>::get().contains(who)
+    }
+    #[cfg(feature = "runtime-benchmarks")]
+    fn contains(_who: &AccountId) -> bool {
+        false
+    }
+}
+
 impl pallet_governance_fuel::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     // The same 3-of-5 FollowerCommittee gate as every other crown-jewel call (sudo-free).
     type GrantOrigin = AuthorityOrigin;
+    // Footgun-guard: refuse to de-fund a still-seated committee member (unseat via set_members first).
+    type Seated = IsCommitteeMember;
     // Mint/burn the native token (Balances@4; implements `fungible::Mutate<AccountId, Balance = u128>`).
     type Currency = Balances;
     type MaxAllowance = MaxFuelAllowance;
+    // Payability floor: a grant must cover the ED + fee headroom, so a seated member can always pay
+    // (an exactly-ED grant would seat an unpayable member that dilutes the quorum).
+    type MinAllowance = MinFuelAllowance;
     // Comfortably covers MaxValidators (32) + FollowerMaxMembers (7) with headroom.
     type MaxFundedAccounts = ConstU32<64>;
     type RegenPeriod = FuelRegenPeriod;
@@ -399,6 +502,23 @@ parameter_types! {
     pub MaxProposalWeight: Weight = Perbill::from_percent(50) * RuntimeBlockWeights::get().max_block;
 }
 
+/// A `DefaultVote` that counts every abstention as a **NAY** — abstentions can never carry a motion.
+///
+/// This replaces `pallet_collective::PrimeDefaultVote`. With the crown-jewel origin
+/// [`AuthorityOrigin`] (`EnsureProportionAtLeast<3,5>`), `PrimeDefaultVote` was actively dangerous: once a
+/// prime is set, `close()` after the motion window folds EVERY absentee into `yes_votes`
+/// (`prime_vote.unwrap_or(false)`), then dispatches `RawOrigin::Members(yes_votes, seats)` — so a single
+/// unopposed prime aye satisfies the 3/5 bar and passes ANY privileged call unless ≥3 members actively
+/// vote NAY. That inverts "3-of-5 to ACT" into "3 nays to STOP". Abstain-as-nay closes it: a privileged
+/// motion executes ONLY on explicit ayes meeting the proportion, restoring the active-supermajority
+/// property the origin advertises. The prime becomes inert (kept settable but no longer load-bearing).
+pub struct AbstainAsNay;
+impl pallet_collective::DefaultVote for AbstainAsNay {
+    fn default_vote(_prime_vote: Option<bool>, _yes_votes: u32, _no_votes: u32, _len: u32) -> bool {
+        false
+    }
+}
+
 impl pallet_collective::Config<Instance1> for Runtime {
     type RuntimeOrigin = RuntimeOrigin;
     type Proposal = RuntimeCall;
@@ -406,8 +526,10 @@ impl pallet_collective::Config<Instance1> for Runtime {
     type MotionDuration = FollowerMotionDuration;
     type MaxProposals = FollowerMaxProposals;
     type MaxMembers = FollowerMaxMembers;
-    // Prime-member fallback vote; the prime is the tie-breaker for absentees.
-    type DefaultVote = pallet_collective::PrimeDefaultVote;
+    // Abstain-as-NAY: absentees count as NAY, so a crown-jewel motion passes ONLY on explicit ayes meeting
+    // the 3/5 bar. NOT `PrimeDefaultVote` — with the proportion origin a prime default folds absentees into
+    // aye and collapses the supermajority to a lone unopposed prime after the motion window (see AbstainAsNay).
+    type DefaultVote = AbstainAsNay;
     type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
     // SUDO-FREE: the committee polices ITSELF — rotation (`set_members`), disapprove, and kill are all
     // gated by the same `AuthorityOrigin` (≥3/5 of the committee). There is no root fallback. At the
@@ -418,6 +540,11 @@ impl pallet_collective::Config<Instance1> for Runtime {
     type DisapproveOrigin = AuthorityOrigin;
     type KillOrigin = AuthorityOrigin;
     // No proposal deposit/consideration in v1 (the committee is permissioned, not open).
+    // No proposal deposit/consideration in v1 (the committee is permissioned, not open). NOTE: a fuel-HOLD
+    // deposit does NOT bound the proposal queue here, because governance-fuel regeneration refills the free
+    // balance the hold draws from every period — so a hold is a rolling rate-gate, not a cap. A real D-1
+    // anti-flood guard needs either total-balance-capped regen (so holds count against the ceiling) or a
+    // per-member proposal counter; deferred as a deliberate decision, not wired blindly here.
     type Consideration = ();
 }
 
@@ -464,8 +591,13 @@ impl pallet_session::Config for Runtime {
     type DisablingStrategy = pallet_session::disabling::UpToLimitWithReEnablingDisablingStrategy;
     type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
     type Currency = Balances;
-    // Dev: no key deposit. A real testnet sets this above the ED so registering session keys
-    // (`set_keys`) costs something — anti-spam on the validator-candidate registry.
+    // KeyDeposit MUST stay 0 while `CognoCallFilter` blocks `Session::purge_keys` (the keyless-phantom
+    // floor-bypass guard). `purge_keys` is the ONLY path that releases a held key deposit and drops the
+    // consumer ref, so a `KeyDeposit > 0` would permanently strand the deposit + consumer ref of any
+    // committee-`remove_validator`'d or registered-but-never-seated account. To ever charge a deposit
+    // (anti-spam on the validator-candidate registry), FIRST rework the floor: unblock purge and compute
+    // `MinAuthorities` over `Validators ∩ Session::NextKeys` in `validator-set::do_remove_validator`
+    // (its note sketches this), so the phantom bypass stays closed without an unconditional purge block.
     type KeyDeposit = ConstU128<0>;
 }
 
@@ -732,8 +864,18 @@ parameter_types! {
 /// validator must run cardano-node + Cardano db-sync. See docs/IN-PROTOCOL-OBSERVATION.md §2/§8/§11.
 impl pallet_cardano_observer::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
-    // Max identities observed per block (bounds the inherent body + `LastObserved`).
-    type MaxObserved = ConstU32<1024>;
+    // Max identities observed per block. This is a HARD CEILING on concurrent participants, not a batch
+    // size: the observation is a FULL-SET snapshot re-derived every block (the unlock-clamp zeroes any
+    // identity absent from the CURRENT set, so a delta would wrongly clear unchanged accounts), carried in
+    // every block body and re-derived by every producer. Both axes are bounded by it — the vault set
+    // (`entries`) AND the bound-stake set (`stake_entries`) — and an observation over it makes
+    // `create_inherent` abstain (drops the whole inherent → the sole weight writer FREEZES), so the node
+    // now WARNs at 75% and ERRORs at/over it (surfaced via `ObserverConfig::max_observed`). 4096 gives
+    // ~4x headroom over the realistic preprod user base while staying well within the block-length budget
+    // (~48 B/vault + ~44 B/stake entry) and, with the O(N) unlock-clamp, a modest per-block weight. Raising
+    // it further is a one-line const bump within these budgets; REMOVING the ceiling (unbounded users) needs
+    // a delta/paged observation re-architecture (a separate milestone). It stays >= talk-stake's cap needs.
+    type MaxObserved = ConstU32<4096>;
     // The same `stake-1` ceiling as talk-stake (max lockable lovelace = total ADA supply). An entry
     // above it is SKIPPED by the observer (never bricks the Mandatory block), not rejected.
     type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;

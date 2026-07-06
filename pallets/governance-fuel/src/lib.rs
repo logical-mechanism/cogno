@@ -76,6 +76,15 @@ pub mod pallet {
         /// fallback) — the same gate as `add_validator` / `set_members` / `authorize_upgrade`.
         type GrantOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
+        /// Footgun-guard for [`Call::revoke`]: accounts that are STILL a seated committee member. Revoking
+        /// such an account reaps its balance but leaves it in the `EnsureProportionAtLeast` denominator —
+        /// an unpayable seat that raises the effective threshold and, on enough of them, permanently BRICKS
+        /// governance with no sudo recovery (the mirror of the runtime's add-path "must be funded" guard).
+        /// So `revoke` refuses a target for which this returns `true`; the safe offboarding order is unseat
+        /// (`FollowerCommittee::set_members`) THEN `revoke`. Wired in the runtime to
+        /// `pallet_collective::Members`; set to `Nothing` to disable (a chain without a committee / tests).
+        type Seated: frame_support::traits::Contains<Self::AccountId>;
+
         /// The native fungible the committee mints into / burns from. Bound to `Balances` in the
         /// runtime. `Mutate` gives `mint_into` + `burn_from`; its `Inspect` supertrait gives
         /// `balance` / `total_balance` / `minimum_balance` / `reducible_balance`.
@@ -87,6 +96,16 @@ pub mod pallet {
         /// governance never runs dry).
         #[pallet::constant]
         type MaxAllowance: Get<BalanceOf<Self>>;
+
+        /// Per-account LOWER bound on a standing allowance — a **payability floor**. A grant must cover the
+        /// existential deposit PLUS enough headroom to actually pay the fee-bearing admin extrinsics
+        /// (propose/vote/close/set_keys), because fee withdrawal uses `Preservation::Preserve` (reducible =
+        /// balance − ED). A grant of exactly the ED mints an account that can NEVER pay a fee, yet still
+        /// creates an allowance row — so it would pass an existence-only seating gate and seat a member that
+        /// can never vote (diluting the governance quorum toward a brick). This floor makes every allowance
+        /// provably payable. MUST be `>=` the currency's `minimum_balance()` and `<=` [`Config::MaxAllowance`].
+        #[pallet::constant]
+        type MinAllowance: Get<BalanceOf<Self>>;
 
         /// Max number of funded accounts (the length bound on [`Allowances`]). Bounds the regeneration
         /// loop's weight. Comfortably covers the validator set (`MaxValidators`) + committee
@@ -151,12 +170,17 @@ pub mod pallet {
     pub enum Error<T> {
         /// The requested allowance exceeds [`Config::MaxAllowance`].
         AllowanceExceedsMax,
-        /// The requested allowance is below the existential deposit, so a fresh account could not be
-        /// created. Set an allowance of at least the ED.
-        AllowanceBelowExistentialDeposit,
+        /// The requested allowance is below [`Config::MinAllowance`] — the payability floor (existential
+        /// deposit plus fee headroom). A grant at/below the ED would seat an account that can never pay a
+        /// fee. Set an allowance of at least `MinAllowance`.
+        AllowanceBelowMinimum,
         /// Adding a new funded account would exceed [`Config::MaxFundedAccounts`]. Revoke an existing
         /// allowance first, or raise the bound.
         TooManyFundedAccounts,
+        /// The revoke target is still a seated committee member ([`Config::Seated`]). De-funding a seated
+        /// member leaves an unpayable seat that dilutes the governance quorum — unseat it first
+        /// (`FollowerCommittee::set_members`), then revoke.
+        StillSeated,
     }
 
     #[pallet::hooks]
@@ -185,7 +209,8 @@ pub mod pallet {
         ///
         /// Upserts the allowance (so `who` regenerates toward `max` each [`Config::RegenPeriod`]) and
         /// **immediately** mints `who` up to `max` so they are usable now, not only next period. `max`
-        /// must be ≤ [`Config::MaxAllowance`] and ≥ the existential deposit. Use [`Call::revoke`] to stop
+        /// must be ≤ [`Config::MaxAllowance`] and ≥ [`Config::MinAllowance`] (the payability floor — a grant
+        /// at/below the ED would seat an account that can never pay a fee). Use [`Call::revoke`] to stop
         /// regeneration and claw back.
         #[pallet::call_index(0)]
         #[pallet::weight(<T as Config>::WeightInfo::set_allowance())]
@@ -199,9 +224,14 @@ pub mod pallet {
                 max <= T::MaxAllowance::get(),
                 Error::<T>::AllowanceExceedsMax
             );
+            // Payability floor: reject a grant below MinAllowance (ED + fee headroom). A grant of exactly
+            // the ED mints an account with zero reducible balance (fees use Preservation::Preserve) — an
+            // unpayable seat that still creates an allowance row and would dilute the governance quorum. The
+            // runtime enforces MinAllowance >= minimum_balance(), so the mint-into-fresh-account ED floor
+            // below is still satisfied.
             ensure!(
-                max >= T::Currency::minimum_balance(),
-                Error::<T>::AllowanceBelowExistentialDeposit
+                max >= T::MinAllowance::get(),
+                Error::<T>::AllowanceBelowMinimum
             );
 
             // Upsert into the bounded allowance list (source of truth for regeneration). Reject a NEW
@@ -249,6 +279,15 @@ pub mod pallet {
         #[pallet::weight(<T as Config>::WeightInfo::revoke())]
         pub fn revoke(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
             T::GrantOrigin::ensure_origin(origin)?;
+
+            // Refuse to de-fund a still-seated committee member: it would leave an unpayable seat in the
+            // `EnsureProportionAtLeast` denominator (raising the threshold, brick on enough of them, no sudo
+            // recovery). Unseat via `set_members` FIRST, then revoke. Non-committee targets (validators,
+            // spammers) are unaffected.
+            ensure!(
+                !<T::Seated as frame_support::traits::Contains<T::AccountId>>::contains(&who),
+                Error::<T>::StillSeated
+            );
 
             // Stop regeneration: drop the allowance entry (if present).
             Allowances::<T>::mutate(|list| list.retain(|(a, _)| a != &who));

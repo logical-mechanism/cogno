@@ -333,9 +333,11 @@ and the things that bite:
    spec, on a fresh `--dev`/`--tmp` rebuild, or at a restart. Capture it live (`chain_getBlockHash(0)`)
    and pin it wherever you run `cogno-chain-cli` — its genesis guard refuses the wrong chain.
 4. **Federate + operate** with `cogno-chain-cli` from an operator machine (keys by file, off the node
-   host): `committee members add` seats more committee by vote, `validator add` + the new validator's
-   `set-keys` admits producers, and `upgrade authorize` (committee) + a permissionless `upgrade apply`
-   (spec-checked) evolves the runtime. There is no sudo key.
+   host): `committee members set` federates the founder seat straight to 3+ by vote (the runtime rejects
+   a fault-intolerant 2-seat committee, so jump 1 → 3+ in one motion; `members add`/`remove` adjust an
+   already-≥3 set), `validator add` + the new validator's `set-keys` admits producers, and
+   `upgrade authorize` (committee) + a permissionless `upgrade apply` (spec-checked) evolves the runtime.
+   There is no sudo key.
 5. **Ports to open:** P2P `30333` (public); RPC `9944` (behind a proxy if exposed — localhost + `safe`
    by default); Prometheus `9615` (keep on your private scrape network, not public).
 

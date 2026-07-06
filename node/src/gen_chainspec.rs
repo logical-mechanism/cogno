@@ -136,6 +136,19 @@ pub fn run(cmd: &GenChainSpecCmd) -> Result<(), String> {
         }
     }
 
+    // Brick-guard: the FollowerCommittee must seat 1 (founder bootstrap) or >=3 (fault-tolerant). A 2-seat
+    // committee is a unanimity trap (`ceil(2*3/5)=2`) that one lost key permanently bricks with no sudo
+    // recovery. The runtime genesis build asserts the same, but catch it here with an actionable CLI error
+    // instead of an opaque wasm genesis-build panic. (An empty set defaults to the validator account above.)
+    if committee.len() == 2 {
+        return Err(
+            "a 2-seat FollowerCommittee is a unanimity trap — one lost key permanently bricks governance \
+             with no sudo recovery. Seat 1 (pass a single/no --committee-key, the founder bootstrap) or \
+             >=3 (pass three or more --committee-key)."
+                .into(),
+        );
+    }
+
     // Extra endowed accounts (SS58).
     let mut extra = Vec::with_capacity(cmd.endow.len());
     for e in &cmd.endow {

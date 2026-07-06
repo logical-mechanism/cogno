@@ -269,8 +269,13 @@ impl<T: Config> Pallet<T> {
 
     fn do_remove_validator(validator_id: T::ValidatorId) -> DispatchResult {
         let mut validators = Validators::<T>::get();
-        // Never let the *target* count fall below the floor (saturating: removing from an
-        // already-at-floor set is rejected, and the subtraction can't underflow).
+        // Floor guard. This counts `Validators::len()`, which equals the LIVE keyed authority set only
+        // while every entry is keyed. That invariant is upheld by the runtime base call filter blocking
+        // `Session::purge_keys` (a seated validator cannot self-demote to a keyless "phantom" that would
+        // pad `len()` above the true live count and let this floor pass on a set that has fewer real
+        // authorities). If a chain wires this pallet WITHOUT that filter, compute the floor over
+        // `Validators ∩ Session::NextKeys` instead. Never let the *target* count fall below the floor
+        // (saturating: removing from an already-at-floor set is rejected, and the subtraction can't underflow).
         if (validators.len().saturating_sub(1) as u32) < T::MinAuthorities::get() {
             // Floor guard: refusing this removal is what stops an operator stranding the chain
             // at < MinAuthorities — worth a warn so a stuck shrink is visible.

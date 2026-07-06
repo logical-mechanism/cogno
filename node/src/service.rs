@@ -39,13 +39,36 @@ async fn build_cardano_idp(
     metrics: Option<Arc<crate::metrics::ObserverMetrics>>,
 ) -> CardanoObservationInherentDataProvider {
     match observe_for_parent(client, parent).await {
-        Some(obs) => {
+        Some((obs, max_observed)) => {
+            // Alarm on the silent-freeze condition: `create_inherent` bounds each axis with
+            // `BoundedVec::try_from` (which SUCCEEDS at exactly `len == MaxObserved` and FAILS above it), so
+            // the whole inherent is dropped — freezing the sole weight writer with no on-chain signal — only
+            // once the count EXCEEDS the ceiling. ERROR on that actual freeze; WARN across the approach
+            // (75%..=100%, so the at-capacity block that authors the LAST good observation is loud too).
+            // Fires on the import path as well (metrics is None there) so any node seeing it warns.
+            let hi = obs.entries.len().max(obs.stake_entries.len()) as u32;
+            let frozen = max_observed > 0 && hi > max_observed;
+            if frozen {
+                log::error!(
+                    target: "cardano-observer",
+                    "observation of {hi} identities EXCEEDS MaxObserved={max_observed}: the observe inherent will ABSTAIN and Cardano weight is now FROZEN until MaxObserved is raised (governed upgrade) or the set is paged — see docs/IN-PROTOCOL-OBSERVATION.md scaling notes",
+                );
+            } else if max_observed > 0 && hi.saturating_mul(4) >= max_observed.saturating_mul(3) {
+                log::warn!(
+                    target: "cardano-observer",
+                    "observation of {hi} identities is at/near MaxObserved={max_observed} (freeze once it exceeds {max_observed}): raise MaxObserved before the ceiling is crossed",
+                );
+            }
             if let Some(m) = &metrics {
                 m.record_observation(
                     obs.reference.slot,
                     obs.entries.len(),
                     obs.stake_entries.len(),
                 );
+                m.set_max_observed(max_observed);
+                if frozen {
+                    m.record_oversize();
+                }
             }
             CardanoObservationInherentDataProvider {
                 observation: Some(obs),
@@ -70,8 +93,8 @@ async fn build_cardano_idp(
 async fn observe_for_parent(
     client: Arc<FullClient>,
     parent: <Block as BlockT>::Hash,
-) -> Option<CardanoObservation> {
-    // 1. consensus-pinned config (anchors, stability window, vault policy id).
+) -> Option<(CardanoObservation, u32)> {
+    // 1. consensus-pinned config (anchors, stability window, vault policy id, MaxObserved ceiling).
     let config = match client.runtime_api().observer_config(parent) {
         Ok(c) => c,
         Err(e) => {
@@ -79,6 +102,8 @@ async fn observe_for_parent(
             return None;
         }
     };
+    // The freeze ceiling, surfaced to the caller so it can alarm before the observation overruns it.
+    let max_observed = config.max_observed;
     // 2. parent block's Aura slot → canonical unix time (slot × SLOT_DURATION). Genesis ⇒ slot 0 ⇒
     //    pre-Shelley ⇒ abstain.
     let header = match client.header(parent) {
@@ -191,7 +216,7 @@ async fn observe_for_parent(
         "observed {} vault + {} stake entrie(s) as-of slot {} ({} db-sync match(es), {} bound cred(s), anchor block {})",
         obs.entries.len(), obs.stake_entries.len(), ref_slot, read.matches.len(), bound_creds.len(), hex_encode(&anchor_hash),
     );
-    Some(obs)
+    Some((obs, max_observed))
 }
 
 /// The minimum period of blocks on which justifications will be

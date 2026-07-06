@@ -14,6 +14,7 @@ use frame_support::{
 use sp_runtime::traits::BadOrigin;
 
 const ED: u64 = 1_000;
+const MIN: u64 = 2_000; // Config::MinAllowance in the mock (payability floor, above the ED)
 const MAX: u64 = 1_000_000;
 
 /// Current native balance of `who`.
@@ -145,30 +146,44 @@ fn set_allowance_rejects_above_max_allowance() {
 }
 
 #[test]
-fn set_allowance_rejects_below_existential_deposit() {
+fn set_allowance_rejects_below_minimum() {
     new_test_ext().execute_with(|| {
+        // Below the ED is rejected...
         assert_noop!(
             GovernanceFuel::set_allowance(RuntimeOrigin::root(), 2, ED - 1),
-            Error::<Test>::AllowanceBelowExistentialDeposit
+            Error::<Test>::AllowanceBelowMinimum
+        );
+        // ...and — the payability floor — so is an EXACTLY-ED grant (mints an unpayable seat: reducible =
+        // balance - ED = 0), and anything up to just under MinAllowance.
+        assert_noop!(
+            GovernanceFuel::set_allowance(RuntimeOrigin::root(), 2, ED),
+            Error::<Test>::AllowanceBelowMinimum
+        );
+        assert_noop!(
+            GovernanceFuel::set_allowance(RuntimeOrigin::root(), 2, MIN - 1),
+            Error::<Test>::AllowanceBelowMinimum
         );
         assert_eq!(bal(2), 0);
         assert!(Allowances::<Test>::get().is_empty());
+        // At the floor it succeeds and leaves the account fee-payable (reducible = MIN - ED > 0).
+        assert_ok!(GovernanceFuel::set_allowance(RuntimeOrigin::root(), 2, MIN));
+        assert_eq!(bal(2), MIN);
     });
 }
 
 #[test]
 fn set_allowance_rejects_past_the_funded_bound() {
     new_test_ext().execute_with(|| {
-        // Fill the 64-entry bound with cheap ED allowances.
+        // Fill the 64-entry bound with cheap (at-floor) allowances.
         for who in 0u64..64 {
             assert_ok!(GovernanceFuel::set_allowance(
                 RuntimeOrigin::root(),
                 who,
-                ED
+                MIN
             ));
         }
         assert_noop!(
-            GovernanceFuel::set_allowance(RuntimeOrigin::root(), 64, ED),
+            GovernanceFuel::set_allowance(RuntimeOrigin::root(), 64, MIN),
             Error::<Test>::TooManyFundedAccounts
         );
         // The 65th account got nothing.
@@ -195,6 +210,24 @@ fn revoke_drops_allowance_and_claws_back_and_reaps() {
             }
             .into(),
         );
+    });
+}
+
+#[test]
+fn revoke_rejects_a_still_seated_committee_member() {
+    new_test_ext().execute_with(|| {
+        // Account 99 is "seated" in the mock. It may be FUNDED (a seated member needs fuel to vote)...
+        assert_ok!(GovernanceFuel::set_allowance(RuntimeOrigin::root(), 99, MAX));
+        assert_eq!(bal(99), MAX);
+        // ...but revoke is refused while seated (unseat first, else it dilutes the quorum → brick).
+        assert_noop!(
+            GovernanceFuel::revoke(RuntimeOrigin::root(), 99),
+            Error::<Test>::StillSeated
+        );
+        // The rejected revoke changed nothing: balance + allowance + counter intact.
+        assert_eq!(bal(99), MAX);
+        assert_eq!(allowance_of(99), Some(MAX));
+        assert_eq!(TotalRevoked::<Test>::get(), 0);
     });
 }
 
