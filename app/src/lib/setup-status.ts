@@ -22,6 +22,7 @@ export type SetupPhase =
   | "unbound"
   | "binding"
   | "checking_power"
+  | "crediting" // locked ADA, waiting out the observer's stability window before weight is credited
   | "needs_power"
   | "ready";
 
@@ -54,7 +55,13 @@ export interface SetupStatus {
  *   - `null`  → still loading → a neutral "checking" state (no false "all set" / "lock now" flash)
  * It is only consulted in the bound states; the pre-bind phases ignore it (pass `null`).
  */
-export function setupStatus(state: SessionState, postingPower: bigint | null): SetupStatus {
+export function setupStatus(
+  state: SessionState,
+  postingPower: bigint | null,
+  /** a lock is in flight/crediting (usePendingCapacity) — so a bound, zero-power account is WAITING on
+   *  its lock, not missing one: show "crediting", not "lock ADA". */
+  pending = false,
+): SetupStatus {
   switch (state) {
     case "disconnected":
       return {
@@ -91,7 +98,7 @@ export function setupStatus(state: SessionState, postingPower: bigint | null): S
     case "bound":
     case "bound_no_stake":
     case "bound_staked":
-      return boundStatus(postingPower);
+      return boundStatus(postingPower, pending);
   }
 }
 
@@ -99,7 +106,7 @@ export function setupStatus(state: SessionState, postingPower: bigint | null): S
  * The bound branch: identity is registered (Sybil gate passed), but posting ALSO needs locked-ADA
  * talk-capacity. "All set / you can post" is true only once posting power is non-zero.
  */
-function boundStatus(postingPower: bigint | null): SetupStatus {
+function boundStatus(postingPower: bigint | null, pending: boolean): SetupStatus {
   // Has posting power → genuinely all set.
   if (postingPower != null && postingPower > 0n) {
     return {
@@ -117,6 +124,17 @@ function boundStatus(postingPower: bigint | null): SetupStatus {
       ready: false,
       headline: "Almost there",
       detail: "You're registered. Checking your posting power…",
+      next: null,
+    };
+  }
+  // postingPower === 0n but a lock IS crediting → waiting on the observer, not missing a lock. Don't
+  // tell a just-locked user to lock again; there's no action, the wait resolves itself.
+  if (pending) {
+    return {
+      phase: "crediting",
+      ready: false,
+      headline: "Posting power crediting",
+      detail: "Your lock is confirmed on Cardano. Posting unlocks once the chain settles it.",
       next: null,
     };
   }

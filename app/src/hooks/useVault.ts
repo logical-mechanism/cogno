@@ -1,17 +1,23 @@
 "use client";
 
 // useVault — the L1 vault lock/exit state for a connected Cardano wallet (M8). Locking ADA at the
-// talk_vault mints the owner's beacon; the off-chain follower then observes it and grants the bound
-// account its talk-capacity weight. So a successful lock here is "submitted", not "you can post now":
-// capacity appears a few blocks later, after the follower writes the weight (follower: trusted v1).
+// talk_vault mints the owner's beacon; the app-chain's consensus observer then reads it (once it is
+// older than the stability window) and credits the bound account its talk-capacity weight. So a
+// successful lock here is "submitted", NOT "you can post now": capacity appears after the observed
+// Cardano frontier passes the lock's slot (see usePendingCapacity, which narrates that wait).
 //
 // Purely Cardano-side — it needs no chain api. The wallet id comes from the wallet picker in the UI.
+// `lastAction` lets a caller persist a pending-lock record on a lock (and clear it on an exit).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { lockIntoVault, exitVault, fetchVaultState, type VaultInfo } from "@/lib/cardano/vault";
 import { hasCardanoProvider } from "@/lib/cardano/provider";
 
 export type VaultPhase = "idle" | "working" | "submitted" | "error";
+
+/** Which action produced the current tx state — so a caller can tell a lock (start crediting) from an
+ *  exit (stop crediting) when reacting to `phase === "submitted"`. */
+export type VaultAction = "lock" | "exit";
 
 /** The fine-grained sub-phase of the in-flight `working` tx, for a live step indicator. `preparing`
  *  = building the tx (wallet enable + UTxO fetch + script eval), then the wallet sign, then the
@@ -27,6 +33,8 @@ export interface UseVault {
   busy: boolean;
   error: string | null;
   txHash: string | null;
+  /** which action produced the current `txHash`/phase (`lock` vs `exit`), or null when idle. */
+  lastAction: VaultAction | null;
   /** the resolved owner/vault for the connected wallet (address, beacon, …). */
   info: VaultInfo | null;
   /** lovelace currently locked (null = none), once inspected. */
@@ -48,6 +56,7 @@ export function useVault(): UseVault {
   const [step, setStep] = useState<VaultStep>("idle");
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [lastAction, setLastAction] = useState<VaultAction | null>(null);
   const [info, setInfo] = useState<VaultInfo | null>(null);
   const [locked, setLocked] = useState<bigint | null>(null);
   const [lockedKnown, setLockedKnown] = useState(false);
@@ -103,12 +112,17 @@ export function useVault(): UseVault {
   );
 
   const lock = useCallback(
-    (walletId: string, lovelace?: bigint) =>
-      run(() => lockIntoVault(walletId, lovelace, (p) => setStep(p)), walletId),
+    (walletId: string, lovelace?: bigint) => {
+      setLastAction("lock");
+      run(() => lockIntoVault(walletId, lovelace, (p) => setStep(p)), walletId);
+    },
     [run],
   );
   const exit = useCallback(
-    (walletId: string) => run(() => exitVault(walletId, (p) => setStep(p)), walletId),
+    (walletId: string) => {
+      setLastAction("exit");
+      run(() => exitVault(walletId, (p) => setStep(p)), walletId);
+    },
     [run],
   );
   const reset = useCallback(() => {
@@ -116,8 +130,9 @@ export function useVault(): UseVault {
     setStep("idle");
     setError(null);
     setTxHash(null);
+    setLastAction(null);
     inFlight.current = false;
   }, []);
 
-  return { available, phase, step, busy, error, txHash, info, locked, lockedKnown, inspect, lock, exit, reset };
+  return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, inspect, lock, exit, reset };
 }
