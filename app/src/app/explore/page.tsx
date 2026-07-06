@@ -193,6 +193,16 @@ function ExploreView() {
     [commitNow],
   );
 
+  // autoFocus is a MOUNT-only attribute, so decide it once: focus the box only on a desktop pointer
+  // AND a fresh visit (no deep-linked ?q=). Otherwise a shared search link and every Home→Explore tap
+  // popped the mobile soft keyboard and scroll-jumped over the results the link meant to show.
+  const [autoFocusOnMount] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      committedQ.length === 0 &&
+      (window.matchMedia?.("(pointer: fine)")?.matches ?? false),
+  );
+
   // Mode: NO-INDEXER overrides everything; else DEFAULT vs QUERY. A term below MIN_QUERY_LEN (only
   // reachable from an external ?q= — our own writes gate it) stays in DEFAULT rather than running a
   // 1-char scan for near-everything.
@@ -392,7 +402,7 @@ function ExploreView() {
             onChange={onChangeDraft}
             onSubmit={commitNow}
             searchEnabled={searchEnabled}
-            autoFocus
+            autoFocus={autoFocusOnMount}
             loading={mode === "query" && (latest.loading || peopleLoading)}
             recent={recentSearches}
             onSelectRecent={onSelectRecent}
