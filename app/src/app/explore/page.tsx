@@ -354,28 +354,7 @@ function ExploreView() {
     [router, viewer.status, viewerStates, vote, repost, pin, toast],
   );
 
-  // ── "/" global shortcut: focus the SearchBar (X parity, §9). Ignore while typing / a modal is open. ─
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      const tag = t?.tagName;
-      const typing =
-        tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable === true;
-      if (typing) return;
-      // A modal/composer open → don't steal the slash.
-      if (document.querySelector("[role='dialog']")) return;
-      const input = document.querySelector<HTMLInputElement>(
-        "[role='search'] input[type='search']",
-      );
-      if (input) {
-        e.preventDefault();
-        input.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  // The "/" focus shortcut is now app-wide (useSearchHotkey in AppShell) — no per-surface effect here.
 
   // ── result-count live summary (polite) ───────────────────────────────────────────────────────
   const liveSummary =

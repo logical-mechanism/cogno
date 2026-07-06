@@ -18,6 +18,7 @@ import Link from "next/link";
 import styles from "./AppShell.module.css";
 import { LeftNav } from "./nav/LeftNav";
 import { RightRail } from "./nav/RightRail";
+import { useSearchHotkey } from "@/hooks/useSearchHotkey";
 import { BottomTabBar } from "./nav/BottomTabBar";
 import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
@@ -47,6 +48,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!loggedIn && !onWelcome) router.replace("/welcome/");
   }, [loggedIn, onWelcome, router]);
+
+  // App-wide "/" → focus the SearchBar (works on every surface with a search box, not just /explore).
+  useSearchHotkey();
 
   // The welcome flow owns the full viewport — no LeftNav/RightRail/BottomTabBar/ComposeFab chrome.
   if (onWelcome) {
