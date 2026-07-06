@@ -88,15 +88,28 @@ function ExploreView() {
   const committedQ = (searchParams.get("q") ?? "").trim();
   const [draft, setDraft] = useState(committedQ);
 
-  // Keep the draft in sync when the URL term changes from OUTSIDE this input (deep link / rail submit /
-  // back-forward) — but never clobber what the user is mid-typing (only adopt when they actually differ
-  // after trim AND the draft isn't a superset being debounced; simplest correct rule: adopt on mount +
-  // whenever the committed term changes to something the draft's trim doesn't already equal).
+  // The last term THIS input wrote to the URL. The sync effect uses it to tell our own debounce commits
+  // apart from genuinely external URL changes — the single write path so every self-write records itself.
+  const selfCommittedRef = useRef(committedQ);
+  const writeTerm = useCallback(
+    (next: string) => {
+      selfCommittedRef.current = next;
+      router.replace(next.length > 0 ? `/explore/?q=${encodeURIComponent(next)}` : "/explore/");
+    },
+    [router],
+  );
+
+  // Adopt the URL term into the draft only when it changed from OUTSIDE this input (deep link / rail
+  // submit / back-forward), never when it merely echoes what our own debounce just pushed. The old
+  // rule adopted on any committedQ≠draft, so a keystroke typed in the tick between our router.replace
+  // and the ?q= update was clobbered back to the just-committed (older) term — a dropped character.
   const lastCommitted = useRef(committedQ);
   useEffect(() => {
     if (committedQ !== lastCommitted.current) {
       lastCommitted.current = committedQ;
-      if (committedQ !== draft.trim()) setDraft(committedQ);
+      if (committedQ !== selfCommittedRef.current && committedQ !== draft.trim()) {
+        setDraft(committedQ);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [committedQ]);
@@ -111,7 +124,7 @@ function ExploreView() {
       // raw ss58 address); push (not replace) so Back returns to /explore.
       const accountRoute = profileRouteForQuery(next);
       if (accountRoute) return void router.push(accountRoute);
-      router.replace(next.length > 0 ? `/explore/?q=${encodeURIComponent(next)}` : "/explore/");
+      writeTerm(next);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -123,18 +136,18 @@ function ExploreView() {
       // Enter on a valid account address → jump to that profile (see the debounce effect above).
       const accountRoute = profileRouteForQuery(next);
       if (accountRoute) return void router.push(accountRoute);
-      router.replace(next.length > 0 ? `/explore/?q=${encodeURIComponent(next)}` : "/explore/");
+      writeTerm(next);
     },
-    [router],
+    [router, writeTerm],
   );
 
   const onChangeDraft = useCallback(
     (v: string) => {
       setDraft(v);
       // The clear ✕ sets v === "" — return to DEFAULT immediately (don't wait for the debounce).
-      if (v.length === 0 && committedQ.length > 0) router.replace("/explore/");
+      if (v.length === 0 && committedQ.length > 0) writeTerm("");
     },
-    [router, committedQ],
+    [writeTerm, committedQ],
   );
 
   // Mode: NO-INDEXER overrides everything; else DEFAULT (empty term) vs QUERY (term present).
