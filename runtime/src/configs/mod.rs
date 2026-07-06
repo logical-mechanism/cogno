@@ -28,10 +28,7 @@ use frame_support::{
     derive_impl,
     dispatch::DispatchClass,
     parameter_types,
-    traits::{
-        fungible::HoldConsideration, ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains,
-        VariantCountOf,
-    },
+    traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
@@ -45,7 +42,7 @@ use pallet_collective::{EnsureProportionAtLeast, Instance1};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use sp_runtime::{
-    traits::{Convert, One, OpaqueKeys},
+    traits::{One, OpaqueKeys},
     Perbill,
 };
 use sp_version::RuntimeVersion;
@@ -169,8 +166,16 @@ impl Contains<RuntimeCall> for CognoCallFilter {
         // is what `MinAuthorities` checks. Enough phantoms let the committee remove the last REAL validator
         // while the floor still reads satisfied → zero live authorities. Blocking purge keeps `Validators`
         // and the keyed set in lockstep (so the len-based floor stays correct); a validator is deregistered
-        // by committee `remove_validator`, not self-purge, and `set_keys` still rotates keys. A leftover
-        // `NextKeys` entry for an unseated account is harmless (its keys are never loaded).
+        // by committee `remove_validator`, not self-purge, and `set_keys` still rotates keys.
+        //
+        // ACCEPTED COST (bounded state leak): `purge_keys` is the ONLY path that drops the consumer ref
+        // `set_keys` takes (`dec_consumers`). Blocking it means a removed / never-seated validator account
+        // keeps its `NextKeys` row AND its consumer ref forever, so `GovernanceFuel::revoke` cannot reap it
+        // (an ~ED dust account lingers). This is BOUNDED — one leak per ever-removed validator on a small
+        // committee-managed set — and preferred over the alternative (allow purge + floor over
+        // `Validators ∩ NextKeys`), which re-opens a self-purge-to-halt liveness hole. The clean rework
+        // (allow purge, floor over the keyed set, prune keyless ids in `new_session`) is a MAINNET-path
+        // item, co-sequenced with the im-online wiring; see validator-set::do_remove_validator.
         if matches!(call, RuntimeCall::Session(pallet_session::Call::purge_keys { .. })) {
             return false;
         }
@@ -425,8 +430,10 @@ parameter_types! {
 // Config invariants (compile-time): the payability floor must sit at/above the ED and at/below the ceiling,
 // else `set_allowance` is either unsatisfiable (Min > Max) or fails to guarantee payability (Min < ED).
 const _: () = assert!(
-    MinFuelAllowance::get() >= EXISTENTIAL_DEPOSIT,
-    "MinFuelAllowance must be >= the existential deposit",
+    MinFuelAllowance::get() > EXISTENTIAL_DEPOSIT,
+    "MinFuelAllowance must be STRICTLY above the ED — an exactly-ED grant has zero reducible balance \
+     (fees use Preservation::Preserve), so it could never pay a propose/vote/close fee (the very \
+     unpayable-seat bug this floor exists to prevent)",
 );
 const _: () = assert!(
     MinFuelAllowance::get() <= MaxFuelAllowance::get(),
@@ -512,48 +519,6 @@ impl pallet_collective::DefaultVote for AbstainAsNay {
     }
 }
 
-// ── Anti-flood proposal deposit (D-1): a refundable, queue-depth-ramped fuel hold per open motion ──
-//
-// `propose` is nearly free under `IdentityFee`, and the queue is only `FollowerMaxProposals` (100) slots —
-// so without this a SINGLE seat could open 100 junk motions for ~nothing and stall ALL governance (no one
-// else can `propose`, and `disapprove`/`kill` need a passed 3/5 = a free slot). The fix is to make opening a
-// motion COST something that scales with how full the queue already is. `pallet-collective` hands its
-// `Consideration` the current queue depth as the footprint, so `base + slope*depth` makes the marginal cost
-// of the next motion rise with congestion: filling the queue would cost far more fuel than any allowance-
-// funded seat holds, so one seat can occupy only a small fraction of the slots — honest members always have
-// room. The hold is REFUNDABLE (released via the permissionless `release_proposal_cost` after a normal
-// close; NOT filtered) and only BURNED on `kill`. Held in fuel: a runtime hold, not a `Balances` call, so
-// `CognoCallFilter` doesn't touch it, and the fuel regen doc already blesses held funds (they can't pay
-// fees). NOTE: this bounds ALLOWANCE-funded (federated) seats — the exact D-1 threat — not the heavily-
-// endowed genesis founder seats, which are trusted.
-parameter_types! {
-    /// Base fuel deposit held to open a motion into an EMPTY queue (footprint 0).
-    pub const ProposalDepositBase: Balance = 10 * UNIT;
-    /// Added to the held deposit per motion ALREADY open (the queue-depth ramp). With `MaxFuelAllowance`
-    /// = 1000 UNIT, one seat can hold only ~13 motions open at once — far below the 100-slot queue.
-    pub const ProposalDepositSlope: Balance = 10 * UNIT;
-    /// The aggregated hold reason for a held committee-proposal deposit (declared by pallet-collective).
-    pub const FollowerProposalHoldReason: RuntimeHoldReason =
-        RuntimeHoldReason::FollowerCommittee(pallet_collective::HoldReason::ProposalSubmission);
-}
-
-/// Footprint (open-proposal count) → held deposit: `base + slope*depth`. The collective passes the number
-/// of already-open proposals as the `u32` footprint, so the marginal cost of the next motion climbs with
-/// queue congestion (total cost to flood the queue is ~quadratic), while a lone motion into a shallow queue
-/// costs ~`base` and is refunded on close.
-pub struct ProposalDepositPrice;
-impl Convert<u32, Balance> for ProposalDepositPrice {
-    fn convert(open_proposals: u32) -> Balance {
-        ProposalDepositBase::get()
-            .saturating_add(ProposalDepositSlope::get().saturating_mul(u128::from(open_proposals)))
-    }
-}
-
-/// A refundable, queue-depth-ramped deposit held in fuel per open committee proposal — the D-1 anti-flood
-/// guard so no single seat can occupy the whole proposal queue and stall governance.
-type FollowerProposalDeposit =
-    HoldConsideration<AccountId, Balances, FollowerProposalHoldReason, ProposalDepositPrice, u32>;
-
 impl pallet_collective::Config<Instance1> for Runtime {
     type RuntimeOrigin = RuntimeOrigin;
     type Proposal = RuntimeCall;
@@ -575,9 +540,12 @@ impl pallet_collective::Config<Instance1> for Runtime {
     type DisapproveOrigin = AuthorityOrigin;
     type KillOrigin = AuthorityOrigin;
     // No proposal deposit/consideration in v1 (the committee is permissioned, not open).
-    // Anti-flood (D-1): a refundable, queue-depth-ramped fuel deposit per open motion, so no single seat
-    // can occupy the whole proposal queue and stall governance. See `FollowerProposalDeposit` above.
-    type Consideration = FollowerProposalDeposit;
+    // No proposal deposit/consideration in v1 (the committee is permissioned, not open). NOTE: a fuel-HOLD
+    // deposit does NOT bound the proposal queue here, because governance-fuel regeneration refills the free
+    // balance the hold draws from every period — so a hold is a rolling rate-gate, not a cap. A real D-1
+    // anti-flood guard needs either total-balance-capped regen (so holds count against the ceiling) or a
+    // per-member proposal counter; deferred as a deliberate decision, not wired blindly here.
+    type Consideration = ();
 }
 
 /// The crown-jewel authority origin: a **3-of-5 supermajority** of the [`FollowerCommittee`]
@@ -952,31 +920,4 @@ impl pallet_profile::Config for Runtime {
     type MaxLocation = ConstU32<64>;
     type MaxWebsite = ConstU32<256>;
     type WeightInfo = pallet_profile::weights::SubstrateWeight<Runtime>;
-}
-
-#[cfg(test)]
-mod proposal_deposit_tests {
-    use super::*;
-
-    #[test]
-    fn deposit_ramps_and_no_single_seat_can_fill_the_queue() {
-        // Marginal cost of the next motion = base + slope * (already-open count).
-        assert_eq!(ProposalDepositPrice::convert(0), ProposalDepositBase::get());
-        assert_eq!(
-            ProposalDepositPrice::convert(1),
-            ProposalDepositBase::get() + ProposalDepositSlope::get()
-        );
-        // The load-bearing D-1 invariant: filling the whole proposal queue costs far more fuel than any
-        // allowance-funded seat can hold (`MaxFuelAllowance`), so one seat can never occupy every slot and
-        // lock the other members out of `propose`.
-        let cost_to_fill: Balance = (0..FollowerMaxProposals::get())
-            .map(ProposalDepositPrice::convert)
-            .sum();
-        assert!(
-            cost_to_fill > MaxFuelAllowance::get(),
-            "a single seat must not afford to fill the {}-slot queue: fill={cost_to_fill} <= max_allowance={}",
-            FollowerMaxProposals::get(),
-            MaxFuelAllowance::get(),
-        );
-    }
 }
