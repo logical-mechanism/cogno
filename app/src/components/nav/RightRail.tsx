@@ -21,6 +21,7 @@ import { ThemeToggle } from "../ThemeToggle";
 import { useSession } from "../Providers";
 import { useWhoToFollow } from "@/hooks/useWhoToFollow";
 import { useFollow } from "@/hooks/useFollow";
+import { profileRouteForQuery } from "@/lib/ss58";
 
 export function RightRail() {
   const router = useRouter();
@@ -34,7 +35,13 @@ export function RightRail() {
   const submitSearch = useCallback(
     (q: string) => {
       const trimmed = q.trim();
-      router.push(trimmed.length > 0 ? `/explore/?q=${encodeURIComponent(trimmed)}` : "/explore/");
+      // A checksum-valid account address jumps straight to that profile rather than a fruitless
+      // body/display-name search (users click-to-copy ss58 addresses across the app).
+      const accountRoute = profileRouteForQuery(trimmed);
+      router.push(
+        accountRoute ??
+          (trimmed.length > 0 ? `/explore/?q=${encodeURIComponent(trimmed)}` : "/explore/"),
+      );
     },
     [router],
   );

@@ -51,6 +51,7 @@ import { useFollow } from "@/hooks/useFollow";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { copyToClipboard, postLink } from "@/lib/share";
+import { profileRouteForQuery } from "@/lib/ss58";
 import type { CognoPost, FeedQuery, Suggestion, ViewerPostState } from "@/lib/types";
 import type { PostActionCallbacks } from "@/components/kit";
 
@@ -106,6 +107,10 @@ function ExploreView() {
     const next = draft.trim();
     if (next === committedQ) return;
     const t = setTimeout(() => {
+      // A checksum-valid account address jumps straight to that profile (text search never matches a
+      // raw ss58 address); push (not replace) so Back returns to /explore.
+      const accountRoute = profileRouteForQuery(next);
+      if (accountRoute) return void router.push(accountRoute);
       router.replace(next.length > 0 ? `/explore/?q=${encodeURIComponent(next)}` : "/explore/");
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
@@ -115,6 +120,9 @@ function ExploreView() {
   const commitNow = useCallback(
     (value: string) => {
       const next = value.trim();
+      // Enter on a valid account address → jump to that profile (see the debounce effect above).
+      const accountRoute = profileRouteForQuery(next);
+      if (accountRoute) return void router.push(accountRoute);
       router.replace(next.length > 0 ? `/explore/?q=${encodeURIComponent(next)}` : "/explore/");
     },
     [router],
