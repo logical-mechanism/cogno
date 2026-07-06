@@ -369,6 +369,7 @@ export function ModalRouteHost() {
         onClose={onClose}
         onSaveProfile={onSaveProfile}
         onClearProfile={onClearProfile}
+        noPostingPower={noPostingPower}
       />
     );
   }
