@@ -16,10 +16,11 @@
 // dangerouslySetInnerHTML — so the text is XSS-safe; the only links we emit are anchors with
 // rel="noopener noreferrer nofollow", target=_blank, styled in --cg-accent.
 
-import { Fragment, useMemo } from "react";
+import { useMemo } from "react";
 import Link from "next/link";
 import { isImageUrl, resolveImageSrc } from "@/lib/media";
 import { RevealImage } from "./RevealImage";
+import { Highlight } from "./Highlight";
 import styles from "./PostBody.module.css";
 
 export interface PostBodyProps {
@@ -29,6 +30,8 @@ export interface PostBodyProps {
   size?: "base" | "lg";
   /** Banned-author dimming (D10): muted body. */
   dim?: boolean;
+  /** Search term to <mark> in the plain-text / hashtag runs (URLs + images stay untouched). */
+  highlight?: string;
 }
 
 // Match http(s) AND ipfs:// URLs. Stop the run at whitespace; trailing sentence punctuation is
@@ -114,7 +117,7 @@ function urlLabel(raw: string): string {
   return `${host}/…`;
 }
 
-export function PostBody({ text, size = "base", dim }: PostBodyProps) {
+export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps) {
   const segs = useMemo(() => segment(text), [text]);
 
   const cls = [styles.body, size === "lg" ? styles.lg : styles.base, dim ? styles.dim : ""]
@@ -157,11 +160,11 @@ export function PostBody({ text, size = "base", dim }: PostBodyProps) {
               // Inside a clickable PostCard row — don't also trigger the row navigation.
               onClick={(e) => e.stopPropagation()}
             >
-              {s.value}
+              <Highlight text={s.value} query={highlight} />
             </Link>
           );
         }
-        return <Fragment key={i}>{s.value}</Fragment>;
+        return <Highlight key={i} text={s.value} query={highlight} />;
       })}
     </div>
   );

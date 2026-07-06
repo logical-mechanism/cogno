@@ -430,6 +430,7 @@ function ExploreView() {
             emptyDescription="Try different keywords."
             api={api}
             signer={signer}
+            highlight={committedQ}
           />
         )}
       </section>

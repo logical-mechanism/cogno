@@ -13,15 +13,24 @@ export interface PersonResultProps {
   viewer: Viewer;
   isFollowing: boolean;
   onToggleFollow: (target: string, next: boolean) => void;
+  /** The active query, <mark>ed in the display name. */
+  highlight?: string;
 }
 
-export function PersonResult({ person, viewer, isFollowing, onToggleFollow }: PersonResultProps) {
+export function PersonResult({
+  person,
+  viewer,
+  isFollowing,
+  onToggleFollow,
+  highlight,
+}: PersonResultProps) {
   return (
     <PersonRow
       person={person}
       viewer={viewer}
       isFollowing={isFollowing}
       onToggleFollow={onToggleFollow}
+      highlight={highlight}
     />
   );
 }

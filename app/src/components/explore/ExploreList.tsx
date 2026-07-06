@@ -76,6 +76,7 @@ export function ExploreList({
           viewer={viewer}
           isFollowing={isFollowing(p.author)}
           onToggleFollow={onToggleFollow}
+          highlight={query}
         />
       ))}
     </div>

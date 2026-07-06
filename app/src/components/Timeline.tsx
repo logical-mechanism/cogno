@@ -59,6 +59,8 @@ export interface TimelineProps {
   /** API + signer for the per-card poll cast (usePoll). */
   api: CognoApi | null;
   signer: PostingSigner | null;
+  /** Search term to <mark> in each card's body (set only on the search-results Timeline). */
+  highlight?: string;
 }
 
 export function Timeline({
@@ -81,6 +83,7 @@ export function Timeline({
   onCompose,
   api,
   signer,
+  highlight,
 }: TimelineProps) {
   // Index of the keyboard-focused card (roving tabIndex). -1 = none focused yet.
   const [focusIdx, setFocusIdx] = useState(-1);
@@ -214,7 +217,15 @@ export function Timeline({
             onFocus={() => setFocusIdx(i)}
           >
             {post.isPoll && !pending ? (
-              <PollHost post={post} gate={gate} viewer={vs} handlers={handlers} api={api} signer={signer} />
+              <PollHost
+                post={post}
+                gate={gate}
+                viewer={vs}
+                handlers={handlers}
+                api={api}
+                signer={signer}
+                highlight={highlight}
+              />
             ) : (
               <PostCard
                 post={post}
@@ -223,6 +234,7 @@ export function Timeline({
                 handlers={handlers}
                 variant="timeline"
                 pending={pending}
+                highlight={highlight}
               />
             )}
           </div>
@@ -288,6 +300,7 @@ function PollHost({
   handlers,
   api,
   signer,
+  highlight,
 }: {
   post: CognoPost;
   gate: Viewer;
@@ -295,6 +308,7 @@ function PollHost({
   handlers: PostActionCallbacks;
   api: CognoApi | null;
   signer: PostingSigner | null;
+  highlight?: string;
 }) {
   const { source, bestBlock } = useSession();
   const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer, gate.address ?? null, bestBlock);
@@ -308,6 +322,7 @@ function PollHost({
       poll={poll}
       pollMyChoice={myChoice}
       onPollVote={castVote}
+      highlight={highlight}
     />
   );
 }
