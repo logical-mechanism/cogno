@@ -168,8 +168,11 @@ function ExploreView() {
   const firehose = useFeedPage(source, firehoseQuery, firehoseEnabled);
 
   const latestQuery = useMemo<FeedQuery>(
-    () => ({ first: PAGE_SIZE, search: committedQ, order: "recency" }),
-    [committedQ],
+    // `viewer: me` lets a spec-120 node stamp the myVote/reposted overlay node-side (same as the
+    // firehose), so search results show my vote/repost state and `carriedViewerStates` skips the
+    // per-card viewerPostState read (no flash of unfilled action icons).
+    () => ({ first: PAGE_SIZE, search: committedQ, order: "recency", viewer: me ?? undefined }),
+    [committedQ, me],
   );
   const latestEnabled = mode === "query" && searchEnabled;
   const latest = useFeedPage(source, latestQuery, latestEnabled);
