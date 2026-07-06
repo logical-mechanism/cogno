@@ -53,6 +53,7 @@ import { modalActions } from "@/lib/modalStore";
 import { copyToClipboard, postLink } from "@/lib/share";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
+import { useRecentSearches, recentSearchActions } from "@/lib/recentSearchStore";
 import type { CognoPost, FeedQuery, Suggestion, ViewerPostState } from "@/lib/types";
 import type { PostActionCallbacks } from "@/components/kit";
 
@@ -160,6 +161,22 @@ function ExploreView() {
       if (v.length === 0 && committedQ.length > 0) writeTerm("");
     },
     [writeTerm, committedQ],
+  );
+
+  // Recent searches (device-local). Record a term once it has SETTLED (stable ≥1.2s) so live-typed
+  // prefixes ("ab" → "abc" → "abcd") aren't each saved — only the query the user actually landed on.
+  const recentSearches = useRecentSearches();
+  useEffect(() => {
+    if (committedQ.length < MIN_QUERY_LEN) return;
+    const t = setTimeout(() => recentSearchActions.push(committedQ), 1200);
+    return () => clearTimeout(t);
+  }, [committedQ]);
+  const onSelectRecent = useCallback(
+    (term: string) => {
+      setDraft(term);
+      commitNow(term);
+    },
+    [commitNow],
   );
 
   // Mode: NO-INDEXER overrides everything; else DEFAULT vs QUERY. A term below MIN_QUERY_LEN (only
@@ -360,6 +377,10 @@ function ExploreView() {
             searchEnabled={searchEnabled}
             autoFocus
             loading={mode === "query" && (latest.loading || peopleLoading)}
+            recent={recentSearches}
+            onSelectRecent={onSelectRecent}
+            onRemoveRecent={recentSearchActions.remove}
+            onClearRecent={recentSearchActions.clear}
           />
         </div>
         {/* Score ("Top") order isn't served yet (scoreOrderEnabled=false → the only reachable state is
