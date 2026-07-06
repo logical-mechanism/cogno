@@ -50,9 +50,18 @@ export function SearchBar({
       if (e.key === "Enter") {
         e.preventDefault();
         onSubmit(value);
+      } else if (e.key === "Escape") {
+        // First Escape clears the text; a second (empty box) blurs out, which also dismisses the
+        // recent-searches dropdown. The primary keyboard exit — previously nothing handled Escape.
+        if (value.length > 0) {
+          e.preventDefault();
+          onChange("");
+        } else {
+          e.currentTarget.blur();
+        }
       }
     },
-    [onSubmit, value],
+    [onSubmit, onChange, value],
   );
 
   const disabledPlaceholder = "Connecting…";
@@ -82,14 +91,17 @@ export function SearchBar({
           autoFocus={autoFocus}
           spellCheck={false}
           autoComplete="off"
+          enterKeyHint="search"
+          inputMode="search"
         />
-        {searchEnabled && loading ? (
-          // A query is in flight — show the promised in-field spinner (plain wrapper, not the filled
-          // clear pill). The ✕ returns as soon as results land.
+        {/* The in-flight spinner is ADDITIVE to the clear ✕ (it used to replace it, leaving no way to
+            bail a slow scan but select-all-delete). */}
+        {searchEnabled && loading && (
           <span className={styles.icon} aria-hidden>
             <Spinner size="sm" />
           </span>
-        ) : searchEnabled && value.length > 0 ? (
+        )}
+        {searchEnabled && value.length > 0 && (
           <button
             type="button"
             className={styles.clear}
@@ -98,7 +110,7 @@ export function SearchBar({
           >
             <IconClose />
           </button>
-        ) : null}
+        )}
       </div>
 
       {showRecent && (
