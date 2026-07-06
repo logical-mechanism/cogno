@@ -91,15 +91,29 @@ function ExploreView() {
   const committedQ = normalizeQuery(searchParams.get("q") ?? "");
   const [draft, setDraft] = useState(committedQ);
 
+  // The QUERY result-scope tab lives in the URL (?f=people; the default "latest" is omitted) so results
+  // are shareable/bookmarkable and Back restores the scope.
+  const resultTab: ResultTab = searchParams.get("f") === "people" ? "people" : "latest";
+
+  // One builder for every /explore URL write so q + f stay in sync — f only alongside a query, and only
+  // when non-default, to keep URLs clean.
+  const buildExploreUrl = useCallback((q: string, f: ResultTab) => {
+    const params = new URLSearchParams();
+    if (q.length > 0) params.set("q", q);
+    if (q.length > 0 && f === "people") params.set("f", f);
+    const qs = params.toString();
+    return qs ? `/explore/?${qs}` : "/explore/";
+  }, []);
+
   // The last term THIS input wrote to the URL. The sync effect uses it to tell our own debounce commits
   // apart from genuinely external URL changes — the single write path so every self-write records itself.
   const selfCommittedRef = useRef(committedQ);
   const writeTerm = useCallback(
     (next: string) => {
       selfCommittedRef.current = next;
-      router.replace(next.length > 0 ? `/explore/?q=${encodeURIComponent(next)}` : "/explore/");
+      router.replace(buildExploreUrl(next, resultTab));
     },
-    [router],
+    [router, buildExploreUrl, resultTab],
   );
 
   // Adopt the URL term into the draft only when it changed from OUTSIDE this input (deep link / rail
@@ -200,8 +214,11 @@ function ExploreView() {
   const [order, setOrder] = useState<FirehoseOrder>("recency");
   const effectiveOrder: FirehoseOrder = scoreOrderEnabled ? order : "recency";
 
-  // ── QUERY result-scope tab (default Latest) ──────────────────────────────────────────────────
-  const [resultTab, setResultTab] = useState<ResultTab>("latest");
+  // ── QUERY result-scope tab (default Latest, mirrored to ?f=) ──────────────────────────────────
+  const setResultTab = useCallback(
+    (tab: ResultTab) => router.replace(buildExploreUrl(committedQ, tab)),
+    [router, buildExploreUrl, committedQ],
+  );
   // When People is unreachable (shouldn't happen since the strip needs caps.search), fall back to Latest.
   const activeResultTab: ResultTab = resultTab === "people" && !peopleEnabled ? "latest" : resultTab;
 
