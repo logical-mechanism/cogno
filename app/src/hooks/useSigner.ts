@@ -69,11 +69,19 @@ export function useSigner(): UseSigner {
     }
   }, []);
 
+  // Monotonic "derive generation". A CIP-30 signData() has no abort handle, so Cancel/disconnect can't
+  // stop an in-flight wallet prompt — but it CAN abandon it: bumping this invalidates the pending
+  // derive so its late (or never-arriving) result is ignored and the spinner is released immediately.
+  // Without this, a dismissed-but-unsettled wallet popup wedges `deriving` true forever (dead Cancel).
+  const deriveGen = useRef(0);
+
   const connectWallet = useCallback(async (walletId: string): Promise<boolean> => {
+    const gen = ++deriveGen.current;
     setDeriving(true);
     setError(null);
     try {
       const { signer: s, signingAddress } = await deriveSignerFromWallet(walletId);
+      if (deriveGen.current !== gen) return false; // cancelled mid-derive — drop the stale result
       setSigner(s);
       setDevChosen(false);
       setConnectedWalletId(walletId);
@@ -86,6 +94,7 @@ export function useSigner(): UseSigner {
       }
       return true;
     } catch (e) {
+      if (deriveGen.current !== gen) return false; // cancelled — swallow the late error too
       // Surface the real failure — previously every connect error (wrong network, wallet-API failure,
       // signData decline, etc.) was masked as a single generic "cancelled" toast with nothing logged,
       // making it undiagnosable. Log the actual error so the cause is visible.
@@ -94,11 +103,15 @@ export function useSigner(): UseSigner {
       setError(e instanceof Error ? e.message : String(e));
       return false;
     } finally {
-      setDeriving(false);
+      // Only the CURRENT derive owns the spinner; a cancelled one already released it (and a newer
+      // derive may now own it), so don't stomp on that.
+      if (deriveGen.current === gen) setDeriving(false);
     }
   }, []);
 
   const disconnect = useCallback(() => {
+    deriveGen.current++; // abandon any in-flight derive so its late resolution can't revive this session
+    setDeriving(false); // release the "Check your wallet" spinner immediately (makes Cancel actually work)
     setConnectedWalletId(null);
     setWalletAddress(null);
     setError(null);

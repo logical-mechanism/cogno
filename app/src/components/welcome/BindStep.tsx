@@ -14,11 +14,9 @@ import { useMemo } from "react";
 import styles from "./BindStep.module.css";
 import { Spinner } from "@/components/icons";
 import { StepFlow } from "./StepFlow";
-import { truncateSs58 } from "@/lib/ss58";
 import type { BindPhase } from "@/hooks/useIdentity";
 
 export interface BindStepProps {
-  ss58: string;
   binding: boolean;
   /** the phase of the in-flight bind — drives the background-step indicator. */
   bindPhase: BindPhase;
@@ -74,7 +72,6 @@ const BIND_NARRATION: Record<Exclude<BindPhase, "idle">, string> = {
 };
 
 export function BindStep({
-  ss58,
   binding,
   bindPhase,
   error,
@@ -83,7 +80,6 @@ export function BindStep({
   onRegister,
   headingRef,
 }: BindStepProps) {
-  const shortHandle = truncateSs58(ss58);
   const bindError = useMemo(() => (error ? classifyError(error) : null), [error]);
 
   const disabledReason = !bootOk
@@ -100,8 +96,7 @@ export function BindStep({
       </h1>
 
       <p className={styles.body}>
-        Register <span className={styles.handle}>@{shortHandle}</span> to claim this account. Your
-        wallet signs once to prove it&apos;s yours. You&apos;ll add posting power next.
+        Register to claim this account. Your wallet signs once to prove it&apos;s yours.
       </p>
 
       <button

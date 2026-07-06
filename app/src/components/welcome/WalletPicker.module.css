@@ -99,13 +99,6 @@
   color: var(--cg-danger);
 }
 
-.reassure {
-  margin: 0;
-  font-size: var(--cg-fs-xs);
-  line-height: var(--cg-lh-sm);
-  color: var(--cg-text-muted);
-}
-
 .installLinks {
   display: flex;
   flex-direction: column;

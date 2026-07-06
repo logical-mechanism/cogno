@@ -97,7 +97,7 @@ export function WalletPicker({
           )}
         </div>
         <p className={styles.narration} aria-live="polite">
-          Approve the signature in {chosenName} to create your posting key. It never moves funds.
+          Approve the signature in {chosenName} to create your posting key.
         </p>
         <button type="button" className={styles.ghost} onClick={onCancel}>
           Cancel
@@ -148,10 +148,6 @@ export function WalletPicker({
           {errorCopy}
         </p>
       )}
-
-      <p className={styles.reassure}>
-        Your keys stay in your wallet.
-      </p>
     </section>
   );
 }

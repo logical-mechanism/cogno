@@ -177,11 +177,18 @@ export default function WelcomePage() {
     [signerCtl],
   );
 
-  // Cancel an in-flight derive: there is no abort handle on the promise, so we just disconnect back to
-  // the picker (the resolved promise's setState is harmless; the derive doesn't move funds).
+  // Cancel an in-flight derive: there is no abort handle on the CIP-30 signData promise, so disconnect()
+  // abandons it (a derive-generation bump makes its late/never-arriving result a no-op) and releases the
+  // spinner immediately — returning to the picker list. The derive moves no funds. We CAN'T close the
+  // wallet's own popup, so remind the user it may still be asking (otherwise they might sign a request
+  // we've already thrown away).
   const onCancelConnect = useCallback(() => {
     signerCtl.disconnect();
-  }, [signerCtl]);
+    toast({
+      kind: "info",
+      message: "Cancelled. If your wallet still shows a signature request, you can reject it there.",
+    });
+  }, [signerCtl, toast]);
 
   const onRegister = useCallback(() => {
     if (!signerCtl.connectedWalletId) return;
@@ -239,7 +246,6 @@ export default function WelcomePage() {
 
       {welcomeStep === "bind" && (
         <BindStep
-          ss58={signerCtl.signer.ss58}
           binding={identity.binding}
           bindPhase={identity.bindPhase}
           error={identity.error}

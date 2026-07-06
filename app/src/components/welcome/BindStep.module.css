@@ -32,12 +32,6 @@
   color: var(--cg-text-secondary);
 }
 
-.handle {
-  font-family: var(--cg-font-mono);
-  font-size: var(--cg-fs-sm);
-  color: var(--cg-text);
-}
-
 .primary {
   display: inline-flex;
   align-items: center;
