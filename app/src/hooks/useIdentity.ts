@@ -18,7 +18,7 @@ import {
   submitLinkIdentityFeeless,
   submitLinkStakeFeeless,
 } from "@/lib/chain/identity";
-import { produceBindProof, produceBindProofStake } from "@/lib/cardano/cip8";
+import { produceBindProof, produceBindProofStake, isUserRejection } from "@/lib/cardano/cip8";
 
 /** The phase of an in-flight identity bind, so the UI can narrate the background steps instead of
  *  showing one opaque "Registering…" spinner. `client.submit` resolves on FINALIZATION, so the
@@ -222,8 +222,10 @@ export function useIdentity(
           setBound(true);
           setBoundAddress(proof.signingAddress ?? null);
         } catch (e) {
-          // eslint-disable-next-line no-console
-          console.error(`cogno: bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
+          if (!isUserRejection(e)) {
+            // eslint-disable-next-line no-console
+            console.error(`cogno: bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
+          }
           setError(e instanceof Error ? e.message : String(e));
         } finally {
           setBinding(false);
@@ -284,8 +286,10 @@ export function useIdentity(
           );
           setStakeBound(true);
         } catch (e) {
-          // eslint-disable-next-line no-console
-          console.error(`cogno: stake bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
+          if (!isUserRejection(e)) {
+            // eslint-disable-next-line no-console
+            console.error(`cogno: stake bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
+          }
           setStakeError(e instanceof Error ? e.message : String(e));
         } finally {
           setStakeBinding(false);
