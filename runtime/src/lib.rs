@@ -277,8 +277,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // dilutes the quorum — closing the unguarded `set_allowance` mirror of the round-1 `revoke` guard; (f) a
     // genesis brick-guard rejects an empty or 2-seat FollowerCommittee (the dispatch-path `1 || >=3` rule
     // does not run at genesis) in both `testnet_genesis` and `gen-chainspec`; (g) `KeyDeposit` doc-coupled to
-    // the purge_keys block (must stay 0). All call-ACCEPTANCE/behaviour/const changes (new `StillSeated` /
-    // renamed `AllowanceBelowMinimum` errors are additive metadata); transaction_version STAYS 3.
+    // the purge_keys block (must stay 0). Round-3 (same branch): (h) an anti-flood proposal deposit (D-1) —
+    // `FollowerCommittee::Consideration` is now a refundable, queue-depth-ramped `HoldConsideration` on fuel
+    // (`base + slope*depth`), so no single seat can occupy the whole 100-slot proposal queue and stall
+    // governance; the deposit uses the collective's existing `HoldReason::ProposalSubmission` (additive
+    // `RuntimeHoldReason` metadata) and is released via the permissionless `release_proposal_cost`. All
+    // call-ACCEPTANCE/behaviour/const changes (new `StillSeated` / renamed `AllowanceBelowMinimum` errors +
+    // the hold reason are additive metadata); transaction_version STAYS 3.
     spec_version: 203,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
