@@ -439,6 +439,7 @@ function ExploreView() {
             onRetry={() => setPeopleNonce((n) => n + 1)}
             isFollowing={follow.isFollowing}
             onToggleFollow={onToggleFollow}
+            limit={PEOPLE_LIMIT}
           />
         ) : (
           <Timeline

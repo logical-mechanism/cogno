@@ -410,7 +410,7 @@ export async function nodeSearchPeople(
   term: string,
   limit: number,
 ): Promise<Suggestion[]> {
-  const rows = await microblogApi(api).search_people(Binary.fromText(term), limit);
+  const rows = await microblogApi(api).search_people(Binary.fromText(term), clampLimit(limit));
   return rows.map(personSummaryToSuggestion);
 }
 

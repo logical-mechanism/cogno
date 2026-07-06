@@ -21,6 +21,8 @@ export interface ExploreListProps {
   onRetry?: () => void;
   isFollowing: (target: string) => boolean;
   onToggleFollow: (target: string, next: boolean) => void;
+  /** The requested cap; a full page means results were truncated (search_people has no cursor). */
+  limit?: number;
 }
 
 export function ExploreList({
@@ -32,6 +34,7 @@ export function ExploreList({
   onRetry,
   isFollowing,
   onToggleFollow,
+  limit,
 }: ExploreListProps) {
   if (loading && people.length === 0) {
     return (
@@ -79,6 +82,13 @@ export function ExploreList({
           highlight={query}
         />
       ))}
+      {/* People search is a single un-cursored window — a full page means there may be more. Say so
+          (a real load-more tail needs a node cursor). */}
+      {limit != null && people.length >= limit && (
+        <p className={styles.truncated}>
+          Showing the top {limit} people — refine your search to narrow it.
+        </p>
+      )}
     </div>
   );
 }
