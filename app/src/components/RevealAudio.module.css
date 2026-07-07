@@ -1,0 +1,7 @@
+/* RevealAudio — the revealed <audio> bar. The cover / broken / hide chrome lives in
+ * RevealGate.module.css; the caller's short-bar box (PostBody .mediaAudio) sets the width. */
+
+.audio {
+  width: 100%;
+  display: block;
+}

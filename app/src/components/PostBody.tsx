@@ -2,10 +2,12 @@
 
 // PostBody — render a post's text (doc 03 §4, D1).
 //
-// TEXT ONLY, with one exception: an image LINK (an http(s)/ipfs:// URL ending in an image extension,
-// or a bare ipfs:// CID) renders behind a click-to-reveal cover (RevealImage) so the browser never
-// auto-fetches an arbitrary host — there is still no media FIELD on-chain. Everything else:
-//   - bare http(s)/ipfs:// URLs auto-link (ipfs:// resolved to a gateway).
+// TEXT ONLY, with one exception: a media LINK (an http(s)/ipfs:// URL ending in an image/video/audio
+// extension, or a bare ipfs:// CID) renders behind a click-to-reveal cover (RevealImage / RevealVideo /
+// RevealAudio) so the browser never auto-fetches an arbitrary host — there is still no media FIELD
+// on-chain; the URL's extension IS the format, classified in @/lib/media. Everything else:
+//   - bare http(s)/ipfs:// URLs auto-link (ipfs:// resolved to a gateway). Third-party embeds
+//     (YouTube/tweets) stay plain links by design — no live iframe (arbitrary third-party JS).
 //   - NO @mention links — handles are non-unique truncated ss58, NOT addressable text, so a
 //     literal `@5CBE…` in a body is plain text (divergence from X, by design).
 //   - #hashtag links — a `#tag` links to /explore/?q=%23tag (a case-insensitive substring search).
@@ -18,8 +20,10 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { isImageUrl, resolveImageSrc, URL_RE, TRAILING_PUNCT } from "@/lib/media";
+import { classifyMedia, resolveMediaSrc, URL_RE, TRAILING_PUNCT } from "@/lib/media";
 import { RevealImage } from "./RevealImage";
+import { RevealVideo } from "./RevealVideo";
+import { RevealAudio } from "./RevealAudio";
 import { Highlight } from "./Highlight";
 import styles from "./PostBody.module.css";
 
@@ -41,7 +45,7 @@ export interface PostBodyProps {
 const HASHTAG_RE = /#[\p{L}\p{N}_]+/gu;
 
 interface Seg {
-  kind: "text" | "url" | "image" | "hashtag";
+  kind: "text" | "url" | "image" | "video" | "audio" | "hashtag";
   value: string;
 }
 
@@ -68,7 +72,7 @@ function segment(text: string): Seg[] {
     const trail = url.match(TRAILING_PUNCT)?.[0] ?? "";
     if (trail) url = url.slice(0, url.length - trail.length);
     if (start > last) pushText(segs, text.slice(last, start));
-    segs.push({ kind: isImageUrl(url) ? "image" : "url", value: url });
+    segs.push({ kind: classifyMedia(url) ?? "url", value: url });
     if (trail) segs.push({ kind: "text", value: trail });
     last = start + m[0].length;
   }
@@ -76,16 +80,19 @@ function segment(text: string): Seg[] {
   return segs;
 }
 
-/** The href a (non-image) link segment opens — ipfs:// links resolve to a gateway so they work. */
+/** The href a (non-media) link segment opens — ipfs:// links resolve to a gateway so they work. */
 function linkHref(raw: string): string {
-  return /^ipfs:\/\//i.test(raw) ? resolveImageSrc(raw) : raw;
+  return /^ipfs:\/\//i.test(raw) ? resolveMediaSrc(raw) : raw;
 }
 
-/** A short alt for a linked image — its filename, else a generic label (never the whole URL). */
-function imageAlt(raw: string): string {
+/** A short accessible name for a linked media asset — its filename, else a per-kind generic label
+ *  (never the whole URL). */
+function mediaAlt(raw: string, kind: "image" | "video" | "audio"): string {
   const path = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
   const slash = path.lastIndexOf("/");
-  return (slash >= 0 ? path.slice(slash + 1) : "") || "Linked image";
+  const name = slash >= 0 ? path.slice(slash + 1) : "";
+  if (name) return name;
+  return kind === "video" ? "Linked video" : kind === "audio" ? "Linked audio" : "Linked image";
 }
 
 /**
@@ -125,11 +132,27 @@ export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps)
   return (
     <div className={cls}>
       {segs.map((s, i) => {
-        if (s.kind === "image") {
-          const resolved = resolveImageSrc(s.value);
+        if (s.kind === "image" || s.kind === "video" || s.kind === "audio") {
+          const resolved = resolveMediaSrc(s.value);
+          const alt = mediaAlt(s.value, s.kind);
+          if (s.kind === "video") {
+            return (
+              <span key={i} className={styles.media}>
+                <RevealVideo src={resolved} alt={alt} />
+              </span>
+            );
+          }
+          if (s.kind === "audio") {
+            return (
+              <span key={i} className={styles.mediaAudio}>
+                <RevealAudio src={resolved} alt={alt} />
+              </span>
+            );
+          }
+          // image: keep the new-tab link (the image stays inspectable at its source).
           return (
             <span key={i} className={styles.media}>
-              <RevealImage src={resolved} alt={imageAlt(s.value)} href={resolved} />
+              <RevealImage src={resolved} alt={alt} href={resolved} />
             </span>
           );
         }

@@ -19,6 +19,11 @@ export const metadata: Metadata = {
     "Post text, read text. A feeless social chain where posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
   applicationName: "cogno-chain",
   robots: { index: false, follow: false },
+  // Emit <meta name="referrer" content="no-referrer">. <img> carries its own referrerPolicy, but
+  // <video>/<audio> CAN'T (it's an img/iframe/a/link/script-only attribute) — so a revealed clip would
+  // otherwise leak the full document URL (which post/profile) to the arbitrary host. This closes that
+  // Referer leak app-wide. NB: it strips Referer only — IP still reaches the host on reveal.
+  referrer: "no-referrer",
 };
 
 export const viewport: Viewport = {
