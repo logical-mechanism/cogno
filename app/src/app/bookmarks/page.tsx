@@ -6,7 +6,7 @@
 // same read any post detail uses), so the cards are always chain-truth, never a cached copy.
 //
 // Newest-first. Every card write is the same optimistic PostActionCallbacks bundle the Home/Explore
-// timelines use (open / author / reply / quote / like / downvote / repost / copy-link). No pagination
+// timelines use (open / author / reply / quote / like / downvote / copy-link). No pagination
 // (the list is a fixed local set). No honesty/block-number chrome.
 //
 // Reach: LeftNav "Bookmarks" (desktop/tablet) + a Settings launcher (mobile — the bottom bar is a
@@ -20,7 +20,6 @@ import { useSession } from "@/components/Providers";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
-import { useRepost } from "@/hooks/useRepost";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
@@ -137,7 +136,6 @@ export default function BookmarksPage() {
 
   // ── write hooks + per-card action bundle (identical wiring to Home/Explore) ───────────────────
   const vote = useVote(api, signer, votingPower ?? 0n);
-  const repost = useRepost(api, signer);
   const { pin } = usePinPost(api, signer);
   const { toast } = useToaster();
 
@@ -161,15 +159,10 @@ export default function BookmarksPage() {
         if (next) vote.downvote(post.id, cur);
         else vote.clear(post.id, cur);
       },
-      onRepost: (post) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        repost.repost(post.id, cur.reposted);
-      },
       onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, pin, toast],
+    [router, viewer.status, viewerStates, vote, pin, toast],
   );
 
   return (

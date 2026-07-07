@@ -44,7 +44,7 @@ import type {
 export interface PostCardProps {
   /** The post (§0.4). */
   post: CognoPost;
-  /** The viewer's relationship to this post — drives filled heart / disabled repost / poll choice. */
+  /** The viewer's relationship to this post — drives the filled up-vote / poll choice. */
   viewer: ViewerPostState;
   /** Coarse write-gate state (§0.2) — supplied by AppShell, never computed here. */
   gate: Viewer;
@@ -281,7 +281,6 @@ export function PostCard({
             onReply={handlers.onReply}
             onQuote={handlers.onQuote}
             onLike={handlers.onLike}
-            onRepost={handlers.onRepost}
             onDownvote={handlers.onDownvote}
             onCopyLink={handlers.onShare}
             dense={detail ? false : undefined}

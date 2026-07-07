@@ -113,7 +113,7 @@ function boundStatus(postingPower: bigint | null, pending: boolean): SetupStatus
       phase: "ready",
       ready: true,
       headline: "You're all set",
-      detail: "You can post, reply, repost, vote, and follow.",
+      detail: "You can post, reply, quote, vote, and follow.",
       next: null,
     };
   }

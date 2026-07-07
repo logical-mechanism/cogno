@@ -43,7 +43,7 @@ export function extractPostId(
   events: ChainEvent[] | undefined,
   eventName?: "PostCreated",
 ): bigint | undefined {
-  // Only `PostCreated` carries a new id. vote/repost/follow/clear pass no event name (the id is
+  // Only `PostCreated` carries a new id. vote/follow/clear pass no event name (the id is
   // already known to the caller), so there is nothing to extract.
   if (!eventName) return undefined;
   if (!events) return undefined;

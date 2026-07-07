@@ -8,7 +8,7 @@
 // throws / isn't the author's, the surface silently omits this block (no error). The post is de-duped
 // out of the first page of the Posts tab by the surface.
 //
-// It reuses the SAME PostActionCallbacks bundle + viewer state as the tab cards, so Like/Repost/Reply
+// It reuses the SAME PostActionCallbacks bundle + viewer state as the tab cards, so Like/Reply/Quote
 // behave identically. Polls aren't wired here (a pinned poll still renders its body + actions; the live
 // poll results surface on the tab card / detail).
 

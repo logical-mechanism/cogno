@@ -44,7 +44,6 @@ import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { useAccountVote } from "@/hooks/useAccountVote";
 import { usePinPost } from "@/hooks/usePinPost";
-import { useRepost } from "@/hooks/useRepost";
 import { modalActions } from "@/lib/modalStore";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { sharePostWithToast } from "@/lib/share";
@@ -328,9 +327,8 @@ function ProfileBody({ address }: { address: Ss58 }) {
   );
   const viewerStates = useViewerStates(source, postIds, me, carriedStates);
 
-  // ── per-card write hooks (mirrors the home surface; D2 Like==up, D3 permanent repost) ──
+  // ── per-card write hooks (mirrors the home surface; D2 Like==up) ──
   const vote = useVote(api, signer, votingPower ?? 0n);
-  const repost = useRepost(api, signer);
   const { pin } = usePinPost(api, signer);
   const { toast } = useToaster();
 
@@ -356,15 +354,10 @@ function ProfileBody({ address }: { address: Ss58 }) {
         if (next) vote.downvote(post.id, cur);
         else vote.clear(post.id, cur);
       },
-      onRepost: (post) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        repost.repost(post.id, cur.reposted);
-      },
       onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, pin, toast],
+    [router, viewer.status, viewerStates, vote, pin, toast],
   );
 
   // ── derived header bits ──

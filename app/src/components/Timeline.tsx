@@ -9,7 +9,7 @@
 //
 // It OWNS the Home feed keyboard nav (doc 06 §8): j/k move focus between cards (roving tabIndex +
 // a 2px --cg-accent left-border focus marker), n composes, Enter/o opens the focused post, l likes,
-// r replies, t reposts (the card's own confirm fires), . flushes the new-posts pill. Shortcuts are
+// r replies, . flushes the new-posts pill. Shortcuts are
 // DISABLED while focus is in a text input (the composer), so typing n/l/j types characters.
 //
 // Per-card poll wiring: a post.isPoll card mounts a tiny <PollHost> wrapper that calls usePoll for its
@@ -150,12 +150,6 @@ export function Timeline({
           if (!focused) return;
           e.preventDefault();
           handlers.onReply(focused);
-          break;
-        }
-        case "t": {
-          if (!focused) return;
-          e.preventDefault();
-          handlers.onRepost(focused);
           break;
         }
         default:

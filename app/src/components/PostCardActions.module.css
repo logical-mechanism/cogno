@@ -1,4 +1,4 @@
-/* PostCardActions — X action row: Reply · Repost · Quote · Like · Share, spread to ~425px. */
+/* PostCardActions — X action row: Reply · Quote · Like · Share, spread to ~425px. */
 
 .row {
   display: flex;
@@ -67,20 +67,6 @@
 }
 .reply:hover:not(:disabled) .iconWrap {
   background: var(--cg-accent-wash);
-}
-
-.repost:hover:not(:disabled) {
-  color: var(--cg-repost);
-}
-.repost:hover:not(:disabled) .iconWrap {
-  background: var(--cg-repost-wash);
-}
-
-/* reposted — terminal filled green */
-.repostOn,
-.repostOn:disabled {
-  color: var(--cg-repost);
-  opacity: 1;
 }
 
 .quote:hover:not(:disabled) {
@@ -162,55 +148,4 @@
   100% {
     transform: scale(1);
   }
-}
-
-/* ---- repost confirm popover ---- */
-
-.repostWrap {
-  position: relative;
-}
-
-.confirm {
-  position: absolute;
-  top: calc(100% + var(--cg-space-2));
-  left: 0;
-  z-index: var(--cg-z-overlay);
-  width: 240px;
-  padding: var(--cg-space-4);
-  background: var(--cg-bg-elevated);
-  border: 1px solid var(--cg-border);
-  border-radius: var(--cg-radius-card);
-  box-shadow: var(--cg-shadow-menu);
-}
-
-.confirmText {
-  font-size: var(--cg-fs-sm);
-  line-height: var(--cg-lh-sm);
-  color: var(--cg-text);
-  margin-bottom: var(--cg-space-3);
-}
-
-.confirmBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  padding: var(--cg-space-2) var(--cg-space-4);
-  border: 0;
-  border-radius: var(--cg-radius-pill);
-  background: var(--cg-repost);
-  color: var(--cg-accent-contrast);
-  font-size: var(--cg-fs-sm);
-  font-weight: var(--cg-fw-bold);
-  cursor: pointer;
-  transition: opacity var(--cg-motion-fast) var(--cg-ease-standard);
-}
-
-.confirmBtn:hover {
-  opacity: 0.9;
-}
-
-.confirmBtn:focus-visible {
-  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
-  outline-offset: var(--cg-focus-ring-offset);
 }

@@ -1,12 +1,12 @@
 "use client";
 
 // useActionToast — the toast policy for optimistic write actions, in ONE place so every hook
-// (follow / vote / repost / …) words feedback identically. A CheckCapacity pool rejection becomes the
+// (follow / vote / …) words feedback identically. A CheckCapacity pool rejection becomes the
 // dedicated rate-limit toast; anything else is a generic error toast. `ok` is for the few DISCRETE
-// successes worth confirming (follow / unfollow / repost) — high-frequency actions like votes stay
+// successes worth confirming (follow / unfollow) — high-frequency actions like votes stay
 // silent on success because the optimistic UI already showed the change (doc 04 §3.4).
 //
-// `phase` is the tx-lifecycle variant used by the compose writes (post / reply / quote / repost /
+// `phase` is the tx-lifecycle variant used by the compose writes (post / reply / quote /
 // poll): a sticky "…ing" pending toast on submit that UPGRADES in place (dedupe-by-id) to a success
 // toast — optionally carrying a "View →" action — at inBestBlock, or is dismissed + routed through
 // `fail` on error. It returns a RunOptions object to spread straight into useMutation.run so the
@@ -26,7 +26,7 @@ function isRateLimit(message: string): boolean {
 export type ToastAction = { label: string; onClick: () => void };
 
 export interface PhaseToastOptions {
-  /** Dedupe key for the sticky→success upgrade — use the optimistic clientId (or `repost-<id>`). */
+  /** Dedupe key for the sticky→success upgrade — use the optimistic clientId. */
   id: string;
   /** Sticky pending copy shown on submit, e.g. "Quoting…". */
   pending: string;

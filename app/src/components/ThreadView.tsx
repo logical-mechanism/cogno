@@ -18,7 +18,7 @@
 //
 // Cardinal constraints: D1 512-byte replies (the Composer's ByteCounter enforces); D2 Like==up-vote +
 // the weighted score IS surfaced on this detail surface (may be negative → formatSignedWeight renders
-// the leading sign); D3 permanent repost; D4 polls never expire ("Live results"); D5 capacity →
+// the leading sign); D4 polls never expire ("Live results"); D5 capacity →
 // RateLimitNotice (reactive ExhaustsResources → error toast, never a battery); D10 banned authors are
 // dimmed not hidden (PostCard owns the dim+chip); D11 optimistic reply (pending opacity 0.6, phase toast
 // submit→posted, rollback + toast on error). No honesty/block-number chrome.
@@ -38,7 +38,6 @@ import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
-import { useRepost } from "@/hooks/useRepost";
 import { usePoll } from "@/hooks/usePoll";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
@@ -137,7 +136,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const viewerStates = useViewerStates(source, visibleIds, me, carriedStates);
 
   const vote = useVote(api, signer, votingPower ?? 0n);
-  const repost = useRepost(api, signer);
   const { pin } = usePinPost(api, signer);
   const { dropPending, failPending } = useOptimistic();
   const { run } = useMutation();
@@ -225,7 +223,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     ],
   );
 
-  // ── the per-card action bundle (mirrors the home surface; D2 Like==up, D3 permanent repost) ──
+  // ── the per-card action bundle (mirrors the home surface; D2 Like==up) ──
   // NOTIFICATIONS SEAM (doc 08 §10): the Voted / Reposted / quote edges raised here targeting the
   // focal author are exactly what a future useNotifications(who) folds — deferred, seam left.
   const handlers = useMemo<PostActionCallbacks>(
@@ -254,15 +252,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         if (next) vote.downvote(post.id, cur);
         else vote.clear(post.id, cur);
       },
-      onRepost: (post) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        repost.repost(post.id, cur.reposted);
-      },
       onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, pin, toast, rootId, focusComposer],
+    [router, viewer.status, viewerStates, vote, pin, toast, rootId, focusComposer],
   );
 
   // ── scroll-to-focal once per id (X behavior: focal lands just under the sticky header) ──
@@ -386,16 +379,11 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         />
 
         {/* The ONE weighted-nature surface (D2/D12): score (signed, may be negative) + up/down weight,
-            with Like/Repost counts. Detail-only — never rendered on timeline/reply cards. */}
+            with the Like count. Detail-only — never rendered on timeline/reply cards. */}
         <div className={styles.stats} role="group" aria-label="Post statistics">
           {(focal.upCount ?? 0) > 0 && (
             <span className={styles.stat}>
               <strong>{formatCount(focal.upCount)}</strong> Likes
-            </span>
-          )}
-          {(focal.repostCount ?? 0) > 0 && (
-            <span className={styles.stat}>
-              <strong>{formatCount(focal.repostCount)}</strong> Reposts
             </span>
           )}
           <span

@@ -208,7 +208,7 @@ function DoneBanner({
       <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
         {welcomeBack ? "Welcome back" : "You're all set"}
       </h1>
-      <p className={styles.bannerLede}>You can post, reply, repost, vote, and follow.</p>
+      <p className={styles.bannerLede}>You can post, reply, quote, vote, and follow.</p>
       <button type="button" className={styles.primary} onClick={onGoToTimeline}>
         Go to your timeline
       </button>

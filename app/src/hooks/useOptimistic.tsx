@@ -1,7 +1,7 @@
 "use client";
 
-// useOptimistic — the app-wide optimistic overlay context. The write hooks (useVote / useRepost /
-// useFollow / usePoll / useThread / the composer) apply a delta here immediately, then clear it on
+// useOptimistic — the app-wide optimistic overlay context. The write hooks (useVote / useFollow /
+// usePoll / useThread / the composer) apply a delta here immediately, then clear it on
 // confirm or roll it back on failure. The read hooks (useOptimisticFeed / useViewerStates) merge it
 // on top of chain truth so the next feed poll never clobbers an unconfirmed action mid-flight.
 
