@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import styles from "./EmojiPickerPanel.module.css";
 import { EMOJI_CATEGORIES, searchEmoji, type EmojiItem } from "./emoji-data";
+import { loadRecentEmoji, pushRecentEmoji } from "./recentEmoji";
 
 export interface EmojiPickerPanelProps {
   onPick: (emoji: string) => void;
@@ -19,6 +20,13 @@ export default function EmojiPickerPanel({ onPick }: EmojiPickerPanelProps) {
   const results = useMemo(() => (query.trim() ? searchEmoji(query) : null), [query]);
   const boardRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+
+  // Recently-used row (device-local). Record every pick, then hand the char up to the Composer.
+  const [recent, setRecent] = useState<string[]>(() => loadRecentEmoji());
+  const handlePick = (emoji: string) => {
+    setRecent(pushRecentEmoji(emoji));
+    onPick(emoji);
+  };
 
   // Focus the search on open so a user can type-to-filter immediately.
   useEffect(() => {
@@ -50,17 +58,38 @@ export default function EmojiPickerPanel({ onPick }: EmojiPickerPanelProps) {
       <div className={styles.board} ref={boardRef}>
         {results ? (
           results.length ? (
-            <Grid emojis={results} onPick={onPick} />
+            <Grid emojis={results} onPick={handlePick} />
           ) : (
             <p className={styles.empty}>No emoji found.</p>
           )
         ) : (
-          EMOJI_CATEGORIES.map((cat) => (
-            <section key={cat.id} className={styles.section} data-cat={cat.id}>
-              <h3 className={styles.heading}>{cat.name}</h3>
-              <Grid emojis={cat.emojis} onPick={onPick} />
-            </section>
-          ))
+          <>
+            {recent.length > 0 && (
+              <section className={styles.section} data-cat="recent">
+                <h3 className={styles.heading}>Recently used</h3>
+                <div className={styles.grid}>
+                  {recent.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      className={styles.emoji}
+                      title={c}
+                      aria-label={`Emoji ${c}`}
+                      onClick={() => handlePick(c)}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+            {EMOJI_CATEGORIES.map((cat) => (
+              <section key={cat.id} className={styles.section} data-cat={cat.id}>
+                <h3 className={styles.heading}>{cat.name}</h3>
+                <Grid emojis={cat.emojis} onPick={handlePick} />
+              </section>
+            ))}
+          </>
         )}
       </div>
 
