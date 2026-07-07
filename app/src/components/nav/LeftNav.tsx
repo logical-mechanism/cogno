@@ -49,7 +49,10 @@ export function LeftNav() {
       label: "Profile",
       href: profileHref,
       Icon: IconProfile,
-      match: (p) => p.startsWith("/u/") || (!viewer.address && p.startsWith("/welcome")),
+      // Own profile only — not every /u/<someone>. (Addresses are fixed-length, so a prefix match on
+      // our own address never collides with another account's path.)
+      match: (p) =>
+        viewer.address ? p.startsWith(`/u/${viewer.address}`) : p.startsWith("/welcome"),
     },
     { label: "Bookmarks", href: "/bookmarks/", Icon: IconBookmark, match: (p) => p.startsWith("/bookmarks") },
     { label: "Settings", href: "/settings/", Icon: IconSettings, match: (p) => p.startsWith("/settings") },

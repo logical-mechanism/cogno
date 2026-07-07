@@ -33,7 +33,9 @@ export function BottomTabBar() {
       label: "Profile",
       href: profileHref,
       Icon: IconProfile,
-      match: (p) => p.startsWith("/u/") || (!viewer.address && p.startsWith("/welcome")),
+      // Own profile only — not every /u/<someone>.
+      match: (p) =>
+        viewer.address ? p.startsWith(`/u/${viewer.address}`) : p.startsWith("/welcome"),
     },
     { label: "Settings", href: "/settings/", Icon: IconSettings, match: (p) => p.startsWith("/settings") },
   ];
