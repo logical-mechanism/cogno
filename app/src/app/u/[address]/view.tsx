@@ -481,6 +481,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
             website={canProfiles ? profile?.website : undefined}
             banned={banned}
             isSelf={isSelf}
+            followsYou={canFollow && !isSelf && follow.followers.includes(address)}
             hasProfile={hasProfile}
             showCounts={canFollow}
             followingCount={followingCount}

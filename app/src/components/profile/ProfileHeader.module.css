@@ -153,6 +153,24 @@
   line-height: var(--cg-lh-xl);
 }
 
+/* @handle + "Follows you" pill on one line (X-style). */
+.handleRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cg-space-2);
+}
+
+.followsYou {
+  padding: 0 var(--cg-space-2);
+  border-radius: var(--cg-radius-sm);
+  background: var(--cg-bg-subtle);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
 .bio {
   margin-top: var(--cg-space-3);
 }
