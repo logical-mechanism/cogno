@@ -280,6 +280,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     requestAnimationFrame(() => focusComposer());
   }, [focal, rootId, focusComposer]);
 
+  // ── browser tab title: author + snippet, so multiple open post tabs are distinguishable ──
+  useEffect(() => {
+    if (typeof document === "undefined" || !focal) return;
+    const who = focal.authorDisplayName?.trim() || handleOf(focal.author);
+    const snippet = focal.text.trim().replace(/\s+/g, " ");
+    const clipped = snippet.length > 60 ? `${snippet.slice(0, 60)}…` : snippet;
+    document.title = clipped ? `${who} on cogno-chain: “${clipped}”` : `${who} on cogno-chain`;
+    // No cleanup — the next route sets its own title.
+  }, [focal]);
+
   // ── states (§6.2 / §6.3) — the route already guarded an invalid id; here we cover load/error/missing ──
   if (loading && !thread) {
     return (
