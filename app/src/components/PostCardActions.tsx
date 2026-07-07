@@ -130,7 +130,7 @@ export function PostCardActions({
         className={`${styles.action} ${styles.reply}`}
         aria-label={`Reply${post.replyCount ? `, ${post.replyCount}` : ""}`}
         disabled={notBound}
-        title={notBound ? "Finish setup to reply." : undefined}
+        title={notBound ? "Finish setup to reply." : "Reply"}
         onClick={doReply}
       >
         <span className={styles.iconWrap}>
@@ -164,7 +164,7 @@ export function PostCardActions({
         className={`${styles.action} ${styles.quote}`}
         aria-label="Quote"
         disabled={notBound}
-        title={notBound ? "Finish setup to quote." : undefined}
+        title={notBound ? "Finish setup to quote." : "Quote"}
         onClick={doQuote}
       >
         <span className={styles.iconWrap}>
@@ -214,7 +214,8 @@ export function PostCardActions({
       <button
         type="button"
         className={`${styles.action} ${styles.share}`}
-        aria-label="Copy link to post"
+        aria-label="Share post"
+        title="Share"
         onClick={doShare}
       >
         <span className={styles.iconWrap}>
