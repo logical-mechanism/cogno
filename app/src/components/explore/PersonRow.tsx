@@ -21,9 +21,11 @@ export interface PersonRowProps {
   viewer: Viewer;
   isFollowing: boolean;
   onToggleFollow: (target: string, next: boolean) => void;
+  /** Search term to <mark> in the display name (People search results; omitted for who-to-follow). */
+  highlight?: string;
 }
 
-export function PersonRow({ person, viewer, isFollowing, onToggleFollow }: PersonRowProps) {
+export function PersonRow({ person, viewer, isFollowing, onToggleFollow, highlight }: PersonRowProps) {
   const count = formatCount(person.followerCount);
   const followers =
     person.followerCount > 0
@@ -46,7 +48,12 @@ export function PersonRow({ person, viewer, isFollowing, onToggleFollow }: Perso
       >
         <Avatar address={person.author} src={person.avatar} size="md" name={person.displayName} />
         <span className={styles.text}>
-          <DisplayName address={person.author} displayName={person.displayName} truncate />
+          <DisplayName
+            address={person.author}
+            displayName={person.displayName}
+            truncate
+            highlight={highlight}
+          />
           <span className={styles.meta}>
             <Handle address={person.author} />
             {followers && <span className={styles.followers}>{followers}</span>}

@@ -107,6 +107,8 @@
   border: 1px solid var(--cg-border);
   border-radius: var(--cg-radius-pill);
   padding: 2px var(--cg-space-2);
+  /* carries a `title` explaining what voting power is — signal it's hoverable help */
+  cursor: help;
 }
 
 /* "Required to post" chip — accent-weighted so the lock reads as the necessary step, not a boost. */

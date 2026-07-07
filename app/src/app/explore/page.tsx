@@ -50,7 +50,10 @@ import { useRepost } from "@/hooks/useRepost";
 import { useFollow } from "@/hooks/useFollow";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
-import { copyToClipboard, postLink } from "@/lib/share";
+import { sharePostWithToast } from "@/lib/share";
+import { profileRouteForQuery } from "@/lib/ss58";
+import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
+import { useRecentSearches, recentSearchActions } from "@/lib/recentSearchStore";
 import type { CognoPost, FeedQuery, Suggestion, ViewerPostState } from "@/lib/types";
 import type { PostActionCallbacks } from "@/components/kit";
 
@@ -83,58 +86,149 @@ function ExploreView() {
   // the toggle below honestly shows "Most recent" as selected (a node-side score index would flip this).
   const scoreOrderEnabled = false;
 
-  // The committed term is the URL ?q=; the SearchBar value is a separate local draft.
-  const committedQ = (searchParams.get("q") ?? "").trim();
+  // The committed term is the URL ?q= (normalized so "a  b"/"a b"/NFD accents share one URL + result
+  // set); the SearchBar value is a separate local draft.
+  const committedQ = normalizeQuery(searchParams.get("q") ?? "");
   const [draft, setDraft] = useState(committedQ);
 
-  // Keep the draft in sync when the URL term changes from OUTSIDE this input (deep link / rail submit /
-  // back-forward) — but never clobber what the user is mid-typing (only adopt when they actually differ
-  // after trim AND the draft isn't a superset being debounced; simplest correct rule: adopt on mount +
-  // whenever the committed term changes to something the draft's trim doesn't already equal).
+  // The QUERY result-scope tab lives in the URL (?f=people; the default "latest" is omitted) so results
+  // are shareable/bookmarkable and Back restores the scope.
+  const resultTab: ResultTab = searchParams.get("f") === "people" ? "people" : "latest";
+
+  // One builder for every /explore URL write so q + f stay in sync (default "latest" omitted). Keep the
+  // People scope even with an empty q so editing the query text down to nothing / below the min length
+  // doesn't silently reset the tab — it's restored on retype.
+  const buildExploreUrl = useCallback((q: string, f: ResultTab) => {
+    const params = new URLSearchParams();
+    if (q.length > 0) params.set("q", q);
+    if (f === "people") params.set("f", f);
+    const qs = params.toString();
+    return qs ? `/explore/?${qs}` : "/explore/";
+  }, []);
+
+  // writeTerm reads the CURRENT tab from a ref (not a captured value) so a debounce timer that fires
+  // AFTER a tab switch preserves the tab the user is now on, instead of the tab at schedule time.
+  const resultTabRef = useRef(resultTab);
+  resultTabRef.current = resultTab;
+
+  // The last term THIS input wrote to the URL. The sync effect uses it to tell our own debounce commits
+  // apart from genuinely external URL changes — the single write path so every self-write records itself.
+  const selfCommittedRef = useRef(committedQ);
+  const writeTerm = useCallback(
+    (next: string) => {
+      selfCommittedRef.current = next;
+      router.replace(buildExploreUrl(next, resultTabRef.current));
+    },
+    [router, buildExploreUrl],
+  );
+
+  // Adopt the URL term into the draft only when it changed from OUTSIDE this input (deep link / rail
+  // submit / back-forward), never when it merely echoes what our own debounce just pushed. The old
+  // rule adopted on any committedQ≠draft, so a keystroke typed in the tick between our router.replace
+  // and the ?q= update was clobbered back to the just-committed (older) term — a dropped character.
   const lastCommitted = useRef(committedQ);
   useEffect(() => {
     if (committedQ !== lastCommitted.current) {
       lastCommitted.current = committedQ;
-      if (committedQ !== draft.trim()) setDraft(committedQ);
+      // Decide external-vs-self-echo BEFORE updating the ref, then always track the latest committed
+      // term so a later Back/Forward to a previously self-written term is still recognised as external
+      // (the ref used to go stale, dropping that navigation and desyncing the box).
+      const external = committedQ !== selfCommittedRef.current;
+      selfCommittedRef.current = committedQ;
+      if (external && committedQ !== draft.trim()) setDraft(committedQ);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [committedQ]);
 
+  // Commit a NORMALIZED term — shared by the typed-debounce and the Enter/submit paths so they never
+  // drift: a checksum-valid account address jumps straight to that profile (text search never matches a
+  // raw ss58 address; push, not replace, so Back returns to /explore); a below-min ASCII term drops any
+  // committed term and stays in DEFAULT (the "keep typing" hint shows); otherwise it becomes the term.
+  const commitTerm = useCallback(
+    (next: string) => {
+      const accountRoute = profileRouteForQuery(next);
+      if (accountRoute) return void router.push(accountRoute);
+      if (isQueryTooShort(next)) {
+        if (committedQ.length > 0) writeTerm("");
+        return;
+      }
+      writeTerm(next);
+    },
+    [router, writeTerm, committedQ],
+  );
+
   // Debounce draft → committed term (router.replace, no history stacking). Skip when search is off.
   useEffect(() => {
     if (!searchEnabled) return;
-    const next = draft.trim();
+    const next = normalizeQuery(draft);
     if (next === committedQ) return;
-    const t = setTimeout(() => {
-      router.replace(next.length > 0 ? `/explore/?q=${encodeURIComponent(next)}` : "/explore/");
-    }, SEARCH_DEBOUNCE_MS);
+    const t = setTimeout(() => commitTerm(next), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, committedQ, searchEnabled]);
 
-  const commitNow = useCallback(
-    (value: string) => {
-      const next = value.trim();
-      router.replace(next.length > 0 ? `/explore/?q=${encodeURIComponent(next)}` : "/explore/");
-    },
-    [router],
-  );
+  // Enter / explicit submit: commit immediately (no debounce).
+  const commitNow = useCallback((value: string) => commitTerm(normalizeQuery(value)), [commitTerm]);
 
   const onChangeDraft = useCallback(
     (v: string) => {
       setDraft(v);
       // The clear ✕ sets v === "" — return to DEFAULT immediately (don't wait for the debounce).
-      if (v.length === 0 && committedQ.length > 0) router.replace("/explore/");
+      if (v.length === 0 && committedQ.length > 0) writeTerm("");
     },
-    [router, committedQ],
+    [writeTerm, committedQ],
   );
 
-  // Mode: NO-INDEXER overrides everything; else DEFAULT (empty term) vs QUERY (term present).
+  // Recent searches (device-local). Record a term once it has SETTLED (stable ≥1.2s) so live-typed
+  // prefixes ("ab" → "abc" → "abcd") aren't each saved — only the query the user actually landed on.
+  const recentSearches = useRecentSearches();
+  useEffect(() => {
+    // Gate on the SAME isQueryTooShort predicate as `mode` (not raw .length) so a committed single
+    // non-ASCII/CJK term — which DID run a search — is also recorded, while below-min ASCII is skipped.
+    if (committedQ.length === 0 || isQueryTooShort(committedQ)) return;
+    const t = setTimeout(() => recentSearchActions.push(committedQ), 1200);
+    return () => clearTimeout(t);
+  }, [committedQ]);
+  const onSelectRecent = useCallback(
+    (term: string) => {
+      setDraft(term);
+      commitNow(term);
+    },
+    [commitNow],
+  );
+
+  // autoFocus is a MOUNT-only attribute, so decide it once: focus the box only on a desktop pointer
+  // AND a fresh visit (no deep-linked ?q=). Otherwise a shared search link and every Home→Explore tap
+  // popped the mobile soft keyboard and scroll-jumped over the results the link meant to show.
+  const [autoFocusOnMount] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      committedQ.length === 0 &&
+      (window.matchMedia?.("(pointer: fine)")?.matches ?? false),
+  );
+
+  // Mode: NO-INDEXER overrides everything; else DEFAULT vs QUERY. Gate on the SAME isQueryTooShort
+  // predicate the write paths use (NOT raw .length): a single non-ASCII/CJK char is a complete word the
+  // node's byte-substring scan can match, so it must SEARCH — using raw .length here silently dropped
+  // it back to the firehose. A below-min ASCII term (only reachable from an external ?q=, since our own
+  // writes gate it) still stays in DEFAULT with the "keep typing" hint.
   const mode: "no-indexer" | "default" | "query" = !searchEnabled
     ? "no-indexer"
-    : committedQ.length > 0
+    : committedQ.length > 0 && !isQueryTooShort(committedQ)
       ? "query"
       : "default";
+
+  // "Keep typing" hint: the box has a below-min term (and it isn't a pasted address about to route to
+  // a profile), so nothing is searched yet — say so rather than silently showing the firehose.
+  // Gate on mode !== "query" too: while backspacing a committed term below the min, committedQ (and so
+  // the rendered results) lag by the debounce, so without this the hint would flash over the stale
+  // full results for ~300ms.
+  const draftNorm = normalizeQuery(draft);
+  const showTooShortHint =
+    searchEnabled &&
+    mode !== "query" &&
+    isQueryTooShort(draftNorm) &&
+    !profileRouteForQuery(draftNorm);
 
   // ── DEFAULT firehose order toggle ────────────────────────────────────────────────────────────
   // Default to "Most recent"; "Top" (score) is only reachable when a source advertises score order
@@ -142,8 +236,11 @@ function ExploreView() {
   const [order, setOrder] = useState<FirehoseOrder>("recency");
   const effectiveOrder: FirehoseOrder = scoreOrderEnabled ? order : "recency";
 
-  // ── QUERY result-scope tab (default Latest) ──────────────────────────────────────────────────
-  const [resultTab, setResultTab] = useState<ResultTab>("latest");
+  // ── QUERY result-scope tab (default Latest, mirrored to ?f=) ──────────────────────────────────
+  const setResultTab = useCallback(
+    (tab: ResultTab) => router.replace(buildExploreUrl(committedQ, tab)),
+    [router, buildExploreUrl, committedQ],
+  );
   // When People is unreachable (shouldn't happen since the strip needs caps.search), fall back to Latest.
   const activeResultTab: ResultTab = resultTab === "people" && !peopleEnabled ? "latest" : resultTab;
 
@@ -160,8 +257,11 @@ function ExploreView() {
   const firehose = useFeedPage(source, firehoseQuery, firehoseEnabled);
 
   const latestQuery = useMemo<FeedQuery>(
-    () => ({ first: PAGE_SIZE, search: committedQ, order: "recency" }),
-    [committedQ],
+    // `viewer: me` lets a spec-120 node stamp the myVote/reposted overlay node-side (same as the
+    // firehose), so search results show my vote/repost state and `carriedViewerStates` skips the
+    // per-card viewerPostState read (no flash of unfilled action icons).
+    () => ({ first: PAGE_SIZE, search: committedQ, order: "recency", viewer: me ?? undefined }),
+    [committedQ, me],
   );
   const latestEnabled = mode === "query" && searchEnabled;
   const latest = useFeedPage(source, latestQuery, latestEnabled);
@@ -191,7 +291,9 @@ function ExploreView() {
     setPeopleError(null);
     setPeople([]);
     source
-      .searchPeople(committedQ, PEOPLE_LIMIT)
+      // Fetch one extra so ExploreList can tell a full-but-complete page (exactly PEOPLE_LIMIT) from a
+      // genuinely truncated one (a PEOPLE_LIMIT+1th row exists) — search_people has no cursor/total.
+      .searchPeople(committedQ, PEOPLE_LIMIT + 1)
       .then((p) => {
         if (!cancelled) setPeople(p);
       })
@@ -252,50 +354,24 @@ function ExploreView() {
         const cur = viewerStates.get(post.id) ?? NO_VIEWER;
         repost.repost(post.id, cur.reposted);
       },
-      onShare: (post) => {
-        void copyToClipboard(postLink(post.id)).then((ok) =>
-          toast(
-            ok
-              ? { kind: "success", message: "Link copied" }
-              : { kind: "error", message: "Couldn't copy the link" },
-          ),
-        );
-      },
+      onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
     [router, viewer.status, viewerStates, vote, repost, pin, toast],
   );
 
-  // ── "/" global shortcut: focus the SearchBar (X parity, §9). Ignore while typing / a modal is open. ─
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      const tag = t?.tagName;
-      const typing =
-        tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable === true;
-      if (typing) return;
-      // A modal/composer open → don't steal the slash.
-      if (document.querySelector("[role='dialog']")) return;
-      const input = document.querySelector<HTMLInputElement>(
-        "[role='search'] input[type='search']",
-      );
-      if (input) {
-        e.preventDefault();
-        input.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  // The "/" focus shortcut is now app-wide (useSearchHotkey in AppShell) — no per-surface effect here.
 
   // ── result-count live summary (polite) ───────────────────────────────────────────────────────
+  // People fetches PEOPLE_LIMIT+1 as a truncation probe but ExploreList renders only PEOPLE_LIMIT, so the
+  // announced count is clamped to what's on screen (else a screen reader says "21 people" over 20 rows).
+  const peopleShown = Math.min(people.length, PEOPLE_LIMIT);
   const liveSummary =
     mode === "query"
       ? activeResultTab === "people"
         ? peopleLoading
           ? ""
-          : `${people.length} ${people.length === 1 ? "person" : "people"} for ${committedQ}`
+          : `${peopleShown} ${peopleShown === 1 ? "person" : "people"} for ${committedQ}`
         : latest.loading
           ? ""
           : `${activePosts.length} ${activePosts.length === 1 ? "result" : "results"} for ${committedQ}`
@@ -314,8 +390,12 @@ function ExploreView() {
             onChange={onChangeDraft}
             onSubmit={commitNow}
             searchEnabled={searchEnabled}
-            autoFocus
+            autoFocus={autoFocusOnMount}
             loading={mode === "query" && (latest.loading || peopleLoading)}
+            recent={recentSearches}
+            onSelectRecent={onSelectRecent}
+            onRemoveRecent={recentSearchActions.remove}
+            onClearRecent={recentSearchActions.clear}
           />
         </div>
         {/* Score ("Top") order isn't served yet (scoreOrderEnabled=false → the only reachable state is
@@ -330,6 +410,11 @@ function ExploreView() {
         )}
         {mode === "query" && peopleEnabled && (
           <ResultTabStrip active={activeResultTab} onChange={setResultTab} />
+        )}
+        {showTooShortHint && (
+          <p className={styles.tooShortHint} role="status">
+            Keep typing to search — at least {MIN_QUERY_LEN} characters.
+          </p>
         )}
       </header>
 
@@ -363,6 +448,7 @@ function ExploreView() {
             onRetry={() => setPeopleNonce((n) => n + 1)}
             isFollowing={follow.isFollowing}
             onToggleFollow={onToggleFollow}
+            limit={PEOPLE_LIMIT}
           />
         ) : (
           <Timeline
@@ -381,6 +467,7 @@ function ExploreView() {
             emptyDescription="Try different keywords."
             api={api}
             signer={signer}
+            highlight={committedQ}
           />
         )}
       </section>

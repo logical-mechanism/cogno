@@ -8,6 +8,7 @@
 
 import Link from "next/link";
 import styles from "./DisplayName.module.css";
+import { Highlight } from "./Highlight";
 import { fallbackDisplayName } from "@/lib/ss58";
 
 export interface DisplayNameProps {
@@ -18,6 +19,8 @@ export interface DisplayNameProps {
   authorRevoked?: boolean;
   as?: "span" | "a";
   truncate?: boolean;
+  /** Search term to <mark> in the name (set only on search-result surfaces). */
+  highlight?: string;
 }
 
 export function DisplayName({
@@ -26,22 +29,24 @@ export function DisplayName({
   authorRevoked,
   as = "span",
   truncate = true,
+  highlight,
 }: DisplayNameProps) {
   const label = displayName?.trim() || fallbackDisplayName(address);
   const cls = [styles.name, truncate ? styles.truncate : "", authorRevoked ? styles.dim : ""]
     .filter(Boolean)
     .join(" ");
+  const content = <Highlight text={label} query={highlight} />;
 
   if (as === "a") {
     return (
       <Link href={`/u/${address}/`} className={cls} title={address}>
-        {label}
+        {content}
       </Link>
     );
   }
   return (
     <span className={cls} title={address}>
-      {label}
+      {content}
     </span>
   );
 }

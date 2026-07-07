@@ -83,8 +83,11 @@ interface PersonSummaryRaw {
  * Read at the BEST block, not the runtime-API default (finalized). Writes confirm at `inBestBlock`,
  * several blocks before finalization, so a finalized feed read of a just-cast vote/repost is STALE and
  * the optimistic overlay can't reconcile until finalization (a vote appears to revert). This chain is
- * single-producer (best never reorgs), so best is fresh AND safe. Passed to the tally-bearing feed
- * reads (a read-after-write reconciliation depends on them); search / who-to-follow keep the default.
+ * single-producer (best never reorgs), so best is fresh AND safe. Passed to the tally-bearing reads
+ * whose viewer overlay a read-after-write reconciliation depends on — the feeds AND `search_posts`
+ * (Latest results now carry the myVote/reposted overlay, so a finalized read would make a just-cast
+ * vote on a result appear to revert). `search_people` / `who_to_follow` have no per-viewer overlay, so
+ * they keep the finalized default.
  */
 const BEST = { at: "best" } as const;
 type AtBest = typeof BEST;
@@ -127,6 +130,7 @@ interface MicroblogApiCalls {
     beforeId: bigint | undefined,
     limit: number,
     viewer: Ss58 | undefined,
+    opts?: AtBest,
   ): Promise<FeedPageRaw>;
   /** People search by display-name substring (`term` ⇒ `Uint8Array`), ranked by follower count. */
   search_people(term: Uint8Array, limit: number): Promise<PersonSummaryRaw[]>;
@@ -358,6 +362,8 @@ export async function nodeAuthorPostCount(api: CognoApi, author: Ss58): Promise<
  * `Binary`. The runtime bounds each call's scan (`limit · MAX_SCAN_FACTOR` ids) and hands back a
  * `next_cursor` on a sparse-match range; `chasePage` follows it to fill a full page — the SAME
  * cursor-chasing as the feeds, so a no-match dense stretch never yields an empty-but-more page early.
+ * Read at BEST (like the feeds): Latest results carry the viewer overlay, so the read-after-write
+ * reconciliation of a just-cast vote/repost on a result needs the fresh best block (see `BEST`).
  */
 export async function nodeSearchPosts(
   api: CognoApi,
@@ -366,7 +372,7 @@ export async function nodeSearchPosts(
 ): Promise<IdPage> {
   const termBin = Binary.fromText(term);
   return chasePage(
-    (beforeId, limit) => microblogApi(api).search_posts(termBin, beforeId, limit, opts.viewer),
+    (beforeId, limit) => microblogApi(api).search_posts(termBin, beforeId, limit, opts.viewer, BEST),
     opts.beforeId,
     opts.limit,
     opts.viewer != null,
@@ -404,7 +410,7 @@ export async function nodeSearchPeople(
   term: string,
   limit: number,
 ): Promise<Suggestion[]> {
-  const rows = await microblogApi(api).search_people(Binary.fromText(term), limit);
+  const rows = await microblogApi(api).search_people(Binary.fromText(term), clampLimit(limit));
   return rows.map(personSummaryToSuggestion);
 }
 

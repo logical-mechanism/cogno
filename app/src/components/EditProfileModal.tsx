@@ -21,6 +21,7 @@ import { ByteCounter, utf8Bytes } from "./ByteCounter";
 import { Avatar } from "./Avatar";
 import { Spinner } from "./icons";
 import { useSession } from "./Providers";
+import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
 import { useOptimistic } from "@/hooks/useOptimistic";
 
 const MAX_NAME = 64;
@@ -46,14 +47,29 @@ export interface EditProfileModalProps {
   onSaveProfile: (fields: ProfileFields) => void;
   /** Clear the whole profile — the host runs the optimistic write + toast + close. */
   onClearProfile: () => void;
+  /**
+   * Ready account with ZERO posting power (locked-ADA weight 0, or a lock still crediting). set_profile /
+   * clear_profile are capacity-metered exactly like a post, so with no power the write would be refused by
+   * CheckCapacity. Mirror the composer: show the explained NoPostingPowerNotice + hard-disable the actions
+   * rather than let Save fire into a confusing rate-limit toast. Advisory — CheckCapacity is the authority.
+   */
+  noPostingPower?: boolean;
 }
 
-export function EditProfileModal({ onClose, onSaveProfile, onClearProfile }: EditProfileModalProps) {
+export function EditProfileModal({
+  onClose,
+  onSaveProfile,
+  onClearProfile,
+  noPostingPower,
+}: EditProfileModalProps) {
   const { api, source, signerCtl } = useSession();
   const { overlay } = useOptimistic();
 
   const ss58 = signerCtl.signer.ss58;
-  const canWrite = !!api && signerCtl.postingEnabled;
+  // No posting power is a hard write block, same as in the composer: without capacity the feeless
+  // set_profile / clear_profile can't land, so gate both actions off it (the NoPostingPowerNotice below
+  // explains why — and shows the timed "crediting" state when a lock is still settling).
+  const canWrite = !!api && signerCtl.postingEnabled && noPostingPower !== true;
 
   const [name, setName] = useState("");
   const [bio, setBio] = useState("");
@@ -160,6 +176,10 @@ export function EditProfileModal({ onClose, onSaveProfile, onClearProfile }: Edi
         <h2 className={styles.heading} tabIndex={-1} ref={headingRef}>
           Edit profile
         </h2>
+
+        {/* Same explained/timed pending-power banner the composer shows — self-contained (returns null
+            once posting power is credited), so it only appears during the lock→credit wait or a real 0. */}
+        <NoPostingPowerNotice />
 
         {loading ? (
           <div className={styles.loading} aria-busy>
@@ -297,6 +317,7 @@ export function EditProfileModal({ onClose, onSaveProfile, onClearProfile }: Edi
                 type="button"
                 className={styles.linkBtn}
                 onClick={() => setConfirmClear(true)}
+                disabled={!canWrite}
               >
                 Clear profile
               </button>

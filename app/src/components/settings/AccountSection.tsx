@@ -12,6 +12,7 @@ import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
 import { useSession } from "@/components/Providers";
 import { useToaster } from "@/components/toast/ToasterProvider";
+import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { truncateSs58 } from "@/lib/ss58";
 import { setupStatus } from "@/lib/setup-status";
 import { formatAda } from "@/lib/format";
@@ -41,6 +42,10 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
     );
     return () => sub.unsubscribe();
   }, [api, ss58]);
+
+  // A lock crediting → the setup status says "crediting", not "lock ADA" (called before any early
+  // return to satisfy the Rules of Hooks).
+  const pending = usePendingCapacity(api, ss58, postingPower);
 
   const copyAddress = useCallback(async () => {
     try {
@@ -89,7 +94,7 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
 
   const loadingBound = identity.bound === null;
   const loadingVote = identity.votingPower === null;
-  const status = setupStatus(sessionState, postingPower);
+  const status = setupStatus(sessionState, postingPower, pending.kind !== "none");
 
   return (
     <div className={styles.cards}>

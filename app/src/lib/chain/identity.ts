@@ -130,6 +130,14 @@ export async function isAccountBound(api: CognoApi, ss58: Ss58): Promise<boolean
   return v !== undefined;
 }
 
+/** Whether `ss58` has a live stake credential bound (`StakeCredOf` present ⇒ votes carry weight). The
+ *  stake-bind analogue of `isAccountBound`: the readback that confirms a fresh voting-power bind landed
+ *  on-chain, so the stake bind can narrate a `confirming` step just like the payment bind. */
+export async function isStakeBound(api: CognoApi, ss58: Ss58): Promise<boolean> {
+  const v = await api.query.CognoGate.StakeCredOf.getValue(ss58);
+  return v !== undefined;
+}
+
 /**
  * The AccountOf readback: which account the 32-byte identity hash is bound to. The client's
  * bind-complete check is `readAccountOf(idHash) === my ss58` — the only client-side defense

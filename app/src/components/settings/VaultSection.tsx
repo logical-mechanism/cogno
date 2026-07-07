@@ -17,6 +17,10 @@ import { Skeleton } from "@/components/Skeleton";
 import { CardanoTxLink } from "@/components/CardanoTxLink";
 import { useSession } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
+import { usePendingCapacity } from "@/hooks/usePendingCapacity";
+import { usePendingLockSync } from "@/hooks/usePendingLockSync";
+import { PendingCapacityNotice } from "@/components/PendingCapacityNotice";
+import { pendingLockActions } from "@/lib/pendingLockStore";
 import { useActionToast } from "@/hooks/useActionToast";
 import { formatAda } from "@/lib/format";
 
@@ -31,8 +35,8 @@ export function VaultSection() {
   const ss58 = signerCtl.signer.ss58;
   const connected = signerCtl.walletConnected && !!walletId;
 
-  // On-chain posting power (the weight the follower/inherent granted). Watched — it lands a few blocks
-  // after a lock. This is the ONLY chain read here.
+  // On-chain posting power (the weight the observer inherent granted). Watched — it lands only after the
+  // lock clears the observer's stability window (see usePendingCapacity, which shows the ETA).
   const [postingPower, setPostingPower] = useState<bigint | null>(null);
   useEffect(() => {
     if (!api) {
@@ -47,6 +51,11 @@ export function VaultSection() {
     return () => sub.unsubscribe();
   }, [api, ss58]);
 
+  // Persist the in-flight lock + surface the explained, timed "crediting" state (survives reload,
+  // covers relock). Mirrors the welcome flow so both places tell the same story.
+  usePendingLockSync(vault, ss58);
+  const pending = usePendingCapacity(api, ss58, postingPower);
+
   // Inspect the vault once on mount / wallet change.
   useEffect(() => {
     if (connected && walletId) vault.inspect(walletId);
@@ -58,7 +67,11 @@ export function VaultSection() {
     const action = actionRef.current;
     if (!action) return;
     if (vault.phase === "submitted") {
-      ok(action === "lock" ? "Lock submitted. Posting power updates shortly" : "Exit submitted. Updating shortly");
+      ok(
+        action === "lock"
+          ? "Lock submitted — crediting your posting power"
+          : "Exit submitted — your posting power will update",
+      );
       actionRef.current = null;
     } else if (vault.phase === "error" && vault.error) {
       fail(vault.error);
@@ -82,6 +95,9 @@ export function VaultSection() {
   const locked = vault.locked;
   const hasLock = locked != null && locked > 0n;
   const working = vault.phase === "working";
+  // The pending "crediting" notice replaces "No posting power yet" (and its lock-below note) while a
+  // lock is in flight — the user already locked; don't tell them to lock again.
+  const showingPending = postingPower != null && postingPower <= 0n && pending.kind !== "none";
 
   return (
     <div className={styles.cards}>
@@ -92,12 +108,20 @@ export function VaultSection() {
           <Skeleton variant="line" width="120px" />
         ) : postingPower > 0n ? (
           <p className={styles.power}>{formatAda(postingPower)} locked</p>
+        ) : showingPending ? (
+          <PendingCapacityNotice
+            status={pending}
+            variant="inline"
+            onDismiss={() => pendingLockActions.clear(ss58)}
+          />
         ) : (
           <p className={styles.powerMuted}>No posting power yet</p>
         )}
-        <p className={styles.note}>
-          Posting requires locked ADA. Lock below to get the talk-capacity every post consumes.
-        </p>
+        {!showingPending && (
+          <p className={styles.note}>
+            Posting requires locked ADA. Lock below to get the talk-capacity every post consumes.
+          </p>
+        )}
       </div>
 
       {/* Provider unavailable → hide lock/exit, prompt to configure one */}
@@ -158,7 +182,7 @@ export function VaultSection() {
 
           {vault.phase === "submitted" && (
             <div className={styles.submittedRow}>
-              <p className={styles.submitted}>Submitted. Updating shortly</p>
+              <p className={styles.submitted}>Submitted ✓</p>
               {vault.txHash && <CardanoTxLink txHash={vault.txHash} />}
             </div>
           )}

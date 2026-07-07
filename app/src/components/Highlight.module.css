@@ -1,0 +1,8 @@
+/* The matched search term inside a result. A subtle accent wash keeps the surrounding text legible in
+   both themes (color inherits); no weight change so it never reflows a name/body. */
+.mark {
+  background: var(--cg-accent-wash);
+  color: inherit;
+  border-radius: var(--cg-radius-sm, 2px);
+  padding: 0 0.1em;
+}

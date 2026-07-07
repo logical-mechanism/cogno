@@ -27,3 +27,19 @@ export async function getProvider(projectId?: string): Promise<BlockfrostProvide
   const { BlockfrostProvider } = await import("@meshsdk/core");
   return new BlockfrostProvider(id);
 }
+
+/**
+ * The Cardano slot the given tx was confirmed in, or null if it is not yet in a block (or on any
+ * provider error). Used to time the lock→credit wait: a lock is creditable once the observed frontier
+ * passes this slot. Callers retry until it resolves (a fresh tx is briefly absent from the chain).
+ */
+export async function fetchTxSlot(txHash: string): Promise<number | null> {
+  try {
+    const provider = await getProvider();
+    const info = await provider.fetchTxInfo(txHash);
+    const n = Number(info?.slot);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null; // not yet confirmed, or provider error — caller retries
+  }
+}

@@ -46,7 +46,7 @@ import { draftStatus } from "@/lib/chain/capacity";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitPost } from "@/lib/chain/mutations";
-import { copyToClipboard, postLink } from "@/lib/share";
+import { sharePostWithToast } from "@/lib/share";
 import type { CognoPost, ViewerPostState, FeedQuery } from "@/lib/types";
 import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
 
@@ -242,15 +242,7 @@ export default function HomePage() {
         const cur = viewerStates.get(post.id) ?? NO_VIEWER;
         repost.repost(post.id, cur.reposted);
       },
-      onShare: (post) => {
-        void copyToClipboard(postLink(post.id)).then((ok) =>
-          toast(
-            ok
-              ? { kind: "success", message: "Link copied" }
-              : { kind: "error", message: "Couldn't copy the link" },
-          ),
-        );
-      },
+      onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
     [router, viewer.status, viewerStates, vote, repost, pin, toast],

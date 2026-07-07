@@ -5,11 +5,14 @@
 // zero capacity and every post is refused by CheckCapacity. So this step does NOT claim "you can post"
 // up front — it foregrounds locking ADA as the REQUIRED next step to post, while keeping reading open.
 //
-//   notReady (no posting power yet) — heading "One step left to post"; the VaultCard is the REQUIRED
-//                 primary action (lock 100 ADA → posting capacity), the StakeCard (voting power) is the
-//                 only OPTIONAL boost, and a quiet "Browse the timeline (read-only)" link never blocks
-//                 reading. We never say a battery/block/tx — capacity "arrives shortly".
-//   justLocked    — the lock was submitted; capacity lands a few blocks later → "Almost there".
+//   notReady (no posting power, none pending) — heading "One step left to post"; the VaultCard is the
+//                 REQUIRED primary action (lock 100 ADA → posting capacity), the StakeCard (voting power)
+//                 is the only OPTIONAL boost, and a quiet "Browse the timeline (read-only)" link never
+//                 blocks reading.
+//   pending       — a lock is in flight/crediting (usePendingCapacity, driven by the persisted pending
+//                 record so it survives reload / follows a relock) → the timed PendingCapacityNotice with
+//                 a live "posting unlocks in ~N min" ETA + progress, plus "go to your timeline" (reading
+//                 stays open). Replaces the old ephemeral "Almost there / arrives shortly".
 //   canPost       — posting power > 0 → "You're all set" + "Go to your timeline" (+ optional voting power).
 //
 // VaultCard — lock 100 ADA into the L1 vault to GET posting capacity (useVault.lock). When no Cardano
@@ -29,18 +32,25 @@ import styles from "./PowerUps.module.css";
 import { Spinner } from "@/components/icons";
 import { StepFlow } from "./StepFlow";
 import { CardanoTxLink } from "@/components/CardanoTxLink";
+import { PendingCapacityNotice, pendingTitle } from "@/components/PendingCapacityNotice";
+import { pendingLockActions } from "@/lib/pendingLockStore";
+import type { PendingCapacityStatus } from "@/hooks/usePendingCapacity";
 import type { UseVault, VaultStep } from "@/hooks/useVault";
 import type { BindPhase } from "@/hooks/useIdentity";
 
 // ── shared step-flow configs (mirror the hook phases) ────────────────────────────────────────────
 
-const STAKE_STEPS: { key: Exclude<BindPhase, "idle" | "confirming">; label: string }[] = [
+// Same three-phase shape as the register bind (BIND_STEPS) — both are the one feeless app-chain bind
+// tx (sign → submit-to-finalization → on-chain readback), so they read identically in the UI.
+const STAKE_STEPS: { key: Exclude<BindPhase, "idle">; label: string }[] = [
   { key: "signing", label: "Sign in your wallet" },
   { key: "submitting", label: "Submit voting power" },
+  { key: "confirming", label: "Confirm on-chain" },
 ];
-const STAKE_NARRATION: Record<Exclude<BindPhase, "idle" | "confirming">, string> = {
+const STAKE_NARRATION: Record<Exclude<BindPhase, "idle">, string> = {
   signing: "Approve the stake signature in your wallet…",
   submitting: "Submitting your voting power to the network…",
+  confirming: "Confirming on-chain…",
 };
 
 const VAULT_STEPS: { key: Exclude<VaultStep, "idle">; label: string }[] = [
@@ -73,6 +83,10 @@ export interface PowerUpsProps {
    * locked user shows a neutral "checking" state instead of flashing "One step left to post".
    */
   postingPower: bigint | null;
+  /** the timed lock→credit pending state (usePendingCapacity), driven by the persisted pending record. */
+  pending: PendingCapacityStatus;
+  /** the ss58 whose pending record can be dismissed (an overdue lock that never credits). */
+  ss58?: string | null;
   welcomeBack?: boolean;
   onGoToTimeline: () => void;
   onOpenSettings: () => void;
@@ -84,25 +98,49 @@ export function PowerUps({
   walletId,
   stake,
   postingPower,
+  pending,
+  ss58,
   welcomeBack,
   onGoToTimeline,
   onOpenSettings,
   headingRef,
 }: PowerUpsProps) {
   const hasPostingPower = (postingPower ?? 0n) > 0n;
-  const justLocked = !hasPostingPower && vault.phase === "submitted";
 
-  // Already postable (or the lock just landed) → a done/almost-done banner + the optional voting boost.
-  if (hasPostingPower || justLocked) {
+  // Already postable → a done banner + the optional voting boost.
+  if (hasPostingPower) {
     return (
       <section className={styles.step} aria-labelledby="welcome-heading">
-        <DoneBanner
-          welcomeBack={welcomeBack}
-          justLocked={justLocked}
-          txHash={vault.txHash}
-          onGoToTimeline={onGoToTimeline}
-          headingRef={headingRef}
-        />
+        <DoneBanner welcomeBack={welcomeBack} onGoToTimeline={onGoToTimeline} headingRef={headingRef} />
+        <div className={styles.cards}>
+          <StakeCard stake={stake} walletId={walletId} />
+        </div>
+        <p className={styles.later}>You can manage voting power anytime in Settings.</p>
+      </section>
+    );
+  }
+
+  // A lock is in flight/crediting → the explained, timed pending state (survives reload / follows the
+  // user here from a relock). Reading stays open, so keep the "go to your timeline" invite.
+  if (pending.kind !== "none") {
+    return (
+      <section className={styles.step} aria-labelledby="welcome-heading">
+        <div className={styles.banner}>
+          <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
+            {pendingTitle(pending) ?? "Almost there"}
+          </h1>
+        </div>
+        <div className={styles.cards}>
+          <PendingCapacityNotice
+            status={pending}
+            variant="card"
+            hideTitle
+            onDismiss={ss58 ? () => pendingLockActions.clear(ss58) : undefined}
+          />
+        </div>
+        <button type="button" className={styles.primary} onClick={onGoToTimeline}>
+          Go to your timeline
+        </button>
         <div className={styles.cards}>
           <StakeCard stake={stake} walletId={walletId} />
         </div>
@@ -158,32 +196,19 @@ export function PowerUps({
 
 function DoneBanner({
   welcomeBack,
-  justLocked,
-  txHash,
   onGoToTimeline,
   headingRef,
 }: {
   welcomeBack?: boolean;
-  justLocked: boolean;
-  txHash?: string | null;
   onGoToTimeline: () => void;
   headingRef?: React.Ref<HTMLHeadingElement>;
 }) {
-  const heading = justLocked ? "Almost there" : welcomeBack ? "Welcome back" : "You're all set";
-  const lede = justLocked
-    ? "Locked. Your posting capacity arrives shortly."
-    : "You can post, reply, repost, and follow.";
   return (
     <div className={styles.banner}>
       <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
-        {heading}
+        {welcomeBack ? "Welcome back" : "You're all set"}
       </h1>
-      <p className={styles.bannerLede}>{lede}</p>
-      {justLocked && txHash && (
-        <div className={styles.bannerTx}>
-          <CardanoTxLink txHash={txHash} label="Lock transaction" />
-        </div>
-      )}
+      <p className={styles.bannerLede}>You can post, reply, repost, vote, and follow.</p>
       <button type="button" className={styles.primary} onClick={onGoToTimeline}>
         Go to your timeline
       </button>
@@ -222,7 +247,7 @@ function VaultCard({
 
       {vault.phase === "submitted" ? (
         <>
-          <p className={styles.cardOk}>Locked. Your posting capacity arrives shortly.</p>
+          <p className={styles.cardOk}>Locked ✓ — crediting your posting power…</p>
           {vault.txHash && <CardanoTxLink txHash={vault.txHash} label="Lock transaction" />}
         </>
       ) : !vault.available ? (
@@ -315,7 +340,12 @@ function StakeCard({
     <div className={styles.card}>
       <div className={styles.cardTitleRow}>
         <h2 className={styles.cardTitle}>Add voting power</h2>
-        <span className={styles.optionalChip}>Optional</span>
+        <span
+          className={styles.optionalChip}
+          title="You can post without this. Voting power lets your votes and polls carry weight in Cogno — without it, they count for zero."
+        >
+          Optional
+        </span>
       </div>
       <p className={styles.cardBody}>Prove your wallet&apos;s stake to make your votes count.</p>
 
@@ -356,12 +386,12 @@ function StakeCard({
               <StepFlow
                 steps={STAKE_STEPS}
                 active={STAKE_STEPS.findIndex(
-                  (s) => s.key === (stake.stakeBindPhase === "submitting" ? "submitting" : "signing"),
+                  (s) => s.key === (stake.stakeBindPhase === "idle" ? "signing" : stake.stakeBindPhase),
                 )}
                 ariaLabel="Voting-power progress"
               />
               <p className={styles.narration} aria-live="polite">
-                {STAKE_NARRATION[stake.stakeBindPhase === "submitting" ? "submitting" : "signing"]}
+                {STAKE_NARRATION[stake.stakeBindPhase === "idle" ? "signing" : stake.stakeBindPhase]}
               </p>
             </div>
           )}

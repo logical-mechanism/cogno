@@ -64,6 +64,8 @@ export interface PostCardProps {
   pollMyChoice?: number | null;
   /** Optimistic cast for the attached poll. */
   onPollVote?: (option: number) => void;
+  /** Search term to <mark> in the body (set only on search-result surfaces). */
+  highlight?: string;
 }
 
 /** Build the minimal author descriptor the header/embed need from a CognoPost's flattened fields. */
@@ -88,6 +90,7 @@ export function PostCard({
   poll,
   pollMyChoice,
   onPollVote,
+  highlight,
 }: PostCardProps) {
   const author = useMemo(() => authorOf(post), [post]);
   const dim = post.authorRevoked === true;
@@ -230,11 +233,21 @@ export function PostCard({
           {isReply && variant !== "thread" && (
             <p className={styles.replyContext}>
               Replying to{" "}
-              <span className={styles.replyTarget}>{handleOf(String(post.parent))}</span>
+              <button
+                type="button"
+                className={styles.replyTarget}
+                // parent is a post id, not an account — link to the parent post (not a fake @handle).
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (post.parent != null) handlers.onOpen(post.parent);
+                }}
+              >
+                a post
+              </button>
             </p>
           )}
 
-          <PostBody text={post.text} size={detail ? "lg" : "base"} dim={dim} />
+          <PostBody text={post.text} size={detail ? "lg" : "base"} dim={dim} highlight={highlight} />
 
           {post.quote && (
             <QuotedPostEmbed

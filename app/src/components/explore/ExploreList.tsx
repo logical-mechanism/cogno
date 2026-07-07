@@ -21,6 +21,9 @@ export interface ExploreListProps {
   onRetry?: () => void;
   isFollowing: (target: string) => boolean;
   onToggleFollow: (target: string, next: boolean) => void;
+  /** Display cap. The caller fetches limit+1 so an extra row distinguishes a truncated page from a
+   *  complete one (search_people has no cursor/total); only the first `limit` are shown. */
+  limit?: number;
 }
 
 export function ExploreList({
@@ -32,6 +35,7 @@ export function ExploreList({
   onRetry,
   isFollowing,
   onToggleFollow,
+  limit,
 }: ExploreListProps) {
   if (loading && people.length === 0) {
     return (
@@ -67,17 +71,29 @@ export function ExploreList({
     );
   }
 
+  // The caller fetches limit+1; a (limit+1)th row means there are genuinely more, so we show only the
+  // first `limit` and the "refine" note. Exactly `limit` matches (no extra row) is a COMPLETE result
+  // set → all shown, no misleading note.
+  const truncated = limit != null && people.length > limit;
+  const shown = limit != null ? people.slice(0, limit) : people;
+
   return (
     <div className={styles.list}>
-      {people.map((p) => (
+      {shown.map((p) => (
         <PersonResult
           key={p.author}
           person={p}
           viewer={viewer}
           isFollowing={isFollowing(p.author)}
           onToggleFollow={onToggleFollow}
+          highlight={query}
         />
       ))}
+      {truncated && (
+        <p className={styles.truncated}>
+          Showing the top {limit} people — refine your search to narrow it.
+        </p>
+      )}
     </div>
   );
 }

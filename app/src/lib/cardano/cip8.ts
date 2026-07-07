@@ -55,6 +55,23 @@ function randomNonceHex(): string {
 const hexByteLen = (h: string) => h.replace(/^0x/, "").length / 2;
 
 /**
+ * True for the *expected* wallet outcomes — the user dismissed the CIP-8 sign prompt or mistyped the
+ * wallet password. These are user actions, not app faults: still surface them in the UI, but don't
+ * `console.error` them. Next's dev server mirrors the browser console to the terminal, so a plain
+ * decline would otherwise print a red stack trace for a non-event.
+ */
+export function isUserRejection(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes("declined") ||
+    msg.includes("rejected") ||
+    msg.includes("denied") ||
+    msg.includes("cancel") ||
+    msg.includes("wrong password")
+  );
+}
+
+/**
  * Produce a CIP-8 bind self-proof: enable the wallet → pick a vkey-payment signing address → build the
  * pinned payload IN-BROWSER (committing MY posting account + THIS chain's genesis + a fresh nonce) →
  * client pre-flight (vkey-payment address, 32-byte key, on-chain size bounds) → sign it ONCE. Returns a
@@ -125,10 +142,13 @@ export async function produceBindProof(opts: {
 
     return { ok: true, coseSign1: sig.signature, coseKey: sig.key, signingAddress };
   } catch (e) {
-    // The whole proof is best-effort and returns a structured outcome, but a swallowed error is a silent
-    // identity-flow failure — log it with the account for diagnosis.
-    // eslint-disable-next-line no-console
-    console.error(`cogno: produceBindProof failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
+    // The whole proof is best-effort and returns a structured outcome, but a swallowed *genuine* error is
+    // a silent identity-flow failure — log it with the account for diagnosis. A user-declined prompt or a
+    // wrong wallet password is expected, not a fault: pass it through to the UI without console noise.
+    if (!isUserRejection(e)) {
+      // eslint-disable-next-line no-console
+      console.error(`cogno: produceBindProof failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
+    }
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
@@ -202,8 +222,11 @@ export async function produceBindProofStake(opts: {
 
     return { ok: true, coseSign1: sig.signature, coseKey: sig.key, signingAddress: rewardAddress, stakeCredentialHex };
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error(`cogno: produceBindProofStake failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
+    // A declined prompt / wrong wallet password is expected — surface it in the UI, but don't log it.
+    if (!isUserRejection(e)) {
+      // eslint-disable-next-line no-console
+      console.error(`cogno: produceBindProofStake failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
+    }
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

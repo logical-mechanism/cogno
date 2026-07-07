@@ -23,6 +23,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
+import { usePendingCapacity } from "@/hooks/usePendingCapacity";
+import { usePendingLockSync } from "@/hooks/usePendingLockSync";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { WelcomeShell } from "@/components/welcome/WelcomeShell";
 import { WalletPicker } from "@/components/welcome/WalletPicker";
@@ -97,6 +99,12 @@ export default function WelcomePage() {
     return () => sub.unsubscribe();
   }, [api, signerCtl.signer.ss58]);
 
+  // The lock→credit pending state (explained, timed) + persistence of the in-flight lock so it survives
+  // navigate/reload and follows a relock. usePendingLockSync writes the record when a lock submits (and
+  // clears it on exit); usePendingCapacity turns record + observer frontier + AllowedStake into a status.
+  usePendingLockSync(vault, signerCtl.signer.ss58);
+  const pending = usePendingCapacity(api, signerCtl.signer.ss58, postingPower);
+
   // Derive the active step (surface 11 §6.1).
   const welcomeStep: WelcomeStep =
     sessionState === "connecting"
@@ -159,7 +167,7 @@ export default function WelcomePage() {
   // so focus follows (and screen readers re-announce) the new heading instead of dropping to <body>.
   const powerupsBanner =
     welcomeStep === "powerups"
-      ? `${(postingPower ?? 0n) > 0n}|${vault.phase === "submitted"}|${postingPower === null}`
+      ? `${(postingPower ?? 0n) > 0n}|${pending.kind}|${postingPower === null}`
       : "";
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
@@ -177,11 +185,18 @@ export default function WelcomePage() {
     [signerCtl],
   );
 
-  // Cancel an in-flight derive: there is no abort handle on the promise, so we just disconnect back to
-  // the picker (the resolved promise's setState is harmless; the derive doesn't move funds).
+  // Cancel an in-flight derive: there is no abort handle on the CIP-30 signData promise, so disconnect()
+  // abandons it (a derive-generation bump makes its late/never-arriving result a no-op) and releases the
+  // spinner immediately — returning to the picker list. The derive moves no funds. We CAN'T close the
+  // wallet's own popup, so remind the user it may still be asking (otherwise they might sign a request
+  // we've already thrown away).
   const onCancelConnect = useCallback(() => {
     signerCtl.disconnect();
-  }, [signerCtl]);
+    toast({
+      kind: "info",
+      message: "Cancelled. If your wallet still shows a signature request, you can reject it there.",
+    });
+  }, [signerCtl, toast]);
 
   const onRegister = useCallback(() => {
     if (!signerCtl.connectedWalletId) return;
@@ -239,7 +254,6 @@ export default function WelcomePage() {
 
       {welcomeStep === "bind" && (
         <BindStep
-          ss58={signerCtl.signer.ss58}
           binding={identity.binding}
           bindPhase={identity.bindPhase}
           error={identity.error}
@@ -263,6 +277,8 @@ export default function WelcomePage() {
             bindStake: identity.bindStake,
           }}
           postingPower={postingPower}
+          pending={pending}
+          ss58={signerCtl.signer.ss58}
           onGoToTimeline={goToTimeline}
           onOpenSettings={openSettings}
           headingRef={headingRef}

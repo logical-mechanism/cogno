@@ -65,3 +65,20 @@ export function resolveImageSrc(url: string): string {
     return url;
   }
 }
+
+// URL tokenizer shared with the post renderer (PostBody.segment) and the composer's image-link chip, so
+// the two never drift on which links count as images. Match http(s) AND ipfs:// URLs, stopping the run
+// at whitespace; trailing sentence punctuation is trimmed so a URL at the end of a sentence
+// ("see https://x.org.") doesn't swallow the period.
+export const URL_RE = /(?:https?|ipfs):\/\/[^\s]+/gi;
+export const TRAILING_PUNCT = /[.,!?:;)\]}'"»”’]+$/;
+
+/** How many URLs in `text` render as images (same classification the renderer applies). Used by the
+ *  composer to show the "N image links — shown when opened" chip without re-deriving the URL scan. */
+export function countImageUrls(text: string): number {
+  let n = 0;
+  for (const m of text.matchAll(URL_RE)) {
+    if (isImageUrl(m[0].replace(TRAILING_PUNCT, ""))) n += 1;
+  }
+  return n;
+}

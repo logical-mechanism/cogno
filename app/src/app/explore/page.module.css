@@ -17,6 +17,19 @@
   border-bottom: 1px solid var(--cg-border);
 }
 
+/* "Keep typing to search" hint shown under the box while the draft is below MIN_QUERY_LEN — same
+   blurred header surface as the search row so it reads as part of the pinned header. */
+.tooShortHint {
+  margin: 0;
+  padding: var(--cg-space-2) var(--cg-space-4);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+  background: var(--cg-header-bg);
+  backdrop-filter: blur(var(--cg-header-blur));
+  -webkit-backdrop-filter: blur(var(--cg-header-blur));
+  border-bottom: 1px solid var(--cg-border);
+}
+
 /* Visually-hidden live region for polite result-count announcements (§9). */
 .srOnly {
   position: absolute;

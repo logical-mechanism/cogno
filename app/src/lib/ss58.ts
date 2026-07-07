@@ -1,8 +1,14 @@
-// lib/ss58 — pure ss58 helpers (no React, no network).
+// lib/ss58 — ss58 helpers (no React, no network).
 //
 // There are NO unique @handles on cogno-chain (D6); the "handle" is the account's ss58 address,
 // truncated. These helpers are the single source of that truncation + a cheap plausibility check
 // used by the static-export dynamic routes (/u/[address]) before they render a profile.
+
+import { ss58Decode, ss58Encode } from "@polkadot-labs/hdkd-helpers";
+import { toHex } from "@polkadot-api/utils";
+
+/** The cogno-chain ss58 prefix (42 — the generic-substrate value the chain + signer use). */
+const CHAIN_SS58_PREFIX = 42;
 
 /** Truncate an ss58 address to a middle-ellipsis `5CBE…oFC`. Pure + stable. */
 export function truncateSs58(
@@ -43,4 +49,30 @@ const SS58_RE = /^[1-9A-HJ-NP-Za-km-z]{40,60}$/;
  */
 export function isPlausibleSs58(value: string | null | undefined): boolean {
   return typeof value === "string" && SS58_RE.test(value);
+}
+
+/**
+ * If `value` is a checksum-valid ss58 account address (a 32-byte AccountId32), return the canonical
+ * profile route for it (`/u/<addr>/`, re-encoded to the chain prefix so it matches how the app keys
+ * accounts). Otherwise null.
+ *
+ * This is what lets the search box double as a "jump to account" affordance: users can click-to-copy
+ * an account's ss58 address anywhere in the app, and pasting it into search lands on that profile —
+ * the node-served body/display-name substring search never matches a raw address, so without this a
+ * pasted address is a dead end. The strict checksum decode (not the loose isPlausibleSs58 regex) means
+ * only a genuinely complete, valid address ever redirects; anything else falls through to text search.
+ */
+export function profileRouteForQuery(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  // Cheap reject before the checksum decode (ss58Decode throws on malformed input).
+  if (!isPlausibleSs58(trimmed)) return null;
+  try {
+    const [payload] = ss58Decode(trimmed);
+    // Only an AccountId32 addresses a profile; reject other key lengths (e.g. an ecdsa 33-byte key).
+    if (payload.length !== 32) return null;
+    return `/u/${ss58Encode(toHex(payload), CHAIN_SS58_PREFIX)}/`;
+  } catch {
+    return null;
+  }
 }

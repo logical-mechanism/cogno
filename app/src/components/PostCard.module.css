@@ -124,6 +124,14 @@
 }
 
 .replyTarget {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
   color: var(--cg-accent);
-  font-family: var(--cg-font-mono);
+  cursor: pointer;
+}
+
+.replyTarget:hover {
+  text-decoration: underline;
 }

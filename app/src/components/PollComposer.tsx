@@ -10,6 +10,7 @@
 // options)`. CONTROLLED via `pollDraft` + `onChange`. PRESENTATIONAL — no mutation built here.
 
 import { useCallback, useMemo } from "react";
+import type { KeyboardEvent } from "react";
 import { Composer, MAX_POST_BYTES } from "./Composer";
 import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { IconClose } from "./icons";
@@ -86,6 +87,32 @@ export function PollComposer({
     [onChange, options, pollDraft.question],
   );
 
+  // Focus an option input after the controlled re-render commits (setTimeout, not this render's DOM).
+  const focusOptionSoon = useCallback((i: number) => {
+    setTimeout(() => document.getElementById(`cg-poll-option-${i}`)?.focus(), 0);
+  }, []);
+
+  // Keyboard flow (X parity): Enter → next option (or add one from the last non-empty option, never
+  // submitting the form); Backspace on an empty removable option → delete it and focus the previous.
+  const onOptionKeyDown = useCallback(
+    (i: number, e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (i < options.length - 1) {
+          focusOptionSoon(i + 1);
+        } else if (options[i].trim().length > 0 && options.length < MAX_POLL_OPTIONS) {
+          addOption();
+          focusOptionSoon(i + 1);
+        }
+      } else if (e.key === "Backspace" && options[i].length === 0 && i >= MIN_POLL_OPTIONS) {
+        e.preventDefault();
+        removeOption(i);
+        focusOptionSoon(i - 1);
+      }
+    },
+    [options, addOption, removeOption, focusOptionSoon],
+  );
+
   // Validity (doc 03 §11 / doc 09 §5.4): ≥2 non-empty options after trim, none over 80 bytes.
   const trimmed = options.map((o) => o.trim()).filter((o) => o.length > 0);
   const anyOptionOver = options.some((o) => utf8Bytes(o) > MAX_POLL_OPTION_BYTES);
@@ -118,6 +145,7 @@ export function PollComposer({
               value={opt}
               placeholder={`Choice ${i + 1}`}
               onChange={(e) => setOption(i, e.target.value)}
+              onKeyDown={(e) => onOptionKeyDown(i, e)}
               aria-invalid={utf8Bytes(opt) > MAX_POLL_OPTION_BYTES || undefined}
             />
             <ByteCounter value={opt} maxBytes={MAX_POLL_OPTION_BYTES} size="sm" />

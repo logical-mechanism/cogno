@@ -74,6 +74,7 @@ import {
   UnsupportedQuery,
 } from "./source";
 import { FEED_PAGE_SIZE } from "./constants";
+import { normalizeQuery } from "@/lib/search";
 
 // The seam's first-page / default window (profile Posts first page + global `page()` default + the
 // `watch()` live window). Shared with the hooks' "load more" size so first paint and load-more match.
@@ -518,7 +519,11 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     if (!(await nodeFeedApiReady())) {
       throw new UnsupportedQuery("people search needs a spec-200 node (MicroblogApi.search_people).");
     }
-    return nodeSearchPeople(api, q, limit);
+    // Normalize at the source so every caller (Explore, a future typeahead) shares one cache key /
+    // result set; an empty term after normalization has no matches to scan for.
+    const term = normalizeQuery(q);
+    if (term.length === 0) return [];
+    return nodeSearchPeople(api, term, limit);
   }
 
   // The live feed snapshot, NextPostId-driven (NOT `watchEntries`): each counter change re-reads the

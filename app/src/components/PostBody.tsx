@@ -16,10 +16,11 @@
 // dangerouslySetInnerHTML — so the text is XSS-safe; the only links we emit are anchors with
 // rel="noopener noreferrer nofollow", target=_blank, styled in --cg-accent.
 
-import { Fragment, useMemo } from "react";
+import { useMemo } from "react";
 import Link from "next/link";
-import { isImageUrl, resolveImageSrc } from "@/lib/media";
+import { isImageUrl, resolveImageSrc, URL_RE, TRAILING_PUNCT } from "@/lib/media";
 import { RevealImage } from "./RevealImage";
+import { Highlight } from "./Highlight";
 import styles from "./PostBody.module.css";
 
 export interface PostBodyProps {
@@ -29,12 +30,12 @@ export interface PostBodyProps {
   size?: "base" | "lg";
   /** Banned-author dimming (D10): muted body. */
   dim?: boolean;
+  /** Search term to <mark> in the plain-text / hashtag runs (URLs + images stay untouched). */
+  highlight?: string;
 }
 
-// Match http(s) AND ipfs:// URLs. Stop the run at whitespace; trailing sentence punctuation is
-// trimmed below so a URL at the end of a sentence ("see https://x.org.") doesn't swallow the period.
-const URL_RE = /(?:https?|ipfs):\/\/[^\s]+/gi;
-const TRAILING_PUNCT = /[.,!?:;)\]}'"»”’]+$/;
+// URL_RE + TRAILING_PUNCT (the http(s)/ipfs run matcher + trailing-punctuation strip) live in
+// @/lib/media so the composer's image-link chip classifies links identically to what we render here.
 // A #hashtag: '#' + Unicode letters/numbers/underscore. Scanned ONLY inside plain-text runs (never
 // inside a matched URL), so a fragment like `https://x.org/#section` is never re-linkified.
 const HASHTAG_RE = /#[\p{L}\p{N}_]+/gu;
@@ -114,7 +115,7 @@ function urlLabel(raw: string): string {
   return `${host}/…`;
 }
 
-export function PostBody({ text, size = "base", dim }: PostBodyProps) {
+export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps) {
   const segs = useMemo(() => segment(text), [text]);
 
   const cls = [styles.body, size === "lg" ? styles.lg : styles.base, dim ? styles.dim : ""]
@@ -157,11 +158,11 @@ export function PostBody({ text, size = "base", dim }: PostBodyProps) {
               // Inside a clickable PostCard row — don't also trigger the row navigation.
               onClick={(e) => e.stopPropagation()}
             >
-              {s.value}
+              <Highlight text={s.value} query={highlight} />
             </Link>
           );
         }
-        return <Fragment key={i}>{s.value}</Fragment>;
+        return <Highlight key={i} text={s.value} query={highlight} />;
       })}
     </div>
   );

@@ -1,0 +1,88 @@
+/* PendingCapacityNotice — the "posting is crediting" wait state. `inline` sits in the Composer notice
+   area; `card` is the bigger /welcome treatment. All var(--cg-*). */
+
+.notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-sm);
+  background: var(--cg-bg-subtle);
+}
+
+.inline {
+  padding: var(--cg-space-3);
+}
+
+.card {
+  padding: var(--cg-space-4);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-elevated);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+}
+
+.glyph {
+  font-size: var(--cg-fs-md);
+  line-height: 1;
+}
+
+.title {
+  font-size: var(--cg-fs-md);
+  font-weight: var(--cg-fw-bold);
+  color: var(--cg-text);
+}
+
+.detail {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-text-secondary);
+}
+
+.why {
+  margin: 0;
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-text-muted);
+}
+
+.track {
+  width: 100%;
+  height: 6px;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-bg-hover-solid);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--cg-accent);
+  transition: width var(--cg-motion-slow, 400ms) var(--cg-ease-standard, ease);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  flex-wrap: wrap;
+}
+
+.dismiss {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cg-text-muted);
+  font-size: var(--cg-fs-sm);
+  cursor: pointer;
+}
+
+.dismiss:hover {
+  color: var(--cg-text);
+  text-decoration: underline;
+}

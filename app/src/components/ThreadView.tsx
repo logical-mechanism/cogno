@@ -23,7 +23,7 @@
 // dimmed not hidden (PostCard owns the dim+chip); D11 optimistic reply (pending opacity 0.6, phase toast
 // submit→posted, rollback + toast on error). No honesty/block-number chrome.
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import styles from "./ThreadView.module.css";
 import { PostCard } from "./PostCard";
@@ -48,13 +48,16 @@ import { useCapacity } from "@/hooks/useCapacity";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitReply } from "@/lib/chain/mutations";
-import { copyToClipboard, postLink } from "@/lib/share";
+import { sharePostWithToast } from "@/lib/share";
 import { formatCount, formatSignedWeight, formatWeight } from "@/lib/format";
 import { handleOf } from "@/lib/ss58";
 import type { CognoPost, ViewerPostState } from "@/lib/types";
 import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
 
 const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+// Render replies in pages so a huge thread doesn't mount hundreds of cards at once (useThread fetches
+// them all). Pending (optimistic, id<0) replies are ALWAYS shown so a just-posted reply is never hidden.
+const REPLIES_PAGE = 20;
 
 export interface ThreadViewProps {
   /** The root/focal post id read from /post/[id] (already validated /^\d+$/ by the route). */
@@ -99,6 +102,21 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const replies = useMemo<CognoPost[]>(() => thread?.replies ?? [], [thread?.replies]);
   const ancestors = useMemo<CognoPost[]>(() => thread?.ancestors ?? [], [thread?.ancestors]);
 
+  // Paged replies: the NEWEST N confirmed + ALL pending. Replies come chronological (oldest-first), and
+  // a just-posted reply is the NEWEST one — the target of the scroll-to-reply effect — so it must stay
+  // in the shown window even after it confirms. We therefore keep the TAIL (newest `visibleReplies`) and
+  // let "Show more" reveal OLDER replies above. Slicing the HEAD instead paged the just-posted reply out
+  // the moment its optimistic card was retired on confirm (position > REPLIES_PAGE in a busy thread).
+  const [visibleReplies, setVisibleReplies] = useState(REPLIES_PAGE);
+  useEffect(() => setVisibleReplies(REPLIES_PAGE), [rootId]); // reset when navigating to a new focal
+  const confirmedReplyCount = useMemo(() => replies.filter((r) => r.id >= 0n).length, [replies]);
+  const shownReplies = useMemo(() => {
+    const confirmed = replies.filter((r) => r.id >= 0n);
+    const pending = replies.filter((r) => r.id < 0n);
+    return [...confirmed.slice(Math.max(0, confirmed.length - visibleReplies)), ...pending];
+  }, [replies, visibleReplies]);
+  const hiddenReplies = Math.max(0, confirmedReplyCount - visibleReplies);
+
   // Every card on screen (focal + ancestor chain + direct replies) drives the viewer's vote/repost
   // state, so a like reflects instantly anywhere on the screen.
   const visibleIds = useMemo(() => {
@@ -128,6 +146,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
 
   // The inline reply composer slot — the focus target for "reply to the focal" and the ?reply=1 descend.
   const composerSlotRef = useRef<HTMLDivElement | null>(null);
+  // Scroll to a just-posted reply: the replies container + a flag set on submit (the effect below fires
+  // when the optimistic card lands at the bottom of the list).
+  const repliesRef = useRef<HTMLDivElement | null>(null);
+  const justRepliedRef = useRef(false);
   const focusComposer = useCallback(() => {
     const slot = composerSlotRef.current;
     if (!slot) return;
@@ -169,6 +191,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       // at the bottom of the replies list via useThread's merge — always, since every reply is a
       // reply-to-focal (the focal-nav model routes deeper replies to their own /post/[id]/ first).
       const clientId = addOptimisticReply(optimistic);
+      justRepliedRef.current = true; // the effect below scrolls to the new card once it renders
       void run(
         submitReply(api, signer, draft.text, rootId),
         phase({
@@ -236,15 +259,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         const cur = viewerStates.get(post.id) ?? NO_VIEWER;
         repost.repost(post.id, cur.reposted);
       },
-      onShare: (post) => {
-        void copyToClipboard(postLink(post.id)).then((ok) =>
-          toast(
-            ok
-              ? { kind: "success", message: "Link copied" }
-              : { kind: "error", message: "Couldn't copy the link" },
-          ),
-        );
-      },
+      onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
     [router, viewer.status, viewerStates, vote, repost, pin, toast, rootId, focusComposer],
@@ -276,6 +291,25 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     autofocusedFor.current = rootId;
     requestAnimationFrame(() => focusComposer());
   }, [focal, rootId, focusComposer]);
+
+  // ── scroll to your just-posted reply once its optimistic card renders at the bottom of the list ──
+  useEffect(() => {
+    if (!justRepliedRef.current) return;
+    justRepliedRef.current = false;
+    const nodes = repliesRef.current?.querySelectorAll("[data-reply-node]");
+    const last = nodes && nodes.length ? nodes[nodes.length - 1] : null;
+    if (last) requestAnimationFrame(() => last.scrollIntoView({ block: "center" }));
+  }, [shownReplies]);
+
+  // ── browser tab title: author + snippet, so multiple open post tabs are distinguishable ──
+  useEffect(() => {
+    if (typeof document === "undefined" || !focal) return;
+    const who = focal.authorDisplayName?.trim() || handleOf(focal.author);
+    const snippet = focal.text.trim().replace(/\s+/g, " ");
+    const clipped = snippet.length > 60 ? `${snippet.slice(0, 60)}…` : snippet;
+    document.title = clipped ? `${who} on cogno-chain: “${clipped}”` : `${who} on cogno-chain`;
+    // No cleanup — the next route sets its own title.
+  }, [focal]);
 
   // ── states (§6.2 / §6.3) — the route already guarded an invalid id; here we cover load/error/missing ──
   if (loading && !thread) {
@@ -391,6 +425,11 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           noPostingPower={noPostingPower}
           onSubmit={onSubmitReply}
           draftExtras={{ parentId: rootId }}
+          contextAbove={
+            <p className={styles.replyingToComposer}>
+              Replying to <span className={styles.replyTarget}>{handleOf(focal.author)}</span>
+            </p>
+          }
         />
       </div>
 
@@ -398,12 +437,23 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           its own replies offers a subtle "N replies →" descend link; tapping the card or the link
           navigates to that reply's own /post/[id]/ focal. While the thread refetches we keep the
           rendered replies; a pending optimistic reply is merged in by useThread (id<0 → opacity 0.6). */}
-      <div className={styles.replies}>
+      <div className={styles.replies} ref={repliesRef}>
+        {/* Reveals OLDER replies above the newest window (see the shownReplies tail-slice). */}
+        {hiddenReplies > 0 && (
+          <button
+            type="button"
+            className={styles.showMoreReplies}
+            onClick={() => setVisibleReplies((n) => n + REPLIES_PAGE)}
+          >
+            Show {Math.min(hiddenReplies, REPLIES_PAGE)} older{" "}
+            {hiddenReplies === 1 ? "reply" : "replies"}
+          </button>
+        )}
         {replies.length === 0 ? (
           <EmptyState variant="replies" />
         ) : (
-          replies.map((reply) => (
-            <div key={String(reply.id)} className={styles.replyNode}>
+          shownReplies.map((reply) => (
+            <div key={String(reply.id)} className={styles.replyNode} data-reply-node>
               <PostCard
                 post={reply}
                 viewer={viewerStates.get(reply.id) ?? NO_VIEWER}

@@ -73,6 +73,8 @@ export interface ProfileHeaderProps {
   banned: boolean;
   /** This is the viewer's own profile (self-view → Edit / Set-up, never FollowButton). */
   isSelf: boolean;
+  /** This account follows the viewer → show a "Follows you" pill (social context, X-style). */
+  followsYou?: boolean;
   /** self + all of displayName/bio/avatar empty → "Set up profile" (filled) vs "Edit profile" (outline). */
   hasProfile: boolean;
   /** Show the follower/following figures (caps.follows). Omit entirely when false. */
@@ -112,6 +114,7 @@ export function ProfileHeader({
   website,
   banned,
   isSelf,
+  followsYou,
   hasProfile,
   showCounts,
   followingCount,
@@ -193,7 +196,10 @@ export function ProfileHeader({
             authorRevoked={banned}
             truncate={false}
           />
-          <Handle address={address} truncate="middle" copyable />
+          <div className={styles.handleRow}>
+            <Handle address={address} truncate="middle" copyable />
+            {followsYou && <span className={styles.followsYou}>Follows you</span>}
+          </div>
         </div>
 
         {bioText.length > 0 && (

@@ -13,11 +13,12 @@ import type { CognoApi, PostingSigner } from "@/lib/types";
 import {
   getGenesisHex,
   isAccountBound,
+  isStakeBound,
   readAccountOf,
   submitLinkIdentityFeeless,
   submitLinkStakeFeeless,
 } from "@/lib/chain/identity";
-import { produceBindProof, produceBindProofStake } from "@/lib/cardano/cip8";
+import { produceBindProof, produceBindProofStake, isUserRejection } from "@/lib/cardano/cip8";
 
 /** The phase of an in-flight identity bind, so the UI can narrate the background steps instead of
  *  showing one opaque "Registering…" spinner. `client.submit` resolves on FINALIZATION, so the
@@ -56,7 +57,8 @@ export interface UseIdentity {
   /** a stake bind is in flight (stake-key wallet sign → feeless on-chain `link_stake_signed`). */
   stakeBinding: boolean;
   /** the phase of an in-flight stake bind (`idle` when not binding) — drives the step indicator.
-   *  Uses `signing` → `submitting` only (there is no post-submit readback like the payment bind). */
+   *  `signing` → `submitting` → `confirming`, symmetric with the payment bind: the `confirming` phase
+   *  is a `StakeCredOf` readback that confirms the bind landed before we declare voting power added. */
   stakeBindPhase: BindPhase;
   /** error from the LAST stake-bind attempt (kept separate from the payment-bind `error`). */
   stakeError: string | null;
@@ -220,8 +222,10 @@ export function useIdentity(
           setBound(true);
           setBoundAddress(proof.signingAddress ?? null);
         } catch (e) {
-          // eslint-disable-next-line no-console
-          console.error(`cogno: bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
+          if (!isUserRejection(e)) {
+            // eslint-disable-next-line no-console
+            console.error(`cogno: bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
+          }
           setError(e instanceof Error ? e.message : String(e));
         } finally {
           setBinding(false);
@@ -263,6 +267,17 @@ export function useIdentity(
           if (!res.ok) {
             throw new Error(res.error || "the on-chain stake bind was rejected");
           }
+          // (4) StakeCredOf readback — symmetric with the payment bind's confirm step: don't declare
+          //     "voting power added" until the chain actually shows a stake credential bound to this key.
+          setStakeBindPhase("confirming");
+          const nowStakeBound = await isStakeBound(api, signer.ss58).catch(() => false);
+          if (!nowStakeBound) {
+            // eslint-disable-next-line no-console
+            console.error(
+              `cogno: stake bind submitted but the chain shows ${signer.ss58.slice(0, 8)}… with no stake bound (wallet "${walletId}")`,
+            );
+            throw new Error("voting-power bind submitted, but the chain still shows no stake bound");
+          }
           // The live watch (above) flips stakeBound and surfaces the voting power once observed; seed
           // boundStakeCredHex from the LOCALLY-PROVEN credential (what the runtime binds) so the UI
           // confirms it immediately. Fall back to the event-derived value only if the proof lacks it.
@@ -271,8 +286,10 @@ export function useIdentity(
           );
           setStakeBound(true);
         } catch (e) {
-          // eslint-disable-next-line no-console
-          console.error(`cogno: stake bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
+          if (!isUserRejection(e)) {
+            // eslint-disable-next-line no-console
+            console.error(`cogno: stake bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
+          }
           setStakeError(e instanceof Error ? e.message : String(e));
         } finally {
           setStakeBinding(false);

@@ -47,7 +47,7 @@ import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { modalActions } from "@/lib/modalStore";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { copyToClipboard, postLink } from "@/lib/share";
+import { sharePostWithToast } from "@/lib/share";
 import { isPlausibleSs58, handleOf } from "@/lib/ss58";
 import type { ProfileArgs } from "@/lib/feed/source";
 import type { CognoPost, ViewerPostState, Ss58, PostActionCallbacks } from "@/components/kit";
@@ -361,15 +361,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
         const cur = viewerStates.get(post.id) ?? NO_VIEWER;
         repost.repost(post.id, cur.reposted);
       },
-      onShare: (post) => {
-        void copyToClipboard(postLink(post.id)).then((ok) =>
-          toast(
-            ok
-              ? { kind: "success", message: "Link copied" }
-              : { kind: "error", message: "Couldn't copy the link" },
-          ),
-        );
-      },
+      onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
     [router, viewer.status, viewerStates, vote, repost, pin, toast],
@@ -478,6 +470,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
             website={canProfiles ? profile?.website : undefined}
             banned={banned}
             isSelf={isSelf}
+            followsYou={canFollow && !isSelf && follow.followers.includes(address)}
             hasProfile={hasProfile}
             showCounts={canFollow}
             followingCount={followingCount}
