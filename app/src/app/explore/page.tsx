@@ -95,15 +95,21 @@ function ExploreView() {
   // are shareable/bookmarkable and Back restores the scope.
   const resultTab: ResultTab = searchParams.get("f") === "people" ? "people" : "latest";
 
-  // One builder for every /explore URL write so q + f stay in sync — f only alongside a query, and only
-  // when non-default, to keep URLs clean.
+  // One builder for every /explore URL write so q + f stay in sync (default "latest" omitted). Keep the
+  // People scope even with an empty q so editing the query text down to nothing / below the min length
+  // doesn't silently reset the tab — it's restored on retype.
   const buildExploreUrl = useCallback((q: string, f: ResultTab) => {
     const params = new URLSearchParams();
     if (q.length > 0) params.set("q", q);
-    if (q.length > 0 && f === "people") params.set("f", f);
+    if (f === "people") params.set("f", f);
     const qs = params.toString();
     return qs ? `/explore/?${qs}` : "/explore/";
   }, []);
+
+  // writeTerm reads the CURRENT tab from a ref (not a captured value) so a debounce timer that fires
+  // AFTER a tab switch preserves the tab the user is now on, instead of the tab at schedule time.
+  const resultTabRef = useRef(resultTab);
+  resultTabRef.current = resultTab;
 
   // The last term THIS input wrote to the URL. The sync effect uses it to tell our own debounce commits
   // apart from genuinely external URL changes — the single write path so every self-write records itself.
@@ -111,9 +117,9 @@ function ExploreView() {
   const writeTerm = useCallback(
     (next: string) => {
       selfCommittedRef.current = next;
-      router.replace(buildExploreUrl(next, resultTab));
+      router.replace(buildExploreUrl(next, resultTabRef.current));
     },
-    [router, buildExploreUrl, resultTab],
+    [router, buildExploreUrl],
   );
 
   // Adopt the URL term into the draft only when it changed from OUTSIDE this input (deep link / rail
@@ -124,9 +130,12 @@ function ExploreView() {
   useEffect(() => {
     if (committedQ !== lastCommitted.current) {
       lastCommitted.current = committedQ;
-      if (committedQ !== selfCommittedRef.current && committedQ !== draft.trim()) {
-        setDraft(committedQ);
-      }
+      // Decide external-vs-self-echo BEFORE updating the ref, then always track the latest committed
+      // term so a later Back/Forward to a previously self-written term is still recognised as external
+      // (the ref used to go stale, dropping that navigation and desyncing the box).
+      const external = committedQ !== selfCommittedRef.current;
+      selfCommittedRef.current = committedQ;
+      if (external && committedQ !== draft.trim()) setDraft(committedQ);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [committedQ]);
@@ -214,9 +223,15 @@ function ExploreView() {
 
   // "Keep typing" hint: the box has a below-min term (and it isn't a pasted address about to route to
   // a profile), so nothing is searched yet — say so rather than silently showing the firehose.
+  // Gate on mode !== "query" too: while backspacing a committed term below the min, committedQ (and so
+  // the rendered results) lag by the debounce, so without this the hint would flash over the stale
+  // full results for ~300ms.
   const draftNorm = normalizeQuery(draft);
   const showTooShortHint =
-    searchEnabled && isQueryTooShort(draftNorm) && !profileRouteForQuery(draftNorm);
+    searchEnabled &&
+    mode !== "query" &&
+    isQueryTooShort(draftNorm) &&
+    !profileRouteForQuery(draftNorm);
 
   // ── DEFAULT firehose order toggle ────────────────────────────────────────────────────────────
   // Default to "Most recent"; "Top" (score) is only reachable when a source advertises score order
