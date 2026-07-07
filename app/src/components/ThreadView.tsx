@@ -48,7 +48,7 @@ import { useCapacity } from "@/hooks/useCapacity";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitReply } from "@/lib/chain/mutations";
-import { copyToClipboard, postLink } from "@/lib/share";
+import { sharePost } from "@/lib/share";
 import { formatCount, formatSignedWeight, formatWeight } from "@/lib/format";
 import { handleOf } from "@/lib/ss58";
 import type { CognoPost, ViewerPostState } from "@/lib/types";
@@ -237,13 +237,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         repost.repost(post.id, cur.reposted);
       },
       onShare: (post) => {
-        void copyToClipboard(postLink(post.id)).then((ok) =>
-          toast(
-            ok
-              ? { kind: "success", message: "Link copied" }
-              : { kind: "error", message: "Couldn't copy the link" },
-          ),
-        );
+        void sharePost(post.id).then((r) => {
+          // The OS share sheet gives its own feedback; only toast on the copy fallback.
+          if (r.kind === "copied") {
+            toast(
+              r.ok
+                ? { kind: "success", message: "Link copied" }
+                : { kind: "error", message: "Couldn't copy the link" },
+            );
+          }
+        });
       },
       onPin: (post) => pin(post.id),
     }),

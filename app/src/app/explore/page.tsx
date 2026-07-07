@@ -50,7 +50,7 @@ import { useRepost } from "@/hooks/useRepost";
 import { useFollow } from "@/hooks/useFollow";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
-import { copyToClipboard, postLink } from "@/lib/share";
+import { sharePost } from "@/lib/share";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
 import { useRecentSearches, recentSearchActions } from "@/lib/recentSearchStore";
@@ -358,13 +358,16 @@ function ExploreView() {
         repost.repost(post.id, cur.reposted);
       },
       onShare: (post) => {
-        void copyToClipboard(postLink(post.id)).then((ok) =>
-          toast(
-            ok
-              ? { kind: "success", message: "Link copied" }
-              : { kind: "error", message: "Couldn't copy the link" },
-          ),
-        );
+        void sharePost(post.id).then((r) => {
+          // The OS share sheet gives its own feedback; only toast on the copy fallback.
+          if (r.kind === "copied") {
+            toast(
+              r.ok
+                ? { kind: "success", message: "Link copied" }
+                : { kind: "error", message: "Couldn't copy the link" },
+            );
+          }
+        });
       },
       onPin: (post) => pin(post.id),
     }),

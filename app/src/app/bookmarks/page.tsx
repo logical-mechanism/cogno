@@ -24,7 +24,7 @@ import { useRepost } from "@/hooks/useRepost";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
-import { copyToClipboard, postLink } from "@/lib/share";
+import { sharePost } from "@/lib/share";
 import { useBookmarkList } from "@/lib/bookmarkStore";
 import type { CognoPost, ViewerPostState } from "@/lib/types";
 import type { PostActionCallbacks } from "@/components/kit";
@@ -167,13 +167,16 @@ export default function BookmarksPage() {
         repost.repost(post.id, cur.reposted);
       },
       onShare: (post) => {
-        void copyToClipboard(postLink(post.id)).then((ok) =>
-          toast(
-            ok
-              ? { kind: "success", message: "Link copied" }
-              : { kind: "error", message: "Couldn't copy the link" },
-          ),
-        );
+        void sharePost(post.id).then((r) => {
+          // The OS share sheet gives its own feedback; only toast on the copy fallback.
+          if (r.kind === "copied") {
+            toast(
+              r.ok
+                ? { kind: "success", message: "Link copied" }
+                : { kind: "error", message: "Couldn't copy the link" },
+            );
+          }
+        });
       },
       onPin: (post) => pin(post.id),
     }),
