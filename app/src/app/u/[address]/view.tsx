@@ -47,7 +47,7 @@ import { usePinPost } from "@/hooks/usePinPost";
 import { useRepost } from "@/hooks/useRepost";
 import { modalActions } from "@/lib/modalStore";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { sharePost } from "@/lib/share";
+import { sharePostWithToast } from "@/lib/share";
 import { isPlausibleSs58, handleOf } from "@/lib/ss58";
 import type { ProfileArgs } from "@/lib/feed/source";
 import type { CognoPost, ViewerPostState, Ss58, PostActionCallbacks } from "@/components/kit";
@@ -361,18 +361,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
         const cur = viewerStates.get(post.id) ?? NO_VIEWER;
         repost.repost(post.id, cur.reposted);
       },
-      onShare: (post) => {
-        void sharePost(post.id).then((r) => {
-          // The OS share sheet gives its own feedback; only toast on the copy fallback.
-          if (r.kind === "copied") {
-            toast(
-              r.ok
-                ? { kind: "success", message: "Link copied" }
-                : { kind: "error", message: "Couldn't copy the link" },
-            );
-          }
-        });
-      },
+      onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
     [router, viewer.status, viewerStates, vote, repost, pin, toast],

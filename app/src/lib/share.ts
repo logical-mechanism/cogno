@@ -32,6 +32,25 @@ export async function sharePost(id: bigint): Promise<ShareResult> {
   return { kind: "copied", ok: await copyToClipboard(url) };
 }
 
+/** The minimal toast bus this helper needs — structurally satisfied by `useToaster().toast`. */
+type ShareToast = (spec: { kind: "success" | "error"; message: string }) => void;
+
+/**
+ * Share a post and give the user feedback: the OS share sheet handles its own, so we only toast on the
+ * copy fallback (success "Link copied" / failure "Couldn't copy the link"). Centralizes the onShare
+ * handler every post surface (home / explore / thread / bookmarks / profile) otherwise hand-copied.
+ */
+export async function sharePostWithToast(id: bigint, toast: ShareToast): Promise<void> {
+  const r = await sharePost(id);
+  if (r.kind === "copied") {
+    toast(
+      r.ok
+        ? { kind: "success", message: "Link copied" }
+        : { kind: "error", message: "Couldn't copy the link" },
+    );
+  }
+}
+
 /** Copy `text` to the clipboard; resolves true on success, false if no method worked. */
 export async function copyToClipboard(text: string): Promise<boolean> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {

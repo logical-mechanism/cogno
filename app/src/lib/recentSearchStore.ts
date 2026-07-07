@@ -2,74 +2,31 @@
 
 // recentSearchStore — device-local recent search terms (client-only; NO chain state, nothing written
 // to Cardano). The Explore SearchBar shows them in a dropdown when the box is focused-and-empty, so a
-// prior query is one click away. Mirrors bookmarkStore, but the list is ORDERED (most-recent-first),
-// deduped case-insensitively, and capped. Device-local by design — not synced to the chain or across
-// devices. Exposed via useSyncExternalStore so the dropdown reflects a push/remove/clear instantly.
+// prior query is one click away. The list is ORDERED (most-recent-first), deduped case-insensitively,
+// and capped. Cross-tab synced (via the shared store factory) so the dropdown reflects another tab's
+// searches. Device-local by design — not synced to the chain or across devices.
 
 import { useSyncExternalStore } from "react";
+import { createPersistentStore } from "./persistentStore";
 
 const KEY = "cg-recent-searches";
 const MAX = 8;
 const EMPTY: readonly string[] = [];
 
-let cache: string[] = load();
-const listeners = new Set<() => void>();
-
-function load(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed)
-      ? parsed.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, MAX)
-      : [];
-  } catch {
-    return [];
-  }
+function parse(raw: string | null): string[] {
+  const parsed: unknown = raw ? JSON.parse(raw) : [];
+  return Array.isArray(parsed)
+    ? parsed.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, MAX)
+    : [];
 }
 
-function commit(next: string[]): void {
-  cache = next;
-  try {
-    window.localStorage.setItem(KEY, JSON.stringify(next));
-  } catch {
-    /* quota exceeded / storage disabled → keep the in-memory list only */
-  }
-  listeners.forEach((l) => l());
-}
-
-// Another tab changed the list → reload our cache from localStorage and notify, so the dropdown stays
-// in sync and our next push() builds on the fresh list instead of clobbering the other tab's write.
-// The `storage` event fires only in OTHER tabs, so this never loops with our own commit().
-function onStorage(e: StorageEvent): void {
-  if (e.key !== null && e.key !== KEY) return; // ignore unrelated keys; key===null is a full clear()
-  const next = load();
-  if (next.length === cache.length && next.every((x, i) => x === cache[i])) return;
-  cache = next;
-  listeners.forEach((l) => l());
-}
-
-function subscribe(cb: () => void): () => void {
-  if (listeners.size === 0 && typeof window !== "undefined") {
-    window.addEventListener("storage", onStorage);
-  }
-  listeners.add(cb);
-  return () => {
-    listeners.delete(cb);
-    if (listeners.size === 0 && typeof window !== "undefined") {
-      window.removeEventListener("storage", onStorage);
-    }
-  };
-}
-
-// getSnapshot returns a STABLE ref between changes (commit swaps it) so useSyncExternalStore only
-// re-renders on a real change; getServerSnapshot is a constant for static export / hydration.
-function getSnapshot(): readonly string[] {
-  return cache;
-}
-function getServerSnapshot(): readonly string[] {
-  return EMPTY;
-}
+const store = createPersistentStore<readonly string[]>({
+  key: KEY,
+  empty: EMPTY,
+  parse,
+  serialize: (v) => JSON.stringify(v),
+  crossTab: true, // keep the dropdown in sync with searches made in other tabs
+});
 
 export const recentSearchActions = {
   /** Record a term, moving it to the front (dedup case-insensitively) and capping the list. */
@@ -77,24 +34,26 @@ export const recentSearchActions = {
     const t = term.trim();
     if (t.length === 0) return;
     const lower = t.toLowerCase();
+    const cache = store.read();
     const next = [t, ...cache.filter((x) => x.toLowerCase() !== lower)].slice(0, MAX);
     // No-op when already at the front with the same list — avoids a needless re-render.
     if (next.length === cache.length && next.every((x, i) => x === cache[i])) return;
-    commit(next);
+    store.commit(next);
   },
   remove(term: string): void {
     const lower = term.toLowerCase();
+    const cache = store.read();
     const next = cache.filter((x) => x.toLowerCase() !== lower);
     if (next.length === cache.length) return;
-    commit(next);
+    store.commit(next);
   },
   clear(): void {
-    if (cache.length === 0) return;
-    commit([]);
+    if (store.read().length === 0) return;
+    store.commit([]);
   },
 };
 
 /** The recent-search terms, most-recent-first. Subscribes → re-renders on change. */
 export function useRecentSearches(): readonly string[] {
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot);
 }

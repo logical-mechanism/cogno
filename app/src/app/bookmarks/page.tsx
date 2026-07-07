@@ -24,7 +24,7 @@ import { useRepost } from "@/hooks/useRepost";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
-import { sharePost } from "@/lib/share";
+import { sharePostWithToast } from "@/lib/share";
 import { useBookmarkList } from "@/lib/bookmarkStore";
 import type { CognoPost, ViewerPostState } from "@/lib/types";
 import type { PostActionCallbacks } from "@/components/kit";
@@ -166,18 +166,7 @@ export default function BookmarksPage() {
         const cur = viewerStates.get(post.id) ?? NO_VIEWER;
         repost.repost(post.id, cur.reposted);
       },
-      onShare: (post) => {
-        void sharePost(post.id).then((r) => {
-          // The OS share sheet gives its own feedback; only toast on the copy fallback.
-          if (r.kind === "copied") {
-            toast(
-              r.ok
-                ? { kind: "success", message: "Link copied" }
-                : { kind: "error", message: "Couldn't copy the link" },
-            );
-          }
-        });
-      },
+      onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
     [router, viewer.status, viewerStates, vote, repost, pin, toast],

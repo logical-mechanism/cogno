@@ -16,7 +16,7 @@
 import { useEffect, useState } from "react";
 import type { CognoApi } from "@/lib/types";
 import { usePendingLock, pendingLockActions } from "@/lib/pendingLockStore";
-import { readObserverConfig, readEnforceWeight, slotToUnixSec, type ObserverConfig } from "@/lib/chain/observer";
+import { readObserverConfig, slotToUnixSec, type ObserverConfig } from "@/lib/chain/observer";
 import { fetchTxSlot } from "@/lib/cardano/provider";
 
 // Grace past the theoretical unlock before we call a lock "overdue": the credit lands a little AFTER the
@@ -60,14 +60,17 @@ export function usePendingCapacity(
   allowedStake: bigint | null,
 ): PendingCapacityStatus {
   const record = usePendingLock(ss58);
+  const pending = !!record;
 
   const [cfg, setCfg] = useState<ObserverConfig | null>(null);
   const [frontier, setFrontier] = useState<bigint | null>(null);
   const [enforcing, setEnforcing] = useState(true);
 
-  // Observer policy + enforce flag — fixed/rare per runtime, read once per api.
+  // Observer policy — fixed per runtime; only needed to TIME a pending lock, so read it lazily WHILE one
+  // is pending. This also avoids a CardanoObserverApi round-trip on every composer/settings mount for the
+  // common case of a user who can already post and has no pending lock.
   useEffect(() => {
-    if (!api) {
+    if (!api || !pending) {
       setCfg(null);
       return;
     }
@@ -75,16 +78,12 @@ export function usePendingCapacity(
     readObserverConfig(api)
       .then((c) => !cancelled && setCfg(c))
       .catch(() => !cancelled && setCfg(null));
-    readEnforceWeight(api)
-      .then((e) => !cancelled && setEnforcing(e))
-      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [api]);
+  }, [api, pending]);
 
   // Watch the observation frontier only while a lock is actually pending.
-  const pending = !!record;
   useEffect(() => {
     if (!api || !pending) {
       setFrontier(null);
@@ -94,6 +93,22 @@ export function usePendingCapacity(
     const sub = api.query.CardanoObserver.LastReference.watchValue({ at: "best" }).subscribe(
       ({ value: ref }) => setFrontier(ref ? ref.slot : null),
       () => setFrontier(null),
+    );
+    return () => sub.unsubscribe();
+  }, [api, pending]);
+
+  // WATCH EnforceWeight (not a one-shot read) while a lock is pending: an emergency freeze that begins
+  // DURING the wait must flip `enforcing` so the UI stops ticking a false countdown and does NOT then show
+  // a false "overdue" nudge (the overdue gate is `&& enforcing` for exactly this reason). Idle → default
+  // to enforcing; there's no pending lock to mistime.
+  useEffect(() => {
+    if (!api || !pending) {
+      setEnforcing(true);
+      return;
+    }
+    const sub = api.query.CardanoObserver.EnforceWeight.watchValue({ at: "best" }).subscribe(
+      ({ value }) => setEnforcing(value),
+      () => setEnforcing(true), // read error → assume enforcing (keep the overdue gate conservative)
     );
     return () => sub.unsubscribe();
   }, [api, pending]);

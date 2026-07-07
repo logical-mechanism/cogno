@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEV_ACCOUNTS, getDevSigner } from "@/lib/signer";
 import { deriveSignerFromWallet } from "@/lib/signer/wallet-derive";
+import { clearPostDraft } from "@/lib/composerDraftStore";
 import type { PostingSigner } from "@/lib/types";
 
 const DEV_CHOICE_KEY = "cogno.signer.devChoice";
@@ -117,6 +118,9 @@ export function useSigner(): UseSigner {
     setError(null);
     setDevChosen(false);
     setSigner(getDevSigner(DEFAULT_DEV));
+    // The unsent post draft is device-local and identity-agnostic — forget it on disconnect so it can't
+    // resurface in the NEXT account's composer on a shared device.
+    clearPostDraft();
   }, []);
 
   const setDevAccount = useCallback((uri: string) => {

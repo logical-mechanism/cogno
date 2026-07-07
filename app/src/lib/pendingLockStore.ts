@@ -10,12 +10,13 @@
 // "Lock ADA to post" — telling someone who just locked to lock again.
 //
 // Keyed by ss58 (the posting account) so a relock overwrites the prior record and the exit-then-relock
-// case reuses the same machinery. Device-local by design (nothing on-chain, nothing across devices):
-// the AUTHORITATIVE credit signal is on-chain (TalkStake.AllowedStake > 0); this record only lets the
-// UI show a pending/ETA state until that lands. Mirrors bookmarkStore/muteStore (module cache +
-// listeners + useSyncExternalStore).
+// case reuses the same machinery. Cross-tab synced (via the shared store factory) so a lock recorded in
+// one tab isn't invisible to another already-open tab. Device-local by design (nothing on-chain, nothing
+// across devices): the AUTHORITATIVE credit signal is on-chain (TalkStake.AllowedStake > 0); this record
+// only lets the UI show a pending/ETA state until that lands.
 
 import { useSyncExternalStore } from "react";
+import { createPersistentStore } from "./persistentStore";
 
 const KEY = "cg-pending-locks";
 const EMPTY: PendingLockMap = {};
@@ -31,78 +32,56 @@ export interface PendingLock {
 
 type PendingLockMap = Record<string, PendingLock>;
 
-let cache: PendingLockMap = load();
-const listeners = new Set<() => void>();
-
-function load(): PendingLockMap {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : {};
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: PendingLockMap = {};
-    for (const [ss58, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!v || typeof v !== "object") continue;
-      const r = v as Record<string, unknown>;
-      if (typeof r.txHash !== "string" || typeof r.submittedAtMs !== "number") continue;
-      const lockSlot = typeof r.lockSlot === "number" ? r.lockSlot : null;
-      out[ss58] = { txHash: r.txHash, submittedAtMs: r.submittedAtMs, lockSlot };
-    }
-    return out;
-  } catch {
-    return {};
+function parse(raw: string | null): PendingLockMap {
+  const parsed: unknown = raw ? JSON.parse(raw) : {};
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: PendingLockMap = {};
+  for (const [ss58, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!v || typeof v !== "object") continue;
+    const r = v as Record<string, unknown>;
+    if (typeof r.txHash !== "string" || typeof r.submittedAtMs !== "number") continue;
+    const lockSlot = typeof r.lockSlot === "number" ? r.lockSlot : null;
+    out[ss58] = { txHash: r.txHash, submittedAtMs: r.submittedAtMs, lockSlot };
   }
+  return out;
 }
 
-function commit(next: PendingLockMap): void {
-  cache = next;
-  try {
-    window.localStorage.setItem(KEY, JSON.stringify(next));
-  } catch {
-    /* quota exceeded / storage disabled → keep the in-memory map only */
-  }
-  listeners.forEach((l) => l());
-}
-
-function subscribe(cb: () => void): () => void {
-  listeners.add(cb);
-  return () => {
-    listeners.delete(cb);
-  };
-}
-
-function getSnapshot(): PendingLockMap {
-  return cache;
-}
-function getServerSnapshot(): PendingLockMap {
-  return EMPTY;
-}
+const store = createPersistentStore<PendingLockMap>({
+  key: KEY,
+  empty: EMPTY,
+  parse,
+  serialize: (v) => JSON.stringify(v),
+  crossTab: true, // a lock recorded/cleared in another tab must reflect here (else a stale "Lock ADA" nag)
+});
 
 export const pendingLockActions = {
   /** Record a fresh lock for `ss58`. Dedup by txHash: re-recording the SAME tx (a re-render) keeps the
    *  original clock + resolved slot; a NEW tx (relock) replaces the record and restarts the clock. */
   record(ss58: string, txHash: string): void {
+    const cache = store.read();
     const existing = cache[ss58];
     if (existing && existing.txHash === txHash) return;
-    commit({ ...cache, [ss58]: { txHash, submittedAtMs: Date.now(), lockSlot: null } });
+    store.commit({ ...cache, [ss58]: { txHash, submittedAtMs: Date.now(), lockSlot: null } });
   },
   /** Fill in the lock tx's Cardano slot once Blockfrost confirms it in a block. */
   setLockSlot(ss58: string, txHash: string, lockSlot: number): void {
+    const cache = store.read();
     const existing = cache[ss58];
     if (!existing || existing.txHash !== txHash || existing.lockSlot === lockSlot) return;
-    commit({ ...cache, [ss58]: { ...existing, lockSlot } });
+    store.commit({ ...cache, [ss58]: { ...existing, lockSlot } });
   },
   /** Drop the pending record (weight credited, exited, or dismissed). */
   clear(ss58: string): void {
+    const cache = store.read();
     if (!cache[ss58]) return;
     const next = { ...cache };
     delete next[ss58];
-    commit(next);
+    store.commit(next);
   },
 };
 
 /** The pending lock for `ss58` (null when none). Subscribes, so the caller re-renders on any change. */
 export function usePendingLock(ss58: string | null): PendingLock | null {
-  const snap = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const snap = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot);
   return ss58 ? (snap[ss58] ?? null) : null;
 }

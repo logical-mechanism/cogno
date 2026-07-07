@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { ss58Address, ss58Encode } from "@polkadot-labs/hdkd-helpers";
-import { toHex } from "@polkadot-api/utils";
 import { isPlausibleSs58, profileRouteForQuery, truncateSs58, handleOf } from "./ss58";
 
 // A deterministic 32-byte AccountId32 (Alice's well-known public key), encoded at the chain prefix 42.

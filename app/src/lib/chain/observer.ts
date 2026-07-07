@@ -34,18 +34,11 @@ export async function readObserverConfig(api: CognoApi): Promise<ObserverConfig>
   };
 }
 
-/** Whether the observer is enforcing (advancing weights). false ⇒ emergency-frozen — a pending lock
- *  will NOT credit while this is off, so the UI must not tick a false countdown. */
-export async function readEnforceWeight(api: CognoApi): Promise<boolean> {
-  return api.query.CardanoObserver.EnforceWeight.getValue();
-}
+// EnforceWeight (`false` ⇒ the observer is emergency-frozen and a pending lock will NOT credit) is read
+// LIVE by usePendingCapacity via a `watchValue` subscription so a freeze mid-wait is reflected, rather
+// than through a one-shot helper here — a one-shot read went stale and ticked a false countdown.
 
 /** The wall-clock unix time (seconds) of a Cardano slot, from the Shelley anchor (1 slot = 1 second). */
 export function slotToUnixSec(slot: bigint, cfg: ObserverConfig): number {
   return Number(cfg.shelleyStartUnix + (slot - cfg.shelleyStartSlot));
-}
-
-/** The Cardano slot at a wall-clock time (unix seconds). Inverse of slotToUnixSec. */
-export function unixSecToSlot(unixSec: number, cfg: ObserverConfig): number {
-  return Math.floor(unixSec) - Number(cfg.shelleyStartUnix) + Number(cfg.shelleyStartSlot);
 }

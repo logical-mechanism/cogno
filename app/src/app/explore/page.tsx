@@ -50,7 +50,7 @@ import { useRepost } from "@/hooks/useRepost";
 import { useFollow } from "@/hooks/useFollow";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
-import { sharePost } from "@/lib/share";
+import { sharePostWithToast } from "@/lib/share";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
 import { useRecentSearches, recentSearchActions } from "@/lib/recentSearchStore";
@@ -140,32 +140,12 @@ function ExploreView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [committedQ]);
 
-  // Debounce draft → committed term (router.replace, no history stacking). Skip when search is off.
-  useEffect(() => {
-    if (!searchEnabled) return;
-    const next = normalizeQuery(draft);
-    if (next === committedQ) return;
-    const t = setTimeout(() => {
-      // A checksum-valid account address jumps straight to that profile (text search never matches a
-      // raw ss58 address); push (not replace) so Back returns to /explore.
-      const accountRoute = profileRouteForQuery(next);
-      if (accountRoute) return void router.push(accountRoute);
-      // Below the min length: don't run a scan for near-everything — drop any committed term and stay
-      // in DEFAULT (the "keep typing" hint shows).
-      if (isQueryTooShort(next)) {
-        if (committedQ.length > 0) writeTerm("");
-        return;
-      }
-      writeTerm(next);
-    }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, committedQ, searchEnabled]);
-
-  const commitNow = useCallback(
-    (value: string) => {
-      const next = normalizeQuery(value);
-      // Enter on a valid account address → jump to that profile (see the debounce effect above).
+  // Commit a NORMALIZED term — shared by the typed-debounce and the Enter/submit paths so they never
+  // drift: a checksum-valid account address jumps straight to that profile (text search never matches a
+  // raw ss58 address; push, not replace, so Back returns to /explore); a below-min ASCII term drops any
+  // committed term and stays in DEFAULT (the "keep typing" hint shows); otherwise it becomes the term.
+  const commitTerm = useCallback(
+    (next: string) => {
       const accountRoute = profileRouteForQuery(next);
       if (accountRoute) return void router.push(accountRoute);
       if (isQueryTooShort(next)) {
@@ -176,6 +156,19 @@ function ExploreView() {
     },
     [router, writeTerm, committedQ],
   );
+
+  // Debounce draft → committed term (router.replace, no history stacking). Skip when search is off.
+  useEffect(() => {
+    if (!searchEnabled) return;
+    const next = normalizeQuery(draft);
+    if (next === committedQ) return;
+    const t = setTimeout(() => commitTerm(next), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, committedQ, searchEnabled]);
+
+  // Enter / explicit submit: commit immediately (no debounce).
+  const commitNow = useCallback((value: string) => commitTerm(normalizeQuery(value)), [commitTerm]);
 
   const onChangeDraft = useCallback(
     (v: string) => {
@@ -361,18 +354,7 @@ function ExploreView() {
         const cur = viewerStates.get(post.id) ?? NO_VIEWER;
         repost.repost(post.id, cur.reposted);
       },
-      onShare: (post) => {
-        void sharePost(post.id).then((r) => {
-          // The OS share sheet gives its own feedback; only toast on the copy fallback.
-          if (r.kind === "copied") {
-            toast(
-              r.ok
-                ? { kind: "success", message: "Link copied" }
-                : { kind: "error", message: "Couldn't copy the link" },
-            );
-          }
-        });
-      },
+      onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
     [router, viewer.status, viewerStates, vote, repost, pin, toast],
@@ -381,12 +363,15 @@ function ExploreView() {
   // The "/" focus shortcut is now app-wide (useSearchHotkey in AppShell) — no per-surface effect here.
 
   // ── result-count live summary (polite) ───────────────────────────────────────────────────────
+  // People fetches PEOPLE_LIMIT+1 as a truncation probe but ExploreList renders only PEOPLE_LIMIT, so the
+  // announced count is clamped to what's on screen (else a screen reader says "21 people" over 20 rows).
+  const peopleShown = Math.min(people.length, PEOPLE_LIMIT);
   const liveSummary =
     mode === "query"
       ? activeResultTab === "people"
         ? peopleLoading
           ? ""
-          : `${people.length} ${people.length === 1 ? "person" : "people"} for ${committedQ}`
+          : `${peopleShown} ${peopleShown === 1 ? "person" : "people"} for ${committedQ}`
         : latest.loading
           ? ""
           : `${activePosts.length} ${activePosts.length === 1 ? "result" : "results"} for ${committedQ}`

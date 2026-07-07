@@ -18,7 +18,7 @@
 // CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isImageUrl } from "@/lib/media";
+import { countImageUrls } from "@/lib/media";
 import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
@@ -277,10 +277,7 @@ export function Composer({
 
   // Count image links in the draft (matching PostBody's reveal-on-open posture — NO auto-fetch here;
   // just a chip so the author knows the link will render as an image when the post is opened).
-  const imageLinkCount = useMemo(() => {
-    const urls = text.match(/(?:https?|ipfs):\/\/[^\s]+/gi) ?? [];
-    return urls.filter((u) => isImageUrl(u.replace(/[.,!?:;)\]}'"»”’]+$/, ""))).length;
-  }, [text]);
+  const imageLinkCount = useMemo(() => countImageUrls(text), [text]);
 
   return (
     <form
