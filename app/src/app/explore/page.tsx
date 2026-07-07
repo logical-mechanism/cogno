@@ -294,7 +294,9 @@ function ExploreView() {
     setPeopleError(null);
     setPeople([]);
     source
-      .searchPeople(committedQ, PEOPLE_LIMIT)
+      // Fetch one extra so ExploreList can tell a full-but-complete page (exactly PEOPLE_LIMIT) from a
+      // genuinely truncated one (a PEOPLE_LIMIT+1th row exists) — search_people has no cursor/total.
+      .searchPeople(committedQ, PEOPLE_LIMIT + 1)
       .then((p) => {
         if (!cancelled) setPeople(p);
       })
