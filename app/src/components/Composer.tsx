@@ -46,6 +46,10 @@ const EmojiPickerPanel = lazy(() => import("./emoji/EmojiPickerPanel"));
 const EMOJI_PANEL_W = 340;
 const EMOJI_PANEL_MAX_H = 420;
 
+// For the Post-button tooltip advertising the ⌘/Ctrl+Enter submit shortcut. Guarded for SSR/prerender.
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/i.test(navigator.platform ?? "");
+
 const PLACEHOLDER: Record<ComposerMode, string> = {
   post: "What's happening?",
   reply: "Post your reply",
@@ -364,7 +368,7 @@ export function Composer({
                       ? "Write something first"
                       : rateLimited
                         ? "You're over the rate limit"
-                        : undefined
+                        : `${label} — ${IS_MAC ? "⌘↵" : "Ctrl+Enter"}`
             }
           >
             {pending ? <Spinner size="sm" label="Posting" /> : label}
