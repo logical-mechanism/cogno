@@ -38,10 +38,27 @@ function commit(next: string[]): void {
   listeners.forEach((l) => l());
 }
 
+// Another tab changed the list → reload our cache from localStorage and notify, so the dropdown stays
+// in sync and our next push() builds on the fresh list instead of clobbering the other tab's write.
+// The `storage` event fires only in OTHER tabs, so this never loops with our own commit().
+function onStorage(e: StorageEvent): void {
+  if (e.key !== null && e.key !== KEY) return; // ignore unrelated keys; key===null is a full clear()
+  const next = load();
+  if (next.length === cache.length && next.every((x, i) => x === cache[i])) return;
+  cache = next;
+  listeners.forEach((l) => l());
+}
+
 function subscribe(cb: () => void): () => void {
+  if (listeners.size === 0 && typeof window !== "undefined") {
+    window.addEventListener("storage", onStorage);
+  }
   listeners.add(cb);
   return () => {
     listeners.delete(cb);
+    if (listeners.size === 0 && typeof window !== "undefined") {
+      window.removeEventListener("storage", onStorage);
+    }
   };
 }
 
