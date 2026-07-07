@@ -19,6 +19,12 @@ export const metadata: Metadata = {
     "Post text, read text. A feeless social chain where posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
   applicationName: "cogno-chain",
   robots: { index: false, follow: false },
+  // Emit <meta name="referrer" content="no-referrer"> as an app-wide default: no request the app makes
+  // ever sends a Referer header disclosing which post/profile the viewer is on. The remote <img>s (post
+  // images / avatars / banners) already set referrerPolicy="no-referrer" individually and external links
+  // use rel="noreferrer"; this is the belt-and-suspenders default so a future remote fetch that forgets
+  // the per-element attribute still can't leak. (Referer only — a revealed image's fetch still exposes IP.)
+  referrer: "no-referrer",
 };
 
 export const viewport: Viewport = {
