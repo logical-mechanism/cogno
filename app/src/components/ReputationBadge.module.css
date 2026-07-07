@@ -1,0 +1,28 @@
+/* ReputationBadge — a compact stake-weighted reputation chip on the post identity line. Sits inline
+   after the display name; never grows or wraps oddly (flex 0 0 auto, tabular digits, no line wrap). */
+
+.badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: var(--cg-radius-pill);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-bold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* endorsed (net-positive): neutral chip — the app is monochrome, so a positive score reads as a quiet
+   badge, not a colour. */
+.up {
+  color: var(--cg-text-secondary);
+  background: var(--cg-accent-wash);
+}
+
+/* disputed (net-negative): danger-red, matching the People-row rule — the loud "bad actor" signal. */
+.down {
+  color: var(--cg-danger);
+  background: var(--cg-danger-wash);
+}

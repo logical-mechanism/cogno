@@ -24,6 +24,7 @@ import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
 import { PostTime } from "./PostTime";
 import { ProfileHoverCard } from "./ProfileHoverCard";
+import { ReputationBadge } from "./ReputationBadge";
 import { IconMore } from "./icons";
 import type { AuthorRef, OverflowMenuItem, AvatarSize } from "./kit";
 
@@ -138,6 +139,9 @@ export function PostCardHeader({
               />
             </button>
           </ProfileHoverCard>
+          {/* Community reputation next to the name — a quick good-actor/troll signal (self-hidden when
+              unknown or net-zero, so most rows stay clean). */}
+          <ReputationBadge address={author.address} />
           <Handle address={author.address} />
           {at != null && <PostTime at={at} />}
           {dim && (

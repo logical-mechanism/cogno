@@ -27,6 +27,7 @@ import { useSelfProfile } from "@/hooks/useSelfProfile";
 import { deriveSessionState, type SessionState } from "@/lib/session";
 import { ToasterProvider } from "@/components/toast/ToasterProvider";
 import { OptimisticProvider } from "@/hooks/useOptimistic";
+import { ReputationProvider } from "@/hooks/useReputation";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, ConnStatus, BootGuard, PostingSigner } from "@/lib/types";
 import type { Viewer, ViewerStatus } from "@/components/kit";
@@ -166,7 +167,13 @@ function ChainProvider({ children }: { children: ReactNode }) {
     [api, client, status, boot, wsUrl, reconnect, signer, signerCtl, identity, sessionState, viewer, source, bestBlock],
   );
 
-  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+  // ReputationProvider lives INSIDE the session context (it reads `api` via useSession) so the
+  // whole tree shares one batched, cached AccountVoteTally lookup for the author-reputation badges.
+  return (
+    <SessionContext.Provider value={value}>
+      <ReputationProvider>{children}</ReputationProvider>
+    </SessionContext.Provider>
+  );
 }
 
 /** The single composed provider stack mounted once in the root layout (around AppShell). */
