@@ -12,11 +12,13 @@ describe("normalizeQuery", () => {
     expect(normalizeQuery(once)).toBe(once);
   });
 
-  it("NFC-normalizes so decomposed and composed accents match", () => {
+  it("does NOT Unicode-normalize (stays byte-comparable with the node's raw scan)", () => {
     const composed = "café"; // é = U+00E9
     const decomposed = "café"; // e + combining acute
-    expect(decomposed).not.toBe(composed);
-    expect(normalizeQuery(decomposed)).toBe(normalizeQuery(composed));
+    // Both pass through unchanged, so an NFD query still byte-matches NFD-authored content.
+    expect(normalizeQuery(decomposed)).toBe(decomposed);
+    expect(normalizeQuery(composed)).toBe(composed);
+    expect(normalizeQuery(decomposed)).not.toBe(normalizeQuery(composed));
   });
 
   it("maps a whitespace-only query to empty", () => {
@@ -29,12 +31,17 @@ describe("isQueryTooShort", () => {
     expect(isQueryTooShort("")).toBe(false);
   });
 
-  it("is true for a non-empty term below the minimum", () => {
+  it("is true for a non-empty ASCII term below the minimum", () => {
     expect(isQueryTooShort("a")).toBe(true);
     expect("a".length).toBeLessThan(MIN_QUERY_LEN);
   });
 
-  it("is false once the term reaches the minimum", () => {
+  it("is false once an ASCII term reaches the minimum", () => {
     expect(isQueryTooShort("ab")).toBe(false);
+  });
+
+  it("is false for a single non-ASCII character (CJK is a complete searchable word)", () => {
+    expect(isQueryTooShort("猫")).toBe(false); // 猫
+    expect(isQueryTooShort("日")).toBe(false); // 日
   });
 });
