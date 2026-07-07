@@ -141,6 +141,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
 
   // The inline reply composer slot — the focus target for "reply to the focal" and the ?reply=1 descend.
   const composerSlotRef = useRef<HTMLDivElement | null>(null);
+  // Scroll to a just-posted reply: the replies container + a flag set on submit (the effect below fires
+  // when the optimistic card lands at the bottom of the list).
+  const repliesRef = useRef<HTMLDivElement | null>(null);
+  const justRepliedRef = useRef(false);
   const focusComposer = useCallback(() => {
     const slot = composerSlotRef.current;
     if (!slot) return;
@@ -182,6 +186,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       // at the bottom of the replies list via useThread's merge — always, since every reply is a
       // reply-to-focal (the focal-nav model routes deeper replies to their own /post/[id]/ first).
       const clientId = addOptimisticReply(optimistic);
+      justRepliedRef.current = true; // the effect below scrolls to the new card once it renders
       void run(
         submitReply(api, signer, draft.text, rootId),
         phase({
@@ -292,6 +297,15 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     autofocusedFor.current = rootId;
     requestAnimationFrame(() => focusComposer());
   }, [focal, rootId, focusComposer]);
+
+  // ── scroll to your just-posted reply once its optimistic card renders at the bottom of the list ──
+  useEffect(() => {
+    if (!justRepliedRef.current) return;
+    justRepliedRef.current = false;
+    const nodes = repliesRef.current?.querySelectorAll("[data-reply-node]");
+    const last = nodes && nodes.length ? nodes[nodes.length - 1] : null;
+    if (last) requestAnimationFrame(() => last.scrollIntoView({ block: "center" }));
+  }, [shownReplies]);
 
   // ── browser tab title: author + snippet, so multiple open post tabs are distinguishable ──
   useEffect(() => {
@@ -429,12 +443,12 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           its own replies offers a subtle "N replies →" descend link; tapping the card or the link
           navigates to that reply's own /post/[id]/ focal. While the thread refetches we keep the
           rendered replies; a pending optimistic reply is merged in by useThread (id<0 → opacity 0.6). */}
-      <div className={styles.replies}>
+      <div className={styles.replies} ref={repliesRef}>
         {replies.length === 0 ? (
           <EmptyState variant="replies" />
         ) : (
           shownReplies.map((reply) => (
-            <div key={String(reply.id)} className={styles.replyNode}>
+            <div key={String(reply.id)} className={styles.replyNode} data-reply-node>
               <PostCard
                 post={reply}
                 viewer={viewerStates.get(reply.id) ?? NO_VIEWER}
