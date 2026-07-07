@@ -19,9 +19,13 @@ export function useSearchHotkey(): void {
       if (typing) return;
       // A modal/composer open → don't steal the slash.
       if (document.querySelector("[role='dialog']")) return;
-      const input = document.querySelector<HTMLInputElement>(
+      // Pick the first VISIBLE search box: on ≤1019px the RightRail SearchBar is display:none but stays
+      // mounted, and focus() on a hidden element is a no-op — which would swallow "/" with no effect.
+      // offsetParent is null for a display:none-nested element, so skip those.
+      const inputs = document.querySelectorAll<HTMLInputElement>(
         "[role='search'] input[type='search']",
       );
+      const input = Array.from(inputs).find((el) => el.offsetParent !== null);
       if (input) {
         e.preventDefault();
         input.focus();
