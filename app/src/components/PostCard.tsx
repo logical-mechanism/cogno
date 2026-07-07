@@ -233,7 +233,17 @@ export function PostCard({
           {isReply && variant !== "thread" && (
             <p className={styles.replyContext}>
               Replying to{" "}
-              <span className={styles.replyTarget}>{handleOf(String(post.parent))}</span>
+              <button
+                type="button"
+                className={styles.replyTarget}
+                // parent is a post id, not an account — link to the parent post (not a fake @handle).
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (post.parent != null) handlers.onOpen(post.parent);
+                }}
+              >
+                a post
+              </button>
             </p>
           )}
 
