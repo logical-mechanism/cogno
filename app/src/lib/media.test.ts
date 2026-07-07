@@ -1,15 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  isImageUrl,
-  classifyMedia,
-  countMediaUrls,
-  resolveImageSrc,
-  resolveMediaSrc,
-  IMAGE_EXTENSIONS,
-  VIDEO_EXTENSIONS,
-  AUDIO_EXTENSIONS,
-  IPFS_GATEWAY,
-} from "./media";
+import { isImageUrl, resolveImageSrc, IMAGE_EXTENSIONS, IPFS_GATEWAY } from "./media";
 
 describe("isImageUrl — http(s) detection by extension", () => {
   it("matches every supported image extension", () => {
@@ -60,81 +50,6 @@ describe("isImageUrl — ipfs:// handling", () => {
   it("rejects an ipfs URI with no CID", () => {
     expect(isImageUrl("ipfs://")).toBe(false);
     expect(isImageUrl("ipfs://ipfs/")).toBe(false);
-  });
-});
-
-describe("classifyMedia — image / video / audio by extension", () => {
-  it("classifies every image extension as 'image'", () => {
-    for (const ext of IMAGE_EXTENSIONS) {
-      expect(classifyMedia(`https://example.com/pic.${ext}`)).toBe("image");
-    }
-  });
-
-  it("classifies every video extension as 'video'", () => {
-    for (const ext of VIDEO_EXTENSIONS) {
-      expect(classifyMedia(`https://example.com/clip.${ext}`)).toBe("video");
-    }
-  });
-
-  it("classifies every audio extension as 'audio'", () => {
-    for (const ext of AUDIO_EXTENSIONS) {
-      expect(classifyMedia(`https://example.com/song.${ext}`)).toBe("audio");
-    }
-  });
-
-  it("is case-insensitive and ignores query / hash", () => {
-    expect(classifyMedia("https://example.com/CLIP.MP4?t=3")).toBe("video");
-    expect(classifyMedia("https://example.com/a.WebM#x")).toBe("video");
-    expect(classifyMedia("https://example.com/track.MP3?dl=1")).toBe("audio");
-  });
-
-  it("returns null for a non-media / no-extension http(s) link", () => {
-    expect(classifyMedia("https://youtube.com/watch?v=abc")).toBeNull();
-    expect(classifyMedia("https://example.com/page")).toBeNull();
-    expect(classifyMedia("https://example.com/doc.pdf")).toBeNull();
-  });
-
-  it("returns null for non-http/ipfs schemes (never a media/href/src sink)", () => {
-    expect(classifyMedia("javascript:alert(1)")).toBeNull();
-    expect(classifyMedia("data:image/png;base64,AAAA")).toBeNull();
-    expect(classifyMedia("ftp://host/a.mp4")).toBeNull();
-    expect(classifyMedia("mailto:a@b.com")).toBeNull();
-    expect(classifyMedia("")).toBeNull();
-  });
-
-  it("classifies ipfs media by extension, bare CID as image, unknown ext as null", () => {
-    expect(classifyMedia("ipfs://bafyCID")).toBe("image"); // bare CID assumed image
-    expect(classifyMedia("ipfs://bafy/cat.png")).toBe("image");
-    expect(classifyMedia("ipfs://bafy/clip.mp4")).toBe("video");
-    expect(classifyMedia("ipfs://bafy/song.mp3")).toBe("audio");
-    expect(classifyMedia("ipfs://bafy/meta.json")).toBeNull();
-    expect(classifyMedia("ipfs://")).toBeNull();
-  });
-
-  it("keeps isImageUrl a strict image predicate (video/audio are NOT images)", () => {
-    expect(isImageUrl("https://example.com/a.mp4")).toBe(false);
-    expect(isImageUrl("https://example.com/a.mp3")).toBe(false);
-    expect(isImageUrl("https://example.com/a.png")).toBe(true);
-  });
-});
-
-describe("countMediaUrls — counts image/video/audio links in text", () => {
-  it("counts every media kind and ignores plain links / trailing punctuation", () => {
-    const text =
-      "pic https://x.io/a.png a clip https://x.io/b.mp4. audio https://x.io/c.mp3, " +
-      "and a page https://x.io/read plus ipfs://bafy/d.webm";
-    expect(countMediaUrls(text)).toBe(4); // png + mp4 + mp3 + ipfs webm; the /read page is not counted
-  });
-
-  it("is zero when there is no media link", () => {
-    expect(countMediaUrls("just words and https://x.io/page here")).toBe(0);
-  });
-});
-
-describe("resolveMediaSrc — alias of resolveImageSrc", () => {
-  it("resolves ipfs:// and passes http(s) through, same as resolveImageSrc", () => {
-    expect(resolveMediaSrc("ipfs://bafyCID/clip.mp4")).toBe(`${IPFS_GATEWAY}bafyCID/clip.mp4`);
-    expect(resolveMediaSrc("https://example.com/a.mp4")).toBe("https://example.com/a.mp4");
   });
 });
 

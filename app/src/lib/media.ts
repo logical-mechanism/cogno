@@ -1,40 +1,18 @@
-// media — pure helpers for the reveal-cover media pipeline (image-reveal feature).
+// media — pure helpers for the image reveal-cover (image-reveal feature).
 //
-// The chain is text-only; a media URL pasted into a post/bio (or set as an avatar/banner) points at an
-// ARBITRARY host. These helpers classify which links are renderable media — image, video, or audio (so
-// the UI can gate them behind a click-to-reveal cover instead of auto-fetching) and resolve ipfs:// URIs
-// to a public gateway. No DOM, no network — unit-tested in media.test.ts.
+// The chain is text-only; an image URL pasted into a post/bio (or set as an avatar/banner) points at
+// an ARBITRARY host. These helpers classify which links are images (so the UI can gate them behind a
+// click-to-reveal cover instead of auto-fetching) and resolve ipfs:// URIs to a public gateway. No
+// DOM, no network — unit-tested in media.test.ts.
 
-/** Image file extensions we render behind a reveal cover (lower-case, no dot). `gif` stays here: an
- *  animated GIF is an `<img>` that auto-animates the instant it mounts — "plays when revealed". */
+/** Image file extensions we render behind a reveal cover (lower-case, no dot). */
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"] as const;
-
-/** Video file extensions we render behind a reveal cover. Deliberately TRIMMED to formats browsers
- *  decode broadly — do NOT add mov/ogv/mkv (playback the browser often can't deliver; unknown
- *  extensions degrade to a plain link, and a mis-guess to the broken-media fallback). */
-export const VIDEO_EXTENSIONS = ["mp4", "webm"] as const;
-
-/** Audio file extensions we render behind a reveal cover (same broadly-decodable trim; no aac/flac). */
-export const AUDIO_EXTENSIONS = ["mp3", "ogg", "wav", "m4a"] as const;
-
-/** What a media URL renders as. `null` (from {@link classifyMedia}) means "a plain link, not media". */
-export type MediaKind = "image" | "video" | "audio";
 
 /** Public IPFS gateway used to fetch ipfs:// content once the user reveals it. */
 export const IPFS_GATEWAY = "https://ipfs.io/ipfs/";
 
 const EXT_RE = /\.([a-z0-9]+)$/;
 const IMAGE_EXT_SET: ReadonlySet<string> = new Set(IMAGE_EXTENSIONS);
-const VIDEO_EXT_SET: ReadonlySet<string> = new Set(VIDEO_EXTENSIONS);
-const AUDIO_EXT_SET: ReadonlySet<string> = new Set(AUDIO_EXTENSIONS);
-
-/** Map a lower-cased file extension to its MediaKind, or null when it's not a type we render. */
-function kindForExt(ext: string): MediaKind | null {
-  if (IMAGE_EXT_SET.has(ext)) return "image";
-  if (VIDEO_EXT_SET.has(ext)) return "video";
-  if (AUDIO_EXT_SET.has(ext)) return "audio";
-  return null;
-}
 
 /** The lower-cased file extension of a path-like string (query/hash already stripped), or null. */
 function extensionOf(pathLike: string): string | null {
@@ -43,37 +21,27 @@ function extensionOf(pathLike: string): string | null {
 }
 
 /**
- * Classify a URL as renderable media (rendered behind a reveal cover), or null for a plain link:
- *   - http(s): mapped by its file extension (image/video/audio sets); no or unknown extension → null
- *     (a generic link stays a link).
- *   - ipfs://: mapped by extension too, so `ipfs://<cid>/clip.mp4` → "video"; a bare CID with NO
- *     extension is assumed to be an image (a wrong guess degrades to the broken-media fallback, never
- *     an auto-fetch, because the cover gates the load).
- * Query string and hash fragment are ignored when reading the extension. A non-http/ipfs scheme
- * (ftp:/mailto:/javascript:/data:) is never media.
+ * True when `url` should be rendered as an image (behind a reveal cover):
+ *   - http(s): must end in a known image extension (a generic link stays a link).
+ *   - ipfs://: counts when it carries an image extension OR no extension at all (a bare CID is
+ *     assumed to be an image — a wrong guess degrades to the broken-image fallback, never an
+ *     auto-fetch, because the cover gates the load).
+ * Query string and hash fragment are ignored when reading the extension.
  */
-export function classifyMedia(url: string): MediaKind | null {
+export function isImageUrl(url: string): boolean {
   const path = url.split(/[?#]/, 1)[0];
   if (/^ipfs:\/\//i.test(path)) {
-    // Require a non-empty CID (`ipfs://` / `ipfs://ipfs/` alone is not media).
+    // Require a non-empty CID (`ipfs://` / `ipfs://ipfs/` alone is not an image).
     const cid = path.replace(/^ipfs:\/\//i, "").replace(/^ipfs\//i, "");
-    if (!cid) return null;
+    if (!cid) return false;
     const ext = extensionOf(path);
-    return ext === null ? "image" : kindForExt(ext);
+    return ext === null || IMAGE_EXT_SET.has(ext);
   }
   if (/^https?:\/\//i.test(path)) {
     const ext = extensionOf(path);
-    return ext === null ? null : kindForExt(ext);
+    return ext !== null && IMAGE_EXT_SET.has(ext);
   }
-  return null;
-}
-
-/** True when `url` should be rendered as an image — a convenience predicate over {@link classifyMedia}
- *  (`classifyMedia(url) === "image"`). No app caller today (the renderer uses `classifyMedia`; the
- *  avatar/profile paths use `resolveImageSrc`); exercised by the media tests and kept as a public
- *  image-only predicate. */
-export function isImageUrl(url: string): boolean {
-  return classifyMedia(url) === "image";
+  return false;
 }
 
 /**
@@ -98,23 +66,19 @@ export function resolveImageSrc(url: string): string {
   }
 }
 
-/** Media-type-agnostic alias of {@link resolveImageSrc} (ipfs:// → gateway, http(s) passthrough) — the
- *  renderer resolves image, video, and audio srcs through the same normaliser + gateway-root guard. */
-export const resolveMediaSrc = resolveImageSrc;
-
-// URL tokenizer shared with the post renderer (PostBody.segment) and the composer's media-link chip, so
-// the two never drift on which links count as media. Match http(s) AND ipfs:// URLs, stopping the run
+// URL tokenizer shared with the post renderer (PostBody.segment) and the composer's image-link chip, so
+// the two never drift on which links count as images. Match http(s) AND ipfs:// URLs, stopping the run
 // at whitespace; trailing sentence punctuation is trimmed so a URL at the end of a sentence
 // ("see https://x.org.") doesn't swallow the period.
 export const URL_RE = /(?:https?|ipfs):\/\/[^\s]+/gi;
 export const TRAILING_PUNCT = /[.,!?:;)\]}'"»”’]+$/;
 
-/** How many URLs in `text` render as media of ANY kind (image/video/audio) — the same classification
- *  the renderer applies. Used by the composer's "N media links — shown when opened" chip. */
-export function countMediaUrls(text: string): number {
+/** How many URLs in `text` render as images (same classification the renderer applies). Used by the
+ *  composer to show the "N image links — shown when opened" chip without re-deriving the URL scan. */
+export function countImageUrls(text: string): number {
   let n = 0;
   for (const m of text.matchAll(URL_RE)) {
-    if (classifyMedia(m[0].replace(TRAILING_PUNCT, "")) !== null) n += 1;
+    if (isImageUrl(m[0].replace(TRAILING_PUNCT, ""))) n += 1;
   }
   return n;
 }

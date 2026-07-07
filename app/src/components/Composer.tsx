@@ -13,15 +13,12 @@
 // §6.1 — the surface closes the modal + inserts the pending card).
 //
 // Toolbar is stripped to chain-backed affordances (doc 09 §12): exactly the Poll toggle (top-level
-// post only) + an OPTIONAL text-only emoji insert helper. NO media-UPLOAD / GIF-picker / location /
-// audience / schedule / poll-duration button — media is a pasted URL (image/video/audio), recognized by
-// @/lib/media.countMediaUrls and surfaced only as the read-only "media link" chip below the textarea; it
-// renders behind a reveal cover when the post is opened (PostBody), never fetched from the composer. The
-// ByteCounter ring (UTF-8 BYTES, D1) is the single source of truth the CTA gates off; a RateLimitNotice
-// line (D5) shows when the surface says capacity is exhausted.
+// post only) + an OPTIONAL text-only emoji insert helper. NO media / GIF / location / audience /
+// schedule / poll-duration. The ByteCounter ring (UTF-8 BYTES, D1) is the single source of truth the
+// CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { countMediaUrls } from "@/lib/media";
+import { countImageUrls } from "@/lib/media";
 import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
@@ -278,10 +275,9 @@ export function Composer({
   // Live-announce remaining only when ≤ 20 bytes left (avoid spam — doc 09 §11).
   const announce = measure.remaining <= 20;
 
-  // Count media links (image/video/audio) in the draft — matching PostBody's reveal-on-open posture (NO
-  // auto-fetch here; just a chip so the author knows the link will render as media when the post is
-  // opened). Media stays a pasted URL: no upload affordance, the draft still carries only text.
-  const mediaLinkCount = useMemo(() => countMediaUrls(text), [text]);
+  // Count image links in the draft (matching PostBody's reveal-on-open posture — NO auto-fetch here;
+  // just a chip so the author knows the link will render as an image when the post is opened).
+  const imageLinkCount = useMemo(() => countImageUrls(text), [text]);
 
   return (
     <form
@@ -314,12 +310,12 @@ export function Composer({
             aria-describedby={`cg-composer-${mode}-meta`}
           />
           {contextBelow}
-          {mediaLinkCount > 0 && (
+          {imageLinkCount > 0 && (
             <p className={styles.imageChip} role="note">
-              <span aria-hidden>🔗</span>{" "}
-              {mediaLinkCount === 1
-                ? "Media link — shown when the post is opened"
-                : `${mediaLinkCount} media links — shown when opened`}
+              <span aria-hidden>🖼</span>{" "}
+              {imageLinkCount === 1
+                ? "Image link — shown when the post is opened"
+                : `${imageLinkCount} image links — shown when opened`}
             </p>
           )}
         </div>
