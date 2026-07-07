@@ -61,6 +61,13 @@
   font-size: var(--cg-fs-sm);
 }
 
+/* "Image link — shown when opened" chip under the textarea (no auto-fetch; mirrors reveal-on-open). */
+.imageChip {
+  margin: var(--cg-space-1) 0 0;
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}
+
 .notice {
   /* hosts the RateLimitNotice slim banner above the toolbar */
 }

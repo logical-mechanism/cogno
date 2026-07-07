@@ -17,7 +17,8 @@
 // schedule / poll-duration. The ByteCounter ring (UTF-8 BYTES, D1) is the single source of truth the
 // CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isImageUrl } from "@/lib/media";
 import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
@@ -274,6 +275,13 @@ export function Composer({
   // Live-announce remaining only when ≤ 20 bytes left (avoid spam — doc 09 §11).
   const announce = measure.remaining <= 20;
 
+  // Count image links in the draft (matching PostBody's reveal-on-open posture — NO auto-fetch here;
+  // just a chip so the author knows the link will render as an image when the post is opened).
+  const imageLinkCount = useMemo(() => {
+    const urls = text.match(/(?:https?|ipfs):\/\/[^\s]+/gi) ?? [];
+    return urls.filter((u) => isImageUrl(u.replace(/[.,!?:;)\]}'"»”’]+$/, ""))).length;
+  }, [text]);
+
   return (
     <form
       className={styles.composer}
@@ -305,6 +313,14 @@ export function Composer({
             aria-describedby={`cg-composer-${mode}-meta`}
           />
           {contextBelow}
+          {imageLinkCount > 0 && (
+            <p className={styles.imageChip} role="note">
+              <span aria-hidden>🖼</span>{" "}
+              {imageLinkCount === 1
+                ? "Image link — shown when the post is opened"
+                : `${imageLinkCount} image links — shown when opened`}
+            </p>
+          )}
         </div>
       </div>
 
