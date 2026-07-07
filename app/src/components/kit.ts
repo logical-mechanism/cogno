@@ -222,8 +222,6 @@ export interface PostActionCallbacks {
   onLike: (post: CognoPost, next: boolean) => void;
   /** down-vote (the ▼ in the action row); next=true → downvote, next=false → clear. */
   onDownvote: (post: CognoPost, next: boolean) => void;
-  /** repost — submitted on a single click; no un-repost. */
-  onRepost: (post: CognoPost) => void;
   /** copy /post/[id] link → success toast. */
   onShare: (post: CognoPost) => void;
   /** Pin one of YOUR OWN posts to your profile (own-post overflow menu only). Optional: a surface

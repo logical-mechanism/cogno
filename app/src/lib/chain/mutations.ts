@@ -3,7 +3,7 @@
 // stream (`Observable<TxUpdate>`) for signed writes, or — for the two CIP-8 binds — re-exports the
 // bare-unsigned promise submitters from identity.ts.
 //
-// Cost model (spec 117): post / reply / quote / vote / clear / repost / follow / unfollow / poll
+// Cost model (spec 117): post / reply / quote / vote / clear / follow / unfollow / poll
 // are FEELESS + capacity-metered SIGNED writes. **Profile writes (set_profile / clear_profile /
 // pin_post / unpin_post) are ALSO FEELESS** (pallet-profile carries `#[pallet::feeless_if(...true)]`
 // + capacity-metered at ProfileCost) — so they are built exactly like a post: signed, no fee path,
@@ -85,17 +85,7 @@ export function submitClearVote(
   return watchSigned(api, tx, signer);
 }
 
-// ── reposts / follows ──────────────────────────────────────────────────────────────────────
-
-/** Repost is PERMANENT (the chain rejects `AlreadyReposted`); the optimistic UI must not double-fire. */
-export function submitRepost(
-  api: CognoApi,
-  signer: PostingSigner,
-  postId: bigint,
-): Observable<TxUpdate> {
-  const tx = api.tx.Microblog.repost({ post_id: postId }) as unknown as Signable;
-  return watchSigned(api, tx, signer);
-}
+// ── follows ────────────────────────────────────────────────────────────────────────────────
 
 export function submitFollow(
   api: CognoApi,

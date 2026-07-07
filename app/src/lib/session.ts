@@ -43,7 +43,7 @@ export function deriveSessionState(s: SignerState, id: IdentityState): SessionSt
   return "disconnected"; // bound === null (loading): not yet writable
 }
 
-/** True when the session can submit any write (post/vote/repost/follow/poll/profile). */
+/** True when the session can submit any write (post/vote/quote/follow/poll/profile). */
 export function canWrite(state: SessionState): boolean {
   return state === "bound" || state === "bound_no_stake" || state === "bound_staked";
 }

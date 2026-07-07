@@ -34,7 +34,6 @@ import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
-import { useRepost } from "@/hooks/useRepost";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
@@ -133,7 +132,6 @@ export default function HomePage() {
   // ── write hooks ─────────────────────────────────────────────────────────────────────────────
   const vote = useVote(api, signer, votingPower ?? 0n);
   const { pin } = usePinPost(api, signer);
-  const repost = useRepost(api, signer);
   const { addPending, failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
@@ -237,15 +235,10 @@ export default function HomePage() {
         if (next) vote.downvote(post.id, cur);
         else vote.clear(post.id, cur);
       },
-      onRepost: (post) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        repost.repost(post.id, cur.reposted);
-      },
       onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => pin(post.id),
     }),
-    [router, viewer.status, viewerStates, vote, repost, pin, toast],
+    [router, viewer.status, viewerStates, vote, pin, toast],
   );
 
   const composeState: ActionState = "idle"; // inline composer clears optimistically; per-tx state lives on the card

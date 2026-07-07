@@ -2,28 +2,27 @@
 
 // PostCardActions — the X action row under every post (doc 03 §3, D2/D3).
 //
-//   ⟲ Reply 12     ↻ Repost 4     ❝ Quote 1     ♥ 38              ↗ Share
-//   teal hover     green/perm     teal hover     LIKE=UP vote      copy→toast
+//   ⟲ Reply 12     ❝ Quote     ♥ 38              ↗ Share
+//   teal hover     teal hover  LIKE=UP vote      copy→toast
 //
 // Spread across ~425px max (X parity) with Share pushed to the trailing edge. The up-vote == an
-// on-chain UP vote (D2). Repost submits on a single click (everything on-chain is permanent, so we
-// don't call it out) → it turns filled green (--cg-repost), disabled, aria-pressed — there is no
-// un-repost. Tapping an active up/down vote toggle-clears it inline. The net stake-weighted SCORE is
-// rendered inline between the up/down buttons; only the separate up/down weight breakdown stays
-// detail-only (D2/D12).
+// on-chain UP vote (D2). Tapping an active up/down vote toggle-clears it inline. The net
+// stake-weighted SCORE is rendered inline between the up/down buttons; only the separate up/down
+// weight breakdown stays detail-only (D2/D12). (Repost was dropped — quote + the stake-weighted
+// vote cover amplification, and a bare repost redistributed nothing on this chain.)
 //
 // Presentational + optimistic: every count/filled state is driven by props the surface
 // optimistically overrides; this row NEVER builds an extrinsic.
 
 import { useCallback } from "react";
 import styles from "./PostCardActions.module.css";
-import { IconReply, IconRepost, IconQuote, IconShare, IconDownvote } from "./icons";
+import { IconReply, IconQuote, IconShare, IconDownvote } from "./icons";
 import { formatCount, formatSignedWeight } from "@/lib/format";
 import type { CognoPost, ViewerPostState, Viewer, ActionState } from "./kit";
 
 export interface PostCardActionsProps {
   post: CognoPost;
-  /** The viewer's relationship to this post (drives filled heart / disabled repost). */
+  /** The viewer's relationship to this post (drives the filled up-vote). */
   viewer: ViewerPostState;
   /** Gate state (not-connected → welcome; not-identity-bound → disabled tooltip). */
   gate: Viewer;
@@ -31,15 +30,12 @@ export interface PostCardActionsProps {
   onQuote: (post: CognoPost) => void;
   /** Toggle the heart (UP vote): next=true → like, next=false → clear. */
   onLike: (post: CognoPost, next: boolean) => void;
-  /** Repost — submitted on a single click; no un-repost. */
-  onRepost: (post: CognoPost) => void;
   /** Secondary down-vote: next=true → downvote, false → clear (tap the active ▼ to clear). */
   onDownvote: (post: CognoPost, next: boolean) => void;
   /** Copy /post/[id] link → success toast (Share + the header "Copy link" item). */
   onCopyLink: (post: CognoPost) => void;
-  /** Optimistic states for the Like + Repost buttons (spinner overlay until ok). */
+  /** Optimistic state for the Like button (spinner overlay until ok). */
   likeState?: ActionState;
-  repostState?: ActionState;
   /** Compact row (e.g. inside a denser context). */
   dense?: boolean;
 }
@@ -51,19 +47,15 @@ export function PostCardActions({
   onReply,
   onQuote,
   onLike,
-  onRepost,
   onDownvote,
   onCopyLink,
   likeState = "idle",
-  repostState = "idle",
   dense,
 }: PostCardActionsProps) {
   const up = viewer.myVote === "Up";
   const down = viewer.myVote === "Down";
-  const reposted = viewer.reposted;
   const notBound = gate.status === "not-identity-bound";
   const likePending = likeState === "pending";
-  const repostPending = repostState === "pending";
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -107,17 +99,7 @@ export function PostCardActions({
     [onCopyLink, post],
   );
 
-  const doRepost = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (reposted) return; // terminal — no un-repost
-      onRepost(post);
-    },
-    [reposted, onRepost, post],
-  );
-
   const replyCount = formatCount(post.replyCount);
-  const repostCount = formatCount(post.repostCount);
   // Net stake-weighted score (upWeight − downWeight); may be negative. The appchain vote model
   // surfaced directly — ▲ score ▼ replaces the Twitter heart (user 2026-06-21).
   const score = formatSignedWeight(post.score ?? 0n);
@@ -137,25 +119,6 @@ export function PostCardActions({
           <IconReply style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }} />
         </span>
         {replyCount && <span className={styles.count}>{replyCount}</span>}
-      </button>
-
-      {/* Repost — single click submits (no un-repost) */}
-      <button
-        type="button"
-        className={`${styles.action} ${styles.repost} ${reposted ? styles.repostOn : ""}`}
-        aria-label={`Repost${post.repostCount ? `, ${post.repostCount}` : ""}`}
-        aria-pressed={reposted}
-        disabled={reposted || repostPending || notBound}
-        title={reposted ? "Reposted" : notBound ? "Finish setup to repost." : "Repost"}
-        onClick={doRepost}
-      >
-        <span className={styles.iconWrap}>
-          <IconRepost
-            filled={reposted}
-            style={{ width: "var(--cg-icon-sm)", height: "var(--cg-icon-sm)" }}
-          />
-        </span>
-        {repostCount && <span className={styles.count}>{repostCount}</span>}
       </button>
 
       {/* Quote */}
