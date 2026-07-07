@@ -190,7 +190,9 @@ function ExploreView() {
   // prefixes ("ab" → "abc" → "abcd") aren't each saved — only the query the user actually landed on.
   const recentSearches = useRecentSearches();
   useEffect(() => {
-    if (committedQ.length < MIN_QUERY_LEN) return;
+    // Gate on the SAME isQueryTooShort predicate as `mode` (not raw .length) so a committed single
+    // non-ASCII/CJK term — which DID run a search — is also recorded, while below-min ASCII is skipped.
+    if (committedQ.length === 0 || isQueryTooShort(committedQ)) return;
     const t = setTimeout(() => recentSearchActions.push(committedQ), 1200);
     return () => clearTimeout(t);
   }, [committedQ]);
@@ -212,12 +214,14 @@ function ExploreView() {
       (window.matchMedia?.("(pointer: fine)")?.matches ?? false),
   );
 
-  // Mode: NO-INDEXER overrides everything; else DEFAULT vs QUERY. A term below MIN_QUERY_LEN (only
-  // reachable from an external ?q= — our own writes gate it) stays in DEFAULT rather than running a
-  // 1-char scan for near-everything.
+  // Mode: NO-INDEXER overrides everything; else DEFAULT vs QUERY. Gate on the SAME isQueryTooShort
+  // predicate the write paths use (NOT raw .length): a single non-ASCII/CJK char is a complete word the
+  // node's byte-substring scan can match, so it must SEARCH — using raw .length here silently dropped
+  // it back to the firehose. A below-min ASCII term (only reachable from an external ?q=, since our own
+  // writes gate it) still stays in DEFAULT with the "keep typing" hint.
   const mode: "no-indexer" | "default" | "query" = !searchEnabled
     ? "no-indexer"
-    : committedQ.length >= MIN_QUERY_LEN
+    : committedQ.length > 0 && !isQueryTooShort(committedQ)
       ? "query"
       : "default";
 

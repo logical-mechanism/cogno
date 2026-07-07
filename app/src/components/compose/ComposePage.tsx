@@ -117,10 +117,14 @@ export function ComposePage() {
   // Uncontrolled reply/quote drafts report dirtiness here so Cancel can confirm before discarding.
   const composerDirtyRef = useRef(false);
 
-  // Persist the plain-post draft as it changes (post mode only; savePostDraft clears an empty draft).
+  // Persist the plain-post draft as it changes. Gate on the STABLE `mode` (not `effectiveMode`): `text`
+  // only holds the real post draft when mode==="post" (it's initialized "" for reply/quote). Using
+  // effectiveMode here meant a reply/quote whose target failed to resolve degraded to "post" and ran
+  // savePostDraft("") — whose empty branch removeItem()s the key — silently WIPING an unrelated saved
+  // draft. mode==="post" never fires for a reply/quote deep link, so the saved draft is preserved.
   useEffect(() => {
-    if (effectiveMode === "post") savePostDraft(text);
-  }, [effectiveMode, text]);
+    if (mode === "post") savePostDraft(text);
+  }, [mode, text]);
 
   // ── Capacity gate (§5.1) — mirror HomePage.composerRateLimited. Profile is irrelevant; every
   //    write here is feeless + capacity-metered, so capacity exhaustion is the only gate. ──

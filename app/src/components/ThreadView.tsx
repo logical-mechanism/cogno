@@ -102,15 +102,20 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const replies = useMemo<CognoPost[]>(() => thread?.replies ?? [], [thread?.replies]);
   const ancestors = useMemo<CognoPost[]>(() => thread?.ancestors ?? [], [thread?.ancestors]);
 
-  // Paged replies: the first N confirmed + ALL pending (a just-posted reply must never be paged out).
+  // Paged replies: the NEWEST N confirmed + ALL pending. Replies come chronological (oldest-first), and
+  // a just-posted reply is the NEWEST one — the target of the scroll-to-reply effect — so it must stay
+  // in the shown window even after it confirms. We therefore keep the TAIL (newest `visibleReplies`) and
+  // let "Show more" reveal OLDER replies above. Slicing the HEAD instead paged the just-posted reply out
+  // the moment its optimistic card was retired on confirm (position > REPLIES_PAGE in a busy thread).
   const [visibleReplies, setVisibleReplies] = useState(REPLIES_PAGE);
   useEffect(() => setVisibleReplies(REPLIES_PAGE), [rootId]); // reset when navigating to a new focal
+  const confirmedReplyCount = useMemo(() => replies.filter((r) => r.id >= 0n).length, [replies]);
   const shownReplies = useMemo(() => {
     const confirmed = replies.filter((r) => r.id >= 0n);
     const pending = replies.filter((r) => r.id < 0n);
-    return [...confirmed.slice(0, visibleReplies), ...pending];
+    return [...confirmed.slice(Math.max(0, confirmed.length - visibleReplies)), ...pending];
   }, [replies, visibleReplies]);
-  const hiddenReplies = Math.max(0, replies.filter((r) => r.id >= 0n).length - visibleReplies);
+  const hiddenReplies = Math.max(0, confirmedReplyCount - visibleReplies);
 
   // Every card on screen (focal + ancestor chain + direct replies) drives the viewer's vote/repost
   // state, so a like reflects instantly anywhere on the screen.
@@ -444,6 +449,17 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           navigates to that reply's own /post/[id]/ focal. While the thread refetches we keep the
           rendered replies; a pending optimistic reply is merged in by useThread (id<0 → opacity 0.6). */}
       <div className={styles.replies} ref={repliesRef}>
+        {/* Reveals OLDER replies above the newest window (see the shownReplies tail-slice). */}
+        {hiddenReplies > 0 && (
+          <button
+            type="button"
+            className={styles.showMoreReplies}
+            onClick={() => setVisibleReplies((n) => n + REPLIES_PAGE)}
+          >
+            Show {Math.min(hiddenReplies, REPLIES_PAGE)} older{" "}
+            {hiddenReplies === 1 ? "reply" : "replies"}
+          </button>
+        )}
         {replies.length === 0 ? (
           <EmptyState variant="replies" />
         ) : (
@@ -468,16 +484,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
               )}
             </div>
           ))
-        )}
-        {hiddenReplies > 0 && (
-          <button
-            type="button"
-            className={styles.showMoreReplies}
-            onClick={() => setVisibleReplies((n) => n + REPLIES_PAGE)}
-          >
-            Show {Math.min(hiddenReplies, REPLIES_PAGE)} more{" "}
-            {hiddenReplies === 1 ? "reply" : "replies"}
-          </button>
         )}
         {loading && thread && (
           <div className={styles.refetching}>
