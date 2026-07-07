@@ -404,6 +404,11 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           noPostingPower={noPostingPower}
           onSubmit={onSubmitReply}
           draftExtras={{ parentId: rootId }}
+          contextAbove={
+            <p className={styles.replyingToComposer}>
+              Replying to <span className={styles.replyTarget}>{handleOf(focal.author)}</span>
+            </p>
+          }
         />
       </div>
 

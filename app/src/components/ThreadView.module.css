@@ -39,6 +39,17 @@
   font-weight: var(--cg-fw-medium);
 }
 
+/* "Replying to @…" line above the inline reply composer (X parity). */
+.replyingToComposer {
+  margin: 0 0 var(--cg-space-1);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}
+
+.replyingToComposer .replyTarget {
+  color: var(--cg-accent);
+}
+
 /* The focal post wrapper — anchors scroll-to-focal + SR focus; carries the detail stats row below. */
 .focal {
   border-bottom: 1px solid var(--cg-border);
