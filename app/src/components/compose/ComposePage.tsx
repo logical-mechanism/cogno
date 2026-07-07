@@ -24,7 +24,7 @@
 // so the reply/quote edges a future useNotifications(who) would fold are created here already. Not
 // built in v1 — this note keeps the flow notification-friendly.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import styles from "./ComposePage.module.css";
 import { Composer } from "@/components/Composer";
@@ -42,6 +42,7 @@ import { useActionToast } from "@/hooks/useActionToast";
 import { useCapacity } from "@/hooks/useCapacity";
 import { useHeads } from "@/hooks/useHeads";
 import { draftStatus } from "@/lib/chain/capacity";
+import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
 import {
   submitPost,
   submitReply,
@@ -108,10 +109,18 @@ export function ComposePage() {
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
 
   // Controlled text so the capacity gate measures the live draft (and a rollback can restore it).
-  const [text, setText] = useState("");
+  // Hydrate the persisted post draft on mount — but ONLY for a plain-post compose (gated on the stable
+  // `mode`, not effectiveMode), so a reply/quote deep-link never leaks the saved post text into its
+  // capacity gate. Client-only render behind Suspense, so the lazy initializer is safe.
+  const [text, setText] = useState(() => (mode === "post" ? loadPostDraft() : ""));
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   // Uncontrolled reply/quote drafts report dirtiness here so Cancel can confirm before discarding.
   const composerDirtyRef = useRef(false);
+
+  // Persist the plain-post draft as it changes (post mode only; savePostDraft clears an empty draft).
+  useEffect(() => {
+    if (effectiveMode === "post") savePostDraft(text);
+  }, [effectiveMode, text]);
 
   // ── Capacity gate (§5.1) — mirror HomePage.composerRateLimited. Profile is irrelevant; every
   //    write here is feeless + capacity-metered, so capacity exhaustion is the only gate. ──
@@ -230,6 +239,7 @@ export function ComposePage() {
       // Session-gated submit reroutes to /welcome (the Composer relabels the CTA; §5.3).
       if (viewer.status !== "ready") return void router.push("/welcome/");
       if (!api || !signer || draft.text.trim().length === 0) return;
+      clearPostDraft(); // submitted → don't restore it next time
       runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text), {
         pending: "Posting…",
         success: "Posted",
@@ -415,6 +425,7 @@ export function ComposePage() {
           cancelLabel="Keep editing"
           danger
           onConfirm={() => {
+            clearPostDraft(); // explicit discard → forget the saved draft
             setConfirmDiscard(false);
             goBack();
           }}

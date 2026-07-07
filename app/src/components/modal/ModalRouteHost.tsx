@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ComposerModal } from "../ComposerModal";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
 import { Composer } from "../Composer";
 import { ReplyComposer } from "../ReplyComposer";
 import { QuoteComposer } from "../QuoteComposer";
@@ -122,13 +123,20 @@ export function ModalRouteHost() {
   }, [kind, close]);
 
   // Reset the per-open transient state whenever the modal kind changes (also on close → kind null).
+  // Opening the plain composer HYDRATES the persisted post draft (localStorage) so an accidental close
+  // or reload didn't lose it; other kinds start empty.
   useEffect(() => {
     setSubmitState("idle");
-    setText("");
+    setText(kind === "compose" ? loadPostDraft() : "");
     setConfirmDiscard(false);
     composerDirtyRef.current = false;
     if (kind === "poll") setPollDraft({ question: "", options: ["", ""] });
   }, [kind]);
+
+  // Persist the plain-compose draft as it changes (savePostDraft removes the key when it's empty).
+  useEffect(() => {
+    if (kind === "compose") savePostDraft(text);
+  }, [kind, text]);
 
   // Pre-flight capacity gate — mirror ComposePage so the PRIMARY (overlay) compose path also disables
   // the CTA + shows the inline RateLimitNotice before submit, instead of only surfacing a rate limit
@@ -234,6 +242,7 @@ export function ModalRouteHost() {
   const onPost = useCallback(
     (draft: ComposerDraft) => {
       if (!api || !signer || draft.text.trim().length === 0) return;
+      clearPostDraft(); // submitted → don't restore it next time
       runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text), {
         pending: "Posting…",
         success: "Posted",
@@ -449,6 +458,7 @@ export function ModalRouteHost() {
           cancelLabel="Keep editing"
           danger
           onConfirm={() => {
+            clearPostDraft(); // explicit discard → forget the saved draft
             setConfirmDiscard(false);
             onClose();
           }}
