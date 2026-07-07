@@ -50,6 +50,23 @@
   color: var(--cg-accent);
 }
 
+/* "Show N more replies" pager — full-width, centered, like a load-more row. */
+.showMoreReplies {
+  width: 100%;
+  padding: var(--cg-space-3) var(--cg-space-4);
+  background: none;
+  border: none;
+  border-top: 1px solid var(--cg-border);
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-medium);
+  cursor: pointer;
+}
+
+.showMoreReplies:hover {
+  background: var(--cg-bg-subtle);
+}
+
 /* The focal post wrapper — anchors scroll-to-focal + SR focus; carries the detail stats row below. */
 .focal {
   border-bottom: 1px solid var(--cg-border);

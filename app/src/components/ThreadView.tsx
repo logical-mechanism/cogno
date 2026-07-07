@@ -23,7 +23,7 @@
 // dimmed not hidden (PostCard owns the dim+chip); D11 optimistic reply (pending opacity 0.6, phase toast
 // submit→posted, rollback + toast on error). No honesty/block-number chrome.
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import styles from "./ThreadView.module.css";
 import { PostCard } from "./PostCard";
@@ -55,6 +55,9 @@ import type { CognoPost, ViewerPostState } from "@/lib/types";
 import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
 
 const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+// Render replies in pages so a huge thread doesn't mount hundreds of cards at once (useThread fetches
+// them all). Pending (optimistic, id<0) replies are ALWAYS shown so a just-posted reply is never hidden.
+const REPLIES_PAGE = 20;
 
 export interface ThreadViewProps {
   /** The root/focal post id read from /post/[id] (already validated /^\d+$/ by the route). */
@@ -98,6 +101,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   }, [thread?.root]);
   const replies = useMemo<CognoPost[]>(() => thread?.replies ?? [], [thread?.replies]);
   const ancestors = useMemo<CognoPost[]>(() => thread?.ancestors ?? [], [thread?.ancestors]);
+
+  // Paged replies: the first N confirmed + ALL pending (a just-posted reply must never be paged out).
+  const [visibleReplies, setVisibleReplies] = useState(REPLIES_PAGE);
+  useEffect(() => setVisibleReplies(REPLIES_PAGE), [rootId]); // reset when navigating to a new focal
+  const shownReplies = useMemo(() => {
+    const confirmed = replies.filter((r) => r.id >= 0n);
+    const pending = replies.filter((r) => r.id < 0n);
+    return [...confirmed.slice(0, visibleReplies), ...pending];
+  }, [replies, visibleReplies]);
+  const hiddenReplies = Math.max(0, replies.filter((r) => r.id >= 0n).length - visibleReplies);
 
   // Every card on screen (focal + ancestor chain + direct replies) drives the viewer's vote/repost
   // state, so a like reflects instantly anywhere on the screen.
@@ -420,7 +433,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         {replies.length === 0 ? (
           <EmptyState variant="replies" />
         ) : (
-          replies.map((reply) => (
+          shownReplies.map((reply) => (
             <div key={String(reply.id)} className={styles.replyNode}>
               <PostCard
                 post={reply}
@@ -441,6 +454,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
               )}
             </div>
           ))
+        )}
+        {hiddenReplies > 0 && (
+          <button
+            type="button"
+            className={styles.showMoreReplies}
+            onClick={() => setVisibleReplies((n) => n + REPLIES_PAGE)}
+          >
+            Show {Math.min(hiddenReplies, REPLIES_PAGE)} more{" "}
+            {hiddenReplies === 1 ? "reply" : "replies"}
+          </button>
         )}
         {loading && thread && (
           <div className={styles.refetching}>
