@@ -38,17 +38,15 @@
   outline-offset: calc(-1 * var(--cg-focus-ring-width));
 }
 
-/* Sizes any cover glyph (eye / play / speaker) to the icon box regardless of the SVG's own 1em default. */
+/* Centers the cover glyph (eye / play / speaker) in the icon box. The glyph itself is sized via the
+ * icon's `size` prop (--cg-icon-md); this box just centers it and reserves the slot in the flex column. */
 .coverIcon {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: var(--cg-icon-md);
   height: var(--cg-icon-md);
   flex: 0 0 auto;
-}
-
-.coverIcon svg {
-  width: 100%;
-  height: 100%;
 }
 
 .coverLabel {

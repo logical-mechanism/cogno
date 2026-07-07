@@ -52,7 +52,7 @@ export function RevealVideo({
       label={label}
       hideLabel={hideLabel}
       compact={compact}
-      coverIcon={<IconPlay />}
+      coverIcon={<IconPlay size="var(--cg-icon-md)" />}
       fallback={fallback}
       brokenAlt={alt}
       resetKey={src}

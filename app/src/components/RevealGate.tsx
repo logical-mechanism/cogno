@@ -39,7 +39,10 @@ export interface RevealGateProps {
   coverIcon?: ReactNode;
   /** Rendered when the children signal a load error (via the `onError` handed to them). */
   fallback?: ReactNode;
-  /** Accessible label announced for the broken-media state. */
+  /** ARIA role for the broken-media placeholder. Images pass "img"; video/audio omit it (so the
+   *  fallback isn't announced as an image) and let the visible fallback text be read. */
+  brokenRole?: string;
+  /** Accessible label announced for the broken-media state (only used when `brokenRole` is set). */
   brokenAlt?: string;
   /** Clear a stale broken state when this changes (usually the src) so a good asset isn't masked. */
   resetKey?: string;
@@ -61,6 +64,7 @@ export function RevealGate({
   eager = false,
   coverIcon,
   fallback,
+  brokenRole,
   brokenAlt,
   resetKey,
   className,
@@ -91,7 +95,7 @@ export function RevealGate({
         title={label}
       >
         <span className={styles.coverIcon} aria-hidden>
-          {coverIcon ?? <IconEye />}
+          {coverIcon ?? <IconEye size="var(--cg-icon-md)" />}
         </span>
         {!compact && <span className={styles.coverLabel}>{label}</span>}
       </button>
@@ -100,7 +104,14 @@ export function RevealGate({
 
   if (broken) {
     return (
-      <span className={[root, styles.broken].join(" ")} style={style} role="img" aria-label={brokenAlt}>
+      <span
+        className={[root, styles.broken].join(" ")}
+        style={style}
+        role={brokenRole}
+        // aria-label overrides the child text, so only apply it when a role is set (images). Without a
+        // role (video/audio) the visible "Media unavailable" text is what assistive tech reads.
+        aria-label={brokenRole ? brokenAlt : undefined}
+      >
         {fallback ?? <span className={styles.brokenText}>Media unavailable</span>}
       </span>
     );

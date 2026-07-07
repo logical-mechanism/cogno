@@ -47,7 +47,7 @@ export function RevealAudio({
       label={label}
       hideLabel={hideLabel}
       compact={compact}
-      coverIcon={<IconSpeaker />}
+      coverIcon={<IconSpeaker size="var(--cg-icon-md)" />}
       fallback={fallback}
       brokenAlt={alt}
       resetKey={src}

@@ -316,7 +316,7 @@ export function Composer({
           {contextBelow}
           {mediaLinkCount > 0 && (
             <p className={styles.imageChip} role="note">
-              <span aria-hidden>🖼</span>{" "}
+              <span aria-hidden>🔗</span>{" "}
               {mediaLinkCount === 1
                 ? "Media link — shown when the post is opened"
                 : `${mediaLinkCount} media links — shown when opened`}

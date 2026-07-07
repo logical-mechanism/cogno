@@ -66,6 +66,7 @@ export function RevealImage({
       compact={compact}
       eager={eager}
       fallback={fallback}
+      brokenRole="img"
       brokenAlt={alt}
       resetKey={src}
       className={className}

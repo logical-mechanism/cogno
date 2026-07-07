@@ -20,7 +20,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { classifyMedia, resolveMediaSrc, URL_RE, TRAILING_PUNCT } from "@/lib/media";
+import { classifyMedia, resolveMediaSrc, URL_RE, TRAILING_PUNCT, type MediaKind } from "@/lib/media";
 import { RevealImage } from "./RevealImage";
 import { RevealVideo } from "./RevealVideo";
 import { RevealAudio } from "./RevealAudio";
@@ -45,7 +45,7 @@ export interface PostBodyProps {
 const HASHTAG_RE = /#[\p{L}\p{N}_]+/gu;
 
 interface Seg {
-  kind: "text" | "url" | "image" | "video" | "audio" | "hashtag";
+  kind: MediaKind | "text" | "url" | "hashtag";
   value: string;
 }
 
@@ -61,7 +61,7 @@ function pushText(segs: Seg[], text: string): void {
   if (last < text.length) segs.push({ kind: "text", value: text.slice(last) });
 }
 
-/** Split a body into plain-text + url + image + hashtag segments (pure; no DOM). */
+/** Split a body into plain-text + url + image/video/audio + hashtag segments (pure; no DOM). */
 function segment(text: string): Seg[] {
   const segs: Seg[] = [];
   let last = 0;
@@ -87,7 +87,7 @@ function linkHref(raw: string): string {
 
 /** A short accessible name for a linked media asset — its filename, else a per-kind generic label
  *  (never the whole URL). */
-function mediaAlt(raw: string, kind: "image" | "video" | "audio"): string {
+function mediaAlt(raw: string, kind: MediaKind): string {
   const path = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
   const slash = path.lastIndexOf("/");
   const name = slash >= 0 ? path.slice(slash + 1) : "";

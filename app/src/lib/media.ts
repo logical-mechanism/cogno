@@ -68,8 +68,10 @@ export function classifyMedia(url: string): MediaKind | null {
   return null;
 }
 
-/** True when `url` should be rendered as an image. A thin wrapper over {@link classifyMedia} kept so
- *  the profile/avatar image paths and tests read naturally. */
+/** True when `url` should be rendered as an image — a convenience predicate over {@link classifyMedia}
+ *  (`classifyMedia(url) === "image"`). No app caller today (the renderer uses `classifyMedia`; the
+ *  avatar/profile paths use `resolveImageSrc`); exercised by the media tests and kept as a public
+ *  image-only predicate. */
 export function isImageUrl(url: string): boolean {
   return classifyMedia(url) === "image";
 }
@@ -100,22 +102,12 @@ export function resolveImageSrc(url: string): string {
  *  renderer resolves image, video, and audio srcs through the same normaliser + gateway-root guard. */
 export const resolveMediaSrc = resolveImageSrc;
 
-// URL tokenizer shared with the post renderer (PostBody.segment) and the composer's image-link chip, so
-// the two never drift on which links count as images. Match http(s) AND ipfs:// URLs, stopping the run
+// URL tokenizer shared with the post renderer (PostBody.segment) and the composer's media-link chip, so
+// the two never drift on which links count as media. Match http(s) AND ipfs:// URLs, stopping the run
 // at whitespace; trailing sentence punctuation is trimmed so a URL at the end of a sentence
 // ("see https://x.org.") doesn't swallow the period.
 export const URL_RE = /(?:https?|ipfs):\/\/[^\s]+/gi;
 export const TRAILING_PUNCT = /[.,!?:;)\]}'"»”’]+$/;
-
-/** How many URLs in `text` render as images (same classification the renderer applies). Used by the
- *  composer to show the "N image links — shown when opened" chip without re-deriving the URL scan. */
-export function countImageUrls(text: string): number {
-  let n = 0;
-  for (const m of text.matchAll(URL_RE)) {
-    if (isImageUrl(m[0].replace(TRAILING_PUNCT, ""))) n += 1;
-  }
-  return n;
-}
 
 /** How many URLs in `text` render as media of ANY kind (image/video/audio) — the same classification
  *  the renderer applies. Used by the composer's "N media links — shown when opened" chip. */
