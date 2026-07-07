@@ -65,12 +65,22 @@ export function SearchBar({
   );
 
   const disabledPlaceholder = "Connecting…";
-  // Recent-searches dropdown: only while focused with an empty box and some history to show.
+  // Recent-searches dropdown: only while focus is within the box+panel, with an empty box and some
+  // history to show. Focus is tracked at the WRAPPER (focus events bubble), so Tabbing from the input
+  // into a recent-search button keeps the panel open — otherwise it unmounted before the option could
+  // receive focus, making the listbox mouse-only.
   const showRecent =
     searchEnabled && focused && value.length === 0 && !!recent && recent.length > 0;
 
   return (
-    <div className={styles.wrap} role="search">
+    <div
+      className={styles.wrap}
+      role="search"
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+      }}
+    >
       <div className={styles.root}>
         <span className={styles.icon} aria-hidden>
           <IconSearch />
@@ -81,8 +91,6 @@ export function SearchBar({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
           placeholder={searchEnabled ? placeholder : disabledPlaceholder}
           aria-label={placeholder}
           disabled={!searchEnabled}
