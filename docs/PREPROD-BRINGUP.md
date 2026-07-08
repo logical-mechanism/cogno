@@ -200,4 +200,4 @@ Running this proves the **mechanism and operations** end to end on real preprod 
 observation, header-sealed anchors, enforced observer-credited weight, sudo-free committee governance, and the
 full lock→bind→weight→post→read loop. It does **not** prove cross-*instance* observation determinism or provide
 any trust/decentralization — that is the deferred validator-decentralization workstream (≥3 producers each with
-their own db-sync). Treat this as a durable iteration platform, labeled **D4-SHAPED, not D4-TRUST**.
+their own db-sync). Treat it as a durable iteration platform — trust-minimized, not trustless, until then.

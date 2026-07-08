@@ -59,6 +59,6 @@ Useful env overrides (see the script header for the full list): `RPC_PORT`, `P2P
 - **RPC stays on `127.0.0.1`** by default for a co-located app. To expose it off-box, add
   `--rpc-external --rpc-methods safe --rpc-cors '<origins>'` (behind TLS) — a separate concern from P2P.
 - **Archive pruning** (`--state-pruning/--blocks-pruning archive`, already in the script) keeps full
-  history so the node can answer historical reads over its runtime API (DR-08's archival commitment).
+  history so the node can answer historical reads over its runtime API (the archival commitment).
 - The node abstains on the Cardano observer with no db-sync configured (`CannotVerify` is non-fatal),
   so it syncs the live chain regardless — the script unsets `DBSYNC_URL`/`DBSYNC` to guarantee this.
