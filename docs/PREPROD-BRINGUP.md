@@ -6,24 +6,11 @@ This is the end-to-end companion to [deploy/README.md](../deploy/README.md) (the
 [docs/IN-PROTOCOL-OBSERVATION.md](IN-PROTOCOL-OBSERVATION.md) (the observer design). It ties genesis → node →
 observed weight → frontend → federation into one sequence.
 
-> ## Honest posture — read first
-> This is a **live, single-operator testnet**, not a production or trustless system. The in-protocol Cardano
-> observer **enforces from genesis** (`EnforceWeight = true`): it is the **sole** writer of talk-stake weight
-> — there is no `set_stake` extrinsic and no off-chain follower. But with **one** block producer,
-> `check_inherent`'s "every importer re-derives" is *not* load-bearing (there is no second producer to
-> out-vote a bad author), so this is **D4-SHAPED, not D4-TRUST**. Trustless weight requires **≥3 independent
-> producers each running their own db-sync** — deliberately deferred. Label every user-facing surface
-> accordingly. (`set_enforcement(false)` exists only as a committee-gated **emergency weight-freeze**, not a
-> routine mode.)
-
-## What standing this up does / does not buy you
-
-| It buys | It does **not** buy |
-|---|---|
-| A stable, committed genesis that survives restarts/rebuilds | Trust, decentralization, or any progress toward the mainnet flip |
-| Real uptime + real db-sync wiring against the live preprod vault | Cross-instance observation determinism (needs ≥2 db-syncs) |
-| Real CIP-8 binds + real L1 ADA locks/exits, end to end | GRANDPA fault tolerance (`MinAuthorities = 1`, one producer) |
-| Enforced, observer-credited weight (no trusted weight-setter) | Trustless enforcement (one producer's observation is unchecked) |
+> **Posture.** A live, single-operator preprod testnet. The Cardano observer enforces from genesis (it's
+> the sole writer of weight — no `set_stake`, no follower), and the full dapp loop is real, but with one
+> producer it isn't trustless (that needs ≥3 independent producers, deliberately deferred). Full trust
+> model: [ARCHITECTURE.md](ARCHITECTURE.md). `set_enforcement(false)` is a committee-gated emergency
+> weight-freeze, not a routine mode.
 
 ## Prerequisites (external infrastructure you run separately)
 

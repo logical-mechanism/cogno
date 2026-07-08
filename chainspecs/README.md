@@ -5,18 +5,15 @@ Committed **raw chain specs** for cogno-chain networks — the file you pass a n
 
 | File | Network | Genesis | Runtime |
 |---|---|---|---|
-| `preprod.raw.json` | **Cogno Preprod (operator)** (operator-run preprod testnet, `id: cogno-preprod-operator`, `chainType: Live`) | `0xe2e06d71f4001627bd2af383f9aef628edf6e970f20c9db1eb6d40ae237623c0` | `cogno-chain-runtime` spec 200 (pre-governance-fuel — superseded by spec 203; regenerate before relaunch) |
+| `preprod.raw.json` | **Cogno Preprod (operator)** (operator-run preprod testnet, `id: cogno-preprod-operator`, `chainType: Live`) | `0x73eaa4bf5facbb3f8f7c7479aeda88dee1e9d5dd61e4ffb98bf4cf9aa305ef09` | `cogno-chain-runtime` spec 203 |
 
-> **Note.** This committed `preprod.raw.json` is a **tracking-node convenience/reference** spec — not the
-> operator's production genesis. A fresh operator mints their own offline from `.skey` files and keeps it
-> out of the repo (see [`../docs/PREPROD-BRINGUP.md`](../docs/PREPROD-BRINGUP.md) Step 1, which starts from
-> *no committed chainspec*). This copy also **predates the governance-fuel restart**: it is a
-> `spec_version` **200** (pre-governance-fuel) artifact — its `properties` still read `tokenDecimals: 6`
-> with no `tokenSymbol`, whereas the current spec-203 runtime emits `tokenSymbol: "FUEL", tokenDecimals: 12`.
-> Its embedded wasm is therefore pre-governance-fuel, so the genesis hash + spec row above no longer
-> identify what the current code builds. **Regenerate this spec from the spec-203 runtime before the
-> relaunch** (below) and update the genesis-hash + spec row; every regeneration changes the genesis again.
-> Its single embedded bootnode carries the relaunched validator's libp2p peer id.
+> **Note.** This committed `preprod.raw.json` is a **tracking-node convenience** spec — it matches the
+> live chain's genesis and spec-203 runtime (`properties` read `tokenSymbol: "FUEL", tokenDecimals: 12`),
+> so a relay syncs against it out of the box. It is **not** an operator's production genesis: a fresh
+> operator mints their own offline from `.skey` files and keeps it out of the repo (see
+> [`../docs/PREPROD-BRINGUP.md`](../docs/PREPROD-BRINGUP.md) Step 1). Its single embedded bootnode carries
+> the live validator's libp2p peer id. Regenerating the spec changes the genesis hash — update the table
+> row above whenever you do.
 
 These are **raw** specs: genesis is pre-encoded storage and embeds the runtime wasm
 (`:code`, ~500 KB), so the file is ~1.05 MB. That weight is the price of a node-ready,
