@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { lockIntoVault, exitVault, fetchVaultState, type VaultInfo } from "@/lib/cardano/vault";
 import { hasCardanoProvider } from "@/lib/cardano/provider";
+import { isUserRejection } from "@/lib/cardano/cip8";
 
 export type VaultPhase = "idle" | "working" | "submitted" | "error";
 
@@ -100,8 +101,15 @@ export function useVault(): UseVault {
           // the lock/exit takes a few blocks to settle; re-read the vault then.
           setTimeout(() => inspect(walletId), 5000);
         } catch (e) {
-          setError(e instanceof Error ? e.message : String(e));
-          setPhase("error");
+          // A user-declined wallet prompt is an expected cancel, not a failure: return to idle so the
+          // user can just try again — no red "error" wall (matches the connect + CIP-8 bind flows). A
+          // genuine failure still surfaces as phase="error" with the message.
+          if (isUserRejection(e)) {
+            setPhase("idle");
+          } else {
+            setError(e instanceof Error ? e.message : String(e));
+            setPhase("error");
+          }
         } finally {
           setStep("idle");
           inFlight.current = false;

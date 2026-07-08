@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEV_ACCOUNTS, getDevSigner } from "@/lib/signer";
 import { deriveSignerFromWallet } from "@/lib/signer/wallet-derive";
+import { isUserRejection } from "@/lib/cardano/cip8";
 import { clearPostDraft } from "@/lib/composerDraftStore";
 import type { PostingSigner } from "@/lib/types";
 
@@ -96,11 +97,15 @@ export function useSigner(): UseSigner {
       return true;
     } catch (e) {
       if (deriveGen.current !== gen) return false; // cancelled — swallow the late error too
-      // Surface the real failure — previously every connect error (wrong network, wallet-API failure,
-      // signData decline, etc.) was masked as a single generic "cancelled" toast with nothing logged,
-      // making it undiagnosable. Log the actual error so the cause is visible.
-      // eslint-disable-next-line no-console
-      console.error(`cogno: connectWallet("${walletId}") failed:`, e);
+      // A user-declined sign prompt (or a dismissed wallet popup) is an expected action, not a fault:
+      // surface it in the UI (the caller classifies it into a gentle "Connection cancelled." toast) but
+      // do NOT console.error it — Next's dev server mirrors the browser console to the terminal, so a
+      // plain decline would print a red stack trace for a non-event. Same rule the CIP-8 binds already
+      // follow. A GENUINE failure (wrong network, wallet-API error, no signature) is still logged.
+      if (!isUserRejection(e)) {
+        // eslint-disable-next-line no-console
+        console.error(`cogno: connectWallet("${walletId}") failed:`, e);
+      }
       setError(e instanceof Error ? e.message : String(e));
       return false;
     } finally {
