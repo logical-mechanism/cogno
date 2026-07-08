@@ -36,9 +36,8 @@ Then the focused deep-dives, if you want the detail:
 - **[SCALE-NODE-READS.md](SCALE-NODE-READS.md)** — why the node serves reads directly, with no
   external indexer.
 
-> **Deep-dives contain design history.** ECONOMICS and IN-PROTOCOL-OBSERVATION carry build-era
-> decisions and status notes alongside the current design — they explain *why*, but they are not
-> onboarding steps. To run or test the chain you only need the two lanes above.
+> These explain *why*, not *how to run*. They're the reference for understanding the design — you
+> don't need any of them to run or test the chain; the two lanes above cover that.
 
 ## Not built yet
 
