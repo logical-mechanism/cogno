@@ -52,6 +52,30 @@ export function isPlausibleSs58(value: string | null | undefined): boolean {
 }
 
 /**
+ * If `value` is a checksum-valid ss58 AccountId32, return it re-encoded to the chain's canonical
+ * prefix (42, so any-prefix input normalises to how the app keys accounts); otherwise null.
+ *
+ * The STRICT gate (a full blake2b-checksummed 32-byte AccountId has ~zero false positives) behind
+ * both {@link profileRouteForQuery} and @mention linkification (`lib/mentions`): a bare `@<ss58>` in a
+ * post body can be turned into a real mention link with confidence, and anything that isn't a genuine
+ * address is rejected rather than mis-linked.
+ */
+export function normalizeSs58(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  // Cheap reject before the checksum decode (ss58Decode throws on malformed input).
+  if (!isPlausibleSs58(trimmed)) return null;
+  try {
+    const [payload] = ss58Decode(trimmed);
+    // Only an AccountId32 addresses a profile / a person; reject other key lengths (e.g. an ecdsa 33-byte key).
+    if (payload.length !== 32) return null;
+    return ss58Encode(toHex(payload), CHAIN_SS58_PREFIX);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * If `value` is a checksum-valid ss58 account address (a 32-byte AccountId32), return the canonical
  * profile route for it (`/u/<addr>/`, re-encoded to the chain prefix so it matches how the app keys
  * accounts). Otherwise null.
@@ -63,16 +87,6 @@ export function isPlausibleSs58(value: string | null | undefined): boolean {
  * only a genuinely complete, valid address ever redirects; anything else falls through to text search.
  */
 export function profileRouteForQuery(value: string | null | undefined): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  // Cheap reject before the checksum decode (ss58Decode throws on malformed input).
-  if (!isPlausibleSs58(trimmed)) return null;
-  try {
-    const [payload] = ss58Decode(trimmed);
-    // Only an AccountId32 addresses a profile; reject other key lengths (e.g. an ecdsa 33-byte key).
-    if (payload.length !== 32) return null;
-    return `/u/${ss58Encode(toHex(payload), CHAIN_SS58_PREFIX)}/`;
-  } catch {
-    return null;
-  }
+  const addr = normalizeSs58(value);
+  return addr ? `/u/${addr}/` : null;
 }
