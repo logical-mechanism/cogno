@@ -20,10 +20,12 @@ export default function NotificationsPage() {
   const [tab, setTab] = useState<NotifTab>("all");
 
   // Freeze the unread set at open (so the highlight is stable while you read), then clear the badge.
-  // Runs once the first fold has settled (enabled + not loading).
+  // Gate on `loaded` — NOT `!loading` — because on a hard load / deep-link the provider's fold hasn't
+  // run yet (loading is still false, items empty); freezing then would markAllRead an empty set and
+  // leave the badge stuck once the fold lands. `loaded` is true only after the first fold settles.
   const frozen = useRef<Set<string> | null>(null);
   useEffect(() => {
-    if (frozen.current === null && feed.enabled && !feed.loading) {
+    if (frozen.current === null && feed.enabled && feed.loaded) {
       frozen.current = new Set(feed.items.filter((i) => feed.isUnread(i.key)).map((i) => i.key));
       feed.markAllRead();
     }
@@ -31,7 +33,7 @@ export default function NotificationsPage() {
   const wasUnread = (key: string) => frozen.current?.has(key) ?? false;
 
   const items = tab === "mentions" ? feed.items.filter((i) => i.kind === "mention") : feed.items;
-  const showEmpty = !feed.loading && items.length === 0;
+  const showEmpty = feed.loaded && items.length === 0;
 
   const tabsNode = (
     <div className={styles.tabs} role="tablist" aria-label="Notification filters">
@@ -74,7 +76,7 @@ export default function NotificationsPage() {
           title="Sign in to see notifications"
           description="Connect your wallet to follow replies, likes, mentions and new followers."
         />
-      ) : feed.loading && items.length === 0 ? (
+      ) : (!feed.loaded || feed.loading) && items.length === 0 ? (
         <div className={styles.loading} aria-busy>
           <Spinner size="md" label="Loading notifications" />
         </div>

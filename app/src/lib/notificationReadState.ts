@@ -25,9 +25,12 @@ export interface ReadState {
 
 export const EMPTY_READ_STATE: ReadState = { readThrough: 0, firstSeen: {} };
 
-// Safety cap so firstSeen can't grow without bound across months of activity (evict the OLDEST when
-// exceeded). The notification fold is itself bounded, so eviction only ever touches long-read items.
-const MAX_TRACKED = 4000;
+// Safety cap so firstSeen can't grow without bound across months of activity. Set well above any single
+// fold's size (per-post votes/replies + followers are unbounded on a viral account) so eviction is
+// unreachable at realistic scale; when it does fire it drops READ entries FIRST (see withSeen), since
+// dropping a still-unread key would make it reappear as unread on the next fold. (The scalable fix is
+// the deferred on-chain reverse-index; this store is a device-local badge only.)
+const MAX_TRACKED = 10000;
 
 // ── pure helpers (unit-tested; no localStorage / no clock) ──────────────────────────────────────────
 
@@ -66,9 +69,18 @@ export function withSeen(state: ReadState, ids: string[], now: number): ReadStat
   }
   if (!changed) return state;
   const keys = Object.keys(firstSeen);
-  if (keys.length > MAX_TRACKED) {
-    // Evict the oldest first-seen entries (smallest ms) down to the cap.
-    const drop = keys.sort((a, b) => firstSeen[a] - firstSeen[b]).slice(0, keys.length - MAX_TRACKED);
+  const over = keys.length - MAX_TRACKED;
+  if (over > 0) {
+    // Evict READ entries first (first-seen at/before the read cursor), oldest-first: dropping an UNREAD
+    // key would re-stamp it as unread on the next fold. Only if there aren't enough read entries to
+    // reclaim (a pathological all-unread flood) do we drop the oldest unread ones too.
+    const oldestFirst = (a: string, b: string) => firstSeen[a] - firstSeen[b];
+    const read = keys.filter((k) => firstSeen[k] <= state.readThrough).sort(oldestFirst);
+    const drop = read.slice(0, over);
+    if (drop.length < over) {
+      const unread = keys.filter((k) => firstSeen[k] > state.readThrough).sort(oldestFirst);
+      drop.push(...unread.slice(0, over - drop.length));
+    }
     for (const k of drop) delete firstSeen[k];
   }
   return { ...state, firstSeen };

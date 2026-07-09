@@ -39,6 +39,24 @@ describe("withSeen", () => {
   });
 });
 
+describe("withSeen eviction prefers READ entries (never re-flips unread items)", () => {
+  it("drops read entries first when over the cap, preserving all unread keys", () => {
+    // 9600 READ entries (first-seen 100, cursor 200) + enough NEW unread to cross MAX_TRACKED (10000).
+    const firstSeen: Record<string, number> = {};
+    for (let i = 0; i < 9600; i++) firstSeen[`r${i}`] = 100;
+    const base: ReadState = { readThrough: 200, firstSeen };
+    const newUnread = Array.from({ length: 800 }, (_, i) => `u${i}`); // 9600 + 800 = 10400 → evict 400
+
+    const next = withSeen(base, newUnread, 300);
+    const keys = Object.keys(next.firstSeen);
+    expect(keys.length).toBe(10000); // capped
+    // Every newly-seen (unread) key survives — none were evicted.
+    for (const u of newUnread) expect(next.firstSeen[u]).toBe(300);
+    // The 400 evicted keys are all READ ones; unread count is exactly the 800 new items.
+    expect(countUnread(next)).toBe(800);
+  });
+});
+
 describe("withAllRead + countUnread + isUnread", () => {
   it("counts items first-seen after the read cursor, and clears on markAllRead", () => {
     let s = withSeen(EMPTY_READ_STATE, ["a", "b"], 100);

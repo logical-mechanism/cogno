@@ -76,7 +76,11 @@ export function useMentions(opts: {
   const { api, signer, source, viewer } = useSession();
   const me = viewer.address ?? null;
   const { following } = useFollow(api, signer, source, me);
-  const followingSet = useMemo(() => new Set(following), [following]);
+  // Hold the following set in a REF (not a memo in the search-effect deps): useFollow returns a fresh
+  // `[]` on every render while its edges are null (in-flight / failed), which would otherwise make the
+  // debounced search effect re-run in a ~180ms loop. The ranking reads the latest set from the ref.
+  const followingSetRef = useRef<Set<string>>(new Set());
+  followingSetRef.current = useMemo(() => new Set(following), [following]);
 
   const [mentions, setMentions] = useState<MentionRef[]>([]);
   const [open, setOpen] = useState(false);
@@ -138,6 +142,7 @@ export function useMentions(opts: {
           if (cancelled) return;
           // Client-side re-rank: (a) accounts the viewer follows first, (b) reputation net score desc,
           // (c) follower count desc — the strongest-signal-first ordering the task specifies.
+          const followingSet = followingSetRef.current;
           const ranked = [...people].sort((a, b) => {
             const fa = followingSet.has(a.author) ? 0 : 1;
             const fb = followingSet.has(b.author) ? 0 : 1;
@@ -161,7 +166,7 @@ export function useMentions(opts: {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [open, query, source, canSearch, followingSet]);
+  }, [open, query, source, canSearch]);
 
   const pick = useCallback(
     (s: Suggestion) => {
@@ -199,24 +204,32 @@ export function useMentions(opts: {
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent): boolean => {
       if (!open) return false;
+      // Every consumed key ALSO stops propagation: the composer sits inside ComposerModal, whose card
+      // handles Escape (close) + Tab (focus trap). Without this, Escape-to-dismiss-the-popover would
+      // bubble up and close the whole modal (popping the discard-confirm). The EmojiPicker guards the
+      // same way. preventDefault alone does NOT stop the synthetic-event bubble.
       if (e.key === "Escape") {
         e.preventDefault();
+        e.stopPropagation();
         close();
         return true;
       }
       if (results.length === 0) return false;
       if (e.key === "ArrowDown") {
         e.preventDefault();
+        e.stopPropagation();
         setActiveIndex((i) => (i + 1) % results.length);
         return true;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
+        e.stopPropagation();
         setActiveIndex((i) => (i - 1 + results.length) % results.length);
         return true;
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
+        e.stopPropagation();
         pick(results[activeIndex]);
         return true;
       }

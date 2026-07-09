@@ -36,6 +36,10 @@ export interface NotificationsFeed {
   items: Notif[];
   unreadCount: number;
   loading: boolean;
+  /** true once the FIRST fold for the current account has settled. Distinguishes a genuinely-empty
+   *  feed from a not-yet-folded one — a consumer must gate "mark all read on open" on this, never on
+   *  `!loading` (which is also false in the pre-fold window). */
+  loaded: boolean;
   error: string | null;
   /** false when there is no connected account (nothing to fold). */
   enabled: boolean;
@@ -50,6 +54,7 @@ const DISABLED: NotificationsFeed = {
   items: [],
   unreadCount: 0,
   loading: false,
+  loaded: false,
   error: null,
   enabled: false,
   truncated: false,
@@ -68,6 +73,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
 
   const [raw, setRaw] = useState<Notif[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false); // first fold for the current account has settled
   const [error, setError] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
 
@@ -98,7 +104,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       if (seq !== loadSeq.current) return;
       setError(e instanceof Error ? e.message : "could not load notifications");
     } finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current) {
+        setLoading(false);
+        setLoaded(true); // the first (and every) fold has settled — the feed is now authoritative
+      }
     }
   }, [me]);
 
@@ -106,8 +115,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     if (!me) {
       setRaw([]);
       setTruncated(false);
+      setLoaded(false);
       return;
     }
+    setLoaded(false); // a new account (or reconnect) hasn't folded yet — consumers must wait
     void runLoad();
     const iv = setInterval(() => void runLoad(), REFRESH_INTERVAL_MS);
     let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -156,6 +167,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       items,
       unreadCount,
       loading,
+      loaded,
       error,
       enabled: me != null,
       truncated,
@@ -163,7 +175,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       markAllRead,
       isUnread,
     }),
-    [items, unreadCount, loading, error, me, truncated, refresh, markAllRead, isUnread],
+    [items, unreadCount, loading, loaded, error, me, truncated, refresh, markAllRead, isUnread],
   );
 
   return <NotificationsContext.Provider value={value}>{children}</NotificationsContext.Provider>;
