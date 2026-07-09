@@ -199,7 +199,7 @@ export function ProfileSection() {
       {/* Live preview */}
       <div className={styles.card}>
         <div className={styles.previewRow}>
-          <Avatar address={ss58} src={shown.avatar ?? null} size="lg" name={shown.displayName} eager />
+          <Avatar address={ss58} src={shown.avatar ?? null} size="lg" name={shown.displayName} eager noRing />
           <div className={styles.previewText}>
             <DisplayName address={ss58} displayName={shown.displayName} truncate={false} />
             <Handle address={ss58} truncate="middle" />

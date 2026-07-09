@@ -80,6 +80,18 @@ export async function readAccountVoteTally(
 }
 
 /**
+ * An account's Cardano-sourced talk WEIGHT — `TalkStake.VotingPower` (lovelace; ValueQuery ⇒ default
+ * 0n). This is the account's total proven Cardano stake (the observer-written epoch stake of its bound
+ * stake credential), which VARIES per account — unlike `AllowedStake`, the flat posting deposit. It
+ * drives the stake-tier avatar ring (`useAuthorWeight` / `useStakeRing`). 0n when the account has no
+ * stake-credential bind (most accounts) → no ring.
+ */
+export async function readVotingPower(api: CognoApi, who: Ss58): Promise<bigint> {
+  const w = (await api.query.TalkStake.VotingPower.getValue(who, BEST)) as unknown as bigint | undefined;
+  return BigInt(w ?? 0n);
+}
+
+/**
  * The viewer's own reputation vote on `target`. Unlike `Reposts`, `AccountVotes` carries a non-unit
  * `VoteRecord`, so `getValue` distinguishes Some/None cleanly — a plain point read (no getEntries hack).
  */

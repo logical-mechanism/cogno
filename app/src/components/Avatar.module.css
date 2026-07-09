@@ -30,6 +30,26 @@
   opacity: 0.45;
 }
 
+/* Stake-tier trust ring (doc: monochrome ramp by proven Cardano stake; red overrides for a negative
+ * community-reputation score). A box-shadow — NOT an outline (which is reserved for :focus-visible) —
+ * so it adds no layout and never clips against the avatar's own overflow:hidden. Tier prominence rises
+ * with stake; the ring self-hides (no class) below tier 1 unless the author is community-disputed. */
+.ring1 {
+  box-shadow: 0 0 0 2px var(--cg-ring-1);
+}
+
+.ring2 {
+  box-shadow: 0 0 0 2px var(--cg-ring-2);
+}
+
+.ring3 {
+  box-shadow: 0 0 0 2px var(--cg-ring-3);
+}
+
+.ringDanger {
+  box-shadow: 0 0 0 2px var(--cg-ring-danger);
+}
+
 .img,
 .identicon {
   width: 100%;

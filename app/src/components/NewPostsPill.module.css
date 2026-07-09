@@ -11,6 +11,13 @@
   pointer-events: none;
 }
 
+/* inline variant — normal flow (e.g. at the top of a thread's replies), not sticky under the tabs. */
+.wrapInline {
+  display: flex;
+  justify-content: center;
+  padding: var(--cg-space-2) 0;
+}
+
 .pill {
   pointer-events: auto;
   display: inline-flex;

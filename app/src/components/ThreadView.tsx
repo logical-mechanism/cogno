@@ -28,6 +28,7 @@ import { useRouter } from "next/navigation";
 import styles from "./ThreadView.module.css";
 import { PostCard } from "./PostCard";
 import { Composer } from "./Composer";
+import { NewPostsPill } from "./NewPostsPill";
 import { EmptyState } from "./EmptyState";
 import { Skeleton } from "./Skeleton";
 import { NotFoundInline } from "./AppShell";
@@ -73,8 +74,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const { view: capacityView } = useCapacity(api, viewer.address ?? null, bestBlock);
   const noPostingPower = viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
 
-  // `me` threaded into the thread read so a spec-120 node stamps the myVote/reposted overlay node-side.
-  const { thread, loading, error, addOptimisticReply } = useThread(source, rootId, me);
+  // `me` threaded into the thread read so a spec-120 node stamps the myVote/reposted overlay node-side;
+  // `bestBlock` drives the live re-read (tallies refresh in place; new replies buffer behind the pill).
+  const { thread, loading, error, addOptimisticReply, confirmReply, newReplyCount, flushReplies } =
+    useThread(source, rootId, me, bestBlock);
   // The focal's reply-context is rendered ONCE, as the tappable ancestor line above the card. We
   // prefer thread.parent (the richer QuotedRef with a display name; indexer path); on PAPI-direct
   // thread.parent is absent but the focal still carries its parent id, so we fall back to a bare
@@ -137,7 +140,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
 
   const vote = useVote(api, signer, votingPower ?? 0n);
   const { pin } = usePinPost(api, signer);
-  const { dropPending, failPending } = useOptimistic();
+  const { failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
   const { phase } = useActionToast();
@@ -154,6 +157,14 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     slot.scrollIntoView({ block: "center" });
     slot.querySelector("textarea")?.focus();
   }, []);
+
+  // "N new replies" pill: reveal the buffered replies, then scroll to the newest — they land at the
+  // BOTTOM of the (oldest-first) list, so without this the pill would appear to do nothing. Reuses the
+  // just-replied scroll effect below (fires once shownReplies grows), which centers the last reply node.
+  const onShowNewReplies = useCallback(() => {
+    flushReplies();
+    justRepliedRef.current = true;
+  }, [flushReplies]);
 
   // ── poll on the FOCAL post (always-show results on the detail surface, D4) ──
   const focalIsPoll = focal?.isPoll === true;
@@ -200,7 +211,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
             u.postId != null
               ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
               : undefined,
-          onConfirm: () => dropPending(clientId),
+          // Hand off to chain truth: confirmReply re-reads the thread and retires the pending card in
+          // the SAME commit, so the reply never blinks out. Keyed by clientId (duplicate-text safe), and
+          // the retire always runs — even if you navigated away — so no overlay entry can leak.
+          onConfirm: () => confirmReply(clientId),
           onError: () => failPending(clientId),
           onCancel: () => failPending(clientId),
         }),
@@ -217,7 +231,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       addOptimisticReply,
       run,
       phase,
-      dropPending,
+      confirmReply,
       failPending,
       router,
     ],
@@ -426,6 +440,15 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           navigates to that reply's own /post/[id]/ focal. While the thread refetches we keep the
           rendered replies; a pending optimistic reply is merged in by useThread (id<0 → opacity 0.6). */}
       <div className={styles.replies} ref={repliesRef}>
+        {/* New replies from OTHERS arrive live, buffered behind a pill so the scroll never jumps
+            (your own reply shows at once). Tap to reveal them in the list below. */}
+        <NewPostsPill
+          count={newReplyCount}
+          onClick={onShowNewReplies}
+          noun="reply"
+          nounPlural="replies"
+          variant="inline"
+        />
         {/* Reveals OLDER replies above the newest window (see the shownReplies tail-slice). */}
         {hiddenReplies > 0 && (
           <button
@@ -437,7 +460,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
             {hiddenReplies === 1 ? "reply" : "replies"}
           </button>
         )}
-        {replies.length === 0 ? (
+        {replies.length === 0 && newReplyCount === 0 ? (
           <EmptyState variant="replies" />
         ) : (
           shownReplies.map((reply) => (
