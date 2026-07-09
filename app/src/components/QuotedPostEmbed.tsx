@@ -16,6 +16,7 @@ import { Avatar } from "./Avatar";
 import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
 import { PostBody } from "./PostBody";
+import { useNestedQuote } from "@/hooks/useNestedQuote";
 import type { QuotedRef } from "./kit";
 
 export interface QuotedPostEmbedProps {
@@ -44,6 +45,11 @@ export function QuotedPostEmbed({
 }: QuotedPostEmbedProps) {
   const missing = unavailable || (!quoted.text.trim() && !quoted.author);
 
+  // Does the quoted post ITSELF quote another post? The one-level seam can't carry that, so a shared
+  // cache does one cheap keyed read (null until known / when it quotes nothing). We surface a subtle
+  // "Quoted post →" pill that jumps straight to that inner post — one level, never a nested embed.
+  const innerQuoteId = useNestedQuote(missing ? undefined : quoted.id);
+
   const open = useCallback(
     (e: React.MouseEvent) => {
       // Stop the parent PostCard row link from also firing.
@@ -51,6 +57,14 @@ export function QuotedPostEmbed({
       if (!missing) onOpen(quoted.id);
     },
     [missing, onOpen, quoted.id],
+  );
+
+  const openInner = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (innerQuoteId != null) onOpen(innerQuoteId);
+    },
+    [innerQuoteId, onOpen],
   );
 
   const onKeyDown = useCallback(
@@ -102,6 +116,19 @@ export function QuotedPostEmbed({
       <div className={styles.bodyClamp} style={{ ["--cg-clamp-lines" as string]: String(maxLines) }}>
         <PostBody text={quoted.text} dim={dim} />
       </div>
+
+      {/* This quoted post itself quotes another — a subtle, non-recursive reference that jumps to that
+          inner post (we deliberately never render a second embed level; the seam is one-level). */}
+      {innerQuoteId != null && (
+        <button
+          type="button"
+          className={styles.quotePill}
+          onClick={openInner}
+          aria-label="This post also quotes another post; open it"
+        >
+          Quoted post →
+        </button>
+      )}
     </div>
   );
 }

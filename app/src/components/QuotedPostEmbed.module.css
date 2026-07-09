@@ -54,6 +54,35 @@
   color: var(--cg-text-secondary);
 }
 
+/* "Quoted post →" — a subtle chip shown when the quoted post itself quotes another (one-level seam:
+   we never nest a second embed). Tapping jumps to that inner post; it stopPropagation()s so the box's
+   own row link doesn't also fire. */
+.quotePill {
+  margin-top: var(--cg-space-2);
+  padding: 0 var(--cg-space-2);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+  color: var(--cg-text-secondary);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
+    border-color var(--cg-motion-fast) var(--cg-ease-standard),
+    color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.quotePill:hover {
+  background: var(--cg-bg-hover);
+  border-color: var(--cg-text-muted);
+  color: var(--cg-text);
+}
+
+.quotePill:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
 /* clamp the quoted body to N lines (X-style truncation). */
 .bodyClamp {
   margin-top: var(--cg-space-1);

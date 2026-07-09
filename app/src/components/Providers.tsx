@@ -28,6 +28,7 @@ import { deriveSessionState, type SessionState } from "@/lib/session";
 import { ToasterProvider } from "@/components/toast/ToasterProvider";
 import { OptimisticProvider } from "@/hooks/useOptimistic";
 import { ReputationProvider } from "@/hooks/useReputation";
+import { NestedQuoteProvider } from "@/hooks/useNestedQuote";
 import { AccountProfileProvider } from "@/hooks/useAccountProfile";
 import { NotificationsProvider } from "@/hooks/useNotifications";
 import type { FeedSource } from "@/lib/feed/source";
@@ -175,9 +176,11 @@ function ChainProvider({ children }: { children: ReactNode }) {
   return (
     <SessionContext.Provider value={value}>
       <ReputationProvider>
-        <AccountProfileProvider>
-          <NotificationsProvider>{children}</NotificationsProvider>
-        </AccountProfileProvider>
+        <NestedQuoteProvider>
+          <AccountProfileProvider>
+            <NotificationsProvider>{children}</NotificationsProvider>
+          </AccountProfileProvider>
+        </NestedQuoteProvider>
       </ReputationProvider>
     </SessionContext.Provider>
   );

@@ -111,6 +111,21 @@ export function watchLatestPostId(api: CognoApi): Observable<bigint | null> {
   );
 }
 
+/**
+ * The id of the post that `id` itself quotes, or null when `id` doesn't quote / doesn't exist. The
+ * node feed API's one-level `quoted` summary drops this field, so the FE can't tell a quote-of-a-quote
+ * apart from a plain quote without this extra keyed read (`useNestedQuote` batches + caches it, keyed by
+ * id, once per session). Read at BEST, not the finalized default: a freshly-posted quote is visible in
+ * the feed (best-head) before it finalizes, and `useNestedQuote` commits the id after one read, so a
+ * finalized-lag `null` would wrongly, permanently suppress the pill for that embed this session.
+ */
+export async function readPostQuoteId(api: CognoApi, id: bigint): Promise<bigint | null> {
+  const v = (await api.query.Microblog.Posts.getValue(id, { at: "best" })) as unknown as
+    | RawPostValue
+    | undefined;
+  return v?.quote != null ? BigInt(v.quote) : null;
+}
+
 // ── per-post enrichment (batched, page-bounded) ──────────────────────────────────────────────────
 
 /**
