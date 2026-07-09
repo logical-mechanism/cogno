@@ -29,6 +29,9 @@ import {
   isUnread as isUnreadOf,
 } from "@/lib/notificationReadState";
 
+/** Stable empty fold — keeps the `items` memo from re-running on every render when nothing is folded. */
+const EMPTY_NOTIFS: Notif[] = [];
+
 const REFRESH_INTERVAL_MS = 120_000; // catches edge signals (likes/follows/votes) that don't bump the head
 const LIVE_DEBOUNCE_MS = 6_000; // coalesce a burst of new posts into one refold
 
@@ -71,11 +74,18 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const mutedList = useMutedList();
   const readState = useNotificationReadState(me);
 
-  const [raw, setRaw] = useState<Notif[]>([]);
+  // The fold and the "has settled" flag are STAMPED WITH THE ACCOUNT THEY BELONG TO, and `loaded` /
+  // `items` are derived from that stamp rather than reset in an effect. Effects run child-first, so a
+  // consumer's effect fires BEFORE this provider's on an in-place account switch — a `loaded` held in
+  // plain state would still read `true` there, handing the consumer the previous account's items under
+  // the new account's read-state. Deriving it makes that window impossible: the moment `me` changes,
+  // `loaded` is already false in the same render.
+  const [fold, setFold] = useState<{ account: string; notifs: Notif[]; truncated: boolean } | null>(
+    null,
+  );
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false); // first fold for the current account has settled
   const [error, setError] = useState<string | null>(null);
-  const [truncated, setTruncated] = useState(false);
 
   // Reach the latest api/source from the reload closure without re-subscribing on identity.
   const apiRef = useRef(api);
@@ -92,8 +102,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     try {
       const { notifs, truncated: trunc } = await loadNotifications(api0, sourceRef.current, me);
       if (seq !== loadSeq.current) return; // superseded by a newer load
-      setRaw(notifs);
-      setTruncated(trunc);
+      setFold({ account: me, notifs, truncated: trunc });
       setError(null);
       // Stamp first-seen for any new item keys (drives the unread badge + edge-signal ordering).
       notificationReadActions.recordSeen(
@@ -106,19 +115,20 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     } finally {
       if (seq === loadSeq.current) {
         setLoading(false);
-        setLoaded(true); // the first (and every) fold has settled — the feed is now authoritative
+        // The first (and every) fold has settled for THIS account — the feed is now authoritative.
+        // Stamped even on the error path, so a failed fold surfaces the error instead of a forever-spinner.
+        setLoadedFor(me);
       }
     }
   }, [me]);
 
   useEffect(() => {
     if (!me) {
-      setRaw([]);
-      setTruncated(false);
-      setLoaded(false);
+      setFold(null);
+      setLoadedFor(null);
+      setError(null);
       return;
     }
-    setLoaded(false); // a new account (or reconnect) hasn't folded yet — consumers must wait
     void runLoad();
     const iv = setInterval(() => void runLoad(), REFRESH_INTERVAL_MS);
     let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -145,9 +155,16 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const mutedSet = useMemo(() => new Set(mutedList), [mutedKey]);
 
+  // Only the CURRENT account's fold is ever surfaced. A fold left over from the previous account is
+  // dropped here rather than by an effect, so there is no frame in which it is visible.
+  const mine = fold && fold.account === me ? fold : null;
+  const loaded = me != null && loadedFor === me;
+  const truncated = mine?.truncated ?? false;
+  const notifs = mine?.notifs ?? EMPTY_NOTIFS;
+
   const items = useMemo(
-    () => orderNotifs(raw, readState.firstSeen, mutedSet),
-    [raw, readState.firstSeen, mutedSet],
+    () => orderNotifs(notifs, readState.firstSeen, mutedSet),
+    [notifs, readState.firstSeen, mutedSet],
   );
   const unreadCount = useMemo(
     () => items.reduce((n, it) => n + (isUnreadOf(readState, it.key) ? 1 : 0), 0),
@@ -168,7 +185,8 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       unreadCount,
       loading,
       loaded,
-      error,
+      // A failed fold belongs to the account it failed for; never leak it across a switch.
+      error: loaded ? error : null,
       enabled: me != null,
       truncated,
       refresh,
