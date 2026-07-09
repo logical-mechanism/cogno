@@ -29,6 +29,7 @@ import { ToasterProvider } from "@/components/toast/ToasterProvider";
 import { OptimisticProvider } from "@/hooks/useOptimistic";
 import { ReputationProvider } from "@/hooks/useReputation";
 import { AccountProfileProvider } from "@/hooks/useAccountProfile";
+import { NotificationsProvider } from "@/hooks/useNotifications";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, ConnStatus, BootGuard, PostingSigner } from "@/lib/types";
 import type { Viewer, ViewerStatus } from "@/components/kit";
@@ -174,7 +175,9 @@ function ChainProvider({ children }: { children: ReactNode }) {
   return (
     <SessionContext.Provider value={value}>
       <ReputationProvider>
-        <AccountProfileProvider>{children}</AccountProfileProvider>
+        <AccountProfileProvider>
+          <NotificationsProvider>{children}</NotificationsProvider>
+        </AccountProfileProvider>
       </ReputationProvider>
     </SessionContext.Provider>
   );
