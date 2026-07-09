@@ -91,7 +91,7 @@ export function Account() {
         aria-expanded={open}
         aria-label="Account menu"
       >
-        <Avatar address={me} src={viewer.avatar} size="md" name={viewer.displayName} eager />
+        <Avatar address={me} src={viewer.avatar} size="md" name={viewer.displayName} eager noRing />
         <span className={styles.who}>
           <DisplayName address={me} displayName={viewer.displayName} truncate />
           <Handle address={me} />

@@ -127,6 +127,12 @@
   --cg-danger-wash: rgba(244, 33, 46, 0.12);
   --cg-warning: #f5a623;
 
+  /* stake-tier avatar ring — monochrome ramp (--cg-text at rising opacity) + danger override. */
+  --cg-ring-1: rgba(231, 233, 234, 0.28);
+  --cg-ring-2: rgba(231, 233, 234, 0.55);
+  --cg-ring-3: rgba(231, 233, 234, 0.9);
+  --cg-ring-danger: var(--cg-danger);
+
   --cg-overlay: rgba(91, 112, 131, 0.4);
   --cg-header-bg: rgba(0, 0, 0, 0.65);
 
@@ -164,6 +170,10 @@
   --cg-danger: #f4212e;
   --cg-danger-wash: rgba(244, 33, 46, 0.12);
   --cg-warning: #f5a623;
+  --cg-ring-1: rgba(231, 233, 234, 0.28);
+  --cg-ring-2: rgba(231, 233, 234, 0.55);
+  --cg-ring-3: rgba(231, 233, 234, 0.9);
+  --cg-ring-danger: var(--cg-danger);
   --cg-overlay: rgba(91, 112, 131, 0.4);
   --cg-header-bg: rgba(0, 0, 0, 0.65);
   --cg-focus-ring: var(--cg-accent);
@@ -197,6 +207,10 @@
   --cg-danger: #f4212e;
   --cg-danger-wash: rgba(244, 33, 46, 0.1);
   --cg-warning: #b26a00;
+  --cg-ring-1: rgba(15, 20, 25, 0.22);
+  --cg-ring-2: rgba(15, 20, 25, 0.45);
+  --cg-ring-3: rgba(15, 20, 25, 0.8);
+  --cg-ring-danger: var(--cg-danger);
   --cg-overlay: rgba(0, 0, 0, 0.4);
   --cg-header-bg: rgba(255, 255, 255, 0.85);
   --cg-focus-ring: var(--cg-accent);

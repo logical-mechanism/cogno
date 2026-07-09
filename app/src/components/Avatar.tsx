@@ -15,6 +15,7 @@ import styles from "./Avatar.module.css";
 import { identiconFor } from "@/lib/identicon";
 import { resolveImageSrc } from "@/lib/media";
 import { reveal, unreveal, useRevealed } from "@/lib/reveal";
+import { useStakeRing } from "@/hooks/useStakeRing";
 import { IconEye, IconEyeOff } from "./icons";
 import type { AvatarSize } from "./kit";
 
@@ -36,6 +37,12 @@ export interface AvatarProps {
    * cover over it in chrome reads as broken. Still a sandboxed <img> (no-referrer, identicon onError).
    */
   eager?: boolean;
+  /**
+   * Suppress the stake-tier trust ring. The ring self-hides when the author has no stake and a
+   * non-negative reputation, so it's usually harmless everywhere; set this only where an author ring
+   * would read as noise (pure chrome showing the viewer's OWN avatar — e.g. the composer/account menu).
+   */
+  noRing?: boolean;
   onClick?: () => void;
 }
 
@@ -44,6 +51,14 @@ const SIZE_VAR: Record<Exclude<AvatarSize, number>, string> = {
   md: "var(--cg-avatar-md)",
   lg: "var(--cg-avatar-lg)",
   xl: "var(--cg-avatar-xl)",
+};
+
+// Stake-tier ring class by tier (tier 0 never reaches here — it either self-hides or, when the author
+// is community-disputed, renders `styles.ringDanger` regardless of tier).
+const RING_TIER_CLASS: Record<number, string> = {
+  1: styles.ring1,
+  2: styles.ring2,
+  3: styles.ring3,
 };
 
 function Identicon({ address }: { address: string }) {
@@ -64,7 +79,7 @@ function Identicon({ address }: { address: string }) {
   );
 }
 
-export function Avatar({ address, src, size = "md", dim, name, eager, onClick }: AvatarProps) {
+export function Avatar({ address, src, size = "md", dim, name, eager, noRing, onClick }: AvatarProps) {
   const [broken, setBroken] = useState(false);
   const resolvedSrc = useMemo(() => (src ? resolveImageSrc(src) : null), [src]);
   const revealed = useRevealed(resolvedSrc ?? "");
@@ -75,7 +90,18 @@ export function Avatar({ address, src, size = "md", dim, name, eager, onClick }:
   const gated = hasImg && !revealed && !eager;
   const alt = `${name?.trim() || address} avatar`;
 
-  const cls = [styles.avatar, dim ? styles.dim : "", onClick ? styles.clickable : ""]
+  // Stake-tier trust ring: monochrome by proven Cardano stake, red for a negative reputation. Shared,
+  // batched reads (dedup with the ReputationBadge); self-hides (null) for the common fresh-chain case.
+  // Passing `undefined` when `noRing` skips BOTH batched reads for chrome avatars (composer / account
+  // menu / profile previews) whose ring is suppressed anyway — no wasted VotingPower/reputation lookups.
+  const ring = useStakeRing(noRing ? undefined : address);
+  const ringClass = ring
+    ? ring.danger
+      ? styles.ringDanger
+      : RING_TIER_CLASS[ring.tier] ?? ""
+    : "";
+
+  const cls = [styles.avatar, dim ? styles.dim : "", onClick ? styles.clickable : "", ringClass]
     .filter(Boolean)
     .join(" ");
 

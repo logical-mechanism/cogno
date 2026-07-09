@@ -228,7 +228,7 @@ export function EditProfileModal({
                 Avatar
               </label>
               <div className={styles.avatarRow}>
-                <Avatar address={ss58} src={avatarSrc} size="lg" name={name} eager />
+                <Avatar address={ss58} src={avatarSrc} size="lg" name={name} eager noRing />
                 <div className={styles.avatarInput}>
                   <div className={styles.inputRow}>
                     <input

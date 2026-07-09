@@ -334,7 +334,7 @@ export function Composer({
       {contextAbove}
 
       <div className={styles.body}>
-        <Avatar address={viewer.address ?? ""} src={viewer.avatar} size="md" name={viewer.displayName} eager />
+        <Avatar address={viewer.address ?? ""} src={viewer.avatar} size="md" name={viewer.displayName} eager noRing />
 
         <div className={styles.field}>
           <label className={styles.srOnly} htmlFor={`cg-composer-${mode}`}>
