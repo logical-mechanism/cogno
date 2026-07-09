@@ -76,12 +76,8 @@ export function ThreadView({ rootId }: ThreadViewProps) {
 
   // `me` threaded into the thread read so a spec-120 node stamps the myVote/reposted overlay node-side;
   // `bestBlock` drives the live re-read (tallies refresh in place; new replies buffer behind the pill).
-  const { thread, loading, error, addOptimisticReply, newReplyCount, flushReplies } = useThread(
-    source,
-    rootId,
-    me,
-    bestBlock,
-  );
+  const { thread, loading, error, addOptimisticReply, confirmReply, newReplyCount, flushReplies } =
+    useThread(source, rootId, me, bestBlock);
   // The focal's reply-context is rendered ONCE, as the tappable ancestor line above the card. We
   // prefer thread.parent (the richer QuotedRef with a display name; indexer path); on PAPI-direct
   // thread.parent is absent but the focal still carries its parent id, so we fall back to a bare
@@ -144,7 +140,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
 
   const vote = useVote(api, signer, votingPower ?? 0n);
   const { pin } = usePinPost(api, signer);
-  const { dropPending, failPending } = useOptimistic();
+  const { failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
   const { phase } = useActionToast();
@@ -215,11 +211,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
             u.postId != null
               ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
               : undefined,
-          // Retire the pending reply by clientId on confirm. This callback is app-level (the toast bus
-          // outlives ThreadView), so it fires even if you navigate away — no orphaned overlay entry —
-          // and keys on clientId, so a duplicate-text reply still shows its own optimistic card. The
-          // live re-read then carries the real reply in (shown via the `r.author === me` branch).
-          onConfirm: () => dropPending(clientId),
+          // Hand off to chain truth: confirmReply re-reads the thread and retires the pending card in
+          // the SAME commit, so the reply never blinks out. Keyed by clientId (duplicate-text safe), and
+          // the retire always runs — even if you navigated away — so no overlay entry can leak.
+          onConfirm: () => confirmReply(clientId),
           onError: () => failPending(clientId),
           onCancel: () => failPending(clientId),
         }),
@@ -236,7 +231,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       addOptimisticReply,
       run,
       phase,
-      dropPending,
+      confirmReply,
       failPending,
       router,
     ],
