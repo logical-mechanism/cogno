@@ -46,15 +46,34 @@
   flex: 1 1 auto;
 }
 
+/* column-gap, not a literal space in the markup: the verb is a flex item, so a leading space in its
+   text collapses at the start of its line box and the name butts against it.
+   Single line, name-yields-first: a display name may be up to MaxName = 64 bytes, which overruns this
+   column on its own. The name carries a huge shrink factor so it ellipsises long before the verb — the
+   actual content of the row — gives up any width. `overflow: hidden` is the backstop: at phone widths
+   even a fully-shrunk name leaves the longest verb ("disputed your reputation") wider than the column,
+   and nothing above this clips (no overflow-x on html/body, none on .row/.body). */
 .line {
   display: flex;
   align-items: baseline;
-  gap: 0;
+  column-gap: var(--cg-space-1);
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+/* the DisplayName — shrinks first, but never vanishes entirely */
+.line > :first-child {
+  flex-shrink: 1000;
+  min-width: 4ch;
 }
 
 .verb {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--cg-text-secondary);
 }
 
