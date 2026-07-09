@@ -11,12 +11,15 @@ import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/icons";
 import { NotificationRow } from "@/components/notifications/NotificationRow";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
+import { useSession } from "@/components/Providers";
 import styles from "./page.module.css";
 
 type NotifTab = "all" | "mentions";
 
 export default function NotificationsPage() {
   const feed = useNotificationsFeed();
+  const { viewer } = useSession();
+  const me = viewer.address ?? null;
   const [tab, setTab] = useState<NotifTab>("all");
 
   // Freeze the unread set at open (so the highlight is stable while you read), then clear the badge.
@@ -24,6 +27,13 @@ export default function NotificationsPage() {
   // run yet (loading is still false, items empty); freezing then would markAllRead an empty set and
   // leave the badge stuck once the fold lands. `loaded` is true only after the first fold settles.
   const frozen = useRef<Set<string> | null>(null);
+  // Re-arm the freeze on an in-place account switch (viewer.address changes without a remount), so the
+  // swapped-in account's badge clears + its own unread set is captured.
+  const prevMe = useRef(me);
+  if (prevMe.current !== me) {
+    prevMe.current = me;
+    frozen.current = null;
+  }
   useEffect(() => {
     if (frozen.current === null && feed.enabled && feed.loaded) {
       frozen.current = new Set(feed.items.filter((i) => feed.isUnread(i.key)).map((i) => i.key));
