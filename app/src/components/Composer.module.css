@@ -23,6 +23,11 @@
   gap: var(--cg-space-3);
 }
 
+/* Anchor for the @-mention autocomplete popover (positioned under the textarea). */
+.taWrap {
+  position: relative;
+}
+
 .textarea {
   width: 100%;
   border: 0;

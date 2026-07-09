@@ -17,8 +17,9 @@
 // schedule / poll-duration. The ByteCounter ring (UTF-8 BYTES, D1) is the single source of truth the
 // CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { countImageUrls } from "@/lib/media";
+import { useMentions } from "@/hooks/useMentions";
 import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
@@ -112,6 +113,13 @@ export interface ComposerProps {
   /** Controlled text (PollComposer drives the question through here); uncontrolled when omitted. */
   text?: string;
   onTextChange?: (text: string) => void;
+  /**
+   * The SERIALIZED body (display `@name` tokens expanded to `@<ss58>`) whenever it changes. A surface
+   * that runs a per-draft capacity gate (ComposePage/ModalRouteHost) uses this — NOT the display text —
+   * so the gate counts the real, ~48-bytes-per-mention serialized length. The byte-counter ring + the
+   * over-limit CTA gate always count the serialized length internally regardless.
+   */
+  onSerializedChange?: (serialized: string) => void;
   /** Focus the textarea on mount (modal/sheet = true). */
   autoFocus?: boolean;
   /** Build a ComposerDraft and submit. The surface maps it to the right mutation. */
@@ -149,6 +157,7 @@ export function Composer({
   extraValid = true,
   text: controlledText,
   onTextChange,
+  onSerializedChange,
   autoFocus,
   onSubmit,
   onCancel,
@@ -169,6 +178,27 @@ export function Composer({
     [isControlled, onTextChange],
   );
 
+  // @-mentions: the display text holds friendly `@name` tokens; `serializeDraft` expands them to
+  // `@<ss58>` for the byte meter + submit, and `mentionPopover` is the autocomplete popover.
+  const listId = useId();
+  const {
+    serialize: serializeDraft,
+    mentionCount,
+    suggestions: mentionPopover,
+    open: mentionsOpen,
+    onTextInput: syncMentionQuery,
+    onKeyDown: mentionKeyDown,
+    dismiss: dismissMentions,
+    reset: resetMentions,
+  } = useMentions({ text, setText, taRef, listId });
+
+  // The SERIALIZED body — what actually gets posted, and what the byte counter / capacity gate must
+  // measure (each `@name` token expands to a ~48-byte ss58, so a short-looking draft can exceed 512).
+  const serializedText = useMemo(() => serializeDraft(text), [serializeDraft, text]);
+  useEffect(() => {
+    onSerializedChange?.(serializedText);
+  }, [serializedText, onSerializedChange]);
+
   // Single source of truth for the byte measurement; the CTA gates off the SAME measure the ring shows.
   const [measure, setMeasure] = useState<ByteMeasure>({ bytes: 0, remaining: maxBytes, over: false });
 
@@ -182,12 +212,18 @@ export function Composer({
       const start = el?.selectionStart ?? text.length;
       const end = el?.selectionEnd ?? text.length;
       const candidate = text.slice(0, start) + emoji + text.slice(end);
-      const next = utf8Bytes(candidate) > maxBytes ? clampToBytes(candidate, maxBytes) : candidate;
+      // Clamp on the DISPLAY text only when there are no mention tokens (display === serialized then);
+      // with mentions present the serialized measure governs, and clamping display text could cut a token.
+      const next =
+        mentionCount === 0 && utf8Bytes(candidate) > maxBytes
+          ? clampToBytes(candidate, maxBytes)
+          : candidate;
       setText(next);
+      const pos = start + emoji.length;
+      syncMentionQuery(next, pos); // an emoji ends any active @query
       // restore the caret after the inserted emoji on the next frame
       requestAnimationFrame(() => {
         if (!el) return;
-        const pos = start + emoji.length;
         el.focus();
         try {
           el.setSelectionRange(pos, pos);
@@ -196,7 +232,7 @@ export function Composer({
         }
       });
     },
-    [text, maxBytes, setText],
+    [text, maxBytes, setText, mentionCount, syncMentionQuery],
   );
 
   // Validity (doc 09 §5.4 precedence): for a quote the chain allows empty text but the UI requires a
@@ -222,26 +258,31 @@ export function Composer({
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const el = e.currentTarget;
       // Hard-block past the byte boundary: clamp a paste to the last whole code point that fits (D1).
+      // With mention tokens present, display length ≠ serialized length, so clamping the DISPLAY here
+      // could cut a token; instead the serialized byte meter turns the ring red + disables the CTA.
       let next = el.value;
-      if (utf8Bytes(next) > maxBytes) {
+      if (mentionCount === 0 && utf8Bytes(next) > maxBytes) {
         next = clampToBytes(next, maxBytes);
       }
       setText(next);
+      syncMentionQuery(next, el.selectionStart ?? next.length);
       el.style.height = "auto";
       el.style.height = `${el.scrollHeight}px`;
     },
-    [maxBytes, setText],
+    [maxBytes, setText, mentionCount, syncMentionQuery],
   );
 
   const buildDraft = useCallback(
     (): ComposerDraft => ({
       mode,
-      text,
+      // Serialize `@name` display tokens to `@<ss58>` so the POSTED body is the self-describing form
+      // every client parses (QuoteComposer forwards draft.text; PollComposer submits draft.text too).
+      text: serializedText,
       parentId: draftExtras?.parentId,
       quotedId: draftExtras?.quotedId,
       pollOptions: draftExtras?.pollOptions,
     }),
-    [mode, text, draftExtras],
+    [mode, serializedText, draftExtras],
   );
 
   const submit = useCallback(() => {
@@ -254,21 +295,24 @@ export function Composer({
     if (disabled) return;
     onSubmit(buildDraft());
     // OPTIMISTIC: clear the textarea instantly (doc 09 §6.1). Controlled drafts are cleared by the surface.
+    resetMentions(); // drop the recorded mentions with the submitted draft
     if (!isControlled) {
       setInnerText("");
       if (taRef.current) taRef.current.style.height = "auto";
     }
-  }, [sessionGated, disabled, onSubmit, buildDraft, isControlled]);
+  }, [sessionGated, disabled, onSubmit, buildDraft, isControlled, resetMentions]);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // Let the mention popover claim navigation keys first (↑/↓ move, Enter/Tab pick, Esc close).
+      if (mentionKeyDown(e)) return;
       // ⌘/Ctrl+Enter submits; Enter is a newline (X parity, doc 09 §7.1).
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
         submit();
       }
     },
-    [submit],
+    [submit, mentionKeyDown],
   );
 
   const label = ctaLabel(mode, viewer.status);
@@ -296,19 +340,31 @@ export function Composer({
           <label className={styles.srOnly} htmlFor={`cg-composer-${mode}`}>
             {TEXTAREA_LABEL[mode]}. Press Command or Control plus Enter to post
           </label>
-          <textarea
-            id={`cg-composer-${mode}`}
-            ref={taRef}
-            className={styles.textarea}
-            placeholder={placeholder ?? PLACEHOLDER[mode]}
-            value={text}
-            rows={1}
-            readOnly={sessionGated}
-            autoFocus={autoFocus}
-            onChange={onTextareaInput}
-            onKeyDown={onKeyDown}
-            aria-describedby={`cg-composer-${mode}-meta`}
-          />
+          {/* Relatively-positioned wrapper so the mention autocomplete popover anchors under the textarea. */}
+          <div className={styles.taWrap}>
+            <textarea
+              id={`cg-composer-${mode}`}
+              ref={taRef}
+              className={styles.textarea}
+              placeholder={placeholder ?? PLACEHOLDER[mode]}
+              value={text}
+              rows={1}
+              readOnly={sessionGated}
+              autoFocus={autoFocus}
+              onChange={onTextareaInput}
+              onKeyDown={onKeyDown}
+              // Re-detect an @query when the caret is moved by mouse; close the popover on blur (a row
+              // pick uses mousedown+preventDefault, so it never blurs before the pick lands).
+              onClick={(e) => syncMentionQuery(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)}
+              onBlur={dismissMentions}
+              role="combobox"
+              aria-expanded={mentionsOpen}
+              aria-controls={mentionsOpen ? listId : undefined}
+              aria-autocomplete="list"
+              aria-describedby={`cg-composer-${mode}-meta`}
+            />
+            {mentionPopover}
+          </div>
           {contextBelow}
           {imageLinkCount > 0 && (
             <p className={styles.imageChip} role="note">
@@ -362,7 +418,9 @@ export function Composer({
         <div className={styles.toolbarRight}>
           {!sessionGated && (
             <span aria-live={announce ? "polite" : "off"}>
-              <ByteCounter value={text} maxBytes={maxBytes} onMeasure={setMeasure} />
+              {/* Count the SERIALIZED body (mention tokens expanded to their ~48-byte ss58), not the
+                  short display text — else a mention-heavy draft that looks short fails the 512 cap. */}
+              <ByteCounter value={serializedText} maxBytes={maxBytes} onMeasure={setMeasure} />
             </span>
           )}
           <button

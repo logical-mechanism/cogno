@@ -1,0 +1,57 @@
+/* MentionSuggestions — the @-autocomplete dropdown, anchored under the composer textarea. */
+
+.popover {
+  position: absolute;
+  top: calc(100% + var(--cg-space-1));
+  left: 0;
+  right: 0;
+  z-index: var(--cg-z-popover, 60);
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--cg-bg-elevated, var(--cg-bg));
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  box-shadow: var(--cg-shadow-menu, 0 8px 24px rgb(0 0 0 / 0.18));
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: var(--cg-space-1);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-2);
+  border-radius: var(--cg-radius-input);
+  cursor: pointer;
+}
+
+.row.active,
+.row:hover {
+  background: var(--cg-bg-subtle);
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+  min-width: 0;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-2) var(--cg-space-3);
+  color: var(--cg-text-muted);
+  font-size: var(--cg-fs-sm);
+}
