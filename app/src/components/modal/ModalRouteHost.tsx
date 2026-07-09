@@ -95,6 +95,9 @@ export function ModalRouteHost() {
   // Controlled text for the base compose mode so the capacity gate measures the live draft (reply /
   // quote stay uncontrolled — their gate uses the empty-draft base-cost probe, exactly like ComposePage).
   const [text, setText] = useState("");
+  // The SERIALIZED compose body (mention `@name` tokens expanded to `@<ss58>`), reported by the base
+  // Composer, so the capacity gate counts the real posted length rather than the short display text.
+  const [serialized, setSerialized] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   // Uncontrolled reply/quote drafts report dirtiness here so a close can confirm before discarding.
   const composerDirtyRef = useRef(false);
@@ -128,6 +131,7 @@ export function ModalRouteHost() {
   useEffect(() => {
     setSubmitState("idle");
     setText(kind === "compose" ? loadPostDraft() : "");
+    setSerialized(""); // the base Composer re-reports on mount; reply/quote leave it "" (base-cost gate)
     setConfirmDiscard(false);
     composerDirtyRef.current = false;
     if (kind === "poll") setPollDraft({ question: "", options: ["", ""] });
@@ -141,7 +145,9 @@ export function ModalRouteHost() {
   // Pre-flight capacity gate — mirror ComposePage so the PRIMARY (overlay) compose path also disables
   // the CTA + shows the inline RateLimitNotice before submit, instead of only surfacing a rate limit
   // via the post-submit failure toast (D5).
-  const gateText = kind === "poll" ? pollDraft.question : text;
+  // Non-poll compose measures the SERIALIZED body (mention tokens count as their ss58 length); reply /
+  // quote are uncontrolled → `serialized` stays "" and the gate uses the base-cost probe, as before.
+  const gateText = kind === "poll" ? pollDraft.question : serialized;
   const rateLimited = useMemo(() => {
     if (viewer.status !== "ready" || !capacityView || !capacityConsts) return false;
     const byteLen = new TextEncoder().encode(gateText).length;
@@ -404,6 +410,7 @@ export function ModalRouteHost() {
             rateLimited={rateLimited}
             text={text}
             onTextChange={setText}
+            onSerializedChange={setSerialized}
             autoFocus
             onSubmit={onPost}
             onCancel={onRequestClose}

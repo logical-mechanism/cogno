@@ -1,0 +1,67 @@
+/* NotificationRow — a tappable activity row (kind icon · avatar · actor + verb · unread dot). */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+  color: var(--cg-text);
+}
+
+.row:hover {
+  background: var(--cg-bg-hover);
+  text-decoration: none;
+}
+
+.unread {
+  background: var(--cg-accent-wash);
+}
+
+.unread:hover {
+  background: var(--cg-accent-wash);
+}
+
+.kind {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: var(--cg-icon-lg);
+  justify-content: center;
+}
+
+.toneUp {
+  color: var(--cg-accent);
+}
+.toneDown {
+  color: var(--cg-danger);
+}
+.toneNeutral {
+  color: var(--cg-text-secondary);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.line {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.verb {
+  color: var(--cg-text-secondary);
+}
+
+.dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--cg-accent);
+}

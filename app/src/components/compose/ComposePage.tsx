@@ -113,6 +113,9 @@ export function ComposePage() {
   // `mode`, not effectiveMode), so a reply/quote deep-link never leaks the saved post text into its
   // capacity gate. Client-only render behind Suspense, so the lazy initializer is safe.
   const [text, setText] = useState(() => (mode === "post" ? loadPostDraft() : ""));
+  // The SERIALIZED post body (mention `@name` tokens expanded to `@<ss58>`), reported up by the base
+  // Composer, so the capacity gate counts the real posted length — a mention is ~48 bytes, not `@name`.
+  const [serialized, setSerialized] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   // Uncontrolled reply/quote drafts report dirtiness here so Cancel can confirm before discarding.
   const composerDirtyRef = useRef(false);
@@ -132,8 +135,10 @@ export function ComposePage() {
   const bestBlock = heads.best?.number ?? null;
   const { view: capacityView, consts: capacityConsts } = useCapacity(api, viewer.address ?? null, bestBlock);
 
-  // The text the capacity gate measures: the post/reply/quote draft, or the poll question.
-  const gateText = mode === "poll" ? pollDraft.question : text;
+  // The text the capacity gate measures: the SERIALIZED post/reply/quote body (so mention tokens count
+  // as their ss58 length), or the poll question. Reply/quote are uncontrolled → `serialized` stays ""
+  // and the gate uses the empty-draft base-cost probe, exactly as before.
+  const gateText = mode === "poll" ? pollDraft.question : serialized;
   const rateLimited = useMemo(() => {
     if (viewer.status !== "ready" || !capacityView || !capacityConsts) return false;
     const byteLen = new TextEncoder().encode(gateText).length;
@@ -331,6 +336,7 @@ export function ComposePage() {
             submitState={submitState}
             text={text}
             onTextChange={setText}
+            onSerializedChange={setSerialized}
             rateLimited={rateLimited}
             noPostingPower={noPostingPower}
             autoFocus
@@ -365,6 +371,7 @@ export function ComposePage() {
                 submitState={submitState}
                 text={text}
                 onTextChange={setText}
+                onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
                 noPostingPower={noPostingPower}
                 autoFocus
@@ -396,6 +403,7 @@ export function ComposePage() {
                 submitState={submitState}
                 text={text}
                 onTextChange={setText}
+                onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
                 noPostingPower={noPostingPower}
                 autoFocus

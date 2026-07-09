@@ -28,6 +28,8 @@ import { deriveSessionState, type SessionState } from "@/lib/session";
 import { ToasterProvider } from "@/components/toast/ToasterProvider";
 import { OptimisticProvider } from "@/hooks/useOptimistic";
 import { ReputationProvider } from "@/hooks/useReputation";
+import { AccountProfileProvider } from "@/hooks/useAccountProfile";
+import { NotificationsProvider } from "@/hooks/useNotifications";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, ConnStatus, BootGuard, PostingSigner } from "@/lib/types";
 import type { Viewer, ViewerStatus } from "@/components/kit";
@@ -167,11 +169,16 @@ function ChainProvider({ children }: { children: ReactNode }) {
     [api, client, status, boot, wsUrl, reconnect, signer, signerCtl, identity, sessionState, viewer, source, bestBlock],
   );
 
-  // ReputationProvider lives INSIDE the session context (it reads `api` via useSession) so the
-  // whole tree shares one batched, cached AccountVoteTally lookup for the author-reputation badges.
+  // ReputationProvider + AccountProfileProvider live INSIDE the session context (they read `api` via
+  // useSession) so the whole tree shares one batched, cached lookup each — AccountVoteTally for the
+  // author-reputation badges, and Profile.Profiles for @mention chips + notification actor rows.
   return (
     <SessionContext.Provider value={value}>
-      <ReputationProvider>{children}</ReputationProvider>
+      <ReputationProvider>
+        <AccountProfileProvider>
+          <NotificationsProvider>{children}</NotificationsProvider>
+        </AccountProfileProvider>
+      </ReputationProvider>
     </SessionContext.Provider>
   );
 }

@@ -1,0 +1,69 @@
+/* /notifications — activity list + All/Mentions filter tabs. */
+
+.tabs {
+  display: flex;
+  gap: var(--cg-space-4);
+}
+
+.tab {
+  position: relative;
+  padding: var(--cg-space-2) 0;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-md);
+  font-weight: var(--cg-fw-medium);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--cg-text);
+}
+
+.tabActive {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-bold);
+}
+
+/* neutral underline indicator (accent is reserved for the Post CTA + focus ring — doc 00) */
+.indicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 3px;
+  border-radius: 999px 999px 0 0;
+  background: var(--cg-text);
+}
+
+.markRead {
+  background: none;
+  border: none;
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-medium);
+  cursor: pointer;
+  padding: var(--cg-space-1) var(--cg-space-2);
+}
+
+.markRead:hover {
+  text-decoration: underline;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--cg-space-6);
+}
+
+.truncated {
+  padding: var(--cg-space-4);
+  color: var(--cg-text-muted);
+  font-size: var(--cg-fs-sm);
+  text-align: center;
+}

@@ -120,12 +120,14 @@ export function PollComposer({
   const extraValid = enoughOptions && !anyOptionOver;
 
   const onSubmit = useCallback(
-    (_draft: ComposerDraft) => {
+    (draft: ComposerDraft) => {
       const out = options.map((o) => o.trim()).filter((o) => o.length > 0).slice(0, MAX_POLL_OPTIONS);
       if (out.length < MIN_POLL_OPTIONS) return; // guard (CTA should already be disabled)
-      submitCreatePoll(pollDraft.question, out);
+      // draft.text is the question with any @mention display tokens serialized to `@<ss58>` (the base
+      // Composer owns that). Use it, NOT the raw pollDraft.question, so poll questions mention correctly.
+      submitCreatePoll(draft.text, out);
     },
-    [options, pollDraft.question, submitCreatePoll],
+    [options, submitCreatePoll],
   );
 
   const fieldset = (

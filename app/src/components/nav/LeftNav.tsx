@@ -16,8 +16,9 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import styles from "./LeftNav.module.css";
 import { Account } from "../Account";
-import { IconHome, IconSearch, IconProfile, IconBookmark, IconSettings, IconCompose } from "../icons";
+import { IconHome, IconSearch, IconProfile, IconBookmark, IconSettings, IconCompose, IconBell } from "../icons";
 import { useSession } from "../Providers";
+import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useModalStore } from "@/lib/modalStore";
 import type { IconProps } from "../icons";
 
@@ -27,24 +28,30 @@ interface NavItem {
   Icon: (p: IconProps) => React.ReactElement;
   /** active-match predicate against the current pathname. */
   match: (path: string) => boolean;
+  /** unread badge count (Notifications); omitted / 0 → no badge. */
+  badge?: number;
 }
 
 export function LeftNav() {
   const pathname = usePathname() ?? "/";
   const router = useRouter();
   const { viewer } = useSession();
+  const { unreadCount } = useNotificationsFeed();
   const { openCompose } = useModalStore();
 
   // Profile target resolves to the connected account, else the onboarding gate (doc 01 §6.4).
   const profileHref = viewer.address ? `/u/${viewer.address}/` : "/welcome/";
 
-  // HOOK: notifications — the indexer emits Voted / Reposted / Followed / reply / quote targeting <me>,
-  // which is a ready-made notifications feed. When it ships, add a "Notifications" item + bell here and
-  // a /notifications route. DEFERRED for now (locked decision).
-
   const items: NavItem[] = [
     { label: "Home", href: "/", Icon: IconHome, match: (p) => p === "/" },
     { label: "Explore", href: "/explore/", Icon: IconSearch, match: (p) => p.startsWith("/explore") },
+    {
+      label: "Notifications",
+      href: "/notifications/",
+      Icon: IconBell,
+      match: (p) => p.startsWith("/notifications"),
+      badge: unreadCount,
+    },
     {
       label: "Profile",
       href: profileHref,
@@ -75,17 +82,24 @@ export function LeftNav() {
         </Link>
 
         <ul className={styles.items}>
-          {items.map(({ label, href, Icon, match }) => {
+          {items.map(({ label, href, Icon, match, badge }) => {
             const active = match(pathname);
+            const count = badge && badge > 0 ? badge : 0;
             return (
               <li key={label}>
                 <Link
                   href={href}
                   className={`${styles.item} ${active ? styles.active : ""}`}
                   aria-current={active ? "page" : undefined}
+                  aria-label={count > 0 ? `${label} (${count} unread)` : undefined}
                 >
                   <span className={styles.itemIcon}>
                     <Icon filled={active} size="var(--cg-icon-lg)" />
+                    {count > 0 && (
+                      <span className={styles.badge} aria-hidden>
+                        {count > 99 ? "99+" : count}
+                      </span>
+                    )}
                   </span>
                   <span className={styles.itemLabel}>{label}</span>
                 </Link>

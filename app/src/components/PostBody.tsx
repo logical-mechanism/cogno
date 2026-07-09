@@ -6,8 +6,11 @@
 // or a bare ipfs:// CID) renders behind a click-to-reveal cover (RevealImage) so the browser never
 // auto-fetches an arbitrary host — there is still no media FIELD on-chain. Everything else:
 //   - bare http(s)/ipfs:// URLs auto-link (ipfs:// resolved to a gateway).
-//   - NO @mention links — handles are non-unique truncated ss58, NOT addressable text, so a
-//     literal `@5CBE…` in a body is plain text (divergence from X, by design).
+//   - @mention links — a `@<full-ss58>` (a checksum-valid AccountId32, ~48 base58 chars) links to that
+//     person's profile as a `<MentionChip>` (their CURRENT display name + identicon). Only a FULL
+//     checksummed ss58 linkifies (near-zero false positives); a truncated handle stays plain text. A
+//     mention refers to a unique PERSON encoded in the body itself (no side-field) — the ss58 IS the
+//     addressable value even though the cosmetic truncated handle is not (`lib/mentions`).
 //   - #hashtag links — a `#tag` links to /explore/?q=%23tag (a case-insensitive substring search).
 //     There is still no Topics surface; the link just runs the search that `#tag` matches.
 //   - NO markdown.
@@ -19,7 +22,9 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { isImageUrl, resolveImageSrc, URL_RE, TRAILING_PUNCT } from "@/lib/media";
+import { validSs58Prefix } from "@/lib/mentions";
 import { RevealImage } from "./RevealImage";
+import { MentionChip } from "./MentionChip";
 import { Highlight } from "./Highlight";
 import styles from "./PostBody.module.css";
 
@@ -36,23 +41,37 @@ export interface PostBodyProps {
 
 // URL_RE + TRAILING_PUNCT (the http(s)/ipfs run matcher + trailing-punctuation strip) live in
 // @/lib/media so the composer's image-link chip classifies links identically to what we render here.
-// A #hashtag: '#' + Unicode letters/numbers/underscore. Scanned ONLY inside plain-text runs (never
-// inside a matched URL), so a fragment like `https://x.org/#section` is never re-linkified.
-const HASHTAG_RE = /#[\p{L}\p{N}_]+/gu;
+// TOKEN_RE matches, inside a PLAIN-TEXT run (never inside a matched URL — so `https://x.org/#section`
+// and `https://x.org/@handle` are never re-tokenized), either:
+//   - a #hashtag: '#' + Unicode letters/numbers/underscore, or
+//   - a mention candidate: '@' + a ≥44-char base58 run (checksum-validated below via validSs58Prefix).
+const TOKEN_RE = /#[\p{L}\p{N}_]+|@[1-9A-HJ-NP-Za-km-z]{44,}/gu;
 
 interface Seg {
-  kind: "text" | "url" | "image" | "hashtag";
+  kind: "text" | "url" | "image" | "hashtag" | "mention";
+  /** the run text (text/url/image/hashtag); for a mention, the canonical prefix-42 ss58. */
   value: string;
 }
 
-/** Push a plain-text run onto `segs`, further split into text + #hashtag segments. */
+/** Push a plain-text run onto `segs`, further split into text + #hashtag + @mention segments. */
 function pushText(segs: Seg[], text: string): void {
   let last = 0;
-  for (const m of text.matchAll(HASHTAG_RE)) {
+  for (const m of text.matchAll(TOKEN_RE)) {
     const start = m.index ?? 0;
+    const tok = m[0];
+    if (tok[0] === "@") {
+      // Only a checksum-valid ss58 PREFIX linkifies; a look-alike run stays plain text. A base58 char
+      // glued to the address (no separator) is not consumed — validSs58Prefix returns just the address.
+      const hit = validSs58Prefix(tok.slice(1));
+      if (!hit) continue; // leave as plain text — emitted by the next slice / final tail
+      if (start > last) segs.push({ kind: "text", value: text.slice(last, start) });
+      segs.push({ kind: "mention", value: hit.ss58 });
+      last = start + 1 + hit.length; // consumed '@' + the address only
+      continue;
+    }
     if (start > last) segs.push({ kind: "text", value: text.slice(last, start) });
-    segs.push({ kind: "hashtag", value: m[0] });
-    last = start + m[0].length;
+    segs.push({ kind: "hashtag", value: tok });
+    last = start + tok.length;
   }
   if (last < text.length) segs.push({ kind: "text", value: text.slice(last) });
 }
@@ -161,6 +180,10 @@ export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps)
               <Highlight text={s.value} query={highlight} />
             </Link>
           );
+        }
+        if (s.kind === "mention") {
+          // s.value is the canonical ss58; the chip resolves the current display name + identicon.
+          return <MentionChip key={i} ss58={s.value} />;
         }
         return <Highlight key={i} text={s.value} query={highlight} />;
       })}

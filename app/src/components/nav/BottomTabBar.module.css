@@ -25,6 +25,31 @@
   text-decoration: none;
 }
 
+/* icon wrapper — anchors the unread badge over the glyph */
+.tabIcon {
+  position: relative;
+  display: inline-flex;
+}
+
+.badge {
+  position: absolute;
+  top: -5px;
+  left: 60%;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--cg-accent);
+  color: var(--cg-on-accent, #fff);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .active {
   color: var(--cg-accent);
 }
