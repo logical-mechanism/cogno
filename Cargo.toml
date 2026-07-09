@@ -44,6 +44,15 @@ license = "Apache-2.0"
 [workspace.lints.rust]
 unused_extern_crates = "allow"
 
+[workspace.lints.clippy]
+# The node's CLI/service entry points (fn main, command::run, service::new_partial/new_full, key::*)
+# return the polkadot-sdk error types (sc_cli::Error / sc_service::Error), whose Err variant is large
+# (~176 B) — the standard substrate node signatures we don't own. Boxing SDK errors on `fn main()` etc.
+# would diverge from every substrate node for no real benefit (these are top-level, non-hot functions).
+# So we allow the lint rather than box them. Our own FRAME error enums are small, so this never masks a
+# fixable case in the pallets / runtime / cli. (rust 1.93.0 made result_large_err warn-by-default.)
+result_large_err = "allow"
+
 [workspace.dependencies]
 # ── local crates ───────────────────────────────────────────────────────────────
 cogno-chain-runtime = { path = "runtime", default-features = false }
