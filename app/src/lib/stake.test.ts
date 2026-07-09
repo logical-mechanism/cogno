@@ -30,22 +30,34 @@ describe("stakeTier — weight (lovelace) → monochrome ring tier", () => {
 });
 
 describe("avatarRing — tier + red danger override, with self-hide", () => {
-  it("hides (null) only when tier 0 AND reputation non-negative", () => {
+  it("hides (null) only when tier 0 AND reputation non-disputed", () => {
     expect(avatarRing(0n, 0n)).toBeNull();
     expect(avatarRing(null, null)).toBeNull();
-    expect(avatarRing(0n, 500n)).toBeNull(); // positive rep, no stake → still nothing to draw
+    expect(avatarRing(0n, 500n * ADA)).toBeNull(); // positive rep, no stake → still nothing to draw
   });
 
   it("shows the tier ring (no danger) for staked, non-negative reputation", () => {
     expect(avatarRing(100n * ADA, 0n)).toEqual({ tier: 1, danger: false });
-    expect(avatarRing(15_927n * ADA, 999n)).toEqual({ tier: 2, danger: false });
+    expect(avatarRing(15_927n * ADA, 999n * ADA)).toEqual({ tier: 2, danger: false });
     expect(avatarRing(100_000n * ADA, null)).toEqual({ tier: 3, danger: false });
   });
 
-  it("negative reputation forces the red ring at EVERY tier, including tier 0", () => {
-    expect(avatarRing(0n, -1n)).toEqual({ tier: 0, danger: true });
-    expect(avatarRing(null, -1n)).toEqual({ tier: 0, danger: true });
-    expect(avatarRing(100n * ADA, -50n)).toEqual({ tier: 1, danger: true });
-    expect(avatarRing(200_000n * ADA, -5n)).toEqual({ tier: 3, danger: true });
+  it("disputed (net-negative) reputation forces the red ring at EVERY tier, including tier 0", () => {
+    expect(avatarRing(0n, -1n * ADA)).toEqual({ tier: 0, danger: true });
+    expect(avatarRing(null, -1n * ADA)).toEqual({ tier: 0, danger: true });
+    expect(avatarRing(100n * ADA, -50n * ADA)).toEqual({ tier: 1, danger: true });
+    expect(avatarRing(200_000n * ADA, -5n * ADA)).toEqual({ tier: 3, danger: true });
+  });
+
+  // The ring and the ReputationBadge next to the name must never disagree: the badge hides a score
+  // whose magnitude rounds below the 0.1-ADA display floor ("−0"), so the ring must stay neutral too.
+  it("does NOT red-ring a dust-negative score the ReputationBadge hides", () => {
+    expect(avatarRing(0n, -1n)).toBeNull(); // 1 lovelace net-negative → badge hidden → no ring
+    expect(avatarRing(0n, -99_999n)).toBeNull(); // just under the 0.1-ADA floor
+    expect(avatarRing(100n * ADA, -99_999n)).toEqual({ tier: 1, danger: false });
+  });
+
+  it("red-rings from the exact 0.1-ADA display floor up (where the badge first appears)", () => {
+    expect(avatarRing(0n, -100_000n)).toEqual({ tier: 0, danger: true });
   });
 });

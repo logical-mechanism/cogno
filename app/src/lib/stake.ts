@@ -10,6 +10,8 @@
 // This module owns only the display DECISION (tier + danger). The reads + caches live in the
 // `useAuthorWeight` / `useReputation` providers; `useStakeRing` composes them into this.
 
+import { reputationBadge } from "./reputation";
+
 const LOVELACE_PER_ADA = 1_000_000n;
 /** Tier-2 floor: ≥ 10K ADA of proven stake. */
 const TIER2_LOVELACE = 10_000n * LOVELACE_PER_ADA;
@@ -38,16 +40,20 @@ export function stakeTier(weight: bigint | null | undefined): StakeTier {
 }
 
 /**
- * The avatar-ring view for an author, or `null` when there is nothing to draw. A negative reputation
- * score always shows the RED danger ring (even at tier 0 — a warning is worth drawing on a zero-stake
- * troll). Otherwise the ring appears only from tier 1 up; tier 0 with non-negative reputation ⇒ `null`
- * (self-hidden), which is the common case for fresh-chain accounts, so most rows stay clean.
+ * The avatar-ring view for an author, or `null` when there is nothing to draw. A community-disputed
+ * reputation always shows the RED danger ring (even at tier 0 — a warning is worth drawing on a
+ * zero-stake troll). Otherwise the ring appears only from tier 1 up; tier 0 with non-negative
+ * reputation ⇒ `null` (self-hidden), the common case for fresh-chain accounts, so most rows stay clean.
+ *
+ * "Disputed" is decided by `reputationBadge`, NOT by a raw `< 0n` test, so the ring and the badge next
+ * to the name can never disagree: a sub-0.1-ADA dust downvote rounds to "−0" and the badge hides it, so
+ * the ring must stay neutral too rather than red-ringing an author app-wide over noise.
  */
 export function avatarRing(
   weight: bigint | null | undefined,
   reputationScore: bigint | null | undefined,
 ): AvatarRingView | null {
-  const danger = reputationScore != null && reputationScore < 0n;
+  const danger = reputationBadge(reputationScore)?.tone === "down";
   const tier = stakeTier(weight);
   if (tier === 0 && !danger) return null;
   return { tier, danger };
