@@ -1,21 +1,28 @@
 # cogno-chain frontend — a feeless social client
 
-The Next.js 16 **static-export** SPA for cogno-chain — a dark-first, Twitter-style social client
-(**post text / read text**): a home feed, explore/search, compose, post threads, quotes and permanent
-reposts, polls, user profiles (with pinned posts and Posts / Replies / Likes / Following tabs), follows
-with follower/following lists and tappable follow counts, who-to-follow, and account-reputation votes (a
-stake-weighted anti-Sybil / anti-impersonation signal ON accounts, shown on profiles and People rows).
-Posting, voting (on posts **and** on accounts), reposting, quoting, following, and polls are all
-**feeless**, metered by Cardano-sourced **talk-capacity** (lock ADA on Cardano → earn capacity), not
-per-action fees; identity is a one-time **CIP-8 bind** (one Cardano owner Address ⇒ one app-chain
-account), with an optional second **stake bind** that unlocks stake-weighted voting/poll power.
-Bookmarks (device-local, `/bookmarks`), mute/hide, and a Diagnostics settings panel round it out. It
-reads **everything node-direct** — feed / thread / profile /
-search over **PAPI** (`polkadot-api`) + the runtime read API, no indexer and no follower — and reaches
-Cardano with **MeshJS** (CIP-30 wallet + Blockfrost) for the L1 vault lock/exit. The chain is
-**observe-only**: it reads Cardano, never writes back (no anchor). There is no backend and no
-telemetry — it self-hosts on any static host (`output: "export"`, see `next.config.mjs`). For the
-full project, see the top-level [`README.md`](../README.md); for the design,
+The Next.js 16 **static-export** SPA for cogno-chain: a dark-first, Twitter-style client where you
+**post text and read text**, and everything is **feeless** — metered by Cardano-sourced *talk-capacity*
+(lock ADA on Cardano → earn capacity) instead of per-action fees.
+
+What it does:
+
+- **Feed, explore, search** — a home timeline, a following timeline, and full-text search over posts
+  and people.
+- **Post, reply, quote, poll** — threaded replies, quote-with-comment, and stake-weighted polls.
+- **Vote on posts *and* on accounts** — up/down votes weighted by your Cardano stake; account votes are
+  a community anti-Sybil / anti-impersonation reputation signal shown on profiles and people rows.
+- **Profiles and follows** — editable profiles (pinned post; Posts / Replies / Likes / Following tabs),
+  follower/following lists with tappable counts, and who-to-follow.
+- **Device-local bookmarks and mute/hide** — saved and muted lists live in your browser only (a public
+  chain can't keep those private).
+
+Identity is a one-time **CIP-8 bind** (one Cardano owner Address ⇒ one app-chain account), with an
+optional second **stake bind** that unlocks stake-weighted voting power. The client reads
+**everything node-direct** — feed / thread / profile / search over **PAPI** (`polkadot-api`) + the
+node's runtime read API, no indexer and no follower — and reaches Cardano with **MeshJS** (CIP-30
+wallet + Blockfrost) for the L1 vault lock/exit. The chain is **observe-only**: it reads Cardano, never
+writes back. No backend, no telemetry; it self-hosts on any static host (`output: "export"`, see
+`next.config.mjs`). For the full project see the top-level [`README.md`](../README.md); for the design,
 [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
 
 ## Run
@@ -80,8 +87,7 @@ cogno-chain separates **identity/stake** from **posting**, and the two are diffe
   dev accounts remain as a testing fallback.) Honest threat model: the derived key signs **posts
   only** and never controls funds, so the worst case if it is phished is impersonation (revoke +
   re-derive), never theft — but it does **not** defend against XSS on this origin once derived in
-  memory. *(An earlier PBKDF2(310k) → AES-GCM-256 keystore was built in M8 and then superseded by
-  sign-to-derive.)*
+  memory.
 
 The two keys are bound 1:1 by the M2 CIP-8 bind: one Cardano identity ⇒ one posting account.
 

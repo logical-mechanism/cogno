@@ -1,119 +1,59 @@
-# Iterate on the frontend against the REAL chain (local tracking node)
+# Iterate on the frontend against the real chain (local tracking node)
 
-Develop the `app/` frontend locally while it reads **live data from the real Cogno chain**, without
-running a validator or touching the operator's node. You run a **non-validator "relay"** — a tracking
-full node — that syncs the real chain over P2P and serves RPC to your dev frontend on `127.0.0.1`.
+Develop the `app/` frontend locally while it reads **live data from the real cogno-chain**, without
+running a validator or touching the operator's node. You run a **tracking node** (a non-validator
+"relay") that syncs the real chain over P2P and serves RPC to your dev frontend on `127.0.0.1`.
 
 ```
  ┌────────────┐   libp2p P2P    ┌───────────────────────────┐   ws RPC :9944   ┌──────────────┐
- │ validator  │◀───────────────▶│  local tracking node       │◀───────────────▶│ app (next dev│
- │ (producer) │   :30333        │  (relay; --no validator)   │                 │  :3000)      │
- │ = SOURCE   │                 │  syncs + serves reads       │                 │              │
- │   OF TRUTH │                 └───────────────────────────┘                 └──────────────┘
+ │ validator  │◀───────────────▶│  local tracking node      │◀───────────────▶│ app          │
+ │ (producer) │   :30333        │  (relay; no --validator)  │                 │ (next dev    │
+ │ = truth    │                 │  syncs + serves reads     │                 │  :3000)      │
+ └────────────┘                 └───────────────────────────┘                 └──────────────┘
 ```
 
-The validator stays the **sole block producer and source of truth**. The relay only follows it and
-answers reads (and broadcasts the posts you submit) — it can't author, equivocate, or affect
-consensus. This is the same "tracking node" from the [README's "Your own network"](../README.md#your-own-network)
-section, packaged for the local-dev loop with two helper scripts.
+The validator stays the sole block producer; the relay only follows it, answers reads, and broadcasts
+the posts you submit — it can't author or affect consensus. Running the tracking node itself is covered
+in [RELAY-NODE.md](RELAY-NODE.md); this doc is the frontend-dev loop on top of it.
 
-## Prerequisites
+## The loop
 
-- The node binary is built: `cargo build --release`.
-- You can reach the validator two ways:
-  1. its **JSON-RPC** endpoint (to learn the genesis + build a matching chain spec), and
-  2. its **P2P port** (default `:30333`) — this must accept inbound TCP **from your machine** (see
-     [Operator setup](#operator-setup-exposing-the-validator) if it's firewalled).
-- Use the **nvm node** for the `.mjs` helper (`~/.nvm/versions/node/v22.12.0/bin` on `PATH`) — the snap
-  node swallows stdout (see [CLAUDE.md](../CLAUDE.md)).
+1. **Build the node** — `cargo build --release`.
 
-## 1. Chain spec — the committed one already matches
+2. **Run a tracking node.** The committed [`chainspecs/preprod.raw.json`](../chainspecs/preprod.raw.json)
+   already matches the live chain (spec 203, genesis `0x73eaa4bf…`) and has the validator's bootnode
+   embedded, so there's no spec-building step:
 
-A tracking node must load the chain's **exact** genesis (same genesis block hash) or it forms a
-different chain and never peers. **The repo ships a matching one:**
-[`chainspecs/preprod.raw.json`](../chainspecs/preprod.raw.json) is the live spec (id
-`cogno-preprod-operator`, genesis `0xe2e06d71…237623c0`, spec 200 — the pre-governance-fuel restart;
-the runtime source is now spec 203) with the validator's DDNS bootnode
-embedded, and it's the default `CHAINSPEC` in `run-tracking-node.sh`. **For the normal dev loop, skip
-to step 2** — no spec-building needed. Once the chain is relaunched at spec 203 the genesis changes;
-regenerate this spec (the step 1 fallback below) and re-check the genesis hash before relying on the
-committed copy.
+   ```bash
+   ./scripts/run-tracking-node.sh          # non-validator, no db-sync; RPC on 127.0.0.1:9944, DB in ./.relay-data
+   ```
 
-**Only rebuild if the network was relaunched** and the committed copy is stale. Reconstruct it from the
-validator's **safe, read-only RPC** — [`scripts/fetch-chainspec.mjs`](../scripts/fetch-chainspec.mjs)
-enumerates every genesis storage key (`state_getKeysPaged`) and reads each value as-of genesis
-(`state_getStorage`), which reproduces the genesis state root byte-for-byte:
+   Use the **nvm node** (`~/.nvm/versions/node/v22.12.0/bin` on `PATH`) for anything Node-related — the
+   snap node swallows stdout. The observer abstains with no db-sync configured (non-fatal), so the relay
+   syncs and follows the chain regardless.
 
-```bash
-# Point at the validator's HTTP JSON-RPC (a ws:// proxy usually also accepts HTTP POST on the same path).
-# Get its peer id + listen addrs from the validator host: `cogno-chain-node key inspect-node-key ...`,
-# or over RPC: system_localPeerId + system_localListenAddresses.
-node scripts/fetch-chainspec.mjs http://<validator-host>/rpc \
-  --bootnode /ip4/<validator-ip>/tcp/30333/p2p/<peer-id> \
-  --id cogno-preprod-operator \
-  --out network/raw.json
-```
+3. **Point the frontend at it.** The app already defaults to `ws://127.0.0.1:9944` (the relay). To be
+   explicit, set it in `app/.env.local` (gitignored), then run the dev server:
 
-It prints the genesis hash and writes `network/raw.json` (gitignored) with the bootnode embedded; run
-the relay against it with `CHAINSPEC=network/raw.json ./scripts/run-tracking-node.sh`. The chain name +
-properties are read from the node, and **`--id` must match what the network was generated with**
-(`cogno-chain-node gen-chainspec` derives it from `--base`, here `cogno-preprod-operator`). Note: the
-script always sets a `protocolId` (defaulting to `--id`), whereas the operator spec configures **none**
-(the validator logs `default protocol ID "sup"`) — that gap can hurt peer discovery, so for a byte-exact
-match prefer the committed `preprod.raw.json` or the operator's real `network/raw.json`.
+   ```bash
+   # app/.env.local
+   NEXT_PUBLIC_WS_URL=ws://127.0.0.1:9944
+   ```
+   ```bash
+   cd app && npm run dev          # :3000 (nvm node) — reads live chain data through the relay
+   ```
 
-> If you already have the operator's real `network/raw.json` (e.g. from `cogno-chain-node gen-chainspec`), use it
-> directly and skip this step — just make sure its `bootNodes` includes the validator, or pass
-> `BOOTNODE=…` at launch.
+   A user can override the endpoint at runtime in Settings (persisted in `localStorage`), which always
+   wins over the build default.
 
-## 2. Run the tracking node (relay)
+> **Descriptors must match the live runtime.** The bundled `@polkadot-api/descriptors` are generated at
+> `npm install` from a metadata snapshot. If the live chain runs a different runtime than they were built
+> against, decode/encode fails — regenerate against the relay: from `app/`,
+> `rm .papi/descriptors/generated.json && npx papi add cogno -w ws://127.0.0.1:9944`, then re-run `npm run dev`.
 
-[`scripts/run-tracking-node.sh`](../scripts/run-tracking-node.sh) launches the node as a
-non-validator against `chainspecs/preprod.raw.json` (its default `CHAINSPEC`), serving RPC on
-`127.0.0.1:9944`:
-
-```bash
-./scripts/run-tracking-node.sh                 # uses chainspecs/preprod.raw.json + its embedded bootnode
-# tunables (env): NODE_BIN, CHAINSPEC, RELAY_BASE, RPC_PORT, P2P_PORT, RELAY_NAME, BOOTNODE
-./scripts/run-tracking-node.sh -l sync=debug   # extra node flags pass through
-```
-
-By design it runs **without `--validator`** and **without db-sync**: the in-protocol Cardano observer
-abstains on every import, which the runtime treats as `CannotVerify` (non-fatal — see
-[`pallets/cardano-observer`](../pallets/cardano-observer/src/lib.rs)). So the relay syncs and follows
-the chain even though it has no Cardano credentials and need not match the validator's exact client
-commit. The chain DB lives in `./.relay-data` (gitignored; delete it to re-sync from scratch).
-
-## 3. Point the frontend at the relay
-
-The app's default WS endpoint is already `ws://127.0.0.1:9944` (the relay). For an explicit dev
-default, set it in `app/.env.local` (gitignored):
-
-```bash
-# app/.env.local
-NEXT_PUBLIC_WS_URL=ws://127.0.0.1:9944
-```
-
-Then run the dev server as usual — it reads live chain data through the relay:
-
-```bash
-cd app && npm run dev          # :3000  (use the nvm node)
-```
-
-> **Descriptors must match the live runtime.** The app's bundled `@polkadot-api/descriptors` are
-> generated from a stored metadata snapshot at `npm install`. If the live chain the relay follows runs
-> a different runtime than the descriptors were built against (e.g. the committed spec-200 chain vs. the
-> spec-203 code, or vice-versa after the restart), decode/encode fails. Regenerate them against the
-> relay — from `app/`: `rm .papi/descriptors/generated.json && npx papi add cogno -w ws://127.0.0.1:9944`
-> (then re-run `npm run dev`).
-
-A user can still override the endpoint at runtime in the UI (Endpoint Settings → persisted in
-`localStorage`), which always wins over the build default.
-
-> **Reads vs. writes.** Browsing the feed needs only the relay (reads). The full post/bind/lock flow
-> additionally needs Blockfrost (the in-browser CIP-30 vault; see [app/README.md](../app/README.md)) — those are
-> independent of this tracking-node setup. The CIP-8 binds are feeless (bare unsigned, verified at
-> pool admission), so the browser submits them directly — no bind relay needed.
+> **Reads vs. writes.** Browsing the feed needs only the relay. The full post/bind/lock flow also needs
+> Blockfrost (the in-browser CIP-30 vault; see [app/README.md](../app/README.md)). CIP-8 binds are feeless
+> (bare unsigned, verified at pool admission), so the browser submits them directly — no bind relay.
 
 ## Verify it's syncing real data
 
@@ -127,21 +67,35 @@ curl -s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method"
 curl -s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"system_peers","params":[]}' $RELAY
 ```
 
-The relay's `system_health.peers` should be ≥ 1 and its best block should track the validator's.
+## If the network was relaunched — rebuild the spec
+
+Only needed if the committed `chainspecs/preprod.raw.json` is stale (a relaunch changes the genesis
+hash). Reconstruct it from the validator's **read-only** RPC — [`scripts/fetch-chainspec.mjs`](../scripts/fetch-chainspec.mjs)
+enumerates every genesis storage key and reads each value as-of genesis, reproducing the genesis state
+root byte-for-byte:
+
+```bash
+node scripts/fetch-chainspec.mjs http://<validator-host>/rpc \
+  --bootnode /ip4/<validator-ip>/tcp/30333/p2p/<peer-id> \
+  --id cogno-preprod-operator \
+  --out network/raw.json
+# then: CHAINSPEC=network/raw.json ./scripts/run-tracking-node.sh
+```
+
+`--id` must match what the network was generated with (`gen-chainspec` derives it from `--base`). The
+script prints the genesis hash so you can confirm it against the validator. If you already have the
+operator's real `network/raw.json`, use it directly and skip this.
 
 ## Operator setup (exposing the validator)
 
 For the relay to reach a validator you operate, that host must:
 
-- **Serve RPC** to your dev machine — either bind RPC for the LAN (`--rpc-external --rpc-methods safe
-  --rpc-cors <origins>`, ideally behind a TLS/filtering proxy) or expose it through a reverse proxy
-  (the `…/rpc` form). Only the **safe** RPC set is needed (`state_getKeysPaged`, `state_getStorage`,
-  `system_*`, `chain_*`).
-- **Accept inbound P2P** on `:30333` from your machine. A tracking node syncs over libp2p, **not** RPC
-  — if `:30333` is firewalled, sync never starts even though RPC works. Open it, e.g.:
+- **Serve RPC** to your dev machine — bind RPC for the LAN (`--rpc-external --rpc-methods safe
+  --rpc-cors <origins>`, ideally behind a TLS/filtering proxy). Only the **safe** RPC set is needed.
+- **Accept inbound P2P** on `:30333` from your machine. A tracking node syncs over libp2p, **not** RPC —
+  if `:30333` is firewalled, sync never starts even though RPC works:
 
   ```bash
   sudo ufw allow from <your-lan-subnet>/24 to any port 30333 proto tcp
+  # confirm from your dev machine: nc -z -w4 <validator-host> 30333
   ```
-
-  Confirm from your dev machine: `nc -z -w4 <validator-host> 30333`.

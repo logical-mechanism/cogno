@@ -1,91 +1,71 @@
 # Changelog
 
-All notable changes to cogno-chain are documented here. The format is based on
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+What's changed in cogno-chain, newest first — written for people, not compilers. Each entry leads
+with what it *means*; the runtime `spec_version` it shipped in is noted at the end where it matters.
 
-Because this is a live chain, the meaningful version numbers are the runtime's on-wire identifiers:
-`spec_version` (bumped for encoding-affecting changes) and `transaction_version` (bumped when the
-signed-extension set changes). The chain has not yet cut a tagged public release.
+The live chain runs **`spec_version` 203** (`transaction_version` 3). There is no tagged public
+release yet: this is a running preprod testnet, so the on-chain `spec_version` is the real version
+number. It only moves when the runtime's logic or encoding changes — most app work moves nothing.
 
-## [Unreleased]
+## Recent — app only (no chain change)
 
-Current runtime: **`spec_version` 203 / `transaction_version` 3**.
+- **Reputation on the timeline.** An author's community reputation now shows next to their name in
+  the feed, not just on their profile.
+- **Repost removed.** The bare "repost" button is gone. Quoting a post (with your own comment) and
+  up-voting it already cover amplification, and a plain repost surfaced nowhere useful — so quote is
+  now the single way to boost a post. *(The old repost call still exists in the runtime and will be
+  retired the next time the chain's code changes.)*
+- **Better threads and replies.** Long reply chains page behind a "Show more" control, the composer
+  shows who you're replying to, and the view scrolls to your reply after you post it.
+- **Follower/following lists** with tappable counts and a "who to follow" suggestion — all read
+  straight from the node.
+- **Device-local bookmarks and mute/hide.** Saved and muted lists live in your browser only — there
+  is no bookmark or mute stored on-chain (a public chain can't keep those private).
 
-### Governance fuel (`spec_version` 202 → 203)
+## Community reputation — vote on accounts, not just posts
 
-- **`pallet-governance-fuel` (index 18).** A committee-administered (`AuthorityOrigin`, 3-of-5)
-  REGENERATING native-`Balances` admin-fuel budget that pays the fee-bearing admin extrinsics
-  (`Session::set_keys`, committee `propose`/`vote`/`close`). `set_allowance` (call 0) upserts a standing
-  allowance and mints the account up to it; `revoke` (call 1) drops the allowance and claws back its
-  balance; an `on_initialize` hook mints funded accounts back toward their allowance each `RegenPeriod`.
-  This is the FIRST post-genesis native mint path (mint-on-demand), fixing native-fee-token depletion
-  and the self-refund deadlock. Storage `Allowances` / `TotalMinted` / `TotalRevoked`; events
-  `AllowanceSet` / `AllowanceRevoked` / `FuelRegenerated`.
-- **Fuel is non-transferable.** `CognoCallFilter` now blocks the ENTIRE `pallet-balances` call surface
-  (not just `transfer*`), so fuel can never move or post.
-- **Fuel + session-keys-gated seating.** `validatorSet.add_validator` (index 14) now refuses an account
-  with no governance-fuel allowance (`NotFunded`) or no registered session keys (`NoSessionKeys`), and
-  `CognoCallFilter` refuses a `FollowerCommittee::set_members` that seats a NEW member holding no
-  allowance (`CallFiltered`). Federation onboarding order is now `fuel set-allowance` → `set-keys` →
-  `add_validator` (both gates default to allow-all off-chain / under `runtime-benchmarks`).
-- Spec bump **202 → 203**; `transaction_version` stays **3** (call-acceptance/behaviour change, not an
-  encoding change). Fresh-genesis restart ⇒ no migration.
+- You can now up- or down-vote an **account** to signal trust, the same way you vote on a post. It's
+  an anti-impersonation / anti-Sybil signal, weighted by your Cardano stake, shown on profiles and in
+  people lists. You can't vote on yourself, and the target must have a bound identity.
+- *Runtime:* `spec_version` 201 → 202. Encoding unchanged (`transaction_version` stays 3).
 
-### Account-reputation votes (`spec_version` 201 → 202)
+## Governance fuel — admin fees that refill themselves
 
-- **Stake-weighted votes ON accounts.** Added a community anti-Sybil / anti-impersonation reputation
-  signal to `pallet-microblog` (index 10): `vote_account{target, dir}` (call 11) / `clear_account_vote{target}`
-  (call 12), storage `AccountVotes` (DoubleMap) + `AccountVoteTally`, events `AccountVoted` /
-  `AccountVoteCleared`, and errors `SelfAccountVote` / `TargetNotAllowed`. Weight is the voter's
-  `TalkStake::VotingPower` snapshot (the same Sybil-resistant source as post votes); feeless +
-  capacity-metered at the existing `VoteCost`. Spec bump **201 → 202**; `transaction_version` stays **3**
-  (new signed extrinsics, the `TxExtension` tuple is byte-identical).
+- Privileged actions (registering validator keys, committee motions) are paid from a small
+  **non-transferable, self-refilling fuel budget** the committee grants to an account, instead of a
+  fee token that could run dry and deadlock its own top-up. Fuel can never be transferred or spent on
+  posting — it exists only to pay admin fees, and regenerates toward its allowance over time.
+- Onboarding a new validator or committee seat is now **fund-first**: grant the account a fuel
+  allowance before you seat it (an unfunded seat is rejected on-chain).
+- *Runtime:* `spec_version` 202 → 203. Encoding unchanged (`transaction_version` stays 3).
 
-### Frontend
+## Toolchain — polkadot-sdk stable2606
 
-- Added follower / following lists (`FollowsPanel` / `FollowsList`), tappable follow counts
-  (`FollowCounts`), and who-to-follow — all node-served via `MicroblogApi.follow_edges` / `who_to_follow`.
-- Added device-local bookmarks and mute/hide (`localStorage` only — no chain or Cardano write; there is
-  no bookmark call, storage item, or event in any pallet).
+- Upgraded the whole Rust workspace to polkadot-sdk `stable2606` and pinned the toolchain to rustc
+  1.93.0.
+- *Runtime:* `spec_version` 200 → 201. Encoding byte-identical.
 
-### Toolchain / dependencies (polkadot-sdk `stable2606`)
+## The all-Rust restart (fresh genesis)
 
-- **Upgraded the whole Rust workspace to polkadot-sdk `stable2606`** (from `stable2603-3`) and the
-  pinned toolchain to **rustc 1.93.0** (from 1.90.0) — the toolchain Parity builds the `stable2606`
-  release train against. The runtime `spec_version` bumped **200 → 201**; `transaction_version`
-  stays **3** (extrinsic/extension encoding is byte-identical). The old "stable ≥ ~1.91 breaks the
-  `sp_io` wasm link" pin caution no longer applies: it was specific to stable2603's sp-io 45.0.0, and
-  stable2606's sp-io 48.0.0 links cleanly under 1.93.0.
+The backend was consolidated to a single all-Rust stack and the chain relaunched at a fresh genesis:
 
-### All-Rust restart (fresh genesis)
+- **No sudo, ever.** There is no admin superuser. Every privileged action goes through a 3-of-5
+  committee that exists from the first block and can start as one seat and federate out by vote.
+- **Cardano is observed in-protocol.** Talk-capacity weight is written only by a consensus-verified
+  observer built into the node — no off-chain follower or relayer, and no way to set weight by hand.
+- **Observe-only.** Nothing is written back to Cardano; the anchoring path and its relayer were
+  removed. All reads (feed, thread, search, profile) are served by the node itself — no external
+  indexer.
 
-The backend was consolidated to an all-Rust stack and the chain restarted at a fresh genesis:
+## Open-source readiness
 
-- **Sudo-free from genesis.** Removed `pallet-sudo`; every privileged call now routes through the
-  3-of-5 `FollowerCommittee` (`pallet-collective`), with an empty-committee brick-guard. Runtime
-  upgrades are committee `authorize` + a permissionless spec-checked `apply` (`pallet-governed-upgrade`,
-  index 7).
-- **`cardano-observer` is the sole weight writer.** The talk-capacity weight is written only by a
-  consensus-verified inherent that reads Cardano state via db-sync; the `talkStake.set_stake` /
-  `set_voting_power` extrinsics were removed.
-- **Anchoring dropped.** Removed `pallet-anchor` (index 12, now permanently vacant) and the off-chain
-  anchor relayer — the chain is observe-only.
-- **All reads folded into the node.** Expanded the `MicroblogApi` runtime read layer; removed the
-  external SubQuery indexer.
-- **Off-chain services removed.** The Python follower and JS relayer/committee/indexer are gone; an
-  independent Python CIP-8 verifier is retained under `ci/cip8-oracle/` purely as a CI adversarial
-  oracle.
+- Relicensed to **Apache-2.0** with a `NOTICE` attributing the Apache-2.0 upstreams (Polkadot SDK
+  templates, the partner-chains consensus primitives, the `substrate-validator-set` fork).
+- Added `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue/PR templates, `CODEOWNERS`,
+  and Dependabot.
 
-### Repository / open-source readiness
+## Deliberately left for mainnet (not bugs)
 
-- Relicensed the workspace to **Apache-2.0** with a `LICENSE` and a `NOTICE` attributing the
-  Apache-2.0 upstreams (Polkadot SDK templates, the partner-chains consensus primitives, and the
-  `substrate-validator-set` fork).
-- Added `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue/PR templates, `CODEOWNERS`, and
-  Dependabot.
-
-### Deliberately deferred (`MAINNET PREREQUISITE`)
-
-These are honestly-labeled testnet-scope choices, not defects: `MinAuthorities = 1`, GRANDPA
-equivocation reporting as a no-op, an independent audit of the CIP-8 verifier, production key custody,
-and db-sync over TLS.
+Honestly-labeled testnet choices, flagged `MAINNET PREREQUISITE` in the source: `MinAuthorities = 1`,
+GRANDPA equivocation reporting as a no-op (no slashing), an independent audit of the CIP-8 verifier,
+production key custody, and db-sync over TLS.
