@@ -35,6 +35,8 @@ Then the focused deep-dives, if you want the detail:
 - **[TRUSTLESS-IDENTITY.md](TRUSTLESS-IDENTITY.md)** — the on-chain CIP-8 identity proof.
 - **[SCALE-NODE-READS.md](SCALE-NODE-READS.md)** — why the node serves reads directly, with no
   external indexer.
+- **[PROTOCOL-PARAMS.md](PROTOCOL-PARAMS.md)** — every tunable (block time, capacity costs, bounds,
+  governance thresholds) with its current value and where to change it in the code.
 
 > These explain *why*, not *how to run*. They're the reference for understanding the design — you
 > don't need any of them to run or test the chain; the two lanes above cover that.
