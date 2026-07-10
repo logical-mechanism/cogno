@@ -1,0 +1,11 @@
+{
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "_sdk/**": true,
+    "_reference/**": true,
+    "**/node_modules/**": true,
+    "app/.next/**": true,
+    "app/out/**": true,
+    "**/.git/objects/**": true
+  }
+}

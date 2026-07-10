@@ -83,7 +83,7 @@ export function NotificationRow({ notif, unread }: { notif: Notif; unread: boole
       <span className={styles.body}>
         <span className={styles.line}>
           <DisplayName address={notif.actor} displayName={profile?.displayName} truncate />
-          <span className={styles.verb}> {verb(notif)}</span>
+          <span className={styles.verb}>{verb(notif)}</span>
         </span>
         <Handle address={notif.actor} />
       </span>
