@@ -19,10 +19,12 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref.
+# Cancel superseded runs on the same ref — EXCEPT on main, where a run can be mid-deploy. Workflow-level
+# cancellation kills every job in the run, so cancelling here would SIGTERM `rsync --delete` against the
+# live tree and leave a half-updated site. A job-level concurrency group cannot veto this.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   rust:
@@ -212,14 +214,21 @@ jobs:
   #   secrets.DEPLOY_KNOWN_HOSTS                 `ssh-keyscan <host>` output — pins the host key
   #
   # Lock the deploy key down in the droplet's authorized_keys so a leaked key cannot become a shell:
-  #   command="rrsync -wo /var/www/cogno",restrict ssh-ed25519 AAAA...
+  #   restrict ssh-ed25519 AAAA...
+  # (`restrict` = no pty, no port/agent forwarding, no X11.) Give DEPLOY_USER write access to
+  # /var/www/cogno and nothing else. Do NOT reach for `command="rrsync -wo /var/www/cogno"` without
+  # also changing the destination below: rrsync re-roots the client's path under its own root, so an
+  # absolute `:/var/www/cogno/` becomes /var/www/cogno/var/www/cogno. rrsync wants `:/` — and `:/` with
+  # `--delete` against a host that does NOT have the forced command would target the filesystem root.
+  # The absolute path is the safe default; keep it.
   deploy-app:
     needs: [frontend]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Never cancel a deploy mid-rsync: --delete on a half-copied tree is a broken site. The
-    # workflow-level `cancel-in-progress` applies to the build jobs, not to this.
+    # Serializes deploys against each other. It does NOT protect a running rsync from the
+    # workflow-level `concurrency` above — that cancels the whole run, this job included — which is
+    # why cancel-in-progress is disabled for main up there rather than here.
     concurrency:
       group: deploy-app
       cancel-in-progress: false
@@ -241,6 +250,19 @@ jobs:
             sleep 15
           done
           exit 1
+      # endpoints.ts exempts loopback so a developer can build for a local `serve out`. That exemption
+      # must not reach a public deploy: a `vars.NEXT_PUBLIC_WS_URL` of ws://127.0.0.1:9944 would build
+      # green and ship a bundle every visitor resolves to their own machine. Nothing downstream can
+      # catch it — the dev-fallback literal is in the bundle either way — so assert it here, before the
+      # build, where the value is still a string we can look at. Empty also fails (`-qF ""` matches all).
+      - name: the deployed endpoint must be wss://
+        env:
+          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
+        run: |
+          case "$NEXT_PUBLIC_WS_URL" in
+            wss://?*) echo "endpoint: $NEXT_PUBLIC_WS_URL" ;;
+            *) echo "::error::vars.NEXT_PUBLIC_WS_URL must be a wss:// URL (got '${NEXT_PUBLIC_WS_URL:-<unset>}')"; exit 1 ;;
+          esac
       - name: build (static export, pointed at the live relay)
         env:
           NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
