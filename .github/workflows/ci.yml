@@ -148,6 +148,11 @@ jobs:
       - name: test (vitest — pure logic units)
         run: npm run test
       - name: build (static export)
+        # `endpoints.ts` refuses a production build without an explicit wss:// endpoint. This build is
+        # never deployed, so it names a reserved-TLD host (RFC 2606) rather than the live relay — the
+        # deploy-app job below supplies the real one.
+        env:
+          NEXT_PUBLIC_WS_URL: wss://ci-build.invalid/rpc
         run: npm run build
 
   cip8-oracle:
