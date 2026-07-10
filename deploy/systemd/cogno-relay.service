@@ -1,0 +1,111 @@
+# cogno-chain RELAY node — a non-validator, archive tracking node that faces the public.
+#
+# Same binary as the validator, three differences that matter:
+#   1. NO --validator / --force-authoring. It never authors, so it cannot equivocate, and it holds
+#      no session keys. This is the box that faces the internet precisely because losing it costs
+#      nothing but uptime.
+#   2. NO EnvironmentFile. See the DBSYNC_URL warning below — this is the one rule you cannot break.
+#   3. Public RPC, but only through a TLS reverse proxy (deploy/nginx/cogno.conf). RPC itself stays
+#      bound to 127.0.0.1; nginx terminates wss:// and proxies in. There is no --rpc-external here.
+#
+# It is also, incidentally, your offsite archive: with MinAuthorities=1 the validator's DB is the
+# sole copy of chain history, and this node is a full second copy that resyncs for free. Do NOT pay
+# DigitalOcean for backups of it.
+#
+# Install: copy to /etc/systemd/system/, edit the literal paths below, then
+#          `systemctl daemon-reload && systemctl enable --now cogno-relay`.
+# See deploy/README.md.
+
+[Unit]
+Description=cogno-chain relay (non-validator archive node, public RPC via TLS proxy)
+Documentation=https://github.com/LogicalMechanism/cogno-chain/blob/main/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=cogno
+Group=cogno
+
+# ── DO NOT ADD AN EnvironmentFile WITH DBSYNC_URL ────────────────────────────────────────
+# The import queue re-derives its OWN Cardano observation for every block it imports. Given a
+# db-sync that is behind, pruned, or on the wrong network, this node computes a different
+# observation than the validator did, and the mismatch is FATAL on import: it rejects the
+# validator's perfectly valid blocks and freezes at the tip while still happily serving stale
+# reads over RPC. With no db-sync it abstains (CannotVerify, non-fatal) and tracks the chain
+# correctly. So: no db-sync on this host, ever, and no cogno.env copied over from the validator.
+#
+# An abstaining node logs one observer line per block, so quiet that target only.
+Environment=RUST_LOG=info,cardano-observer=error
+
+# --rpc-methods safe: MANDATORY here. The default (`auto`) exposes UNSAFE methods
+#   (author_insertKey, author_rotateKeys, peer manipulation) on a loopback bind — and nginx
+#   forwards the public internet to that loopback bind. `safe` is what makes the proxy safe.
+#   (scripts/run-tracking-node.sh is a DEV script and is not a template for this file.)
+# --rpc-cors all: kept deliberately. Under `safe` there are no unsafe methods and no credentials,
+#   so CORS constrains only browsers, never curl; and the app is endpoint-neutral by design
+#   (app/src/lib/config/endpoints.ts) — other frontends may legitimately point here.
+# --rpc-max-connections: the default of 100 caps you at 100 concurrent browser sockets, and the
+#   101st visitor is refused with no UX. --rpc-rate-limit bounds an anonymous caller; it is OFF
+#   by default. --rpc-rate-limit-trust-proxy-headers makes it count the real client, not nginx.
+# --state-pruning/--blocks-pruning archive: this node answers EVERY app read (feed / thread /
+#   search / profile) from its runtime API. A pruned node cannot serve them, and cannot serve
+#   history to any node syncing through it.
+# --node-key-file: pins a stable peer id across restarts, so this node can be named in the
+#   chainspec bootNodes. A non-validator would otherwise auto-generate one under its base-path.
+ExecStart=/usr/local/bin/cogno-chain-node run \
+  --name cogno-relay \
+  --chain /etc/cogno/chainspec.raw.json \
+  --node-key-file /etc/cogno/relay-node.key \
+  --base-path /var/lib/cogno-relay/node \
+  --state-pruning archive \
+  --blocks-pruning archive \
+  --port 30333 \
+  --rpc-port 9944 \
+  --rpc-methods safe \
+  --rpc-cors all \
+  --rpc-max-connections 2000 \
+  --rpc-max-subscriptions-per-connection 256 \
+  --rpc-rate-limit 600 \
+  --rpc-rate-limit-trust-proxy-headers \
+  --prometheus-port 9615 \
+  --no-mdns
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+TimeoutStopSec=120
+
+StateDirectory=cogno-relay
+StateDirectoryMode=0700
+
+# Sandboxing — identical posture to the validator unit; the node only writes its DB.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cogno-relay
+# Deliberately NO MemoryDenyWriteExecute — the runtime is executed by a JIT (wasmtime) that needs
+# W^X pages; denying W+X breaks block execution.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+ProtectHostname=true
+ProtectClock=true
+ProtectProc=invisible
+ProcSubset=pid
+RemoveIPC=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -72,6 +72,7 @@ exec "$NODE_BIN" run \
   --name "$RELAY_NAME" \
   --rpc-port "$RPC_PORT" \
   --port "$P2P_PORT" \
+  --rpc-methods safe \
   --rpc-cors all \
   --no-mdns \
   --state-pruning archive \

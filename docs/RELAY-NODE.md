@@ -56,8 +56,11 @@ Useful env overrides (see the script header for the full list): `RPC_PORT`, `P2P
 - **Outbound only.** A tracking node dials *out* to the validator; it needs no inbound port-forward
   or public address of its own. (The validator side does — stable peer ID + forwarded :30333 + a
   DDNS updater. See [README.md](../README.md) and `deploy/systemd/cogno-node.service`.)
-- **RPC stays on `127.0.0.1`** by default for a co-located app. To expose it off-box, add
-  `--rpc-external --rpc-methods safe --rpc-cors '<origins>'` (behind TLS) — a separate concern from P2P.
+- **RPC stays on `127.0.0.1`.** Leave it there. To serve a public app, put a TLS reverse proxy in front
+  of the loopback bind rather than reaching for `--rpc-external` — see
+  [`deploy/nginx/cogno.conf`](../deploy/nginx/cogno.conf) and
+  [`deploy/systemd/cogno-relay.service`](../deploy/systemd/cogno-relay.service), which is the production
+  version of this script. A separate concern from P2P.
 - **Archive pruning** (`--state-pruning/--blocks-pruning archive`, already in the script) keeps full
   history so the node can answer historical reads over its runtime API (the archival commitment).
 - The node abstains on the Cardano observer with no db-sync configured (`CannotVerify` is non-fatal),

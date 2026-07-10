@@ -11,6 +11,27 @@
 const ENV_WS = process.env.NEXT_PUBLIC_WS_URL || "";
 const ENV_BLOCKFROST = process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID || "";
 
+/**
+ * A production build MUST name its endpoint explicitly. Left to the fallback below, `next build`
+ * stays green and emits a bundle every remote visitor resolves to *their own* `127.0.0.1:9944` —
+ * which is nothing. The operator never sees it, because on the operator's machine there IS a node
+ * on that port. Loopback is exempt (browsers treat it as a secure origin, and it is how you build
+ * for a local `serve out`); anything else must be `wss://`, since a plaintext `ws://` to a public
+ * host is mixed-content-blocked from the https page the export is served over.
+ *
+ * `next build` sets NODE_ENV=production, so a bad value fails the build rather than the deploy.
+ */
+if (process.env.NODE_ENV === "production") {
+  const loopback = ENV_WS.startsWith("ws://127.0.0.1") || ENV_WS.startsWith("ws://localhost");
+  if (!ENV_WS.startsWith("wss://") && !loopback) {
+    throw new Error(
+      `NEXT_PUBLIC_WS_URL must be a wss:// endpoint in a production build (got ${ENV_WS || "<unset>"}). ` +
+        `Set it to the public relay, e.g. wss://cogno.example.io/rpc. ` +
+        `A ws://127.0.0.1 value is accepted for a local build.`,
+    );
+  }
+}
+
 /** The default node the dev build speaks to. The only network call the app makes. */
 export const DEFAULT_WS_ENDPOINTS: string[] = [
   ENV_WS && (ENV_WS.startsWith("ws://") || ENV_WS.startsWith("wss://")) ? ENV_WS : "ws://127.0.0.1:9944",

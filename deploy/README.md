@@ -20,6 +20,10 @@ independent-custody committee) remain scoped out — see the repo README / `docs
 | Unit | Process | Binds | Needs |
 |---|---|---|---|
 | `cogno-node` | the Substrate validator (Aura + GRANDPA) + observer + read RPC | p2p :30333, RPC :9944, Prometheus :9615 | **db-sync** (read-only; the observer) |
+| `cogno-relay` | a non-validator archive node serving the public app | p2p :30333, RPC :9944 (loopback), Prometheus :9615 | nothing — **never db-sync** |
+
+The relay is optional and lives on a different host (a cloud droplet). See
+[the relay section](#the-public-relay) below.
 
 **Not managed here** (external infrastructure you run separately): a synced `cardano-node` feeding a
 read-only **db-sync** (Postgres) that the node's in-protocol observer reads via `DBSYNC_URL`. Add
@@ -135,6 +139,38 @@ Once the node is producing, capture its genesis hash (`chain_getBlockHash[0]`) a
 rules (chain down / finality stalled / block production stalled, plus the observer group:
 abstaining / reference-slot frozen / no-vaults), an Alertmanager config, and a starter Grafana dashboard —
 see [`deploy/monitoring/README.md`](monitoring/README.md).
+
+## The public relay
+
+To put the app on the internet you need one more box: a **relay** — the same binary, run without
+`--validator`, that follows the chain over P2P and serves reads. It carries no keys, so it is the box
+that faces the public; the validator stays behind it, reachable by nobody. A $12/mo droplet is enough,
+and it doubles as your offsite copy of chain history (which, at `MinAuthorities=1`, the validator's DB
+is otherwise the only one of).
+
+Three files: [`systemd/cogno-relay.service`](systemd/cogno-relay.service) (the unit),
+[`nginx/cogno.conf`](nginx/cogno.conf) (TLS, `wss://` proxy, and the static app), and the `deploy-app`
+job in [`ci.yml`](../.github/workflows/ci.yml) (rsyncs `app/out/` on every green push to `main`).
+
+**The one rule: the relay must never see `DBSYNC_URL`.** It re-derives the Cardano observation for
+every block it imports. Against a db-sync that is behind, pruned, or on the wrong network, it computes
+a different observation than the validator did — and the mismatch is fatal on import. It rejects your
+valid blocks, freezes at the tip, and keeps serving stale reads as if nothing were wrong. With no
+db-sync it abstains, which is non-fatal and correct. So do not install db-sync there, and do not copy
+`/etc/cogno/cogno.env` across. The relay unit deliberately has no `EnvironmentFile` at all.
+
+Two smaller things that bite:
+
+- **`--rpc-methods safe` is not optional** on the relay. The default (`auto`) exposes `author_insertKey`
+  and friends on the loopback bind that nginx forwards the internet to.
+- **Build the app with `NEXT_PUBLIC_WS_URL=wss://<domain>/rpc`.** Browsers on an `https://` page cannot
+  open a plaintext `ws://` socket to a public host, and without the variable the export silently falls
+  back to `ws://127.0.0.1:9944` — which works on your machine and nowhere else. `endpoints.ts` now fails
+  the build rather than let that ship.
+
+Build the binary on the relay host (`cargo build --release`, see [`docs/RELAY-NODE.md`](../docs/RELAY-NODE.md));
+a release build wants ~8 GB, so add swap on a small droplet. Do **not** enable DigitalOcean backups on it
+— it resyncs from the validator for free. Back up the validator instead.
 
 ## Operating notes
 
