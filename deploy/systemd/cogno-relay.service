@@ -53,6 +53,14 @@ Environment=RUST_LOG=info,cardano-observer=error
 #   history to any node syncing through it.
 # --node-key-file: pins a stable peer id across restarts, so this node can be named in the
 #   chainspec bootNodes. A non-validator would otherwise auto-generate one under its base-path.
+# --listen-addr /ip4/0.0.0.0/tcp/30333: REQUIRED, not just a port choice — and mutually exclusive
+#   with --port. A non-validator with no --listen-addr defaults its p2p listener to WebSocket
+#   (/ip4/0.0.0.0/tcp/<port>/ws; sc-cli network_params.rs), while peers dial this box as raw TCP via
+#   its bootNodes multiaddr (/dns4/<host>/tcp/30333, no /ws). The TCP socket still accepts (so the port
+#   looks alive and `nc` succeeds), but a raw-TCP dialer and a WebSocket listener never complete a
+#   libp2p session — the relay sits at 0 peers, stuck at genesis, forever. Binding raw TCP explicitly
+#   is what lets the entry-point relay actually be dialed. (A validator flips to raw TCP by default, so
+#   only a public non-validator needs this.)
 ExecStart=/usr/local/bin/cogno-chain-node run \
   --name cogno-relay \
   --chain /etc/cogno/chainspec.raw.json \
@@ -60,7 +68,7 @@ ExecStart=/usr/local/bin/cogno-chain-node run \
   --base-path /var/lib/cogno-relay/node \
   --state-pruning archive \
   --blocks-pruning archive \
-  --port 30333 \
+  --listen-addr /ip4/0.0.0.0/tcp/30333 \
   --rpc-port 9944 \
   --rpc-methods safe \
   --rpc-cors all \

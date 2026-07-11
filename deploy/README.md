@@ -161,6 +161,13 @@ db-sync it abstains, which is non-fatal and correct. So do not install db-sync t
 
 Two smaller things that bite:
 
+- **The relay must bind raw TCP with `--listen-addr /ip4/0.0.0.0/tcp/30333`, not `--port`.** A
+  non-validator with no `--listen-addr` defaults its p2p listener to *WebSocket* (`…/tcp/30333/ws`),
+  while peers dial the entry-point relay as raw TCP via its bootNodes multiaddr. The port still accepts
+  connections — `nc` succeeds, the relay looks alive — but a raw-TCP dialer never completes a libp2p
+  session with a WebSocket listener, so the relay sits at 0 peers stuck at genesis. The shipped unit
+  binds raw TCP explicitly; if you hand-roll one, don't drop that flag. (A validator defaults to raw
+  TCP, so only a public non-validator hits this.)
 - **`--rpc-methods safe` is not optional** on the relay. The default (`auto`) exposes `author_insertKey`
   and friends on the loopback bind that nginx forwards the internet to.
 - **Build the app with `NEXT_PUBLIC_WS_URL=wss://<domain>/rpc`.** Browsers on an `https://` page cannot
