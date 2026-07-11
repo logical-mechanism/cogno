@@ -19,12 +19,11 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref — EXCEPT on main, where a run can be mid-deploy. Workflow-level
-# cancellation kills every job in the run, so cancelling here would SIGTERM `rsync --delete` against the
-# live tree and leave a half-updated site. A job-level concurrency group cannot veto this.
+# Cancel superseded runs on the same ref. (Deploy is a separate, manual workflow — deploy-app.yml —
+# so nothing here is ever mid-deploy; cancelling a stale build run is safe.)
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 jobs:
   rust:
@@ -197,104 +196,3 @@ jobs:
         run: |
           python test_beacon.py
           python test_agreement.py
-
-  # Ship the static export to the relay droplet on every green push to main.
-  #
-  # Gated on `frontend` alone, not the whole matrix: the export embeds no Rust artifact — its PAPI
-  # descriptors regenerate offline from the committed app/.papi/metadata/cogno.scale — so a red
-  # `rust` job cannot make this bundle wrong. The node binary is built on the box (docs/RELAY-NODE.md),
-  # never shipped from here.
-  #
-  # Requires, in repo settings:
-  #   vars.NEXT_PUBLIC_WS_URL                    wss://<domain>/rpc   (public; the build refuses to run without it)
-  #   secrets.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID  preprod project id   (inlined into the bundle by design;
-  #                                                                    a secret only to keep it out of git)
-  #   secrets.DEPLOY_HOST / DEPLOY_USER          the droplet + its restricted deploy user
-  #   secrets.DEPLOY_SSH_KEY                     ed25519 private key, no passphrase
-  #   secrets.DEPLOY_KNOWN_HOSTS                 `ssh-keyscan <host>` output — pins the host key
-  #
-  # Lock the deploy key down in the droplet's authorized_keys so a leaked key cannot become a shell:
-  #   restrict ssh-ed25519 AAAA...
-  # (`restrict` = no pty, no port/agent forwarding, no X11.) Give DEPLOY_USER write access to
-  # /var/www/cogno and nothing else. Do NOT reach for `command="rrsync -wo /var/www/cogno"` without
-  # also changing the destination below: rrsync re-roots the client's path under its own root, so an
-  # absolute `:/var/www/cogno/` becomes /var/www/cogno/var/www/cogno. rrsync wants `:/` — and `:/` with
-  # `--delete` against a host that does NOT have the forced command would target the filesystem root.
-  # The absolute path is the safe default; keep it.
-  deploy-app:
-    needs: [frontend]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Serializes deploys against each other. It does NOT protect a running rsync from the
-    # workflow-level `concurrency` above — that cancels the whole run, this job included — which is
-    # why cancel-in-progress is disabled for main up there rather than here.
-    concurrency:
-      group: deploy-app
-      cancel-in-progress: false
-    defaults:
-      run:
-        working-directory: app
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22.12.0
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-      - name: install deps (retry transient npm network errors)
-        run: |
-          for i in 1 2 3; do
-            npm ci && exit 0
-            echo "npm ci attempt $i/3 failed; retrying in 15s"
-            sleep 15
-          done
-          exit 1
-      # endpoints.ts exempts loopback so a developer can build for a local `serve out`. That exemption
-      # must not reach a public deploy: a `vars.NEXT_PUBLIC_WS_URL` of ws://127.0.0.1:9944 would build
-      # green and ship a bundle every visitor resolves to their own machine. Nothing downstream can
-      # catch it — the dev-fallback literal is in the bundle either way — so assert it here, before the
-      # build, where the value is still a string we can look at. Empty also fails (`-qF ""` matches all).
-      - name: the deployed endpoint must be wss://
-        env:
-          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
-        run: |
-          case "$NEXT_PUBLIC_WS_URL" in
-            wss://?*) echo "endpoint: $NEXT_PUBLIC_WS_URL" ;;
-            *) echo "::error::vars.NEXT_PUBLIC_WS_URL must be a wss:// URL (got '${NEXT_PUBLIC_WS_URL:-<unset>}')"; exit 1 ;;
-          esac
-      - name: build (static export, pointed at the live relay)
-        env:
-          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
-          NEXT_PUBLIC_BLOCKFROST_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID }}
-        run: npm run build
-      # Assert the endpoint we configured is the one that got inlined. Note we do NOT assert the
-      # absence of "127.0.0.1:9944": that literal is endpoints.ts's dev fallback and survives
-      # minification even in a wss:// build (verified) — it is simply unreachable once the
-      # production guard has passed. Its presence proves nothing; the wss URL's presence does.
-      - name: sanity-check the bundle before it replaces a live site
-        env:
-          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
-        run: |
-          test -f out/index.html || { echo "::error::out/index.html missing — refusing to deploy"; exit 1; }
-          grep -rqF "$NEXT_PUBLIC_WS_URL" out/_next/static/chunks/ || {
-            echo "::error::configured endpoint '$NEXT_PUBLIC_WS_URL' is not in the bundle"
-            exit 1
-          }
-      - name: authorize ssh
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-      - name: rsync out/ -> /var/www/cogno
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          rsync -az --delete --checksum \
-            -e 'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' \
-            out/ "$DEPLOY_USER@$DEPLOY_HOST:/var/www/cogno/"
