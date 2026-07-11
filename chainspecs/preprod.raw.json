@@ -3,7 +3,7 @@
     "id": "cogno-preprod-operator",
     "chainType": "Live",
     "bootNodes": [
-      "/dns4/logicalmechanism.asuscomm.com/tcp/30333/p2p/12D3KooW9qvNzQipTjf3DG78H8XmZ7SbfSBgkyHVepMV5vZmLAXW"
+      "/dns4/157.230.53.66/tcp/30333/p2p/12D3KooWGuaAfQV5pafWLNsTdtwEdPN2jL3MmpAgvhdkHtcab3jj"
     ],
     "telemetryEndpoints": null,
     "protocolId": null,
