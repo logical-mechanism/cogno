@@ -30,6 +30,8 @@ import { Timeline } from "@/components/Timeline";
 import { Composer } from "@/components/Composer";
 import { useSession } from "@/components/Providers";
 import { useLiveFeed } from "@/hooks/useLiveFeed";
+import { usePostActions } from "@/hooks/usePostActions";
+import { modalActions } from "@/lib/modalStore";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
@@ -42,13 +44,9 @@ import { useComposerGate } from "@/hooks/useComposerGate";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { modalActions } from "@/lib/modalStore";
 import { submitPost } from "@/lib/chain/mutations";
-import { sharePostWithToast } from "@/lib/share";
-import type { CognoPost, ViewerPostState, FeedQuery } from "@/lib/types";
-import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
-
-const NO_VIEWER: ViewerPostState = { myVote: null };
+import type { CognoPost, FeedQuery } from "@/lib/types";
+import type { ActionState, ComposerDraft } from "@/components/kit";
 
 /** Walk up to the closest scrollable ancestor (the center column on desktop, document on mobile). */
 function scrollContainerOf(el: HTMLElement | null): HTMLElement | null {
@@ -207,31 +205,7 @@ export default function HomePage() {
   }, [forYou]);
 
   // ── per-card action bundle ──────────────────────────────────────────────────────────────────
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (address) => router.push(`/u/${address}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onShare: (post) => void sharePostWithToast(post.id, toast),
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, pin, toast],
-  );
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
 
   const composeState: ActionState = "idle"; // inline composer clears optimistically; per-tx state lives on the card
 

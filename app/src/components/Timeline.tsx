@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./Timeline.module.css";
 import { PostCard } from "./PostCard";
+import { NO_VIEWER } from "@/lib/optimistic";
 import { Skeleton } from "./Skeleton";
 import { EmptyState } from "./EmptyState";
 import { Spinner } from "./icons";
@@ -30,8 +31,6 @@ import type {
   ViewerPostState,
   PostActionCallbacks,
 } from "./kit";
-
-const NO_VIEWER: ViewerPostState = { myVote: null };
 
 export interface TimelineProps {
   posts: CognoPost[];

@@ -18,17 +18,13 @@ import { StickyHeader } from "@/components/AppShell";
 import { Timeline } from "@/components/Timeline";
 import { useSession } from "@/components/Providers";
 import { useViewerStates } from "@/hooks/useViewerStates";
+import { usePostActions } from "@/hooks/usePostActions";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { modalActions } from "@/lib/modalStore";
-import { sharePostWithToast } from "@/lib/share";
 import { useBookmarkList } from "@/lib/bookmarkStore";
-import type { CognoPost, ViewerPostState } from "@/lib/types";
-import type { PostActionCallbacks } from "@/components/kit";
-
-const NO_VIEWER: ViewerPostState = { myVote: null };
+import type { CognoPost } from "@/lib/types";
 
 export default function BookmarksPage() {
   const router = useRouter();
@@ -139,31 +135,7 @@ export default function BookmarksPage() {
   const { pin } = usePinPost(api, signer);
   const { toast } = useToaster();
 
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (address) => router.push(`/u/${address}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onShare: (post) => void sharePostWithToast(post.id, toast),
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, pin, toast],
-  );
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
 
   return (
     <>

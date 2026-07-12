@@ -38,6 +38,9 @@ import { FollowsPanel } from "@/components/profile/FollowsPanel";
 import { PinnedPostBlock } from "@/components/profile/PinnedPostBlock";
 import { useSession } from "@/components/Providers";
 import { useHeads } from "@/hooks/useHeads";
+import { NO_VIEWER } from "@/lib/optimistic";
+import { usePostActions } from "@/hooks/usePostActions";
+import { modalActions } from "@/lib/modalStore";
 import { useProfile } from "@/hooks/useProfile";
 import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -45,15 +48,11 @@ import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { useAccountVote } from "@/hooks/useAccountVote";
 import { usePinPost } from "@/hooks/usePinPost";
-import { modalActions } from "@/lib/modalStore";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { sharePostWithToast } from "@/lib/share";
 import { isPlausibleSs58, handleOf } from "@/lib/ss58";
 import { useRouteSegment } from "@/lib/routeSegment";
 import type { ProfileArgs } from "@/lib/feed/source";
-import type { CognoPost, ViewerPostState, Ss58, PostActionCallbacks } from "@/components/kit";
-
-const NO_VIEWER: ViewerPostState = { myVote: null };
+import type { CognoPost, Ss58 } from "@/components/kit";
 
 /** Map a ProfileTab to the seam's tab arg (Posts → undefined / Replies / Likes). */
 function tabArg(tab: ProfileTab): ProfileArgs["tab"] {
@@ -356,31 +355,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
 
   // NOTIFICATIONS SEAM (doc 07 §14): the Voted / Reposted / reply / quote edges raised here targeting
   // this profile's author are what a future useNotifications(author) folds — deferred, seam left.
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (addr) => router.push(`/u/${addr}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onShare: (post) => void sharePostWithToast(post.id, toast),
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, pin, toast],
-  );
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
 
   // ── derived header bits ──
   const hasProfile = !!(

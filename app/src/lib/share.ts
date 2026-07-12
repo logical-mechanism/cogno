@@ -33,7 +33,7 @@ export async function sharePost(id: bigint): Promise<ShareResult> {
 }
 
 /** The minimal toast bus this helper needs — structurally satisfied by `useToaster().toast`. */
-type ShareToast = (spec: { kind: "success" | "error"; message: string }) => void;
+export type ShareToast = (spec: { kind: "success" | "error"; message: string }) => void;
 
 /**
  * Share a post and give the user feedback: the OS share sheet handles its own, so we only toast on the

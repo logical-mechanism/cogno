@@ -38,6 +38,7 @@ import { ResultTabStrip, RESULT_PANEL_ID, type ResultTab } from "@/components/ex
 import { ExploreList } from "@/components/explore/ExploreList";
 import { useSession } from "@/components/Providers";
 import { useFeedPage } from "@/hooks/useFeed";
+import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
@@ -45,15 +46,11 @@ import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useFollow } from "@/hooks/useFollow";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { modalActions } from "@/lib/modalStore";
-import { sharePostWithToast } from "@/lib/share";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
 import { useRecentSearches, recentSearchActions } from "@/lib/recentSearchStore";
-import type { CognoPost, FeedQuery, Suggestion, ViewerPostState } from "@/lib/types";
-import type { PostActionCallbacks } from "@/components/kit";
+import type { CognoPost, FeedQuery, Suggestion } from "@/lib/types";
 
-const NO_VIEWER: ViewerPostState = { myVote: null };
 const SEARCH_DEBOUNCE_MS = 300;
 const PEOPLE_LIMIT = 20;
 // The firehose + Latest-search page size (one node `state_call` per page since spec-120).
@@ -324,31 +321,7 @@ function ExploreView() {
   const { toast } = useToaster();
 
   // ── per-card action bundle (identical wiring to the home Timeline; surface 10 §3.5/§7.5) ─────
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (address) => router.push(`/u/${address}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onShare: (post) => void sharePostWithToast(post.id, toast),
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, pin, toast],
-  );
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
 
   // The "/" focus shortcut is now app-wide (useSearchHotkey in AppShell) — no per-surface effect here.
 

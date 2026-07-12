@@ -142,6 +142,18 @@ export function viewerPatchSettled(
   return patch?.expected === true && base.myVote === (patch.myVote ?? null);
 }
 
+/**
+ * "This viewer has no relationship to this post" — the fallback for a post whose viewer state hasn't
+ * been read yet, or for a signed-out reader.
+ *
+ * ONE frozen object, not seven. It was declared verbatim in six surfaces (as `NO_VIEWER`) plus a
+ * seventh under a different name (`NONE`, in useViewerStates), and every one of them minted a fresh
+ * `{ myVote: null }` — so an unread card handed `PostCard` a new object identity on every render, which
+ * is exactly what a memoized card cannot tolerate. Lives here rather than in components/kit.ts, which
+ * is type-only: putting a runtime value there would force hooks to import from components.
+ */
+export const NO_VIEWER: ViewerPostState = Object.freeze({ myVote: null });
+
 /** Apply a viewer patch over a read ViewerPostState (undefined fields keep the base value). */
 export function applyViewerPatch(
   base: ViewerPostState,

@@ -13,11 +13,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
-import { applyViewerPatch, viewerPatchSettled } from "@/lib/optimistic";
+import { applyViewerPatch, viewerPatchSettled, NO_VIEWER } from "@/lib/optimistic";
 import type { FeedSource } from "@/lib/feed/source";
 import type { Ss58, ViewerPostState } from "@/lib/types";
 
-const NONE: ViewerPostState = { myVote: null };
 
 export function useViewerStates(
   source: FeedSource | null,
@@ -79,7 +78,7 @@ export function useViewerStates(
       postIds.map(async (id) => {
         const fromCarried = carriedNow?.get(String(id));
         if (fromCarried) return [String(id), fromCarried] as const;
-        return [String(id), await source.viewerPostState(id, who).catch(() => NONE)] as const;
+        return [String(id), await source.viewerPostState(id, who).catch(() => NO_VIEWER)] as const;
       }),
     ).then((entries) => {
       if (cancelled) return;
@@ -92,7 +91,7 @@ export function useViewerStates(
       const v = overlayRef.current.viewer;
       for (const id of postIds) {
         const patch = v[String(id)];
-        if (patch?.expected && viewerPatchSettled(map.get(String(id)) ?? NONE, patch)) {
+        if (patch?.expected && viewerPatchSettled(map.get(String(id)) ?? NO_VIEWER, patch)) {
           clearPost(id);
         }
       }
@@ -106,7 +105,7 @@ export function useViewerStates(
   return useMemo(() => {
     const out = new Map<bigint, ViewerPostState>();
     for (const id of postIds) {
-      const b = base.get(String(id)) ?? NONE;
+      const b = base.get(String(id)) ?? NO_VIEWER;
       out.set(id, applyViewerPatch(b, overlay.viewer[String(id)]));
     }
     return out;

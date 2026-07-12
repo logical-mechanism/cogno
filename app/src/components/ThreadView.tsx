@@ -35,25 +35,23 @@ import { NotFoundInline } from "./AppShell";
 import { Spinner } from "./icons";
 import { useSession } from "./Providers";
 import { useThread } from "@/hooks/useThread";
+import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useOptimistic } from "@/hooks/useOptimistic";
-import { nextPendingId } from "@/lib/optimistic";
+import { nextPendingId, NO_VIEWER } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
 import { useActionToast } from "@/hooks/useActionToast";
 import { useComposerGate } from "@/hooks/useComposerGate";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { modalActions } from "@/lib/modalStore";
 import { submitReply } from "@/lib/chain/mutations";
-import { sharePostWithToast } from "@/lib/share";
 import { formatCount, formatSignedWeight, formatWeight } from "@/lib/format";
 import { handleOf } from "@/lib/ss58";
-import type { CognoPost, ViewerPostState } from "@/lib/types";
-import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
+import type { CognoPost } from "@/lib/types";
+import type { ActionState, ComposerDraft } from "@/components/kit";
 
-const NO_VIEWER: ViewerPostState = { myVote: null };
 // Render replies in pages so a huge thread doesn't mount hundreds of cards at once (useThread fetches
 // them all). Pending (optimistic, id<0) replies are ALWAYS shown so a just-posted reply is never hidden.
 const REPLIES_PAGE = 20;
@@ -245,37 +243,18 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // ── the per-card action bundle (mirrors the home surface; D2 Like==up) ──
   // NOTIFICATIONS SEAM (doc 08 §10): the Voted / Reposted / quote edges raised here targeting the
   // focal author are exactly what a future useNotifications(who) folds — deferred, seam left.
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (address) => router.push(`/u/${address}/`),
-      // Focal-nav reply: the focal's Reply focuses the inline composer in place; a non-focal reply
-      // descends to that reply's own focal (?reply=1 auto-focuses its composer) so the reply is always
-      // authored where parentId===rootId and shows optimistically.
-      onReply: (post) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        if (post.id === rootId) focusComposer();
-        else router.push(`/post/${post.id}/?reply=1`);
-      },
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onShare: (post) => void sharePostWithToast(post.id, toast),
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, pin, toast, rootId, focusComposer],
+  // Focal-nav reply: the focal's Reply focuses the inline composer in place; a non-focal reply descends
+  // to that reply's own focal (?reply=1 auto-focuses its composer) so a reply is always authored where
+  // parentId === rootId and shows optimistically. usePostActions applies the signed-out bounce BEFORE
+  // calling this, so the gate cannot be lost here.
+  const onReplyReady = useCallback(
+    (post: CognoPost) => {
+      if (post.id === rootId) focusComposer();
+      else router.push(`/post/${post.id}/?reply=1`);
+    },
+    [rootId, focusComposer, router],
   );
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast, onReplyReady });
 
   // ── scroll-to-focal once per id (X behavior: focal lands just under the sticky header) ──
   const focalRef = useRef<HTMLDivElement | null>(null);
