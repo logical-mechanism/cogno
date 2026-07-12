@@ -105,7 +105,6 @@ export async function produceBindProof(opts: {
     const signingAddress: string = await wallet.getChangeAddress();
     const props = cst.Address.fromBech32(signingAddress).getProps();
     if (props.paymentPart?.type !== 0) {
-      // eslint-disable-next-line no-console
       console.error(
         `cogno: bind aborted — wallet "${opts.walletId}" change address has a non-vkey payment credential (type=${props.paymentPart?.type}); never bind from a script/vault address`,
       );
@@ -146,7 +145,6 @@ export async function produceBindProof(opts: {
     // a silent identity-flow failure — log it with the account for diagnosis. A user-declined prompt or a
     // wrong wallet password is expected, not a fault: pass it through to the UI without console noise.
     if (!isUserRejection(e)) {
-      // eslint-disable-next-line no-console
       console.error(`cogno: produceBindProof failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
     }
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -224,7 +222,6 @@ export async function produceBindProofStake(opts: {
   } catch (e) {
     // A declined prompt / wrong wallet password is expected — surface it in the UI, but don't log it.
     if (!isUserRejection(e)) {
-      // eslint-disable-next-line no-console
       console.error(`cogno: produceBindProofStake failed for account ${account.slice(0, 8)}…:`, e instanceof Error ? e.message : String(e));
     }
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

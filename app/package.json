@@ -7,7 +7,7 @@
     "postinstall": "papi",
     "dev": "next dev -p 3000",
     "build": "next build",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 90",
     "papi:add": "papi add cogno -w ws://127.0.0.1:9944",
     "papi": "papi",
     "test": "vitest run",

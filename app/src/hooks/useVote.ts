@@ -14,7 +14,7 @@ import { useActionToast } from "./useActionToast";
 import { useOptimistic } from "./useOptimistic";
 import { voteDelta } from "@/lib/optimistic";
 import { submitVote, submitClearVote } from "@/lib/chain/mutations";
-import type { CognoApi, PostingSigner, Ss58, ViewerPostState } from "@/lib/types";
+import type { CognoApi, PostingSigner, ViewerPostState } from "@/lib/types";
 
 export interface UseVote {
   /** Toggle the heart: like if not up-voted, else clear. */

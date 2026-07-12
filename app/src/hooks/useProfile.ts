@@ -144,7 +144,6 @@ export function useProfile(
       .finally(() => {
         if (epochRef.current === epoch) setLoadingMore(false);
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, loadingMore, cursor, canPage, profile, args.viewer]);
 
   // First page (merged across silent refreshes) + any loaded-more pages, de-duped + newest-first.

@@ -213,7 +213,6 @@ export function useIdentity(
           }
           const nowBound = await isAccountBound(api, signer.ss58).catch(() => false);
           if (!nowBound) {
-            // eslint-disable-next-line no-console
             console.error(
               `cogno: bind submitted but the chain shows ${signer.ss58.slice(0, 8)}… unbound (wallet "${walletId}", identity ${res.identityHash?.slice(0, 10)}…)`,
             );
@@ -223,7 +222,6 @@ export function useIdentity(
           setBoundAddress(proof.signingAddress ?? null);
         } catch (e) {
           if (!isUserRejection(e)) {
-            // eslint-disable-next-line no-console
             console.error(`cogno: bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
           }
           setError(e instanceof Error ? e.message : String(e));
@@ -272,7 +270,6 @@ export function useIdentity(
           setStakeBindPhase("confirming");
           const nowStakeBound = await isStakeBound(api, signer.ss58).catch(() => false);
           if (!nowStakeBound) {
-            // eslint-disable-next-line no-console
             console.error(
               `cogno: stake bind submitted but the chain shows ${signer.ss58.slice(0, 8)}… with no stake bound (wallet "${walletId}")`,
             );
@@ -287,7 +284,6 @@ export function useIdentity(
           setStakeBound(true);
         } catch (e) {
           if (!isUserRejection(e)) {
-            // eslint-disable-next-line no-console
             console.error(`cogno: stake bind failed for ${signer.ss58.slice(0, 8)}… (wallet "${walletId}"):`, e instanceof Error ? e.message : String(e));
           }
           setStakeError(e instanceof Error ? e.message : String(e));

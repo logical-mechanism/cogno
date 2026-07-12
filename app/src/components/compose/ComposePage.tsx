@@ -342,7 +342,6 @@ export function ComposePage() {
             autoFocus
             onTogglePoll={() => router.push("/compose/?poll=1")}
             onSubmit={onPost}
-            onCancel={requestBack}
           />
         )}
 
@@ -359,7 +358,6 @@ export function ComposePage() {
               noPostingPower={noPostingPower}
               autoFocus
               submitReply={onReply}
-              onCancel={requestBack}
               onDirtyChange={onComposerDirty}
             />
           ) : (
@@ -376,7 +374,6 @@ export function ComposePage() {
                 noPostingPower={noPostingPower}
                 autoFocus
                 onSubmit={onPost}
-                onCancel={requestBack}
               />
             )
           )
@@ -392,7 +389,6 @@ export function ComposePage() {
               noPostingPower={noPostingPower}
               autoFocus
               submitQuote={onQuote}
-              onCancel={requestBack}
               onDirtyChange={onComposerDirty}
             />
           ) : (
@@ -408,7 +404,6 @@ export function ComposePage() {
                 noPostingPower={noPostingPower}
                 autoFocus
                 onSubmit={onPost}
-                onCancel={requestBack}
               />
             )
           )
@@ -424,7 +419,6 @@ export function ComposePage() {
             noPostingPower={noPostingPower}
             autoFocus
             submitCreatePoll={onCreatePoll}
-            onCancel={requestBack}
           />
         )}
       </div>

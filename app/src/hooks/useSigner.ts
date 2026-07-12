@@ -103,7 +103,6 @@ export function useSigner(): UseSigner {
       // plain decline would print a red stack trace for a non-event. Same rule the CIP-8 binds already
       // follow. A GENUINE failure (wrong network, wallet-API error, no signature) is still logged.
       if (!isUserRejection(e)) {
-        // eslint-disable-next-line no-console
         console.error(`cogno: connectWallet("${walletId}") failed:`, e);
       }
       setError(e instanceof Error ? e.message : String(e));

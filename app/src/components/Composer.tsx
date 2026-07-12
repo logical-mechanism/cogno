@@ -124,8 +124,6 @@ export interface ComposerProps {
   autoFocus?: boolean;
   /** Build a ComposerDraft and submit. The surface maps it to the right mutation. */
   onSubmit: (draft: ComposerDraft) => void;
-  /** Modal/page close. */
-  onCancel?: () => void;
   /** Report draft dirtiness (non-empty text) so the surface can confirm a discard on close. */
   onDirtyChange?: (dirty: boolean) => void;
   /** Surface-supplied extras the surface needs to assemble the ComposerDraft (parentId/quotedId/options). */
@@ -160,7 +158,6 @@ export function Composer({
   onSerializedChange,
   autoFocus,
   onSubmit,
-  onCancel,
   onDirtyChange,
   draftExtras,
 }: ComposerProps) {
@@ -287,8 +284,8 @@ export function Composer({
 
   const submit = useCallback(() => {
     if (sessionGated) {
-      // Reroute is owned by onCancel/onSubmit at the surface; here we just hand back the draft so the
-      // surface can decide (it inspects viewer.status). For the gated case the surface routes /welcome.
+      // Reroute is owned by the surface; here we just hand back the draft so the surface can decide
+      // (it inspects viewer.status). For the gated case the surface routes /welcome.
       onSubmit(buildDraft());
       return;
     }

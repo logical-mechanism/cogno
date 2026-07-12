@@ -86,7 +86,6 @@ export async function submitLinkIdentityFeeless(
       .find((e) => e.type === "CognoGate" && e.value?.type === "IdentityLinked");
     return { ok: true, identityHash: ev?.value?.value?.identity };
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.error("cogno: feeless link_identity_signed submission failed:", stringifyError(e), e);
     return { ok: false, error: stringifyError(e) };
   }
@@ -118,7 +117,6 @@ export async function submitLinkStakeFeeless(
       .find((e) => e.type === "CognoGate" && e.value?.type === "StakeLinked");
     return { ok: true, stakeCredHex: ev?.value?.value?.stake_cred };
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.error("cogno: feeless link_stake_signed submission failed:", stringifyError(e), e);
     return { ok: false, error: stringifyError(e) };
   }

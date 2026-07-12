@@ -25,7 +25,6 @@ export function normalizeQuery(raw: string): string {
  * exempt pasted addresses / identity hashes, which route to a profile regardless.
  */
 export function isQueryTooShort(normalized: string): boolean {
-  // eslint-disable-next-line no-control-regex
   if (!/^[\x00-\x7F]*$/.test(normalized)) return false; // any non-ASCII char → searchable at length 1
   const codePoints = [...normalized].length;
   return codePoints > 0 && codePoints < MIN_QUERY_LEN;

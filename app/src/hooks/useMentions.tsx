@@ -22,7 +22,7 @@ import {
   type MentionRef,
 } from "@/lib/mentions";
 import { fallbackDisplayName, truncateSs58 } from "@/lib/ss58";
-import type { Ss58, Suggestion } from "@/lib/types";
+import type { Suggestion } from "@/lib/types";
 
 const MENTION_LIMIT = 6;
 const SEARCH_DEBOUNCE_MS = 180;

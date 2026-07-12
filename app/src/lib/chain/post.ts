@@ -182,7 +182,6 @@ export function watchTx(
         error(err: unknown) {
           // Signer rejection, validity error, or network drop — surface honestly AND log it
           // with context so a failed submission is debuggable (the UI only shows the message).
-          // eslint-disable-next-line no-console
           console.error(`cogno: ${eventName ?? "tx"} submission failed (stream error):`, stringifyError(err), err);
           subscriber.next({ phase: "error", error: stringifyError(err) });
           subscriber.complete();
@@ -194,7 +193,6 @@ export function watchTx(
     } catch (err) {
       // Synchronous failure building/signing the tx — log it (a thrown tx-build error is
       // otherwise invisible beyond the one-line message the UI renders).
-      // eslint-disable-next-line no-console
       console.error(`cogno: ${eventName ?? "tx"} submission threw while building/signing:`, stringifyError(err), err);
       subscriber.next({ phase: "error", error: stringifyError(err) });
       subscriber.complete();

@@ -35,7 +35,6 @@ export interface PollComposerProps {
   autoFocus?: boolean;
   /** Hand back the trimmed args; the surface calls mutations.submitCreatePoll(question, options). */
   submitCreatePoll: (question: string, options: string[]) => void;
-  onCancel?: () => void;
 }
 
 /** Ensure the controlled draft always has at least the two mandatory option slots. */
@@ -55,7 +54,6 @@ export function PollComposer({
   noPostingPower,
   autoFocus,
   submitCreatePoll,
-  onCancel,
 }: PollComposerProps) {
   const options = useMemo(() => normalize(pollDraft.options), [pollDraft.options]);
 
@@ -199,7 +197,6 @@ export function PollComposer({
       contextBelow={fieldset}
       draftExtras={{ pollOptions: options }}
       onSubmit={onSubmit}
-      onCancel={onCancel}
     />
   );
 }

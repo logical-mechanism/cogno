@@ -71,7 +71,6 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     document.body.appendChild(ta);
     ta.select();
     // execCommand is deprecated but remains the only clipboard path in insecure contexts.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     const ok = document.execCommand("copy");
     document.body.removeChild(ta);
     return ok;

@@ -81,7 +81,7 @@ export function ModalRouteHost() {
   const { addPending, dropPending, failPending, patchProfile, confirmProfile, rollbackProfile } =
     useOptimistic();
   const { run } = useMutation();
-  const { toast, rateLimit } = useToaster();
+  const { toast } = useToaster();
   const { phase } = useActionToast();
   const router = useRouter();
 
@@ -114,7 +114,6 @@ export function ModalRouteHost() {
   // Sync the URL when the overlay opens; restore it (history.back) when it closes via the store.
   useEffect(() => {
     if (kind && kind !== "edit-profile") pushModalUrl(kind, state.targetId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, state.targetId]);
 
   // Back-button closes the overlay (doc 01 §7.2): a popstate while open dismisses without a route swap.
@@ -413,7 +412,6 @@ export function ModalRouteHost() {
             onSerializedChange={setSerialized}
             autoFocus
             onSubmit={onPost}
-            onCancel={onRequestClose}
             onDirtyChange={onComposerDirty}
           />
         )}
@@ -426,7 +424,6 @@ export function ModalRouteHost() {
             rateLimited={rateLimited}
             autoFocus
             submitReply={onReply}
-            onCancel={onRequestClose}
             onDirtyChange={onComposerDirty}
           />
         )}
@@ -439,7 +436,6 @@ export function ModalRouteHost() {
             rateLimited={rateLimited}
             autoFocus
             submitQuote={onQuote}
-            onCancel={onRequestClose}
             onDirtyChange={onComposerDirty}
           />
         )}
@@ -453,7 +449,6 @@ export function ModalRouteHost() {
             rateLimited={rateLimited}
             autoFocus
             submitCreatePoll={onCreatePoll}
-            onCancel={onRequestClose}
           />
         )}
       </ComposerModal>
