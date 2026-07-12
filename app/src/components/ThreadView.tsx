@@ -181,8 +181,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // detail=true, so results stay always-shown on this surface (D4).
 
   // ── inline reply composer → submitReply(parent = focal) with the optimistic pending card (D11) ──
-  // NOTIFICATIONS SEAM (doc 08 §10, deferred): a reply whose parent is the focal author's post is one
-  // of the edges a future useNotifications(focal.author) folds — leave the seam, do not build it here.
   const onSubmitReply = useCallback(
     (draft: ComposerDraft) => {
       if (viewer.status !== "ready") {
@@ -241,12 +239,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   );
 
   // ── the per-card action bundle (mirrors the home surface; D2 Like==up) ──
-  // NOTIFICATIONS SEAM (doc 08 §10): the Voted / Reposted / quote edges raised here targeting the
-  // focal author are exactly what a future useNotifications(who) folds — deferred, seam left.
-  // Focal-nav reply: the focal's Reply focuses the inline composer in place; a non-focal reply descends
-  // to that reply's own focal (?reply=1 auto-focuses its composer) so a reply is always authored where
-  // parentId === rootId and shows optimistically. usePostActions applies the signed-out bounce BEFORE
-  // calling this, so the gate cannot be lost here.
   const onReplyReady = useCallback(
     (post: CognoPost) => {
       if (post.id === rootId) focusComposer();

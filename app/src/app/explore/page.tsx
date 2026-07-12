@@ -22,10 +22,6 @@
 // useSearchParams() requires a <Suspense> boundary under output:'export' (mirrors /compose) — the route
 // default mounts <ExploreView> inside one.
 //
-// HOOK: notifications — deferred (surface 10 §10 / useNotifications). A future /notifications surface
-// (+ a bell in LeftNav/BottomTabBar) would fold the indexer edges Voted / Reposted / Followed /
-// reply-PostCreated (parentId ∈ my posts) / quote (quote.id ∈ my posts) via useNotifications(who). No
-// notifications affordance ships here — this comment is the only hook.
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -203,8 +199,8 @@ function ExploreView() {
   // node's byte-substring scan can match, so it must SEARCH — using raw .length here silently dropped
   // it back to the firehose. A below-min ASCII term (only reachable from an external ?q=, since our own
   // writes gate it) still stays in DEFAULT with the "keep typing" hint.
-  const mode: "no-indexer" | "default" | "query" = !searchEnabled
-    ? "no-indexer"
+  const mode: "disconnected" | "default" | "query" = !searchEnabled
+    ? "disconnected"
     : committedQ.length > 0 && !isQueryTooShort(committedQ)
       ? "query"
       : "default";
@@ -241,7 +237,7 @@ function ExploreView() {
   );
   // The firehose renders in DEFAULT mode AND in NO-INDEXER mode (PAPI-direct still shows the live
   // window, §5.4) — only QUERY mode swaps it out for the result list.
-  const firehoseEnabled = mode === "default" || mode === "no-indexer";
+  const firehoseEnabled = mode === "default" || mode === "disconnected";
   const firehose = useFeedPage(source, firehoseQuery, firehoseEnabled);
 
   const latestQuery = useMemo<FeedQuery>(
@@ -385,8 +381,8 @@ function ExploreView() {
           (mode === "query" && activeResultTab === "people" && peopleLoading) || undefined
         }
       >
-        {mode === "no-indexer" ? (
-          <NoIndexerBody firehose={renderFirehose()} router={router} />
+        {mode === "disconnected" ? (
+          <DisconnectedBody firehose={renderFirehose()} router={router} />
         ) : mode === "default" ? (
           renderFirehose()
         ) : activeResultTab === "people" ? (
@@ -448,7 +444,7 @@ function ExploreView() {
 
 // NO-INDEXER body: the firehose still renders (PAPI live window), and the search-unavailable
 // EmptyState sits ABOVE it so a user who reaches for search is told why + linked to Settings (§7.4).
-function NoIndexerBody({
+function DisconnectedBody({
   firehose,
   router,
 }: {

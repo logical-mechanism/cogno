@@ -21,9 +21,6 @@
 // profile directly: the header (name/bio/avatar/counts), the Posts tab, the Likes tab (spec-118 reverse
 // maps) AND the reverse Replies tab (spec-200 `author_replies_page`) — nothing needs an indexer.
 //
-// NOTIFICATIONS SEAM (doc 07 §14, deferred): a Followed{ followee === viewer } is a "new follower"; the
-// Voted / Reposted edges raised from the tab cards targeting this author, and replies/quotes of this
-// author's posts, are exactly what a future /notifications surface folds. No bell/route is built here.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -163,7 +160,6 @@ function ProfileBody({ address }: { address: Ss58 }) {
         router.push("/welcome/");
         return;
       }
-      // NOTIFICATIONS SEAM (doc 07 §14): this Followed edge is a future "new follower" notification.
       if (next) {
         follow.follow(target);
         setFollowDelta((d) => d + 1);
@@ -353,8 +349,6 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const { pin } = usePinPost(api, signer);
   const { toast } = useToaster();
 
-  // NOTIFICATIONS SEAM (doc 07 §14): the Voted / Reposted / reply / quote edges raised here targeting
-  // this profile's author are what a future useNotifications(author) folds — deferred, seam left.
   const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
 
   // ── derived header bits ──

@@ -16,9 +16,6 @@
 //
 // One socket: everything reads from useSession(); this page never instantiates a client.
 //
-// HOOK: notifications — deferred (doc 06 §11 / useNotifications). The indexer's vote/repost/follow/
-// reply/quote edges targeting the viewer make a future /notifications surface a clean follow-up; no
-// bell/badge is built here.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";

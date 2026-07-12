@@ -20,9 +20,6 @@
 // (spec 117), so there is NO funding / balance gate — capacity exhaustion is the only chain reality
 // (inline RateLimitNotice via the rateLimited prop, owned by the Composer).
 //
-// NOTIFICATIONS SEAM (§13 — DEFERRED): a reply carries parent=Some(id) and a quote carries quoted_id,
-// so the reply/quote edges a future useNotifications(who) would fold are created here already. Not
-// built in v1 — this note keeps the flow notification-friendly.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";

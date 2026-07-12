@@ -6,7 +6,7 @@
 // descriptors generated from cogno-chain-runtime (spec_version 200 — the all-Rust restart:
 // the spec-113 social pallet set + spec-117 feeless pallet-profile, with feed/thread/profile
 // reads now served node-direct by the node's spec-200 MicroblogApi rather than a SubQuery
-// indexer; the live shapes are confirmed against the running node's metadata, not guessed).
+// node's MicroblogApi; the live shapes are confirmed against the running node's metadata, not guessed).
 
 import type { PolkadotClient, TypedApi } from "polkadot-api";
 import type { PolkadotSigner } from "polkadot-api/signer";
@@ -42,13 +42,13 @@ export interface CognoPost {
   /** Block number the post was created at (`BlockNumber` u32). NOT a timestamp; never rendered as one. */
   at: number;
   /**
-   * The author's identity binding has been revoked (`Author.banned` on the indexer; the
-   * absence of `CognoGate.PkhOf` on the PAPI path). NOT a per-post chain field — revoke
+   * The author's identity binding has been revoked (the absence of `CognoGate.PkhOf`). NOT a
+   * per-post chain field — revoke
    * leaves the posts intact, so the feed must FLAG (dim), not drop, them.
    */
   authorRevoked?: boolean;
 
-  // ── spec-113 social (indexer-derived; PAPI-direct fills what storage allows) ──
+  // ── spec-113 social ──
   /** Present iff this post quotes another (`Post.quote` on-chain). A shallow, one-level embed. */
   quote?: QuotedRef;
   /** True iff a `PollCreated` fired for this id; fetch options via `source.poll(id)`. */
@@ -64,7 +64,7 @@ export interface CognoPost {
   /** Count of direct replies. */
   replyCount?: number;
 
-  // ── profile snapshot of the author (indexer convenience; avoids N+1 on the timeline) ──
+  // ── profile snapshot of the author (stamped node-side; avoids N+1 on the timeline) ──
   authorDisplayName?: string;
   authorAvatar?: string;
   /** Author posting power (lovelace); undefined until staked. */
@@ -74,7 +74,7 @@ export interface CognoPost {
   /**
    * The connected viewer's own vote/repost on this post, stamped node-side by the spec-120
    * `MicroblogApi` (when a `viewer` was passed). PRESENT only when a `viewer` was passed;
-   * `undefined` on the keyed/indexer paths, where `useViewerStates` reads it per-card instead. When
+   * `undefined` on the keyed fallback path, where `useViewerStates` reads it per-card instead. When
    * present, `useViewerStates` prefers it and SKIPS the per-card `Reposts.getEntries` viewer scan.
    */
   myVote?: "Up" | "Down" | null;
@@ -103,7 +103,7 @@ export interface QuotedRef {
   author: Ss58;
   text: string;
   authorRevoked: boolean;
-  /** Resolved from Profile when available (indexer only). */
+  /** Resolved from Profile when available. */
   displayName?: string;
   avatar?: string;
 }
@@ -113,7 +113,7 @@ export interface ViewerPostState {
   myVote: "Up" | "Down" | null; // null = not voted
 }
 
-/** Followers/following ids + counts for an account (indexer only). */
+/** Followers/following ids + counts for an account. */
 export interface FollowEdges {
   followers: Ss58[]; // accounts following `who`
   following: Ss58[]; // accounts `who` follows
@@ -132,14 +132,13 @@ export interface Suggestion {
   accountScore?: bigint;
 }
 
-// ── M4: the indexer-backed feed seam ────────────────────────────────────────────────────
-// The data layer reads from either the SubQuery GraphQL indexer (search + cursor pagination
-// + thread/profile/social views) or, as the always-available fallback, the PAPI node directly.
-// These shapes are the contract; both sources IMPLEMENT them, the indexer fully and the PAPI-
-// direct reader as far as direct storage allows. `FeedSnapshot` (the live watch shape) is
-// unchanged.
+// ── the feed seam ───────────────────────────────────────────────────────────────────────
+// These shapes are the contract between the data layer and React. There is ONE reader
+// (lib/feed/papi-source.ts), serving everything out of the node — the SubQuery indexer this seam
+// was originally built to abstract over no longer exists.
 
-/** An opaque cursor string from the indexer (`pageInfo.endCursor` / `edges.cursor`). */
+/** An opaque cursor string. The node's cursors are ENDPOINT-SCOPED — one method's cursor is only
+ *  valid passed back to the SAME method. */
 export type FeedCursor = string;
 
 /** One page of the feed. `asOf` is the block the page reflects, when knowable (PAPI), else null. */
@@ -148,14 +147,14 @@ export interface FeedPage {
   /** The cursor to pass as the next `after`, or null when there is no further page. */
   endCursor: FeedCursor | null;
   hasNextPage: boolean;
-  /** Total matching posts, when the source can report it (indexer `totalCount`). */
+  /** Total matching posts, when the source can report it. */
   totalCount?: number;
   asOf: number | null;
 }
 
 /**
  * A page request. `after` continues a cursor; `search` is a case-insensitive substring
- * (indexer only); `authorId` / `identityHash` scope the page to one author. `tab` selects a
+ * `authorId` / `identityHash` scope the page to one author. `tab` selects a
  * home/profile view; `followeeOf` scopes the Following timeline.
  * Empty/omitted fields mean the global feed, page one.
  */
@@ -171,7 +170,7 @@ export interface FeedQuery {
   /**
    * The connected account, when known. The source threads it into the
    * `MicroblogApi` so each returned post carries the viewer's `myVote`/`reposted` overlay, computed
-   * node-side in the same `state_call`. The keyed + indexer paths IGNORE it (the overlay is fetched
+   * node-side in the same `state_call`. The keyed fallback path IGNORES it (the overlay is fetched
    * separately via `useViewerStates`), so passing it is always safe and never changes those results.
    */
   viewer?: Ss58;
@@ -223,7 +222,7 @@ export interface ThreadView {
   /**
    * The ancestor chain above `root`, ordered top-down (the conversation root first, `root`'s
    * immediate parent last). Empty when `root` is top-level. PAPI-direct walks the full chain from
-   * the snapshot; the indexer path currently supplies the immediate parent only.
+   * the snapshot.
    */
   ancestors: CognoPost[];
   replies: CognoPost[];

@@ -1,7 +1,8 @@
 // PAPI-direct social reads: per-post tallies + the viewer's own vote/repost/poll state, read
 // straight from `Microblog` storage — the vote/poll tallies the feed reader stamps onto each card
-// (the node serves the aggregate maps cheaply); follow edges / display names / who-to-follow stay
-// indexer-only because they need reverse-index aggregation the node can't serve.
+// (the node serves the aggregate maps cheaply). Follow edges / display names / who-to-follow are ALSO
+// node-served now, via the reverse maps + MicroblogApi — the claim that they needed an indexer has been
+// false since spec 118.
 //
 // ⛔ NEVER iterate all `Votes` entries to sum a tally — the chain maintains the denormalized
 // aggregate maps (`VoteTally`, `RepostCount`, `PollTally`) exactly so the client doesn't have to.
