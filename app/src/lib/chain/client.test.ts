@@ -18,27 +18,38 @@ function apiWith(version: { spec_name: string; spec_version: number } | (() => n
   } as unknown as CognoApi;
 }
 
+// The spec the descriptors are built against. `npm run check:spec` asserts this equals the runtime's
+// spec_version in runtime/src/lib.rs, so it cannot drift out from under these tests.
+const DESCRIPTOR_SPEC = 203;
+
 describe("checkBootGuard", () => {
-  it("ok=true when the spec_name matches and the descriptor version is unpinned (null)", async () => {
-    const g = await checkBootGuard(apiWith({ spec_name: "cogno-chain-runtime", spec_version: 107 }));
+  it("ok=true when the spec_name AND spec_version match the descriptors", async () => {
+    const g = await checkBootGuard(
+      apiWith({ spec_name: "cogno-chain-runtime", spec_version: DESCRIPTOR_SPEC }),
+    );
     expect(g.ok).toBe(true);
     expect(g.nodeSpecName).toBe("cogno-chain-runtime");
-    expect(g.nodeSpecVersion).toBe(107);
-    expect(g.descriptorSpecVersion).toBeNull();
+    expect(g.nodeSpecVersion).toBe(DESCRIPTOR_SPEC);
+    expect(g.descriptorSpecVersion).toBe(DESCRIPTOR_SPEC);
     expect(g.reason).toBeUndefined();
   });
 
   it("ok=false with a reason on a spec_name mismatch (this is not a cogno-chain node)", async () => {
-    const g = await checkBootGuard(apiWith({ spec_name: "kusama", spec_version: 107 }));
+    const g = await checkBootGuard(apiWith({ spec_name: "kusama", spec_version: DESCRIPTOR_SPEC }));
     expect(g.ok).toBe(false);
     expect(g.reason).toMatch(/spec_name/i);
     expect(g.reason).toContain("kusama");
   });
 
-  it("does NOT gate on spec_version while DESCRIPTOR_SPEC_VERSION is null (any version ok)", async () => {
-    // A future spec bump with the same name must still pass — version is not pinned in the build.
+  // This case used to assert the OPPOSITE ("does NOT gate on spec_version"), pinning the hole:
+  // DESCRIPTOR_SPEC_VERSION was null, so the version half of the guard was a permanent no-op and a
+  // runtime spec bump would ship a frontend that silently mis-encoded every write.
+  it("DOES gate on spec_version — a bumped runtime is an encoding mismatch, not a compatible node", async () => {
     const g = await checkBootGuard(apiWith({ spec_name: "cogno-chain-runtime", spec_version: 999 }));
-    expect(g.ok).toBe(true);
+    expect(g.ok).toBe(false);
+    expect(g.reason).toMatch(/spec_version/i);
+    expect(g.reason).toContain("999");
+    expect(g.reason).toContain(String(DESCRIPTOR_SPEC));
   });
 
   it("returns a not-ok guard WITH a reason when the version read throws (never crashes boot)", async () => {

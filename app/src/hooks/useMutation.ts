@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Observable, Subscription } from "rxjs";
+import { useSession } from "@/components/Providers";
 import type { TxUpdate } from "@/lib/types";
 
 export type MutationPhase =
@@ -49,6 +50,7 @@ export interface UseMutation {
 }
 
 export function useMutation(): UseMutation {
+  const { boot } = useSession();
   const [phase, setPhase] = useState<MutationPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -75,6 +77,21 @@ export function useMutation(): UseMutation {
   }, []);
 
   const run = useCallback((stream$: Observable<TxUpdate>, opts?: RunOptions): Promise<TxUpdate> => {
+    // ENCODING GUARD. Every write in the app funnels through here, which is why the gate lives here:
+    // if the connected node's runtime does not match the spec our PAPI descriptors were built against,
+    // the extrinsic we are about to sign is mis-encoded. The boot guard has always computed this and
+    // its reason string has always said "Posting is blocked to avoid mis-encoding" — but its only
+    // enforcer was useSubmit, which had ZERO importers, so nothing was ever blocked.
+    //
+    // `=== false`, not `!== true`: `boot` is null while the probe is still in flight, and treating that
+    // as a failure would make the app read-only for the first moments of every session.
+    if (boot?.ok === false) {
+      const message = boot.reason ?? "This app is not compatible with the connected node.";
+      setPhase("error");
+      setError(message);
+      opts?.onError?.(message);
+      return Promise.reject(new Error(message));
+    }
     setError(null);
     setPending(true);
     setPhase("signing");
@@ -141,7 +158,7 @@ export function useMutation(): UseMutation {
       };
       subs.current.add(entry);
     });
-  }, []);
+  }, [boot]);
 
   return { phase, error, pending, run, reset };
 }

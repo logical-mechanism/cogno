@@ -21,13 +21,21 @@ import type { ChainHandle, ConnStatus, BootGuard, CognoApi } from "@/lib/types";
 const EXPECTED_SPEC_NAME = "cogno-chain-runtime";
 
 /**
- * The descriptor's expected spec_version, when statically discoverable. The generated
- * `@polkadot-api/descriptors` bundle embeds the spec only inside its opaque metadata blob
- * (no plain exported constant), so we cannot read it without decoding metadata — we leave
- * it `null` and gate solely on the spec_name. Reported transparently via BootGuard so the
- * UI never over-claims a version match it didn't actually verify.
+ * The runtime spec_version this app's PAPI descriptors were generated against.
+ *
+ * This was `null` — which made the version half of the boot guard a permanent no-op, so a runtime spec
+ * bump would ship a frontend that silently MIS-ENCODES every write, and neither the types, the guard,
+ * nor CI would notice. (The guard's own reason string has always said "Posting is blocked to avoid
+ * mis-encoding"; it just never had a version to compare against.)
+ *
+ * It is `null` no longer, and it cannot silently drift: `npm run check:spec` (part of `npm run lint`,
+ * and therefore CI) asserts this equals `spec_version` in runtime/src/lib.rs. Bump the runtime without
+ * regenerating the descriptors and updating this, and the build fails — loudly, which is the point.
+ *
+ * The spec_version genuinely is NOT statically readable from the descriptors (SCALE metadata does not
+ * carry it; it lives in the RuntimeVersion runtime API), so a checked constant is the honest mechanism.
  */
-const DESCRIPTOR_SPEC_VERSION: number | null = null;
+const DESCRIPTOR_SPEC_VERSION: number | null = 203;
 
 /** Heartbeat window: if no new best block arrives within this, we surface "reconnecting". */
 const BLOCK_HEARTBEAT_MS = 30_000;
