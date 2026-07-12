@@ -547,8 +547,6 @@ function ProfileBody({ address }: { address: Ss58 }) {
                 onCompose={() =>
                   viewer.status === "ready" ? modalActions.openCompose() : router.push("/welcome/")
                 }
-                api={api}
-                signer={signer}
               />
             ) : pinned ? null : (
               <EmptyState

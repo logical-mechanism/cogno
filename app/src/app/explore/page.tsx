@@ -455,8 +455,6 @@ function ExploreView() {
             emptyVariant="feed"
             emptyTitle={`No results for "${committedQ}"`}
             emptyDescription="Try different keywords."
-            api={api}
-            signer={signer}
             highlight={committedQ}
           />
         )}
@@ -482,8 +480,6 @@ function ExploreView() {
         emptyTitle="Nothing here yet"
         emptyDescription="Be the first to post."
         emptyAction={{ label: "Go home", onClick: () => router.push("/") }}
-        api={api}
-        signer={signer}
       />
     );
   }

@@ -3,7 +3,7 @@
 // PostCard — the load-bearing unit: one post in any list context (doc 03 §1).
 //
 // Composes PostCardHeader + an optional "Replying to" line + PostBody + an optional QuotedPostEmbed
-// OR PollCard + PostCardActions. Carries the optimistic-pending rendering (opacity 0.6, actions
+// OR InlinePoll + PostCardActions. Carries the optimistic-pending rendering (opacity 0.6, actions
 // disabled, no row nav) and the banned/authorRevoked dimming (D10 — content STAYS, we dim + chip,
 // never hide). Clicking anywhere on the row (outside an interactive child) navigates to /post/[id]/
 // via an X-style overlay <a> covering the non-interactive area, so the whole card is a real link
@@ -22,7 +22,6 @@ import styles from "./PostCard.module.css";
 import { PostCardHeader } from "./PostCardHeader";
 import { PostBody } from "./PostBody";
 import { QuotedPostEmbed } from "./QuotedPostEmbed";
-import { PollCard } from "./PollCard";
 import { InlinePoll } from "./InlinePoll";
 import { PostCardActions } from "./PostCardActions";
 import { Spinner } from "./icons";
@@ -34,7 +33,6 @@ import type {
   CognoPost,
   ViewerPostState,
   Viewer,
-  PollView,
   AuthorRef,
   OverflowMenuItem,
   PostActionCallbacks,
@@ -58,12 +56,6 @@ export interface PostCardProps {
   showThreadLine?: boolean;
   /** Surface-specific header slot (e.g. a "Pinned" marker on a profile). */
   headerExtra?: React.ReactNode;
-  /** The poll attached to this post (when post.isPoll). Fetched separately by the surface. */
-  poll?: PollView | null;
-  /** The viewer's poll choice (option index), or null. */
-  pollMyChoice?: number | null;
-  /** Optimistic cast for the attached poll. */
-  onPollVote?: (option: number) => void;
   /** Search term to <mark> in the body (set only on search-result surfaces). */
   highlight?: string;
 }
@@ -87,9 +79,6 @@ export function PostCard({
   pending,
   showThreadLine,
   headerExtra,
-  poll,
-  pollMyChoice,
-  onPollVote,
   highlight,
 }: PostCardProps) {
   const author = useMemo(() => authorOf(post), [post]);
@@ -260,22 +249,11 @@ export function PostCard({
             />
           )}
 
-          {post.isPoll &&
-            (poll && onPollVote ? (
-              // Surface pre-wired the poll (ThreadView focal): use it directly.
-              <PollCard
-                poll={poll}
-                myChoice={pollMyChoice ?? null}
-                onVote={onPollVote}
-                showResults={detail}
-                disabled={gate.status === "not-identity-bound"}
-                compact={!detail}
-              />
-            ) : (
-              // List context (timeline/profile): self-fetch + render the votable poll inline so it
-              // isn't just a plain text post.
-              !pending && <InlinePoll postId={post.id} gate={gate} detail={detail} />
-            ))}
+          {/* InlinePoll is the SOLE poll owner. This used to be a ternary between a surface-supplied
+              poll and a self-fetching InlinePoll — and because the surface's read starts at null, the
+              first render ALWAYS took the InlinePoll branch, then flipped once the read landed. Two
+              usePoll instances per card, and the second one's optimistic cast died with it. */}
+          {post.isPoll && !pending && <InlinePoll postId={post.id} gate={gate} detail={detail} />}
 
           <PostCardActions
             post={post}

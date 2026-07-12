@@ -183,8 +183,6 @@ export default function BookmarksPage() {
         emptyTitle="No bookmarks yet"
         emptyDescription="Save a post from the ··· menu to find it here. Bookmarks are kept on this device only."
         emptyAction={{ label: "Explore", onClick: () => router.push("/explore/") }}
-        api={api}
-        signer={signer}
       />
     </>
   );

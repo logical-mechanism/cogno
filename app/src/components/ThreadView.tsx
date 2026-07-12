@@ -39,7 +39,6 @@ import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
-import { usePoll } from "@/hooks/usePoll";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
@@ -178,16 +177,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     justRepliedRef.current = true;
   }, [flushReplies]);
 
-  // ── poll on the FOCAL post (always-show results on the detail surface, D4) ──
-  const focalIsPoll = focal?.isPoll === true;
-  const { poll, myChoice, castVote } = usePoll(
-    source,
-    focalIsPoll ? rootId : null,
-    api,
-    signer,
-    me,
-    bestBlock,
-  );
+  // The focal poll is owned by InlinePoll inside PostCard, like every other poll card. ThreadView used
+  // to fetch it here and pass it down — but PostCard's first render saw a null poll and mounted
+  // InlinePoll anyway, so the focal card ran TWO usePolls. `variant="detail"` still gives InlinePoll
+  // detail=true, so results stay always-shown on this surface (D4).
 
   // ── inline reply composer → submitReply(parent = focal) with the optimistic pending card (D11) ──
   // NOTIFICATIONS SEAM (doc 08 §10, deferred): a reply whose parent is the focal author's post is one
@@ -403,9 +396,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           gate={viewer}
           handlers={handlers}
           variant="detail"
-          poll={focalIsPoll ? poll : null}
-          pollMyChoice={myChoice}
-          onPollVote={focalIsPoll ? castVote : undefined}
         />
 
         {/* The ONE weighted-nature surface (D2/D12): score (signed, may be negative) + up/down weight,

@@ -319,8 +319,6 @@ export default function HomePage() {
           }
           onCompose={onCompose}
           onFlush={flushPending}
-          api={api}
-          signer={signer}
         />
       ) : (
         <Timeline
@@ -338,8 +336,6 @@ export default function HomePage() {
           emptyAction={{ label: "Explore", onClick: () => router.push("/explore/") }}
           onCompose={onCompose}
           onFlush={flushPending}
-          api={api}
-          signer={signer}
         />
       )}
     </>
