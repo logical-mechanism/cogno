@@ -177,7 +177,7 @@
 .primaryBtn:disabled,
 .outlineBtn:disabled,
 .copyBtn:disabled {
-  opacity: 0.5;
+  opacity: var(--cg-disabled-opacity);
   cursor: not-allowed;
 }
 

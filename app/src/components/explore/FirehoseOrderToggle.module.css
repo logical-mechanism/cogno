@@ -55,7 +55,7 @@
 }
 
 .opt:disabled {
-  opacity: 0.45;
+  opacity: var(--cg-disabled-opacity);
   cursor: not-allowed;
 }
 

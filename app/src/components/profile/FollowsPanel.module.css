@@ -54,7 +54,11 @@
   font-weight: var(--cg-fw-semibold);
 }
 
-.tab.active .count {
+/* The tab button now lives in ui/Tabs.module.css, so `.tab.active` is hashed into ANOTHER scope and
+   this descendant selector could no longer reach it. `[data-active]` is an attribute selector — not
+   hashed — and ui/Tabs stamps it on the active tab precisely so a caller's own label internals (this
+   `.count`) can still be styled from here. */
+[data-active] .count {
   color: var(--cg-text);
 }
 

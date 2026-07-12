@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { StickyHeader } from "@/components/AppShell";
+import { Tabs } from "@/components/ui/Tabs";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/icons";
 import { NotificationRow } from "@/components/notifications/NotificationRow";
@@ -79,47 +80,16 @@ export default function NotificationsPage() {
   // Offer the action only when there is a wash to clear, and never floating above an empty state.
   const showMarkAllRead = !showEmpty && armed.size > 0;
 
-  // Arrow-key roving across the tablist (WAI-ARIA tabs pattern), matching TimelineTabs / ProfileTabs /
-  // ResultTabStrip — a single Tab stop, Left/Right to move between filters.
-  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const onTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-    const idx = TABS.findIndex((t) => t.id === tab);
-    if (idx < 0) return;
-    let next = idx;
-    if (e.key === "ArrowRight") next = (idx + 1) % TABS.length;
-    else if (e.key === "ArrowLeft") next = (idx - 1 + TABS.length) % TABS.length;
-    else return;
-    e.preventDefault();
-    setTab(TABS[next].id);
-    tabRefs.current[TABS[next].id]?.focus();
-  };
 
   const tabsNode = (
-    <div className={styles.tabs} role="tablist" aria-label="Notification filters">
-      {TABS.map((t) => {
-        const selected = tab === t.id;
-        return (
-          <button
-            key={t.id}
-            ref={(el) => {
-              tabRefs.current[t.id] = el;
-            }}
-            type="button"
-            role="tab"
-            id={`cg-notif-tab-${t.id}`}
-            aria-selected={selected}
-            aria-controls={PANEL_ID}
-            tabIndex={selected ? 0 : -1}
-            className={`${styles.tab} ${selected ? styles.tabActive : ""}`}
-            onClick={() => setTab(t.id)}
-            onKeyDown={onTabKeyDown}
-          >
-            <span>{t.label}</span>
-            {selected && <span className={styles.indicator} aria-hidden />}
-          </button>
-        );
-      })}
-    </div>
+    <Tabs
+      tabs={TABS}
+      active={tab}
+      onChange={setTab}
+      idPrefix="cg-notif-tab"
+      panelId={PANEL_ID}
+      ariaLabel="Notification filters"
+    />
   );
 
   return (

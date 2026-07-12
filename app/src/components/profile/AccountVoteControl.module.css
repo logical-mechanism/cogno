@@ -36,7 +36,7 @@
 }
 
 .action:disabled {
-  opacity: 0.5;
+  opacity: var(--cg-disabled-opacity);
   cursor: default;
 }
 
