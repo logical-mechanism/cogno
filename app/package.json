@@ -10,6 +10,7 @@
     "lint": "eslint . --max-warnings 89 && node scripts/check-tokens.mjs && node scripts/check-spec.mjs",
     "check:tokens": "node scripts/check-tokens.mjs",
     "check:spec": "node scripts/check-spec.mjs",
+    "smoke": "node scripts/smoke-export.mjs",
     "papi:add": "papi add cogno -w ws://127.0.0.1:9944",
     "papi": "papi",
     "test": "vitest run",
