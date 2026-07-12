@@ -1,0 +1,274 @@
+name: deploy-node
+
+# MANUAL build + deploy of the NODE BINARY to the relay droplet — the sibling of deploy-app.yml, which
+# ships the static frontend to the same box. Trigger it from the Actions tab ("Run workflow") and pick
+# the ref to deploy; nothing here fires on push, so `main` stays a free-to-push work branch.
+#
+# ── You probably do not need this workflow ─────────────────────────────────────────────────────────
+# A RUNTIME upgrade is WASM. It goes on-chain through governed-upgrade (`cogno-chain-cli upgrade
+# authorize` by committee + a permissionless `upgrade apply`), every node picks it up from the chain
+# itself, and NO binary is deployed. Pallet changes, storage migrations, a spec_version bump: none of
+# them come through here.
+#
+# This workflow is for the CLIENT half — changes that live in the binary and cannot be shipped on-chain:
+# a polkadot-sdk bump, a node/consensus bugfix, a new host function, an RPC/CLI change. If you are not
+# sure which you have: if `runtime/` alone changed, it is a WASM upgrade.
+#
+# ── Scope: the RELAY only ──────────────────────────────────────────────────────────────────────────
+# The validator runs this same binary from the operator's home network, behind NAT, and is unreachable
+# from GitHub Actions. It is updated BY HAND. Nothing here touches it. (That asymmetry is fine — the
+# relay is the box that faces the public and carries no keys; the validator is the box that carries
+# keys and faces nobody.)
+#
+# ── This takes the site down for a few seconds, and can take it down for good ──────────────────────
+# Restarting cogno-relay drops the RPC that https://cogno.forum depends on for every read. A binary that
+# will not exec, or panics on boot, leaves the relay dead and the app blank. So the deploy is staged: CI
+# rsyncs the binary to a directory the unprivileged deploy user owns, and the only root-privileged step
+# is one fixed, version-controlled script (deploy/scripts/cogno-deploy-node) reached through a
+# single-command NOPASSWD sudoers entry. That script execs the staged binary BEFORE touching the live
+# one, backs the live one up, restarts, waits for the relay to resume IMPORTING blocks (not merely to be
+# up — a node can peer while accepting no blocks), and rolls back if it does not come back.
+#
+# ── One-time server setup ──────────────────────────────────────────────────────────────────────────
+# The droplet needs the deploy script + the sudoers entry installed once, by hand, as root. Until they
+# are there this workflow fails its preflight and deploys nothing. See "Deploying the node binary" in
+# deploy/README.md.
+#
+# ── Secrets (the same four deploy-app.yml uses; no new ones) ───────────────────────────────────────
+#   secrets.DEPLOY_HOST         157.230.53.66
+#   secrets.DEPLOY_USER         the droplet deploy user (cogno) — also the relay's service user
+#   secrets.DEPLOY_SSH_KEY      an ed25519 PRIVATE key, no passphrase
+#   secrets.DEPLOY_KNOWN_HOSTS  `ssh-keyscan 157.230.53.66` output — pins the host key
+#   vars.NEXT_PUBLIC_WS_URL     optional here: if set, the final step probes the PUBLIC endpoint too
+#
+# Note that ci.yml's `rust` job builds the workspace in DEBUG (`cargo build --workspace --locked`, no
+# `--release`). That binary is unoptimized and must never be shipped. This workflow does its own release
+# build.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize deploys. Never cancel one in flight: a cancelled run can be sitting between "swapped the new
+# binary in" and "health-checked / rolled it back", and killing it there is how you end up with a dead
+# relay and no rollback.
+concurrency:
+  group: deploy-node
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # PINNED, deliberately — do NOT use ubuntu-latest. The droplet is Ubuntu 24.04 (glibc 2.39), and a
+    # dynamically-linked Rust binary records the glibc symbol versions it was built against. Build on a
+    # newer Ubuntu and the droplet's loader refuses to exec it — before main(), so it is not a crash you
+    # can debug from the logs, and no CI check on the runner would ever have caught it. `ubuntu-latest`
+    # silently repoints to the next LTS on GitHub's schedule, which would turn a green deploy into a
+    # dead relay on a day nobody touched this file. Match the droplet, and bump this line the day the
+    # droplet is upgraded — not before.
+    runs-on: ubuntu-24.04
+    # A cold polkadot-sdk release build is ~an hour. Warm (rust-cache hit) it is a fraction of that, but
+    # a Cargo.lock change — an SDK bump, which is exactly why you are here — invalidates the cache.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      # The polkadot-sdk build (node + runtime wasm + RocksDB's C++) does not fit the ~14 GB free on a
+      # stock runner root. Reclaim the preinstalled toolchains we never use (→ ~40 GB). Same step as
+      # ci.yml's rust job, and inline rather than a third-party action to keep the least-privilege
+      # posture on a workflow that holds a deploy key.
+      - name: free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          sudo docker image prune --all --force || true
+          df -h /
+
+      # rustc is pinned by rust-toolchain.toml to 1.93.0 (the toolchain Parity builds the polkadot-sdk
+      # stable2606 train against); dtolnay pins the same version here so the deploy cannot silently
+      # drift onto a different compiler than CI tested with. rust-src + both wasm targets mirror
+      # rust-toolchain.toml — substrate's wasm-builder needs them to build the embedded runtime.
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rust-src
+          targets: wasm32v1-none, wasm32-unknown-unknown
+
+      # The apt list from README.md's prerequisites: llvm/clang for librocksdb-sys's bindgen, protoc for
+      # libp2p, cmake/openssl/pkg-config for the rest.
+      - name: system build deps
+        run: >
+          sudo apt-get update &&
+          sudo apt-get install -y
+          clang llvm-dev libclang-dev protobuf-compiler cmake libssl-dev pkg-config make build-essential
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Cache-poison guard, same as ci.yml's. substrate-wasm-builder emits a build-script output
+      # (wasm_binary.rs) that `include_bytes!`es a wasm under target/*/wbuild/ — and rust-cache restores
+      # the former while pruning the latter. Cargo then sees a fresh build-script fingerprint, does not
+      # re-run it, and the crate fails to compile against a file that is not there. Drop both so the
+      # wasm-builder re-runs and rebuilds the runtime wasm for real. No-op on a cache miss (no target/).
+      - name: reset stale substrate wasm-builder outputs (rust-cache cache-poison guard)
+        run: |
+          [ -d target ] || exit 0
+          rm -rf target/*/wbuild || true
+          find target -type f -path '*/build/*/out/wasm_binary.rs' | while read -r f; do
+            rm -rf "$(dirname "$(dirname "$f")")"
+          done
+
+      # `-p cogno-chain-node` — the node is all we ship; the CLI and the pallets' test harnesses are not
+      # on this box. The runtime wasm is still built and embedded (the node depends on the runtime crate,
+      # whose build.rs runs the wasm-builder): SKIP_WASM_BUILD must NOT be set here, or the binary ships
+      # with a stub runtime and cannot execute a single block.
+      - name: build (release)
+        run: cargo build --release --locked -p cogno-chain-node
+
+      # Prove it runs at all on the runner, and pin the exact bytes. The sha256 is carried through the
+      # rest of the job: it is checked against the file that lands on the droplet, so a truncated or
+      # tampered transfer is caught while the live relay is still untouched.
+      - name: sanity-check the binary + record its hash
+        run: |
+          version=$(./target/release/cogno-chain-node --version)
+          sha=$(sha256sum ./target/release/cogno-chain-node | cut -d' ' -f1)
+          size=$(du -h ./target/release/cogno-chain-node | cut -f1)
+          echo "built: $version ($size, sha256 $sha)"
+          echo "BINARY_SHA256=$sha" >> "$GITHUB_ENV"
+          echo "BINARY_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: authorize ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # The privileged half of this deploy runs from a script ON THE DROPLET, so the droplet's copy is
+      # what actually decides whether a bad binary gets rolled back. If someone improves the rollback
+      # logic in the repo and nobody reinstalls it, this workflow would quietly keep running the old
+      # logic — the class of drift that only shows up on the day you need it. So: refuse to deploy
+      # unless the box's copy is byte-identical to the committed one. This runs BEFORE anything is
+      # transferred, so a failure here changes nothing on the droplet.
+      - name: preflight — the droplet's deploy script must match the committed one
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh() { command ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$DEPLOY_USER@$DEPLOY_HOST" "$@"; }
+          want=$(sha256sum deploy/scripts/cogno-deploy-node | cut -d' ' -f1)
+          got=$(ssh 'sha256sum /usr/local/sbin/cogno-deploy-node 2>/dev/null | cut -d" " -f1' || true)
+          if [ -z "$got" ]; then
+            echo "::error::/usr/local/sbin/cogno-deploy-node is not installed on the droplet (or the box is"
+            echo "::error::unreachable). Do the one-time server setup — 'Deploying the node binary' in"
+            echo "::error::deploy/README.md. It installs the deploy script AND the sudoers entry, and it"
+            echo "::error::parse-checks the sudoers file with 'visudo -c' first (a bad /etc/sudoers.d file"
+            echo "::error::locks you out of sudo entirely — do not skip that step or hand-type the entry)."
+            exit 1
+          fi
+          if [ "$got" != "$want" ]; then
+            echo "::error::the droplet's /usr/local/sbin/cogno-deploy-node has drifted from the committed one"
+            echo "::error::  droplet:   $got"
+            echo "::error::  committed: $want"
+            echo "::error::Reinstall it (the repo is the source of truth — do not edit it on the box):"
+            echo "::error::  sudo install -m 0755 -o root -g root deploy/scripts/cogno-deploy-node /usr/local/sbin/"
+            exit 1
+          fi
+          echo "deploy script on the droplet matches deploy/scripts/cogno-deploy-node ($want)"
+
+      # Stage into a directory the DEPLOY USER owns. Nothing here needs root, and nothing here is live:
+      # the relay is still running the old binary and will keep running it until the script below says
+      # otherwise. rsync writes to a temp file and renames, so the staged path is never half-written.
+      - name: stage the binary on the droplet
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh() { command ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes "$DEPLOY_USER@$DEPLOY_HOST" "$@"; }
+          ssh 'mkdir -p ~/staging'
+          rsync -az --chmod=F0755 \
+            -e 'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' \
+            target/release/cogno-chain-node "$DEPLOY_USER@$DEPLOY_HOST:staging/cogno-chain-node"
+          got=$(ssh 'sha256sum ~/staging/cogno-chain-node | cut -d" " -f1')
+          if [ "$got" != "$BINARY_SHA256" ]; then
+            echo "::error::the staged binary does not match what we built (transfer corrupted?)"
+            echo "::error::  droplet: $got"
+            echo "::error::  built:   $BINARY_SHA256"
+            exit 1
+          fi
+          echo "staged: ~/staging/cogno-chain-node ($BINARY_SHA256)"
+
+      # THE PRIVILEGED STEP — and the only one. Everything root does on the droplet is in that script:
+      # exec the staged binary as the service user (a wrong-glibc binary dies here, relay untouched),
+      # back up the live one, rename the new one in, restart cogno-relay, confirm it resumes importing
+      # blocks, and roll back to the backup if it does not. A non-zero exit means the deploy failed AND the
+      # rollback has already been attempted — read the script's output above this error, it says which.
+      - name: install + restart cogno-relay (root, via the one-command sudoers entry)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # Capture output so we can tell "sudo refused us" (the sudoers entry is missing/wrong — the
+          # preflight only checks the *script*, not the sudoers) apart from "the script ran and failed".
+          # -tt is deliberately NOT passed: sudo -n needs no tty, and a pty would merge stderr into stdout
+          # and mangle the script's exit code. `restrict` in authorized_keys (no pty) is therefore fine.
+          set +e
+          out=$(ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes \
+                  "$DEPLOY_USER@$DEPLOY_HOST" 'sudo -n /usr/local/sbin/cogno-deploy-node' 2>&1)
+          rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] && exit 0
+          # sudo's own refusals (no matching NOPASSWD rule, or a parse-broken sudoers) — not the script.
+          case "$out" in
+            *"a password is required"*|*"a terminal is required"*|*"not allowed to execute"*|*"sudo:"*)
+              echo "::error::sudo refused to run the deploy script — the /etc/sudoers.d/cogno-deploy entry"
+              echo "::error::is missing, malformed, or does not match. Re-do the one-time server setup in"
+              echo "::error::deploy/README.md ('Deploying the node binary'). The node was NOT touched."
+              exit 1 ;;
+          esac
+          echo "::error::the node deploy FAILED on the droplet — see the script output above."
+          echo "::error::It rolls back on its own; the last lines say whether the relay came back on the"
+          echo "::error::previous binary, or is DOWN and needs you. To look:"
+          echo "::error::  ssh $DEPLOY_USER@<droplet> 'journalctl -u cogno-relay -n 200 --no-pager'"
+          exit 1
+
+      # End-to-end, from outside: does the PUBLIC endpoint the app actually talks to answer? The script
+      # already checked 127.0.0.1:9944 on the box; this checks the whole path a browser takes —
+      # nginx :443 → /rpc → the relay. It catches the case where the node is healthy but the proxy in
+      # front of it is not. Skipped if vars.NEXT_PUBLIC_WS_URL is unset (it is the app deploy's variable;
+      # this workflow does not require it).
+      - name: smoke-check the public RPC endpoint
+        env:
+          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
+        run: |
+          if [ -z "${NEXT_PUBLIC_WS_URL:-}" ]; then
+            # A warning, not a silent pass: the on-box check confirmed the node, but nothing here has
+            # verified the browser-facing path (nginx / TLS / cert). Set vars.NEXT_PUBLIC_WS_URL — the
+            # same variable the app deploy uses — to close that gap.
+            echo "::warning::vars.NEXT_PUBLIC_WS_URL is unset, so the public endpoint (nginx → relay) was"
+            echo "::warning::NOT probed. The node passed its own on-box health check; the public wss:// path"
+            echo "::warning::is unverified by this run."
+            exit 0
+          fi
+          url="$(printf '%s' "$NEXT_PUBLIC_WS_URL" | sed -E 's#^wss://#https://#')"
+          # nginx maps an absent Upgrade header to `Connection: close`, so a plain POST reaches the
+          # node's JSON-RPC over HTTP on the same port the browser opens a websocket to.
+          resp=$(curl -sS -m 10 --retry 3 --retry-delay 2 \
+                   -H 'Content-Type: application/json' \
+                   -d '{"jsonrpc":"2.0","id":1,"method":"system_health","params":[]}' \
+                   "$url" || true)
+          case "$resp" in
+            *'"peers"'*) echo "public RPC OK: $url -> $resp" ;;
+            *)
+              echo "::error::the relay is healthy on the box, but the PUBLIC endpoint is not answering."
+              echo "::error::  $url -> ${resp:-<no response>}"
+              echo "::error::The node is fine (its own health check passed) — look at nginx:"
+              echo "::error::  ssh <droplet> 'sudo nginx -t && sudo systemctl status nginx'"
+              exit 1
+              ;;
+          esac
+
+      - name: done
+        run: echo "deployed ${BINARY_VERSION} (${BINARY_SHA256}) to cogno-relay"
