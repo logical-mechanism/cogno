@@ -66,13 +66,14 @@ export function LeftNav() {
   ];
 
   const onPost = useCallback(() => {
-    if (viewer.status === "ready") {
+    if (viewer.writeReady) {
       openCompose();
     } else {
-      // Write intent funnels to /welcome when not connected / not bound (doc 01 §6.4).
+      // Write intent funnels to /welcome until setup is fully complete (bound + stake-bound + posting
+      // power). An explicit "Post" click is clearer sent to finish setup than to a disabled composer CTA.
       router.push("/welcome/");
     }
-  }, [viewer.status, openCompose, router]);
+  }, [viewer.writeReady, openCompose, router]);
 
   return (
     <nav className={styles.nav} aria-label="Primary">

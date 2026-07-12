@@ -163,7 +163,7 @@ export function ModalRouteHost() {
   // quote are uncontrolled → `serialized` stays "" and the gate uses the base-cost probe, as before.
   // `noPostingPower` also feeds EditProfileModal below — profile writes are capacity-metered too.
   const gateText = kind === "poll" ? pollDraft.question : serialized;
-  const { rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
+  const { rateLimited, noPostingPower, needsVotingPower, retryInSeconds } = useComposerGate(gateText);
 
 
   const onComposerDirty = useCallback((dirty: boolean) => {
@@ -364,6 +364,7 @@ export function ModalRouteHost() {
         onSaveProfile={onSaveProfile}
         onClearProfile={onClearProfile}
         noPostingPower={noPostingPower}
+        needsVotingPower={needsVotingPower}
       />
     );
   }
@@ -386,6 +387,7 @@ export function ModalRouteHost() {
             mode="post"
             submitState={submitState}
             noPostingPower={noPostingPower}
+            needsVotingPower={needsVotingPower}
             rateLimited={rateLimited}
             retryInSeconds={retryInSeconds}
             text={text}
@@ -403,6 +405,7 @@ export function ModalRouteHost() {
             replyTo={targetPost}
             submitState={submitState}
             noPostingPower={noPostingPower}
+            needsVotingPower={needsVotingPower}
             rateLimited={rateLimited}
             autoFocus
             submitReply={onReply}
@@ -415,6 +418,7 @@ export function ModalRouteHost() {
             quoted={targetPost}
             submitState={submitState}
             noPostingPower={noPostingPower}
+            needsVotingPower={needsVotingPower}
             rateLimited={rateLimited}
             autoFocus
             submitQuote={onQuote}
@@ -428,6 +432,7 @@ export function ModalRouteHost() {
             onChange={setPollDraft}
             submitState={submitState}
             noPostingPower={noPostingPower}
+            needsVotingPower={needsVotingPower}
             rateLimited={rateLimited}
             autoFocus
             submitCreatePoll={onCreatePoll}

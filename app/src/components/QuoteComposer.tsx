@@ -22,6 +22,7 @@ export interface QuoteComposerProps {
   rateLimited?: boolean;
   retryInSeconds?: number | null;
   noPostingPower?: boolean;
+  needsVotingPower?: boolean;
   autoFocus?: boolean;
   /** Hand back the comment text; the surface calls mutations.submitQuote(text, quoted.id). */
   submitQuote: (text: string) => void;
@@ -47,6 +48,7 @@ export function QuoteComposer({
   rateLimited,
   retryInSeconds,
   noPostingPower,
+  needsVotingPower,
   autoFocus,
   submitQuote,
   onDirtyChange,
@@ -73,6 +75,7 @@ export function QuoteComposer({
       rateLimited={rateLimited}
       retryInSeconds={retryInSeconds}
       noPostingPower={noPostingPower}
+      needsVotingPower={needsVotingPower}
       autoFocus={autoFocus}
       contextBelow={embed}
       draftExtras={{ quotedId: quoted.id }}

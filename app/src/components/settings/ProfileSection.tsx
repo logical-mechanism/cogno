@@ -9,6 +9,7 @@
 // (reusing the same bind affordance) and Edit/Clear are hidden.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import styles from "./ProfileSection.module.css";
 import { Avatar } from "@/components/Avatar";
 import { DisplayName } from "@/components/DisplayName";
@@ -36,7 +37,8 @@ interface ProfilePreview {
 }
 
 export function ProfileSection() {
-  const { api, signer, source, signerCtl, identity, bestBlock } = useSession();
+  const { api, signer, source, signerCtl, identity, viewer, bestBlock } = useSession();
+  const router = useRouter();
   const { run } = useMutation();
   const { overlay } = useOptimistic();
   const { toast } = useToaster();
@@ -131,6 +133,9 @@ export function ProfileSection() {
 
   const onClear = useCallback(() => {
     if (!api) return;
+    // A profile write is gated on full setup (bound + stake-bound + posting power) like every other
+    // write — an unfinished account is funneled to /welcome instead of firing a doomed extrinsic.
+    if (!viewer.writeReady) return void router.push("/welcome/");
     submit("clear", submitClearProfile(api, signer), "Profile cleared", () => {
       setPreview({ displayName: undefined, bio: undefined, avatar: undefined, pinnedPostId: undefined });
       // This path clears the profile WITHOUT going through ModalRouteHost, so it must drop the shared
@@ -142,15 +147,16 @@ export function ProfileSection() {
         invalidateHoverProfile(ss58);
       }
     });
-  }, [api, signer, submit, ss58, invalidateAccountProfile]);
+  }, [api, signer, submit, ss58, invalidateAccountProfile, viewer.writeReady, router]);
 
   const onUnpin = useCallback(() => {
     if (!api) return;
+    if (!viewer.writeReady) return void router.push("/welcome/");
     submit("unpin", submitUnpinPost(api, signer), "Post unpinned", () => {
       setPinnedPost(null);
       setPreview((p) => (p ? { ...p, pinnedPostId: undefined } : p));
     });
-  }, [api, signer, submit]);
+  }, [api, signer, submit, viewer.writeReady, router]);
 
   // connected-but-unbound: nudge to finish setup; Edit/Clear hidden.
   if (signerCtl.postingEnabled && bound === false) {
@@ -223,7 +229,13 @@ export function ProfileSection() {
         </div>
 
         <div className={styles.actions}>
-          <button type="button" className={styles.primaryBtn} onClick={() => modalActions.openEditProfile()}>
+          <button
+            type="button"
+            className={styles.primaryBtn}
+            onClick={() =>
+              viewer.writeReady ? modalActions.openEditProfile() : router.push("/welcome/")
+            }
+          >
             Edit profile
           </button>
           <button

@@ -2,7 +2,8 @@
 
 // ComposeFab — the mobile (<688px) floating compose button (doc 01 §5.4). A fixed accent circle above
 // the BottomTabBar (bottom-right) that opens the compose modal overlay (full-screen sheet on mobile).
-// Write intent funnels to /welcome/ when not connected / not bound (doc 01 §6.4).
+// Write intent funnels to /welcome/ until setup is fully complete (bound + stake-bound + posting power,
+// i.e. viewer.writeReady) — an explicit "Post" tap is clearer sent to finish setup than to a dead CTA.
 
 import { useCallback } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -18,9 +19,9 @@ export function ComposeFab() {
   const { openCompose } = useModalStore();
 
   const onClick = useCallback(() => {
-    if (viewer.status === "ready") openCompose();
+    if (viewer.writeReady) openCompose();
     else router.push("/welcome/");
-  }, [viewer.status, openCompose, router]);
+  }, [viewer.writeReady, openCompose, router]);
 
   // Hidden on the full-screen onboarding flow (doc 11 §11).
   if (pathname.startsWith("/welcome")) return null;

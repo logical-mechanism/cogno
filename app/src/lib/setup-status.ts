@@ -4,15 +4,18 @@
 // question consistently instead of re-interpreting connected/bound/locked ad hoc. (Today the Settings
 // Account card is the consumer; the welcome flow mirrors the same model with its own UI.)
 //
-// Posting requires BOTH gates, in order:
+// Posting requires ALL THREE gates, in order:
 //   1. the CIP-8 identity bind        — the Sybil/identity gate (free, feeless, instant)
-//   2. locked ADA → talk-capacity     — the posting gate (capacity = weight·CapRatio; weight 0 ⇒ 0)
+//   2. the stake-key bind             — voting power; a MANDATORY onboarding step (feeless, before lock)
+//   3. locked ADA → talk-capacity     — the posting gate (capacity = weight·CapRatio; weight 0 ⇒ 0)
 // A bound account with ZERO locked ADA has zero talk-capacity, so every post is refused at the pool by
-// CheckCapacity (pallet-microblog). "You can post" is therefore true only once posting power > 0 —
-// binding alone is necessary but NOT sufficient. Reading is always open at every phase.
+// CheckCapacity (pallet-microblog); an account that has not bound its stake key is treated as setup-
+// incomplete and cannot write either. "You can post" (ready) is true only once the account is identity-
+// bound AND stake-bound AND posting power > 0. Reading is always open at every phase.
 //
-// Binding the STAKE key (voting power, weights your votes) is the only genuinely OPTIONAL boost — it
-// never gates posting and is surfaced separately, never as a required step.
+// The stake bind is ordered BEFORE the lock because it is feeless and fails fast on wallets that can't
+// sign over a reward address (Eternl/Lace can) — so the user learns their wallet can't finish BEFORE
+// spending 100 ADA. It was formerly optional; it is now required.
 
 import type { SessionState } from "./session";
 
@@ -21,6 +24,7 @@ export type SetupPhase =
   | "connecting"
   | "unbound"
   | "binding"
+  | "needs_voting_power" // bound but stake key not linked — the mandatory voting-power step (before lock)
   | "checking_power"
   | "crediting" // locked ADA, waiting out the observer's stability window before weight is credited
   | "needs_power"
@@ -30,6 +34,7 @@ export type SetupPhase =
 export type SetupAction =
   | { kind: "connect"; label: string } // open the wallet picker → derive the posting key
   | { kind: "bind"; label: string } // register the CIP-8 identity
+  | { kind: "stake"; label: string } // bind the stake key (voting power) — mandatory, before the lock
   | { kind: "lock"; label: string }; // lock ADA to earn posting capacity
 
 export interface SetupStatus {
@@ -54,10 +59,15 @@ export interface SetupStatus {
  *   - `0n`    → bound but no posting power yet → the next required step is to lock ADA
  *   - `null`  → still loading → a neutral "checking" state (no false "all set" / "lock now" flash)
  * It is only consulted in the bound states; the pre-bind phases ignore it (pass `null`).
+ *
+ * `stakeBound` is the on-chain `CognoGate.StakeCredOf` presence (`true` linked / `false` not / `null`
+ * loading). Because the stake bind is now a MANDATORY step ordered before the lock, the bound branch
+ * checks it first: `false` → the "add voting power" step; `null` → neutral checking (no flash).
  */
 export function setupStatus(
   state: SessionState,
   postingPower: bigint | null,
+  stakeBound: boolean | null,
   /** a lock is in flight/crediting (usePendingCapacity) — so a bound, zero-power account is WAITING on
    *  its lock, not missing one: show "crediting", not "lock ADA". */
   pending = false,
@@ -98,15 +108,41 @@ export function setupStatus(
     case "bound":
     case "bound_no_stake":
     case "bound_staked":
-      return boundStatus(postingPower, pending);
+      return boundStatus(stakeBound, postingPower, pending);
   }
 }
 
 /**
- * The bound branch: identity is registered (Sybil gate passed), but posting ALSO needs locked-ADA
- * talk-capacity. "All set / you can post" is true only once posting power is non-zero.
+ * The bound branch: identity is registered (Sybil gate passed), but two required steps remain, in
+ * order: (1) bind the stake key (voting power), then (2) lock ADA for talk-capacity. "All set / you can
+ * post" is true only once the stake key is linked AND posting power is non-zero.
  */
-function boundStatus(postingPower: bigint | null, pending: boolean): SetupStatus {
+function boundStatus(
+  stakeBound: boolean | null,
+  postingPower: bigint | null,
+  pending: boolean,
+): SetupStatus {
+  // Stake read still loading → neutral (never flash "add voting power" before the read resolves).
+  if (stakeBound === null) {
+    return {
+      phase: "checking_power",
+      ready: false,
+      headline: "Almost there",
+      detail: "You're registered. Checking your setup…",
+      next: null,
+    };
+  }
+  // Stake key not linked → the mandatory voting-power step, which comes BEFORE the lock.
+  if (!stakeBound) {
+    return {
+      phase: "needs_voting_power",
+      ready: false,
+      headline: "Add voting power to continue",
+      detail: "Prove your wallet's stake to finish setting up your account.",
+      next: { kind: "stake", label: "Add voting power" },
+    };
+  }
+  // Stake linked → the posting-power (lock) step.
   // Has posting power → genuinely all set.
   if (postingPower != null && postingPower > 0n) {
     return {

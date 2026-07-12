@@ -55,14 +55,14 @@ export function RightRail() {
 
   const onToggleFollow = useCallback(
     (target: string, next: boolean) => {
-      if (viewer.status !== "ready") {
+      if (!viewer.writeReady) {
         router.push("/welcome/");
         return;
       }
       if (next) follow.follow(target);
       else follow.unfollow(target);
     },
-    [viewer.status, router, follow],
+    [viewer.writeReady, router, follow],
   );
 
   // Suppress the whole rail where the surface owns the full content width: the

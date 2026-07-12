@@ -1,10 +1,12 @@
 "use client";
 
 // WelcomePage — /welcome (surface 11). The connect → derive → CIP-8 bind onboarding stepper, then the
-// power-ups step: locking 100 ADA into the L1 vault is REQUIRED to post (it earns the talk-capacity
-// every post consumes — a bound account with zero locked ADA cannot post), while binding the stake key
-// for voting weight is the only genuinely optional boost. It is the canonical write-gate target for any
-// write intent attempted while not connected / not bound.
+// power-ups step, which now has TWO required, non-skippable sub-steps in order: (1) bind the stake key
+// (voting power) — required and ordered first so a wallet that can't sign its stake is caught before any
+// ADA is locked; (2) lock 100 ADA into the L1 vault for talk-capacity (a bound account with zero locked
+// ADA cannot post). It is the canonical target for any write intent attempted before setup is fully
+// complete — every write affordance funnels here until `viewer.writeReady` (bound + stake-bound +
+// posting power). Reading stays open throughout (read-only browse).
 //
 // The stepper is driven by session.sessionState (@/lib/session) + a local subStep within
 // connected_unbound (surface 11 §6.1):
@@ -125,21 +127,28 @@ export default function WelcomePage() {
   }, [sessionState]);
 
   // ── returning-user fast path ───────────────────────────────────────────────────────────────────
-  // Only a user who just registered THIS session needs the power-ups interstitial; anyone already set
-  // up should land straight in the feed. We must NOT infer "did they onboard?" from session states:
-  // on an in-app reconnect the identity read is briefly stale (bound === false for the reverted
-  // //Alice key) before it resolves, so the session flaps through a PHANTOM `connected_unbound` that
-  // used to wrongly mark onboarding as started — leaving a returning user stuck on power-ups. Latch it
-  // on the actual Register action instead (set in onRegister), and reset on a real disconnect. A
-  // returning user reconnects into a bound state without ever registering here, so this stays false.
-  const registeredThisSession = useRef(false);
+  // Only a user who just registered THIS session needs to walk the power-ups steps. A returning user is
+  // either FULLY set up (bounce straight to the feed) or an existing account that predates a now-
+  // mandatory step (drop onto power-ups to finish it — e.g. bound + locked but never stake-bound). We
+  // must NOT infer "did they onboard?" purely from session states: on an in-app reconnect the identity
+  // read is briefly stale (bound === false for the reverted //Alice key), so the session flaps through a
+  // PHANTOM `connected_unbound` — which is why we latch registration on the actual Register action
+  // (onRegister) rather than the session state, and reset it on a real disconnect. It is STATE (not a
+  // ref) so the routing below re-derives from it during render.
+  //
+  // "Fully set up" = stake bound AND posting power > 0 — the same rule `viewer.writeReady` gates writes
+  // on. For a returning user we must WAIT for the stake + posting-power reads before deciding, else a
+  // fully-set-up user flashes the power-ups "checking" UI for a frame before the bounce; `decidingReturn`
+  // holds the loader until both resolve. Fresh registrants skip the wait and continue through the steps.
+  const [registeredThisSession, setRegisteredThisSession] = useState(false);
   useEffect(() => {
-    if (sessionState === "disconnected") registeredThisSession.current = false;
+    if (sessionState === "disconnected") setRegisteredThisSession(false);
   }, [sessionState]);
-  // A returning (already-onboarded) user lands on power-ups without having registered here → bounce
-  // to the feed. Computed once so the redirect and the loader below stay in lockstep (the loader hides
-  // the power-ups step for the one frame before the redirect lands, so nothing flashes).
-  const bouncingToFeed = welcomeStep === "powerups" && !registeredThisSession.current;
+  const fullySetUp = identity.stakeBound === true && (postingPower ?? 0n) > 0n;
+  const returningOnPowerups = welcomeStep === "powerups" && !registeredThisSession;
+  const decidingReturn =
+    returningOnPowerups && (identity.stakeBound === null || postingPower === null);
+  const bouncingToFeed = returningOnPowerups && !decidingReturn && fullySetUp;
   useEffect(() => {
     if (bouncingToFeed) router.replace("/");
   }, [bouncingToFeed, router]);
@@ -167,7 +176,7 @@ export default function WelcomePage() {
   // so focus follows (and screen readers re-announce) the new heading instead of dropping to <body>.
   const powerupsBanner =
     welcomeStep === "powerups"
-      ? `${(postingPower ?? 0n) > 0n}|${pending.kind}|${postingPower === null}`
+      ? `${identity.stakeBound}|${(postingPower ?? 0n) > 0n}|${pending.kind}|${postingPower === null}`
       : "";
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
@@ -200,14 +209,21 @@ export default function WelcomePage() {
 
   const onRegister = useCallback(() => {
     if (!signerCtl.connectedWalletId) return;
-    // Latch that onboarding started HERE this session, so the power-ups step isn't skipped for a
+    // Latch that onboarding started HERE this session, so the power-ups steps aren't skipped for a
     // genuine new registrant (see the returning-user fast path above).
-    registeredThisSession.current = true;
+    setRegisteredThisSession(true);
     identity.bind(signerCtl.connectedWalletId);
   }, [identity, signerCtl.connectedWalletId]);
 
   const goToTimeline = useCallback(() => router.push("/"), [router]);
   const openSettings = useCallback(() => router.push("/settings/"), [router]);
+
+  // "Use a different wallet" from the (now-required) stake step: a wallet that can't sign over its
+  // reward address can't finish, so drop back to the wallet picker to re-derive from another wallet.
+  const useDifferentWallet = useCallback(() => {
+    setSubStep("account");
+    signerCtl.disconnect();
+  }, [signerCtl]);
 
   const walletName = signerCtl.connectedWalletId
     ? capitalize(signerCtl.connectedWalletId)
@@ -218,11 +234,15 @@ export default function WelcomePage() {
 
   // Neutral "deciding" loader (surface 11 §6): shown while a reconnecting key's bound-read is in flight
   // (checkingBound) — so the connect/account step never flashes, incl. the first post-derive frame since
-  // checkingBound is set during render, not an effect — or while we're bouncing an already-onboarded user
-  // to the feed (so power-ups never flashes). checkingBound flips false on error OR timeout, so a
-  // failed/hung read falls through to the connect step instead of wedging the loader on a blank screen.
+  // checkingBound is set during render, not an effect — while we're bouncing an already-onboarded user
+  // to the feed (so power-ups never flashes), OR while a returning user's stake/posting-power reads are
+  // still resolving (decidingReturn), so a fully-set-up user never flashes a power-ups step before the
+  // bounce. checkingBound flips false on error OR timeout, so a failed/hung read falls through to the
+  // connect step instead of wedging the loader on a blank screen.
   const showLoader =
-    (signerCtl.postingEnabled && !signerCtl.deriving && identity.checkingBound) || bouncingToFeed;
+    (signerCtl.postingEnabled && !signerCtl.deriving && identity.checkingBound) ||
+    bouncingToFeed ||
+    decidingReturn;
 
   // ── render ─────────────────────────────────────────────────────────────────────────────────────
   if (showLoader) return <WelcomeShell loading />;
@@ -281,6 +301,7 @@ export default function WelcomePage() {
           ss58={signerCtl.signer.ss58}
           onGoToTimeline={goToTimeline}
           onOpenSettings={openSettings}
+          onUseDifferentWallet={useDifferentWallet}
           headingRef={headingRef}
         />
       )}

@@ -87,6 +87,12 @@ export interface ComposerProps {
    * self-contained on every surface; this prop only hard-disables the CTA where the surface knows it.
    */
   noPostingPower?: boolean;
+  /**
+   * Ready account whose MANDATORY stake bind is unfinished → CTA disabled + the "add voting power /
+   * finish setup" notice (rendered self-contained by NoPostingPowerNotice; this prop hard-disables the
+   * CTA). Takes precedence over noPostingPower — stake is the earlier required step.
+   */
+  needsVotingPower?: boolean;
   /** Context block above/below the textarea (reply preview / QuotedPostEmbed / poll options). */
   contextAbove?: ReactNode;
   contextBelow?: ReactNode;
@@ -146,6 +152,7 @@ export function Composer({
   rateLimited,
   retryInSeconds,
   noPostingPower,
+  needsVotingPower,
   contextAbove,
   contextBelow,
   toolbarExtras,
@@ -253,10 +260,14 @@ export function Composer({
   }, [nonEmpty, onDirtyChange]);
 
   // CTA disabled rules — §5.4 order: session(reroute) > validity > capacity > pending. No posting
-  // power (zero locked ADA) is a hard capacity block, same as rate-limited.
+  // power (zero locked ADA) and the unfinished mandatory stake step are hard blocks, same as rate-limited.
   const disabled = sessionGated
     ? false // session-gated CTA is ACTIVE (it reroutes), never greyed
-    : !textValid || rateLimited === true || noPostingPower === true || pending;
+    : !textValid ||
+      rateLimited === true ||
+      noPostingPower === true ||
+      needsVotingPower === true ||
+      pending;
 
   // Auto-grow: let the textarea size to content (capped by CSS max-height → scroll).
   const onTextareaInput = useCallback(
@@ -397,7 +408,7 @@ export function Composer({
           it renders on every surface; it takes precedence over the transient rate-limit notice. */}
       {!sessionGated && <NoPostingPowerNotice />}
 
-      {!sessionGated && !noPostingPower && rateLimited && (
+      {!sessionGated && !noPostingPower && !needsVotingPower && rateLimited && (
         <div className={styles.notice}>
           <RateLimitNotice variant="inline" retryInSeconds={retryInSeconds} />
         </div>
@@ -439,15 +450,17 @@ export function Composer({
             title={
               sessionGated
                 ? undefined
-                : noPostingPower
-                  ? "Lock ADA to post"
-                  : overLimit
-                    ? `Too long. Trim to ${maxBytes} bytes`
-                    : !nonEmpty
-                      ? "Write something first"
-                      : rateLimited
-                        ? "You're over the rate limit"
-                        : `${label} — ${IS_MAC ? "⌘↵" : "Ctrl+Enter"}`
+                : needsVotingPower
+                  ? "Add voting power to finish setup"
+                  : noPostingPower
+                    ? "Lock ADA to post"
+                    : overLimit
+                      ? `Too long. Trim to ${maxBytes} bytes`
+                      : !nonEmpty
+                        ? "Write something first"
+                        : rateLimited
+                          ? "You're over the rate limit"
+                          : `${label} — ${IS_MAC ? "⌘↵" : "Ctrl+Enter"}`
             }
           >
             {pending ? <Spinner size="sm" label="Posting" /> : label}

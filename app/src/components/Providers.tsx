@@ -16,7 +16,7 @@
 // FeedSource is derived inside ChainProvider (memoized on [api]) and handed out via the same context,
 // so a surface calls useSession() once instead of re-deriving the source per route.
 
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { PolkadotClient } from "polkadot-api";
 import { useChain } from "@/hooks/useChain";
 import { useSigner, type UseSigner } from "@/hooks/useSigner";
@@ -108,6 +108,26 @@ function ChainProvider({ children }: { children: ReactNode }) {
     bestBlock,
   );
 
+  // The active account's posting power (TalkStake.AllowedStake = locked-ADA weight), watched globally so
+  // `viewer.writeReady` can gate EVERY write affordance on the same "fully set up" signal instead of each
+  // surface re-deriving it. 0n = registered-but-unlocked (or a lock still crediting), null = still loading.
+  // Composers still read their own useCapacity for the rate-limit math; this is only for the coarse gate.
+  const [postingPower, setPostingPower] = useState<bigint | null>(null);
+  useEffect(() => {
+    const active = signerCtl.postingEnabled ? signer.ss58 : null;
+    if (!api || !active) {
+      setPostingPower(null);
+      return;
+    }
+    // PAPI v2: watchValue takes an options object and emits { block, value } (destructure .value). On a
+    // subscription error fall through to 0n (not-ready) rather than sit on null (loading) forever.
+    const sub = api.query.TalkStake.AllowedStake.watchValue(active, { at: "best" }).subscribe(
+      ({ value: w }) => setPostingPower((w as bigint) ?? 0n),
+      () => setPostingPower(0n),
+    );
+    return () => sub.unsubscribe();
+  }, [api, signerCtl.postingEnabled, signer.ss58]);
+
   const sessionState = useMemo(
     () =>
       deriveSessionState(
@@ -138,13 +158,20 @@ function ChainProvider({ children }: { children: ReactNode }) {
       identityHash: identity.bound ? (identity.boundStakeCredHex ?? undefined) : undefined,
       displayName: self.displayName,
       avatar: self.avatar,
+      // The one authoritative write gate: bound + stake-bound + locked-ADA weight. Stake is a MANDATORY
+      // onboarding step, so a bound, locked, but never-stake-bound account is intentionally NOT writeReady
+      // (it browses read-only and every write funnels to /welcome to finish). False while any read loads.
+      writeReady:
+        identity.bound === true && identity.stakeBound === true && (postingPower ?? 0n) > 0n,
     };
   }, [
     sessionState,
     signerCtl.postingEnabled,
     signer.ss58,
     identity.bound,
+    identity.stakeBound,
     identity.boundStakeCredHex,
+    postingPower,
     self.displayName,
     self.avatar,
   ]);

@@ -24,6 +24,10 @@ export interface ComposerGate {
   rateLimited: boolean;
   /** Ready account with zero locked-ADA weight → the honest "lock ADA to post" gate, NOT a rate limit. */
   noPostingPower: boolean;
+  /** Bound account whose stake key is not linked → the mandatory "add voting power" step (before the
+   *  lock) is unfinished, so it can't post yet. Distinct from noPostingPower and takes precedence in the
+   *  notice (stake comes first). `=== false` only — never during the stake read's loading (no flash). */
+  needsVotingPower: boolean;
   /**
    * Seconds until THIS draft becomes postable — the countdown in the inline RateLimitNotice.
    *
@@ -48,7 +52,7 @@ export interface ComposerGate {
  *   a degenerate case.
  */
 export function useComposerGate(gateText: string): ComposerGate {
-  const { api, viewer, bestBlock } = useSession();
+  const { api, viewer, identity, bestBlock } = useSession();
   const { view, consts } = useCapacity(api, viewer.address ?? null, bestBlock);
 
   const rateLimited = useMemo(() => {
@@ -69,6 +73,10 @@ export function useComposerGate(gateText: string): ComposerGate {
 
   const noPostingPower = viewer.status === "ready" && !!view && view.weight === 0n;
 
+  // The mandatory stake step is unfinished. `=== false` (never `!== true`) so a returning stake-bound
+  // account's brief loading (`null`) doesn't flash the CTA disabled.
+  const needsVotingPower = viewer.status === "ready" && identity.stakeBound === false;
+
   // The countdown, only where it can be truthful (see the doc on ComposerGate.retryInSeconds).
   const retryInSeconds = useMemo(() => {
     if (viewer.status !== "ready" || !view || !consts) return undefined;
@@ -79,5 +87,5 @@ export function useComposerGate(gateText: string): ComposerGate {
     return st.blocks * SECS_PER_BLOCK;
   }, [viewer.status, view, consts, gateText]);
 
-  return { rateLimited, noPostingPower, retryInSeconds };
+  return { rateLimited, noPostingPower, needsVotingPower, retryInSeconds };
 }
