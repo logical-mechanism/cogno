@@ -37,7 +37,7 @@ export default function BookmarksPage() {
 
   // The saved id set (bigint[]) from localStorage; an order-independent string key drives the resolve
   // effect so a referentially-new-but-equal list doesn't refetch.
-  const bookmarkIds = useBookmarkList();
+  const bookmarkIds = useBookmarkList(me);
   const idsKey = useMemo(() => bookmarkIds.map(String).sort().join(","), [bookmarkIds]);
 
   // ── resolve saved ids → live posts (newest-first) ─────────────────────────────────────────────

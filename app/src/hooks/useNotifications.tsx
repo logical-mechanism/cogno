@@ -71,7 +71,7 @@ const NotificationsContext = createContext<NotificationsFeed | null>(null);
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const { api, source, viewer } = useSession();
   const me = viewer.address ?? null;
-  const mutedList = useMutedList();
+  const mutedList = useMutedList(me);
   const readState = useNotificationReadState(me);
 
   // The fold and the "has settled" flag are STAMPED WITH THE ACCOUNT THEY BELONG TO, and `loaded` /

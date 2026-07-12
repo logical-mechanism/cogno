@@ -27,8 +27,8 @@ import { InlinePoll } from "./InlinePoll";
 import { PostCardActions } from "./PostCardActions";
 import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
-import { useMuted, muteActions } from "@/lib/muteStore";
-import { useBookmarked, bookmarkActions } from "@/lib/bookmarkStore";
+import { useMuted, muteActionsFor } from "@/lib/muteStore";
+import { useBookmarked, bookmarkActionsFor } from "@/lib/bookmarkStore";
 import { useToaster } from "./toast/ToasterProvider";
 import type {
   CognoPost,
@@ -130,10 +130,13 @@ export function PostCard({
   // posted (non-pending) posts, and only when the surface wired onPin. Unpin lives in Settings → Profile.
   const isOwnPost =
     gate.status === "ready" && gate.address != null && gate.address === post.author;
+  // Bookmarks + mutes are device-local but scoped PER ACCOUNT (null = the signed-out bucket), so a
+  // shared device never shows one wallet's saved posts or mute list to the next.
+  const me = gate.status === "ready" ? (gate.address ?? null) : null;
   // Client-local mute (device-only, no chain state): collapse another account's posts everywhere.
-  const muted = useMuted(post.author);
+  const muted = useMuted(post.author, me);
   // Client-local bookmark (device-only, no chain state): save any post to the /bookmarks shortlist.
-  const bookmarked = useBookmarked(post.id);
+  const bookmarked = useBookmarked(post.id, me);
   // Bookmarking lives only in the ··· menu (which closes on select) → toast so the save is confirmed,
   // mirroring the "Link copied" feedback on the sibling copy-link action.
   const { toast } = useToaster();
@@ -149,7 +152,7 @@ export function PostCard({
       id: "bookmark",
       label: bookmarked ? "Remove bookmark" : "Bookmark",
       onSelect: () => {
-        bookmarkActions.toggle(post.id);
+        bookmarkActionsFor(me).toggle(post.id);
         toast(
           bookmarked
             ? { kind: "info", message: "Removed from bookmarks" }
@@ -162,11 +165,11 @@ export function PostCard({
       items.push({
         id: "mute",
         label: muted ? `Unmute ${handle}` : `Mute ${handle}`,
-        onSelect: () => muteActions.toggle(post.author),
+        onSelect: () => muteActionsFor(me).toggle(post.author),
       });
     }
     return items.length > 0 ? items : undefined;
-  }, [pending, isOwnPost, handlers, post, muted, bookmarked, toast]);
+  }, [pending, isOwnPost, handlers, post, muted, bookmarked, toast, me]);
 
   // A muted author's post collapses to a "Show" stub everywhere EXCEPT the detail focal (you opened it
   // on purpose). Revealing is local + reversible; the full card keeps its "Unmute" in the ··· menu.
