@@ -13,6 +13,7 @@ import {
   postsOf,
   type CapacityConsts,
   type CapacityInputs,
+  type CapacityView,
 } from "./capacity";
 
 // Representative runtime-shaped constants (the exact values are read from metadata at runtime;
@@ -186,9 +187,18 @@ describe("postsOf", () => {
 // `status.blocks * 6` on them yields NaN — which happens to render as the generic copy by luck, not by
 // design. This pins the contract the gate depends on.
 describe("draftStatus — which kinds carry a `blocks` countdown", () => {
+  const mkView = (over: Partial<CapacityView> = {}): CapacityView => ({
+    weight: 50n,
+    bucket: { capLast: 0n, lastBlock: 0 },
+    cap: 500n,
+    have: 0n,
+    ratePerBlock: 100n,
+    at: 0,
+    ...over,
+  });
+
   it("wait and charging carry blocks (a real wait, so a real number)", () => {
-    const view = { weight: 1_000_000n, have: 0n, cap: 10_000n, ratePerBlock: 100n, bucket: true };
-    const st = draftStatus(view, 100, K);
+    const st = draftStatus(mkView({ weight: 1_000_000n, cap: 10_000n }), 100, K);
     expect(st.kind === "wait" || st.kind === "charging").toBe(true);
     if (st.kind === "wait" || st.kind === "charging") {
       expect(st.blocks).toBeGreaterThan(0);
@@ -197,15 +207,13 @@ describe("draftStatus — which kinds carry a `blocks` countdown", () => {
   });
 
   it("too_long carries NO blocks — waiting never helps, the post is over the cap at that LENGTH", () => {
-    const view = { weight: 1_000n, have: 0n, cap: 10n, ratePerBlock: 100n, bucket: true };
-    const st = draftStatus(view, 5_000, K);
+    const st = draftStatus(mkView({ weight: 1_000n, cap: 10n }), 5_000, K);
     expect(st.kind).toBe("too_long");
     expect("blocks" in st).toBe(false);
   });
 
   it("no_weight carries NO blocks — zero weight is not a timer, it is a lock-ADA gate", () => {
-    const view = { weight: 0n, have: 0n, cap: 0n, ratePerBlock: 0n, bucket: false };
-    const st = draftStatus(view, 100, K);
+    const st = draftStatus(mkView({ weight: 0n, cap: 0n, ratePerBlock: 0n, bucket: null }), 100, K);
     expect(st.kind).toBe("no_weight");
     expect("blocks" in st).toBe(false);
   });
