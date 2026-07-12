@@ -17,6 +17,7 @@
 //   PollVotes(u64, who) -> PollVoteRecord { option:u8, weight:u128 } | None                       (OptionQuery)
 
 import { Binary } from "polkadot-api";
+import type { RawTally } from "./descriptors";
 import type { CognoApi, Ss58, PollView, ViewerPostState } from "@/lib/types";
 
 // Read at the BEST block, not the default (finalized). Writes confirm at `inBestBlock` — several blocks
@@ -26,19 +27,21 @@ import type { CognoApi, Ss58, PollView, ViewerPostState } from "@/lib/types";
 // a read-after-write reconciliation depends on (tallies + the viewer's own vote/repost/poll choice).
 const BEST = { at: "best" } as const;
 
-/** A storage entry as PAPI returns it from `getEntries` (full key tuple + decoded value). */
+/** A decoded tally, client-side (camelCase + the derived `score`). */
+export interface Tally {
+  upWeight: bigint;
+  downWeight: bigint;
+  upCount: number;
+  downCount: number;
+  score: bigint;
+}
 
-/** The denormalized stake-weighted up/down tally for a post (default all-zero, ValueQuery). */
-export async function readPostTally(
-  api: CognoApi,
-  id: bigint,
-): Promise<{ upWeight: bigint; downWeight: bigint; upCount: number; downCount: number; score: bigint }> {
-  const t = (await api.query.Microblog.VoteTally.getValue(id, BEST)) as unknown as {
-    up_weight: bigint;
-    down_weight: bigint;
-    up_count: number;
-    down_count: number;
-  };
+/**
+ * Decode a raw `Tally` (post-keyed or account-keyed — the chain uses the same struct for both).
+ * `score = up − down`, and it MAY be negative. The `?? 0n` / `?? 0` guards are belt-and-braces: both
+ * maps are ValueQuery so the value is always present, but a zero default costs nothing to assert.
+ */
+function toTally(t: RawTally): Tally {
   const upWeight = BigInt(t.up_weight ?? 0n);
   const downWeight = BigInt(t.down_weight ?? 0n);
   return {
@@ -50,29 +53,17 @@ export async function readPostTally(
   };
 }
 
+/** The denormalized stake-weighted up/down tally for a post (default all-zero, ValueQuery). */
+export async function readPostTally(api: CognoApi, id: bigint): Promise<Tally> {
+  return toTally(await api.query.Microblog.VoteTally.getValue(id, BEST));
+}
+
 /**
  * The denormalized stake-weighted REPUTATION tally for an account (`AccountVoteTally`, ValueQuery ⇒
- * default all-zero). The account analog of {@link readPostTally}; `score = up − down` (may be negative).
+ * default all-zero). The account analog of {@link readPostTally}.
  */
-export async function readAccountVoteTally(
-  api: CognoApi,
-  target: Ss58,
-): Promise<{ upWeight: bigint; downWeight: bigint; upCount: number; downCount: number; score: bigint }> {
-  const t = (await api.query.Microblog.AccountVoteTally.getValue(target, BEST)) as unknown as {
-    up_weight: bigint;
-    down_weight: bigint;
-    up_count: number;
-    down_count: number;
-  };
-  const upWeight = BigInt(t.up_weight ?? 0n);
-  const downWeight = BigInt(t.down_weight ?? 0n);
-  return {
-    upWeight,
-    downWeight,
-    upCount: t.up_count ?? 0,
-    downCount: t.down_count ?? 0,
-    score: upWeight - downWeight,
-  };
+export async function readAccountVoteTally(api: CognoApi, target: Ss58): Promise<Tally> {
+  return toTally(await api.query.Microblog.AccountVoteTally.getValue(target, BEST));
 }
 
 /**
@@ -83,8 +74,7 @@ export async function readAccountVoteTally(
  * stake-credential bind (most accounts) → no ring.
  */
 export async function readVotingPower(api: CognoApi, who: Ss58): Promise<bigint> {
-  const w = (await api.query.TalkStake.VotingPower.getValue(who, BEST)) as unknown as bigint | undefined;
-  return BigInt(w ?? 0n);
+  return await api.query.TalkStake.VotingPower.getValue(who, BEST);
 }
 
 /**
@@ -96,9 +86,7 @@ export async function readViewerAccountVote(
   target: Ss58,
   who: Ss58,
 ): Promise<"Up" | "Down" | null> {
-  const vote = (await api.query.Microblog.AccountVotes.getValue(target, who, BEST)) as unknown as
-    | { dir: { type: "Up" | "Down" }; weight: bigint }
-    | undefined;
+  const vote = await api.query.Microblog.AccountVotes.getValue(target, who, BEST);
   return vote ? (vote.dir.type === "Down" ? "Down" : "Up") : null;
 }
 
@@ -118,36 +106,25 @@ export async function readViewerPostState(
   id: bigint,
   who: Ss58,
 ): Promise<ViewerPostState> {
-  const vote = (await api.query.Microblog.Votes.getValue(id, who, BEST)) as
-    | { dir: { type: "Up" | "Down" }; weight: bigint }
-    | undefined;
+  const vote = await api.query.Microblog.Votes.getValue(id, who, BEST);
   return { myVote: vote ? (vote.dir.type === "Down" ? "Down" : "Up") : null };
 }
 
 /**
  * A poll's options + per-option stake-weighted tally, assembled from `Polls` + `PollTally`.
  *
- * ⚠ Shape gotcha: `Poll` is a SINGLE-FIELD struct (`{ options }`), and PAPI unwraps a single-field
- * struct to its inner type — so `Polls.getValue` returns the options `Vec` DIRECTLY (a `Binary[]`),
- * NOT a `{ options }` wrapper. Reading `.options` off the array yielded `undefined`, so `labels.map`
- * threw, `usePoll` swallowed it, and EVERY poll rendered as a plain, unvotable post. Accept the bare
- * array (and still tolerate a wrapper, in case the struct ever gains a second field).
+ * ⚠ Shape gotcha, now enforced by the compiler: `Poll` is a SINGLE-FIELD struct (`{ options }`), and
+ * PAPI unwraps a single-field struct to its inner type — so `Polls.getValue` returns the options `Vec`
+ * DIRECTLY (a `Binary[]`), NOT a `{ options }` wrapper. The hand-written type claimed the wrapper;
+ * reading `.options` off an array yielded `undefined`, `labels.map` threw, `usePoll` swallowed it, and
+ * EVERY poll rendered as a plain, unvotable post. `RawPolls` is derived from the descriptor, so the
+ * wrapper is no longer expressible — this decode cannot regress the same way.
  */
 export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView> {
-  const poll = (await api.query.Microblog.Polls.getValue(hostId, BEST)) as unknown as
-    | Uint8Array[]
-    | { options: Uint8Array[] }
-    | undefined;
-  if (!poll) return { hostId, options: [], totalWeight: 0n, totalCount: 0 };
-  const labels = Array.isArray(poll) ? poll : poll.options;
+  const labels = await api.query.Microblog.Polls.getValue(hostId, BEST);
+  if (!labels) return { hostId, options: [], totalWeight: 0n, totalCount: 0 };
   const tallies = await Promise.all(
-    labels.map(
-      (_, i) =>
-        api.query.Microblog.PollTally.getValue(hostId, i, BEST) as Promise<{
-          weight: bigint;
-          count: number;
-        }>,
-    ),
+    labels.map((_, i) => api.query.Microblog.PollTally.getValue(hostId, i, BEST)),
   );
   const options = labels.map((b, i) => ({
     index: i,
@@ -166,8 +143,6 @@ export async function readViewerPollChoice(
   hostId: bigint,
   who: Ss58,
 ): Promise<number | null> {
-  const v = (await api.query.Microblog.PollVotes.getValue(hostId, who, BEST)) as unknown as
-    | { option: number }
-    | undefined;
+  const v = await api.query.Microblog.PollVotes.getValue(hostId, who, BEST);
   return v ? v.option : null;
 }

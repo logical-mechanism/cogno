@@ -29,9 +29,7 @@ export interface AccountProfile {
 /** Read one `Profile.Profiles` row → the display name + avatar (both BoundedVec<u8> → trimmed string). */
 async function readAccountProfile(api: CognoApi, account: Ss58): Promise<AccountProfile> {
   // The ROW is optional; the FIELDS are not — keep the `rec?.` chain rather than marking them optional.
-  const rec = (await api.query.Profile.Profiles.getValue(account)) as unknown as
-    | { display_name?: Uint8Array; avatar?: Uint8Array }
-    | undefined;
+  const rec = await api.query.Profile.Profiles.getValue(account);
   return { displayName: binTextOpt(rec?.display_name), avatar: binTextOpt(rec?.avatar) };
 }
 

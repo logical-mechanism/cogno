@@ -10,12 +10,18 @@
 import { Binary } from "polkadot-api";
 import { Observable } from "rxjs";
 import { takeNonce, settleNonce } from "@/lib/chain/nonce";
+import type { Tx } from "@/lib/chain/descriptors";
 import type { CognoApi, PostingSigner, TxUpdate } from "@/lib/types";
 
-/** A PAPI transaction we can sign + watch, with the client-managed nonce we override. */
-export interface SignableTx {
-  signSubmitAndWatch(signer: unknown, options?: { nonce?: number }): unknown;
-}
+/**
+ * A PAPI transaction we can sign + watch, with the client-managed nonce we override.
+ *
+ * Derived, not hand-written: PAPI's `Transaction` is parameterized by the chain's asset + signed
+ * extensions, never by the call's own arguments, so ONE type accepts every `api.tx.*` result. That is
+ * what let the 13 `as unknown as Signable` casts in mutations.ts go — they were laundering a real type
+ * into a hand-written structural stub that happened to be weaker.
+ */
+export type SignableTx = Tx;
 
 /** One event emitted by `signSubmitAndWatch` (the subset of fields we read). */
 interface TxWatchEvent {
@@ -241,10 +247,7 @@ export function signSubmitWatch(
           // PAPI v2: TxOptions.at is a pinned block-HASH only (no "best"/"finalized"); passing "best"
           // now throws at runtime. Drop it — the extrinsic builds against the latest block; the
           // client-managed `nonce` (still passed) is what keeps rapid sequential writes from colliding.
-          () =>
-            tx.signSubmitAndWatch(signer.signer, { nonce }) as unknown as ReturnType<
-              Parameters<typeof watchTx>[0]
-            >,
+          () => tx.signSubmitAndWatch(signer.signer, { nonce }),
           eventName,
           fallbackId,
         );
@@ -301,6 +304,6 @@ export function submitPost(
     text: Binary.fromText(text),
     parent,
   });
-  return signSubmitWatch(api, signer, tx as unknown as SignableTx, "PostCreated");
+  return signSubmitWatch(api, signer, tx, "PostCreated");
 }
 

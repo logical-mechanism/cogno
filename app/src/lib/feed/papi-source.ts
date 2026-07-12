@@ -82,7 +82,7 @@ async function isRevoked(api: CognoApi, account: Ss58): Promise<boolean> {
 /** The Cardano-sourced talk weight (lovelace) for an account, when set. */
 async function readWeight(api: CognoApi, account: Ss58): Promise<bigint | undefined> {
   const v = await api.query.TalkStake.AllowedStake.getValue(account);
-  return v == null ? undefined : BigInt(v as unknown as bigint);
+  return v == null ? undefined : BigInt(v);
 }
 
 /** The accounts `who` follows — the forward `Following` double-map (key2 = followee). */
@@ -304,7 +304,7 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       banner: profileText(profileRec?.banner),
       location: profileText(profileRec?.location),
       website: profileText(profileRec?.website),
-      pinnedPostId: pinned == null ? undefined : BigInt(pinned as unknown as bigint),
+      pinnedPostId: pinned == null ? undefined : BigInt(pinned),
       followerCount: Number(followerCount ?? 0),
       followingCount: Number(followingCount ?? 0),
       // spec-202 account reputation: the tally + the viewer's own vote (drives the header control).

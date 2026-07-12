@@ -1,154 +1,45 @@
 // Node-served reads (spec-120): one enriched, viewer-aware feed / thread / profile page per
 // `state_call`, via the `MicroblogApi` runtime API. This REPLACES the ~5-reads-per-post `enrichPosts`
-// fan-out (reads.ts) with a
-// SINGLE call that returns everything a card renders — tallies, counts, the poll flag, the author
-// profile snapshot, a one-level quote summary, and (when a `viewer` is passed) the viewer's own
-// vote/repost overlay — atomic at one block.
+// fan-out (reads.ts) with a SINGLE call that returns everything a card renders — tallies, counts, the
+// poll flag, the author profile snapshot, a one-level quote summary, and (when a `viewer` is passed)
+// the viewer's own vote overlay — atomic at one block.
 //
-// This is the PREFERRED path on a spec-120 node; the PAPI-direct source RUNTIME-DETECTS support
-// (papi-source.ts `supportsNodeFeedApi`) and keeps the keyed `getGlobalFeedPage`/`getAuthorFeedPage`/
-// `getThread` read (reads.ts) as a RESILIENCE fallback for a thread too big for one state_call. They MUST agree: the
-// mapping here mirrors `enrichPosts` exactly (same CognoPost shape; `score = upWeight - downWeight`,
-// the SAME derivation as `readPostTally`/`toCognoPost`), proven by the parity test in reads.test.ts.
+// This is the PRIMARY read path. reads.ts is NOT a dead compat layer: papi-source.ts keeps its keyed
+// `getThread` and `authorPostCount` as live RESILIENCE fallbacks (`nodeThread(...).catch(() =>
+// getThread(...))`), because a viral post with tens of thousands of replies can blow the `state_call`
+// resource limit, and a thread read carries no cursor so falling back is position-safe. Do not delete
+// them as "unused" — the `.catch()` is their only caller by design. reads.ts also owns the liveness
+// signal (`watchLatestPostId`) and the profile-text decoder outright.
+//
+// The two paths MUST agree: the mapping here mirrors `enrichPosts` exactly (same CognoPost shape;
+// `score = upWeight - downWeight`, the SAME derivation as `readPostTally`/`toCognoPost`), proven by
+// the parity test in reads.test.ts.
+//
+// The raw wire shapes are DERIVED from the generated descriptors (see chain/descriptors.ts) — there is
+// no hand-written mirror of the runtime API here, so it cannot drift from the chain.
 
 import { Binary } from "polkadot-api";
 import { binTextOpt, type IdPage, type RawThread } from "./reads";
+import type { EnrichedPost, FeedPageRaw, PersonSummaryRaw } from "./descriptors";
 import type { CognoApi, CognoPost, Ss58, QuotedRef, ViewerPostState, Suggestion } from "@/lib/types";
 
 const MAX_PAGE = 100;
 
-/** PAPI v2's byte type as the API returns it: a `Vec<u8>` decodes to a `Uint8Array` (decode via `Binary.toText`). */
-type BinaryLike = Uint8Array;
-
-/** One `EnrichedPost` exactly as `api.apis.MicroblogApi.*` decodes it (snake_case; `text`/profile = Binary). */
-interface EnrichedPost {
-  id: bigint;
-  author: SS58Like;
-  text: BinaryLike;
-  parent?: bigint;
-  quote?: bigint;
-  at: number;
-  up_weight: bigint;
-  down_weight: bigint;
-  up_count: number;
-  down_count: number;
-  repost_count: number;
-  reply_count: number;
-  is_poll: boolean;
-  my_vote?: { type: "Up" | "Down" };
-  author_display_name: BinaryLike;
-  author_avatar: BinaryLike;
-  quoted?: {
-    id: bigint;
-    author: SS58Like;
-    text: BinaryLike;
-    author_display_name: BinaryLike;
-    author_avatar: BinaryLike;
-  };
-}
-
-/** PAPI returns SS58 author fields as plain strings; alias for intent. */
-type SS58Like = Ss58;
-
-interface FeedPageRaw {
-  posts: EnrichedPost[];
-  next_cursor?: bigint;
-}
-
-interface ThreadRaw {
-  ancestors: EnrichedPost[];
-  focal?: EnrichedPost;
-  replies: EnrichedPost[];
-}
-
-/** One `PersonSummary` exactly as `MicroblogApi.search_people`/`who_to_follow` decodes it (snake_case;
- *  `display_name`/`avatar` = Binary; `weight` = u128 bigint; `follower_count` = u32). */
-interface PersonSummaryRaw {
-  account: SS58Like;
-  display_name: BinaryLike;
-  avatar: BinaryLike;
-  weight: bigint;
-  follower_count: number;
-  /** spec-202: the account's reputation tally (stake-weighted up/down votes ON it). */
-  account_tally: {
-    up_weight: bigint;
-    down_weight: bigint;
-    up_count: number;
-    down_count: number;
-  };
-}
-
 /**
  * Read at the BEST block, not the runtime-API default (finalized). Writes confirm at `inBestBlock`,
- * several blocks before finalization, so a finalized feed read of a just-cast vote/repost is STALE and
- * the optimistic overlay can't reconcile until finalization (a vote appears to revert). This chain is
+ * several blocks before finalization, so a finalized feed read of a just-cast vote is STALE and the
+ * optimistic overlay can't reconcile until finalization (a vote appears to revert). This chain is
  * single-producer (best never reorgs), so best is fresh AND safe. Passed to the tally-bearing reads
  * whose viewer overlay a read-after-write reconciliation depends on — the feeds AND `search_posts`
- * (Latest results now carry the myVote/reposted overlay, so a finalized read would make a just-cast
- * vote on a result appear to revert). `search_people` / `who_to_follow` have no per-viewer overlay, so
- * they keep the finalized default.
+ * (Latest results carry the myVote overlay, so a finalized read would make a just-cast vote on a
+ * result appear to revert). `search_people` / `who_to_follow` have no per-viewer overlay, so they
+ * DELIBERATELY keep the finalized default — do not "helpfully" add BEST to them.
  */
 const BEST = { at: "best" } as const;
-type AtBest = typeof BEST;
 
-/** The runtime-API surface this module calls (a subset of `api.apis.MicroblogApi`). */
-interface MicroblogApiCalls {
-  feed_page(
-    beforeId: bigint | undefined,
-    limit: number,
-    viewer: Ss58 | undefined,
-    opts?: AtBest,
-  ): Promise<FeedPageRaw>;
-  author_feed_page(
-    author: Ss58,
-    beforeId: bigint | undefined,
-    limit: number,
-    viewer: Ss58 | undefined,
-    opts?: AtBest,
-  ): Promise<FeedPageRaw>;
-  following_feed_page(
-    viewer: Ss58,
-    beforeId: bigint | undefined,
-    limit: number,
-    opts?: AtBest,
-  ): Promise<FeedPageRaw>;
-  thread(focal: bigint, viewer: Ss58 | undefined, opts?: AtBest): Promise<ThreadRaw>;
-  author_post_count(author: Ss58): Promise<number>;
-  // ── the all-Rust restart: the SubQuery indexer reads folded into the node (fork/all-rust, P6) ──
-  /** One author's REPLIES (`parent != None`), newest-first, paged below `beforeId` (a post id). */
-  author_replies_page(
-    author: Ss58,
-    beforeId: bigint | undefined,
-    limit: number,
-    viewer: Ss58 | undefined,
-    opts?: AtBest,
-  ): Promise<FeedPageRaw>;
-  /** Full-text post search: ASCII-case-insensitive substring on `term` (a `Vec<u8>` ⇒ `Uint8Array`). */
-  search_posts(
-    term: Uint8Array,
-    beforeId: bigint | undefined,
-    limit: number,
-    viewer: Ss58 | undefined,
-    opts?: AtBest,
-  ): Promise<FeedPageRaw>;
-  /** People search by display-name substring (`term` ⇒ `Uint8Array`), ranked by follower count. */
-  search_people(term: Uint8Array, limit: number): Promise<PersonSummaryRaw[]>;
-  /** Ranked who-to-follow suggestions (ByAuthor members, ranked by follower count — INCLUDES 0-follower
-   *  authors, so the panel is non-empty on a fresh-genesis chain). */
-  who_to_follow(limit: number): Promise<PersonSummaryRaw[]>;
-  /** The posts `who` has up-voted (the profile Likes tab), newest-first, paged below `beforeId`. */
-  likes_page(
-    who: Ss58,
-    beforeId: bigint | undefined,
-    limit: number,
-    viewer: Ss58 | undefined,
-    opts?: AtBest,
-  ): Promise<FeedPageRaw>;
-}
-
-/** The typed `MicroblogApi` off the api (present on a spec-120 node; detected before any call). */
-function microblogApi(api: CognoApi): MicroblogApiCalls {
-  return (api.apis as unknown as { MicroblogApi: MicroblogApiCalls }).MicroblogApi;
+/** The `MicroblogApi` runtime-API surface, typed by the generated descriptors (no cast, no mirror). */
+function microblogApi(api: CognoApi) {
+  return api.apis.MicroblogApi;
 }
 
 /** Map the API's one-level `quoted` summary to the client `QuotedRef` (author name/avatar carried). */

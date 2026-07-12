@@ -11,6 +11,7 @@
 import { Binary, type PolkadotClient } from "polkadot-api";
 import { Observable, combineLatest, distinctUntilChanged, map, startWith } from "rxjs";
 import { readPostTally } from "./social-reads";
+import type { RawPostValue, RawProfile } from "./descriptors";
 import type {
   CognoApi,
   CognoPost,
@@ -18,16 +19,6 @@ import type {
   BlockRef,
   Ss58,
 } from "@/lib/types";
-
-/** A single decoded `Posts` storage value (PAPI v2 shape; `text` is a `Vec<u8>` → `Uint8Array`). */
-interface RawPostValue {
-  author: string;
-  text: Uint8Array;
-  parent?: bigint;
-  /** Quoted post id (`Post.quote: Option<u64>`, storage v1); undefined for plain posts/replies. */
-  quote?: bigint;
-  at: number;
-}
 
 /** A decoded post value paired with its storage-key id (the unit `enrichPosts` consumes). */
 interface RawPostWithId {
@@ -61,13 +52,6 @@ function quoteRefOf(
   };
 }
 
-/** A single `Profile.Profiles` value (display name / bio / avatar are BoundedVec<u8> → Uint8Array). */
-interface RawProfile {
-  display_name: Uint8Array;
-  bio: Uint8Array;
-  avatar: Uint8Array;
-}
-
 /** Decode a `Vec<u8>` profile field (PAPI v2 Uint8Array) to a trimmed UTF-8 string, or undefined when empty/absent. */
 export function binTextOpt(v?: Uint8Array): string | undefined {
   const s = v != null ? Binary.toText(v).trim() : undefined;
@@ -82,8 +66,7 @@ export function binTextOpt(v?: Uint8Array): string | undefined {
  * `NextPostId - 1`. This is the cursor the global feed pages down from.
  */
 export async function latestPostId(api: CognoApi): Promise<bigint | null> {
-  const next = (await api.query.Microblog.NextPostId.getValue()) as unknown as bigint;
-  const n = BigInt(next ?? 0n);
+  const n = await api.query.Microblog.NextPostId.getValue();
   return n > 0n ? n - 1n : null;
 }
 
@@ -94,10 +77,7 @@ export async function latestPostId(api: CognoApi): Promise<bigint | null> {
  */
 export function watchLatestPostId(api: CognoApi): Observable<bigint | null> {
   return api.query.Microblog.NextPostId.watchValue({ at: "best" }).pipe(
-    map(({ value: next }): bigint | null => {
-      const n = BigInt((next ?? 0n) as bigint);
-      return n > 0n ? n - 1n : null;
-    }),
+    map(({ value: n }): bigint | null => (n > 0n ? n - 1n : null)),
     // PAPI v2 watchValue emits every poll (not only on change); dedupe so a new post — not every
     // block — drives the "N new posts" prepend / feed re-page (preserves the v1 emit-on-change semantics).
     distinctUntilChanged(),
@@ -113,9 +93,7 @@ export function watchLatestPostId(api: CognoApi): Observable<bigint | null> {
  * finalized-lag `null` would wrongly, permanently suppress the pill for that embed this session.
  */
 export async function readPostQuoteId(api: CognoApi, id: bigint): Promise<bigint | null> {
-  const v = (await api.query.Microblog.Posts.getValue(id, { at: "best" })) as unknown as
-    | RawPostValue
-    | undefined;
+  const v = await api.query.Microblog.Posts.getValue(id, { at: "best" });
   return v?.quote != null ? BigInt(v.quote) : null;
 }
 
@@ -141,9 +119,7 @@ export async function enrichPosts(
   const quotedById = new Map<bigint, CognoPost>();
   await Promise.all(
     quotedIds.map(async (qid) => {
-      const v = (await api.query.Microblog.Posts.getValue(qid)) as unknown as
-        | RawPostValue
-        | undefined;
+      const v = await api.query.Microblog.Posts.getValue(qid);
       if (v) quotedById.set(qid, toCognoPost(qid, v));
     }),
   );
@@ -155,9 +131,7 @@ export async function enrichPosts(
   const profileByAuthor = new Map<string, { displayName?: string; avatar?: string }>();
   await Promise.all(
     Array.from(authors).map(async (a) => {
-      const prof = (await api.query.Profile.Profiles.getValue(a)) as unknown as
-        | RawProfile
-        | undefined;
+      const prof: RawProfile | undefined = await api.query.Profile.Profiles.getValue(a);
       if (prof) {
         profileByAuthor.set(a, {
           displayName: binTextOpt(prof.display_name),
@@ -175,7 +149,7 @@ export async function enrichPosts(
       // from a per-post read; ReplyCount + the poll flag are read alongside.
       const [tally, replyCount, pollRec] = await Promise.all([
         readPostTally(api, r.id),
-        api.query.Microblog.ReplyCount.getValue(r.id) as Promise<number>,
+        api.query.Microblog.ReplyCount.getValue(r.id),
         api.query.Microblog.Polls.getValue(r.id),
       ]);
       post.upWeight = tally.upWeight;
@@ -210,10 +184,7 @@ export interface IdPage {
 
 /** The total number of posts an author has authored (the `ByAuthor` index length — one keyed read). */
 export async function authorPostCount(api: CognoApi, account: Ss58): Promise<number> {
-  const rawIds = (await api.query.Microblog.ByAuthor.getValue(account)) as unknown as
-    | bigint[]
-    | undefined;
-  return (rawIds ?? []).length;
+  return (await api.query.Microblog.ByAuthor.getValue(account)).length;
 }
 
 // ── thread reconstruction (keyed reverse lookup — no full-snapshot scan) ──────────────────────────
@@ -237,9 +208,7 @@ export interface RawThread {
  * `replyCount` (stamped by `enrichPosts`) so the UI can offer an inline "Show replies" expander.
  */
 export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThread> {
-  const focalVal = (await api.query.Microblog.Posts.getValue(focalId)) as unknown as
-    | RawPostValue
-    | undefined;
+  const focalVal = await api.query.Microblog.Posts.getValue(focalId);
   if (!focalVal) throw new Error(`thread root #${focalId} not found on the node`);
 
   // Ancestor chain: walk `parent` up from the focal, guarding cycles + bounding depth. A dangling
@@ -251,24 +220,22 @@ export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThre
   while (cursor != null && !seen.has(cursor) && depth < MAX_ANCESTOR_DEPTH) {
     seen.add(cursor);
     depth++;
-    const v = (await api.query.Microblog.Posts.getValue(cursor)) as unknown as
-      | RawPostValue
-      | undefined;
+    const v = await api.query.Microblog.Posts.getValue(cursor);
     if (!v) break;
     ancestorsRaw.push({ id: cursor, value: v });
     cursor = v.parent;
   }
   ancestorsRaw.reverse(); // top-down (conversation root first)
 
-  // Direct replies: ONE parent's children via the reverse map, then read each value.
-  const replyEntries = (await api.query.Microblog.RepliesByParent.getEntries(focalId)) as unknown as {
-    keyArgs: unknown[];
-  }[];
+  // Direct replies: ONE parent's children via the reverse map, then read each value. `RepliesByParent`
+  // is a double map keyed (parent, reply), so the reply id is the SECOND key arg — the derived
+  // descriptor types `keyArgs` as the `[bigint, bigint]` tuple, so this index is checked, not cast.
+  const replyEntries = await api.query.Microblog.RepliesByParent.getEntries(focalId);
   const replyIds = replyEntries
-    .map((e) => e.keyArgs[e.keyArgs.length - 1] as bigint)
+    .map((e) => e.keyArgs[1])
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)); // replies oldest-first
   const replyValues = await Promise.all(
-    replyIds.map((id) => api.query.Microblog.Posts.getValue(id) as Promise<RawPostValue | undefined>),
+    replyIds.map((id) => api.query.Microblog.Posts.getValue(id)),
   );
   const repliesRaw: RawPostWithId[] = replyIds
     .map((id, i) => ({ id, value: replyValues[i] }))
