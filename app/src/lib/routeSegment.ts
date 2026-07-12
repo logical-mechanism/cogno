@@ -16,17 +16,21 @@
 import { usePathname } from "next/navigation";
 
 /**
- * The first path segment under `/<base>/` — e.g. useRouteSegment("u") on /u/5Grw…/?tab=likes → "5Grw…".
- * Returns "" when the current path isn't under that base.
+ * The first path segment under `/<base>/`, or "" when `pathname` isn't under that base.
+ * Pure — the hook below is the only thing that needs React. See routeSegment.test.ts.
  */
-export function useRouteSegment(base: string): string {
-  const pathname = usePathname() ?? "";
+export function routeSegmentOf(pathname: string, base: string): string {
   const prefix = `/${base}/`;
   if (!pathname.startsWith(prefix)) return "";
-  const segment = pathname.slice(prefix.length).split("/")[0] ?? "";
+  const segment = pathname.slice(prefix.length).split("/")[0];
   try {
     return decodeURIComponent(segment);
   } catch {
     return segment; // malformed %-escape → let the caller's validation reject it
   }
+}
+
+/** routeSegmentOf against the live URL — e.g. useRouteSegment("u") on /u/5Grw…/?tab=likes → "5Grw…". */
+export function useRouteSegment(base: string): string {
+  return routeSegmentOf(usePathname() ?? "", base);
 }

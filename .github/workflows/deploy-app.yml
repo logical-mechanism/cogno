@@ -120,15 +120,19 @@ jobs:
           origin="$(printf '%s' "$NEXT_PUBLIC_WS_URL" | sed -E 's#^wss://([^/]+).*#https://\1#')"
           addr=5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
           fail=0
+          # `|| true`: curl exits non-zero on a connection/TLS failure (an HTTP 404 still exits 0), and
+          # this step runs under `bash -e` — without it the step would die on the raw curl status and
+          # never print the guidance below, which is the whole point of the check.
+          probe() { curl -sS --retry 3 --retry-delay 2 -o /dev/null -w "$1" "$2" || true; }
           for url in "$origin/u/$addr/" "$origin/post/1/"; do
-            code=$(curl -sS --retry 3 --retry-delay 2 -o /dev/null -w '%{http_code}' "$url")
-            [ "$code" = 200 ] || { echo "::error::deep-link document $url -> HTTP $code (want 200)"; fail=1; }
+            code=$(probe '%{http_code}' "$url")
+            [ "$code" = 200 ] || { echo "::error::deep-link document $url -> HTTP ${code:-<no response>} (want 200)"; fail=1; }
           done
           for url in "$origin/u/$addr/index.txt" "$origin/post/1/index.txt"; do
-            read -r code ctype <<<"$(curl -sS --retry 3 --retry-delay 2 -o /dev/null -w '%{http_code} %{content_type}' "$url")"
+            read -r code ctype <<<"$(probe '%{http_code} %{content_type}' "$url")"
             case "$code:$ctype" in
               200:text/plain*) ;;
-              *) echo "::error::RSC payload $url -> HTTP $code ($ctype); want 200 text/plain"; fail=1 ;;
+              *) echo "::error::RSC payload $url -> HTTP ${code:-<no response>} (${ctype:-none}); want 200 text/plain"; fail=1 ;;
             esac
           done
           if [ "$fail" = 1 ]; then
