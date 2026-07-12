@@ -45,6 +45,17 @@ updates:
       - dependency-name: "eslint"
         update-types: ["version-update:semver-major"]
 
+      # typescript is held on the 6.x line. TS 7 is the native (Go) rewrite, and its npm package no
+      # longer exports the JS compiler API — `ts.Extension`, `ts.ScriptKind` and `ts.ModuleKind` are
+      # all undefined under 7.0.2. Anything that reads that API breaks: @typescript-eslint (bundled
+      # by eslint-config-next@16, peer range `>=4.8.4 <6.1.0`) dies on load reading `ts.Extension.Cjs`
+      # — `TypeError: Cannot read properties of undefined (reading 'Cjs')` — so `eslint .` fails, and
+      # `next build` fails too. Only vitest survives, because it strips types instead of checking
+      # them, which means a green test run says nothing here. Stay on 6.x until typescript-eslint
+      # supports TS 7 and eslint-config-next picks it up; patches/minors within 6.x still flow.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
   # CIP-8 adversarial oracle (pinned Python deps)
   - package-ecosystem: pip
     directory: "/ci/cip8-oracle"

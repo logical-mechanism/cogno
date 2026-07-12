@@ -22,22 +22,22 @@
     "@meshsdk/core": "^1.9.1",
     "@meshsdk/core-cst": "^1.9.1",
     "@polkadot-api/descriptors": "file:.papi/descriptors",
-    "@polkadot-labs/hdkd": "^0.0.28",
-    "@polkadot-labs/hdkd-helpers": "^0.0.30",
+    "@polkadot-labs/hdkd": "^0.0.29",
+    "@polkadot-labs/hdkd-helpers": "^0.0.31",
     "blakejs": "^1.2.1",
     "emojibase-data": "^17.0.0",
     "next": "^16.2.10",
-    "polkadot-api": "^2.1.7",
+    "polkadot-api": "^2.1.8",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
-    "@types/node": "^26.1.0",
+    "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.10",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   }
 }
