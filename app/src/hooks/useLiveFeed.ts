@@ -76,7 +76,7 @@ export function useLiveFeed(
   // state_call); the keyed + indexer paths ignore it. Re-keyed on `me` so connecting mid-session
   // re-pages with the overlay (the source-change effect below re-seeds on a new baseQuery identity).
   const baseQuery = useMemo<FeedQuery>(
-    () => ({ tab: "forYou", first: PAGE, order: "recency", viewer: me ?? undefined }),
+    () => ({ tab: "forYou", first: PAGE, viewer: me ?? undefined }),
     [me],
   );
 

@@ -244,19 +244,26 @@ function ExploreView() {
     // `viewer: me` lets a spec-120 node stamp the myVote/reposted overlay node-side (same as the
     // firehose), so search results show my vote/repost state and `carriedViewerStates` skips the
     // per-card viewerPostState read (no flash of unfilled action icons).
-    () => ({ first: PAGE_SIZE, search: committedQ, order: "recency", viewer: me ?? undefined }),
+    () => ({ first: PAGE_SIZE, search: committedQ, viewer: me ?? undefined }),
     [committedQ, me],
   );
-  // ...and the Latest tab is actually on screen. Without the last clause, opening a search on the People
-  // tab still ran a full `search_posts` scan plus a useViewerStates fan-out over up to 50 posts that were
-  // never rendered. `activeResultTab` already falls back to "latest" when People is unreachable, so this
-  // cannot strand the Latest results.
-  const latestEnabled = mode === "query" && searchEnabled && activeResultTab === "latest";
+  // Deliberately NOT gated on the active result tab. `useFeedPage` treats `enabled: false` as DISCARD,
+  // not pause — it clears `posts` and the cursor — so tying this to the tab would throw away every loaded
+  // page the moment you looked at People, and re-run the whole `search_posts` scan from page 1 on the way
+  // back. The read this gating existed to avoid is the per-card `useViewerStates` fan-out, which is
+  // skipped below on the ids instead.
+  const latestEnabled = mode === "query" && searchEnabled;
   const latest = useFeedPage(source, latestQuery, latestEnabled);
 
   // Which post list is on screen (firehose in DEFAULT + NO-INDEXER; Latest results in QUERY).
   const activePosts: CognoPost[] = mode === "query" ? latest.posts : firehose.posts;
-  const postIds = useMemo(() => activePosts.map((p) => p.id), [activePosts]);
+  // Empty while People is on screen: those cards are not rendered, so their viewer overlay is a read of
+  // up to PAGE_SIZE posts nobody is looking at. The posts themselves stay loaded (see above).
+  const showingPosts = mode !== "query" || activeResultTab === "latest";
+  const postIds = useMemo(
+    () => (showingPosts ? activePosts.map((p) => p.id) : []),
+    [showingPosts, activePosts],
+  );
   // Node-served posts carry the overlay → skip the per-card Reposts scan for those ids.
   const carriedStates = useMemo(() => carriedViewerStates(activePosts), [activePosts]);
   const viewerStates = useViewerStates(source, postIds, me, carriedStates);
