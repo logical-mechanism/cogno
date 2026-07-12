@@ -29,6 +29,52 @@ export function mentionToken(display: string): string {
   return `@${display}`;
 }
 
+/** The draft last handed to `onSubmit`: its DISPLAY text and the refs it was serialized with. */
+export interface SubmittedDraft {
+  text: string;
+  refs: MentionRef[];
+}
+
+/**
+ * The composer's mention-registry rule, as a pure function of (registry, new display text, last submit).
+ * `useMentions` is this plus a `useState` — it lives here so the rule is unit-testable, because the two
+ * ways it can go wrong both corrupt a POST PERMANENTLY (this chain has no `delete_post`).
+ *
+ * Normally: drop any ref whose display token is no longer in the text (the user deleted or broke it → it
+ * degrades to plain text, and `serializeMentions` leaves it literal rather than mis-binding it).
+ *
+ * The exception is a RESTORE. A controlled surface clears the composer optimistically at submit and hands
+ * the SAME display text back if the tx fails (Home's failed-post restore). The refs are long gone by then
+ * — pruned against the empty box — and `serializeMentions` is a no-op on an empty registry, so without
+ * this the restored `@alice` would re-serialize to a LITERAL and the retry would post an UNBOUND mention.
+ *
+ * Two guards keep that exception narrow:
+ *   - `text === submitted.text` EXACTLY, not "the draft is empty". The composer is not disabled during
+ *     the write, so the user can type while the tx is in flight; an emptiness rule would already have
+ *     lost the refs by the time the failure landed. It also stops an unrelated draft that merely happens
+ *     to contain `@alice` from inheriting a binding.
+ *   - `mentions` must be EMPTY. The snapshot outlives a SUCCESSFUL post too, and a display name is not
+ *     unique across accounts: a user who later picks a DIFFERENT account under the same name and retypes
+ *     the same sentence must keep THEIR pick. Restoring over a non-empty registry would silently swap it
+ *     back — a mention bound to the WRONG account, which is worse than the literal this exists to prevent.
+ */
+export function reconcileMentions(
+  mentions: MentionRef[],
+  text: string,
+  submitted: SubmittedDraft | null,
+): MentionRef[] {
+  if (
+    mentions.length === 0 &&
+    submitted !== null &&
+    submitted.text !== "" &&
+    text === submitted.text
+  ) {
+    return submitted.refs;
+  }
+  const kept = mentions.filter((m) => text.includes(mentionToken(m.display)));
+  return kept.length === mentions.length ? mentions : kept;
+}
+
 /** True for a character that could be part of a name/handle run (so a mention token can't be a prefix
  *  of a longer word the user kept typing, e.g. `@elon` inside `@elonx`). */
 function isNameCont(ch: string | undefined): boolean {

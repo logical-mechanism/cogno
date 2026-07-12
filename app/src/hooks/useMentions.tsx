@@ -18,8 +18,10 @@ import { useFollow } from "@/hooks/useFollow";
 import { MentionSuggestions } from "@/components/MentionSuggestions";
 import {
   serializeMentions,
+  reconcileMentions,
   mentionToken,
   type MentionRef,
+  type SubmittedDraft,
 } from "@/lib/mentions";
 import { fallbackDisplayName, truncateSs58 } from "@/lib/ss58";
 import type { Suggestion } from "@/lib/types";
@@ -48,10 +50,13 @@ function displayFor(s: Suggestion): string {
 }
 
 export interface UseMentions {
-  /** Expand the display tokens in `text` to `@<ss58>` body text (submit + byte-meter path). */
+  /** Expand the display tokens in `text` to `@<ss58>` body text (submit + byte-meter path). Also the
+   *  composer's clamp test: `serialize(t) === t` means `t` carries no mention token, so its DISPLAY
+   *  length is its posted length and an as-you-type clamp cannot slice a token. */
   serialize: (text: string) => string;
-  /** How many mentions are recorded (the composer relaxes its as-you-type clamp when > 0). */
-  mentionCount: number;
+  /** Snapshot the draft being submitted (its DISPLAY text + current refs) so the bindings come back if
+   *  the surface restores it after a failed tx. Call with the display text, BEFORE the surface clears. */
+  markSubmitted: (displayText: string) => void;
   /** The popover node — render it inside the (relatively-positioned) textarea wrapper. */
   suggestions: ReactNode;
   /** True while the popover is open (composer suppresses its own Enter handling then). */
@@ -60,10 +65,8 @@ export interface UseMentions {
   onTextInput: (value: string, caret: number) => void;
   /** Handle a keydown while open; returns true when it consumed the key (nav/select/close). */
   onKeyDown: (e: React.KeyboardEvent) => boolean;
-  /** Close the popover without touching the recorded mentions (call on textarea blur). */
+  /** Close the popover without touching the recorded mentions (call on textarea blur / submit). */
   dismiss: () => void;
-  /** Clear all mention state (call on submit / discard). */
-  reset: () => void;
 }
 
 export function useMentions(opts: {
@@ -92,14 +95,20 @@ export function useMentions(opts: {
 
   const canSearch = !!source;
 
-  // Prune mentions whose display token no longer appears in the text (a deletion or an edit that broke
-  // the token → it degrades to plain text and is dropped from the set). Runs on ANY text change —
-  // including a controlled reset (PollComposer clearing the question) — and no-ops when unchanged.
+  // The draft last handed to onSubmit — see `reconcileMentions`, which decides what it is allowed to do.
+  const submitted = useRef<SubmittedDraft | null>(null);
+  const markSubmitted = useCallback(
+    (displayText: string) => {
+      submitted.current = { text: displayText, refs: mentions };
+    },
+    [mentions],
+  );
+
+  // Prune against the text, or restore the submitted draft's bindings if the surface handed it back.
+  // The rule itself is `reconcileMentions` in lib/mentions — pure, and unit-tested there, because both
+  // ways it can go wrong corrupt a post permanently.
   useEffect(() => {
-    setMentions((ms) => {
-      const kept = ms.filter((m) => text.includes(mentionToken(m.display)));
-      return kept.length === ms.length ? ms : kept;
-    });
+    setMentions((ms) => reconcileMentions(ms, text, submitted.current));
   }, [text]);
 
   const close = useCallback(() => {
@@ -238,11 +247,6 @@ export function useMentions(opts: {
     [open, results, activeIndex, pick, close],
   );
 
-  const reset = useCallback(() => {
-    setMentions([]);
-    close();
-  }, [close]);
-
   const serialize = useCallback((t: string) => serializeMentions(t, mentions), [mentions]);
 
   const suggestions =
@@ -260,12 +264,11 @@ export function useMentions(opts: {
 
   return {
     serialize,
-    mentionCount: mentions.length,
+    markSubmitted,
     suggestions,
     open: open && canSearch,
     onTextInput,
     onKeyDown,
     dismiss: close,
-    reset,
   };
 }

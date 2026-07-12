@@ -180,13 +180,12 @@ export function Composer({
   const listId = useId();
   const {
     serialize: serializeDraft,
-    mentionCount,
+    markSubmitted,
     suggestions: mentionPopover,
     open: mentionsOpen,
     onTextInput: syncMentionQuery,
     onKeyDown: mentionKeyDown,
     dismiss: dismissMentions,
-    reset: resetMentions,
   } = useMentions({ text, setText, taRef, listId });
 
   // The SERIALIZED body — what actually gets posted, and what the byte counter / capacity gate must
@@ -195,6 +194,17 @@ export function Composer({
   useEffect(() => {
     onSerializedChange?.(serializedText);
   }, [serializedText, onSerializedChange]);
+
+  // May the as-you-type clamp cut THIS candidate? Only when the display text already IS the serialized
+  // body — with a mention token present, display length ≠ posted length and clamping the display could
+  // slice a token in half (the serialized byte meter reddens the ring + disables the CTA instead).
+  //
+  // Asked of the CANDIDATE TEXT, not of a mention COUNT: the count describes the registry as it stood on
+  // the LAST render, so it answers for the previous value of the box, not the one about to be committed.
+  const clampable = useCallback(
+    (candidate: string) => serializeDraft(candidate) === candidate,
+    [serializeDraft],
+  );
 
   // Single source of truth for the byte measurement; the CTA gates off the SAME measure the ring shows.
   const [measure, setMeasure] = useState<ByteMeasure>({ bytes: 0, remaining: maxBytes, over: false });
@@ -209,10 +219,8 @@ export function Composer({
       const start = el?.selectionStart ?? text.length;
       const end = el?.selectionEnd ?? text.length;
       const candidate = text.slice(0, start) + emoji + text.slice(end);
-      // Clamp on the DISPLAY text only when there are no mention tokens (display === serialized then);
-      // with mentions present the serialized measure governs, and clamping display text could cut a token.
       const next =
-        mentionCount === 0 && utf8Bytes(candidate) > maxBytes
+        clampable(candidate) && utf8Bytes(candidate) > maxBytes
           ? clampToBytes(candidate, maxBytes)
           : candidate;
       setText(next);
@@ -229,7 +237,7 @@ export function Composer({
         }
       });
     },
-    [text, maxBytes, setText, mentionCount, syncMentionQuery],
+    [text, maxBytes, setText, clampable, syncMentionQuery],
   );
 
   // Validity (doc 09 §5.4 precedence): for a quote the chain allows empty text but the UI requires a
@@ -255,10 +263,8 @@ export function Composer({
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const el = e.currentTarget;
       // Hard-block past the byte boundary: clamp a paste to the last whole code point that fits (D1).
-      // With mention tokens present, display length ≠ serialized length, so clamping the DISPLAY here
-      // could cut a token; instead the serialized byte meter turns the ring red + disables the CTA.
       let next = el.value;
-      if (mentionCount === 0 && utf8Bytes(next) > maxBytes) {
+      if (clampable(next) && utf8Bytes(next) > maxBytes) {
         next = clampToBytes(next, maxBytes);
       }
       setText(next);
@@ -266,7 +272,7 @@ export function Composer({
       el.style.height = "auto";
       el.style.height = `${el.scrollHeight}px`;
     },
-    [maxBytes, setText, mentionCount, syncMentionQuery],
+    [maxBytes, setText, clampable, syncMentionQuery],
   );
 
   const buildDraft = useCallback(
@@ -290,14 +296,19 @@ export function Composer({
       return;
     }
     if (disabled) return;
+    // Snapshot the DISPLAY text + its mention refs BEFORE anyone clears the box. If the surface hands
+    // this exact text back (Home restores the draft when the tx fails), useMentions restores its bindings
+    // with it — otherwise the restored `@alice` re-serializes to a literal and the retry posts an unbound
+    // mention, permanently (no delete_post). Dropping the refs here instead is what caused that.
+    markSubmitted(text);
     onSubmit(buildDraft());
+    dismissMentions(); // close the popover; the refs are retired by the prune, not here
     // OPTIMISTIC: clear the textarea instantly (doc 09 §6.1). Controlled drafts are cleared by the surface.
-    resetMentions(); // drop the recorded mentions with the submitted draft
     if (!isControlled) {
       setInnerText("");
       if (taRef.current) taRef.current.style.height = "auto";
     }
-  }, [sessionGated, disabled, onSubmit, buildDraft, isControlled, resetMentions]);
+  }, [sessionGated, disabled, onSubmit, buildDraft, isControlled, dismissMentions, markSubmitted, text]);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
