@@ -156,7 +156,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
 
   const onToggleFollow = useCallback(
     (target: Ss58, next: boolean) => {
-      if (viewer.status !== "ready") {
+      if (!viewer.writeReady) {
         router.push("/welcome/");
         return;
       }
@@ -168,7 +168,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
         setFollowDelta((d) => d - 1);
       }
     },
-    [viewer.status, follow, router],
+    [viewer.writeReady, follow, router],
   );
 
   // ── followers / following lists: a full-screen sub-view synced to ?follows=followers|following. ──
@@ -222,14 +222,14 @@ function ProfileBody({ address }: { address: Ss58 }) {
   // profile's own counter, driven by onToggleFollow above). Optimism lives in the useFollow hook.
   const onListToggleFollow = useCallback(
     (target: Ss58, next: boolean) => {
-      if (viewer.status !== "ready") {
+      if (!viewer.writeReady) {
         router.push("/welcome/");
         return;
       }
       if (next) follow.follow(target);
       else follow.unfollow(target);
     },
-    [viewer.status, follow, router],
+    [viewer.writeReady, follow, router],
   );
 
   // ── account reputation (header): stake-weighted up/down votes ON this account (spec-202). The base
@@ -293,13 +293,13 @@ function ProfileBody({ address }: { address: Ss58 }) {
   }, [address, resetAccountVote]);
 
   const onAccountUp = useCallback(() => {
-    if (viewer.status !== "ready") return void router.push("/welcome/");
+    if (!viewer.writeReady) return void router.push("/welcome/");
     upvoteAccount(address, shownAccountVote.myVote);
-  }, [viewer.status, router, upvoteAccount, address, shownAccountVote.myVote]);
+  }, [viewer.writeReady, router, upvoteAccount, address, shownAccountVote.myVote]);
   const onAccountDown = useCallback(() => {
-    if (viewer.status !== "ready") return void router.push("/welcome/");
+    if (!viewer.writeReady) return void router.push("/welcome/");
     downvoteAccount(address, shownAccountVote.myVote);
-  }, [viewer.status, router, downvoteAccount, address, shownAccountVote.myVote]);
+  }, [viewer.writeReady, router, downvoteAccount, address, shownAccountVote.myVote]);
 
   // ── pinned post: resolve the single id via source.thread(id).root (the seam's one-post resolver). ──
   // Silently omit on 404 / throw / author-mismatch (doc 07 §5.1 / §11). Only on the Posts tab.
@@ -514,7 +514,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
                 emptyTitle={emptyForTab.title}
                 emptyAction={"action" in emptyForTab ? emptyForTab.action : undefined}
                 onCompose={() =>
-                  viewer.status === "ready" ? modalActions.openCompose() : router.push("/welcome/")
+                  viewer.writeReady ? modalActions.openCompose() : router.push("/welcome/")
                 }
               />
             ) : pinned ? null : (

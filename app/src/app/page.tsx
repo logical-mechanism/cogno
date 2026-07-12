@@ -140,6 +140,7 @@ export default function HomePage() {
   const {
     rateLimited: composerRateLimited,
     noPostingPower: composerNoPower,
+    needsVotingPower: composerNeedsVotingPower,
     retryInSeconds,
   } = useComposerGate(composerSerialized);
 
@@ -208,9 +209,10 @@ export default function HomePage() {
 
   const composeState: ActionState = "idle"; // inline composer clears optimistically; per-tx state lives on the card
 
-  // Open the inline composer (the `n` shortcut / mobile FAB path). On desktop we focus the textarea.
+  // Open the inline composer (the `n` shortcut / Timeline empty-state compose). On desktop we focus the
+  // textarea. An explicit compose intent funnels to /welcome until setup is fully complete (writeReady).
   const onCompose = useCallback(() => {
-    if (viewer.status !== "ready") {
+    if (!viewer.writeReady) {
       router.push("/welcome/");
       return;
     }
@@ -219,7 +221,7 @@ export default function HomePage() {
     const ta = document.getElementById("cg-composer-post") as HTMLTextAreaElement | null;
     if (ta && ta.offsetParent !== null) ta.focus();
     else modalActions.openCompose();
-  }, [viewer.status, router]);
+  }, [viewer.writeReady, router]);
 
   // Following-tab loading/error mirror For-you (doc 06 §7.2).
   const followingLoading = followingEnabled && followingPage.loading && followingPage.posts.length === 0;
@@ -251,6 +253,7 @@ export default function HomePage() {
             rateLimited={composerRateLimited}
             retryInSeconds={retryInSeconds}
             noPostingPower={composerNoPower}
+            needsVotingPower={composerNeedsVotingPower}
             onTogglePoll={() => modalActions.openPoll()}
             onSubmit={onComposePost}
           />

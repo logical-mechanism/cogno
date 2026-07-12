@@ -94,7 +94,7 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
 
   const loadingBound = identity.bound === null;
   const loadingVote = identity.votingPower === null;
-  const status = setupStatus(sessionState, postingPower, pending.kind !== "none");
+  const status = setupStatus(sessionState, postingPower, identity.stakeBound, pending.kind !== "none");
 
   return (
     <div className={styles.cards}>
@@ -123,6 +123,22 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
             )}
           </button>
         )}
+        {status.next?.kind === "stake" && (
+          <button
+            type="button"
+            className={styles.primaryBtn}
+            onClick={() => walletId && identity.bindStake(walletId)}
+            disabled={identity.stakeBinding || !walletId}
+          >
+            {identity.stakeBinding ? (
+              <>
+                <Spinner size="sm" label="Adding voting power" /> Adding voting power…
+              </>
+            ) : (
+              status.next.label
+            )}
+          </button>
+        )}
         {status.next?.kind === "lock" && onGoVault && (
           <button type="button" className={styles.primaryBtn} onClick={onGoVault}>
             {status.next.label}
@@ -131,6 +147,11 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
         {identity.error && (
           <p className={styles.error} role="alert">
             {identity.error}
+          </p>
+        )}
+        {status.next?.kind === "stake" && identity.stakeError && (
+          <p className={styles.error} role="alert">
+            {identity.stakeError}
           </p>
         )}
       </div>
@@ -194,11 +215,12 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
           )}
         </div>
 
-        {/* Voting power — OPTIONAL boost, only meaningful once registered. */}
+        {/* Voting power — a REQUIRED setup step (the status card above drives the action); this row is
+            the display + a manual re-link affordance once registered. */}
         {identity.bound && (
           <>
             <p className={styles.optionalNote}>
-              Only affects how much weight your votes carry.
+              Required to post. Also sets how much weight your votes carry.
             </p>
             <div className={styles.statRow}>
               <span className={styles.statLabel}>Voting power</span>

@@ -6,16 +6,19 @@
 // `useMemo<PostActionCallbacks>` with the same eight callbacks. Three were byte-identical; the profile's
 // differed only in a parameter NAME; ThreadView's differed for a real reason (see `onReplyReady`).
 //
-// THE SIGNED-OUT GATE IS THE POINT. Six of the eight callbacks bounce a signed-out reader to /welcome/
-// before doing anything. That gate is written INSIDE this hook, and the one axis a surface can vary —
-// where a Reply goes — is expressed as a callback the hook invokes only AFTER the gate has passed. A
-// surface therefore cannot supply a reply handler that forgets to check, which is precisely the mistake
-// the obvious extraction invites: ThreadView's reply handler reads
+// THE SETUP GATE IS THE POINT. The mutating callbacks (reply/quote/like/downvote/pin) bounce a viewer
+// whose setup is not fully complete to /welcome/ before doing anything. "Fully complete" is
+// `viewer.writeReady` (bound + stake-bound + posting power), NOT merely `status === "ready"` (bound):
+// stake is a mandatory step, and a bound-but-unstaked-or-unlocked account browses read-only. That gate
+// is written INSIDE this hook, and the one axis a surface can vary — where a Reply goes — is expressed
+// as a callback the hook invokes only AFTER the gate has passed. A surface therefore cannot supply a
+// reply handler that forgets to check, which is precisely the mistake the obvious extraction invites:
+// ThreadView's reply handler reads
 //
 //     if (viewer.status !== "ready") return void router.push("/welcome/");
 //     if (post.id === rootId) focusComposer();
 //
-// and lifting that body wholesale into a shared `onReply` override would let a signed-out user focus
+// and lifting that body wholesale into a shared `onReply` override would let an unfinished user focus
 // the composer instead of bouncing.
 //
 // `modalActions` is a module singleton (lib/modalStore), imported directly and deliberately absent from
@@ -31,7 +34,8 @@ import type { PostActionCallbacks, Viewer } from "@/components/kit";
 import type { CognoPost, ViewerPostState } from "@/lib/types";
 
 export interface PostActionDeps {
-  /** The write-gate state. `status === "ready"` is the only one that may mutate. */
+  /** The write-gate state. Only `viewer.writeReady` (bound + stake-bound + posting power) may mutate;
+   *  a bound-but-unfinished viewer is bounced to /welcome to finish setup. */
   viewer: Viewer;
   /** Per-post viewer overlay, keyed by post id. Missing ids fall back to {@link NO_VIEWER}. */
   viewerStates: Map<bigint, ViewerPostState>;
@@ -61,9 +65,10 @@ export function usePostActions({
   const router = useRouter();
 
   return useMemo<PostActionCallbacks>(() => {
-    /** The signed-out bounce, in ONE place. Returns false when the caller must stop. */
+    /** The finish-setup bounce, in ONE place. Returns false when the caller must stop. Gates on
+     *  writeReady (bound + stake-bound + posting power), not just bound — stake/lock are required. */
     const ready = (): boolean => {
-      if (viewer.status === "ready") return true;
+      if (viewer.writeReady) return true;
       void router.push("/welcome/");
       return false;
     };
@@ -94,7 +99,10 @@ export function usePostActions({
         else vote.clear(post.id, cur);
       },
       onShare: (post) => void sharePostWithToast(post.id, toast),
-      onPin: (post) => pin(post.id),
+      onPin: (post) => {
+        if (!ready()) return;
+        pin(post.id);
+      },
     };
-  }, [router, viewer.status, viewerStates, vote, pin, toast, onReplyReady]);
+  }, [router, viewer.writeReady, viewerStates, vote, pin, toast, onReplyReady]);
 }

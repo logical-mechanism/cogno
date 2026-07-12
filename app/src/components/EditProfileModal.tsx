@@ -54,6 +54,12 @@ export interface EditProfileModalProps {
    * rather than let Save fire into a confusing rate-limit toast. Advisory — CheckCapacity is the authority.
    */
   noPostingPower?: boolean;
+  /**
+   * Ready account whose MANDATORY stake bind is unfinished. Profile writes are gated on the same
+   * "fully set up" rule as every other write, so hard-disable the actions (the NoPostingPowerNotice
+   * renders the "add voting power / finish setup" variant self-contained).
+   */
+  needsVotingPower?: boolean;
 }
 
 export function EditProfileModal({
@@ -61,15 +67,18 @@ export function EditProfileModal({
   onSaveProfile,
   onClearProfile,
   noPostingPower,
+  needsVotingPower,
 }: EditProfileModalProps) {
   const { api, source, signerCtl } = useSession();
   const { overlay } = useOptimistic();
 
   const ss58 = signerCtl.signer.ss58;
-  // No posting power is a hard write block, same as in the composer: without capacity the feeless
-  // set_profile / clear_profile can't land, so gate both actions off it (the NoPostingPowerNotice below
-  // explains why — and shows the timed "crediting" state when a lock is still settling).
-  const canWrite = !!api && signerCtl.postingEnabled && noPostingPower !== true;
+  // No posting power OR the unfinished mandatory stake step is a hard write block, same as in the
+  // composer: without capacity the feeless set_profile / clear_profile can't land, and an unstaked
+  // account is setup-incomplete. Gate both actions off them (the NoPostingPowerNotice below explains
+  // why — and shows the timed "crediting" state when a lock is still settling).
+  const canWrite =
+    !!api && signerCtl.postingEnabled && noPostingPower !== true && needsVotingPower !== true;
 
   const [name, setName] = useState("");
   const [bio, setBio] = useState("");

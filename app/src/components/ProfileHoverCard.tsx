@@ -185,14 +185,14 @@ function HoverPopover({
 
   const onToggle = useCallback(
     (target: string, next: boolean) => {
-      if (viewer.status !== "ready") {
+      if (!viewer.writeReady) {
         router.push("/welcome/");
         return;
       }
       if (next) follow.follow(target);
       else follow.unfollow(target);
     },
-    [viewer.status, follow, router],
+    [viewer.writeReady, follow, router],
   );
 
   if (typeof document === "undefined") return null;

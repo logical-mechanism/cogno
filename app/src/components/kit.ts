@@ -57,7 +57,7 @@ export type {
 export type ViewerStatus = "not-connected" | "not-identity-bound" | "ready";
 
 export interface Viewer {
-  /** Coarse write-gate state. `not-connected` → route to /welcome; `not-identity-bound` → disable + "Finish setup"; `ready` → act. */
+  /** Coarse READ/entry-gate state. `not-connected` → route to /welcome; `not-identity-bound` → disable + "Finish setup"; `ready` → identity-bound (may browse). */
   status: ViewerStatus;
   /** ss58 (prefix 42) of the derived posting account — the @handle source + identicon seed. Undefined until connected. */
   address?: Ss58;
@@ -67,6 +67,15 @@ export interface Viewer {
   displayName?: string;
   /** The viewer's own Profile.avatar URL/CID. */
   avatar?: string;
+  /**
+   * The single authoritative WRITE gate: all required onboarding is complete → may post/vote/follow/
+   * poll/edit-profile. True only when identity-bound AND stake-bound AND posting power (locked-ADA
+   * weight) > 0. `status === "ready"` gates browsing/entry; `writeReady` gates every write. False while
+   * any of bind / stake / lock is missing OR still loading — a `!writeReady` write intent routes to
+   * /welcome to finish setup (reading stays open). Note stake is a MANDATORY onboarding step, so a
+   * bound, locked, but never-stake-bound account is intentionally not writeReady.
+   */
+  writeReady: boolean;
 }
 
 /**
