@@ -137,8 +137,13 @@ jobs:
           done
           if [ "$fail" = 1 ]; then
             echo "::error::nginx is not serving the dynamic-route SPA shell's RSC payloads. Install the"
-            echo "::error::current deploy/nginx/cogno.conf on the droplet and reload:"
-            echo "::error::  cp deploy/nginx/cogno.conf /etc/nginx/sites-available/cogno.conf && nginx -t && systemctl reload nginx"
+            echo "::error::current deploy/nginx/cogno.conf on the droplet and reload. cogno.conf is a"
+            echo "::error::TEMPLATE — it ships the placeholder domain cogno.example.io, so copying it"
+            echo "::error::verbatim leaves nginx pointing at a cert path that does not exist and 'nginx"
+            echo "::error::-t' fails (the reload is then refused and the old config stays live):"
+            echo "::error::  sudo cp deploy/nginx/cogno.conf /etc/nginx/sites-available/cogno.conf"
+            echo "::error::  sudo sed -i \"s/cogno.example.io/\$(echo '$origin' | sed 's#^https://##')/g\" /etc/nginx/sites-available/cogno.conf"
+            echo "::error::  sudo nginx -t && sudo systemctl reload nginx"
             exit 1
           fi
           echo "SPA shell OK: both the document and the RSC payload resolve for /u/<addr>/ and /post/<id>/."
