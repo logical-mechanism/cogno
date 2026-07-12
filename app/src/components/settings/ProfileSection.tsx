@@ -20,16 +20,13 @@ import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useMutation } from "@/hooks/useMutation";
 import { useOptimistic } from "@/hooks/useOptimistic";
-import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
+import { useToaster } from "@/components/toast/ToasterProvider";
+import { useActionToast } from "@/hooks/useActionToast";
 import { modalActions } from "@/lib/modalStore";
 import { submitClearProfile, submitUnpinPost } from "@/lib/chain/mutations";
 import { useInvalidateAccountProfile } from "@/hooks/useAccountProfile";
 import { invalidateHoverProfile } from "@/components/ProfileHoverCard";
 import type { CognoPost } from "@/lib/types";
-
-function isRateLimit(message: string): boolean {
-  return /rate limit|ExhaustsResources/i.test(message);
-}
 
 interface ProfilePreview {
   displayName?: string;
@@ -43,6 +40,7 @@ export function ProfileSection() {
   const { run } = useMutation();
   const { overlay } = useOptimistic();
   const { toast } = useToaster();
+  const { fail } = useActionToast();
   const invalidateAccountProfile = useInvalidateAccountProfile();
 
   const ss58 = signerCtl.signer.ss58;
@@ -119,14 +117,16 @@ export function ProfileSection() {
           setWorking(null);
           toast({ kind: "success", message: success });
         },
-        onError: (message: string) => {
+        onError: (error) => {
           setWorking(null);
-          if (isRateLimit(message)) toast({ id: "rate-limit", kind: "rate-limit", message: RATE_LIMIT_COPY });
-          else toast({ kind: "error", message });
+          // This branch WAS a hand-rolled copy of useActionToast.fail() — the same rate-limit-vs-generic
+          // split, the same toast ids — sitting behind a third copy of the isRateLimit regex. It is just
+          // fail().
+          fail(error);
         },
       }).catch(() => {});
     },
-    [api, run, toast],
+    [api, run, toast, fail],
   );
 
   const onClear = useCallback(() => {

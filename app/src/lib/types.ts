@@ -11,6 +11,8 @@
 import type { PolkadotClient, TypedApi } from "polkadot-api";
 import type { PolkadotSigner } from "polkadot-api/signer";
 import type { cogno } from "@polkadot-api/descriptors";
+// errors.ts is a LEAF (it imports nothing) — safe to depend on from here without a cycle.
+import type { ChainError } from "@/lib/chain/errors";
 
 /** The typed API for the cogno-chain runtime (Microblog @ pallet index 10). */
 export type CognoApi = TypedApi<typeof cogno>;
@@ -318,8 +320,14 @@ export interface TxUpdate {
   txHash?: string;
   /** the new post id (from an id-bearing event, e.g. `PostCreated`) once in a block. */
   postId?: bigint;
-  /** dispatch/validity/runtime error message when phase is "invalid" | "error". */
-  error?: string;
+  /**
+   * The CLASSIFIED failure when phase is "invalid" | "error" (see lib/chain/errors.ts).
+   *
+   * Structured, not a string: this used to be prose, so every consumer that needed to know WHICH
+   * failure it was had to regex the English back out of it. Branch on `error.kind`; render with
+   * `errorCopy(error)`.
+   */
+  error?: ChainError;
   /** true once the including block is GRANDPA-finalized. */
   finalized?: boolean;
 }

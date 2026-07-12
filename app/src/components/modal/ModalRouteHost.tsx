@@ -34,7 +34,8 @@ import { useThread } from "@/hooks/useThread";
 import { useInvalidateAccountProfile } from "@/hooks/useAccountProfile";
 import { invalidateHoverProfile } from "../ProfileHoverCard";
 import { useComposerGate } from "@/hooks/useComposerGate";
-import { useToaster, RATE_LIMIT_COPY } from "../toast/ToasterProvider";
+import { useToaster } from "../toast/ToasterProvider";
+import { errorCopy } from "@/lib/chain/errors";
 import {
   submitPost,
   submitReply,
@@ -46,11 +47,6 @@ import {
 import type { ActionState, ComposerDraft, PollDraft, ModalKind } from "../kit";
 import type { CognoPost } from "@/lib/types";
 import type { ProfileFields } from "../EditProfileModal";
-
-/** The CheckCapacity pool rejection surfaces as the rate-limit copy (stringifyError maps it). */
-function isRateLimit(message: string): boolean {
-  return /rate limit|ExhaustsResources/i.test(message);
-}
 
 const TITLES: Record<Exclude<ModalKind, null>, string> = {
   compose: "Compose post",
@@ -342,10 +338,17 @@ export function ModalRouteHost() {
           invalidateHoverProfile(ss58);
           toast({ id: "profile-save", kind: "success", message: successCopy });
         },
-        onError: (message: string) => {
+        onError: (error) => {
           rollbackProfile(ss58);
-          if (isRateLimit(message)) toast({ id: "profile-save", kind: "rate-limit", message: RATE_LIMIT_COPY });
-          else toast({ id: "profile-save", kind: "error", message });
+          // Re-toast under the SAME id on purpose: "profile-save" is the sticky pending toast above,
+          // which has NO auto-dismiss (pending: null). Replacing it in place is the only thing that
+          // clears it. Route this through useActionToast.fail() — whose toast ids are "rate-limit" and
+          // a fresh nextId() — and "Saving your profile…" spins on the app-wide toast bus forever.
+          toast({
+            id: "profile-save",
+            kind: error.kind === "rate-limit" ? "rate-limit" : "error",
+            message: errorCopy(error),
+          });
         },
       }).catch(() => {
         /* settled + rolled back via onError */

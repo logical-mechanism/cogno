@@ -11,6 +11,7 @@ import { Binary } from "polkadot-api";
 import { Observable } from "rxjs";
 import { takeNonce, settleNonce } from "@/lib/chain/nonce";
 import type { Tx } from "@/lib/chain/descriptors";
+import { classifyDispatchError, classifyThrown, errorCopy } from "@/lib/chain/errors";
 import type { CognoApi, PostingSigner, TxUpdate } from "@/lib/types";
 
 /**
@@ -62,45 +63,6 @@ export function extractPostId(
   return undefined;
 }
 
-/** Best-effort dispatchError → human string, so failures are surfaced rather than swallowed. */
-export function stringifyDispatchError(
-  err: { type: string; value: unknown } | undefined,
-): string {
-  if (!err) return "Transaction failed (no dispatch error reported).";
-  try {
-    // `value` is typically a nested { type, value } module-error shape; JSON-stringify with a
-    // bigint-safe replacer so we never throw on a u64-bearing error value.
-    const detail = JSON.stringify(
-      err.value,
-      (_k, v) => (typeof v === "bigint" ? v.toString() : v),
-    );
-    return detail && detail !== "{}" && detail !== "null"
-      ? `${err.type}: ${detail}`
-      : err.type;
-  } catch {
-    return err.type;
-  }
-}
-
-/** Best-effort thrown-error → message (signer rejection, network drop, capacity gate, etc.). */
-export function stringifyError(err: unknown): string {
-  let raw: string;
-  if (err instanceof Error) raw = err.message;
-  else {
-    try {
-      raw = typeof err === "string" ? err : JSON.stringify(err, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
-    } catch {
-      raw = String(err);
-    }
-  }
-  // The feeless-post spam gate (CheckCapacity → ExhaustsResources). The composer gates this
-  // proactively via the rate-limit pre-flight (no battery), so this is the rare race; surface
-  // the same Twitter-style rate-limit line.
-  if (/ExhaustsResources/i.test(raw)) {
-    return "You are over the rate limit. Try again shortly.";
-  }
-  return raw || "Transaction failed.";
-}
 
 /**
  * Map a `signSubmitAndWatch` stream into the shared TxUpdate phase stream.
@@ -157,7 +119,7 @@ export function watchTx(
                   phase: "invalid",
                   blockNumber: e.block?.number,
                   txHash: e.txHash,
-                  error: stringifyDispatchError(e.dispatchError),
+                  error: classifyDispatchError(e.dispatchError),
                 });
               }
               break;
@@ -176,7 +138,7 @@ export function watchTx(
                   phase: "error",
                   blockNumber: e.block?.number,
                   txHash: e.txHash,
-                  error: stringifyDispatchError(e.dispatchError),
+                  error: classifyDispatchError(e.dispatchError),
                 });
               }
               break;
@@ -188,8 +150,9 @@ export function watchTx(
         error(err: unknown) {
           // Signer rejection, validity error, or network drop — surface honestly AND log it
           // with context so a failed submission is debuggable (the UI only shows the message).
-          console.error(`cogno: ${eventName ?? "tx"} submission failed (stream error):`, stringifyError(err), err);
-          subscriber.next({ phase: "error", error: stringifyError(err) });
+          const e = classifyThrown(err);
+          console.error(`cogno: ${eventName ?? "tx"} submission failed (stream error):`, errorCopy(e), err);
+          subscriber.next({ phase: "error", error: e });
           subscriber.complete();
         },
         complete() {
@@ -199,8 +162,9 @@ export function watchTx(
     } catch (err) {
       // Synchronous failure building/signing the tx — log it (a thrown tx-build error is
       // otherwise invisible beyond the one-line message the UI renders).
-      console.error(`cogno: ${eventName ?? "tx"} submission threw while building/signing:`, stringifyError(err), err);
-      subscriber.next({ phase: "error", error: stringifyError(err) });
+      const e = classifyThrown(err);
+      console.error(`cogno: ${eventName ?? "tx"} submission threw while building/signing:`, errorCopy(e), err);
+      subscriber.next({ phase: "error", error: e });
       subscriber.complete();
     }
 
@@ -277,7 +241,7 @@ export function signSubmitWatch(
       })
       .catch((e: unknown) => {
         settle();
-        subscriber.next({ phase: "error", error: stringifyError(e) });
+        subscriber.next({ phase: "error", error: classifyThrown(e) });
         subscriber.complete();
       });
 

@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Observable, Subscription } from "rxjs";
 import { useSession } from "@/components/Providers";
+import { classifyThrown, errorCopy, type ChainError } from "@/lib/chain/errors";
 import type { TxUpdate } from "@/lib/types";
 
 export type MutationPhase =
@@ -25,8 +26,8 @@ export type MutationPhase =
 export interface RunOptions {
   /** Fired once at `inBestBlock` (ok) — the confirm point. */
   onConfirm?: (u: TxUpdate) => void;
-  /** Fired once on `invalid` / `error` with the friendly message. */
-  onError?: (message: string) => void;
+  /** Fired once on `invalid` / `error` with the CLASSIFIED failure (branch on `.kind`, render with `errorCopy`). */
+  onError?: (error: ChainError) => void;
   /**
    * Fired once if the run is still UNSETTLED when the hook unmounts (e.g. the card navigated away
    * mid-flight). Use it to silently roll back an optimistic overlay — do NOT reuse onError, which
@@ -37,7 +38,7 @@ export interface RunOptions {
 
 export interface UseMutation {
   phase: MutationPhase;
-  error: string | null;
+  error: ChainError | null;
   /** true between `run()` and the settle (confirm or error). */
   pending: boolean;
   /**
@@ -52,7 +53,7 @@ export interface UseMutation {
 export function useMutation(): UseMutation {
   const { boot } = useSession();
   const [phase, setPhase] = useState<MutationPhase>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ChainError | null>(null);
   const [pending, setPending] = useState(false);
   const subs = useRef<Set<{ sub: Subscription; cancel: () => void }>>(new Set());
 
@@ -86,10 +87,15 @@ export function useMutation(): UseMutation {
     // `=== false`, not `!== true`: `boot` is null while the probe is still in flight, and treating that
     // as a failure would make the app read-only for the first moments of every session.
     if (boot?.ok === false) {
+      // `raw`, never a classified kind: this must NEVER be mistakable for a rate limit. When the error
+      // was a prose string, the downstream isRateLimit regex could match a boot reason that happened to
+      // contain "rate limit" and show the user "you're posting too fast" for an ENCODING MISMATCH — a
+      // write block with no diagnosis. Structurally impossible now.
       const message = boot.reason ?? "This app is not compatible with the connected node.";
+      const err: ChainError = { kind: "raw", detail: message };
       setPhase("error");
-      setError(message);
-      opts?.onError?.(message);
+      setError(err);
+      opts?.onError?.(err);
       return Promise.reject(new Error(message));
     }
     setError(null);
@@ -104,16 +110,16 @@ export function useMutation(): UseMutation {
         opts?.onConfirm?.(u);
         resolve(u);
       };
-      const settleErr = (message: string) => {
+      const settleErr = (err: ChainError) => {
         // Guard FIRST: a late invalid/error (or observable error) after inBestBlock already settled
         // must not flip a confirmed tx's phase to "error".
         if (settled) return;
         settled = true;
         setPhase("error");
-        setError(message);
+        setError(err);
         setPending(false);
-        opts?.onError?.(message);
-        reject(new Error(message));
+        opts?.onError?.(err);
+        reject(new Error(errorCopy(err)));
       };
       // `entry` is captured by complete() below; declared with `let` before subscribe() so a
       // (theoretical) synchronous complete sees `undefined` (a harmless delete) rather than a TDZ throw.
@@ -136,12 +142,12 @@ export function useMutation(): UseMutation {
               break;
             case "invalid":
             case "error":
-              settleErr(u.error ?? "Transaction failed.");
+              settleErr(u.error ?? { kind: "raw", detail: "Transaction failed." });
               break;
           }
         },
         error: (e: unknown) => {
-          settleErr(e instanceof Error ? e.message : String(e));
+          settleErr(classifyThrown(e));
         },
         complete: () => {
           if (entry) subs.current.delete(entry);

@@ -128,7 +128,7 @@ export interface ToastApi {
   /** Raise a toast (id auto-generated when omitted); returns the id. Dedupes by id. */
   toast: (spec: Omit<ToastSpec, "id"> & { id?: string }) => string;
   dismiss: (id: string) => void;
-  /** Convenience: the canonical rate-limit toast ("You are over the rate limit. Try again shortly."). */
+  /** Convenience: the canonical rate-limit toast (copy from `errorCopy({ kind: "rate-limit" })`). */
   rateLimit: () => string;
 }
 
