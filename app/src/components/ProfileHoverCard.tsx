@@ -139,7 +139,7 @@ function HoverPopover({
   // Lazily fetch the full profile (node-direct: name/bio/avatar/counts), cache it. Keeps the seed
   // name+avatar from the post visible while it loads; a failed read just leaves the seed.
   useEffect(() => {
-    if (!source || !source.caps.profiles) return;
+    if (!source) return;
     const cached = profileCache.get(author.address);
     if (cached) {
       setProfile(cached);
@@ -164,7 +164,7 @@ function HoverPopover({
   const avatar = profile?.avatar ?? author.avatar;
   const banned = profile?.banned ?? author.banned ?? false;
   const bio = profile?.bio?.trim() ?? "";
-  const hasCounts = source?.caps.follows === true && profile != null;
+  const hasCounts = source != null && profile != null;
 
   const openProfile = useCallback(
     () => router.push(`/u/${author.address}/`),

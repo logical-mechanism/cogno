@@ -1,5 +1,5 @@
 // PAPI-direct social reads: per-post tallies + the viewer's own vote/repost/poll state, read
-// straight from `Microblog` storage. These let the PAPI-direct FeedSource set `caps.tallies:true`
+// straight from `Microblog` storage — the vote/poll tallies the feed reader stamps onto each card
 // (the node serves the aggregate maps cheaply); follow edges / display names / who-to-follow stay
 // indexer-only because they need reverse-index aggregation the node can't serve.
 //

@@ -1,26 +1,23 @@
 "use client";
 
 // ExplorePage — /explore (surface 10). The search-first discovery surface. A full-width SearchBar in
-// a sticky blurred header; below it two modes derived from the URL term `q` (read client-side via
-// useSearchParams) + feedSource.caps.search:
+// a sticky blurred header; below it three modes, derived from whether a reader is connected and from
+// the URL term `q` (read client-side via useSearchParams):
 //
-//   caps.search === false → NO-SOURCE   : the reader isn't ready yet (no `source` before connect;
-//                                          search is node-served, so once connected caps.search is true) —
-//                                          SearchBar disabled + `search-unavailable` EmptyState; firehose
-//                                          still renders (the live window).
-//   caps.search === true, q === ''       → DEFAULT : firehose Timeline + FirehoseOrderToggle (Top|Recent).
-//   caps.search === true, q !== ''       → QUERY   : ResultTabStrip (People | Latest) + result list.
+//   no source yet  → NO-SOURCE : the reader isn't connected — SearchBar disabled +
+//                                `search-unavailable` EmptyState; the firehose still renders.
+//   source, q ===  '' → DEFAULT : firehose Timeline + FirehoseOrderToggle (Top|Recent).
+//   source, q !== '' → QUERY   : ResultTabStrip (People | Latest) + result list.
 //
 // `q` is the committed term (mirrored to ?q=). The SearchBar's controlled value is a SEPARATE local
 // `draft` that debounces into `q` (300ms) while typing — router.replace (not push) so keystroke term
 // changes never stack history; Enter commits immediately; the clear ✕ → router.replace('/explore').
 //
-// The firehose + Latest both use useFeedPage(source, …), both NODE-DIRECT: the firehose via the spec-200
-// feed_page (recency by id, cursor-paginated), Latest via search_posts (the in-runtime substring scan).
-// caps.pagination is true, so the Timeline shows infinite-scroll for both. People search uses
-// source.searchPeople (node-served — search_people). Every result-card write is optimistic and
-// funnels disconnected/unbound viewers to /welcome; capacity exhaustion → RateLimitNotice toast. No
-// honesty/block-number chrome anywhere.
+// The firehose + Latest both use useFeedPage(source, …), both node-direct: the firehose via feed_page
+// (recency by id, cursor-paginated), Latest via search_posts (the in-runtime substring scan). Both
+// paginate, so the Timeline shows infinite-scroll for each. People search uses source.searchPeople
+// (search_people). Every result-card write is optimistic and funnels disconnected/unbound viewers to
+// /welcome; capacity exhaustion → RateLimitNotice toast. No honesty/block-number chrome anywhere.
 //
 // useSearchParams() requires a <Suspense> boundary under output:'export' (mirrors /compose) — the route
 // default mounts <ExploreView> inside one.
@@ -77,9 +74,9 @@ function ExploreView() {
   const { api, signer, source, viewer, votingPower } = useSession();
 
   const me = viewer.address ?? null;
-  const searchEnabled = source?.caps.search === true;
-  const peopleEnabled = source?.caps.search === true && source?.caps.profiles === true;
-  const paginationCapable = source?.caps.pagination === true;
+  const searchEnabled = source != null;
+  const peopleEnabled = source != null;
+  const paginationCapable = source != null;
   // Node-first: the firehose is node-served (recency, by id) on every source makeFeedSource builds
   // (papi + hybrid). The node has no score index, so the score-ranked "Top" order is unavailable —
   // the toggle below honestly shows "Most recent" as selected (a node-side score index would flip this).
@@ -240,7 +237,7 @@ function ExploreView() {
     (tab: ResultTab) => router.replace(buildExploreUrl(committedQ, tab)),
     [router, buildExploreUrl, committedQ],
   );
-  // When People is unreachable (shouldn't happen since the strip needs caps.search), fall back to Latest.
+  // When People is unreachable, fall back to Latest.
   const activeResultTab: ResultTab = resultTab === "people" && !peopleEnabled ? "latest" : resultTab;
 
   // ── DEFAULT firehose / QUERY Latest feed (both via the page seam) ────────────────────────────
@@ -272,7 +269,7 @@ function ExploreView() {
   const carriedStates = useMemo(() => carriedViewerStates(activePosts), [activePosts]);
   const viewerStates = useViewerStates(source, postIds, me, carriedStates);
 
-  // ── People search (indexer-only) ─────────────────────────────────────────────────────────────
+  // ── People search (node-served) ──────────────────────────────────────────────────────────────
   const [people, setPeople] = useState<Suggestion[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(false);
   const [peopleError, setPeopleError] = useState<string | null>(null);

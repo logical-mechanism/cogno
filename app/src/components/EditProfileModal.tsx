@@ -103,7 +103,7 @@ export function EditProfileModal({
     }
     void (async () => {
       try {
-        if (source && source.caps.profiles && ss58) {
+        if (source && ss58) {
           const p = await source.profile({ author: ss58 });
           if (cancelled) return;
           setName(p.displayName ?? "");

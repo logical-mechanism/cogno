@@ -90,7 +90,7 @@ export function useMentions(opts: {
   const [loading, setLoading] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  const canSearch = !!source && source.caps.search && source.caps.profiles;
+  const canSearch = !!source;
 
   // Prune mentions whose display token no longer appears in the text (a deletion or an edit that broke
   // the token → it degrades to plain text and is dropped from the set). Runs on ANY text change —

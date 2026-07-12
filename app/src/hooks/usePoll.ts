@@ -56,7 +56,7 @@ export function usePoll(
 
   // One read of the poll's tallies + the viewer's prior choice (null-soft on the choice read).
   const read = useCallback(async (): Promise<{ poll: PollView; choice: number | null } | null> => {
-    if (!source || hostId == null || !source.caps.tallies) return null;
+    if (!source || hostId == null ) return null;
     const [p, choice] = await Promise.all([
       source.poll(hostId),
       who ? source.viewerPollChoice(hostId, who).catch(() => null) : Promise.resolve(null),
@@ -67,7 +67,7 @@ export function usePoll(
   // Initial / context load — accepts unconditionally (no cast in flight). Only the poll() read surfaces
   // an error; a missing/erroring choice fails soft to null. Re-runs when source / hostId / who changes.
   useEffect(() => {
-    if (!source || hostId == null || !source.caps.tallies) {
+    if (!source || hostId == null) {
       setPoll(null);
       setMyChoice(null);
       return;

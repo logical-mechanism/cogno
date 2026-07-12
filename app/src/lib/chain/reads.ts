@@ -74,13 +74,6 @@ export function binTextOpt(v?: Uint8Array): string | undefined {
   return s ? s : undefined;
 }
 
-/** Newest-first by id (bigint-safe comparator). */
-function byIdDesc(a: bigint, b: bigint): number {
-  if (a < b) return 1;
-  if (a > b) return -1;
-  return 0;
-}
-
 // ── liveness + the id cursor ────────────────────────────────────────────────────────────────────
 
 /**
@@ -217,114 +210,6 @@ export interface IdPage {
   nextCursor: bigint | null;
 }
 
-/** Read a contiguous descending block of `Posts` values [hi .. hi-count+1], clamped at id 0. */
-async function readIdBlock(
-  api: CognoApi,
-  hi: bigint,
-  count: number,
-): Promise<{ id: bigint; value: RawPostValue | undefined }[]> {
-  const ids: bigint[] = [];
-  for (let k = 0; k < count && hi - BigInt(k) >= 0n; k++) ids.push(hi - BigInt(k));
-  const values = await Promise.all(
-    ids.map((id) => api.query.Microblog.Posts.getValue(id) as Promise<RawPostValue | undefined>),
-  );
-  return ids.map((id, i) => ({ id, value: values[i] }));
-}
-
-const SCAN_BATCH = 32;
-
-/**
- * One page of the GLOBAL feed: walk ids DESC from `beforeId` (default the latest post), keeping
- * top-level posts only (replies live in threads), skipping any absent id, until `limit` posts are
- * collected or id 0 is reached. Returns the enriched page + the cursor (last examined id − 1) for
- * the next, older page. `keep` optionally filters further (e.g. a Following-feed author set).
- */
-export async function getGlobalFeedPage(
-  api: CognoApi,
-  opts: { beforeId?: bigint; limit: number; keep?: (p: RawPostValue) => boolean },
-): Promise<IdPage> {
-  const limit = Math.max(1, opts.limit);
-  let cursor: bigint;
-  if (opts.beforeId != null) {
-    cursor = opts.beforeId;
-  } else {
-    const latest = await latestPostId(api);
-    if (latest == null) return { posts: [], nextCursor: null };
-    cursor = latest;
-  }
-
-  // SCALING NOTE (Following feed): with a `keep` filter over a sparse follow set on a large chain,
-  // this walk can read many ids per page before collecting `limit` matches — same O(N) cost class as
-  // the pre-spec-119 full-snapshot filter (a non-regression). The indexer is the scalable path for a
-  // busy Following timeline. A bounded per-page scan budget was tried but tripped `@vercel/nft`'s
-  // static-export trace; left out deliberately rather than ship a fragile build.
-  const collected: RawPostWithId[] = [];
-  let lastExamined: bigint | null = null;
-  let next = cursor;
-  while (collected.length < limit && next >= 0n) {
-    const block = await readIdBlock(api, next, SCAN_BATCH);
-    for (const { id, value } of block) {
-      lastExamined = id;
-      if (!value) continue; // absent id (append-only chain ⇒ normally never; defensive)
-      if (value.parent != null) continue; // replies are read in threads, not the home feed
-      if (opts.keep && !opts.keep(value)) continue;
-      collected.push({ id, value });
-      if (collected.length >= limit) break;
-    }
-    if (block.length === 0) break;
-    next = block[block.length - 1].id - 1n;
-  }
-
-  const posts = await enrichPosts(api, collected);
-  // More pages iff we stopped above id 0; the next page starts just below the last id we examined.
-  const nextCursor =
-    lastExamined != null && lastExamined > 0n && collected.length >= limit
-      ? lastExamined - 1n
-      : null;
-  return { posts, nextCursor };
-}
-
-/**
- * One page of an AUTHOR's TOP-LEVEL posts (the profile Posts tab), newest-first. The author's id set
- * is the `ByAuthor` BoundedVec (one keyed read); we page over it — `beforeId` continues below a prior
- * page — reading each `Posts` value and keeping top-level only. No global scan.
- */
-export async function getAuthorFeedPage(
-  api: CognoApi,
-  account: Ss58,
-  opts: { beforeId?: bigint; limit: number },
-): Promise<IdPage> {
-  const limit = Math.max(1, opts.limit);
-  const rawIds = (await api.query.Microblog.ByAuthor.getValue(account)) as unknown as
-    | bigint[]
-    | undefined;
-  const allDesc = (rawIds ?? []).map((x) => BigInt(x)).sort(byIdDesc);
-  const candidates =
-    opts.beforeId == null ? allDesc : allDesc.filter((id) => id < opts.beforeId!);
-
-  const collected: RawPostWithId[] = [];
-  let idx = 0;
-  while (idx < candidates.length && collected.length < limit) {
-    const window = candidates.slice(idx, idx + SCAN_BATCH);
-    const values = await Promise.all(
-      window.map((id) => api.query.Microblog.Posts.getValue(id) as Promise<RawPostValue | undefined>),
-    );
-    for (let k = 0; k < window.length; k++) {
-      idx++; // examined
-      const value = values[k];
-      if (!value) continue;
-      if (value.parent != null) continue; // top-level only (profile Posts tab)
-      collected.push({ id: window[k], value });
-      if (collected.length >= limit) break;
-    }
-  }
-
-  const posts = await enrichPosts(api, collected);
-  const hasMore = idx < candidates.length;
-  const lastExaminedId = idx > 0 ? candidates[idx - 1] : null;
-  return { posts, nextCursor: hasMore && lastExaminedId != null ? lastExaminedId : null };
-}
-
 /** The total number of posts an author has authored (the `ByAuthor` index length — one keyed read). */
 export async function authorPostCount(api: CognoApi, account: Ss58): Promise<number> {
   const rawIds = (await api.query.Microblog.ByAuthor.getValue(account)) as unknown as
@@ -430,19 +315,4 @@ export function watchHeads(client: PolkadotClient): Observable<ChainHeads> {
       finalized: toBlockRef(finalized),
     })),
   );
-}
-
-/**
- * Fetch a single post by id, fully enriched (tallies/counts/replyCount/poll flag/profile/quote), or
- * undefined if it does not exist. The canonical single-post read (the thread root, a liked post, a
- * quote target). Revocation is flagged by the caller (PAPI source) per distinct author.
- */
-export async function getPost(
-  api: CognoApi,
-  id: bigint,
-): Promise<CognoPost | undefined> {
-  const raw = (await api.query.Microblog.Posts.getValue(id)) as unknown as RawPostValue | undefined;
-  if (!raw) return undefined;
-  const [post] = await enrichPosts(api, [{ id, value: raw }]);
-  return post;
 }

@@ -7,7 +7,7 @@
 //
 // This is the PREFERRED path on a spec-120 node; the PAPI-direct source RUNTIME-DETECTS support
 // (papi-source.ts `supportsNodeFeedApi`) and keeps the keyed `getGlobalFeedPage`/`getAuthorFeedPage`/
-// `getThread` reads (reads.ts) as the fallback for pre-120 nodes. The two paths MUST agree: the
+// `getThread` read (reads.ts) as a RESILIENCE fallback for a thread too big for one state_call. They MUST agree: the
 // mapping here mirrors `enrichPosts` exactly (same CognoPost shape; `score = upWeight - downWeight`,
 // the SAME derivation as `readPostTally`/`toCognoPost`), proven by the parity test in reads.test.ts.
 
@@ -354,7 +354,7 @@ export async function nodeAuthorPostCount(api: CognoApi, author: Ss58): Promise<
   return microblogApi(api).author_post_count(author);
 }
 
-// ── the all-Rust restart (fork/all-rust, P8b): the last three indexer-only caps, folded into the node ──
+// ── the all-Rust restart (fork/all-rust, P8b): the last three indexer-only reads, folded into the node ──
 
 /**
  * Full-text post search (`MicroblogApi.search_posts`): an ASCII-case-insensitive substring match on

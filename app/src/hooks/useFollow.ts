@@ -1,7 +1,7 @@
 "use client";
 
 // useFollow — the follow graph + optimistic toggle. The READ (edges + counts) is gated on
-// caps.follows (indexer-only; PAPI-direct returns empties). The WRITE (follow/unfollow) is NEVER
+// the node (which serves the whole follow graph). The WRITE (follow/unfollow) is NEVER
 // reader-gated — it is a chain extrinsic available to any bound account — so the toggle works even
 // on PAPI-direct; only the displayed counts are hidden there.
 
@@ -35,7 +35,7 @@ export function useFollow(
   const [optimistic, setOptimistic] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    if (!source || !who || !source.caps.follows) {
+    if (!source || !who) {
       setEdges(null);
       return;
     }

@@ -67,7 +67,7 @@ export function useViewerStates(
   overlayRef.current = overlay;
 
   useEffect(() => {
-    if (!source || !who || !source.caps.tallies || postIds.length === 0) {
+    if (!source || !who || postIds.length === 0) {
       setBase(new Map());
       return;
     }

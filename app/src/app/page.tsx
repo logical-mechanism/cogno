@@ -12,7 +12,7 @@
 //   • Following — useFeedPage(source, { tab:'following', followeeOf, first }, enabled); skipped +
 //                 shows the follows empty-state when the viewer follows nobody / is disconnected. The
 //                 node serves the Following timeline directly (spec-120 following_feed_page), so the
-//                 tab shows on the PAPI-direct/hybrid path too; it only hides if caps.follows is false.
+//                 node serves the Following timeline directly, so the tab is always available.
 //
 // One socket: everything reads from useSession(); this page never instantiates a client.
 //
@@ -66,8 +66,8 @@ export default function HomePage() {
   const { api, signer, source, viewer, votingPower, bestBlock } = useSession();
 
   const me = viewer.address ?? null;
-  const canFollow = source?.caps.follows === true;
-  const paginationCapable = source?.caps.pagination === true;
+  const canFollow = source != null;
+  const paginationCapable = source != null;
 
   // Active tab is CLIENT state (not a route change). Ignore a persisted 'following' on PAPI-direct.
   const [tab, setTab] = useState<TimelineTab>("for-you");

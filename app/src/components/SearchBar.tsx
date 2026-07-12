@@ -1,7 +1,7 @@
 "use client";
 
 // SearchBar — the global search input (doc 03 §21). Substring search over post bodies is node-served
-// (spec-200 MicroblogApi.search_posts), gated on `searchEnabled` = feedSource.caps.search — which is
+// (MicroblogApi.search_posts), gated on `searchEnabled` — which is
 // true once the node reader is ready, so the input is disabled only before connect (no `source` yet).
 // Pill, --cg-bg-subtle. Controlled value; Enter commits via onSubmit (nav to /explore?q= or run inline);
 // a clear (✕) appears when there's text. NO fake client-side search.
@@ -14,7 +14,7 @@ export interface SearchBarProps {
   value: string;
   onChange: (v: string) => void;
   onSubmit: (v: string) => void;
-  /** = feedSource.caps.search. false → disabled + honest cap placeholder. */
+  /** false (no reader connected yet) → disabled + honest placeholder. */
   searchEnabled: boolean;
   placeholder?: string;
   autoFocus?: boolean;

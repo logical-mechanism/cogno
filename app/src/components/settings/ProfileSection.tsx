@@ -58,7 +58,7 @@ export function ProfileSection() {
   // Load the viewer's own profile (node-served via the seam) for the preview — display name / bio /
   // avatar / pinned. Re-reads silently each block so a save (from the Edit modal) reconciles here too.
   useEffect(() => {
-    if (!(source && source.caps.profiles && bound)) {
+    if (!(source && bound)) {
       setPreview({});
       setPinnedPost(null);
       setLoading(false);

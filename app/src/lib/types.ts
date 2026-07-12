@@ -25,7 +25,7 @@ export type Ss58 = string;
  *
  * The social fields (quote/tallies/counts + author profile snapshot) are ADDITIVE and all
  * optional: the node-served MicroblogApi reader fills them fully; a bare PAPI-direct storage
- * read fills only what direct storage allows (gated by `FeedCaps`). Weight/score fields are
+ * read fills what the node serves. Weight/score fields are
  * `bigint` (u128 ⇒ lovelace-scale, may exceed 2^53; `score` may be negative).
  */
 export interface CognoPost {
@@ -73,7 +73,7 @@ export interface CognoPost {
   // ── viewer overlay (spec-120 node-served reads only) ──
   /**
    * The connected viewer's own vote/repost on this post, stamped node-side by the spec-120
-   * `MicroblogApi` (when a `viewer` was passed). PRESENT only on a `caps.nodeFeedApi`-served page;
+   * `MicroblogApi` (when a `viewer` was passed). PRESENT only when a `viewer` was passed;
    * `undefined` on the keyed/indexer paths, where `useViewerStates` reads it per-card instead. When
    * present, `useViewerStates` prefers it and SKIPS the per-card `Reposts.getEntries` viewer scan.
    */
@@ -173,7 +173,7 @@ export interface FeedQuery {
   followeeOf?: Ss58; // "Following" timeline: posts by accounts this user follows
   order?: "recency" | "score"; // forYou default recency; "score" = top (indexer SCORE_DESC)
   /**
-   * The connected account, when known. A `caps.nodeFeedApi` source threads it into the spec-120
+   * The connected account, when known. The source threads it into the
    * `MicroblogApi` so each returned post carries the viewer's `myVote`/`reposted` overlay, computed
    * node-side in the same `state_call`. The keyed + indexer paths IGNORE it (the overlay is fetched
    * separately via `useViewerStates`), so passing it is always safe and never changes those results.
@@ -192,7 +192,7 @@ export interface ProfileView {
   banned: boolean;
   /** Cardano-sourced talk weight (lovelace), when known. */
   weight?: bigint;
-  // ── spec-117 pallet-profile (indexer-derived; PAPI-direct omits — caps.profiles:false) ──
+  // ── spec-117 pallet-profile (node-served) ──
   displayName?: string;
   bio?: string;
   avatar?: string;
@@ -202,7 +202,7 @@ export interface ProfileView {
   website?: string;
   /** Pinned post id (a bare on-chain string id; not existence-validated). */
   pinnedPostId?: bigint;
-  /** Follower/following counts (indexer-only; PAPI-direct omits — caps.follows:false). */
+  /** Follower/following counts (node-served, off the denormalised counters). */
   followerCount?: number;
   followingCount?: number;
   // ── spec-202 account reputation (stake-weighted up/down votes ON this account) ──

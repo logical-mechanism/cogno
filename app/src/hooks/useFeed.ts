@@ -71,7 +71,7 @@ export interface UseFeedPage {
 /**
  * The paginated read path: fetch the first page whenever the source or query changes, then
  * append cursor pages on `loadMore`. Used for search and "load more" — gated on
- * `source.caps.pagination` by the caller. Honest error state; never blanks on failure.
+ * the caller. Honest error state; never blanks on failure.
  */
 export function useFeedPage(
   source: FeedSource | null,

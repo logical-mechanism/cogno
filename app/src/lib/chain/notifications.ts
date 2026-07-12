@@ -103,7 +103,7 @@ export async function loadNotifications(
       ),
       (q.AccountVotes.getEntries(me, BEST) as Promise<StorageEntry[]>).catch(() => [] as StorageEntry[]),
       (q.Followers.getEntries(me, BEST) as Promise<StorageEntry[]>).catch(() => [] as StorageEntry[]),
-      source && source.caps.search
+      source
         ? source.page({ search: me, viewer: me, first: MENTION_LIMIT }).catch(() => null)
         : Promise.resolve(null),
     ]);

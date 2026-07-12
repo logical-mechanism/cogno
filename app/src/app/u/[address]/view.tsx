@@ -103,12 +103,13 @@ function ProfileBody({ address }: { address: Ss58 }) {
 
   const me = viewer.address ?? null;
   const isSelf = me != null && me === address;
-  const canFollow = source?.caps.follows === true;
-  const canAccountVote = source?.caps.tallies === true; // reputation votes ON this account (spec-202)
-  const canProfiles = source?.caps.profiles === true; // display name / bio / avatar (node + indexer)
-  const canReplies = source?.caps.profileReplies === true; // replies-by-author tab (node — author_replies_page)
-  const canLikes = source?.caps.profileLikes === true; // likes tab (node-direct since spec-118)
-  const paginationCapable = source?.caps.pagination === true;
+  // The node serves every one of these, so they collapse to "is the reader connected yet".
+  const canFollow = source != null;
+  const canAccountVote = source != null;
+  const canProfiles = source != null;
+  const canReplies = source != null;
+  const canLikes = source != null;
+  const paginationCapable = source != null;
 
   // ── active tab: client state synced to ?tab= (the static route stays /u/[address]). ──
   const [tab, setTab] = useState<ProfileTab>(() => parseTabParam(searchParams?.get("tab") ?? null));
@@ -142,7 +143,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
     bestBlock,
   );
 
-  // ── follow graph + optimistic toggle (header). READ gated on caps.follows; WRITE always allowed. ──
+  // ── follow graph + optimistic toggle (header). ──
   const follow = useFollow(api, signer, source, me);
   const isFollowing = follow.isFollowing(address);
 
