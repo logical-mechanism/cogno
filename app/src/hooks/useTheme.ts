@@ -4,27 +4,28 @@
 // the root <html> and persists the choice to localStorage['cg-theme']. The pre-paint boot
 // script in the root layout sets the attribute before first paint (no flash); this hook keeps
 // React in sync and flips it on toggle. Default is "dark".
+//
+// Backed by the SHARED persistent store, not a private useState. Two ThemeToggles are mounted at once
+// on desktop /settings (the RightRail one and AppearanceSection's), and with per-instance state,
+// toggling one left the other rendering the wrong icon, the wrong label, and an aria-label that
+// actively lied ("Switch to light mode" on a page that was already light). `crossTab` keeps a second
+// window in sync too.
+//
+// localStorage is the single source of truth: the layout's boot script derives the attribute from
+// exactly this key with exactly this default, so the store and the DOM cannot disagree at boot.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { createPersistentStore } from "@/lib/persistentStore";
 
 export type Theme = "dark" | "light";
-const STORAGE_KEY = "cg-theme";
 
-function readStoredTheme(): Theme {
-  if (typeof document !== "undefined") {
-    const attr = document.documentElement.getAttribute("data-theme");
-    if (attr === "light" || attr === "dark") return attr;
-  }
-  if (typeof window !== "undefined") {
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
-      if (stored === "light" || stored === "dark") return stored;
-    } catch {
-      /* storage blocked — fall through to default */
-    }
-  }
-  return "dark";
-}
+const store = createPersistentStore<Theme>({
+  key: "cg-theme",
+  empty: "dark", // also the SSG/first-paint snapshot
+  parse: (raw) => (raw === "light" || raw === "dark" ? raw : "dark"),
+  serialize: (t) => t,
+  crossTab: true,
+});
 
 export interface UseTheme {
   theme: Theme;
@@ -33,28 +34,17 @@ export interface UseTheme {
 }
 
 export function useTheme(): UseTheme {
-  // Default to "dark" for SSG/first paint; reconcile with the stored/attribute value on mount.
-  const [theme, setThemeState] = useState<Theme>("dark");
+  const theme = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot);
 
+  // Mirror the store onto the document. This must run for EVERY change, not only ones this tab made:
+  // a `storage` event from another tab updates our store but cannot touch our document, so without it
+  // the icon would flip while the page kept its old colours.
   useEffect(() => {
-    setThemeState(readStoredTheme());
-  }, []);
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
 
-  const setTheme = useCallback((t: Theme) => {
-    setThemeState(t);
-    if (typeof document !== "undefined") {
-      document.documentElement.setAttribute("data-theme", t);
-    }
-    try {
-      window.localStorage.setItem(STORAGE_KEY, t);
-    } catch {
-      /* storage blocked — the attribute still applies for this session */
-    }
-  }, []);
-
-  const toggle = useCallback(() => {
-    setTheme(readStoredTheme() === "dark" ? "light" : "dark");
-  }, [setTheme]);
+  const setTheme = useCallback((t: Theme) => store.commit(t), []);
+  const toggle = useCallback(() => store.commit(store.read() === "dark" ? "light" : "dark"), []);
 
   return { theme, setTheme, toggle };
 }

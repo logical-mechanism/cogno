@@ -73,6 +73,12 @@ export function createPersistentStore<T>(opts: PersistentStoreOpts<T>): Persiste
   function subscribe(cb: () => void): () => void {
     if (crossTab && listeners.size === 0 && typeof window !== "undefined") {
       window.addEventListener("storage", onStorage);
+      // Re-read on (re)attach. The `storage` listener is only mounted while someone is subscribed, so
+      // any foreign-tab write that landed while `listeners` was empty fired into a void — without this
+      // the cache stays stale forever, and the NEXT commit builds on it and clobbers the other tab's
+      // write. Safe with useSyncExternalStore: React calls getSnapshot() AFTER subscribe() returns.
+      const fresh = loadFromStorage();
+      if (serialize(fresh) !== serialize(cache)) cache = fresh;
     }
     listeners.add(cb);
     return () => {
