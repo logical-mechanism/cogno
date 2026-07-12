@@ -7,7 +7,7 @@
     "postinstall": "papi",
     "dev": "next dev -p 3000",
     "build": "next build",
-    "lint": "eslint . --max-warnings 84 && node scripts/check-tokens.mjs && node scripts/check-spec.mjs",
+    "lint": "eslint . --max-warnings 83 && node scripts/check-tokens.mjs && node scripts/check-spec.mjs",
     "check:tokens": "node scripts/check-tokens.mjs",
     "check:spec": "node scripts/check-spec.mjs",
     "smoke": "node scripts/smoke-export.mjs",
