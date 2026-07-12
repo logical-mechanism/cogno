@@ -39,6 +39,13 @@ export interface UseThread {
   newReplyCount: number;
   /** Reveal the buffered new replies (the pill). */
   flushReplies: () => void;
+  /**
+   * Re-run the initial load. The error card's Retry needs this: a FAILED cold read leaves
+   * `seeded.current === false`, and the per-block live refetch early-returns on exactly that, so the
+   * thread could never recover on its own. (The Retry it had called `router.refresh()`, which under
+   * `output: 'export'` has no RSC payload to refetch and did nothing at all.)
+   */
+  reload: () => void;
 }
 
 export function useThread(
@@ -82,6 +89,9 @@ export function useThread(
   // viewer-stamped fetch on the same root.
   const loadGen = useRef(0);
   const mounted = useRef(true);
+  // Bumped by `reload()` to re-arm the initial-load effect (the error card's Retry).
+  const [retryNonce, setRetryNonce] = useState(0);
+  const reload = useCallback(() => setRetryNonce((n) => n + 1), []);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -168,7 +178,10 @@ export function useThread(
     return () => {
       cancelled = true;
     };
-  }, [source, rootId, viewer, applyFresh]);
+    // `retryNonce` re-arms this effect for the error card's Retry. No seed refs need resetting: a cold
+    // failure leaves base=null / seeded=false / seededRoot=null, which is exactly the state a re-run
+    // expects — it recomputes `cold` from baseRef and re-seeds shownIds on success.
+  }, [source, rootId, viewer, applyFresh, retryNonce]);
 
   // ── live re-read: refresh tallies in place + surface new replies (buffered behind the pill) ──
   // Silent (no `loading`, errors swallowed), so the "Refreshing replies" indicator doesn't blink and a
@@ -270,5 +283,6 @@ export function useThread(
     confirmReply,
     newReplyCount,
     flushReplies,
+    reload,
   };
 }

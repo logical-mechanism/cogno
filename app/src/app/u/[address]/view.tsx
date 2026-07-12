@@ -136,7 +136,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
     () => ({ author: address, tab: tabArg(activeTab), viewer: me ?? undefined }),
     [address, activeTab, me],
   );
-  const { profile, posts, loading, error, hasMore, loadingMore, loadMore } = useProfile(
+  const { profile, posts, loading, error, hasMore, loadingMore, loadMore, reload } = useProfile(
     source,
     profileArgs,
     bestBlock,
@@ -531,12 +531,18 @@ function ProfileBody({ address }: { address: Ss58 }) {
                 handlers={handlers}
                 loading={loading && listPosts.length === 0}
                 error={error}
-                onRetry={() => router.refresh()}
+                onRetry={reload}
                 hasMore={hasMore}
                 onLoadMore={loadMore}
                 loadingMore={loadingMore}
                 paginationCapable={paginationCapable}
+                // Match the standalone EmptyState below. Passing only the title let `emptyVariant` fall
+                // through to Timeline's `feed` default, so a profile whose read FAILED rendered the feed
+                // preset — "Find some people to follow." under an error row — and silently dropped the
+                // owner's Compose CTA.
+                emptyVariant={emptyForTab.variant}
                 emptyTitle={emptyForTab.title}
+                emptyAction={"action" in emptyForTab ? emptyForTab.action : undefined}
                 onCompose={() =>
                   viewer.status === "ready" ? modalActions.openCompose() : router.push("/welcome/")
                 }

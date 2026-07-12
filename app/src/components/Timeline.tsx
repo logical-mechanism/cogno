@@ -24,7 +24,13 @@ import { EmptyState } from "./EmptyState";
 import { Spinner } from "./icons";
 import { useSession } from "./Providers";
 import { usePoll } from "@/hooks/usePoll";
-import type { CognoPost, Viewer, ViewerPostState, PostActionCallbacks } from "./kit";
+import type {
+  CognoPost,
+  EmptyStateVariant,
+  Viewer,
+  ViewerPostState,
+  PostActionCallbacks,
+} from "./kit";
 import type { CognoApi, PostingSigner } from "@/lib/types";
 
 const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
@@ -47,8 +53,13 @@ export interface TimelineProps {
   loadingMore?: boolean;
   /** Source cursor-paginates (caps.pagination) → show the infinite-scroll tail. */
   paginationCapable: boolean;
-  /** EmptyState variant for THIS tab (feed | follows). */
-  emptyVariant?: "feed" | "follows";
+  /**
+   * EmptyState variant for THIS tab. The full EmptyStateVariant — it was narrowed to `feed | follows`,
+   * which meant the profile view (whose tabs are `profile | replies`) could not pass its own variant at
+   * all and silently fell through to the `feed` default, rendering "Find some people to follow" on
+   * someone's profile.
+   */
+  emptyVariant?: EmptyStateVariant;
   emptyTitle?: string;
   emptyDescription?: string;
   emptyAction?: { label: string; onClick: () => void };

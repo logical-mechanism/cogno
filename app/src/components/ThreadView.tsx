@@ -76,8 +76,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
 
   // `me` threaded into the thread read so a spec-120 node stamps the myVote/reposted overlay node-side;
   // `bestBlock` drives the live re-read (tallies refresh in place; new replies buffer behind the pill).
-  const { thread, loading, error, addOptimisticReply, confirmReply, newReplyCount, flushReplies } =
-    useThread(source, rootId, me, bestBlock);
+  const {
+    thread,
+    loading,
+    error,
+    addOptimisticReply,
+    confirmReply,
+    newReplyCount,
+    flushReplies,
+    reload,
+  } = useThread(source, rootId, me, bestBlock);
   // The focal's reply-context is rendered ONCE, as the tappable ancestor line above the card. We
   // prefer thread.parent (the richer QuotedRef with a display name; indexer path); on PAPI-direct
   // thread.parent is absent but the focal still carries its parent id, so we fall back to a bare
@@ -333,7 +341,11 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         <EmptyState
           title="Couldn't load this post."
           description="Something went wrong reading the thread."
-          action={{ label: "Retry", onClick: () => router.refresh() }}
+          // `useThread.reload()`, not `router.refresh()` — under `output: 'export'` there is no RSC
+          // payload to refetch, so the old Retry did nothing whatsoever. This one is load-bearing: a
+          // failed COLD read leaves the hook unseeded, and the per-block live refetch skips unseeded
+          // threads, so a hard reload used to be the only way out of this error card.
+          action={{ label: "Retry", onClick: reload }}
         />
       </section>
     );
