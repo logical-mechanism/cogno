@@ -156,7 +156,7 @@ export interface FeedPage {
 /**
  * A page request. `after` continues a cursor; `search` is a case-insensitive substring
  * (indexer only); `authorId` / `identityHash` scope the page to one author. `tab` selects a
- * home/profile view; `followeeOf` scopes the Following timeline; `order` picks recency vs top.
+ * home/profile view; `followeeOf` scopes the Following timeline.
  * Empty/omitted fields mean the global feed, page one.
  */
 export interface FeedQuery {
@@ -168,7 +168,6 @@ export interface FeedQuery {
   // ── NEW ──
   tab?: "forYou" | "following" | "replies" | "likes";
   followeeOf?: Ss58; // "Following" timeline: posts by accounts this user follows
-  order?: "recency" | "score"; // forYou default recency; "score" = top (indexer SCORE_DESC)
   /**
    * The connected account, when known. The source threads it into the
    * `MicroblogApi` so each returned post carries the viewer's `myVote`/`reposted` overlay, computed
@@ -251,15 +250,6 @@ export interface ChainHeads {
   finalized: BlockRef | null;
 }
 
-/**
- * A live feed snapshot. `posts` is the FULL current set (rebuilt from
- * `watchEntries().entries` every emission — `entries` is authoritative; deltas can be
- * null), sorted newest-first by `id`. `asOf` is the block the snapshot reflects.
- */
-export interface FeedSnapshot {
-  posts: CognoPost[];
-  asOf: number | null;
-}
 
 /** Connection lifecycle for the WS provider (drives the connecting/reconnecting UI). */
 export type ConnStatus = "connecting" | "connected" | "reconnecting" | "error";

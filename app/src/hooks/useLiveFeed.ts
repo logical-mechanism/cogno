@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
 import { mergeFeed, pendingKey, viewerPatchSettled } from "@/lib/optimistic";
-import { byIdDesc, bridgeFetchSize, mergeById, partitionFresh } from "@/lib/feed/live";
+import { bridgeFetchSize, mergeById, partitionFresh } from "@/lib/feed/live";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoPost, FeedQuery, Ss58 } from "@/lib/types";
@@ -92,20 +92,6 @@ export function useLiveFeed(
       part.newOthers.forEach((p) => bufferedIds.current.add(String(p.id)));
       setBuffered((prev) => mergeById(prev, [...part.newOthers, ...part.refreshBuffered]));
     }
-  }, []);
-
-  // Indexer fold: WINDOW-REPLACE — the poll-driven watch() is the authoritative top-N window, so
-  // rebuild `loaded` from it (minus anything buffered) instead of accumulating stale rows that have
-  // since scrolled out of that window. New others still buffer behind the pill.
-  const foldWatch = useCallback((snap: CognoPost[]) => {
-    const part = partitionFresh(snap, loadedIds.current, bufferedIds.current, meRef.current);
-    if (part.newOthers.length) {
-      part.newOthers.forEach((p) => bufferedIds.current.add(String(p.id)));
-      setBuffered((prev) => mergeById(prev, part.newOthers));
-    }
-    const shown = snap.filter((p) => !bufferedIds.current.has(String(p.id)));
-    loadedIds.current = new Set(shown.map((p) => String(p.id)));
-    setLoaded(shown.slice().sort(byIdDesc));
   }, []);
 
   // Reset + (re)subscribe whenever the source changes.
@@ -188,35 +174,18 @@ export function useLiveFeed(
         });
     };
 
-    let sub: { unsubscribe(): void } | undefined;
-    if (source.liveHeadId) {
-      sub = source.liveHeadId().subscribe({
-        next: handleHead,
-        error: (e: unknown) => fail(e, "the live feed errored"),
-      });
-    } else {
-      // Indexer: its poll-driven watch() is the whole window (untouched). First emission seeds.
-      sub = source.watch().subscribe({
-        next: (snap) => {
-          if (cancelled) return;
-          if (!seeded) {
-            seeded = true;
-            snap.posts.forEach((p) => loadedIds.current.add(String(p.id)));
-            setLoaded(snap.posts);
-            setReady(true);
-          } else {
-            foldWatch(snap.posts);
-          }
-        },
-        error: (e: unknown) => fail(e, "the feed source errored"),
-      });
-    }
+    // `liveHeadId` is a REQUIRED member of FeedSource, so the old `if (source.liveHeadId)` was always
+    // true and its else-branch — an indexer-era `source.watch()` fold — was statically unreachable.
+    const sub = source.liveHeadId().subscribe({
+      next: handleHead,
+      error: (e: unknown) => fail(e, "the live feed errored"),
+    });
 
     return () => {
       cancelled = true;
       sub?.unsubscribe();
     };
-  }, [source, baseQuery, applyFresh, foldWatch]);
+  }, [source, baseQuery, applyFresh]);
 
   const loadMore = useCallback(() => {
     if (!source || loadingMore || cursor == null) return;
@@ -263,7 +232,7 @@ export function useLiveFeed(
   // `pendingKey`, the SAME key mergeFeed dedups on) — NOT on tx-confirm — so the optimistic→chain
   // handoff stays continuous (no blank-then-reappear).
   useEffect(() => {
-    const top = overlay.pending.filter((p) => p.status === "pending" && p.parentId === undefined);
+    const top = overlay.pending.filter((p) => p.parentId === undefined);
     if (top.length === 0) return;
     const realKeys = new Set(loaded.map(pendingKey));
     for (const pp of top) {

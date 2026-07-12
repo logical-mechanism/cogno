@@ -109,7 +109,6 @@ export default function HomePage() {
       tab: "following",
       followeeOf: me ?? undefined,
       first: FEED_PAGE_SIZE,
-      order: "recency",
       viewer: me ?? undefined,
     }),
     [me],

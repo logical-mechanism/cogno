@@ -35,7 +35,6 @@ export interface PendingPost {
   post: CognoPost;
   /** For replies: the thread this pending card belongs under. */
   parentId?: bigint;
-  status: "pending" | "failed";
 }
 
 /**
@@ -195,7 +194,7 @@ export function mergeFeed(posts: CognoPost[], overlay: Overlay): CognoPost[] {
   // swap seamless regardless of which arrives first.
   const realKeys = new Set(patched.map(pendingKey));
   const pendingCards = overlay.pending
-    .filter((pp) => pp.status === "pending" && pp.parentId === undefined)
+    .filter((pp) => pp.parentId === undefined)
     .filter((pp) => !realKeys.has(pendingKey(pp.post)))
     .map((pp) => pp.post);
   return [...pendingCards, ...patched];

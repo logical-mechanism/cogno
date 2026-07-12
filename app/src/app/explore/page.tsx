@@ -33,7 +33,6 @@ import styles from "./page.module.css";
 import { SearchBar } from "@/components/SearchBar";
 import { Timeline } from "@/components/Timeline";
 import { EmptyState } from "@/components/EmptyState";
-import { FirehoseOrderToggle, type FirehoseOrder } from "@/components/explore/FirehoseOrderToggle";
 import { ResultTabStrip, RESULT_PANEL_ID, type ResultTab } from "@/components/explore/ResultTabStrip";
 import { ExploreList } from "@/components/explore/ExploreList";
 import { useSession } from "@/components/Providers";
@@ -77,7 +76,6 @@ function ExploreView() {
   // Node-first: the firehose is node-served (recency, by id) on every source makeFeedSource builds
   // (papi + hybrid). The node has no score index, so the score-ranked "Top" order is unavailable —
   // the toggle below honestly shows "Most recent" as selected (a node-side score index would flip this).
-  const scoreOrderEnabled = false;
 
   // The committed term is the URL ?q= (normalized so "a  b"/"a b"/NFD accents share one URL + result
   // set); the SearchBar value is a separate local draft.
@@ -226,8 +224,6 @@ function ExploreView() {
   // ── DEFAULT firehose order toggle ────────────────────────────────────────────────────────────
   // Default to "Most recent"; "Top" (score) is only reachable when a source advertises score order
   // (none today — see scoreOrderEnabled). effectiveOrder is what's actually served + shown selected.
-  const [order, setOrder] = useState<FirehoseOrder>("recency");
-  const effectiveOrder: FirehoseOrder = scoreOrderEnabled ? order : "recency";
 
   // ── QUERY result-scope tab (default Latest, mirrored to ?f=) ──────────────────────────────────
   const setResultTab = useCallback(
@@ -239,10 +235,9 @@ function ExploreView() {
 
   // ── DEFAULT firehose / QUERY Latest feed (both via the page seam) ────────────────────────────
   const firehoseQuery = useMemo<FeedQuery>(
-    // `viewer: me` lets a spec-120 node stamp the myVote/reposted overlay node-side (PAPI-direct
-    // firehose); the keyed + indexer paths ignore it.
-    () => ({ first: PAGE_SIZE, order: effectiveOrder, viewer: me ?? undefined }),
-    [effectiveOrder, me],
+    // `viewer: me` lets the node stamp the myVote overlay node-side, in the same state_call.
+    () => ({ first: PAGE_SIZE, viewer: me ?? undefined }),
+    [me],
   );
   // The firehose renders in DEFAULT mode AND in NO-INDEXER mode (PAPI-direct still shows the live
   // window, §5.4) — only QUERY mode swaps it out for the result list.
@@ -364,13 +359,6 @@ function ExploreView() {
         {/* Score ("Top") order isn't served yet (scoreOrderEnabled=false → the only reachable state is
             "Most recent"), so hide the toggle rather than show a permanently-disabled control. Flip
             scoreOrderEnabled back to true to restore it — no other change needed. */}
-        {mode === "default" && scoreOrderEnabled && (
-          <FirehoseOrderToggle
-            value={effectiveOrder}
-            onChange={setOrder}
-            scoreEnabled={scoreOrderEnabled}
-          />
-        )}
         {mode === "query" && peopleEnabled && (
           <ResultTabStrip active={activeResultTab} onChange={setResultTab} />
         )}

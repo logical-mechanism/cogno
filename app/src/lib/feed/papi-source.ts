@@ -23,7 +23,7 @@
 //
 // This file does NOT modify reads.ts — it only consumes it (+ social-reads.ts).
 
-import { type Observable, from, startWith, switchMap } from "rxjs";
+import type { Observable } from "rxjs";
 import type { SizedHex } from "polkadot-api";
 import {
   authorPostCount,
@@ -54,7 +54,6 @@ import {
 import type {
   CognoApi,
   CognoPost,
-  FeedSnapshot,
   FeedPage,
   FeedQuery,
   ThreadView,
@@ -69,8 +68,8 @@ import type { FeedSource, ProfileArgs } from "./source";
 import { FEED_PAGE_SIZE } from "./constants";
 import { normalizeQuery } from "@/lib/search";
 
-// The seam's first-page / default window (profile Posts first page + global `page()` default + the
-// `watch()` live window). Shared with the hooks' "load more" size so first paint and load-more match.
+// The seam's first-page / default window (profile Posts first page + global `page()` default).
+// Shared with the hooks' "load more" size so first paint and load-more match.
 const DEFAULT_FIRST = FEED_PAGE_SIZE;
 
 /** Is this account's identity binding still live? `PkhOf` present ⇒ not revoked. */
@@ -369,25 +368,12 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     return nodeSearchPeople(api, term, limit);
   }
 
-  // The live feed snapshot, NextPostId-driven (NOT `watchEntries`): each counter change re-reads the
-  // newest page by id. Home/profile use `liveHeadId` + `page` directly (incremental prepend); this is
-  // the seam's generic `watch()` for any consumer that wants a whole live window.
-  function watch(): Observable<FeedSnapshot> {
-    return watchLatestPostId(api).pipe(
-      switchMap(() =>
-        from(page({ first: DEFAULT_FIRST }).then((p): FeedSnapshot => ({ posts: p.posts, asOf: p.asOf }))),
-      ),
-      startWith({ posts: [] as CognoPost[], asOf: null } as FeedSnapshot),
-    );
-  }
-
   // The liveness signal the home feed pages off (a new post bumps NextPostId). No `watchEntries`.
   function liveHeadId(): Observable<bigint | null> {
     return watchLatestPostId(api);
   }
 
   return {
-    watch,
     liveHeadId,
     page,
     thread,

@@ -252,7 +252,7 @@ export function useThread(
       (r) => shownIds.has(String(r.id)) || (me != null && r.author === me),
     );
     const pendingReplies = overlay.pending
-      .filter((p) => p.status === "pending" && p.parentId === rootId)
+      .filter((p) => p.parentId === rootId)
       .map((p) => p.post);
     if (pendingReplies.length === 0 && shownReplies.length === base.replies.length) return base;
     return {

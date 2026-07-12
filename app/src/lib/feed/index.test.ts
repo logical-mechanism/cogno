@@ -14,7 +14,6 @@ describe("makeFeedSource — the sole PAPI-direct reader", () => {
   it("returns a reader exposing the whole read surface", () => {
     const src = makeFeedSource(fakeApi);
     for (const method of [
-      "watch",
       "liveHeadId", // the NextPostId liveness signal the home feed pages off
       "page",
       "thread",

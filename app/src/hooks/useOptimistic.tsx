@@ -81,7 +81,7 @@ export function OptimisticProvider({ children }: { children: React.ReactNode }) 
 
   const addPending = useCallback((post: CognoPost, parentId?: bigint): string => {
     const clientId = `pending-${seq.current++}`;
-    const entry: PendingPost = { clientId, post, parentId, status: "pending" };
+    const entry: PendingPost = { clientId, post, parentId };
     setOverlay((o) => ({ ...o, pending: [entry, ...o.pending] }));
     return clientId;
   }, []);

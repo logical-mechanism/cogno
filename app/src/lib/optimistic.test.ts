@@ -164,8 +164,8 @@ describe("mergeFeed", () => {
   it("prepends pending top-level cards and patches existing rows", () => {
     const overlay: Overlay = {
       pending: [
-        { clientId: "c1", post: post(99n, { text: "pending" }), status: "pending" },
-        { clientId: "c2", post: post(98n), parentId: 1n, status: "pending" }, // a reply — NOT in the feed
+        { clientId: "c1", post: post(99n, { text: "pending" }) },
+        { clientId: "c2", post: post(98n), parentId: 1n }, // a reply — NOT in the feed
       ],
       counts: { "1": { upCountDelta: 1, upWeightDelta: 5n } },
       viewer: {},

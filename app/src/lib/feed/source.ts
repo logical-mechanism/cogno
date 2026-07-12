@@ -21,7 +21,6 @@
 
 import type { Observable } from "rxjs";
 import type {
-  FeedSnapshot,
   FeedPage,
   FeedQuery,
   ThreadView,
@@ -48,8 +47,6 @@ export interface ProfileArgs {
 
 /** The read surface for the feed / thread / profile / social views. */
 export interface FeedSource {
-  /** The live feed — a continuously-updating snapshot, newest-first. */
-  watch(): Observable<FeedSnapshot>;
   /**
    * The newest post id, on every change — the liveness signal, via `NextPostId.watchValue` (a new post
    * bumps the counter). The home feed pages by id and drives the "N new posts" pill off this, so it
