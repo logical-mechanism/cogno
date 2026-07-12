@@ -31,6 +31,8 @@ import { useActionToast } from "@/hooks/useActionToast";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useThread } from "@/hooks/useThread";
+import { useInvalidateAccountProfile } from "@/hooks/useAccountProfile";
+import { invalidateHoverProfile } from "../ProfileHoverCard";
 import { useComposerGate } from "@/hooks/useComposerGate";
 import { useToaster, RATE_LIMIT_COPY } from "../toast/ToasterProvider";
 import {
@@ -81,6 +83,7 @@ export function ModalRouteHost() {
     useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
+  const invalidateAccountProfile = useInvalidateAccountProfile();
   const { phase } = useActionToast();
   const router = useRouter();
 
@@ -331,6 +334,12 @@ export function ModalRouteHost() {
       void run(stream, {
         onConfirm: () => {
           confirmProfile(ss58);
+          // MANDATORY, not polish: confirmProfile's overlay is TTL-backed and evaporates on its own, so
+          // without dropping the caches the chrome avatar, every mention chip and every hover card
+          // silently revert to the pre-edit name/avatar once it expires — and the hover card's own cache
+          // had no expiry at all, so it stayed stale for the whole session.
+          invalidateAccountProfile(ss58);
+          invalidateHoverProfile(ss58);
           toast({ id: "profile-save", kind: "success", message: successCopy });
         },
         onError: (message: string) => {
@@ -342,7 +351,18 @@ export function ModalRouteHost() {
         /* settled + rolled back via onError */
       });
     },
-    [api, signer, viewer.address, patchProfile, confirmProfile, rollbackProfile, run, toast, onClose],
+    [
+      api,
+      signer,
+      viewer.address,
+      patchProfile,
+      confirmProfile,
+      rollbackProfile,
+      invalidateAccountProfile,
+      run,
+      toast,
+      onClose,
+    ],
   );
 
   const onSaveProfile = useCallback(

@@ -33,6 +33,18 @@ const EST_H = 220;
 // every hover would be wasteful. Counts can go slightly stale (the live profile page is the truth).
 const profileCache = new Map<string, ProfileView>();
 
+/**
+ * Drop `address` from the hover cache so the next hover re-reads it.
+ *
+ * This cache had NO way to be cleared, which meant: edit your own profile, then hover your own name in
+ * the feed, and the popover showed your OLD name / avatar / bio for the rest of the session. It is not
+ * routed through createChainCache because the hover card fetches LAZILY on hover — the factory registers
+ * on mount, which here would fire a full profile() read for every author card on screen.
+ */
+export function invalidateHoverProfile(address: string): void {
+  profileCache.delete(address);
+}
+
 function supportsHover(): boolean {
   return typeof window !== "undefined" && !!window.matchMedia?.("(hover: hover)").matches;
 }

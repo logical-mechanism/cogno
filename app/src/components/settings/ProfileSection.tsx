@@ -23,6 +23,8 @@ import { useOptimistic } from "@/hooks/useOptimistic";
 import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitClearProfile, submitUnpinPost } from "@/lib/chain/mutations";
+import { useInvalidateAccountProfile } from "@/hooks/useAccountProfile";
+import { invalidateHoverProfile } from "@/components/ProfileHoverCard";
 import type { CognoPost } from "@/lib/types";
 
 function isRateLimit(message: string): boolean {
@@ -41,6 +43,7 @@ export function ProfileSection() {
   const { run } = useMutation();
   const { overlay } = useOptimistic();
   const { toast } = useToaster();
+  const invalidateAccountProfile = useInvalidateAccountProfile();
 
   const ss58 = signerCtl.signer.ss58;
   const bound = identity.bound;
@@ -128,10 +131,18 @@ export function ProfileSection() {
 
   const onClear = useCallback(() => {
     if (!api) return;
-    submit("clear", submitClearProfile(api, signer), "Profile cleared", () =>
-      setPreview({ displayName: undefined, bio: undefined, avatar: undefined, pinnedPostId: undefined }),
-    );
-  }, [api, signer, submit]);
+    submit("clear", submitClearProfile(api, signer), "Profile cleared", () => {
+      setPreview({ displayName: undefined, bio: undefined, avatar: undefined, pinnedPostId: undefined });
+      // This path clears the profile WITHOUT going through ModalRouteHost, so it must drop the shared
+      // caches itself — otherwise every mention chip and hover card keeps rendering the name you just
+      // cleared, and only a reload fixes it. (It previously updated local state and leaned entirely on
+      // useSelfProfile's per-block poll, which no other surface reads.)
+      if (ss58) {
+        invalidateAccountProfile(ss58);
+        invalidateHoverProfile(ss58);
+      }
+    });
+  }, [api, signer, submit, ss58, invalidateAccountProfile]);
 
   const onUnpin = useCallback(() => {
     if (!api) return;
