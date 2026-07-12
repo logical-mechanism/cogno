@@ -14,6 +14,7 @@
 // usePathname() returns the canonical URL, which is the real one in both cases.
 
 import { usePathname } from "next/navigation";
+import { useRef, useSyncExternalStore } from "react";
 
 /**
  * The first path segment under `/<base>/`, or "" when `pathname` isn't under that base.
@@ -30,7 +31,46 @@ export function routeSegmentOf(pathname: string, base: string): string {
   }
 }
 
-/** routeSegmentOf against the live URL — e.g. useRouteSegment("u") on /u/5Grw…/?tab=likes → "5Grw…". */
-export function useRouteSegment(base: string): string {
-  return routeSegmentOf(usePathname() ?? "", base);
+/**
+ * The segment to render, given the one just parsed off the URL and the one we last held.
+ *
+ * An empty `next` does NOT mean "no such profile" — it means the URL currently points somewhere that
+ * isn't this route, while this route is still mounted. ModalRouteHost does exactly that: it pushes the
+ * overlay URL (/compose/?reply=<id>) with the RAW History API to keep <main> mounted behind the modal
+ * (doc 01 §7.2). Next patches pushState, and for a state object it did not author it moves the CANONICAL
+ * URL — hence usePathname — while restoring the route tree unchanged. So the moment a reply/quote/compose
+ * overlay opens on /u/<addr>/, a naive re-parse yields "" and the profile behind the modal would render
+ * its not-found body. Hold the last real segment instead. See routeSegment.test.ts.
+ */
+export function holdSegment(prev: string, next: string): string {
+  return next || prev;
+}
+
+const subscribeNever = () => () => {};
+
+/**
+ * The route's dynamic segment, read from the live URL — or `null` until the client has hydrated.
+ *
+ * `null` is not "missing", it is "the URL is not trustworthy yet". `output: 'export'` prerenders ONE
+ * shell per dynamic route, built from the "_" placeholder, and every profile is served that same HTML.
+ * If the first client render read the real URL it would disagree with what the server put on disk:
+ * React reports a hydration mismatch (#418) and — worse — the shell's prerendered body paints first, so
+ * every cold deep link would flash "This account doesn't exist" before the profile appeared. Returning
+ * `null` for that one render lets the caller prerender a loading state instead of a verdict.
+ *
+ * After hydration `useSyncExternalStore` returns true on the very first render, so a client-side
+ * navigation to another profile never sees `null` and never flashes a skeleton.
+ */
+export function useRouteSegment(base: string): string | null {
+  const hydrated = useSyncExternalStore(
+    subscribeNever,
+    () => true, // client
+    () => false, // server / the hydration render
+  );
+  const segment = routeSegmentOf(usePathname() ?? "", base);
+
+  const held = useRef("");
+  held.current = holdSegment(held.current, segment);
+
+  return hydrated ? held.current : null;
 }

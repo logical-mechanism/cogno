@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { routeSegmentOf } from "./routeSegment";
+import { routeSegmentOf, holdSegment } from "./routeSegment";
 
 // The static export serves ONE placeholder shell per dynamic route, so this parse — not useParams() —
 // is what resolves every profile and every thread. Getting it wrong renders the in-app not-found for
@@ -51,5 +51,32 @@ describe("routeSegmentOf", () => {
   it("passes a malformed %-escape through rather than throwing", () => {
     // decodeURIComponent("%zz") throws URIError; a crash here would take out the whole route.
     expect(routeSegmentOf("/u/%zz/", "u")).toBe("%zz");
+  });
+
+  it("yields nothing for the overlay URL a modal pushes over a still-mounted profile", () => {
+    // ModalRouteHost pushes /compose/ WITHOUT unmounting the page under it, and Next moves the
+    // canonical URL for it. This "" is what holdSegment below exists to absorb.
+    expect(routeSegmentOf("/compose/?reply=12", "u")).toBe("");
+    expect(routeSegmentOf("/compose/", "post")).toBe("");
+  });
+});
+
+describe("holdSegment", () => {
+  it("keeps the current profile when an overlay moves the URL off the route", () => {
+    // The bug this exists to prevent: opening reply/quote/compose on /u/<addr>/ blanked the profile
+    // behind the modal to "This account doesn't exist".
+    expect(holdSegment(ALICE, "")).toBe(ALICE);
+  });
+
+  it("still follows a real navigation to another profile", () => {
+    expect(holdSegment(ALICE, "5FHneW46…bob")).toBe("5FHneW46…bob");
+  });
+
+  it("takes the first segment it sees", () => {
+    expect(holdSegment("", ALICE)).toBe(ALICE);
+  });
+
+  it("holds nothing when there is nothing to hold, so the caller's validation still rejects", () => {
+    expect(holdSegment("", "")).toBe("");
   });
 });

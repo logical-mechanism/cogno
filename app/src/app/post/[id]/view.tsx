@@ -9,11 +9,23 @@
 // (→ NotFoundInline).
 
 import { StickyHeader, NotFoundInline } from "@/components/AppShell";
+import { Skeleton } from "@/components/Skeleton";
 import { ThreadView } from "@/components/ThreadView";
 import { useRouteSegment } from "@/lib/routeSegment";
 
 export function PostDetailView() {
   const id = useRouteSegment("post");
+
+  // null = pre-hydration. Every thread is served the SAME prerendered shell, so judging the id on this
+  // render is what bakes not-found into that shared HTML and flashes it on every cold deep link.
+  if (id === null) {
+    return (
+      <>
+        <StickyHeader showBack title="Post" />
+        <Skeleton variant="thread" />
+      </>
+    );
+  }
 
   if (!/^\d+$/.test(id)) return <NotFoundInline kind="post" />;
 

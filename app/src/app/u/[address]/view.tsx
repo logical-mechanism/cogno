@@ -71,6 +71,21 @@ export function ProfileView() {
   // the "_" placeholder for every profile (see lib/routeSegment).
   const address = useRouteSegment("u");
 
+  // null = pre-hydration. Every profile is served the SAME prerendered shell, so the first render is
+  // the one render that must not judge the address: rendering not-found here is what the server would
+  // bake into that shared HTML, flashing "This account doesn't exist" on every cold deep link.
+  if (address === null) {
+    return (
+      <>
+        <StickyHeader showBack title="Profile" />
+        <div aria-busy="true">
+          <Skeleton variant="profileHeader" />
+          <Skeleton variant="post" count={6} />
+        </div>
+      </>
+    );
+  }
+
   // Invalid ss58 → in-app not-found (NOT a hard 404); never attempt a chain read (doc 07 §10).
   if (!isPlausibleSs58(address)) return <NotFoundInline kind="profile" />;
 
