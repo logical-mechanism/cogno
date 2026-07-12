@@ -148,9 +148,12 @@ that faces the public; the validator stays behind it, reachable by nobody. A $12
 and it doubles as your offsite copy of chain history (which, at `MinAuthorities=1`, the validator's DB
 is otherwise the only one of).
 
-Three files: [`systemd/cogno-relay.service`](systemd/cogno-relay.service) (the unit),
-[`nginx/cogno.conf`](nginx/cogno.conf) (TLS, `wss://` proxy, and the static app), and the `deploy-app`
-job in [`ci.yml`](../.github/workflows/ci.yml) (rsyncs `app/out/` on every green push to `main`).
+Four files: [`systemd/cogno-relay.service`](systemd/cogno-relay.service) (the unit),
+[`nginx/cogno.conf`](nginx/cogno.conf) (TLS, `wss://` proxy, and the static app), and two **manual**
+GitHub Actions that ship to it — [`deploy-app.yml`](../.github/workflows/deploy-app.yml) (builds the
+static export, rsyncs it to `/var/www/cogno`) and [`deploy-node.yml`](../.github/workflows/deploy-node.yml)
+(builds the node binary, installs it, restarts the relay — see [below](#deploying-the-node-binary)).
+Neither fires on push: `main` is a work branch, and nothing deploys until you click it.
 
 **The one rule: the relay must never see `DBSYNC_URL`.** It re-derives the Cardano observation for
 every block it imports. Against a db-sync that is behind, pruned, or on the wrong network, it computes
@@ -175,9 +178,78 @@ Two smaller things that bite:
   back to `ws://127.0.0.1:9944` — which works on your machine and nowhere else. `endpoints.ts` now fails
   the build rather than let that ship.
 
-Build the binary on the relay host (`cargo build --release`, see [`docs/RELAY-NODE.md`](../docs/RELAY-NODE.md));
-a release build wants ~8 GB, so add swap on a small droplet. Do **not** enable DigitalOcean backups on it
-— it resyncs from the validator for free. Back up the validator instead.
+Do **not** enable DigitalOcean backups on the relay — it resyncs from the validator for free. Back up the
+validator instead.
+
+### Deploying the node binary
+
+The relay's binary comes from the **`deploy-node`** workflow (manual, Actions tab → Run workflow). It
+builds `cogno-chain-node` in release mode on an Ubuntu 24.04 runner — pinned to the droplet's OS, because
+a binary built against a newer glibc is rejected by the droplet's loader before `main()` ever runs — then
+stages it on the box, installs it, restarts the relay, and rolls back if the relay does not come back
+healthy. You do not need a compiler, 8 GB of RAM, or swap on the droplet.
+
+**A runtime upgrade does not come through here.** Runtime code is WASM and ships on-chain
+(`cogno-chain-cli upgrade authorize` + `upgrade apply`) — pallet changes, migrations, and `spec_version`
+bumps need no binary deploy at all. `deploy-node` is for the *client* half: an SDK bump, a node/consensus
+fix, a new host function. And it is **relay-only** — the validator sits behind NAT on the operator's home
+network, unreachable from CI, and is updated by hand.
+
+The workflow runs as the unprivileged `cogno` (it holds no root; reaching root needs the sudoers entry
+below) right up until one step, which runs a single root-owned script through a single-command sudoers
+entry. Both are in this repo, and the workflow **refuses to deploy** if the copy on the droplet has
+drifted from the committed one — so install them once, and reinstall whenever they change here:
+
+```bash
+# On the droplet, as root. Parse-check the sudoers file BEFORE installing it: sudo refuses to run at
+# all if it cannot parse a file in /etc/sudoers.d, and you are one bad line from locking yourself out.
+visudo -c -f deploy/sudoers.d/cogno-deploy
+
+sudo install -m 0755 -o root -g root deploy/scripts/cogno-deploy-node /usr/local/sbin/cogno-deploy-node
+sudo install -m 0440 -o root -g root deploy/sudoers.d/cogno-deploy   /etc/sudoers.d/cogno-deploy
+
+# Sanity: the deploy user can run that one command as root, and nothing else.
+sudo -u cogno sudo -n /usr/local/sbin/cogno-deploy-node --help   # must be REFUSED (it takes no args)
+sudo -u cogno sudo -n systemctl restart cogno-relay              # must be REFUSED
+```
+
+[`deploy/scripts/cogno-deploy-node`](scripts/cogno-deploy-node) takes **no arguments**, by design: it
+installs a file as root into a world-readable path, so an argument would let the deploy user point it at
+`/root/.ssh/id_ed25519` and read it back. The paths are baked in, and
+[`deploy/sudoers.d/cogno-deploy`](sudoers.d/cogno-deploy) pins the entry to zero arguments (a bare command
+in sudoers permits *any* arguments — the trailing `""` is what forbids them). A stolen deploy key can
+therefore ship a node binary and bounce the relay. It cannot become root.
+
+What the script does, in order — everything before the swap is non-destructive:
+
+1. Refuses a staged file that is a symlink, or not owned by the deploy user.
+2. **Execs the staged binary as the service user** (`--version`). This is the check that matters: a
+   wrong-glibc binary dies here, with the old relay still up and serving.
+3. Backs the live binary up to `/usr/local/bin/cogno-chain-node.prev`.
+4. Renames the new one into place — a rename, because you cannot write over the binary of a running
+   process (`ETXTBSY`) — and restarts `cogno-relay`.
+5. Health-checks that the relay is **importing**, not merely up: it records the best block first, then
+   after the restart waits for the block number to *advance* past it. Peer count alone is not the bar —
+   a node can hold peers while accepting no blocks (a p2p/consensus change it can't follow), which is a
+   chain frozen at the tip serving stale reads, exactly the change class this workflow ships.
+6. If it does not start importing: restores `.prev`, restarts, and verifies the relay is **serving** again
+   (RPC answering — importing is the validator's job, not the rollback's), then exits non-zero with a
+   message that distinguishes "the new binary is bad" from "the validator is down and the binary is a
+   bystander." One caveat the script cannot cover: rollback swaps the *binary* back, so it only recovers a
+   binary change. If a new binary irreversibly migrates the on-disk DB format before failing, `.prev` may
+   not be able to open the migrated DB — recovery is then a re-sync from the validator, not a rollback.
+
+Run it by hand the same way CI does — `sudo /usr/local/sbin/cogno-deploy-node`, after putting a binary at
+`/home/cogno/staging/cogno-chain-node`.
+
+**Bring-up order on a fresh droplet.** The workflow can install the *first* binary too, but it needs the
+box to be otherwise ready: the `cogno` user, `/etc/cogno/chainspec.raw.json`, the relay's node key, the
+unit file, and the two files above. Install those, then run the workflow, then `systemctl enable
+cogno-relay` for boot persistence. Two first-install caveats: there is no `.prev` yet, so a bad first
+binary cannot be rolled back; and on the relay `cogno` is a **login** user — it is the SSH deploy user, so
+it needs a real shell and a home directory (`useradd --create-home --shell /bin/bash cogno`), unlike the
+validator host's service-only account above (`--no-create-home --shell /usr/sbin/nologin`), which never
+receives an SSH session.
 
 ## Operating notes
 

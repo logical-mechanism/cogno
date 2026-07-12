@@ -1,0 +1,29 @@
+# /etc/sudoers.d/cogno-deploy — the ONLY root privilege the CI deploy user has.
+#
+# Install (root:root, 0440 — sudo ignores a file that is group/world-writable, and refuses to run at all
+# if it cannot parse one, so validate BEFORE you move it into place):
+#
+#     visudo -c -f deploy/sudoers.d/cogno-deploy          # parse-check the repo copy first
+#     sudo install -m 0440 -o root -g root deploy/sudoers.d/cogno-deploy /etc/sudoers.d/cogno-deploy
+#
+# The filename must contain NO DOT and no `~`: sudo's #includedir skips those, silently, and you would
+# spend an afternoon wondering why NOPASSWD is not taking effect.
+#
+# Why this is safe to hand a CI system:
+#
+#   • It grants exactly one command. Not `systemctl`, not `install`, not a shell — one root-owned
+#     script (deploy/scripts/cogno-deploy-node) whose behaviour is fixed and version-controlled. The
+#     deploy user cannot edit it: /usr/local/sbin is root-owned.
+#
+#   • The trailing "" pins it to ZERO ARGUMENTS. This is the part that is easy to get wrong. A bare
+#     `NOPASSWD: /path/to/script` permits that script to be run with ANY arguments — and since the
+#     script installs the file it is pointed at, as root, into a world-readable 0755 path, an argument
+#     would be a read-any-file-on-the-box primitive. `""` means "this command, with no arguments".
+#
+# So a stolen deploy key buys an attacker exactly what a stolen deploy key should buy: the ability to
+# ship a node binary and bounce the relay. Not root on the droplet.
+#
+# The user below is the DEPLOY_USER from the workflow's secrets (the droplet's `cogno`, which is both
+# the SSH deploy user and the relay's service user). Change both if yours differs.
+
+cogno ALL=(root) NOPASSWD: /usr/local/sbin/cogno-deploy-node ""

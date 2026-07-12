@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+# cogno-deploy-node — install a staged cogno-chain-node binary and restart the relay.
+#
+# Lives at /usr/local/sbin/cogno-deploy-node (root:root, 0755). It is the ONE root-privileged thing the
+# unprivileged CI deploy user may run, via /etc/sudoers.d/cogno-deploy:
+#
+#     cogno ALL=(root) NOPASSWD: /usr/local/sbin/cogno-deploy-node ""
+#
+# It takes NO ARGUMENTS, and that is a security property, not a style choice. This script copies a file
+# to a world-readable 0755 path AS ROOT. If the path were an argument, the deploy user could pass
+# /etc/shadow or /root/.ssh/id_ed25519 and read it back out of /usr/local/bin — turning "may deploy a
+# binary" into "may read any file on the box". So: the paths are hardcoded here, the sudoers entry's
+# trailing "" pins the command to zero arguments (a bare command in sudoers permits ANY arguments), and
+# the script refuses to run if handed one anyway. Belt and braces, because the failure is total.
+#
+# The same reasoning drives the copy at step 4: the staged file is READ as the deploy user (runuser), so
+# even a symlink swapped in after the checks below cannot make root read something the deploy user
+# couldn't already read.
+#
+# Order of operations. Everything before the swap is non-destructive; anything that fails after it rolls
+# back:
+#
+#   1. sanity-check the staged file (regular file, not a symlink, owned by the deploy user, non-empty)
+#   2. exec it as the deploy user: `--version`. A binary that cannot run on this box — the classic case
+#      being one linked against a newer glibc, which fails in the loader before main() — dies right
+#      here, while the live relay is still untouched and serving.
+#   3. back up the live binary to .prev
+#   4. swap the new one in (rename; see the ETXTBSY note) and restart cogno-relay
+#   5. health-check: unit active, RPC answering, node peered
+#   6. on any failure in 4–5: restore .prev, restart, report, exit non-zero
+#
+# Restarting cogno-relay drops the RPC that the public app depends on, so this is deliberately paranoid
+# about handing the relay a binary it cannot run.
+#
+# Run it by hand exactly as CI does — it is idempotent for a given staged file:
+#
+#     sudo /usr/local/sbin/cogno-deploy-node
+#
+# Version-controlled at deploy/scripts/cogno-deploy-node. The deploy-node workflow compares this host's
+# copy against the committed one and refuses to deploy if they differ, so edit it in the repo and
+# reinstall — never in place on the box.
+
+set -euo pipefail
+
+# ── the layout this script assumes (see deploy/README.md) ───────────────────────────────
+DEPLOY_USER=cogno                                   # owns the staged file; runs the relay
+STAGED=/home/cogno/staging/cogno-chain-node         # where CI rsyncs the new binary
+STAGING_DIR=/home/cogno/staging
+LIVE=/usr/local/bin/cogno-chain-node                # what the unit's ExecStart names
+PREV=/usr/local/bin/cogno-chain-node.prev           # the rollback copy
+NEW=/usr/local/bin/.cogno-chain-node.new            # same filesystem as LIVE, so the swap is a rename
+UNIT=cogno-relay
+RPC_URL=http://127.0.0.1:9944                       # the relay's loopback RPC (nginx proxies wss:// in)
+HEALTH_TIMEOUT=180                                  # seconds to give the node to come back + import a block.
+                                                    # Must exceed RocksDB warmup + one block time; larger is
+                                                    # strictly safer since wait_for returns the instant the
+                                                    # block advances — the timeout only bounds FAILURE.
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'cogno-deploy-node: %s\n' "$*" >&2; exit 1; }
+
+trap 'rm -f "$NEW"' EXIT
+
+# ── 0. preflight: refuse arguments, require root, require the tools ─────────────────────
+# The sudoers entry already pins this to zero arguments; this is the second lock on that door.
+[ "$#" -eq 0 ] || die "takes no arguments (got: $*). Paths are hardcoded — see the header."
+[ "$(id -u)" -eq 0 ] || die "must run as root (via: sudo /usr/local/sbin/cogno-deploy-node)."
+
+for tool in runuser curl systemctl sha256sum stat sed cut; do
+	command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
+done
+id -u "$DEPLOY_USER" >/dev/null 2>&1 || die "deploy user '$DEPLOY_USER' does not exist on this host."
+systemctl cat "$UNIT" >/dev/null 2>&1 || die "unit '$UNIT' is not installed (see deploy/README.md)."
+
+# ── 1. the staged file must be exactly what we think it is ──────────────────────────────
+# A symlink here would be followed by the copy in step 4 with root's privileges. We refuse symlinks for
+# both the file and its directory, and require the deploy user to own the file — if they own it, they
+# could already read its contents, so nothing new is exposed by installing it.
+[ -e "$STAGED" ] || die "nothing staged at $STAGED. CI rsyncs the binary there before calling this."
+[ ! -L "$STAGING_DIR" ] || die "$STAGING_DIR is a symlink — refusing."
+[ ! -L "$STAGED" ]      || die "$STAGED is a symlink — refusing (it would be followed as root)."
+[ -f "$STAGED" ]        || die "$STAGED is not a regular file — refusing."
+[ -s "$STAGED" ]        || die "$STAGED is empty — refusing."
+
+staged_owner=$(stat -c '%U' "$STAGED")
+[ "$staged_owner" = "$DEPLOY_USER" ] ||
+	die "$STAGED is owned by '$staged_owner', not '$DEPLOY_USER' — refusing."
+
+staged_sha=$(sha256sum "$STAGED" | cut -d' ' -f1)
+say "staged:    $STAGED"
+say "  sha256:  $staged_sha"
+
+# ── 2. it must actually EXEC on this box, before the live one is touched ────────────────
+# As the deploy user, which is also the service user — same privileges the unit will run it under. This
+# is the check that catches a binary built against a newer glibc than this host's: the dynamic loader
+# rejects it before main() ever runs, so no amount of "it built fine in CI" saves you. Better to find
+# out now, with the old relay still up, than after the swap.
+if ! staged_version=$(runuser -u "$DEPLOY_USER" -- "$STAGED" --version 2>&1); then
+	say "$staged_version"
+	die "the staged binary does not exec on this host — NOT touching the live relay.
+     A loader error here ('version GLIBC_2.4x not found', 'cannot execute binary file') means the
+     build ran on a newer OS than this droplet. Pin the workflow's runner to the droplet's Ubuntu."
+fi
+say "  version: $staged_version"
+
+if [ -x "$LIVE" ]; then
+	live_version=$(runuser -u "$DEPLOY_USER" -- "$LIVE" --version 2>/dev/null || echo '<will not exec>')
+	say "live:      $LIVE"
+	say "  version: $live_version"
+else
+	say "live:      $LIVE does not exist yet — this is a FIRST install."
+	say "           There is no previous binary, so a failure below CANNOT be rolled back."
+fi
+
+# ── the health probe ────────────────────────────────────────────────────────────────────
+# Both methods below (system_health, system_syncState) are `safe` RPC methods, so they work against the
+# relay's hardened RPC. Parsed with sed rather than jq: jq is not a dependency of this box, and this
+# script must not add one. rpc_field pulls the first integer value of a named field out of the response;
+# a missing method / error object / empty body yields no match and a non-zero return.
+rpc_field() {                     # $1 = rpc method, $2 = json field name
+	local resp val
+	resp=$(curl -sS -m 5 -H 'Content-Type: application/json' \
+		-d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":[]}" \
+		"$RPC_URL" 2>/dev/null) || return 1
+	val=$(printf '%s' "$resp" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p")
+	[ -n "$val" ] || return 1
+	printf '%s' "$val"
+}
+
+# probe echoes one state string, and the whole deploy decision turns on WHY peers alone is not the gate:
+# a relay can hold healthy libp2p peers (handshake/ping succeed → peers>=1) while importing NOTHING —
+# because a p2p/sync-protocol or consensus change means it can no longer accept the validator's blocks.
+# That is a chain frozen at the tip serving stale reads: the exact silent failure the unit file warns
+# about, and exactly the change class this workflow ships (SDK / consensus / p2p bumps). So "importing"
+# — the best block advancing — is the real health signal; peers is reported for diagnosis, not gated on.
+#
+#   inactive          the unit is not up. The binary will not stay running.
+#   no-rpc            up, but RPC does not answer. It is not serving the app.
+#   height:<h>:<p>    up and serving RPC at best block <h> with <p> peers ('?' if system_health didn't
+#                     answer). Whether <h> is ADVANCING is decided by the caller against a baseline.
+probe() {
+	local h p
+	systemctl is-active --quiet "$UNIT"     || { printf 'inactive'; return; }
+	h=$(rpc_field system_syncState currentBlock) || { printf 'no-rpc'; return; }
+	p=$(rpc_field system_health peers) || p='?'
+	printf 'height:%s:%s' "$h" "$p"
+}
+
+serving() { case "$1" in height:*) return 0;; *) return 1;; esac; }   # RPC answers with a block height
+state_height() { case "$1" in height:*) printf '%s' "$1" | cut -d: -f2;; esac; }
+state_peers()  { case "$1" in height:*) printf '%s' "$1" | cut -d: -f3;; esac; }
+
+# BASELINE_HEIGHT is captured from the CURRENTLY RUNNING relay before anything is touched (empty if it is
+# not serving — first install, or an already-broken relay from a prior failed deploy). "Importing" means
+# the best block has climbed PAST that baseline, which proves the node is accepting new blocks, not just
+# holding sockets open. With no baseline (nothing was running to compare against) we cannot prove forward
+# progress, so we fall back to serving+peered — the best signal available on a cold box.
+BASELINE_HEIGHT=
+
+imported() {                      # $1 = probe state; 0 iff the node is importing (or, cold, is peered)
+	serving "$1" || return 1
+	local h p; h=$(state_height "$1"); p=$(state_peers "$1")
+	if [ -n "$BASELINE_HEIGHT" ]; then
+		[ "${h:-0}" -gt "$BASELINE_HEIGHT" ]
+	else
+		case "$p" in ''|'?') return 1;; *) [ "$p" -ge 1 ];; esac
+	fi
+}
+
+HEALTH_STATE=
+# wait_for <predicate-fn> <label> — polls until the predicate accepts the state or the timeout hits.
+# Leaves the last observed state in $HEALTH_STATE either way.
+wait_for() {
+	local pred=$1 label=$2 deadline=$((SECONDS + HEALTH_TIMEOUT))
+	while :; do
+		HEALTH_STATE=$(probe)
+		if "$pred" "$HEALTH_STATE"; then
+			say "  $label: $HEALTH_STATE"
+			return 0
+		fi
+		[ "$SECONDS" -lt "$deadline" ] || break
+		sleep 3
+	done
+	say "  $label: did NOT reach '$pred' after ${HEALTH_TIMEOUT}s — last state '$HEALTH_STATE'"
+	return 1
+}
+
+restart_unit() {
+	say "restarting $UNIT ..."
+	# `systemctl restart` returns as soon as exec() succeeds (Type=exec), so a binary that starts and
+	# then panics reports a clean restart. The health poll is what actually decides the deploy.
+	systemctl restart "$UNIT" || return 1
+}
+
+# Put $PREV back. Stage the copy FIRST, while the relay is still up: if that copy fails (a full disk, an
+# I/O error) we must NOT have already stopped the unit — abort with the relay still serving the bad-but-
+# -running binary rather than leaving it stopped and dark. Only once $NEW is staged do we stop + swap.
+# Copy-then-rename so $PREV itself always survives as the last known-good binary.
+restore_previous() {
+	cp -a "$PREV" "$NEW" || die "rollback: cannot stage $PREV (disk full?). $UNIT is still UP on the new
+     binary ($LIVE) — it did not come back healthy but it is running. Fix the disk and re-run, or
+     recover by hand: journalctl -u $UNIT -n 200 --no-pager"
+	systemctl stop "$UNIT" || true          # under Restart=always a bad binary is respawning; stop first
+	mv -f "$NEW" "$LIVE"   || die "rollback: cannot swap $PREV into place. $UNIT is STOPPED and $LIVE may
+     be the new binary. $PREV is intact — install it by hand and start $UNIT."
+	say "restored:  $LIVE from $PREV"
+}
+
+# ── 3. baseline the running relay + back up the live binary ─────────────────────────────
+# Probe the relay as it is RIGHT NOW, before anything is touched. Two things come from this one read:
+#   1. BASELINE_HEIGHT — the block the new binary must climb PAST to prove it is importing (step 5).
+#   2. whether $LIVE is a good rollback target. Only back it up if the current relay is actually serving:
+#      if a PRIOR failed deploy already left a broken binary at $LIVE, copying it over $PREV would poison
+#      the last known-good copy, so a second bad deploy would "roll back" to a binary that never worked.
+#      When the current relay is not serving, keep whatever $PREV already exists.
+baseline_state=$(probe)
+if serving "$baseline_state"; then
+	BASELINE_HEIGHT=$(state_height "$baseline_state")
+	say "baseline:  $UNIT is $baseline_state (best block $BASELINE_HEIGHT)"
+	if [ -f "$LIVE" ]; then
+		cp -a "$LIVE" "$PREV"               # reading a running binary is fine; writing over one is not
+		say "backup:    $PREV ($(sha256sum "$PREV" | cut -d' ' -f1))"
+	fi
+else
+	say "baseline:  $UNIT is '$baseline_state' — NOT healthy right now."
+	if [ -f "$PREV" ]; then
+		say "           Keeping the existing $PREV as the rollback target (not overwriting it with a"
+		say "           possibly-broken $LIVE). A failed deploy can still roll back to a known-good binary."
+	fi
+fi
+
+# ── 4. install ──────────────────────────────────────────────────────────────────────────
+# Read the staged file AS THE DEPLOY USER and write it as root: the redirect's fd is opened by root, but
+# the bytes are read with the deploy user's privileges. This is what makes a symlink swapped in between
+# the checks above and this line harmless — cat would simply be denied.
+install -m 0755 -o root -g root /dev/null "$NEW"
+runuser -u "$DEPLOY_USER" -- cat -- "$STAGED" > "$NEW"
+
+installed_sha=$(sha256sum "$NEW" | cut -d' ' -f1)
+[ "$installed_sha" = "$staged_sha" ] ||
+	die "the copy does not match the staged file ($installed_sha != $staged_sha) — refusing to install."
+runuser -u "$DEPLOY_USER" -- "$NEW" --version >/dev/null 2>&1 ||
+	die "the installed copy does not exec — refusing to swap it in."
+
+# The swap is a RENAME, not a copy, and it has to be. You cannot write over the binary of a running
+# process — the kernel returns ETXTBSY ("Text file busy"), so `install`/`cp` onto $LIVE fails while the
+# relay is up. rename(2) is atomic and merely unlinks the old inode, which the running process keeps
+# using until it exits. $NEW is on the same filesystem as $LIVE, which is what makes it a rename.
+mv -f "$NEW" "$LIVE"
+say "installed: $LIVE"
+say "  sha256:  $installed_sha"
+logger -t cogno-deploy-node "installed $LIVE sha256=$installed_sha version=$staged_version"
+
+# ── 5. restart + health-check ───────────────────────────────────────────────────────────
+# The new binary must reach IMPORTING (best block advancing past the baseline) to be accepted — not just
+# up, not just peered. See the imported()/probe note above for why peers alone is not the bar.
+if restart_unit && wait_for imported "$UNIT"; then
+	say ""
+	say "DEPLOYED. $UNIT is running $staged_version and importing ($HEALTH_STATE)."
+	logger -t cogno-deploy-node "deploy OK: $staged_version ($HEALTH_STATE)"
+	exit 0
+fi
+new_state=$HEALTH_STATE           # remember how the NEW binary fell short
+
+# ── 6. it did not come back importing — roll back ───────────────────────────────────────
+logger -t cogno-deploy-node "deploy FAILED ($new_state) — rolling back"
+say ""
+say "!! $UNIT did not import on the new binary (last state '$new_state') — rolling back to $PREV"
+
+if [ ! -f "$PREV" ]; then
+	# First install, or a run whose baseline said "don't back up". There is nothing to restore to.
+	die "no $PREV to roll back to. $UNIT is '$new_state' on the just-installed binary — recover by hand:
+       journalctl -u $UNIT -n 200 --no-pager"
+fi
+
+restore_previous
+# The rollback's job is to get the relay SERVING again (RPC answering) — importing is a separate question
+# that depends on the validator, not on which binary is installed. If it will not even serve, it is down.
+if ! restart_unit || ! wait_for serving "rolled back"; then
+	die "ROLLBACK DID NOT COME BACK ($HEALTH_STATE). THE RELAY IS DOWN — the app has no RPC.
+     $PREV is the last known-good binary and is already installed. Look at:
+       journalctl -u $UNIT -n 200 --no-pager"
+fi
+
+# Relay serves again on the old binary. WHY the new one was rejected decides the operator's next move,
+# and the fork is: did the OLD binary manage to import where the new one couldn't?
+if imported "$HEALTH_STATE"; then
+	# old binary imports, new one didn't → the new binary genuinely cannot accept blocks. Suspect it.
+	die "ROLLED BACK — relay is importing again on the previous binary. The NEW binary served RPC but did
+     not import (a p2p/consensus change that can't accept the validator's blocks?). Do NOT just re-run it.
+       journalctl -u $UNIT -n 200 --no-pager"
+fi
+if serving "$new_state"; then
+	# new served RPC but didn't import, AND the rolled-back old binary also isn't importing (we're here
+	# because wait_for imported would have returned 0 otherwise) → the chain isn't advancing for EITHER,
+	# which points upstream at the validator. The relay itself is up and serving its last block.
+	die "ROLLED BACK, but note: NEITHER binary is importing though both serve RPC — that points at the
+     VALIDATOR (or the network to it), not this binary. The relay is up, serving its last block. Check
+     the validator; once it produces again, re-run this deploy — the new binary may be fine.
+       journalctl -u $UNIT -n 200 --no-pager"
+fi
+die "ROLLED BACK — relay is up on the previous binary. The new binary was '$new_state' (it would not stay
+     up / would not serve RPC). Diagnose it: journalctl -u $UNIT -n 200 --no-pager"
