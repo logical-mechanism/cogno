@@ -1,12 +1,19 @@
 # cip8-oracle — the independent CIP-8 verifier's Python deps (CI-only, ci/cip8-oracle/).
 # The CIP-8 verify path is REUSED from cogno_v3 (do NOT reimplement): pycardano.cip.cip8.verify,
-# pinned to the proven version. blake2b is stdlib (hashlib); beacon.py imports cbor2 directly for the
+# pinned to an exact version. blake2b is stdlib (hashlib); beacon.py imports cbor2 directly for the
 # Plutus-Data CBOR encoding of the owner Address (the L1 beacon-name / identity hash).
 #   python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 #
 # (This is the all-Rust restart's CI oracle — there is no follower service, so the old psycopg
 # db-sync reader + http.server deps are gone; the node reads Cardano through the cogno-dbsync crate.)
-pycardano==0.13.0
-# Pin the major line: beacon.py's Plutus-Data CBOR must stay byte-identical to the Aiken beacon-name
-# (the LOCKED value in test_beacon.py is the guard). cbor2 6.x could change encoding behaviour.
+#
+# 0.19.2 was verified equivalent to the old 0.13.0 pin for this oracle's path before adopting the jump:
+# pycardano.cip.cip8.verify() is byte-identical between the two (only sign(), which we never call,
+# changed), so `verified` still folds in the signature check AND the header-address-hashes-to-key bind.
+# test_beacon.py's locked Aiken hash and test_agreement.py's 13 cross-checks are unchanged on 0.19.2.
+pycardano==0.19.2
+# beacon.py imports cbor2 (the C build) directly, so pin it: its Plutus-Data CBOR must stay
+# byte-identical to the Aiken beacon-name (the LOCKED value in test_beacon.py is the guard), and
+# cbor2 6.x could change encoding behaviour. NB pycardano 0.19 also pulls in cbor2pure transitively
+# (its default decode path) — unpinned, but only reached for Byron addresses the oracle never sees.
 cbor2>=5.6,<6
