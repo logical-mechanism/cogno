@@ -2,8 +2,9 @@
 
 // ProfileView — the full /u/[address] surface (doc 07). The client half of a server/client split:
 // page.tsx is the static-export server wrapper (generateStaticParams placeholder) and reads NOTHING;
-// this reads the live ss58 from useParams(), validates it (plausible base58/length → else in-app
-// not-found, NOT a hard 404), and renders the profile chrome + three tabs.
+// this reads the live ss58 from the URL (useRouteSegment, NOT useParams — see lib/routeSegment),
+// validates it (plausible base58/length → else in-app not-found, NOT a hard 404), and renders the
+// profile chrome + three tabs.
 //
 // Composition (thin orchestrator): StickyHeader(back + name + "N posts" + <ProfileTabs>) → <ProfileHeader>
 // (banner / avatar / action-button switch / name / handle / bio / counts / banned note) → the active
@@ -25,7 +26,7 @@
 // author's posts, are exactly what a future /notifications surface folds. No bell/route is built here.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import styles from "./view.module.css";
 import { StickyHeader, NotFoundInline } from "@/components/AppShell";
 import { Skeleton } from "@/components/Skeleton";
@@ -48,6 +49,7 @@ import { modalActions } from "@/lib/modalStore";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { sharePostWithToast } from "@/lib/share";
 import { isPlausibleSs58, handleOf } from "@/lib/ss58";
+import { useRouteSegment } from "@/lib/routeSegment";
 import type { ProfileArgs } from "@/lib/feed/source";
 import type { CognoPost, ViewerPostState, Ss58, PostActionCallbacks } from "@/components/kit";
 
@@ -65,13 +67,17 @@ function parseTabParam(raw: string | null): ProfileTab {
 }
 
 export function ProfileView() {
-  const params = useParams<{ address: string }>();
-  const address = params?.address ?? "";
+  // The ss58 comes from the URL, not useParams() — in the static export the router state tree carries
+  // the "_" placeholder for every profile (see lib/routeSegment).
+  const address = useRouteSegment("u");
 
   // Invalid ss58 → in-app not-found (NOT a hard 404); never attempt a chain read (doc 07 §10).
   if (!isPlausibleSs58(address)) return <NotFoundInline kind="profile" />;
 
-  return <ProfileBody address={address} />;
+  // key: every profile shares the one exported route segment ("_"), so React would otherwise keep
+  // ProfileBody mounted across /u/A/ → /u/B/ (a mention chip, a hover card, an author click) and carry
+  // A's tab + timeline state onto B. Keying on the address restores the per-profile remount.
+  return <ProfileBody key={address} address={address} />;
 }
 
 function ProfileBody({ address }: { address: Ss58 }) {

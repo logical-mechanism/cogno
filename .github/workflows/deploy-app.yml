@@ -105,3 +105,36 @@ jobs:
           rsync -az --delete \
             -e 'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' \
             out/ "$DEPLOY_USER@$DEPLOY_HOST:/var/www/cogno/"
+
+      # A dynamic route's SPA shell is TWO artifacts, and nginx has to map BOTH: the document (a cold
+      # deep link) and the RSC payload the CLIENT router fetches on a <Link> click. Mapping only the
+      # document is invisible on a cold load but 404s /u/<addr>/index.txt on every in-app click — and
+      # Next answers a 404 payload with a FULL DOCUMENT LOAD, which reboots the SPA and destroys the
+      # in-memory wallet session (the posting key is never persisted). That is exactly the bug this
+      # check exists to keep dead. nginx is NOT deployed by this workflow, so without this the site can
+      # regress silently whenever deploy/nginx/cogno.conf is newer than what the droplet has loaded.
+      - name: smoke-check the SPA shell — document AND RSC payload
+        env:
+          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
+        run: |
+          origin="$(printf '%s' "$NEXT_PUBLIC_WS_URL" | sed -E 's#^wss://([^/]+).*#https://\1#')"
+          addr=5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+          fail=0
+          for url in "$origin/u/$addr/" "$origin/post/1/"; do
+            code=$(curl -sS --retry 3 --retry-delay 2 -o /dev/null -w '%{http_code}' "$url")
+            [ "$code" = 200 ] || { echo "::error::deep-link document $url -> HTTP $code (want 200)"; fail=1; }
+          done
+          for url in "$origin/u/$addr/index.txt" "$origin/post/1/index.txt"; do
+            read -r code ctype <<<"$(curl -sS --retry 3 --retry-delay 2 -o /dev/null -w '%{http_code} %{content_type}' "$url")"
+            case "$code:$ctype" in
+              200:text/plain*) ;;
+              *) echo "::error::RSC payload $url -> HTTP $code ($ctype); want 200 text/plain"; fail=1 ;;
+            esac
+          done
+          if [ "$fail" = 1 ]; then
+            echo "::error::nginx is not serving the dynamic-route SPA shell's RSC payloads. Install the"
+            echo "::error::current deploy/nginx/cogno.conf on the droplet and reload:"
+            echo "::error::  cp deploy/nginx/cogno.conf /etc/nginx/sites-available/cogno.conf && nginx -t && systemctl reload nginx"
+            exit 1
+          fi
+          echo "SPA shell OK: both the document and the RSC payload resolve for /u/<addr>/ and /post/<id>/."
