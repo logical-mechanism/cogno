@@ -1,5 +1,5 @@
 // In-browser talk_vault lock / exit — the L1 "interact with the smart contract" half of the wallet
-// button. A browser port of app/scripts/m2d-lock.mjs + m2d-unlock.mjs: identical tx shape, but the
+// button. A browser port of app/scripts/cardano-reference/m2d-{lock,unlock}.mjs: identical tx shape, but the
 // signer is the user's connected CIP-30 wallet and the provider is Blockfrost (which supplies live
 // cost models, so no manual setCostModels). MeshJS is browser-only, so every runtime dependency is
 // imported INSIDE the async functions — this module is import-safe during the static export.

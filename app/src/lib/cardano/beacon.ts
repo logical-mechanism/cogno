@@ -1,4 +1,4 @@
-// On-chain data builders — a browser port of app/scripts/m2d-beacon.mjs, byte-for-byte identical
+// On-chain data builders — a browser port of app/scripts/cardano-reference/m2d-beacon.mjs, byte-for-byte identical
 // to the Aiken `talk_vault` types (and to the follower's beacon.py). Uses Uint8Array (no Node
 // `Buffer`) so it runs unchanged inside the Next.js static-export bundle.
 //
