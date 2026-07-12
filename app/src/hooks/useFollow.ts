@@ -77,7 +77,7 @@ export function useFollow(
           setOptimistic((p) => ({ ...p, [target]: false }));
           fail(message);
         },
-      }).catch(() => {});
+      });
     },
     [api, signer, run, fail, ok],
   );
@@ -92,7 +92,7 @@ export function useFollow(
           setOptimistic((p) => ({ ...p, [target]: true }));
           fail(message);
         },
-      }).catch(() => {});
+      });
     },
     [api, signer, run, fail, ok],
   );

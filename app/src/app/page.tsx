@@ -188,7 +188,7 @@ export default function HomePage() {
           },
           onCancel: () => failPending(clientId),
         }),
-      ).catch(() => {});
+      );
     },
     [viewer, api, signer, me, composerText, addPending, failPending, run, phase, router],
   );

@@ -130,8 +130,6 @@ export function usePoll(
           // `fail` routes a rate-limit to its dedicated toast and everything else to a generic error.
           fail(message);
         },
-      }).catch(() => {
-        /* failure surfaced via fail(); optimistic move rolled back in onError */
       });
     },
     [api, signer, hostId, myChoice, run, read, fail],

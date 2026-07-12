@@ -8,7 +8,7 @@
 // `myWeight` is the viewer's VotingPower snapshot (TalkStake.VotingPower, from useIdentity), NOT
 // AllowedStake. On confirm/error the overlay patch is cleared so the next read (chain truth) wins.
 
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useMutation } from "./useMutation";
 import { useActionToast } from "./useActionToast";
 import { useOptimistic } from "./useOptimistic";
@@ -25,7 +25,6 @@ export interface UseVote {
   downvote: (postId: bigint, current: ViewerPostState) => void;
   /** Clear whatever vote exists. */
   clear: (postId: bigint, current: ViewerPostState) => void;
-  pending: boolean;
 }
 
 export function useVote(
@@ -34,7 +33,7 @@ export function useVote(
   myWeight: bigint,
 ): UseVote {
   const { patchViewer, patchCounts, confirmPost, clearPost } = useOptimistic();
-  const { run, pending } = useMutation();
+  const { run } = useMutation();
   const { fail } = useActionToast();
 
   const doVote = useCallback(
@@ -60,18 +59,29 @@ export function useVote(
         // Card unmounted mid-flight (navigation) → silently drop the provider-scoped patch so it can't
         // stick forever offsetting the count/colour; a later read reflects the vote if it landed.
         onCancel: () => clearPost(postId),
-      }).catch(() => {
-        /* failure surfaced via fail(); optimistic patch rolled back via clearPost */
       });
     },
     [api, signer, myWeight, patchViewer, patchCounts, confirmPost, clearPost, run, fail],
   );
 
-  return {
-    like: (postId, current) => doVote(postId, current, current.myVote === "Up" ? null : "Up"),
-    unlike: (postId, current) => doVote(postId, current, null),
-    downvote: (postId, current) => doVote(postId, current, current.myVote === "Down" ? null : "Down"),
-    clear: (postId, current) => doVote(postId, current, null),
-    pending,
-  };
+  // This return used to be a fresh object with four fresh closures on every render. Five surfaces wrap
+  // it in a `useMemo<PostActionCallbacks>` that lists `vote` in its deps, so all five memos invalidated
+  // every render and the memoization was purely decorative. (eslint's react-hooks rules say so out loud.)
+  //
+  // `pending` is GONE from the interface rather than excluded from these deps. Keeping it would have
+  // churned the object identity on every tx state transition — re-invalidating all five bundles exactly
+  // as before, leaving the memo decorative again — and excluding it from the deps while still returning
+  // it would hand callers a permanently stale boolean. Nothing ever read `vote.pending`; the honest fix
+  // is not to return it. (useAccountVote's `pending` IS read, by AccountVoteControl, and stays.)
+  return useMemo(
+    () => ({
+      like: (postId: bigint, current: ViewerPostState) =>
+        doVote(postId, current, current.myVote === "Up" ? null : "Up"),
+      unlike: (postId: bigint, current: ViewerPostState) => doVote(postId, current, null),
+      downvote: (postId: bigint, current: ViewerPostState) =>
+        doVote(postId, current, current.myVote === "Down" ? null : "Down"),
+      clear: (postId: bigint, current: ViewerPostState) => doVote(postId, current, null),
+    }),
+    [doVote],
+  );
 }

@@ -1,27 +1,31 @@
 "use client";
 
-// useMutation — the generic write adapter every optimistic social hook composes on. It
-// subscribes to a `TxUpdate` phase stream (from lib/chain/mutations.ts), tracks the phase
-// reactively, and returns a Promise that RESOLVES at `inBestBlock` (the optimistic confirm
-// point — Twitter-speed) and REJECTS on `invalid` / `error` (so the caller rolls back).
+// useMutation — the generic write adapter every optimistic social hook composes on. It subscribes to a
+// `TxUpdate` phase stream (from lib/chain/mutations.ts) and delivers the outcome through the
+// onConfirm / onError / onCancel callbacks.
 //
-// Toast policy (doc 04 §3.4): feeless social actions are SILENT on success (the optimistic UI
-// already showed the heart fill — we never toast "Liked!"). We surface ONLY failures. The
-// caller decides whether to toast a confirm (e.g. profile edits close a modal on success).
+// The returned promise SETTLES (never rejects) once the run reaches any terminal state. "Settled" means
+// the outcome has been delivered to your callbacks — NOT that it succeeded. Do not branch on it; there
+// is nothing in it to branch on. It exists so a caller can `void run(...)` without an unhandled
+// rejection, which is all any of the twelve call sites ever wanted: every one of them was
+// `void run(...).catch(() => {})`, twelve copies of "please don't crash the tab".
+//
+// It used to REJECT on failure, and it used to track the tx `phase` reactively. Nothing consumed the
+// phase — every call site destructured `{ run }` or `{ run, pending }` — but `setPhase` fired on each
+// stream event, and `useVote` mounts inside the component that owns the timeline, so a single like
+// re-rendered the whole 50-card feed several times over to store a string nobody read.
+//
+// `pending` survives because it has one real consumer (useAccountVote → AccountVoteControl's disabled).
+//
+// Toast policy (doc 04 §3.4): feeless social actions are SILENT on success (the optimistic UI already
+// showed the heart fill — we never toast "Liked!"). We surface ONLY failures. The caller decides
+// whether to toast a confirm (e.g. profile edits close a modal on success).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Observable, Subscription } from "rxjs";
 import { useSession } from "@/components/Providers";
-import { classifyThrown, errorCopy, type ChainError } from "@/lib/chain/errors";
+import { classifyThrown, type ChainError } from "@/lib/chain/errors";
 import type { TxUpdate } from "@/lib/types";
-
-export type MutationPhase =
-  | "idle"
-  | "signing"
-  | "broadcast"
-  | "inBestBlock"
-  | "finalized"
-  | "error";
 
 export interface RunOptions {
   /** Fired once at `inBestBlock` (ok) — the confirm point. */
@@ -37,23 +41,20 @@ export interface RunOptions {
 }
 
 export interface UseMutation {
-  phase: MutationPhase;
-  error: ChainError | null;
-  /** true between `run()` and the settle (confirm or error). */
+  /** true between `run()` and the settle (confirm, error, or cancel). */
   pending: boolean;
   /**
-   * Subscribe a `TxUpdate` stream. Resolves with the confirming update at `inBestBlock`,
-   * rejects with an Error on `invalid` / `error` / stream error. Continues tracking the phase
-   * through `finalized` after resolving.
+   * Subscribe a `TxUpdate` stream. The outcome arrives via `opts` — onConfirm at `inBestBlock`,
+   * onError on `invalid`/`error`, onCancel if the hook unmounts still in flight.
+   *
+   * The promise resolves when the run has SETTLED, whichever way. It never rejects, and it carries no
+   * value: resolution does NOT mean success. Await it only to sequence work after the run is over.
    */
-  run: (stream$: Observable<TxUpdate>, opts?: RunOptions) => Promise<TxUpdate>;
-  reset: () => void;
+  run: (stream$: Observable<TxUpdate>, opts?: RunOptions) => Promise<void>;
 }
 
 export function useMutation(): UseMutation {
   const { boot } = useSession();
-  const [phase, setPhase] = useState<MutationPhase>("idle");
-  const [error, setError] = useState<ChainError | null>(null);
   const [pending, setPending] = useState(false);
   const subs = useRef<Set<{ sub: Subscription; cancel: () => void }>>(new Set());
 
@@ -71,13 +72,7 @@ export function useMutation(): UseMutation {
     };
   }, []);
 
-  const reset = useCallback(() => {
-    setPhase("idle");
-    setError(null);
-    setPending(false);
-  }, []);
-
-  const run = useCallback((stream$: Observable<TxUpdate>, opts?: RunOptions): Promise<TxUpdate> => {
+  const run = useCallback((stream$: Observable<TxUpdate>, opts?: RunOptions): Promise<void> => {
     // ENCODING GUARD. Every write in the app funnels through here, which is why the gate lives here:
     // if the connected node's runtime does not match the spec our PAPI descriptors were built against,
     // the extrinsic we are about to sign is mis-encoded. The boot guard has always computed this and
@@ -87,39 +82,35 @@ export function useMutation(): UseMutation {
     // `=== false`, not `!== true`: `boot` is null while the probe is still in flight, and treating that
     // as a failure would make the app read-only for the first moments of every session.
     if (boot?.ok === false) {
-      // `raw`, never a classified kind: this must NEVER be mistakable for a rate limit. When the error
-      // was a prose string, the downstream isRateLimit regex could match a boot reason that happened to
-      // contain "rate limit" and show the user "you're posting too fast" for an ENCODING MISMATCH — a
-      // write block with no diagnosis. Structurally impossible now.
-      const message = boot.reason ?? "This app is not compatible with the connected node.";
-      const err: ChainError = { kind: "raw", detail: message };
-      setPhase("error");
-      setError(err);
-      opts?.onError?.(err);
-      return Promise.reject(new Error(message));
+      // `raw`, never a classified kind: this must NEVER be mistakable for a rate limit (see
+      // lib/chain/errors.ts). This path SETTLES like any other — it used to reject, and it is a second,
+      // separate rejection path from settleErr, so a conversion that only fixed settleErr would have
+      // turned every write on an incompatible node into an unhandled rejection.
+      const error: ChainError = {
+        kind: "raw",
+        detail: boot.reason ?? "This app is not compatible with the connected node.",
+      };
+      opts?.onError?.(error);
+      return Promise.resolve();
     }
-    setError(null);
     setPending(true);
-    setPhase("signing");
-    return new Promise<TxUpdate>((resolve, reject) => {
+    return new Promise<void>((resolve) => {
       let settled = false;
       const settleOk = (u: TxUpdate) => {
         if (settled) return;
         settled = true;
         setPending(false);
         opts?.onConfirm?.(u);
-        resolve(u);
+        resolve();
       };
-      const settleErr = (err: ChainError) => {
+      const settleErr = (error: ChainError) => {
         // Guard FIRST: a late invalid/error (or observable error) after inBestBlock already settled
-        // must not flip a confirmed tx's phase to "error".
+        // must not flip a confirmed tx to failed.
         if (settled) return;
         settled = true;
-        setPhase("error");
-        setError(err);
         setPending(false);
-        opts?.onError?.(err);
-        reject(new Error(errorCopy(err)));
+        opts?.onError?.(error);
+        resolve();
       };
       // `entry` is captured by complete() below; declared with `let` before subscribe() so a
       // (theoretical) synchronous complete sees `undefined` (a harmless delete) rather than a TDZ throw.
@@ -127,22 +118,17 @@ export function useMutation(): UseMutation {
       const sub = stream$.subscribe({
         next: (u) => {
           switch (u.phase) {
-            case "signing":
-              setPhase("signing");
-              break;
-            case "broadcast":
-              setPhase("broadcast");
-              break;
             case "inBestBlock":
-              setPhase("inBestBlock");
               settleOk(u);
-              break;
-            case "finalized":
-              setPhase("finalized");
               break;
             case "invalid":
             case "error":
               settleErr(u.error ?? { kind: "raw", detail: "Transaction failed." });
+              break;
+            // "signing" / "broadcast" / "finalized" are not ignored — they are simply not OURS to
+            // react to. The subscription must stay open through them so complete() fires and removes
+            // this entry from subs.current; short-circuiting at inBestBlock leaks it until unmount.
+            default:
               break;
           }
         },
@@ -160,11 +146,15 @@ export function useMutation(): UseMutation {
           settled = true;
           setPending(false);
           opts?.onCancel?.();
+          // Settle here too. This path used to flip `settled` and call onCancel WITHOUT resolving, so
+          // the promise dangled forever on unmount-mid-flight. Harmless while every caller ignored it;
+          // a lie the moment anyone awaits it.
+          resolve();
         },
       };
       subs.current.add(entry);
     });
   }, [boot]);
 
-  return { phase, error, pending, run, reset };
+  return { pending, run };
 }

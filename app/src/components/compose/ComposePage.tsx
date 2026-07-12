@@ -218,9 +218,7 @@ export function ComposePage() {
           },
           onCancel: () => failPending(clientId),
         }),
-      ).catch(() => {
-        /* settled + rolled back via onError */
-      });
+      );
     },
     [api, signer, addPending, dropPending, failPending, run, phase, router, goBack],
   );

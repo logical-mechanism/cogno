@@ -124,7 +124,7 @@ export function ProfileSection() {
           // fail().
           fail(error);
         },
-      }).catch(() => {});
+      });
     },
     [api, run, toast, fail],
   );

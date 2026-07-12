@@ -231,9 +231,7 @@ export function ModalRouteHost() {
           },
           onCancel: () => failPending(clientId),
         }),
-      ).catch(() => {
-        /* settled + rolled back via onError */
-      });
+      );
     },
     [api, signer, addPending, dropPending, failPending, run, phase, router, onClose],
   );
@@ -350,8 +348,6 @@ export function ModalRouteHost() {
             message: errorCopy(error),
           });
         },
-      }).catch(() => {
-        /* settled + rolled back via onError */
       });
     },
     [

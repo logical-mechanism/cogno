@@ -230,7 +230,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           onError: () => failPending(clientId),
           onCancel: () => failPending(clientId),
         }),
-      ).catch(() => {});
+      );
     },
     [
       viewer.status,
