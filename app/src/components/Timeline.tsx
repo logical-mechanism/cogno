@@ -33,7 +33,7 @@ import type {
 } from "./kit";
 import type { CognoApi, PostingSigner } from "@/lib/types";
 
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+const NO_VIEWER: ViewerPostState = { myVote: null };
 
 export interface TimelineProps {
   posts: CognoPost[];

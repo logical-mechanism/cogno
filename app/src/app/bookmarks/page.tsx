@@ -28,7 +28,7 @@ import { useBookmarkList } from "@/lib/bookmarkStore";
 import type { CognoPost, ViewerPostState } from "@/lib/types";
 import type { PostActionCallbacks } from "@/components/kit";
 
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+const NO_VIEWER: ViewerPostState = { myVote: null };
 
 export default function BookmarksPage() {
   const router = useRouter();

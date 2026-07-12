@@ -48,7 +48,7 @@ import { sharePostWithToast } from "@/lib/share";
 import type { CognoPost, ViewerPostState, FeedQuery } from "@/lib/types";
 import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
 
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+const NO_VIEWER: ViewerPostState = { myVote: null };
 
 /** Walk up to the closest scrollable ancestor (the center column on desktop, document on mobile). */
 function scrollContainerOf(el: HTMLElement | null): HTMLElement | null {

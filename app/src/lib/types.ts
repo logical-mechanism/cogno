@@ -59,8 +59,6 @@ export interface CognoPost {
   downCount?: number;
   /** `upWeight - downWeight` (u128 difference; MAY be negative). */
   score?: bigint;
-  /** Permanent repost count; only increments. */
-  repostCount?: number;
   /** Count of direct replies. */
   replyCount?: number;
 
@@ -78,8 +76,6 @@ export interface CognoPost {
    * present, `useViewerStates` prefers it and SKIPS the per-card `Reposts.getEntries` viewer scan.
    */
   myVote?: "Up" | "Down" | null;
-  /** Companion to {@link myVote}: the viewer has reposted this post. Present iff `myVote` is. */
-  reposted?: boolean;
 }
 
 /** A 0-indexed poll option with its stake-weighted tally. */
@@ -113,7 +109,6 @@ export interface QuotedRef {
 /** The viewer's own relationship to a post — drives the active/filled action icons. */
 export interface ViewerPostState {
   myVote: "Up" | "Down" | null; // null = not voted
-  reposted: boolean; // permanent once true
 }
 
 /** Followers/following ids + counts for an account (indexer only). */

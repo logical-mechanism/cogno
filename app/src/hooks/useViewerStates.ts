@@ -17,7 +17,7 @@ import { applyViewerPatch, viewerPatchSettled } from "@/lib/optimistic";
 import type { FeedSource } from "@/lib/feed/source";
 import type { Ss58, ViewerPostState } from "@/lib/types";
 
-const NONE: ViewerPostState = { myVote: null, reposted: false };
+const NONE: ViewerPostState = { myVote: null };
 
 export function useViewerStates(
   source: FeedSource | null,
@@ -41,7 +41,7 @@ export function useViewerStates(
       carried == null
         ? ""
         : Array.from(carried.entries())
-            .map(([id, v]) => `${id}:${v.myVote ?? "null"}:${v.reposted ? 1 : 0}`)
+            .map(([id, v]) => `${id}:${v.myVote ?? "null"}`)
             .sort()
             .join(","),
     [carried],

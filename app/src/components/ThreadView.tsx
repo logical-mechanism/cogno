@@ -54,7 +54,7 @@ import { handleOf } from "@/lib/ss58";
 import type { CognoPost, ViewerPostState } from "@/lib/types";
 import type { ActionState, ComposerDraft, PostActionCallbacks } from "@/components/kit";
 
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+const NO_VIEWER: ViewerPostState = { myVote: null };
 // Render replies in pages so a huge thread doesn't mount hundreds of cards at once (useThread fetches
 // them all). Pending (optimistic, id<0) replies are ALWAYS shown so a just-posted reply is never hidden.
 const REPLIES_PAGE = 20;

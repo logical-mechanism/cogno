@@ -10,7 +10,7 @@
 
 import { Binary, type PolkadotClient } from "polkadot-api";
 import { Observable, combineLatest, distinctUntilChanged, map, startWith } from "rxjs";
-import { readPostTally, readRepostCount } from "./social-reads";
+import { readPostTally } from "./social-reads";
 import type {
   CognoApi,
   CognoPost,
@@ -125,7 +125,7 @@ export async function readPostQuoteId(api: CognoApi, id: bigint): Promise<bigint
  * Stamp the social aggregates + author profile + quote ref onto a batch of decoded posts, reading
  * each aggregate by KEY (never iterating a whole map). Profiles + quoted posts are de-duped across
  * the page (one read per distinct author / quoted id); the per-post aggregates (VoteTally,
- * RepostCount, ReplyCount, Polls flag) are read per id. Revocation is NOT stamped here — the PAPI
+ * ReplyCount, Polls flag) are read per id. Revocation is NOT stamped here — the PAPI
  * source flags it once per distinct author via `CognoGate.PkhOf`.
  */
 export async function enrichPosts(
@@ -173,9 +173,8 @@ export async function enrichPosts(
       const post = toCognoPost(r.id, r.value);
       // Reuse the single tally/repost decoders (social-reads.ts) so the feed score can never drift
       // from a per-post read; ReplyCount + the poll flag are read alongside.
-      const [tally, repostCount, replyCount, pollRec] = await Promise.all([
+      const [tally, replyCount, pollRec] = await Promise.all([
         readPostTally(api, r.id),
-        readRepostCount(api, r.id),
         api.query.Microblog.ReplyCount.getValue(r.id) as Promise<number>,
         api.query.Microblog.Polls.getValue(r.id),
       ]);
@@ -184,7 +183,6 @@ export async function enrichPosts(
       post.upCount = tally.upCount;
       post.downCount = tally.downCount;
       post.score = tally.score;
-      post.repostCount = repostCount;
       post.replyCount = Number(replyCount ?? 0);
       if (pollRec) post.isPoll = true;
       const prof = profileByAuthor.get(post.author);

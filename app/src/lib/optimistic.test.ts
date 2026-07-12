@@ -47,7 +47,6 @@ function post(id: bigint, over: Partial<CognoPost> = {}): CognoPost {
     upCount: 0,
     downCount: 0,
     score: 0n,
-    repostCount: 0,
     ...over,
   };
 }
@@ -128,16 +127,15 @@ describe("applyCountPatch", () => {
 
 describe("applyViewerPatch", () => {
   it("overrides only the patched fields", () => {
-    const base: ViewerPostState = { myVote: null, reposted: false };
-    expect(applyViewerPatch(base, { myVote: "Up" })).toEqual({ myVote: "Up", reposted: false });
-    expect(applyViewerPatch(base, { reposted: true })).toEqual({ myVote: null, reposted: true });
+    const base: ViewerPostState = { myVote: null };
+    expect(applyViewerPatch(base, { myVote: "Up" })).toEqual({ myVote: "Up" });
     expect(applyViewerPatch(base, undefined)).toBe(base);
   });
 });
 
 describe("viewerPatchSettled — reconcile a confirmed vote by fresh read", () => {
-  const up: ViewerPostState = { myVote: "Up", reposted: false };
-  const none: ViewerPostState = { myVote: null, reposted: false };
+  const up: ViewerPostState = { myVote: "Up" };
+  const none: ViewerPostState = { myVote: null };
 
   it("never settles an unconfirmed (not-expected) patch, even when the read agrees", () => {
     expect(viewerPatchSettled(up, { myVote: "Up" })).toBe(false);

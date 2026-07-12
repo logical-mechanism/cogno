@@ -53,7 +53,7 @@ import { useRecentSearches, recentSearchActions } from "@/lib/recentSearchStore"
 import type { CognoPost, FeedQuery, Suggestion, ViewerPostState } from "@/lib/types";
 import type { PostActionCallbacks } from "@/components/kit";
 
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+const NO_VIEWER: ViewerPostState = { myVote: null };
 const SEARCH_DEBOUNCE_MS = 300;
 const PEOPLE_LIMIT = 20;
 // The firehose + Latest-search page size (one node `state_call` per page since spec-120).

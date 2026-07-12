@@ -59,7 +59,6 @@ function addCountPatch(a: CountPatch | undefined, b: CountPatch): CountPatch {
     downCountDelta: (a?.downCountDelta ?? 0) + (b.downCountDelta ?? 0),
     upWeightDelta: (a?.upWeightDelta ?? 0n) + (b.upWeightDelta ?? 0n),
     downWeightDelta: (a?.downWeightDelta ?? 0n) + (b.downWeightDelta ?? 0n),
-    repostCountDelta: (a?.repostCountDelta ?? 0) + (b.repostCountDelta ?? 0),
   };
 }
 

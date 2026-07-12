@@ -15,13 +15,11 @@ export interface CountPatch {
   downCountDelta?: number;
   upWeightDelta?: bigint;
   downWeightDelta?: bigint;
-  repostCountDelta?: number;
 }
 
 /** The viewer's own optimistic state on a post (overrides the read ViewerPostState). */
 export interface ViewerPatch {
   myVote?: "Up" | "Down" | null;
-  reposted?: boolean;
   /**
    * Set once the write has CONFIRMED (inBestBlock). The patch is then kept — not cleared — until a
    * FRESH read of the viewer's own vote agrees with it (see {@link viewerPatchSettled}), so the
@@ -126,7 +124,6 @@ export function applyCountPatch(post: CognoPost, patch: CountPatch | undefined):
     downCount: Math.max(0, (post.downCount ?? 0) + (patch.downCountDelta ?? 0)),
     upWeight,
     downWeight,
-    repostCount: Math.max(0, (post.repostCount ?? 0) + (patch.repostCountDelta ?? 0)),
     score: upWeight - downWeight,
   };
 }
@@ -153,7 +150,6 @@ export function applyViewerPatch(
   if (!patch) return base;
   return {
     myVote: patch.myVote !== undefined ? patch.myVote : base.myVote,
-    reposted: patch.reposted !== undefined ? patch.reposted : base.reposted,
   };
 }
 

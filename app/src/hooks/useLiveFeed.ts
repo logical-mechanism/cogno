@@ -293,7 +293,7 @@ export function useLiveFeed(
           const patch = v[String(p.id)];
           if (
             patch?.expected &&
-            viewerPatchSettled({ myVote: p.myVote ?? null, reposted: p.reposted === true }, patch)
+            viewerPatchSettled({ myVote: p.myVote ?? null }, patch)
           ) {
             clearPost(p.id);
           }

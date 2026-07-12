@@ -53,7 +53,7 @@ import { useRouteSegment } from "@/lib/routeSegment";
 import type { ProfileArgs } from "@/lib/feed/source";
 import type { CognoPost, ViewerPostState, Ss58, PostActionCallbacks } from "@/components/kit";
 
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+const NO_VIEWER: ViewerPostState = { myVote: null };
 
 /** Map a ProfileTab to the seam's tab arg (Posts → undefined / Replies / Likes). */
 function tabArg(tab: ProfileTab): ProfileArgs["tab"] {

@@ -27,10 +27,6 @@ import type { CognoApi, Ss58, PollView, ViewerPostState } from "@/lib/types";
 const BEST = { at: "best" } as const;
 
 /** A storage entry as PAPI returns it from `getEntries` (full key tuple + decoded value). */
-interface StorageEntry {
-  keyArgs: unknown[];
-  value: unknown;
-}
 
 /** The denormalized stake-weighted up/down tally for a post (default all-zero, ValueQuery). */
 export async function readPostTally(
@@ -106,36 +102,26 @@ export async function readViewerAccountVote(
   return vote ? (vote.dir.type === "Down" ? "Down" : "Up") : null;
 }
 
-/** The permanent repost count for a post (ValueQuery ⇒ default 0). */
-export async function readRepostCount(api: CognoApi, id: bigint): Promise<number> {
-  const n = (await api.query.Microblog.RepostCount.getValue(id, BEST)) as unknown as number;
-  return n ?? 0;
-}
 
 /**
- * The viewer's own vote + repost on a post.
+ * The viewer's own vote on a post — ONE keyed point-read.
  *
- * `Votes` carries a non-unit `VoteRecord`, so `getValue` distinguishes Some/None cleanly. But
- * `Reposts` is a `()`-valued `OptionQuery`: PAPI decodes both `Some(())` and `None` as `undefined`,
- * so `getValue` CANNOT tell them apart. We instead read the post's repost entries and test
- * membership (correct; heavier than a point-read — the indexer path is the efficient one).
+ * This used to also compute `reposted`, and paid dearly for it: `Reposts` is a `()`-valued
+ * `OptionQuery`, so PAPI decodes both `Some(())` and `None` as `undefined` and `getValue` cannot tell
+ * them apart. The workaround was a `Reposts.getEntries(id)` PREFIX SCAN per card (its own comment
+ * conceded it was "heavier than a point-read") to test membership. Repost was dropped as a feature and
+ * nothing rendered the flag, so every card in every feed was paying for a scan whose result was thrown
+ * away.
  */
 export async function readViewerPostState(
   api: CognoApi,
   id: bigint,
   who: Ss58,
 ): Promise<ViewerPostState> {
-  const [vote, repostEntries] = await Promise.all([
-    api.query.Microblog.Votes.getValue(id, who, BEST) as Promise<
-      { dir: { type: "Up" | "Down" }; weight: bigint } | undefined
-    >,
-    api.query.Microblog.Reposts.getEntries(id, BEST) as unknown as Promise<StorageEntry[]>,
-  ]);
-  const reposted = repostEntries.some(
-    (e) => e.keyArgs[e.keyArgs.length - 1] === who,
-  );
-  const myVote = vote ? (vote.dir.type === "Down" ? "Down" : "Up") : null;
-  return { myVote, reposted };
+  const vote = (await api.query.Microblog.Votes.getValue(id, who, BEST)) as
+    | { dir: { type: "Up" | "Down" }; weight: bigint }
+    | undefined;
+  return { myVote: vote ? (vote.dir.type === "Down" ? "Down" : "Up") : null };
 }
 
 /**

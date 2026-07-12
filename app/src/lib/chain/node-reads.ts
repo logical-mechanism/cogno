@@ -1,6 +1,6 @@
 // Node-served reads (spec-120): one enriched, viewer-aware feed / thread / profile page per
 // `state_call`, via the `MicroblogApi` runtime API. This REPLACES the ~5-reads-per-post `enrichPosts`
-// fan-out (reads.ts) AND the per-card `Reposts.getEntries` viewer-state scan (social-reads.ts) with a
+// fan-out (reads.ts) with a
 // SINGLE call that returns everything a card renders — tallies, counts, the poll flag, the author
 // profile snapshot, a one-level quote summary, and (when a `viewer` is passed) the viewer's own
 // vote/repost overlay — atomic at one block.
@@ -36,7 +36,6 @@ interface EnrichedPost {
   reply_count: number;
   is_poll: boolean;
   my_vote?: { type: "Up" | "Down" };
-  reposted: boolean;
   author_display_name: BinaryLike;
   author_avatar: BinaryLike;
   quoted?: {
@@ -170,12 +169,12 @@ function mapQuoted(q: EnrichedPost["quoted"]): QuotedRef | undefined {
 /**
  * Map one `EnrichedPost` → the client `CognoPost`, the SAME shape `enrichPosts` produces: id/author/
  * text/parent/quote/at + the tally (with `score = upWeight - downWeight`, identical to `readPostTally`)
- * + repostCount/replyCount/isPoll + the author profile snapshot + the one-level quote ref.
+ * + replyCount/isPoll + the author profile snapshot + the one-level quote ref.
  *
  * `hasViewer` says whether the request actually carried a `viewer`. The runtime returns
- * `my_vote: None` / `reposted: false` REGARDLESS of whether a viewer was supplied, so the payload
+ * `my_vote: None` REGARDLESS of whether a viewer was supplied, so the payload
  * alone can't tell "no viewer" apart from "viewer, but no vote/repost". Only when `hasViewer` is true
- * do we stamp the `myVote`/`reposted` overlay; otherwise we leave both keys UNSET (`undefined`, exactly
+ * do we stamp the `myVote` overlay; otherwise we leave the key UNSET (`undefined`, exactly
  * as the keyed path does), so `carriedViewerStates` excludes the post and `useViewerStates` reads it
  * per-card. Without this, a viewer-less node fetch for a logged-in account would carry a `myVote: null`
  * that the overlay-bypass would wrongly trust, hiding the user's real votes/reposts.
@@ -194,16 +193,14 @@ export function mapEnrichedPost(e: EnrichedPost, hasViewer: boolean): CognoPost 
     upCount: e.up_count ?? 0,
     downCount: e.down_count ?? 0,
     score: upWeight - downWeight, // SAME derivation as readPostTally / toCognoPost
-    repostCount: e.repost_count ?? 0,
     replyCount: e.reply_count ?? 0,
     authorDisplayName: binTextOpt(e.author_display_name),
     authorAvatar: binTextOpt(e.author_avatar),
   };
-  // The viewer overlay, stamped node-side — lets useViewerStates skip its per-card Reposts scan.
+  // The viewer overlay, stamped node-side — lets useViewerStates skip its per-card vote read.
   // Only set it when a viewer was actually in the request (see the doc comment above).
   if (hasViewer) {
     post.myVote = e.my_vote ? e.my_vote.type : null;
-    post.reposted = e.reposted === true;
   }
   // Set `isPoll` only when true — mirror `enrichPosts` (`if (pollRec) post.isPoll = true`), which
   // leaves it `undefined` on a non-poll, so the keyed + node CognoPost shapes stay byte-identical.
@@ -227,7 +224,7 @@ export function carriedViewerStates(posts: CognoPost[]): Map<string, ViewerPostS
   const out = new Map<string, ViewerPostState>();
   for (const p of posts) {
     if (p.myVote !== undefined) {
-      out.set(String(p.id), { myVote: p.myVote, reposted: p.reposted === true });
+      out.set(String(p.id), { myVote: p.myVote });
     }
   }
   return out;

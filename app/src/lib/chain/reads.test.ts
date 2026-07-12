@@ -30,7 +30,12 @@ interface FakeSpec {
   byAuthor?: Map<string, bigint[]>;
   /** Viewer's votes: post id → direction (drives the node API's `my_vote` overlay). */
   votesByAccount?: Map<string, Map<bigint, "Up" | "Down">>;
-  /** Viewer's reposts: account → set of post ids (drives the node API's `reposted` overlay). */
+  /**
+   * Viewer's reposts: account → set of post ids. The CHAIN still has Reposts/RepostCount storage and
+   * the runtime still returns `reposted` / `repost_count` in its payload — repost was dropped from the
+   * FRONTEND only. The fake keeps emitting them on purpose, so these tests prove the client cleanly
+   * IGNORES fields the chain still sends, rather than choking on them.
+   */
   repostsByAccount?: Map<string, Set<bigint>>;
 }
 
@@ -289,7 +294,6 @@ function sharedFields(p: CognoPost) {
     upCount: p.upCount,
     downCount: p.downCount,
     score: p.score,
-    repostCount: p.repostCount,
     replyCount: p.replyCount,
     isPoll: p.isPoll,
     quote: p.quote,
@@ -302,7 +306,7 @@ describe("node-served reads", () => {
     const node = await nodeGlobalFeedPage(api, { limit: 2 });
     // `carriedViewerStates` keys on `myVote !== undefined`. Stamping the overlay on a page fetched with
     // NO viewer would make it wrongly trust a null overlay for a logged-in account and hide their votes.
-    expect(node.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
+    expect(node.posts.every((p) => p.myVote === undefined)).toBe(true);
   });
 
   it("nodeThread matches getThread — the resilience fallback must not render differently", async () => {
@@ -316,7 +320,7 @@ describe("node-served reads", () => {
     expect(node.replyCount).toBe(keyed.replyCount);
   });
 
-  it("stamps the viewer overlay (myVote/reposted) node-side when a viewer is passed", async () => {
+  it("stamps the viewer overlay (myVote) node-side when a viewer is passed", async () => {
     const spec = sampleSpec();
     spec.votesByAccount = new Map([["dave", new Map([[2n, "Up"]])]]);
     spec.repostsByAccount = new Map([["dave", new Set([3n])]]);
@@ -324,14 +328,12 @@ describe("node-served reads", () => {
     const page = await nodeGlobalFeedPage(api, { limit: 5, viewer: "dave" });
     const byId = new Map(page.posts.map((p) => [p.id, p]));
     expect(byId.get(2n)!.myVote).toBe("Up");
-    expect(byId.get(2n)!.reposted).toBe(false);
     expect(byId.get(3n)!.myVote).toBeNull();
-    expect(byId.get(3n)!.reposted).toBe(true);
     // No viewer ⇒ NO overlay at all: the keys stay UNSET (undefined), not `null`/`false`. The runtime
-    // returns my_vote: None / reposted: false regardless of viewer, so the client must NOT stamp them
+    // returns my_vote: None regardless of viewer, so the client must NOT stamp it
     // when it passed no viewer — otherwise carriedViewerStates would wrongly trust a null overlay for a
     // logged-in account and hide their real votes.
     const anon = await nodeGlobalFeedPage(api, { limit: 5 });
-    expect(anon.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
+    expect(anon.posts.every((p) => p.myVote === undefined)).toBe(true);
   });
 });
