@@ -38,10 +38,9 @@ import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
 import { useActionToast } from "@/hooks/useActionToast";
-import { useCapacity } from "@/hooks/useCapacity";
+import { useComposerGate } from "@/hooks/useComposerGate";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
-import { draftStatus } from "@/lib/chain/capacity";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitPost } from "@/lib/chain/mutations";
@@ -138,25 +137,14 @@ export default function HomePage() {
   const { phase } = useActionToast();
 
   // ── inline composer capacity gate (doc 06 §9) ──────────────────────────────────────────────
-  const { view: capacityView, consts: capacityConsts } = useCapacity(api, me, bestBlock);
+  // `composerText` is what the USER sees; `composerSerialized` is what actually gets posted (a mention
+  // renders `@alice` but posts as `@<48-char ss58>`). The gate must measure the latter — this surface
+  // used to measure the display text, so "hi @alice @bob" gated at 14 bytes and was rejected on-chain
+  // at ~110. The two are kept apart deliberately: the gate reads serialized, the textarea reads display.
   const [composerText, setComposerText] = useState("");
-  const composerRateLimited = useMemo(() => {
-    if (viewer.status !== "ready" || !capacityView || !capacityConsts) return false;
-    const byteLen = new TextEncoder().encode(composerText).length;
-    // An empty draft is never "rate-limited" (the byte-counter/CTA handles empties).
-    if (byteLen === 0) {
-      // probe the minimum post (base cost) so a fully-exhausted bucket still disables the CTA
-      const probe = draftStatus(capacityView, 0, capacityConsts);
-      return probe.kind === "charging" || probe.kind === "wait";
-    }
-    // Zero locked ADA (weight 0) is surfaced separately as "lock ADA to post", NOT as a rate limit.
-    // Any OTHER non-ok kind (incl. the weight>0 / rate==0 no_weight edge) still disables via rateLimited.
-    const k = draftStatus(capacityView, byteLen, capacityConsts).kind;
-    return k !== "ok" && !(k === "no_weight" && capacityView.weight === 0n);
-  }, [viewer.status, capacityView, capacityConsts, composerText]);
-  // Ready account with zero posting power (locked-ADA weight 0) → the honest "lock ADA to post" gate.
-  const composerNoPower =
-    viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
+  const [composerSerialized, setComposerSerialized] = useState("");
+  const { rateLimited: composerRateLimited, noPostingPower: composerNoPower } =
+    useComposerGate(composerSerialized);
 
   // ── inline composer (top-level post) ──────────────────────────────────────────────────────
   const onComposePost = useCallback(
@@ -175,7 +163,11 @@ export default function HomePage() {
         authorAvatar: viewer.avatar,
       };
       const clientId = addPending(optimistic);
+      // What the user typed, for the error restore below. `draft.text` is the SERIALIZED body — putting
+      // that back in the textarea returned a failed post as a wall of raw `@5GrwvaEF…`.
+      const displayText = composerText;
       setComposerText("");
+      setComposerSerialized("");
       // Status toast (sticky "Posting…" → "Posted" + "View →"), but NO onConfirm dropPending: the
       // pending card is retired when its real twin lands in the feed (useLiveFeed presence-reconcile),
       // so the optimistic card never blinks out at confirm. onCancel drops the sticky toast if Home
@@ -192,13 +184,13 @@ export default function HomePage() {
               : undefined,
           onError: () => {
             failPending(clientId);
-            setComposerText(draft.text); // restore the draft for a retry
+            setComposerText(displayText); // restore what they TYPED, not the serialized body
           },
           onCancel: () => failPending(clientId),
         }),
       ).catch(() => {});
     },
-    [viewer, api, signer, me, addPending, failPending, run, phase, router],
+    [viewer, api, signer, me, composerText, addPending, failPending, run, phase, router],
   );
 
   // ── new-posts pill flush ────────────────────────────────────────────────────────────────────
@@ -282,6 +274,7 @@ export default function HomePage() {
             submitState={composeState}
             text={composerText}
             onTextChange={setComposerText}
+            onSerializedChange={setComposerSerialized}
             rateLimited={composerRateLimited}
             noPostingPower={composerNoPower}
             onTogglePoll={() => modalActions.openPoll()}

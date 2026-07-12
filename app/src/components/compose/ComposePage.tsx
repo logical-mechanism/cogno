@@ -15,7 +15,7 @@
 // Mode resolution (§1): ?reply=<id> > ?quote=<id> > ?poll=1 > (none → post). The id is validated
 // (/^[0-9]+$/) before BigInt so a junk deep link never crashes the route.
 //
-// Capacity gate (§5.1): mirrors HomePage's composerRateLimited — useHeads + useCapacity + draftStatus.
+// Capacity gate (§5.1): the shared useComposerGate, same as every other composing surface.
 // pallet-profile is irrelevant here; every post/reply/quote/poll write is FEELESS + capacity-metered
 // (spec 117), so there is NO funding / balance gate — capacity exhaustion is the only chain reality
 // (inline RateLimitNotice via the rateLimited prop, owned by the Composer).
@@ -24,7 +24,7 @@
 // so the reply/quote edges a future useNotifications(who) would fold are created here already. Not
 // built in v1 — this note keeps the flow notification-friendly.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import styles from "./ComposePage.module.css";
 import { Composer } from "@/components/Composer";
@@ -39,9 +39,7 @@ import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
 import { useActionToast } from "@/hooks/useActionToast";
-import { useCapacity } from "@/hooks/useCapacity";
-import { useHeads } from "@/hooks/useHeads";
-import { draftStatus } from "@/lib/chain/capacity";
+import { useComposerGate } from "@/hooks/useComposerGate";
 import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
 import {
   submitPost,
@@ -72,7 +70,7 @@ const TITLES: Record<ComposerMode, string> = {
 export function ComposePage() {
   const router = useRouter();
   const params = useSearchParams();
-  const { api, client, signer, source, viewer } = useSession();
+  const { api, signer, source, viewer } = useSession();
 
   // ── Mode resolution (§1): precedence reply > quote > poll > post; defensive against junk ids. ──
   const replyId = parseTargetId(params.get("reply"));
@@ -129,32 +127,17 @@ export function ComposePage() {
     if (mode === "post") savePostDraft(text);
   }, [mode, text]);
 
-  // ── Capacity gate (§5.1) — mirror HomePage.composerRateLimited. Profile is irrelevant; every
-  //    write here is feeless + capacity-metered, so capacity exhaustion is the only gate. ──
-  const heads = useHeads(client);
-  const bestBlock = heads.best?.number ?? null;
-  const { view: capacityView, consts: capacityConsts } = useCapacity(api, viewer.address ?? null, bestBlock);
-
-  // The text the capacity gate measures: the SERIALIZED post/reply/quote body (so mention tokens count
-  // as their ss58 length), or the poll question. Reply/quote are uncontrolled → `serialized` stays ""
-  // and the gate uses the empty-draft base-cost probe, exactly as before.
+  // ── Capacity gate (§5.1), shared with every other composing surface — see useComposerGate. Profile
+  //    is irrelevant; every write here is feeless + capacity-metered, so capacity is the only gate.
+  //    The text it measures is the SERIALIZED post/reply/quote body (so mention tokens count as their
+  //    ss58 length), or the poll question. Reply/quote are uncontrolled → `serialized` stays "" and the
+  //    gate uses the empty-draft base-cost probe, exactly as before.
+  //
+  //    This used to open its OWN useHeads subscription purely to feed the gate a block number that
+  //    useSession already publishes; the shared hook reads the session's, so that second subscription
+  //    (and its extra render cadence) is gone.
   const gateText = mode === "poll" ? pollDraft.question : serialized;
-  const rateLimited = useMemo(() => {
-    if (viewer.status !== "ready" || !capacityView || !capacityConsts) return false;
-    const byteLen = new TextEncoder().encode(gateText).length;
-    if (byteLen === 0) {
-      // probe the base cost so a fully-exhausted bucket still disables the CTA on an empty draft
-      const probe = draftStatus(capacityView, 0, capacityConsts);
-      return probe.kind === "charging" || probe.kind === "wait";
-    }
-    // Zero locked ADA (weight 0) is surfaced separately as "lock ADA to post", NOT as a rate limit.
-    // Any OTHER non-ok kind (incl. the weight>0 / rate==0 no_weight edge) still disables via rateLimited.
-    const k = draftStatus(capacityView, byteLen, capacityConsts).kind;
-    return k !== "ok" && !(k === "no_weight" && capacityView.weight === 0n);
-  }, [viewer.status, capacityView, capacityConsts, gateText]);
-  // Ready account with zero posting power (locked-ADA weight 0) → the honest "lock ADA to post" gate.
-  const noPostingPower =
-    viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
+  const { rateLimited, noPostingPower } = useComposerGate(gateText);
 
   // ── goBack: prefer in-app history; else land on Home (§6.1 step 3 / Cancel). ─────────────────
   const goBack = useCallback(() => {

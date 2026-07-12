@@ -31,8 +31,7 @@ import { useActionToast } from "@/hooks/useActionToast";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useThread } from "@/hooks/useThread";
-import { useCapacity } from "@/hooks/useCapacity";
-import { draftStatus } from "@/lib/chain/capacity";
+import { useComposerGate } from "@/hooks/useComposerGate";
 import { useToaster, RATE_LIMIT_COPY } from "../toast/ToasterProvider";
 import {
   submitPost,
@@ -77,18 +76,13 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 
 export function ModalRouteHost() {
   const { state, close } = useModalStore();
-  const { api, signer, source, viewer, bestBlock } = useSession();
+  const { api, signer, source, viewer } = useSession();
   const { addPending, dropPending, failPending, patchProfile, confirmProfile, rollbackProfile } =
     useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
   const { phase } = useActionToast();
   const router = useRouter();
-
-  // Zero locked ADA → no posting power: hard-disable the composer CTA (the self-contained
-  // NoPostingPowerNotice already shows the "Lock ADA to post" banner), matching HomePage/ComposePage.
-  const { view: capacityView, consts: capacityConsts } = useCapacity(api, viewer.address ?? null, bestBlock);
-  const noPostingPower = viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
 
   const [submitState, setSubmitState] = useState<ActionState>("idle");
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
@@ -151,22 +145,12 @@ export function ModalRouteHost() {
     if (kind === "compose") savePostDraft(text);
   }, [kind, text]);
 
-  // Pre-flight capacity gate — mirror ComposePage so the PRIMARY (overlay) compose path also disables
-  // the CTA + shows the inline RateLimitNotice before submit, instead of only surfacing a rate limit
-  // via the post-submit failure toast (D5).
+  // Pre-flight capacity gate (shared with every other composing surface — see useComposerGate).
   // Non-poll compose measures the SERIALIZED body (mention tokens count as their ss58 length); reply /
   // quote are uncontrolled → `serialized` stays "" and the gate uses the base-cost probe, as before.
+  // `noPostingPower` also feeds EditProfileModal below — profile writes are capacity-metered too.
   const gateText = kind === "poll" ? pollDraft.question : serialized;
-  const rateLimited = useMemo(() => {
-    if (viewer.status !== "ready" || !capacityView || !capacityConsts) return false;
-    const byteLen = new TextEncoder().encode(gateText).length;
-    if (byteLen === 0) {
-      const probe = draftStatus(capacityView, 0, capacityConsts);
-      return probe.kind === "charging" || probe.kind === "wait";
-    }
-    const k = draftStatus(capacityView, byteLen, capacityConsts).kind;
-    return k !== "ok" && !(k === "no_weight" && capacityView.weight === 0n);
-  }, [viewer.status, capacityView, capacityConsts, gateText]);
+  const { rateLimited, noPostingPower } = useComposerGate(gateText);
 
   const onClose = useCallback(() => {
     // Pop the pushed URL (if any) then clear the store. The popstate handler also calls close(); the

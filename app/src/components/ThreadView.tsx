@@ -44,7 +44,7 @@ import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
 import { useActionToast } from "@/hooks/useActionToast";
-import { useCapacity } from "@/hooks/useCapacity";
+import { useComposerGate } from "@/hooks/useComposerGate";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { modalActions } from "@/lib/modalStore";
 import { submitReply } from "@/lib/chain/mutations";
@@ -69,10 +69,14 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const { api, signer, source, viewer, votingPower, bestBlock } = useSession();
   const me = viewer.address ?? null;
 
-  // Zero locked ADA → no posting power: hard-disable the inline reply CTA (the Composer's
-  // self-contained NoPostingPowerNotice shows the "Lock ADA to post" banner), matching the other surfaces.
-  const { view: capacityView } = useCapacity(api, viewer.address ?? null, bestBlock);
-  const noPostingPower = viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
+  // The pre-flight capacity gate, matching every other composing surface. This one previously computed
+  // only `noPostingPower` and never `rateLimited`, so the thread reply box — the highest-volume reply
+  // path in the app — was the ONE composer that could not show a RateLimitNotice or disable its CTA on
+  // an exhausted bucket; every rate-limited reply round-tripped to a failure toast instead.
+  //
+  // "" because this composer is UNCONTROLLED: the gate then probes the BASE post cost, which is exactly
+  // what we want (an exhausted bucket disables the CTA before a single character is typed).
+  const { rateLimited, noPostingPower } = useComposerGate("");
 
   // `me` threaded into the thread read so a spec-120 node stamps the myVote/reposted overlay node-side;
   // `bestBlock` drives the live re-read (tallies refresh in place; new replies buffer behind the pill).
@@ -437,6 +441,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           mode="reply"
           submitState={composeState}
           noPostingPower={noPostingPower}
+          rateLimited={rateLimited}
           onSubmit={onSubmitReply}
           draftExtras={{ parentId: rootId }}
           contextAbove={
