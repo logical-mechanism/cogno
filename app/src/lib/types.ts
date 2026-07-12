@@ -168,6 +168,15 @@ export interface FeedQuery {
   tab?: "forYou" | "following" | "replies" | "likes";
   followeeOf?: Ss58; // "Following" timeline: posts by accounts this user follows
   /**
+   * Cap the reader's cursor-chase at this many hops. Omit for a RENDERED feed — the user is looking at
+   * the page and wants it filled, so the reader's own generous defaults are right.
+   *
+   * Set it for a BACKGROUND probe. The notifications fold searches posts for the viewer's own address;
+   * a viewer with no mentions (the common case) never fills the page, so an unbounded chase walks the
+   * cursor down towards post id 0 — a chain-wide scan, per client, to render nothing.
+   */
+  maxHops?: number;
+  /**
    * The connected account, when known. The source threads it into the
    * `MicroblogApi` so each returned post carries the viewer's `myVote`/`reposted` overlay, computed
    * node-side in the same `state_call`. The keyed fallback path IGNORES it (the overlay is fetched

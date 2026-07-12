@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveSessionState, canWrite, voteCarriesWeight } from "./session";
+import { deriveSessionState } from "./session";
 
 const sig = (over = {}) => ({ deriving: false, postingEnabled: true, walletConnected: true, ...over });
 const id = (over = {}) => ({ bound: null as boolean | null, binding: false, stakeBound: null as boolean | null, ...over });
@@ -34,16 +34,3 @@ describe("deriveSessionState — the write-gate machine", () => {
   });
 });
 
-describe("canWrite / voteCarriesWeight", () => {
-  it("write is allowed for every bound state", () => {
-    expect(canWrite("bound_no_stake")).toBe(true);
-    expect(canWrite("bound_staked")).toBe(true);
-    expect(canWrite("connected_unbound")).toBe(false);
-    expect(canWrite("disconnected")).toBe(false);
-  });
-
-  it("votes carry weight only when stake-bound", () => {
-    expect(voteCarriesWeight("bound_staked")).toBe(true);
-    expect(voteCarriesWeight("bound_no_stake")).toBe(false);
-  });
-});

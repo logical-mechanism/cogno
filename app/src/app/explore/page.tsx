@@ -247,7 +247,11 @@ function ExploreView() {
     () => ({ first: PAGE_SIZE, search: committedQ, order: "recency", viewer: me ?? undefined }),
     [committedQ, me],
   );
-  const latestEnabled = mode === "query" && searchEnabled;
+  // ...and the Latest tab is actually on screen. Without the last clause, opening a search on the People
+  // tab still ran a full `search_posts` scan plus a useViewerStates fan-out over up to 50 posts that were
+  // never rendered. `activeResultTab` already falls back to "latest" when People is unreachable, so this
+  // cannot strand the Latest results.
+  const latestEnabled = mode === "query" && searchEnabled && activeResultTab === "latest";
   const latest = useFeedPage(source, latestQuery, latestEnabled);
 
   // Which post list is on screen (firehose in DEFAULT + NO-INDEXER; Latest results in QUERY).

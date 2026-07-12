@@ -150,6 +150,16 @@ async function chasePage(
   beforeId: bigint | undefined,
   limit: number,
   hasViewer: boolean,
+  /**
+   * A TOTAL hop budget, overriding both default caps. For a RENDERED feed the defaults are right — the
+   * user is looking at the page and wants it filled. For a BACKGROUND probe they are not: the
+   * notifications fold searches for the viewer's own address, and a viewer with no mentions never fills
+   * the page, so it chases every hop it is allowed down towards post id 0.
+   *
+   * It must bound BOTH branches. Capping only the empty branch bounds exactly the viewers who have no
+   * mentions and leaves anyone who HAS one chasing to the end of the chain under MAX_CHASE_HOPS.
+   */
+  maxHops?: number,
 ): Promise<IdPage> {
   const target = clampLimit(limit);
   const posts: CognoPost[] = [];
@@ -161,7 +171,8 @@ async function chasePage(
     nextCursor = raw.next_cursor != null ? BigInt(raw.next_cursor) : null;
     if (nextCursor === null || posts.length >= target) break;
     // Keep chasing rather than surface an empty page + cursor; allow more hops while still empty.
-    const cap = posts.length === 0 ? MAX_EMPTY_CHASE_HOPS : MAX_CHASE_HOPS;
+    const cap =
+      maxHops ?? (posts.length === 0 ? MAX_EMPTY_CHASE_HOPS : MAX_CHASE_HOPS);
     if (hop + 1 >= cap) break;
     cursor = nextCursor;
   }
@@ -256,7 +267,7 @@ export async function nodeAuthorPostCount(api: CognoApi, author: Ss58): Promise<
 export async function nodeSearchPosts(
   api: CognoApi,
   term: string,
-  opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
+  opts: { beforeId?: bigint; limit: number; viewer?: Ss58; maxHops?: number },
 ): Promise<IdPage> {
   const termBin = Binary.fromText(term);
   return chasePage(
@@ -264,6 +275,7 @@ export async function nodeSearchPosts(
     opts.beforeId,
     opts.limit,
     opts.viewer != null,
+    opts.maxHops,
   );
 }
 

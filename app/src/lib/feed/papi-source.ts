@@ -143,7 +143,12 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     // old `if (q.search)` empty-string behaviour, no throw).
     if (q.search && q.search.trim().length > 0) {
       return toFeedPage(
-        await nodeSearchPosts(api, q.search.trim(), { beforeId, limit: first, viewer }),
+        await nodeSearchPosts(api, q.search.trim(), {
+          beforeId,
+          limit: first,
+          viewer,
+          maxHops: q.maxHops,
+        }),
       );
     }
 

@@ -22,7 +22,19 @@ const BEST = { at: "best" } as const;
 
 /** Cap the reverse-index scan: the newest N of the viewer's posts are examined for replies/likes/poll
  *  votes. Bounded on purpose (the scalable reverse-index is out of scope); `truncated` reports a cap hit. */
-export const MAX_MY_POSTS = 120;
+export /**
+ * Hop budget for the mention probe. This is a BACKGROUND search for the viewer's own ss58 — and a viewer
+ * with no mentions (the common case) never fills the page, so without a cap the reader chases its cursor
+ * hop after hop down towards post id 0. Every connected client, scanning the whole chain, to render an
+ * empty mentions tab.
+ *
+ * 8 hops bounds it to the recent range where a mention would plausibly be. The cost: a mention older
+ * than that range is not surfaced until it is paged past — which is the correct trade for a background
+ * probe, and is the honest version of what the unbounded chase was pretending to do.
+ */
+const MENTION_MAX_HOPS = 8;
+
+const MAX_MY_POSTS = 120;
 /** How many recent mention hits to pull from the body-substring search. */
 export const MENTION_LIMIT = 40;
 
@@ -104,7 +116,9 @@ export async function loadNotifications(
       (q.AccountVotes.getEntries(me, BEST) as Promise<StorageEntry[]>).catch(() => [] as StorageEntry[]),
       (q.Followers.getEntries(me, BEST) as Promise<StorageEntry[]>).catch(() => [] as StorageEntry[]),
       source
-        ? source.page({ search: me, viewer: me, first: MENTION_LIMIT }).catch(() => null)
+        ? source
+            .page({ search: me, viewer: me, first: MENTION_LIMIT, maxHops: MENTION_MAX_HOPS })
+            .catch(() => null)
         : Promise.resolve(null),
     ]);
 
