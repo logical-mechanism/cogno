@@ -15,7 +15,6 @@
 // module.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { ComposerModal } from "../ComposerModal";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
@@ -27,13 +26,12 @@ import { EditProfileModal } from "../EditProfileModal";
 import { useSession } from "../Providers";
 import { modalActions, useModalStore } from "@/lib/modalStore";
 import { useMutation } from "@/hooks/useMutation";
-import { useActionToast } from "@/hooks/useActionToast";
 import { useOptimistic } from "@/hooks/useOptimistic";
-import { nextPendingId } from "@/lib/optimistic";
 import { useThread } from "@/hooks/useThread";
 import { useInvalidateAccountProfile } from "@/hooks/useAccountProfile";
 import { invalidateHoverProfile } from "../ProfileHoverCard";
 import { useComposerGate } from "@/hooks/useComposerGate";
+import { useComposeWrite } from "@/hooks/useComposeWrite";
 import { useToaster } from "../toast/ToasterProvider";
 import { errorCopy } from "@/lib/chain/errors";
 import {
@@ -44,7 +42,7 @@ import {
   submitSetProfile,
   submitClearProfile,
 } from "@/lib/chain/mutations";
-import type { ActionState, ComposerDraft, PollDraft, ModalKind } from "../kit";
+import type { ComposerDraft, PollDraft, ModalKind } from "../kit";
 import type { CognoPost } from "@/lib/types";
 import type { ProfileFields } from "../EditProfileModal";
 
@@ -75,15 +73,12 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 export function ModalRouteHost() {
   const { state, close } = useModalStore();
   const { api, signer, source, viewer } = useSession();
-  const { addPending, dropPending, failPending, patchProfile, confirmProfile, rollbackProfile } =
-    useOptimistic();
+  // Only the PROFILE overlay is still owned here — the compose overlay moved into useComposeWrite.
+  const { patchProfile, confirmProfile, rollbackProfile } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
   const invalidateAccountProfile = useInvalidateAccountProfile();
-  const { phase } = useActionToast();
-  const router = useRouter();
 
-  const [submitState, setSubmitState] = useState<ActionState>("idle");
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
   // Controlled text for the base compose mode so the capacity gate measures the live draft (reply /
   // quote stay uncontrolled — their gate uses the empty-draft base-cost probe, exactly like ComposePage).
@@ -107,6 +102,25 @@ export function ModalRouteHost() {
   const needsTarget = kind === "reply" || kind === "quote";
   const { thread } = useThread(source, needsTarget ? targetId : null);
   const targetPost: CognoPost | null = needsTarget ? thread?.root ?? null : null;
+
+  const onClose = useCallback(() => {
+    // Pop the pushed URL (if any) then clear the store. The popstate handler also calls close(); the
+    // store no-op guard makes the double call harmless.
+    if (kind && kind !== "edit-profile" && typeof window !== "undefined" && window.history.state?.cgModal) {
+      window.history.back();
+    }
+    close();
+  }, [kind, close]);
+
+  // The modal host is mounted once in AppShell and NEVER unmounts, so `setSubmitState` is not
+  // optional here: the per-open reset effect below is the ONLY thing that returns the CTA to idle
+  // after a submit. (runWrite's onCancel, by the same token, is unreachable from this surface.)
+  const { submitState, setSubmitState, runWrite, optimisticPost } = useComposeWrite(
+    api,
+    signer,
+    viewer,
+    onClose,
+  );
 
   // Sync the URL when the overlay opens; restore it (history.back) when it closes via the store.
   useEffect(() => {
@@ -151,14 +165,6 @@ export function ModalRouteHost() {
   const gateText = kind === "poll" ? pollDraft.question : serialized;
   const { rateLimited, noPostingPower } = useComposerGate(gateText);
 
-  const onClose = useCallback(() => {
-    // Pop the pushed URL (if any) then clear the store. The popstate handler also calls close(); the
-    // store no-op guard makes the double call harmless.
-    if (kind && kind !== "edit-profile" && typeof window !== "undefined" && window.history.state?.cgModal) {
-      window.history.back();
-    }
-    close();
-  }, [kind, close]);
 
   const onComposerDirty = useCallback((dirty: boolean) => {
     composerDirtyRef.current = dirty;
@@ -194,61 +200,7 @@ export function ModalRouteHost() {
     modalActions.openCompose();
   }, [pollDraft.question]);
 
-  // The shared submit pipeline: optimistic insert → close → run(stream) with a phase() status toast
-  // (sticky "…ing" → "…ed" + "View →" at inBestBlock, or dismissed + fail() on error). Rollback on
-  // error/cancel. The modal host persists after close(), so the background run still upgrades the toast.
-  const runWrite = useCallback(
-    (
-      stream: ReturnType<typeof submitPost>,
-      optimistic: CognoPost,
-      feedback: { pending: string; success: string },
-      parentId?: bigint,
-    ) => {
-      if (!api || !signer) return;
-      const clientId = addPending(optimistic, parentId);
-      setSubmitState("pending");
-      onClose();
-      void run(
-        stream,
-        phase({
-          id: clientId,
-          pending: feedback.pending,
-          success: feedback.success,
-          view: (u) =>
-            u.postId != null
-              ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
-              : undefined,
-          onConfirm: () => {
-            // Top-level posts/quotes are retired by the feed presence-reconcile when their real twin
-            // lands (no confirm-time blink). Replies live in a thread with no such reconcile, so they
-            // still hand off on confirm.
-            if (parentId != null) dropPending(clientId);
-            setSubmitState("ok");
-          },
-          onError: () => {
-            failPending(clientId);
-            setSubmitState("error");
-          },
-          onCancel: () => failPending(clientId),
-        }),
-      );
-    },
-    [api, signer, addPending, dropPending, failPending, run, phase, router, onClose],
-  );
 
-  // Build a minimal optimistic CognoPost for the pending card (the real row replaces it on confirm).
-  const optimisticPost = useCallback(
-    (text: string, extra: Partial<CognoPost> = {}): CognoPost => ({
-      id: nextPendingId(), // strictly-negative unique sentinel — never collides with a real post id
-      author: viewer.address ?? signer.ss58,
-      text,
-      at: 0,
-      authorDisplayName: viewer.displayName,
-      authorAvatar: viewer.avatar,
-      ...extra,
-    }),
-    [viewer.address, viewer.displayName, viewer.avatar, signer.ss58],
-  );
 
   const onPost = useCallback(
     (draft: ComposerDraft) => {

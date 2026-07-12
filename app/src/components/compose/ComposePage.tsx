@@ -35,11 +35,8 @@ import { PollComposer } from "@/components/PollComposer";
 import { Spinner } from "@/components/icons";
 import { useSession } from "@/components/Providers";
 import { useThread } from "@/hooks/useThread";
-import { useOptimistic } from "@/hooks/useOptimistic";
-import { nextPendingId } from "@/lib/optimistic";
-import { useMutation } from "@/hooks/useMutation";
-import { useActionToast } from "@/hooks/useActionToast";
 import { useComposerGate } from "@/hooks/useComposerGate";
+import { useComposeWrite } from "@/hooks/useComposeWrite";
 import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
 import {
   submitPost,
@@ -47,7 +44,7 @@ import {
   submitQuote,
   submitCreatePoll,
 } from "@/lib/chain/mutations";
-import type { ActionState, ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
+import type { ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
 import type { CognoPost } from "@/lib/types";
 
 /** Only a canonical decimal u64 is a valid reply/quote target; reject anything else (no BigInt throw). */
@@ -98,10 +95,6 @@ export function ComposePage() {
   const effectiveMode = contextUnavailable ? "post" : mode;
 
   // ── Write pipeline (mirror ModalRouteHost.runWrite) ──────────────────────────────────────────
-  const { addPending, dropPending, failPending } = useOptimistic();
-  const { run } = useMutation();
-  const { phase } = useActionToast();
-  const [submitState, setSubmitState] = useState<ActionState>("idle");
 
   // The poll draft lives here (controlled by PollComposer) — same shape ModalRouteHost seeds.
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
@@ -167,63 +160,12 @@ export function ComposePage() {
     else goBack();
   }, [isDirty, goBack]);
 
-  // Build a minimal optimistic CognoPost for the pending card (the real row replaces it on confirm).
-  const optimisticPost = useCallback(
-    (body: string, extra: Partial<CognoPost> = {}): CognoPost => ({
-      id: nextPendingId(), // strictly-negative unique sentinel — never collides with a real post id
-      author: viewer.address ?? signer.ss58,
-      text: body,
-      at: 0,
-      authorDisplayName: viewer.displayName,
-      authorAvatar: viewer.avatar,
-      ...extra,
-    }),
-    [viewer.address, viewer.displayName, viewer.avatar, signer.ss58],
-  );
-
-  // The shared submit pipeline: optimistic insert → navigate away → run(stream) with a phase() status
-  // toast (sticky "…ing" → "…ed" + "View →" at inBestBlock, or dismissed + fail() on error). Rollback
-  // on error/cancel — this page can unmount on navigation, so onCancel drops the sticky pending too.
-  const runWrite = useCallback(
-    (
-      stream: ReturnType<typeof submitPost>,
-      optimistic: CognoPost,
-      feedback: { pending: string; success: string },
-      parentId?: bigint,
-    ) => {
-      if (!api || !signer) return;
-      const clientId = addPending(optimistic, parentId);
-      setSubmitState("pending");
-      goBack();
-      void run(
-        stream,
-        phase({
-          id: clientId,
-          pending: feedback.pending,
-          success: feedback.success,
-          view: (u) =>
-            u.postId != null
-              ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
-              : undefined,
-          onConfirm: () => {
-            // Top-level posts/quotes are retired by the feed presence-reconcile when their real twin
-            // lands (no confirm-time blink). Replies live in a thread with no such reconcile, so they
-            // still hand off on confirm.
-            if (parentId != null) dropPending(clientId);
-            setSubmitState("ok");
-          },
-          onError: () => {
-            failPending(clientId);
-            setSubmitState("error");
-          },
-          onCancel: () => failPending(clientId),
-        }),
-      );
-    },
-    [api, signer, addPending, dropPending, failPending, run, phase, router, goBack],
-  );
 
   // ── Per-mode submit handlers ─────────────────────────────────────────────────────────────────
+  // This page UNMOUNTS on navigation, so runWrite's onCancel is live here: it drops the sticky
+  // pending toast when the user navigates away mid-flight.
+  const { submitState, runWrite, optimisticPost } = useComposeWrite(api, signer, viewer, goBack);
+
   const onPost = useCallback(
     (draft: ComposerDraft) => {
       // Session-gated submit reroutes to /welcome (the Composer relabels the CTA; §5.3).
