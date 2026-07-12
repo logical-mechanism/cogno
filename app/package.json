@@ -23,7 +23,7 @@
     "@meshsdk/core-cst": "^1.9.1",
     "@polkadot-api/descriptors": "file:.papi/descriptors",
     "@polkadot-labs/hdkd": "^0.0.29",
-    "@polkadot-labs/hdkd-helpers": "^0.0.30",
+    "@polkadot-labs/hdkd-helpers": "^0.0.31",
     "blakejs": "^1.2.1",
     "emojibase-data": "^17.0.0",
     "next": "^16.2.10",
