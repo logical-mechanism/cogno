@@ -163,7 +163,7 @@ export function ModalRouteHost() {
   // quote are uncontrolled → `serialized` stays "" and the gate uses the base-cost probe, as before.
   // `noPostingPower` also feeds EditProfileModal below — profile writes are capacity-metered too.
   const gateText = kind === "poll" ? pollDraft.question : serialized;
-  const { rateLimited, noPostingPower } = useComposerGate(gateText);
+  const { rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
 
 
   const onComposerDirty = useCallback((dirty: boolean) => {
@@ -387,6 +387,7 @@ export function ModalRouteHost() {
             submitState={submitState}
             noPostingPower={noPostingPower}
             rateLimited={rateLimited}
+            retryInSeconds={retryInSeconds}
             text={text}
             onTextChange={setText}
             onSerializedChange={setSerialized}

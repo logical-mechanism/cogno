@@ -17,13 +17,28 @@
 import { useMemo } from "react";
 import { useSession } from "@/components/Providers";
 import { useCapacity } from "./useCapacity";
-import { draftStatus } from "@/lib/chain/capacity";
+import { draftStatus, SECS_PER_BLOCK } from "@/lib/chain/capacity";
 
 export interface ComposerGate {
   /** The draft cannot be posted right now (bucket exhausted / charging) → disable the CTA + notice. */
   rateLimited: boolean;
   /** Ready account with zero locked-ADA weight → the honest "lock ADA to post" gate, NOT a rate limit. */
   noPostingPower: boolean;
+  /**
+   * Seconds until THIS draft becomes postable — the countdown in the inline RateLimitNotice.
+   *
+   * `undefined` unless the number is TRUE, which is narrower than it looks:
+   *
+   *   - Only when `gateText` is non-empty. An uncontrolled composer (reply/quote/ThreadView) passes "",
+   *     and the empty branch deliberately probes the BASE cost — so `blocks` there is the wait for a
+   *     MINIMUM post, not for the reply the user is actually typing. Rendering it would promise "you can
+   *     post again in ~12s", expire, re-enable the CTA, and have the 200-byte reply rejected anyway. A
+   *     vague-but-true "try again shortly" beats a precise lie.
+   *   - Only for the `wait` / `charging` kinds. They are the only ones that carry `blocks`. `too_long` is
+   *     never postable at that length (no amount of waiting helps — the honest copy is "trim it"), and
+   *     the rate==0 `no_weight` edge has no timer either.
+   */
+  retryInSeconds?: number;
 }
 
 /**
@@ -54,5 +69,15 @@ export function useComposerGate(gateText: string): ComposerGate {
 
   const noPostingPower = viewer.status === "ready" && !!view && view.weight === 0n;
 
-  return { rateLimited, noPostingPower };
+  // The countdown, only where it can be truthful (see the doc on ComposerGate.retryInSeconds).
+  const retryInSeconds = useMemo(() => {
+    if (viewer.status !== "ready" || !view || !consts) return undefined;
+    const byteLen = new TextEncoder().encode(gateText).length;
+    if (byteLen === 0) return undefined; // base-cost probe — the number would not be this draft's
+    const st = draftStatus(view, byteLen, consts);
+    if (st.kind !== "wait" && st.kind !== "charging") return undefined; // the only kinds with `blocks`
+    return st.blocks * SECS_PER_BLOCK;
+  }, [viewer.status, view, consts, gateText]);
+
+  return { rateLimited, noPostingPower, retryInSeconds };
 }

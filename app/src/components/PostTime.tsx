@@ -7,8 +7,9 @@
 
 import styles from "./PostTime.module.css";
 import { useSession } from "./Providers";
+import { SECS_PER_BLOCK } from "@/lib/chain/capacity";
 
-const SECS_PER_BLOCK = 6;
+
 
 function formatAgo(seconds: number): string {
   if (seconds < 45) return "now";

@@ -137,8 +137,11 @@ export default function HomePage() {
   // at ~110. The two are kept apart deliberately: the gate reads serialized, the textarea reads display.
   const [composerText, setComposerText] = useState("");
   const [composerSerialized, setComposerSerialized] = useState("");
-  const { rateLimited: composerRateLimited, noPostingPower: composerNoPower } =
-    useComposerGate(composerSerialized);
+  const {
+    rateLimited: composerRateLimited,
+    noPostingPower: composerNoPower,
+    retryInSeconds,
+  } = useComposerGate(composerSerialized);
 
   // ── inline composer (top-level post) ──────────────────────────────────────────────────────
   const onComposePost = useCallback(
@@ -246,6 +249,7 @@ export default function HomePage() {
             onTextChange={setComposerText}
             onSerializedChange={setComposerSerialized}
             rateLimited={composerRateLimited}
+            retryInSeconds={retryInSeconds}
             noPostingPower={composerNoPower}
             onTogglePoll={() => modalActions.openPoll()}
             onSubmit={onComposePost}

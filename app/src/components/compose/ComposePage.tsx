@@ -127,7 +127,7 @@ export function ComposePage() {
   //    useSession already publishes; the shared hook reads the session's, so that second subscription
   //    (and its extra render cadence) is gone.
   const gateText = mode === "poll" ? pollDraft.question : serialized;
-  const { rateLimited, noPostingPower } = useComposerGate(gateText);
+  const { rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
 
   // ── goBack: prefer in-app history; else land on Home (§6.1 step 3 / Cancel). ─────────────────
   const goBack = useCallback(() => {
@@ -258,6 +258,7 @@ export function ComposePage() {
             onTextChange={setText}
             onSerializedChange={setSerialized}
             rateLimited={rateLimited}
+            retryInSeconds={retryInSeconds}
             noPostingPower={noPostingPower}
             autoFocus
             onTogglePoll={() => router.push("/compose/?poll=1")}

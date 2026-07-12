@@ -178,3 +178,35 @@ describe("postsOf", () => {
     expect(postsOf(250n, { ...K, baseCost: 0n })).toBe(0);
   });
 });
+
+// ── the retry countdown's precondition ────────────────────────────────────────────────────────────
+//
+// useComposerGate renders "you can post again in ~Ns" from `blocks × SECS_PER_BLOCK`. It may only do so
+// for the kinds that actually CARRY `blocks`. The other two rate-limiting kinds do not, and a naive
+// `status.blocks * 6` on them yields NaN — which happens to render as the generic copy by luck, not by
+// design. This pins the contract the gate depends on.
+describe("draftStatus — which kinds carry a `blocks` countdown", () => {
+  it("wait and charging carry blocks (a real wait, so a real number)", () => {
+    const view = { weight: 1_000_000n, have: 0n, cap: 10_000n, ratePerBlock: 100n, bucket: true };
+    const st = draftStatus(view, 100, K);
+    expect(st.kind === "wait" || st.kind === "charging").toBe(true);
+    if (st.kind === "wait" || st.kind === "charging") {
+      expect(st.blocks).toBeGreaterThan(0);
+      expect(Number.isFinite(st.blocks)).toBe(true);
+    }
+  });
+
+  it("too_long carries NO blocks — waiting never helps, the post is over the cap at that LENGTH", () => {
+    const view = { weight: 1_000n, have: 0n, cap: 10n, ratePerBlock: 100n, bucket: true };
+    const st = draftStatus(view, 5_000, K);
+    expect(st.kind).toBe("too_long");
+    expect("blocks" in st).toBe(false);
+  });
+
+  it("no_weight carries NO blocks — zero weight is not a timer, it is a lock-ADA gate", () => {
+    const view = { weight: 0n, have: 0n, cap: 0n, ratePerBlock: 0n, bucket: false };
+    const st = draftStatus(view, 100, K);
+    expect(st.kind).toBe("no_weight");
+    expect("blocks" in st).toBe(false);
+  });
+});
