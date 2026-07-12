@@ -28,8 +28,14 @@ export interface AccountProfile {
 
 /** Read one `Profile.Profiles` row → the display name + avatar (both BoundedVec<u8> → trimmed string). */
 async function readAccountProfile(api: CognoApi, account: Ss58): Promise<AccountProfile> {
+  // At BEST, not PAPI's finalized default — the same rule the feeds follow (see `BEST` in node-reads).
+  // This row is READ-AFTER-WRITE: a profile save invalidates it, and `invalidate` re-reads in the same
+  // tick as `onConfirm`, which fires at `inBestBlock` — several blocks before finalization. A finalized
+  // read there deterministically returns the PRE-save row, and the batcher would then COMMIT that stale
+  // value, pinning the old name (or resurrecting a name the user just CLEARED) for the rest of the
+  // session. Single-producer chain: best never reorgs, so it is both fresh and safe.
   // The ROW is optional; the FIELDS are not — keep the `rec?.` chain rather than marking them optional.
-  const rec = await api.query.Profile.Profiles.getValue(account);
+  const rec = await api.query.Profile.Profiles.getValue(account, { at: "best" });
   return { displayName: binTextOpt(rec?.display_name), avatar: binTextOpt(rec?.avatar) };
 }
 

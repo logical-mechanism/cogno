@@ -244,7 +244,14 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
         readWeight(api, account),
         api.query.Microblog.FollowerCount.getValue(account),
         api.query.Microblog.FollowingCount.getValue(account),
-        api.query.Profile.Profiles.getValue(account),
+        // At BEST, alone among the reads in this batch, because this is the one row here that is
+        // READ-AFTER-WRITE: saving or clearing a profile invalidates the hover cache (ProfileHoverCard's
+        // `invalidateHoverProfile`, called on the line after `invalidateAccountProfile`) from an
+        // `onConfirm` that fires at `inBestBlock` — blocks before finalization. At PAPI's finalized
+        // default the refill returns the PRE-save row and the hover cache, which has no TTL, pins it for
+        // the session: the old name, or a name the user just CLEARED, keeps rendering. Same rule and same
+        // reason as the sibling read in useAccountProfile; see `BEST` in lib/chain/node-reads.
+        api.query.Profile.Profiles.getValue(account, { at: "best" }),
         api.query.Profile.PinnedPost.getValue(account),
         // spec-202 account reputation tally + (when a viewer is known) their own vote on this account.
         // No viewer ⇒ `undefined` (unknown), NOT `null` (which means "known viewer, has not voted").

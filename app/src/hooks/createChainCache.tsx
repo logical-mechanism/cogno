@@ -204,15 +204,20 @@ export function createChainCache<K, V>(spec: ChainCacheSpec<K, V>): ChainCache<K
     const invalidate = useCallback(
       (keys: K[]) => {
         if (keys.length === 0) return;
-        const ks = batcher.invalidate(keys); // uncommit → the next mount re-reads
-        setValues((prev) => {
-          let changed = false;
-          const next = new Map(prev);
-          for (const k of ks) if (next.delete(k)) changed = true;
-          return changed ? next : prev;
-        });
+        batcher.invalidate(keys); // uncommit, so `request` will queue the key for a fresh read
+        // Re-QUEUE, don't just uncommit. An ALREADY-MOUNTED consumer never re-requests on its own —
+        // useValue's effect is keyed on [key, request] and neither changes when a value is invalidated —
+        // so uncommitting alone re-reads the key on the NEXT MOUNT and never for the surface that asked.
+        // Every caller invalidates because it just WROTE (a profile save, a vote, a stake bind), and
+        // ModalRouteHost — which invalidates after the profile save — is mounted once in AppShell and
+        // never unmounts, so "the next mount" can be the rest of the session.
+        //
+        // The stale value is deliberately KEPT until the fresh one lands. Deleting it here blanked a
+        // mounted consumer to `null`, which renders as a raw ss58 where a display name was: correct-then-
+        // wrong is worse than stale-then-correct, and the flush overwrites it a microtask later anyway.
+        for (const key of keys) request(key);
       },
-      [batcher],
+      [batcher, request],
     );
 
     // When the socket connects (api null → ready), fetch anything registered while it was still offline.
