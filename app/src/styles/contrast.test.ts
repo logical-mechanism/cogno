@@ -63,13 +63,18 @@ describe("token contrast: text on a coloured fill", () => {
     // The pill that is re-declared ~18 times. Guarded for the same reason.
     const fills = valuesOf("cg-accent");
     const labels = valuesOf("cg-accent-contrast");
-    for (const fill of fills) {
-      // --cg-accent and --cg-accent-contrast flip together per theme, so pair them by index rather
-      // than cross-producting (a dark fill with a light theme's label is not a combination that renders).
-      const label = labels[fills.indexOf(fill)];
-      if (!label) continue;
-      expect(contrast(label, fill)).toBeGreaterThanOrEqual(AA_NORMAL);
-    }
+    expect(labels.length).toBe(fills.length); // the label must exist in every block that defines the fill
+    // --cg-accent and --cg-accent-contrast flip together per theme, so pair them by POSITION rather than
+    // cross-producting (a dark fill with a light theme's label is not a combination that renders).
+    //
+    // By position, not by `labels[fills.indexOf(fill)]`: two theme blocks currently declare the SAME
+    // accent (:root and [data-theme=dark] are both #eff3f4), and indexOf collapses the second onto the
+    // first — so that block's label was never actually tested. It passed only because the duplicate
+    // blocks also share a label. Change one theme's contrast without changing its fill and the guard
+    // would have gone quiet on exactly the theme that broke.
+    fills.forEach((fill, i) => {
+      expect(contrast(labels[i], fill)).toBeGreaterThanOrEqual(AA_NORMAL);
+    });
   });
 
   it("PINS the regression: white-on-danger is BELOW the floor (this is what the review told us to ship)", () => {
