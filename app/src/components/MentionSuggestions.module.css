@@ -5,7 +5,10 @@
   top: calc(100% + var(--cg-space-1));
   left: 0;
   right: 0;
-  z-index: var(--cg-z-popover, 60);
+  /* --cg-z-dropdown (300), the layer every other popover uses. This referenced an undeclared
+     --cg-z-popover and fell back to 60 — BELOW --cg-z-sticky (100), so the "N new posts" pill
+     painted over the @-mention autocomplete. */
+  z-index: var(--cg-z-dropdown);
   max-height: 280px;
   overflow-y: auto;
   background: var(--cg-bg-elevated, var(--cg-bg));

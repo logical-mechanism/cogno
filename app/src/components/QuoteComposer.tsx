@@ -25,7 +25,6 @@ export interface QuoteComposerProps {
   autoFocus?: boolean;
   /** Hand back the comment text; the surface calls mutations.submitQuote(text, quoted.id). */
   submitQuote: (text: string) => void;
-  onCancel?: () => void;
   onDirtyChange?: (dirty: boolean) => void;
 }
 
@@ -50,7 +49,6 @@ export function QuoteComposer({
   noPostingPower,
   autoFocus,
   submitQuote,
-  onCancel,
   onDirtyChange,
 }: QuoteComposerProps) {
   const onSubmit = useCallback(
@@ -79,7 +77,6 @@ export function QuoteComposer({
       contextBelow={embed}
       draftExtras={{ quotedId: quoted.id }}
       onSubmit={onSubmit}
-      onCancel={onCancel}
       onDirtyChange={onDirtyChange}
     />
   );

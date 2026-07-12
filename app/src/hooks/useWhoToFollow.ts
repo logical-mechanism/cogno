@@ -23,7 +23,7 @@ export function useWhoToFollow(
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!source || !source.caps.whoToFollow) {
+    if (!source ) {
       setRaw([]);
       return;
     }
@@ -46,7 +46,7 @@ export function useWhoToFollow(
   }, [source, who, limit]);
 
   useEffect(() => {
-    if (!source || !who || !source.caps.follows) {
+    if (!source || !who ) {
       setFollowing(new Set());
       return;
     }

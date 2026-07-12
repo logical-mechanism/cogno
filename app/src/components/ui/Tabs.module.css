@@ -1,10 +1,15 @@
-/* ResultTabStrip — the People | Latest result-scope strip (§2.1). Mirrors TimelineTabs geometry
-   (neutral active underline). The strip is wrapped in the page's sticky header block; here we add
-   its own blurred background so it reads as part of the pinned header while results scroll. */
+/* Tabs — the one horizontal tab strip (was five modules; TimelineTabs and ProfileTabs were byte-identical).
+   Monochrome: the active underline is a NEUTRAL text-coloured pill, never a coloured accent — the accent
+   is reserved for the Post CTA + the focus ring (doc 00). */
 
 .tablist {
   display: flex;
   width: 100%;
+}
+
+/* The Explore results strip sits inside the page's sticky header, so it carries its own blurred
+   background and scrolls horizontally when the result tabs overflow. */
+.sticky {
   border-bottom: 1px solid var(--cg-border);
   background: var(--cg-header-bg);
   backdrop-filter: blur(var(--cg-header-blur));
@@ -13,7 +18,7 @@
   scrollbar-width: none;
 }
 
-.tablist::-webkit-scrollbar {
+.sticky::-webkit-scrollbar {
   display: none;
 }
 
@@ -30,8 +35,8 @@
   color: var(--cg-text-secondary);
   font-size: var(--cg-fs-md);
   font-weight: var(--cg-fw-semibold);
-  cursor: pointer;
   white-space: nowrap;
+  cursor: pointer;
   transition: background var(--cg-motion-fast) var(--cg-ease-standard),
     color var(--cg-motion-fast) var(--cg-ease-standard);
 }
@@ -51,13 +56,20 @@
   border-radius: var(--cg-radius-input);
 }
 
+/* Baseline + gap, so FollowsPanel's label-plus-count sits on a common baseline.
+   NOTE the missing `height: 100%`, which the old modules carried. Baseline alignment in a FULL-HEIGHT
+   flex box pins a single text child to the TOP (a lone item's baseline is the container's, so it lands
+   at cross-start) — which would have visibly raised the label on the four strips that have no count.
+   Without the height the box shrinks to its content and `.tab`'s own `align-items: center` centres it,
+   exactly as before, while baseline still governs the label↔count relationship inside. */
 .label {
   position: relative;
   display: inline-flex;
-  align-items: center;
-  height: 100%;
+  align-items: baseline;
+  gap: var(--cg-space-2);
 }
 
+/* 4px-tall neutral pill under the active label (X-exact geometry, monochrome fill). */
 .indicator {
   position: absolute;
   left: 50%;

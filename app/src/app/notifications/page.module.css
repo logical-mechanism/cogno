@@ -1,57 +1,7 @@
 /* /notifications — activity list + All/Mentions filter tabs. */
 
 /* Mirrors TimelineTabs / ProfileTabs geometry: equal-flex tabs filling the header row. */
-.tabs {
-  display: flex;
-  width: 100%;
-}
-
-.tab {
-  position: relative;
-  flex: 1 1 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: var(--cg-header-h);
-  padding: var(--cg-space-4) var(--cg-space-2);
-  color: var(--cg-text-secondary);
-  font-size: var(--cg-fs-md);
-  font-weight: var(--cg-fw-semibold);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
-    color var(--cg-motion-fast) var(--cg-ease-standard);
-}
-
-.tab:hover {
-  background: var(--cg-bg-hover);
-}
-
-.tab:focus-visible {
-  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
-  outline-offset: calc(-1 * var(--cg-focus-ring-width));
-  border-radius: var(--cg-radius-input);
-}
-
-.tabActive {
-  color: var(--cg-text);
-  font-weight: var(--cg-fw-bold);
-}
-
 /* neutral underline indicator (accent is reserved for the Post CTA + focus ring — doc 00) */
-.indicator {
-  position: absolute;
-  left: 50%;
-  bottom: 0;
-  transform: translateX(-50%);
-  width: 100%;
-  min-width: 56px;
-  height: 4px;
-  border-radius: var(--cg-radius-pill);
-  background: var(--cg-text);
-}
-
 .markRead {
   background: none;
   border: none;

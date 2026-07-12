@@ -6,11 +6,13 @@
 // descriptors generated from cogno-chain-runtime (spec_version 200 — the all-Rust restart:
 // the spec-113 social pallet set + spec-117 feeless pallet-profile, with feed/thread/profile
 // reads now served node-direct by the node's spec-200 MicroblogApi rather than a SubQuery
-// indexer; the live shapes are confirmed against the running node's metadata, not guessed).
+// node's MicroblogApi; the live shapes are confirmed against the running node's metadata, not guessed).
 
 import type { PolkadotClient, TypedApi } from "polkadot-api";
 import type { PolkadotSigner } from "polkadot-api/signer";
 import type { cogno } from "@polkadot-api/descriptors";
+// errors.ts is a LEAF (it imports nothing) — safe to depend on from here without a cycle.
+import type { ChainError } from "@/lib/chain/errors";
 
 /** The typed API for the cogno-chain runtime (Microblog @ pallet index 10). */
 export type CognoApi = TypedApi<typeof cogno>;
@@ -25,7 +27,7 @@ export type Ss58 = string;
  *
  * The social fields (quote/tallies/counts + author profile snapshot) are ADDITIVE and all
  * optional: the node-served MicroblogApi reader fills them fully; a bare PAPI-direct storage
- * read fills only what direct storage allows (gated by `FeedCaps`). Weight/score fields are
+ * read fills what the node serves. Weight/score fields are
  * `bigint` (u128 ⇒ lovelace-scale, may exceed 2^53; `score` may be negative).
  */
 export interface CognoPost {
@@ -40,13 +42,13 @@ export interface CognoPost {
   /** Block number the post was created at (`BlockNumber` u32). NOT a timestamp; never rendered as one. */
   at: number;
   /**
-   * The author's identity binding has been revoked (`Author.banned` on the indexer; the
-   * absence of `CognoGate.PkhOf` on the PAPI path). NOT a per-post chain field — revoke
+   * The author's identity binding has been revoked (the absence of `CognoGate.PkhOf`). NOT a
+   * per-post chain field — revoke
    * leaves the posts intact, so the feed must FLAG (dim), not drop, them.
    */
   authorRevoked?: boolean;
 
-  // ── spec-113 social (indexer-derived; PAPI-direct fills what storage allows) ──
+  // ── spec-113 social ──
   /** Present iff this post quotes another (`Post.quote` on-chain). A shallow, one-level embed. */
   quote?: QuotedRef;
   /** True iff a `PollCreated` fired for this id; fetch options via `source.poll(id)`. */
@@ -59,12 +61,10 @@ export interface CognoPost {
   downCount?: number;
   /** `upWeight - downWeight` (u128 difference; MAY be negative). */
   score?: bigint;
-  /** Permanent repost count; only increments. */
-  repostCount?: number;
   /** Count of direct replies. */
   replyCount?: number;
 
-  // ── profile snapshot of the author (indexer convenience; avoids N+1 on the timeline) ──
+  // ── profile snapshot of the author (stamped node-side; avoids N+1 on the timeline) ──
   authorDisplayName?: string;
   authorAvatar?: string;
   /** Author posting power (lovelace); undefined until staked. */
@@ -73,13 +73,11 @@ export interface CognoPost {
   // ── viewer overlay (spec-120 node-served reads only) ──
   /**
    * The connected viewer's own vote/repost on this post, stamped node-side by the spec-120
-   * `MicroblogApi` (when a `viewer` was passed). PRESENT only on a `caps.nodeFeedApi`-served page;
-   * `undefined` on the keyed/indexer paths, where `useViewerStates` reads it per-card instead. When
+   * `MicroblogApi` (when a `viewer` was passed). PRESENT only when a `viewer` was passed;
+   * `undefined` on the keyed fallback path, where `useViewerStates` reads it per-card instead. When
    * present, `useViewerStates` prefers it and SKIPS the per-card `Reposts.getEntries` viewer scan.
    */
   myVote?: "Up" | "Down" | null;
-  /** Companion to {@link myVote}: the viewer has reposted this post. Present iff `myVote` is. */
-  reposted?: boolean;
 }
 
 /** A 0-indexed poll option with its stake-weighted tally. */
@@ -105,7 +103,7 @@ export interface QuotedRef {
   author: Ss58;
   text: string;
   authorRevoked: boolean;
-  /** Resolved from Profile when available (indexer only). */
+  /** Resolved from Profile when available. */
   displayName?: string;
   avatar?: string;
 }
@@ -113,10 +111,9 @@ export interface QuotedRef {
 /** The viewer's own relationship to a post — drives the active/filled action icons. */
 export interface ViewerPostState {
   myVote: "Up" | "Down" | null; // null = not voted
-  reposted: boolean; // permanent once true
 }
 
-/** Followers/following ids + counts for an account (indexer only). */
+/** Followers/following ids + counts for an account. */
 export interface FollowEdges {
   followers: Ss58[]; // accounts following `who`
   following: Ss58[]; // accounts `who` follows
@@ -135,14 +132,13 @@ export interface Suggestion {
   accountScore?: bigint;
 }
 
-// ── M4: the indexer-backed feed seam ────────────────────────────────────────────────────
-// The data layer reads from either the SubQuery GraphQL indexer (search + cursor pagination
-// + thread/profile/social views) or, as the always-available fallback, the PAPI node directly.
-// These shapes are the contract; both sources IMPLEMENT them, the indexer fully and the PAPI-
-// direct reader as far as direct storage allows. `FeedSnapshot` (the live watch shape) is
-// unchanged.
+// ── the feed seam ───────────────────────────────────────────────────────────────────────
+// These shapes are the contract between the data layer and React. There is ONE reader
+// (lib/feed/papi-source.ts), serving everything out of the node — the SubQuery indexer this seam
+// was originally built to abstract over no longer exists.
 
-/** An opaque cursor string from the indexer (`pageInfo.endCursor` / `edges.cursor`). */
+/** An opaque cursor string. The node's cursors are ENDPOINT-SCOPED — one method's cursor is only
+ *  valid passed back to the SAME method. */
 export type FeedCursor = string;
 
 /** One page of the feed. `asOf` is the block the page reflects, when knowable (PAPI), else null. */
@@ -151,15 +147,15 @@ export interface FeedPage {
   /** The cursor to pass as the next `after`, or null when there is no further page. */
   endCursor: FeedCursor | null;
   hasNextPage: boolean;
-  /** Total matching posts, when the source can report it (indexer `totalCount`). */
+  /** Total matching posts, when the source can report it. */
   totalCount?: number;
   asOf: number | null;
 }
 
 /**
  * A page request. `after` continues a cursor; `search` is a case-insensitive substring
- * (indexer only); `authorId` / `identityHash` scope the page to one author. `tab` selects a
- * home/profile view; `followeeOf` scopes the Following timeline; `order` picks recency vs top.
+ * `authorId` / `identityHash` scope the page to one author. `tab` selects a
+ * home/profile view; `followeeOf` scopes the Following timeline.
  * Empty/omitted fields mean the global feed, page one.
  */
 export interface FeedQuery {
@@ -171,11 +167,19 @@ export interface FeedQuery {
   // ── NEW ──
   tab?: "forYou" | "following" | "replies" | "likes";
   followeeOf?: Ss58; // "Following" timeline: posts by accounts this user follows
-  order?: "recency" | "score"; // forYou default recency; "score" = top (indexer SCORE_DESC)
   /**
-   * The connected account, when known. A `caps.nodeFeedApi` source threads it into the spec-120
+   * Cap the reader's cursor-chase at this many hops. Omit for a RENDERED feed — the user is looking at
+   * the page and wants it filled, so the reader's own generous defaults are right.
+   *
+   * Set it for a BACKGROUND probe. The notifications fold searches posts for the viewer's own address;
+   * a viewer with no mentions (the common case) never fills the page, so an unbounded chase walks the
+   * cursor down towards post id 0 — a chain-wide scan, per client, to render nothing.
+   */
+  maxHops?: number;
+  /**
+   * The connected account, when known. The source threads it into the
    * `MicroblogApi` so each returned post carries the viewer's `myVote`/`reposted` overlay, computed
-   * node-side in the same `state_call`. The keyed + indexer paths IGNORE it (the overlay is fetched
+   * node-side in the same `state_call`. The keyed fallback path IGNORES it (the overlay is fetched
    * separately via `useViewerStates`), so passing it is always safe and never changes those results.
    */
   viewer?: Ss58;
@@ -192,7 +196,7 @@ export interface ProfileView {
   banned: boolean;
   /** Cardano-sourced talk weight (lovelace), when known. */
   weight?: bigint;
-  // ── spec-117 pallet-profile (indexer-derived; PAPI-direct omits — caps.profiles:false) ──
+  // ── spec-117 pallet-profile (node-served) ──
   displayName?: string;
   bio?: string;
   avatar?: string;
@@ -202,7 +206,7 @@ export interface ProfileView {
   website?: string;
   /** Pinned post id (a bare on-chain string id; not existence-validated). */
   pinnedPostId?: bigint;
-  /** Follower/following counts (indexer-only; PAPI-direct omits — caps.follows:false). */
+  /** Follower/following counts (node-served, off the denormalised counters). */
   followerCount?: number;
   followingCount?: number;
   // ── spec-202 account reputation (stake-weighted up/down votes ON this account) ──
@@ -227,7 +231,7 @@ export interface ThreadView {
   /**
    * The ancestor chain above `root`, ordered top-down (the conversation root first, `root`'s
    * immediate parent last). Empty when `root` is top-level. PAPI-direct walks the full chain from
-   * the snapshot; the indexer path currently supplies the immediate parent only.
+   * the snapshot.
    */
   ancestors: CognoPost[];
   replies: CognoPost[];
@@ -254,15 +258,6 @@ export interface ChainHeads {
   finalized: BlockRef | null;
 }
 
-/**
- * A live feed snapshot. `posts` is the FULL current set (rebuilt from
- * `watchEntries().entries` every emission — `entries` is authoritative; deltas can be
- * null), sorted newest-first by `id`. `asOf` is the block the snapshot reflects.
- */
-export interface FeedSnapshot {
-  posts: CognoPost[];
-  asOf: number | null;
-}
 
 /** Connection lifecycle for the WS provider (drives the connecting/reconnecting UI). */
 export type ConnStatus = "connecting" | "connected" | "reconnecting" | "error";
@@ -323,8 +318,14 @@ export interface TxUpdate {
   txHash?: string;
   /** the new post id (from an id-bearing event, e.g. `PostCreated`) once in a block. */
   postId?: bigint;
-  /** dispatch/validity/runtime error message when phase is "invalid" | "error". */
-  error?: string;
+  /**
+   * The CLASSIFIED failure when phase is "invalid" | "error" (see lib/chain/errors.ts).
+   *
+   * Structured, not a string: this used to be prose, so every consumer that needed to know WHICH
+   * failure it was had to regex the English back out of it. Branch on `error.kind`; render with
+   * `errorCopy(error)`.
+   */
+  error?: ChainError;
   /** true once the including block is GRANDPA-finalized. */
   finalized?: boolean;
 }

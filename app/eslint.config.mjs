@@ -12,24 +12,26 @@ export default defineConfig([
   ...nextVitals,
   globalIgnores([".papi/**", "scripts/**", "out/**", ".next/**", "next-env.d.ts"]),
   {
-    // ESLint 9 flat config defaults `reportUnusedDisableDirectives` to "warn"; ESLint 8 (the prior
-    // toolchain) defaulted it OFF. Keep it OFF so this dependency bump preserves the exact prior lint
-    // contract instead of newly flagging pre-existing `eslint-disable` comments (a separate cleanup).
-    linterOptions: { reportUnusedDisableDirectives: "off" },
+    // On, so a stale `eslint-disable` (there are 13 inline exhaustive-deps suppressions) becomes visible
+    // the moment the code under it changes — otherwise a suppression outlives the problem it was hiding
+    // and silently keeps suppressing the NEXT one.
+    linterOptions: { reportUnusedDisableDirectives: "warn" },
   },
   {
-    // eslint-config-next 16 upgraded eslint-plugin-react-hooks to v7, which adds a batch of
-    // React-Compiler-readiness rules that did NOT exist in the v14 config's plugin. They are advisory
-    // (cascading-render / ref-during-render / manual-memoization patterns), not correctness findings —
-    // this is a live, shipped SPA whose 170 units pass — and satisfying them means refactoring ~60
-    // working effects/refs. That is out of scope for a dependency-currency bump, so they are DEFERRED
-    // to a dedicated react-hooks-7 follow-up rather than silently churned here. Every other react-hooks
-    // rule (incl. the load-bearing `exhaustive-deps`) stays at its config-next default severity.
-    name: "cogno/defer-react-hooks-7-advisories",
+    // The three react-hooks-7 advisories (React-Compiler-readiness: cascading-render / ref-during-render
+    // / manual-memoization). They were "off" while the dependency bump landed; they are now WARNINGS
+    // under a ratchet — `npm run lint` passes `--max-warnings <N>`, and N comes down with each refactor
+    // that removes a real hit. They stay at "warn" rather than "error" on purpose: a minority of the hits
+    // are legitimate (the StrictMode re-arm in the batch-cache providers, useTheme's hydration reconcile),
+    // so the ratchet floor will not reach zero and a blanket "fix them all" sweep is the wrong move.
+    //
+    // The `preserve-manual-memoization` hits are NOT cosmetic — they are the compiler telling us a
+    // useMemo is decorative because its dep is rebuilt every render (see useVote's returned arrows).
+    name: "cogno/react-hooks-7-ratchet",
     rules: {
-      "react-hooks/set-state-in-effect": "off",
-      "react-hooks/refs": "off",
-      "react-hooks/preserve-manual-memoization": "off",
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/refs": "warn",
+      "react-hooks/preserve-manual-memoization": "warn",
     },
   },
 ]);

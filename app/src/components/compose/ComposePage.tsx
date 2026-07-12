@@ -15,16 +15,13 @@
 // Mode resolution (§1): ?reply=<id> > ?quote=<id> > ?poll=1 > (none → post). The id is validated
 // (/^[0-9]+$/) before BigInt so a junk deep link never crashes the route.
 //
-// Capacity gate (§5.1): mirrors HomePage's composerRateLimited — useHeads + useCapacity + draftStatus.
+// Capacity gate (§5.1): the shared useComposerGate, same as every other composing surface.
 // pallet-profile is irrelevant here; every post/reply/quote/poll write is FEELESS + capacity-metered
 // (spec 117), so there is NO funding / balance gate — capacity exhaustion is the only chain reality
 // (inline RateLimitNotice via the rateLimited prop, owned by the Composer).
 //
-// NOTIFICATIONS SEAM (§13 — DEFERRED): a reply carries parent=Some(id) and a quote carries quoted_id,
-// so the reply/quote edges a future useNotifications(who) would fold are created here already. Not
-// built in v1 — this note keeps the flow notification-friendly.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import styles from "./ComposePage.module.css";
 import { Composer } from "@/components/Composer";
@@ -35,13 +32,8 @@ import { PollComposer } from "@/components/PollComposer";
 import { Spinner } from "@/components/icons";
 import { useSession } from "@/components/Providers";
 import { useThread } from "@/hooks/useThread";
-import { useOptimistic } from "@/hooks/useOptimistic";
-import { nextPendingId } from "@/lib/optimistic";
-import { useMutation } from "@/hooks/useMutation";
-import { useActionToast } from "@/hooks/useActionToast";
-import { useCapacity } from "@/hooks/useCapacity";
-import { useHeads } from "@/hooks/useHeads";
-import { draftStatus } from "@/lib/chain/capacity";
+import { useComposerGate } from "@/hooks/useComposerGate";
+import { useComposeWrite } from "@/hooks/useComposeWrite";
 import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
 import {
   submitPost,
@@ -49,7 +41,7 @@ import {
   submitQuote,
   submitCreatePoll,
 } from "@/lib/chain/mutations";
-import type { ActionState, ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
+import type { ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
 import type { CognoPost } from "@/lib/types";
 
 /** Only a canonical decimal u64 is a valid reply/quote target; reject anything else (no BigInt throw). */
@@ -72,7 +64,7 @@ const TITLES: Record<ComposerMode, string> = {
 export function ComposePage() {
   const router = useRouter();
   const params = useSearchParams();
-  const { api, client, signer, source, viewer } = useSession();
+  const { api, signer, source, viewer } = useSession();
 
   // ── Mode resolution (§1): precedence reply > quote > poll > post; defensive against junk ids. ──
   const replyId = parseTargetId(params.get("reply"));
@@ -100,10 +92,6 @@ export function ComposePage() {
   const effectiveMode = contextUnavailable ? "post" : mode;
 
   // ── Write pipeline (mirror ModalRouteHost.runWrite) ──────────────────────────────────────────
-  const { addPending, dropPending, failPending } = useOptimistic();
-  const { run } = useMutation();
-  const { phase } = useActionToast();
-  const [submitState, setSubmitState] = useState<ActionState>("idle");
 
   // The poll draft lives here (controlled by PollComposer) — same shape ModalRouteHost seeds.
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
@@ -129,32 +117,17 @@ export function ComposePage() {
     if (mode === "post") savePostDraft(text);
   }, [mode, text]);
 
-  // ── Capacity gate (§5.1) — mirror HomePage.composerRateLimited. Profile is irrelevant; every
-  //    write here is feeless + capacity-metered, so capacity exhaustion is the only gate. ──
-  const heads = useHeads(client);
-  const bestBlock = heads.best?.number ?? null;
-  const { view: capacityView, consts: capacityConsts } = useCapacity(api, viewer.address ?? null, bestBlock);
-
-  // The text the capacity gate measures: the SERIALIZED post/reply/quote body (so mention tokens count
-  // as their ss58 length), or the poll question. Reply/quote are uncontrolled → `serialized` stays ""
-  // and the gate uses the empty-draft base-cost probe, exactly as before.
+  // ── Capacity gate (§5.1), shared with every other composing surface — see useComposerGate. Profile
+  //    is irrelevant; every write here is feeless + capacity-metered, so capacity is the only gate.
+  //    The text it measures is the SERIALIZED post/reply/quote body (so mention tokens count as their
+  //    ss58 length), or the poll question. Reply/quote are uncontrolled → `serialized` stays "" and the
+  //    gate uses the empty-draft base-cost probe, exactly as before.
+  //
+  //    This used to open its OWN useHeads subscription purely to feed the gate a block number that
+  //    useSession already publishes; the shared hook reads the session's, so that second subscription
+  //    (and its extra render cadence) is gone.
   const gateText = mode === "poll" ? pollDraft.question : serialized;
-  const rateLimited = useMemo(() => {
-    if (viewer.status !== "ready" || !capacityView || !capacityConsts) return false;
-    const byteLen = new TextEncoder().encode(gateText).length;
-    if (byteLen === 0) {
-      // probe the base cost so a fully-exhausted bucket still disables the CTA on an empty draft
-      const probe = draftStatus(capacityView, 0, capacityConsts);
-      return probe.kind === "charging" || probe.kind === "wait";
-    }
-    // Zero locked ADA (weight 0) is surfaced separately as "lock ADA to post", NOT as a rate limit.
-    // Any OTHER non-ok kind (incl. the weight>0 / rate==0 no_weight edge) still disables via rateLimited.
-    const k = draftStatus(capacityView, byteLen, capacityConsts).kind;
-    return k !== "ok" && !(k === "no_weight" && capacityView.weight === 0n);
-  }, [viewer.status, capacityView, capacityConsts, gateText]);
-  // Ready account with zero posting power (locked-ADA weight 0) → the honest "lock ADA to post" gate.
-  const noPostingPower =
-    viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
+  const { rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
 
   // ── goBack: prefer in-app history; else land on Home (§6.1 step 3 / Cancel). ─────────────────
   const goBack = useCallback(() => {
@@ -184,65 +157,12 @@ export function ComposePage() {
     else goBack();
   }, [isDirty, goBack]);
 
-  // Build a minimal optimistic CognoPost for the pending card (the real row replaces it on confirm).
-  const optimisticPost = useCallback(
-    (body: string, extra: Partial<CognoPost> = {}): CognoPost => ({
-      id: nextPendingId(), // strictly-negative unique sentinel — never collides with a real post id
-      author: viewer.address ?? signer.ss58,
-      text: body,
-      at: 0,
-      authorDisplayName: viewer.displayName,
-      authorAvatar: viewer.avatar,
-      ...extra,
-    }),
-    [viewer.address, viewer.displayName, viewer.avatar, signer.ss58],
-  );
-
-  // The shared submit pipeline: optimistic insert → navigate away → run(stream) with a phase() status
-  // toast (sticky "…ing" → "…ed" + "View →" at inBestBlock, or dismissed + fail() on error). Rollback
-  // on error/cancel — this page can unmount on navigation, so onCancel drops the sticky pending too.
-  const runWrite = useCallback(
-    (
-      stream: ReturnType<typeof submitPost>,
-      optimistic: CognoPost,
-      feedback: { pending: string; success: string },
-      parentId?: bigint,
-    ) => {
-      if (!api || !signer) return;
-      const clientId = addPending(optimistic, parentId);
-      setSubmitState("pending");
-      goBack();
-      void run(
-        stream,
-        phase({
-          id: clientId,
-          pending: feedback.pending,
-          success: feedback.success,
-          view: (u) =>
-            u.postId != null
-              ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
-              : undefined,
-          onConfirm: () => {
-            // Top-level posts/quotes are retired by the feed presence-reconcile when their real twin
-            // lands (no confirm-time blink). Replies live in a thread with no such reconcile, so they
-            // still hand off on confirm.
-            if (parentId != null) dropPending(clientId);
-            setSubmitState("ok");
-          },
-          onError: () => {
-            failPending(clientId);
-            setSubmitState("error");
-          },
-          onCancel: () => failPending(clientId),
-        }),
-      ).catch(() => {
-        /* settled + rolled back via onError */
-      });
-    },
-    [api, signer, addPending, dropPending, failPending, run, phase, router, goBack],
-  );
 
   // ── Per-mode submit handlers ─────────────────────────────────────────────────────────────────
+  // This page UNMOUNTS on navigation, so runWrite's onCancel is live here: it drops the sticky
+  // pending toast when the user navigates away mid-flight.
+  const { submitState, runWrite, optimisticPost } = useComposeWrite(api, signer, viewer, goBack);
+
   const onPost = useCallback(
     (draft: ComposerDraft) => {
       // Session-gated submit reroutes to /welcome (the Composer relabels the CTA; §5.3).
@@ -338,11 +258,11 @@ export function ComposePage() {
             onTextChange={setText}
             onSerializedChange={setSerialized}
             rateLimited={rateLimited}
+            retryInSeconds={retryInSeconds}
             noPostingPower={noPostingPower}
             autoFocus
             onTogglePoll={() => router.push("/compose/?poll=1")}
             onSubmit={onPost}
-            onCancel={requestBack}
           />
         )}
 
@@ -359,7 +279,6 @@ export function ComposePage() {
               noPostingPower={noPostingPower}
               autoFocus
               submitReply={onReply}
-              onCancel={requestBack}
               onDirtyChange={onComposerDirty}
             />
           ) : (
@@ -376,7 +295,6 @@ export function ComposePage() {
                 noPostingPower={noPostingPower}
                 autoFocus
                 onSubmit={onPost}
-                onCancel={requestBack}
               />
             )
           )
@@ -392,7 +310,6 @@ export function ComposePage() {
               noPostingPower={noPostingPower}
               autoFocus
               submitQuote={onQuote}
-              onCancel={requestBack}
               onDirtyChange={onComposerDirty}
             />
           ) : (
@@ -408,7 +325,6 @@ export function ComposePage() {
                 noPostingPower={noPostingPower}
                 autoFocus
                 onSubmit={onPost}
-                onCancel={requestBack}
               />
             )
           )
@@ -424,7 +340,6 @@ export function ComposePage() {
             noPostingPower={noPostingPower}
             autoFocus
             submitCreatePoll={onCreatePoll}
-            onCancel={requestBack}
           />
         )}
       </div>

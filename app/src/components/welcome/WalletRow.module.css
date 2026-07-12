@@ -24,7 +24,7 @@
 
 .row:disabled {
   cursor: default;
-  opacity: 0.7;
+  opacity: var(--cg-disabled-opacity);
 }
 
 .row:focus-visible {

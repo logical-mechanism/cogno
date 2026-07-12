@@ -63,8 +63,6 @@ export interface Viewer {
   address?: Ss58;
   /** 0x beacon name; undefined until identity-bound. */
   identityHash?: string;
-  /** true once link_stake_signed is observed (VotingPower > 0). Gates the "votes carry weight" nudge, never blocks voting. */
-  hasVotingPower: boolean;
   /** The viewer's own Profile.display_name (for the composer avatar/name). */
   displayName?: string;
   /** The viewer's own Profile.avatar URL/CID. */
@@ -128,7 +126,7 @@ export interface ToastApi {
   /** Raise a toast (id auto-generated when omitted); returns the id. Dedupes by id. */
   toast: (spec: Omit<ToastSpec, "id"> & { id?: string }) => string;
   dismiss: (id: string) => void;
-  /** Convenience: the canonical rate-limit toast ("You are over the rate limit. Try again shortly."). */
+  /** Convenience: the canonical rate-limit toast (copy from `errorCopy({ kind: "rate-limit" })`). */
   rateLimit: () => string;
 }
 

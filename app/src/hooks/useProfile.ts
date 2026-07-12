@@ -30,6 +30,13 @@ export interface UseProfile {
   hasMore: boolean;
   loadingMore: boolean;
   loadMore: () => void;
+  /**
+   * Re-run the read now. A failed profile read already self-heals on the next `liveKey` tick, so this
+   * is about immediacy: the error card's Retry called `router.refresh()`, which under `output: 'export'`
+   * does nothing, leaving the user staring at an error for up to a block with no idea it would fix
+   * itself. (Contrast useThread.reload, where the equivalent failure is terminal.)
+   */
+  reload: () => void;
 }
 
 /**
@@ -52,6 +59,9 @@ export function useProfile(
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by `reload()` to re-arm the read effect (the error card's Retry).
+  const [retryNonce, setRetryNonce] = useState(0);
+  const reload = useCallback(() => setRetryNonce((n) => n + 1), []);
   // Optimistic profile overlay: a just-saved edit shows instantly (merged below), retired once a fresh
   // read agrees (reconcile) or after the store's TTL backstop.
   const { overlay, reconcileProfile } = useOptimistic();
@@ -120,8 +130,11 @@ export function useProfile(
     return () => {
       cancelled = true;
     };
+    // `retryNonce` re-arms this for the error card's Retry. Safe: `loadedKey` is only stamped on
+    // SUCCESS, so a retry after a failure still computes `firstForKey === true` and runs as a fresh
+    // load (spinner + error surfacing), exactly as the first attempt did.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, key, liveKey]);
+  }, [source, key, liveKey, retryNonce]);
 
   const loadMore = useCallback(() => {
     const account = profile?.author;
@@ -144,7 +157,6 @@ export function useProfile(
       .finally(() => {
         if (epochRef.current === epoch) setLoadingMore(false);
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, loadingMore, cursor, canPage, profile, args.viewer]);
 
   // First page (merged across silent refreshes) + any loaded-more pages, de-duped + newest-first.
@@ -163,5 +175,5 @@ export function useProfile(
     [profile, profilePatch],
   );
 
-  return { profile: mergedProfile, posts, loading, error, hasMore, loadingMore, loadMore };
+  return { profile: mergedProfile, posts, loading, error, hasMore, loadingMore, loadMore, reload };
 }

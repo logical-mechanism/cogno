@@ -10,10 +10,8 @@
 //   "Inter Tight Variable"  -> --cg-font-ui    (everything: body, chrome, names)
 //   "IBM Plex Mono"         -> --cg-font-mono  (truncated ss58 handles, addresses)
 //
-// X uses one UI sans for body and chrome alike; we do too. The old Reading-Room
-// build used Source Serif for post bodies — the X-clone drops it (the post body
-// is now the UI sans), so @fontsource-variable/source-serif-4 is no longer
-// imported here (it stays in package.json, unused, harmless).
+// X uses one UI sans for body and chrome alike; we do too. (The old Reading-Room build used Source Serif
+// for post bodies; the X-clone dropped it, and the package has now been dropped too.)
 
 // UI sans (variable weight axis) — drives every visible glyph.
 import "@fontsource-variable/inter-tight";

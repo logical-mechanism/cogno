@@ -33,7 +33,7 @@ export async function sharePost(id: bigint): Promise<ShareResult> {
 }
 
 /** The minimal toast bus this helper needs — structurally satisfied by `useToaster().toast`. */
-type ShareToast = (spec: { kind: "success" | "error"; message: string }) => void;
+export type ShareToast = (spec: { kind: "success" | "error"; message: string }) => void;
 
 /**
  * Share a post and give the user feedback: the OS share sheet handles its own, so we only toast on the
@@ -71,7 +71,6 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     document.body.appendChild(ta);
     ta.select();
     // execCommand is deprecated but remains the only clipboard path in insecure contexts.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     const ok = document.execCommand("copy");
     document.body.removeChild(ta);
     return ok;

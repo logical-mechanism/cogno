@@ -32,7 +32,7 @@ export function useSelfProfile(
   const loadedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!enabled || !ss58 || !source || !source.caps.profiles) {
+    if (!enabled || !ss58 || !source) {
       setBase({});
       loadedFor.current = null;
       return;

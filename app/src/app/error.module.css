@@ -1,0 +1,77 @@
+/* Route-level error body. Rendered inside AppShell, so it only owns the column — the nav, header and
+   theme are still the app's. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-8) var(--cg-space-5);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--cg-fs-xl);
+  font-weight: var(--cg-fw-bold);
+  color: var(--cg-text);
+}
+
+.detail {
+  margin: 0;
+  max-width: 32rem;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-md);
+  line-height: var(--cg-lh-md);
+}
+
+.digest {
+  margin: 0;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  font-family: var(--cg-font-mono);
+}
+
+.actions {
+  display: flex;
+  gap: var(--cg-space-3);
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: var(--cg-space-2);
+}
+
+.primary,
+.secondary {
+  padding: var(--cg-space-2) var(--cg-space-5);
+  border-radius: var(--cg-radius-pill);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.primary {
+  border: none;
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+}
+
+.primary:hover {
+  background: var(--cg-accent-hover);
+}
+
+.secondary {
+  border: 1px solid var(--cg-border);
+  background: transparent;
+  color: var(--cg-text);
+}
+
+.secondary:hover {
+  background: var(--cg-bg-hover);
+}
+
+.primary:focus-visible,
+.secondary:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: 2px;
+}

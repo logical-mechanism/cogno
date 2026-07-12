@@ -10,7 +10,8 @@
 
 import { Binary, type PolkadotClient } from "polkadot-api";
 import { Observable, combineLatest, distinctUntilChanged, map, startWith } from "rxjs";
-import { readPostTally, readRepostCount } from "./social-reads";
+import { readPostTally } from "./social-reads";
+import type { RawPostValue, RawProfile } from "./descriptors";
 import type {
   CognoApi,
   CognoPost,
@@ -18,16 +19,6 @@ import type {
   BlockRef,
   Ss58,
 } from "@/lib/types";
-
-/** A single decoded `Posts` storage value (PAPI v2 shape; `text` is a `Vec<u8>` → `Uint8Array`). */
-interface RawPostValue {
-  author: string;
-  text: Uint8Array;
-  parent?: bigint;
-  /** Quoted post id (`Post.quote: Option<u64>`, storage v1); undefined for plain posts/replies. */
-  quote?: bigint;
-  at: number;
-}
 
 /** A decoded post value paired with its storage-key id (the unit `enrichPosts` consumes). */
 interface RawPostWithId {
@@ -61,24 +52,10 @@ function quoteRefOf(
   };
 }
 
-/** A single `Profile.Profiles` value (display name / bio / avatar are BoundedVec<u8> → Uint8Array). */
-interface RawProfile {
-  display_name: Uint8Array;
-  bio: Uint8Array;
-  avatar: Uint8Array;
-}
-
 /** Decode a `Vec<u8>` profile field (PAPI v2 Uint8Array) to a trimmed UTF-8 string, or undefined when empty/absent. */
 export function binTextOpt(v?: Uint8Array): string | undefined {
   const s = v != null ? Binary.toText(v).trim() : undefined;
   return s ? s : undefined;
-}
-
-/** Newest-first by id (bigint-safe comparator). */
-function byIdDesc(a: bigint, b: bigint): number {
-  if (a < b) return 1;
-  if (a > b) return -1;
-  return 0;
 }
 
 // ── liveness + the id cursor ────────────────────────────────────────────────────────────────────
@@ -89,8 +66,7 @@ function byIdDesc(a: bigint, b: bigint): number {
  * `NextPostId - 1`. This is the cursor the global feed pages down from.
  */
 export async function latestPostId(api: CognoApi): Promise<bigint | null> {
-  const next = (await api.query.Microblog.NextPostId.getValue()) as unknown as bigint;
-  const n = BigInt(next ?? 0n);
+  const n = await api.query.Microblog.NextPostId.getValue();
   return n > 0n ? n - 1n : null;
 }
 
@@ -101,10 +77,7 @@ export async function latestPostId(api: CognoApi): Promise<bigint | null> {
  */
 export function watchLatestPostId(api: CognoApi): Observable<bigint | null> {
   return api.query.Microblog.NextPostId.watchValue({ at: "best" }).pipe(
-    map(({ value: next }): bigint | null => {
-      const n = BigInt((next ?? 0n) as bigint);
-      return n > 0n ? n - 1n : null;
-    }),
+    map(({ value: n }): bigint | null => (n > 0n ? n - 1n : null)),
     // PAPI v2 watchValue emits every poll (not only on change); dedupe so a new post — not every
     // block — drives the "N new posts" prepend / feed re-page (preserves the v1 emit-on-change semantics).
     distinctUntilChanged(),
@@ -120,9 +93,7 @@ export function watchLatestPostId(api: CognoApi): Observable<bigint | null> {
  * finalized-lag `null` would wrongly, permanently suppress the pill for that embed this session.
  */
 export async function readPostQuoteId(api: CognoApi, id: bigint): Promise<bigint | null> {
-  const v = (await api.query.Microblog.Posts.getValue(id, { at: "best" })) as unknown as
-    | RawPostValue
-    | undefined;
+  const v = await api.query.Microblog.Posts.getValue(id, { at: "best" });
   return v?.quote != null ? BigInt(v.quote) : null;
 }
 
@@ -132,7 +103,7 @@ export async function readPostQuoteId(api: CognoApi, id: bigint): Promise<bigint
  * Stamp the social aggregates + author profile + quote ref onto a batch of decoded posts, reading
  * each aggregate by KEY (never iterating a whole map). Profiles + quoted posts are de-duped across
  * the page (one read per distinct author / quoted id); the per-post aggregates (VoteTally,
- * RepostCount, ReplyCount, Polls flag) are read per id. Revocation is NOT stamped here — the PAPI
+ * ReplyCount, Polls flag) are read per id. Revocation is NOT stamped here — the PAPI
  * source flags it once per distinct author via `CognoGate.PkhOf`.
  */
 export async function enrichPosts(
@@ -148,9 +119,7 @@ export async function enrichPosts(
   const quotedById = new Map<bigint, CognoPost>();
   await Promise.all(
     quotedIds.map(async (qid) => {
-      const v = (await api.query.Microblog.Posts.getValue(qid)) as unknown as
-        | RawPostValue
-        | undefined;
+      const v = await api.query.Microblog.Posts.getValue(qid);
       if (v) quotedById.set(qid, toCognoPost(qid, v));
     }),
   );
@@ -162,9 +131,7 @@ export async function enrichPosts(
   const profileByAuthor = new Map<string, { displayName?: string; avatar?: string }>();
   await Promise.all(
     Array.from(authors).map(async (a) => {
-      const prof = (await api.query.Profile.Profiles.getValue(a)) as unknown as
-        | RawProfile
-        | undefined;
+      const prof: RawProfile | undefined = await api.query.Profile.Profiles.getValue(a);
       if (prof) {
         profileByAuthor.set(a, {
           displayName: binTextOpt(prof.display_name),
@@ -180,10 +147,9 @@ export async function enrichPosts(
       const post = toCognoPost(r.id, r.value);
       // Reuse the single tally/repost decoders (social-reads.ts) so the feed score can never drift
       // from a per-post read; ReplyCount + the poll flag are read alongside.
-      const [tally, repostCount, replyCount, pollRec] = await Promise.all([
+      const [tally, replyCount, pollRec] = await Promise.all([
         readPostTally(api, r.id),
-        readRepostCount(api, r.id),
-        api.query.Microblog.ReplyCount.getValue(r.id) as Promise<number>,
+        api.query.Microblog.ReplyCount.getValue(r.id),
         api.query.Microblog.Polls.getValue(r.id),
       ]);
       post.upWeight = tally.upWeight;
@@ -191,7 +157,6 @@ export async function enrichPosts(
       post.upCount = tally.upCount;
       post.downCount = tally.downCount;
       post.score = tally.score;
-      post.repostCount = repostCount;
       post.replyCount = Number(replyCount ?? 0);
       if (pollRec) post.isPoll = true;
       const prof = profileByAuthor.get(post.author);
@@ -217,120 +182,9 @@ export interface IdPage {
   nextCursor: bigint | null;
 }
 
-/** Read a contiguous descending block of `Posts` values [hi .. hi-count+1], clamped at id 0. */
-async function readIdBlock(
-  api: CognoApi,
-  hi: bigint,
-  count: number,
-): Promise<{ id: bigint; value: RawPostValue | undefined }[]> {
-  const ids: bigint[] = [];
-  for (let k = 0; k < count && hi - BigInt(k) >= 0n; k++) ids.push(hi - BigInt(k));
-  const values = await Promise.all(
-    ids.map((id) => api.query.Microblog.Posts.getValue(id) as Promise<RawPostValue | undefined>),
-  );
-  return ids.map((id, i) => ({ id, value: values[i] }));
-}
-
-const SCAN_BATCH = 32;
-
-/**
- * One page of the GLOBAL feed: walk ids DESC from `beforeId` (default the latest post), keeping
- * top-level posts only (replies live in threads), skipping any absent id, until `limit` posts are
- * collected or id 0 is reached. Returns the enriched page + the cursor (last examined id − 1) for
- * the next, older page. `keep` optionally filters further (e.g. a Following-feed author set).
- */
-export async function getGlobalFeedPage(
-  api: CognoApi,
-  opts: { beforeId?: bigint; limit: number; keep?: (p: RawPostValue) => boolean },
-): Promise<IdPage> {
-  const limit = Math.max(1, opts.limit);
-  let cursor: bigint;
-  if (opts.beforeId != null) {
-    cursor = opts.beforeId;
-  } else {
-    const latest = await latestPostId(api);
-    if (latest == null) return { posts: [], nextCursor: null };
-    cursor = latest;
-  }
-
-  // SCALING NOTE (Following feed): with a `keep` filter over a sparse follow set on a large chain,
-  // this walk can read many ids per page before collecting `limit` matches — same O(N) cost class as
-  // the pre-spec-119 full-snapshot filter (a non-regression). The indexer is the scalable path for a
-  // busy Following timeline. A bounded per-page scan budget was tried but tripped `@vercel/nft`'s
-  // static-export trace; left out deliberately rather than ship a fragile build.
-  const collected: RawPostWithId[] = [];
-  let lastExamined: bigint | null = null;
-  let next = cursor;
-  while (collected.length < limit && next >= 0n) {
-    const block = await readIdBlock(api, next, SCAN_BATCH);
-    for (const { id, value } of block) {
-      lastExamined = id;
-      if (!value) continue; // absent id (append-only chain ⇒ normally never; defensive)
-      if (value.parent != null) continue; // replies are read in threads, not the home feed
-      if (opts.keep && !opts.keep(value)) continue;
-      collected.push({ id, value });
-      if (collected.length >= limit) break;
-    }
-    if (block.length === 0) break;
-    next = block[block.length - 1].id - 1n;
-  }
-
-  const posts = await enrichPosts(api, collected);
-  // More pages iff we stopped above id 0; the next page starts just below the last id we examined.
-  const nextCursor =
-    lastExamined != null && lastExamined > 0n && collected.length >= limit
-      ? lastExamined - 1n
-      : null;
-  return { posts, nextCursor };
-}
-
-/**
- * One page of an AUTHOR's TOP-LEVEL posts (the profile Posts tab), newest-first. The author's id set
- * is the `ByAuthor` BoundedVec (one keyed read); we page over it — `beforeId` continues below a prior
- * page — reading each `Posts` value and keeping top-level only. No global scan.
- */
-export async function getAuthorFeedPage(
-  api: CognoApi,
-  account: Ss58,
-  opts: { beforeId?: bigint; limit: number },
-): Promise<IdPage> {
-  const limit = Math.max(1, opts.limit);
-  const rawIds = (await api.query.Microblog.ByAuthor.getValue(account)) as unknown as
-    | bigint[]
-    | undefined;
-  const allDesc = (rawIds ?? []).map((x) => BigInt(x)).sort(byIdDesc);
-  const candidates =
-    opts.beforeId == null ? allDesc : allDesc.filter((id) => id < opts.beforeId!);
-
-  const collected: RawPostWithId[] = [];
-  let idx = 0;
-  while (idx < candidates.length && collected.length < limit) {
-    const window = candidates.slice(idx, idx + SCAN_BATCH);
-    const values = await Promise.all(
-      window.map((id) => api.query.Microblog.Posts.getValue(id) as Promise<RawPostValue | undefined>),
-    );
-    for (let k = 0; k < window.length; k++) {
-      idx++; // examined
-      const value = values[k];
-      if (!value) continue;
-      if (value.parent != null) continue; // top-level only (profile Posts tab)
-      collected.push({ id: window[k], value });
-      if (collected.length >= limit) break;
-    }
-  }
-
-  const posts = await enrichPosts(api, collected);
-  const hasMore = idx < candidates.length;
-  const lastExaminedId = idx > 0 ? candidates[idx - 1] : null;
-  return { posts, nextCursor: hasMore && lastExaminedId != null ? lastExaminedId : null };
-}
-
 /** The total number of posts an author has authored (the `ByAuthor` index length — one keyed read). */
 export async function authorPostCount(api: CognoApi, account: Ss58): Promise<number> {
-  const rawIds = (await api.query.Microblog.ByAuthor.getValue(account)) as unknown as
-    | bigint[]
-    | undefined;
-  return (rawIds ?? []).length;
+  return (await api.query.Microblog.ByAuthor.getValue(account)).length;
 }
 
 // ── thread reconstruction (keyed reverse lookup — no full-snapshot scan) ──────────────────────────
@@ -354,9 +208,7 @@ export interface RawThread {
  * `replyCount` (stamped by `enrichPosts`) so the UI can offer an inline "Show replies" expander.
  */
 export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThread> {
-  const focalVal = (await api.query.Microblog.Posts.getValue(focalId)) as unknown as
-    | RawPostValue
-    | undefined;
+  const focalVal = await api.query.Microblog.Posts.getValue(focalId);
   if (!focalVal) throw new Error(`thread root #${focalId} not found on the node`);
 
   // Ancestor chain: walk `parent` up from the focal, guarding cycles + bounding depth. A dangling
@@ -368,24 +220,22 @@ export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThre
   while (cursor != null && !seen.has(cursor) && depth < MAX_ANCESTOR_DEPTH) {
     seen.add(cursor);
     depth++;
-    const v = (await api.query.Microblog.Posts.getValue(cursor)) as unknown as
-      | RawPostValue
-      | undefined;
+    const v = await api.query.Microblog.Posts.getValue(cursor);
     if (!v) break;
     ancestorsRaw.push({ id: cursor, value: v });
     cursor = v.parent;
   }
   ancestorsRaw.reverse(); // top-down (conversation root first)
 
-  // Direct replies: ONE parent's children via the reverse map, then read each value.
-  const replyEntries = (await api.query.Microblog.RepliesByParent.getEntries(focalId)) as unknown as {
-    keyArgs: unknown[];
-  }[];
+  // Direct replies: ONE parent's children via the reverse map, then read each value. `RepliesByParent`
+  // is a double map keyed (parent, reply), so the reply id is the SECOND key arg — the derived
+  // descriptor types `keyArgs` as the `[bigint, bigint]` tuple, so this index is checked, not cast.
+  const replyEntries = await api.query.Microblog.RepliesByParent.getEntries(focalId);
   const replyIds = replyEntries
-    .map((e) => e.keyArgs[e.keyArgs.length - 1] as bigint)
+    .map((e) => e.keyArgs[1])
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)); // replies oldest-first
   const replyValues = await Promise.all(
-    replyIds.map((id) => api.query.Microblog.Posts.getValue(id) as Promise<RawPostValue | undefined>),
+    replyIds.map((id) => api.query.Microblog.Posts.getValue(id)),
   );
   const repliesRaw: RawPostWithId[] = replyIds
     .map((id, i) => ({ id, value: replyValues[i] }))
@@ -430,19 +280,4 @@ export function watchHeads(client: PolkadotClient): Observable<ChainHeads> {
       finalized: toBlockRef(finalized),
     })),
   );
-}
-
-/**
- * Fetch a single post by id, fully enriched (tallies/counts/replyCount/poll flag/profile/quote), or
- * undefined if it does not exist. The canonical single-post read (the thread root, a liked post, a
- * quote target). Revocation is flagged by the caller (PAPI source) per distinct author.
- */
-export async function getPost(
-  api: CognoApi,
-  id: bigint,
-): Promise<CognoPost | undefined> {
-  const raw = (await api.query.Microblog.Posts.getValue(id)) as unknown as RawPostValue | undefined;
-  if (!raw) return undefined;
-  const [post] = await enrichPosts(api, [{ id, value: raw }]);
-  return post;
 }

@@ -136,7 +136,6 @@ function ChainProvider({ children }: { children: ReactNode }) {
       // background //Alice default that posting stays disabled on.
       address: signerCtl.postingEnabled ? signer.ss58 : undefined,
       identityHash: identity.bound ? (identity.boundStakeCredHex ?? undefined) : undefined,
-      hasVotingPower: (identity.votingPower ?? 0n) > 0n,
       displayName: self.displayName,
       avatar: self.avatar,
     };
@@ -146,7 +145,6 @@ function ChainProvider({ children }: { children: ReactNode }) {
     signer.ss58,
     identity.bound,
     identity.boundStakeCredHex,
-    identity.votingPower,
     self.displayName,
     self.avatar,
   ]);

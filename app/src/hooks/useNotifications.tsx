@@ -71,7 +71,7 @@ const NotificationsContext = createContext<NotificationsFeed | null>(null);
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const { api, source, viewer } = useSession();
   const me = viewer.address ?? null;
-  const mutedList = useMutedList();
+  const mutedList = useMutedList(me);
   const readState = useNotificationReadState(me);
 
   // The fold and the "has settled" flag are STAMPED WITH THE ACCOUNT THEY BELONG TO, and `loaded` /
@@ -130,13 +130,27 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       return;
     }
     void runLoad();
-    const iv = setInterval(() => void runLoad(), REFRESH_INTERVAL_MS);
+    // The fold is EXPENSIVE (a fan-out over the viewer's own posts plus a mention search). Skip it while
+    // the tab is hidden — nobody is looking at the badge, and a backgrounded tab was re-folding on a
+    // fixed interval forever.
+    const iv = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void runLoad();
+    }, REFRESH_INTERVAL_MS);
     let debounce: ReturnType<typeof setTimeout> | undefined;
     let sub: { unsubscribe(): void } | undefined;
     const src = sourceRef.current;
     if (src?.liveHeadId) {
+      // PAPI's watchValue REPLAYS its current value on subscribe, so the first emission is not a new
+      // post — it is the head as it already stood. Acting on it scheduled a SECOND full fold 6s after
+      // every mount and every account switch, on top of the runLoad() directly above. Skip it.
+      let primed = false;
       sub = src.liveHeadId().subscribe({
         next: () => {
+          if (!primed) {
+            primed = true;
+            return;
+          }
           if (debounce) clearTimeout(debounce);
           debounce = setTimeout(() => void runLoad(), LIVE_DEBOUNCE_MS);
         },

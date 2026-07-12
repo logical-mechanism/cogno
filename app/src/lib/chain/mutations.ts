@@ -17,16 +17,13 @@ import type { Observable } from "rxjs";
 import { signSubmitWatch, submitPost, type SignableTx } from "@/lib/chain/post";
 import type { CognoApi, PostingSigner, TxUpdate, Ss58 } from "@/lib/types";
 
-/** Minimal shape of a PAPI transaction we can sign + watch. */
-type Signable = SignableTx;
-
 /**
  * Sign a signed write with a client-managed nonce (see signSubmitWatch / lib/chain/nonce). Every
  * signed mutation goes through here so rapid sequential writes never collide on nonce (`Invalid: Stale`).
  */
 function watchSigned(
   api: CognoApi,
-  tx: Signable,
+  tx: SignableTx,
   signer: PostingSigner,
   eventName?: "PostCreated",
 ): Observable<TxUpdate> {
@@ -55,7 +52,7 @@ export function submitQuote(
   const tx = api.tx.Microblog.quote_post({
     text: Binary.fromText(text),
     quoted_id: quotedId,
-  }) as unknown as Signable;
+  });
   return watchSigned(api, tx, signer, "PostCreated");
 }
 
@@ -71,7 +68,7 @@ export function submitVote(
   const tx = api.tx.Microblog.vote({
     post_id: postId,
     dir: Enum(dir),
-  }) as unknown as Signable;
+  });
   return watchSigned(api, tx, signer);
 }
 
@@ -81,7 +78,7 @@ export function submitClearVote(
   signer: PostingSigner,
   postId: bigint,
 ): Observable<TxUpdate> {
-  const tx = api.tx.Microblog.clear_vote({ post_id: postId }) as unknown as Signable;
+  const tx = api.tx.Microblog.clear_vote({ post_id: postId });
   return watchSigned(api, tx, signer);
 }
 
@@ -92,7 +89,7 @@ export function submitFollow(
   signer: PostingSigner,
   target: Ss58,
 ): Observable<TxUpdate> {
-  const tx = api.tx.Microblog.follow({ target }) as unknown as Signable;
+  const tx = api.tx.Microblog.follow({ target });
   return watchSigned(api, tx, signer);
 }
 
@@ -101,7 +98,7 @@ export function submitUnfollow(
   signer: PostingSigner,
   target: Ss58,
 ): Observable<TxUpdate> {
-  const tx = api.tx.Microblog.unfollow({ target }) as unknown as Signable;
+  const tx = api.tx.Microblog.unfollow({ target });
   return watchSigned(api, tx, signer);
 }
 
@@ -121,7 +118,7 @@ export function submitVoteAccount(
   const tx = api.tx.Microblog.vote_account({
     target,
     dir: Enum(dir),
-  }) as unknown as Signable;
+  });
   return watchSigned(api, tx, signer);
 }
 
@@ -131,7 +128,7 @@ export function submitClearAccountVote(
   signer: PostingSigner,
   target: Ss58,
 ): Observable<TxUpdate> {
-  const tx = api.tx.Microblog.clear_account_vote({ target }) as unknown as Signable;
+  const tx = api.tx.Microblog.clear_account_vote({ target });
   return watchSigned(api, tx, signer);
 }
 
@@ -151,7 +148,7 @@ export function submitCreatePoll(
   const tx = api.tx.Microblog.create_poll({
     question: Binary.fromText(question),
     options: options.map((o) => Binary.fromText(o)),
-  }) as unknown as Signable;
+  });
   return watchSigned(api, tx, signer, "PostCreated");
 }
 
@@ -165,7 +162,7 @@ export function submitPollVote(
   const tx = api.tx.Microblog.cast_poll_vote({
     post_id: hostId,
     option,
-  }) as unknown as Signable;
+  });
   return watchSigned(api, tx, signer);
 }
 
@@ -194,7 +191,7 @@ export function submitSetProfile(
     banner: Binary.fromText(banner),
     location: Binary.fromText(location),
     website: Binary.fromText(website),
-  }) as unknown as Signable;
+  });
   return watchSigned(api, tx, signer);
 }
 
@@ -202,7 +199,7 @@ export function submitClearProfile(
   api: CognoApi,
   signer: PostingSigner,
 ): Observable<TxUpdate> {
-  const tx = api.tx.Profile.clear_profile() as unknown as Signable;
+  const tx = api.tx.Profile.clear_profile();
   return watchSigned(api, tx, signer);
 }
 
@@ -211,7 +208,7 @@ export function submitPinPost(
   signer: PostingSigner,
   id: bigint,
 ): Observable<TxUpdate> {
-  const tx = api.tx.Profile.pin_post({ id }) as unknown as Signable;
+  const tx = api.tx.Profile.pin_post({ id });
   return watchSigned(api, tx, signer);
 }
 
@@ -219,7 +216,7 @@ export function submitUnpinPost(
   api: CognoApi,
   signer: PostingSigner,
 ): Observable<TxUpdate> {
-  const tx = api.tx.Profile.unpin_post() as unknown as Signable;
+  const tx = api.tx.Profile.unpin_post();
   return watchSigned(api, tx, signer);
 }
 

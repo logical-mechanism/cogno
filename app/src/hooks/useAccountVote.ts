@@ -147,8 +147,6 @@ export function useAccountVote(
           reset(target);
           fail(message);
         },
-      }).catch(() => {
-        /* failure surfaced via fail(); optimistic rolled back in onError */
       });
     },
     [api, signer, myWeight, run, fail, reset, clearTimer],

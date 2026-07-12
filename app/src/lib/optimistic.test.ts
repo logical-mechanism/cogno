@@ -47,7 +47,6 @@ function post(id: bigint, over: Partial<CognoPost> = {}): CognoPost {
     upCount: 0,
     downCount: 0,
     score: 0n,
-    repostCount: 0,
     ...over,
   };
 }
@@ -96,20 +95,47 @@ describe("applyCountPatch", () => {
     expect(applyCountPatch(p, { upCountDelta: -1 }).upCount).toBe(0);
     expect(applyCountPatch(p, undefined)).toBe(p);
   });
+
+  // The real sequence this guards, which shipped a NEGATIVE score to the UI: every surface passes
+  // `votingPower ?? 0n`, so a vote cast before VotingPower resolves applies +0n weight. Reversing it
+  // AFTER the power loads applies the full -N against a base that never gained it.
+  it("clamps weights at 0 when a reversal over-subtracts (vote cast at 0 power, reversed at 100)", () => {
+    const cast = voteDelta(null, "Up", 0n); // liked while VotingPower was still null
+    expect(cast.upWeightDelta).toBe(0n);
+
+    const reverse = voteDelta("Up", null, 100n); // unliked once VotingPower resolved to 100
+    expect(reverse.upWeightDelta).toBe(-100n);
+
+    const out = applyCountPatch(post(1n, { upWeight: 0n }), reverse);
+    expect(out.upWeight).toBe(0n); // was -100n
+    expect(out.score).toBe(0n); // was -100n — a negative score rendered on the card
+  });
+
+  it("clamps downWeight at 0 on an over-subtracting reversal too", () => {
+    const out = applyCountPatch(post(1n, { downWeight: 10n }), { downWeightDelta: -100n });
+    expect(out.downWeight).toBe(0n);
+    expect(out.score).toBe(0n);
+  });
+
+  // The floor must NOT swallow a legitimate negative score — that comes from down > up, not from a
+  // sub-zero weight. Guards against "fixing" this by clamping `score` instead of the weights.
+  it("still reports a genuinely negative score when downWeight exceeds upWeight", () => {
+    const out = applyCountPatch(post(1n, { upWeight: 10n, downWeight: 50n }), {});
+    expect(out.score).toBe(-40n);
+  });
 });
 
 describe("applyViewerPatch", () => {
   it("overrides only the patched fields", () => {
-    const base: ViewerPostState = { myVote: null, reposted: false };
-    expect(applyViewerPatch(base, { myVote: "Up" })).toEqual({ myVote: "Up", reposted: false });
-    expect(applyViewerPatch(base, { reposted: true })).toEqual({ myVote: null, reposted: true });
+    const base: ViewerPostState = { myVote: null };
+    expect(applyViewerPatch(base, { myVote: "Up" })).toEqual({ myVote: "Up" });
     expect(applyViewerPatch(base, undefined)).toBe(base);
   });
 });
 
 describe("viewerPatchSettled — reconcile a confirmed vote by fresh read", () => {
-  const up: ViewerPostState = { myVote: "Up", reposted: false };
-  const none: ViewerPostState = { myVote: null, reposted: false };
+  const up: ViewerPostState = { myVote: "Up" };
+  const none: ViewerPostState = { myVote: null };
 
   it("never settles an unconfirmed (not-expected) patch, even when the read agrees", () => {
     expect(viewerPatchSettled(up, { myVote: "Up" })).toBe(false);
@@ -138,8 +164,8 @@ describe("mergeFeed", () => {
   it("prepends pending top-level cards and patches existing rows", () => {
     const overlay: Overlay = {
       pending: [
-        { clientId: "c1", post: post(99n, { text: "pending" }), status: "pending" },
-        { clientId: "c2", post: post(98n), parentId: 1n, status: "pending" }, // a reply — NOT in the feed
+        { clientId: "c1", post: post(99n, { text: "pending" }) },
+        { clientId: "c2", post: post(98n), parentId: 1n }, // a reply — NOT in the feed
       ],
       counts: { "1": { upCountDelta: 1, upWeightDelta: 5n } },
       viewer: {},

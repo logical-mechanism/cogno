@@ -20,14 +20,13 @@ import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useMutation } from "@/hooks/useMutation";
 import { useOptimistic } from "@/hooks/useOptimistic";
-import { useToaster, RATE_LIMIT_COPY } from "@/components/toast/ToasterProvider";
+import { useToaster } from "@/components/toast/ToasterProvider";
+import { useActionToast } from "@/hooks/useActionToast";
 import { modalActions } from "@/lib/modalStore";
 import { submitClearProfile, submitUnpinPost } from "@/lib/chain/mutations";
+import { useInvalidateAccountProfile } from "@/hooks/useAccountProfile";
+import { invalidateHoverProfile } from "@/components/ProfileHoverCard";
 import type { CognoPost } from "@/lib/types";
-
-function isRateLimit(message: string): boolean {
-  return /rate limit|ExhaustsResources/i.test(message);
-}
 
 interface ProfilePreview {
   displayName?: string;
@@ -41,6 +40,8 @@ export function ProfileSection() {
   const { run } = useMutation();
   const { overlay } = useOptimistic();
   const { toast } = useToaster();
+  const { fail } = useActionToast();
+  const invalidateAccountProfile = useInvalidateAccountProfile();
 
   const ss58 = signerCtl.signer.ss58;
   const bound = identity.bound;
@@ -58,7 +59,7 @@ export function ProfileSection() {
   // Load the viewer's own profile (node-served via the seam) for the preview — display name / bio /
   // avatar / pinned. Re-reads silently each block so a save (from the Edit modal) reconciles here too.
   useEffect(() => {
-    if (!(source && source.caps.profiles && bound)) {
+    if (!(source && bound)) {
       setPreview({});
       setPinnedPost(null);
       setLoading(false);
@@ -116,22 +117,32 @@ export function ProfileSection() {
           setWorking(null);
           toast({ kind: "success", message: success });
         },
-        onError: (message: string) => {
+        onError: (error) => {
           setWorking(null);
-          if (isRateLimit(message)) toast({ id: "rate-limit", kind: "rate-limit", message: RATE_LIMIT_COPY });
-          else toast({ kind: "error", message });
+          // This branch WAS a hand-rolled copy of useActionToast.fail() — the same rate-limit-vs-generic
+          // split, the same toast ids — sitting behind a third copy of the isRateLimit regex. It is just
+          // fail().
+          fail(error);
         },
-      }).catch(() => {});
+      });
     },
-    [api, run, toast],
+    [api, run, toast, fail],
   );
 
   const onClear = useCallback(() => {
     if (!api) return;
-    submit("clear", submitClearProfile(api, signer), "Profile cleared", () =>
-      setPreview({ displayName: undefined, bio: undefined, avatar: undefined, pinnedPostId: undefined }),
-    );
-  }, [api, signer, submit]);
+    submit("clear", submitClearProfile(api, signer), "Profile cleared", () => {
+      setPreview({ displayName: undefined, bio: undefined, avatar: undefined, pinnedPostId: undefined });
+      // This path clears the profile WITHOUT going through ModalRouteHost, so it must drop the shared
+      // caches itself — otherwise every mention chip and hover card keeps rendering the name you just
+      // cleared, and only a reload fixes it. (It previously updated local state and leaned entirely on
+      // useSelfProfile's per-block poll, which no other surface reads.)
+      if (ss58) {
+        invalidateAccountProfile(ss58);
+        invalidateHoverProfile(ss58);
+      }
+    });
+  }, [api, signer, submit, ss58, invalidateAccountProfile]);
 
   const onUnpin = useCallback(() => {
     if (!api) return;

@@ -117,6 +117,14 @@ export type DraftStatus =
  * Classify a draft against a view. ⛔ Order matters (L5 §8.5): check weight==0 first (never a
  * timer), then need>cap (never at this length), then guard rate==0 BEFORE the ceil-division.
  */
+/**
+ * Block time. The runtime's `MILLI_SECS_PER_BLOCK` is 6000, and the whole app already assumes it —
+ * PostTime renders a post's age as `(best − at) × 6s`. Shared from here because this module is where
+ * "how long until I can post" is computed, and a countdown that disagreed with the age stamps would be
+ * a visible contradiction.
+ */
+export const SECS_PER_BLOCK = 6;
+
 export function draftStatus(view: CapacityView, byteLen: number, K: CapacityConsts): DraftStatus {
   const need = postCost(byteLen, K);
   if (view.weight === 0n) return { kind: "no_weight", need }; // ⛔ no timer — needs weight

@@ -1,13 +1,35 @@
 version: 2
+
+# CI-cost posture. Dependabot was 30% of the CI bill (1016 min/mo) and had merged exactly zero PRs
+# — every bump lands by hand on a `chore/deps-*` branch, so these PRs are a NOTIFICATION channel,
+# not a merge pipeline. They are therefore batched (`groups`) and slowed to the cadence each
+# ecosystem actually moves at.
+#
+# Safety net: this only holds because Dependabot ALERTS + SECURITY UPDATES are enabled in repo
+# settings. Security PRs are raised by an alert, not by `schedule` — they ignore `interval`,
+# ignore `open-pull-requests-limit`, and are NOT suppressed by the `ignore:` blocks below (per
+# GitHub's options reference, `ignore` / `update-types` apply to VERSION updates only). A CVE
+# still opens a PR the day it lands, whatever the interval says.
+
 updates:
-  # Rust workspace
+  # ── Rust workspace ────────────────────────────────────────────────────────────────────────────
+  # The expensive one: a Cargo.lock change misses the rust-cache key, so every cargo PR is a cold
+  # ~27-min workspace build. ONE grouped PR per month instead of six weekly singletons.
+  #
+  # Majors are deliberately IN the group: the polkadot-sdk crates are major-versioned and must move
+  # as a train (sp-runtime 46→48, pallet-session 46→49 … were all majors). Splitting majors out
+  # would put each SDK crate back in its own 27-min PR — exactly the thing this is fixing.
   - package-ecosystem: cargo
     directory: "/"
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 2
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [major, minor, patch]
     ignore:
       # jsonrpsee is pinned to the 0.24.x line the polkadot-sdk stable2606 RPC layer
       # (sc-rpc / substrate-frame-rpc-system) is built against — see the note at Cargo.toml.
@@ -15,27 +37,26 @@ updates:
       # must move with the SDK train, not float to latest. Don't auto-bump it.
       - dependency-name: "jsonrpsee"
 
-  # GitHub Actions (keeps the SHA-pinned actions current)
-  - package-ecosystem: github-actions
-    directory: "/"
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: "chore(ci)"
-    ignore:
-      # The `dtolnay/rust-toolchain@<ver>` ref IS the rustc version, and rustc is pinned to 1.93.0
-      # (rust-toolchain.toml) — the toolchain the polkadot-sdk stable2606 train is built against.
-      # Never auto-bump it; it must track the SDK release, not float to latest stable.
-      - dependency-name: "dtolnay/rust-toolchain"
-
-  # Frontend
+  # ── Frontend ──────────────────────────────────────────────────────────────────────────────────
+  # Highest-churn ecosystem (14 PRs in 30 days) but the cheapest to test. Minors/patches ride one
+  # grouped monthly PR; MAJORS stay ungrouped on purpose — next 14→16, react 18→19, polkadot-api
+  # 1→2 are the bumps that actually need eyes, and a lone red major must not redden (and hide) the
+  # safe train next to it.
+  #
+  # NOTE for path-filtering: app/package-lock.json is an input to BOTH the `frontend` AND the
+  # `cip8-oracle` job (the oracle npm-ci's app/ for the headless MeshJS signing fixture). A filter
+  # that maps app/** to `frontend` only will wrongly skip the oracle.
   - package-ecosystem: npm
     directory: "/app"
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      app-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
     ignore:
       # eslint is held on the 9.x line: eslint-config-next@16 (Next 16's flat config) bundles
       # eslint-plugin-react / -import / -jsx-a11y whose peer range caps at `eslint ^9`, and
@@ -56,13 +77,19 @@ updates:
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
 
-  # CIP-8 adversarial oracle (pinned Python deps)
+  # ── CIP-8 adversarial oracle (pinned Python deps) ─────────────────────────────────────────────
+  # Three pinned deps behind a CI-only oracle; nothing here ships. Quarterly, one grouped PR.
   - package-ecosystem: pip
     directory: "/ci/cip8-oracle"
     schedule:
-      interval: weekly
+      interval: quarterly
+    open-pull-requests-limit: 1
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      cip8-oracle:
+        patterns: ["*"]
+        update-types: [major, minor, patch]
     ignore:
       # cbor2 is held on the 5.x line: beacon.py's Plutus-Data CBOR of the owner Address must stay
       # byte-identical to the Aiken beacon-name / identity hash (the LOCKED value in test_beacon.py
@@ -70,3 +97,28 @@ updates:
       # stay there until a 6.x bump is verified byte-for-byte. Patches/minors within 5.x still flow.
       - dependency-name: "cbor2"
         update-types: ["version-update:semver-major"]
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────────────────────────
+  # The actions are pinned to MUTABLE major tags (actions/checkout@v7, actions/setup-node@v6,
+  # Swatinem/rust-cache@v2, aiken-lang/setup-aiken@v1) — NOT to SHAs, despite what the old comment
+  # here claimed. Consequence: the `v7` tag already floats to the latest v7.x.y on its own, so
+  # Dependabot only ever fires here on a MAJOR bump. That is a handful of PRs a year, so quarterly
+  # loses nothing; the four seen in the last 30 days were the one-off first-scan backlog.
+  # (If the mutable-tag supply-chain exposure is ever worth closing, SHA-pin the actions — then
+  # Dependabot resumes proposing every patch and this entry gets busier.)
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: quarterly
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [major, minor, patch]
+    ignore:
+      # The `dtolnay/rust-toolchain@<ver>` ref IS the rustc version, and rustc is pinned to 1.93.0
+      # (rust-toolchain.toml) — the toolchain the polkadot-sdk stable2606 train is built against.
+      # Never auto-bump it; it must track the SDK release, not float to latest stable.
+      - dependency-name: "dtolnay/rust-toolchain"

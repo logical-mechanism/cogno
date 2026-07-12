@@ -21,9 +21,6 @@
 // profile directly: the header (name/bio/avatar/counts), the Posts tab, the Likes tab (spec-118 reverse
 // maps) AND the reverse Replies tab (spec-200 `author_replies_page`) — nothing needs an indexer.
 //
-// NOTIFICATIONS SEAM (doc 07 §14, deferred): a Followed{ followee === viewer } is a "new follower"; the
-// Voted / Reposted edges raised from the tab cards targeting this author, and replies/quotes of this
-// author's posts, are exactly what a future /notifications surface folds. No bell/route is built here.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -38,6 +35,9 @@ import { FollowsPanel } from "@/components/profile/FollowsPanel";
 import { PinnedPostBlock } from "@/components/profile/PinnedPostBlock";
 import { useSession } from "@/components/Providers";
 import { useHeads } from "@/hooks/useHeads";
+import { NO_VIEWER } from "@/lib/optimistic";
+import { usePostActions } from "@/hooks/usePostActions";
+import { modalActions } from "@/lib/modalStore";
 import { useProfile } from "@/hooks/useProfile";
 import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -45,15 +45,11 @@ import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { useAccountVote } from "@/hooks/useAccountVote";
 import { usePinPost } from "@/hooks/usePinPost";
-import { modalActions } from "@/lib/modalStore";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { sharePostWithToast } from "@/lib/share";
 import { isPlausibleSs58, handleOf } from "@/lib/ss58";
 import { useRouteSegment } from "@/lib/routeSegment";
 import type { ProfileArgs } from "@/lib/feed/source";
-import type { CognoPost, ViewerPostState, Ss58, PostActionCallbacks } from "@/components/kit";
-
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+import type { CognoPost, Ss58 } from "@/components/kit";
 
 /** Map a ProfileTab to the seam's tab arg (Posts → undefined / Replies / Likes). */
 function tabArg(tab: ProfileTab): ProfileArgs["tab"] {
@@ -103,12 +99,13 @@ function ProfileBody({ address }: { address: Ss58 }) {
 
   const me = viewer.address ?? null;
   const isSelf = me != null && me === address;
-  const canFollow = source?.caps.follows === true;
-  const canAccountVote = source?.caps.tallies === true; // reputation votes ON this account (spec-202)
-  const canProfiles = source?.caps.profiles === true; // display name / bio / avatar (node + indexer)
-  const canReplies = source?.caps.profileReplies === true; // replies-by-author tab (node — author_replies_page)
-  const canLikes = source?.caps.profileLikes === true; // likes tab (node-direct since spec-118)
-  const paginationCapable = source?.caps.pagination === true;
+  // The node serves every one of these, so they collapse to "is the reader connected yet".
+  const canFollow = source != null;
+  const canAccountVote = source != null;
+  const canProfiles = source != null;
+  const canReplies = source != null;
+  const canLikes = source != null;
+  const paginationCapable = source != null;
 
   // ── active tab: client state synced to ?tab= (the static route stays /u/[address]). ──
   const [tab, setTab] = useState<ProfileTab>(() => parseTabParam(searchParams?.get("tab") ?? null));
@@ -136,13 +133,13 @@ function ProfileBody({ address }: { address: Ss58 }) {
     () => ({ author: address, tab: tabArg(activeTab), viewer: me ?? undefined }),
     [address, activeTab, me],
   );
-  const { profile, posts, loading, error, hasMore, loadingMore, loadMore } = useProfile(
+  const { profile, posts, loading, error, hasMore, loadingMore, loadMore, reload } = useProfile(
     source,
     profileArgs,
     bestBlock,
   );
 
-  // ── follow graph + optimistic toggle (header). READ gated on caps.follows; WRITE always allowed. ──
+  // ── follow graph + optimistic toggle (header). ──
   const follow = useFollow(api, signer, source, me);
   const isFollowing = follow.isFollowing(address);
 
@@ -163,7 +160,6 @@ function ProfileBody({ address }: { address: Ss58 }) {
         router.push("/welcome/");
         return;
       }
-      // NOTIFICATIONS SEAM (doc 07 §14): this Followed edge is a future "new follower" notification.
       if (next) {
         follow.follow(target);
         setFollowDelta((d) => d + 1);
@@ -353,33 +349,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const { pin } = usePinPost(api, signer);
   const { toast } = useToaster();
 
-  // NOTIFICATIONS SEAM (doc 07 §14): the Voted / Reposted / reply / quote edges raised here targeting
-  // this profile's author are what a future useNotifications(author) folds — deferred, seam left.
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (addr) => router.push(`/u/${addr}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onShare: (post) => void sharePostWithToast(post.id, toast),
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, pin, toast],
-  );
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
 
   // ── derived header bits ──
   const hasProfile = !!(
@@ -531,17 +501,21 @@ function ProfileBody({ address }: { address: Ss58 }) {
                 handlers={handlers}
                 loading={loading && listPosts.length === 0}
                 error={error}
-                onRetry={() => router.refresh()}
+                onRetry={reload}
                 hasMore={hasMore}
                 onLoadMore={loadMore}
                 loadingMore={loadingMore}
                 paginationCapable={paginationCapable}
+                // Match the standalone EmptyState below. Passing only the title let `emptyVariant` fall
+                // through to Timeline's `feed` default, so a profile whose read FAILED rendered the feed
+                // preset — "Find some people to follow." under an error row — and silently dropped the
+                // owner's Compose CTA.
+                emptyVariant={emptyForTab.variant}
                 emptyTitle={emptyForTab.title}
+                emptyAction={"action" in emptyForTab ? emptyForTab.action : undefined}
                 onCompose={() =>
                   viewer.status === "ready" ? modalActions.openCompose() : router.push("/welcome/")
                 }
-                api={api}
-                signer={signer}
               />
             ) : pinned ? null : (
               <EmptyState

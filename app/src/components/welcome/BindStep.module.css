@@ -55,7 +55,7 @@
 }
 
 .primary:disabled {
-  opacity: 0.55;
+  opacity: var(--cg-disabled-opacity);
   cursor: default;
 }
 
@@ -125,7 +125,7 @@
 }
 
 .retry:disabled {
-  opacity: 0.5;
+  opacity: var(--cg-disabled-opacity);
   cursor: default;
 }
 

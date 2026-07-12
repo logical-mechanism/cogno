@@ -13,6 +13,7 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState } fro
 import type { ReactNode } from "react";
 import { Toaster } from "./Toaster";
 import type { ToastApi, ToastKind, ToastSpec } from "../kit";
+import { errorCopy } from "@/lib/chain/errors";
 
 const ToasterContext = createContext<ToastApi | null>(null);
 
@@ -31,7 +32,10 @@ function nextId(): string {
   return `t${seq}`;
 }
 
-export const RATE_LIMIT_COPY = "You're over the rate limit. Try again shortly.";
+// The rate-limit line has ONE source (lib/chain/errors.ts). It used to be written here AND in the
+// chain layer, in two subtly different sentences ("You're" vs "You are"), the chain one existing only
+// to be regex-matched and discarded.
+export const RATE_LIMIT_COPY = errorCopy({ kind: "rate-limit" });
 
 export function ToasterProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastSpec[]>([]);

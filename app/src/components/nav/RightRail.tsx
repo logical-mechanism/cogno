@@ -31,7 +31,7 @@ export function RightRail() {
   const me = viewer.address ?? null;
 
   const [term, setTerm] = useState("");
-  const searchEnabled = source?.caps.search === true;
+  const searchEnabled = source != null;
 
   const submitSearch = useCallback(
     (q: string) => {
@@ -51,7 +51,7 @@ export function RightRail() {
   const follow = useFollow(api, signer, source, me);
   // Only show the card once real suggestions exist ("hidden only when empty") — rendering during the
   // load window left a heading + "Show more" over an empty body, which reads as broken.
-  const showWhoToFollow = source?.caps.whoToFollow === true && suggestions.length > 0;
+  const showWhoToFollow = suggestions.length > 0;
 
   const onToggleFollow = useCallback(
     (target: string, next: boolean) => {

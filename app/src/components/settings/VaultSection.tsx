@@ -74,7 +74,10 @@ export function VaultSection() {
       );
       actionRef.current = null;
     } else if (vault.phase === "error" && vault.error) {
-      fail(vault.error);
+      // A CARDANO L1 failure (wallet rejection, Ogmios submit), not a chain dispatch error — so it has
+      // no pallet to classify against and carries its own prose. `raw` is the honest kind here; it can
+      // never be mistaken for the capacity rate limit, which is a cogno-chain concept.
+      fail({ kind: "raw", detail: vault.error });
       actionRef.current = null;
     }
   }, [vault.phase, vault.error, fail, ok]);

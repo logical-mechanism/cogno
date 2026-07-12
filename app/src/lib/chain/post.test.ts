@@ -1,15 +1,14 @@
 // Pure-logic tests for the write path's event extraction, error mapping, and phase ordering.
 // watchTx is driven by a hand-rolled "submit" factory so we can replay an exact event sequence
 // and assert the honest phase stream (signed -> broadcast -> inBestBlock/invalid -> finalized/error)
-// without a chain. The id extraction and the ExhaustsResources rephrase are load-bearing for the UI.
+// without a chain. The id extraction is load-bearing for the UI.
+//
+// Error classification moved to errors.test.ts — along with a CORRECTED module-error fixture. The one
+// that lived here invented the shape (`value.error` as a string) and passed only because the old code
+// JSON-stringified the value blindly.
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import {
-  extractPostId,
-  stringifyDispatchError,
-  stringifyError,
-  watchTx,
-} from "./post";
+import { extractPostId, watchTx } from "./post";
 import type { TxUpdate } from "@/lib/types";
 
 afterEach(() => {
@@ -48,58 +47,6 @@ describe("extractPostId", () => {
   it("does not pick up a same-named event from a different pallet", () => {
     const events = [{ type: "SomethingElse", value: { type: "PostCreated", value: { id: 1n } } }];
     expect(extractPostId(events as never, "PostCreated")).toBeUndefined();
-  });
-});
-
-describe("stringifyDispatchError", () => {
-  it("returns a friendly fallback when there is no dispatch error", () => {
-    expect(stringifyDispatchError(undefined)).toMatch(/no dispatch error/i);
-  });
-
-  it("renders a nested module-error shape as 'type: detail'", () => {
-    const err = { type: "Module", value: { type: "Microblog", value: { error: "TooLong" } } };
-    const out = stringifyDispatchError(err);
-    expect(out).toContain("Module");
-    expect(out).toContain("Microblog");
-    expect(out).toContain("TooLong");
-  });
-
-  it("is bigint-safe (a u64-bearing error value does not throw)", () => {
-    const err = { type: "Module", value: { index: 10n, error: 3n } };
-    const out = stringifyDispatchError(err);
-    expect(out).toContain("10");
-    expect(out).toContain("Module");
-  });
-
-  it("falls back to the bare type when the value serializes to empty/null", () => {
-    expect(stringifyDispatchError({ type: "BadOrigin", value: null })).toBe("BadOrigin");
-    expect(stringifyDispatchError({ type: "BadOrigin", value: {} })).toBe("BadOrigin");
-  });
-});
-
-describe("stringifyError", () => {
-  it("rephrases ExhaustsResources as the Twitter-style rate-limit line (the spam gate race)", () => {
-    const out = stringifyError(new Error("1010: Invalid Transaction: ExhaustsResources"));
-    expect(out).toMatch(/rate limit/i);
-    expect(out).not.toContain("ExhaustsResources");
-  });
-
-  it("passes through a plain Error message", () => {
-    expect(stringifyError(new Error("user cancelled"))).toBe("user cancelled");
-  });
-
-  it("passes through a string error", () => {
-    expect(stringifyError("network down")).toBe("network down");
-  });
-
-  it("is bigint-safe when stringifying a non-Error object", () => {
-    const out = stringifyError({ code: 5n, msg: "boom" });
-    expect(out).toContain("5");
-    expect(out).toContain("boom");
-  });
-
-  it("returns a default for an empty message", () => {
-    expect(stringifyError("")).toBe("Transaction failed.");
   });
 });
 
@@ -188,12 +135,14 @@ describe("watchTx — honest phase ordering", () => {
         found: true,
         ok: false,
         block: { number: 300, hash: "0xb", index: 0 },
-        dispatchError: { type: "Module", value: { type: "Microblog", value: { error: "TooLong" } } },
+        // The REAL decoded shape (a three-level tagged enum), not the invented `value.error` string
+        // this fixture used to carry. See errors.test.ts.
+        dispatchError: { type: "Module", value: { type: "Microblog", value: { type: "TooLong" } } },
       },
     ]);
     const invalid = out.find((u) => u.phase === "invalid")!;
     expect(invalid).toBeDefined();
-    expect(invalid.error).toContain("TooLong");
+    expect(invalid.error).toEqual({ kind: "module", pallet: "Microblog", name: "TooLong" });
     expect(invalid.blockNumber).toBe(300);
   });
 
@@ -209,14 +158,14 @@ describe("watchTx — honest phase ordering", () => {
     ]);
     const err = out.find((u) => u.phase === "error")!;
     expect(err).toBeDefined();
-    expect(err.error).toBe("BadOrigin");
+    expect(err.error).toEqual({ kind: "raw", detail: "BadOrigin" });
   });
 
   it("logs and emits a single 'error' phase on a stream error (signer rejection / network)", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     const out = await collect([{ type: "signed" }], { errorWith: new Error("user rejected") });
     expect(out.map((u) => u.phase)).toEqual(["signing", "error"]);
-    expect(out[1].error).toBe("user rejected");
+    expect(out[1].error).toEqual({ kind: "raw", detail: "user rejected" });
     // The audit gap: a failed submission must be logged with context, not silently swallowed.
     expect(spy).toHaveBeenCalled();
     expect(spy.mock.calls[0].join(" ")).toContain("PostCreated");

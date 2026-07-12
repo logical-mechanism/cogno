@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Binary } from "polkadot-api";
-import { getGlobalFeedPage, getAuthorFeedPage, getThread, latestPostId } from "./reads";
+import { getThread, latestPostId } from "./reads";
 import { nodeGlobalFeedPage, nodeAuthorFeedPage, nodeThread } from "./node-reads";
 import type { CognoApi, CognoPost } from "@/lib/types";
 
@@ -30,7 +30,12 @@ interface FakeSpec {
   byAuthor?: Map<string, bigint[]>;
   /** Viewer's votes: post id → direction (drives the node API's `my_vote` overlay). */
   votesByAccount?: Map<string, Map<bigint, "Up" | "Down">>;
-  /** Viewer's reposts: account → set of post ids (drives the node API's `reposted` overlay). */
+  /**
+   * Viewer's reposts: account → set of post ids. The CHAIN still has Reposts/RepostCount storage and
+   * the runtime still returns `reposted` / `repost_count` in its payload — repost was dropped from the
+   * FRONTEND only. The fake keeps emitting them on purpose, so these tests prove the client cleanly
+   * IGNORES fields the chain still sends, rather than choking on them.
+   */
   repostsByAccount?: Map<string, Set<bigint>>;
 }
 
@@ -212,14 +217,17 @@ describe("latestPostId", () => {
   });
 });
 
-describe("getGlobalFeedPage — id paging, replies excluded", () => {
+// These assertions were the KEYED reader's, and they are kept verbatim against the node reader that
+// replaced it: they were the reference the node path was originally verified against, so they are
+// exactly the right expectations to hold it to now that it is the only path.
+describe("nodeGlobalFeedPage — id paging, replies excluded", () => {
   it("returns the newest top-level posts and a cursor for the next page", async () => {
     const api = makeFakeApi(sampleSpec());
-    const page1 = await getGlobalFeedPage(api, { limit: 2 });
+    const page1 = await nodeGlobalFeedPage(api, { limit: 2 });
     // Newest top-level first; reply id 1 is NOT in the feed.
     expect(page1.posts.map((p) => p.id)).toEqual([3n, 2n]);
     expect(page1.nextCursor).toBe(1n); // continue just below the last examined id (2)
-    // Enrichment stamped the tally aggregates (post 2 has up 5 / down 2 → score 3).
+    // The tally aggregates are stamped (post 2 has up 5 / down 2 → score 3).
     const p2 = page1.posts.find((p) => p.id === 2n)!;
     expect(p2.score).toBe(3n);
     expect(p2.upWeight).toBe(5n);
@@ -227,27 +235,18 @@ describe("getGlobalFeedPage — id paging, replies excluded", () => {
 
   it("walks the cursor to exhaustion, skipping the reply, then stops", async () => {
     const api = makeFakeApi(sampleSpec());
-    const page2 = await getGlobalFeedPage(api, { beforeId: 1n, limit: 2 });
+    const page2 = await nodeGlobalFeedPage(api, { beforeId: 1n, limit: 2 });
     expect(page2.posts.map((p) => p.id)).toEqual([0n]); // id 1 skipped (reply), id 0 kept
     expect(page2.nextCursor).toBeNull(); // reached id 0 — no further page
     // The top-level root carries its reply count (denormalized ReplyCount aggregate).
     expect(page2.posts[0].replyCount).toBe(1);
   });
-
-  it("filters by a keep() predicate (the Following-feed author set)", async () => {
-    const api = makeFakeApi(sampleSpec());
-    const page = await getGlobalFeedPage(api, {
-      limit: 5,
-      keep: (v) => v.author === "alice",
-    });
-    expect(page.posts.map((p) => p.id)).toEqual([3n, 0n]); // alice's top-level posts only
-  });
 });
 
-describe("getAuthorFeedPage — top-level over the ByAuthor index", () => {
+describe("nodeAuthorFeedPage — top-level over the ByAuthor index", () => {
   it("pages an author's own top-level posts newest-first", async () => {
     const api = makeFakeApi(sampleSpec());
-    const page = await getAuthorFeedPage(api, "alice", { limit: 10 });
+    const page = await nodeAuthorFeedPage(api, "alice", { limit: 10 });
     expect(page.posts.map((p) => p.id)).toEqual([3n, 0n]);
     expect(page.nextCursor).toBeNull();
   });
@@ -272,11 +271,15 @@ describe("getThread — keyed reverse lookup, no full scan", () => {
   });
 });
 
-// ── PARITY: the spec-120 node-served reads MUST equal the keyed reads ──────────────────────────────
-// The design's acceptance criterion: the API page and the keyed-read page agree on ids + aggregates +
-// (where the keyed path can compute it) the viewer overlay, so the fallback can never silently drift.
-// The keyed path does NOT stamp myVote/reposted (useViewerStates reads those per-card), so we compare
-// the SHARED render fields and assert the node path additionally carries the overlay.
+// ── PARITY: nodeThread MUST equal the keyed getThread ──────────────────────────────────────────────
+// This is the ONE parity pair left, and it is still load-bearing: getThread ships as `thread()`'s
+// RESILIENCE fallback (a viral post enumerates every reply in one state_call and can hit a resource
+// limit, so the keyed per-card path can succeed where the big call cannot). The two must therefore
+// still agree, or a thread would silently render differently after a fallback.
+//
+// The keyed feed readers are GONE (they were the pre-spec-120 compat path and unreachable on a spec-203
+// chain), so there is nothing left to compare the feed pages against; their assertions now run directly
+// against the node reader above.
 
 /** The fields both read paths produce for a card (everything but the node-only viewer overlay). */
 function sharedFields(p: CognoPost) {
@@ -291,42 +294,22 @@ function sharedFields(p: CognoPost) {
     upCount: p.upCount,
     downCount: p.downCount,
     score: p.score,
-    repostCount: p.repostCount,
     replyCount: p.replyCount,
     isPoll: p.isPoll,
     quote: p.quote,
   };
 }
 
-describe("node-served reads — parity with the keyed reads", () => {
-  it("nodeGlobalFeedPage matches getGlobalFeedPage (same ids, aggregates, cursor)", async () => {
+describe("node-served reads", () => {
+  it("a no-viewer page leaves the overlay UNSET, so the per-card read still runs", async () => {
     const api = makeFakeApi(sampleSpec());
-    const keyed = await getGlobalFeedPage(api, { limit: 2 });
     const node = await nodeGlobalFeedPage(api, { limit: 2 });
-    expect(node.posts.map((p) => p.id)).toEqual(keyed.posts.map((p) => p.id));
-    expect(node.nextCursor).toEqual(keyed.nextCursor);
-    expect(node.posts.map(sharedFields)).toEqual(keyed.posts.map(sharedFields));
-    // post 2's tally (up 5 / down 2 → score 3) flows through identically on the node path.
-    const p2 = node.posts.find((p) => p.id === 2n)!;
-    expect(p2.score).toBe(3n);
-    expect(p2.upWeight).toBe(5n);
-    // The keyed path NEVER stamps the viewer overlay (useViewerStates reads it per-card), and — with
-    // no `viewer` passed — neither does the node path. Both must leave the keys UNSET so that
-    // `carriedViewerStates` (which keys on `myVote !== undefined`) excludes them and the per-card read
-    // runs. A regression that stamped the overlay onto either no-viewer page would be caught here.
-    expect(keyed.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
-    expect(node.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
+    // `carriedViewerStates` keys on `myVote !== undefined`. Stamping the overlay on a page fetched with
+    // NO viewer would make it wrongly trust a null overlay for a logged-in account and hide their votes.
+    expect(node.posts.every((p) => p.myVote === undefined)).toBe(true);
   });
 
-  it("nodeAuthorFeedPage matches getAuthorFeedPage for an author's top-level posts", async () => {
-    const api = makeFakeApi(sampleSpec());
-    const keyed = await getAuthorFeedPage(api, "alice", { limit: 10 });
-    const node = await nodeAuthorFeedPage(api, "alice", { limit: 10 });
-    expect(node.posts.map((p) => p.id)).toEqual(keyed.posts.map((p) => p.id)); // [3n, 0n]
-    expect(node.posts.map(sharedFields)).toEqual(keyed.posts.map(sharedFields));
-  });
-
-  it("nodeThread matches getThread (focal + ancestors + replies + replyCount)", async () => {
+  it("nodeThread matches getThread — the resilience fallback must not render differently", async () => {
     const api = makeFakeApi(sampleSpec());
     const keyed = await getThread(api, 0n);
     const node = await nodeThread(api, 0n);
@@ -337,7 +320,7 @@ describe("node-served reads — parity with the keyed reads", () => {
     expect(node.replyCount).toBe(keyed.replyCount);
   });
 
-  it("stamps the viewer overlay (myVote/reposted) node-side when a viewer is passed", async () => {
+  it("stamps the viewer overlay (myVote) node-side when a viewer is passed", async () => {
     const spec = sampleSpec();
     spec.votesByAccount = new Map([["dave", new Map([[2n, "Up"]])]]);
     spec.repostsByAccount = new Map([["dave", new Set([3n])]]);
@@ -345,14 +328,12 @@ describe("node-served reads — parity with the keyed reads", () => {
     const page = await nodeGlobalFeedPage(api, { limit: 5, viewer: "dave" });
     const byId = new Map(page.posts.map((p) => [p.id, p]));
     expect(byId.get(2n)!.myVote).toBe("Up");
-    expect(byId.get(2n)!.reposted).toBe(false);
     expect(byId.get(3n)!.myVote).toBeNull();
-    expect(byId.get(3n)!.reposted).toBe(true);
     // No viewer ⇒ NO overlay at all: the keys stay UNSET (undefined), not `null`/`false`. The runtime
-    // returns my_vote: None / reposted: false regardless of viewer, so the client must NOT stamp them
+    // returns my_vote: None regardless of viewer, so the client must NOT stamp it
     // when it passed no viewer — otherwise carriedViewerStates would wrongly trust a null overlay for a
     // logged-in account and hide their real votes.
     const anon = await nodeGlobalFeedPage(api, { limit: 5 });
-    expect(anon.posts.every((p) => p.myVote === undefined && p.reposted === undefined)).toBe(true);
+    expect(anon.posts.every((p) => p.myVote === undefined)).toBe(true);
   });
 });

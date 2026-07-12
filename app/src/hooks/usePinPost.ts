@@ -27,8 +27,6 @@ export function usePinPost(api: CognoApi | null, signer: PostingSigner | null): 
       void run(submitPinPost(api, signer, postId), {
         onConfirm: () => ok("Pinned to your profile"),
         onError: (message) => fail(message),
-      }).catch(() => {
-        /* failure surfaced via fail() */
       });
     },
     [api, signer, run, ok, fail],

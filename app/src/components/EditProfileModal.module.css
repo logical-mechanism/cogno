@@ -76,7 +76,7 @@
 
 .input:disabled,
 .textarea:disabled {
-  opacity: 0.6;
+  opacity: var(--cg-disabled-opacity);
   cursor: not-allowed;
 }
 
@@ -186,7 +186,7 @@
 
 .dangerBtn {
   background: var(--cg-danger);
-  color: var(--cg-accent-contrast);
+  color: var(--cg-danger-contrast);
 }
 
 .dangerBtn:hover:not(:disabled) {
@@ -209,7 +209,7 @@
 .cancelBtn:disabled,
 .dangerBtn:disabled,
 .linkBtn:disabled {
-  opacity: 0.5;
+  opacity: var(--cg-disabled-opacity);
   cursor: not-allowed;
 }
 

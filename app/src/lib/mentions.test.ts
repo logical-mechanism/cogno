@@ -3,6 +3,7 @@ import { ss58Address } from "@polkadot-labs/hdkd-helpers";
 import {
   mentionToken,
   serializeMentions,
+  reconcileMentions,
   parseMentionBody,
   validSs58Prefix,
   type MentionRef,
@@ -101,5 +102,60 @@ describe("serialize → parse round-trip (the cross-client interop contract)", (
     const body = serializeMentions(draft, mentions);
     const parsed = parseMentionBody(body);
     expect(parsed.map((m) => m.ss58)).toEqual([ALICE, BOB]);
+  });
+});
+
+// The composer's registry rule. Both ways it can go wrong put a WRONG BODY on chain, and this chain has
+// no `delete_post` — so each case below is a permanent-corruption regression test, not a UX one.
+describe("reconcileMentions", () => {
+  const DRAFT = `hey ${mentionToken("alice")} welcome`; // "hey @alice welcome"
+  const picked = [ref("alice", ALICE)];
+
+  it("prunes a ref whose token the user deleted (it degrades to plain text, never mis-binds)", () => {
+    expect(reconcileMentions(picked, "hey welcome", null)).toEqual([]);
+  });
+
+  it("keeps a ref whose token is still in the text", () => {
+    expect(reconcileMentions(picked, DRAFT, null)).toEqual(picked);
+  });
+
+  it("returns the SAME array when nothing changed (so the effect does not churn a re-render)", () => {
+    expect(reconcileMentions(picked, DRAFT, { text: "x", refs: [] })).toBe(picked);
+  });
+
+  // THE BUG THIS RULE EXISTS FOR. Submit clears the box, which prunes the registry to []. If the tx
+  // FAILS, the surface hands the display text back — and without the restore, `serializeMentions` (a
+  // no-op on an empty registry) would leave "@alice" LITERAL and the retry would post an UNBOUND mention.
+  it("restores the submitted draft's bindings when the surface hands that exact text back", () => {
+    const submitted = { text: DRAFT, refs: picked };
+    expect(reconcileMentions([], "", submitted)).toEqual([]); // the optimistic clear prunes to empty
+    expect(reconcileMentions([], DRAFT, submitted)).toEqual(picked); // ...and the restore brings them back
+  });
+
+  it("restores even if the user typed while the tx was in flight (the box is not disabled)", () => {
+    const submitted = { text: DRAFT, refs: picked };
+    expect(reconcileMentions([], "a new thought", submitted)).toEqual([]);
+    expect(reconcileMentions([], DRAFT, submitted)).toEqual(picked);
+  });
+
+  // THE OPPOSITE FAILURE, which is WORSE: a mention bound to the WRONG ACCOUNT. The snapshot outlives a
+  // SUCCESSFUL post, and a display name is not unique across accounts. A user who later picks a DIFFERENT
+  // "alice" and retypes the same sentence must keep THEIR pick — restoring over it would silently swap
+  // the mention back to the first alice.
+  it("NEVER overwrites a ref the user actively picked, even on an exact text match", () => {
+    const submitted = { text: DRAFT, refs: [ref("alice", ALICE)] };
+    const repicked = [ref("alice", BOB)]; // same display name, a DIFFERENT account
+    expect(reconcileMentions(repicked, DRAFT, submitted)).toEqual(repicked);
+    // and the body really does bind to the account the user picked, not the snapshot's
+    expect(serializeMentions(DRAFT, reconcileMentions(repicked, DRAFT, submitted))).toContain(BOB);
+  });
+
+  it("does not restore into an unrelated draft that merely contains the same token", () => {
+    const submitted = { text: DRAFT, refs: picked };
+    expect(reconcileMentions([], `different sentence ${mentionToken("alice")}`, submitted)).toEqual([]);
+  });
+
+  it("ignores an empty-text snapshot (nothing was ever submitted)", () => {
+    expect(reconcileMentions([], "", { text: "", refs: picked })).toEqual([]);
   });
 });

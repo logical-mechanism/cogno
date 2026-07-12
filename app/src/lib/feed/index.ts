@@ -13,4 +13,3 @@ export function makeFeedSource(api: CognoApi): FeedSource {
 }
 
 export type { FeedSource } from "./source";
-export { UnsupportedQuery } from "./source";

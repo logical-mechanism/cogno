@@ -72,5 +72,7 @@
 .danger {
   border: none;
   background: var(--cg-danger);
-  color: #fff;
+  /* Was a raw #fff (which tokens.css forbids) at 4.11:1 on the danger red — under the 4.5:1 AA floor
+     for 15px text. This is a real contrast fix, not a rename. */
+  color: var(--cg-danger-contrast);
 }

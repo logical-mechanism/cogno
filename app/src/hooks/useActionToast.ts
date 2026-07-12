@@ -14,13 +14,9 @@
 
 import { useCallback } from "react";
 import { useToaster } from "@/components/toast/ToasterProvider";
+import { errorCopy, type ChainError } from "@/lib/chain/errors";
 import type { RunOptions } from "./useMutation";
 import type { TxUpdate } from "@/lib/types";
-
-/** A CheckCapacity pool rejection ⇒ the rate-limit toast, not the generic error. */
-function isRateLimit(message: string): boolean {
-  return /rate limit|ExhaustsResources/i.test(message);
-}
 
 /** Optional CTA on the success toast (e.g. "View →" the just-created post). */
 export type ToastAction = { label: string; onClick: () => void };
@@ -39,14 +35,14 @@ export interface PhaseToastOptions {
   /** Caller bookkeeping composed after the success toast fires (drop/keep the optimistic card). */
   onConfirm?: (u: TxUpdate) => void;
   /** Caller rollback composed after the pending toast is dismissed + the failure surfaced. */
-  onError?: (message: string) => void;
+  onError?: (error: ChainError) => void;
   /** Caller rollback composed after the pending toast is dismissed (run still unsettled at unmount). */
   onCancel?: () => void;
 }
 
 export interface ActionToast {
   /** Toast a settle failure (rate-limit gets its dedicated toast; everything else a generic error). */
-  fail: (message: string) => void;
+  fail: (error: ChainError) => void;
   /** Toast a discrete success — skip for high-frequency actions (votes). */
   ok: (message: string) => void;
   /**
@@ -58,10 +54,12 @@ export interface ActionToast {
 
 export function useActionToast(): ActionToast {
   const { toast, dismiss, rateLimit } = useToaster();
+  // The rate-limit branch is a KIND CHECK, not a regex over English. It used to be the latter — one of
+  // three byte-identical copies parsing prose that the chain layer had itself just written.
   const fail = useCallback(
-    (message: string) => {
-      if (isRateLimit(message)) rateLimit();
-      else toast({ kind: "error", message });
+    (error: ChainError) => {
+      if (error.kind === "rate-limit") rateLimit();
+      else toast({ kind: "error", message: errorCopy(error) });
     },
     [toast, rateLimit],
   );
@@ -84,11 +82,11 @@ export function useActionToast(): ActionToast {
           });
           opts.onConfirm?.(u);
         },
-        onError: (message) => {
+        onError: (error) => {
           // Clear the sticky pending, then reuse fail() (rate-limit vs generic) before the caller rolls back.
           dismiss(tid);
-          fail(message);
-          opts.onError?.(message);
+          fail(error);
+          opts.onError?.(error);
         },
         onCancel: () => {
           // Unmounted mid-flight: drop the sticky pending so it can't outlive its surface in the app-wide bus.

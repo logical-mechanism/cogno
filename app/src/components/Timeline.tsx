@@ -12,22 +12,25 @@
 // r replies, . flushes the new-posts pill. Shortcuts are
 // DISABLED while focus is in a text input (the composer), so typing n/l/j types characters.
 //
-// Per-card poll wiring: a post.isPoll card mounts a tiny <PollHost> wrapper that calls usePoll for its
-// host id (reading the FeedSource from the shared session) and threads poll / pollMyChoice / onPollVote
-// into the PostCard.
+// Poll cards need no wiring here: InlinePoll (inside PostCard) is the sole poll owner and pulls the
+// session itself. Timeline used to mount a <PollHost> that fetched the poll and passed it down — which
+// double-mounted usePoll, because the surface read starts null and PostCard fell through to InlinePoll
+// on the first render anyway.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./Timeline.module.css";
 import { PostCard } from "./PostCard";
+import { NO_VIEWER } from "@/lib/optimistic";
 import { Skeleton } from "./Skeleton";
 import { EmptyState } from "./EmptyState";
 import { Spinner } from "./icons";
-import { useSession } from "./Providers";
-import { usePoll } from "@/hooks/usePoll";
-import type { CognoPost, Viewer, ViewerPostState, PostActionCallbacks } from "./kit";
-import type { CognoApi, PostingSigner } from "@/lib/types";
-
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
+import type {
+  CognoPost,
+  EmptyStateVariant,
+  Viewer,
+  ViewerPostState,
+  PostActionCallbacks,
+} from "./kit";
 
 export interface TimelineProps {
   posts: CognoPost[];
@@ -47,8 +50,13 @@ export interface TimelineProps {
   loadingMore?: boolean;
   /** Source cursor-paginates (caps.pagination) → show the infinite-scroll tail. */
   paginationCapable: boolean;
-  /** EmptyState variant for THIS tab (feed | follows). */
-  emptyVariant?: "feed" | "follows";
+  /**
+   * EmptyState variant for THIS tab. The full EmptyStateVariant — it was narrowed to `feed | follows`,
+   * which meant the profile view (whose tabs are `profile | replies`) could not pass its own variant at
+   * all and silently fell through to the `feed` default, rendering "Find some people to follow" on
+   * someone's profile.
+   */
+  emptyVariant?: EmptyStateVariant;
   emptyTitle?: string;
   emptyDescription?: string;
   emptyAction?: { label: string; onClick: () => void };
@@ -56,9 +64,6 @@ export interface TimelineProps {
   onFlush?: () => void;
   /** Open the composer (the `n` shortcut). */
   onCompose?: () => void;
-  /** API + signer for the per-card poll cast (usePoll). */
-  api: CognoApi | null;
-  signer: PostingSigner | null;
   /** Search term to <mark> in each card's body (set only on the search-results Timeline). */
   highlight?: string;
 }
@@ -81,8 +86,6 @@ export function Timeline({
   emptyAction,
   onFlush,
   onCompose,
-  api,
-  signer,
   highlight,
 }: TimelineProps) {
   // Index of the keyboard-focused card (roving tabIndex). -1 = none focused yet.
@@ -210,27 +213,15 @@ export function Timeline({
             className={`${styles.cardSlot} ${focused ? styles.focused : ""}`}
             onFocus={() => setFocusIdx(i)}
           >
-            {post.isPoll && !pending ? (
-              <PollHost
-                post={post}
-                gate={gate}
-                viewer={vs}
-                handlers={handlers}
-                api={api}
-                signer={signer}
-                highlight={highlight}
-              />
-            ) : (
-              <PostCard
-                post={post}
-                viewer={vs}
-                gate={gate}
-                handlers={handlers}
-                variant="timeline"
-                pending={pending}
-                highlight={highlight}
-              />
-            )}
+            <PostCard
+              post={post}
+              viewer={vs}
+              gate={gate}
+              handlers={handlers}
+              variant="timeline"
+              pending={pending}
+              highlight={highlight}
+            />
           </div>
         );
       })}
@@ -282,41 +273,3 @@ function LoadMoreTail({ loading, onLoadMore }: { loading?: boolean; onLoadMore?:
   );
 }
 
-/**
- * PollHost — a per-card wrapper that fetches the attached poll (usePoll, reading the FeedSource from
- * the shared session) for a post.isPoll row and threads it into the PostCard. Polls never expire
- * (live results); usePoll handles the optimistic cast + reload.
- */
-function PollHost({
-  post,
-  gate,
-  viewer,
-  handlers,
-  api,
-  signer,
-  highlight,
-}: {
-  post: CognoPost;
-  gate: Viewer;
-  viewer: ViewerPostState;
-  handlers: PostActionCallbacks;
-  api: CognoApi | null;
-  signer: PostingSigner | null;
-  highlight?: string;
-}) {
-  const { source, bestBlock } = useSession();
-  const { poll, myChoice, castVote } = usePoll(source, post.id, api, signer, gate.address ?? null, bestBlock);
-  return (
-    <PostCard
-      post={post}
-      viewer={viewer}
-      gate={gate}
-      handlers={handlers}
-      variant="timeline"
-      poll={poll}
-      pollMyChoice={myChoice}
-      onPollVote={castVote}
-      highlight={highlight}
-    />
-  );
-}

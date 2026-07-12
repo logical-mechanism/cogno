@@ -15,7 +15,10 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    // `.tsx` is included so a pure-logic test that happens to live next to a component file still
+    // RUNS. A `.test.tsx` matched nothing here before, and vitest reports a suite it never collected
+    // as green — a silently-skipped test is worse than a missing one.
+    include: ["src/**/*.test.{ts,tsx}"],
     // No global setup: every mock is declared per-file so a test reads as a closed unit.
     globals: false,
   },

@@ -3,80 +3,39 @@
 // muteStore — device-local "muted accounts" (client-only; NO chain state, no writing to Cardano).
 // A viewer collapses a muted author's posts everywhere (the only recourse on a delete-free,
 // no-moderation chain — muting is the viewer's own choice, it never hides content for anyone else).
-// Persisted as a JSON array of ss58 under localStorage['cg-muted']; exposed via useSyncExternalStore
-// so any component (PostCard, a Settings list) reflects a mute/unmute instantly.
+// Mirrors across this device's tabs, and is scoped PER ACCOUNT: a mute list is a personal judgement,
+// so a shared device must not apply one wallet's to the next.
+//
+// A typed Ss58 facade over the shared viewer-scoped set store. The validity guard rejects the empty
+// string on BOTH read and write: without it `mute("")` persists, and `useMuted("")` then renders an
+// empty address as muted.
 
-import { useSyncExternalStore } from "react";
+import { createViewerScopedStringSetStore } from "./stringSetStore";
 import type { Ss58 } from "./types";
 
-const KEY = "cg-muted";
-const EMPTY: ReadonlySet<string> = new Set();
+const store = createViewerScopedStringSetStore({
+  prefix: "cg-muted",
+  isValid: (v) => v.length > 0,
+});
 
-let cache: Set<string> = load();
-const listeners = new Set<() => void>();
-
-function load(): Set<string> {
-  if (typeof window === "undefined") return new Set();
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function commit(next: Set<string>): void {
-  cache = next;
-  try {
-    window.localStorage.setItem(KEY, JSON.stringify([...next]));
-  } catch {
-    /* quota exceeded / storage disabled → keep the in-memory set only */
-  }
-  listeners.forEach((l) => l());
-}
-
-function subscribe(cb: () => void): () => void {
-  listeners.add(cb);
-  return () => {
-    listeners.delete(cb);
+/** Mute actions bound to `who` (null = the signed-out device bucket). */
+export function muteActionsFor(who: Ss58 | null) {
+  const a = store.actionsFor(who);
+  return {
+    mute: (addr: Ss58) => a.add(addr),
+    unmute: (addr: Ss58) => a.remove(addr),
+    toggle: (addr: Ss58) => a.toggle(addr),
   };
 }
 
-// getSnapshot returns a STABLE ref between changes (commit swaps it) so useSyncExternalStore only
-// re-renders on a real change; getServerSnapshot is a constant for static export / hydration.
-function getSnapshot(): ReadonlySet<string> {
-  return cache;
-}
-function getServerSnapshot(): ReadonlySet<string> {
-  return EMPTY;
-}
-
-export const muteActions = {
-  mute(addr: Ss58): void {
-    if (!addr || cache.has(addr)) return;
-    commit(new Set(cache).add(addr));
-  },
-  unmute(addr: Ss58): void {
-    if (!cache.has(addr)) return;
-    const next = new Set(cache);
-    next.delete(addr);
-    commit(next);
-  },
-  toggle(addr: Ss58): void {
-    if (cache.has(addr)) muteActions.unmute(addr);
-    else muteActions.mute(addr);
-  },
-};
-
-/** Is `addr` muted? Subscribes, so the caller re-renders when the mute set changes. */
-export function useMuted(addr: Ss58 | null | undefined): boolean {
-  const snap = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+/** Is `addr` muted by `who`? Subscribes, so the caller re-renders when the mute set changes. */
+export function useMuted(addr: Ss58 | null | undefined, who: Ss58 | null): boolean {
+  const snap = store.useSet(who);
   return addr != null && snap.has(addr);
 }
 
-/** The full muted-account list (for the Settings manager). */
-export function useMutedList(): Ss58[] {
-  const snap = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+/** `who`'s muted-account list (for the Settings manager + the notifications fold). */
+export function useMutedList(who: Ss58 | null): Ss58[] {
+  const snap = store.useSet(who);
   return [...snap];
 }

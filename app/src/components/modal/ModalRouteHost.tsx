@@ -15,7 +15,6 @@
 // module.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { ComposerModal } from "../ComposerModal";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
@@ -25,15 +24,16 @@ import { QuoteComposer } from "../QuoteComposer";
 import { PollComposer } from "../PollComposer";
 import { EditProfileModal } from "../EditProfileModal";
 import { useSession } from "../Providers";
-import { useModalStore } from "@/lib/modalStore";
+import { modalActions, useModalStore } from "@/lib/modalStore";
 import { useMutation } from "@/hooks/useMutation";
-import { useActionToast } from "@/hooks/useActionToast";
 import { useOptimistic } from "@/hooks/useOptimistic";
-import { nextPendingId } from "@/lib/optimistic";
 import { useThread } from "@/hooks/useThread";
-import { useCapacity } from "@/hooks/useCapacity";
-import { draftStatus } from "@/lib/chain/capacity";
-import { useToaster, RATE_LIMIT_COPY } from "../toast/ToasterProvider";
+import { useInvalidateAccountProfile } from "@/hooks/useAccountProfile";
+import { invalidateHoverProfile } from "../ProfileHoverCard";
+import { useComposerGate } from "@/hooks/useComposerGate";
+import { useComposeWrite } from "@/hooks/useComposeWrite";
+import { useToaster } from "../toast/ToasterProvider";
+import { errorCopy } from "@/lib/chain/errors";
 import {
   submitPost,
   submitReply,
@@ -42,14 +42,9 @@ import {
   submitSetProfile,
   submitClearProfile,
 } from "@/lib/chain/mutations";
-import type { ActionState, ComposerDraft, PollDraft, ModalKind } from "../kit";
+import type { ComposerDraft, PollDraft, ModalKind } from "../kit";
 import type { CognoPost } from "@/lib/types";
 import type { ProfileFields } from "../EditProfileModal";
-
-/** The CheckCapacity pool rejection surfaces as the rate-limit copy (stringifyError maps it). */
-function isRateLimit(message: string): boolean {
-  return /rate limit|ExhaustsResources/i.test(message);
-}
 
 const TITLES: Record<Exclude<ModalKind, null>, string> = {
   compose: "Compose post",
@@ -77,20 +72,13 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 
 export function ModalRouteHost() {
   const { state, close } = useModalStore();
-  const { api, signer, source, viewer, bestBlock } = useSession();
-  const { addPending, dropPending, failPending, patchProfile, confirmProfile, rollbackProfile } =
-    useOptimistic();
+  const { api, signer, source, viewer } = useSession();
+  // Only the PROFILE overlay is still owned here — the compose overlay moved into useComposeWrite.
+  const { patchProfile, confirmProfile, rollbackProfile } = useOptimistic();
   const { run } = useMutation();
-  const { toast, rateLimit } = useToaster();
-  const { phase } = useActionToast();
-  const router = useRouter();
+  const { toast } = useToaster();
+  const invalidateAccountProfile = useInvalidateAccountProfile();
 
-  // Zero locked ADA → no posting power: hard-disable the composer CTA (the self-contained
-  // NoPostingPowerNotice already shows the "Lock ADA to post" banner), matching HomePage/ComposePage.
-  const { view: capacityView, consts: capacityConsts } = useCapacity(api, viewer.address ?? null, bestBlock);
-  const noPostingPower = viewer.status === "ready" && !!capacityView && capacityView.weight === 0n;
-
-  const [submitState, setSubmitState] = useState<ActionState>("idle");
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
   // Controlled text for the base compose mode so the capacity gate measures the live draft (reply /
   // quote stay uncontrolled — their gate uses the empty-draft base-cost probe, exactly like ComposePage).
@@ -101,6 +89,10 @@ export function ModalRouteHost() {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   // Uncontrolled reply/quote drafts report dirtiness here so a close can confirm before discarding.
   const composerDirtyRef = useRef(false);
+  // Carries the in-flight words across a compose↔poll flip (see the reset effect). A ref, not state:
+  // the flip is driven by the modal store, so the reset effect below runs on the NEXT render with the
+  // new `kind` and would otherwise clobber anything the toggle handler had set.
+  const carryRef = useRef<string | null>(null);
 
   const kind = state.kind;
   const targetId = state.targetId ? BigInt(state.targetId) : null;
@@ -111,10 +103,28 @@ export function ModalRouteHost() {
   const { thread } = useThread(source, needsTarget ? targetId : null);
   const targetPost: CognoPost | null = needsTarget ? thread?.root ?? null : null;
 
+  const onClose = useCallback(() => {
+    // Pop the pushed URL (if any) then clear the store. The popstate handler also calls close(); the
+    // store no-op guard makes the double call harmless.
+    if (kind && kind !== "edit-profile" && typeof window !== "undefined" && window.history.state?.cgModal) {
+      window.history.back();
+    }
+    close();
+  }, [kind, close]);
+
+  // The modal host is mounted once in AppShell and NEVER unmounts, so `setSubmitState` is not
+  // optional here: the per-open reset effect below is the ONLY thing that returns the CTA to idle
+  // after a submit. (runWrite's onCancel, by the same token, is unreachable from this surface.)
+  const { submitState, setSubmitState, runWrite, optimisticPost } = useComposeWrite(
+    api,
+    signer,
+    viewer,
+    onClose,
+  );
+
   // Sync the URL when the overlay opens; restore it (history.back) when it closes via the store.
   useEffect(() => {
     if (kind && kind !== "edit-profile") pushModalUrl(kind, state.targetId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, state.targetId]);
 
   // Back-button closes the overlay (doc 01 §7.2): a popstate while open dismisses without a route swap.
@@ -128,13 +138,19 @@ export function ModalRouteHost() {
   // Reset the per-open transient state whenever the modal kind changes (also on close → kind null).
   // Opening the plain composer HYDRATES the persisted post draft (localStorage) so an accidental close
   // or reload didn't lose it; other kinds start empty.
+  //
+  // EXCEPT across a compose↔poll flip, which is a mode swap within one open modal, not a new open. The
+  // flip hands the user's in-flight words through `carryRef` (a post's text IS a poll's question), so
+  // toggling does not silently blank the textarea they were typing in.
   useEffect(() => {
+    const carried = carryRef.current;
+    carryRef.current = null;
     setSubmitState("idle");
-    setText(kind === "compose" ? loadPostDraft() : "");
+    setText(kind === "compose" ? (carried ?? loadPostDraft()) : "");
     setSerialized(""); // the base Composer re-reports on mount; reply/quote leave it "" (base-cost gate)
     setConfirmDiscard(false);
     composerDirtyRef.current = false;
-    if (kind === "poll") setPollDraft({ question: "", options: ["", ""] });
+    if (kind === "poll") setPollDraft({ question: carried ?? "", options: ["", ""] });
   }, [kind]);
 
   // Persist the plain-compose draft as it changes (savePostDraft removes the key when it's empty).
@@ -142,31 +158,13 @@ export function ModalRouteHost() {
     if (kind === "compose") savePostDraft(text);
   }, [kind, text]);
 
-  // Pre-flight capacity gate — mirror ComposePage so the PRIMARY (overlay) compose path also disables
-  // the CTA + shows the inline RateLimitNotice before submit, instead of only surfacing a rate limit
-  // via the post-submit failure toast (D5).
+  // Pre-flight capacity gate (shared with every other composing surface — see useComposerGate).
   // Non-poll compose measures the SERIALIZED body (mention tokens count as their ss58 length); reply /
   // quote are uncontrolled → `serialized` stays "" and the gate uses the base-cost probe, as before.
+  // `noPostingPower` also feeds EditProfileModal below — profile writes are capacity-metered too.
   const gateText = kind === "poll" ? pollDraft.question : serialized;
-  const rateLimited = useMemo(() => {
-    if (viewer.status !== "ready" || !capacityView || !capacityConsts) return false;
-    const byteLen = new TextEncoder().encode(gateText).length;
-    if (byteLen === 0) {
-      const probe = draftStatus(capacityView, 0, capacityConsts);
-      return probe.kind === "charging" || probe.kind === "wait";
-    }
-    const k = draftStatus(capacityView, byteLen, capacityConsts).kind;
-    return k !== "ok" && !(k === "no_weight" && capacityView.weight === 0n);
-  }, [viewer.status, capacityView, capacityConsts, gateText]);
+  const { rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
 
-  const onClose = useCallback(() => {
-    // Pop the pushed URL (if any) then clear the store. The popstate handler also calls close(); the
-    // store no-op guard makes the double call harmless.
-    if (kind && kind !== "edit-profile" && typeof window !== "undefined" && window.history.state?.cgModal) {
-      window.history.back();
-    }
-    close();
-  }, [kind, close]);
 
   const onComposerDirty = useCallback((dirty: boolean) => {
     composerDirtyRef.current = dirty;
@@ -187,63 +185,22 @@ export function ModalRouteHost() {
     else onClose();
   }, [isDirty, onClose]);
 
-  // The shared submit pipeline: optimistic insert → close → run(stream) with a phase() status toast
-  // (sticky "…ing" → "…ed" + "View →" at inBestBlock, or dismissed + fail() on error). Rollback on
-  // error/cancel. The modal host persists after close(), so the background run still upgrades the toast.
-  const runWrite = useCallback(
-    (
-      stream: ReturnType<typeof submitPost>,
-      optimistic: CognoPost,
-      feedback: { pending: string; success: string },
-      parentId?: bigint,
-    ) => {
-      if (!api || !signer) return;
-      const clientId = addPending(optimistic, parentId);
-      setSubmitState("pending");
-      onClose();
-      void run(
-        stream,
-        phase({
-          id: clientId,
-          pending: feedback.pending,
-          success: feedback.success,
-          view: (u) =>
-            u.postId != null
-              ? { label: "View →", onClick: () => router.push(`/post/${u.postId}/`) }
-              : undefined,
-          onConfirm: () => {
-            // Top-level posts/quotes are retired by the feed presence-reconcile when their real twin
-            // lands (no confirm-time blink). Replies live in a thread with no such reconcile, so they
-            // still hand off on confirm.
-            if (parentId != null) dropPending(clientId);
-            setSubmitState("ok");
-          },
-          onError: () => {
-            failPending(clientId);
-            setSubmitState("error");
-          },
-          onCancel: () => failPending(clientId),
-        }),
-      ).catch(() => {
-        /* settled + rolled back via onError */
-      });
-    },
-    [api, signer, addPending, dropPending, failPending, run, phase, router, onClose],
-  );
+  // The in-modal compose↔poll mode swap. Until this existed, `openPoll()` had exactly ONE caller —
+  // Home's inline composer, which is `display: none` below 688px — so poll creation was unreachable on
+  // mobile entirely, and on desktop unless you composed from the inline box. Both the LeftNav "Post"
+  // pill and the mobile FAB open THIS modal, which supported `kind === "poll"` all along with nothing
+  // able to ask for it. Each direction hands its in-flight words to the other (see `carryRef`).
+  const toPoll = useCallback(() => {
+    carryRef.current = text;
+    modalActions.openPoll();
+  }, [text]);
 
-  // Build a minimal optimistic CognoPost for the pending card (the real row replaces it on confirm).
-  const optimisticPost = useCallback(
-    (text: string, extra: Partial<CognoPost> = {}): CognoPost => ({
-      id: nextPendingId(), // strictly-negative unique sentinel — never collides with a real post id
-      author: viewer.address ?? signer.ss58,
-      text,
-      at: 0,
-      authorDisplayName: viewer.displayName,
-      authorAvatar: viewer.avatar,
-      ...extra,
-    }),
-    [viewer.address, viewer.displayName, viewer.avatar, signer.ss58],
-  );
+  const toCompose = useCallback(() => {
+    carryRef.current = pollDraft.question;
+    modalActions.openCompose();
+  }, [pollDraft.question]);
+
+
 
   const onPost = useCallback(
     (draft: ComposerDraft) => {
@@ -323,18 +280,40 @@ export function ModalRouteHost() {
       void run(stream, {
         onConfirm: () => {
           confirmProfile(ss58);
+          // MANDATORY, not polish: confirmProfile's overlay is TTL-backed and evaporates on its own, so
+          // without dropping the caches the chrome avatar, every mention chip and every hover card
+          // silently revert to the pre-edit name/avatar once it expires — and the hover card's own cache
+          // had no expiry at all, so it stayed stale for the whole session.
+          invalidateAccountProfile(ss58);
+          invalidateHoverProfile(ss58);
           toast({ id: "profile-save", kind: "success", message: successCopy });
         },
-        onError: (message: string) => {
+        onError: (error) => {
           rollbackProfile(ss58);
-          if (isRateLimit(message)) toast({ id: "profile-save", kind: "rate-limit", message: RATE_LIMIT_COPY });
-          else toast({ id: "profile-save", kind: "error", message });
+          // Re-toast under the SAME id on purpose: "profile-save" is the sticky pending toast above,
+          // which has NO auto-dismiss (pending: null). Replacing it in place is the only thing that
+          // clears it. Route this through useActionToast.fail() — whose toast ids are "rate-limit" and
+          // a fresh nextId() — and "Saving your profile…" spins on the app-wide toast bus forever.
+          toast({
+            id: "profile-save",
+            kind: error.kind === "rate-limit" ? "rate-limit" : "error",
+            message: errorCopy(error),
+          });
         },
-      }).catch(() => {
-        /* settled + rolled back via onError */
       });
     },
-    [api, signer, viewer.address, patchProfile, confirmProfile, rollbackProfile, run, toast, onClose],
+    [
+      api,
+      signer,
+      viewer.address,
+      patchProfile,
+      confirmProfile,
+      rollbackProfile,
+      invalidateAccountProfile,
+      run,
+      toast,
+      onClose,
+    ],
   );
 
   const onSaveProfile = useCallback(
@@ -408,12 +387,13 @@ export function ModalRouteHost() {
             submitState={submitState}
             noPostingPower={noPostingPower}
             rateLimited={rateLimited}
+            retryInSeconds={retryInSeconds}
             text={text}
             onTextChange={setText}
             onSerializedChange={setSerialized}
             autoFocus
             onSubmit={onPost}
-            onCancel={onRequestClose}
+            onTogglePoll={toPoll}
             onDirtyChange={onComposerDirty}
           />
         )}
@@ -426,7 +406,6 @@ export function ModalRouteHost() {
             rateLimited={rateLimited}
             autoFocus
             submitReply={onReply}
-            onCancel={onRequestClose}
             onDirtyChange={onComposerDirty}
           />
         )}
@@ -439,7 +418,6 @@ export function ModalRouteHost() {
             rateLimited={rateLimited}
             autoFocus
             submitQuote={onQuote}
-            onCancel={onRequestClose}
             onDirtyChange={onComposerDirty}
           />
         )}
@@ -453,7 +431,7 @@ export function ModalRouteHost() {
             rateLimited={rateLimited}
             autoFocus
             submitCreatePoll={onCreatePoll}
-            onCancel={onRequestClose}
+            onTogglePoll={toCompose}
           />
         )}
       </ComposerModal>

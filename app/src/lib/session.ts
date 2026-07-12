@@ -43,12 +43,11 @@ export function deriveSessionState(s: SignerState, id: IdentityState): SessionSt
   return "disconnected"; // bound === null (loading): not yet writable
 }
 
-/** True when the session can submit any write (post/vote/quote/follow/poll/profile). */
-export function canWrite(state: SessionState): boolean {
-  return state === "bound" || state === "bound_no_stake" || state === "bound_staked";
-}
 
-/** True when a vote carries stake weight (only a stake-bound session). */
-export function voteCarriesWeight(state: SessionState): boolean {
-  return state === "bound_staked";
-}
+// canWrite() and voteCarriesWeight() lived here and are GONE. Both had zero consumers, and
+// voteCarriesWeight was WRONG: it keyed on `state === "bound_staked"`, i.e. the mere PRESENCE of a bound
+// stake credential (CognoGate.StakeCredOf). What ships keys on `votingPower > 0n`
+// (TalkStake.VotingPower). Those disagree for a stake-bound account with zero observed Cardano stake —
+// which is not a corner case but the GUARANTEED state for several blocks after every stake bind, since
+// VotingPower is written asynchronously by the cardano-observer inherent. `votingPower > 0n` is the rule;
+// it is the one that ships, and it is the one that is right.

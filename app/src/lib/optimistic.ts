@@ -15,13 +15,11 @@ export interface CountPatch {
   downCountDelta?: number;
   upWeightDelta?: bigint;
   downWeightDelta?: bigint;
-  repostCountDelta?: number;
 }
 
 /** The viewer's own optimistic state on a post (overrides the read ViewerPostState). */
 export interface ViewerPatch {
   myVote?: "Up" | "Down" | null;
-  reposted?: boolean;
   /**
    * Set once the write has CONFIRMED (inBestBlock). The patch is then kept — not cleared — until a
    * FRESH read of the viewer's own vote agrees with it (see {@link viewerPatchSettled}), so the
@@ -37,7 +35,6 @@ export interface PendingPost {
   post: CognoPost;
   /** For replies: the thread this pending card belongs under. */
   parentId?: bigint;
-  status: "pending" | "failed";
 }
 
 /**
@@ -108,18 +105,24 @@ export function profilePatchSettled(view: ProfileView, patch: ProfilePatch | und
   );
 }
 
-/** Apply a count patch to a post's tallies (counts clamp at 0; score recomputed from weights). */
+/** Apply a count patch to a post's tallies (counts AND weights clamp at 0; score recomputed from weights). */
 export function applyCountPatch(post: CognoPost, patch: CountPatch | undefined): CognoPost {
   if (!patch) return post;
-  const upWeight = (post.upWeight ?? 0n) + (patch.upWeightDelta ?? 0n);
-  const downWeight = (post.downWeight ?? 0n) + (patch.downWeightDelta ?? 0n);
+  // Clamp weights at 0 like the chain's `saturating_sub`. Composing a reversal at a DIFFERENT weight
+  // than the vote was cast at over-subtracts below zero: every surface passes `votingPower ?? 0n`, so a
+  // vote cast while VotingPower is still loading applies +0, and reversing it once the real power has
+  // loaded applies -N against a base of 0 — rendering a NEGATIVE weight and a doubly-negative score.
+  // `useAccountVote.merge` has floored this since it shipped; the post path never did.
+  const upSum = (post.upWeight ?? 0n) + (patch.upWeightDelta ?? 0n);
+  const downSum = (post.downWeight ?? 0n) + (patch.downWeightDelta ?? 0n);
+  const upWeight = upSum < 0n ? 0n : upSum;
+  const downWeight = downSum < 0n ? 0n : downSum;
   return {
     ...post,
     upCount: Math.max(0, (post.upCount ?? 0) + (patch.upCountDelta ?? 0)),
     downCount: Math.max(0, (post.downCount ?? 0) + (patch.downCountDelta ?? 0)),
     upWeight,
     downWeight,
-    repostCount: Math.max(0, (post.repostCount ?? 0) + (patch.repostCountDelta ?? 0)),
     score: upWeight - downWeight,
   };
 }
@@ -138,6 +141,18 @@ export function viewerPatchSettled(
   return patch?.expected === true && base.myVote === (patch.myVote ?? null);
 }
 
+/**
+ * "This viewer has no relationship to this post" — the fallback for a post whose viewer state hasn't
+ * been read yet, or for a signed-out reader.
+ *
+ * ONE frozen object, not seven. It was declared verbatim in six surfaces (as `NO_VIEWER`) plus a
+ * seventh under a different name (`NONE`, in useViewerStates), and every one of them minted a fresh
+ * `{ myVote: null }` — so an unread card handed `PostCard` a new object identity on every render, which
+ * is exactly what a memoized card cannot tolerate. Lives here rather than in components/kit.ts, which
+ * is type-only: putting a runtime value there would force hooks to import from components.
+ */
+export const NO_VIEWER: ViewerPostState = Object.freeze({ myVote: null });
+
 /** Apply a viewer patch over a read ViewerPostState (undefined fields keep the base value). */
 export function applyViewerPatch(
   base: ViewerPostState,
@@ -146,7 +161,6 @@ export function applyViewerPatch(
   if (!patch) return base;
   return {
     myVote: patch.myVote !== undefined ? patch.myVote : base.myVote,
-    reposted: patch.reposted !== undefined ? patch.reposted : base.reposted,
   };
 }
 
@@ -180,7 +194,7 @@ export function mergeFeed(posts: CognoPost[], overlay: Overlay): CognoPost[] {
   // swap seamless regardless of which arrives first.
   const realKeys = new Set(patched.map(pendingKey));
   const pendingCards = overlay.pending
-    .filter((pp) => pp.status === "pending" && pp.parentId === undefined)
+    .filter((pp) => pp.parentId === undefined)
     .filter((pp) => !realKeys.has(pendingKey(pp.post)))
     .map((pp) => pp.post);
   return [...pendingCards, ...patched];

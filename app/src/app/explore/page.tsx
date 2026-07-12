@@ -1,34 +1,27 @@
 "use client";
 
 // ExplorePage — /explore (surface 10). The search-first discovery surface. A full-width SearchBar in
-// a sticky blurred header; below it two modes derived from the URL term `q` (read client-side via
-// useSearchParams) + feedSource.caps.search:
+// a sticky blurred header; below it three modes, derived from whether a reader is connected and from
+// the URL term `q` (read client-side via useSearchParams):
 //
-//   caps.search === false → NO-SOURCE   : the reader isn't ready yet (no `source` before connect;
-//                                          search is node-served, so once connected caps.search is true) —
-//                                          SearchBar disabled + `search-unavailable` EmptyState; firehose
-//                                          still renders (the live window).
-//   caps.search === true, q === ''       → DEFAULT : firehose Timeline + FirehoseOrderToggle (Top|Recent).
-//   caps.search === true, q !== ''       → QUERY   : ResultTabStrip (People | Latest) + result list.
+//   no source yet  → NO-SOURCE : the reader isn't connected — SearchBar disabled +
+//                                `search-unavailable` EmptyState; the firehose still renders.
+//   source, q ===  '' → DEFAULT : firehose Timeline + FirehoseOrderToggle (Top|Recent).
+//   source, q !== '' → QUERY   : ResultTabStrip (People | Latest) + result list.
 //
 // `q` is the committed term (mirrored to ?q=). The SearchBar's controlled value is a SEPARATE local
 // `draft` that debounces into `q` (300ms) while typing — router.replace (not push) so keystroke term
 // changes never stack history; Enter commits immediately; the clear ✕ → router.replace('/explore').
 //
-// The firehose + Latest both use useFeedPage(source, …), both NODE-DIRECT: the firehose via the spec-200
-// feed_page (recency by id, cursor-paginated), Latest via search_posts (the in-runtime substring scan).
-// caps.pagination is true, so the Timeline shows infinite-scroll for both. People search uses
-// source.searchPeople (node-served — search_people). Every result-card write is optimistic and
-// funnels disconnected/unbound viewers to /welcome; capacity exhaustion → RateLimitNotice toast. No
-// honesty/block-number chrome anywhere.
+// The firehose + Latest both use useFeedPage(source, …), both node-direct: the firehose via feed_page
+// (recency by id, cursor-paginated), Latest via search_posts (the in-runtime substring scan). Both
+// paginate, so the Timeline shows infinite-scroll for each. People search uses source.searchPeople
+// (search_people). Every result-card write is optimistic and funnels disconnected/unbound viewers to
+// /welcome; capacity exhaustion → RateLimitNotice toast. No honesty/block-number chrome anywhere.
 //
 // useSearchParams() requires a <Suspense> boundary under output:'export' (mirrors /compose) — the route
 // default mounts <ExploreView> inside one.
 //
-// HOOK: notifications — deferred (surface 10 §10 / useNotifications). A future /notifications surface
-// (+ a bell in LeftNav/BottomTabBar) would fold the indexer edges Voted / Reposted / Followed /
-// reply-PostCreated (parentId ∈ my posts) / quote (quote.id ∈ my posts) via useNotifications(who). No
-// notifications affordance ships here — this comment is the only hook.
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -36,11 +29,11 @@ import styles from "./page.module.css";
 import { SearchBar } from "@/components/SearchBar";
 import { Timeline } from "@/components/Timeline";
 import { EmptyState } from "@/components/EmptyState";
-import { FirehoseOrderToggle, type FirehoseOrder } from "@/components/explore/FirehoseOrderToggle";
 import { ResultTabStrip, RESULT_PANEL_ID, type ResultTab } from "@/components/explore/ResultTabStrip";
 import { ExploreList } from "@/components/explore/ExploreList";
 import { useSession } from "@/components/Providers";
 import { useFeedPage } from "@/hooks/useFeed";
+import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
@@ -48,15 +41,11 @@ import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useFollow } from "@/hooks/useFollow";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { modalActions } from "@/lib/modalStore";
-import { sharePostWithToast } from "@/lib/share";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
 import { useRecentSearches, recentSearchActions } from "@/lib/recentSearchStore";
-import type { CognoPost, FeedQuery, Suggestion, ViewerPostState } from "@/lib/types";
-import type { PostActionCallbacks } from "@/components/kit";
+import type { CognoPost, FeedQuery, Suggestion } from "@/lib/types";
 
-const NO_VIEWER: ViewerPostState = { myVote: null, reposted: false };
 const SEARCH_DEBOUNCE_MS = 300;
 const PEOPLE_LIMIT = 20;
 // The firehose + Latest-search page size (one node `state_call` per page since spec-120).
@@ -77,13 +66,12 @@ function ExploreView() {
   const { api, signer, source, viewer, votingPower } = useSession();
 
   const me = viewer.address ?? null;
-  const searchEnabled = source?.caps.search === true;
-  const peopleEnabled = source?.caps.search === true && source?.caps.profiles === true;
-  const paginationCapable = source?.caps.pagination === true;
+  const searchEnabled = source != null;
+  const peopleEnabled = source != null;
+  const paginationCapable = source != null;
   // Node-first: the firehose is node-served (recency, by id) on every source makeFeedSource builds
   // (papi + hybrid). The node has no score index, so the score-ranked "Top" order is unavailable —
   // the toggle below honestly shows "Most recent" as selected (a node-side score index would flip this).
-  const scoreOrderEnabled = false;
 
   // The committed term is the URL ?q= (normalized so "a  b"/"a b"/NFD accents share one URL + result
   // set); the SearchBar value is a separate local draft.
@@ -211,8 +199,8 @@ function ExploreView() {
   // node's byte-substring scan can match, so it must SEARCH — using raw .length here silently dropped
   // it back to the firehose. A below-min ASCII term (only reachable from an external ?q=, since our own
   // writes gate it) still stays in DEFAULT with the "keep typing" hint.
-  const mode: "no-indexer" | "default" | "query" = !searchEnabled
-    ? "no-indexer"
+  const mode: "disconnected" | "default" | "query" = !searchEnabled
+    ? "disconnected"
     : committedQ.length > 0 && !isQueryTooShort(committedQ)
       ? "query"
       : "default";
@@ -232,47 +220,55 @@ function ExploreView() {
   // ── DEFAULT firehose order toggle ────────────────────────────────────────────────────────────
   // Default to "Most recent"; "Top" (score) is only reachable when a source advertises score order
   // (none today — see scoreOrderEnabled). effectiveOrder is what's actually served + shown selected.
-  const [order, setOrder] = useState<FirehoseOrder>("recency");
-  const effectiveOrder: FirehoseOrder = scoreOrderEnabled ? order : "recency";
 
   // ── QUERY result-scope tab (default Latest, mirrored to ?f=) ──────────────────────────────────
   const setResultTab = useCallback(
     (tab: ResultTab) => router.replace(buildExploreUrl(committedQ, tab)),
     [router, buildExploreUrl, committedQ],
   );
-  // When People is unreachable (shouldn't happen since the strip needs caps.search), fall back to Latest.
+  // When People is unreachable, fall back to Latest.
   const activeResultTab: ResultTab = resultTab === "people" && !peopleEnabled ? "latest" : resultTab;
 
   // ── DEFAULT firehose / QUERY Latest feed (both via the page seam) ────────────────────────────
   const firehoseQuery = useMemo<FeedQuery>(
-    // `viewer: me` lets a spec-120 node stamp the myVote/reposted overlay node-side (PAPI-direct
-    // firehose); the keyed + indexer paths ignore it.
-    () => ({ first: PAGE_SIZE, order: effectiveOrder, viewer: me ?? undefined }),
-    [effectiveOrder, me],
+    // `viewer: me` lets the node stamp the myVote overlay node-side, in the same state_call.
+    () => ({ first: PAGE_SIZE, viewer: me ?? undefined }),
+    [me],
   );
   // The firehose renders in DEFAULT mode AND in NO-INDEXER mode (PAPI-direct still shows the live
   // window, §5.4) — only QUERY mode swaps it out for the result list.
-  const firehoseEnabled = mode === "default" || mode === "no-indexer";
+  const firehoseEnabled = mode === "default" || mode === "disconnected";
   const firehose = useFeedPage(source, firehoseQuery, firehoseEnabled);
 
   const latestQuery = useMemo<FeedQuery>(
     // `viewer: me` lets a spec-120 node stamp the myVote/reposted overlay node-side (same as the
     // firehose), so search results show my vote/repost state and `carriedViewerStates` skips the
     // per-card viewerPostState read (no flash of unfilled action icons).
-    () => ({ first: PAGE_SIZE, search: committedQ, order: "recency", viewer: me ?? undefined }),
+    () => ({ first: PAGE_SIZE, search: committedQ, viewer: me ?? undefined }),
     [committedQ, me],
   );
+  // Deliberately NOT gated on the active result tab. `useFeedPage` treats `enabled: false` as DISCARD,
+  // not pause — it clears `posts` and the cursor — so tying this to the tab would throw away every loaded
+  // page the moment you looked at People, and re-run the whole `search_posts` scan from page 1 on the way
+  // back. The read this gating existed to avoid is the per-card `useViewerStates` fan-out, which is
+  // skipped below on the ids instead.
   const latestEnabled = mode === "query" && searchEnabled;
   const latest = useFeedPage(source, latestQuery, latestEnabled);
 
   // Which post list is on screen (firehose in DEFAULT + NO-INDEXER; Latest results in QUERY).
   const activePosts: CognoPost[] = mode === "query" ? latest.posts : firehose.posts;
-  const postIds = useMemo(() => activePosts.map((p) => p.id), [activePosts]);
+  // Empty while People is on screen: those cards are not rendered, so their viewer overlay is a read of
+  // up to PAGE_SIZE posts nobody is looking at. The posts themselves stay loaded (see above).
+  const showingPosts = mode !== "query" || activeResultTab === "latest";
+  const postIds = useMemo(
+    () => (showingPosts ? activePosts.map((p) => p.id) : []),
+    [showingPosts, activePosts],
+  );
   // Node-served posts carry the overlay → skip the per-card Reposts scan for those ids.
   const carriedStates = useMemo(() => carriedViewerStates(activePosts), [activePosts]);
   const viewerStates = useViewerStates(source, postIds, me, carriedStates);
 
-  // ── People search (indexer-only) ─────────────────────────────────────────────────────────────
+  // ── People search (node-served) ──────────────────────────────────────────────────────────────
   const [people, setPeople] = useState<Suggestion[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(false);
   const [peopleError, setPeopleError] = useState<string | null>(null);
@@ -327,31 +323,7 @@ function ExploreView() {
   const { toast } = useToaster();
 
   // ── per-card action bundle (identical wiring to the home Timeline; surface 10 §3.5/§7.5) ─────
-  const handlers = useMemo<PostActionCallbacks>(
-    () => ({
-      onOpen: (id) => router.push(`/post/${id}/`),
-      onAuthorOpen: (address) => router.push(`/u/${address}/`),
-      onReply: (post) =>
-        viewer.status === "ready" ? modalActions.openReply(post.id) : router.push("/welcome/"),
-      onQuote: (post) =>
-        viewer.status === "ready" ? modalActions.openQuote(post.id) : router.push("/welcome/"),
-      onLike: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.like(post.id, cur);
-        else vote.unlike(post.id, cur);
-      },
-      onDownvote: (post, next) => {
-        if (viewer.status !== "ready") return void router.push("/welcome/");
-        const cur = viewerStates.get(post.id) ?? NO_VIEWER;
-        if (next) vote.downvote(post.id, cur);
-        else vote.clear(post.id, cur);
-      },
-      onShare: (post) => void sharePostWithToast(post.id, toast),
-      onPin: (post) => pin(post.id),
-    }),
-    [router, viewer.status, viewerStates, vote, pin, toast],
-  );
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
 
   // The "/" focus shortcut is now app-wide (useSearchHotkey in AppShell) — no per-surface effect here.
 
@@ -394,13 +366,6 @@ function ExploreView() {
         {/* Score ("Top") order isn't served yet (scoreOrderEnabled=false → the only reachable state is
             "Most recent"), so hide the toggle rather than show a permanently-disabled control. Flip
             scoreOrderEnabled back to true to restore it — no other change needed. */}
-        {mode === "default" && scoreOrderEnabled && (
-          <FirehoseOrderToggle
-            value={effectiveOrder}
-            onChange={setOrder}
-            scoreEnabled={scoreOrderEnabled}
-          />
-        )}
         {mode === "query" && peopleEnabled && (
           <ResultTabStrip active={activeResultTab} onChange={setResultTab} />
         )}
@@ -427,8 +392,8 @@ function ExploreView() {
           (mode === "query" && activeResultTab === "people" && peopleLoading) || undefined
         }
       >
-        {mode === "no-indexer" ? (
-          <NoIndexerBody firehose={renderFirehose()} router={router} />
+        {mode === "disconnected" ? (
+          <DisconnectedBody firehose={renderFirehose()} router={router} />
         ) : mode === "default" ? (
           renderFirehose()
         ) : activeResultTab === "people" ? (
@@ -458,8 +423,6 @@ function ExploreView() {
             emptyVariant="feed"
             emptyTitle={`No results for "${committedQ}"`}
             emptyDescription="Try different keywords."
-            api={api}
-            signer={signer}
             highlight={committedQ}
           />
         )}
@@ -485,8 +448,6 @@ function ExploreView() {
         emptyTitle="Nothing here yet"
         emptyDescription="Be the first to post."
         emptyAction={{ label: "Go home", onClick: () => router.push("/") }}
-        api={api}
-        signer={signer}
       />
     );
   }
@@ -494,7 +455,7 @@ function ExploreView() {
 
 // NO-INDEXER body: the firehose still renders (PAPI live window), and the search-unavailable
 // EmptyState sits ABOVE it so a user who reaches for search is told why + linked to Settings (§7.4).
-function NoIndexerBody({
+function DisconnectedBody({
   firehose,
   router,
 }: {

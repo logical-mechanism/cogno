@@ -132,9 +132,11 @@ This is a single-operator preprod testnet (spec_version 203, transaction_version
 `0x73eaa4bf`): usable, honestly labelled, not yet trustless. A mainnet deployment would re-introduce an
 anti-bloat cost — a refundable deposit or a PoW stamp — as a documented `MAINNET PREREQUISITE`.
 
-Proven live by `app/scripts/d1-acceptance.mjs`: a zero-balance account completes both the identity and the
-stake bind as bare unsigned extrinsics (Δbalance = 0), posts feelessly, and a replayed proof is refused at
-the pool (`Invalid: Stale`) by the tombstone while a junk proof is refused as `Invalid: BadProof`.
+Proven live on preprod: a zero-balance account completes both the identity and the stake bind as bare
+unsigned extrinsics (Δbalance = 0), posts feelessly, and a replayed proof is refused at the pool
+(`Invalid: Stale`) by the tombstone while a junk proof is refused as `Invalid: BadProof`. (The driver that
+demonstrated this, `app/scripts/d1-acceptance.mjs`, has been removed — it grants weight through
+`Sudo.sudo(TalkStake.set_stake(...))`, and neither the Sudo pallet nor that call exists any more.)
 
 ## MAINNET PREREQUISITE — independent verifier audit
 

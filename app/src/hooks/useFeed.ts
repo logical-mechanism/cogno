@@ -1,61 +1,13 @@
 "use client";
 
-// useFeed — subscribes to a FeedSource's live `watch()` and exposes the snapshot as plain React
-// state. NOTE: the home/profile feeds now read via the id-paged `useLiveFeed` / `useFeedPage`; this
-// generic watch hook is retained for any consumer that wants the source's whole live window. Neither
-// source uses `watchEntries` (PAPI's `watch()` is NextPostId-driven; the indexer's is poll-driven).
-//
-// useFeedPage — for the paginated/search read path (indexer-only): fetches one page on demand,
+// useFeedPage — the paginated/search read path: fetches one page on demand,
 // supports cursor "load more" by appending, and surfaces a clear error state instead of
 // blanking the feed if the indexer is unreachable.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FeedSnapshot, FeedPage, FeedQuery, CognoPost } from "@/lib/types";
+import type { FeedPage, FeedQuery, CognoPost } from "@/lib/types";
 import type { FeedSource } from "@/lib/feed/source";
 
-const EMPTY: FeedSnapshot = { posts: [], asOf: null };
-
-export interface UseFeed {
-  /** Full current post set, newest-first. */
-  snapshot: FeedSnapshot;
-  /** false until the first emission lands (so the UI can tell "loading" from "empty"). */
-  ready: boolean;
-  /** A live error (e.g. the indexer is unreachable), so the UI can degrade honestly. */
-  error: string | null;
-}
-
-export function useFeed(source: FeedSource | null): UseFeed {
-  const [snapshot, setSnapshot] = useState<FeedSnapshot>(EMPTY);
-  const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!source) {
-      setSnapshot(EMPTY);
-      setReady(false);
-      setError(null);
-      return;
-    }
-    setReady(false);
-    setError(null);
-    const sub = source.watch().subscribe({
-      next: (snap) => {
-        setSnapshot(snap);
-        setReady(true);
-        setError(null);
-      },
-      error: (err: unknown) => {
-        // Keep the last good snapshot, but stop claiming readiness and surface why so the UI
-        // can show a clear error state (indexer unreachable → user can clear it to use PAPI).
-        setReady(false);
-        setError(err instanceof Error ? err.message : "the feed source errored");
-      },
-    });
-    return () => sub.unsubscribe();
-  }, [source]);
-
-  return { snapshot, ready, error };
-}
 
 export interface UseFeedPage {
   page: FeedPage | null;
@@ -71,7 +23,7 @@ export interface UseFeedPage {
 /**
  * The paginated read path: fetch the first page whenever the source or query changes, then
  * append cursor pages on `loadMore`. Used for search and "load more" — gated on
- * `source.caps.pagination` by the caller. Honest error state; never blanks on failure.
+ * the caller. Honest error state; never blanks on failure.
  */
 export function useFeedPage(
   source: FeedSource | null,

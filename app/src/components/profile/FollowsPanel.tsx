@@ -8,9 +8,10 @@
 // already-fetched edges (no refetch). Only reachable when caps.follows is true — the counts that open
 // it are themselves gated on it, so a reader that can't serve the graph never surfaces this.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import styles from "./FollowsPanel.module.css";
 import { StickyHeader } from "@/components/AppShell";
+import { Tabs } from "@/components/ui/Tabs";
 import { FollowsList } from "./FollowsList";
 import { handleOf } from "@/lib/ss58";
 import type { FeedSource } from "@/lib/feed/source";
@@ -91,17 +92,6 @@ export function FollowsPanel({
     { id: "following", label: "Following", count: followingCount },
   ];
 
-  const refs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLButtonElement>) => {
-      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-      e.preventDefault();
-      const next: FollowsSide = side === "followers" ? "following" : "followers";
-      onSwitch(next);
-      refs.current[next]?.focus();
-    },
-    [side, onSwitch],
-  );
 
   return (
     <>
@@ -112,33 +102,23 @@ export function FollowsPanel({
         // header would show the same @handle twice.
         subtitle={name !== handle ? handle : undefined}
         tabs={
-          <div className={styles.tablist} role="tablist" aria-label="Followers and following">
-            {tabs.map((t) => {
-              const selected = t.id === side;
-              return (
-                <button
-                  key={t.id}
-                  ref={(el) => {
-                    refs.current[t.id] = el;
-                  }}
-                  type="button"
-                  role="tab"
-                  id={`cg-follows-tab-${t.id}`}
-                  aria-selected={selected}
-                  aria-controls="cg-follows-panel"
-                  tabIndex={selected ? 0 : -1}
-                  className={`${styles.tab} ${selected ? styles.active : ""}`}
-                  onClick={() => onSwitch(t.id)}
-                  onKeyDown={onKeyDown}
-                >
-                  <span className={styles.label}>
-                    {t.label} <span className={styles.count}>{GROUP.format(t.count)}</span>
-                  </span>
-                  {selected && <span className={styles.indicator} aria-hidden />}
-                </button>
-              );
-            })}
-          </div>
+          <Tabs
+            tabs={tabs.map((t) => ({
+              id: t.id,
+              // A ReactNode label, so the count keeps its own class from THIS module — which is what lets
+              // the `[data-active] .count` rule below still reach it after the strip moved to ui/Tabs.
+              label: (
+                <>
+                  {t.label} <span className={styles.count}>{GROUP.format(t.count)}</span>
+                </>
+              ),
+            }))}
+            active={side}
+            onChange={onSwitch}
+            idPrefix="cg-follows-tab"
+            panelId="cg-follows-panel"
+            ariaLabel="Followers and following"
+          />
         }
       />
 

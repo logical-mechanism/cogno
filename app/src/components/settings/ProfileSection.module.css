@@ -117,7 +117,7 @@
 
 .dangerBtn {
   background: var(--cg-danger);
-  color: var(--cg-accent-contrast);
+  color: var(--cg-danger-contrast);
 }
 
 .dangerBtn:hover:not(:disabled) {
@@ -138,7 +138,7 @@
 .outlineBtn:disabled,
 .dangerBtn:disabled,
 .dangerLink:disabled {
-  opacity: 0.5;
+  opacity: var(--cg-disabled-opacity);
   cursor: not-allowed;
 }
 

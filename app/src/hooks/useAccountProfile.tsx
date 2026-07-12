@@ -1,31 +1,22 @@
 "use client";
 
-// useAccountProfile — a session-lived, shared cache of each account's profile display name + avatar,
-// keyed by ss58. It powers surfaces that reference an account which is NOT the author of an on-screen
-// post (so the feed's per-post `authorDisplayName` enrichment doesn't already cover it): the @mention
-// chips inside a post body (`MentionChip`) and the actor rows in the notifications feed.
+// useAccountProfile — a session-lived, shared cache of each account's profile display name + avatar.
+// A mention chip, a hover card, an author line: the same account recurs across dozens of cards and
+// every surface, and keying by account means it costs exactly ONE read no matter how many are on screen.
 //
-// WHY A SHARED PROVIDER (mirrors useReputation): a mentioned/acting account recurs across many posts
-// and surfaces; keying the cache by account — app-wide — means the same account costs exactly ONE
-// `Profile.Profiles` read no matter how many mentions of them are on screen, and a name resolved on
-// Home is already warm when you open a thread. A leaf `<MentionChip>` / notification row consumes it.
+// ERROR POLICY = commit-empty, and this is the ONE cache that differs. A failed or absent read resolves
+// to `{}` and is NEVER retried, so a mention chip settles on its truncated-ss58 fallback — visually
+// identical to a genuinely unbound/nameless account — instead of thrashing a read every time it scrolls
+// back into view. That is a deliberate product call, not drift: for a cosmetic label, thrashing is worse
+// than stale. A reload refetches.
 //
-// READS: POINT reads of `Profile.Profiles` per DISTINCT account, BATCHED (a microtask coalesces every
-// account registered in the same tick into ONE `Promise.all`) and cached for the session. A failed or
-// empty read resolves to an EMPTY record `{}` (not re-tried per render) — the chip degrades to the
-// truncated ss58, exactly the graceful fallback for an unbound/nameless account.
+// (Contrast useReputation / useAuthorWeight / useNestedQuote, which uncommit a failure and retry on the
+// next mount. The shared factory takes the policy as a parameter for exactly this reason.)
+//
+// The batching / coalescing / StrictMode scaffold lives in createChainCache — this file used to be a
+// 140-line copy of it.
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { useSession } from "@/components/Providers";
+import { createChainCache } from "./createChainCache";
 import { binTextOpt } from "@/lib/chain/reads";
 import type { CognoApi, Ss58 } from "@/lib/types";
 
@@ -35,106 +26,38 @@ export interface AccountProfile {
   avatar?: string;
 }
 
-interface AccountProfileCtx {
-  /** Resolved profiles, keyed by ss58. Absent ⇒ unknown / still loading. */
-  profiles: Map<string, AccountProfile>;
-  /** Register an account for a batched, cached profile read (idempotent; safe to call every render). */
-  request: (address: Ss58) => void;
-}
-
-const AccountProfileContext = createContext<AccountProfileCtx | null>(null);
-
 /** Read one `Profile.Profiles` row → the display name + avatar (both BoundedVec<u8> → trimmed string). */
 async function readAccountProfile(api: CognoApi, account: Ss58): Promise<AccountProfile> {
-  const rec = (await api.query.Profile.Profiles.getValue(account)) as unknown as
-    | { display_name?: Uint8Array; avatar?: Uint8Array }
-    | undefined;
+  // At BEST, not PAPI's finalized default — the same rule the feeds follow (see `BEST` in node-reads).
+  // This row is READ-AFTER-WRITE: a profile save invalidates it, and `invalidate` re-reads in the same
+  // tick as `onConfirm`, which fires at `inBestBlock` — several blocks before finalization. A finalized
+  // read there deterministically returns the PRE-save row, and the batcher would then COMMIT that stale
+  // value, pinning the old name (or resurrecting a name the user just CLEARED) for the rest of the
+  // session. Single-producer chain: best never reorgs, so it is both fresh and safe.
+  // The ROW is optional; the FIELDS are not — keep the `rec?.` chain rather than marking them optional.
+  const rec = await api.query.Profile.Profiles.getValue(account, { at: "best" });
   return { displayName: binTextOpt(rec?.display_name), avatar: binTextOpt(rec?.avatar) };
 }
 
-export function AccountProfileProvider({ children }: { children: ReactNode }) {
-  const { api } = useSession();
-  const [profiles, setProfiles] = useState<Map<string, AccountProfile>>(new Map());
+const EMPTY: AccountProfile = {};
 
-  // Reach the LATEST api from the deferred (microtask) flush closure without re-subscribing on identity.
-  const apiRef = useRef(api);
-  apiRef.current = api;
-  const requested = useRef<Set<string>>(new Set()); // committed to a fetch (in-flight or resolved)
-  const queue = useRef<Set<string>>(new Set()); // registered, waiting for the next batch
-  const flushScheduled = useRef(false);
-  const mounted = useRef(true);
-  // Re-arm `mounted` on SETUP (not just cleanup): React 19 StrictMode double-invokes the effect in
-  // `next dev`; a cleanup-only body would leave `mounted` stuck false and swallow every resolved batch.
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+const cache = createChainCache<Ss58, AccountProfile>({
+  name: "AccountProfile",
+  toKey: (a) => a,
+  read: readAccountProfile,
+  onError: { mode: "commit", fallback: EMPTY },
+});
 
-  const flush = useCallback(() => {
-    flushScheduled.current = false;
-    const api0 = apiRef.current;
-    // No socket yet — leave the queue INTACT; the [api] effect re-flushes once the client connects.
-    if (!api0 || queue.current.size === 0) return;
-    const batch = Array.from(queue.current);
-    queue.current.clear();
-    for (const a of batch) requested.current.add(a);
-    void Promise.all(
-      batch.map(async (addr) => {
-        try {
-          return [addr, await readAccountProfile(api0, addr)] as const;
-        } catch {
-          // Read failed — resolve to empty so the chip shows the truncated-ss58 fallback (identical to
-          // an unbound/nameless account) rather than retrying forever. A reload refetches.
-          return [addr, {} as AccountProfile] as const;
-        }
-      }),
-    ).then((entries) => {
-      if (!mounted.current) return;
-      setProfiles((prev) => {
-        const next = new Map(prev);
-        for (const [addr, prof] of entries) next.set(addr, prof);
-        return next;
-      });
-    });
-  }, []);
+export const AccountProfileProvider = cache.Provider;
 
-  const scheduleFlush = useCallback(() => {
-    if (flushScheduled.current) return;
-    flushScheduled.current = true;
-    queueMicrotask(flush);
-  }, [flush]);
-
-  const request = useCallback(
-    (address: Ss58) => {
-      if (!address || requested.current.has(address) || queue.current.has(address)) return;
-      queue.current.add(address);
-      scheduleFlush();
-    },
-    [scheduleFlush],
-  );
-
-  // When the socket connects (api null → ready), fetch anything registered while it was still offline.
-  useEffect(() => {
-    if (api && queue.current.size > 0) scheduleFlush();
-  }, [api, scheduleFlush]);
-
-  const value = useMemo<AccountProfileCtx>(() => ({ profiles, request }), [profiles, request]);
-  return <AccountProfileContext.Provider value={value}>{children}</AccountProfileContext.Provider>;
+/** The cached display name + avatar for one account, or `null` while unknown / loading. */
+export function useAccountProfile(address: Ss58 | undefined): AccountProfile | null {
+  return cache.useValue(address);
 }
 
 /**
- * The cached profile (display name + avatar) for one account, or `null` while unknown / loading /
- * outside the provider. Registering the address is a side effect, so a chip that mounts triggers a
- * batched read; the profile lands on a later render once the batch resolves. `request` is a STABLE
- * reference, so this effect re-runs only when the address changes — never in a loop as profiles fill in.
+ * Drop cached profiles so the next consumer re-reads them. Wired to the profile-save confirm: without
+ * it, editing your own profile leaves every mention chip and hover card showing the OLD name and avatar
+ * for the rest of the session.
  */
-export function useAccountProfile(address: string | undefined): AccountProfile | null {
-  const ctx = useContext(AccountProfileContext);
-  const request = ctx?.request;
-  useEffect(() => {
-    if (address && request) request(address);
-  }, [address, request]);
-  return address && ctx ? (ctx.profiles.get(address) ?? null) : null;
-}
+export const useInvalidateAccountProfile = cache.useInvalidate;

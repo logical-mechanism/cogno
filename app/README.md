@@ -47,8 +47,10 @@ stale — regenerate them against a live node:
 rm .papi/descriptors/generated.json && npx papi add cogno -w ws://127.0.0.1:9944
 ```
 
-There are also headless verification scripts under `scripts/` (e.g. `e2e-m7-browse.mjs`, the M2d
-lock/bind/post drivers) used by the build logs.
+`scripts/` holds the live tooling (`check-tokens`, `check-spec`, `smoke-export`, the CIP-8 fixtures the
+Rust tests and the CI oracle pin by name, and `verify-account-votes`). `scripts/cardano-reference/` holds
+the M2d Cardano drivers — the only working lock/exit drivers for the live preprod `talk_vault`, and the
+provenance for the browser ports in `src/lib/cardano/`.
 
 ## Config surface
 

@@ -7,17 +7,16 @@
     "postinstall": "papi",
     "dev": "next dev -p 3000",
     "build": "next build",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 83 && node scripts/check-tokens.mjs && node scripts/check-spec.mjs",
+    "check:tokens": "node scripts/check-tokens.mjs",
+    "check:spec": "node scripts/check-spec.mjs",
+    "smoke": "node scripts/smoke-export.mjs",
     "papi:add": "papi add cogno -w ws://127.0.0.1:9944",
     "papi": "papi",
-    "test": "vitest run",
-    "grant": "node scripts/grant-weight.mjs",
-    "acceptance": "node scripts/papi-acceptance.mjs",
-    "acceptance:m2c": "node scripts/m2c-acceptance.mjs"
+    "test": "vitest run"
   },
   "dependencies": {
     "@fontsource-variable/inter-tight": "^5.2.7",
-    "@fontsource-variable/source-serif-4": "^5.2.9",
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@meshsdk/core": "^1.9.1",
     "@meshsdk/core-cst": "^1.9.1",

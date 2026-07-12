@@ -12,7 +12,7 @@
 
 import type { PolkadotClient, SizedHex } from "polkadot-api";
 import type { CognoApi, Ss58 } from "@/lib/types";
-import { stringifyDispatchError, stringifyError } from "@/lib/chain/post";
+import { classifyDispatchError, classifyThrown, errorCopy } from "@/lib/chain/errors";
 import { hexToBytes } from "@/lib/util/hex";
 
 /**
@@ -79,16 +79,16 @@ export async function submitLinkIdentityFeeless(
     const bareTx = await buildLinkIdentityTx(api, coseSign1Hex, coseKeyHex, threadHex).getBareTx();
     const res = await client.submit(bareTx);
     if (!res.ok) {
-      return { ok: false, error: stringifyDispatchError(res.dispatchError) };
+      return { ok: false, error: errorCopy(classifyDispatchError(res.dispatchError)) };
     }
     // PAPI v2: the event's `identity` ([u8;32]) decodes to a 0x-hex string, not a Binary with `.asHex()`.
     const ev = (res.events as Array<{ type: string; value?: { type: string; value?: { identity?: string } } }>)
       .find((e) => e.type === "CognoGate" && e.value?.type === "IdentityLinked");
     return { ok: true, identityHash: ev?.value?.value?.identity };
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error("cogno: feeless link_identity_signed submission failed:", stringifyError(e), e);
-    return { ok: false, error: stringifyError(e) };
+    const err = classifyThrown(e);
+    console.error("cogno: feeless link_identity_signed submission failed:", errorCopy(err), e);
+    return { ok: false, error: errorCopy(err) };
   }
 }
 
@@ -111,16 +111,16 @@ export async function submitLinkStakeFeeless(
     const bareTx = await buildLinkStakeTx(api, coseSign1Hex, coseKeyHex).getBareTx();
     const res = await client.submit(bareTx);
     if (!res.ok) {
-      return { ok: false, error: stringifyDispatchError(res.dispatchError) };
+      return { ok: false, error: errorCopy(classifyDispatchError(res.dispatchError)) };
     }
     // PAPI v2: the event's `stake_cred` ([u8;28]) decodes to a 0x-hex string, not a Binary with `.asHex()`.
     const ev = (res.events as Array<{ type: string; value?: { type: string; value?: { stake_cred?: string } } }>)
       .find((e) => e.type === "CognoGate" && e.value?.type === "StakeLinked");
     return { ok: true, stakeCredHex: ev?.value?.value?.stake_cred };
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error("cogno: feeless link_stake_signed submission failed:", stringifyError(e), e);
-    return { ok: false, error: stringifyError(e) };
+    const err = classifyThrown(e);
+    console.error("cogno: feeless link_stake_signed submission failed:", errorCopy(err), e);
+    return { ok: false, error: errorCopy(err) };
   }
 }
 
