@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation } from "./useMutation";
+import { useActionToast } from "./useActionToast";
 import { submitPollVote } from "@/lib/chain/mutations";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, PostingSigner, PollView, Ss58 } from "@/lib/types";
@@ -43,6 +44,7 @@ export function usePoll(
   bestBlock?: number | null,
 ): UsePoll {
   const { run } = useMutation();
+  const { fail } = useActionToast();
   const [poll, setPoll] = useState<PollView | null>(null);
   const [myChoice, setMyChoice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -112,8 +114,8 @@ export function usePoll(
           triesRef.current = 0;
           setPendingOption(option);
         },
-        onError: () => {
-          // Roll back to chain truth (the optimistic move + choice are undone by the fresh read).
+        onError: (message) => {
+          // Roll back to chain truth (the optimistic move + choice are undone by the fresh read)...
           setPendingOption(null);
           setMyChoice(prev);
           read()
@@ -123,10 +125,16 @@ export function usePoll(
               setMyChoice(r.choice);
             })
             .catch(() => {});
+          // ...and TELL the user. Without this the option silently slid back with no toast, no
+          // console, nothing — the only mutation hook that surfaced a rejection to no one.
+          // `fail` routes a rate-limit to its dedicated toast and everything else to a generic error.
+          fail(message);
         },
-      }).catch(() => {});
+      }).catch(() => {
+        /* failure surfaced via fail(); optimistic move rolled back in onError */
+      });
     },
-    [api, signer, hostId, myChoice, run, read],
+    [api, signer, hostId, myChoice, run, read, fail],
   );
 
   // Reconcile-reload: after a cast, re-read each block until the read reflects the cast option (or the

@@ -35,6 +35,12 @@ export interface PollComposerProps {
   autoFocus?: boolean;
   /** Hand back the trimmed args; the surface calls mutations.submitCreatePoll(question, options). */
   submitCreatePoll: (question: string, options: string[]) => void;
+  /**
+   * Flip back OUT of poll mode (to the plain composer). Optional: a surface that reaches PollComposer
+   * one-way (Home, which opens the poll modal directly) omits it and shows no toggle. The in-modal
+   * compose↔poll flip passes it so poll mode is not a one-way trap.
+   */
+  onTogglePoll?: () => void;
 }
 
 /** Ensure the controlled draft always has at least the two mandatory option slots. */
@@ -54,6 +60,7 @@ export function PollComposer({
   noPostingPower,
   autoFocus,
   submitCreatePoll,
+  onTogglePoll,
 }: PollComposerProps) {
   const options = useMemo(() => normalize(pollDraft.options), [pollDraft.options]);
 
@@ -193,6 +200,8 @@ export function PollComposer({
       autoFocus={autoFocus}
       text={pollDraft.question}
       onTextChange={setQuestion}
+      onTogglePoll={onTogglePoll}
+      pollActive={onTogglePoll ? true : undefined}
       extraValid={extraValid}
       contextBelow={fieldset}
       draftExtras={{ pollOptions: options }}

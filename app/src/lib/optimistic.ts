@@ -108,11 +108,18 @@ export function profilePatchSettled(view: ProfileView, patch: ProfilePatch | und
   );
 }
 
-/** Apply a count patch to a post's tallies (counts clamp at 0; score recomputed from weights). */
+/** Apply a count patch to a post's tallies (counts AND weights clamp at 0; score recomputed from weights). */
 export function applyCountPatch(post: CognoPost, patch: CountPatch | undefined): CognoPost {
   if (!patch) return post;
-  const upWeight = (post.upWeight ?? 0n) + (patch.upWeightDelta ?? 0n);
-  const downWeight = (post.downWeight ?? 0n) + (patch.downWeightDelta ?? 0n);
+  // Clamp weights at 0 like the chain's `saturating_sub`. Composing a reversal at a DIFFERENT weight
+  // than the vote was cast at over-subtracts below zero: every surface passes `votingPower ?? 0n`, so a
+  // vote cast while VotingPower is still loading applies +0, and reversing it once the real power has
+  // loaded applies -N against a base of 0 — rendering a NEGATIVE weight and a doubly-negative score.
+  // `useAccountVote.merge` has floored this since it shipped; the post path never did.
+  const upSum = (post.upWeight ?? 0n) + (patch.upWeightDelta ?? 0n);
+  const downSum = (post.downWeight ?? 0n) + (patch.downWeightDelta ?? 0n);
+  const upWeight = upSum < 0n ? 0n : upSum;
+  const downWeight = downSum < 0n ? 0n : downSum;
   return {
     ...post,
     upCount: Math.max(0, (post.upCount ?? 0) + (patch.upCountDelta ?? 0)),

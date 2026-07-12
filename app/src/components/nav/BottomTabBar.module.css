@@ -43,7 +43,7 @@
   align-items: center;
   justify-content: center;
   background: var(--cg-accent);
-  color: var(--cg-on-accent, #fff);
+  color: var(--cg-accent-contrast);
   border-radius: 999px;
   font-size: 9px;
   font-weight: 700;

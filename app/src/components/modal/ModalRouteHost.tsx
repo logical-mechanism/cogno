@@ -25,7 +25,7 @@ import { QuoteComposer } from "../QuoteComposer";
 import { PollComposer } from "../PollComposer";
 import { EditProfileModal } from "../EditProfileModal";
 import { useSession } from "../Providers";
-import { useModalStore } from "@/lib/modalStore";
+import { modalActions, useModalStore } from "@/lib/modalStore";
 import { useMutation } from "@/hooks/useMutation";
 import { useActionToast } from "@/hooks/useActionToast";
 import { useOptimistic } from "@/hooks/useOptimistic";
@@ -101,6 +101,10 @@ export function ModalRouteHost() {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   // Uncontrolled reply/quote drafts report dirtiness here so a close can confirm before discarding.
   const composerDirtyRef = useRef(false);
+  // Carries the in-flight words across a compose↔poll flip (see the reset effect). A ref, not state:
+  // the flip is driven by the modal store, so the reset effect below runs on the NEXT render with the
+  // new `kind` and would otherwise clobber anything the toggle handler had set.
+  const carryRef = useRef<string | null>(null);
 
   const kind = state.kind;
   const targetId = state.targetId ? BigInt(state.targetId) : null;
@@ -127,13 +131,19 @@ export function ModalRouteHost() {
   // Reset the per-open transient state whenever the modal kind changes (also on close → kind null).
   // Opening the plain composer HYDRATES the persisted post draft (localStorage) so an accidental close
   // or reload didn't lose it; other kinds start empty.
+  //
+  // EXCEPT across a compose↔poll flip, which is a mode swap within one open modal, not a new open. The
+  // flip hands the user's in-flight words through `carryRef` (a post's text IS a poll's question), so
+  // toggling does not silently blank the textarea they were typing in.
   useEffect(() => {
+    const carried = carryRef.current;
+    carryRef.current = null;
     setSubmitState("idle");
-    setText(kind === "compose" ? loadPostDraft() : "");
+    setText(kind === "compose" ? (carried ?? loadPostDraft()) : "");
     setSerialized(""); // the base Composer re-reports on mount; reply/quote leave it "" (base-cost gate)
     setConfirmDiscard(false);
     composerDirtyRef.current = false;
-    if (kind === "poll") setPollDraft({ question: "", options: ["", ""] });
+    if (kind === "poll") setPollDraft({ question: carried ?? "", options: ["", ""] });
   }, [kind]);
 
   // Persist the plain-compose draft as it changes (savePostDraft removes the key when it's empty).
@@ -185,6 +195,21 @@ export function ModalRouteHost() {
     if (isDirty()) setConfirmDiscard(true);
     else onClose();
   }, [isDirty, onClose]);
+
+  // The in-modal compose↔poll mode swap. Until this existed, `openPoll()` had exactly ONE caller —
+  // Home's inline composer, which is `display: none` below 688px — so poll creation was unreachable on
+  // mobile entirely, and on desktop unless you composed from the inline box. Both the LeftNav "Post"
+  // pill and the mobile FAB open THIS modal, which supported `kind === "poll"` all along with nothing
+  // able to ask for it. Each direction hands its in-flight words to the other (see `carryRef`).
+  const toPoll = useCallback(() => {
+    carryRef.current = text;
+    modalActions.openPoll();
+  }, [text]);
+
+  const toCompose = useCallback(() => {
+    carryRef.current = pollDraft.question;
+    modalActions.openCompose();
+  }, [pollDraft.question]);
 
   // The shared submit pipeline: optimistic insert → close → run(stream) with a phase() status toast
   // (sticky "…ing" → "…ed" + "View →" at inBestBlock, or dismissed + fail() on error). Rollback on
@@ -412,6 +437,7 @@ export function ModalRouteHost() {
             onSerializedChange={setSerialized}
             autoFocus
             onSubmit={onPost}
+            onTogglePoll={toPoll}
             onDirtyChange={onComposerDirty}
           />
         )}
@@ -449,6 +475,7 @@ export function ModalRouteHost() {
             rateLimited={rateLimited}
             autoFocus
             submitCreatePoll={onCreatePoll}
+            onTogglePoll={toCompose}
           />
         )}
       </ComposerModal>
