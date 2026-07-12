@@ -10,6 +10,8 @@ name: ci
 #   • frontend    — the Next.js static export (lint + Vitest pure-logic units + build).
 #   • cip8-oracle — the independent pycardano CIP-8 verifier (ci/cip8-oracle/), kept as an adversarial
 #                   SECOND implementation of the on-chain verifier (pallets/cogno-gate/src/cip8.rs).
+#
+# Each of those four runs only when the ref actually touches the layer it gates — see the `changes` job.
 on:
   push:
     branches: [main]
@@ -18,6 +20,11 @@ on:
 # Least-privilege token: this pipeline only builds + tests, it never writes repo contents.
 permissions:
   contents: read
+  # Read-only, and load-bearing. On `pull_request`, dorny/paths-filter reads the changed-file list from
+  # the REST API (GET /pulls/{n}/files) — the authoritative answer. An explicit `permissions:` block sets
+  # every scope it does NOT list to `none`, so without this line the filter 403s on every PR, the
+  # `changes` job dies, and all four jobs below skip: CI would silently run NOTHING and report green.
+  pull-requests: read
 
 # Cancel superseded runs on the same ref. (Deploy is a separate, manual workflow — deploy-app.yml —
 # so nothing here is ever mid-deploy; cancelling a stale build run is safe.)
@@ -26,7 +33,88 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which layers did this ref actually touch? Every job below is gated on this, because a frontend-only
+  # change was paying for a 10-minute whole-workspace Rust build: 142 of the last 209 runs compiled the
+  # polkadot-sdk with ZERO Rust files changed.
+  #
+  # A job skipped by a job-level `if:` bills no minutes and still posts a check run (conclusion `skipped`,
+  # which branch protection counts as success). A top-level `on.<event>.paths` filter would be simpler but
+  # posts NO check run at all — the day branch protection lands, a required check that never reports leaves
+  # the PR stuck on "Expected" forever. Do not convert this to `on.paths`.
+  #
+  # The filters are deliberately BROAD, because the failure mode here is fail-OPEN: an over-triggered job
+  # wastes ~10 minutes, but an under-triggered one merges a broken tree green. When in doubt, add the glob.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      contracts: ${{ steps.filter.outputs.contracts }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      # Underscore, not `cip8-oracle`: in a GitHub expression `steps.filter.outputs.cip8-oracle` parses as
+      # SUBTRACTION (cip8 minus oracle), evaluates to NaN, and would never equal 'true' — the oracle would
+      # silently never run again. Filter names must stay identifier-safe.
+      cip8_oracle: ${{ steps.filter.outputs.cip8_oracle }}
+    steps:
+      # fetch-depth 0 is for the `push` path, where dorny diffs against github.event.before with real git.
+      # (On pull_request it uses the REST API and needs no history — but the full clone is ~0.4 MB here.)
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # SHA-pinned, not @v3: a mutable major tag on a third-party action is the tj-actions/changed-files
+      # supply-chain footgun, and this workflow otherwise avoids third-party actions entirely.
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          # No `base:` — it is ignored on pull_request, and on push dorny already defaults to the commit
+          # before the push.
+          filters: |
+            # The `**/*.rs` + `**/Cargo.toml` catch-alls cover a new crate at a new top-level directory
+            # even if nobody remembers to update this list. Cargo.lock is load-bearing on its own: a
+            # dependabot cargo bump touches ONLY Cargo.lock and a Cargo.toml.
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'node/**'
+              - 'runtime/**'
+              - 'cli/**'
+              - 'pallets/**'
+              - 'cogno-dbsync/**'
+              - 'cogno-keyfile/**'
+              - '.github/workflows/ci.yml'
+            # ci.yml is NOT optional here: the aiken compiler pin (setup-aiken v1.1.22) lives in THIS file,
+            # and a compiler bump moves the compiled UPLC hash. Without this glob, a bot PR bumping the pin
+            # would skip the live-hash guard and merge green — orphaning the deployed preprod vault.
+            contracts:
+              - 'contracts/**'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'app/**'
+              # LOAD-BEARING, do not tidy away. `npm run lint` runs app/scripts/check-spec.mjs, which reads
+              # ../../runtime/src/lib.rs and fails if the runtime's spec_version has drifted from
+              # DESCRIPTOR_SPEC_VERSION in app/src/lib/chain/client.ts. Without this glob a runtime-only
+              # spec bump skips the frontend job, the drift merges green, and the app ships mis-encoded
+              # writes against the new runtime with its own boot guard blind.
+              - 'runtime/src/lib.rs'
+              - '.github/workflows/ci.yml'
+            # Deliberately NOT 'app/**'. The oracle npm-ci's app's deps and shells out to
+            # app/scripts/m2-cip8-fixture.mjs, but that fixture imports only node_modules (@meshsdk,
+            # blakejs, hdkd, polkadot-api) — it has no relative import into app/src, so an app/src change
+            # cannot affect it. cogno-gate is insurance: the whole point of the oracle is to shadow
+            # pallets/cogno-gate/src/cip8.rs with an independent implementation.
+            cip8_oracle:
+              - 'ci/cip8-oracle/**'
+              - 'app/scripts/**'
+              - 'app/package.json'
+              - 'app/package-lock.json'
+              - 'pallets/cogno-gate/**'
+              - '.github/workflows/ci.yml'
+
   rust:
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -64,6 +152,21 @@ jobs:
           sudo apt-get update &&
           sudo apt-get install -y clang llvm-dev libclang-dev protobuf-compiler cmake libssl-dev pkg-config
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The repo cache sits at 10.9 GB against GitHub's hard 10 GB limit, so it is in permanent LRU
+          # eviction — and the thing being evicted is this 1.29 GB rust cache, because every PR branch was
+          # writing its own copy alongside a 0.21 GB npm cache. That is why a dependabot rust job averaged
+          # 27 minutes against a 10-minute fleet average: not the Cargo.lock key miss, the eviction.
+          #
+          # Restrict WRITES to main — the lineage every PR restores from (GitHub cache scoping already lets
+          # a PR read its base branch's cache) — plus the dependency branches, which are the only ones that
+          # legitimately need a lineage of their own across pushes, since a Cargo.lock bump partially misses
+          # main's key. Every other branch is restore-only. This is also why `push: branches: [main]` below
+          # stays: with save-if in place, it is the sole writer of the cache all PRs depend on.
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'dependabot/') }}
+          # Default behaviour saves nothing when the job fails, which makes a red dependency PR re-pay the
+          # full cold build on every push until it goes green.
+          cache-on-failure: true
       # Cache-poison guard for the SKIP_WASM_BUILD clippy pass below. substrate-wasm-builder writes a
       # build-script output (`.../build/<crate>-<hash>/out/wasm_binary.rs`) that `include_bytes!` a
       # `target/*/wbuild/<crate>/<crate>.wasm`. rust-cache can restore that wasm_binary.rs while the
@@ -103,6 +206,8 @@ jobs:
         run: cargo build --workspace --locked
 
   contracts:
+    needs: changes
+    if: ${{ needs.changes.outputs.contracts == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -124,6 +229,8 @@ jobs:
           git diff --exit-code plutus.json
 
   frontend:
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -171,6 +278,8 @@ jobs:
     # verifier, kept precisely because it does NOT share the Rust verifier's lineage. test_agreement.py
     # shells out to a headless MeshJS fixture (app/scripts/m2-cip8-fixture.mjs) to generate REAL
     # wallet-signed proofs, so this job needs BOTH node (for the fixture + its app deps) and python.
+    needs: changes
+    if: ${{ needs.changes.outputs.cip8_oracle == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
