@@ -41,6 +41,19 @@ export interface UseLiveFeed {
   newCount: number;
   /** Accept the buffered new posts into view (the pill / `.` shortcut; the caller scrolls to top). */
   flush: () => void;
+  /**
+   * Re-read page 1 and fold it into the loaded list (the Home-tab re-tap + the error row's Retry).
+   *
+   * It FLUSHES the pill buffer, then merges a fresh page 1 over what is loaded — it does NOT replace
+   * the list. That distinction is the whole design: a replace would have to reset `cursor` (dropping
+   * every "load more" page under the viewer) and invalidate the in-flight `loadMore` epoch (whose
+   * epoch-gated `.finally` would then never clear `loadingMore`, wedging load-more for the session).
+   * A merge keys on post id, so it can neither duplicate nor drop a row, and the pages below stay put.
+   *
+   * Liveness already folds in NEW posts off the head id; what a manual refresh adds is fresh TALLIES
+   * (a vote writes no post, so the head never moves) and a way back from a read error.
+   */
+  refresh: () => void;
 }
 
 export function useLiveFeed(
@@ -71,6 +84,8 @@ export function useLiveFeed(
   overlayRef.current = overlay;
   // Epoch: bumped on every source change so an in-flight load-more from the OLD source is ignored.
   const epochRef = useRef(0);
+  // Single-flight guard for `refresh` — a spam-clicked Home button must not stack page-1 reads.
+  const refreshingRef = useRef(false);
 
   // `viewer: me` lets a spec-120 node stamp each post's myVote/reposted overlay node-side (one
   // state_call); the keyed + indexer paths ignore it. Re-keyed on `me` so connecting mid-session
@@ -104,6 +119,10 @@ export function useLiveFeed(
     setCursor(null);
     setReady(false);
     setError(null);
+    // The epoch bump above orphans any in-flight load-more, and its `.finally` is epoch-gated — so
+    // without this, a source change mid-load-more leaves `loadingMore` true forever and `loadMore`
+    // dead-returns on its own guard for the rest of the session.
+    setLoadingMore(false);
     if (!source) return;
 
     let cancelled = false;
@@ -221,6 +240,40 @@ export function useLiveFeed(
     setBuffered((prev) => prev.filter((p) => !promoted.has(String(p.id))));
   }, []);
 
+  // Re-read page 1 and MERGE it over the loaded list (see the `refresh` doc on UseLiveFeed above for
+  // why a merge and not a replace). Deliberately touches neither `cursor`, `epochRef`, `ready` nor
+  // `loadingMore`: the tail the viewer has paged in stays exactly where it is, and an in-flight
+  // load-more still lands. Failure is silent — the list on screen is still valid, and the head
+  // subscription keeps the feed live regardless.
+  const refresh = useCallback(() => {
+    flush(); // the pill's posts are already in memory: promote them for free, before any read
+    if (!source || refreshingRef.current) return; // single-flight: a double-tap reads page 1 once
+    refreshingRef.current = true;
+    const epoch = epochRef.current; // compared, never bumped
+    source
+      .page(baseQuery)
+      .then((pg) => {
+        if (epochRef.current !== epoch) return; // the source changed mid-flight — drop the stale page
+        const fresh = new Set(pg.posts.map((p) => String(p.id)));
+        pg.posts.forEach((p) => {
+          loadedIds.current.add(String(p.id));
+          // An explicit refresh means "show me everything now" — nothing it returns goes back behind
+          // the pill (and a concurrent head-tick that already buffered one of these ids must not leave
+          // a phantom count pointing at a post that is now visible).
+          bufferedIds.current.delete(String(p.id));
+        });
+        setLoaded((prev) => mergeById(prev, pg.posts)); // by id: cannot duplicate, cannot drop
+        setBuffered((prev) => prev.filter((p) => !fresh.has(String(p.id))));
+        setError(null); // the read demonstrably works — retire any stale error row
+      })
+      .catch(() => {
+        // Silent by design: this is a re-read of content already on screen, not a load.
+      })
+      .finally(() => {
+        refreshingRef.current = false;
+      });
+  }, [source, baseQuery, flush]);
+
   // (A former mid-session "promote my own buffered posts" effect lived here; it was redundant — a `me`
   // change re-keys baseQuery, which re-runs the reset effect above and re-seeds page-1 with the viewer
   // stamped in node-side, so the viewer's newest own post returns already loaded.)
@@ -286,5 +339,6 @@ export function useLiveFeed(
     loadMore,
     newCount: buffered.length,
     flush,
+    refresh,
   };
 }

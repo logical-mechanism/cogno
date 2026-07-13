@@ -19,6 +19,7 @@ import { Account } from "../Account";
 import { IconHome, IconSearch, IconProfile, IconBookmark, IconSettings, IconCompose, IconBell } from "../icons";
 import { useSession } from "../Providers";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
+import { useNavReTap } from "@/hooks/useNavReTap";
 import { useModalStore } from "@/lib/modalStore";
 import type { IconProps } from "../icons";
 
@@ -38,6 +39,8 @@ export function LeftNav() {
   const { viewer } = useSession();
   const { unreadCount } = useNotificationsFeed();
   const { openCompose } = useModalStore();
+  // Clicking the tab you're already on scrolls that surface to the top (and, on Home, refreshes it).
+  const reTap = useNavReTap();
 
   // Profile target resolves to the connected account, else the onboarding gate (doc 01 §6.4).
   const profileHref = viewer.address ? `/u/${viewer.address}/` : "/welcome/";
@@ -78,7 +81,7 @@ export function LeftNav() {
   return (
     <nav className={styles.nav} aria-label="Primary">
       <div className={styles.inner}>
-        <Link href="/" className={styles.wordmark} aria-label="cogno-chain home">
+        <Link href="/" className={styles.wordmark} onClick={reTap("/")} aria-label="cogno-chain home">
           <span className={styles.wordmarkText}>cogno</span>
         </Link>
 
@@ -90,6 +93,7 @@ export function LeftNav() {
               <li key={label}>
                 <Link
                   href={href}
+                  onClick={reTap(href)}
                   className={`${styles.item} ${active ? styles.active : ""}`}
                   aria-current={active ? "page" : undefined}
                   aria-label={count > 0 ? `${label} (${count} unread)` : undefined}

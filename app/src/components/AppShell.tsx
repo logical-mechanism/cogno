@@ -5,9 +5,14 @@
 // subscription, the connected wallet/identity, and the rails all survive client route changes.
 //
 // Layout by breakpoint (exact px, doc 01 §5.1): LeftNav (desktop ≥1020) / BottomTabBar (mobile <688) ·
-// main (THE scroll container on desktop: overflow-y:auto; height:100vh; centered, capped at
-// --cg-col-feed 600px) · RightRail (desktop ≥1020) · ComposeFab (mobile) · ModalRouteHost. The Toaster
-// is already mounted by ToasterProvider, so it is NOT re-mounted here.
+// main (centered, capped at --cg-col-feed 600px) · RightRail (desktop ≥1020) · ComposeFab (mobile) ·
+// ModalRouteHost. The Toaster is already mounted by ToasterProvider, so it is NOT re-mounted here.
+//
+// The DOCUMENT scrolls at every breakpoint — `main` is NOT a scroll container (AppShell.module.css:
+// "main FLOWS with the document"), which is what lets a scroll over the rails or the side margins move
+// the feed, with the rails held in place by `position: sticky`. Scroll the feed with lib/scroll.ts's
+// scrollToTop(). (This comment used to claim main was `overflow-y:auto; height:100vh` on desktop; it
+// never was, and Home carried a scrollable-ancestor walk that consequently never found anything.)
 //
 // Also exports StickyHeader (the blurred per-surface header every page composes) and NotFoundInline
 // (the in-app not-found state for an invalid dynamic param / unknown route).

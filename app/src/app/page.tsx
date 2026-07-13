@@ -17,7 +17,7 @@
 // One socket: everything reads from useSession(); this page never instantiates a client.
 //
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import styles from "./page.module.css";
 import { StickyHeader } from "@/components/AppShell";
@@ -42,19 +42,10 @@ import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { submitPost } from "@/lib/chain/mutations";
+import { scrollToTop } from "@/lib/scroll";
+import { subscribeHomeReset } from "@/lib/homeSignal";
 import type { CognoPost, FeedQuery } from "@/lib/types";
 import type { ActionState, ComposerDraft } from "@/components/kit";
-
-/** Walk up to the closest scrollable ancestor (the center column on desktop, document on mobile). */
-function scrollContainerOf(el: HTMLElement | null): HTMLElement | null {
-  let node: HTMLElement | null = el?.parentElement ?? null;
-  while (node) {
-    const style = window.getComputedStyle(node);
-    if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
-    node = node.parentElement;
-  }
-  return null;
-}
 
 export default function HomePage() {
   const router = useRouter();
@@ -192,17 +183,27 @@ export default function HomePage() {
   );
 
   // ── new-posts pill flush ────────────────────────────────────────────────────────────────────
-  const anchorRef = useRef<HTMLDivElement | null>(null);
+  // Depend on `forYou.flush` — a stable useCallback — and NOT on `forYou`, which useLiveFeed rebuilds
+  // as a fresh object literal every render (so `[forYou]` gave this handler a new identity per render,
+  // and the effect below would re-subscribe on every one of them).
+  const forYouFlush = forYou.flush;
   const flushPending = useCallback(() => {
-    forYou.flush(); // accept the buffered new posts into view
-    const scroller = scrollContainerOf(anchorRef.current);
-    const reduce =
-      typeof window !== "undefined" &&
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    const behavior: ScrollBehavior = reduce ? "auto" : "smooth";
-    if (scroller) scroller.scrollTo({ top: 0, behavior });
-    else window.scrollTo({ top: 0, behavior });
-  }, [forYou]);
+    forYouFlush(); // accept the buffered new posts into view
+    scrollToTop();
+  }, [forYouFlush]);
+
+  // ── Home re-tap: the nav's Home button (or wordmark) clicked while already on "/" ───────────
+  // The X gesture. The nav owns the scroll-to-top (it does that for every tab); Home is the only
+  // surface with a feed to re-read, so it owns what "refresh" means — which is per-TAB. For-you
+  // promotes the pill buffer and re-reads page 1 for fresh tallies; Following has no liveness
+  // subscription at all, so its re-read is the only way that tab ever picks up a new post.
+  const forYouRefresh = forYou.refresh;
+  const followingRefresh = followingPage.refresh;
+  const onHomeReset = useCallback(() => {
+    if (activeTab === "following") followingRefresh();
+    else forYouRefresh();
+  }, [activeTab, forYouRefresh, followingRefresh]);
+  useEffect(() => subscribeHomeReset(onHomeReset), [onHomeReset]);
 
   // ── per-card action bundle ──────────────────────────────────────────────────────────────────
   const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
@@ -236,9 +237,6 @@ export default function HomePage() {
         }
       />
 
-      {/* anchor for the scroll-to-top target resolution */}
-      <div ref={anchorRef} aria-hidden />
-
       {/* inline composer — desktop/tablet only (CSS-gated < 688px); mobile uses the ComposeFab.
           Time-boxed: this is a simple NON-collapsing inline composer (no scroll-collapse). */}
       {viewer.status === "ready" && (
@@ -270,6 +268,7 @@ export default function HomePage() {
           handlers={handlers}
           loading={followingLoading}
           error={followingPage.error}
+          onRetry={followingRefresh}
           hasMore={followingPage.hasNextPage}
           onLoadMore={followingPage.loadMore}
           loadingMore={followingPage.loading}
@@ -305,6 +304,7 @@ export default function HomePage() {
           handlers={handlers}
           loading={forYouLoading}
           error={feedError}
+          onRetry={forYouRefresh}
           hasMore={forYou.hasMore}
           onLoadMore={forYou.loadMore}
           loadingMore={forYou.loadingMore}
