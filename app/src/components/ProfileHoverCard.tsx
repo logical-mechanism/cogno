@@ -17,9 +17,11 @@ import { Avatar } from "./Avatar";
 import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
 import { FollowButton } from "./FollowButton";
+import { AccountVoteControl } from "./profile/AccountVoteControl";
 import { Spinner } from "./icons";
 import { useSession } from "./Providers";
 import { useFollow } from "@/hooks/useFollow";
+import { useAccountVoteFor } from "@/hooks/useAccountVote";
 import type { AuthorRef } from "./kit";
 import type { ProfileView } from "@/lib/types";
 
@@ -156,6 +158,11 @@ function HoverPopover({
   const { api, signer, source, viewer } = useSession();
   const me = viewer.address ?? null;
   const follow = useFollow(api, signer, source, me);
+  // The reputation vote, from the same hook the profile header uses — so you can endorse or dispute an
+  // account without opening it, and a vote cast here is already showing when you do. No `liveKey`: the
+  // card is open for seconds, and its own vote comes back through the write side's confirm invalidation.
+  // The score is usually already warm — every avatar in the feed registers this account's tally key.
+  const accountVote = useAccountVoteFor(author.address);
   const [profile, setProfile] = useState<ProfileView | null>(
     () => profileCache.get(author.address) ?? null,
   );
@@ -224,13 +231,34 @@ function HoverPopover({
         <button type="button" className={styles.avatarBtn} onClick={openProfile} aria-label="Open profile">
           <Avatar address={author.address} src={avatar} size="lg" dim={banned} name={displayName} />
         </button>
-        <FollowButton
-          target={author.address}
-          isFollowing={follow.isFollowing(author.address)}
-          viewer={viewer}
-          onToggle={onToggle}
-          size="sm"
-        />
+        <div className={styles.actions}>
+          {/* Gated on the vote reads AND on `profile`, and both halves of that are load-bearing.
+              `accountVote.ready`: a fabricated `0` beside an unlit arrow reads as "nobody has voted and
+              neither have you" — a lie that invites a duplicate vote.
+              `profile != null`: `banned` defaults to FALSE until the profile read lands (a mention seeds
+              it that way), so rendering before it would offer live arrows on an account that may not be
+              identity-bound at all. The chain rejects that vote with TargetNotAllowed — after burning a
+              slice of talk-capacity. So it fails closed: no profile, no arrows. */}
+          {accountVote.ready && profile != null && (
+            <AccountVoteControl
+              compact
+              vote={accountVote.vote}
+              gate={viewer}
+              isSelf={me != null && me === author.address}
+              votable={!banned}
+              pending={accountVote.pending}
+              onUp={accountVote.onUp}
+              onDown={accountVote.onDown}
+            />
+          )}
+          <FollowButton
+            target={author.address}
+            isFollowing={follow.isFollowing(author.address)}
+            viewer={viewer}
+            onToggle={onToggle}
+            size="sm"
+          />
+        </div>
       </div>
 
       <button type="button" className={styles.nameBtn} onClick={openProfile}>

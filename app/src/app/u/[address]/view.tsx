@@ -43,7 +43,7 @@ import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
-import { useAccountVote } from "@/hooks/useAccountVote";
+import { useAccountVoteFor } from "@/hooks/useAccountVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { isPlausibleSs58, handleOf } from "@/lib/ss58";
@@ -232,74 +232,22 @@ function ProfileBody({ address }: { address: Ss58 }) {
     [viewer.writeReady, follow, router],
   );
 
-  // ── account reputation (header): stake-weighted up/down votes ON this account (spec-202). The base
-  // tally + the viewer's own vote come from the profile read; useAccountVote layers a local optimistic
-  // override (single-target, single-surface — it never touches the app-wide overlay). ──
-  const accountVoteHook = useAccountVote(api, signer, votingPower ?? 0n);
+  // ── account reputation (header): stake-weighted up/down votes ON this account (spec-202) ──
+  // One shared hook, the same one the profile hover card uses — so a vote cast from a hover card is
+  // already showing when you land here. It composes the two session caches (the account tally + the
+  // viewer's own vote) and rebases the viewer's declared intent over them; the whole bespoke block that
+  // used to live here (a composed delta, a settle-on-agreement effect, a pending-flash guard, an unmount
+  // reset) is gone, because rebasing makes settling an arithmetic identity rather than a rule.
+  //
+  // `liveKey: bestBlock` is the one thing this surface asks for that a hover card does not: re-read the
+  // tally each block, so somebody ELSE's vote appears without a reload while you sit on the page.
   const {
-    upvote: upvoteAccount,
-    downvote: downvoteAccount,
-    merge: mergeAccountVote,
-    reset: resetAccountVote,
-    isOptimistic: isAccountVoteOptimistic,
-    pending: accountVotePendingRaw,
-  } = accountVoteHook;
-  const accountVoteBase = useMemo(
-    () => ({
-      myVote: profile?.myAccountVote ?? null,
-      upWeight: profile?.accountUpWeight ?? 0n,
-      downWeight: profile?.accountDownWeight ?? 0n,
-      upCount: profile?.accountUpCount ?? 0,
-      downCount: profile?.accountDownCount ?? 0,
-    }),
-    [
-      profile?.myAccountVote,
-      profile?.accountUpWeight,
-      profile?.accountDownWeight,
-      profile?.accountUpCount,
-      profile?.accountDownCount,
-    ],
-  );
-  const shownAccountVote = mergeAccountVote(address, accountVoteBase);
-  // Scope the pending-disable to THIS profile: `pending` is shared across the reused ProfileBody, so a
-  // vote in flight on /u/A must not disable /u/B's arrows — only when THIS target carries the override.
-  const accountVotePending = accountVotePendingRaw && isAccountVoteOptimistic(address);
-  // Retire a SETTLED override once a fresh read of the viewer's OWN vote matches what we show (merge
-  // already renders the base when settled, so this only keeps the record + `isOptimistic` clean). The
-  // separate cleanup below drops this address's override on a profile switch (ProfileBody is reused
-  // across /u/A → /u/B) so a not-yet-reconciled override can't leak back on return.
-  useEffect(() => {
-    // Only retire once NO tx is in flight: a net-zero re-vote (Up then clear) transiently makes
-    // `o.myVote === base.myVote` while both txs are still pending, and dropping the override then would
-    // expose an intermediate read (a brief "Up" flash before the clear lands). Waiting for `!pending`
-    // keeps the override holding the intended end-state until the chain has fully caught up.
-    if (
-      !accountVotePendingRaw &&
-      isAccountVoteOptimistic(address) &&
-      (profile?.myAccountVote ?? null) === shownAccountVote.myVote
-    ) {
-      resetAccountVote(address);
-    }
-  }, [
-    accountVotePendingRaw,
-    address,
-    profile?.myAccountVote,
-    shownAccountVote.myVote,
-    isAccountVoteOptimistic,
-    resetAccountVote,
-  ]);
-  useEffect(() => {
-    return () => resetAccountVote(address);
-  }, [address, resetAccountVote]);
-
-  const onAccountUp = useCallback(() => {
-    if (!viewer.writeReady) return void router.push("/welcome/");
-    upvoteAccount(address, shownAccountVote.myVote);
-  }, [viewer.writeReady, router, upvoteAccount, address, shownAccountVote.myVote]);
-  const onAccountDown = useCallback(() => {
-    if (!viewer.writeReady) return void router.push("/welcome/");
-    downvoteAccount(address, shownAccountVote.myVote);
-  }, [viewer.writeReady, router, downvoteAccount, address, shownAccountVote.myVote]);
+    vote: shownAccountVote,
+    ready: accountVoteReady,
+    pending: accountVotePending,
+    onUp: onAccountUp,
+    onDown: onAccountDown,
+  } = useAccountVoteFor(address, { liveKey: bestBlock });
 
   // ── pinned post: resolve the single id via source.thread(id).root (the seam's one-post resolver). ──
   // Silently omit on 404 / throw / author-mismatch (doc 07 §5.1 / §11). Only on the Posts tab.
@@ -465,7 +413,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
             isFollowing={isFollowing}
             onEditProfile={onEditProfile}
             onToggleFollow={onToggleFollow}
-            canAccountVote={canAccountVote}
+            canAccountVote={canAccountVote && accountVoteReady}
             accountVote={shownAccountVote}
             accountVotePending={accountVotePending}
             onAccountUp={onAccountUp}

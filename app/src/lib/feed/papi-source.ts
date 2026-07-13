@@ -48,8 +48,6 @@ import {
   readPoll,
   readViewerPostState,
   readViewerPollChoice,
-  readAccountVoteTally,
-  readViewerAccountVote,
 } from "@/lib/chain/social-reads";
 import type {
   CognoApi,
@@ -232,8 +230,6 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       followingCount,
       profileRec,
       pinned,
-      accountTally,
-      myAccountVote,
     ] = await Promise.all([
         // The header "N posts" is the author's TOP-LEVEL post count, matching the top-level cards in
         // the Posts tab below — served O(1) off the on-chain `TopLevelByAuthor` counter. The keyed
@@ -253,12 +249,10 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
         // reason as the sibling read in useAccountProfile; see `BEST` in lib/chain/node-reads.
         api.query.Profile.Profiles.getValue(account, { at: "best" }),
         api.query.Profile.PinnedPost.getValue(account),
-        // spec-202 account reputation tally + (when a viewer is known) their own vote on this account.
-        // No viewer ⇒ `undefined` (unknown), NOT `null` (which means "known viewer, has not voted").
-        readAccountVoteTally(api, account),
-        args.viewer
-          ? readViewerAccountVote(api, account, args.viewer)
-          : Promise.resolve<"Up" | "Down" | null | undefined>(undefined),
+        // (The spec-202 account reputation tally + the viewer's own vote used to be read here. They now
+        // live in their own session cache — `useAccountVoteState` — because the vote control needs them
+        // FRESH after a write and this read is not invalidated by one. Reading them here as well meant a
+        // profile page re-read both storage keys every block and threw the results away.)
       ]);
     const banned = pkh === undefined;
     // PAPI v2: PkhOf's `[u8;32]` value decodes to a 0x-hex string, not a Binary with `.asHex()`.
@@ -318,13 +312,6 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       pinnedPostId: pinned == null ? undefined : BigInt(pinned),
       followerCount: Number(followerCount ?? 0),
       followingCount: Number(followingCount ?? 0),
-      // spec-202 account reputation: the tally + the viewer's own vote (drives the header control).
-      accountScore: accountTally.score,
-      accountUpWeight: accountTally.upWeight,
-      accountDownWeight: accountTally.downWeight,
-      accountUpCount: accountTally.upCount,
-      accountDownCount: accountTally.downCount,
-      myAccountVote,
       page: {
         posts,
         endCursor,

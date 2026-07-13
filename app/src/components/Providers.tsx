@@ -28,6 +28,8 @@ import { deriveSessionState, type SessionState } from "@/lib/session";
 import { ToasterProvider } from "@/components/toast/ToasterProvider";
 import { OptimisticProvider } from "@/hooks/useOptimistic";
 import { ReputationProvider } from "@/hooks/useReputation";
+import { AccountVoteStateProvider } from "@/hooks/useAccountVoteState";
+import { AccountVoteProvider } from "@/hooks/useAccountVote";
 import { AuthorWeightProvider } from "@/hooks/useAuthorWeight";
 import { NestedQuoteProvider } from "@/hooks/useNestedQuote";
 import { AccountProfileProvider } from "@/hooks/useAccountProfile";
@@ -202,13 +204,22 @@ function ChainProvider({ children }: { children: ReactNode }) {
   return (
     <SessionContext.Provider value={value}>
       <ReputationProvider>
-        <AuthorWeightProvider>
-          <NestedQuoteProvider>
-            <AccountProfileProvider>
-              <NotificationsProvider>{children}</NotificationsProvider>
-            </AccountProfileProvider>
-          </NestedQuoteProvider>
-        </AuthorWeightProvider>
+        <AccountVoteStateProvider>
+          <AuthorWeightProvider>
+            <NestedQuoteProvider>
+              <AccountProfileProvider>
+                {/* The account-vote WRITE side. It must outlive every surface that can cast a vote: a
+                    hover card unmounts ~200ms after the mouse leaves, and useMutation kills an unsettled
+                    run's callbacks when its caller unmounts — so a vote cast from a popover would lose
+                    both its confirm (nothing would refresh the tally) and its failure toast. It sits
+                    inside both vote caches because it invalidates them once a vote lands. */}
+                <AccountVoteProvider>
+                  <NotificationsProvider>{children}</NotificationsProvider>
+                </AccountVoteProvider>
+              </AccountProfileProvider>
+            </NestedQuoteProvider>
+          </AuthorWeightProvider>
+        </AccountVoteStateProvider>
       </ReputationProvider>
     </SessionContext.Provider>
   );

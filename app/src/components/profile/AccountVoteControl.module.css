@@ -9,6 +9,13 @@
   margin-top: var(--cg-space-2);
 }
 
+/* Compact (a hover card's action row): no caption, and no top margin — that margin exists to stack this
+   under the profile header's follow counts, and inside a flex action row it just shoves it off-centre. */
+.compact {
+  margin-top: 0;
+  gap: 0;
+}
+
 .label {
   font-size: var(--cg-fs-xs);
   color: var(--cg-text-secondary);

@@ -47,6 +47,16 @@
   gap: var(--cg-space-3);
 }
 
+/* The card's action cluster: the reputation ▲ score ▼ then Follow, right-aligned opposite the avatar.
+   The vote group's 34px hover wash carries a -7px margin, so its layout box is only 20px tall and the
+   row's height — and therefore the card's — is unchanged (EST_H stays right). */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  min-width: 0;
+}
+
 .avatarBtn {
   padding: 0;
   border: 0;

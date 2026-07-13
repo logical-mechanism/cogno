@@ -34,6 +34,12 @@ export interface AccountVoteControlProps {
    * `TargetNotAllowed`), so hide the arrows but keep the historical score visible. */
   votable?: boolean;
   pending?: boolean;
+  /**
+   * Drop the "Reputation" caption and the header-stacking margin: the control is sitting in a tight
+   * action row (a hover card's top row, next to Follow), not stacked under a profile header. The wrap's
+   * aria-label and each arrow's own aria-label/title already carry everything the caption said.
+   */
+  compact?: boolean;
   onUp: () => void;
   onDown: () => void;
 }
@@ -44,6 +50,7 @@ export function AccountVoteControl({
   isSelf,
   votable = true,
   pending,
+  compact = false,
   onUp,
   onDown,
 }: AccountVoteControlProps) {
@@ -55,8 +62,11 @@ export function AccountVoteControl({
   const showArrows = votable && !isSelf;
 
   return (
-    <div className={styles.wrap} aria-label="Community reputation (stake-weighted)">
-      <span className={styles.label}>Reputation</span>
+    <div
+      className={`${styles.wrap} ${compact ? styles.compact : ""}`}
+      aria-label="Community reputation (stake-weighted)"
+    >
+      {!compact && <span className={styles.label}>Reputation</span>}
       <div className={styles.voteGroup}>
         {showArrows && (
           <button
