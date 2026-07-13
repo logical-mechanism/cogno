@@ -52,14 +52,6 @@
   color: var(--cg-text);
 }
 
-.signingIn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--cg-space-2);
-  font-size: var(--cg-fs-md);
-  color: var(--cg-text-secondary);
-}
-
 .walletRow,
 .acctRow {
   display: flex;

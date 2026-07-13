@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import styles from "./AccountSection.module.css";
 import { Handle } from "@/components/Handle";
 import { Spinner } from "@/components/icons";
+import { Loading } from "@/components/Loading";
 import { Skeleton } from "@/components/Skeleton";
 import { useSession } from "@/components/Providers";
 import { useToaster } from "@/components/toast/ToasterProvider";
@@ -84,9 +85,7 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
     return (
       <div className={styles.cards}>
         <div className={styles.card}>
-          <span className={styles.signingIn}>
-            <Spinner size="sm" label="Signing in" /> Signing in…
-          </span>
+          <Loading variant="panel" label="Signing you in…" />
         </div>
       </div>
     );

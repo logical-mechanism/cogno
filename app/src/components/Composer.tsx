@@ -26,6 +26,7 @@ import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
 import { CapacityMeter } from "./CapacityMeter";
 import { Avatar } from "./Avatar";
 import { Spinner, IconPoll } from "./icons";
+import { Loading } from "./Loading";
 import styles from "./Composer.module.css";
 import type {
   Viewer,
@@ -572,9 +573,7 @@ function EmojiPicker({ onPick }: { onPick: (e: string) => void }) {
         <div className={styles.emojiPanel} style={anchorStyle} onKeyDown={onPanelKeyDown}>
           <Suspense
             fallback={
-              <div className={styles.emojiPanelLoading}>
-                <Spinner size="sm" />
-              </div>
+              <Loading variant="panel" label="Loading emoji…" quiet />
             }
           >
             <EmojiPickerPanel onPick={pick} />

@@ -10,7 +10,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import styles from "./WelcomeShell.module.css";
 import { ProgressDots } from "./ProgressDots";
-import { Spinner } from "@/components/icons";
+import { Loading } from "@/components/Loading";
 
 export interface WelcomeShellProps {
   /** 1-based active step for the progress dots (1..4). Ignored while `loading`. */
@@ -30,10 +30,7 @@ export function WelcomeShell({ step = 1, loading = false, children }: WelcomeShe
         </Link>
 
         {loading ? (
-          <div className={styles.loading} role="status" aria-live="polite">
-            <Spinner />
-            <span className={styles.loadingLabel}>Signing you in…</span>
-          </div>
+          <Loading variant="fit" label="Signing you in…" />
         ) : (
           <>
             <ProgressDots step={step} total={4} />

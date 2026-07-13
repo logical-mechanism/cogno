@@ -110,8 +110,11 @@
   font-weight: var(--cg-fw-bold);
 }
 
+/* The counts row while the profile read is in flight. Centred like every other wait in the app —
+ * this was the one indicator in the app with no `justify-content` at all, so it sat flush left. */
 .loading {
   display: flex;
+  justify-content: center;
   padding: var(--cg-space-1) 0;
 }
 

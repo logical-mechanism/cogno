@@ -8,10 +8,11 @@
 
 import { Suspense } from "react";
 import { ComposePage } from "@/components/compose/ComposePage";
+import { Loading } from "@/components/Loading";
 
 export default function ComposeRoute() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<Loading variant="surface" label="Opening the composer…" />}>
       <ComposePage />
     </Suspense>
   );

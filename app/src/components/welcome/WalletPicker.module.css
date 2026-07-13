@@ -38,19 +38,6 @@
   text-align: left;
 }
 
-.loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--cg-space-2);
-  padding: var(--cg-space-6) 0;
-  color: var(--cg-text-secondary);
-}
-
-.srLabel {
-  font-size: var(--cg-fs-sm);
-}
-
 .derivingRow {
   display: flex;
   align-items: center;

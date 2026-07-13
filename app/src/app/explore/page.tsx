@@ -29,6 +29,7 @@ import styles from "./page.module.css";
 import { SearchBar } from "@/components/SearchBar";
 import { Timeline } from "@/components/Timeline";
 import { EmptyState } from "@/components/EmptyState";
+import { Loading } from "@/components/Loading";
 import { ResultTabStrip, RESULT_PANEL_ID, type ResultTab } from "@/components/explore/ResultTabStrip";
 import { ExploreList } from "@/components/explore/ExploreList";
 import { useSession } from "@/components/Providers";
@@ -54,7 +55,7 @@ const PAGE_SIZE = FEED_PAGE_SIZE;
 export default function ExploreRoute() {
   // useSearchParams() resolves client-side under the static export — wrap in Suspense (mirrors /compose).
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<Loading variant="surface" label="Loading Explore…" />}>
       <ExploreView />
     </Suspense>
   );

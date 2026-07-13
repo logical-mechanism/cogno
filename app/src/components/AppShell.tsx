@@ -28,6 +28,7 @@ import { BottomTabBar } from "./nav/BottomTabBar";
 import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
 import { EmptyState } from "./EmptyState";
+import { Loading } from "./Loading";
 import { IconBack } from "./icons";
 import { useSession } from "./Providers";
 
@@ -62,8 +63,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <div className={styles.standalone}>{children}</div>;
   }
 
-  // Logged-out on an app route: render nothing while the redirect effect runs (never flash the feed).
-  if (!loggedIn) return null;
+  // Logged-out on an app route: never flash the feed — but never flash a BLANK PAGE either. There is no
+  // persistent session (the posting key is re-derived from a wallet signature each visit), so this is
+  // every cold load and every hard refresh of every route, and it used to render `null`: a white screen
+  // until the redirect landed. Neutral copy on purpose — this covers both "your session is coming back"
+  // and "you are genuinely logged out and about to land on /welcome".
+  if (!loggedIn) return <Loading variant="screen" label="Loading…" />;
 
   return (
     <div className={styles.shell}>

@@ -1,0 +1,46 @@
+/* Loading — the one blocking-wait indicator: spinner over caption, dead-centre of the surface that is
+ * waiting. The three variants differ ONLY in how much room the wait owns (that is, in what "centred" is
+ * measured against). Everything else — the stack, the gap, the caption type — is shared, which is the
+ * entire point: a wait should look the same wherever it happens. */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cg-space-3);
+  text-align: center;
+}
+
+/* The whole viewport: a cold load, a route-level Suspense gate. */
+.screen {
+  min-height: 100vh;
+  padding: var(--cg-space-6);
+}
+
+/* The routed column, below the sticky header. Not 100vh — the header is already painted above it, so a
+ * full-viewport box would push the spinner below the fold. Roughly centres it in what you can see. */
+.surface {
+  min-height: 50vh;
+  padding: var(--cg-space-7) var(--cg-space-4);
+}
+
+/* A bounded box: a modal body, a dropdown, a popover. Tall enough that the surrounding chrome does not
+ * collapse around the spinner and then snap back open when the content lands. */
+.panel {
+  min-height: 120px;
+  padding: var(--cg-space-5) var(--cg-space-4);
+}
+
+/* No room of its own — the caller already centres it (WelcomeShell's column is `margin: auto 0` inside a
+ * 100vh root). Handing THAT a min-height does not move the spinner, it just inflates the column and
+ * shoves the caller's own content — the "cogno" wordmark — up out of the centre, leaving a void. */
+.fit {
+  padding: var(--cg-space-3) 0;
+}
+
+.label {
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-md);
+}
