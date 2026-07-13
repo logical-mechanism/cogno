@@ -11,6 +11,7 @@ import styles from "./BottomTabBar.module.css";
 import { IconHome, IconSearch, IconProfile, IconSettings, IconBell } from "../icons";
 import { useSession } from "../Providers";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
+import { useNavReTap } from "@/hooks/useNavReTap";
 import type { IconProps } from "../icons";
 
 interface Tab {
@@ -25,6 +26,8 @@ export function BottomTabBar() {
   const pathname = usePathname() ?? "/";
   const { viewer } = useSession();
   const { unreadCount } = useNotificationsFeed();
+  // Tapping the tab you're already on scrolls that surface to the top (and, on Home, refreshes it).
+  const reTap = useNavReTap();
   const profileHref = viewer.address ? `/u/${viewer.address}/` : "/welcome/";
 
   const tabs: Tab[] = [
@@ -60,6 +63,7 @@ export function BottomTabBar() {
           <Link
             key={label}
             href={href}
+            onClick={reTap(href)}
             className={`${styles.tab} ${active ? styles.active : ""}`}
             aria-current={active ? "page" : undefined}
             aria-label={count > 0 ? `${label} (${count} unread)` : label}

@@ -209,15 +209,11 @@ export interface ProfileView {
   /** Follower/following counts (node-served, off the denormalised counters). */
   followerCount?: number;
   followingCount?: number;
-  // ── spec-202 account reputation (stake-weighted up/down votes ON this account) ──
-  /** Net stake-weighted reputation score (`accountUpWeight − accountDownWeight`; may be negative). */
-  accountScore?: bigint;
-  accountUpWeight?: bigint;
-  accountDownWeight?: bigint;
-  accountUpCount?: number;
-  accountDownCount?: number;
-  /** The connected viewer's own vote on this account (null = not voted; undefined = no viewer / unknown). */
-  myAccountVote?: "Up" | "Down" | null;
+  // (The spec-202 account reputation tally + the viewer's own vote used to hang here. They are read
+  // through their own session cache now — see hooks/useAccountVoteState — so that a vote can invalidate
+  // them and the control re-reads. Leaving them on ProfileView would have been a trap: nothing
+  // invalidates a ProfileView, so a surface wiring itself to them would render a score that silently
+  // desynced from the vote control sitting next to it.)
   page: FeedPage;
 }
 

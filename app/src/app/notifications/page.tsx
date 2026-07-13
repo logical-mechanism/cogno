@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { StickyHeader } from "@/components/AppShell";
 import { Tabs } from "@/components/ui/Tabs";
 import { EmptyState } from "@/components/EmptyState";
-import { Spinner } from "@/components/icons";
+import { Loading } from "@/components/Loading";
 import { NotificationRow } from "@/components/notifications/NotificationRow";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useSession } from "@/components/Providers";
@@ -115,9 +115,7 @@ export default function NotificationsPage() {
             description="Connect your wallet to follow replies, likes, mentions and new followers."
           />
         ) : (!feed.loaded || feed.loading) && items.length === 0 ? (
-          <div className={styles.loading} aria-busy>
-            <Spinner size="md" label="Loading notifications" />
-          </div>
+          <Loading variant="surface" label="Loading notifications…" />
         ) : showEmpty ? (
           <EmptyState
             variant="generic"

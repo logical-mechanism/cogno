@@ -50,9 +50,12 @@
   min-width: 0;
 }
 
+/* The "Searching…" / "No matches" row. Centred, unlike the selectable result rows above it — it is a
+ * status, not something you can pick, and every other wait in the app is centred too. */
 .status {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--cg-space-2);
   padding: var(--cg-space-2) var(--cg-space-3);
   color: var(--cg-text-muted);

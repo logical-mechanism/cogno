@@ -18,6 +18,7 @@ import styles from "./WalletPicker.module.css";
 import { WalletRow } from "./WalletRow";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/icons";
+import { Loading } from "@/components/Loading";
 import { listCardanoWallets, type CardanoWalletInfo } from "@/lib/cardano/cip8";
 
 export interface WalletPickerProps {
@@ -115,9 +116,7 @@ export function WalletPicker({
       <p className={styles.lede}>Connect a Cardano wallet to start posting.</p>
 
       {wallets === null ? (
-        <div className={styles.loading} aria-live="polite">
-          <Spinner /> <span className={styles.srLabel}>Looking for wallets…</span>
-        </div>
+        <Loading variant="panel" label="Looking for wallets…" />
       ) : wallets.length === 0 ? (
         <EmptyState
           variant="generic"

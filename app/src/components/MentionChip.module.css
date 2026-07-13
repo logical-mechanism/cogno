@@ -1,22 +1,16 @@
-/* MentionChip — an in-body `@<ss58>` mention: a tiny identicon + the account's display name, in the
- * accent colour, linking to their profile. inline-flex so it flows inside the post text and wraps. */
+/* MentionChip — an in-body `@<ss58>` mention: the account's display name in the accent colour, linking
+ * to their profile. Plain inline TEXT, so it flows, wraps and sits on the baseline like any other word
+ * in the sentence. (It used to be an inline-flex chip leading with a 16px identicon — no recognisable
+ * signal at that size, and it made every mention an atomic box that could not line-break.) The avatar
+ * and the rest of the identity live in the hover card. */
 
 .mention {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2em;
   color: var(--cg-accent);
-  /* keep the chip on the text baseline within a flowing paragraph */
-  vertical-align: bottom;
   border-radius: var(--cg-radius-input);
-  max-width: 100%;
 }
 
 .mention:hover {
   color: var(--cg-accent-hover);
-}
-
-.mention:hover .name {
   text-decoration: underline;
   text-underline-offset: 0.15em;
 }
@@ -24,16 +18,4 @@
 .mention:focus-visible {
   outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
   outline-offset: var(--cg-focus-ring-offset);
-}
-
-/* the identicon sits just inside the leading edge; sized to ~1 line-height so it never bloats the row */
-.mention :global(.cg-avatar),
-.mention > :first-child {
-  flex: 0 0 auto;
-}
-
-.name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

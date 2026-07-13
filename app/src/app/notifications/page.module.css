@@ -21,12 +21,6 @@
   flex-direction: column;
 }
 
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: var(--cg-space-6);
-}
-
 .truncated {
   padding: var(--cg-space-4);
   color: var(--cg-text-muted);

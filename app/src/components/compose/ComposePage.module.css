@@ -63,16 +63,6 @@
   padding: var(--cg-space-3) var(--cg-space-4) var(--cg-space-6);
 }
 
-/* The cold-deep-link reply/quote context loader placeholder. */
-.contextLoading {
-  min-height: 96px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--cg-text-secondary);
-  padding: var(--cg-space-5) 0;
-}
-
 /* The muted "This post is unavailable." stub for a missing reply/quote target (§8). */
 .contextUnavailable {
   border: 1px solid var(--cg-border);

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./ConnectWalletButton.module.css";
 import { Spinner } from "./icons";
+import { Loading } from "./Loading";
 import { useSession } from "./Providers";
 import { useToaster } from "./toast/ToasterProvider";
 import { listCardanoWallets } from "@/lib/cardano/cip8";
@@ -131,9 +132,7 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
         <div ref={pickerRef} className={styles.picker} role="dialog" aria-label="Choose a Cardano wallet">
           <p className={styles.pickerTitle}>Choose a wallet</p>
           {loadingWallets ? (
-            <div className={styles.pickerEmpty}>
-              <Spinner size="sm" />
-            </div>
+            <Loading variant="panel" label="Looking for wallets…" />
           ) : wallets.length === 0 ? (
             <p className={styles.pickerEmpty}>No CIP-30 wallet detected. Install one to continue.</p>
           ) : (

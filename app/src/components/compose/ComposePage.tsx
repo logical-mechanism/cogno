@@ -29,7 +29,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ReplyComposer } from "@/components/ReplyComposer";
 import { QuoteComposer } from "@/components/QuoteComposer";
 import { PollComposer } from "@/components/PollComposer";
-import { Spinner } from "@/components/icons";
+import { Loading } from "@/components/Loading";
 import { useSession } from "@/components/Providers";
 import { useThread } from "@/hooks/useThread";
 import { useComposerGate } from "@/hooks/useComposerGate";
@@ -237,9 +237,7 @@ export function ComposePage() {
       <div className={styles.body}>
         {/* reply/quote: hydrate the target post for context; busy placeholder then the composer. */}
         {needsTarget && targetLoading && (
-          <div className={styles.contextLoading} aria-busy>
-            <Spinner size="md" label="Loading the post" />
-          </div>
+          <Loading variant="panel" label="Loading the post…" />
         )}
 
         {/* Missing/pruned target → muted stub, but keep the composer usable (§8). */}

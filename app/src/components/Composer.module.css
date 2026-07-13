@@ -151,15 +151,6 @@
   box-shadow: var(--cg-shadow-menu);
 }
 
-.emojiPanelLoading {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-  min-height: 120px;
-  padding: var(--cg-space-4);
-}
-
 .toolbarRight {
   display: flex;
   align-items: center;

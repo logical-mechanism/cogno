@@ -5,9 +5,14 @@
 // subscription, the connected wallet/identity, and the rails all survive client route changes.
 //
 // Layout by breakpoint (exact px, doc 01 §5.1): LeftNav (desktop ≥1020) / BottomTabBar (mobile <688) ·
-// main (THE scroll container on desktop: overflow-y:auto; height:100vh; centered, capped at
-// --cg-col-feed 600px) · RightRail (desktop ≥1020) · ComposeFab (mobile) · ModalRouteHost. The Toaster
-// is already mounted by ToasterProvider, so it is NOT re-mounted here.
+// main (centered, capped at --cg-col-feed 600px) · RightRail (desktop ≥1020) · ComposeFab (mobile) ·
+// ModalRouteHost. The Toaster is already mounted by ToasterProvider, so it is NOT re-mounted here.
+//
+// The DOCUMENT scrolls at every breakpoint — `main` is NOT a scroll container (AppShell.module.css:
+// "main FLOWS with the document"), which is what lets a scroll over the rails or the side margins move
+// the feed, with the rails held in place by `position: sticky`. Scroll the feed with lib/scroll.ts's
+// scrollToTop(). (This comment used to claim main was `overflow-y:auto; height:100vh` on desktop; it
+// never was, and Home carried a scrollable-ancestor walk that consequently never found anything.)
 //
 // Also exports StickyHeader (the blurred per-surface header every page composes) and NotFoundInline
 // (the in-app not-found state for an invalid dynamic param / unknown route).
@@ -23,8 +28,10 @@ import { BottomTabBar } from "./nav/BottomTabBar";
 import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
 import { EmptyState } from "./EmptyState";
+import { Loading } from "./Loading";
 import { IconBack } from "./icons";
 import { useSession } from "./Providers";
+import { welcomeUrlFor } from "@/lib/returnTo";
 
 /** /welcome is the standalone onboarding surface — it owns the whole canvas (no rails). */
 function isWelcomePath(pathname: string | null): boolean {
@@ -45,9 +52,17 @@ export function AppShell({ children }: { children: ReactNode }) {
   // welcome/join page. There is no persistent session — the posting key is re-derived from a wallet
   // signature each visit and nothing is stored, so every fresh load starts logged-out. The welcome
   // page is therefore the canonical landing; the feed only exists once you're bound.
+  //
+  // The bounce REMEMBERS where you were going (`?next=`), and this is what makes a share link work at
+  // all. Every cold load is logged out, so pasting /post/123/ always hits this wall — and until now the
+  // wall threw the destination away and /welcome finished by sending you to the feed. The post you were
+  // sent was simply unreachable by its own link. The query string comes off `window.location` rather
+  // than useSearchParams(): this component wraps every route, and useSearchParams() here would force a
+  // client-side bailout for the whole app under `output: export`.
   useEffect(() => {
-    if (!loggedIn && !onWelcome) router.replace("/welcome/");
-  }, [loggedIn, onWelcome, router]);
+    if (loggedIn || onWelcome) return;
+    router.replace(welcomeUrlFor(pathname, window.location.search));
+  }, [loggedIn, onWelcome, pathname, router]);
 
   // App-wide "/" → focus the SearchBar (works on every surface with a search box, not just /explore).
   useSearchHotkey();
@@ -57,8 +72,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <div className={styles.standalone}>{children}</div>;
   }
 
-  // Logged-out on an app route: render nothing while the redirect effect runs (never flash the feed).
-  if (!loggedIn) return null;
+  // Logged-out on an app route: never flash the feed — but never flash a BLANK PAGE either. There is no
+  // persistent session (the posting key is re-derived from a wallet signature each visit), so this is
+  // every cold load and every hard refresh of every route, and it used to render `null`: a white screen
+  // until the redirect landed. Neutral copy on purpose — this covers both "your session is coming back"
+  // and "you are genuinely logged out and about to land on /welcome".
+  if (!loggedIn) return <Loading variant="screen" label="Loading…" />;
 
   return (
     <div className={styles.shell}>

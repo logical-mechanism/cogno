@@ -30,6 +30,7 @@ import { useOptimistic } from "@/hooks/useOptimistic";
 import { useThread } from "@/hooks/useThread";
 import { useInvalidateAccountProfile } from "@/hooks/useAccountProfile";
 import { invalidateHoverProfile } from "../ProfileHoverCard";
+import { Loading } from "../Loading";
 import { useComposerGate } from "@/hooks/useComposerGate";
 import { useComposeWrite } from "@/hooks/useComposeWrite";
 import { useToaster } from "../toast/ToasterProvider";
@@ -373,7 +374,7 @@ export function ModalRouteHost() {
   if (needsTarget && !targetPost) {
     return (
       <ComposerModal title={title} onClose={onRequestClose}>
-        <div style={{ minHeight: "120px" }} aria-busy />
+        <Loading variant="panel" label="Loading the post…" />
       </ComposerModal>
     );
   }

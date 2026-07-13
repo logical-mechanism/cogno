@@ -19,7 +19,7 @@ import styles from "./EditProfileModal.module.css";
 import { ComposerModal } from "./ComposerModal";
 import { ByteCounter, utf8Bytes } from "./ByteCounter";
 import { Avatar } from "./Avatar";
-import { Spinner } from "./icons";
+import { Loading } from "./Loading";
 import { useSession } from "./Providers";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
 import { useOptimistic } from "@/hooks/useOptimistic";
@@ -191,9 +191,7 @@ export function EditProfileModal({
         <NoPostingPowerNotice />
 
         {loading ? (
-          <div className={styles.loading} aria-busy>
-            <Spinner label="Loading your profile" />
-          </div>
+          <Loading variant="panel" label="Loading your profile…" />
         ) : (
           <>
             {/* Display name */}

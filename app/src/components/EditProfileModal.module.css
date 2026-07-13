@@ -17,13 +17,6 @@
   outline: none;
 }
 
-.loading {
-  display: flex;
-  justify-content: center;
-  padding: var(--cg-space-7) 0;
-  color: var(--cg-text-secondary);
-}
-
 .field {
   display: flex;
   flex-direction: column;
