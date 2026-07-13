@@ -28,6 +28,7 @@ import { useVault } from "@/hooks/useVault";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
 import { useToaster } from "@/components/toast/ToasterProvider";
+import { readReturnTo } from "@/lib/returnTo";
 import { WelcomeShell } from "@/components/welcome/WelcomeShell";
 import { WalletPicker } from "@/components/welcome/WalletPicker";
 import { AccountConfirm } from "@/components/welcome/AccountConfirm";
@@ -149,8 +150,17 @@ export default function WelcomePage() {
   const decidingReturn =
     returningOnPowerups && (identity.stakeBound === null || postingPower === null);
   const bouncingToFeed = returningOnPowerups && !decidingReturn && fullySetUp;
+  // Land them where they were actually HEADED, not on the feed. A returning, fully-set-up visitor is
+  // precisely the person who pasted a share link: every cold load is logged out, so the auth wall bounced
+  // them here carrying `?next=` — and finishing by sending them to the timeline is what made a post link
+  // unopenable by its own URL. `readReturnTo` validates the target (it came off the URL, so it is
+  // attacker-chosen: see the open-redirect guard in lib/returnTo) and falls back to the feed.
+  //
+  // Read off `window.location` rather than useSearchParams(): this page has no Suspense boundary, and
+  // useSearchParams() here would force a client-side bailout under `output: export`.
   useEffect(() => {
-    if (bouncingToFeed) router.replace("/");
+    if (!bouncingToFeed) return;
+    router.replace(readReturnTo(window.location.search));
   }, [bouncingToFeed, router]);
 
   // ── connect-error routing (toast vs inline) ──────────────────────────────────────────────────

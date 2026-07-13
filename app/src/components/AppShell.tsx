@@ -31,6 +31,7 @@ import { EmptyState } from "./EmptyState";
 import { Loading } from "./Loading";
 import { IconBack } from "./icons";
 import { useSession } from "./Providers";
+import { welcomeUrlFor } from "@/lib/returnTo";
 
 /** /welcome is the standalone onboarding surface — it owns the whole canvas (no rails). */
 function isWelcomePath(pathname: string | null): boolean {
@@ -51,9 +52,17 @@ export function AppShell({ children }: { children: ReactNode }) {
   // welcome/join page. There is no persistent session — the posting key is re-derived from a wallet
   // signature each visit and nothing is stored, so every fresh load starts logged-out. The welcome
   // page is therefore the canonical landing; the feed only exists once you're bound.
+  //
+  // The bounce REMEMBERS where you were going (`?next=`), and this is what makes a share link work at
+  // all. Every cold load is logged out, so pasting /post/123/ always hits this wall — and until now the
+  // wall threw the destination away and /welcome finished by sending you to the feed. The post you were
+  // sent was simply unreachable by its own link. The query string comes off `window.location` rather
+  // than useSearchParams(): this component wraps every route, and useSearchParams() here would force a
+  // client-side bailout for the whole app under `output: export`.
   useEffect(() => {
-    if (!loggedIn && !onWelcome) router.replace("/welcome/");
-  }, [loggedIn, onWelcome, router]);
+    if (loggedIn || onWelcome) return;
+    router.replace(welcomeUrlFor(pathname, window.location.search));
+  }, [loggedIn, onWelcome, pathname, router]);
 
   // App-wide "/" → focus the SearchBar (works on every surface with a search box, not just /explore).
   useSearchHotkey();
