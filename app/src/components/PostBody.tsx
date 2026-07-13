@@ -7,8 +7,9 @@
 // auto-fetches an arbitrary host — there is still no media FIELD on-chain. Everything else:
 //   - bare http(s)/ipfs:// URLs auto-link (ipfs:// resolved to a gateway).
 //   - @mention links — a `@<full-ss58>` (a checksum-valid AccountId32, ~48 base58 chars) links to that
-//     person's profile as a `<MentionChip>` (their CURRENT display name + identicon). Only a FULL
-//     checksummed ss58 linkifies (near-zero false positives); a truncated handle stays plain text. A
+//     person's profile as a `<MentionChip>`: their CURRENT display name as plain inline text, with the
+//     same ProfileHoverCard quick-view the post's author line has. Only a FULL checksummed ss58
+//     linkifies (near-zero false positives); a truncated handle stays plain text. A
 //     mention refers to a unique PERSON encoded in the body itself (no side-field) — the ss58 IS the
 //     addressable value even though the cosmetic truncated handle is not (`lib/mentions`).
 //   - #hashtag links — a `#tag` links to /explore/?q=%23tag (a case-insensitive substring search).
@@ -182,7 +183,7 @@ export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps)
           );
         }
         if (s.kind === "mention") {
-          // s.value is the canonical ss58; the chip resolves the current display name + identicon.
+          // s.value is the canonical ss58; the chip resolves the current display name + hover card.
           return <MentionChip key={i} ss58={s.value} />;
         }
         return <Highlight key={i} text={s.value} query={highlight} />;

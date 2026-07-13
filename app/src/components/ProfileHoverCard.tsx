@@ -54,7 +54,19 @@ interface Coords {
   left: number;
 }
 
-export function ProfileHoverCard({ author, children }: { author: AuthorRef; children: ReactNode }) {
+export interface ProfileHoverCardProps {
+  author: AuthorRef;
+  children: ReactNode;
+  /**
+   * The trigger is inline TEXT inside flowing prose (an @mention in a post body), not a self-contained
+   * block (an avatar, a name button). The hover region is `display: inline-flex` by default, which as a
+   * wrapper around a mention would make it an atomic inline box: it could not line-break, and it would
+   * sit on its own baseline mid-sentence. `inline` keeps the trigger behaving like the word it is.
+   */
+  inline?: boolean;
+}
+
+export function ProfileHoverCard({ author, children, inline = false }: ProfileHoverCardProps) {
   const [coords, setCoords] = useState<Coords | null>(null);
   const wrapRef = useRef<HTMLSpanElement | null>(null);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -112,7 +124,7 @@ export function ProfileHoverCard({ author, children }: { author: AuthorRef; chil
   return (
     <span
       ref={wrapRef}
-      className={styles.wrap}
+      className={inline ? styles.wrapInline : styles.wrap}
       onMouseEnter={scheduleOpen}
       onMouseLeave={scheduleClose}
     >

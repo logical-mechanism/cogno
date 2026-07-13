@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { ss58Address } from "@polkadot-labs/hdkd-helpers";
 import {
   mentionToken,
+  mentionLabel,
   serializeMentions,
   reconcileMentions,
   parseMentionBody,
@@ -14,6 +15,38 @@ const ALICE = ss58Address("0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5
 const BOB = ss58Address("0x8eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a48", 42);
 
 const ref = (display: string, ss58: string): MentionRef => ({ display, ss58 });
+
+describe("mentionLabel", () => {
+  it("shows the display name when there is one", () => {
+    expect(mentionLabel("alice", ALICE)).toBe("alice");
+  });
+
+  it("falls back to the truncated ss58 when the account is nameless / unbound / still loading", () => {
+    expect(mentionLabel(undefined, ALICE)).toBe(mentionLabel(undefined, ALICE));
+    expect(mentionLabel(undefined, ALICE)).toContain("…");
+    expect(mentionLabel(undefined, ALICE)).not.toBe("");
+  });
+
+  it("never returns an empty label (a whitespace-only name falls back too)", () => {
+    expect(mentionLabel("", ALICE)).toContain("…");
+    expect(mentionLabel("   ", ALICE)).toContain("…");
+    expect(mentionLabel("\n\t", ALICE)).toContain("…");
+  });
+
+  // The griefing case. A post body is `white-space: pre-wrap` and a display name is attacker-controlled
+  // (pallet-profile bounds it by length only, feelessly). An un-collapsed name carrying newlines would
+  // render them as HARD LINE BREAKS inside someone ELSE's permanent, undeletable post.
+  it("collapses newlines in a name, so a mention can never break the line of the post that mentions it", () => {
+    expect(mentionLabel("a\n".repeat(31) + "b", ALICE)).not.toContain("\n");
+    expect(mentionLabel("Alice\nSmith", BOB)).toBe("Alice Smith");
+  });
+
+  it("collapses tabs and interior space runs too", () => {
+    expect(mentionLabel("Alice\t\tSmith", ALICE)).toBe("Alice Smith");
+    expect(mentionLabel("Alice     Smith", ALICE)).toBe("Alice Smith");
+    expect(mentionLabel("  Alice Smith  ", ALICE)).toBe("Alice Smith");
+  });
+});
 
 describe("serializeMentions", () => {
   it("expands a display token to @<ss58>", () => {
