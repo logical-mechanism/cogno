@@ -278,7 +278,7 @@ function VaultCard({
 
       {vault.phase === "submitted" ? (
         <>
-          <p className={styles.cardOk}>Locked ✓ — crediting your posting power…</p>
+          <p className={styles.cardOk}>Locked ✓. Crediting your posting power…</p>
           {vault.txHash && <CardanoTxLink txHash={vault.txHash} label="Lock transaction" />}
         </>
       ) : !vault.available ? (

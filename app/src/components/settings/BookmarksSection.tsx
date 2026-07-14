@@ -18,7 +18,7 @@ export function BookmarksSection() {
   return (
     <EmptyState
       title={count > 0 ? `${count} bookmarked ${count === 1 ? "post" : "posts"}` : "No bookmarks yet"}
-      description="Saved posts are kept on this device only — never written to the chain or synced across devices, and each account has its own list. Bookmark a post from the ··· menu on it."
+      description="Saved posts are kept on this device only. Never written to the chain or synced across devices, and each account has its own list. Bookmark a post from the ··· menu on it."
       action={{ label: "Open bookmarks", onClick: () => router.push("/bookmarks/") }}
     />
   );

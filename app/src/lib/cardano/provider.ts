@@ -21,7 +21,7 @@ export async function getProvider(projectId?: string): Promise<BlockfrostProvide
   const id = (projectId ?? getBlockfrostProjectId()).trim();
   if (!id) {
     throw new Error(
-      "No Cardano provider configured — set a Blockfrost preprod project id in settings to lock from your wallet.",
+      "No Cardano provider configured. Set a Blockfrost preprod project id in settings to lock from your wallet.",
     );
   }
   const { BlockfrostProvider } = await import("@meshsdk/core");

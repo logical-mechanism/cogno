@@ -69,8 +69,8 @@ export function VaultSection() {
     if (vault.phase === "submitted") {
       ok(
         action === "lock"
-          ? "Lock submitted — crediting your posting power"
-          : "Exit submitted — your posting power will update",
+          ? "Lock submitted. Crediting your posting power"
+          : "Exit submitted. Your posting power will update",
       );
       actionRef.current = null;
     } else if (vault.phase === "error" && vault.error) {

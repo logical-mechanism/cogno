@@ -19,14 +19,14 @@ export default function PrivacyPage() {
       <article className={styles.page}>
         <p className={styles.lead}>
           cogno has no accounts, no analytics, no cookies and no server that stores anything about
-          you. That means there is very little to say here — but the little there is, matters.
+          you. That means there is very little to say here, but the little there is matters.
         </p>
 
         <section className={styles.section}>
           <h2 className={styles.heading}>What you post is permanent</h2>
           <p className={styles.callout}>
             Posts cannot be deleted. Not by you, not by us, not by anyone. There is no delete
-            function in the chain — that is a deliberate design choice, not an oversight. Anything you
+            function in the chain. That is a deliberate design choice, not an oversight. Anything you
             publish is written to a public blockchain, replicated to every node, and stays there.
             Assume it is permanent and world-readable before you press post.
           </p>
@@ -45,7 +45,7 @@ export default function PrivacyPage() {
             <li>No analytics, no tracking pixels, no advertising, no third-party scripts.</li>
             <li>No cookies.</li>
             <li>
-              No database. This app is a static page — there is no server of ours for your data to sit
+              No database. This app is a static page. There is no server of ours for your data to sit
               on.
             </li>
           </ul>
@@ -60,7 +60,7 @@ export default function PrivacyPage() {
           <h2 className={styles.heading}>What the network can see</h2>
           <p className={styles.body}>
             Reading and posting means your browser talks to computers, and those computers see an IP
-            address — the same as with any website. Two of them are worth naming:
+            address, the same as with any website. Two of them are worth naming:
           </p>
           <ul className={styles.list}>
             <li>
@@ -75,7 +75,7 @@ export default function PrivacyPage() {
           </ul>
           <p className={styles.body}>
             We keep no logs of this for any purpose beyond running the node, and we do not build
-            profiles from it. If you want stronger network privacy than that, use a VPN or Tor — we
+            profiles from it. If you want stronger network privacy than that, use a VPN or Tor. We
             cannot give it to you and would rather say so than pretend otherwise.
           </p>
         </section>

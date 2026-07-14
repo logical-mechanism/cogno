@@ -91,7 +91,7 @@ export function ExploreList({
       ))}
       {truncated && (
         <p className={styles.truncated}>
-          Showing the top {limit} people — refine your search to narrow it.
+          Showing the top {limit} people. Refine your search to narrow it.
         </p>
       )}
     </div>

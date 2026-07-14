@@ -373,7 +373,7 @@ function ExploreView() {
         )}
         {showTooShortHint && (
           <p className={styles.tooShortHint} role="status">
-            Keep typing to search — at least {MIN_QUERY_LEN} characters.
+            Type at least {MIN_QUERY_LEN} characters to search.
           </p>
         )}
       </header>

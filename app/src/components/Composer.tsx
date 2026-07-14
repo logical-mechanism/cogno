@@ -391,8 +391,8 @@ export function Composer({
             <p className={styles.imageChip} role="note">
               <span aria-hidden>🖼</span>{" "}
               {imageLinkCount === 1
-                ? "Image link — shown when the post is opened"
-                : `${imageLinkCount} image links — shown when opened`}
+                ? "Image link, shown when the post is opened"
+                : `${imageLinkCount} image links, shown when opened`}
             </p>
           )}
         </div>
@@ -462,7 +462,7 @@ export function Composer({
                         ? "Write something first"
                         : rateLimited
                           ? "You're over the rate limit"
-                          : `${label} — ${IS_MAC ? "⌘↵" : "Ctrl+Enter"}`
+                          : `${label} (${IS_MAC ? "⌘↵" : "Ctrl+Enter"})`
             }
           >
             {pending ? <Spinner size="sm" label="Posting" /> : label}

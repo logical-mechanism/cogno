@@ -133,7 +133,7 @@ export default function NotificationsPage() {
             ))}
             {feed.truncated && tab === "all" && (
               <p className={styles.truncated}>
-                Showing your most recent activity — older items aren’t listed.
+                Showing your most recent activity. Older items aren’t listed.
               </p>
             )}
           </div>

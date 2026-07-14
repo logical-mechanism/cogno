@@ -108,7 +108,7 @@ export async function produceBindProof(opts: {
       console.error(
         `cogno: bind aborted — wallet "${opts.walletId}" change address has a non-vkey payment credential (type=${props.paymentPart?.type}); never bind from a script/vault address`,
       );
-      throw new Error("signing address has a script payment credential — bind from a normal wallet address, never a script/vault address");
+      throw new Error("signing address has a script payment credential; bind from a normal wallet address, never a script/vault address");
     }
 
     // Build the EXACT payload IN-BROWSER (no follower): the nonce is client-generated and on-chain it is
@@ -127,7 +127,7 @@ export async function produceBindProof(opts: {
       const vkHex = typeof vk === "string" ? vk : (vk as { hex?: () => string }).hex?.() ?? String(vk);
       const vkLen = vkHex.replace(/^0x/, "").length / 2;
       if (vkLen === 64) {
-        throw new Error("signing key is a 64-byte extended key — only 32-byte CIP-30 keys are accepted");
+        throw new Error("signing key is a 64-byte extended key; only 32-byte CIP-30 keys are accepted");
       }
     } catch (e) {
       if (e instanceof Error && e.message.includes("extended key")) throw e;
@@ -184,17 +184,17 @@ export async function produceBindProofStake(opts: {
     // The wallet's REWARD (stake) address — signing over it makes the wallet sign with the STAKE key.
     const rewardAddresses: string[] = await wallet.getRewardAddresses();
     if (!rewardAddresses.length) {
-      throw new Error("wallet exposes no reward address — use Eternl (a base address with a stake key)");
+      throw new Error("wallet exposes no reward address; use Eternl (a base address with a stake key)");
     }
     const rewardAddress = rewardAddresses[0];
 
     // Parse the 29-byte reward address (header + 28-byte stake credential). Require a vkey stake reward
     // (header type 0b1110); a SCRIPT-stake reward (0b1111) is not a votable identity here.
     const rewardRaw = cst.Address.fromBech32(rewardAddress).toBytes().toString();
-    if (rewardRaw.length !== 58) throw new Error("reward address is not 29 bytes — unexpected address shape");
+    if (rewardRaw.length !== 58) throw new Error("reward address is not 29 bytes; unexpected address shape");
     const addrType = parseInt(rewardRaw.slice(0, 2), 16) >> 4;
     if (addrType !== 0b1110) {
-      throw new Error(`reward address has a script stake credential (type ${addrType}) — only vkey stake keys can bind`);
+      throw new Error(`reward address has a script stake credential (type ${addrType}); only vkey stake keys can bind`);
     }
     const stakeCredentialHex = rewardRaw.slice(2);
 
@@ -209,7 +209,7 @@ export async function produceBindProofStake(opts: {
       const vk = cst.getPublicKeyFromCoseKey(sig.key);
       const vkHex = typeof vk === "string" ? vk : (vk as { hex?: () => string }).hex?.() ?? String(vk);
       if (vkHex.replace(/^0x/, "").length / 2 === 64) {
-        throw new Error("signing key is a 64-byte extended key — only 32-byte CIP-30 keys are accepted");
+        throw new Error("signing key is a 64-byte extended key; only 32-byte CIP-30 keys are accepted");
       }
     } catch (e) {
       if (e instanceof Error && e.message.includes("extended key")) throw e;

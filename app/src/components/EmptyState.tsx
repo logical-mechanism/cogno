@@ -34,7 +34,7 @@ function presetFor(v: EmptyStateVariant, query?: string, handle?: string): Prese
       return {
         title: "Welcome to cogno-chain",
         description:
-          "This is the best place to see what's happening. Find some people to follow.",
+          "Your feed is empty. Find some people to follow.",
       };
     case "search":
       return {

@@ -111,7 +111,7 @@ export function BindStep({
         <ul className={styles.consentList}>
           <li>
             <strong>Your wallet becomes public.</strong> This account is linked 1:1 to your Cardano
-            wallet on-chain, and the stake step that follows publishes your stake credential — from it
+            wallet on-chain, and the stake step that follows publishes your stake credential. From it
             anyone can read the balances, NFTs and staking history behind everything you ever post.
           </li>
           <li>

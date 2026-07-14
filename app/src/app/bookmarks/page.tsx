@@ -108,7 +108,7 @@ export default function BookmarksPage() {
         const failed = results.filter((r) => !r.ok).length;
         setError(
           failed > 0
-            ? `Couldn't load ${failed} bookmark${failed === 1 ? "" : "s"} — check your connection.`
+            ? `Couldn't load ${failed} bookmark${failed === 1 ? "" : "s"}. Check your connection.`
             : null,
         );
       })
