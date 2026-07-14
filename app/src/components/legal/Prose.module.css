@@ -1,0 +1,84 @@
+/* Prose — the shared reading column for the two static legal documents (/legal, /privacy).
+   Deliberately plain: no card chrome, no accent colour, no illustration. These pages are read once,
+   by someone who wants a fact, and the fastest way to give them one is body copy on a page. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-6);
+  padding: var(--cg-space-5);
+  max-width: var(--cg-content-max);
+}
+
+.lead {
+  margin: 0;
+  font-size: var(--cg-fs-md);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-text-secondary);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
+}
+
+.heading {
+  margin: 0;
+  font-size: var(--cg-fs-lg);
+  font-weight: var(--cg-fw-extrabold);
+  color: var(--cg-text);
+}
+
+.body {
+  margin: 0;
+  font-size: var(--cg-fs-md);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-text);
+}
+
+.list {
+  margin: 0;
+  padding-left: var(--cg-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  font-size: var(--cg-fs-md);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-text);
+}
+
+/* The one thing on either page a user must not miss: posts are permanent. */
+.callout {
+  margin: 0;
+  border: 1px solid var(--cg-border);
+  border-left: var(--cg-ring-3) solid var(--cg-warning);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-subtle);
+  padding: var(--cg-space-4);
+  font-size: var(--cg-fs-md);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-text);
+}
+
+.link {
+  color: var(--cg-accent);
+  text-decoration: none;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}
+
+.footnote {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-muted);
+}

@@ -75,11 +75,26 @@
 
 .footer {
   display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  padding: 0 var(--cg-space-2);
+  margin-top: auto;
+}
+
+.footerRow {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--cg-space-3);
-  padding: 0 var(--cg-space-2);
-  margin-top: auto;
+}
+
+/* Legal · Privacy — the attribution + permanence surface the bundle is obliged to carry. */
+.footerLinks {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-muted);
 }
 
 .about {
