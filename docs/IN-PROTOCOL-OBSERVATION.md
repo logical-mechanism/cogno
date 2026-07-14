@@ -224,7 +224,7 @@ mechanism itself, which is complete and enforcing today.
   on-chain result is read back with `cogno-chain-cli query weight` (over RPC).
 - Constants (`runtime/src/configs/mod.rs`): `MinLock = 100_000_000`; `MaxStakeWeight = MaxVotingPower =
   45×10¹⁵`; `StabilitySlots = 600` (testnet; mainnet 129,600); Shelley anchor `1655769600` / slot
-  `86400`; `StakeEpochLookback = 1`; `MaxObserved = 4096`.
+  `86400`; `StakeEpochLookback = 1`; `MaxObserved = 1024`; `StallAfter = 50` blocks (5 min).
 - Live vault policy / script hash: `168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7`
   (`contracts/vault.json`) — never move it.
 - Identity keys: 32-byte beacon name = `AccountOf` key; 28-byte stake credential = `AccountOfStakeCred`

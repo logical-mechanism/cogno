@@ -40,11 +40,12 @@ runtime computes the overlay node-side, a viewer-aware page needs no follow-up r
 The viewer overlay is a runtime computation, not a client one: inside wasm, `Votes::get(id, who)` decodes
 cleanly, so `my_vote` comes back stamped per post.
 
-**One wart.** `EnrichedPost` and `ViewerState` still carry `repost_count: u32` and `reposted: bool`. Both
-are dead — reposting was retired in spec 204, the `Reposts` / `RepostCount` storage was deleted by
-migration v5, and the runtime now hardcodes `0` / `false`. The **fields** stay on the wire because the
-deployed frontend bundle decodes these structs field-by-field: removing them changes the return encoding
-and breaks the live feed for every client that has not reloaded. They cost 5 bytes a post and keep
+**One wart.** `EnrichedPost` still carries `repost_count: u32` and `reposted: bool`, and `ViewerState`
+still carries `reposted: bool`. All of them are dead — reposting was retired in spec 204, the `Reposts` /
+`RepostCount` storage was deleted by migration v5, and the runtime now hardcodes `0` / `false`. The
+**fields** stay on the wire because the deployed frontend bundle decodes these structs field-by-field:
+removing them changes the return encoding and breaks the live feed for every client that has not
+reloaded. They cost 5 bytes per post on `EnrichedPost` and 1 byte per id on `ViewerState`, and they keep
 `MicroblogApi` at version 1. Do not read them, do not re-add the storage behind them, and do not
 re-declare the `Reposts` / `RepostCount` prefixes — a re-declared prefix resurrects the state the
 migration deleted.
