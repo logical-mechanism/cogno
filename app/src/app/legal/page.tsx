@@ -56,8 +56,7 @@ export default function LegalPage() {
           </p>
           <p className={styles.body}>
             It is provided <strong>as is, without warranties or conditions of any kind</strong>. That
-            is not boilerplate: this is a testnet chain run by one operator, and you should treat it
-            as one.
+            is not boilerplate. Use it at your own risk.
           </p>
         </section>
 

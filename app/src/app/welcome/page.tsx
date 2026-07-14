@@ -57,7 +57,7 @@ function classifyConnectError(raw: string): { inline: string | null; toast: stri
   }
   if (/wrong network|mainnet|preprod|network id|network mismatch/.test(m)) {
     return {
-      inline: "Switch your wallet to the Cardano preprod testnet, then reconnect.",
+      inline: "Switch your wallet to the correct Cardano network, then reconnect.",
       toast: null,
     };
   }

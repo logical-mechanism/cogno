@@ -39,7 +39,7 @@ async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; 
   const [{ BrowserWallet }, cst] = await Promise.all([import("@meshsdk/core"), import("@meshsdk/core-cst")]);
   const wallet = await BrowserWallet.enable(walletId);
   if ((await wallet.getNetworkId()) !== 0) {
-    throw new Error("connect a PREPROD (testnet) wallet; this is a testnet showcase");
+    throw new Error("connect a Cardano wallet");
   }
   const address = await wallet.getChangeAddress();
   const props = cst.Address.fromBech32(address).getProps();
@@ -84,7 +84,7 @@ export async function lockIntoVault(
   const { MeshTxBuilder } = await import("@meshsdk/core");
   const provider = await getProvider();
   const utxos = await wallet.getUtxos();
-  if (!utxos.length) throw new Error("your wallet has no UTxOs on preprod; fund it first");
+  if (!utxos.length) throw new Error("your wallet has no UTxOs; fund it first");
   const collateral = pickCollateral(await wallet.getCollateral(), utxos);
 
   const datum = vaultDatumCborHex(paymentKeyHash, stakeKeyHash);

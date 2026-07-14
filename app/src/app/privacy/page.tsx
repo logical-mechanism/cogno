@@ -75,8 +75,7 @@ export default function PrivacyPage() {
           </ul>
           <p className={styles.body}>
             We keep no logs of this for any purpose beyond running the node, and we do not build
-            profiles from it. If you want stronger network privacy than that, use a VPN or Tor. We
-            cannot give it to you and would rather say so than pretend otherwise.
+            profiles from it.
           </p>
         </section>
 
