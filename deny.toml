@@ -10,9 +10,11 @@
 # matches anything, which is the signal that an entry can be deleted.
 #
 # The `licenses` check is deliberately NOT run. The dep graph carries GPL-3.0-only, GPL-3.0-or-later
-# WITH Classpath-exception-2.0, LGPL-2.1-or-later and MPL-2.0 crates from the SDK; an allow-list that
-# admits all of them gates nothing, and what those licenses mean for the distributed binary is a
-# statement for NOTICE, not a lint. See NOTICE.
+# WITH Classpath-exception-2.0 and MPL-2.0 crates from the SDK; an allow-list that admits all of them
+# gates nothing, and what those licenses mean for the binaries this project builds is a statement for
+# NOTICE, not a lint. See NOTICE. (There is no LGPL anywhere in the graph, and no GPL-2.0-only — the
+# one family Apache-2.0 genuinely cannot combine with. The GPL-2.0 strings that do appear, on
+# `ittapi`/`ittapi-sys` via wasmtime, are disjunctive duals: `GPL-2.0-only OR BSD-3-Clause`.)
 
 [advisories]
 version = 2

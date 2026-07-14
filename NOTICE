@@ -3,8 +3,10 @@ Copyright 2026 LogicalMechanism <support@logicalmechanism.io>
 
 This product includes software developed at LogicalMechanism and by third
 parties as attributed below. Its own source is licensed under the Apache
-License, Version 2.0 (see the LICENSE file). The binaries it distributes are
-not: see "Licensing of the distributed binaries" at the end of this file.
+License, Version 2.0 (see the LICENSE file). The binaries it builds are combined
+works that also carry their dependencies' licenses — overwhelmingly permissive,
+plus the Classpath-excepted `sc-*` stack. See "Licensing of the built binaries"
+at the end of this file for exactly where that stands.
 
 ================================================================================
 Third-party attributions
@@ -23,15 +25,15 @@ Third-party attributions
      benchmark-generated `weights.rs` files under `pallets/*/src/` derive from the
      Apache-2.0 FRAME weight template and retain their upstream
      `SPDX-License-Identifier: Apache-2.0` Parity copyright headers, as does
-     `runtime/src/genesis_config_presets.rs`. (The `weights.rs` in
-     `cardano-observer`, `governance-fuel`, and `governed-upgrade` carry no such
-     header because they are original hand-written placeholders, not generated
-     output.)
+     `runtime/src/genesis_config_presets.rs`. (`pallets/governed-upgrade/src/weights.rs`
+     carries no such header because it is an original hand-written placeholder,
+     not generated output.)
 
-   * Substrate client crates (`sc-*`, plus smoldot) —
-     GPL-3.0-or-later WITH Classpath-exception-2.0. The `cogno-chain-node` binary
-     links 48 of them. The Classpath exception is what permits distributing that
-     combined binary under this project's own terms.
+   * Substrate client crates (`sc-*`) — the `cogno-chain-node` binary links 43 of
+     them. 40 are GPL-3.0-or-later WITH Classpath-exception-2.0; the Classpath
+     exception is what permits distributing that combined binary under this
+     project's own terms. The other 3 (`sc-allocator`, `sc-utils`,
+     `sc-tracing-proc-macro`) are Apache-2.0.
 
 2. partner-chains — `sp-partner-chains-consensus-aura` (Input Output Global / IOG)
    License: Apache-2.0
@@ -84,6 +86,17 @@ Third-party attributions
    The inline SVG icon set in `app/src/components/icons/` uses Material path data.
    The static export ships it inside the JS bundle.
 
+7. Noto Color Emoji (Google)
+   License: SIL Open Font License 1.1
+   https://github.com/googlefonts/noto-emoji
+   Copyright 2013 Google LLC
+
+   `app/src/app/{icon.png,apple-icon.png,favicon.ico}` and the inlined base64
+   favicon in `deploy/maintenance/index.html` are the U+1F62D glyph, rasterized
+   from the Noto Color Emoji font. The font is licensed under the SIL OFL 1.1;
+   the copyright notice and license are reproduced here as OFL section 2
+   requires. (The OFL text is already shipped at `app/public/OFL-1.1.txt`.)
+
 ================================================================================
 Provenance notes (not third-party code)
 ================================================================================
@@ -96,13 +109,23 @@ Provenance notes (not third-party code)
   obligation. (An early planning note that speculated a GPL-3.0 derivation was
   never reflected in the shipped code.)
 
+- `app/src/lib/identicon.ts` adapts the xorshift128 PRNG, the HSL colour
+  derivation, and the mirrored-grid layout of the `blockies` identicon algorithm
+  (https://github.com/download13/blockies), reimplemented in TypeScript with an
+  SVG renderer. Upstream ships no LICENSE file: its README states WTFPL while its
+  `package.json` declares MIT, and it carries no copyright notice anywhere in its
+  tree. Neither reading imposes an attribution requirement we could discharge by
+  reproducing a notice that does not exist; the lineage is recorded here for
+  provenance. (The unrelated npm package named `blockies` is a different,
+  GPL-3.0 repackaging and is not the source of this code.)
+
 ================================================================================
-Licensing of the distributed binaries
+Licensing of the built binaries
 ================================================================================
 
 This project's own source is Apache-2.0. The dependency graph of the binaries it
-distributes is almost, but not quite, clean of copyleft — here is exactly where
-it stands.
+builds is almost, but not quite, clean of copyleft — here is exactly where it
+stands. (Counts are against the committed `Cargo.lock`, default features.)
 
 The `sc-*` Substrate client crates are GPL-3.0-or-later WITH
 Classpath-exception-2.0. The node links 40 of them. The Classpath exception
@@ -112,10 +135,10 @@ they impose no copyleft on this project. Nothing to resolve there.
 `frame-benchmarking-cli` is used only by `node/src/benchmarking.rs`, which is
 gated behind the `runtime-benchmarks` feature. It is therefore declared
 `optional` in `node/Cargo.toml` and is NOT in the default dependency graph. This
-matters: left non-optional it drags in 150 further crates — the `polkadot-*`,
-`staging-xcm*` and `tracing-gum*` trees, via `cumulus-*` — 17 of which are
-strict `GPL-3.0-only` with no exception. Gating it keeps them out of the shipped
-binary entirely.
+matters: enabling `runtime-benchmarks` adds 126 further crates to the node's
+graph — the `polkadot-*`, `staging-xcm*` and `tracing-gum*` trees, via
+`cumulus-*` — 17 of which are strict `GPL-3.0-only` with no exception. Gating it
+keeps them out of the shipped binary entirely.
 
 That leaves exactly one strict-copyleft crate anywhere in the graph:
 

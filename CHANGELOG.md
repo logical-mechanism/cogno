@@ -111,9 +111,14 @@ The backend was consolidated to a single all-Rust stack and the chain relaunched
 
 - Relicensed to **Apache-2.0** with a `NOTICE` attributing every upstream — the Polkadot SDK template,
   the partner-chains consensus primitives, the `substrate-validator-set` fork, the Aiken stdlib
-  compiled into the L1 script, and the fonts and icons the frontend redistributes. `NOTICE` also states
-  plainly that the distributed node binary and runtime WASM are a combined work carrying GPL-3.0-only
-  code (`pallet-skip-feeless-payment`), even though this project's own source is Apache-2.0.
+  compiled into the L1 script, and the fonts, icons and emoji artwork the frontend redistributes.
+  `NOTICE` also records the one place where a dependency's crate metadata disagrees with its own source
+  headers: `pallet-skip-feeless-payment` publishes `license = "GPL-3.0-only"` (an upstream
+  `license.workspace` packaging slip) while every one of its source files carries
+  `SPDX-License-Identifier: Apache-2.0`. We read the headers as the operative grant. The `sc-*` client
+  crates the node links are GPL-3.0-or-later WITH Classpath-exception-2.0, which permits exactly this
+  linking; the strict-GPL `polkadot-*`/XCM tree is kept out of the shipped binary by gating
+  `frame-benchmarking-cli` behind the `runtime-benchmarks` feature.
 - Added `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `POLICY.md` (content is permanent and
   nobody — including the operator — can remove it), issue/PR templates, `CODEOWNERS`, and Dependabot.
 

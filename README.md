@@ -275,6 +275,8 @@ never shift. A new pallet always takes a new index.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). Reused/reimplemented third-party code (the
-Polkadot SDK templates, the partner-chains consensus primitives, and the `substrate-validator-set`
-fork — all Apache-2.0) is attributed in [`NOTICE`](NOTICE).
+Licensed under the [Apache License, Version 2.0](LICENSE). Reused and reimplemented third-party code —
+the Polkadot SDK templates, the partner-chains consensus primitives, the `substrate-validator-set`
+fork, the Aiken stdlib compiled into the L1 script, and the fonts, icons and emoji artwork the frontend
+redistributes — is attributed in [`NOTICE`](NOTICE), which also sets out the licensing of the binaries
+this project builds.
