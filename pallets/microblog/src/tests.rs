@@ -2941,3 +2941,39 @@ mod node_reads {
         });
     }
 }
+
+// ── TEMPORARY adversarial-verification probe (to be reverted) ────────────────
+#[cfg(feature = "try-runtime")]
+mod tmp_tryruntime_probe {
+    use super::*;
+    use crate::migrations::v5::{retired, MigrateV4ToV5};
+    use crate::{CapacityState, Pallet};
+    use frame_support::traits::{OnRuntimeUpgrade, StorageVersion};
+
+    #[test]
+    fn probe_pre_and_post_upgrade_actually_run() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(100);
+            StorageVersion::new(4).put::<Pallet<Test>>();
+
+            retired::Reposts::<Test>::insert(0u64, 9u64, ());
+            retired::Reposts::<Test>::insert(6u64, 9u64, ());
+            retired::RepostCount::<Test>::insert(0u64, 1u32);
+            retired::RepostCount::<Test>::insert(6u64, 1u32);
+
+            TalkStake::apply_weight(&1, 100);
+            Capacity::<Test>::insert(1, CapacityState { cap_last: 0, last_block: 90 });
+            TalkStake::apply_weight(&2, 10);
+            Capacity::<Test>::insert(2, CapacityState { cap_last: 40, last_block: 95 });
+            Capacity::<Test>::insert(3, CapacityState { cap_last: 500, last_block: 50 });
+
+            let state = MigrateV4ToV5::<Test>::pre_upgrade().expect("pre_upgrade failed");
+            println!("PROBE: pre_upgrade payload = {} bytes", state.len());
+            let _w = MigrateV4ToV5::<Test>::on_runtime_upgrade();
+            match MigrateV4ToV5::<Test>::post_upgrade(state) {
+                Ok(()) => println!("PROBE: post_upgrade PASSED"),
+                Err(e) => panic!("PROBE: post_upgrade FAILED: {:?}", e),
+            }
+        });
+    }
+}
