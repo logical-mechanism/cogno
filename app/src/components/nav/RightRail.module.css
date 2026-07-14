@@ -73,28 +73,26 @@
   color: var(--cg-accent);
 }
 
+/* One line: the links, then the theme toggle pushed to the far edge. */
 .footer {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--cg-space-2);
   padding: 0 var(--cg-space-2);
   margin-top: auto;
 }
 
-.footerRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--cg-space-3);
-}
-
-/* Legal · Privacy — the attribution + permanence surface the bundle is obliged to carry. */
+/* About & settings · Legal · Privacy — the attribution + permanence surface the bundle is obliged
+   to carry. Kept on a single row; the rail is 350px and the copy only just fits. */
 .footerLinks {
   display: flex;
   align-items: center;
   gap: var(--cg-space-2);
+  min-width: 0;
   font-size: var(--cg-fs-xs);
   color: var(--cg-text-muted);
+  white-space: nowrap;
 }
 
 .about {
