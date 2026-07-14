@@ -20,8 +20,13 @@
 #     script installs the file it is pointed at, as root, into a world-readable 0755 path, an argument
 #     would be a read-any-file-on-the-box primitive. `""` means "this command, with no arguments".
 #
-# So a stolen deploy key buys an attacker exactly what a stolen deploy key should buy: the ability to
-# ship a node binary and bounce the relay. Not root on the droplet.
+# So a stolen deploy key cannot become root on this droplet. That is ALL this file buys, and it is not
+# the same as "a stolen deploy key is contained": the SAME key (secrets.DEPLOY_SSH_KEY, shared by
+# deploy-node.yml and deploy-app.yml) also rsyncs the static site into /var/www/cogno, which nginx
+# serves to every visitor. Full blast radius: ship a node binary, bounce the relay, AND replace the
+# frontend. The frontend is the more valuable target — a swapped bundle keeps the CIP-8 wallet
+# signature that the posting key is derived from, and that key cannot be rotated or self-revoked. See
+# deploy/README.md.
 #
 # The user below is the DEPLOY_USER from the workflow's secrets (the droplet's `cogno`, which is both
 # the SSH deploy user and the relay's service user). Change both if yours differs.

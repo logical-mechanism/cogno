@@ -30,7 +30,7 @@
   min-height: 100vh;
 }
 
-/* The centered max-width container; the three columns flex within it (doc 01 §5.2). */
+/* The centered max-width container; the three columns flex within it. */
 .container {
   display: flex;
   justify-content: center;
@@ -59,7 +59,7 @@
   flex: 0 0 auto;
 }
 
-/* ── Sticky blurred header (doc 01 §8) ── */
+/* ── Sticky blurred header ── */
 .header {
   position: sticky;
   top: 0;

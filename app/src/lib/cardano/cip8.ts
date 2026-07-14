@@ -100,7 +100,7 @@ export async function produceBindProof(opts: {
     const wallet = await BrowserWallet.enable(opts.walletId);
 
     // Pick a signing address the user controls whose PAYMENT credential is a verification key (type 0) —
-    // never a script-payment (vault) address (L5 §5.6 / L2 §7.4). The change address is always a base
+    // never a script-payment (vault) address. The change address is always a base
     // address the wallet controls. The on-chain verifier also rejects script/pointer/stake-only addresses.
     const signingAddress: string = await wallet.getChangeAddress();
     const props = cst.Address.fromBech32(signingAddress).getProps();
@@ -120,7 +120,7 @@ export async function produceBindProof(opts: {
     const sig = (await wallet.signData(payload, signingAddress)) as { signature: string; key: string };
 
     // Client pre-flight: recover the verification key and reject 64-byte extended keys — only 32-byte
-    // CIP-30 keys are accepted (L5 §5.6, matched by the on-chain verifier). Best-effort: the runtime is
+    // CIP-30 keys are accepted (matched by the on-chain verifier). Best-effort: the runtime is
     // the authoritative verifier, so a recovery quirk doesn't block, but a clear extended key does.
     try {
       const vk = cst.getPublicKeyFromCoseKey(sig.key);

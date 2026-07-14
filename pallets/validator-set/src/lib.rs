@@ -1,4 +1,4 @@
-//! # Validator Set pallet (cogno-chain, M6)
+//! # Validator Set pallet (cogno-chain)
 //!
 //! **The MUTABLE Aura + GRANDPA validator set** — the block-producing authorities are no longer
 //! frozen at genesis. This pallet is vendor-forked from
@@ -12,8 +12,8 @@
 //!   `pallet-grandpa` via their `OneSessionHandler` impls. **Aura and GRANDPA therefore derive their
 //!   authorities from the session, not from static genesis** (the two are mutually exclusive — the
 //!   runtime seats authorities through `SessionConfig`, leaving the aura/grandpa genesis empty).
-//! - `add_validator` / `remove_validator` are gated by [`Config::AddRemoveOrigin`] (the M5 3-of-5
-//!   `FollowerCommittee`, with the `EnsureRoot`/sudo dev fallback). A change mutates [`Validators`]
+//! - `add_validator` / `remove_validator` are gated by [`Config::AddRemoveOrigin`] (the 3-of-5
+//!   `FollowerCommittee`; there is no sudo). A change mutates [`Validators`]
 //!   immediately but is only **applied at a session boundary** — `pallet-session` queues the new set
 //!   one session, then enacts it the next (~2 sessions). It is never applied mid-session.
 //! - [`Config::MinAuthorities`] is the floor: `remove_validator` refuses to drop the active set below
@@ -69,9 +69,8 @@ pub mod pallet {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
         /// Origin allowed to add or remove a validator. In cogno-chain this is the shared
-        /// `AuthorityOrigin` (M5, DR-07): `EnsureRoot`/sudo OR a 3-of-5 `FollowerCommittee`
-        /// supermajority. It stays an `EnsureOrigin` so the graduation to an Ariadne/SPO
-        /// selection pallet is a signature-free swap.
+        /// `AuthorityOrigin`: a 3-of-5 `FollowerCommittee` supermajority (sudo-free). It stays an
+        /// `EnsureOrigin` so graduating to a stake/SPO selection pallet is a signature-free swap.
         type AddRemoveOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
         /// Minimum number of validators the active set may never drop below on removal. The hard
@@ -248,7 +247,7 @@ impl<T: Config> Pallet<T> {
             );
             return Err(Error::<T>::Duplicate.into());
         }
-        // BoundedVec `try_push` rejects growth past MaxValidators (validators-3) — the consensus
+        // BoundedVec `try_push` rejects growth past MaxValidators — the consensus
         // pallets would otherwise silently truncate a set larger than their MaxAuthorities.
         validators.try_push(validator_id.clone()).map_err(|_| {
             // At the consensus MaxAuthorities cap: refusing growth here prevents a silent

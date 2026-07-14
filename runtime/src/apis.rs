@@ -106,9 +106,9 @@ fn enrich_author_profiles(posts: &mut [pallet_microblog::EnrichedPost<AccountId>
     }
 }
 
-// fork/all-rust P6: the people-search / who-to-follow reads iterate a whole pallet map (Option-1 linear
-// scan). Cap the candidates examined per `state_call` so a large corpus can't run the node's read budget
-// away; a `tantivy` node-side index is the documented graduation (`docs/SCALE-NODE-READS.md`).
+// The people-search / who-to-follow reads iterate a whole pallet map (a linear scan). Cap the
+// candidates examined per `state_call` so a large corpus can't run the node's read budget away.
+// The scan is the known ceiling on these two reads — see `docs/SCALE-NODE-READS.md`.
 const MAX_PEOPLE_SCAN: u32 = 10_000;
 
 /// Cross-pallet fold: build a [`pallet_microblog::PersonSummary`] for `account` — display/avatar from
@@ -328,7 +328,7 @@ impl_runtime_apis! {
             pallet_microblog::Pallet::<Runtime>::top_level_post_count(&author)
         }
 
-        // ── fork/all-rust P6: the SubQuery indexer reads, folded into the node ──
+        // ── The read paths a separate indexer used to serve, folded into the node ──
         // The post-returning reads run in the pallet, then the runtime fills author profiles (same
         // no-Cargo-cycle seam as the feed reads); the people/profile/identity reads are cross-pallet, so
         // the runtime does them here, reading pallet-profile / talk-stake / cogno-gate directly.

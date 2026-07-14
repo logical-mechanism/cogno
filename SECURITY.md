@@ -38,6 +38,9 @@ We will acknowledge receipt within **5 business days**, keep you updated on our 
 you in the fix notes unless you prefer to remain anonymous. Because this is a testnet, there is no bug
 bounty at this time.
 
+Abuse or objectionable content on the hosted network (<https://cogno.forum>) is not a security issue —
+see [`POLICY.md`](POLICY.md), which also explains, plainly, what can and cannot be done about it.
+
 ## Coordinated disclosure
 
 Please give us a reasonable window to investigate and remediate before any public disclosure. For a

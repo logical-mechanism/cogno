@@ -63,8 +63,13 @@ Generate your keys with `cogno-chain-cli key gen` (cardano-cli-style envelopes, 
 `//Alice` dev keys, no seed phrases**), then build an operator-keyed genesis with `cogno-chain-node
 gen-chainspec` (it reads only the PUBLIC keys and refuses dev keys):
 
+Mint them **outside the checkout** — a key that never lands in the working tree cannot be committed by
+accident, and `.gitignore` is then a backstop rather than the only thing standing between you and a
+published secret:
+
 ```bash
 CLI=/usr/local/bin/cogno-chain-cli   # on your operator machine
+mkdir -p ~/cogno-keys && chmod 700 ~/cogno-keys && cd ~/cogno-keys
 $CLI key gen --scheme sr25519 --out val-account.skey
 $CLI key gen --scheme sr25519 --out val-aura.skey
 $CLI key gen --scheme ed25519 --out val-grandpa.skey
@@ -148,9 +153,11 @@ that faces the public; the validator stays behind it, reachable by nobody. A $12
 and it doubles as your offsite copy of chain history (which, at `MinAuthorities=1`, the validator's DB
 is otherwise the only one of).
 
-Four files: [`systemd/cogno-relay.service`](systemd/cogno-relay.service) (the unit),
-[`nginx/cogno.conf`](nginx/cogno.conf) (TLS, `wss://` proxy, and the static app), and two **manual**
-GitHub Actions that ship to it — [`deploy-app.yml`](../.github/workflows/deploy-app.yml) (builds the
+Files: [`systemd/cogno-relay.service`](systemd/cogno-relay.service) (the unit),
+[`nginx/cogno.conf`](nginx/cogno.conf) (TLS, `wss://` proxy, and the static app) with
+[`nginx/security-headers.conf`](nginx/security-headers.conf) (HSTS, CSP, and the anti-framing headers it
+includes into every location — this origin has visitors sign with a wallet, so read the comments there
+before you loosen anything), and two **manual** GitHub Actions that ship to it — [`deploy-app.yml`](../.github/workflows/deploy-app.yml) (builds the
 static export, rsyncs it to `/var/www/cogno`) and [`deploy-node.yml`](../.github/workflows/deploy-node.yml)
 (builds the node binary, installs it, restarts the relay — see [below](#deploying-the-node-binary)).
 Neither fires on push: `main` is a work branch, and nothing deploys until you click it.
@@ -217,8 +224,19 @@ sudo -u cogno sudo -n systemctl restart cogno-relay              # must be REFUS
 installs a file as root into a world-readable path, so an argument would let the deploy user point it at
 `/root/.ssh/id_ed25519` and read it back. The paths are baked in, and
 [`deploy/sudoers.d/cogno-deploy`](sudoers.d/cogno-deploy) pins the entry to zero arguments (a bare command
-in sudoers permits *any* arguments — the trailing `""` is what forbids them). A stolen deploy key can
-therefore ship a node binary and bounce the relay. It cannot become root.
+in sudoers permits *any* arguments — the trailing `""` is what forbids them). So a stolen deploy key
+cannot become root.
+
+**But do not read that as "contained".** One key (`secrets.DEPLOY_SSH_KEY`) is shared by both workflows,
+and `deploy-app` rsyncs the static export into `/var/www/cogno`. Whoever holds it can replace the
+**frontend** — and the frontend is the crown jewel here, not the binary: the posting key is derived
+in-browser as `blake2b_256` of a CIP-8 wallet signature over a message that `wallet-derive.ts` marks
+"PINNED FOREVER", so a bundle that keeps that signature reproduces the user's posting key forever.
+Re-deriving cannot rotate it (it is deterministic), and `cogno-gate`'s `revoke` is committee-gated, so a
+user cannot revoke themselves. If you want the two halves separated, issue a second key for the app
+deploy and pin it in `authorized_keys` to a path-jailed write (`command="rrsync -wo /var/www/cogno"`).
+The node key cannot be pinned that way — `deploy-node` needs three different remote commands under one
+key — which is why its containment is the zero-argument sudoers entry above.
 
 What the script does, in order — everything before the swap is non-destructive:
 

@@ -6,8 +6,7 @@
 //      a time (keyed `Posts.getValue` walks on the PAPI path), never the full set.
 //   2. Liveness via the NextPostId head — `source.liveHeadId()` emits the newest post id; on an
 //      advance we re-read enough to BRIDGE the whole gap (newHead − lastHead) so no in-between post is
-//      missed, and we SKIP the refetch entirely when the head is unchanged (no per-block waste). The
-//      indexer source has no `liveHeadId`, so it falls back to its own poll-driven `watch()`.
+//      missed, and we SKIP the refetch entirely when the head is unchanged (no per-block waste).
 //   3. The "N new posts" pill buffer — a new post from SOMEONE ELSE waits behind the pill (the scroll
 //      never jumps); the viewer's OWN new post injects directly (incl. when they connect mid-session).
 //   4. The optimistic overlay + presence-reconcile — a pending card (negative id) is prepended via
@@ -20,6 +19,7 @@ import { mergeFeed, pendingKey, viewerPatchSettled } from "@/lib/optimistic";
 import { bridgeFetchSize, mergeById, partitionFresh } from "@/lib/feed/live";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import type { FeedSource } from "@/lib/feed/source";
+import { readErrorCopy } from "@/lib/chain/errors";
 import type { CognoPost, FeedQuery, Ss58 } from "@/lib/types";
 
 /** Posts per page (base load + each "load more"). One node `state_call` per page since spec-120. */
@@ -59,7 +59,7 @@ export interface UseLiveFeed {
 export function useLiveFeed(
   source: FeedSource | null,
   me: Ss58 | null,
-  /** Best-block number — ticks the vote/repost reconcile refetch (votes don't advance the head id). */
+  /** Best-block number — ticks the vote reconcile refetch (votes don't advance the head id). */
   bestBlock?: number | null,
 ): UseLiveFeed {
   const { overlay, dropPending, clearPost } = useOptimistic();
@@ -87,8 +87,8 @@ export function useLiveFeed(
   // Single-flight guard for `refresh` — a spam-clicked Home button must not stack page-1 reads.
   const refreshingRef = useRef(false);
 
-  // `viewer: me` lets a spec-120 node stamp each post's myVote/reposted overlay node-side (one
-  // state_call); the keyed + indexer paths ignore it. Re-keyed on `me` so connecting mid-session
+  // `viewer: me` lets the node stamp each post's `myVote` overlay node-side (one
+  // state_call). Re-keyed on `me` so connecting mid-session
   // re-pages with the overlay (the source-change effect below re-seeds on a new baseQuery identity).
   const baseQuery = useMemo<FeedQuery>(
     () => ({ tab: "forYou", first: PAGE, viewer: me ?? undefined }),
@@ -131,7 +131,7 @@ export function useLiveFeed(
     let lastHead: bigint | null = null;
 
     const fail = (e: unknown, fallback: string) => {
-      if (!cancelled) setError(e instanceof Error ? e.message : fallback);
+      if (!cancelled) setError(readErrorCopy(e, fallback));
     };
 
     // Seed the loaded list from the newest page (PAPI). `h` is the head id at seed time → `lastHead`.
@@ -152,7 +152,7 @@ export function useLiveFeed(
         })
         .catch((e: unknown) => {
           seeding = false;
-          fail(e, "could not load the feed");
+          fail(e, "Could not load the feed.");
         });
     };
 
@@ -193,11 +193,9 @@ export function useLiveFeed(
         });
     };
 
-    // `liveHeadId` is a REQUIRED member of FeedSource, so the old `if (source.liveHeadId)` was always
-    // true and its else-branch — an indexer-era `source.watch()` fold — was statically unreachable.
     const sub = source.liveHeadId().subscribe({
       next: handleHead,
-      error: (e: unknown) => fail(e, "the live feed errored"),
+      error: (e: unknown) => fail(e, "The live feed errored."),
     });
 
     return () => {
@@ -220,7 +218,7 @@ export function useLiveFeed(
         setCursor(pg.endCursor);
       })
       .catch((e: unknown) => {
-        if (epochRef.current === epoch) setError(e instanceof Error ? e.message : "could not load more");
+        if (epochRef.current === epoch) setError(readErrorCopy(e, "Could not load more."));
       })
       .finally(() => {
         if (epochRef.current === epoch) setLoadingMore(false);
@@ -293,10 +291,10 @@ export function useLiveFeed(
     }
   }, [loaded, overlay.pending, dropPending]);
 
-  // Vote/repost reconcile refetch: a vote/repost writes VoteTally/Reposts but creates NO new post, so
+  // Vote reconcile refetch: a vote writes VoteTally but creates NO new post, so
   // the head-id liveness never refetches it and the loaded row's tally + carried myVote stay frozen
   // (the optimistic overlay would otherwise just TTL-expire back to the stale row). While a CONFIRMED
-  // (expected) vote/repost patch sits on a loaded post, re-read page-1 each block; retire the patches
+  // (expected) vote patch sits on a loaded post, re-read page-1 each block; retire the patches
   // whose fresh (best-block) row now agrees — BEFORE folding the fresh row in, so the clear + the fold
   // batch into one render (the tally hands off from overlay to chain truth with no double-count flash).
   useEffect(() => {

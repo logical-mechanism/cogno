@@ -1,19 +1,17 @@
-// components/kit.ts — the SHARED TYPE SURFACE for the cogno-chain component kit (doc 03).
+// components/kit.ts — the SHARED TYPE SURFACE for the cogno-chain component kit.
 //
-// This module holds ONLY the view-model / shared-prop types that doc 03's components need beyond
-// the data seam in `@/lib/types`. It NEVER redefines a seam type: it re-exports the canonical
-// shapes (CognoPost, QuotedRef, ViewerPostState, PollView, PollOptionView, Suggestion, FollowEdges,
+// This module holds ONLY the view-model / shared-prop types the components need beyond the data
+// seam in `@/lib/types`. It NEVER redefines a seam type: it re-exports the canonical shapes
+// (CognoPost, QuotedRef, ViewerPostState, PollView, PollOptionView, Suggestion, FollowEdges,
 // ProfileView, ThreadView, Ss58, TxUpdate/TxPhase) so every component imports them from one place
 // and the kit stays welded to the seam.
 //
-// IMPORTANT mapping note (doc 03 vocabulary → seam reality):
-//   doc 03 sketches `PostVM` / `AuthorVM` / `PollVM` with string ids + ISO timestamps. The LIVE
-//   seam is `CognoPost` (id: bigint, `at`: blockHeight — NEVER rendered as a time), with the author
-//   profile FLATTENED onto the post (`authorDisplayName` / `authorAvatar` / `authorWeight` /
-//   `authorRevoked`) rather than a nested AuthorVM, and the poll fetched separately via
-//   `source.poll(id)` → `PollView`. Components bind to `CognoPost` / `PollView` DIRECTLY; the only
-//   author-shaped helper the kit adds is `AuthorRef` (below), derived from a CognoPost or a
-//   QuotedRef, so Avatar / DisplayName / Handle have one tidy input. Do NOT reintroduce PostVM.
+// Components bind to `CognoPost` / `PollView` DIRECTLY — there is no separate view-model layer. A
+// post is `id: bigint` + `at: blockHeight` (NEVER rendered as a time), with the author profile
+// FLATTENED onto it (`authorDisplayName` / `authorAvatar` / `authorWeight` / `authorRevoked`) rather
+// than nested, and the poll fetched separately via `source.poll(id)` → `PollView`. The only
+// author-shaped helper the kit adds is `AuthorRef` (below), derived from a CognoPost or a QuotedRef,
+// so Avatar / DisplayName / Handle have one tidy input.
 
 import type {
   CognoPost,
@@ -31,7 +29,7 @@ import type {
 } from "@/lib/types";
 import type { ReactNode } from "react";
 
-// ── Re-exports of the seam types the kit binds to (single import site) ───────────────────────
+// ── Re-exports of the seam types the kit binds to (single import site) ───────────────────────────
 export type {
   CognoPost,
   QuotedRef,
@@ -47,13 +45,13 @@ export type {
   TxPhase,
 };
 
-// ── Viewer / session summary (doc 03 §0.2 / §0.4) ────────────────────────────────────────────
+// ── Viewer / session summary ─────────────────────────────────────────────────────────────────────
 // The connected user as the kit consumes it. Derived ONCE in AppShell from useSigner + useIdentity
 // (and `deriveSessionState` in @/lib/session) and passed down. Components NEVER compute gate state;
-// they read `viewer.status`. `status` is the doc-03 three-state gate; `session` carries the richer
+// they read `viewer.status`. `status` is the three-state gate; `session` carries the richer
 // @/lib/session SessionState for surfaces that need the binding/connecting nuance.
 
-/** The doc-03 gate triad every write affordance branches on (§0.2). */
+/** The gate triad every write affordance branches on. */
 export type ViewerStatus = "not-connected" | "not-identity-bound" | "ready";
 
 export interface Viewer {
@@ -91,21 +89,21 @@ export interface AuthorRef {
   banned: boolean;
 }
 
-// ── Optimistic per-action state machine (doc 03 §0.1) ────────────────────────────────────────
+// ── Optimistic per-action state machine ──────────────────────────────────────────────────────────
 // The union every optimistic write control carries. `rate-limited` is the special-cased
 // CheckCapacity pool rejection → RateLimitNotice (NOT a generic error toast).
 export type ActionState = "idle" | "pending" | "ok" | "error" | "rate-limited";
 
-// ── Avatar / size unions (doc 03 §13, §12, §3) ───────────────────────────────────────────────
+// ── Avatar / size unions ─────────────────────────────────────────────────────────────────────────
 /** Named avatar sizes (px resolved from tokens: sm 24 / md 40 / lg 48 / xl 133) or a raw px number. */
 export type AvatarSize = "sm" | "md" | "lg" | "xl" | number;
 /** Generic control size used by FollowButton / ConnectWalletButton / SearchBar / ByteCounter. */
 export type ControlSize = "sm" | "md";
 
-// ── PostCard variants (doc 03 §1) ────────────────────────────────────────────────────────────
+// ── PostCard variants ────────────────────────────────────────────────────────────────────────────
 export type PostCardVariant = "timeline" | "detail" | "reply" | "thread";
 
-// ── Overflow menu (doc 03 §2.1) ──────────────────────────────────────────────────────────────
+// ── Overflow menu ────────────────────────────────────────────────────────────────────────────────
 export interface OverflowMenuItem {
   id: string;
   label: string;
@@ -117,7 +115,7 @@ export interface OverflowMenuItem {
   disabled?: boolean;
 }
 
-// ── Toaster / Toast (doc 03 §16) ─────────────────────────────────────────────────────────────
+// ── Toaster / Toast ──────────────────────────────────────────────────────────────────────────────
 export type ToastKind = "success" | "pending" | "error" | "rate-limit" | "info";
 
 export interface ToastSpec {
@@ -139,10 +137,10 @@ export interface ToastApi {
   rateLimit: () => string;
 }
 
-// ── Composer drafts (doc 03 §7, §10, §11) ────────────────────────────────────────────────────
+// ── Composer drafts ──────────────────────────────────────────────────────────────────────────────
 export type ComposerMode = "post" | "reply" | "quote" | "poll";
 
-/** The controlled poll draft (PollComposer §11). 2..=4 options, each ≤ 80 bytes; question reuses 512 B. */
+/** The controlled poll draft (PollComposer). 2..=4 options, each ≤ 80 bytes; question reuses 512 B. */
 export interface PollDraft {
   question: string;
   options: string[];
@@ -165,7 +163,7 @@ export interface CapacityHint {
   retryInSeconds?: number | null;
 }
 
-// ── ByteCounter measurement (doc 03 §8) ──────────────────────────────────────────────────────
+// ── ByteCounter measurement ──────────────────────────────────────────────────────────────────────
 /** The byte measurement a ByteCounter reports up to its Composer via onMeasure (UTF-8 bytes, never .length). */
 export interface ByteMeasure {
   bytes: number;
@@ -173,7 +171,7 @@ export interface ByteMeasure {
   over: boolean;
 }
 
-// ── EmptyState / Skeleton variants (doc 03 §18, §19) ─────────────────────────────────────────
+// ── EmptyState / Skeleton variants ───────────────────────────────────────────────────────────────
 export type EmptyStateVariant =
   | "feed"
   | "search"
@@ -192,10 +190,10 @@ export type SkeletonVariant =
   | "thread"
   | "person";
 
-// ── RateLimitNotice (doc 03 §17) ─────────────────────────────────────────────────────────────
+// ── RateLimitNotice ──────────────────────────────────────────────────────────────────────────────
 export type RateLimitVariant = "inline" | "toast";
 
-// ── Modal-route store (doc 01 §7.2 — the History-API ModalRouteHost) ─────────────────────────
+// ── Modal-route store (the History-API ModalRouteHost) ───────────────────────────────────────────
 /** Which overlay the ModalRouteHost is showing (null = none). `edit-profile` standalone-falls-back to /settings/. */
 export type ModalKind = "compose" | "reply" | "quote" | "poll" | "edit-profile" | null;
 
@@ -205,7 +203,7 @@ export interface ModalState {
   targetId?: string;
 }
 
-/** The tiny client modal store AppShell mounts once and the action callbacks drive (doc 01 §5.4 / §7.2). */
+/** The tiny client modal store AppShell mounts once and the action callbacks drive. */
 export interface ModalStoreApi {
   state: ModalState;
   openCompose: () => void;
@@ -216,7 +214,7 @@ export interface ModalStoreApi {
   close: () => void;
 }
 
-// ── Shared action-callback bundle (doc 03 §1/§3 — forwarded PostCard → PostCardActions) ───────
+// ── Shared action-callback bundle (forwarded PostCard → PostCardActions) ─────────────────────────
 // Every list surface (Timeline / ThreadView / ExploreList / ProfileTabs) supplies ONE of these and
 // forwards it to each PostCard, which splits it into the per-button props. Centralizing the bundle
 // keeps the callback names identical across surfaces.

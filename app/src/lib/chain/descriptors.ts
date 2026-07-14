@@ -48,7 +48,7 @@ export type RawPollTally = Awaited<ReturnType<Query["Microblog"]["PollTally"]["g
 /** `Microblog.PollVotes` — the viewer's chosen option (OptionQuery). */
 export type RawPollVote = Awaited<ReturnType<Query["Microblog"]["PollVotes"]["getValue"]>>;
 
-// ── the MicroblogApi runtime API (spec-120 node-served reads) ─────────────────────────────────────
+// ── the MicroblogApi runtime API (spec-120 node-served reads) ────────────────────────────────────
 
 /** One enriched, viewer-aware feed page as `MicroblogApi.feed_page` decodes it. */
 export type FeedPageRaw = Awaited<ReturnType<Apis["MicroblogApi"]["feed_page"]>>;

@@ -1,4 +1,4 @@
-// ProfilePage — /u/[address] (doc 01 §1, surface 07).
+// ProfilePage — /u/[address].
 //
 // STATIC EXPORT: this page.tsx is a SERVER component (NO "use client") because Next forbids a page
 // from being both a Client Component and exporting generateStaticParams(). generateStaticParams returns

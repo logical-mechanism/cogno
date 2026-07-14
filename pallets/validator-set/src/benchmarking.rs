@@ -1,9 +1,9 @@
-//! Benchmarking for `pallet-validator-set` (DR-05).
+//! Benchmarking for `pallet-validator-set`.
 //!
 //! `add_validator` / `remove_validator` are each one `Validators` StorageValue read + write behind
-//! the gated `AddRemoveOrigin`. The origin is obtained via `try_successful_origin` so the benchmark
-//! is correct whether the runtime wires `EnsureRoot` (v1 dev) or the M5 `EitherOfDiverse<EnsureRoot,
-//! EnsureProportionAtLeast<FollowerCommittee, 3, 5>>`. `remove_validator` seeds `MinAuthorities + 1`
+//! the gated `AddRemoveOrigin`. The origin is obtained via `try_successful_origin`, so the benchmark
+//! is correct for whatever `EnsureOrigin` the runtime wires (in production: the 3-of-5
+//! `FollowerCommittee`). `remove_validator` seeds `MinAuthorities + 1`
 //! validators first so the removal stays above the floor (the worst case: a full retain scan).
 
 use super::*;

@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
 import type { FeedSource } from "@/lib/feed/source";
+import { readErrorCopy } from "@/lib/chain/errors";
 import type { CognoPost, ThreadView, Ss58 } from "@/lib/types";
 
 export interface UseThread {
@@ -51,9 +52,9 @@ export interface UseThread {
 export function useThread(
   source: FeedSource | null,
   rootId: bigint | null,
-  /** The connected account, when known — threaded into the seam so a spec-120 node stamps the
-   *  myVote/reposted overlay node-side (keyed/indexer paths ignore it), and used to promote the viewer's
-   *  OWN replies into the revealed set (others' new replies buffer behind the pill). */
+  /** The connected account, when known — threaded into the seam so the node stamps the `myVote`
+   *  overlay node-side, and used to promote the viewer's OWN replies into the revealed set (others'
+   *  new replies buffer behind the pill). */
   viewer?: Ss58 | null,
   /** Best-block number — ticks the live re-read that refreshes tallies + surfaces new replies. */
   bestBlock?: number | null,
@@ -170,7 +171,7 @@ export function useThread(
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        if (cold) setError(e instanceof Error ? e.message : "could not load the thread");
+        if (cold) setError(readErrorCopy(e, "Could not load the thread."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

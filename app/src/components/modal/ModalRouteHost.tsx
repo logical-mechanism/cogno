@@ -1,12 +1,12 @@
 "use client";
 
-// ModalRouteHost — the single overlay host mounted once in AppShell (doc 01 §7.2).
+// ModalRouteHost — the single overlay host mounted once in AppShell.
 //
 // It subscribes to the client modalStore and renders the matching composer inside ComposerModal chrome
 // WITHOUT a route swap — <main> never unmounts, so the live source.watch() subscription keeps streaming
 // behind the modal (X-exact). It keeps the URL in sync via the History API directly (history.pushState
 // / history.back), NOT next/router: opening pushes a shareable /compose/?reply=<id>/?quote=<id> URL;
-// closing pops it. On a COLD load of /compose/ the full-page fallback is ComposePage (doc 01 §7.1) — this
+// closing pops it. On a COLD load of /compose/ the full-page fallback is ComposePage — this
 // host only handles the in-app overlay path, so it does NOT open itself from the URL on mount.
 //
 // This host is the "surface" that owns the write for compose/reply/quote/poll: it holds useMutation +
@@ -55,7 +55,7 @@ const TITLES: Record<Exclude<ModalKind, null>, string> = {
   "edit-profile": "Edit profile",
 };
 
-/** Push the shareable overlay URL for a mode without swapping <main> (History API, doc 01 §7.2). */
+/** Push the shareable overlay URL for a mode without swapping <main> (History API). */
 function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
   if (typeof window === "undefined") return;
   const base = "/compose/";
@@ -128,7 +128,7 @@ export function ModalRouteHost() {
     if (kind && kind !== "edit-profile") pushModalUrl(kind, state.targetId);
   }, [kind, state.targetId]);
 
-  // Back-button closes the overlay (doc 01 §7.2): a popstate while open dismisses without a route swap.
+  // Back-button closes the overlay: a popstate while open dismisses without a route swap.
   useEffect(() => {
     if (!kind) return;
     const onPop = () => close();
@@ -152,7 +152,9 @@ export function ModalRouteHost() {
     setConfirmDiscard(false);
     composerDirtyRef.current = false;
     if (kind === "poll") setPollDraft({ question: carried ?? "", options: ["", ""] });
-  }, [kind]);
+    // `setSubmitState` is useComposeWrite's raw useState setter — a stable identity, so listing it
+    // cannot re-run this effect. The effect is keyed on `kind` alone.
+  }, [kind, setSubmitState]);
 
   // Persist the plain-compose draft as it changes (savePostDraft removes the key when it's empty).
   useEffect(() => {
@@ -260,7 +262,7 @@ export function ModalRouteHost() {
     [api, signer, runWrite, optimisticPost],
   );
 
-  // ── profile save/clear pipeline (feeless + capacity-metered, exactly like a post) ────────────────
+  // ── profile save/clear pipeline (feeless + capacity-metered, exactly like a post) ──────────────
   // Owned HERE (the persistent host), not in EditProfileModal, so the modal can close INSTANTLY while
   // this tx runs to confirmation in the background: apply the optimistic overlay → close + sticky
   // "Saving…" toast → on confirm keep the overlay (retired by a fresh read) + swap to a success toast;

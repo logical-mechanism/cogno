@@ -2,5 +2,5 @@
 
 .embed {
   margin-top: var(--cg-space-1);
-  pointer-events: none; /* read-only inside the composer (doc 09 §2.3) */
+  pointer-events: none; /* read-only inside the composer */
 }

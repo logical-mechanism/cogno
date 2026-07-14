@@ -1,6 +1,6 @@
 "use client";
 
-// ProfileView — the full /u/[address] surface (doc 07). The client half of a server/client split:
+// ProfileView — the full /u/[address] surface. The client half of a server/client split:
 // page.tsx is the static-export server wrapper (generateStaticParams placeholder) and reads NOTHING;
 // this reads the live ss58 from the URL (useRouteSegment, NOT useParams — see lib/routeSegment),
 // validates it (plausible base58/length → else in-app not-found, NOT a hard 404), and renders the
@@ -12,14 +12,14 @@
 //
 // SPEC 117 FEELESS: pallet-profile writes (set_profile / pin_post / …) are feeless + capacity-metered
 // + optimistic exactly like a post — there is NO funding gate / balance check / fee-estimate anywhere
-// here. The OLD doc-07 §9.4 "fee-bearing / fund-your-account" model is OBSOLETE. The Edit/Set-up button
+// here. The OLD "fee-bearing / fund-your-account" model is OBSOLETE. The Edit/Set-up button
 // just opens the edit-profile modal (the form is owned by the Settings surface); capacity exhaustion on
 // any tab-card action surfaces via the shared rate-limit toast inside the optimistic hooks.
 //
 // Tabs (Posts / Replies / Likes; NO Media — D1, the chain is text-only) are CLIENT state synced to the
 // ?tab= query via history.pushState (the static route stays /u/[address]). The node serves the WHOLE
 // profile directly: the header (name/bio/avatar/counts), the Posts tab, the Likes tab (spec-118 reverse
-// maps) AND the reverse Replies tab (spec-200 `author_replies_page`) — nothing needs an indexer.
+// maps) AND the reverse Replies tab (`author_replies_page`) — every one of them node-direct.
 //
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -82,7 +82,7 @@ export function ProfileView() {
     );
   }
 
-  // Invalid ss58 → in-app not-found (NOT a hard 404); never attempt a chain read (doc 07 §10).
+  // Invalid ss58 → in-app not-found (NOT a hard 404); never attempt a chain read.
   if (!isPlausibleSs58(address)) return <NotFoundInline kind="profile" />;
 
   // key: every profile shares the one exported route segment ("_"), so React would otherwise keep
@@ -109,8 +109,8 @@ function ProfileBody({ address }: { address: Ss58 }) {
 
   // ── active tab: client state synced to ?tab= (the static route stays /u/[address]). ──
   const [tab, setTab] = useState<ProfileTab>(() => parseTabParam(searchParams?.get("tab") ?? null));
-  // Coerce a persisted tab the active reader can't serve back to Posts (the Replies tab needs the
-  // indexer; Likes is node-direct). Display fields (name/bio/avatar) still show.
+  // Coerce a persisted tab back to Posts when there is no reader at all (disconnected). Display
+  // fields (name/bio/avatar) still show.
   const activeTab: ProfileTab =
     (tab === "replies" && !canReplies) || (tab === "likes" && !canLikes) ? "posts" : tab;
 
@@ -129,7 +129,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
 
   // ── profile + the active tab's posts (one round-trip per tab via the seam) ──
   const profileArgs = useMemo<ProfileArgs>(
-    // `viewer: me` lets a spec-120 node stamp the Posts-tab overlay node-side; keyed/indexer ignore it.
+    // `viewer: me` lets the node stamp the Posts-tab `myVote` overlay in the same state_call.
     () => ({ author: address, tab: tabArg(activeTab), viewer: me ?? undefined }),
     [address, activeTab, me],
   );
@@ -144,7 +144,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const isFollowing = follow.isFollowing(address);
 
   // Header counts: optimistically bumped/decremented as the viewer follows/unfollows from THIS header.
-  // Base counts come from the profile (indexer-denormalized); the optimistic delta layers on top.
+  // Base counts come from the profile (the chain's denormalized counters); the delta layers on top.
   const [followDelta, setFollowDelta] = useState(0);
   const followerCount = (profile?.followerCount ?? 0) + followDelta;
   const followingCount = profile?.followingCount ?? 0;
@@ -173,8 +173,8 @@ function ProfileBody({ address }: { address: Ss58 }) {
 
   // ── followers / following lists: a full-screen sub-view synced to ?follows=followers|following. ──
   // Tapping a follow count opens it (pushState → the header back-arrow / browser Back closes it, via
-  // popstate below); switching sides inside replaces (no history stacking). caps.follows already gates
-  // the counts, so this is only reachable when the reader serves the follow graph.
+  // popstate below); switching sides inside replaces (no history stacking). Only reachable through the
+  // follow counts, which are omitted when the reader can't serve the graph.
   const [follows, setFollows] = useState<"followers" | "following" | null>(() => {
     const v = searchParams?.get("follows");
     return v === "followers" || v === "following" ? v : null;
@@ -250,7 +250,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
   } = useAccountVoteFor(address, { liveKey: bestBlock });
 
   // ── pinned post: resolve the single id via source.thread(id).root (the seam's one-post resolver). ──
-  // Silently omit on 404 / throw / author-mismatch (doc 07 §5.1 / §11). Only on the Posts tab.
+  // Silently omit on 404 / throw / author-mismatch. Only on the Posts tab.
   const pinnedId = profile?.pinnedPostId ?? null;
   const [pinned, setPinned] = useState<CognoPost | null>(null);
   useEffect(() => {
@@ -279,13 +279,13 @@ function ProfileBody({ address }: { address: Ss58 }) {
     return posts.filter((p) => p.id !== pinned.id);
   }, [posts, pinned]);
 
-  // ── viewer-relative state across the visible cards (filled heart / active repost) ──
+  // ── viewer-relative state across the visible cards (the filled heart) ──
   const postIds = useMemo(() => {
     const ids = listPosts.map((p) => p.id);
     if (pinned) ids.unshift(pinned.id);
     return ids;
   }, [listPosts, pinned]);
-  // Node-served posts (list + pinned) carry the overlay → skip the per-card Reposts scan for them.
+  // Node-served posts (list + pinned) carry the overlay → skip the per-card viewer read for them.
   const carriedStates = useMemo(
     () => carriedViewerStates(pinned ? [pinned, ...listPosts] : listPosts),
     [listPosts, pinned],
@@ -315,7 +315,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
 
   const onEditProfile = useCallback(() => modalActions.openEditProfile(), []);
 
-  // ── empty-state copy per tab (doc 07 §11 / §6) ──
+  // ── empty-state copy per tab ──
   const emptyForTab = useMemo(() => {
     if (activeTab === "replies") {
       return isSelf
@@ -327,7 +327,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
         ? { variant: "profile" as const, title: "Posts you like show up here." }
         : { variant: "profile" as const, title: `${handle} hasn't liked any posts yet.` };
     }
-    // Posts (also the who-is-this-when-unbound fallback — §6: never a 404, the empty shell).
+    // Posts (also the who-is-this-when-unbound fallback: never a 404, the empty shell).
     return isSelf
       ? {
           variant: "profile" as const,
@@ -437,10 +437,10 @@ function ProfileBody({ address }: { address: Ss58 }) {
             )}
 
             {/* Body: (a) loading / has posts / a read-error → Timeline (it owns the skeleton + the
-                inline error+Retry row, doc 07 §11; the data layer prefers a PAPI-direct fallback over a
+                inline error+Retry row; the data layer prefers a PAPI-direct fallback over a
                 hard error); (b) no posts + a pinned card → the pinned block stands alone (nothing more);
                 (c) no posts + nothing pinned → a PROFILE-specific EmptyState (Timeline only knows
-                feed|follows, so we render our own per-tab copy, doc 07 §6/§11). */}
+                feed|follows, so we render our own per-tab copy). */}
             {loading || listPosts.length > 0 || error ? (
               <Timeline
                 posts={listPosts}

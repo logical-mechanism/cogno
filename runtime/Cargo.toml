@@ -1,6 +1,6 @@
 [package]
 name = "cogno-chain-runtime"
-description = "The cogno-chain runtime (forked from polkadot-sdk solochain-template @ stable2603-3)."
+description = "The cogno-chain runtime — feeless, talk-capacity-metered social pallets over a sudo-free, committee-governed FRAME runtime."
 version.workspace = true
 license = "Apache-2.0"
 authors.workspace = true

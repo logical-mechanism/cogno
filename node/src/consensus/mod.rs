@@ -2,10 +2,10 @@
 // Copyright 2026 LogicalMechanism. Reimplemented from the Apache-2.0 partner-chains
 // `sp-partner-chains-consensus-aura` crate (see the repo NOTICE file for attribution).
 //! Custom block proposer that seals the stable Cardano block anchor into the block HEADER as a `cobs`
-//! PreRuntime digest (in-protocol-observation §15.3 / Midnight delta A.1 — the partner-chains "McHash"
-//! header-seal pattern adapted to cogno's single pinned vault).
+//! PreRuntime digest — the partner-chains "McHash" header-seal pattern, adapted to cogno's single pinned
+//! vault. See docs/IN-PROTOCOL-OBSERVATION.md.
 //!
-//! **Architecture A (the signed-off design).** The header digest is an EXTERNAL-AUDITABILITY artifact: a
+//! **Architecture A.** The header digest is an EXTERNAL-AUDITABILITY artifact: a
 //! third party reading only PC block headers can see which stable Cardano block each block anchored to,
 //! without trusting the operator. The LOAD-BEARING importer re-validation rides cogno's existing
 //! `pallet_cardano_observer::check_inherent` chokepoint (which now compares `CardanoRef.block_hash`), so
@@ -14,7 +14,7 @@
 //! the deferred Architecture-B upgrade, co-sequenced with the ≥3-independent-producer cutover ("D4-SHAPED,
 //! not D4-TRUST").
 //!
-//! Reimplemented (DR-26: study, don't depend — the upstream repo is archived) from the partner-chains
+//! Reimplemented — study, don't depend: the upstream repo is archived — from the partner-chains
 //! Apache-2.0 `sp-partner-chains-consensus-aura` crate, pinned to cogno's polkadot-stable2606: the
 //! [`InherentDigest`] trait + the [`PartnerChainsProposerFactory`]/`PartnerChainsProposer` wrapper. The
 //! upstream proposer's `from_inherent_data` panic is replaced with a logged-empty fallback so a

@@ -1,12 +1,10 @@
 //! The PURE, deterministic reduction half of the Cardano observation — no IO, no `sc-*`, no node.
 //!
-//! Folded out of the former `node/src/cardano_observer.rs` (its pure core) and kept logically identical to
-//! the retired `services/_shared/observation.mjs` (`observeAsOf` / `cardanoReferenceSlot` / `candidates`)
-//! and `services/cogno-follower/vault.py` — the cross-language spec these all mirrored is now this one
-//! crate. The node observation `InherentDataProvider` (the WRITER) and the `cogno-chain-cli`
-//! `query weight --dbsync` diagnostic (READ-ONLY) both call these functions, so the golden fixture
-//! ([`rust_matches_js_observation_equivalence_fixture`]) guarantees the CLI prints what the inherent
-//! writes. A divergence here is a chain FORK.
+//! This crate IS the spec. It used to be mirrored across a JS and a Python implementation; those are gone,
+//! so these functions are the single definition of how Cardano state reduces to on-chain weight. Both node
+//! paths call them: the observation `InherentDataProvider` (the consensus WRITER) and the boot-time
+//! `config_check` probe (read-only). A divergence here is a chain FORK, which is what the golden fixture
+//! ([`reduction_matches_the_golden_determinism_fixture`]) exists to catch.
 
 use codec::Encode;
 use pallet_cardano_observer::{BeaconName, CardanoObservation, CardanoRef, StakeCredential};
@@ -15,9 +13,9 @@ use std::collections::BTreeMap;
 /// Map a stable wall-clock time (unix seconds, from the PARENT block) to the Cardano slot to observe
 /// AS-OF: `(Shelley slot at that time) − stability_window`. Fail-closed (`None`) on a pre-Shelley /
 /// wrong-network / underflowing input ⇒ the caller emits no observation. Port of `cardanoReferenceSlot`
-/// (observation.mjs) — checked arithmetic, since a naive `u64` subtraction would WRAP under
-/// overflow-checks-off release builds (the determinism trap, design §5.2). Only 1 s Shelley slots; the
-/// anchor MUST be the Shelley start, NOT Byron `systemStart`.
+/// Checked arithmetic throughout, since a naive `u64` subtraction would WRAP under the wasm runtime's
+/// overflow-checks-off release build — that is the determinism trap. Only 1 s Shelley slots; the anchor
+/// MUST be the Shelley start, NOT Byron `systemStart`.
 pub fn reference_slot(
     parent_unix_s: u64,
     shelley_start_unix: u64,
@@ -416,17 +414,17 @@ mod tests {
         }
     }
 
-    /// Cross-implementation observation determinism EQUIVALENCE regression (mirrors Midnight's
-    /// primitives/mainchain-follower/tests/cnight_equivalence.rs cross-implementation equality test).
+    /// Byte-exact determinism regression on the canonical SCALE output.
     ///
     /// Loads the committed golden fixture (`src/fixtures/observation-equivalence.json`) and, for each case,
     /// re-derives `observe_as_of` and SCALE-encodes the canonical `(reference_slot, entries)` structure,
-    /// asserting it equals the golden BYTE-FOR-BYTE. The golden was generated from the canonical
-    /// observation.mjs spec; after this consolidation, THIS crate is the canonical spec and the node writer +
-    /// the CLI reader both call these functions, so a divergence here is a chain FORK. The SCALE encoding
-    /// of `(u64, Vec<([u8;32], u128)>)` is `u64` LE ++ compact-len ++ per entry `[u8;32]` ++ `u128` LE.
+    /// asserting it equals the golden BYTE-FOR-BYTE. The golden values were produced by the original JS
+    /// reference implementation, which was retired in the all-Rust consolidation — so this is a frozen-golden
+    /// guard, not a live two-implementation equivalence check. Its job is to make ANY change to the reduction
+    /// output fail loudly: a divergence is a chain fork. The SCALE encoding of `(u64, Vec<([u8;32], u128)>)`
+    /// is `u64` LE ++ compact-len ++ per entry `[u8;32]` ++ `u128` LE.
     #[test]
-    fn rust_matches_js_observation_equivalence_fixture() {
+    fn reduction_matches_the_golden_determinism_fixture() {
         use codec::Encode;
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),

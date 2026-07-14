@@ -1,6 +1,6 @@
 //! Mock runtime for `pallet-validator-set` — System + Balances + ValidatorSet + Session, wired to
 //! the pinned SDK's `pallet-session` (the newer `Currency` / `KeyDeposit` / `DisablingStrategy`
-//! API). Mirrors `_sdk/substrate/frame/session/src/mock.rs` for those fields. Genesis seats three
+//! API). Mirrors polkadot-sdk's own `frame/session` mock for those fields. Genesis seats three
 //! validators `[1, 2, 3]`.
 
 use crate as pallet_validator_set;

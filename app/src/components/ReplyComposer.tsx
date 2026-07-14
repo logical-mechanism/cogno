@@ -1,6 +1,6 @@
 "use client";
 
-// ReplyComposer — a Composer fixed to mode='reply' (doc 03 §9, doc 09 §2.2).
+// ReplyComposer — a Composer fixed to mode='reply'.
 //
 // Adds the compact read-only preview of the parent post + the "Replying to @handle" context line
 // (the @handle links to /u/[address]) above the textarea. Submit sets parent=Some(replyTo.id): the

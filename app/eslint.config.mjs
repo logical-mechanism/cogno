@@ -1,9 +1,9 @@
-// ESLint flat config (ESLint 9 / Next 16). Replaces the legacy .eslintrc.json — Next 16 removed the
-// `next lint` command and defaults to flat config, so `npm run lint` now calls the ESLint CLI directly
-// (`eslint .`). `eslint-config-next/core-web-vitals` is the flat-config array equivalent of the old
-// `extends: "next/core-web-vitals"` (same Next + react/react-hooks/import/jsx-a11y/@typescript-eslint
-// rule set). The globalIgnores mirror the old `ignorePatterns`: generated PAPI descriptors, the headless
-// verification scripts (not app source), the static-export output, the Next build dir, and next-env.d.ts.
+// ESLint flat config (ESLint 9 / Next 16). Next 16 removed the `next lint` command and defaults to
+// flat config, so `npm run lint` calls the ESLint CLI directly (`eslint . --max-warnings 0`).
+// `eslint-config-next/core-web-vitals` is the flat-config array equivalent of the old
+// `extends: "next/core-web-vitals"` (Next + react/react-hooks/import/jsx-a11y/@typescript-eslint).
+// The globalIgnores cover the generated PAPI descriptors, the headless verification scripts (not app
+// source), the static-export output, the Next build dir, and next-env.d.ts.
 
 import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
@@ -12,26 +12,31 @@ export default defineConfig([
   ...nextVitals,
   globalIgnores([".papi/**", "scripts/**", "out/**", ".next/**", "next-env.d.ts"]),
   {
-    // On, so a stale `eslint-disable` (there are 13 inline exhaustive-deps suppressions) becomes visible
+    // On, so a stale `eslint-disable` (there are 12 inline exhaustive-deps suppressions) becomes visible
     // the moment the code under it changes — otherwise a suppression outlives the problem it was hiding
     // and silently keeps suppressing the NEXT one.
     linterOptions: { reportUnusedDisableDirectives: "warn" },
   },
   {
-    // The three react-hooks-7 advisories (React-Compiler-readiness: cascading-render / ref-during-render
-    // / manual-memoization). They were "off" while the dependency bump landed; they are now WARNINGS
-    // under a ratchet — `npm run lint` passes `--max-warnings <N>`, and N comes down with each refactor
-    // that removes a real hit. They stay at "warn" rather than "error" on purpose: a minority of the hits
-    // are legitimate (the StrictMode re-arm in the batch-cache providers, useTheme's hydration reconcile),
-    // so the ratchet floor will not reach zero and a blanket "fix them all" sweep is the wrong move.
+    // The two React-Compiler-readiness advisories eslint-config-next 16 enables by default. They are
+    // not correctness rules — they flag code the compiler declines to auto-memoize — and here they fire
+    // 73 times on two patterns that are deliberate:
     //
-    // The `preserve-manual-memoization` hits are NOT cosmetic — they are the compiler telling us a
-    // useMemo is decorative because its dep is rebuilt every render (see useVote's returned arrows).
-    name: "cogno/react-hooks-7-ratchet",
+    //   set-state-in-effect (47 hits): every chain-reading hook clears its state synchronously when its
+    //     input goes null (`if (!api) { setX(null); return; }`) before re-subscribing. The suggested fix
+    //     — derive during render — renders one frame of the PREVIOUS account's data.
+    //   refs (26 hits): the latest-value ref (`sourceRef.current = source` in the render body), which is
+    //     what lets a best-block-driven refetch read fresh props WITHOUT resubscribing every block. The
+    //     suggested fix — sync it in an effect — reads a stale value for exactly one commit, which is
+    //     the bug the pattern exists to avoid.
+    //
+    // Off, not a warning budget: a numeric ceiling silently grants headroom for new violations anywhere
+    // in the app, and neither rule reaches zero without adopting the React Compiler. Turn them back on
+    // as errors if that happens. Nothing else in app/ is suppressed.
+    name: "cogno/react-compiler-advisories",
     rules: {
-      "react-hooks/set-state-in-effect": "warn",
-      "react-hooks/refs": "warn",
-      "react-hooks/preserve-manual-memoization": "warn",
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/refs": "off",
     },
   },
 ]);

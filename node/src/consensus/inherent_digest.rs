@@ -5,7 +5,7 @@
 //! digest, and how to decode them back on import.
 //!
 //! Reimplemented from the Apache-2.0 partner-chains `sp-partner-chains-consensus-aura` primitives, pinned
-//! to cogno's polkadot-stable2606 (DR-26: study the archived upstream, don't depend on it).
+//! to cogno's polkadot-stable2606 (the upstream repo is archived — study it, don't depend on it).
 
 use sp_inherents::InherentData;
 use sp_runtime::DigestItem;

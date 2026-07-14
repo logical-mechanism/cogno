@@ -1,6 +1,6 @@
 [package]
 name = "cogno-chain-node"
-description = "The cogno-chain solochain node (forked from polkadot-sdk solochain-template @ stable2603-3)."
+description = "The cogno-chain solochain node — Aura + GRANDPA, with a custom proposer that seals the observed Cardano block anchor into each header."
 version.workspace = true
 license = "Apache-2.0"
 authors.workspace = true

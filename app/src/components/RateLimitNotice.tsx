@@ -1,6 +1,6 @@
 "use client";
 
-// RateLimitNotice — the ONE capacity reality we surface (doc 03 §17, D5). Twitter-style, NO battery,
+// RateLimitNotice — the ONE capacity reality we surface (D5). Twitter-style, NO battery.
 // NO capacity numbers/jargon. Raised when a feeless extrinsic is rejected at the pool by CheckCapacity
 // (or pre-emptively when a capacity hint says it won't fit). Slim inline banner sitting inside the
 // Composer (variant 'inline'); the 'toast' variant defers to the rate-limit Toast (same copy) so the

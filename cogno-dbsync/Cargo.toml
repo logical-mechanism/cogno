@@ -1,6 +1,6 @@
 [package]
 name = "cogno-dbsync"
-description = "The shared deterministic Cardano db-sync reader + node-keyed reduction for cogno-chain. Used by the node observation InherentDataProvider (the WRITER of the talk-stake weight ledger) and, read-only, by the cogno-chain-cli `query weight --dbsync` diagnostic. Pinned by the golden observation-equivalence fixture so both produce byte-identical observations. Folds the former node/src/dbsync.rs + node/src/cardano_observer.rs (pure half) + services/_shared/observation.mjs + services/cogno-follower/vault.py into ONE std-only crate."
+description = "The shared deterministic Cardano db-sync reader + reduction for cogno-chain. Cardano is read EXCLUSIVELY through this crate: the node's observation InherentDataProvider is the sole WRITER of the talk-stake weight ledger, and the node's boot-time config_check probe reuses it read-only. Determinism is pinned by a golden fixture — a divergence here is a chain fork. std-only; no sc-*/runtime deps."
 version.workspace = true
 license = "Apache-2.0"
 authors.workspace = true

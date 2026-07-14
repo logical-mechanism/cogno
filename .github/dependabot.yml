@@ -77,6 +77,22 @@ updates:
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
 
+  # ── Acceptance script ─────────────────────────────────────────────────────────────────────────
+  # A second npm root (scripts/acceptance/, one dep: @polkadot/api) that the `/app` entry above does
+  # NOT cover — a Dependabot directory is not recursive. It is a dev-only script and nothing ships
+  # from it, so quarterly is plenty; it is here so the lockfile is not simply unwatched.
+  - package-ecosystem: npm
+    directory: "/scripts/acceptance"
+    schedule:
+      interval: quarterly
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      acceptance:
+        patterns: ["*"]
+        update-types: [major, minor, patch]
+
   # ── CIP-8 adversarial oracle (pinned Python deps) ─────────────────────────────────────────────
   # Three pinned deps behind a CI-only oracle; nothing here ships. Quarterly, one grouped PR.
   - package-ecosystem: pip
@@ -99,13 +115,14 @@ updates:
         update-types: ["version-update:semver-major"]
 
   # ── GitHub Actions ────────────────────────────────────────────────────────────────────────────
-  # The actions are pinned to MUTABLE major tags (actions/checkout@v7, actions/setup-node@v6,
-  # Swatinem/rust-cache@v2, aiken-lang/setup-aiken@v1) — NOT to SHAs, despite what the old comment
-  # here claimed. Consequence: the `v7` tag already floats to the latest v7.x.y on its own, so
-  # Dependabot only ever fires here on a MAJOR bump. That is a handful of PRs a year, so quarterly
-  # loses nothing; the four seen in the last 30 days were the one-off first-scan backlog.
-  # (If the mutable-tag supply-chain exposure is ever worth closing, SHA-pin the actions — then
-  # Dependabot resumes proposing every patch and this entry gets busier.)
+  # Every THIRD-PARTY action is SHA-pinned (dorny/paths-filter, Swatinem/rust-cache, aiken-lang/
+  # setup-aiken, dtolnay/rust-toolchain, EmbarkStudios/cargo-deny-action) — a mutable tag on a
+  # third-party action is the tj-actions/changed-files footgun, and two of them run in the job that
+  # holds DEPLOY_SSH_KEY. GitHub's own actions/* stay on major tags.
+  #
+  # Consequence for the cadence: a SHA pin does not float, so Dependabot proposes EVERY patch here,
+  # not just majors. That makes this entry busier than it was — hence the group, and hence quarterly.
+  # A CVE in an action still opens a security PR the day it lands, whatever this says.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
@@ -118,7 +135,8 @@ updates:
         patterns: ["*"]
         update-types: [major, minor, patch]
     ignore:
-      # The `dtolnay/rust-toolchain@<ver>` ref IS the rustc version, and rustc is pinned to 1.93.0
-      # (rust-toolchain.toml) — the toolchain the polkadot-sdk stable2606 train is built against.
-      # Never auto-bump it; it must track the SDK release, not float to latest stable.
+      # The `dtolnay/rust-toolchain` pin IS the rustc version (the SHA is tagged 1.93.0), and rustc is
+      # pinned to 1.93.0 in rust-toolchain.toml — the toolchain the polkadot-sdk stable2606 train is
+      # built against. Never auto-bump it; it must move with the SDK release, not to latest stable.
+      # Re-pin it BY HAND, to the SHA of the tag matching the new rustc, on an SDK bump.
       - dependency-name: "dtolnay/rust-toolchain"

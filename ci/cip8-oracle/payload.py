@@ -1,4 +1,4 @@
-"""The PINNED CIP-8 bind payload (DR-02) — the single source of truth for the bytes the user signs.
+"""The PINNED CIP-8 bind payload — the single source of truth for the bytes the user signs.
 A byte-exact agreement across three implementations: the frontend's MeshJS `signData`, the on-chain
 verifier's `parse_payload` (`pallet_cogno_gate::cip8`, which is what production checks now), and the
 independent reference verifier here (`build`/`parse`, proven in `test_agreement.py`).
@@ -9,9 +9,9 @@ Why a single-line UTF-8 string (not raw concatenated bytes): pycardano's `cip8.v
 `message = payload.decode("utf-8")`, so the committed payload MUST be valid UTF-8. ASCII-only,
 fixed field order, ';' separator, no spaces → unambiguous and trivial to re-derive identically.
 
-Fields (DR-02 — what the signature COMMITS, so bind-hijack is PREVENTED, not just detected):
+Fields — what the signature COMMITS, so bind-hijack is PREVENTED, not just detected:
   - domain  'cogno-chain/bind/v1'  — domain separation (this signature is a cogno-chain bind, v1)
-  - genesis  the L3 genesis block hash, lowercase hex, 64 chars, no 0x  — anti-cross-chain
+  - genesis  the cogno-chain genesis block hash, lowercase hex, 64 chars, no 0x  — anti-cross-chain
   - account  the 32-byte sr25519 posting pubkey, lowercase hex, 64 chars — commits the bind target
   - nonce    a 16-byte lowercase-hex value, 32 chars — FORMAT-checked only (D1). Replay is now
              prevented on-chain by the pallet's 1:1 maps + permanent tombstone, not by a server

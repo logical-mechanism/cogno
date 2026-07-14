@@ -16,11 +16,11 @@
 //     vault script address equals the beacon policy id;
 //   • the deterministic stable-block anchor is the single `block` row at `max(slot_no) <= reference`
 //     (≤1 block/slot on settled history ⇒ unique across every fully-synced db-sync).
-// See docs/IN-PROTOCOL-OBSERVATION.md §15.3.
+// See docs/IN-PROTOCOL-OBSERVATION.md.
 import pg from "pg";
 
 // One consistent-snapshot read: freshness tip + the deterministic stable-block anchor + the vault matches
-// AS-OF `$1` (the node's exact read; in-protocol-observation §15.3). `$2` = the vault policy id hex.
+// AS-OF `$1` (the node's exact read). `$2` = the vault policy id hex.
 const OBSERVATION_SQL = `
 WITH params AS (SELECT $1::bigint AS ref, $2::text AS pol),
 freshness AS (SELECT max(slot_no) AS tip_slot FROM block),
@@ -129,7 +129,7 @@ export async function readUnspentMatches(url, vaultHex) {
 	});
 }
 
-// ── Stake-key VOTING POWER observation (epoch_stake) ───────────────────────────────────────────────
+// ── Stake-key VOTING POWER observation (epoch_stake) ─────────────────────────────────────────────
 // The voting-power source (spec 114): the TOTAL Cardano stake of a PROVEN stake credential, read from
 // db-sync's per-epoch `epoch_stake` snapshot — the same snapshot Cardano uses for leader election and
 // CIP-1694/Catalyst use for voting power. Deterministic + manipulation-resistant (an epoch snapshot is
@@ -183,7 +183,7 @@ export async function stakeForCredential(url, stakeCredHex, epochNo, network = 0
 	});
 }
 
-// ── Write-path helpers (the anchor-relayer + the M2d demo scripts) ─────────────────────────────────
+// ── Write-path helpers (the anchor-relayer + the M2d demo scripts) ───────────────────────────────
 // These are NOT part of the consensus observation lockstep above (no Rust/Python twin): they serve the
 // L1 WRITE path — the relayer/wallet's own unspent UTxOs (so MeshTxBuilder can coin-select), tx-in-a-
 // block confirmation by hash, and reading a tx's metadata back. Ogmios still SUBMITS the tx + serves

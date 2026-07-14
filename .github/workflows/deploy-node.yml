@@ -89,7 +89,12 @@ jobs:
       # stable2606 train against); dtolnay pins the same version here so the deploy cannot silently
       # drift onto a different compiler than CI tested with. rust-src + both wasm targets mirror
       # rust-toolchain.toml — substrate's wasm-builder needs them to build the embedded runtime.
-      - uses: dtolnay/rust-toolchain@1.93.0
+      #
+      # SHA-pinned, and non-negotiably so: this job holds DEPLOY_SSH_KEY. A tag — even a
+      # version-specific one like `@1.93.0` — is a mutable ref the action's owner can re-point, and any
+      # step in this job can read the key off ~/.ssh or out of the runner. The trailing comment is the
+      # version the SHA was resolved from; it is a label, not the pin.
+      - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
         with:
           components: rust-src
           targets: wasm32v1-none, wasm32-unknown-unknown
@@ -102,7 +107,9 @@ jobs:
           sudo apt-get install -y
           clang llvm-dev libclang-dev protobuf-compiler cmake libssl-dev pkg-config make build-essential
 
-      - uses: Swatinem/rust-cache@v2
+      # SHA-pinned for the same reason as the toolchain above — this is the job with the deploy key, and
+      # a floating `@v2` here is exactly the tj-actions/changed-files shape.
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       # Cache-poison guard, same as ci.yml's. substrate-wasm-builder emits a build-script output
       # (wasm_binary.rs) that `include_bytes!`es a wasm under target/*/wbuild/ — and rust-cache restores

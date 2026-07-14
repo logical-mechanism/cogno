@@ -1,6 +1,6 @@
 "use client";
 
-// EmptyState — the friendly placeholder when a list/section has no data (doc 03 §18). Centered
+// EmptyState — the friendly placeholder when a list/section has no data. Centered
 // icon + headline + optional subtext + optional CTA pill. Presets carry canonical copy; explicit
 // title/description override a preset. The `search-unavailable` preset is the honest cap message
 // (framed as a feature dependency, NOT an honesty disclaimer — the trust layer is dropped).

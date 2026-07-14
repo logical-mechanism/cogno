@@ -4,7 +4,7 @@
 // generator already navigated). The artifact is the source of truth, proven against the live relaunch.
 import vault from "./vault.json";
 
-/** The min_lock-applied policy id == vault script hash (DR-18). */
+/** The min_lock-applied policy id == vault script hash. */
 export const VAULT_HASH: string = vault.vaultHash;
 /** The applied (parameterized) Plutus V3 script CBOR — the mint/spend script in every vault tx. */
 export const APPLIED_CBOR: string = vault.appliedCbor;

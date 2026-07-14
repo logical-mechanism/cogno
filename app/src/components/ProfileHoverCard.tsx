@@ -1,6 +1,6 @@
 "use client";
 
-// ProfileHoverCard — desktop hover quick-view over a username/avatar (doc 03 §12 follow-up). Wraps a
+// ProfileHoverCard — desktop hover quick-view over a username/avatar (follow-up). Wraps a
 // trigger; after a short hover delay it LAZILY fetches the author's profile (node-direct profile()
 // reader: name / bio / avatar / follower+following counts) and shows a popover with a Follow button.
 //

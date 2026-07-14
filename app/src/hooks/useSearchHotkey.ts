@@ -1,6 +1,6 @@
 "use client";
 
-// useSearchHotkey — the app-wide "/" shortcut that focuses the SearchBar (X parity, surface 10 §9).
+// useSearchHotkey — the app-wide "/" shortcut that focuses the SearchBar (X parity).
 // Mounted once in AppShell so it works on EVERY surface (the RightRail box on Home/profile, the Explore
 // header box) — it used to live inside /explore only, so "/" did nothing elsewhere. Ignores "/" while
 // the user is typing in a field or a modal/dialog is open, and focuses the first [role='search'] search

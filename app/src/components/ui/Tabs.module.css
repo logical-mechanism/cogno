@@ -1,6 +1,6 @@
 /* Tabs — the one horizontal tab strip (was five modules; TimelineTabs and ProfileTabs were byte-identical).
    Monochrome: the active underline is a NEUTRAL text-coloured pill, never a coloured accent — the accent
-   is reserved for the Post CTA + the focus ring (doc 00). */
+   is reserved for the Post CTA + the focus ring. */
 
 .tablist {
   display: flex;

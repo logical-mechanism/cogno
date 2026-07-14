@@ -79,8 +79,8 @@ impl InherentDigest for CardanoObsInherentDigest {
                 }
             }
         }
-        // Duplicate-digest rejection (mirrors the Midnight `mc-hash-digest-reject-duplicates` hardening,
-        // stricter than the base reference which silently takes the first match). >1 `cobs` item ⇒ malformed.
+        // Duplicate-digest rejection — stricter than the partner-chains reference, which silently takes
+        // the first match. More than one `cobs` item means a malformed header, so reject it.
         if count > 1 {
             return Err(format!(
                 "header carries {count} cobs PreRuntime digests (expected at most 1)"

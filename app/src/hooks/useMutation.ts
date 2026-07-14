@@ -17,7 +17,7 @@
 //
 // `pending` survives because it has one real consumer (useAccountVote → AccountVoteControl's disabled).
 //
-// Toast policy (doc 04 §3.4): feeless social actions are SILENT on success (the optimistic UI already
+// Toast policy: feeless social actions are SILENT on success (the optimistic UI already
 // showed the heart fill — we never toast "Liked!"). We surface ONLY failures. The caller decides
 // whether to toast a confirm (e.g. profile edits close a modal on success).
 

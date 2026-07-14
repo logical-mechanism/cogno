@@ -1,6 +1,6 @@
 "use client";
 
-// ProfileHeader — the profile chrome above the tabs (doc 07 §4): banner → overlapping xl Avatar →
+// ProfileHeader — the profile chrome above the tabs: banner → overlapping xl Avatar →
 // action button (Follow / Following / Edit profile / Set up profile) → DisplayName + copyable Handle →
 // linkified bio → location / website meta → FollowCounts → banned "restricted" note.
 //
@@ -8,13 +8,13 @@
 // reveal cover (no auto-fetch of an arbitrary host). With no banner set we fall back to a deterministic
 // CSS gradient seeded from the address (a stable hue/angle offset per account).
 //
-// The action button is the load-bearing self-vs-other switch (§4.4):
+// The action button is the load-bearing self-vs-other switch:
 //   • self + has-profile  → "Edit profile" (outline pill) → onEditProfile()
 //   • self + no-profile    → "Set up profile" (filled accent pill, the stronger nudge) → onEditProfile()
 //   • someone else         → <FollowButton> (returns null on self; the gate funnels to /welcome)
 //
 // FollowCounts is OMITTED entirely when the reader can't serve follows (PAPI-direct) — never "0
-// Followers" (§4.5). A banned author renders dimmed (Avatar dim + DisplayName authorRevoked) with a
+// Followers". A banned author renders dimmed (Avatar dim + DisplayName authorRevoked) with a
 // neutral "restricted" note — NO honesty/trust framing (D10). Posts stay visible (the tab cards dim
 // themselves). FollowButton is still rendered for a banned account (the chain permits it).
 
@@ -77,7 +77,7 @@ export interface ProfileHeaderProps {
   followsYou?: boolean;
   /** self + all of displayName/bio/avatar empty → "Set up profile" (filled) vs "Edit profile" (outline). */
   hasProfile: boolean;
-  /** Show the follower/following figures (caps.follows). Omit entirely when false. */
+  /** Show the follower/following figures. Omit entirely when false. */
   showCounts: boolean;
   followingCount: number;
   followerCount: number;
@@ -93,7 +93,7 @@ export interface ProfileHeaderProps {
   /** Follow/unfollow toggle (others); the surface gates to /welcome when not ready. */
   onToggleFollow: (target: Ss58, next: boolean) => void;
   // ── spec-202 account reputation (stake-weighted up/down votes ON this account) ──
-  /** Show the reputation control (caps.tallies). Omit the control entirely when false. */
+  /** Show the reputation control. Omit the control entirely when false. */
   canAccountVote: boolean;
   /** The merged reputation view (base tally + optimistic override), from useAccountVote.merge. */
   accountVote?: AccountVoteView;
@@ -156,7 +156,7 @@ export function ProfileHeader({
       )}
 
       <div className={styles.body}>
-        {/* avatar (overlapping the banner) on the left; the action button on the right (§2.1) */}
+        {/* avatar (overlapping the banner) on the left; the action button on the right */}
         <div className={styles.topRow}>
           <div className={styles.avatarRing}>
             <Avatar
@@ -231,7 +231,7 @@ export function ProfileHeader({
           </p>
         )}
 
-        {/* Counts omitted entirely on PAPI-direct (caps.follows === false) — never "0 Followers". */}
+        {/* The surface omits the counts entirely rather than rendering "0 Followers". */}
         {showCounts && (
           <FollowCounts
             following={followingCount}

@@ -1,8 +1,10 @@
 //! Weights for `pallet-cardano-observer`.
 //!
-//! Placeholder weights for now — the real FRAME benchmarks are a later step (the DR-05 discipline).
-//! The `observe` call is `DispatchClass::Mandatory` (an inherent), so its weight does not gate the
-//! block against the normal weight limit; a coarse per-entry estimate keeps the accounting honest.
+//! ⚠ These are hand-estimated PLACEHOLDERS, not FRAME benchmarks, and they under-count the real cost
+//! of `observe` by a wide margin. It gets away with it because `observe` is `DispatchClass::Mandatory`
+//! (an inherent): its weight is accounted but does not gate the block against the normal limit. Anyone
+//! sizing block capacity from these numbers will be wrong. Benchmarking the sole weight writer is the
+//! obvious next step here.
 
 use frame_support::weights::Weight;
 
@@ -11,8 +13,7 @@ pub trait WeightInfo {
     fn set_enforcement() -> Weight;
 }
 
-/// Placeholder: a fixed base + a per-observed-entry increment, with a couple of storage reads/writes
-/// (`LastReference`/`LastObserved`). Replace with a benchmarked `SubstrateWeight<T>` in a later step.
+/// A fixed base + a per-observed-entry increment. Replace with a benchmarked `SubstrateWeight<T>`.
 impl WeightInfo for () {
     fn observe(n: u32) -> Weight {
         Weight::from_parts(10_000_000, 0)

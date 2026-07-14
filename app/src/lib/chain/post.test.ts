@@ -50,7 +50,7 @@ describe("extractPostId", () => {
   });
 });
 
-// ── watchTx: drive an exact event sequence and assert the emitted phase stream ──────────────
+// ── watchTx: drive an exact event sequence and assert the emitted phase stream ───────────────────
 
 /** Build a one-shot "submit" factory that replays `events` then completes (or errors). */
 function fakeSubmit(events: unknown[], opts: { errorWith?: unknown } = {}) {

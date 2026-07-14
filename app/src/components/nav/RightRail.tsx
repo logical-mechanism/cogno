@@ -1,11 +1,11 @@
 "use client";
 
-// RightRail — the desktop (≥1020px) right column (doc 01 §5.2 / §6.3). Sticky full-height:
+// RightRail — the desktop (≥1020px) right column. Sticky full-height:
 //   1. SearchBar — submitting routes to /explore/ (the explore surface reads the term client-side).
-//      Gated on caps.search (node-served — true once connected); the input disables itself only before
-//      connect (SearchBar owns that placeholder), and submitting still lands on /explore.
-//   2. "Who to follow" — up to 3 suggestions (useWhoToFollow; caps.whoToFollow), each with a
-//      FollowButton (optimistic, useFollow). Node-served (FollowerCount ranking); hidden only when empty.
+//      Search is node-served, so the input disables itself only before connect (SearchBar owns that
+//      placeholder); submitting still lands on /explore.
+//   2. "Who to follow" — up to 3 suggestions (useWhoToFollow), each with a FollowButton (optimistic,
+//      useFollow). Node-served (FollowerCount ranking); hidden only when empty.
 //   3. Footer — ThemeToggle + an About link to /settings/. No trends, no premium upsell.
 
 import { useCallback, useState } from "react";
@@ -66,11 +66,11 @@ export function RightRail() {
   );
 
   // Suppress the whole rail where the surface owns the full content width: the
-  // centered onboarding flow (doc 11 §11) and the settings master/detail (doc 12 §1).
+  // centered onboarding flow and the settings master/detail.
   if (pathname.startsWith("/welcome") || pathname.startsWith("/settings")) return null;
 
   // /explore owns its own header SearchBar — hide the rail's so there are not two
-  // competing inputs on that surface (doc 10 §5.1, the recommended choice).
+  // competing inputs on that surface (the recommended choice).
   const hideSearch = pathname.startsWith("/explore");
 
   return (

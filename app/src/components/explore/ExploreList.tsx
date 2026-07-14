@@ -1,6 +1,6 @@
 "use client";
 
-// ExploreList — the People-tab list container (surface 10 §6). Renders the four list states for a
+// ExploreList — the People-tab list container. Renders the four list states for a
 // people search: loading → Skeleton variant='person' ×6; empty → people-flavoured `search`
 // EmptyState; error → inline `generic` EmptyState + Retry; results → a column of PersonResult rows.
 // People search is a single ranked window (SEARCH_PEOPLE has no cursor — pagination is a follow-up),

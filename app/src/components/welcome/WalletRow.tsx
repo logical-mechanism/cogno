@@ -1,6 +1,6 @@
 "use client";
 
-// WalletRow — one tappable Cardano wallet in the picker (surface 11 §3.1 / §7.1 / §12). A labelled
+// WalletRow — one tappable Cardano wallet in the picker. A labelled
 // <button aria-label="Connect with <name>"> with the wallet icon + name + a trailing chevron. When
 // this is the row a sign-to-derive is in flight on, it shows an inline Spinner + "Waiting for
 // signature…" and sets aria-busy. ≥44px tall (mobile hit target).

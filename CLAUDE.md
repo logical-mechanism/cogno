@@ -58,12 +58,18 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
 
 ## Critical gotchas
 
-- **The L1 contract is LIVE on preprod — never move its hash.** Any *production* edit under
-  `contracts/` (`validators/*.ak` or `lib/*.ak`) recompiles the script and **moves the blueprint
-  hash** (currently `49ffbfc6…`, applied vault `168a9710…`), orphaning the deployed vault. After any
-  contracts change, `git diff` the `hash` fields in `plutus.json` / `vault.json` and confirm they're
-  unchanged. **Contracts logging is off-limits while live** — even a `trace` line bakes into the script
-  and moves the hash.
+[CONTRIBUTING.md](CONTRIBUTING.md#rules-that-will-bite-you-please-respect-these) carries the ones a
+human contributor also needs — the contracts hash rule, the nvm-vs-snap `node`, TTY-gated `aiken`
+errors, `next build` vs `next dev`. Don't let those drift out of sync with this file. The extra detail
+an agent needs:
+
+- **The live contract hashes** (for the `git diff` check after any `contracts/` touch): blueprint
+  `49ffbfc6…`, applied vault `168a9710…`. Any *production* edit under `contracts/` recompiles the
+  script and moves them, orphaning the deployed vault. Contracts logging is off-limits while live —
+  even a `trace` line bakes into the script and moves the hash.
+- **The nvm node path** to prepend for all Node/MeshJS work:
+  `~/.nvm/versions/node/v22.12.0/bin`. The snap `node` writes stdout to `/dev/null` (silent failures),
+  and importing `@meshsdk/core-cst` redirects stdio.
 - **Cardano is read EXCLUSIVELY through db-sync (consensus-critical determinism)** via the
   `cogno-dbsync` crate. The node's inherent-data provider is the sole consensus **writer**; the node's
   boot-time `config_check` reuses the same crate **read-only** (a non-blocking startup probe) — both go
@@ -75,9 +81,6 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
   largest-UTxO-wins per identity (never summed). Ogmios still SUBMITS L1 txs + serves cost models; the
   in-browser CIP-30 vault uses Blockfrost. MAINNET PREREQUISITE: db-sync must run FULL (non-pruned),
   **`tx_in`-enabled** (NOT `--consumed-tx-out`), and over TLS.
-- **Use the nvm node `v22.12.0`, not the snap node.** The snap `node` writes stdout to `/dev/null`
-  (silent failures), and importing `@meshsdk/core-cst` redirects stdio. Prepend
-  `~/.nvm/versions/node/v22.12.0/bin` to `PATH` for all Node/MeshJS work.
 - **Pallet indices are on-wire contracts — never renumber.** Indices **6** (Sudo, removed) and **12**
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index;
   gaps are fine.
@@ -98,9 +101,10 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
   `validator set-keys` first. Seating an unfunded/keyless account is rejected on-chain (`CallFiltered`
   for a committee seat, `NotFunded` / `NoSessionKeys` for a validator). See docs/PREPROD-BRINGUP.md Step 6.
 - **Cardano cost models:** inject live Ogmios cost models via `setCostModels` when building L1 txs —
-  MeshJS's stale defaults produce a bad script-integrity hash.
-- **Never `next build` while `next dev` is running** (they share `.next/`). Run the frontend dev server
-  on a free port if the live cardano-node monitoring is binding `:3000`/`:3001`.
+  MeshJS's stale defaults produce a bad script-integrity hash. (The in-browser CIP-30 path uses
+  Blockfrost, which supplies live cost models, so it doesn't need this.)
+- **Run the frontend dev server on a free port** if the live cardano-node monitoring is binding
+  `:3000`/`:3001`.
 
 ## Conventions
 

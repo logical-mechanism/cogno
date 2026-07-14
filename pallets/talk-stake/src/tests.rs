@@ -48,10 +48,10 @@ fn apply_weight_overwrites_and_emits() {
     });
 }
 
-/// **DR-06 — largest-wins / never-sum (the L3 side).** `apply_weight` is an idempotent OVERWRITE; it
+/// **Largest-wins / never-sum, the chain side.** `apply_weight` is an idempotent OVERWRITE; it
 /// NEVER accumulates. That is the on-chain guarantee that makes the observer's largest-wins / never-sum
 /// reduction safe: whatever per-vault weight the reduction folds for an identity, it applies exactly ONE
-/// value and L3 stores precisely that — never the running sum (no live stake-splitting double-dip). We
+/// value and the chain stores precisely that — never the running sum (no live stake-splitting double-dip). We
 /// sweep several re-observation sequences and assert: after every write the stored weight equals the
 /// just-written value; and for any sequence with ≥2 nonzero observations the stored weight is strictly
 /// below the naive sum (no accumulation, independent of read order).

@@ -8,7 +8,7 @@
 //!      its own db-sync is behind the reference (a point-existence freshness guard).
 //!   2. `anchor` — the **deterministic** stable Cardano block AT/UNDER the reference: the single `block`
 //!      row with the max `slot_no <= reference`. Cardano has ≤1 block per slot on settled history, so this
-//!      is unique and identical across every fully-synced db-sync (in-protocol-observation §15.3).
+//!      is unique and identical across every fully-synced db-sync.
 //!   3. `matches` — the vault UTxOs shaped (in SQL) into the canonical match JSON the pure reduction
 //!      (`observe_as_of` / `candidate_tuples`) consumes BYTE-IDENTICALLY, UNCHANGED. Spentness is read
 //!      from `tx_in` (canonical ledger data), NOT `consumed_by_tx_id` (a denormalized, config-dependent
@@ -135,9 +135,9 @@ pub async fn read_observation(
         // Fail-closed: the spentness join requires a tx_in-ENABLED db-sync. Under db-sync `--consumed-tx-out`
         // mode the `tx_in` consuming rows are pruned (spentness lives in `tx_out.consumed_by_tx_id` instead),
         // so the `LEFT JOIN tx_in` would silently emit `spent_at = NULL` for an actually-spent vault UTxO ⇒ a
-        // WRONG observation (a spent vault read as locked) and a cross-node fork at the enforced cutover. We
-        // mirror Midnight's `SELECT EXISTS (SELECT 1 FROM tx_in)` probe and ABSTAIN — the consensus-safe
-        // choice. We do NOT fall back to `consumed_by_tx_id`: it was observed unreliable (NULL for a
+        // WRONG observation (a spent vault read as locked) and a cross-node fork at the enforced cutover. So
+        // the read probes `SELECT EXISTS (SELECT 1 FROM tx_in)` and ABSTAINS when it is empty — the
+        // consensus-safe choice. We do NOT fall back to `consumed_by_tx_id`: it was observed unreliable (NULL for a
         // known-spent vault) on the live instance, so a tx_in-enabled db-sync is a hard requirement
         // (MAINNET PREREQUISITE: do NOT run db-sync with `--consumed-tx-out`).
         // Use `try_get` (not the panicking `Row::get`) throughout: a column type-mismatch must honour the

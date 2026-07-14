@@ -1,6 +1,6 @@
 "use client";
 
-// ComposeFab — the mobile (<688px) floating compose button (doc 01 §5.4). A fixed accent circle above
+// ComposeFab — the mobile (<688px) floating compose button. A fixed accent circle above
 // the BottomTabBar (bottom-right) that opens the compose modal overlay (full-screen sheet on mobile).
 // Write intent funnels to /welcome/ until setup is fully complete (bound + stake-bound + posting power,
 // i.e. viewer.writeReady) — an explicit "Post" tap is clearer sent to finish setup than to a dead CTA.
@@ -23,7 +23,7 @@ export function ComposeFab() {
     else router.push("/welcome/");
   }, [viewer.writeReady, openCompose, router]);
 
-  // Hidden on the full-screen onboarding flow (doc 11 §11).
+  // Hidden on the full-screen onboarding flow.
   if (pathname.startsWith("/welcome")) return null;
 
   return (

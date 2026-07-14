@@ -1,6 +1,6 @@
 "use client";
 
-// SearchBar — the global search input (doc 03 §21). Substring search over post bodies is node-served
+// SearchBar — the global search input. Substring search over post bodies is node-served
 // (MicroblogApi.search_posts), gated on `searchEnabled` — which is
 // true once the node reader is ready, so the input is disabled only before connect (no `source` yet).
 // Pill, --cg-bg-subtle. Controlled value; Enter commits via onSubmit (nav to /explore?q= or run inline);

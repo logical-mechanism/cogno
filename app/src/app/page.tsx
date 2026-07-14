@@ -1,11 +1,11 @@
 "use client";
 
-// HomePage — the Home route '/' (doc 06). The default landing surface: a sticky header carrying the
+// HomePage — the Home route '/'. The default landing surface: a sticky header carrying the
 // TimelineTabs (For you / Following), an inline Composer at the top (desktop/tablet), a "Show N posts"
 // new-posts pill, and the Timeline of PostCards. Every write is optimistic; the only chain realities
 // surfaced are a graceful rate-limit notice + a quiet failure toast. No honesty/block-number chrome.
 //
-// Two tabs (doc 06 §4):
+// Two tabs:
 //   • For you   — useLiveFeed(source) id-paged live feed (NextPostId-driven; "load more" reads one
 //                 page at a time). Fresh OTHER-author items buffer behind the pill (the scroll never
 //                 jumps); the viewer's OWN optimistic post injects directly.
@@ -59,7 +59,7 @@ export default function HomePage() {
   const [tab, setTab] = useState<TimelineTab>("for-you");
   const activeTab: TimelineTab = tab === "following" && !canFollow ? "for-you" : tab;
 
-  // ── For you: id-paged live feed (NextPostId-driven; "load more" reads one page at a time) ────
+  // ── For you: id-paged live feed (NextPostId-driven; "load more" reads one page at a time) ──────
   // useLiveFeed owns the new-posts pill buffer (a fresh OTHER-author post waits behind the pill so
   // the scroll never jumps; the viewer's own optimistic + confirmed post injects directly) AND the
   // optimistic overlay + presence-reconcile. It pages by post id — NO full `watchEntries`.
@@ -69,7 +69,7 @@ export default function HomePage() {
   const ready = forYou.ready;
   const feedError = forYou.error;
 
-  // ── Following: paged followee feed ─────────────────────────────────────────────────────────
+  // ── Following: paged followee feed ─────────────────────────────────────────────────────────────
   // We resolve the followee set through the page seam's `followeeOf`. Skip the query (and show the
   // follows empty-state) when disconnected or the viewer follows nobody.
   const [followeesEmpty, setFolloweesEmpty] = useState(false);
@@ -105,15 +105,15 @@ export default function HomePage() {
     activeTab === "following" && canFollow && me != null && !followeesEmpty;
   const followingPage = useFeedPage(source, followingQuery, followingEnabled);
 
-  // ── the post-id set + viewer-relative state (filled heart / active repost) ──────────────────
+  // ── the post-id set + viewer-relative state (the filled heart) ────────────────────────────────
   const visiblePosts = activeTab === "following" ? followingPage.posts : displayedForYou;
   const postIds = useMemo(() => visiblePosts.map((p) => p.id), [visiblePosts]);
-  // A node-served page carries each post's myVote/reposted overlay → useViewerStates skips its
-  // per-card Reposts.getEntries scan for those ids (keyed-path posts have no overlay → per-card read).
+  // A node-served page carries each post's `myVote` overlay → useViewerStates skips its per-card
+  // read for those ids (posts without an overlay fall back to the per-card read).
   const carriedStates = useMemo(() => carriedViewerStates(visiblePosts), [visiblePosts]);
   const viewerStates = useViewerStates(source, postIds, me, carriedStates);
 
-  // ── write hooks ─────────────────────────────────────────────────────────────────────────────
+  // ── write hooks ────────────────────────────────────────────────────────────────────────────────
   const vote = useVote(api, signer, votingPower ?? 0n);
   const { pin } = usePinPost(api, signer);
   const { addPending, failPending } = useOptimistic();
@@ -121,7 +121,7 @@ export default function HomePage() {
   const { toast } = useToaster();
   const { phase } = useActionToast();
 
-  // ── inline composer capacity gate (doc 06 §9) ──────────────────────────────────────────────
+  // ── inline composer capacity gate ──────────────────────────────────────────────────────────────
   // `composerText` is what the USER sees; `composerSerialized` is what actually gets posted (a mention
   // renders `@alice` but posts as `@<48-char ss58>`). The gate must measure the latter — this surface
   // used to measure the display text, so "hi @alice @bob" gated at 14 bytes and was rejected on-chain
@@ -135,7 +135,7 @@ export default function HomePage() {
     retryInSeconds,
   } = useComposerGate(composerSerialized);
 
-  // ── inline composer (top-level post) ──────────────────────────────────────────────────────
+  // ── inline composer (top-level post) ───────────────────────────────────────────────────────────
   const onComposePost = useCallback(
     (draft: ComposerDraft) => {
       if (viewer.status !== "ready") {
@@ -182,7 +182,7 @@ export default function HomePage() {
     [viewer, api, signer, me, composerText, addPending, failPending, run, phase, router],
   );
 
-  // ── new-posts pill flush ────────────────────────────────────────────────────────────────────
+  // ── new-posts pill flush ───────────────────────────────────────────────────────────────────────
   // Depend on `forYou.flush` — a stable useCallback — and NOT on `forYou`, which useLiveFeed rebuilds
   // as a fresh object literal every render (so `[forYou]` gave this handler a new identity per render,
   // and the effect below would re-subscribe on every one of them).
@@ -192,7 +192,7 @@ export default function HomePage() {
     scrollToTop();
   }, [forYouFlush]);
 
-  // ── Home re-tap: the nav's Home button (or wordmark) clicked while already on "/" ───────────
+  // ── Home re-tap: the nav's Home button (or wordmark) clicked while already on "/" ──────────────
   // The X gesture. The nav owns the scroll-to-top (it does that for every tab); Home is the only
   // surface with a feed to re-read, so it owns what "refresh" means — which is per-TAB. For-you
   // promotes the pill buffer and re-reads page 1 for fresh tallies; Following has no liveness
@@ -205,7 +205,7 @@ export default function HomePage() {
   }, [activeTab, forYouRefresh, followingRefresh]);
   useEffect(() => subscribeHomeReset(onHomeReset), [onHomeReset]);
 
-  // ── per-card action bundle ──────────────────────────────────────────────────────────────────
+  // ── per-card action bundle ─────────────────────────────────────────────────────────────────────
   const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
 
   const composeState: ActionState = "idle"; // inline composer clears optimistically; per-tx state lives on the card
@@ -224,7 +224,7 @@ export default function HomePage() {
     else modalActions.openCompose();
   }, [viewer.writeReady, router]);
 
-  // Following-tab loading/error mirror For-you (doc 06 §7.2).
+  // Following-tab loading/error mirror For-you.
   const followingLoading = followingEnabled && followingPage.loading && followingPage.posts.length === 0;
   const forYouLoading = !ready && displayedForYou.length === 0;
 

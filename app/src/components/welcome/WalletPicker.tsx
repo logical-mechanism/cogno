@@ -1,6 +1,6 @@
 "use client";
 
-// WalletPicker — Step 1 of onboarding (surface 11 §3.1–3.2 / §7.1). Lists installed CIP-30 wallets
+// WalletPicker — Step 1 of onboarding (3.2 /). Lists installed CIP-30 wallets
 // (listCardanoWallets()), each as a labelled WalletRow → useSigner.connectWallet(walletId) which
 // derives the sr25519 posting key from one wallet signature (nothing stored). Empty list →
 // EmptyState (generic) with install links. While a derive is in flight: the chosen row spins +
@@ -9,7 +9,7 @@
 // Returning users just re-pick their wallet from the same list — clicking it re-derives the identical
 // key — so there is no separate "reconnect" affordance; the list IS the reconnect.
 //
-// Errors are mapped to the §14 copy by the page and passed in as `errorCopy` (declined / non-vkey /
+// Errors are mapped to the copy by the page and passed in as `errorCopy` (declined / non-vkey /
 // no-signature / not-installed / wrong-network). The wallet sign moves NO funds — one quiet
 // reassurance line under the list.
 
@@ -24,7 +24,7 @@ import { listCardanoWallets, type CardanoWalletInfo } from "@/lib/cardano/cip8";
 export interface WalletPickerProps {
   /** a sign-to-derive is in flight (useSigner.deriving). */
   deriving: boolean;
-  /** inline error under the list (mapped to §14 copy). null when clear. */
+  /** inline error under the list (mapped to copy). null when clear. */
   errorCopy: string | null;
   /** connect + derive — resolves true on success. */
   onConnect: (walletId: string) => Promise<boolean> | void;
@@ -72,7 +72,7 @@ export function WalletPicker({
     void onConnect(walletId);
   };
 
-  // ── connecting / deriving ──────────────────────────────────────────────────────────────────
+  // ── connecting / deriving ──────────────────────────────────────────────────────────────────────
   if (deriving) {
     const chosen = wallets?.find((w) => w.id === chosenId);
     const chosenName = chosen?.name ?? chosenId ?? "your wallet";
@@ -107,7 +107,7 @@ export function WalletPicker({
     );
   }
 
-  // ── idle / list ────────────────────────────────────────────────────────────────────────────
+  // ── idle / list ────────────────────────────────────────────────────────────────────────────────
   return (
     <section className={styles.step} aria-labelledby="welcome-heading">
       <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>

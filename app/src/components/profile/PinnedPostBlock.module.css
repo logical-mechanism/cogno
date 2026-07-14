@@ -1,4 +1,4 @@
-/* PinnedPostBlock — the "Pinned" marker rendered into the PostCard header slot (doc 07 §5.1).
+/* PinnedPostBlock — the "Pinned" marker rendered into the PostCard header slot.
    Small secondary-text label with a pushpin glyph; the card chrome itself is the shared PostCard. */
 
 .pinned {

@@ -1,8 +1,7 @@
-// PAPI-direct social reads: per-post tallies + the viewer's own vote/repost/poll state, read
-// straight from `Microblog` storage — the vote/poll tallies the feed reader stamps onto each card
-// (the node serves the aggregate maps cheaply). Follow edges / display names / who-to-follow are ALSO
-// node-served now, via the reverse maps + MicroblogApi — the claim that they needed an indexer has been
-// false since spec 118.
+// PAPI-direct social reads: per-post tallies + the viewer's own vote/poll state, read straight from
+// `Microblog` storage — the tallies the feed reader stamps onto each card (the node serves the
+// aggregate maps cheaply). Follow edges / display names / who-to-follow are node-served too, via the
+// reverse maps + MicroblogApi.
 //
 // ⛔ NEVER iterate all `Votes` entries to sum a tally — the chain maintains the denormalized
 // aggregate maps (`VoteTally`, `RepostCount`, `PollTally`) exactly so the client doesn't have to.
@@ -25,7 +24,7 @@ import type { CognoApi, Ss58, PollView, ViewerPostState } from "@/lib/types";
 // before finalization — so a finalized read of a just-cast vote/poll is STALE, and the optimistic UI
 // can't reconcile until finalization (a vote appears to "revert" then re-appear on refresh). On this
 // single-producer chain best never reorgs, so best is both fresh and safe. Applies to every read that
-// a read-after-write reconciliation depends on (tallies + the viewer's own vote/repost/poll choice).
+// a read-after-write reconciliation depends on (tallies + the viewer's own vote/poll choice).
 const BEST = { at: "best" } as const;
 
 /** A decoded tally, client-side (camelCase + the derived `score`). */
@@ -92,16 +91,7 @@ export async function readViewerAccountVote(
 }
 
 
-/**
- * The viewer's own vote on a post — ONE keyed point-read.
- *
- * This used to also compute `reposted`, and paid dearly for it: `Reposts` is a `()`-valued
- * `OptionQuery`, so PAPI decodes both `Some(())` and `None` as `undefined` and `getValue` cannot tell
- * them apart. The workaround was a `Reposts.getEntries(id)` PREFIX SCAN per card (its own comment
- * conceded it was "heavier than a point-read") to test membership. Repost was dropped as a feature and
- * nothing rendered the flag, so every card in every feed was paying for a scan whose result was thrown
- * away.
- */
+/** The viewer's own vote on a post — ONE keyed point-read. */
 export async function readViewerPostState(
   api: CognoApi,
   id: bigint,

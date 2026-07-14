@@ -1,10 +1,10 @@
 "use client";
 
-// AppShell — the persistent X-style chrome (doc 01 §4.1 / §5). Mounted ONCE inside <Providers>; only
+// AppShell — the persistent X-style chrome. Mounted ONCE inside <Providers>; only
 // <main>{children}</main> swaps on navigation, so the PAPI ws connection, the live source.watch()
 // subscription, the connected wallet/identity, and the rails all survive client route changes.
 //
-// Layout by breakpoint (exact px, doc 01 §5.1): LeftNav (desktop ≥1020) / BottomTabBar (mobile <688) ·
+// Layout by breakpoint (exact px): LeftNav (desktop ≥1020) / BottomTabBar (mobile <688) ·
 // main (centered, capped at --cg-col-feed 600px) · RightRail (desktop ≥1020) · ComposeFab (mobile) ·
 // ModalRouteHost. The Toaster is already mounted by ToasterProvider, so it is NOT re-mounted here.
 //
@@ -109,7 +109,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 }
 
-// ── StickyHeader — the blurred per-surface header (doc 01 §8) ─────────────────────────────────────
+// ── StickyHeader — the blurred per-surface header ────────────────────────────────────────────────
 
 export interface StickyHeaderProps {
   /** Primary label ("Home", a display name, "Settings", …). */
@@ -127,7 +127,7 @@ export interface StickyHeaderProps {
 export function StickyHeader({ title, subtitle, showBack, tabs, actions }: StickyHeaderProps) {
   const router = useRouter();
   const onBack = () => {
-    // Prefer in-app history; fall back to Home for a cold deep link (doc 01 §8).
+    // Prefer in-app history; fall back to Home for a cold deep link.
     if (typeof window !== "undefined" && window.history.length > 1) router.back();
     else router.push("/");
   };
@@ -153,7 +153,7 @@ export function StickyHeader({ title, subtitle, showBack, tabs, actions }: Stick
   );
 }
 
-// ── NotFoundInline — the in-app not-found body (doc 01 §2) ────────────────────────────────────────
+// ── NotFoundInline — the in-app not-found body ───────────────────────────────────────────────────
 
 export interface NotFoundInlineProps {
   kind?: "post" | "profile" | "page";

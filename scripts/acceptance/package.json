@@ -1,9 +1,9 @@
 {
-  "name": "cogno-chain-m0-acceptance",
+  "name": "cogno-chain-acceptance",
   "private": true,
   "type": "module",
   "version": "1.0.0",
-  "description": "M0 acceptance: submit a signed Microblog.post_message and read it back over WS.",
+  "description": "Acceptance smoke test against a running node: the runtime's call surface is sudo-free, observer-written, anchoring-dropped and append-only; reads are node-served; and the CheckCapacity gate rejects an unfunded post at the pool.",
   "scripts": {
     "test": "node acceptance.mjs"
   },

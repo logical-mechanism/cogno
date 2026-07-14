@@ -1,6 +1,6 @@
 "use client";
 
-// BottomTabBar — the mobile (<688px) fixed bottom navigation (doc 01 §5.4 / §6.2). 5 tabs:
+// BottomTabBar — the mobile (<688px) fixed bottom navigation. 5 tabs:
 // Home · Explore · Notifications · Profile · Settings. Compose is the FAB (ComposeFab), never a tab
 // (X-exact). Active item = filled icon + accent tint; Notifications carries an unread badge. Profile
 // resolves to /u/<me>/ when connected, else /welcome/.
@@ -51,7 +51,7 @@ export function BottomTabBar() {
     { label: "Settings", href: "/settings/", Icon: IconSettings, match: (p) => p.startsWith("/settings") },
   ];
 
-  // The full-screen onboarding flow hides the bottom tabs (doc 11 §11).
+  // The full-screen onboarding flow hides the bottom tabs.
   if (pathname.startsWith("/welcome")) return null;
 
   return (

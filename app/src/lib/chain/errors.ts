@@ -167,3 +167,24 @@ export function errorCopy(e: ChainError): string {
       return e.detail || "Transaction failed.";
   }
 }
+
+/** Anything a dead/unreachable WS endpoint throws on the read path. */
+const UNREACHABLE =
+  /disconnect|websocket|socket|network|connection|closed|abort|timed? ?out|failed to fetch|ECONNREFUSED/i;
+
+/**
+ * Copy for a READ failure (feed / thread / profile / search) — the counterpart of {@link errorCopy}
+ * for the read path, so a raw exception string never lands in a feed row.
+ *
+ * A read fails for one of two reasons: the endpoint is unreachable (by far the common one — a stopped
+ * node, a typo'd endpoint, an offline laptop), which gets an ACTIONABLE line pointing at Settings; or
+ * the node answered and something else went wrong, which falls through to the one prose producer.
+ * `fallback` is the caller's own "could not load the feed"-style sentence, used when the thrown value
+ * carries no message at all.
+ */
+export function readErrorCopy(err: unknown, fallback: string): string {
+  const raw = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  if (!raw) return fallback;
+  if (UNREACHABLE.test(raw)) return "Can't reach the node. Check your endpoint in Settings.";
+  return errorCopy(classifyThrown(err));
+}

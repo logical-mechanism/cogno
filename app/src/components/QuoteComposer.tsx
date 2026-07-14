@@ -1,12 +1,12 @@
 "use client";
 
-// QuoteComposer — a Composer fixed to mode='quote' (doc 03 §10, doc 09 §2.3).
+// QuoteComposer — a Composer fixed to mode='quote'.
 //
 // Embeds the read-only QuotedPostEmbed of the quoted post BELOW the textarea (onOpen is a no-op
 // inside the composer — the embed is non-interactive here). Submit calls quote_post via the
 // surface: this component hands back the comment text through `submitQuote(text)` only. A quote
-// requires ≥1 non-whitespace byte (a zero-comment quote is indistinguishable from a Repost — doc 03
-// §10), enforced by Composer's own non-empty rule. PRESENTATIONAL — no mutation built here.
+// requires ≥1 non-whitespace byte, enforced by Composer's own non-empty rule. PRESENTATIONAL —
+// no mutation built here.
 
 import { useCallback, useMemo } from "react";
 import { Composer } from "./Composer";

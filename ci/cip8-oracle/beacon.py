@@ -1,9 +1,9 @@
-"""The beacon name / identity hash — the L1↔L2↔L3↔L5 join key (DR-01).
+"""The beacon name / identity hash — the join key between the L1 vault, the chain, and the app.
 
 The on-chain L1 `talk_vault` contract names each beacon `blake2b_256(cbor.serialise(owner Address))`
 where `cbor.serialise` is the Plutus-Data CBOR of the Aiken `Address` type — Constr 0 (tag 121) with
 INDEFINITE-length arrays, and (load-bearing) NO network byte (the Aiken `Address` carries only the
-payment + stake credentials, not the network). So the L3 identity hash MUST be computed the same way
+payment + stake credentials, not the network). So the on-chain identity hash MUST be computed the same way
 — NOT from the raw CIP-19 address bytes.
 
 This module reproduces that serialization byte-for-byte in pycardano. Proven identical to the Aiken
@@ -56,7 +56,7 @@ def address_plutus_cbor(addr: Address) -> bytes:
 
 
 def beacon_name(addr: Address) -> bytes:
-    """The 32-byte beacon `token_name` / L3 identity hash for `addr` (DR-01)."""
+    """The 32-byte beacon `token_name` / on-chain identity hash for `addr`."""
     return hashlib.blake2b(address_plutus_cbor(addr), digest_size=32).digest()
 
 

@@ -17,9 +17,9 @@
 # Prereqs:
 #   1. The node binary is built:               cargo build --release
 #   2. A genesis-matching raw spec exists:      chainspecs/preprod.raw.json is COMMITTED and used by default
-#      (the operator's public DDNS bootnode is embedded — no --bootnodes flag needed). To run a
-#      different operator-keyed spec, regenerate via `cogno-chain-node gen-chainspec` and set CHAINSPEC.
-#   3. The validator's P2P port is reachable from here (it must accept inbound on :30333).
+#      (the public relay's bootnode is embedded — no --bootnodes flag needed). To run a different
+#      operator-keyed spec, regenerate via `cogno-chain-node gen-chainspec` and set CHAINSPEC.
+#   3. The embedded bootnode's P2P port is reachable from here (:30333 inbound on the relay).
 #
 # This is a TRACKING node, by design:
 #   • NO --validator  → it never authors; it cannot equivocate or affect consensus.

@@ -243,7 +243,7 @@ fn check_inherent_accepts_when_entries_agree_despite_commitment_diff() {
 #[test]
 fn check_inherent_rejects_a_forged_sealed_block_hash_anchor() {
     new_test_ext().execute_with(|| {
-        // in-protocol-observation §15.3 / Midnight delta A.1: `block_hash` is now the SEALED stable-block
+        // `block_hash` is the SEALED stable-block
         // anchor (the latest stable Cardano block ≤ the reference), re-validated cross-node — NOT the old
         // node-local tip diagnostic. The importer agrees on the SLOT, the entries, and the input commitment
         // but the author sealed a DIFFERENT block_hash (a forged / regressing / wrong stable block). A
@@ -647,7 +647,7 @@ fn set_enforcement_is_gated_by_the_enforce_origin() {
 
 #[test]
 fn set_enforcement_is_not_an_inherent() {
-    // Only `observe` may be an inherent (the §5.2 mutual-exclusion invariant) — the setter is a normal,
+    // Only `observe` may be an inherent (the mutual-exclusion invariant) — the setter is a normal,
     // pool-admissible governance call and must NOT be discriminated as an inherent.
     let call = crate::Call::<Test>::set_enforcement { enabled: true };
     assert!(!<CardanoObserver as ProvideInherent>::is_inherent(&call));
@@ -664,7 +664,7 @@ fn observe_rejects_a_regressing_reference() {
             entries(&[(A, 200_000_000)]),
             no_stake()
         ));
-        // A later block proposing an OLDER reference than the chain already holds is rejected (§5.6).
+        // A later block proposing an OLDER reference than the chain already holds is rejected.
         assert_noop!(
             CardanoObserver::observe(
                 RuntimeOrigin::none(),

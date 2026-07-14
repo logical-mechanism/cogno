@@ -1,6 +1,6 @@
 "use client";
 
-// ThreadView — the conversation composite for /post/[id] (surface 08, doc 03 §22.5).
+// ThreadView — the conversation composite for /post/[id].
 //
 // Focal-navigation ("true Twitter") model. One screen renders, top-down: the connected ANCESTOR chain
 // above the focal (root→focal, each a tappable PostCard; a shallow "Replying to @parent" fallback line
@@ -75,7 +75,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // what we want (an exhausted bucket disables the CTA before a single character is typed).
   const { rateLimited, noPostingPower, needsVotingPower } = useComposerGate("");
 
-  // `me` threaded into the thread read so a spec-120 node stamps the myVote/reposted overlay node-side;
+  // `me` threaded into the thread read so the node stamps the `myVote` overlay node-side;
   // `bestBlock` drives the live re-read (tallies refresh in place; new replies buffer behind the pill).
   const {
     thread,
@@ -87,21 +87,19 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     flushReplies,
     reload,
   } = useThread(source, rootId, me, bestBlock);
-  // The focal's reply-context is rendered ONCE, as the tappable ancestor line above the card. We
-  // prefer thread.parent (the richer QuotedRef with a display name; indexer path); on PAPI-direct
-  // thread.parent is absent but the focal still carries its parent id, so we fall back to a bare
-  // tappable id. Either way we strip `parent` off the focal so PostCard does NOT also render its own
-  // static (non-tappable, id-only) "Replying to" line — one affordance, no duplicate.
+  // The focal's reply-context is rendered ONCE, as the tappable ancestor line above the card. The
+  // node reader does not populate `thread.parent` (the richer QuotedRef with a display name), so in
+  // practice this falls back to the focal's own parent id — a bare tappable "#id". Either way we strip
+  // `parent` off the focal so PostCard does NOT also render its own static (non-tappable, id-only)
+  // "Replying to" line — one affordance, no duplicate.
+  const parentRef = thread?.parent;
+  const rootParentId = thread?.root.parent;
   const ancestor = useMemo<{ id: bigint; label: string } | null>(() => {
-    if (thread?.parent) {
-      return {
-        id: thread.parent.id,
-        label: thread.parent.displayName?.trim() || handleOf(thread.parent.author),
-      };
+    if (parentRef) {
+      return { id: parentRef.id, label: parentRef.displayName?.trim() || handleOf(parentRef.author) };
     }
-    const pid = thread?.root.parent;
-    return pid !== undefined ? { id: pid, label: `#${pid}` } : null;
-  }, [thread?.parent, thread?.root.parent]);
+    return rootParentId !== undefined ? { id: rootParentId, label: `#${rootParentId}` } : null;
+  }, [parentRef, rootParentId]);
 
   const focal = useMemo<CognoPost | null>(() => {
     const root = thread?.root;
@@ -128,8 +126,8 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   }, [replies, visibleReplies]);
   const hiddenReplies = Math.max(0, confirmedReplyCount - visibleReplies);
 
-  // Every card on screen (focal + ancestor chain + direct replies) drives the viewer's vote/repost
-  // state, so a like reflects instantly anywhere on the screen.
+  // Every card on screen (focal + ancestor chain + direct replies) drives the viewer's vote state, so
+  // a like reflects instantly anywhere on the screen.
   const visibleIds = useMemo(() => {
     const ids: bigint[] = [];
     if (focal) ids.push(focal.id);
@@ -138,7 +136,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     return ids;
   }, [focal, ancestors, replies]);
   // Every visible card's node-served overlay (focal + ancestors + replies) → useViewerStates skips the
-  // per-card Reposts scan for ids it covers.
+  // per-card viewer read for ids it covers.
   const carriedStates = useMemo(() => {
     const all: CognoPost[] = [];
     if (focal) all.push(focal);
@@ -294,7 +292,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     // No cleanup — the next route sets its own title.
   }, [focal]);
 
-  // ── states (§6.2 / §6.3) — the route already guarded an invalid id; here we cover load/error/missing ──
+  // ── states — the route already guarded an invalid id; here we cover load/error/missing ──
   if (loading && !thread) {
     return (
       <section className={styles.thread} aria-label="Conversation" aria-busy="true">
@@ -395,7 +393,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       {/* Inline ReplyComposer — pinned under the focal, "Post your reply". On submit it clears + stays
           open (X "reply again"); the optimistic pending card appears at the bottom of the replies list
           and reconciles on inBestBlock (D11), with a submit→posted phase toast. When session-gated the
-          Composer renders its own finish-setup / connect prompt (§6.1). */}
+          Composer renders its own finish-setup / connect prompt. */}
       <div ref={composerSlotRef} className={styles.composerSlot}>
         <Composer
           viewer={viewer}

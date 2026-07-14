@@ -1,6 +1,6 @@
 //! Unit tests for `pallet-validator-set` — the extrinsic behaviour (add / remove / duplicate /
 //! min-floor / origin gate) and the `SessionManager` hand-off. The queue→apply-at-a-session-boundary
-//! behaviour is exercised on a live multi-node `--dev` network in the M6 acceptance, not here.
+//! behaviour is exercised on a live multi-node `--dev` network, not here.
 
 use crate::{mock::*, Error, Event, Validators};
 use frame_support::{assert_noop, assert_ok};
@@ -367,9 +367,9 @@ fn remove_from_single_validator_set_at_min_authorities_one_is_rejected() {
     });
 }
 
-// NOTE (validators-5): the FULL queue→enact latency — a pending change becoming the ACTIVE
+// NOTE: the FULL queue→enact latency — a pending change becoming the ACTIVE
 // aura/grandpa set only after pallet-session rotates ~2 boundaries later, AND pallet-session
-// silently filtering out an added validator that has no registered session keys (validators-2) — is
+// silently filtering out an added validator that has no registered session keys — is
 // integration behaviour of pallet-session that requires real (proof-of-possession) session keys, so
-// it is exercised on the live multi-node `--dev` network in the M6 acceptance, not in this mock. The
+// it is exercised on the live multi-node `--dev` network, not in this mock. The
 // in-pallet surface (new_session publishes the pending set; the offline-drain path) is covered above.

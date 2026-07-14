@@ -6,10 +6,15 @@
 // PUBLIC key (the posting account) and the posts it signs are public. Re-derive each session by
 // signing again — there is no key to back up, no password, no second wallet.
 //
-// SECURITY (honest, matching "usable ≠ trustless"): the derived key signs POSTS ONLY. It never
-// controls funds — the ADA is the Cardano wallet's, which is never derived from anything. So the
-// worst case if this signature were ever phished is impersonation (post as you → revoke + re-derive),
-// never theft. The message below is shown by the wallet and warns the user not to sign it elsewhere.
+// SECURITY, stated honestly: the derived key signs POSTS ONLY. It never controls funds — the ADA is
+// the Cardano wallet's, which is never derived from anything. So a phished signature costs you
+// impersonation, never theft.
+//
+// But there is NO ROTATION: the key is a pure function of the wallet (no nonce, see below), so
+// re-deriving hands back the same key, and `CognoGate::revoke` is committee-origin only and writes a
+// PERMANENT tombstone. A leaked signature is therefore an unfixable impersonation. The message below
+// is shown by the wallet and warns the user not to sign it anywhere else — that warning is the whole
+// mitigation.
 //
 // MeshJS is browser-only, so it is imported dynamically (this module is import-safe during SSG).
 import { blake2b } from "blakejs";

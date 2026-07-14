@@ -1,5 +1,5 @@
 // setup-status.ts — the SINGLE source of truth for "am I able to post, and if not, what's my ONE
-// next step?" It collapses the rich SessionState (doc 04 §5) — plus the account's posting power
+// next step?" It collapses the rich SessionState — plus the account's posting power
 // (locked-ADA weight) — into a plain-language funnel so any surface that consumes it answers the
 // question consistently instead of re-interpreting connected/bound/locked ad hoc. (Today the Settings
 // Account card is the consumer; the welcome flow mirrors the same model with its own UI.)

@@ -1,6 +1,6 @@
 "use client";
 
-// EmojiPickerPanel — the searchable, categorized emoji board (surface 09 §4.1). The Composer's
+// EmojiPickerPanel — the searchable, categorized emoji board. The Composer's
 // EmojiPicker lazy-loads this component, so the emoji dataset (emoji-data) downloads only when a user
 // first opens the picker. It emits the chosen native emoji via onPick; the Composer inserts it at the
 // caret (byte-counted, D1). Presentational — no chain calls, no draft state.

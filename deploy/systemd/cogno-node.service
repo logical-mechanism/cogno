@@ -10,7 +10,7 @@
 
 [Unit]
 Description=cogno-chain node (Aura+GRANDPA validator)
-Documentation=https://github.com/LogicalMechanism/cogno-chain/blob/main/deploy/README.md
+Documentation=https://github.com/logical-mechanism/cogno/blob/main/deploy/README.md
 After=network-online.target
 Wants=network-online.target
 

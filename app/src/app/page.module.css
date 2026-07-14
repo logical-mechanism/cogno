@@ -1,11 +1,11 @@
-/* Home route (surface 06). The rich Timeline / TimelineTabs / NewPostsPill carry their own modules;
+/* Home route. The rich Timeline / TimelineTabs / NewPostsPill carry their own modules.
    this only styles the home-level composition (the inline composer slot + its responsive hide). */
 
 .composerSlot {
   border-bottom: 1px solid var(--cg-border);
 }
 
-/* Mobile (<688px): no inline composer — composing is the ComposeFab (doc 06 §2.3 / §10). */
+/* Mobile (<688px): no inline composer — composing is the ComposeFab. */
 @media (max-width: 687px) {
   .composerSlot {
     display: none;

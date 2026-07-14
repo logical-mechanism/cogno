@@ -1,6 +1,6 @@
 "use client";
 
-// ProfileTabs — the Posts / Replies / Likes strip under the profile header (doc 07 §5, doc 03 §22.3).
+// ProfileTabs — the Posts / Replies / Likes strip under the profile header.
 //
 // Composes the tab LIST (each tab is gated on the reader advertising it) and hands it to the shared
 // <Tabs> strip — whose CSS module was, before the merge, byte-identical to TimelineTabs' apart from the
@@ -19,9 +19,9 @@ export type ProfileTab = "posts" | "replies" | "likes";
 export interface ProfileTabsProps {
   active: ProfileTab;
   onChange: (tab: ProfileTab) => void;
-  /** Show the Replies tab (node-served — spec-200 MicroblogApi.author_replies_page). */
+  /** Show the Replies tab (node-served — `MicroblogApi.author_replies_page`). */
   showReplies: boolean;
-  /** Show the Likes tab (node-direct since spec-118's VotesByAccount reverse index). */
+  /** Show the Likes tab (node-direct, via the `VotesByAccount` reverse index). */
   showLikes: boolean;
 }
 

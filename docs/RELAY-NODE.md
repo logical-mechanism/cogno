@@ -7,7 +7,9 @@ chain data (the node serves all reads via its runtime API) and broadcast txs wit
 operator's validator.
 
 ```
- validator (producer) ──libp2p :30333──▶ this tracking node ──ws RPC :9944──▶ app (:3000)
+ public relay ──libp2p :30333──▶ this tracking node ──ws RPC :9944──▶ app (:3000)
+      ▲
+      └── the validator (sole producer) sits behind it — dialed by nobody
 ```
 
 > **There is no "libp2p" to install.** P2P networking is the `sc-network` crate (which wraps
@@ -22,15 +24,16 @@ operator's validator.
    toolchain the pinned SDK release is verified against).
 2. **Clone + build** (heavy first compile):
    ```bash
-   git clone <repo> cogno-chain && cd cogno-chain
+   git clone https://github.com/logical-mechanism/cogno.git && cd cogno
    cargo build --release        # → ./target/release/cogno-chain-node  (libp2p is baked in here)
    ```
 3. **Chain spec** — the committed [`chainspecs/preprod.raw.json`](../chainspecs/preprod.raw.json) is the
    genesis-matching live spec (the default `CHAINSPEC` in `scripts/run-tracking-node.sh`). Its single
-   embedded bootnode points at the validator over DDNS (`/dns4/…asuscomm.com/…`), so a relay needs no
-   `--bootnodes` flag. (No operator keys? Reconstruct a genesis-identical spec from the validator's
-   read-only RPC instead — see
-   [`LOCAL-FRONTEND.md`](LOCAL-FRONTEND.md#1-chain-spec--the-committed-one-already-matches).)
+   embedded bootnode is the operator's **public cloud relay** — the network's entry point — so a relay
+   needs no `--bootnodes` flag. The validator itself is not publicly dialable and is not in the spec.
+   (If the network was relaunched and the committed spec is stale, rebuild a genesis-identical one from
+   read-only RPC — see
+   [`LOCAL-FRONTEND.md`](LOCAL-FRONTEND.md#if-the-network-was-relaunched--rebuild-the-spec).)
 
 ## Run
 
@@ -44,18 +47,20 @@ Useful env overrides (see the script header for the full list): `RPC_PORT`, `P2P
 
 ## Verify it connected
 
-- Logs go from `0 peers` → `1 peers (best: #…)` and begin importing/finalizing blocks.
-- Pre-flight reachability of the validator's P2P port (works from any box; from a same-LAN box it
-  relies on the router's NAT hairpin):
+- Logs go from `0 peers` → `1 peers (best: #…)` and begin importing/finalizing blocks. This is the
+  authoritative check — it is the only one that proves a real libp2p session.
+- A pre-flight TCP probe of whatever bootnode the spec actually carries (no hardcoded host, so it can't
+  rot):
   ```bash
-  nc -vz logicalmechanism.asuscomm.com 30333
+  python3 -c "import json,re;a=json.load(open('chainspecs/preprod.raw.json'))['bootNodes'][0];m=re.match(r'/(?:dns4|ip4)/([^/]+)/tcp/(\d+)',a);print(m[1],m[2])" | xargs nc -vz
   ```
+  A successful `nc` only proves the socket accepts — it does not prove a libp2p handshake.
 
 ## Notes
 
-- **Outbound only.** A tracking node dials *out* to the validator; it needs no inbound port-forward
-  or public address of its own. (The validator side does — stable peer ID + forwarded :30333 + a
-  DDNS updater. See [README.md](../README.md) and `deploy/systemd/cogno-node.service`.)
+- **Outbound only.** A tracking node dials *out* to the bootnode relay; it needs no inbound port-forward
+  or public address of its own. Only the public relay accepts inbound P2P, and it holds no keys — see
+  [`../deploy/README.md`](../deploy/README.md).
 - **RPC stays on `127.0.0.1`.** Leave it there. To serve a public app, put a TLS reverse proxy in front
   of the loopback bind rather than reaching for `--rpc-external` — see
   [`deploy/nginx/cogno.conf`](../deploy/nginx/cogno.conf) and

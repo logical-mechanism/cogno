@@ -1,6 +1,6 @@
 "use client";
 
-// VaultSection — Settings §4 (doc 12). Lock / exit the 100-ADA L1 vault that earns POSTING POWER
+// VaultSection — Settings. Lock / exit the 100-ADA L1 vault that earns POSTING POWER
 // (talk-capacity weight). Framed plainly as "posting power" — NEVER a battery, NO app-chain
 // block/finalization chrome. The ONE exception (by request): after a lock/exit submits, we link the
 // resulting Cardano transaction on Cardanoscan — it's a real L1 tx the user initiated, so it

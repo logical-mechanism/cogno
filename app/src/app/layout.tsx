@@ -1,6 +1,6 @@
 // Root layout — a Server Component (no data fetch). Emits <html>/<head>/<body>, the pre-paint theme
 // boot script (no flash), the local-fonts side-effect, then the client <Providers> + <AppShell> chrome
-// the whole App Router tree lives inside (doc 01 §4.1). The shell persists across navigations — only
+// the whole App Router tree lives inside. The shell persists across navigations — only
 // <main>{children}</main> swaps — so the PAPI ws connection + live feed subscription survive route
 // changes.
 

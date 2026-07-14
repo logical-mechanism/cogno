@@ -1,8 +1,8 @@
 "use client";
 
-// useWhoToFollow — the RightRail ranked suggestions (caps.whoToFollow; node-direct via the
-// FollowerCount map since spec-118, or the indexer). Filters out the viewer + anyone they already
-// follow (client-side, via followEdges). Returns nothing when the reader can't serve it (surface omits).
+// useWhoToFollow — the RightRail ranked suggestions, node-direct via the FollowerCount map. Filters
+// out the viewer + anyone they already follow (client-side, via followEdges). Returns nothing when the
+// reader can't serve it (the surface then omits the section).
 
 import { useEffect, useMemo, useState } from "react";
 import type { FeedSource } from "@/lib/feed/source";

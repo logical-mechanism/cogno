@@ -1,6 +1,6 @@
 "use client";
 
-// PollComposer — a Composer fixed to mode='poll' (doc 03 §11, doc 09 §2.4).
+// PollComposer — a Composer fixed to mode='poll'.
 //
 // The poll QUESTION reuses the 512-byte textarea (controlled through the base Composer's text seam);
 // below it a <fieldset> of 2–4 option inputs, EACH with its own ByteCounter('sm', 80). The first two
@@ -120,7 +120,7 @@ export function PollComposer({
     [options, addOption, removeOption, focusOptionSoon],
   );
 
-  // Validity (doc 03 §11 / doc 09 §5.4): ≥2 non-empty options after trim, none over 80 bytes.
+  // Validity: ≥2 non-empty options after trim, none over 80 bytes.
   const trimmed = options.map((o) => o.trim()).filter((o) => o.length > 0);
   const anyOptionOver = options.some((o) => utf8Bytes(o) > MAX_POLL_OPTION_BYTES);
   const enoughOptions = trimmed.length >= MIN_POLL_OPTIONS;

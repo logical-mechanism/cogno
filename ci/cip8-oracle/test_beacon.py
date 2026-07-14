@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Lock the L1↔L2 beacon-name agreement: the follower's beacon_name() must equal the Aiken
-contract's util.beacon_name byte-for-byte (DR-01). The contract's `beacon_name_matches_follower`
+"""Lock the contract-vs-follower beacon-name agreement: the follower's beacon_name() must equal the Aiken
+contract's util.beacon_name byte-for-byte. The contract's `beacon_name_matches_follower`
 test asserts the SAME hex for the SAME owner (vkey a1*28 payment + vkey b2*28 stake)."""
 from pycardano import Address, Network
 from pycardano.hash import VerificationKeyHash, ScriptHash

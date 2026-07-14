@@ -1,6 +1,6 @@
 "use client";
 
-// Toast — one notification (doc 03 §16). Colour/icon driven by `kind`: success=--cg-accent,
+// Toast — one notification. Colour/icon driven by `kind`: success=--cg-accent.
 // error=--cg-danger, rate-limit=--cg-warning (the two main cases are error + rate-limit), pending=
 // spinner, info=neutral. Optional action button (Retry/View). Errors additionally carry role="alert".
 

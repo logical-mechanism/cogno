@@ -3,7 +3,7 @@
 // useProfile — fetch one author's profile + posts via the seam (tab-aware: Posts / Replies / Likes).
 // The seam returns the FIRST page (with a cursor); on the Posts tab `loadMore` pages by post id via
 // `source.page({authorId, after})` and appends. Everything is node-served now (pallet-profile + the
-// spec-118 reverse maps for the header/counts, and spec-200 `author_replies_page` for the Replies tab).
+// reverse maps for the header/counts, and `author_replies_page` for the Replies tab).
 //
 // Only the Posts tab paginates here. `loadMore` issues `page({authorId, after})` WITHOUT a `tab`, which
 // routes to the top-level author-feed branch — so enabling it for Replies/Likes would append the WRONG
@@ -16,6 +16,7 @@ import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { applyProfilePatch } from "@/lib/optimistic";
 import type { FeedSource, ProfileArgs } from "@/lib/feed/source";
+import { readErrorCopy } from "@/lib/chain/errors";
 import type { CognoPost, ProfileView } from "@/lib/types";
 
 // Posts-tab "load more" page size (the first page comes back from `source.profile()` at the seam
@@ -121,7 +122,7 @@ export function useProfile(
       .catch((e: unknown) => {
         // Only surface an error on the initial load; a silent refresh failure keeps the last data.
         if (!cancelled && firstForKey) {
-          setError(e instanceof Error ? e.message : "could not load the profile");
+          setError(readErrorCopy(e, "Could not load the profile."));
         }
       })
       .finally(() => {

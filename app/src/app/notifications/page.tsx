@@ -1,6 +1,6 @@
 "use client";
 
-// /notifications — the activity feed for the connected account (doc 04 §5.4), folded client-side from
+// /notifications — the activity feed for the connected account, folded client-side from
 // the reverse indexes (useNotifications). A single non-dynamic route (bookmarks shape). Two filters:
 // All and Mentions (the @<my-ss58> body-search hits). Opening the page ARMS the unread highlight (so it
 // persists while you read) and clears the nav badge; activity landing while the page is open arms itself

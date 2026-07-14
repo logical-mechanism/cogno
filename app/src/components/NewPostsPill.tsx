@@ -1,6 +1,6 @@
 "use client";
 
-// NewPostsPill — the Twitter-style "Show N posts" affordance (doc 06 §6.5).
+// NewPostsPill — the Twitter-style "Show N posts" affordance.
 //
 // When the live watch() snapshot gains fresh top-of-feed items from OTHER accounts (the viewer's own
 // optimistic post injects directly, NOT here), Home buffers them behind this pill rather than jumping

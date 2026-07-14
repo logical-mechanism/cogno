@@ -1,6 +1,6 @@
 "use client";
 
-// ProgressDots — the 4-step onboarding progress indicator (surface 11 §3, §12). A single
+// ProgressDots — the 4-step onboarding progress indicator. A single
 // role="progressbar" with aria-valuenow/aria-valuemax=4; the active dot uses --cg-accent, completed
 // dots are filled --cg-text, pending dots --cg-border. Purely presentational — driven by the
 // derived `welcomeStep` index.

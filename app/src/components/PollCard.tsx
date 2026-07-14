@@ -1,6 +1,6 @@
 "use client";
 
-// PollCard — an on-chain poll rendered inside its host PostCard (doc 03 §6, D4).
+// PollCard — an on-chain poll rendered inside its host PostCard (D4).
 //
 // 2–4 options as WEIGHTED percentage bars (option.weight / poll.totalWeight, via weightPercent), the
 // viewer's choice marked with a ✓, and a totals line. Polls NEVER expire on-chain, so the chip is a

@@ -1,6 +1,6 @@
 "use client";
 
-// modalStore — the tiny client store the ModalRouteHost subscribes to (doc 01 §5.4 / §7.2).
+// modalStore — the tiny client store the ModalRouteHost subscribes to.
 //
 // Compose / reply / quote / poll / edit-profile open as OVERLAYS over the current surface so
 // <main> never unmounts (the live source.watch() subscription keeps streaming behind the modal).
@@ -47,7 +47,7 @@ function getServerSnapshot(): ModalState {
   return EMPTY;
 }
 
-// ── imperative actions (also usable outside React, e.g. from the mutation layer) ───────────────
+// ── imperative actions (also usable outside React, e.g. from the mutation layer) ─────────────────
 
 export const modalActions = {
   openCompose: () => set({ kind: "compose" }),

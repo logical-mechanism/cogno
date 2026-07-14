@@ -1,19 +1,18 @@
 //! # Microblog pallet (cogno-chain)
 //!
-//! **M2c shape: feeless, capacity-metered posting.** `post_message` is now **feeless**
-//! (`#[pallet::feeless_if]` + the runtime's `SkipCheckIfFeeless<ChargeTransactionPayment>`)
-//! and rate-limited by a regenerating, stake-weighted **talk-capacity** meter folded into
-//! this pallet (DR-24). The whole anti-spam budget is the [`CheckCapacity`] transaction
-//! extension: it gates **inclusion** in `validate()` (over-budget → `ExhaustsResources` at
-//! the pool) and **consumes** capacity in `post_dispatch_details()` — never the reverse
-//! (`ECONOMICS.md` §4/§7, `L3-chain.md` §4.3/§5).
+//! **Feeless, capacity-metered posting.** `post_message` carries no fee (`#[pallet::feeless_if]` +
+//! the runtime's `SkipCheckIfFeeless<ChargeTransactionPayment>`); it is rate-limited instead by a
+//! regenerating, stake-weighted **talk-capacity** meter, which lives in this pallet rather than in a
+//! pallet of its own. The whole anti-spam budget is the [`CheckCapacity`] transaction extension: it
+//! gates **inclusion** in `validate()` (over-budget → `ExhaustsResources` at the pool) and **consumes**
+//! capacity in `post_dispatch_details()` — never the reverse.
 //!
 //! Per-account weight comes from [`pallet_talk_stake::AllowedStake`], written ONLY by the
 //! consensus-verified `cardano-observer` inherent (the sole weight writer — talk-stake is
 //! call-less). The lazy token-bucket math (`current_capacity` / `on_first_bind` / `post_cost` /
-//! `consume`) is `ECONOMICS.md` §4.1 verbatim, computed O(1) on access — no per-block sweep. On a
-//! no-Cardano `--dev`/`local` chain, weight is seeded at genesis (talk-stake `GenesisConfig`);
-//! [`force_set_capacity`] (committee `ForceOrigin`) remains an operator override.
+//! `consume`) is computed O(1) on access — no per-block sweep. On a no-Cardano `--dev`/`local` chain,
+//! weight is seeded at genesis (talk-stake `GenesisConfig`); [`force_set_capacity`] (committee
+//! `ForceOrigin`) remains an operator override. See docs/ECONOMICS.md.
 //!
 //! ## Anti-farm invariants (do not break)
 //! - **First touch starts at ZERO** (`current_capacity` `None ⇒ 0`): a new identity charges
@@ -72,17 +71,17 @@ use sp_runtime::{
 // dependency cycle. Both live HERE, in the depended-upon crate: pallet-cogno-gate depends on
 // pallet-microblog (to call `on_first_bind` at link), so the shared traits must live in
 // microblog — if they lived in cogno-gate, microblog would have to depend on cogno-gate and the
-// two crates would form a cycle. (L3-chain.md §4.4, the M2 architectural gotcha.) Neither
-// pallet names the other's crate in a trait bound; the runtime supplies the concrete cross-impl.
+// two crates would form a cycle. Neither pallet names the other's crate in a trait bound; the
+// runtime supplies the concrete cross-impl.
 // ───────────────────────────────────────────────────────────────────────────────────────
 
 /// The identity gate microblog consults before accepting a post. Implemented by
-/// `pallet-cogno-gate` (M2); wired to microblog's `Config::IdentityGate` in the runtime.
+/// `pallet-cogno-gate`; wired to microblog's `Config::IdentityGate` in the runtime.
 pub trait IsAllowed<AccountId> {
     /// Whether `who` has a live 1:1 Cardano-identity binding (⇒ may post).
     fn is_allowed(who: &AccountId) -> bool;
 
-    /// Benchmark-only setup hook (DR-05): force `who` into the allowed set so a subsequent
+    /// Benchmark-only setup hook: force `who` into the allowed set so a subsequent
     /// `is_allowed(who)` returns `true`. This lets `post_message` be benchmarked end-to-end
     /// through the *real* runtime gate (`CognoGate`) — where the `whitelisted_caller` is
     /// otherwise unbound and would be rejected `NotAllowed` — without the microblog crate
@@ -155,19 +154,19 @@ pub mod pallet {
         /// The overarching runtime event type.
         #[allow(deprecated)]
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
-        /// The Cardano-identity gate (M2): `post_message` is rejected with `NotAllowed` unless
+        /// The Cardano-identity gate: `post_message` is rejected with `NotAllowed` unless
         /// `IdentityGate::is_allowed(&who)`. Wired to `CognoGate` in the runtime. This is the
         /// authoritative on-chain Sybil gate; the capacity extension is separate spam control.
         type IdentityGate: IsAllowed<Self::AccountId>;
-        /// Maximum length, in bytes, of a post's text. Bounds PoV / proof size. (DR-10b: 512.)
+        /// Maximum length, in bytes, of a post's text. Bounds PoV / proof size. (512 in the runtime.)
         #[pallet::constant]
         type MaxLength: Get<u32>;
         /// Maximum number of posts tracked per author in the on-chain `ByAuthor` index.
-        /// (DR-10b: 10_000. Complete history beyond this is served by the off-chain indexer.)
+        /// (10_000 in the runtime.)
         #[pallet::constant]
         type MaxPostsPerAuthor: Get<u32>;
 
-        // ── talk-capacity constants (ECONOMICS §4; all runtime-tunable, read from metadata
+        // ── talk-capacity constants (see docs/ECONOMICS.md; all runtime-tunable, read from metadata
         //    by the client capacity battery — never hardcode there) ─────────────────────────
         /// Capacity ceiling per unit weight: `cap = min(weight · CapRatio, Ceiling)`
         /// (micro-capacity units per lovelace).
@@ -177,7 +176,7 @@ pub mod pallet {
         /// (micro-capacity units per lovelace per block).
         #[pallet::constant]
         type RegenPerBlock: Get<u128>;
-        /// Hard capacity ceiling (capped-linear curve, DR-11) — a single mega-whale cannot
+        /// Hard capacity ceiling (the capped-linear curve) — a single mega-whale cannot
         /// dominate the mempool regardless of stake.
         #[pallet::constant]
         type Ceiling: Get<u128>;
@@ -210,10 +209,9 @@ pub mod pallet {
         #[pallet::constant]
         type MaxPollOptionLen: Get<u32>;
 
-        /// Origin allowed to force a capacity row (operator/migration; **sudo in dev**). The
-        /// future `cogno-gate` `link_identity` will call [`Pallet::on_first_bind`] directly;
-        /// this dispatchable is the M2c stand-in that lets the operator prime/pre-charge an
-        /// account's battery without the Cardano side wired.
+        /// Origin allowed to force a capacity row (operator/migration). Wired to the 3-of-5
+        /// committee in the runtime; there is no sudo. `cogno-gate`'s bind calls
+        /// [`Pallet::on_first_bind`] directly, so this is only an operator override.
         type ForceOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
         /// Prices feeless calls from OTHER pallets (e.g. `pallet-profile`) against this pallet's one
@@ -346,7 +344,7 @@ pub mod pallet {
         pub count: u32,
     }
 
-    /// The lazy token-bucket state for one identity (`ECONOMICS.md` §4.1).
+    /// The lazy token-bucket state for one identity (see docs/ECONOMICS.md).
     ///
     /// `cap_last` is the banked micro-capacity at `last_block`; `current_capacity` regenerates
     /// it on read. `OptionQuery` is load-bearing: `None` (a genuinely new identity) vs `Some`
@@ -359,7 +357,7 @@ pub mod pallet {
         pub last_block: BN,
     }
 
-    /// The id that will be assigned to the next post. `u64` (DR-21).
+    /// The id that will be assigned to the next post.
     #[pallet::storage]
     pub type NextPostId<T> = StorageValue<_, u64, ValueQuery>;
 
@@ -378,7 +376,7 @@ pub mod pallet {
     >;
 
     /// Per-identity talk-capacity bucket. `None` ⇒ never-bound (first touch = 0); the row is
-    /// **never deleted** on unlock (relock-farm guard, `ECONOMICS.md` §6.1).
+    /// **never deleted** on unlock (the relock-farm guard).
     #[pallet::storage]
     pub type Capacity<T: Config> = StorageMap<
         _,
@@ -456,7 +454,7 @@ pub mod pallet {
     /// The denormalized aggregate mirroring [`RepostCount`] — lets a client read a post's reply count
     /// with one keyed lookup instead of scanning every post for `parent == id`. Maintained in lockstep
     /// with [`RepliesByParent`] on the reply-creation path. Content is append-only (`delete_post` was
-    /// removed in M0; `@1` is permanently vacant), so — exactly like `RepostCount` — it **only ever
+    /// removed before launch; `@1` is permanently vacant), so — exactly like `RepostCount` — it **only ever
     /// increments**; there is no decrement path. Backfilled from existing `Posts` by migration v3.
     #[pallet::storage]
     pub type ReplyCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
@@ -620,7 +618,7 @@ pub mod pallet {
         /// The author has reached `MaxPostsPerAuthor` and cannot be indexed for another post.
         TooManyPosts,
         /// The caller has not bound a Cardano identity via the gate (`IdentityGate::is_allowed`
-        /// returned `false`). The M2 anti-Sybil gate (`L3-chain.md` §4.4/§5.1).
+        /// returned `false`) — the anti-Sybil gate.
         NotAllowed,
         /// `clear_vote` was called but the caller has no vote on that post.
         NotVoted,
@@ -651,21 +649,21 @@ pub mod pallet {
 
     impl<T: Config> Pallet<T> {
         /// The stake-backed capacity ceiling for a stake `weight`: `min(weight·CapRatio, Ceiling)`
-        /// (capped-linear, DR-11). The SINGLE source of truth for the ceiling — both the live meter
+        /// (capped-linear). The SINGLE source of truth for the ceiling — both the live meter
         /// ([`current_capacity`]) and the `force_set_capacity` clamp call this, so the
-        /// "voice == locked ADA" invariant can never drift between the two (`microblog-3`/CL1).
+        /// "voice == locked ADA" invariant can never drift between the two.
         pub fn capacity_ceiling(weight: u128) -> u128 {
             core::cmp::min(weight.saturating_mul(T::CapRatio::get()), T::Ceiling::get())
         }
 
-        /// Lazy regenerate-on-read (`ECONOMICS.md` §4.1). **Pure** — no writes — so it is safe
+        /// Lazy regenerate-on-read. **Pure** — no writes — so it is safe
         /// to call repeatedly inside `validate()`.
         ///
         /// ⚑ `None ⇒ 0` (first-touch is empty, not full) and all arithmetic is `saturating_*`,
         /// so an identity idle for years saturates into the `min(cap, …)` clamp, never wraps.
         pub fn current_capacity(who: &T::AccountId, now: BlockNumberFor<T>) -> u128 {
             let weight = pallet_talk_stake::AllowedStake::<T>::get(who); // 0 if unbound/unlocked
-            let cap = Self::capacity_ceiling(weight); // capped-linear (DR-11) — the stake-backed ceiling
+            let cap = Self::capacity_ceiling(weight); // capped-linear — the stake-backed ceiling
             match Capacity::<T>::get(who) {
                 None => 0, // first-touch = ZERO (charges up); closes the cheap-identity burst farm
                 Some(s) => {
@@ -697,7 +695,7 @@ pub mod pallet {
             }
         }
 
-        /// The capacity cost of a post of `len` bytes (`ECONOMICS.md` §4.2).
+        /// The capacity cost of a post of `len` bytes.
         pub fn post_cost(len: u32) -> u128 {
             T::BaseCost::get().saturating_add(T::PerByteCost::get().saturating_mul(len as u128))
         }
@@ -795,7 +793,7 @@ pub mod pallet {
         }
 
         fn on_revoke(who: &T::AccountId) {
-            // Release the provider reference taken at `on_bind` (gate-1). Best-effort: an outstanding
+            // Release the provider reference taken at `on_bind`. Best-effort: an outstanding
             // consumer ref would make `dec_providers` fail, in which case the ref stays — no worse
             // than the prior always-leak behaviour, but log so the leak is observable.
             if let Err(e) = frame_system::Pallet::<T>::dec_providers(who) {
@@ -852,10 +850,10 @@ pub mod pallet {
             parent: Option<u64>,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            // ⚑ M2 identity gate (belt-and-suspenders): a weighted-but-unbound account (e.g. a
-            // sudo misconfig) is rejected here even though the capacity extension already rejects
-            // the unbound-because-unweighted case at the pool. Identity ≠ rate limit. No event is
-            // emitted on rejection (the call reverts), so log it for the operator's audit trail.
+            // Identity gate (belt-and-suspenders): a weighted-but-unbound account is rejected here
+            // even though the capacity extension already rejects the unbound-because-unweighted case at
+            // the pool. Identity ≠ rate limit. No event is emitted on rejection (the call reverts), so
+            // log it for the operator's audit trail.
             if !T::IdentityGate::is_allowed(&who) {
                 log::debug!(
                     target: LOG_TARGET,
@@ -902,22 +900,19 @@ pub mod pallet {
             Ok(())
         }
 
-        // call_index 1 is PERMANENTLY VACANT: the M0 `delete_post` was removed — content is
+        // call_index 1 is PERMANENTLY VACANT: `delete_post` was removed before launch — content is
         // append-only (no edit, no delete). The chain is a neutral permanent ledger; what a
         // frontend shows is the frontend's policy. Never reuse index 1 (on-wire contract).
 
-        /// Force a capacity bucket for `who` to `cap_last` (dated at the current block), gated
-        /// by `ForceOrigin`. The **M2c operator/dev stand-in** for the future gate's first-bind
-        /// bookkeeping: it primes the capacity row (via [`Pallet::on_first_bind`]) and lets the
-        /// operator pre-charge a battery so the showcase is interactive immediately. (The provider
-        /// reference is taken at identity bind, not here — an unbound account can't post anyway.)
-        /// (Cardano-sourced weight + on-first-bind-at-`link_identity` are M2/M2d.)
+        /// Force a capacity bucket for `who` to `cap_last` (dated at the current block), gated by
+        /// `ForceOrigin` (the 3-of-5 committee). An operator override: it primes the capacity row (via
+        /// [`Pallet::on_first_bind`]) and pre-charges a battery. (The provider reference is taken at
+        /// identity bind, not here — an unbound account can't post anyway.)
         ///
         /// `cap_last` is **clamped to the stake-backed ceiling** `min(weight·CapRatio, Ceiling)`
-        /// (microblog-3): the force can prime up to what the account's locked stake backs, but can
-        /// never mint capacity above it — preserving the "voice == locked ADA" invariant even
-        /// against a misconfigured/compromised authority origin. (The legitimate follower flow sets
-        /// `set_stake` first, then forces exactly `min(weight·CapRatio, Ceiling)`, so it is unaffected.)
+        /// — the force can prime up to what the account's locked stake backs, but can never mint
+        /// capacity above it, preserving the "voice == locked ADA" invariant even against a
+        /// compromised authority origin. An account with no observed weight cannot be primed at all.
         #[pallet::call_index(2)]
         #[pallet::weight(<T as Config>::WeightInfo::force_set_capacity())]
         pub fn force_set_capacity(
@@ -929,7 +924,7 @@ pub mod pallet {
             Self::on_first_bind(&who); // ensure the (relock-safe) capacity row exists (no provider ref)
             let now = frame_system::Pallet::<T>::block_number();
             // Clamp to what the account's current weight backs — never pre-charge above the ceiling.
-            // Shares the single ceiling helper with `current_capacity` so the two can't drift (CL1).
+            // Shares the single ceiling helper with `current_capacity` so the two can't drift.
             let weight = pallet_talk_stake::AllowedStake::<T>::get(&who);
             let ceiling = Self::capacity_ceiling(weight);
             let requested = cap_last;
@@ -1182,6 +1177,12 @@ pub mod pallet {
 
         /// Repost post `post_id`. **Permanent** (treated like content — there is no un-repost);
         /// a duplicate repost fails `AlreadyReposted`. Feeless + capacity-metered.
+        ///
+        /// ⚠ **RETIRED.** Reposting was dropped from the product: a bare repost surfaced nothing in any
+        /// feed and, unlike a quote or a stake-weighted vote, carried no weight, so it was redundant.
+        /// No client calls it and nothing renders `Reposts`/`RepostCount`. It still ships — live and
+        /// callable — only because removing a `call_index` is an on-wire break; the retirement (this call
+        /// plus the two storage maps) is scheduled for a future runtime upgrade. Do not build on it.
         #[pallet::call_index(6)]
         #[pallet::weight(<T as Config>::WeightInfo::repost())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64| -> bool { true })]
@@ -1374,7 +1375,6 @@ pub mod pallet {
 // (inclusion) is the only place capacity is consumed. Never consume in `validate()` (the
 // pool calls it many times per tx); never do crypto there (heavy uncharged compute is itself
 // a DoS). It touches only ~2 cheap reads: `AllowedStake`, `Capacity`, block number.
-// (`L3-chain.md` §5.1, shape verified against polkadot-sdk's own extensions for this version.)
 // ───────────────────────────────────────────────────────────────────────────────────────
 
 /// `TransactionExtension` that gates feeless `post_message` inclusion on talk capacity.
@@ -1427,7 +1427,7 @@ where
     // macro defaults nothing here.
     impl_tx_ext_default!(T::RuntimeCall;);
 
-    /// The extension's weight is **real** (DR-05 / `L3-chain.md` §5.4), NOT zero: it covers the
+    /// The extension's weight is **real**, NOT zero: it covers the
     /// `AllowedStake` + `Capacity` reads `validate()` performs (`current_capacity`) and the
     /// `Capacity` write `consume()` performs in `post_dispatch`. Counting it here is what makes
     /// the feeless post path's FULL cost — the `post_message` call body PLUS this capacity gate —
@@ -1462,7 +1462,7 @@ where
         // source ⇒ not metered (e.g. `force_set_capacity`, or a foreign call the runtime does not price)
         // ⇒ pass through and consume nothing.
         let need = if let Some(inner) = call.is_sub_type() {
-            // O(1) over-length reject at the POOL (microblog-4) for the text-bearing calls: a body
+            // O(1) over-length reject at the POOL for the text-bearing calls: a body
             // longer than `MaxLength` is guaranteed to fail `TooLong`, so metering + feeless-including
             // it would only burn block weight on a doomed tx. `Call` (malformed) — NOT
             // `ExhaustsResources` (which would be retried) — it must not be retried.
@@ -1598,7 +1598,7 @@ const MAX_VIEWER_IDS: usize = 256;
 
 /// ASCII-case-insensitive substring test — is `needle` a substring of `haystack` (an empty `needle`
 /// matches). The Option-1 in-runtime search primitive, shared by the linear-scan `search_posts` (post
-/// text) and the runtime's `search_people` (display name); a node-side `tantivy` inverted index + custom
+/// text) and the runtime's `search_people` (display name); a node-side inverted index + custom
 /// RPC is the documented graduation once corpus size demands it (`docs/SCALE-NODE-READS.md`).
 pub fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
@@ -2128,9 +2128,9 @@ impl<T: Config> Pallet<T> {
     }
 
     /// Full-text search over post bodies: an ASCII-case-insensitive substring match on `term`, newest-first,
-    /// paged below `before_id` (a post id). The Option-1 in-runtime linear scan — bounded at
+    /// paged below `before_id` (a post id). An in-runtime linear scan — bounded at
     /// `limit · MAX_SCAN_FACTOR` ids per call with a `next_cursor` to continue (no unbounded walk), so a
-    /// no-match dense range never runs away. Graduates to a `tantivy` node-side index later.
+    /// no-match dense range never runs away. The scan is the known ceiling here; see docs/SCALE-NODE-READS.md.
     pub fn search_posts(
         term: Vec<u8>,
         before_id: Option<u64>,
@@ -2278,7 +2278,7 @@ sp_api::decl_runtime_apis! {
         /// The author's TOP-LEVEL post count (replies excluded) — the correct profile `postCount`.
         fn author_post_count(author: AccountId) -> u32;
 
-        // ── the all-Rust restart: the indexer reads folded into the node (fork/all-rust, P6) ──
+        // ── The read paths a separate indexer used to serve, folded into the node ──
         /// One author's REPLIES (the profile Replies tab): `parent != None`, newest-first, paged below
         /// `before_id` (a post id).
         fn author_replies_page(

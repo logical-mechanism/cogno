@@ -1,7 +1,7 @@
 /* /notifications — activity list + All/Mentions filter tabs. */
 
 /* Mirrors TimelineTabs / ProfileTabs geometry: equal-flex tabs filling the header row. */
-/* neutral underline indicator (accent is reserved for the Post CTA + focus ring — doc 00) */
+/* neutral underline indicator (accent is reserved for the Post CTA + focus ring) */
 .markRead {
   background: none;
   border: none;

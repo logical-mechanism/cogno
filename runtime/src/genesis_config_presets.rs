@@ -30,7 +30,7 @@ use sp_keyring::{Ed25519Keyring, Sr25519Keyring};
 
 // Returns the genesis config presets populated with given parameters.
 //
-// M6 (DR-26): authorities are seated through `pallet-session`, NOT the aura/grandpa GenesisConfig
+// Authorities are seated through `pallet-session`, NOT the aura/grandpa GenesisConfig
 // (the two are mutually exclusive). Each initial authority registers its
 // `(Aura, Grandpa)` session keys here; `pallet-validator-set` seats the same accounts as the
 // initial mutable validator set. The aura/grandpa pallets then derive their authorities from the
@@ -65,7 +65,7 @@ fn testnet_genesis(
                 .map(|k| (k, 1u128 << 60))
                 .collect::<Vec<_>>(),
         },
-        // M6: register each initial authority's session keys. `validator_id == account` (identity
+        // Register each initial authority's session keys. `validator_id == account` (identity
         // ValidatorIdOf). Aura+GRANDPA authorities are populated from these at genesis.
         session: SessionConfig {
             keys: initial_authorities
@@ -76,7 +76,7 @@ fn testnet_genesis(
                 })
                 .collect::<Vec<_>>(),
         },
-        // M6: seat the initial MUTABLE validator set (the same accounts). `add_validator` /
+        // Seat the initial MUTABLE validator set (the same accounts). `add_validator` /
         // `remove_validator` mutate this later, applied at a session boundary.
         validator_set: ValidatorSetConfig {
             initial_validators: initial_authorities

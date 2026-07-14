@@ -5,8 +5,8 @@
 // the account's name / @handle + a Followers | Following tab strip) over FollowsList.
 //
 // The follow graph is read ONCE via source.followEdges(address); switching sides just re-slices the
-// already-fetched edges (no refetch). Only reachable when caps.follows is true — the counts that open
-// it are themselves gated on it, so a reader that can't serve the graph never surfaces this.
+// already-fetched edges (no refetch). Only reachable through the follow counts, which the profile
+// omits when the graph can't be read — so this never surfaces without data behind it.
 
 import { useEffect, useState } from "react";
 import styles from "./FollowsPanel.module.css";
@@ -15,6 +15,7 @@ import { Tabs } from "@/components/ui/Tabs";
 import { FollowsList } from "./FollowsList";
 import { handleOf } from "@/lib/ss58";
 import type { FeedSource } from "@/lib/feed/source";
+import { readErrorCopy } from "@/lib/chain/errors";
 import type { Ss58, Viewer } from "@/components/kit";
 
 export type FollowsSide = "followers" | "following";
@@ -67,7 +68,7 @@ export function FollowsPanel({
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Couldn't load this list.");
+        setError(readErrorCopy(err, "Couldn't load this list."));
         setLoading(false);
       });
     return () => {

@@ -30,7 +30,7 @@ function watchSigned(
   return signSubmitWatch(api, signer, tx, eventName);
 }
 
-// ── posts / threading ──────────────────────────────────────────────────────────────────────
+// ── posts / threading ────────────────────────────────────────────────────────────────────────────
 
 /** A reply is just a post with a parent (emits `PostCreated`). */
 export function submitReply(
@@ -56,7 +56,7 @@ export function submitQuote(
   return watchSigned(api, tx, signer, "PostCreated");
 }
 
-// ── votes ────────────────────────────────────────────────────────────────────────────────────
+// ── votes ────────────────────────────────────────────────────────────────────────────────────────
 
 /** Like == an UP vote; Down == the secondary down-vote. `VoteDir` encodes as `Enum("Up"|"Down")`. */
 export function submitVote(
@@ -82,7 +82,7 @@ export function submitClearVote(
   return watchSigned(api, tx, signer);
 }
 
-// ── follows ────────────────────────────────────────────────────────────────────────────────
+// ── follows ──────────────────────────────────────────────────────────────────────────────────────
 
 export function submitFollow(
   api: CognoApi,
@@ -102,7 +102,7 @@ export function submitUnfollow(
   return watchSigned(api, tx, signer);
 }
 
-// ── account reputation votes (stake-weighted up/down ON an account) ──────────────────────────
+// ── account reputation votes (stake-weighted up/down ON an account) ──────────────────────────────
 
 /**
  * Cast / change a stake-weighted reputation vote ON `target`'s account — the community anti-Sybil /
@@ -132,7 +132,7 @@ export function submitClearAccountVote(
   return watchSigned(api, tx, signer);
 }
 
-// ── polls ──────────────────────────────────────────────────────────────────────────────────
+// ── polls ────────────────────────────────────────────────────────────────────────────────────────
 
 /**
  * Create a poll: the question IS the host post's text, the options are `Vec<Vec<u8>>`. 2..=4
@@ -166,7 +166,7 @@ export function submitPollVote(
   return watchSigned(api, tx, signer);
 }
 
-// ── profile (FEELESS signed — D9 obsolete) ───────────────────────────────────────────────────
+// ── profile (FEELESS signed — D9 obsolete) ───────────────────────────────────────────────────────
 
 /**
  * Set the whole Profile record (spec-118): display name / bio / avatar / banner / location / website
@@ -220,7 +220,7 @@ export function submitUnpinPost(
   return watchSigned(api, tx, signer);
 }
 
-// ── re-exports ───────────────────────────────────────────────────────────────────────────────
+// ── re-exports ───────────────────────────────────────────────────────────────────────────────────
 
 // Post (exists in post.ts) — re-exported so every write goes through one module.
 export { submitPost } from "@/lib/chain/post";

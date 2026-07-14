@@ -1,6 +1,6 @@
 "use client";
 
-// DisplayName — an account's display name (doc 03 §14). Uses the profile display name; FALLS BACK to
+// DisplayName — an account's display name. Uses the profile display name; FALLS BACK to
 // a stable `cogno-…` label derived from the ss58 when none is set (D6, names are non-unique). Bold,
 // --cg-text. Dimmed when the author's identity is revoked (D10 — the parent header renders the
 // "restricted" chip; here we only dim). Sanitised: display names are user input → rendered as TEXT,

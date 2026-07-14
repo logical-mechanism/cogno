@@ -1,4 +1,4 @@
-//! On-chain CIP-8 (COSE_Sign1) identity self-proof verifier — the trustless D1 core.
+//! On-chain CIP-8 (COSE_Sign1) identity self-proof verifier.
 //!
 //! Replaces the trusted off-chain follower with in-runtime verification (the Python original is kept as
 //! a CI cross-check oracle at `ci/cip8-oracle/verify.py`): a user submits the
@@ -17,7 +17,7 @@
 //! 5. The signed payload is exactly `cogno-chain/bind/v1;genesis=<64hex>;account=<64hex>;nonce=<32hex>`
 //!    (`payload.py`); the caller checks `genesis` == the chain genesis and binds the committed `account`.
 //!
-//! ## Security invariants (from the adversarial threat-model — every one is load-bearing)
+//! ## Security invariants (every one is load-bearing)
 //! - **Single key source.** The verification key is the COSE_Key `-2` ONLY; it is the SAME 32 bytes
 //!   ed25519-verified AND blake2b-224-hashed for the address bind. If the protected header carries a KID,
 //!   it must equal it byte-for-byte. (Closes the "verify one key, hash another" forge.)
@@ -30,9 +30,17 @@
 //! - **Reject `hashed:true`, detached payloads, non-empty external_aad** (external_aad is hard-coded h'').
 //! - **32-byte keys only** (reject 64-byte extended keys — one rule, no truncation).
 //!
-//! ⚠ MAINNET PREREQUISITE: this verifier is the anti-Sybil crown jewel — a bug forges any identity. It is
-//! hardened by tests + a 4-agent adversarial threat-model, but it has NOT had a formal external audit
-//! (a "Wormhole-class" forgery risk). Independent audit required before mainnet/real value.
+//! Each invariant above is pinned by a negative test in `cip8/tests.rs`: a swapped COSE_Key
+//! (`swapped_cose_key_is_caught_by_the_kid_equality_check`), a tampered signature, a wrong network
+//! nibble, a 64-byte extended key, trailing bytes after the COSE_Sign1, indefinite-length and
+//! non-minimal CBOR, non-VerificationKey address types, and a malformed bind payload. The positive
+//! side is a real wallet `signData` fixture, and the beacon name is cross-checked against the Aiken
+//! and Python vectors. `ci/cip8-oracle/verify.py` is a second, independent implementation kept as a CI
+//! oracle.
+//!
+//! ⚠ MAINNET PREREQUISITE: this verifier is the anti-Sybil crown jewel — a bug forges any identity, and
+//! those tests are first-party. It has NOT had a formal external audit. Independent audit required before
+//! mainnet/real value.
 
 use alloc::vec::Vec;
 

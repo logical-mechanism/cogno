@@ -1,6 +1,6 @@
-// The optimistic overlay (doc 04 §2.11 / §3.3). A pure, app-wide overlay merged on top of the
+// The optimistic overlay. A pure, app-wide overlay merged on top of the
 // watched feed snapshot + the viewer-state reads, so an optimistic action (a just-posted card, a
-// like, a repost) renders INSTANTLY and is not clobbered by the next feed poll before it confirms.
+// like) renders INSTANTLY and is not clobbered by the next feed poll before it confirms.
 // On confirm the overlay entry is cleared (the real row/tally now carries it); on failure it is
 // rolled back. Keyed by post id (String) so the reconciling read wins once it lands.
 //

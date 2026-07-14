@@ -58,7 +58,7 @@ export function binTextOpt(v?: Uint8Array): string | undefined {
   return s ? s : undefined;
 }
 
-// ── liveness + the id cursor ────────────────────────────────────────────────────────────────────
+// ── liveness + the id cursor ─────────────────────────────────────────────────────────────────────
 
 /**
  * The id of the latest post, or null when the chain has none. `NextPostId` is the id that WILL be
@@ -145,7 +145,7 @@ export async function enrichPosts(
   return Promise.all(
     raw.map(async (r) => {
       const post = toCognoPost(r.id, r.value);
-      // Reuse the single tally/repost decoders (social-reads.ts) so the feed score can never drift
+      // Reuse the single tally decoders (social-reads.ts) so the feed score can never drift
       // from a per-post read; ReplyCount + the poll flag are read alongside.
       const [tally, replyCount, pollRec] = await Promise.all([
         readPostTally(api, r.id),
@@ -187,7 +187,7 @@ export async function authorPostCount(api: CognoApi, account: Ss58): Promise<num
   return (await api.query.Microblog.ByAuthor.getValue(account)).length;
 }
 
-// ── thread reconstruction (keyed reverse lookup — no full-snapshot scan) ──────────────────────────
+// ── thread reconstruction (keyed reverse lookup — no full-snapshot scan) ─────────────────────────
 
 /** Max ancestors to walk up from a focal post (cycle/cost guard). */
 const MAX_ANCESTOR_DEPTH = 64;
@@ -255,7 +255,7 @@ export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThre
   return { root, ancestors, replies, replyCount: root.replyCount ?? 0 };
 }
 
-// ── head positions (unchanged from the load-all era) ──────────────────────────────────────────────
+// ── head positions (unchanged from the load-all era) ─────────────────────────────────────────────
 
 /** Project a PAPI BlockInfo into the minimal BlockRef the UI labels with. */
 function toBlockRef(info: { number: number; hash: string } | null): BlockRef | null {

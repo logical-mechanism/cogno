@@ -271,7 +271,7 @@ describe("getThread — keyed reverse lookup, no full scan", () => {
   });
 });
 
-// ── PARITY: nodeThread MUST equal the keyed getThread ──────────────────────────────────────────────
+// ── PARITY: nodeThread MUST equal the keyed getThread ────────────────────────────────────────────
 // This is the ONE parity pair left, and it is still load-bearing: getThread ships as `thread()`'s
 // RESILIENCE fallback (a viral post enumerates every reply in one state_call and can hit a resource
 // limit, so the keyed per-card path can succeed where the big call cannot). The two must therefore

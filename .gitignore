@@ -2,8 +2,9 @@
 /target
 **/target
 
-# Vendored polkadot-sdk monorepo clone (huge; never a build input, re-cloneable
-# at tag polkadot-stable2603-3 / commit e3737178ec726cffe506c907263aaaa417893fd0).
+# Vendored polkadot-sdk monorepo clone (huge; never a build input — a local reference checkout only,
+# re-cloneable at the pinned release tag. The workspace tracks `stable2606`; the original fork point
+# is recorded in Cargo.toml.)
 /_sdk
 
 # Vendored study checkouts
@@ -13,18 +14,27 @@ _keys
 # Node deps (app + the acceptance / CIP-8 fixture scripts)
 node_modules/
 
-# Secrets / local env (never commit real creds). The committed manifests are the
-# *.env.example files; the live .env / .env*.local files stay local.
-.env
-**/.env
-.env*.local
-**/.env*.local
+# Secrets / local env (never commit real creds). The committed manifests are the *.env.example files;
+# every other .env* variant stays local — Next.js also loads `.env.production` / `.env.development`,
+# so the glob has to be wider than `.env` + `.env*.local`.
+.env*
+**/.env*
 !.env.example
 !**/.env.example
+
+# Python bytecode (ci/cip8-oracle)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
 
 # Editor / OS cruft
 *.rs.bk
 .DS_Store
+
+# Local coding-agent state (CLAUDE.md lives at the repo root, so contributors will run agent tooling
+# here). Their transcripts / settings / scratch are personal and must never ride into a PR.
+.claude/
 
 # Local chain state (dev/throwaway runs use --tmp/--dev)
 /state
@@ -39,6 +49,11 @@ node_modules/
 # chainspec itself is not secret — but the .skey / keys.json envelopes that seed it are.
 *.skey
 **/keys.json
+
+# libp2p node (p2p) key files (`cogno-chain-cli key generate-node-key`). A RAW HEX ed25519 SECRET —
+# the node's network identity. Both runbooks mint `val-p2p.key` with a RELATIVE path, i.e. straight
+# into the checkout root, so one `git add -A` would publish it. Never commit it.
+*.key
 
 # A filled-in systemd EnvironmentFile (DBSYNC_URL + any DB creds) is a local secret; the committed
 # manifest is cogno.env.example. (No bare **/vault.json ignore — vault.json is a committed build

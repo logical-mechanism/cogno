@@ -25,7 +25,7 @@ scale-info = { features = ["derive"], workspace = true }
 # The spec-120 `MicroblogApi` node-served read API (decl_runtime_apis! at the crate root).
 sp-api = { workspace = true }
 sp-runtime = { workspace = true }
-# Tight coupling: the capacity meter reads per-account weight from talk-stake (ECONOMICS §6.2).
+# Tight coupling: the capacity meter reads per-account weight from talk-stake. See docs/ECONOMICS.md.
 pallet-talk-stake = { workspace = true }
 
 [dev-dependencies]

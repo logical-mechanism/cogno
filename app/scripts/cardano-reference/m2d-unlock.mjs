@@ -30,7 +30,7 @@ const TARGET = process.argv[2]; // optional "<txHash>#<index>"
 async function main() {
   const { wallet, address, paymentKeyHash, stakeKeyHash } = await getOwnerWallet({ withProvider: true });
 
-  // The vault address (script payment cred + the owner's stake cred, DR-01) — for the script input.
+  // The vault address (script payment cred + the owner's stake cred) — for the script input.
   const { address: vaultAddress } = serializePlutusScript(
     { code: APPLIED_CBOR, version: "V3" }, stakeKeyHash, 0, false,
   );

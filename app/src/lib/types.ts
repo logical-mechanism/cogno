@@ -2,11 +2,9 @@
 //
 // This file is the DETERMINISTIC SEAM between the PAPI data layer (lib/chain, lib/signer)
 // and the React layer (hooks, components). The data layer IMPLEMENTS these shapes; the
-// React layer CONSUMES them. Nothing here imports React. Grounded against PAPI 1.x + the
-// descriptors generated from cogno-chain-runtime (spec_version 200 — the all-Rust restart:
-// the spec-113 social pallet set + spec-117 feeless pallet-profile, with feed/thread/profile
-// reads now served node-direct by the node's spec-200 MicroblogApi rather than a SubQuery
-// node's MicroblogApi; the live shapes are confirmed against the running node's metadata, not guessed).
+// React layer CONSUMES them. Nothing here imports React. The shapes are grounded against
+// polkadot-api 2.x and the descriptors generated from the live cogno-chain-runtime
+// (spec_version 203) — confirmed against the running node's metadata, not guessed.
 
 import type { PolkadotClient, TypedApi } from "polkadot-api";
 import type { PolkadotSigner } from "polkadot-api/signer";
@@ -70,12 +68,10 @@ export interface CognoPost {
   /** Author posting power (lovelace); undefined until staked. */
   authorWeight?: bigint;
 
-  // ── viewer overlay (spec-120 node-served reads only) ──
+  // ── viewer overlay (node-served reads only) ──
   /**
-   * The connected viewer's own vote/repost on this post, stamped node-side by the spec-120
-   * `MicroblogApi` (when a `viewer` was passed). PRESENT only when a `viewer` was passed;
-   * `undefined` on the keyed fallback path, where `useViewerStates` reads it per-card instead. When
-   * present, `useViewerStates` prefers it and SKIPS the per-card `Reposts.getEntries` viewer scan.
+   * The connected viewer's own vote on this post, stamped node-side by `MicroblogApi` when a `viewer`
+   * was passed — `undefined` otherwise, in which case `useViewerStates` reads it per-card instead.
    */
   myVote?: "Up" | "Down" | null;
 }
@@ -132,10 +128,9 @@ export interface Suggestion {
   accountScore?: bigint;
 }
 
-// ── the feed seam ───────────────────────────────────────────────────────────────────────
+// ── the feed seam ────────────────────────────────────────────────────────────────────────────────
 // These shapes are the contract between the data layer and React. There is ONE reader
-// (lib/feed/papi-source.ts), serving everything out of the node — the SubQuery indexer this seam
-// was originally built to abstract over no longer exists.
+// (lib/feed/papi-source.ts) and it serves everything out of the node.
 
 /** An opaque cursor string. The node's cursors are ENDPOINT-SCOPED — one method's cursor is only
  *  valid passed back to the SAME method. */
@@ -177,10 +172,8 @@ export interface FeedQuery {
    */
   maxHops?: number;
   /**
-   * The connected account, when known. The source threads it into the
-   * `MicroblogApi` so each returned post carries the viewer's `myVote`/`reposted` overlay, computed
-   * node-side in the same `state_call`. The keyed fallback path IGNORES it (the overlay is fetched
-   * separately via `useViewerStates`), so passing it is always safe and never changes those results.
+   * The connected account, when known. The source threads it into `MicroblogApi` so each returned
+   * post carries the viewer's `myVote` overlay, computed node-side in the same `state_call`.
    */
   viewer?: Ss58;
 }
@@ -259,7 +252,7 @@ export interface ChainHeads {
 export type ConnStatus = "connecting" | "connected" | "reconnecting" | "error";
 
 /**
- * Read/write-aware boot guard (L5 §8.1): compares the runtime `spec_version` to the
+ * Read/write-aware boot guard: compares the runtime `spec_version` to the
  * descriptors the app was built against. A mismatch must BLOCK the write path (a silent
  * spec bump mis-encodes posts) while keeping READS in best-effort mode.
  */

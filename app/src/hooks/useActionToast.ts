@@ -4,7 +4,7 @@
 // (follow / vote / …) words feedback identically. A CheckCapacity pool rejection becomes the
 // dedicated rate-limit toast; anything else is a generic error toast. `ok` is for the few DISCRETE
 // successes worth confirming (follow / unfollow) — high-frequency actions like votes stay
-// silent on success because the optimistic UI already showed the change (doc 04 §3.4).
+// silent on success because the optimistic UI already showed the change.
 //
 // `phase` is the tx-lifecycle variant used by the compose writes (post / reply / quote /
 // poll): a sticky "…ing" pending toast on submit that UPGRADES in place (dedupe-by-id) to a success

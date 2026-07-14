@@ -25,7 +25,7 @@ export interface OwnerKeys {
 }
 
 export interface VaultInfo {
-  /** the script address (vault hash payment cred + the owner's stake cred, DR-01). */
+  /** the script address (vault hash payment cred + the owner's stake cred). */
   vaultAddress: string;
   /** the 32-byte beacon name == the app-chain identity hash (blake2b_256(owner)). */
   beacon: string;

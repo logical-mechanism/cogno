@@ -67,8 +67,8 @@ function addCountPatch(a: CountPatch | undefined, b: CountPatch): CountPatch {
 const CONFIRM_TTL_MS = 15_000;
 
 // A confirmed profile patch is kept until a fresh read agrees; this backstop retires it if that read
-// never lands (surface unmounted, stalled subscription). Longer than a vote's — a profile read can be
-// indexer-derived (slower to reflect) and there's no per-field chip to wedge, only stale display text.
+// never lands (surface unmounted, stalled subscription). Longer than a vote's — there is no per-field
+// chip to wedge, only stale display text.
 const PROFILE_CONFIRM_TTL_MS = 20_000;
 
 export function OptimisticProvider({ children }: { children: React.ReactNode }) {

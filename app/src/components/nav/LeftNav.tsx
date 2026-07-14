@@ -1,6 +1,6 @@
 "use client";
 
-// LeftNav — the persistent left rail (doc 01 §5.2 / §6.1). Desktop (≥1020px): icons + labels + a
+// LeftNav — the persistent left rail. Desktop (≥1020px): icons + labels + a
 // full-width accent "Post" pill + the Account mini-widget. Tablet (688–1019px): the same rail
 // collapses to icons only (CSS) and the Post pill becomes a round accent icon button.
 //
@@ -8,7 +8,7 @@
 // Account. (Bookmarks is the desktop/tablet reach for the device-local /bookmarks list; on mobile the
 // bottom bar stays a locked 4 tabs, so a Settings launcher covers it there.)
 // Active state uses usePathname() with FILLED icons (X-style). Profile resolves to /u/<me>/ when
-// connected, else /welcome/ (doc 01 §6.4). The "Post" pill opens the compose modal overlay
+// connected, else /welcome/. The "Post" pill opens the compose modal overlay
 // (modalStore.openCompose). Reads the gate from useSession(); never builds an extrinsic.
 
 import { useCallback } from "react";
@@ -42,7 +42,7 @@ export function LeftNav() {
   // Clicking the tab you're already on scrolls that surface to the top (and, on Home, refreshes it).
   const reTap = useNavReTap();
 
-  // Profile target resolves to the connected account, else the onboarding gate (doc 01 §6.4).
+  // Profile target resolves to the connected account, else the onboarding gate.
   const profileHref = viewer.address ? `/u/${viewer.address}/` : "/welcome/";
 
   const items: NavItem[] = [

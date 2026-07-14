@@ -1,8 +1,15 @@
 # Iterate on the frontend against the real chain (local tracking node)
 
+> **Just want to use cogno?** It is already hosted at **<https://cogno.forum>**, served by a public RPC
+> endpoint at **`wss://cogno.forum/rpc`** — nothing to build. This doc is for *developing* the frontend.
+
 Develop the `app/` frontend locally while it reads **live data from the real cogno-chain**, without
 running a validator or touching the operator's node. You run a **tracking node** (a non-validator
 "relay") that syncs the real chain over P2P and serves RPC to your dev frontend on `127.0.0.1`.
+
+(You can also skip the node and point the dev server straight at the public RPC —
+`NEXT_PUBLIC_WS_URL=wss://cogno.forum/rpc` — but then you are trusting the operator's node for reads.
+Running your own tracking node is the point of the loop below.)
 
 ```
  ┌────────────┐   libp2p P2P    ┌───────────────────────────┐   ws RPC :9944   ┌──────────────┐
@@ -40,7 +47,9 @@ in [RELAY-NODE.md](RELAY-NODE.md); this doc is the frontend-dev loop on top of i
    NEXT_PUBLIC_WS_URL=ws://127.0.0.1:9944
    ```
    ```bash
-   cd app && npm run dev          # :3000 (nvm node) — reads live chain data through the relay
+   cd app
+   npm install                    # postinstall runs `papi` → generates @polkadot-api/descriptors
+   npm run dev                    # :3000 (nvm node) — reads live chain data through the relay
    ```
 
    A user can override the endpoint at runtime in Settings (persisted in `localStorage`), which always

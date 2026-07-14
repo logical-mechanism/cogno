@@ -18,7 +18,7 @@
 //! Why the appended `PreRuntime` item survives `Executive::final_checks`: `frame_system::initialize`
 //! stores the FULL incoming header digest (`<Digest<T>>::put(digest)`) and `finalize` reproduces it, so
 //! the sealed item is carried through `execute_block` exactly like the Aura slot pre-digest — no runtime
-//! change is needed for the digest itself (in-protocol-observation §4.4).
+//! change is needed for the digest itself.
 
 use crate::consensus::InherentDigest;
 use futures::FutureExt;

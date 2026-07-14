@@ -1,7 +1,7 @@
-// Client-side talk-capacity replay (L5 §8.5 / L4 §5.2).
+// Client-side talk-capacity replay.
 //
 // ⛔ ADVISORY ONLY. The authoritative gate is the runtime's `CheckCapacity::validate()`
-// (pallet-microblog §5). This replays `current_capacity()` VERBATIM so the battery and the
+// (pallet-microblog). This replays `current_capacity()` VERBATIM so the battery and the
 // composer can show honest, live estimates — never to decide truth. All constants are read
 // from PAPI metadata (`api.constants.Microblog.*`), never hardcoded, so a `spec_version` bump
 // that retunes capacity retunes the UI too (fail-closed on a missing constant).
@@ -114,7 +114,7 @@ export type DraftStatus =
   | { kind: "wait"; have: bigint; need: bigint; blocks: number }; // under budget; postable in N blocks
 
 /**
- * Classify a draft against a view. ⛔ Order matters (L5 §8.5): check weight==0 first (never a
+ * Classify a draft against a view. ⛔ Order matters: check weight==0 first (never a
  * timer), then need>cap (never at this length), then guard rate==0 BEFORE the ceil-division.
  */
 /**

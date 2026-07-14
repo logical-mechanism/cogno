@@ -1,5 +1,5 @@
 // CognoGate reads + the trustless bind WRITE (D1). Reads: is the active posting account bound (⇒
-// allowed to post), and the AccountOf readback that confirms a fresh bind landed on-chain (L5 §5.7).
+// allowed to post), and the AccountOf readback that confirms a fresh bind landed on-chain.
 // Write: submit the user's CIP-8 self-proof via `cognoGate.link_identity_signed` / `link_stake_signed`.
 //
 // The binds are FEELESS and UNSIGNED (spec 116): the CIP-8 proof IS the authorization (the runtime

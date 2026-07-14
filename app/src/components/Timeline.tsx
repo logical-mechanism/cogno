@@ -1,13 +1,12 @@
 "use client";
 
-// Timeline — the Home post list (doc 06 §3 / §7 / §8, doc 03 §22.1).
+// Timeline — the Home post list.
 //
 // Renders a column of `PostCard variant="timeline"` (the cards own their hairline divider + hover
 // tint), and handles the three list states: loading → Skeleton×8, empty → EmptyState, tail →
-// infinite-scroll Spinner when the source cursor-paginates (caps.pagination — true on the node path
-// since spec-119) and another page exists.
+// infinite-scroll Spinner when the source cursor-paginates and another page exists.
 //
-// It OWNS the Home feed keyboard nav (doc 06 §8): j/k move focus between cards (roving tabIndex +
+// It OWNS the Home feed keyboard nav: j/k move focus between cards (roving tabIndex +
 // a 2px --cg-accent left-border focus marker), n composes, Enter/o opens the focused post, l likes,
 // r replies, . flushes the new-posts pill. Shortcuts are
 // DISABLED while focus is in a text input (the composer), so typing n/l/j types characters.
@@ -35,7 +34,7 @@ import type {
 export interface TimelineProps {
   posts: CognoPost[];
   gate: Viewer;
-  /** Map of the viewer's own vote/repost over the visible post ids. */
+  /** Map of the viewer's own vote over the visible post ids. */
   viewerStates: Map<bigint, ViewerPostState>;
   handlers: PostActionCallbacks;
   /** Initial-load skeleton. */
@@ -43,12 +42,12 @@ export interface TimelineProps {
   /** A passive read-failure message (shown as a retry row above the cards; never a toast). */
   error?: string | null;
   onRetry?: () => void;
-  /** Cursor pagination available (caps.pagination). */
+  /** Cursor pagination available. */
   hasMore: boolean;
   onLoadMore?: () => void;
   /** Tail spinner while a load-more page is in flight. */
   loadingMore?: boolean;
-  /** Source cursor-paginates (caps.pagination) → show the infinite-scroll tail. */
+  /** Source cursor-paginates → show the infinite-scroll tail. */
   paginationCapable: boolean;
   /**
    * EmptyState variant for THIS tab. The full EmptyStateVariant — it was narrowed to `feed | follows`,
@@ -102,7 +101,7 @@ export function Timeline({
     cardRefs.current[idx]?.focus();
   }, []);
 
-  // ── feed keyboard nav (doc 06 §8). Disabled while focus is in a text input. ──
+  // ── feed keyboard nav. Disabled while focus is in a text input. ──
   const onKeyDownList = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       const t = e.target as HTMLElement;
@@ -226,8 +225,8 @@ export function Timeline({
         );
       })}
 
-      {/* tail — the infinite-scroll "load more" sentinel, shown when the source paginates
-          (caps.pagination — true on the node path since spec-119) and another page exists. */}
+      {/* tail — the infinite-scroll "load more" sentinel, shown when the source paginates and
+          another page exists. */}
       {paginationCapable && hasMore && (
         <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />
       )}

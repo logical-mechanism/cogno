@@ -1,11 +1,11 @@
 //! # Cogno-gate pallet (cogno-chain)
 //!
-//! **The anti-Sybil identity anchor (M2): a hard 1:1 binding between a Cardano owner
-//! Address and a Substrate posting account.** This is the "Cardano READ link" — the gate that
-//! turns an anonymous sr25519 key into a Cardano-anchored identity so that one Cardano owner
-//! Address maps to exactly one posting account, and back (DR-01/DR-02/DR-07/DR-14).
+//! **The anti-Sybil identity anchor: a hard 1:1 binding between a Cardano owner Address and a
+//! Substrate posting account.** This is the "Cardano READ link" — the gate that turns an anonymous
+//! sr25519 key into a Cardano-anchored identity so that one Cardano owner Address maps to exactly
+//! one posting account, and back.
 //!
-//! ## What is bound (DR-01)
+//! ## What is bound
 //! The key is the **32-byte `blake2b_256` of the serialized owner Cardano Address** (== the L1
 //! beacon `token_name`), NOT a bare 28-byte payment-key-hash. Identity is the *whole* CIP-19
 //! Address (payment + stake credential). The bind is **trustless (D1)**: a user submits the CIP-8
@@ -20,7 +20,7 @@
 //! the reverse-map check would let one identity bind many accounts → multiply talk capacity → defeat
 //! the entire anti-Sybil purpose of the chain.
 //!
-//! ## Loose coupling (the M2 architectural gotcha)
+//! ## Loose coupling (the architectural gotcha)
 //! cogno-gate calls **into** `pallet-microblog` ([`pallet_microblog::OnIdentityBind`] →
 //! `on_first_bind`) at link, and microblog calls **into** cogno-gate
 //! ([`pallet_microblog::IsAllowed`] → `is_allowed`) at post. Implementing that literally would
@@ -29,14 +29,14 @@
 //! and *consumes* `OnIdentityBind` (wired to `Microblog` in the runtime). Neither pallet names
 //! the other's crate in a trait bound.
 //!
-//! ## Trust posture (D1 — named honestly)
+//! ## Trust posture
 //! The bind is permissionless + cryptographic: [`Call::link_identity_signed`] removes the operator
 //! from the identity-correctness path entirely (every full node re-verifies the proof). `FollowerOrigin`
-//! (a single trusted key + `EnsureRoot` sudo escape hatch in v1 dev, an `EnsureOrigin` that widens to a
-//! 3-of-5 committee signature-free) now gates ONLY [`Call::revoke`] — the manual-operator-ban moderation
-//! lever (DR-14), which tombstones an identity permanently. ⚠ The verifier itself is the anti-Sybil crown
-//! jewel — a bug forges any identity; it is hardened by an adversarial threat-model + tests but is NOT
-//! externally audited (MAINNET PREREQUISITE, see [`cip8`]).
+//! gates ONLY [`Call::revoke`] — the manual-operator-ban moderation lever, which tombstones an identity
+//! permanently. In the runtime that origin is the 3-of-5 FollowerCommittee: cogno-chain is sudo-free from
+//! genesis, so there is no `EnsureRoot` fallback behind it. ⚠ The verifier itself is the anti-Sybil crown
+//! jewel — a bug forges any identity; it is pinned by the negative tests in [`cip8`] but is NOT externally
+//! audited (MAINNET PREREQUISITE).
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -44,7 +44,7 @@ extern crate alloc;
 
 pub use pallet::*;
 
-/// The on-chain CIP-8 (COSE_Sign1) identity self-proof verifier (D1 — trustless identity).
+/// The on-chain CIP-8 (COSE_Sign1) identity self-proof verifier.
 pub mod cip8;
 
 #[cfg(test)]
@@ -64,7 +64,7 @@ pub use weights::*;
 pub const LOG_TARGET: &str = "runtime::cogno-gate";
 
 /// The on-chain identity key: the 32-byte `blake2b_256` of the serialized owner Cardano
-/// Address (== the L1 beacon `token_name`, DR-01). A fixed `[u8; 32]` (not a `BoundedVec`):
+/// Address (== the L1 beacon `token_name`). A fixed `[u8; 32]` (not a `BoundedVec`):
 /// it is exactly a hash, so the codec enforces the length for free and the `AccountOf` key is
 /// the raw 32 bytes with no length prefix — the client's `AccountOf` readback keys on the
 /// identical bytes.
@@ -95,11 +95,11 @@ pub mod pallet {
         /// The overarching runtime event type.
         #[allow(deprecated)]
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
-        /// The authority allowed to [`Call::revoke`] (the manual-operator-ban moderation lever, DR-14):
-        /// a single trusted key **plus `EnsureRoot`/sudo escape hatch** in v1 dev (DR-07). An
-        /// `EnsureOrigin` (never `ensure_signed`) — the public pool must not be able to ban identities —
-        /// so the widen to a 3-of-5 k-of-t committee is signature-free. NOTE: binding is no longer gated
-        /// by this; it is the permissionless cryptographic [`Call::link_identity_signed`] (D1).
+        /// The authority allowed to [`Call::revoke`] (the manual-operator-ban moderation lever). An
+        /// `EnsureOrigin`, never `ensure_signed` — the public pool must not be able to ban identities.
+        /// The runtime wires it to the 3-of-5 FollowerCommittee; there is no sudo fallback behind it.
+        /// NOTE: binding is NOT gated by this; it is the permissionless cryptographic
+        /// [`Call::link_identity_signed`].
         type FollowerOrigin: EnsureOrigin<Self::RuntimeOrigin>;
         /// Bind/revoke lifecycle hook into `pallet-microblog`: `on_bind` primes the capacity row + a
         /// provider reference so a freshly-bound feeless poster's first post is not rejected by
@@ -126,21 +126,21 @@ pub mod pallet {
         StorageMap<_, Blake2_128Concat, T::AccountId, IdentityHash, OptionQuery>;
 
     /// Reverse map: 32-byte Cardano identity hash → the one posting account it is bound to. The
-    /// client's bind readback queries this by the 32-byte key (DR-01). Load-bearing for the 1:1
+    /// client's bind readback queries this by the 32-byte key. Load-bearing for the 1:1
     /// invariant: a second account cannot claim an already-bound identity.
     #[pallet::storage]
     pub type AccountOf<T: Config> =
         StorageMap<_, Blake2_128Concat, IdentityHash, T::AccountId, OptionQuery>;
 
     /// Optional cogno_v3 thread pointer (5 raw bytes / 10 hex chars — `ConstU32<10>`, **never**
-    /// `<4>`, DR-23) bound to a posting account, for joining the live cogno_v3 forum. Kept in the
+    /// `<4>`) bound to a posting account, for joining the live cogno_v3 forum. Kept in the
     /// on-wire interface even though the v1 UX may defer the thread join — a settled field is not
     /// silently dropped.
     #[pallet::storage]
     pub type ThreadOf<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, BoundedVec<u8, ConstU32<10>>, OptionQuery>;
 
-    /// Permanently-banned identities — the manual-operator-ban tombstone (DR-14). [`Call::revoke`]
+    /// Permanently-banned identities — the manual-operator-ban tombstone. [`Call::revoke`]
     /// inserts here; the permissionless [`Call::link_identity_signed`] refuses to (re)bind a tombstoned
     /// identity, so an eternally-valid CIP-8 proof replayed after a ban does NOT resurrect the binding.
     /// Never removed (a tombstone is permanent — your "ban means ban" decision).
@@ -172,15 +172,15 @@ pub mod pallet {
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        /// A Cardano identity was bound 1:1 to a posting account (the D0 per-bind audit record,
-        /// DR-07). `identity` is `blake2b_256(serialized owner Address)`.
+        /// A Cardano identity was bound 1:1 to a posting account — the per-bind audit record.
+        /// `identity` is `blake2b_256(serialized owner Address)`.
         IdentityLinked {
             who: T::AccountId,
             identity: IdentityHash,
         },
-        /// A binding was revoked (the v1 manual-operator-ban path, DR-14). The provider ref is
+        /// A binding was revoked (the manual-operator-ban path). The provider ref is
         /// released and the banked capacity zeroed; the capacity row itself is kept (relock-farm
-        /// guard) — see [`pallet_microblog::OnIdentityBind::on_revoke`] (gate-1).
+        /// guard) — see [`pallet_microblog::OnIdentityBind::on_revoke`].
         Revoked {
             who: T::AccountId,
             identity: IdentityHash,
@@ -201,7 +201,7 @@ pub mod pallet {
         /// This Cardano identity is already bound to an account (1:1, identity side). Named
         /// `PkhAlreadyBound` for cross-doc continuity; the key is the 32-byte Address hash.
         PkhAlreadyBound,
-        /// The supplied thread pointer exceeded 10 bytes (5 raw bytes / 10 hex chars, DR-23).
+        /// The supplied thread pointer exceeded 10 bytes (5 raw bytes / 10 hex chars).
         BadThread,
         /// No binding exists for this account (revoke target not found).
         NotBound,
@@ -245,10 +245,10 @@ pub mod pallet {
         /// too (not only at dispatch). A bind grants NOTHING actionable on its own (talk-capacity and voting
         /// power come from observed Cardano stake keyed on the bound credential), so flooding empty binds
         /// buys an attacker no posting/voting amplification — only the per-block-weight-bounded cost of the
-        /// `ed25519` verify it forces. See the PR's DoS analysis.
+        /// `ed25519` verify it forces. See docs/TRUSTLESS-IDENTITY.md.
         ///
-        /// ⚠ The verifier is the anti-Sybil crown jewel — a bug forges any identity. It is hardened by an
-        /// adversarial threat-model + tests but has NOT had a formal external audit:
+        /// ⚠ The verifier is the anti-Sybil crown jewel — a bug forges any identity. Its invariants are
+        /// pinned by the negative tests in [`cip8`], but it has NOT had a formal external audit:
         /// **MAINNET PREREQUISITE — independent verifier audit** before real value.
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::link_identity_signed())]
@@ -296,7 +296,7 @@ pub mod pallet {
             Self::do_bind_stake(&account, stake_credential)
         }
 
-        /// Revoke an account's binding (the v1 manual-operator-ban path, DR-14). Gated by
+        /// Revoke an account's binding (the manual-operator-ban path). Gated by
         /// `FollowerOrigin`. Removes both directional maps + the thread pointer, so `is_allowed`
         /// flips to `false` and the account can no longer post.
         ///
@@ -335,7 +335,7 @@ pub mod pallet {
                 TombstonedStakeCred::<T>::insert(stake_cred, ());
                 log::debug!(target: LOG_TARGET, "revoke: stake credential unbound + tombstoned (ban-the-key)");
             }
-            // Symmetric teardown (gate-1): release the provider ref taken at bind + zero the banked
+            // Symmetric teardown: release the provider ref taken at bind + zero the banked
             // capacity, while microblog KEEPS the (relock-safe) capacity row. NOTE: `on_revoke` is
             // infallible today; if it is ever made fallible, an Err here would leak the bind/revoke
             // provider-ref symmetry (the count stays incremented) — it MUST be error-checked then.
@@ -428,7 +428,7 @@ pub mod pallet {
             identity: IdentityHash,
             thread_pointer: Option<Vec<u8>>,
         ) -> DispatchResult {
-            // A permanently-banned (revoked) identity can never be re-bound (the tombstone, DR-14).
+            // A permanently-banned (revoked) identity can never be re-bound (the tombstone).
             ensure!(
                 !Tombstoned::<T>::contains_key(identity),
                 Error::<T>::IdentityTombstoned
@@ -516,7 +516,7 @@ pub mod pallet {
             PkhOf::<T>::contains_key(who)
         }
 
-        /// Benchmark-only (DR-05): bind `who` to a dummy identity so `microblog::post_message`
+        /// Benchmark-only: bind `who` to a dummy identity so `microblog::post_message`
         /// can be benchmarked through the real gate. Writes only the forward map (`PkhOf`, which
         /// `is_allowed` reads) — NOT `AccountOf` — so repeated calls with the same dummy hash do
         /// not trip the 1:1 reverse-side invariant across benchmark iterations.
