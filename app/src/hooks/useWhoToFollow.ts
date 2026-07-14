@@ -5,6 +5,7 @@
 // reader can't serve it (the surface then omits the section).
 
 import { useEffect, useMemo, useState } from "react";
+import { useBlockedSet } from "@/lib/blockStore";
 import type { FeedSource } from "@/lib/feed/source";
 import type { Ss58, Suggestion } from "@/lib/types";
 
@@ -62,9 +63,14 @@ export function useWhoToFollow(
     };
   }, [source, who]);
 
+  // A blocked account never appears as a suggestion (hard suppression, viewer-side).
+  const blocked = useBlockedSet(who);
   const suggestions = useMemo(
-    () => raw.filter((s) => s.author !== who && !following.has(s.author)).slice(0, limit),
-    [raw, following, who, limit],
+    () =>
+      raw
+        .filter((s) => s.author !== who && !following.has(s.author) && !blocked.has(s.author))
+        .slice(0, limit),
+    [raw, following, blocked, who, limit],
   );
 
   return { suggestions, loading };

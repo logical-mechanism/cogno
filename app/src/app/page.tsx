@@ -33,6 +33,7 @@ import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
+import { useFollow } from "@/hooks/useFollow";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
@@ -116,6 +117,7 @@ export default function HomePage() {
   // ── write hooks ────────────────────────────────────────────────────────────────────────────────
   const vote = useVote(api, signer, votingPower ?? 0n);
   const { pin } = usePinPost(api, signer);
+  const follow = useFollow(api, signer, source, me);
   const { addPending, failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
@@ -220,7 +222,7 @@ export default function HomePage() {
   );
 
   // ── per-card action bundle ─────────────────────────────────────────────────────────────────────
-  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast, follow });
 
   const composeState: ActionState = "idle"; // inline composer clears optimistically; per-tx state lives on the card
 

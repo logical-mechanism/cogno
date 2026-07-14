@@ -228,4 +228,9 @@ export interface PostActionCallbacks {
   /** Pin one of YOUR OWN posts to your profile (own-post overflow menu only). Optional: a surface
    *  that doesn't wire it simply shows no pin item. */
   onPin?: (post: CognoPost) => void;
+  /** Is the viewer following `target`? Supplied (with onToggleFollow) by surfaces that wire the shared
+   *  useFollow, so the ··· menu can show Follow/Unfollow. Omitted → no follow item. */
+  isFollowing?: (target: Ss58) => boolean;
+  /** Follow/unfollow the post author from the ··· menu (a chain write; gated on writeReady). */
+  onToggleFollow?: (target: Ss58, next: boolean) => void;
 }

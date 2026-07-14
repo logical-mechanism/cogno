@@ -27,6 +27,8 @@ import { PostCardActions } from "./PostCardActions";
 import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
 import { useMuted, muteActionsFor } from "@/lib/muteStore";
+import { useBlocked, blockActionsFor } from "@/lib/blockStore";
+import { useHidden, hiddenActionsFor } from "@/lib/hiddenStore";
 import { useBookmarked, bookmarkActionsFor } from "@/lib/bookmarkStore";
 import { useToaster } from "./toast/ToasterProvider";
 import type {
@@ -124,6 +126,10 @@ export function PostCard({
   const me = gate.status === "ready" ? (gate.address ?? null) : null;
   // Client-local mute (device-only, no chain state): collapse another account's posts everywhere.
   const muted = useMuted(post.author, me);
+  // Client-local block (device-only): HARD-suppress the author — a stub here, removed from every list.
+  const blocked = useBlocked(post.author, me);
+  // Client-local hide (device-only): drop THIS one post from every list (still reachable by permalink).
+  const hidden = useHidden(post.id, me);
   // Client-local bookmark (device-only, no chain state): save any post to the /bookmarks shortlist.
   const bookmarked = useBookmarked(post.id, me);
   // Bookmarking lives only in the ··· menu (which closes on select) → toast so the save is confirmed,
@@ -151,14 +157,76 @@ export function PostCard({
     });
     if (!isOwnPost) {
       const handle = handleOf(post.author);
+      // Follow / unfollow the author — a CHAIN write, so it's wired through the shared handlers bundle
+      // (one useFollow per surface, not per card). Shown only where the surface supplies it.
+      if (handlers.onToggleFollow && handlers.isFollowing) {
+        const following = handlers.isFollowing(post.author);
+        items.push({
+          id: "follow",
+          label: following ? `Unfollow ${handle}` : `Follow ${handle}`,
+          onSelect: () => handlers.onToggleFollow!(post.author, !following),
+        });
+      }
+      // Hide THIS post (device-local): a "not this one" dismissal, undoable here or in Settings.
+      items.push({
+        id: "hide",
+        label: hidden ? "Unhide post" : "Hide post",
+        onSelect: () => {
+          hiddenActionsFor(me).toggle(post.id);
+          toast(
+            hidden
+              ? { kind: "info", message: "Post unhidden" }
+              : { kind: "success", message: "Post hidden" },
+          );
+        },
+      });
       items.push({
         id: "mute",
         label: muted ? `Unmute ${handle}` : `Mute ${handle}`,
         onSelect: () => muteActionsFor(me).toggle(post.author),
       });
+      // Block (device-local hard suppression) — the danger action, last.
+      items.push({
+        id: "block",
+        label: blocked ? `Unblock ${handle}` : `Block ${handle}`,
+        danger: !blocked,
+        onSelect: () => {
+          blockActionsFor(me).toggle(post.author);
+          toast(
+            blocked
+              ? { kind: "info", message: `Unblocked ${handle}` }
+              : { kind: "success", message: `Blocked ${handle}` },
+          );
+        },
+      });
     }
     return items.length > 0 ? items : undefined;
-  }, [pending, isOwnPost, handlers, post, muted, bookmarked, toast, me]);
+  }, [pending, isOwnPost, handlers, post, muted, blocked, hidden, bookmarked, toast, me]);
+
+  // A blocked author is a HARD suppression: lists strip the post before it reaches here (useModeration),
+  // so this branch only fires where a card is rendered directly — the detail focal / a permalink. No
+  // "Show" (that is mute); the only way back is Unblock. Block wins over mute when both are set.
+  if (blocked && !isOwnPost && !pending) {
+    return (
+      <article
+        className={[styles.card, styles[variant], styles.mutedRow, showThreadLine ? styles.threadLine : ""]
+          .filter(Boolean)
+          .join(" ")}
+        data-post-id={String(post.id)}
+      >
+        <div className={styles.mutedStub}>
+          <span className={styles.mutedText}>You&apos;ve blocked this account</span>
+          <button
+            type="button"
+            className={styles.mutedShow}
+            onClick={() => blockActionsFor(me).unblock(post.author)}
+          >
+            Unblock
+          </button>
+        </div>
+      </article>
+    );
+  }
 
   // A muted author's post collapses to a "Show" stub everywhere EXCEPT the detail focal (you opened it
   // on purpose). Revealing is local + reversible; the full card keeps its "Unmute" in the ··· menu.
