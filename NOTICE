@@ -151,15 +151,15 @@ source files says otherwise:
     // SPDX-License-Identifier: Apache-2.0
 
 The metadata is an upstream packaging slip, not a deliberate relicense. The
-crate's manifest declares `license.workspace = true`, inheriting the
-polkadot-sdk workspace default of `GPL-3.0-only`; 238 crates under `substrate/`
-explicitly override that default and 15 — including this one — forget to. Its
-own directory siblings, `transaction-payment` and `transaction-payment/asset-
-tx-payment`, both override it correctly.
+crate's manifest declares `license.workspace = true`, inheriting the polkadot-sdk
+workspace default of `GPL-3.0-only`; 310 crates under `substrate/` explicitly
+override that default, and 15 — including this one — do not. Its own directory
+siblings, `transaction-payment` and `transaction-payment/asset-tx-payment`, both
+override it correctly. (Counts are against polkadot-sdk stable2606, the pinned
+train.)
 
-We read the Apache-2.0 file headers as the operative grant, and have reported
-the manifest bug upstream. We are flagging it here rather than quietly relying
-on it, because it is the kind of thing you would rather hear from us than
-discover from `cargo metadata`. If your own compliance process needs the
-manifest and the headers to agree, this is the one place in the tree where they
-do not.
+We read the Apache-2.0 file headers as the operative grant. We are flagging it
+here rather than quietly relying on it, because it is the kind of thing you would
+rather hear from us than discover from `cargo metadata`. If your own compliance
+process needs the manifest and the headers to agree, this is the one place in the
+tree where they do not.
