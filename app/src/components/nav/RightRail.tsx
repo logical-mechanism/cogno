@@ -114,10 +114,21 @@ export function RightRail() {
       )}
 
       <footer className={styles.footer}>
-        <ThemeToggle withLabel />
-        <Link href="/settings/" className={styles.about}>
-          About &amp; settings
-        </Link>
+        <div className={styles.footerRow}>
+          <ThemeToggle withLabel />
+          <Link href="/settings/" className={styles.about}>
+            About &amp; settings
+          </Link>
+        </div>
+        <nav className={styles.footerLinks} aria-label="Legal">
+          <Link href="/legal/" className={styles.about}>
+            Legal
+          </Link>
+          <span aria-hidden="true">·</span>
+          <Link href="/privacy/" className={styles.about}>
+            Privacy
+          </Link>
+        </nav>
       </footer>
     </aside>
   );

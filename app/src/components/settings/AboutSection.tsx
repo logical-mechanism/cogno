@@ -5,7 +5,7 @@
 
 import styles from "./AboutSection.module.css";
 
-const SOURCE_URL = "https://github.com/logicalmechanism/cogno-chain";
+const SOURCE_URL = "https://github.com/logical-mechanism/cogno";
 
 export function AboutSection() {
   return (
