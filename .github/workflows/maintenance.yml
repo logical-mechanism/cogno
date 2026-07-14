@@ -134,41 +134,61 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          # Build BOTH stages. `off` is staged even on an `on` run, because the verify step needs it to
-          # disarm if it cannot confirm the flag took effect.
+          # Two stages, and they are NOT symmetric.
+          #
+          #   arm  = {index.html, ON}   rsynced with --delete
+          #   lift = {}                 rsynced with --delete --exclude=index.html
+          #
+          # The lift stage is EMPTY, and that is the point: --delete then removes ON and nothing else, while
+          # --exclude=index.html protects the page already on the box (an excluded path is protected from
+          # --delete on the receiver). So lifting depends on no file, reads no file, and cannot be blocked by
+          # one. That matters more than it looks: a lift that aborts leaves every visitor staring at a 503,
+          # and the last thing that should be able to cause it is a problem with the page it is not serving.
           on_dir="$RUNNER_TEMP/stage-on"; off_dir="$RUNNER_TEMP/stage-off"
           install -d "$on_dir" "$off_dir"
-          install -m 0644 deploy/maintenance/index.html "$on_dir/index.html"
-          install -m 0644 deploy/maintenance/index.html "$off_dir/index.html"
-
-          # 0644, because nginx's worker really does open() this one (unlike the flag, which it only stats).
-          # And it must be non-empty: the stage is rsynced with --delete, so an empty/absent page would not
-          # just render badly — it would DELETE the live page from the droplet, and a set flag with no page
-          # behind it serves nginx's built-in 503 instead of ours.
-          test -s "$on_dir/index.html" || { echo "::error::deploy/maintenance/index.html is missing or empty"; exit 1; }
-
-          # Stamp the flag with who armed it and when. The file's CONTENTS are never read by nginx (`-f` is
-          # a stat), so this costs nothing — but it means the box itself records the answer to "how long has
-          # this been on, and who did it", which is the question you will actually have.
-          printf 'armed %s by %s (run %s/actions/runs/%s)\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_ACTOR" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
-            > "$on_dir/ON"
-
-          [ "$STATE" = on ] && src="$on_dir" || src="$off_dir"
           echo "STAGE_OFF=$off_dir" >> "$GITHUB_ENV"
 
-          # ONE rsync, and --delete is the load-bearing flag: on `off` it is what removes ON. (On `on` there
-          # is nothing to delete — the stage is a strict superset of what is there.) No remote shell command
-          # anywhere in this workflow, which is what keeps it compatible with an rrsync-jailed deploy key.
-          if ! rsync -az --delete \
+          # Everything below is arming-only. `off` needs none of it.
+          if [ "$STATE" = on ]; then
+            # 0644 because nginx's worker really does open() this one (unlike the flag, which it only stats).
+            # Non-empty, because the arm stage IS rsynced with --delete: an empty page would not merely render
+            # badly, it would DELETE the live page, and a flag with no page behind it serves nginx's built-in
+            # beige 503 instead of ours.
+            install -m 0644 deploy/maintenance/index.html "$on_dir/index.html"
+            test -s "$on_dir/index.html" || { echo "::error::deploy/maintenance/index.html is missing or empty"; exit 1; }
+
+            # Stamp the flag with who armed it and when. nginx never reads the CONTENTS (`-f` is a stat), so
+            # this is free — but it means the box itself records the answer to "how long has this been on, and
+            # who did it", which is the question you will actually be asking.
+            printf 'armed %s by %s (run %s/actions/runs/%s)\n' \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_ACTOR" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
+              > "$on_dir/ON"
+            src="$on_dir"; extra=()
+          else
+            src="$off_dir"; extra=(--exclude=index.html)
+          fi
+
+          # ONE rsync. No remote shell command anywhere in this workflow — that is what keeps the toggle
+          # compatible with a deploy key jailed behind a forced `command="rrsync -wo …"`.
+          if ! rsync -az --delete "${extra[@]}" \
                  -e 'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' \
                  "$src/" "$DEPLOY_USER@$DEPLOY_HOST:/var/www/cogno-maintenance/"; then
-            echo "::error::could not write /var/www/cogno-maintenance/ on the droplet — NOTHING WAS CHANGED."
-            echo "::error::/var/www is root-owned, so the deploy user cannot create that directory itself."
-            echo "::error::If this is the first run, do the one-time setup (deploy/README.md, 'Maintenance mode'):"
-            echo "::error::  sudo install -d -o <deploy-user> -g <deploy-user> -m 0755 /var/www/cogno-maintenance"
-            echo "::error::  sudo install -m 0644 deploy/nginx/maintenance.conf /etc/nginx/maintenance.conf"
-            echo "::error::  # then copy deploy/nginx/cogno.conf over and: nginx -t && systemctl reload nginx"
+            echo "::error::could not write /var/www/cogno-maintenance/ on the droplet."
+            if [ "$STATE" = on ]; then
+              echo "::error::NOTHING WAS CHANGED — the site is still live and unparked."
+              echo "::error::/var/www is root-owned, so the deploy user cannot create that directory itself."
+              echo "::error::If this is the first run, do the one-time setup (deploy/README.md, 'Maintenance mode'):"
+              echo "::error::  sudo install -d -o <deploy-user> -g <deploy-user> -m 0755 /var/www/cogno-maintenance"
+              echo "::error::  sudo install -m 0644 deploy/nginx/maintenance.conf /etc/nginx/maintenance.conf"
+              echo "::error::  # then copy deploy/nginx/cogno.conf over and: nginx -t && systemctl reload nginx"
+            else
+              # The bad one. The flag is untouched, so the site is STILL PARKED and every visitor is still
+              # getting a 503 — and the operator came here to end that. Do not send them to a setup runbook.
+              echo "::error::THE SITE IS STILL IN MAINTENANCE. The flag was not removed, and every visitor is"
+              echo "::error::still being served the maintenance page. Lift it by hand — it takes effect on the"
+              echo "::error::very next request, and there is nothing to reload:"
+              echo "::error::  ssh <deploy-user>@<droplet> 'rm -f /var/www/cogno-maintenance/ON'"
+            fi
             exit 1
           fi
           echo "switch thrown: state=$STATE"
@@ -248,6 +268,18 @@ jobs:
           }
           is_200() { [ "$1" = 200 ]; }
 
+          # Is the relay answering through nginx? Leaves the response in $rpc for the caller's message. Both
+          # states ask this — arming, to assert the /rpc carve-out really held; lifting, because HTML serving
+          # again does NOT mean the site works, and a relay that never came back means every visitor gets a
+          # shell wired to nothing.
+          rpc=""
+          rpc_up() {
+            rpc=$(curl -sS -m 10 "${resolve[@]}" -H 'Content-Type: application/json' \
+                    -d '{"jsonrpc":"2.0","id":1,"method":"system_health","params":[]}' \
+                    "https://$HOST_NAME/rpc" 2>/dev/null || true)
+            case "$rpc" in *'"peers"'*) return 0 ;; *) return 1 ;; esac
+          }
+
           # Deliberately NOT interpolating $DEPLOY_USER / $DEPLOY_HOST into any guidance below. They are
           # `secrets.*`, and GitHub's log masker replaces every occurrence of a secret's VALUE with `***` —
           # so the single most important line in this file would render as `ssh ***@*** 'rm -f …'`. (And if
@@ -268,7 +300,11 @@ jobs:
               # `nginx -t && systemctl reload` — including the one certbot runs unattended, twice a day —
               # would take the site dark hours later, from a flag nobody remembers writing, with no workflow
               # run to attribute it to.
-              rsync -az --delete -e 'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' \
+              # Same shape as the lift: an EMPTY stage, so --delete removes ON, and --exclude=index.html
+              # protects the page (an excluded path is protected from --delete on the receiver). Drop the
+              # exclude and this would delete the page along with the flag, leaving the next arm to serve
+              # nginx's built-in 503.
+              rsync -az --delete --exclude=index.html -e 'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' \
                 "$STAGE_OFF/" "$DEPLOY_USER@$DEPLOY_HOST:/var/www/cogno-maintenance/" \
                 && disarmed=yes || disarmed=no
               echo "::error::THE FLAG WAS WRITTEN BUT THE SITE IS NOT IN MAINTENANCE."
@@ -294,17 +330,14 @@ jobs:
               exit 1
             fi
 
-            # The carve-out, asserted rather than assumed: /rpc must survive a window, or `cogno-chain-cli`
-            # and deploy-node's own final health check both break. A warning, not a failure — the relay being
-            # down is a real thing to know, but it is not a reason to refuse to take the site down.
-            rpc=$(curl -sS -m 10 "${resolve[@]}" -H 'Content-Type: application/json' \
-                    -d '{"jsonrpc":"2.0","id":1,"method":"system_health","params":[]}' \
-                    "https://$HOST_NAME/rpc" 2>/dev/null || true)
-            case "$rpc" in
-              *'"peers"'*) echo "RPC is still up, as intended: /rpc -> $rpc" ;;
-              *) echo "::warning::/rpc is not answering (${rpc:-<no response>}). Maintenance mode does not"
-                 echo "::warning::touch it, so the relay itself is down or nginx cannot reach it." ;;
-            esac
+            # The carve-out, asserted rather than assumed. A warning, not a failure — a down relay is a real
+            # thing to know, but it is not a reason to refuse to take the site down.
+            if rpc_up; then
+              echo "RPC is still up, as intended: /rpc -> $rpc"
+            else
+              echo "::warning::/rpc is not answering (${rpc:-<no response>}). Maintenance mode does not touch"
+              echo "::warning::it, so the relay itself is down or nginx cannot reach it."
+            fi
             echo "::notice::Site is in maintenance. Remember to run this workflow again with state=off."
 
           else
@@ -325,9 +358,9 @@ jobs:
             #   2. the site does not answer 200 — you ARE out, but something else on the box is broken.
             #
             # Everything after those two is a warning, no matter how bad it looks. `force` skips even these.
-            # A clean 200 first time needs no second opinion; anything else gets re-probed, so that a single
-            # transport blip cannot turn a perfectly good lift red.
-            [ "$code" = 200 ] || settled is_200 || true
+            # settled() retries, so a single transport blip cannot turn a perfectly good lift red; `|| true`
+            # because a genuine "still parked" or "not serving" is diagnosed below, not here.
+            settled is_200 || true
 
             if is_maintenance "$code"; then
               echo "::error::THE SITE IS STILL IN MAINTENANCE — the flag did not come off."
@@ -370,17 +403,13 @@ jobs:
               echo "SPA shell OK: documents and RSC payloads both resolve."
             fi
 
-            # The check that matters most on the way out, and the one nothing else performs: HTML serving
-            # again does NOT mean the site works. If the relay did not come back from whatever you just did,
-            # every visitor gets a shell that connects to nothing.
-            rpc=$(curl -sS -m 10 "${resolve[@]}" -H 'Content-Type: application/json' \
-                    -d '{"jsonrpc":"2.0","id":1,"method":"system_health","params":[]}' \
-                    "https://$HOST_NAME/rpc" 2>/dev/null || true)
-            case "$rpc" in
-              *'"peers"'*) echo "RPC OK: /rpc -> $rpc" ;;
-              *) echo "::warning::THE SITE IS BACK BUT THE RELAY IS NOT ANSWERING (${rpc:-<no response>})."
-                 echo "::warning::Visitors will get an empty shell that loads nothing. The app is fine; the node"
-                 echo "::warning::is not. Look at it before you call this done:"
-                 echo "::warning::  ssh <deploy-user>@<droplet> 'journalctl -u cogno-relay -n 100 --no-pager'" ;;
-            esac
+            # The check that matters most on the way out, and the one nothing else in this project performs.
+            if rpc_up; then
+              echo "RPC OK: /rpc -> $rpc"
+            else
+              echo "::warning::THE SITE IS BACK BUT THE RELAY IS NOT ANSWERING (${rpc:-<no response>})."
+              echo "::warning::Visitors will get an empty shell that loads nothing. The app is fine; the node"
+              echo "::warning::is not. Look at it before you call this done:"
+              echo "::warning::  ssh <deploy-user>@<droplet> 'journalctl -u cogno-relay -n 100 --no-pager'"
+            fi
           fi
