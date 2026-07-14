@@ -14,11 +14,27 @@ import { AppShell } from "@/components/AppShell";
 void FONTS_LOADED;
 
 export const metadata: Metadata = {
-  title: "cogno-chain",
+  title: "cogno",
   description:
     "Post text, read text. A feeless social chain where posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
-  applicationName: "cogno-chain",
+  applicationName: "cogno",
   robots: { index: false, follow: false },
+  // The tab icon is 😭 (U+1F62D), rasterized from Noto Color Emoji. The three files are App Router
+  // metadata-file conventions — Next discovers `icon.png` / `apple-icon.png` / `favicon.ico` sitting next
+  // to this layout and emits the <link> tags itself, so there is nothing to declare here. They live in
+  // src/app/ rather than public/ for exactly that reason; moving them to public/ would silently drop the
+  // tags (the file would still be served, and only /favicon.ico would still be found — by convention, not
+  // by markup).
+  //
+  // openGraph is what a link to a post looks like when it is pasted into a chat or another social app.
+  // Without it, the unfurl falls back to a bare URL. `robots: noindex` above governs SEARCH indexing and
+  // does not suppress unfurls, so this is worth setting even on a noindex origin.
+  openGraph: {
+    type: "website",
+    siteName: "cogno",
+    title: "cogno",
+    description: "Post text, read text.",
+  },
   // Emit <meta name="referrer" content="no-referrer"> as an app-wide default: no request the app makes
   // ever sends a Referer header disclosing which post/profile the viewer is on. The remote <img>s (post
   // images / avatars / banners) already set referrerPolicy="no-referrer" individually and external links
@@ -34,7 +50,14 @@ export const viewport: Viewport = {
 // Pre-paint theme boot: read localStorage['cg-theme'] (default 'dark') and set
 // document.documentElement.dataset.theme BEFORE first paint, so there is no theme flash. Mirrors
 // useTheme()'s storage key + default; kept as a tiny inline string so it runs synchronously in <head>.
-const THEME_BOOT = `(function(){try{var t=localStorage.getItem('cg-theme');if(t!=='light'&&t!=='dark')t='dark';document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='dark';}})();`;
+//
+// It also stamps <meta name="theme-color"> — the colour a mobile browser paints its own chrome (the
+// address bar, the status bar) with. That has to happen HERE, from the same variable, and cannot be a
+// static `viewport.themeColor`: the theme is chosen in localStorage, not from the OS, so the usual
+// `prefers-color-scheme` media form would give a light-mode visitor on a dark OS a black status bar above
+// a white page. The meta tag is created rather than looked up so it does not depend on whether Next has
+// already emitted its own head tags at this point in the parse.
+const THEME_BOOT = `(function(){var t='dark';try{var s=localStorage.getItem('cg-theme');if(s==='light'||s==='dark')t=s;}catch(e){}document.documentElement.dataset.theme=t;var m=document.createElement('meta');m.name='theme-color';m.content=t==='light'?'#ffffff':'#000000';document.head.appendChild(m);})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

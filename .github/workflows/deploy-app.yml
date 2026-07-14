@@ -9,6 +9,12 @@ name: deploy-app
 # committed app/.papi/metadata/cogno.scale — so this builds from source with no dependency on the node
 # binary. Its sibling deploy-node.yml ships the node binary to the same box.
 #
+# Deploying while the site is parked behind the maintenance page (Actions -> maintenance -> state: on) is
+# a normal, intended thing to do — it is most of the reason maintenance mode exists. The bundle ships as
+# usual; the only difference is that the SPA-shell smoke check at the end SKIPS with a warning, because
+# every URL it probes answers 503 by design. Those checks then run when you take the site back out
+# (state: off). See deploy/README.md, "Maintenance mode".
+#
 # Requires, in repo Settings → Secrets and variables → Actions:
 #   vars.NEXT_PUBLIC_WS_URL                    wss://cogno.forum/rpc  (a Variable; the build refuses non-wss)
 #   secrets.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID  preprod project id     (inlined into the bundle by design;
@@ -97,6 +103,12 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      # `--delete` prunes anything on the droplet that is not in this build — which is what keeps stale
+      # chunks from outliving the bundle that named them. It is also why the maintenance switch
+      # (/var/www/cogno-maintenance/ON) lives OUTSIDE this docroot, in its own directory. Do not "tidy" it
+      # in here: this rsync would delete the flag, and since deploying the app is the thing you are most
+      # likely to do DURING a maintenance window, the site would silently come back up in the middle of it.
+      # A separate directory makes that impossible. See deploy/nginx/maintenance.conf.
       - name: rsync out/ -> /var/www/cogno
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -120,25 +132,81 @@ jobs:
           origin="$(printf '%s' "$NEXT_PUBLIC_WS_URL" | sed -E 's#^wss://([^/]+).*#https://\1#')"
           addr=5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
           fail=0
-          # `|| true`: curl exits non-zero on a connection/TLS failure (an HTTP 404 still exits 0), and
-          # this step runs under `bash -e` — without it the step would die on the raw curl status and
-          # never print the guidance below, which is the whole point of the check.
-          probe() { curl -sS --retry 3 --retry-delay 2 -o /dev/null -w "$1" "$2" || true; }
+          hdr="$RUNNER_TEMP/h"; body="$RUNNER_TEMP/b"
+
+          # Is the site parked behind the maintenance page? Then every URL below answers 503 and this check
+          # cannot run. Deploying the app while the site is parked is a NORMAL, intended thing to do — it is
+          # most of the reason maintenance mode exists — so that is a skip, not a failure.
+          #
+          # This gets its OWN curl, with NO --retry, and that is the whole reason it is a separate function.
+          # The maintenance page sets `Retry-After: 120` (deploy/nginx/cogno.conf), and curl OBEYS a
+          # server-sent Retry-After IN PREFERENCE TO --retry-delay — verified on curl 8.5.0, the runner's
+          # version: `--retry 2 --retry-delay 1` against a 503 carrying `Retry-After: 6` slept 12s, not 2s.
+          # Probing a parked site with `--retry 3` therefore burns ~SIX MINUTES on one URL, and this job's
+          # timeout is 15. The retrying probe() below must never be the thing that first meets a 503.
+          #
+          # `-o "$body"`, never /dev/null: curl truncates the output sink to rewind for a retry, /dev/null
+          # cannot be truncated, and curl then dies with CURLE_WRITE_ERROR while `-w` prints nothing at all.
+          # `|| true`, never `|| echo 000`: `-w '%{http_code}'` already prints `000` itself on a transport
+          # failure, so `|| echo 000` CONCATENATES into `000000` (or `503000` when the transfer dies after the
+          # headers land) and compares equal to nothing.
+          #
+          # Status AND header AND body marker, all three, every time this is asked. A bare 503 is ambiguous
+          # (nginx emits one of its own when the page is missing; so does an overloaded upstream), and the
+          # header is set by nginx even when the page failed to render. Only the body marker proves our page
+          # actually rendered. Waving a genuinely broken site through as "in maintenance" is the failure this
+          # closes — so all three, in both places it is called.
+          in_maintenance() {
+            local c
+            c=$(curl -sS --max-time 20 -D "$hdr" -o "$body" -w '%{http_code}' "$origin/" 2>/dev/null || true)
+            [ "$c" = 503 ] \
+              && grep -qi '^x-cogno-maintenance:' "$hdr" \
+              && grep -qF 'cogno-maintenance-page-v1' "$body"
+          }
+
+          # The 200-expecting probes. --retry survives a transient blip, but is BOUNDED — if maintenance is
+          # armed mid-loop these meet the same Retry-After: 120. Content-type comes from -w, not from a header
+          # file: curl APPENDS a header block per retry attempt rather than truncating, so grepping the file
+          # could read attempt 1's headers and judge attempt 3's status.
+          probe() {
+            curl -sS --retry 3 --retry-delay 2 --retry-max-time 30 --max-time 20 \
+                 -o "$body" -w '%{http_code} %{content_type}' "$1" 2>/dev/null || true
+          }
+
+          if in_maintenance; then
+            echo "::warning::THE SITE IS IN MAINTENANCE MODE. The new bundle shipped to /var/www/cogno and is"
+            echo "::warning::in place, but it is NOT being served to anyone, and the SPA-shell smoke check below"
+            echo "::warning::could not run (every URL answers 503 by design)."
+            echo "::warning::Take the site back out and the checks run there: Actions -> maintenance -> state: off."
+            exit 0
+          fi
+
           for url in "$origin/u/$addr/" "$origin/post/1/"; do
-            code=$(probe '%{http_code}' "$url")
-            [ "$code" = 200 ] || { echo "::error::deep-link document $url -> HTTP ${code:-<no response>} (want 200)"; fail=1; }
+            read -r code _ <<<"$(probe "$url")"
+            [ "$code" = 200 ] || { echo "::error::deep-link document $url -> HTTP $code (want 200)"; fail=1; }
           done
           for url in "$origin/u/$addr/index.txt" "$origin/post/1/index.txt"; do
-            read -r code ctype <<<"$(probe '%{http_code} %{content_type}' "$url")"
+            read -r code ctype <<<"$(probe "$url")"
             case "$code:$ctype" in
               200:text/plain*) ;;
-              *) echo "::error::RSC payload $url -> HTTP ${code:-<no response>} (${ctype:-none}); want 200 text/plain"; fail=1 ;;
+              *) echo "::error::RSC payload $url -> HTTP $code (${ctype:-no content-type}); want 200 text/plain"; fail=1 ;;
             esac
           done
           if [ "$fail" = 1 ]; then
+            # Before blaming nginx, rule out the race: maintenance can be armed in the seconds between the
+            # pre-flight above and here. Without this, the run would go red telling the operator to go edit and
+            # reload nginx on the live box — a confident, wrong diagnosis delivered mid-incident.
+            if in_maintenance; then
+              echo "::warning::maintenance mode was turned ON while this check was running. The bundle shipped;"
+              echo "::warning::the smoke check did not run. Re-run it via: Actions -> maintenance -> state: off."
+              exit 0
+            fi
             echo "::error::nginx is not serving the dynamic-route SPA shell's RSC payloads. Install the"
-            echo "::error::current deploy/nginx/cogno.conf on the droplet and reload:"
-            echo "::error::  cp deploy/nginx/cogno.conf /etc/nginx/sites-available/cogno.conf && nginx -t && systemctl reload nginx"
+            echo "::error::current deploy/nginx/cogno.conf on the droplet (re-apply your domain — the committed"
+            echo "::error::copy is a template that says cogno.example.io) and reload:"
+            echo "::error::  cp deploy/nginx/cogno.conf /etc/nginx/sites-available/cogno.conf"
+            echo "::error::  sed -i 's/cogno.example.io/<your-domain>/g' /etc/nginx/sites-available/cogno.conf"
+            echo "::error::  nginx -t && systemctl reload nginx"
             exit 1
           fi
           echo "SPA shell OK: both the document and the RSC payload resolve for /u/<addr>/ and /post/<id>/."
