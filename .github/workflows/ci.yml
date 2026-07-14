@@ -65,7 +65,7 @@ jobs:
       # supply-chain footgun. Every third-party action in this repo is SHA-pinned for the same reason —
       # only GitHub's own actions/* are taken on a major tag. The trailing comment is the version the
       # SHA was resolved from; it is a label, not the pin.
-      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
         with:
           # No `base:` — it is ignored on pull_request, and on push dorny already defaults to the commit
@@ -277,7 +277,7 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.12.0
           cache: npm
@@ -323,7 +323,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.12.0
           cache: npm

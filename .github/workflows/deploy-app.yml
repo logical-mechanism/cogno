@@ -45,7 +45,7 @@ jobs:
       # Checks out the ref you selected in "Run workflow" (defaults to the branch you launched from),
       # so you deploy exactly what you point at — main, a release tag, or a feature branch.
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.12.0
           cache: npm
