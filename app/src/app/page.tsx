@@ -205,6 +205,20 @@ export default function HomePage() {
   }, [activeTab, forYouRefresh, followingRefresh]);
   useEffect(() => subscribeHomeReset(onHomeReset), [onHomeReset]);
 
+  // Tapping a timeline tab refreshes that tab's feed and scrolls to the top — the Home-button gesture,
+  // scoped to the tab you clicked. It refreshes `next` (not the still-current `activeTab`, since setTab
+  // hasn't applied yet) and fires on every click, including re-tapping the tab you're already on. On a
+  // switch TO Following its refresh is a no-op (the query isn't enabled yet); the tab flip loads page 1.
+  const onTabChange = useCallback(
+    (next: TimelineTab) => {
+      setTab(next);
+      if (next === "following") followingRefresh();
+      else forYouRefresh();
+      scrollToTop();
+    },
+    [forYouRefresh, followingRefresh],
+  );
+
   // ── per-card action bundle ─────────────────────────────────────────────────────────────────────
   const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
 
@@ -233,7 +247,7 @@ export default function HomePage() {
       <StickyHeader
         title="Home"
         tabs={
-          <TimelineTabs active={activeTab} onChange={setTab} showFollowing={canFollow} />
+          <TimelineTabs active={activeTab} onChange={onTabChange} showFollowing={canFollow} />
         }
       />
 
