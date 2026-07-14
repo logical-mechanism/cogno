@@ -25,6 +25,10 @@ log = { workspace = true }
 # names profile, so profile -> microblog is one-directional (no Cargo cycle), exactly like cogno-gate.
 pallet-microblog = { workspace = true }
 scale-info = { features = ["derive"], workspace = true }
+# `TryRuntimeError`, named by the v1 migration's try-runtime hooks. It was a dev-dependency only, so the
+# hooks compiled under `cargo test` but NOT in a `--features try-runtime` runtime build — the very build
+# docs/UPGRADES.md requires before enacting a storage migration.
+sp-runtime = { workspace = true }
 
 [dev-dependencies]
 sp-core = { default-features = true, workspace = true }
@@ -41,6 +45,7 @@ std = [
 	"log/std",
 	"pallet-microblog/std",
 	"scale-info/std",
+	"sp-runtime/std",
 ]
 runtime-benchmarks = [
 	"frame-benchmarking/runtime-benchmarks",
@@ -52,4 +57,5 @@ try-runtime = [
 	"frame-support/try-runtime",
 	"frame-system/try-runtime",
 	"pallet-microblog/try-runtime",
+	"sp-runtime/try-runtime",
 ]

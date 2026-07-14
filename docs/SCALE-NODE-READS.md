@@ -72,7 +72,7 @@ only as a type seam, so the React layer never touches a concrete reader.
 
 There is **no capability detection** and no second read path. The old `FeedCaps` flags, the `nodeFeedApi`
 gate, and the keyed-storage fallback for a pre-`MicroblogApi` node were all deleted: the live chain is
-spec 203 and a pre-spec-120 cogno node cannot sync it, so every one of those branches was unreachable.
+spec 204 and a pre-spec-120 cogno node cannot sync it, so every one of those branches was unreachable.
 
 One fallback survives, in `thread()`: `nodeThread(…).catch(() => getThread(…))`. That is a **resilience**
 path, not a compatibility one — a viral post whose replies are enumerated in a single `state_call` can hit

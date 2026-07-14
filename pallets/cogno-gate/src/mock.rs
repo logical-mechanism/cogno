@@ -47,7 +47,6 @@ impl pallet_microblog::Config for Test {
     type BaseCost = ConstU128<100>;
     type PerByteCost = ConstU128<1>;
     type VoteCost = ConstU128<50>;
-    type RepostCost = ConstU128<30>;
     type FollowCost = ConstU128<30>;
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<32>;

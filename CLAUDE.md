@@ -28,8 +28,8 @@ scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 203 / tx_version 3**) |
-| `pallets/` | `microblog` (10), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 204 / tx_version 3**) |
+| `pallets/` | `microblog` (10, storage v5; repost retired — call_index 1 AND 6 permanently vacant), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; `MaxObserved` 1024, benchmarked `observe`, on-chain stall alarm), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand) |
 | `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`query weight` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
@@ -85,9 +85,24 @@ an agent needs:
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index;
   gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **203**); after a bump, regenerate PAPI descriptors:
+  `spec_version` (currently **204**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
+  (never the live chain):
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
-  Non-encoding changes (bounds, logging, tests) must **not** bump it.
+  Non-encoding changes (bounds, logging, tests) must **not** bump it. `transaction_version` moves ONLY on
+  a call-arg / `TxExtension` change — *removing* a call does not move it.
+  A bump is a **lockstep FE deploy**: `DESCRIPTOR_SPEC_VERSION` in `app/src/lib/chain/client.ts` must
+  match (`npm run lint` runs `scripts/check-spec.mjs` and fails on drift), and the deployed bundle
+  **blocks posting** against a chain whose `spec_version` differs from the one it was built against.
+- **Event/Error variant indices are on-wire too — SCALE indexes enum variants by DECLARATION ORDER.**
+  Deleting a variant silently shifts every one below it. Every microblog + observer Event/Error variant
+  now carries an explicit `#[codec(index = N)]` pinning its current value; retired ones (microblog event
+  6 `Reposted`, error 5 `AlreadyReposted`) leave a permanent GAP. Never insert into a gap, never reorder,
+  always pin a new variant. Same rule as pallet/call indices.
+- **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
+  never runs: the on-chain `StorageVersion` stays put while the code declares the new one, and
+  `post_upgrade` never fires. Before enacting, run the `try-runtime` dry-run against live state that
+  docs/UPGRADES.md prescribes — `--features try-runtime` compiles the `pre_upgrade`/`post_upgrade`/
+  `try_state` hooks that are the whole safety net (CI does **not** gate on it).
 - **Toolchain is pinned to rustc 1.93.0** — the toolchain Parity builds the polkadot-sdk `stable2606`
   train against. The old "stable ≥ ~1.91 breaks the `sp_io` wasm link" ceiling was specific to
   stable2603's sp-io 45.0.0; stable2606's sp-io 48.0.0 links cleanly under 1.93.0. Stay on the

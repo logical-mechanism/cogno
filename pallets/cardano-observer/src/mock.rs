@@ -102,6 +102,24 @@ pub fn vp_was_written(who: AccountId) -> bool {
     VOTING_POWERS.with(|w| w.borrow().contains_key(&who))
 }
 
+/// Benchmark-only setup seam. The runtime's impl writes the real cogno-gate / talk-stake / microblog rows;
+/// here it writes the fixture maps those stand in for, so `impl_benchmark_test_suite!` exercises the
+/// benchmark bodies as tests.
+#[cfg(feature = "runtime-benchmarks")]
+pub struct MockBenchSetup;
+#[cfg(feature = "runtime-benchmarks")]
+impl pallet_cardano_observer::BenchmarkSetup<AccountId> for MockBenchSetup {
+    fn bench_bind_beacon(beacon: &[u8; 32], i: u32) {
+        bind(*beacon, Self::bench_account(i));
+    }
+    fn bench_bind_stake_cred(cred: &[u8; 28], i: u32) {
+        bind_stake(*cred, Self::bench_account(i));
+    }
+    fn bench_account(i: u32) -> AccountId {
+        i as AccountId
+    }
+}
+
 /// The block clock stand-in (`pallet_timestamp` in the real runtime).
 pub struct MockTime;
 impl UnixTime for MockTime {
@@ -119,6 +137,8 @@ pub const SHELLEY_START_SLOT: u64 = 86_400;
 pub const STABILITY_SLOTS: u64 = 1_000; // small for the mock
 pub const MIN_LOCK: u128 = 100_000_000;
 pub const MAX_STAKE_WEIGHT: u128 = 45_000_000_000_000_000;
+/// Blocks without an applied observation before the stall alarm latches (small, so the tests can cross it).
+pub const STALL_AFTER: u64 = 10;
 
 parameter_types! {
     // A dummy 28-byte policy id for the mock (the real one is the live vault hash in the runtime).
@@ -127,7 +147,10 @@ parameter_types! {
 
 impl pallet_cardano_observer::Config for Test {
     type RuntimeEvent = RuntimeEvent;
-    type MaxObserved = ConstU32<64>;
+    // ⚠ Must equal the runtime's `MaxObserved`: it is also the upper bound of the `observe` benchmark's
+    // `Linear` components (which need a literal), and `impl_benchmark_test_suite!` runs those bodies
+    // against THIS mock. A smaller bound here fails the benchmark's seeding.
+    type MaxObserved = ConstU32<1024>;
     type MaxStakeWeight = ConstU128<MAX_STAKE_WEIGHT>;
     type MinLock = ConstU128<MIN_LOCK>;
     type StabilitySlots = ConstU64<STABILITY_SLOTS>;
@@ -136,6 +159,7 @@ impl pallet_cardano_observer::Config for Test {
     type VaultPolicyId = MockVaultPolicyId;
     type MaxVotingPower = ConstU128<MAX_STAKE_WEIGHT>;
     type StakeEpochLookback = ConstU64<1>;
+    type StallAfter = ConstU64<STALL_AFTER>;
     type BeaconResolver = MockBeacons;
     type StakeResolver = MockStakeResolver;
     type WeightSink = MockSink;
@@ -144,6 +168,8 @@ impl pallet_cardano_observer::Config for Test {
     type EnforceOrigin = frame_system::EnsureRoot<AccountId>;
     type UnixTime = MockTime;
     type WeightInfo = ();
+    #[cfg(feature = "runtime-benchmarks")]
+    type BenchmarkSetup = MockBenchSetup;
 }
 
 /// A "now" well past the Shelley anchor (so the stability bound is active) — the corresponding Cardano

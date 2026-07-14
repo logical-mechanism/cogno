@@ -68,7 +68,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // transaction extensions) or any change to consensus-visible behaviour that requires nodes to
     // upgrade in lockstep. Leave it alone for comments, bounds, logging and tests. The per-release
     // history lives in CHANGELOG.md, not here.
-    spec_version: 203,
+    spec_version: 204,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

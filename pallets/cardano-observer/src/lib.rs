@@ -50,6 +50,8 @@ extern crate alloc;
 
 pub use pallet::*;
 
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
@@ -61,6 +63,7 @@ pub use weights::*;
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 use sp_inherents::{InherentIdentifier, IsFatalError};
+use sp_runtime::traits::{Saturating, Zero};
 
 /// Off-chain node logs only (the on-chain audit trail is the `ObservationApplied` event).
 pub const LOG_TARGET: &str = "runtime::cardano-observer";
@@ -201,6 +204,26 @@ pub trait BoundStakeCredentials {
     fn bound_stake_credentials() -> alloc::vec::Vec<StakeCredential>;
 }
 
+/// Benchmark-only setup seam. This pallet is deliberately decoupled from cogno-gate / talk-stake /
+/// microblog by the resolver + sink traits above (no Cargo cycle), so `observe`'s benchmark cannot bind a
+/// beacon or seed a weight by itself — the runtime implements this to write those collaborators' rows
+/// directly. Same pattern as microblog's `IsAllowed::benchmark_set_allowed`; the production `Config` is
+/// untouched (the associated type exists only under `runtime-benchmarks`).
+///
+/// The seeded state must drive `observe` down its EXPENSIVE branch: a bound account whose CURRENT weight
+/// DIFFERS from the observed one, so the runtime sink's `previous != weight` guard takes the write path.
+/// Seeding a matching weight would benchmark the no-op fast path and under-weight the Mandatory inherent.
+#[cfg(feature = "runtime-benchmarks")]
+pub trait BenchmarkSetup<AccountId> {
+    /// Bind `beacon` to [`BenchmarkSetup::bench_account`]`(i)` and seed that account's vault-weight state.
+    fn bench_bind_beacon(beacon: &BeaconName, i: u32);
+    /// Bind `cred` to [`BenchmarkSetup::bench_account`]`(i)` and seed that account's voting-power state.
+    fn bench_bind_stake_cred(cred: &StakeCredential, i: u32);
+    /// The benchmark account for index `i`. Must be injective: the credit loops and the unlock-clamp bases
+    /// are seeded from disjoint index ranges precisely so they resolve to disjoint accounts.
+    fn bench_account(i: u32) -> AccountId;
+}
+
 /// The consensus-pinned observation config the node-side `InherentDataProvider` reads via the
 /// [`CardanoObserverApi`] runtime API — the SINGLE source of truth, so the node and the runtime cannot
 /// drift on the anchors, the stability window, or which Cardano policy to observe (design "no-drift").
@@ -257,8 +280,19 @@ pub mod pallet {
         #[allow(deprecated)]
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         /// Max identities observed in one block (bounds the inherent + `LastObserved`).
+        ///
+        /// A HARD CEILING on concurrent participants, not a batch size: the observation is a FULL-SET
+        /// snapshot re-derived every block, so per-block cost is O(total participants), not O(changes).
+        /// An observation over this bound makes `create_inherent` abstain — the whole inherent drops and
+        /// the sole weight writer FREEZES. [`Stalled`] is what makes that freeze visible on-chain.
         #[pallet::constant]
         type MaxObserved: Get<u32>;
+        /// Blocks without an APPLIED observation before the on-chain stall alarm latches ([`Stalled`]).
+        /// The node authors the inherent every block, so a gap this long means the sole weight writer has
+        /// stopped: db-sync is down or behind, or the observation overran [`Config::MaxObserved`] and
+        /// `create_inherent` abstained.
+        #[pallet::constant]
+        type StallAfter: Get<BlockNumberFor<Self>>;
         /// Hard ceiling on a single account's weight (`stake-1`). An entry above it is SKIPPED (not a
         /// block error) — a bad inherent value must never be consensus-pinned nor brick the Mandatory
         /// block. (Contrast `talk_stake::set_stake`, which rejects the whole call.)
@@ -304,6 +338,10 @@ pub mod pallet {
         type UnixTime: UnixTime;
         /// Dispatch weights.
         type WeightInfo: WeightInfo;
+        /// Benchmark-only: seed the cogno-gate / talk-stake / microblog rows `observe`'s worst case needs
+        /// (the pallet cannot reach those through its production seams). Not part of the production Config.
+        #[cfg(feature = "runtime-benchmarks")]
+        type BenchmarkSetup: BenchmarkSetup<Self::AccountId>;
     }
 
     /// The last accepted Cardano reference — the monotonicity anchor. `None` before the first
@@ -340,14 +378,37 @@ pub mod pallet {
     pub type LastObservedStake<T: Config> =
         StorageValue<_, BoundedVec<(StakeCredential, T::AccountId), T::MaxObserved>, ValueQuery>;
 
+    /// The block in which the last observation was APPLIED — the stall alarm's clock. `0` means "none
+    /// yet": block 0 is genesis and carries no extrinsics, so a real observation can never stamp it. The
+    /// `on_initialize` hook re-anchors a zero clock to the CURRENT block rather than measuring from block
+    /// 0, so a chain upgraded into this alarm does not read its whole history as one long stall.
+    #[pallet::storage]
+    pub type LastAppliedAt<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+    /// The latched stall alarm: `true` once the observer has gone [`Config::StallAfter`] blocks without
+    /// applying an observation; cleared by the next accepted `observe`. LATCHED, not recomputed, so
+    /// [`Event::ObservationStalled`] fires exactly ONCE per episode rather than every block.
+    ///
+    /// This is the ONLY on-chain signal that the sole weight writer has stopped. `create_inherent` drops
+    /// the ENTIRE inherent when an observation exceeds [`Config::MaxObserved`] (the `BoundedVec::try_from`
+    /// fails ⇒ `None`) — no delta, no partial apply — which silently freezes weight chain-wide. Before this
+    /// flag the only evidence was a node-side `log::error!` and a Prometheus counter, i.e. OFF-CHAIN only:
+    /// an operator watching the chain saw nothing at all.
+    #[pallet::storage]
+    pub type Stalled<T: Config> = StorageValue<_, bool, ValueQuery>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
+    // Variant indices are ON-WIRE (every client that decodes an event keys off them). SCALE derives them
+    // from declaration order, so they are pinned explicitly here: the two variants appended below cannot
+    // shift 0/1/2, and a future reorder is a compile-visible decision rather than a silent break.
     pub enum Event<T: Config> {
         /// A verified observation was processed as-of `reference_slot`: `credited` identities had weight
         /// applied, `cleared` had it zeroed (unlock clamp), `skipped` were observed but dropped for
         /// exceeding `MaxStakeWeight` (step 3). `enforced` is the mode: `true` (the default) means weight
         /// was APPLIED to `AllowedStake`/capacity; `false` means frozen (emergency revert: verified but not
         /// applied), so `credited`/`cleared` count what WOULD have been applied.
+        #[codec(index = 0)]
         ObservationApplied {
             reference_slot: u64,
             credited: u32,
@@ -359,6 +420,7 @@ pub mod pallet {
         /// voting power applied, `cleared` were zeroed (unlock clamp), `skipped` exceeded `MaxVotingPower`.
         /// `enforced` mirrors `ObservationApplied`: `true` means applied to talk-stake `VotingPower`;
         /// `false` means frozen (not applied).
+        #[codec(index = 1)]
         VotingPowerObserved {
             reference_slot: u64,
             credited: u32,
@@ -368,7 +430,22 @@ pub mod pallet {
         },
         /// The enforce flag was set via [`Call::set_enforcement`]. `enabled = true` (the default) means the
         /// verified inherent APPLIES weight; `false` means frozen (emergency revert: verify but don't write).
+        #[codec(index = 2)]
         EnforcementSet { enabled: bool },
+        /// No observation has been applied for more than [`Config::StallAfter`] blocks — the SOLE weight
+        /// writer has stopped. Either the node's Cardano read is unavailable, or the observation overran
+        /// [`Config::MaxObserved`] and `create_inherent` abstained (dropping the whole inherent). Latched
+        /// via [`Stalled`], so it fires ONCE per episode. `last_applied` is the block the last observation
+        /// landed in; `blocks` is how long the gap had run when the alarm latched.
+        #[codec(index = 3)]
+        ObservationStalled {
+            last_applied: BlockNumberFor<T>,
+            blocks: BlockNumberFor<T>,
+        },
+        /// An observation was applied again after a latched stall, clearing [`Stalled`]. `blocks` is the
+        /// total length of the gap.
+        #[codec(index = 4)]
+        ObservationResumed { blocks: BlockNumberFor<T> },
     }
 
     #[pallet::error]
@@ -381,14 +458,105 @@ pub mod pallet {
         ReferenceTooFresh,
     }
 
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// Latch the on-chain stall alarm ([`Stalled`]) when no observation has been applied for
+        /// [`Config::StallAfter`] blocks. Runs BEFORE this block's inherents, so an observation landing in
+        /// THIS block clears the latch again inside `observe`: the alarm can only fire on a gap that is
+        /// already over the threshold at the start of the block.
+        ///
+        /// Deliberately OUTSIDE the consensus path — `create_inherent` / `check_inherent` are untouched. A
+        /// predicate added there could reject every imported block, turning a stalled Cardano READ into a
+        /// stalled CHAIN. This records THAT weight stopped, durably and alertably; the node's `log::error!`
+        /// still says WHY.
+        ///
+        /// The weight is stated directly rather than benchmarked: the hook is one comparison plus, at
+        /// worst, two reads / one write / one event, and `DbWeight` prices exactly that. The common path
+        /// (an observation applied last block) is a single read.
+        fn on_initialize(now: BlockNumberFor<T>) -> Weight {
+            let last = LastAppliedAt::<T>::get();
+            if last.is_zero() {
+                // Nothing applied since this alarm came into existence: a fresh chain, or the first block
+                // of the runtime that introduced it. Anchor the window HERE — measuring from block 0 would
+                // read an upgraded chain's whole history as one enormous stall and fire a false alarm.
+                LastAppliedAt::<T>::put(now);
+                return T::DbWeight::get().reads_writes(1, 1);
+            }
+            let blocks = now.saturating_sub(last);
+            if blocks <= T::StallAfter::get() {
+                return T::DbWeight::get().reads(1);
+            }
+            if Stalled::<T>::get() {
+                // Already latched: once per episode, not once per block.
+                return T::DbWeight::get().reads(2);
+            }
+            Stalled::<T>::put(true);
+            log::error!(
+                target: LOG_TARGET,
+                "OBSERVATION STALLED: no observation applied for {blocks:?} blocks (last at {last:?}) — the SOLE weight writer has stopped (Cardano read unavailable, or the observation exceeded MaxObserved and the inherent was dropped)",
+            );
+            Self::deposit_event(Event::ObservationStalled {
+                last_applied: last,
+                blocks,
+            });
+            T::DbWeight::get().reads_writes(2, 2)
+        }
+
+        /// Both unlock-clamp bases are `BoundedVec<_, MaxObserved>`. LOWERING `MaxObserved` under live state
+        /// therefore has teeth: a stored vec longer than the new bound fails to decode, and `ValueQuery`
+        /// answers a decode failure with the DEFAULT — an EMPTY basis — so every account that has since
+        /// unlocked keeps its weight forever, silently. `get()` cannot see that (it IS the thing that
+        /// swallows it); `decode_len` reads the raw length prefix and is bound-independent, so it can.
+        ///
+        /// This runs under `try-runtime` against a snapshot of REAL state (docs/UPGRADES.md's pre-enactment
+        /// dry-run), which is the only place a bound drop can be caught BEFORE it is on-chain.
+        #[cfg(feature = "try-runtime")]
+        fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
+            let bound = T::MaxObserved::get() as usize;
+            ensure!(
+                LastObserved::<T>::decode_len().unwrap_or(0) <= bound,
+                "LastObserved is longer than MaxObserved — the vault clamp basis will not decode"
+            );
+            ensure!(
+                LastObservedStake::<T>::decode_len().unwrap_or(0) <= bound,
+                "LastObservedStake is longer than MaxObserved — the stake clamp basis will not decode"
+            );
+            Ok(())
+        }
+    }
+
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         /// Apply a verified Cardano observation. INHERENT-ONLY (`is_inherent` → true ⇒ pool-inadmissible)
         /// and `Mandatory`. Runs in `execute_block` on every node; its enforcement (monotonicity,
         /// stability bound, `MaxStakeWeight` skip, account resolution, weight/capacity application, unlock
         /// clamp) is what holds even on nodes that skip `check_inherent`.
+        ///
+        /// The weight is the benchmarked cost of the WHOLE call over four components, because the
+        /// mass-unlock worst case is not expressible from the arguments alone:
+        ///
+        /// - `n` = `entries.len()` and `m` = `stake_entries.len()` — the two credit loops.
+        /// - `p` = `LastObserved` len and `q` = `LastObservedStake` len — the two unlock-clamp bases. A
+        ///   block whose observation is EMPTY but whose previous set was full is the most expensive one
+        ///   there is (every prior identity is settled and zeroed), and `n`/`m` say nothing about it.
+        ///
+        /// `p`/`q` therefore come from storage. `decode_len` reads only the length prefix, of the two keys
+        /// the body reads in full anyway.
+        ///
+        /// This replaces a hand-estimate that took `entries.len()` alone and under-counted the true cost by
+        /// ~100x — on the one call in the chain that cannot be skipped. It also priced every term at
+        /// `proof_size = 0`: inert here (a solochain's `max_block` sets proof_size to `u64::MAX`), but the
+        /// entire PoV dimension of the sole per-block weight writer would read as free on a parachain.
         #[pallet::call_index(0)]
-        #[pallet::weight((T::WeightInfo::observe(entries.len() as u32), DispatchClass::Mandatory))]
+        #[pallet::weight((
+            T::WeightInfo::observe(
+                entries.len() as u32,
+                stake_entries.len() as u32,
+                LastObserved::<T>::decode_len().unwrap_or(0) as u32,
+                LastObservedStake::<T>::decode_len().unwrap_or(0) as u32,
+            ),
+            DispatchClass::Mandatory,
+        ))]
         pub fn observe(
             origin: OriginFor<T>,
             reference: CardanoRef,
@@ -543,6 +711,19 @@ pub mod pallet {
             }
 
             LastReference::<T>::put(&reference);
+
+            // The stall alarm's clock, stamped on every APPLIED observation — including a FROZEN one: the
+            // read was still verified cross-node, and a freeze is a deliberate governance state, not a
+            // stall. Clearing the latch reads `LastAppliedAt` before overwriting it, so the reported gap is
+            // the real one.
+            let now_block = frame_system::Pallet::<T>::block_number();
+            if Stalled::<T>::get() {
+                let blocks = now_block.saturating_sub(LastAppliedAt::<T>::get());
+                Stalled::<T>::put(false);
+                Self::deposit_event(Event::ObservationResumed { blocks });
+            }
+            LastAppliedAt::<T>::put(now_block);
+
             Self::deposit_event(Event::ObservationApplied {
                 reference_slot: reference.slot,
                 credited,

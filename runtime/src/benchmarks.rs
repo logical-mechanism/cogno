@@ -34,13 +34,17 @@ frame_benchmarking::define_benchmarks!(
     // so there is no `#[benchmarks]` module to list here yet.
     // ── cogno-chain app pallets ──
     // NOTE: no pallet-talk-stake — it is now a call-less observer-written ledger (no dispatchables to bench).
+    // The SOLE weight writer. `observe` is Mandatory and runs in every block, so its weight is the one that
+    // cannot be skipped: benchmarked over four components (observed vault entries, observed stake entries,
+    // and the two unlock-clamp bases, which the arguments alone cannot express).
+    [pallet_cardano_observer, CardanoObserver]
     [pallet_cogno_gate, CognoGate]
     [pallet_microblog, Microblog]
     // Social-actions branch: the fee-bearing display-profile pallet.
     [pallet_profile, Profile]
     // The regenerating admin-fuel budget: set_allowance/revoke + the on_initialize regeneration hook.
-    // Ships with a placeholder `WeightInfo = ()` (see configs/mod.rs); listed here so `benchmark pallet`
-    // can generate real weights (fund/revoke are O(1); regenerate is linear in the funded-set size).
+    // `regenerate` is billed from that hook and is linear in the funded-set size, so (like `observe`) it
+    // runs on real benchmarked weights as of spec 204 — fund/revoke are O(1).
     [pallet_governance_fuel, GovernanceFuel]
     // Real WeightInfo for the mutable-authority add/remove extrinsics.
     [pallet_validator_set, ValidatorSet]

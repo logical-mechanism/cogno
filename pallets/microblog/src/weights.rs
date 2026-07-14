@@ -62,7 +62,6 @@ pub trait WeightInfo {
 	fn clear_vote() -> Weight;
 	fn vote_account() -> Weight;
 	fn clear_account_vote() -> Weight;
-	fn repost() -> Weight;
 	fn follow() -> Weight;
 	fn unfollow() -> Weight;
 	fn create_poll(s: u32, ) -> Weight;
@@ -173,23 +172,6 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		// Placeholder mirroring `clear_vote`. Regenerate with the benchmark before mainnet.
 		Weight::from_parts(23_335_000, 3554)
 			.saturating_add(T::DbWeight::get().reads(3_u64))
-			.saturating_add(T::DbWeight::get().writes(2_u64))
-	}
-	/// Storage: `CognoGate::PkhOf` (r:1 w:0)
-	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
-	/// Storage: `Microblog::Posts` (r:1 w:0)
-	/// Proof: `Microblog::Posts` (`max_values`: None, `max_size`: Some(592), added: 3067, mode: `MaxEncodedLen`)
-	/// Storage: `Microblog::Reposts` (r:1 w:1)
-	/// Proof: `Microblog::Reposts` (`max_values`: None, `max_size`: Some(72), added: 2547, mode: `MaxEncodedLen`)
-	/// Storage: `Microblog::RepostCount` (r:1 w:1)
-	/// Proof: `Microblog::RepostCount` (`max_values`: None, `max_size`: Some(28), added: 2503, mode: `MaxEncodedLen`)
-	fn repost() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `295`
-		//  Estimated: `4057`
-		// Minimum execution time: 20_824_000 picoseconds.
-		Weight::from_parts(23_485_000, 4057)
-			.saturating_add(T::DbWeight::get().reads(4_u64))
 			.saturating_add(T::DbWeight::get().writes(2_u64))
 	}
 	/// Storage: `CognoGate::PkhOf` (r:1 w:0)
@@ -393,23 +375,6 @@ impl WeightInfo for () {
 	fn clear_account_vote() -> Weight {
 		Weight::from_parts(23_335_000, 3554)
 			.saturating_add(RocksDbWeight::get().reads(3_u64))
-			.saturating_add(RocksDbWeight::get().writes(2_u64))
-	}
-	/// Storage: `CognoGate::PkhOf` (r:1 w:0)
-	/// Proof: `CognoGate::PkhOf` (`max_values`: None, `max_size`: Some(80), added: 2555, mode: `MaxEncodedLen`)
-	/// Storage: `Microblog::Posts` (r:1 w:0)
-	/// Proof: `Microblog::Posts` (`max_values`: None, `max_size`: Some(592), added: 3067, mode: `MaxEncodedLen`)
-	/// Storage: `Microblog::Reposts` (r:1 w:1)
-	/// Proof: `Microblog::Reposts` (`max_values`: None, `max_size`: Some(72), added: 2547, mode: `MaxEncodedLen`)
-	/// Storage: `Microblog::RepostCount` (r:1 w:1)
-	/// Proof: `Microblog::RepostCount` (`max_values`: None, `max_size`: Some(28), added: 2503, mode: `MaxEncodedLen`)
-	fn repost() -> Weight {
-		// Proof Size summary in bytes:
-		//  Measured:  `295`
-		//  Estimated: `4057`
-		// Minimum execution time: 20_824_000 picoseconds.
-		Weight::from_parts(23_485_000, 4057)
-			.saturating_add(RocksDbWeight::get().reads(4_u64))
 			.saturating_add(RocksDbWeight::get().writes(2_u64))
 	}
 	/// Storage: `CognoGate::PkhOf` (r:1 w:0)

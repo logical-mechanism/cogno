@@ -9,6 +9,7 @@ use crate::{
 use frame_support::{
     assert_noop, assert_ok,
     inherent::{InherentData, IsFatalError, ProvideInherent},
+    traits::OnInitialize,
     BoundedVec,
 };
 
@@ -886,5 +887,149 @@ fn check_inherent_rejects_differing_stake_entries_as_mismatch() {
             stake_entries: stk(&[(S1, 800_000_000)]),
         };
         assert!(<CardanoObserver as ProvideInherent>::check_inherent(&honest, &id).is_ok());
+    });
+}
+
+// ── the on-chain stall alarm (`Stalled` / `LastAppliedAt`) ──────────────────────────────────────────
+//
+// An observation over `MaxObserved` makes `create_inherent` abstain: the whole inherent drops, the sole
+// weight writer freezes chain-wide, and before this alarm the only evidence was a node-side log line. These
+// pin the latch's contract — it fires ONCE, it does not fire while observations land, and an upgraded
+// chain's history is not read as one long stall.
+
+/// Run `on_initialize` for every block up to `to`, as `Executive` does — before that block's inherents.
+fn roll_to(to: u64) {
+    let mut n = System::block_number();
+    while n < to {
+        n += 1;
+        System::set_block_number(n);
+        CardanoObserver::on_initialize(n);
+    }
+}
+
+fn stalled_events() -> usize {
+    System::events()
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.event,
+                RuntimeEvent::CardanoObserver(Event::ObservationStalled { .. })
+            )
+        })
+        .count()
+}
+
+/// A well-formed observation of a single bound identity, applied at the current block.
+fn observe_once(slot: u64) {
+    assert_ok!(CardanoObserver::observe(
+        RuntimeOrigin::none(),
+        cref(slot),
+        COMMIT,
+        entries(&[(A, 200_000_000)]),
+        no_stake(),
+    ));
+}
+
+#[test]
+fn stall_alarm_latches_exactly_once_and_clears_on_the_next_observation() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        bind(A, ALICE);
+        observe_once(MAX_REFERENCE - 1);
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), 1);
+        assert!(!crate::Stalled::<Test>::get());
+
+        // A gap of exactly StallAfter is not yet a stall.
+        roll_to(1 + STALL_AFTER);
+        assert!(!crate::Stalled::<Test>::get());
+        assert_eq!(stalled_events(), 0);
+
+        // One block past it, the alarm latches.
+        roll_to(1 + STALL_AFTER + 1);
+        assert!(crate::Stalled::<Test>::get());
+        assert_eq!(stalled_events(), 1);
+        System::assert_last_event(
+            Event::ObservationStalled {
+                last_applied: 1,
+                blocks: STALL_AFTER + 1,
+            }
+            .into(),
+        );
+
+        // Latched: every further block is silent. The alarm is a latch, not a per-block event.
+        roll_to(1 + STALL_AFTER + 20);
+        assert!(crate::Stalled::<Test>::get());
+        assert_eq!(
+            stalled_events(),
+            1,
+            "the alarm fires ONCE per episode, not once per block"
+        );
+
+        // The next accepted observation clears it and reports the whole gap.
+        let now = System::block_number();
+        observe_once(MAX_REFERENCE);
+        assert!(!crate::Stalled::<Test>::get());
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), now);
+        System::assert_has_event(Event::ObservationResumed { blocks: now - 1 }.into());
+    });
+}
+
+#[test]
+fn no_alarm_while_observations_keep_landing() {
+    new_test_ext().execute_with(|| {
+        bind(A, ALICE);
+        for n in 1..=(STALL_AFTER * 3) {
+            System::set_block_number(n);
+            CardanoObserver::on_initialize(n);
+            observe_once(MAX_REFERENCE - 1);
+        }
+        assert!(!crate::Stalled::<Test>::get());
+        assert_eq!(stalled_events(), 0);
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), STALL_AFTER * 3);
+    });
+}
+
+#[test]
+fn a_zero_clock_anchors_at_the_current_block_instead_of_alarming() {
+    new_test_ext().execute_with(|| {
+        // The state a chain upgraded INTO this alarm starts in: a high block number, no clock yet.
+        System::set_block_number(500_000);
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), 0);
+
+        CardanoObserver::on_initialize(500_000);
+
+        assert_eq!(
+            crate::LastAppliedAt::<Test>::get(),
+            500_000,
+            "the stall window opens HERE, not at block 0"
+        );
+        assert!(
+            !crate::Stalled::<Test>::get(),
+            "an upgraded chain's history is not a stall"
+        );
+        assert_eq!(stalled_events(), 0);
+    });
+}
+
+#[test]
+fn a_frozen_observation_still_stamps_the_clock() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        freeze();
+        bind(A, ALICE);
+
+        // Frozen, the inherent still LANDS every block — it verifies the read cross-node and skips only the
+        // weight writes. So the clock keeps advancing and the alarm stays quiet: an emergency weight freeze
+        // is a deliberate governance state, not a stalled observer.
+        for n in 1..=(STALL_AFTER * 2) {
+            System::set_block_number(n);
+            CardanoObserver::on_initialize(n);
+            observe_once(MAX_REFERENCE - 1);
+        }
+
+        assert!(!was_written(ALICE), "frozen: no weight applied");
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), STALL_AFTER * 2);
+        assert!(!crate::Stalled::<Test>::get());
+        assert_eq!(stalled_events(), 0);
     });
 }
