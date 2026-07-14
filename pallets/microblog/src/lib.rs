@@ -11,7 +11,7 @@
 //! consensus-verified `cardano-observer` inherent (the sole weight writer — talk-stake is
 //! call-less). The lazy token-bucket math (`current_capacity` / `on_first_bind` / `post_cost` /
 //! `consume`) is computed O(1) on access — no per-block sweep. On a no-Cardano `--dev`/`local` chain,
-//! weight is seeded at genesis (talk-stake `GenesisConfig`); [`force_set_capacity`] (committee
+//! weight is seeded at genesis (talk-stake `GenesisConfig`); [`Pallet::force_set_capacity`] (committee
 //! `ForceOrigin`) remains an operator override. See docs/ECONOMICS.md.
 //!
 //! ## Anti-farm invariants (do not break)
@@ -53,7 +53,8 @@ mod benchmarking;
 pub mod weights;
 pub use weights::*;
 
-/// Storage migrations for this pallet (`v1` adds `Post.quote` — the project's first migration).
+/// Storage migrations for this pallet (`v1` adds `Post.quote`, the project's first; `v5` retires the
+/// repost storage and settles every capacity bucket).
 pub mod migrations;
 
 use alloc::vec::Vec;
@@ -584,7 +585,7 @@ pub mod pallet {
         #[codec(index = 3)]
         VoteCleared { id: u64, who: T::AccountId },
         /// `who` (stake-`weight`) cast or changed a `dir` reputation vote on account `target`.
-        /// `weight` is the snapshot the tally was adjusted by — same fold-determinism contract as [`Voted`].
+        /// `weight` is the snapshot the tally was adjusted by — same fold-determinism contract as `Voted`.
         #[codec(index = 4)]
         AccountVoted {
             target: T::AccountId,
@@ -684,7 +685,7 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         /// The stake-backed capacity ceiling for a stake `weight`: `min(weight·CapRatio, Ceiling)`
         /// (capped-linear). The SINGLE source of truth for the ceiling — both the live meter
-        /// ([`current_capacity`]) and the `force_set_capacity` clamp call this, so the
+        /// ([`Pallet::current_capacity`]) and the `force_set_capacity` clamp call this, so the
         /// "voice == locked ADA" invariant can never drift between the two.
         pub fn capacity_ceiling(weight: u128) -> u128 {
             core::cmp::min(weight.saturating_mul(T::CapRatio::get()), T::Ceiling::get())
@@ -740,7 +741,7 @@ pub mod pallet {
         ///    `AllowedStake` write, no `StakeSet` event, no capacity write. Without it, every credited
         ///    account's row is rewritten every block — an O(MaxObserved) write storm inside a Mandatory
         ///    inherent that cannot `ExhaustsResources` and would simply run the block past its Aura slot.
-        /// 2. **[`settle_capacity_at`] BEFORE `apply_weight`, with the PREVIOUS weight.** The bucket
+        /// 2. **[`Pallet::settle_capacity_at`] BEFORE `apply_weight`, with the PREVIOUS weight.** The bucket
         ///    regenerates lazily from `(now - last_block)` priced at the account's CURRENT weight, and only
         ///    `consume` / `on_revoke` / `force_set_capacity` restamp `last_block`. So without this settle a
         ///    weight change re-prices the whole idle window at the NEW weight: an account first observed
@@ -750,7 +751,7 @@ pub mod pallet {
         ///    makes the relock guard hold on the observer's unlock path, not just on `on_revoke`. Reversed,
         ///    it would settle at the NEW weight and bank the retro-credit into `cap_last`, making the bug
         ///    permanent rather than merely visible on read.
-        /// 3. **[`on_first_bind`] OUTSIDE the guard**, because a first observation must prime the
+        /// 3. **[`Pallet::on_first_bind`] OUTSIDE the guard**, because a first observation must prime the
         ///    (relock-safe) row even when the account's weight happens to be unchanged. Idempotent — one
         ///    `contains_key` read once primed.
         pub fn apply_observed_weight(who: &T::AccountId, weight: u128) {
@@ -767,13 +768,13 @@ pub mod pallet {
         /// never accrue across a window the account spent at a different weight. `old_weight == 0` settles
         /// to 0: a zero-weight period earns nothing and banks nothing. That is the relock guard.
         ///
-        /// ⚑ Reached from the observer path only through [`apply_observed_weight`], which calls it ONLY when
+        /// ⚑ Reached from the observer path only through [`Pallet::apply_observed_weight`], which calls it ONLY when
         /// the weight actually changes. Calling it unconditionally would rewrite every credited account's
         /// row on every block (the observer re-derives the full set each block) — an O(MaxObserved) write
         /// storm in a Mandatory inherent. Migration v5 calls it directly, once, to retire the last stale
         /// `last_block` left over from before the settle existed.
         ///
-        /// Observably neutral at the moment of the call: it stores exactly what [`current_capacity`]
+        /// Observably neutral at the moment of the call: it stores exactly what [`Pallet::current_capacity`]
         /// already returns for `old_weight` at `now`, so settling changes no read — it only closes the
         /// window so the NEXT one is priced at the weight actually held during it.
         pub fn settle_capacity_at(who: &T::AccountId, old_weight: u128) {
@@ -1407,7 +1408,7 @@ pub mod pallet {
         /// Cast or change a **stake-weighted** vote in poll `post_id` for `option`. Weight is the
         /// caller's `pallet_talk_stake::VotingPower` snapshot (total Cardano stake of the bound stake
         /// credential, NOT the posting deposit); a re-cast reverses the PREVIOUSLY-STORED weight from
-        /// the per-option tally before applying the fresh one (same drift-free fold as [`vote`]). Feeless.
+        /// the per-option tally before applying the fresh one (same drift-free fold as `vote`). Feeless.
         #[pallet::call_index(10)]
         #[pallet::weight(<T as Config>::WeightInfo::cast_poll_vote())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _option: &u8| -> bool { true })]

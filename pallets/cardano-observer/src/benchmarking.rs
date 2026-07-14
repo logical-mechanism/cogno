@@ -38,9 +38,15 @@ use frame_system::RawOrigin;
 /// what makes every one of them fall out of the current set and get cleared.
 const CLAMP_BASE: u32 = 1_000_000;
 
-/// The upper bound of every `Linear` component on `observe`. MUST equal the runtime's (and the mock's)
-/// `MaxObserved` — the benchmark asserts it, because a `Linear`'s bounds must be literals and so cannot
-/// read `T::MaxObserved::get()` themselves. Keep the `Linear<0, 1024>` literals below in step with this.
+/// The upper bound of every `Linear` component on `observe`, and the SINGLE knob for it — the components
+/// below are declared `Linear<0, MAX_OBSERVED>`, not `Linear<0, 1024>`, so there is no second literal to
+/// forget. It MUST equal the runtime's (and the mock's) `MaxObserved`; a `Linear` bound is a const generic,
+/// so it can be a named const but NOT `T::MaxObserved::get()`, which is why the coupling has to be asserted
+/// at run time rather than checked by the compiler. `observe` asserts it.
+///
+/// A range short of the real bound would under-cover the per-block cost of the sole weight writer (the one
+/// call in the chain that can never be skipped); a range past it makes the benchmark's seeding fail with a
+/// `BoundedVec` overflow.
 const MAX_OBSERVED: u32 = 1024;
 
 /// The 32-byte beacon for index `i`, big-endian so the set is ASCENDING — the canonical order the real
@@ -62,27 +68,26 @@ fn stake_cred(i: u32) -> StakeCredential {
 mod benchmarks {
     use super::*;
 
-    /// ⚠ The `Linear` upper bounds MUST equal the runtime `MaxObserved` (and the mock sets the same bound):
-    /// a `Linear` needs a literal, so it cannot read `T::MaxObserved::get()`. If `MaxObserved` moves, move
-    /// these with it — a range short of the bound would under-cover the real per-block cost of the sole
-    /// weight writer, and a range past it makes the seeding fail (`BoundedVec` overflow).
+    /// The four components are bounded by [`MAX_OBSERVED`], which MUST equal the runtime `MaxObserved` (and
+    /// the mock sets the same bound). A `Linear` bound is a const generic: a named const is fine, but
+    /// `T::MaxObserved::get()` is not — so the compiler cannot check the coupling and the body asserts it.
     #[benchmark]
     fn observe(
-        n: Linear<0, 1024>,
-        m: Linear<0, 1024>,
-        p: Linear<0, 1024>,
-        q: Linear<0, 1024>,
+        n: Linear<0, MAX_OBSERVED>,
+        m: Linear<0, MAX_OBSERVED>,
+        p: Linear<0, MAX_OBSERVED>,
+        q: Linear<0, MAX_OBSERVED>,
     ) -> Result<(), BenchmarkError> {
-        // The `Linear` bounds above are LITERALS (a `Linear` cannot read `T::MaxObserved::get()`), so pin
-        // them to the real bound here rather than trusting the comment. A `MaxObserved` bump that forgets
-        // to move the literals would fit the sole Mandatory call's weight over a range shorter than reality
-        // — silently under-weighting the one call in the chain that can never be skipped. This assert runs
-        // in the real `benchmark pallet` run (against the runtime's `MaxObserved`) AND under
-        // `impl_benchmark_test_suite!` (against the mock's), so either one drifting is a loud failure.
+        // [`MAX_OBSERVED`] is the sole knob for the component bounds above, but nothing makes the RUNTIME
+        // agree with it — so assert it. A `MaxObserved` bump that forgets this const would fit the sole
+        // Mandatory call's weight over a range shorter than reality, silently under-weighting the one call
+        // in the chain that can never be skipped. This runs in the real `benchmark pallet` run (against the
+        // runtime's `MaxObserved`) AND under `impl_benchmark_test_suite!` (against the mock's), so either
+        // one drifting from the const is a loud failure rather than a quiet mis-fit.
         assert_eq!(
             T::MaxObserved::get(),
             MAX_OBSERVED,
-            "MaxObserved changed: move `observe`'s `Linear<0, {MAX_OBSERVED}>` component bounds with it",
+            "MaxObserved changed: move benchmarking::MAX_OBSERVED (which bounds observe's components) with it",
         );
 
         let min_lock = T::MinLock::get();

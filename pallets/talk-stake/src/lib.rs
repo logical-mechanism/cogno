@@ -117,7 +117,7 @@ pub mod pallet {
         /// touching the (relock-safe) capacity row in `pallet-microblog`.
         ///
         /// ⚠ **Do NOT call this directly.** It is `pub` only because the meter lives in another crate. The
-        /// single legal caller is [`pallet_microblog::Pallet::apply_observed_weight`], which SETTLES the
+        /// single legal caller is `pallet_microblog::Pallet::apply_observed_weight`, which SETTLES the
         /// capacity bucket at the OLD weight before this overwrites it (and skips the write entirely when
         /// the weight is unchanged). Reaching `apply_weight` around that helper changes the weight without
         /// settling, so the account's whole idle window is re-priced at the NEW weight on the next read —
