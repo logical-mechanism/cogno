@@ -100,22 +100,43 @@ Provenance notes (not third-party code)
 Licensing of the distributed binaries
 ================================================================================
 
-This project's own source is Apache-2.0. The artifacts it distributes are a
-combined work that is not.
+This project's own source is Apache-2.0. The dependency graph of the binaries it
+distributes is almost, but not quite, clean of copyleft — here is exactly where
+it stands.
 
-`pallet-skip-feeless-payment` (v23.0.0) is a direct dependency of the runtime.
-The crate is published under `license = "GPL-3.0-only"` with NO Classpath
-exception — unlike the `sc-*` client crates above, whose Classpath exception is
-exactly what makes linking them from an Apache-2.0 binary fine. That pallet is
-compiled into the runtime WASM, and the runtime WASM is embedded in the
-chainspec this repo ships (`chainspecs/preprod.raw.json`), so the shipped
-chainspec and the `cogno-chain-node` binary carry GPL-3.0-only code.
+The `sc-*` Substrate client crates are GPL-3.0-or-later WITH
+Classpath-exception-2.0. The node links 40 of them. The Classpath exception
+exists precisely to permit linking them from a differently-licensed binary, so
+they impose no copyleft on this project. Nothing to resolve there.
 
-(The crate's own source headers say Apache-2.0, which contradicts its published
-crate metadata. We take the published license at its word rather than assume the
-looser reading.)
+`frame-benchmarking-cli` is used only by `node/src/benchmarking.rs`, which is
+gated behind the `runtime-benchmarks` feature. It is therefore declared
+`optional` in `node/Cargo.toml` and is NOT in the default dependency graph. This
+matters: left non-optional it drags in 150 further crates — the `polkadot-*`,
+`staging-xcm*` and `tracing-gum*` trees, via `cumulus-*` — 17 of which are
+strict `GPL-3.0-only` with no exception. Gating it keeps them out of the shipped
+binary entirely.
 
-Practically: take the source under Apache-2.0; treat any binary or chainspec you
-receive from us — and any you build with this dependency in place — as GPL-3.0.
-Removing the dependency is being looked at; until it is gone, this is the honest
-statement of where the project stands.
+That leaves exactly one strict-copyleft crate anywhere in the graph:
+
+  `pallet-skip-feeless-payment` (v23.0.0), a direct dependency of the runtime.
+
+Its published crate metadata says `license = "GPL-3.0-only"`. Every one of its
+source files says otherwise:
+
+    // Copyright (C) Parity Technologies (UK) Ltd.
+    // SPDX-License-Identifier: Apache-2.0
+
+The metadata is an upstream packaging slip, not a deliberate relicense. The
+crate's manifest declares `license.workspace = true`, inheriting the
+polkadot-sdk workspace default of `GPL-3.0-only`; 238 crates under `substrate/`
+explicitly override that default and 15 — including this one — forget to. Its
+own directory siblings, `transaction-payment` and `transaction-payment/asset-
+tx-payment`, both override it correctly.
+
+We read the Apache-2.0 file headers as the operative grant, and have reported
+the manifest bug upstream. We are flagging it here rather than quietly relying
+on it, because it is the kind of thing you would rather hear from us than
+discover from `cargo metadata`. If your own compliance process needs the
+manifest and the headers to agree, this is the one place in the tree where they
+do not.
