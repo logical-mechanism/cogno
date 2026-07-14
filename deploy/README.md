@@ -157,10 +157,14 @@ Files: [`systemd/cogno-relay.service`](systemd/cogno-relay.service) (the unit),
 [`nginx/cogno.conf`](nginx/cogno.conf) (TLS, `wss://` proxy, and the static app) with
 [`nginx/security-headers.conf`](nginx/security-headers.conf) (HSTS, CSP, and the anti-framing headers it
 includes into every location — this origin has visitors sign with a wallet, so read the comments there
-before you loosen anything), and two **manual** GitHub Actions that ship to it — [`deploy-app.yml`](../.github/workflows/deploy-app.yml) (builds the
-static export, rsyncs it to `/var/www/cogno`) and [`deploy-node.yml`](../.github/workflows/deploy-node.yml)
-(builds the node binary, installs it, restarts the relay — see [below](#deploying-the-node-binary)).
-Neither fires on push: `main` is a work branch, and nothing deploys until you click it.
+before you loosen anything) and [`nginx/maintenance.conf`](nginx/maintenance.conf)
+(the maintenance switch — see [below](#maintenance-mode)), and three **manual** GitHub Actions that ship to
+it: [`deploy-app.yml`](../.github/workflows/deploy-app.yml) (builds the
+static export, rsyncs it to `/var/www/cogno`), [`deploy-node.yml`](../.github/workflows/deploy-node.yml)
+(builds the node binary, installs it, restarts the relay — see [below](#deploying-the-node-binary)), and
+[`maintenance.yml`](../.github/workflows/maintenance.yml) (parks the site behind a "down for maintenance"
+page while you use the other two). None fires on push: `main` is a work branch, and nothing deploys until
+you click it.
 
 **The one rule: the relay must never see `DBSYNC_URL`.** It re-derives the Cardano observation for
 every block it imports. Against a db-sync that is behind, pruned, or on the wrong network, it computes
@@ -268,6 +272,93 @@ binary cannot be rolled back; and on the relay `cogno` is a **login** user — i
 it needs a real shell and a home directory (`useradd --create-home --shell /bin/bash cogno`), unlike the
 validator host's service-only account above (`--no-create-home --shell /usr/sbin/nologin`), which never
 receives an SSH session.
+
+### Maintenance mode
+
+Park the site behind a *"cogno is down for maintenance"* page — from the Actions tab, without touching the
+box. Run it before a node deploy, before an app deploy you want to land in one piece, or any time a visitor
+arriving mid-change would see something broken:
+
+```
+Actions → maintenance → Run workflow → state: on      … do the work …
+Actions → maintenance → Run workflow → state: off
+```
+
+The switch is **one file**: `/var/www/cogno-maintenance/ON`. nginx stats it on every request
+([`nginx/maintenance.conf`](nginx/maintenance.conf)) and answers **503** with
+[`maintenance/index.html`](maintenance/index.html) while it exists. No reload, no restart, no root, no
+rebuild — and the workflow toggles it with a single `rsync`, never a remote shell command, so it keeps
+working if you ever jail the deploy key behind a forced `command="rrsync -wo …"`.
+
+**The node keeps running, and `/rpc` stays up for the whole window.** That is deliberate, not an oversight:
+`cogno-chain-cli` drives committee motions and runtime upgrades over that endpoint — a maintenance window is
+when you are using it *most* — and `deploy-node` ends by health-checking the public `/rpc` itself, so a 503
+there would turn every node deploy red at the final step. Maintenance mode takes the **app** down, not the
+chain. (An open tab that lives through a window keeps reading a healthy chain until it navigates, at which
+point it gets the page. Slightly odd; harmless.)
+
+**One-time server setup**, alongside the nginx install at the top of [`nginx/cogno.conf`](nginx/cogno.conf):
+
+```bash
+# On the droplet, as root. /var/www is root-owned, so the deploy user cannot create this itself.
+sudo install -d -o cogno -g cogno -m 0755 /var/www/cogno-maintenance
+sudo install -m 0644 deploy/maintenance/index.html /var/www/cogno-maintenance/index.html
+sudo install -m 0644 deploy/nginx/maintenance.conf /etc/nginx/maintenance.conf
+
+# cogno.conf gained the `include` lines that arm the switch. It is a TEMPLATE — it says cogno.example.io —
+# so re-apply your domain after copying it, or `nginx -t` fails on a cert path that does not exist, the
+# `&&` short-circuits, and you are left with a broken vhost on disk and no reload.
+sudo cp deploy/nginx/cogno.conf /etc/nginx/sites-available/cogno.conf
+sudo sed -i 's/cogno.example.io/<your-domain>/g' /etc/nginx/sites-available/cogno.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+The `index.html` line matters even though the workflow rsyncs the page on every run: without it, a **manual**
+arm (below) on a fresh box sets a flag with no page behind it, and visitors get nginx's built-in beige 503
+instead of the branded one.
+
+`0755` is load-bearing, and `0750` is the mistake that looks right. nginx's `-f` test is a `stat()`, so the
+worker needs *search* on that directory; at `0750` the stat fails, the test evaluates **false**, and the
+guard **silently never fires** — the site stays live while you believe it is dark. It fails *open*. Which is
+why the workflow does not trust itself: after arming, it re-fetches the origin over HTTPS and requires the
+503, the `X-Cogno-Maintenance` header, *and* a marker in the page body. If it cannot see all three it
+**removes the flag it just wrote** and fails loudly, rather than leave an armed-but-inert flag on disk — one
+of those is a landmine that takes the site dark on the next `systemctl reload nginx`, including the one
+certbot runs unattended, twice a day.
+
+Turning it **off** is different, and deliberately so: the lift happens *first* and unconditionally, and
+nothing that follows can put the flag back. It fails the run for only two things — the flag somehow did not
+come off, or the site does not answer 200 — and the SPA-shell and `/rpc` checks it runs on the way out are
+**warnings, never blockers**. Gating a lift on the site being fully *healthy* is how you build a trap that
+refuses to let you out of maintenance because of a stale nginx or an expired certificate. You turned it on
+to fix something; it must not stop you finishing. If even those two checks are what's broken, `force: true`
+lifts without verifying anything.
+
+**If Actions cannot reach the box** — or the workflow itself is what is broken — the manual override is the
+whole mechanism, and it takes effect on the next request, with nothing to reload:
+
+```bash
+ssh cogno@<droplet> 'rm -f /var/www/cogno-maintenance/ON'      # lift
+ssh cogno@<droplet> 'touch /var/www/cogno-maintenance/ON'      # arm
+```
+
+If you lift by hand, run the workflow with `state: off` afterwards anyway — `rm -f` is idempotent, and the
+run is what performs the SPA-shell and relay checks that `deploy-app` skipped while the window was open.
+
+Deploying the app *during* a window is fine and expected: `deploy-app` notices the 503, ships the bundle, and
+**skips** its SPA-shell smoke check with a warning, because every URL it probes answers 503 by design. And
+the flag lives in its **own directory**, not in `/var/www/cogno`, because `deploy-app`'s rsync uses
+`--delete` and would otherwise eat it mid-window, silently putting the site back up in the middle of
+whatever you took it down for. Do not tidy it into the docroot.
+
+Nothing else in this project watches the website — Prometheus scrapes only the node, on a different box, and
+Alertmanager pages nobody as shipped. So
+[`maintenance-canary.yml`](../.github/workflows/maintenance-canary.yml) runs hourly and **fails** (GitHub
+emails you) while the site is still parked. A planned window will therefore email you about once an hour —
+that is the alarm working, and it is the only thing that will ever tell you that you forgot. A long window
+(a cold `deploy-node` build is up to two hours) will trip it two or three times, which is exactly how an
+alarm gets muted; disable the workflow for the duration rather than learning to ignore it, and remember that
+a disabled canary is itself an oven left on.
 
 ## Operating notes
 

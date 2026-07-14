@@ -288,7 +288,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     const who = focal.authorDisplayName?.trim() || handleOf(focal.author);
     const snippet = focal.text.trim().replace(/\s+/g, " ");
     const clipped = snippet.length > 60 ? `${snippet.slice(0, 60)}…` : snippet;
-    document.title = clipped ? `${who} on cogno-chain: “${clipped}”` : `${who} on cogno-chain`;
+    document.title = clipped ? `${who} on cogno: “${clipped}”` : `${who} on cogno`;
     // No cleanup — the next route sets its own title.
   }, [focal]);
 
