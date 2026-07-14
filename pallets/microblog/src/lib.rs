@@ -21,12 +21,15 @@
 //!   lock/unlock/relock cycle can't read a `None` first-touch and re-mint (relock farm).
 //! - **`current_capacity` is PURE** (no writes — safe to call repeatedly in `validate()`); `consume`
 //!   is the only writer on the transaction path.
-//! - **Going-forward-only**: a weight change SETTLES the bucket at the OLD weight and restamps it
-//!   ([`Pallet::settle_capacity_at`], which the runtime's observer sink calls immediately BEFORE
-//!   talk-stake's `apply_weight`), so regen can never accrue across a window the account spent at a
-//!   different weight. A raise lifts the future `cap`/`rate` but credits nothing retroactively, and a
-//!   zero-weight window banks nothing — which is what makes the relock guard hold on the observer's
-//!   unlock path (`weight → 0`), not just on `on_revoke`.
+//! - **Going-forward-only**: a weight change SETTLES the bucket at the OLD weight and restamps it, so
+//!   regen can never accrue across a window the account spent at a different weight. A raise lifts the
+//!   future `cap`/`rate` but credits nothing retroactively, and a zero-weight window banks nothing —
+//!   which is what makes the relock guard hold on the observer's unlock path (`weight → 0`), not just on
+//!   `on_revoke`.
+//! - **[`Pallet::apply_observed_weight`] is the SOLE way weight enters the chain.** It owns the
+//!   settle-then-apply order and the unchanged-weight guard; the runtime's observer `WeightSink` is a
+//!   one-line delegation to it. Never call `pallet_talk_stake::apply_weight` from anywhere else — doing so
+//!   changes the weight without settling and reintroduces the retro-credit farm.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -726,14 +729,49 @@ pub mod pallet {
             }
         }
 
+        /// **The one and only way weight may enter the chain.** The runtime's observer `WeightSink` is a
+        /// one-line delegation to this, and `pallet-talk-stake::apply_weight` must never be called from
+        /// anywhere else — the going-forward-only rule lives HERE, not in the caller.
+        ///
+        /// Three things in one, and the ORDER is the invariant:
+        ///
+        /// 1. **The `previous != weight` guard.** The observer re-derives the FULL Cardano vault set every
+        ///    block and calls this for every credited account, so an unchanged account must cost nothing: no
+        ///    `AllowedStake` write, no `StakeSet` event, no capacity write. Without it, every credited
+        ///    account's row is rewritten every block — an O(MaxObserved) write storm inside a Mandatory
+        ///    inherent that cannot `ExhaustsResources` and would simply run the block past its Aura slot.
+        /// 2. **[`settle_capacity_at`] BEFORE `apply_weight`, with the PREVIOUS weight.** The bucket
+        ///    regenerates lazily from `(now - last_block)` priced at the account's CURRENT weight, and only
+        ///    `consume` / `on_revoke` / `force_set_capacity` restamp `last_block`. So without this settle a
+        ///    weight change re-prices the whole idle window at the NEW weight: an account first observed
+        ///    ~100 blocks after its bind is handed a FULL bucket instead of charging up from empty, and a
+        ///    relock after an observer unlock springs the old bucket back. Settling at the old weight closes
+        ///    that window (`previous == 0` settles to 0 — a zero-weight period banks nothing), which is what
+        ///    makes the relock guard hold on the observer's unlock path, not just on `on_revoke`. Reversed,
+        ///    it would settle at the NEW weight and bank the retro-credit into `cap_last`, making the bug
+        ///    permanent rather than merely visible on read.
+        /// 3. **[`on_first_bind`] OUTSIDE the guard**, because a first observation must prime the
+        ///    (relock-safe) row even when the account's weight happens to be unchanged. Idempotent — one
+        ///    `contains_key` read once primed.
+        pub fn apply_observed_weight(who: &T::AccountId, weight: u128) {
+            let previous = pallet_talk_stake::AllowedStake::<T>::get(who);
+            if previous != weight {
+                Self::settle_capacity_at(who, previous);
+                pallet_talk_stake::Pallet::<T>::apply_weight(who, weight);
+            }
+            Self::on_first_bind(who);
+        }
+
         /// Settle the bucket at the OLD weight and restamp it to `now`. MUST be called while `old_weight`
         /// is still the account's `AllowedStake` — i.e. BEFORE `apply_weight` overwrites it — so regen can
         /// never accrue across a window the account spent at a different weight. `old_weight == 0` settles
         /// to 0: a zero-weight period earns nothing and banks nothing. That is the relock guard.
         ///
-        /// ⚑ The runtime's observer `WeightSink` calls this ONLY when the weight actually changes. Calling
-        /// it unconditionally would rewrite every credited account's row on every block (the observer
-        /// re-derives the full set each block) — an O(MaxObserved) write storm in a Mandatory inherent.
+        /// ⚑ Reached from the observer path only through [`apply_observed_weight`], which calls it ONLY when
+        /// the weight actually changes. Calling it unconditionally would rewrite every credited account's
+        /// row on every block (the observer re-derives the full set each block) — an O(MaxObserved) write
+        /// storm in a Mandatory inherent. Migration v5 calls it directly, once, to retire the last stale
+        /// `last_block` left over from before the settle existed.
         ///
         /// Observably neutral at the moment of the call: it stores exactly what [`current_capacity`]
         /// already returns for `old_weight` at `now`, so settling changes no read — it only closes the

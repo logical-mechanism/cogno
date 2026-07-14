@@ -92,21 +92,16 @@ impl pallet_microblog::Config for Test {
     type WeightInfo = ();
 }
 
-/// The observer's weight sink, reproducing the runtime's `WeightApply` body verbatim
-/// (`runtime/src/configs/mod.rs`). The `cardano-observer` inherent is the ONLY writer of weight on a
-/// real chain and it goes through that sink, so the capacity tests must drive THIS — not
-/// `TalkStake::apply_weight` directly. `apply_weight` alone never touches the capacity row, so a test
-/// that calls it directly cannot see a missing settle and will pass while the retro-credit bug is live.
+/// Drive weight into the chain exactly the way the `cardano-observer` inherent does: through
+/// [`pallet_microblog::Pallet::apply_observed_weight`], which is what the runtime's `WeightSink` calls
+/// (`runtime/src/configs/mod.rs`, `WeightApply`). The capacity tests must go through THIS and never call
+/// `TalkStake::apply_weight` directly — `apply_weight` alone never touches the capacity row, so a test that
+/// calls it directly cannot see a missing settle and will pass while the retro-credit bug is live.
 ///
-/// Keep the two bodies in lockstep: the settle-before-apply order and the `previous != weight` guard are
-/// the whole fix.
+/// This is a thin alias, NOT a re-implementation: the settle-before-apply order and the unchanged-weight
+/// guard live in the pallet, so there is no second body that can drift out of lockstep with the runtime.
 pub fn observe_weight(who: &u64, weight: u128) {
-    let previous = pallet_talk_stake::AllowedStake::<Test>::get(who);
-    if previous != weight {
-        pallet_microblog::Pallet::<Test>::settle_capacity_at(who, previous);
-        pallet_talk_stake::Pallet::<Test>::apply_weight(who, weight);
-    }
-    pallet_microblog::Pallet::<Test>::on_first_bind(who);
+    pallet_microblog::Pallet::<Test>::apply_observed_weight(who, weight);
 }
 
 /// Build a genesis storage for tests.

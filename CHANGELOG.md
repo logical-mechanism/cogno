@@ -28,7 +28,9 @@ It carries the project's first live storage migration, which **deletes data** (s
   weight, so if it silently stops, weight quietly freezes and nothing says so. The chain now records
   when an observation last landed and raises an on-chain **`ObservationStalled`** event (once per
   episode) if five minutes pass without one, then **`ObservationResumed`** when it recovers. Read
-  `CardanoObserver.Stalled` to know whether the observer is healthy.
+  `CardanoObserver.Stalled` to know whether the observer is healthy. The alarm arms only once the
+  chain has accepted its first observation — a chain that never started is not a chain that stopped,
+  which is what keeps `--dev` (no db-sync, so it never observes at all) from crying wolf every run.
 - **The observation is honestly priced.** Its block weight was a hand-written placeholder that
   under-charged by orders of magnitude at the top of its range — a real risk of a block too slow to
   make its slot. It is now benchmarked. That measurement also showed the old participant ceiling

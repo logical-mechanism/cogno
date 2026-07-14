@@ -6,12 +6,12 @@ read loop *inside the runtime* and returns one enriched, viewer-aware page in a 
 atomic at one block.
 
 This works because the on-chain data model is already complete: every list the app renders is either an
-O(1) aggregate (`VoteTally`, `RepostCount`, `ReplyCount`, `FollowerCount`, `FollowingCount`, `PollTally`)
-or a single-key, prefix-iterable reverse index (`ByAuthor`, `RepliesByParent`, `Followers`, `Following`,
-`VotesByAccount`, `Reposts`, `PollVotes`). The follow graph and every count already live on chain, so the
-node can assemble a "For-you" feed, a thread, a following timeline, or a profile page without asking any
-other system. The alternative — the client firing five JSON-RPC reads per card and chasing a per-card
-`Reposts` scan, roughly 150 round-trips for a 30-post page — is exactly what this API removes.
+O(1) aggregate (`VoteTally`, `ReplyCount`, `FollowerCount`, `FollowingCount`, `PollTally`) or a
+single-key, prefix-iterable reverse index (`ByAuthor`, `RepliesByParent`, `Followers`, `Following`,
+`VotesByAccount`, `PollVotes`). The follow graph and every count already live on chain, so the node can
+assemble a "For-you" feed, a thread, a following timeline, or a profile page without asking any other
+system. The alternative — the client firing several JSON-RPC reads per card, roughly 150 round-trips for
+a 30-post page — is exactly what this API removes.
 
 ## The `MicroblogApi` runtime API
 
@@ -27,20 +27,27 @@ no dependency on profile). The main surface:
 - `author_replies_page`, `likes_page` — the profile Replies and Likes tabs.
 - `search_posts(term, …)` — case-insensitive substring search over post bodies (an in-runtime linear scan).
 - `poll` / `poll_choice` — a poll's options and per-option tally, and the viewer's own choice.
-- `viewer_states(who, ids)` — the viewer's own vote + reposted flag over a batch of ids.
+- `viewer_states(who, ids)` — the viewer's own vote over a batch of ids.
 - `follow_edges`, `profile`, `resolve_identity`, `search_people`, `who_to_follow` — the People / profile surface.
 - `author_post_count(author)` — the author's top-level post count (replies excluded), the correct profile `postCount`.
 
 Every feed method returns `FeedPage { posts: Vec<EnrichedPost>, next_cursor: Option<u64> }`. An
 `EnrichedPost` carries everything a card renders in one shot: `id, author, text, parent, quote, at`, the
-tally (`up_weight, down_weight, up_count, down_count`), `repost_count, reply_count, is_poll`, the viewer
-overlay (`my_vote`, `reposted`), the author's `display_name`/`avatar`, and a one-level resolved `quoted`
-summary. Because the runtime computes the overlay node-side, a viewer-aware page needs no follow-up reads.
+tally (`up_weight, down_weight, up_count, down_count`), `reply_count, is_poll`, the viewer overlay
+(`my_vote`), the author's `display_name`/`avatar`, and a one-level resolved `quoted` summary. Because the
+runtime computes the overlay node-side, a viewer-aware page needs no follow-up reads.
 
-The viewer overlay is a runtime computation, not a client one: inside wasm, `Reposts::contains_key(id, who)`
-and `Votes::get(id, who)` decode cleanly, so `reposted` / `my_vote` come back stamped per post. (The app no
-longer surfaces a repost button, but the `Reposts` / `RepostCount` storage remains, and `repost_count` /
-`reposted` stay part of the enriched shape.)
+The viewer overlay is a runtime computation, not a client one: inside wasm, `Votes::get(id, who)` decodes
+cleanly, so `my_vote` comes back stamped per post.
+
+**One wart.** `EnrichedPost` and `ViewerState` still carry `repost_count: u32` and `reposted: bool`. Both
+are dead — reposting was retired in spec 204, the `Reposts` / `RepostCount` storage was deleted by
+migration v5, and the runtime now hardcodes `0` / `false`. The **fields** stay on the wire because the
+deployed frontend bundle decodes these structs field-by-field: removing them changes the return encoding
+and breaks the live feed for every client that has not reloaded. They cost 5 bytes a post and keep
+`MicroblogApi` at version 1. Do not read them, do not re-add the storage behind them, and do not
+re-declare the `Reposts` / `RepostCount` prefixes — a re-declared prefix resurrects the state the
+migration deleted.
 
 ## The top-level-post index
 

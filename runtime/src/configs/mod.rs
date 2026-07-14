@@ -800,38 +800,21 @@ impl pallet_cardano_observer::BeaconResolver<AccountId> for BeaconLookup {
     }
 }
 
-/// Weight-application adapter for pallet-cardano-observer: settle the capacity bucket at the OLD weight,
-/// set the talk-stake weight (writes ONLY `AllowedStake`), and ensure the relock-safe microblog capacity
-/// row exists. The lazy capacity meter reads the live weight, so `cap`/`rate` follow it and `weight = 0`
-/// collapses capacity on the next read — deliberately NO per-block refill (that would defeat the spam meter).
+/// Weight-application adapter for pallet-cardano-observer.
 ///
-/// Two things here are LOAD-BEARING:
+/// Deliberately a ONE-LINE delegation. The going-forward-only rule — settle the capacity bucket at the OLD
+/// weight, then write `AllowedStake`, and only when the weight actually changed — is not a property of this
+/// adapter; it is a property of the capacity meter, so it lives with the meter in
+/// [`pallet_microblog::Pallet::apply_observed_weight`], which is the SOLE way weight may enter the chain.
+/// (It used to live here, hand-copied into microblog's test mock so the tests could reach it — which meant
+/// nothing tested the code that actually ran. Now the mock drives the same function the runtime does.)
 ///
-/// 1. **`settle_capacity_at` runs BEFORE `apply_weight`, with the PREVIOUS weight.** The bucket regenerates
-///    lazily from `(now - last_block)` priced at the account's CURRENT weight, and only `consume`/`on_revoke`/
-///    `force_set_capacity` restamp `last_block`. So without this settle, a weight change re-prices the whole
-///    idle window at the NEW weight: an account observed with weight for the first time ~100 blocks after its
-///    bind is handed a FULL bucket instead of charging up from empty, and a relock after an observer unlock
-///    springs the old bucket back. Settling at the old weight closes that window (`old_weight == 0` settles to
-///    0 — a zero-weight period banks nothing). Reversed, it would settle at the NEW weight and bank the
-///    retro-credit into `cap_last`, making the bug permanent rather than merely visible on read.
-///
-/// 2. **The `previous != weight` guard.** The observer re-derives the FULL Cardano vault set every block and
-///    calls this for every credited account, so an unchanged account must cost nothing: no `AllowedStake`
-///    write, no `StakeSet` event, no capacity write. Without the guard, `settle_capacity_at` would fire for
-///    every account on every block — an O(MaxObserved) write storm inside a Mandatory inherent that cannot
-///    `ExhaustsResources` and would simply run the block past its Aura slot.
+/// The lazy capacity meter reads the live weight, so `cap`/`rate` follow it and `weight = 0` collapses
+/// capacity on the next read — deliberately NO per-block refill (that would defeat the spam meter).
 pub struct WeightApply;
 impl pallet_cardano_observer::WeightSink<AccountId> for WeightApply {
     fn set_weight(who: &AccountId, weight: u128) {
-        let previous = pallet_talk_stake::AllowedStake::<Runtime>::get(who);
-        if previous != weight {
-            pallet_microblog::Pallet::<Runtime>::settle_capacity_at(who, previous);
-            pallet_talk_stake::Pallet::<Runtime>::apply_weight(who, weight);
-        }
-        // Outside the guard: a first observation must prime the (relock-safe) row even when the
-        // account's weight happens to be unchanged. Idempotent — one `contains_key` read once primed.
-        pallet_microblog::Pallet::<Runtime>::on_first_bind(who);
+        pallet_microblog::Pallet::<Runtime>::apply_observed_weight(who, weight);
     }
 }
 
@@ -970,6 +953,18 @@ impl pallet_cardano_observer::Config for Runtime {
     // old hand-estimate priced the 4096 worst case at 8.2 ms — a 440x under-count of the only call in the
     // chain that cannot be skipped.
     //
+    // ⚠ These are CHARGES, not measurements, and the small end is a loose upper bound rather than a tight
+    // one. `observe`'s fitted base weight is ~42.6 ms (weights.rs), which is ~90% of that 47 ms live-chain
+    // figure — and an `observe` over empty vectors does ~6 reads / 4 writes and plainly cannot cost 42.6 ms
+    // (`set_enforcement`, one write + one event, measures 4.7 US). It is a regression artifact, not a
+    // constant: FRAME's benchmark CLI sweeps ONE component across its range while holding the others at
+    // their MAXIMUM, so with four components there is no datapoint anywhere near (0,0,0,0) and the
+    // intercept is pure extrapolation. Not fixable by re-running — the sampling design is the tool's, not
+    // ours — and it errs CONSERVATIVE (we over-charge the Mandatory inherent, never under-charge it), so
+    // it is safe. The cost is that ~2% of every block is reserved for work that is not happening. The
+    // per-entry coefficients, which are what actually govern scaling, are sound; do not read the base as
+    // the real cost of a quiet block.
+    //
     // ⚠ RESIDUAL CEILING — this fix does NOT lift it. The observation is still a FULL SNAPSHOT of every
     // bound identity in EVERY block, so per-block cost stays O(total participants), not O(changes): at the
     // ceiling the observer alone charges half the block, every block, forever. `MaxObserved` remains a hard
@@ -1002,7 +997,9 @@ impl pallet_cardano_observer::Config for Runtime {
     // The observation is authored every block, so 5 minutes of silence is not a hiccup — it is the sole
     // weight writer stopped. Long enough to ride out a db-sync blip without crying wolf; short enough that
     // a real freeze (a Cardano read that is down, or an observation over MaxObserved that makes
-    // `create_inherent` abstain) is on-chain and alertable within minutes rather than never.
+    // `create_inherent` abstain) is on-chain and alertable within minutes rather than never. The alarm only
+    // ARMS once the chain has applied its first observation, so `--dev` (which has no db-sync and never
+    // observes at all) does not trip it every run — see the pallet's `on_initialize`.
     type StallAfter = ConstU32<{ 5 * MINUTES }>;
     type BeaconResolver = BeaconLookup;
     type StakeResolver = StakeLookup;

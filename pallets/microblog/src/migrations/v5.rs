@@ -79,6 +79,17 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV4ToV5<T> {
         let removed = (reposts.backend as u64).saturating_add(repost_count.backend as u64);
         reads = reads.saturating_add(removed);
         writes = writes.saturating_add(removed);
+        // A `clear` that stops early hands back a cursor and leaves rows behind — orphaned under a prefix
+        // no pallet declares any more, and unreachable by any future migration that (correctly) assumes
+        // this one finished. Never panic here (a panic in `on_runtime_upgrade` bricks the upgrade); this
+        // must be LOUD instead. `post_upgrade` turns the same condition into a hard failure under the
+        // try-runtime dry-run, which is where it should be caught.
+        if reposts.maybe_cursor.is_some() || repost_count.maybe_cursor.is_some() {
+            log::error!(
+                target: crate::LOG_TARGET,
+                "migration v4->v5: the retired repost maps did NOT fully drain in one pass — rows remain orphaned under an undeclared prefix",
+            );
+        }
 
         // (b) Settle every capacity bucket at the weight it is CURRENTLY priced at, which materializes
         // exactly the value `current_capacity` already returns (see the module docs). Collect the keys
@@ -113,26 +124,30 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV4ToV5<T> {
                 (who, cap)
             })
             .collect();
-        // The live chain HAS repost rows — count them, never assert they are absent.
-        let reposts = retired::Reposts::<T>::iter().count() as u64;
-        let repost_counts = retired::RepostCount::<T>::iter().count() as u64;
+        // The live chain HAS repost rows — count them (an operator reading the dry-run wants to see how
+        // many rows this is about to delete), never assert they are absent. They are NOT carried into the
+        // payload: `post_upgrade` proves the strictly stronger property that BOTH maps are now empty, which
+        // a before/after count comparison cannot (a count says how many went, not that none stayed).
         log::info!(
             target: crate::LOG_TARGET,
-            "migration v4->v5 pre: {} capacity buckets, {reposts} Reposts rows, {repost_counts} RepostCount rows",
+            "migration v4->v5 pre: {} capacity buckets, {} Reposts rows, {} RepostCount rows (all repost rows will be DELETED)",
             capacities.len(),
+            retired::Reposts::<T>::iter().count(),
+            retired::RepostCount::<T>::iter().count(),
         );
-        Ok((capacities, reposts, repost_counts).encode())
+        Ok(capacities.encode())
     }
 
     #[cfg(feature = "try-runtime")]
     fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-        let (capacities, _reposts, _repost_counts): (Vec<(T::AccountId, u128)>, u64, u64) =
+        let capacities: Vec<(T::AccountId, u128)> =
             Decode::decode(&mut &state[..]).map_err(|_| {
                 sp_runtime::TryRuntimeError::Other("microblog v5: bad pre_upgrade state")
             })?;
         let now = frame_system::Pallet::<T>::block_number();
 
-        // (a) Both retired maps are fully drained — no orphan rows left under an undeclared prefix.
+        // (a) Both retired maps are fully drained — no orphan rows left under an undeclared prefix. This is
+        // also what catches a `clear` that stopped early and handed back a cursor.
         ensure!(
             retired::Reposts::<T>::iter().next().is_none(),
             "microblog v5: Reposts must be fully drained"

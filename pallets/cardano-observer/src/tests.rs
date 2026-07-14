@@ -1012,6 +1012,38 @@ fn a_zero_clock_anchors_at_the_current_block_instead_of_alarming() {
 }
 
 #[test]
+fn a_chain_that_never_observed_does_not_alarm() {
+    new_test_ext().execute_with(|| {
+        // `--dev`: no db-sync, so the node's IDP returns no data, `create_inherent` abstains on EVERY
+        // block, and no observation ever lands. The alarm says "the sole weight writer has STOPPED" — a
+        // false statement about a chain where it never started. Roll well past the threshold: silence.
+        for n in 1..=(STALL_AFTER * 4) {
+            System::set_block_number(n);
+            CardanoObserver::on_initialize(n);
+        }
+        assert!(crate::LastReference::<Test>::get().is_none());
+        assert!(
+            !crate::Stalled::<Test>::get(),
+            "a chain that never observed is not stalled — it never started"
+        );
+        assert_eq!(stalled_events(), 0, "no dev-run noise, no on-chain alarm");
+
+        // But the FIRST accepted observation arms it for good: from here the alarm has something to lose.
+        bind(A, ALICE);
+        observe_once(MAX_REFERENCE - 1);
+        let armed_at = System::block_number();
+        assert!(crate::LastReference::<Test>::get().is_some());
+
+        roll_to(armed_at + STALL_AFTER + 1);
+        assert!(
+            crate::Stalled::<Test>::get(),
+            "once a real observation has landed, a gap past StallAfter IS a stall"
+        );
+        assert_eq!(stalled_events(), 1);
+    });
+}
+
+#[test]
 fn a_frozen_observation_still_stamps_the_clock() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);

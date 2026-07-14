@@ -111,13 +111,20 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
-        /// Write `who`'s stake weight (insert `AllowedStake` + emit `StakeSet`). The sole entry point:
-        /// **pallet-cardano-observer** calls it from its verified Mandatory inherent (which applies its OWN
-        /// `MaxStakeWeight` skip-not-reject *before* calling, so a bad value is filtered out and never
-        /// reaches here). Writes **only** `AllowedStake` (the going-forward-only rule):
-        /// the lazy capacity meter reads this live, so a raise lifts the future `cap`/`rate` and
-        /// `weight = 0` collapses capacity on the next read — without touching the (relock-safe) capacity
-        /// row in `pallet-microblog`.
+        /// Write `who`'s stake weight (insert `AllowedStake` + emit `StakeSet`). Writes **only**
+        /// `AllowedStake` (the going-forward-only rule): the lazy capacity meter reads this live, so a raise
+        /// lifts the future `cap`/`rate` and `weight = 0` collapses capacity on the next read — without
+        /// touching the (relock-safe) capacity row in `pallet-microblog`.
+        ///
+        /// ⚠ **Do NOT call this directly.** It is `pub` only because the meter lives in another crate. The
+        /// single legal caller is [`pallet_microblog::Pallet::apply_observed_weight`], which SETTLES the
+        /// capacity bucket at the OLD weight before this overwrites it (and skips the write entirely when
+        /// the weight is unchanged). Reaching `apply_weight` around that helper changes the weight without
+        /// settling, so the account's whole idle window is re-priced at the NEW weight on the next read —
+        /// the retro-credit farm (a first-time locker gets a full battery; a relock springs the old bucket
+        /// back). The observer inherent reaches it through the runtime's `WeightSink`, which delegates to
+        /// that helper; it applies its OWN `MaxStakeWeight` skip-not-reject *before* calling, so a bad value
+        /// is filtered out and never reaches here.
         pub fn apply_weight(who: &T::AccountId, weight: StakeWeight) {
             let previous = AllowedStake::<T>::get(who);
             AllowedStake::<T>::insert(who, weight);

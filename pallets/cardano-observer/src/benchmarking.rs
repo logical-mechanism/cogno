@@ -38,6 +38,11 @@ use frame_system::RawOrigin;
 /// what makes every one of them fall out of the current set and get cleared.
 const CLAMP_BASE: u32 = 1_000_000;
 
+/// The upper bound of every `Linear` component on `observe`. MUST equal the runtime's (and the mock's)
+/// `MaxObserved` — the benchmark asserts it, because a `Linear`'s bounds must be literals and so cannot
+/// read `T::MaxObserved::get()` themselves. Keep the `Linear<0, 1024>` literals below in step with this.
+const MAX_OBSERVED: u32 = 1024;
+
 /// The 32-byte beacon for index `i`, big-endian so the set is ASCENDING — the canonical order the real
 /// `cogno-dbsync` reduction produces, and the order the clamp's `BTreeSet` build actually sees.
 fn beacon(i: u32) -> BeaconName {
@@ -68,6 +73,18 @@ mod benchmarks {
         p: Linear<0, 1024>,
         q: Linear<0, 1024>,
     ) -> Result<(), BenchmarkError> {
+        // The `Linear` bounds above are LITERALS (a `Linear` cannot read `T::MaxObserved::get()`), so pin
+        // them to the real bound here rather than trusting the comment. A `MaxObserved` bump that forgets
+        // to move the literals would fit the sole Mandatory call's weight over a range shorter than reality
+        // — silently under-weighting the one call in the chain that can never be skipped. This assert runs
+        // in the real `benchmark pallet` run (against the runtime's `MaxObserved`) AND under
+        // `impl_benchmark_test_suite!` (against the mock's), so either one drifting is a loud failure.
+        assert_eq!(
+            T::MaxObserved::get(),
+            MAX_OBSERVED,
+            "MaxObserved changed: move `observe`'s `Linear<0, {MAX_OBSERVED}>` component bounds with it",
+        );
+
         let min_lock = T::MinLock::get();
         // Every observed value differs from the weight `BenchmarkSetup` seeds (`min_lock`), so no entry can
         // take the sink's no-op branch; and all of them sit far below `MaxStakeWeight`/`MaxVotingPower`, so

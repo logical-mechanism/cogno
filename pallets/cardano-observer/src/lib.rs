@@ -387,7 +387,9 @@ pub mod pallet {
 
     /// The latched stall alarm: `true` once the observer has gone [`Config::StallAfter`] blocks without
     /// applying an observation; cleared by the next accepted `observe`. LATCHED, not recomputed, so
-    /// [`Event::ObservationStalled`] fires exactly ONCE per episode rather than every block.
+    /// [`Event::ObservationStalled`] fires exactly ONCE per episode rather than every block. It ARMS only
+    /// after the chain's first-ever accepted observation ([`LastReference`] is `Some`) — a chain that never
+    /// started is not a chain that stopped.
     ///
     /// This is the ONLY on-chain signal that the sole weight writer has stopped. `create_inherent` drops
     /// the ENTIRE inherent when an observation exceeds [`Config::MaxObserved`] (the `BoundedVec::try_from`
@@ -470,8 +472,11 @@ pub mod pallet {
         /// stalled CHAIN. This records THAT weight stopped, durably and alertably; the node's `log::error!`
         /// still says WHY.
         ///
+        /// The alarm reports that observation STOPPED, which means it can only arm on a chain where it ever
+        /// STARTED — see the [`LastReference`] guard below.
+        ///
         /// The weight is stated directly rather than benchmarked: the hook is one comparison plus, at
-        /// worst, two reads / one write / one event, and `DbWeight` prices exactly that. The common path
+        /// worst, three reads / one write / one event, and `DbWeight` prices exactly that. The common path
         /// (an observation applied last block) is a single read.
         fn on_initialize(now: BlockNumberFor<T>) -> Weight {
             let last = LastAppliedAt::<T>::get();
@@ -490,6 +495,18 @@ pub mod pallet {
                 // Already latched: once per episode, not once per block.
                 return T::DbWeight::get().reads(2);
             }
+            // A chain that has never applied a SINGLE observation is not stalled — it never started, and
+            // "the sole weight writer has STOPPED" is a false statement about it. `--dev` is exactly this
+            // chain: it has no db-sync, so the node's IDP returns no data, `create_inherent` abstains on
+            // every block, and `LastAppliedAt` never moves past the anchor above. Without this guard every
+            // dev run latches the alarm ~5 minutes in and logs a chain-is-broken ERROR that is pure noise,
+            // and every dev chain carries `Stalled = true` in state forever. `LastReference` is `Some` from
+            // the first accepted observation onward, so a real chain arms the alarm the moment it has
+            // anything to lose — and a production chain whose observer never worked from genesis has zero
+            // weight for everybody (nobody can post at all), which needs no alarm to notice.
+            if LastReference::<T>::get().is_none() {
+                return T::DbWeight::get().reads(3);
+            }
             Stalled::<T>::put(true);
             log::error!(
                 target: LOG_TARGET,
@@ -499,7 +516,7 @@ pub mod pallet {
                 last_applied: last,
                 blocks,
             });
-            T::DbWeight::get().reads_writes(2, 2)
+            T::DbWeight::get().reads_writes(3, 2)
         }
 
         /// Both unlock-clamp bases are `BoundedVec<_, MaxObserved>`. LOWERING `MaxObserved` under live state

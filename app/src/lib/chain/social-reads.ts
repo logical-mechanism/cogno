@@ -4,14 +4,12 @@
 // reverse maps + MicroblogApi.
 //
 // ⛔ NEVER iterate all `Votes` entries to sum a tally — the chain maintains the denormalized
-// aggregate maps (`VoteTally`, `RepostCount`, `PollTally`) exactly so the client doesn't have to.
+// aggregate maps (`VoteTally`, `PollTally`) exactly so the client doesn't have to.
 // All weight/score values are u128 ⇒ bigint; counts are u32 ⇒ number.
 //
 // Storage shapes (verified against pallets/microblog/src/lib.rs):
 //   VoteTally(u64) -> Tally { up_weight:u128, down_weight:u128, up_count:u32, down_count:u32 }  (ValueQuery)
-//   RepostCount(u64) -> u32                                                                       (ValueQuery)
 //   Votes(u64, who) -> VoteRecord { dir: VoteDir, weight:u128 } | None                            (OptionQuery)
-//   Reposts(u64, who) -> () | None                                                                (OptionQuery, UNIT value)
 //   Polls(u64) -> Poll { options: Vec<Vec<u8>> } | None  ⚠ PAPI UNWRAPS the single field → Binary[] (OptionQuery)
 //   PollTally(u64, u8) -> OptionTally { weight:u128, count:u32 }                                  (ValueQuery, DoubleMap)
 //   PollVotes(u64, who) -> PollVoteRecord { option:u8, weight:u128 } | None                       (OptionQuery)
@@ -78,8 +76,9 @@ export async function readVotingPower(api: CognoApi, who: Ss58): Promise<bigint>
 }
 
 /**
- * The viewer's own reputation vote on `target`. Unlike `Reposts`, `AccountVotes` carries a non-unit
- * `VoteRecord`, so `getValue` distinguishes Some/None cleanly — a plain point read (no getEntries hack).
+ * The viewer's own reputation vote on `target`. `AccountVotes` carries a non-unit `VoteRecord`, so
+ * `getValue` distinguishes Some/None cleanly — a plain point read (no getEntries hack, which a unit-valued
+ * map would have forced).
  */
 export async function readViewerAccountVote(
   api: CognoApi,
