@@ -1,6 +1,6 @@
 "use client";
 
-// Composer (base) — the text-entry engine for every authoring flow (doc 03 §7, doc 09 §4).
+// Composer (base) — the text-entry engine for every authoring flow.
 //
 // PRESENTATIONAL. It owns ONLY the draft text + the live byte measurement. It NEVER builds an
 // extrinsic and NEVER subscribes to a read/capacity hook: the surface owns `useCapacity` +
@@ -9,10 +9,10 @@
 // classified by the surface via @/lib/chain/capacity.draftStatus). The zero-locked-ADA "no posting
 // power" gate is surfaced by the self-contained NoPostingPowerNotice child (like CapacityMeter), with
 // `noPostingPower` hard-disabling the CTA where the surface knows it. On submit the composer hands back
-// a `ComposerDraft` via `onSubmit(draft)` and OPTIMISTICALLY clears its textarea instantly (doc 09
-// §6.1 — the surface closes the modal + inserts the pending card).
+// a `ComposerDraft` via `onSubmit(draft)` and OPTIMISTICALLY clears its textarea instantly (the
+// surface closes the modal + inserts the pending card).
 //
-// Toolbar is stripped to chain-backed affordances (doc 09 §12): exactly the Poll toggle (top-level
+// Toolbar is stripped to chain-backed affordances: exactly the Poll toggle (top-level
 // post only) + an OPTIONAL text-only emoji insert helper. NO media / GIF / location / audience /
 // schedule / poll-duration. The ByteCounter ring (UTF-8 BYTES, D1) is the single source of truth the
 // CTA gates off; a RateLimitNotice line (D5) shows when the surface says capacity is exhausted.
@@ -40,7 +40,7 @@ import type { ReactNode, CSSProperties } from "react";
 /** Runtime Microblog::MaxLength (Vec<u8>), measured as UTF-8 BYTES (D1). */
 export const MAX_POST_BYTES = 512;
 
-// The searchable emoji board (doc 09 §4.1). Lazy so its emoji dataset (~570KB) downloads as its own
+// The searchable emoji board. Lazy so its emoji dataset (~570KB) downloads as its own
 // chunk only when a user first opens the picker — it never touches the main composer bundle. Emoji are
 // still inserted as plain UTF-8 that counts toward the byte budget; this is NOT a media affordance.
 const EmojiPickerPanel = lazy(() => import("./emoji/EmojiPickerPanel"));
@@ -100,14 +100,14 @@ export interface ComposerProps {
   /** Extra toolbar controls injected by the surface (rendered after the built-in Poll/emoji buttons). */
   toolbarExtras?: ReactNode;
   /**
-   * Toggle this composer into poll mode (top-level posts only — doc 09 §4.4). When provided AND
+   * Toggle this composer into poll mode (top-level posts only). When provided AND
    * mode='post', the toolbar shows the built-in IconPoll toggle; the surface owns the actual
    * mode swap (post ↔ poll). `pollActive` highlights it when poll mode is on.
    */
   onTogglePoll?: () => void;
   pollActive?: boolean;
   /**
-   * Show the emoji picker in the toolbar (doc 09 §4.1) — a searchable native-emoji board whose picks
+   * Show the emoji picker in the toolbar — a searchable native-emoji board whose picks
    * are inserted as plain UTF-8 into the textarea (byte-counted); NOT a media affordance. Default true;
    * pass false to hide the affordance.
    */
@@ -137,7 +137,7 @@ export interface ComposerProps {
   draftExtras?: Pick<ComposerDraft, "parentId" | "quotedId" | "pollOptions">;
 }
 
-/** CTA label per mode + session gate (doc 09 §4.3 / §5.3). */
+/** CTA label per mode + session gate. */
 function ctaLabel(mode: ComposerMode, status: Viewer["status"]): string {
   if (status === "not-connected") return "Connect wallet";
   if (status === "not-identity-bound") return "Finish setup";
@@ -218,7 +218,7 @@ export function Composer({
   const [measure, setMeasure] = useState<ByteMeasure>({ bytes: 0, remaining: maxBytes, over: false });
 
   const pending = submitState === "pending";
-  const sessionGated = viewer.status !== "ready"; // relabel + reroute, not silently dead (doc 09 §5.3)
+  const sessionGated = viewer.status !== "ready"; // relabel + reroute, not silently dead
 
   // Insert a plain UTF-8 emoji at the caret — counts toward the byte budget, clamped to maxBytes (D1).
   const insertEmoji = useCallback(
@@ -248,7 +248,7 @@ export function Composer({
     [text, maxBytes, setText, clampable, syncMentionQuery],
   );
 
-  // Validity (doc 09 §5.4 precedence): for a quote the chain allows empty text but the UI requires a
+  // Validity (precedence): for a quote the chain allows empty text but the UI requires a
   // non-whitespace byte; reply/post require non-empty too; poll requires a non-empty question.
   const nonEmpty = text.trim().length > 0;
   const overLimit = measure.over;
@@ -260,7 +260,7 @@ export function Composer({
     onDirtyChange?.(nonEmpty);
   }, [nonEmpty, onDirtyChange]);
 
-  // CTA disabled rules — §5.4 order: session(reroute) > validity > capacity > pending. No posting
+  // CTA disabled rules — order: session(reroute) > validity > capacity > pending. No posting
   // power (zero locked ADA) and the unfinished mandatory stake step are hard blocks, same as rate-limited.
   const disabled = sessionGated
     ? false // session-gated CTA is ACTIVE (it reroutes), never greyed
@@ -315,7 +315,7 @@ export function Composer({
     markSubmitted(text);
     onSubmit(buildDraft());
     dismissMentions(); // close the popover; the refs are retired by the prune, not here
-    // OPTIMISTIC: clear the textarea instantly (doc 09 §6.1). Controlled drafts are cleared by the surface.
+    // OPTIMISTIC: clear the textarea instantly. Controlled drafts are cleared by the surface.
     if (!isControlled) {
       setInnerText("");
       if (taRef.current) taRef.current.style.height = "auto";
@@ -326,7 +326,7 @@ export function Composer({
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // Let the mention popover claim navigation keys first (↑/↓ move, Enter/Tab pick, Esc close).
       if (mentionKeyDown(e)) return;
-      // ⌘/Ctrl+Enter submits; Enter is a newline (X parity, doc 09 §7.1).
+      // ⌘/Ctrl+Enter submits; Enter is a newline (X parity).
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
         submit();
@@ -336,7 +336,7 @@ export function Composer({
   );
 
   const label = ctaLabel(mode, viewer.status);
-  // Live-announce remaining only when ≤ 20 bytes left (avoid spam — doc 09 §11).
+  // Live-announce remaining only when ≤ 20 bytes left (avoid spam).
   const announce = measure.remaining <= 20;
 
   // Count image links in the draft (matching PostBody's reveal-on-open posture — NO auto-fetch here;
@@ -473,7 +473,7 @@ export function Composer({
 }
 
 /**
- * A text-only emoji insert helper (doc 09 §4.1) — NOT a media affordance. A tiny popover of plain
+ * A text-only emoji insert helper — NOT a media affordance. A tiny popover of plain
  * UTF-8 emoji; picking one inserts it at the caret (counted by the ByteCounter). No image/sticker.
  */
 function EmojiPicker({ onPick }: { onPick: (e: string) => void }) {

@@ -1,6 +1,6 @@
 "use client";
 
-// DiagnosticsSection — Settings (doc 12). A read-only, prod-safe snapshot of the node connection + the
+// DiagnosticsSection — Settings. A read-only, prod-safe snapshot of the node connection + the
 // chain identity it sees. Replaces the old "Advanced" section: the dev-account picker is gone (the
 // consumer build posts only through a real wallet). NO secrets and nothing editable — just the
 // connection, genesis/runtime, and block heights. Block numbers appear ONLY here and in the

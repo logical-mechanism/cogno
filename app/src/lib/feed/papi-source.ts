@@ -6,19 +6,15 @@
 // read ONE parent's children via the `RepliesByParent` reverse map + the `ReplyCount` aggregate;
 // liveness rides `NextPostId.watchValue` (`liveHeadId`), NOT `Posts.watchEntries()`.
 //
-// CHAIN-TRUTH for the things the indexer derives:
+// Where each derived fact comes from, all of it straight off the chain:
 //   - revocation = `CognoGate.PkhOf[account]` ABSENT (revoke removes the binding; the posts stay).
 //   - identity-hash → account is the reverse `CognoGate.AccountOf[hash]` map.
-//   - weight is `TalkStake.AllowedStake[account]` (Cardano-sourced lovelace, M2d).
+//   - weight is `TalkStake.AllowedStake[account]` (Cardano-sourced lovelace).
 //   - vote/poll tallies + the viewer's own state come from the aggregate maps (social-reads.ts).
+//   - substring post search + people search are `MicroblogApi.search_posts` / `search_people` (an
+//     in-runtime linear scan), and the reverse Replies tab is `author_replies_page`.
 //
-// Since the all-Rust restart there is NO indexer: the node serves EVERYTHING the SubQuery indexer used
-// to. The last three folded in at P8b are substring post search + people search
-// (`MicroblogApi.search_posts` / `search_people`, the in-runtime linear scan) and the reverse Replies
-// tab (`author_replies_page`).
-//
-// The keyed pre-spec-120 fallback path this reader used to carry is GONE — see feed/source.ts. The one
-// remaining fallback, in `thread()`, is a RESILIENCE path (a viral post can blow the state_call limit),
+// The one fallback, in `thread()`, is a RESILIENCE path (a viral post can blow the state_call limit),
 // not a compatibility one.
 //
 // This file does NOT modify reads.ts — it only consumes it (+ social-reads.ts).
@@ -204,8 +200,8 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
   }
 
   async function profile(args: ProfileArgs): Promise<ProfileView> {
-    // Both reverse tabs are node-served since the all-Rust restart: Replies via the spec-200
-    // `author_replies_page` (below), Likes via the spec-118 `VotesByAccount` reverse index (below).
+    // Both reverse tabs are node-served: Replies via `author_replies_page`, Likes via the
+    // `VotesByAccount` reverse index.
     // Resolve to an account: directly, or via the reverse AccountOf[identityHash] map.
     let account: Ss58 | undefined = args.author;
     if (!account && args.identityHash) {

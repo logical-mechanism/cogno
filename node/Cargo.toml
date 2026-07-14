@@ -1,6 +1,6 @@
 [package]
 name = "cogno-chain-node"
-description = "The cogno-chain solochain node (forked from polkadot-sdk solochain-template @ stable2603-3)."
+description = "The cogno-chain solochain node — Aura + GRANDPA, with a custom proposer that seals the observed Cardano block anchor into each header."
 version.workspace = true
 license = "Apache-2.0"
 authors.workspace = true
@@ -36,13 +36,19 @@ cogno-keyfile = { workspace = true }
 # In-node observer-liveness Prometheus metrics — the `cogno_observer_*` gauges registered on the node's
 # `config.prometheus_registry()` (so chain-liveness alerts staying green can't mask a stale observer).
 substrate-prometheus-endpoint = { default-features = true, workspace = true }
-frame-benchmarking-cli = { default-features = true, workspace = true }
+# Benchmark-only, and OPTIONAL on purpose. Both are used solely from `node/src/benchmarking.rs`, which
+# is itself `#[cfg(feature = "runtime-benchmarks")]`. Left non-optional they still land in the default
+# dependency graph, dragging 150 crates — including 18 strict `GPL-3.0-only` ones (the polkadot-*, xcm
+# and tracing-gum trees, pulled in via frame-benchmarking-cli -> cumulus-*) — into a binary this crate
+# licenses Apache-2.0. Gating them takes the shipped node to ZERO GPL-3.0-only crates; the `sc-*` stack
+# that remains is GPL-3.0-or-later WITH Classpath-exception-2.0, which permits exactly this linking.
+frame-benchmarking-cli = { default-features = true, optional = true, workspace = true }
 frame-metadata-hash-extension = { default-features = true, workspace = true }
 frame-system = { default-features = true, workspace = true }
 futures = { features = ["thread-pool"], workspace = true }
 jsonrpsee = { features = ["server"], workspace = true }
 pallet-microblog = { default-features = true, workspace = true }
-pallet-skip-feeless-payment = { default-features = true, workspace = true }
+pallet-skip-feeless-payment = { default-features = true, optional = true, workspace = true }
 pallet-transaction-payment = { default-features = true, workspace = true }
 pallet-transaction-payment-rpc = { default-features = true, workspace = true }
 sc-basic-authorship = { default-features = true, workspace = true }
@@ -85,6 +91,8 @@ default = ["std"]
 std = ["cogno-chain-runtime/std"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [
+	"dep:frame-benchmarking-cli",
+	"dep:pallet-skip-feeless-payment",
 	"frame-benchmarking-cli/runtime-benchmarks",
 	"frame-system/runtime-benchmarks",
 	"pallet-transaction-payment/runtime-benchmarks",

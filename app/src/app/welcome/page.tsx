@@ -1,6 +1,6 @@
 "use client";
 
-// WelcomePage — /welcome (surface 11). The connect → derive → CIP-8 bind onboarding stepper, then the
+// WelcomePage — /welcome. The connect → derive → CIP-8 bind onboarding stepper, then the
 // power-ups step, which now has TWO required, non-skippable sub-steps in order: (1) bind the stake key
 // (voting power) — required and ordered first so a wallet that can't sign its stake is caught before any
 // ADA is locked; (2) lock 100 ADA into the L1 vault for talk-capacity (a bound account with zero locked
@@ -9,14 +9,14 @@
 // posting power). Reading stays open throughout (read-only browse).
 //
 // The stepper is driven by session.sessionState (@/lib/session) + a local subStep within
-// connected_unbound (surface 11 §6.1):
+// connected_unbound:
 //   connecting / disconnected → 'connect'
 //   binding                   → 'bind'
 //   connected_unbound         → subStep ('account' then 'bind')
 //   bound*                    → 'powerups'
 // Fast-path to 'powerups' when bound===true on connect (returning user).
 //
-// HONESTY PURGE (surface 11 §13): no verified badge, no trust labels, no "signed ≠ finalized", no block
+// HONESTY PURGE: no verified badge, no trust labels, no "signed ≠ finalized", no block
 // numbers / finalized chips, no anchor UI, no capacity battery. The dual-key model surfaces only as
 // friendly copy. No dev-account UI here (the dev-account picker was removed — the //Alice path is now
 // programmatic-only via signerCtl.setDevAccount, not surfaced in Settings).
@@ -108,7 +108,7 @@ export default function WelcomePage() {
   usePendingLockSync(vault, signerCtl.signer.ss58);
   const pending = usePendingCapacity(api, signerCtl.signer.ss58, postingPower);
 
-  // Derive the active step (surface 11 §6.1).
+  // Derive the active step.
   const welcomeStep: WelcomeStep =
     sessionState === "connecting"
       ? "connect"
@@ -163,7 +163,7 @@ export default function WelcomePage() {
     router.replace(readReturnTo(window.location.search));
   }, [bouncingToFeed, router]);
 
-  // ── connect-error routing (toast vs inline) ──────────────────────────────────────────────────
+  // ── connect-error routing (toast vs inline) ────────────────────────────────────────────────────
   const [connectInlineError, setConnectInlineError] = useState<string | null>(null);
   const lastHandledError = useRef<string | null>(null);
   useEffect(() => {
@@ -180,7 +180,7 @@ export default function WelcomePage() {
     if (toastCopy) toast({ kind: "error", message: toastCopy });
   }, [signerCtl.error, toast]);
 
-  // ── focus the step heading on each transition (a11y, §12) ────────────────────────────────────
+  // ── focus the step heading on each transition (a11y) ───────────────────────────────────────────
   // The powerups step swaps its own heading as on-chain state lands (checking → "Lock ADA" → "Almost
   // there" → "You're all set"), all under welcomeStep==='powerups'. Key the focus on that sub-state too
   // so focus follows (and screen readers re-announce) the new heading instead of dropping to <body>.
@@ -195,7 +195,7 @@ export default function WelcomePage() {
     return () => window.cancelAnimationFrame(id);
   }, [welcomeStep, powerupsBanner]);
 
-  // ── actions ──────────────────────────────────────────────────────────────────────────────────
+  // ── actions ────────────────────────────────────────────────────────────────────────────────────
   const onConnect = useCallback(
     (walletId: string) => {
       setConnectInlineError(null);
@@ -242,7 +242,7 @@ export default function WelcomePage() {
   const chainReady = !!api && !!client;
   const bootOk = boot?.ok ?? true;
 
-  // Neutral "deciding" loader (surface 11 §6): shown while a reconnecting key's bound-read is in flight
+  // Neutral "deciding" loader: shown while a reconnecting key's bound-read is in flight
   // (checkingBound) — so the connect/account step never flashes, incl. the first post-derive frame since
   // checkingBound is set during render, not an effect — while we're bouncing an already-onboarded user
   // to the feed (so power-ups never flashes), OR while a returning user's stake/posting-power reads are

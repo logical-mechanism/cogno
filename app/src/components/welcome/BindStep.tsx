@@ -1,14 +1,14 @@
 "use client";
 
-// BindStep — Step 3 of onboarding (surface 11 §3.4 / §7.3 / §14). The REQUIRED identity bind:
+// BindStep — Step 3 of onboarding. The REQUIRED identity bind:
 // "Register account" → useIdentity.bind(walletId), which signs a CIP-8 self-proof ONCE and submits a
 // FEELESS, BARE (unsigned) link_identity_signed extrinsic — no fee, no transaction. On bound===true
 // the page auto-advances to power-ups. While binding the CTA is a disabled Spinner + "Approve the
-// signature…" narration. On error we surface the §7.3 inline states with Try again; the
+// signature…" narration. On error we surface the inline states with Try again; the
 // bound-to-another-account case is a hard danger that does not advance.
 //
 // Writes are gated on chain readiness: when the chain isn't connected or the boot guard is failing,
-// the CTA is disabled with the §14 copy (no honesty framing — just "try again later").
+// the CTA is disabled with the copy (no honesty framing — just "try again later").
 
 import { useMemo } from "react";
 import styles from "./BindStep.module.css";
@@ -35,7 +35,7 @@ interface BindError {
   danger: boolean;
 }
 
-// Map the hook's stringified error to the canonical §14 copy. The hook throws specific messages we
+// Map the hook's stringified error to the canonical copy. The hook throws specific messages we
 // can key on; anything else falls through to the submit-rejected line with the raw reason.
 function classifyError(raw: string): BindError {
   const m = raw.toLowerCase();
@@ -98,6 +98,32 @@ export function BindStep({
       <p className={styles.body}>
         Register to claim this account. Your wallet signs once to prove it&apos;s yours.
       </p>
+
+      {/* The consent block. Every line below is a property of the chain, not a policy we could soften:
+          - the bind is 1:1 and public (CognoGate.PkhOf / AccountOf), and the stake bind that follows
+            writes your 28-byte Cardano stake credential in the clear (CognoGate.StakeCredOf);
+          - there is no delete_post — Microblog call_index 1 is permanently vacant, content is append-only;
+          - there is no user-callable unbind: `revoke` is committee-origin only, and it writes a
+            permanent `Tombstoned` entry that `link_identity_signed` then refuses to bind again.
+          Do not soften this into a tooltip or a docs link. It is the last screen before it is true. */}
+      <div className={styles.consent} role="note">
+        <p className={styles.consentLead}>This is permanent. There is no undo.</p>
+        <ul className={styles.consentList}>
+          <li>
+            <strong>Your wallet becomes public.</strong> This account is linked 1:1 to your Cardano
+            wallet on-chain, and the stake step that follows publishes your stake credential — from it
+            anyone can read the balances, NFTs and staking history behind everything you ever post.
+          </li>
+          <li>
+            <strong>Posts can never be deleted.</strong> Not by you, not by anyone. The chain has no
+            delete.
+          </li>
+          <li>
+            <strong>You cannot unregister.</strong> Only the chain&apos;s committee can revoke a
+            binding, and a revoked wallet is blocked from ever registering again.
+          </li>
+        </ul>
+      </div>
 
       <button
         type="button"

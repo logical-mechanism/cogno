@@ -101,7 +101,7 @@
   outline: none;
 }
 
-/* ── Mobile / tablet (≤1019px): single-column drill-down ───────────────────────────────────── */
+/* ── Mobile / tablet (≤1019px): single-column drill-down ─────────────────────────────────────── */
 @media (max-width: 1019px) {
   /* Not drilled: show the master list, hide the detail. */
   .shell:not(.drilled) .detail {
@@ -113,7 +113,7 @@
   }
 }
 
-/* ── Desktop (≥1020px): master/detail side by side ─────────────────────────────────────────── */
+/* ── Desktop (≥1020px): master/detail side by side ───────────────────────────────────────────── */
 @media (min-width: 1020px) {
   .shell {
     flex-direction: row;

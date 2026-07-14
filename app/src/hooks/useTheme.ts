@@ -1,6 +1,6 @@
 "use client";
 
-// useTheme — dark-first theme toggle (doc 02 §9). Reads/writes the `data-theme` attribute on
+// useTheme — dark-first theme toggle. Reads/writes the `data-theme` attribute on
 // the root <html> and persists the choice to localStorage['cg-theme']. The pre-paint boot
 // script in the root layout sets the attribute before first paint (no flash); this hook keeps
 // React in sync and flips it on toggle. Default is "dark".

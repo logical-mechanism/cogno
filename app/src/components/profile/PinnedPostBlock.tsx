@@ -1,6 +1,6 @@
 "use client";
 
-// PinnedPostBlock — the author's pinned post hoisted above the Posts list (doc 07 §5.1).
+// PinnedPostBlock — the author's pinned post hoisted above the Posts list.
 //
 // Profile.pinnedPostId is a bare on-chain id, NOT existence-validated; the surface resolves the single
 // post (via source.thread(id).root — the seam has no ONE_POST, so thread().root IS the one-post

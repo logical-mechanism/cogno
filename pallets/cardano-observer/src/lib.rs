@@ -7,7 +7,7 @@
 //! OUTPUT rather than a trusted oracle injection. Aura+GRANDPA are unchanged. Full design +
 //! determinism contract: `docs/IN-PROTOCOL-OBSERVATION.md`.
 //!
-//! ## What is inherent data vs on-chain logic (§4.1)
+//! ## What is inherent data vs on-chain logic
 //! The ONLY thing carried as inherent data is the raw observed `(beacon, lovelace)` set as-of a stable
 //! reference slot (the node-side `InherentDataProvider` does that IO, byte-identically across nodes
 //! via the shared `cogno-dbsync` reduction logic). Everything else is
@@ -16,7 +16,7 @@
 //! `MaxStakeWeight` bound, weight application + capacity priming ([`Config::WeightSink`] = a
 //! talk-stake + microblog adapter), and the unlock clamp.
 //!
-//! ## The two enforcement layers (§6)
+//! ## The two enforcement layers
 //! - [`ProvideInherent::check_inherent`] does the CROSS-NODE read match only: the importer compares the
 //!   author's observation against its OWN node's read at the same reference. When the reduced `entries`
 //!   differ, the carried `inputs_commitment` (a `blake2_256` of the pre-reduction candidate set — the
@@ -29,11 +29,11 @@
 //!   `execute_block`), so anything that must hold for EVERY node is enforced in the Mandatory
 //!   dispatchable below, which DOES run in `execute_block`.
 //! - The `observe` dispatchable is `DispatchClass::Mandatory` and `is_inherent`-only (pool-inadmissible,
-//!   the §5.2 mutual-exclusion invariant). It enforces, on every node: reference monotonicity, the
+//!   the mutual-exclusion invariant). It enforces, on every node: reference monotonicity, the
 //!   stability sanity bound, the `MaxStakeWeight` skip-not-reject, account resolution, weight + capacity
 //!   application, and the unlock clamp.
 //!
-//! ## Honest posture (§2/§11)
+//! ## Honest posture
 //! `check_inherent`'s "every producer re-derives" is load-bearing only with MULTIPLE independent block
 //! producers — on a single-operator stack this is **D4-SHAPED, not D4-TRUST** (it buys consensus-pinned
 //! auditability, not trust). In the all-Rust restart this inherent is the **SOLE weight writer**:
@@ -80,10 +80,9 @@ pub type BeaconName = [u8; 32];
 pub type StakeCredential = [u8; 28];
 
 /// The stable Cardano reference the observation was taken as-of (carried in the inherent). The `slot`
-/// is a deterministic function of the PARENT block (so author + importer agree; §5.1) and is the as-of
+/// is a deterministic function of the PARENT block (so author + importer agree) and is the as-of
 /// reference. `block_hash` is the SEALED stable-block anchor: the header hash of the latest stable
-/// Cardano block AT/UNDER `slot` (the partner-chains McHash anchor, in-protocol-observation §15.3 /
-/// Midnight delta A.1). The custom proposer seals it into the block
+/// Cardano block AT/UNDER `slot` — the partner-chains McHash anchor. The custom proposer seals it into the block
 /// HEADER (the `cobs` PreRuntime digest, an external-auditability artifact), and
 /// [`ProvideInherent::check_inherent`] now re-validates BOTH `slot` + `block_hash` + `entries` cross-node.
 /// This is safe (it does NOT spuriously fork) because the anchor is the latest stable block ≤ `slot`,
@@ -91,7 +90,7 @@ pub type StakeCredential = [u8; 28];
 /// table holds EVERY block, so that row is UNIQUE and identical across every fully-synced db-sync (≤1
 /// block/slot on settled history; the reference is ≥ the stability window old = immutable Cardano history).
 /// An importer whose db-sync is BEHIND the reference abstains (→ `CannotVerify`) via the node-side
-/// point-existence guard in the IDP, never reaching a FALSE mismatch here (§15.3). (MAINNET
+/// point-existence guard in the IDP, never reaching a FALSE mismatch here. (MAINNET
 /// PREREQUISITE: db-sync must run full / non-pruned, retaining block history back to the reference.)
 #[derive(
     Encode,
@@ -141,7 +140,7 @@ pub struct CardanoObservation {
 /// The inherent error. The node-side `try_handle_error` branches on this: `Mismatch` and
 /// `ComputeDiverged` are propagated (`Some(Err(_))` → block rejected); `CannotVerify` is swallowed
 /// (`Some(Ok(()))` → accept without verifying). A blanket-swallow would defeat the entire
-/// fork-protection (§6).
+/// fork-protection.
 #[derive(Encode, Decode, Debug)]
 pub enum InherentError {
     /// The author's observation reflects DIFFERENT Cardano data than the importer's own read at the same
@@ -153,7 +152,7 @@ pub enum InherentError {
     /// author's REDUCED `entries` differ from the importer's — i.e. the same data reduced to a different
     /// observed set. This is a determinism divergence in the shared reduction (a bug / a version skew
     /// between binaries), not a data disagreement. FATAL (a divergent reduction must not be consensus-
-    /// pinned), but reported distinctly so operators can tell it apart from a genuine data fork (§6).
+    /// pinned), but reported distinctly so operators can tell it apart from a genuine data fork.
     ComputeDiverged,
 }
 
@@ -175,7 +174,7 @@ pub trait BeaconResolver<AccountId> {
 
 /// Apply an observed weight to an account: set talk-stake weight + prime/clamp the microblog capacity
 /// row, via their existing internal entry points (preserving the going-forward-only / unlock→0 /
-/// never-delete-the-row invariants, `ECONOMICS.md` §6.1). `weight == 0` is the unlock clamp. Implemented
+/// never-delete-the-row invariants; see docs/ECONOMICS.md). `weight == 0` is the unlock clamp. Implemented
 /// by a talk-stake + microblog adapter in the runtime; a recorder in tests.
 pub trait WeightSink<AccountId> {
     fn set_weight(who: &AccountId, weight: u128);
@@ -307,13 +306,13 @@ pub mod pallet {
         type WeightInfo: WeightInfo;
     }
 
-    /// The last accepted Cardano reference — the monotonicity anchor (§5.6). `None` before the first
+    /// The last accepted Cardano reference — the monotonicity anchor. `None` before the first
     /// observation.
     #[pallet::storage]
     pub type LastReference<T: Config> = StorageValue<_, CardanoRef, OptionQuery>;
 
     /// The previously-credited `(beacon, account)` set — required to compute the unlock-clamp set
-    /// (`LastObserved \ current`); a bare digest could not yield "which identities dropped out" (§4.2).
+    /// (`LastObserved \ current`); a bare digest could not yield "which identities dropped out".
     #[pallet::storage]
     pub type LastObserved<T: Config> =
         StorageValue<_, BoundedVec<(BeaconName, T::AccountId), T::MaxObserved>, ValueQuery>;
@@ -326,7 +325,7 @@ pub mod pallet {
     /// flag-INDEPENDENT) but stops writing `AllowedStake`/`VotingPower`, so a determinism bug can be halted
     /// before a bad observation corrupts weight, then fixed via a committee-governed runtime upgrade. In the
     /// frozen state weight simply holds at its last values. ⚠ On a single-operator stack the "every
-    /// producer re-derives" property is still D4-SHAPED, not D4-TRUST (§2) — enforcement being on buys
+    /// producer re-derives" property is still D4-SHAPED, not D4-TRUST — enforcement being on buys
     /// consensus-pinned auditability, not trust, until ≥3 independent producers exist.
     #[pallet::type_value]
     pub fn DefaultEnforce<T: Config>() -> bool {
@@ -374,7 +373,7 @@ pub mod pallet {
 
     #[pallet::error]
     pub enum Error<T> {
-        /// The proposed reference is older than the last accepted one (anti-regression, §5.6). A
+        /// The proposed reference is older than the last accepted one (anti-regression). A
         /// malicious author cannot rewind observed Cardano state.
         ReferenceRegressed,
         /// The proposed reference is fresher than the stability window allows (closer to the block's own
@@ -387,7 +386,7 @@ pub mod pallet {
         /// Apply a verified Cardano observation. INHERENT-ONLY (`is_inherent` → true ⇒ pool-inadmissible)
         /// and `Mandatory`. Runs in `execute_block` on every node; its enforcement (monotonicity,
         /// stability bound, `MaxStakeWeight` skip, account resolution, weight/capacity application, unlock
-        /// clamp) is what holds even on nodes that skip `check_inherent` (§6).
+        /// clamp) is what holds even on nodes that skip `check_inherent`.
         #[pallet::call_index(0)]
         #[pallet::weight((T::WeightInfo::observe(entries.len() as u32), DispatchClass::Mandatory))]
         pub fn observe(
@@ -406,7 +405,7 @@ pub mod pallet {
             // extrinsic — recomputable by anyone against an archived db-sync at `reference.slot`.
             let _ = inputs_commitment;
 
-            // Anti-regression (§5.6): never accept an older reference than the chain already holds.
+            // Anti-regression: never accept an older reference than the chain already holds.
             if let Some(last) = LastReference::<T>::get() {
                 ensure!(reference.slot >= last.slot, Error::<T>::ReferenceRegressed);
             }
@@ -437,7 +436,7 @@ pub mod pallet {
                     Some(a) => a,
                     None => continue,
                 };
-                // MIN_LOCK floor, then the MaxStakeWeight bound as SKIP-not-reject (§7 step 3). A skipped
+                // MIN_LOCK floor, then the MaxStakeWeight bound as SKIP-not-reject. A skipped
                 // over-cap entry is counted (surfaced in the `ObservationApplied` event) so it is not
                 // silently mis-read as agreement.
                 let weight = if *lovelace >= min_lock {
@@ -465,7 +464,7 @@ pub mod pallet {
                 credited = credited.saturating_add(1);
             }
 
-            // Unlock clamp (§7 step 6): a previously-credited account absent from the current set → 0.
+            // Unlock clamp: a previously-credited account absent from the current set → 0.
             // FROZEN (`set_enforcement(false)`): the weight write is skipped, and — critically — the
             // `LastObserved` basis is HELD (advanced only when enforcing, below), so an account that unlocks
             // DURING a freeze stays in the basis and is clamped to 0 on the first enforcing block after
@@ -567,10 +566,10 @@ pub mod pallet {
         /// determinism bug can be halted before a bad observation corrupts weight; fix it via a
         /// committee-governed runtime upgrade, then re-enable). Gated by [`Config::EnforceOrigin`] (the
         /// 3-of-5 committee; sudo-free). NOT an inherent (`is_inherent` matches only `observe`), so this is a
-        /// normal pool-admissible governance call — the §5.2 per-call mutual-exclusion invariant is preserved.
+        /// normal pool-admissible governance call — the per-call mutual-exclusion invariant is preserved.
         ///
         /// ⚠ On a single-operator stack the "every producer re-derives" property is D4-SHAPED, not D4-TRUST
-        /// (no independent verifier; §2) — trustlessness graduates as validators federate (≥3 producers).
+        /// (no independent verifier) — trustlessness graduates as validators federate (≥3 producers).
         #[pallet::call_index(1)]
         #[pallet::weight(T::WeightInfo::set_enforcement())]
         pub fn set_enforcement(origin: OriginFor<T>, enabled: bool) -> DispatchResult {
@@ -598,7 +597,7 @@ pub mod pallet {
         /// The maximum legitimate reference slot for THIS block = `cardano_slot(now) − StabilitySlots`,
         /// or `None` when the block time predates the Shelley anchor (so the bound is skipped). All
         /// arithmetic is CHECKED (release WASM has overflow-checks off; a naive subtraction would WRAP,
-        /// not fail — §5.2). Mirrors `cardano_reference_slot` in the `cogno-dbsync` reduction.
+        /// not fail). Mirrors `cardano_reference_slot` in the `cogno-dbsync` reduction.
         fn max_reference_for_now() -> Option<u64> {
             let now_s = T::UnixTime::now().as_secs();
             let t0 = T::ShelleyStartUnix::get();
@@ -664,7 +663,7 @@ pub mod pallet {
             };
             // Compare the FULL reference (slot + the SEALED `block_hash` anchor) + the canonical entries. The
             // anchor is the latest stable Cardano block ≤ the reference (see [`CardanoRef`]) — re-validating
-            // it is what makes the header-sealed `cobs` anchor importer-checked (Midnight delta A.1). It does
+            // it is what makes the header-sealed `cobs` anchor importer-checked. It does
             // NOT spuriously fork: a behind importer abstains (→ CannotVerify above) before it can reach a
             // FALSE mismatch, and two honest caught-up nodes agree on the stable anchor by construction.
             if reference == &local.reference

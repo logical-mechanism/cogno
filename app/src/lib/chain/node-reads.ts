@@ -64,11 +64,11 @@ function mapQuoted(q: EnrichedPost["quoted"]): QuotedRef | undefined {
  *
  * `hasViewer` says whether the request actually carried a `viewer`. The runtime returns
  * `my_vote: None` REGARDLESS of whether a viewer was supplied, so the payload
- * alone can't tell "no viewer" apart from "viewer, but no vote/repost". Only when `hasViewer` is true
+ * alone can't tell "no viewer" apart from "viewer, but no vote". Only when `hasViewer` is true
  * do we stamp the `myVote` overlay; otherwise we leave the key UNSET (`undefined`, exactly
  * as the keyed path does), so `carriedViewerStates` excludes the post and `useViewerStates` reads it
  * per-card. Without this, a viewer-less node fetch for a logged-in account would carry a `myVote: null`
- * that the overlay-bypass would wrongly trust, hiding the user's real votes/reposts.
+ * that the overlay-bypass would wrongly trust, hiding the user's real votes.
  */
 export function mapEnrichedPost(e: EnrichedPost, hasViewer: boolean): CognoPost {
   const upWeight = BigInt(e.up_weight ?? 0n);
@@ -108,8 +108,8 @@ export function mapEnrichedPost(e: EnrichedPost, hasViewer: boolean): CognoPost 
 /**
  * Build the viewer-overlay map (id-string → {@link ViewerPostState}) `useViewerStates` consumes to
  * SKIP its per-card `viewerPostState` read. Only posts carrying a node-stamped overlay (`myVote`
- * defined — the spec-120 path passed a `viewer`) are included; keyed/indexer posts (`myVote`
- * undefined) are omitted, so those ids fall back to the per-card read, unchanged.
+ * defined — the read passed a `viewer`) are included; the rest are omitted, so those ids fall back to
+ * the per-card read.
  */
 export function carriedViewerStates(posts: CognoPost[]): Map<string, ViewerPostState> {
   const out = new Map<string, ViewerPostState>();
@@ -253,7 +253,7 @@ export async function nodeAuthorPostCount(api: CognoApi, author: Ss58): Promise<
   return microblogApi(api).author_post_count(author);
 }
 
-// ── the all-Rust restart (fork/all-rust, P8b): the last three indexer-only reads, folded into the node ──
+// ── search: substring post search, people search, and the reverse Replies tab ────────────────────
 
 /**
  * Full-text post search (`MicroblogApi.search_posts`): an ASCII-case-insensitive substring match on
@@ -262,7 +262,7 @@ export async function nodeAuthorPostCount(api: CognoApi, author: Ss58): Promise<
  * `next_cursor` on a sparse-match range; `chasePage` follows it to fill a full page — the SAME
  * cursor-chasing as the feeds, so a no-match dense stretch never yields an empty-but-more page early.
  * Read at BEST (like the feeds): Latest results carry the viewer overlay, so the read-after-write
- * reconciliation of a just-cast vote/repost on a result needs the fresh best block (see `BEST`).
+ * reconciliation of a just-cast vote on a result needs the fresh best block (see `BEST`).
  */
 export async function nodeSearchPosts(
   api: CognoApi,
@@ -300,10 +300,10 @@ export async function nodeAuthorRepliesPage(
 
 /**
  * People search (`MicroblogApi.search_people`): a case-insensitive substring match on the display name,
- * ranked by follower count. Maps each `PersonSummary` → the client `Suggestion` (the same shape the old
- * indexer `searchPeople` returned): `display_name`/`avatar` Binary → trimmed string via `binTextOpt`,
- * `weight` u128 → bigint (0 ⇒ `undefined`, matching the who-to-follow / indexer producers), the exact
- * `follower_count`. `term` is a runtime `Vec<u8>`, passed as a `Binary`.
+ * ranked by follower count. Maps each `PersonSummary` → the client `Suggestion`: `display_name`/`avatar`
+ * Binary → trimmed string via `binTextOpt`, `weight` u128 → bigint (0 ⇒ `undefined`, matching the
+ * who-to-follow producer), the exact `follower_count`. `term` is a runtime `Vec<u8>`, passed as a
+ * `Binary`.
  */
 export async function nodeSearchPeople(
   api: CognoApi,

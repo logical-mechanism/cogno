@@ -1,6 +1,6 @@
 "use client";
 
-// PostBody — render a post's text (doc 03 §4, D1).
+// PostBody — render a post's text (D1).
 //
 // TEXT ONLY, with one exception: an image LINK (an http(s)/ipfs:// URL ending in an image extension,
 // or a bare ipfs:// CID) renders behind a click-to-reveal cover (RevealImage) so the browser never

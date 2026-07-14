@@ -89,7 +89,7 @@
   outline-offset: var(--cg-focus-ring-offset);
 }
 
-/* ── recent-searches dropdown ─────────────────────────────────────────────────────────────────── */
+/* ── recent-searches dropdown ────────────────────────────────────────────────────────────────── */
 .recent {
   position: absolute;
   top: calc(100% + var(--cg-space-1));

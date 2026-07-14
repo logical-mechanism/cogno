@@ -62,7 +62,9 @@ jobs:
         with:
           fetch-depth: 0
       # SHA-pinned, not @v3: a mutable major tag on a third-party action is the tj-actions/changed-files
-      # supply-chain footgun, and this workflow otherwise avoids third-party actions entirely.
+      # supply-chain footgun. Every third-party action in this repo is SHA-pinned for the same reason —
+      # only GitHub's own actions/* are taken on a major tag. The trailing comment is the version the
+      # SHA was resolved from; it is a label, not the pin.
       - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         id: filter
         with:
@@ -77,6 +79,8 @@ jobs:
               - '**/Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
+              # deny.toml gates the supply-chain job below; an edit to it must re-run that job.
+              - 'deny.toml'
               - 'node/**'
               - 'runtime/**'
               - 'cli/**'
@@ -137,21 +141,26 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
       # rustc is pinned by rust-toolchain.toml to 1.93.0 (the toolchain the polkadot-sdk stable2606
-      # train is built against); dtolnay pins the same version. clippy is NOT in the pin's components,
-      # so request it explicitly (with rust-src + the wasm targets the substrate wasm-builder needs —
-      # mirrors rust-toolchain.toml). `cargo fmt --check` is intentionally NOT gated: the codebase
-      # predates a rustfmt config and is tab-styled; enforcing a repo-wide reformat is out of scope.
-      - uses: dtolnay/rust-toolchain@1.93.0
+      # train is built against); dtolnay pins the same version. clippy and rustfmt are NOT in the pin's
+      # components, so request them explicitly (with rust-src + the wasm targets the substrate
+      # wasm-builder needs — mirrors rust-toolchain.toml).
+      - uses: dtolnay/rust-toolchain@45f5412a0cc5dee553bb061a37369fc8e63fa137 # 1.93.0
         with:
-          components: clippy, rust-src
+          components: clippy, rustfmt, rust-src
           targets: wasm32v1-none, wasm32-unknown-unknown
+      # The workspace is rustfmt-clean under the default (no rustfmt.toml) config, so this gate costs
+      # nothing to hold and stops the tree drifting back out. It runs BEFORE apt/cache, so a formatting
+      # miss fails in seconds instead of ten minutes. The FRAME-generated weights.rs files carry
+      # `#![cfg_attr(rustfmt, rustfmt_skip)]` and are left alone — regenerate them, never reformat them.
+      - name: fmt (workspace)
+        run: cargo fmt --all --check
       # librocksdb-sys compiles RocksDB (C++) via bindgen even for `cargo clippy`, and libp2p needs
       # protoc — so the native toolchain deps are required before the workspace check, not just the build.
       - name: system build deps (rocksdb/bindgen + protobuf)
         run: >
           sudo apt-get update &&
           sudo apt-get install -y clang llvm-dev libclang-dev protobuf-compiler cmake libssl-dev pkg-config
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           # The repo cache sits at 10.9 GB against GitHub's hard 10 GB limit, so it is in permanent LRU
           # eviction — and the thing being evicted is this 1.29 GB rust cache, because every PR branch was
@@ -204,6 +213,34 @@ jobs:
       # confirmation on top of the warmed artifacts.
       - name: build (workspace)
         run: cargo build --workspace --locked
+      # Nothing above compiles the `#[benchmarks]` modules — they are all behind
+      # `#[cfg(feature = "runtime-benchmarks")]`, so the code that PRODUCES every dispatch weight in
+      # weights.rs could stop compiling and CI would stay green until someone next re-benchmarked.
+      # Checking the node with the feature on pulls the runtime and every pallet in with it, which is
+      # the whole benchmark surface in one command. SKIP_WASM_BUILD: the wasm is already built above,
+      # and this gate is about whether the benchmark code type-checks, not about the blob.
+      - name: check (--features runtime-benchmarks — the benchmark code must still compile)
+        env:
+          SKIP_WASM_BUILD: "1"
+        run: cargo check --locked -p cogno-chain-node --features runtime-benchmarks
+
+  # Supply chain. `cargo deny check advisories bans sources` against deny.toml, which records the
+  # advisories that are knowingly accepted (all of them transitive polkadot-sdk deps today) with a
+  # reason each. Its own job, not a step in `rust`: it needs no build, so it must not sit behind a
+  # 27-minute one — and a red advisory should be legible on its own check, not buried in a build log.
+  # The `licenses` check is deliberately not run; see the note in deny.toml.
+  supply-chain:
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-latest
+    # cargo-deny shells out to `cargo metadata`, which makes rustup materialize the rust-toolchain.toml
+    # pin (1.93.0 + both wasm targets) before it can read the graph. That download is most of this job.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories bans sources
 
   contracts:
     needs: changes
@@ -212,7 +249,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: aiken-lang/setup-aiken@v1
+      # The `version:` input pins the aiken COMPILER (a compiler bump moves the live script hash); this
+      # SHA pins the action that installs it.
+      - uses: aiken-lang/setup-aiken@1728a4be43be099752e22d8b841706caaa6fdd88 # v1.0.4
         with:
           version: v1.1.22
       - name: aiken check

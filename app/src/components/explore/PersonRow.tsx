@@ -1,6 +1,6 @@
 "use client";
 
-// PersonRow — the shared "person" row primitive for the Explore People tab (surface 10 §6). A single
+// PersonRow — the shared "person" row primitive for the Explore People tab. A single
 // row = Avatar (md) + DisplayName + Handle (mono) + follower count + a FollowButton. It is the same
 // shape the RightRail who-to-follow uses, at a larger touch size; PersonResult is a thin wrapper over
 // it. A `Suggestion` carries no bio, so there is NO bio line (per the brief). The whole who-block

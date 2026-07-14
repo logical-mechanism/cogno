@@ -1,13 +1,13 @@
 "use client";
 
-// FollowCounts — the X-exact "N Following · M Followers" inline figures (doc 07 §4.5).
+// FollowCounts — the X-exact "N Following · M Followers" inline figures.
 //
 // Two modes. Without the onOpen* handlers the figures are non-interactive <span>s (the original
 // display-only shape). WITH them, each figure becomes a <button> that opens the Following / Followers
 // list (the FollowsPanel sub-view); the profile surface wires them and owns the ?follows= sync. Counts
-// come from the node's denormalised follower/following counters; on PAPI-direct (caps.follows === false)
-// the SURFACE omits this component entirely (renders nothing) — never "0 Followers". Numbers are plain
-// JS `number` (node Int), grouped with Intl.NumberFormat.
+// come from the node's denormalised follower/following counters. When they can't be read the SURFACE
+// omits this component entirely (renders nothing) — never "0 Followers". Numbers are plain JS `number`
+// (node Int), grouped with Intl.NumberFormat.
 
 import styles from "./FollowCounts.module.css";
 

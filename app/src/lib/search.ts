@@ -1,4 +1,4 @@
-// search — shared helpers for the query text that drives the Explore search (surface 10) and the
+// search — shared helpers for the query text that drives the Explore search and the
 // RightRail box. The node runs a raw-byte ASCII-case-insensitive substring scan over un-normalized
 // stored text, so we deliberately do NOT Unicode-normalize the query (that would rewrite an NFD term
 // to NFC and stop it byte-matching NFD-authored content). We only trim + collapse whitespace, which

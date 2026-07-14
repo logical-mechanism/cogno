@@ -13,7 +13,8 @@ flag already folds in the Ed25519 signature check AND that the COSE-header addre
 signing key. On top of that this asserts the cogno-chain-specific binding invariants — the SAME ones
 the on-chain verifier enforces, so the two implementations must agree (a disagreement is a bug).
 
-M2 scope: WALLET-ONLY CIP-8 (DR-14). There is no observed Cardano vault yet, so "whole-Address ==
+Scope: WALLET-ONLY CIP-8. This oracle verifies the signature and the identity hash only — it does
+not observe the Cardano vault, so "whole-Address ==
 datum.owner" reduces to: the recovered signing Address IS the owner identity (its hash is what we
 bind), and it must be a VerificationKey-payment, non-script address. The vault-datum cross-check
 (recovered address == the observed vault's datum.owner) is the M2d seam — flagged below.
@@ -32,9 +33,10 @@ class VerifyError(Exception):
 
 
 def identity_hash_hex(addr: Address) -> str:
-    """DR-01 identity = the L1 beacon token_name = blake2b_256(cbor.serialise(owner Address)) —
+    """The identity = the L1 beacon token_name = blake2b_256(cbor.serialise(owner Address)) —
     the Plutus-Data CBOR of the credentials (NO network byte), NOT the raw CIP-19 address bytes.
-    Proven byte-identical to the Aiken contract's util.beacon_name (test_beacon.py), so L1/L3/L5 all
+    Proven byte-identical to the Aiken contract's util.beacon_name (test_beacon.py), so the contract,
+    the chain and the client all
     key on the SAME 32 bytes — this is what lets the follower match a CIP-8 binding to an observed
     on-chain vault UTxO in M2d."""
     return beacon_name_hex(addr)
@@ -45,7 +47,7 @@ def verify_bind(
     data_signature: dict,        # the CIP-30 DataSignature {"signature": hex, "key": hex}
     claimed_address: str,        # the bech32 address the frontend says it signed with
     sr25519_pubkey_hex: str,     # the 32-byte posting account hex (POST body)
-    expected_genesis: str,       # the follower's known L3 genesis hash (lowercase hex)
+    expected_genesis: str,       # the follower's known cogno-chain genesis hash (lowercase hex)
     consume_nonce,               # callable(account_hex, nonce_hex) -> None; raises VerifyError if invalid
     expected_network: Network = Network.TESTNET,  # the Cardano network this follower binds for (follower-5)
 ) -> str:
@@ -67,7 +69,7 @@ def verify_bind(
     if addr.encode() != claimed_address:
         raise VerifyError("recovered signing address != claimed signing_address")
 
-    # (2) v1: the payment credential must be a VerificationKey (DR-01) — this STRUCTURALLY rejects
+    # (2) the payment credential must be a VerificationKey — this STRUCTURALLY rejects
     #     any script-payment address, including the L1 vault (type-1) address one must never sign
     #     from (the wrong-address gotcha, structurally closed).
     if not isinstance(addr.payment_part, VerificationKeyHash):
@@ -87,7 +89,7 @@ def verify_bind(
         raise VerifyError("committed genesis != this chain's genesis (wrong chain / replay)")
 
     # (5) The committed account must equal the submitted posting key — this is what PREVENTS the
-    #     operator re-pointing the bind at a different L3 account (DR-02).
+    #     operator re-pointing the bind at a different chain account.
     if fields["account"].lower() != sr25519_pubkey_hex.lower():
         raise VerifyError("committed account != submitted sr25519 pubkey")
 
@@ -96,7 +98,7 @@ def verify_bind(
 
     # ── M2d SEAM: here is where the follower will additionally assert that this recovered Address
     #    matches the `datum.owner` of an OBSERVED on-chain talk_vault UTxO (db-sync) before
-    #    granting weight. In M2 (wallet-only CIP-8, DR-14) there is no vault yet — the address is
+    #    granting weight. This oracle is wallet-only CIP-8: it never reads a vault — the address is
     #    self-asserted; the committed payload + the 1:1 on-chain anchor are the v1 defenses. ──
 
     return identity_hash_hex(addr)

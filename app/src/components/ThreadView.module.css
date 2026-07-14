@@ -1,4 +1,4 @@
-/* ThreadView — the /post/[id] conversation surface (surface 08).
+/* ThreadView — the /post/[id] conversation surface.
  *
  * Monochrome: only the Post/Reply CTA + focus ring carry the accent (owned by Composer/PostCard).
  * Links and the "Replying to" affordance are text-colored, never accent-colored. The score row is the

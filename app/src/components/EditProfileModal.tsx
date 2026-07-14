@@ -1,6 +1,6 @@
 "use client";
 
-// EditProfileModal — the on-chain profile editor form (doc 07 §9 / doc 12 §3). PRESENTATIONAL: it owns
+// EditProfileModal — the on-chain profile editor form. PRESENTATIONAL: it owns
 // the six form fields + byte validation + the clear-confirm dialog, and hands the collected values UP
 // via onSaveProfile / onClearProfile. The persistent ModalRouteHost owns the actual write.
 //

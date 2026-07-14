@@ -1,7 +1,5 @@
 // Pure-logic test for the read-path selector. There is exactly ONE reader — the PAPI-direct node
-// source — so `makeFeedSource` always returns it. The node serves everything the old SubQuery indexer
-// did (feed / thread / profile / search / people / replies), so there is no branch left to select, and
-// no `caps` to advertise: the capability flags were all hardcoded `true` and have been deleted.
+// source — so `makeFeedSource` always returns it, for any api handle.
 
 import { describe, it, expect } from "vitest";
 import { makeFeedSource } from "./index";

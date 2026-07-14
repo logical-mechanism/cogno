@@ -1,6 +1,6 @@
 //! Test mock runtime for `pallet-cogno-gate`.
 //!
-//! This is the faithful **integration** mock for M2: it wires the real `CognoGate`,
+//! This is the faithful **integration** mock: it wires the real `CognoGate`,
 //! `Microblog`, and `TalkStake` together exactly as the runtime does (microblog's
 //! `IdentityGate = CognoGate`, the gate's `OnBind = Microblog`), so the tests exercise the
 //! actual `link_identity → is_allowed → post` flow, the `on_first_bind` provider/capacity
@@ -61,7 +61,8 @@ impl pallet_microblog::Config for Test {
 
 impl pallet_cogno_gate::Config for Test {
     type RuntimeEvent = RuntimeEvent;
-    // Root in the mock mirrors the v1 dev sudo escape hatch (DR-07).
+    // The mock uses Root for `FollowerOrigin`; the runtime wires the 3-of-5 committee (there is no
+    // sudo on-chain). Either way it is an `EnsureOrigin`, so the pallet body is identical.
     type FollowerOrigin = EnsureRoot<u64>;
     // The first-bind hook into microblog (primes the capacity row + provider ref).
     type OnBind = Microblog;

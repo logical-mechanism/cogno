@@ -1,6 +1,6 @@
 "use client";
 
-// ByteCounter — X's circular count ring, re-tuned to UTF-8 BYTES (doc 03 §8, D1).
+// ByteCounter — X's circular count ring, re-tuned to UTF-8 BYTES (D1).
 //
 // Measures `new TextEncoder().encode(value).length` — NOT value.length — against a byte cap
 // (512 post / 80 poll-option / 64 display_name / 256 bio / 128 avatar). Hard-blocks at the cap:

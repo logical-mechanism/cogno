@@ -1,4 +1,4 @@
-//! Unit / integration tests for `pallet-cogno-gate` — the M2 identity gate.
+//! Unit / integration tests for `pallet-cogno-gate` — the identity gate.
 //!
 //! These run against the real `CognoGate ↔ Microblog ↔ TalkStake` wiring (see `mock.rs`), so
 //! they prove the actual gate behaviour: an unbound account cannot post; the shared `do_bind` body
@@ -367,7 +367,7 @@ fn revoke_relocks_posting() {
         assert_ok!(bind(HASH_A, ALICE, None));
         assert_ok!(post_as(ALICE)); // bound → can post
 
-        // The follower (operator ban, DR-14) revokes the binding.
+        // The operator-ban origin revokes the binding.
         assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
         assert!(!PkhOf::<Test>::contains_key(ALICE));
         assert_eq!(AccountOf::<Test>::get(HASH_A), None);
@@ -382,7 +382,7 @@ fn revoke_relocks_posting() {
         // Re-locked: ALICE can no longer post.
         assert_noop!(post_as(ALICE), pallet_microblog::Error::<Test>::NotAllowed);
 
-        // The capacity row is KEPT (relock-farm guard) but its banked capacity is zeroed (gate-1).
+        // The capacity row is KEPT (relock-farm guard) but its banked capacity is zeroed.
         let row = pallet_microblog::Capacity::<Test>::get(ALICE).expect("row kept");
         assert_eq!(row.cap_last, 0);
 
@@ -395,7 +395,7 @@ fn revoke_relocks_posting() {
 
 #[test]
 fn bind_revoke_rebind_keeps_provider_accounting_balanced() {
-    // gate-1/gate-4: the bind/revoke lifecycle is symmetric — bind takes one provider ref, revoke
+    // The bind/revoke lifecycle is symmetric — bind takes one provider ref, revoke
     // releases it (and zeroes the banked capacity), and a rebind re-takes it. The capacity row is
     // never deleted, so the count returns to baseline across cycles with no leak.
     new_test_ext().execute_with(|| {

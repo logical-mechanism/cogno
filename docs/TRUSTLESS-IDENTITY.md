@@ -31,10 +31,10 @@ The bind extrinsic `link_identity_signed` (`call_index(2)`) is submitted as a **
 extrinsic:
 
 ```
-link_identity_signed(origin: None,
-                     cose_sign1: BoundedVec<u8, 512>,
-                     cose_key:   BoundedVec<u8, 128>,
-                     thread:     Option<Vec<u8>>)
+link_identity_signed(origin:         None,
+                     cose_sign1:     BoundedVec<u8, 512>,
+                     cose_key:       BoundedVec<u8, 128>,
+                     thread_pointer: Option<Vec<u8>>)
 ```
 
 The **CIP-8 proof is the authorization** — there is no fee payer, no nonce, and no signing account. That

@@ -1,6 +1,6 @@
 "use client";
 
-// Skeleton — shimmering placeholder rows matching the shape of loading content (doc 03 §19).
+// Skeleton — shimmering placeholder rows matching the shape of loading content.
 // Pure presentational: a `variant` selects a shape preset; `count` repeats it. Shimmer is a token
 // gradient sweep; under prefers-reduced-motion it falls back to a static block (handled in CSS).
 

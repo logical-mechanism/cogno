@@ -180,7 +180,7 @@ describe("postsOf", () => {
   });
 });
 
-// ── the retry countdown's precondition ────────────────────────────────────────────────────────────
+// ── the retry countdown's precondition ───────────────────────────────────────────────────────────
 //
 // useComposerGate renders "you can post again in ~Ns" from `blocks × SECS_PER_BLOCK`. It may only do so
 // for the kinds that actually CARRY `blocks`. The other two rate-limiting kinds do not, and a naive

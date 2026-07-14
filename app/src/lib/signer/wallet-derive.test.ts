@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// ── mock the browser-only MeshJS deps the module dynamically imports ──────────────────────────
+// ── mock the browser-only MeshJS deps the module dynamically imports ─────────────────────────────
 // A controllable fake wallet: tests set the change address + the signature it returns.
 const fake = {
   changeAddress: "addr_test_vkey",

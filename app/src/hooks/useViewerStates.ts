@@ -1,15 +1,13 @@
 "use client";
 
-// useViewerStates — the viewer's own vote/repost on a set of posts (drives the filled heart +
-// active repost icon). Reads via the seam (gated on caps.tallies; batched on the indexer, per-card
-// on PAPI) and MERGES the optimistic viewer overlay so a just-liked/reposted card reflects instantly
-// and reconciles when the read refetches.
+// useViewerStates — the viewer's own vote on a set of posts (drives the filled heart). Reads via the
+// seam and MERGES the optimistic viewer overlay, so a just-voted card reflects instantly and
+// reconciles when the read refetches.
 //
-// SPEC-120 BYPASS: a node-served page (the `caps.nodeFeedApi` MicroblogApi path) already carries each
-// post's `myVote`/`reposted`, stamped node-side. The caller passes that as `carried` (id-string →
-// overlay); for any post present there, this hook uses the carried overlay and SKIPS its per-card
-// `source.viewerPostState(id, who)` read — which on PAPI is the heavy `Reposts.getEntries` scan. Posts
-// absent from `carried` (the pre-120 keyed path) still fall back to the per-card read, unchanged.
+// A node-served page already carries each post's `myVote`, stamped node-side in the same state_call.
+// The caller passes that as `carried` (id-string → overlay); for any post present there, this hook
+// uses the carried overlay and SKIPS its per-card `source.viewerPostState(id, who)` read. Ids absent
+// from `carried` fall back to the per-card read.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
@@ -24,8 +22,8 @@ export function useViewerStates(
   who: Ss58 | null,
   /**
    * Optional per-post overlay already carried on a node-served page (id-string → state). When an id
-   * is present here, the hook trusts it and does NOT issue a `viewerPostState` read for that id (the
-   * spec-120 bypass). Build it from the page's posts (only those whose `myVote` is defined).
+   * is present here, the hook trusts it and does NOT issue a `viewerPostState` read for that id.
+   * Build it from the page's posts (only those whose `myVote` is defined) — see `carriedViewerStates`.
    */
   carried?: Map<string, ViewerPostState>,
 ): Map<bigint, ViewerPostState> {
@@ -72,8 +70,8 @@ export function useViewerStates(
     }
     let cancelled = false;
     const carriedNow = carriedRef.current;
-    // SPEC-120 BYPASS: an id whose overlay the node-served page already carries is read FROM that map;
-    // only the rest hit `source.viewerPostState` (on PAPI, the per-card `Reposts.getEntries` scan).
+    // An id whose overlay the node-served page already carries is read FROM that map; only the rest
+    // hit `source.viewerPostState`.
     Promise.all(
       postIds.map(async (id) => {
         const fromCarried = carriedNow?.get(String(id));

@@ -11,8 +11,8 @@
 //!     to the total.
 //!
 //! Ascending-id order is load-bearing: post ids are monotonic, so it reproduces the exact seq order
-//! the live `index_top_level` path assigns incrementally. Content is append-only (`delete_post` was
-//! removed in M0), so a single pass reconstructs the index exactly.
+//! the live `index_top_level` path assigns incrementally. Content is append-only (there is no
+//! `delete_post`), so a single pass reconstructs the index exactly.
 //!
 //! Wired into the runtime's `SingleBlockMigrations` and guarded by [`VersionedMigration`], so it runs
 //! exactly once (when the on-chain storage version is 3) and self-skips on any re-run.

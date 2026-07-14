@@ -1,12 +1,12 @@
-//! Benchmarking for `pallet-cogno-gate` (DR-05).
+//! Benchmarking for `pallet-cogno-gate`.
 //!
-//! `link_identity_signed` (the permissionless D1 self-proof) and `revoke` (`FollowerOrigin`-gated)
+//! `link_identity_signed` (the permissionless self-proof) and `revoke` (`FollowerOrigin`-gated)
 //! are benchmarked at their **worst case**: `link_identity_signed` over a REAL `MeshWallet.signData`
 //! fixture so it exercises the full on-chain verify (`ed25519_verify` + 2× blake2 + the bounded
 //! CBOR/address/payload parse) on top of `do_bind`'s reads/writes, and `revoke` after a prior bind
 //! (so it actually removes the maps + tombstones). The `revoke` origin is taken via
-//! `try_successful_origin`, correct under both `EnsureRoot` (v1 dev) and the DR-07
-//! `EitherOfDiverse<EnsureRoot, k-of-t>` widen.
+//! `try_successful_origin`, so the benchmark is correct for whatever `EnsureOrigin` the runtime wires
+//! (in production: the 3-of-5 committee).
 
 use super::*;
 use crate::Pallet as CognoGate;

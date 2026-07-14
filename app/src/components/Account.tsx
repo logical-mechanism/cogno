@@ -1,6 +1,6 @@
 "use client";
 
-// Account — the LeftNav bottom mini-widget (doc 01 §6.1 item 7). REPLACES the old M8 Account.tsx
+// Account — the LeftNav bottom mini-widget (item 7). REPLACES the old M8 Account.tsx
 // (the lock/exit/stake control surface — that work now lives in /settings).
 //
 // Connected (postingEnabled): Avatar + DisplayName + Handle (truncated ss58, mono), opening a small

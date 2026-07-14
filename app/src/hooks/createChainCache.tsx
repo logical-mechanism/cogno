@@ -16,7 +16,7 @@
 //
 // It also adds the one thing none of the four had: `invalidate()`.
 //
-// ── THE DIVERGENCES THIS PRESERVES (each is load-bearing; a naive merge erases them) ───────────────
+// ── THE DIVERGENCES THIS PRESERVES (each is load-bearing; a naive merge erases them) ─────────────
 //
 // 1. ERROR POLICY IS A PARAMETER, NOT DRIFT. reputation/weight/quote UNCOMMIT a failed key so it is
 //    retried the next time a card for it mounts. useAccountProfile deliberately COMMITS an empty value

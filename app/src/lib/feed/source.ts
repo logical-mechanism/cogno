@@ -1,19 +1,7 @@
 // The data-layer SEAM for reading the social feed. There is exactly ONE reader — the PAPI-direct node
-// source — and the seam is retained only so the React layer touches an interface, never a concrete
-// reader. As a TYPE that costs nothing. What it used to cost, and no longer does:
-//
-//   - `FeedCaps`: eleven capability flags, every one hardcoded `true`, gating ~28 conditionals across
-//     the components that could therefore never take their false branch. Worse than inert — actively
-//     misleading: useFollow still carried a comment reading "caps.follows (indexer-only; PAPI-direct
-//     returns empties)" from the indexer era, long after papi-source started reporting `follows: true`.
-//   - A COMPLETE second read implementation behind eight `nodeFeedApiReady()` branch points — keyed
-//     storage fallbacks for a pre-spec-120 node. The live chain is spec 203, and a pre-120 cogno node
-//     cannot sync it, so every one of those arms was unreachable.
-//   - `UnsupportedQuery`, thrown in four places, all with messages like "needs a spec-200 node".
-//   - `kind: "papi"`, a discriminated union with one member, documented as "diagnostic only".
-//
-// Endpoint NEUTRALITY is unaffected: a user still points the app at whatever node they trust
-// (lib/config/endpoints.ts). What is gone is compatibility with a cogno node that cannot exist.
+// source (feed/papi-source.ts) — and the seam is retained only so the React layer touches an
+// interface, never a concrete reader. Endpoint neutrality is unaffected: the app reads whatever node
+// the user points it at (lib/config/endpoints.ts).
 //
 // The reader keeps ONE fallback, in `thread()`: if the enriched state_call fails on a viral post (it
 // enumerates every reply in one shot, which can hit a resource limit) it drops to incremental keyed

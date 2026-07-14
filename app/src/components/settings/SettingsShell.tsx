@@ -1,7 +1,7 @@
 "use client";
 
 // SettingsShell — the master/detail (desktop ≥1020) + drill-down (mobile/tablet ≤1019) shell for the
-// Settings sections (doc 12 §1/§9). ONE React tree switched by CSS-Modules width classes — no
+// Settings sections. ONE React tree switched by CSS-Modules width classes — no
 // per-section routes (the static export has no /settings/[section]). The same `active` state drives
 // both layouts; the parent (SettingsPage) owns the hash mirror.
 //
@@ -40,8 +40,6 @@ export const SECTIONS: { id: SectionId; heading: string }[] = [
   { id: "diagnostics", heading: "Diagnostics" },
   { id: "appearance", heading: "Appearance" },
   { id: "about", heading: "About" },
-  // NOTE: Notifications preferences (reply/vote/repost/follow/quote) is a DEFERRED follow-up — see
-  // doc 12 §11. No section is rendered for it in v1; leave this seam.
 ];
 
 export function SettingsShell({
@@ -60,14 +58,14 @@ export function SettingsShell({
   const tablistRef = useRef<HTMLDivElement | null>(null);
   const panelHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
-  // On drilling into a panel (mobile/tablet), move focus to the panel heading (a11y §10).
+  // On drilling into a panel (mobile/tablet), move focus to the panel heading (a11y).
   useEffect(() => {
     if (drilled) panelHeadingRef.current?.focus();
   }, [drilled, active]);
 
   const activeHeading = SECTIONS.find((s) => s.id === active)?.heading ?? "Settings";
 
-  // Roving arrow-key navigation between the master rows (a11y §10).
+  // Roving arrow-key navigation between the master rows (a11y).
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       const idx = SECTIONS.findIndex((s) => s.id === active);

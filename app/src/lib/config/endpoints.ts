@@ -1,40 +1,46 @@
-// Endpoint-as-config. Neutrality is a v1 requirement (no hardcoded "blessed" node in the
-// UI, even in M1): the WS endpoint(s) the app talks to are user-overridable and persisted
-// locally. Reads stay best-effort; the user picks who they trust to read/broadcast through.
+// Endpoint-as-config. Neutrality is a requirement: the WS endpoint(s) the app talks to are
+// user-overridable and persisted locally. Reads stay best-effort; the user picks who they trust to
+// read/broadcast through.
 //
 // SSG-safe: this module is imported during static export, so it must NEVER touch
 // `window`/`localStorage` at module-evaluation time — only inside functions, guarded.
 //
 // Build-time seeds: NEXT_PUBLIC_* are inlined by Next at build (referenced literally so the static
-// export can substitute them), letting a real deployment ship its own defaults while the localhost
-// values stay as the dev fallback. A user override in localStorage always wins over both.
+// export can substitute them), letting a real deployment ship its own defaults. A user override in
+// localStorage always wins over both.
+
+/**
+ * The public preprod endpoint a clean clone falls back to, so `npm run dev` / `npm run build` work
+ * with zero configuration and show the real chain. It is a default, not a blessing: it is the first
+ * thing Settings lets you replace, and nothing else in the app hardcodes a host.
+ */
+const PUBLIC_WS = "wss://cogno.forum/rpc";
+
 const ENV_WS = process.env.NEXT_PUBLIC_WS_URL || "";
 const ENV_BLOCKFROST = process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID || "";
 
 /**
- * A production build MUST name its endpoint explicitly. Left to the fallback below, `next build`
- * stays green and emits a bundle every remote visitor resolves to *their own* `127.0.0.1:9944` —
- * which is nothing. The operator never sees it, because on the operator's machine there IS a node
- * on that port. Loopback is exempt (browsers treat it as a secure origin, and it is how you build
- * for a local `serve out`); anything else must be `wss://`, since a plaintext `ws://` to a public
- * host is mixed-content-blocked from the https page the export is served over.
+ * If a production build NAMES an endpoint, it must be one a browser can actually reach from the
+ * https page the export is served over: `wss://`, or a loopback `ws://` (browsers treat loopback as
+ * a secure origin, and it is how you build for a local `serve out`). A plaintext `ws://` to a public
+ * host is mixed-content-blocked, and would ship a bundle that silently reads nothing.
  *
- * `next build` sets NODE_ENV=production, so a bad value fails the build rather than the deploy.
+ * Unset is fine — it falls back to PUBLIC_WS. `next build` sets NODE_ENV=production, so a bad value
+ * fails the build rather than the deploy.
  */
-if (process.env.NODE_ENV === "production") {
+if (process.env.NODE_ENV === "production" && ENV_WS) {
   const loopback = ENV_WS.startsWith("ws://127.0.0.1") || ENV_WS.startsWith("ws://localhost");
   if (!ENV_WS.startsWith("wss://") && !loopback) {
     throw new Error(
-      `NEXT_PUBLIC_WS_URL must be a wss:// endpoint in a production build (got ${ENV_WS || "<unset>"}). ` +
-        `Set it to the public relay, e.g. wss://cogno.example.io/rpc. ` +
-        `A ws://127.0.0.1 value is accepted for a local build.`,
+      `NEXT_PUBLIC_WS_URL must be a wss:// endpoint in a production build (got ${ENV_WS}). ` +
+        `A ws://127.0.0.1 value is accepted for a local build; leave it unset to use ${PUBLIC_WS}.`,
     );
   }
 }
 
-/** The default node the dev build speaks to. The only network call the app makes. */
+/** The node the app speaks to out of the box. The only network call the app makes. */
 export const DEFAULT_WS_ENDPOINTS: string[] = [
-  ENV_WS && (ENV_WS.startsWith("ws://") || ENV_WS.startsWith("wss://")) ? ENV_WS : "ws://127.0.0.1:9944",
+  ENV_WS && (ENV_WS.startsWith("ws://") || ENV_WS.startsWith("wss://")) ? ENV_WS : PUBLIC_WS,
 ];
 
 /** localStorage key holding a JSON array of ws/wss URLs. */
@@ -89,24 +95,16 @@ export function getActiveWsUrl(): string {
   return getEndpoints()[0];
 }
 
-// (The trusted v1 Cogno-Follower endpoint was REMOVED: the node is the source of truth. The bind flow
-// no longer POSTs a CIP-8 proof to a follower — identity/stake binds are bare unsigned extrinsics
-// (spec 116+) and the bound talk-capacity weight is observed in-protocol by the node's cardano-observer
-// inherent, not granted by an off-chain follower.)
+// The node above is the ONLY app-chain endpoint there is to configure: feed / thread / profile /
+// search / people / replies are all served by its MicroblogApi runtime read API, and the CIP-8
+// identity / stake binds are feeless bare unsigned extrinsics submitted straight to it. There is no
+// indexer, no follower and no relay to point at.
 
-// (The Sponsored-Bind Relay endpoint was REMOVED in spec 116: the CIP-8 identity / stake binds are now
-// FEELESS, submitted as bare unsigned extrinsics, so there is no fee to sponsor and no relay to point at.
-// See `lib/chain/identity.ts` + `docs/TRUSTLESS-IDENTITY.md`.)
-
-// (The SubQuery GraphQL indexer endpoint was REMOVED in the all-Rust restart: reads are served
-// EXCLUSIVELY by the node's spec-200 MicroblogApi (feed / thread / profile / search / people /
-// replies), so there is no indexer to point at. See `lib/feed/papi-source.ts`.)
-
-// ── Blockfrost provider (M8) ─────────────────────────────────────────────────────────────
+// ── Blockfrost provider ──────────────────────────────────────────────────────────────────────────
 // The Cardano provider the in-browser vault lock/exit txs use (fetcher/submitter/evaluator +
 // live cost models). A preprod project id — exposed client-side by design so any visitor can
 // lock from their own wallet without a backend. Empty ⇒ the lock action is hidden. Config like
-// the WS/indexer endpoints: NEXT_PUBLIC_BLOCKFROST_PROJECT_ID seeds the default, a user override
+// the WS endpoint: NEXT_PUBLIC_BLOCKFROST_PROJECT_ID seeds the default, a user override
 // in localStorage wins.
 
 const BLOCKFROST_STORAGE_KEY = "cogno.blockfrost";

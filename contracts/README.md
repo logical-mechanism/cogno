@@ -1,8 +1,13 @@
 # cogno-chain L1 — `talk_vault`
 
 One merged Aiken (Plutus V3) validator implementing a per-user, **owner-reclaimable ADA vault**
-marked by a **beacon NFT**. It is the L1 anchor for cogno-chain's stake→talk-capacity mechanic
-(DR-01 / DR-18).
+marked by a **beacon NFT**. It is the L1 anchor for cogno-chain's stake→talk-capacity mechanic.
+
+It is **live on Cardano preprod** — beacon policy id / vault script hash
+`168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7`
+([Cexplorer](https://preprod.cexplorer.io/policy/168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7)) —
+and the committed artifacts are reproducible from this source. See [Verify the live script
+yourself](#verify-the-live-script-yourself).
 
 - `validators/talk_vault.ak` — the merged `mint` / `spend` / `else` validator + its test/bench suite.
 - `lib/validate.ak` — mint-side creation-invariant enforcement (recursion + length/uniqueness).
@@ -10,9 +15,9 @@ marked by a **beacon NFT**. It is the L1 anchor for cogno-chain's stake→talk-c
 - `lib/types.ak` — `VaultDatum`, `VaultRedeemer`, `MintTypeRedeemer`.
 
 The validator is parameterized by a single `min_lock: Int` (a lovelace floor). The beacon's
-`policy_id` **is this validator's own script hash** (DR-18); its `token_name` is
+`policy_id` **is this validator's own script hash**; its `token_name` is
 `blake2b_256(cbor.serialise(owner Address))`, binding the vault to the **whole** owner Address —
-payment **and** stake credential (DR-01).
+payment **and** stake credential.
 
 ## Trust model
 
@@ -54,6 +59,10 @@ never pay raw ADA to the vault address.**
 
 ## Build, test, benchmark
 
+The compiler is pinned to **aiken v1.1.22** (`aiken.toml`'s `compiler` field; CI installs the same
+version). Aiken writes its errors only to a TTY, so under a pipe or in an agent shell wrap the
+command: `script -qec "aiken check" /dev/null`.
+
 ```sh
 aiken check          # unit + property/fuzz + boundary tests (property tests: 100 samples each)
 aiken build          # regenerates plutus.json (the script blueprint + hash)
@@ -65,6 +74,44 @@ node scripts/regen-vault.mjs   # redeploy only: rebuilds vault.json (applied has
 Test dependency note: `aiken-lang/fuzz` is used only by the property tests and benchmarks; it is
 **not** linked into the on-chain script.
 
+## Verify the live script yourself
+
+The live vault is reproducible from this source — you do not have to take the hash on trust.
+
+**1. The blueprint hash** (`49ffbfc6…`, unparameterized). With aiken v1.1.22, from `contracts/`:
+
+```sh
+script -qec "aiken build" /dev/null && git diff --exit-code plutus.json   # clean = reproduced
+```
+
+A different aiken version still reproduces the same `compiledCode` and `hash` (checked on v1.1.23),
+but stamps its own version into `plutus.json`'s `preamble.compiler`, so the diff is not clean —
+compare `jq -r '.validators[0].hash' plutus.json` instead. This same rebuild-and-diff is a CI gate on
+every `contracts/**` change.
+
+**2. The applied vault hash** (`168a9710…` — the beacon policy id and the vault script hash). Applying
+`min_lock = 100_000_000` to the blueprint is what produces it, and `--verify` recomputes it and
+writes nothing:
+
+```sh
+(cd ../app && npm ci)                          # the MeshJS deps live in app/node_modules
+node scripts/regen-vault.mjs --verify          # exit 0 = the committed hashes derive from this source
+```
+
+**Three artifacts, one hash.** `contracts/plutus.json` is the unapplied blueprint;
+`contracts/vault.json` is the applied artifact (`vaultHash` + `appliedCbor`) that off-chain tooling
+reads; `app/src/lib/cardano/vault.json` is a byte-identical pinned copy the in-browser lock imports.
+`--verify` checks all three agree. The same policy id is consensus-pinned in the runtime as
+`ObsVaultPolicyId` (`runtime/src/configs/mod.rs`) — that constant is what ties on-chain talk-capacity
+to *this* script, and the observer counts nothing minted under any other policy.
+
+**3. On Cardano.** Every live vault carries one beacon minted under that policy (`total_supply: 1`
+each), and every vault address has it as its payment credential:
+
+```sh
+curl -s "https://preprod.koios.rest/api/v1/policy_asset_list?_asset_policy=168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7"
+```
+
 ## Audit
 
 See [`audits/`](./audits/) for an **automated / AI-assisted self-audit** (the `audit-machine` tool — a
@@ -74,7 +121,9 @@ the audit's only on-chain finding (**L-01** — the spend continuation now pins
 `reference_script == None`, mirroring the mint arm) and adds the recommended negative, property,
 and benchmark coverage (I-01 through I-06).
 
-**Redeploy impact.** Changing the validator changes the compiled script hash (and therefore the
+## Redeploy impact
+
+Changing the validator changes the compiled script hash (and therefore the
 `min_lock`-applied policy_id / vault address). This **orphans any previously-deployed vault**: the
 old UTxOs must be exited under the old script, and a fresh vault minted under the new one. The
 artifact that bakes the L1 hash for the off-chain tooling is the **`vault.json`** (vaultHash +
@@ -85,3 +134,12 @@ Never hand-edit the hash — the applied `policy_id` must be recomputed through 
 `{ int: … }` param form (a bare number silently yields a different, unspendable hash). The frontend
 PAPI descriptors describe the Substrate runtime and carry **no**
 L1 script hash, so they are unaffected.
+
+## The `DR-NN` markers in the source
+
+The `.ak` sources and `aiken.toml` carry `DR-01`-style markers. They point into a design-decision
+register that was kept privately during development and is not published; the rest of the repo has
+been scrubbed of these pointers. They survive *here* for exactly one reason: editing a `.ak` file —
+even a comment — recompiles the script, moves the blueprint hash, and orphans the vault that is
+currently live on preprod. Leaving a stale comment is the cheaper mistake. Read them as historical
+markers with no referent, not as a document you are missing.

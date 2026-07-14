@@ -1,6 +1,6 @@
-//! Unit tests for `pallet-microblog` (plain posting + the M2c talk-capacity meter).
+//! Unit tests for `pallet-microblog` (posting + the talk-capacity meter).
 //!
-//! Note: the M0 post/delete tests call the dispatchables directly, which BYPASSES the
+//! Note: the tests call the dispatchables directly, which BYPASSES the
 //! `CheckCapacity` transaction extension (extensions only run in the full tx pipeline) — so
 //! they remain valid unchanged. The capacity *gate* (ExhaustsResources at the pool) and the
 //! *feeless* fee waiver are exercised end-to-end by the node acceptance harness; here we unit
@@ -1112,7 +1112,7 @@ fn force_set_capacity_is_gated() {
 fn force_set_capacity_clamps_to_stake_backed_ceiling() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        // No stake ⇒ ceiling 0 ⇒ a force cannot mint capacity unbacked by locked stake (microblog-3).
+        // No stake ⇒ ceiling 0 ⇒ a force cannot mint capacity unbacked by locked stake.
         assert_ok!(Microblog::force_set_capacity(
             RuntimeOrigin::root(),
             1,
@@ -1303,7 +1303,7 @@ fn on_revoke_without_a_row_releases_ref_and_is_a_noop_on_capacity() {
     });
 }
 
-// ── CheckCapacity transaction extension — the WHOLE feeless anti-spam budget (microblog-1) ──────
+// ── CheckCapacity transaction extension — the WHOLE feeless anti-spam budget ───────────────────
 // The dispatchable tests above bypass the extension (it only runs in the full tx pipeline), so the
 // gate itself was previously untested. These drive validate / post_dispatch_details directly.
 mod capacity_extension {
@@ -2021,13 +2021,13 @@ mod migration_v4 {
     }
 }
 
-// ── DR-06 property test ─────────────────────────────────────────────────────────────────────
+// ── Asymmetric-safety property test ─────────────────────────────────────────────────────────
 
-/// **DR-06 — clamp-latency ≤ grant-latency (the asymmetric-safety property).** The follower's
+/// **Clamp-latency ≤ grant-latency.** The weight writer's
 /// failure modes are asymmetric: a slow GRANT is safe-but-stale, but a slow CLAMP leaves a
 /// stale-positive weight — voice no longer backed by locked ADA — which is the dangerous one.
 /// So a clamp (weight → 0 on unlock) must take effect no slower than a
-/// grant. On L3 this falls out of the capacity math: a grant only raises the future ceiling and
+/// grant. This falls out of the capacity math: a grant only raises the future ceiling and
 /// must regenerate over the window (latency > 0), whereas a clamp drops usable capacity to 0 on
 /// the very next read (latency 0). We measure both latencies directly across a sweep of weights
 /// and assert `clamp_latency == 0 ≤ grant_latency`.
@@ -2432,7 +2432,7 @@ mod node_reads {
         });
     }
 
-    // ── fork/all-rust P6: the folded indexer reads (pallet-side helpers) ──
+    // ── The folded indexer reads (pallet-side helpers) ──
 
     #[test]
     fn author_replies_page_returns_only_replies_newest_first() {

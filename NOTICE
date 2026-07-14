@@ -2,22 +2,36 @@ cogno-chain
 Copyright 2026 LogicalMechanism <support@logicalmechanism.io>
 
 This product includes software developed at LogicalMechanism and by third
-parties as attributed below. It is licensed under the Apache License,
-Version 2.0 (see the LICENSE file).
+parties as attributed below. Its own source is licensed under the Apache
+License, Version 2.0 (see the LICENSE file). The binaries it distributes are
+not: see "Licensing of the distributed binaries" at the end of this file.
 
 ================================================================================
 Third-party attributions
 ================================================================================
 
 1. Polkadot SDK / Substrate (Parity Technologies)
-   License: Apache-2.0
    https://github.com/paritytech/polkadot-sdk
 
-   Several files derive from the Polkadot SDK `solochain-template` and the FRAME
-   weight templates. The generated `weights.rs` files under `pallets/*/src/` and
-   `runtime/src/` retain their upstream `SPDX-License-Identifier: Apache-2.0`
-   Parity copyright headers. `runtime/src/genesis_config_presets.rs` likewise
-   retains its upstream Apache-2.0 header.
+   The SDK is not single-licensed. The parts this project uses:
+
+   * `templates/solochain` — Unlicense (a public-domain dedication). `node/` and
+     `runtime/` are derived from this template. No attribution is required; it is
+     recorded here for provenance.
+
+   * FRAME / primitives crates (`frame-*`, `sp-*`, `pallet-*`) — Apache-2.0. The
+     benchmark-generated `weights.rs` files under `pallets/*/src/` derive from the
+     Apache-2.0 FRAME weight template and retain their upstream
+     `SPDX-License-Identifier: Apache-2.0` Parity copyright headers, as does
+     `runtime/src/genesis_config_presets.rs`. (The `weights.rs` in
+     `cardano-observer`, `governance-fuel`, and `governed-upgrade` carry no such
+     header because they are original hand-written placeholders, not generated
+     output.)
+
+   * Substrate client crates (`sc-*`, plus smoldot) —
+     GPL-3.0-or-later WITH Classpath-exception-2.0. The `cogno-chain-node` binary
+     links 48 of them. The Classpath exception is what permits distributing that
+     combined binary under this project's own terms.
 
 2. partner-chains — `sp-partner-chains-consensus-aura` (Input Output Global / IOG)
    License: Apache-2.0
@@ -40,14 +54,89 @@ Third-party attributions
    to this project's `#[frame_support::pallet]` (frame v46) and the current
    `pallet-session` API (Currency / KeyDeposit / HoldReason / DisablingStrategy).
 
+4. Aiken standard library — `aiken-lang/stdlib` v3.1.0
+   License: Apache-2.0
+   https://github.com/aiken-lang/stdlib
+
+   Compiled into the live `talk_vault` Plutus V3 script (`contracts/`). Pinned in
+   `contracts/aiken.lock`. `aiken-lang/fuzz` v2.1.0 (Apache-2.0) is likewise pinned
+   but is used only by the property tests and benchmarks — it is not part of the
+   compiled validator.
+
+5. Web fonts, redistributed in the built frontend
+   License: SIL Open Font License 1.1
+   https://openfontlicense.org/open-font-license-official-text/
+
+   `app/` self-hosts its fonts via @fontsource (there is no Google Fonts link);
+   `next build` emits the .woff2 files into `out/_next/static/media/`, so the
+   static export redistributes the Font Software.
+
+   Inter Tight — Copyright 2022 The Inter Project Authors
+   https://github.com/rsms/inter-tight
+
+   IBM Plex Mono — Copyright 2017 IBM Corp.
+   https://github.com/IBM/plex
+
+6. Material Design Icons (Google)
+   License: Apache-2.0
+   https://github.com/google/material-design-icons
+
+   The inline SVG icon set in `app/src/components/icons/` uses Material path data.
+   The static export ships it inside the JS bundle.
+
 ================================================================================
 Provenance notes (not third-party code)
 ================================================================================
 
 - `CheckCapacity` (pallets/microblog/src/lib.rs) is an ORIGINAL implementation of
   a standard lazy token-bucket rate limiter, written from this project's own
-  economic specification (docs/ECONOMICS.md §4.1) and built entirely around this
+  economic specification (docs/ECONOMICS.md) and built entirely around this
   project's storage (`AllowedStake`, `Capacity`, `metered_cost`, `ForeignCost`).
   It contains no third-party rate-limiting code and carries no external license
   obligation. (An early planning note that speculated a GPL-3.0 derivation was
   never reflected in the shipped code.)
+
+================================================================================
+Licensing of the distributed binaries
+================================================================================
+
+This project's own source is Apache-2.0. The dependency graph of the binaries it
+distributes is almost, but not quite, clean of copyleft — here is exactly where
+it stands.
+
+The `sc-*` Substrate client crates are GPL-3.0-or-later WITH
+Classpath-exception-2.0. The node links 40 of them. The Classpath exception
+exists precisely to permit linking them from a differently-licensed binary, so
+they impose no copyleft on this project. Nothing to resolve there.
+
+`frame-benchmarking-cli` is used only by `node/src/benchmarking.rs`, which is
+gated behind the `runtime-benchmarks` feature. It is therefore declared
+`optional` in `node/Cargo.toml` and is NOT in the default dependency graph. This
+matters: left non-optional it drags in 150 further crates — the `polkadot-*`,
+`staging-xcm*` and `tracing-gum*` trees, via `cumulus-*` — 17 of which are
+strict `GPL-3.0-only` with no exception. Gating it keeps them out of the shipped
+binary entirely.
+
+That leaves exactly one strict-copyleft crate anywhere in the graph:
+
+  `pallet-skip-feeless-payment` (v23.0.0), a direct dependency of the runtime.
+
+Its published crate metadata says `license = "GPL-3.0-only"`. Every one of its
+source files says otherwise:
+
+    // Copyright (C) Parity Technologies (UK) Ltd.
+    // SPDX-License-Identifier: Apache-2.0
+
+The metadata is an upstream packaging slip, not a deliberate relicense. The
+crate's manifest declares `license.workspace = true`, inheriting the
+polkadot-sdk workspace default of `GPL-3.0-only`; 238 crates under `substrate/`
+explicitly override that default and 15 — including this one — forget to. Its
+own directory siblings, `transaction-payment` and `transaction-payment/asset-
+tx-payment`, both override it correctly.
+
+We read the Apache-2.0 file headers as the operative grant, and have reported
+the manifest bug upstream. We are flagging it here rather than quietly relying
+on it, because it is the kind of thing you would rather hear from us than
+discover from `cargo metadata`. If your own compliance process needs the
+manifest and the headers to agree, this is the one place in the tree where they
+do not.

@@ -16,8 +16,10 @@ failure mode of a real, shipped dApp. The entire pivot to an app-chain exists to
 cost.
 
 Removing fees creates one problem you must then solve: if posting is free, what stops spam? On this
-chain the answer is talk-capacity. There is no fee floor underneath it — capacity **is** the anti-spam
-mechanism (see [Where the check runs](#where-the-check-runs), and the block-weight backstop below).
+chain the answer is talk-capacity. For the social calls there is no fee floor underneath it — capacity
+**is** the anti-spam mechanism (see [Where the check runs](#where-the-check-runs), and the block-weight
+backstop below). Fees survive only on the admin surface capacity doesn't meter; see
+[governance-fuel](#the-other-budget-governance-fuel).
 
 ## The token-bucket mechanic
 
@@ -43,14 +45,19 @@ scales with size: a one-word `gm` costs `BaseCost`; a 500-byte essay costs `Base
 Everything is done in fine-grained micro-capacity units with saturating arithmetic, so an account idle
 for years simply clamps at `cap` instead of overflowing.
 
+There is a hard entry price: **`MinLock` = 100 ADA** (100,000,000 lovelace). It is enforced twice — the
+`talk_vault` validator refuses a lock below it, and the observer maps any observed balance under it to
+weight 0. Below the floor you get nothing; there is no partial credit.
+
 The current dev-tuned constants (all runtime-configurable, none consensus-critical) are
 `CapRatio = 50`, `RegenPerBlock = 2`, `Ceiling = 5·10¹²` (~100k posts), `BaseCost = 50_000_000` (one
-post), `PerByteCost = 50_000`, and `MaxLength = 512` bytes. Under these, ~10 locked ADA gives a burst
-of ~10 posts that refills steadily; 100 ADA gives ten times that. The curve is deliberately **linear
-with a hard ceiling** ("capped-linear"): weight is proportional to locked lovelace, then flattened at
-the top so no single whale can dominate the mempool. Linear is the one split-neutral choice — an
-anti-whale (concave) curve would actually *reward* splitting stake across identities, so it stays off
-the table until the identity gate is proven stronger.
+post), `PerByteCost = 50_000`, and `MaxLength = 512` bytes. Under these, a floor lock of 100 ADA
+(weight 10⁸) gives `cap = min(10⁸·50, Ceiling) = 5·10⁹` ≈ 100 posts of burst, refilling at
+`10⁸·2 = 2·10⁸` per block (≈4 posts/block), so ~25 blocks empty→full. 1,000 ADA gives ten times that,
+up to the `Ceiling`. The curve is deliberately **linear with a hard ceiling** ("capped-linear"): weight
+is proportional to locked lovelace, then flattened at the top so no single whale can dominate the
+mempool. Linear is the one split-neutral choice — an anti-whale (concave) curve would actually *reward*
+splitting stake across identities, so it stays off the table until the identity gate is proven stronger.
 
 The bucket, its constants, and the check-and-consume logic all live folded into **`pallet-microblog`**.
 
@@ -58,8 +65,9 @@ The bucket, its constants, and the check-and-consume logic all live folded into 
 
 Two different Cardano-derived quantities feed the social layer, and they must not be confused:
 
-- **Posting capacity** comes from **`AllowedStake`** — the exact lovelace an account has locked in the
-  `talk_vault` contract. Lock more, post more. Unlock, and it goes to zero.
+- **Posting capacity** comes from **`AllowedStake`** — the lovelace in the account's largest qualifying
+  `talk_vault` UTxO (below the 100-ADA `MinLock` floor it is zero). Lock more, post more. Unlock, and it
+  goes to zero.
 - **Voting power** comes from **`VotingPower`** — the *total* Cardano stake behind the bound stake
   credential (its `epoch_stake`), whether or not any of it is locked. This weights votes and polls.
 
@@ -80,8 +88,9 @@ ties a Cardano address to a posting account.
 That 1:1 identity binding is load-bearing, not decoration. Every stake-weighted scheme is farmable by
 splitting stake across many identities unless **one bucket = one verified Cardano identity**. The gate
 enforces a hard one-to-one map between a Cardano owner address and a single posting account, and the
-observer aggregates *all* of that address's vault UTxOs into one weight. Break either half and capacity
-multiplies for free.
+observer credits only the **single largest** qualifying vault UTxO per identity — it never sums them, so
+splitting a lock across many UTxOs buys nothing (and each split piece under 100 ADA is worth zero).
+Break either half and capacity multiplies for free.
 
 ## Anti-toggle rules
 
@@ -121,9 +130,14 @@ rate-limit everyone else, exactly as fees once did.
 
 ## The other budget: governance-fuel
 
-Everything above is the *social* rate-limit. There is a second, entirely separate resource for the
-handful of fee-bearing **admin** calls an operator submits (a validator's `set_keys`, committee
-propose/vote/close): **governance-fuel**, held in `pallet-governance-fuel`.
+Why does a feeless chain have fees at all? Because `CheckCapacity` only meters the *social* calls.
+Everything else a signed account can submit — `System::remark`, a validator's `Session::set_keys`, a
+seated member's committee propose/vote/close — is unmetered, and some of it is permissionless. Fees are
+the only thing pricing that surface: set them to zero and any keypair can flood the mempool with free
+remarks. So the fee mechanism stays, and the native token exists solely to feed it.
+
+That leaves a second, entirely separate resource for the handful of fee-bearing **admin** calls an
+operator submits: **governance-fuel**, held in `pallet-governance-fuel`.
 
 Fuel is a committee-granted, self-refilling budget. The 3-of-5 committee sets a per-account standing
 allowance with `set_allowance`; an `on_initialize` hook mints each funded account back up toward its
@@ -143,9 +157,9 @@ rate-limits; neither is money; neither can post.
 
 ## Precedents
 
-This shape is production-proven, not novel research. **Hive** (since the 2018 "Velocity" hardfork) runs
-100% feeless posting gated entirely by a regenerating, stake-weighted "manabar" that refills linearly
-over five days — social-media scale, almost exactly this model. **Midnight**'s NIGHT → DUST is the
+This shape is production-proven, not novel research. **Hive** (inheriting Steem's 2018 "Velocity"
+hardfork) runs 100% feeless posting gated entirely by a regenerating, stake-weighted "manabar" that
+refills linearly over five days — social-media scale, almost exactly this model. **Midnight**'s NIGHT → DUST is the
 owner's explicit reference: a held token continuously generates a consumable resource up to a
 stake-proportional cap, burned to pay fees and refilled while the token is held. Both prove the same
 three things cogno-chain needs — feeless posting, gated by a regenerating staked resource, at scale.

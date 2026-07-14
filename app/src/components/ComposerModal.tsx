@@ -1,6 +1,6 @@
 "use client";
 
-// ComposerModal — the modal-presentation wrapper for a Composer (doc 03 §7, doc 09 §1/§2/§7).
+// ComposerModal — the modal-presentation wrapper for a Composer.
 //
 // PRESENTATIONAL chrome only: a --cg-overlay scrim + a centered --cg-radius-card / --cg-shadow-modal
 // dialog (full-screen sheet on mobile via CSS), a close ✕, focus-trap + Esc + scroll-lock, and
@@ -30,7 +30,7 @@ export function ComposerModal({ title, onClose, children }: ComposerModalProps) 
   const cardRef = useRef<HTMLDivElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
 
-  // Remember the trigger so focus returns to it on close (doc 09 §7.2).
+  // Remember the trigger so focus returns to it on close.
   useEffect(() => {
     returnFocusRef.current = (document.activeElement as HTMLElement) ?? null;
     return () => returnFocusRef.current?.focus?.();

@@ -1,6 +1,6 @@
 "use client";
 
-// Handle — the "@handle" (doc 03 §15). There are NO unique usernames on cogno-chain (D6); the handle
+// Handle — the "@handle". There are NO unique usernames on cogno-chain (D6); the handle
 // is the account's ss58 address, middle-truncated, in MONOSPACE (--cg-font-mono), secondary tint.
 // Optional copy-to-clipboard (used on ProfileHeader) raises a success toast via the toaster.
 

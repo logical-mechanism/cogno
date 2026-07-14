@@ -1,8 +1,8 @@
-//! Benchmarking for `pallet-microblog` (DR-05).
+//! Benchmarking for `pallet-microblog`.
 //!
 //! Generates real `WeightInfo` for the **load-bearing feeless post path** — capacity is the only
-//! anti-spam, so these weights back the block-weight backstop (`posts_per_block_max`,
-//! `L3-chain.md` §5.4). `post_message` is length-parameterized over `0..MaxLength` (the linear
+//! anti-spam, so these weights back the block-weight backstop (`posts_per_block_max`).
+//! `post_message` is length-parameterized over `0..MaxLength` (the linear
 //! `s` component) and benchmarked end-to-end through the **real** runtime identity gate via the
 //! [`IsAllowed::benchmark_set_allowed`] setup hook (the `whitelisted_caller` is otherwise unbound
 //! and would be rejected `NotAllowed`). Capacity is consumed in `CheckCapacity::post_dispatch`,
@@ -325,7 +325,7 @@ mod benchmarks {
         Ok(())
     }
 
-    /// The `CheckCapacity` transaction-extension hot path (DR-05 / `L3-chain.md` §5.4): the reads
+    /// The `CheckCapacity` transaction-extension hot path: the reads
     /// `validate()` performs (`AllowedStake` + `Capacity`, via `current_capacity`) plus the
     /// `Capacity` write `consume()` performs in `post_dispatch`. Worst case: a bound, weighted,
     /// charged account (populated rows). This backs the extension's real `weight()`, so the

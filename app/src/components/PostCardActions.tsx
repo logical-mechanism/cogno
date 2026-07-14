@@ -1,6 +1,6 @@
 "use client";
 
-// PostCardActions — the X action row under every post (doc 03 §3, D2/D3).
+// PostCardActions — the X action row under every post (D2/D3).
 //
 //   ⟲ Reply 12     ❝ Quote     ♥ 38              ↗ Share
 //   teal hover     teal hover  LIKE=UP vote      copy→toast

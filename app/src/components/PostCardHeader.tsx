@@ -1,6 +1,6 @@
 "use client";
 
-// PostCardHeader — the single identity line of a PostCard (doc 03 §2).
+// PostCardHeader — the single identity line of a PostCard.
 //
 //   (•) DisplayName  @ha…le                                              [···]
 //    ▲      ▲           ▲                                                  ▲
@@ -11,7 +11,7 @@
 // 6s) — e.g. "· 2h". We deliberately do NOT surface an absolute date, the raw block number ("· #1234"),
 // or any trust/honesty label (that layer is dropped). Omit the `at` prop to hide the age entirely.
 //
-// The "···" opens the overflow menu (doc 03 §2.1) — items supplied as OverflowMenuItem[] by the
+// The "···" opens the overflow menu — items supplied as OverflowMenuItem[] by the
 // PostCard: owner-only "Pin to profile", and a client-local "Mute/Unmute @handle" (device-only; it
 // collapses that author's posts for THIS viewer — the only recourse on a permanent, no-moderation
 // chain, and NOT global moderation). Block/Report/Delete stay absent (no on-chain moderation; content
@@ -33,7 +33,7 @@ export interface PostCardHeaderProps {
   author: AuthorRef;
   /** Post block height (CognoPost.at) → a relative "· 2h" age after the handle. Omit to hide. */
   at?: number;
-  /** Items for the "···" overflow menu (§2.1). Empty/omitted → no menu button. */
+  /** Items for the "···" overflow menu. Empty/omitted → no menu button. */
   menuItems?: OverflowMenuItem[];
   /** Navigate to the author's profile (/u/[address]/). Avatar/name/handle all route here. */
   onAuthorOpen: (address: string) => void;

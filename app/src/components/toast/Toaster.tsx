@@ -1,6 +1,6 @@
 "use client";
 
-// Toaster — the singleton container (doc 03 §16). Mounted once by ToasterProvider; stacks up to 3
+// Toaster — the singleton container. Mounted once by ToasterProvider; stacks up to 3
 // toasts, newest on top, bottom-center. Each Toast carries its OWN live role (status=polite /
 // alert=assertive), so the container is NOT itself a live region — nesting them makes NVDA/JAWS
 // double-announce.

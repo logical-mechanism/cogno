@@ -1,4 +1,4 @@
-// PostDetailPage — /post/[id] (doc 01 §1/§2, surface 08).
+// PostDetailPage — /post/[id].
 //
 // STATIC EXPORT: this page.tsx is a SERVER component (NO "use client") because Next forbids a
 // page from being both a Client Component and exporting generateStaticParams(). generateStaticParams
@@ -14,7 +14,7 @@ import { PostDetailView } from "./view";
 
 export function generateStaticParams() {
   // ≥1 param is required to emit the route bundle under output:'export'. "_" is never a real post id
-  // and validates to the in-app not-found; real ids fall through to the nginx SPA shell (doc 01 §2/§3).
+  // and validates to the in-app not-found; real ids fall through to the nginx SPA shell.
   return [{ id: "_" }];
 }
 

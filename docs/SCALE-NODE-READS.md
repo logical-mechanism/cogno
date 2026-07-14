@@ -66,13 +66,19 @@ top-level creation site (`post_message` with `parent == None`, `quote_post`, `cr
 
 ## Client wiring
 
-The app prefers the node API and falls back to keyed storage reads on an older node. `papi-source.ts`
-runtime-detects the API with PAPI's `isCompatible` against the node's live metadata (probing the newest
-method the capability flag authorizes); a node that lacks `MicroblogApi` reports `false` and the client
-degrades to the pre-API keyed read path. When present, PAPI calls it as `api.apis.MicroblogApi.feed_page(…)`,
-gated by the `nodeFeedApi` capability flag. The keyed fallback chases `next_cursor` to fill a full page so
-the two paths return identical pages. Search, the Replies tab, and the cross-account People surfaces are
-node-served with no keyed fallback — a node without the API cannot serve them.
+There is exactly **one** reader: `app/src/lib/feed/papi-source.ts`, PAPI-direct against the node, calling
+`api.apis.MicroblogApi.feed_page(…)` unconditionally. The `FeedSource` interface in `source.ts` survives
+only as a type seam, so the React layer never touches a concrete reader.
+
+There is **no capability detection** and no second read path. The old `FeedCaps` flags, the `nodeFeedApi`
+gate, and the keyed-storage fallback for a pre-`MicroblogApi` node were all deleted: the live chain is
+spec 203 and a pre-spec-120 cogno node cannot sync it, so every one of those branches was unreachable.
+
+One fallback survives, in `thread()`: `nodeThread(…).catch(() => getThread(…))`. That is a **resilience**
+path, not a compatibility one — a viral post whose replies are enumerated in a single `state_call` can hit
+the node's resource budget, where incremental keyed reads still succeed. The feed paths are deliberately
+*not* wrapped this way: the node cursor is a `TopLevelPosts` seq while the keyed cursor is a post id, so a
+mid-page fallback would cross-wire the cursor.
 
 ## Guardrails
 

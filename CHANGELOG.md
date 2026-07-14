@@ -59,10 +59,13 @@ The backend was consolidated to a single all-Rust stack and the chain relaunched
 
 ## Open-source readiness
 
-- Relicensed to **Apache-2.0** with a `NOTICE` attributing the Apache-2.0 upstreams (Polkadot SDK
-  templates, the partner-chains consensus primitives, the `substrate-validator-set` fork).
-- Added `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue/PR templates, `CODEOWNERS`,
-  and Dependabot.
+- Relicensed to **Apache-2.0** with a `NOTICE` attributing every upstream — the Polkadot SDK template,
+  the partner-chains consensus primitives, the `substrate-validator-set` fork, the Aiken stdlib
+  compiled into the L1 script, and the fonts and icons the frontend redistributes. `NOTICE` also states
+  plainly that the distributed node binary and runtime WASM are a combined work carrying GPL-3.0-only
+  code (`pallet-skip-feeless-payment`), even though this project's own source is Apache-2.0.
+- Added `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `POLICY.md` (content is permanent and
+  nobody — including the operator — can remove it), issue/PR templates, `CODEOWNERS`, and Dependabot.
 
 ## Deliberately left for mainnet (not bugs)
 

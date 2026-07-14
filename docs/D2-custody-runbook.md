@@ -10,7 +10,8 @@ how keys rotate, and how the public audit log lets anyone watch the committee.
 on-chain mechanism is real, but the "five independent custodians" it is designed for do not exist yet.
 Section 5 is the checklist to close that gap. For the wider trust model see
 [`ARCHITECTURE.md`](ARCHITECTURE.md); for the current bring-up steps see
-[`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md) (§6, federate-out) and [`../deploy/README.md`](../deploy/README.md).
+[`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md) (Step 6, federate-out) and
+[`../deploy/README.md`](../deploy/README.md).
 
 ---
 
@@ -92,7 +93,7 @@ brick-guard). To rotate a seat — a planned roll, a suspected compromise, or a 
 
 **Validator keys are a separate operation.** Rotating a validator's session keys (`session.setKeys`) is
 not a committee custody change: Aura (sr25519) and GRANDPA (ed25519) are distinct keypairs — update both
-together or finality silently breaks. See [`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md) (§6,
+together or finality silently breaks. See [`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md) (Step 6,
 `validator set-keys` / `key insert`).
 
 ---
@@ -136,9 +137,10 @@ The mechanism and the sudo-free origins are done. The remaining work is people-a
    never sees seats 2–5. Fund each incoming account with a fuel allowance first (`cogno-chain-cli fuel
    set-allowance`, a committee motion) — seating an unfunded member is rejected on-chain — then seat the
    five accounts via `set_members`.
-3. **Run motions as true co-signs.** Each custodian runs `cogno-chain-cli committee vote` against the
-   proposal hash with **their own key on their own infra** — not one operator scripting all five. Anyone
-   may *propose*; the **votes** must be independent.
+3. **Run motions as true co-signs.** The proposer opens the motion with `--propose` (one seat key, not
+   five bundled on one host); each custodian then runs `cogno-chain-cli committee vote --proposal <hash>
+   --index <n>` with **their own key on their own infra**. `committee list` prints the hash and index of
+   every open motion. Anyone may *propose*; the **votes** must be independent.
 4. **Stand up ≥2 independent watchtowers** (§4), run by different parties.
 5. **Keep loss-tolerance headroom.** The runtime brick-guard enforces a `1 || ≥3` floor (it rejects both
    the empty set and the fault-intolerant 2-seat committee), so federation jumps directly from 1 seat to

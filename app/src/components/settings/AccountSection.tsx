@@ -1,6 +1,6 @@
 "use client";
 
-// AccountSection — Settings §2 (doc 12). Session-state-driven sub-cards: the connected wallet (+
+// AccountSection — Settings. Session-state-driven sub-cards: the connected wallet (+
 // Disconnect), the derived posting account (Handle + Copy → clipboard + success Toast), the identity
 // bind status (Finish setup → identity.bind), and voting power (Add voting power → identity.bindStake).
 // Display + disconnect only — the binds reuse useIdentity exactly as /welcome does. NO honesty copy.

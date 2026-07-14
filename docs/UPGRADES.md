@@ -44,17 +44,35 @@ $CLI upgrade apply     --wasm "$WASM" --account-signing-key-file acct.skey    --
 
 ## Multiple operators (3-of-5 committee)
 
-`authorize` now needs **3 of 5** seats to agree before it takes effect. One seat proposes; the others
-vote; the motion closes once it has the votes:
+`authorize` now needs **3 of 5** seats to agree before it takes effect. There is no `committee propose`
+subcommand: multi-custody is the **`--propose` flag on the governed verb itself**. One seat opens the
+motion with its own key; the others co-sign from their own hosts with `committee vote`; any seat closes
+it. Both `vote` and `close` need the motion's `--proposal` hash **and** its `--index` — `propose` prints
+both, and `committee list` re-prints them for any open motion.
 
 ```bash
-$CLI committee propose --call "upgrade-authorize --wasm $WASM" --committee-signing-key-file seat1.skey --ws $WS
-$CLI committee vote    --proposal <hash> --approve --committee-signing-key-file seat2.skey --ws $WS
-$CLI committee vote    --proposal <hash> --approve --committee-signing-key-file seat3.skey --ws $WS
-$CLI committee close   --proposal <hash>            --committee-signing-key-file seat1.skey --ws $WS
-# then anyone runs the permissionless enactment:
+# 1. one seat opens the motion (prints the motion hash + index and the co-sign lines)
+$CLI upgrade authorize --wasm "$WASM" --propose --committee-signing-key-file seat1.skey --ws $WS
+
+# (any seat can rediscover an open motion's hash + index at any time)
+$CLI committee list --ws $WS
+
+# 2. two more seats co-sign — aye is the default; --reject votes nay
+$CLI committee vote --proposal <hash> --index <n> --committee-signing-key-file seat2.skey --ws $WS
+$CLI committee vote --proposal <hash> --index <n> --committee-signing-key-file seat3.skey --ws $WS
+
+# 3. any seat closes it — at threshold the inner authorize executes
+$CLI committee close --proposal <hash> --index <n> --committee-signing-key-file seat1.skey --ws $WS
+
+# 4. then anyone runs the permissionless enactment:
 $CLI upgrade apply --wasm "$WASM" --account-signing-key-file acct.skey --ws $WS
 ```
+
+`--propose` is the generic multi-custody flag on every committee-governed verb (`upgrade authorize`,
+`validator add`/`remove`, `fuel set-allowance`/`revoke`, `committee members …`, `identity revoke`).
+Without it, the CLI bundles every seat key on one host and runs `propose → vote → close` itself — which
+is the single-operator default, and exactly what you do *not* want once the seats are real custodians.
+An air-gapped seat can `committee vote --offline` and hand the signed extrinsic to `committee submit`.
 
 > **Fuel:** whoever signs `authorize`/`apply` pays the fee in governance fuel. Genesis committee
 > accounts are pre-funded; any account added later needs a committee-granted allowance first
@@ -79,6 +97,12 @@ produces a runtime a normal node can't execute). The artifact is at:
 ```
 target/release/wbuild/cogno-chain-runtime/cogno_chain_runtime.compact.compressed.wasm
 ```
+
+**The runtime is not reproducibly built.** `cargo build --release` of a Substrate runtime is not
+byte-identical across machines, and nothing in CI publishes the blob's hash. So a committee seat voting
+on a `code_hash` is trusting whoever built the WASM, and a third party cannot independently confirm the
+hash on-chain corresponds to a reviewed commit. Closing this means a deterministic container build
+(srtool or a pinned image) that publishes the runtime hash — an open gap, not a solved one.
 
 ## Storage migrations
 

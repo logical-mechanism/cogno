@@ -1,9 +1,9 @@
-// The write-gate session state machine (doc 04 §5). Pure + testable: derives the single
+// The write-gate session state machine. Pure + testable: derives the single
 // SessionState the whole app gates write affordances on, from the two existing hooks' state
 // (useSigner + useIdentity). Other docs cite these state names verbatim.
 //
 // There is NO funded / insufficient-balance state: under spec 117 EVERY write (posts, votes,
-// reposts, follows, polls AND profile edits) is feeless + capacity-metered. The only gates are
+// follows, polls AND profile edits) is feeless + capacity-metered. The only gates are
 // `bound` (the identity bind) and capacity (surfaced as a rate limit, never a funding wall).
 
 /** The canonical session states (cited by every surface). */

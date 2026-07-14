@@ -7,7 +7,7 @@ description = "cogno-chain L1 — the talk_vault owner-reclaimable ADA vault + b
 
 [repository]
 user = "logical-mechanism"
-project = "cogno-chain"
+project = "cogno"
 platform = "github"
 
 [[dependencies]]

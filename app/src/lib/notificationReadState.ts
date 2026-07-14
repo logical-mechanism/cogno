@@ -32,7 +32,7 @@ export const EMPTY_READ_STATE: ReadState = { readThrough: 0, firstSeen: {} };
 // the deferred on-chain reverse-index; this store is a device-local badge only.)
 const MAX_TRACKED = 10000;
 
-// ── pure helpers (unit-tested; no localStorage / no clock) ──────────────────────────────────────────
+// ── pure helpers (unit-tested; no localStorage / no clock) ───────────────────────────────────────
 
 export function parseReadState(raw: string | null): ReadState {
   if (!raw) return EMPTY_READ_STATE;
@@ -105,7 +105,7 @@ export function isUnread(state: ReadState, key: string): boolean {
   return t != null && t > state.readThrough;
 }
 
-// ── the per-viewer persisted store ──────────────────────────────────────────────────────────────────
+// ── the per-viewer persisted store ───────────────────────────────────────────────────────────────
 
 const stores = new Map<string, PersistentStore<ReadState>>();
 

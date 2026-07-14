@@ -1,5 +1,5 @@
 {
-	"_comment": "Golden determinism fixture for the cogno-dbsync observation reduction. The canonical implementation is the Rust cogno-dbsync crate (src/reduction.rs); the test rust_matches_js_observation_equivalence_fixture (src/reduction.rs) re-derives each case and asserts it equals expectedCanonicalHex byte-for-byte (a divergence is a chain fork). Do not hand-edit; after a deliberate change to the reduction output, regenerate expectedCanonicalHex from the reduction and update this file. (The 'js' in the test name is historical: the original JS reference and its generator were removed in the all-Rust restart.)",
+	"_comment": "Golden determinism fixture for the cogno-dbsync observation reduction. The canonical implementation is the Rust cogno-dbsync crate (src/reduction.rs); the test reduction_matches_the_golden_determinism_fixture (src/reduction.rs) re-derives each case and asserts it equals expectedCanonicalHex byte-for-byte (a divergence is a chain fork). Do not hand-edit; after a deliberate change to the reduction output, regenerate expectedCanonicalHex from the reduction and update this file.",
 	"cases": [
 		{
 			"name": "empty",

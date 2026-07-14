@@ -18,7 +18,7 @@
 
 [Unit]
 Description=cogno-chain relay (non-validator archive node, public RPC via TLS proxy)
-Documentation=https://github.com/LogicalMechanism/cogno-chain/blob/main/deploy/README.md
+Documentation=https://github.com/logical-mechanism/cogno/blob/main/deploy/README.md
 After=network-online.target
 Wants=network-online.target
 

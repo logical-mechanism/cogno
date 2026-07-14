@@ -41,7 +41,7 @@ impl InherentDataProvider for CardanoObservationInherentDataProvider {
         if *identifier != INHERENT_IDENTIFIER {
             return None;
         }
-        // THE load-bearing rule (design §6): branch on the runtime's typed error. Mismatch and
+        // THE load-bearing rule: branch on the runtime's typed error. Mismatch and
         // ComputeDiverged are PROPAGATED (Some(Err) ⇒ block rejected — both are real disagreements on the
         // verified read); a CannotVerify is SWALLOWED (Some(Ok) ⇒ accept without verifying — never fork
         // because OUR follower lags). A blanket swallow would silently defeat the entire cross-node

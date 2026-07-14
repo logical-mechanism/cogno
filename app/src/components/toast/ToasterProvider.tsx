@@ -1,6 +1,6 @@
 "use client";
 
-// ToasterProvider + useToaster — the global toast bus (doc 03 §16).
+// ToasterProvider + useToaster — the global toast bus.
 //
 // The optimistic-mutation layer + components raise toasts through this imperative API: error on
 // dispatch failure, the dedicated RATE-LIMIT toast on a CheckCapacity pool rejection (distinct copy,

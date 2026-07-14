@@ -132,7 +132,7 @@ pub fn create_benchmark_extrinsic(
         )),
         frame_system::CheckNonce::<runtime::Runtime>::from(nonce),
         frame_system::CheckWeight::<runtime::Runtime>::new(),
-        // M2c: the feeless-post capacity gate, then payment wrapped in the feeless skip.
+        // The feeless-post capacity gate, then payment wrapped in the feeless skip.
         pallet_microblog::CheckCapacity::<runtime::Runtime>::new(),
         pallet_skip_feeless_payment::SkipCheckIfFeeless::<runtime::Runtime, _>::from(
             pallet_transaction_payment::ChargeTransactionPayment::<runtime::Runtime>::from(0),
@@ -153,7 +153,7 @@ pub fn create_benchmark_extrinsic(
             best_hash,                            // CheckEra
             (),                                   // CheckNonce
             (),                                   // CheckWeight
-            (),                                   // CheckCapacity (M2c)
+            (),                                   // CheckCapacity
             (),                                   // SkipCheckIfFeeless<ChargeTransactionPayment>
             None,                                 // CheckMetadataHash
             (),                                   // WeightReclaim

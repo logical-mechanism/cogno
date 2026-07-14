@@ -86,7 +86,7 @@ async fn build_cardano_idp(
 /// The deterministic observation read — returns `Some(observation)` or `None` to ABSTAIN (fail-closed at
 /// every step). Reads the consensus-pinned config via the `CardanoObserverApi` runtime API (single source
 /// of truth — node + runtime can't drift), derives the stable reference slot from the PARENT block's Aura
-/// slot (so author + every importer agree, design §5.1), and reads THIS node's own db-sync as-of that slot
+/// slot (so author + every importer agree), and reads THIS node's own db-sync as-of that slot
 /// (ONE consistent snapshot: freshness tip + the deterministic stable-block anchor + the vault UTxOs). Any
 /// error (API / header / db-sync down or behind) ⇒ `None` — the author abstains (no inherent; the chain
 /// stays live) and an importer that can't read defers-accepts via the runtime's `CannotVerify` path.
@@ -148,7 +148,7 @@ async fn observe_for_parent(
             return None;
         }
     };
-    // 4a. point-existence guard (§5.4): only trust the read if THIS node's db-sync has indexed PAST the
+    // 4a. point-existence guard: only trust the read if THIS node's db-sync has indexed PAST the
     //     reference. A behind db-sync must ABSTAIN (→ the runtime's CannotVerify accept/defer path) rather
     //     than return a partial UTxO set that would trigger a FALSE fatal Mismatch on import.
     if read.tip_slot < ref_slot {
@@ -159,7 +159,7 @@ async fn observe_for_parent(
         );
         return None;
     }
-    // 4b. the SEALED stable block-hash anchor (in-protocol-observation §15.3, Midnight delta A.1): the
+    // 4b. the SEALED stable block-hash anchor: the
     //     header hash of the latest stable Cardano block AT/UNDER the reference — the single `block` row at
     //     max `slot_no ≤ reference` (deterministic: ≤1 block/slot on settled history). It becomes
     //     `CardanoRef.block_hash` — the custom proposer seals it into the block header (`cobs` digest) and
@@ -352,7 +352,7 @@ pub fn new_full<
         other: (block_import, grandpa_link, mut telemetry),
     } = new_partial(&config)?;
 
-    // fork/all-rust P7: a one-shot, non-blocking startup config check — read the consensus-pinned observer
+    // A one-shot, non-blocking startup config check — read the consensus-pinned observer
     // config from the runtime + (if DBSYNC_URL is set) probe db-sync for the vault under the pinned policy.
     // Logs only; never gates authoring (the chain produces + finalizes regardless of the outcome).
     task_manager.spawn_handle().spawn(
@@ -490,7 +490,7 @@ pub fn new_full<
             prometheus_registry.as_ref(),
             telemetry.as_ref().map(|x| x.handle()),
         );
-        // D4 (in-protocol-observation §15.3 / Midnight delta A.1): wrap the stock proposer so each authored
+        // Wrap the stock proposer so each authored
         // block SEALS the stable Cardano block anchor (CardanoRef { slot, block_hash }) into its HEADER as a
         // `cobs` PreRuntime digest — the external-auditability artifact. The wrapper is passed to the STOCK
         // `start_aura` (generic over the proposer factory; NO import_queue/start_aura fork), and the

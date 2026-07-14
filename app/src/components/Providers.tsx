@@ -1,6 +1,6 @@
 "use client";
 
-// Providers — the single client provider stack the whole App Router tree lives inside (doc 01 §4.1).
+// Providers — the single client provider stack the whole App Router tree lives inside.
 //
 // It lifts the foundation's three socket-owning hooks (useChain → useSigner → useIdentity) into ONE
 // shared React context so every route reads {api, client, signer, identity, source, sessionState,
@@ -59,7 +59,7 @@ export interface Session {
   // ── derived ──
   /** The canonical write-gate state (@/lib/session) the surfaces branch on. */
   sessionState: SessionState;
-  /** The doc-03 Viewer (coarse status + avatar/name/identity) every kit component consumes. */
+  /** The Viewer (coarse status + avatar/name/identity) every kit component consumes. */
   viewer: Viewer;
   /** The feed reader seam (the PAPI-direct node reader). Null before connect. */
   source: FeedSource | null;
@@ -69,7 +69,7 @@ export interface Session {
 
 const SessionContext = createContext<Session | null>(null);
 
-/** Map the rich SessionState to the doc-03 coarse Viewer.status triad (§0.2 of the kit). */
+/** Map the rich SessionState to the coarse Viewer.status triad (of the kit). */
 function viewerStatusOf(s: SessionState): ViewerStatus {
   switch (s) {
     case "disconnected":
@@ -93,8 +93,7 @@ function ChainProvider({ children }: { children: ReactNode }) {
 
   const identity = useIdentity(api, client, signer);
 
-  // The feed reader seam — the PAPI-direct node reader, memoized on [api] inside the hook (the node
-  // serves feed / thread / profile / search directly since the all-Rust restart; no indexer config).
+  // The feed reader seam — the PAPI-direct node reader, memoized on [api] inside the hook.
   const source = useFeedSource(api);
 
   // One shared head subscription for all block-relative UI (post times, capacity, live profile).

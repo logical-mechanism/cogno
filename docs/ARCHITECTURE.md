@@ -20,8 +20,9 @@ Cardano is **observed, not bridged**. It supplies three things and holds no cust
    posting account. This is the anti-Sybil root; see [`TRUSTLESS-IDENTITY.md`](TRUSTLESS-IDENTITY.md).
 2. **Weight** — the ADA an account locks in the `talk_vault` contract becomes its posting power; the
    total stake behind the bound credential becomes its voting power.
-3. **A clock** — each block header seals the hash of a stable, finalized Cardano block, so every node
-   reduces the same Cardano state at the same point in the chain's history.
+3. **A clock** — every node derives one Cardano reference slot from the *parent* block's Aura slot, so
+   every node reduces the same Cardano state at the same point in the chain's history (and each header
+   seals the resulting anchor, so the choice is externally auditable).
 
 The chain inherits **none** of Cardano's finality or security. It runs its own operator-run **Aura**
 (block production) and **GRANDPA** (finality), and never writes anything back to Cardano — no bridge,
@@ -31,16 +32,22 @@ not trustless, and honest about it. The full trust posture is in the
 
 ## The Cardano contract (`talk_vault`)
 
-`contracts/` holds an Aiken (Plutus V3) validator called `talk_vault`. To join, a user locks ADA at
-the vault and commits their posting account and identity in the datum. The lock does double duty: it
-is the account's posting deposit *and* the source of its weight. The vault also mints a **beacon**
-token whose name is `blake2b_256(cbor(owner))` — the on-chain identity hash the observer looks for.
-Exiting burns the beacon and releases the ADA. Custody never leaves Cardano; the app-chain only reads
-the lock.
+`contracts/` holds an Aiken (Plutus V3) validator called `talk_vault`. To join, a user locks ADA at the
+vault under a datum that commits exactly one thing: the **owner** — their whole CIP-19 address (payment
++ stake credential). The lock does double duty: it is the account's posting deposit *and* the source of
+its weight. The vault also mints a **beacon** token whose name is `blake2b_256(cbor(owner))`, derived
+from that owner and never stored — the on-chain identity hash the observer looks for. Exiting burns the
+beacon and releases the ADA. Custody never leaves Cardano; the app-chain only reads the lock.
+
+The datum names **no app-chain account**. That binding is made separately, on the app-chain, by
+`pallet-cogno-gate`'s CIP-8 self-proof — which recomputes the same beacon name byte-for-byte, so the
+observer can join the two. See [`TRUSTLESS-IDENTITY.md`](TRUSTLESS-IDENTITY.md).
 
 The contract is **live on preprod, and its script hash is load-bearing**: any production edit under
 `contracts/` recompiles the validator and moves the hash, orphaning the deployed vault. Treat it as
-frozen — even a `trace` line bakes into the script and moves the hash. See
+frozen — even a `trace` line bakes into the script and moves the hash. The applied script hash (which
+*is* the beacon policy id, so every minted beacon under it is one live vault) is
+`168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7`. See
 [`contracts/README.md`](../contracts/README.md).
 
 ## Observation — Cardano → weight
@@ -102,12 +109,22 @@ governance-fuel allowance and registered session keys first, so the order is `se
 by design; the honest floor and `MinAuthorities` are documented mainnet prerequisites, left low for
 testnet.
 
-**The header seal** is what makes observation deterministic. `node/src/consensus/` is a custom block
-author (a reimplementation of the Apache-2.0 partner-chains proposer and inherent-digest machinery)
-that, at the moment it authors a block, picks a stable finalized Cardano block and writes its anchor
-into the block header as a `PreRuntime` digest tagged **`cobs`**. Every node then reduces Cardano
-state against *that exact anchor* rather than against "now", which is why two honest nodes compute the
-same weight. This seal is the surviving purpose of that consensus code — it is not the old
+**Determinism comes from the reference, not the seal.** Every node derives one Cardano reference slot as
+a pure function of the *parent* block's Aura slot — never the live tip — reads its own db-sync as-of that
+slot through the shared `cogno-dbsync` reduction, and importers re-derive the same read and reject the
+block on mismatch (`check_inherent`). The reduction itself is pinned byte-for-byte by a committed golden
+fixture. That is why two honest nodes compute the same weight.
+
+**The header seal** is the audit trail on top of that. `node/src/consensus/` is a custom block author (a
+reimplementation of the Apache-2.0 partner-chains proposer and inherent-digest machinery) that writes the
+observation's anchor — the `CardanoRef { slot, block_hash }` of the stable Cardano block the read was
+taken as-of — into the block header as a `PreRuntime` digest tagged **`cobs`**, so anyone reading only
+cogno-chain headers can see which Cardano block each block anchored to. Today that digest is a *mirror*
+of the inherent, not a consensus-binding input: the cross-node re-validation rides `check_inherent` on the
+inherent's `CardanoRef`, and no import path decodes the header digest. A header-only auditor is therefore
+trusting the author to have sealed the anchor it actually applied. The decoder that would make the seal
+binding on import is written and tested (`node/src/consensus/cardano_digest.rs`) and is staged for a
+future runtime upgrade. This seal is the surviving purpose of that consensus code — it is not the old
 metadata-anchoring path, which was removed.
 
 ## Reads — folded into the node

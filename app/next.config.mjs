@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Static-export SPA (DR / L5 §10.4): self-hostable on any static host / IPFS,
+  // Static-export SPA: self-hostable on any static host / IPFS,
   // no SSR data dependency, no backend, no telemetry.
   //
   // PRODUCTION-ONLY export: `output:'export'` forces dynamicParams=false, which makes a dev server
@@ -12,7 +12,7 @@ const nextConfig = {
   reactStrictMode: true,
   // Static export cannot optimize images at request time.
   images: { unoptimized: true },
-  // No Next telemetry; honesty/neutrality requirement (L5 §10.4/§10.5).
+  // No Next telemetry; honesty/neutrality requirement.
   // (also disabled via `next telemetry disable` env at build).
   trailingSlash: true,
 };

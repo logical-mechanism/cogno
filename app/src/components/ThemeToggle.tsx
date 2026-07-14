@@ -1,6 +1,6 @@
 "use client";
 
-// ThemeToggle — the dark/light switch (doc 02 §9, locked decision 3: dark-first + a working toggle).
+// ThemeToggle — the dark/light switch (locked decision 3: dark-first + a working toggle).
 //
 // A single icon button: IconMoon when dark (click → light), IconSun when light (click → dark). It
 // drives useTheme(), which flips the `data-theme` attribute on <html> and persists 'cg-theme'. The

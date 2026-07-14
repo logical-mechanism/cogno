@@ -1,8 +1,8 @@
-blank_issues_enabled: false
+# Blank issues are ENABLED on purpose. Discussions is off on this repo, so the two templates below
+# (bug / feature) plus this chooser are the only channels there are — with blank issues disabled, a
+# newcomer whose question is neither a bug nor a feature request had nowhere to go at all.
+blank_issues_enabled: true
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/LogicalMechanism/cogno-chain/blob/main/SECURITY.md
+    url: https://github.com/logical-mechanism/cogno/blob/main/SECURITY.md
     about: Do not open a public issue for security bugs — follow the disclosure policy in SECURITY.md.
-  - name: Question / discussion
-    url: https://github.com/LogicalMechanism/cogno-chain/discussions
-    about: For usage questions and open-ended discussion, please use Discussions.

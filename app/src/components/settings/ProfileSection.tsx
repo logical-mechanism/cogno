@@ -1,6 +1,6 @@
 "use client";
 
-// ProfileSection — Settings §3 (doc 12). A live preview of the viewer's own profile (name / handle /
+// ProfileSection — Settings. A live preview of the viewer's own profile (name / handle /
 // bio / avatar) + [Edit profile] (opens EditProfileModal via the modal route) + [Clear profile]
 // (confirm) + the current pinned post (resolved via source.thread(pinnedPostId).root) + [Unpin].
 //

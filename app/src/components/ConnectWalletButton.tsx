@@ -1,7 +1,7 @@
 "use client";
 
-// ConnectWalletButton — the entry to "Cardano wallet → derive posting key → bind identity" (doc 03
-// §20, D7). Label/target derive from `viewer.status`:
+// ConnectWalletButton — the entry to "Cardano wallet → derive posting key → bind identity".
+// Label/target derive from `viewer.status`:
 //   not-connected      → "Connect wallet" → opens the CIP-30 wallet picker → useSigner.connectWallet
 //                        (derives the sr25519 posting key from the CIP-8 signature; nothing stored).
 //   not-identity-bound → "Finish setup" → onContinueSetup() (routes to /welcome's bind step).

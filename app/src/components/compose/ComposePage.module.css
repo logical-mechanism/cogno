@@ -1,4 +1,4 @@
-/* ComposePage (surface 09 §3.1) — the FULL-PAGE composer fallback chrome.
+/* ComposePage — the FULL-PAGE composer fallback chrome.
    A focused header (Cancel left + the mode title) over the composer body. NOT a dialog: no scrim,
    no blurred sticky-timeline header, no focus trap. Every visual binds to a --cg-* token. The
    accent is monochrome (near-white dark / near-black light) and only the Composer's own Post pill
@@ -11,7 +11,7 @@
 }
 
 /* Focused header bar: Cancel (left) + the mode label. The actual Post CTA lives in the Composer
-   toolbar below (single source of truth for the validity / capacity / session gate — §4.3/§5.4). */
+   toolbar below (single source of truth for the validity / capacity / session gate). */
 .header {
   position: sticky;
   top: 0;
@@ -63,7 +63,7 @@
   padding: var(--cg-space-3) var(--cg-space-4) var(--cg-space-6);
 }
 
-/* The muted "This post is unavailable." stub for a missing reply/quote target (§8). */
+/* The muted "This post is unavailable." stub for a missing reply/quote target. */
 .contextUnavailable {
   border: 1px solid var(--cg-border);
   border-radius: var(--cg-radius-card);

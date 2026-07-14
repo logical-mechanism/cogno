@@ -1,7 +1,7 @@
 "use client";
 
-// usePoll — fetch a poll's options + stake-weighted tallies (gated on caps.tallies) AND the viewer's
-// existing choice, then cast/re-cast the viewer's vote optimistically. Polls NEVER expire (no on-chain
+// usePoll — fetch a poll's options + stake-weighted tallies AND the viewer's existing choice, then
+// cast/re-cast the viewer's vote optimistically. Polls NEVER expire (no on-chain
 // deadline) — results are live and a re-cast moves the viewer's choice.
 //
 // RECONCILE (why this isn't a single reload-on-confirm): a vote confirms at `inBestBlock`, and the reads

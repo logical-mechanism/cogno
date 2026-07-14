@@ -1,6 +1,6 @@
 "use client";
 
-// WelcomeShell — the centered onboarding chrome (surface 11 §3 / §16). A single narrow column
+// WelcomeShell — the centered onboarding chrome. A single narrow column
 // (--cg-col-onboarding, 480px) vertically centered on --cg-bg with the cogno wordmark at the top
 // (links '/'), the ProgressDots row, and the active step content in the slot. The flow owns the
 // canvas; this shell is the auth-card frame the stepper renders into. Wordmark is text-colored

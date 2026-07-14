@@ -1,6 +1,6 @@
 "use client";
 
-// PowerUps — Step 4 of onboarding (surface 11 §3.5 / §7.4 / §14). The identity is bound (the Sybil
+// PowerUps — Step 4 of onboarding. The identity is bound (the Sybil
 // gate). Two REQUIRED steps remain, in order, and neither is skippable:
 //
 //   1. Add voting power (bind the stake key). Mandatory and shown FIRST — it is feeless and fails fast
@@ -20,10 +20,6 @@
 //
 // NO honesty chrome: no battery, no block numbers, no anchor UI, no trust labels.
 //
-// NOTIFICATIONS (DEFERRED — leave the seam): onboarding is the natural place to later prompt "turn on
-// notifications" via a future useNotifications(who) (doc 04 §5.4) folding the indexer's
-// Voted/Reposted/Followed/reply/quote edges targeting the viewer into a /notifications surface. Do
-// NOT build it now — this is the named slot.
 
 import styles from "./PowerUps.module.css";
 import { Spinner } from "@/components/icons";
@@ -227,7 +223,7 @@ export function PowerUps({
   );
 }
 
-// ── DoneBanner ─────────────────────────────────────────────────────────────────────────────────
+// ── DoneBanner ───────────────────────────────────────────────────────────────────────────────────
 
 function DoneBanner({
   welcomeBack,
@@ -251,7 +247,7 @@ function DoneBanner({
   );
 }
 
-// ── VaultCard ──────────────────────────────────────────────────────────────────────────────────
+// ── VaultCard ────────────────────────────────────────────────────────────────────────────────────
 
 function VaultCard({
   vault,
@@ -347,7 +343,7 @@ function VaultCard({
   );
 }
 
-// ── StakeCard ──────────────────────────────────────────────────────────────────────────────────
+// ── StakeCard ────────────────────────────────────────────────────────────────────────────────────
 
 function StakeCard({
   stake,

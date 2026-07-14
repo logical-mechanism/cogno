@@ -1,6 +1,6 @@
 "use client";
 
-// ResultTabStrip — the QUERY-mode result-scope tabs for /explore (surface 10 §2.1): People | Latest.
+// ResultTabStrip — the QUERY-mode result-scope tabs for /explore: People | Latest.
 // Default Latest. The shared <Tabs> strip in its "sticky" variant, which carries the blurred header
 // chrome + horizontal overflow this surface needs (see components/ui/Tabs.tsx). Presentational: the
 // active tab lives in ExplorePage; this only renders + reports onChange. Hidden entirely in DEFAULT

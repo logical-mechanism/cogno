@@ -1,10 +1,10 @@
 //! # Talk-stake pallet (cogno-chain)
 //!
-//! **The weight source for the regenerating talk-capacity meter** — a CALL-LESS ledger written
-//! **only** by the in-protocol `cardano-observer` inherent (the sole weight writer). Stores one
-//! `StakeWeight` per account (the summed buried lovelace backing that identity's posting allowance,
-//! `ECONOMICS.md` §6.1) plus one `VotingPower` (its bound stake credential's total Cardano stake, the
-//! stake-weighted-vote source).
+//! **The weight source for the regenerating talk-capacity meter.** It is a CALL-LESS ledger: it has no
+//! extrinsics at all, and the only thing that writes it is the in-protocol `cardano-observer` inherent.
+//! It stores two numbers per account — `AllowedStake` (the lovelace locked in that identity's largest
+//! `talk_vault` UTxO, which backs its posting allowance) and `VotingPower` (the total Cardano stake of
+//! its bound stake credential, which backs its vote weight).
 //!
 //! ## No extrinsic, no origin — the observer is the ONLY writer
 //! In the all-Rust restart there is **no `set_stake` / `set_voting_power` call and no `SetStakeOrigin`**.
@@ -20,10 +20,10 @@
 //! - `apply_weight` writes **only** `AllowedStake`, **never** the `Capacity` row (which lives in
 //!   `pallet-microblog`). That separation *is* the going-forward-only rule: raising weight lifts the
 //!   future `cap`/`rate` immediately, but the bigger bucket still fills over the window — it never
-//!   retroactively credits banked capacity (`ECONOMICS.md` §6.1 part 1).
+//!   retroactively credits banked capacity. See docs/ECONOMICS.md.
 //! - On **full** unlock the observer writes `weight = 0`; weight is read live, so `cap = rate = 0` and the
 //!   next capacity read collapses to `min(0, …) = 0`. The `Capacity` row is **never deleted** (that lives
-//!   in microblog), so a relock cannot re-mint a fresh bucket (`ECONOMICS.md` §6.1 part 2).
+//!   in microblog), so a relock cannot re-mint a fresh bucket.
 //! - `AllowedStake` is `ValueQuery` → an unbound/unlocked account reads `0` for free.
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -41,8 +41,8 @@ mod tests;
 /// trail is the `StakeSet`/`VotingPowerSet` events; these logs add operator-visible context).
 pub const LOG_TARGET: &str = "runtime::talk-stake";
 
-/// Summed buried lovelace (curve output) backing one identity's talk capacity.
-/// `u128` (lovelace scale; `ECONOMICS.md` §6.1).
+/// The locked lovelace backing one identity's talk capacity — its largest `talk_vault` UTxO, never the
+/// sum of them. `u128` (lovelace scale).
 pub type StakeWeight = u128;
 
 #[frame_support::pallet]
@@ -114,7 +114,7 @@ pub mod pallet {
         /// Write `who`'s stake weight (insert `AllowedStake` + emit `StakeSet`). The sole entry point:
         /// **pallet-cardano-observer** calls it from its verified Mandatory inherent (which applies its OWN
         /// `MaxStakeWeight` skip-not-reject *before* calling, so a bad value is filtered out and never
-        /// reaches here). Writes **only** `AllowedStake` (the going-forward-only rule, `ECONOMICS.md` §6.1):
+        /// reaches here). Writes **only** `AllowedStake` (the going-forward-only rule):
         /// the lazy capacity meter reads this live, so a raise lifts the future `cap`/`rate` and
         /// `weight = 0` collapses capacity on the next read — without touching the (relock-safe) capacity
         /// row in `pallet-microblog`.

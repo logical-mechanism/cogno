@@ -36,7 +36,7 @@ impl SubstrateCli for Cli {
     }
 
     fn support_url() -> String {
-        "https://github.com/LogicalMechanism/cogno-chain/issues".into()
+        "https://github.com/logical-mechanism/cogno/issues".into()
     }
 
     fn copyright_start_year() -> i32 {

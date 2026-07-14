@@ -78,7 +78,7 @@ pub fn set_members(
     })
 }
 
-/// `CognoGate::revoke(substrate_account)` — the manual-operator-ban path (DR-14). `FollowerOrigin`-gated
+/// `CognoGate::revoke(substrate_account)` — the manual-operator-ban path. `FollowerOrigin`-gated
 /// (= the 3/5 committee), so it routes through `propose`. Flips `is_allowed` to false for the account.
 pub fn revoke(substrate_account: AccountId32) -> RuntimeCall {
     RuntimeCall::CognoGate(pallet_cogno_gate::Call::<Runtime>::revoke { substrate_account })

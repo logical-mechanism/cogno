@@ -7,7 +7,7 @@ name: deploy-app
 #
 # The static export embeds no Rust artifact — its PAPI descriptors regenerate offline from the
 # committed app/.papi/metadata/cogno.scale — so this builds from source with no dependency on the node
-# binary. (A sibling deploy-node.yml, for building + shipping the node binary, would live here too.)
+# binary. Its sibling deploy-node.yml ships the node binary to the same box.
 #
 # Requires, in repo Settings → Secrets and variables → Actions:
 #   vars.NEXT_PUBLIC_WS_URL                    wss://cogno.forum/rpc  (a Variable; the build refuses non-wss)

@@ -1,7 +1,7 @@
 "use client";
 
 // PersonResult — a single People-tab result. A thin wrapper over the shared PersonRow so the People
-// list and the RightRail who-to-follow share one row shape (surface 10 §6). Search shows EVERYONE
+// list and the RightRail who-to-follow share one row shape. Search shows EVERYONE
 // matching the term (including the viewer + already-followed) — no self/edge filtering here (unlike
 // who-to-follow); FollowButton itself returns null for the viewer's own row.
 

@@ -37,7 +37,7 @@ export function routeSegmentOf(pathname: string, base: string): string {
  * An empty `next` does NOT mean "no such profile" — it means the URL currently points somewhere that
  * isn't this route, while this route is still mounted. ModalRouteHost does exactly that: it pushes the
  * overlay URL (/compose/?reply=<id>) with the RAW History API to keep <main> mounted behind the modal
- * (doc 01 §7.2). Next patches pushState, and for a state object it did not author it moves the CANONICAL
+ *. Next patches pushState, and for a state object it did not author it moves the CANONICAL
  * URL — hence usePathname — while restoring the route tree unchanged. So the moment a reply/quote/compose
  * overlay opens on /u/<addr>/, a naive re-parse yields "" and the profile behind the modal would render
  * its not-found body. Hold the last real segment instead. See routeSegment.test.ts.

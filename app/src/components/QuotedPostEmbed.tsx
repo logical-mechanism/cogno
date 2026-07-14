@@ -1,7 +1,7 @@
 "use client";
 
 // QuotedPostEmbed — the shallow, one-level quoted-post card nested inside a PostCard when
-// `post.quote` is set (doc 03 §5). Mirrors X's quoted-tweet embed: a bordered, rounded
+// `post.quote` is set. Mirrors X's quoted-tweet embed: a bordered, rounded
 // (--cg-radius-card) box with a small inline avatar + name + handle line, the quoted body clamped to
 // a few lines, and NO action row. Clicking the box opens the quoted post's detail.
 //

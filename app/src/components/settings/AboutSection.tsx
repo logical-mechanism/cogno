@@ -1,6 +1,6 @@
 "use client";
 
-// AboutSection — Settings §8 (doc 12). A minimal, plain "About cogno-chain" card: name + one-liner +
+// AboutSection — Settings. A minimal, plain "About cogno-chain" card: name + one-liner +
 // an optional source link + the copyright line. NO honesty / trusted-follower / operator-run / anchor copy.
 
 import styles from "./AboutSection.module.css";

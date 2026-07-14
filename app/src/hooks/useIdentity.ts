@@ -43,7 +43,7 @@ export interface UseIdentity {
   bind: (walletId: string) => void;
   refresh: () => void;
 
-  // ── Voting power (the SEPARATE stake-key bind) ───────────────────────────────────────────
+  // ── Voting power (the SEPARATE stake-key bind) ─────────────────────────────────────────────────
   // Posting capacity comes from the 100-ADA vault deposit (see useVault/useCapacity). VOTE
   // weight is distinct: it comes from the TOTAL Cardano stake of a stake credential the user
   // proves 1:1 with a stake-key CIP-8 signature. These watch chain state live.
@@ -202,7 +202,7 @@ export function useIdentity(
           if (!res.ok) {
             throw new Error(res.error || "the on-chain bind was rejected");
           }
-          // (4) AccountOf readback (L5 §5.7): confirm the verified identity resolves to MY account, the
+          // (4) AccountOf readback: confirm the verified identity resolves to MY account, the
           //     belt-and-suspenders 1:1 check (the proof already commits my account cryptographically).
           setBindPhase("confirming");
           if (res.identityHash) {

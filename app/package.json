@@ -2,12 +2,17 @@
   "name": "cogno-chain-app",
   "version": "1.0.0",
   "private": true,
-  "description": "cogno-chain M1 frontend — Next.js static-export SPA + PAPI post/read loop (Reading Room / Civic Ledger)",
+  "license": "Apache-2.0",
+  "description": "cogno-chain frontend — a Next.js static-export SPA that reads and writes the chain node-direct over PAPI, and reaches Cardano with MeshJS for the L1 vault lock/exit",
+  "engines": {
+    "node": ">=22.12.0 <23"
+  },
   "scripts": {
     "postinstall": "papi",
     "dev": "next dev -p 3000",
     "build": "next build",
-    "lint": "eslint . --max-warnings 83 && node scripts/check-tokens.mjs && node scripts/check-spec.mjs",
+    "lint": "eslint . --max-warnings 0 && node scripts/check-tokens.mjs && node scripts/check-spec.mjs",
+    "typecheck": "tsc --noEmit --incremental false",
     "check:tokens": "node scripts/check-tokens.mjs",
     "check:spec": "node scripts/check-spec.mjs",
     "smoke": "node scripts/smoke-export.mjs",

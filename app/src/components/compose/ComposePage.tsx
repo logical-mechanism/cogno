@@ -1,21 +1,21 @@
 "use client";
 
-// ComposePage — the FULL-PAGE composer fallback for the real route /compose/ (surface 09 §1/§3.1).
+// ComposePage — the FULL-PAGE composer fallback for the real route /compose/.
 //
 // The PRIMARY compose presentation is the ComposerModal overlay owned by <ModalRouteHost> (mounted in
 // AppShell) — opened from the LeftNav "Post" pill, the ComposeFab, a card Reply/Quote, or the "Poll"
 // entry, WITHOUT a route swap so the timeline keeps streaming behind the scrim. THIS file is only the
-// COLD presentation: a deep-link / hard-refresh / no-JS share of /compose/ (§3.1). It is NOT a dialog
+// COLD presentation: a deep-link / hard-refresh / no-JS share of /compose/. It is NOT a dialog
 // (no scrim, no focus trap, no blurred sticky-timeline header) — just a focused header (Cancel + the
 // mode label) over the same Composer family the modal host renders. One source of truth: the Composer
 // owns the Post CTA + the byte-counter + the validity/capacity/session gate; this page only resolves
 // the mode, hydrates the reply/quote context, and runs the SAME optimistic submit pipeline as
 // ModalRouteHost.runWrite (optimistic insert → run(stream) → silent confirm / rollback + toast).
 //
-// Mode resolution (§1): ?reply=<id> > ?quote=<id> > ?poll=1 > (none → post). The id is validated
+// Mode resolution: ?reply=<id> > ?quote=<id> > ?poll=1 > (none → post). The id is validated
 // (/^[0-9]+$/) before BigInt so a junk deep link never crashes the route.
 //
-// Capacity gate (§5.1): the shared useComposerGate, same as every other composing surface.
+// Capacity gate: the shared useComposerGate, same as every other composing surface.
 // pallet-profile is irrelevant here; every post/reply/quote/poll write is FEELESS + capacity-metered
 // (spec 117), so there is NO funding / balance gate — capacity exhaustion is the only chain reality
 // (inline RateLimitNotice via the rateLimited prop, owned by the Composer).
@@ -66,7 +66,7 @@ export function ComposePage() {
   const params = useSearchParams();
   const { api, signer, source, viewer } = useSession();
 
-  // ── Mode resolution (§1): precedence reply > quote > poll > post; defensive against junk ids. ──
+  // ── Mode resolution: precedence reply > quote > poll > post; defensive against junk ids. ──
   const replyId = parseTargetId(params.get("reply"));
   const quoteId = parseTargetId(params.get("quote"));
   const wantsPoll = params.get("poll") === "1";
@@ -91,7 +91,7 @@ export function ComposePage() {
   // header must say "Post", not the stale "Reply"/"Quote".
   const effectiveMode = contextUnavailable ? "post" : mode;
 
-  // ── Write pipeline (mirror ModalRouteHost.runWrite) ──────────────────────────────────────────
+  // ── Write pipeline (mirror ModalRouteHost.runWrite) ────────────────────────────────────────────
 
   // The poll draft lives here (controlled by PollComposer) — same shape ModalRouteHost seeds.
   const [pollDraft, setPollDraft] = useState<PollDraft>({ question: "", options: ["", ""] });
@@ -117,7 +117,7 @@ export function ComposePage() {
     if (mode === "post") savePostDraft(text);
   }, [mode, text]);
 
-  // ── Capacity gate (§5.1), shared with every other composing surface — see useComposerGate. Profile
+  // ── Capacity gate, shared with every other composing surface — see useComposerGate. Profile
   //    is irrelevant; every write here is feeless + capacity-metered, so capacity is the only gate.
   //    The text it measures is the SERIALIZED post/reply/quote body (so mention tokens count as their
   //    ss58 length), or the poll question. Reply/quote are uncontrolled → `serialized` stays "" and the
@@ -129,7 +129,7 @@ export function ComposePage() {
   const gateText = mode === "poll" ? pollDraft.question : serialized;
   const { rateLimited, noPostingPower, needsVotingPower, retryInSeconds } = useComposerGate(gateText);
 
-  // ── goBack: prefer in-app history; else land on Home (§6.1 step 3 / Cancel). ─────────────────
+  // ── goBack: prefer in-app history; else land on Home (step 3 / Cancel). ────────────────────────
   const goBack = useCallback(() => {
     if (typeof window !== "undefined" && window.history.length > 1) router.back();
     else router.push("/");
@@ -158,14 +158,14 @@ export function ComposePage() {
   }, [isDirty, goBack]);
 
 
-  // ── Per-mode submit handlers ─────────────────────────────────────────────────────────────────
+  // ── Per-mode submit handlers ───────────────────────────────────────────────────────────────────
   // This page UNMOUNTS on navigation, so runWrite's onCancel is live here: it drops the sticky
   // pending toast when the user navigates away mid-flight.
   const { submitState, runWrite, optimisticPost } = useComposeWrite(api, signer, viewer, goBack);
 
   const onPost = useCallback(
     (draft: ComposerDraft) => {
-      // Session-gated submit reroutes to /welcome (the Composer relabels the CTA; §5.3).
+      // Session-gated submit reroutes to /welcome (the Composer relabels the CTA).
       if (viewer.status !== "ready") return void router.push("/welcome/");
       if (!api || !signer || draft.text.trim().length === 0) return;
       clearPostDraft(); // submitted → don't restore it next time
@@ -240,7 +240,7 @@ export function ComposePage() {
           <Loading variant="panel" label="Loading the post…" />
         )}
 
-        {/* Missing/pruned target → muted stub, but keep the composer usable (§8). */}
+        {/* Missing/pruned target → muted stub, but keep the composer usable. */}
         {contextUnavailable && (
           <p className={styles.contextUnavailable} role="status">
             This post is unavailable.

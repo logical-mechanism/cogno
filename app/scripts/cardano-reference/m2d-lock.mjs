@@ -3,7 +3,7 @@
 // (script payment cred + the owner's stake cred), value ≥ min_lock, inline VaultDatum{owner}, owner
 // signs. Uses the local db-sync (fetcher) + Ogmios (submitter/evaluator). Prints the tx hash.
 // The script is embedded in the tx (a reference-script variant is an optional follow-up, see
-// docs/M2d-build.md §Acceptance).
+// the live preprod vault).
 //
 //   node scripts/m2d-lock.mjs
 //
@@ -24,7 +24,7 @@ const APPLIED_CBOR = vaultMeta.appliedCbor;
 async function main() {
   const { wallet, address, paymentKeyHash, stakeKeyHash } = await getOwnerWallet({ withProvider: true });
 
-  // The vault address: script payment cred (the vault hash) + the OWNER's stake key (DR-01).
+  // The vault address: script payment cred (the vault hash) + the OWNER's stake key (the payment credential is the vault hash).
   const { address: vaultAddress } = serializePlutusScript(
     { code: APPLIED_CBOR, version: "V3" },
     stakeKeyHash,

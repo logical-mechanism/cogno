@@ -1,6 +1,6 @@
 "use client";
 
-// FollowButton — toggle following an account (doc 03 §12). Optimistic. Matches X exactly:
+// FollowButton — toggle following an account. Optimistic. Matches X exactly:
 //   not following → "Follow" (filled --cg-accent pill, --cg-accent-contrast text)
 //   following     → "Following" (outline pill) → on HOVER morphs to "Unfollow" in --cg-danger red.
 // No confirm dialog on unfollow (X doesn't confirm). Returns NOTHING on self (target === own

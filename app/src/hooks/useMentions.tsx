@@ -10,7 +10,7 @@
 //
 // It reads the session (source/api/signer/viewer) + the viewer's following set itself, so the base
 // Composer stays presentational (mirrors how ReputationBadge / ProfileHoverCard read from the session
-// as leaves). Gated on caps.search && caps.profiles — a node that can't people-search shows no popover.
+// as leaves). A node that cannot people-search shows no popover.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSession } from "@/components/Providers";

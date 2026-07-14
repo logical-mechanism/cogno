@@ -1,11 +1,11 @@
-# cogno-chain — Rust workspace (M0 scaffold)
+# cogno-chain — Rust workspace
 #
 # Forked from the polkadot-sdk `templates/solochain` at tag polkadot-stable2603-3
 # (commit e3737178ec726cffe506c907263aaaa417893fd0), then upgraded wholesale to the
 # polkadot-sdk stable2606 release train (tag polkadot-stable2606-rc4). Dependency versions
 # below are the exact crates.io versions that ship in that release (harvested from the tag's
 # Cargo.lock; cross-checked against crates.io max_stable_version). Pin is locked further by
-# the committed Cargo.lock. See docs/M0-build.md (DR-03).
+# the committed Cargo.lock.
 [workspace]
 resolver = "2"
 members = [
@@ -37,8 +37,8 @@ members = [
 version = "1.0.0"
 authors = ["LogicalMechanism <support@logicalmechanism.io>"]
 edition = "2021"
-homepage = "https://github.com/LogicalMechanism/cogno-chain"
-repository = "https://github.com/LogicalMechanism/cogno-chain"
+homepage = "https://github.com/logical-mechanism/cogno"
+repository = "https://github.com/logical-mechanism/cogno"
 license = "Apache-2.0"
 
 [workspace.lints.rust]
@@ -62,7 +62,7 @@ pallet-cogno-gate = { path = "pallets/cogno-gate", default-features = false }
 # Twitter-like social-actions branch: mutable per-account display profile (name/bio/avatar),
 # identity-gated via the microblog IsAllowed trait.
 pallet-profile = { path = "pallets/profile", default-features = false }
-# M6 (DR-26): the MUTABLE Aura+GRANDPA validator set — vendor-forked from
+# The MUTABLE Aura+GRANDPA validator set — vendor-forked from
 # gautamdhameja/substrate-validator-set, drives pallet-session's SessionManager.
 pallet-validator-set = { path = "pallets/validator-set", default-features = false }
 # in-protocol-observation (D4): sets talk-stake weight from a consensus-verified Cardano inherent.
@@ -113,10 +113,10 @@ frame-try-runtime = { version = "0.54.0", default-features = false }
 # ── pallets (stock) ────────────────────────────────────────────────────────────
 pallet-aura = { version = "48.0.0", default-features = false }
 pallet-balances = { version = "50.0.0", default-features = false }
-# DR-07: the mutable k-of-t committee backing the crown-jewel origins (M5).
+# The mutable k-of-t committee backing the crown-jewel origins.
 pallet-collective = { version = "49.0.0", default-features = false }
 pallet-grandpa = { version = "49.0.0", default-features = false }
-# M6 (DR-26): mutable authorities — pallet-session rotates Aura+GRANDPA from the validator-set
+# Mutable authorities — pallet-session rotates Aura+GRANDPA from the validator-set
 # pallet's SessionManager each session, instead of from static genesis.
 pallet-session = { version = "49.0.0", default-features = false }
 pallet-skip-feeless-payment = { version = "23.0.0", default-features = false }

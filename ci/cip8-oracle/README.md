@@ -6,8 +6,8 @@ An **independent second implementation** of the on-chain CIP-8 verifier
 divergence between two independent implementations of the anti-Sybil crown jewel. It is **not** part of the
 running system — the all-Rust restart has no follower service; this is a CI adversarial check.
 
-Moved here from the retired `services/cogno-follower/` in the all-Rust restart (`fork/all-rust`, P8). Do
-**not** port it to Rust — its value is the independent lineage.
+It moved here from the retired `services/cogno-follower/` when the backend went all-Rust. Do **not** port
+it to Rust — its value is the independent lineage.
 
 ## Files
 

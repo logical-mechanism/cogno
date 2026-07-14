@@ -1,4 +1,4 @@
-/* Explore route (surface 10). The SearchBar sits in a sticky blurred header; the order toggle /
+/* Explore route. The SearchBar sits in a sticky blurred header; the order toggle /
    result tabs carry their own blurred backgrounds (their modules), so the whole header block stays
    pinned while results scroll. */
 
@@ -30,7 +30,7 @@
   border-bottom: 1px solid var(--cg-border);
 }
 
-/* Visually-hidden live region for polite result-count announcements (§9). */
+/* Visually-hidden live region for polite result-count announcements. */
 .srOnly {
   position: absolute;
   width: 1px;

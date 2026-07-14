@@ -1,14 +1,14 @@
 "use client";
 
-// TimelineTabs — the Home "For you / Following" tab strip (doc 06 §4, doc 03 §22.1).
+// TimelineTabs — the Home "For you / Following" tab strip.
 //
 // Composes the tab LIST (which is surface-specific — Following disappears when the reader can't serve
 // follows) and hands it to the shared <Tabs> strip. The strip itself — markup, keyboard, indicator — was
 // duplicated five times; see components/ui/Tabs.tsx.
 //
 // The active tab carries the NEUTRAL underline indicator (the locked monochrome direction — the accent
-// is the Post CTA + focus ring ONLY, never a coloured link/nav; doc 00). The Following tab is HIDDEN
-// entirely when it can't be served, never greyed or disabled (doc 06 §5.5). Presentational: client tab
+// is the Post CTA + focus ring ONLY, never a coloured link/nav). The Following tab is HIDDEN
+// entirely when it can't be served, never greyed or disabled. Presentational: client tab
 // state lives in HomePage; this only renders + reports `onChange`.
 
 import { useMemo } from "react";

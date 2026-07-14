@@ -122,10 +122,16 @@ block at or under that slot.
 The node's custom proposer (`node/src/consensus/`) seals this `CardanoRef` into **each block header** as
 a `cobs` `PreRuntime` digest. This makes the specific stable Cardano block that underlay the read a
 first-class, externally-auditable artifact: anyone reading only cogno-chain headers can see which
-Cardano block each block was anchored to. Importers re-validate the full `CardanoRef` (slot **and**
-`block_hash`) against their own read, so a forged or regressing anchor is caught. It is safe to compare
-`block_hash` because the anchor is a single unique `block` row in immutable history, and a node whose
-own db-sync is behind abstains before it could reach a false mismatch.
+Cardano block each block was anchored to.
+
+The seal is a **mirror, not a gate**. What importers re-validate is the *inherent's* `CardanoRef` (slot
+**and** `block_hash`) against their own read, so a forged or regressing anchor is caught there — it is
+safe to compare `block_hash` because the anchor is a single unique `block` row in immutable history, and
+a node whose own db-sync is behind abstains before it could reach a false mismatch. The **header digest
+itself is not decoded on import**: an author who sealed an anchor contradicting the observation it
+applied would still be accepted, so a header-only auditor is trusting the author's seal to match the
+inherent. The decoder that would make the digest consensus-binding is implemented and unit-tested in
+`node/src/consensus/cardano_digest.rs`, staged for a future runtime upgrade.
 
 ## Verification: mismatch rejects, can't-check defers
 

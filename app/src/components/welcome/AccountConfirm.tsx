@@ -1,6 +1,6 @@
 "use client";
 
-// AccountConfirm — Step 2 of onboarding (surface 11 §3.3 / §7.2). Shows the derived posting account
+// AccountConfirm — Step 2 of onboarding. Shows the derived posting account
 // the user is about to register: a big identicon Avatar (from signer.ss58), the DisplayName fallback
 // + a copyable Handle, and "derived from <wallet>". Primary "Continue" → subStep 'bind'; secondary
 // "Use a different wallet" → useSigner.disconnect() (back to Step 1). Display-only, no chain call.

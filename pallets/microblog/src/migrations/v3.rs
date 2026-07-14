@@ -8,7 +8,7 @@
 //!       - `ReplyCount[pid]` += 1, and
 //!       - `RepliesByParent[pid][id] = ()`.
 //!
-//! Content is append-only (`delete_post` was removed in M0), so a single forward pass over `Posts`
+//! Content is append-only (there is no `delete_post`), so a single forward pass over `Posts`
 //! reconstructs the exact aggregates the live `post_message` reply path now maintains incrementally.
 //!
 //! Wired into the runtime's `SingleBlockMigrations` and guarded by [`VersionedMigration`], so it runs

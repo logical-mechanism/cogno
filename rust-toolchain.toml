@@ -15,6 +15,7 @@ components = [
 	"rust-std",
 	"rust-src",
 ]
-# wasm-builder prefers wasm32v1-none when present (the target the de-risk verified under 1.90.0).
+# substrate's wasm-builder prefers wasm32v1-none when it is installed, and falls back to
+# wasm32-unknown-unknown; both are here so the runtime wasm builds either way.
 targets = ["wasm32v1-none", "wasm32-unknown-unknown"]
 profile = "minimal"

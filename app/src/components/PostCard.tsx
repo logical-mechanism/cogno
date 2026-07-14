@@ -1,6 +1,6 @@
 "use client";
 
-// PostCard — the load-bearing unit: one post in any list context (doc 03 §1).
+// PostCard — the load-bearing unit: one post in any list context.
 //
 // Composes PostCardHeader + an optional "Replying to" line + PostBody + an optional QuotedPostEmbed
 // OR InlinePoll + PostCardActions. Carries the optimistic-pending rendering (opacity 0.6, actions
@@ -40,11 +40,11 @@ import type {
 } from "./kit";
 
 export interface PostCardProps {
-  /** The post (§0.4). */
+  /** The post. */
   post: CognoPost;
   /** The viewer's relationship to this post — drives the filled up-vote / poll choice. */
   viewer: ViewerPostState;
-  /** Coarse write-gate state (§0.2) — supplied by AppShell, never computed here. */
+  /** Coarse write-gate state — supplied by AppShell, never computed here. */
   gate: Viewer;
   /** The shared callback bundle every list surface forwards (open / author / reply / quote / like / …). */
   handlers: PostActionCallbacks;

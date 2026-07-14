@@ -2,23 +2,29 @@
 
 Pick your lane. Most people want the first one.
 
-## Try it — see the app against the live chain
+## Just use it
 
-The fastest path to actually using cogno-chain. No keys, no Cardano, no validator.
+The app is live at **<https://cogno.forum>**, against a public RPC endpoint at **`wss://cogno.forum/rpc`**.
+Nothing to build. You need a Cardano preprod wallet and 100 ADA to lock before you can post.
+
+## Run it yourself
+
+Sync the live chain on your own machine and point the app at your own node — no keys, no Cardano
+db-sync, no validator.
 
 1. Build the node — [`../README.md`](../README.md#build) (`cargo build --release`).
 2. **[RELAY-NODE.md](RELAY-NODE.md)** — run a tracking node that syncs the live preprod chain and
    serves it to your browser.
 3. **[LOCAL-FRONTEND.md](LOCAL-FRONTEND.md)** — point the app at your node and post.
 
-## Run a node of your own
+## Run a chain of your own
 
 - **[PREPROD-BRINGUP.md](PREPROD-BRINGUP.md)** — stand up your own validator: mint keys, generate a
   genesis, produce blocks, and drive the on-chain admin loop.
 - **[../deploy/README.md](../deploy/README.md)** — the always-on server runbook (systemd, backups,
   monitoring).
-- **[UPGRADES.md](UPGRADES.md)** — ship new runtime code to a live chain (the two-command,
-  sudo-free upgrade; single- vs multi-operator).
+- **[UPGRADES.md](UPGRADES.md)** — ship new runtime code to a live chain (the two-command, sudo-free
+  upgrade; single- vs multi-operator).
 - **[D2-custody-runbook.md](D2-custody-runbook.md)** — split committee keys across custodians when you
   federate to real independent operators.
 
@@ -39,9 +45,4 @@ Then the focused deep-dives, if you want the detail:
   governance thresholds) with its current value and where to change it in the code.
 
 > These explain *why*, not *how to run*. They're the reference for understanding the design — you
-> don't need any of them to run or test the chain; the two lanes above cover that.
-
-## Not built yet
-
-- **[CLIENT-SIDE-RANKING.md](CLIENT-SIDE-RANKING.md)** — a design for client-side feed ranking.
-  Proposal, not shipped.
+> don't need any of them to run or test the chain; the lanes above cover that.

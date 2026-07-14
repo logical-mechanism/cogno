@@ -1,6 +1,6 @@
 "use client";
 
-// PostDetailView — the client half of /post/[id] (surface 08). Reads the live id from the URL
+// PostDetailView — the client half of /post/[id]. Reads the live id from the URL
 // (useRouteSegment, NOT useParams — see lib/routeSegment) and validates it (/^\d+$/); an invalid id
 // (the static-export placeholder "_" or junk) → the in-app not-found (NOT a hard 404 — the server is
 // never reached). A valid id mounts the back-arrow "Post" header + the ThreadView, which owns the

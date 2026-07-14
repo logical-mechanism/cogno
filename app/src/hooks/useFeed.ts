@@ -1,12 +1,13 @@
 "use client";
 
-// useFeedPage — the paginated/search read path: fetches one page on demand,
-// supports cursor "load more" by appending, and surfaces a clear error state instead of
-// blanking the feed if the indexer is unreachable.
+// useFeedPage — the paginated/search read path: fetches one page on demand, supports cursor "load
+// more" by appending, and surfaces a clear error state instead of blanking the feed when the node is
+// unreachable.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mergeById } from "@/lib/feed/live";
 import type { FeedPage, FeedQuery, CognoPost } from "@/lib/types";
+import { readErrorCopy } from "@/lib/chain/errors";
 import type { FeedSource } from "@/lib/feed/source";
 
 
@@ -94,7 +95,7 @@ export function useFeedPage(
         if (cancelled) return;
         applyPage(null);
         setPosts([]);
-        setError(err instanceof Error ? err.message : "could not load the page");
+        setError(readErrorCopy(err, "Could not load the page."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -125,7 +126,7 @@ export function useFeedPage(
       })
       .catch((err: unknown) => {
         if (queryKeyRef.current !== dispatchedKey) return;
-        setError(err instanceof Error ? err.message : "could not load more");
+        setError(readErrorCopy(err, "Could not load more."));
       })
       .finally(() => {
         if (queryKeyRef.current === dispatchedKey) setLoading(false);

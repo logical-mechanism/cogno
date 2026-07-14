@@ -34,7 +34,7 @@ use frame_support::{
         IdentityFee, Weight,
     },
 };
-// DR-07: the mutable k-of-t committee origin combinator + its default instance. cogno-chain is SUDO-FREE:
+// The mutable k-of-t committee origin combinator + its default instance. cogno-chain is SUDO-FREE:
 // the FollowerCommittee is the SOLE governance authority, so there is no `frame_system::EnsureRoot` /
 // `EitherOfDiverse` root fallback anywhere in the runtime.
 use frame_system::limits::{BlockLength, BlockWeights};
@@ -327,7 +327,7 @@ impl pallet_aura::Config for Runtime {
 /// `KeyOwnerProof = Void` + `EquivocationReportSystem = ()` (and the `grandpa` runtime API returns
 /// `None`) mean a double-signing validator has no on-chain consequence — no slashing/disabling. This
 /// is acceptable while the authority set is the small operator-run committee with off-chain
-/// accountability (M6's mutable set is gated by the 3-of-5 `AuthorityOrigin`).
+/// accountability (the mutable authority set is gated by the 3-of-5 `AuthorityOrigin`).
 ///
 /// ⚠ MAINNET PREREQUISITE: before a public multi-validator network, wire a real
 /// `KeyOwnerProofSystem` / `EquivocationReportSystem` (via `pallet-session` historical + an offences
@@ -481,7 +481,7 @@ impl pallet_governance_fuel::Config for Runtime {
     type WeightInfo = ();
 }
 
-// ── DR-07: the FollowerCommittee — the mutable k-of-t authority behind the crown jewels ──
+// ── The FollowerCommittee — the mutable k-of-t authority behind the crown jewels ──
 //
 // `pallet-collective` (one shared `Instance1`) holds a MUTABLE member set (rotation via
 // `Collective::set_members`, gated by `SetMembersOrigin` = the committee's own `AuthorityOrigin`)
@@ -489,9 +489,8 @@ impl pallet_governance_fuel::Config for Runtime {
 // That origin authorizes every privileged write — there is NO `EnsureRoot`/sudo fallback (sudo-free
 // from genesis; index 6 vacant).
 // The proposal lifecycle (`Proposed`/`Voted`/`Closed`/`Approved`/`Executed`) IS the per-action
-// audit log (DR-07's D0 requirement). Widening to k-of-t changed ZERO call signatures because the
-// underlying origins were already `EnsureOrigin` (L2 §8.4). The D2 gate before any mainnet run is
-// exactly this 3-of-5 across five independent custody domains (DR-26).
+// audit log. The gate before any mainnet run is exactly this 3-of-5 across five independent custody
+// domains (see docs/D2-custody-runbook.md).
 parameter_types! {
     /// Motion lifetime before it lapses. Members can `close` early once 3-of-5 is reached, so this
     /// is just the upper bound on an undecided motion (dev value).
@@ -558,10 +557,10 @@ impl pallet_collective::Config<Instance1> for Runtime {
 /// `validator-set::AddRemoveOrigin`, `cardano-observer::EnforceOrigin`
 /// (the weight-freeze control — the observer, not this origin, writes weight), and
 /// `governed-upgrade::AuthorityOrigin` — so identity, validators, upgrades, and force-capacity all sit
-/// behind ONE trust boundary (L2 §8.4, L3 §4.5).
+/// behind ONE trust boundary.
 pub type AuthorityOrigin = EnsureProportionAtLeast<AccountId, Instance1, 3, 5>;
 
-// ── M6 (DR-26): MUTABLE Aura+GRANDPA authorities via pallet-session + pallet-validator-set ──
+// ── MUTABLE Aura+GRANDPA authorities via pallet-session + pallet-validator-set ──
 //
 // `pallet-session` rotates the block-producing authority set; `pallet-validator-set` is its
 // `SessionManager` (the mutable set, gated add/remove). Aura+GRANDPA derive their authorities from
@@ -604,7 +603,7 @@ impl pallet_session::Config for Runtime {
     type KeyDeposit = ConstU128<0>;
 }
 
-/// Configure pallet-validator-set (M6, DR-26): the mutable Aura+GRANDPA validator set. `add_validator`
+/// Configure pallet-validator-set: the mutable Aura+GRANDPA validator set. `add_validator`
 /// / `remove_validator` are gated by the SAME `AuthorityOrigin` as the other crown jewels (the
 /// 3-of-5 FollowerCommittee, sudo-free) — one operator committee governs identity, weight, AND who
 /// produces blocks (the split into a separate validator committee is a documented graduation step).
@@ -683,9 +682,9 @@ impl pallet_skip_feeless_payment::Config for Runtime {
 }
 
 parameter_types! {
-    // ── Talk-capacity constants (M2c) — DEV-TUNED for a snappy, watchable showcase. All are
-    //    runtime-tunable (ECONOMICS §4.4); the real v1 ~5h regen window (DR-10) is a constant
-    //    change for mainnet. Units are "micro-capacity"; one post ≈ BaseCost.
+    // ── Talk-capacity constants — DEV-TUNED for a snappy, watchable showcase. All are runtime-tunable
+    //    (see docs/ECONOMICS.md); the real ~5h regen window is a constant change for mainnet. Units are
+    //    "micro-capacity"; one post ≈ BaseCost.
     //
     //    With these values, a grant of weight 10_000_000 (≈10 ADA in lovelace) yields:
     //      cap  = min(weight·50, Ceiling) = 5·10^8  ≈ 10 posts (burst)
@@ -718,11 +717,10 @@ impl pallet_microblog::ForeignCapacityCost<RuntimeCall> for ProfileCapacityCost 
     }
 }
 
-/// Configure pallet-microblog (M2c: feeless, capacity-metered posting; capacity folded in,
-/// DR-24). MaxLength = 512 / MaxPostsPerAuthor = 10_000 are the decided v1 baselines (DR-10b);
-/// post ids are u64 (DR-21). Real benchmarked WeightInfo is DR-05 (a later milestone). The
-/// `ForceOrigin` (the 3-of-5 committee) lets the operator prime/pre-charge a battery before the Cardano
-/// weight source (M2d) is wired; the future gate's `link_identity` will call `on_first_bind`.
+/// Configure pallet-microblog: feeless, capacity-metered posting, with the talk-capacity meter folded
+/// into the pallet rather than split out. MaxLength = 512 / MaxPostsPerAuthor = 10_000 are the v1
+/// baselines; post ids are u64. The `ForceOrigin` (the 3-of-5 committee) lets the operator prime a
+/// battery by hand; `IdentityGate`'s first bind calls `on_first_bind`.
 impl pallet_microblog::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type MaxLength = ConstU32<512>;
@@ -743,7 +741,7 @@ impl pallet_microblog::Config for Runtime {
     type MaxPollOptionLen = ConstU32<80>;
     // Gated by the 3-of-5 FollowerCommittee (sudo-free).
     type ForceOrigin = AuthorityOrigin;
-    // M2: gate posting on a live Cardano-identity binding (the anti-Sybil anchor).
+    // Gate posting on a live Cardano-identity binding (the anti-Sybil anchor).
     type IdentityGate = CognoGate;
     // Profile pallet's feeless writes share this one battery, priced at `ProfileCost` and gated at the
     // pool by `CheckCapacity` — so the whole app is feeless with no second transaction-extension.
@@ -751,7 +749,7 @@ impl pallet_microblog::Config for Runtime {
     type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
 }
 
-/// Configure pallet-cogno-gate (M2): the 1:1 Cardano-owner-Address ↔ posting-account binding —
+/// Configure pallet-cogno-gate: the 1:1 Cardano-owner-Address ↔ posting-account binding —
 /// the anti-Sybil identity anchor. Binding is a PERMISSIONLESS on-chain CIP-8 self-proof (see the
 /// D1 note below); `FollowerOrigin` (the 3-of-5 committee, sudo-free) gates only `revoke`. The
 /// `EnsureOrigin` shape kept the widen to a k-of-t committee signature-free. `OnBind`
@@ -826,7 +824,7 @@ impl pallet_cardano_observer::VotingPowerSink<AccountId> for VotingPowerApply {
 /// while testing here, flip to the production value before mainnet. The flip is a one-line, ENCODING-NEUTRAL
 /// change (it only widens the as-of reference lag — no Call/storage/event change, no spec bump), gated as a
 /// ⚠ MAINNET PREREQUISITE, NOT a bug. Co-sequence it with the ≥3-producer cutover; at the mainnet depth
-/// db-sync must retain history back to the reference (docs/IN-PROTOCOL-OBSERVATION.md §5.2/§15.3).
+/// db-sync must retain history back to the reference (docs/IN-PROTOCOL-OBSERVATION.md).
 const STABILITY_SLOTS_TESTNET: u64 = 600; // ≈ 10 min — prompt PoC observability on this testnet
 /// The production value: 3k/f = 129_600 slots ≈ 36 h (mainnet/preprod k=2160, f=0.05). Ready + named; the
 /// mainnet cutover flips `ObsStabilitySlots` below from `_TESTNET` to `_MAINNET`. (Held unused until then.)
@@ -836,7 +834,7 @@ const STABILITY_SLOTS_MAINNET: u64 = 129_600;
 parameter_types! {
     // ⚠ MAINNET PREREQUISITE: flip STABILITY_SLOTS_TESTNET -> STABILITY_SLOTS_MAINNET before any
     // mainnet/real-value deployment (a smaller window is permitted ONLY on a labeled dev/testnet; see the
-    // split doc above + docs/IN-PROTOCOL-OBSERVATION.md §5.2). Selected = TESTNET while we test here.
+    // split doc above + docs/IN-PROTOCOL-OBSERVATION.md). Selected = TESTNET while we test here.
     pub const ObsStabilitySlots: u64 = STABILITY_SLOTS_TESTNET;
     // ⚠ PREPROD Shelley anchor (we are live there) — NOT Byron `systemStart` (1654041600). The Shelley
     // era begins at slot 86400 / unix 1655769600 after a 20-day Byron prefix. Verify the MAINNET anchor
@@ -848,7 +846,7 @@ parameter_types! {
     // The live `talk_vault` policy id (== vault script hash, contracts/vault.json:
     // 168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7). Consensus-pinned; the node reads it via
     // the CardanoObserverApi so every node queries the SAME Cardano policy. ⚠ moving the live contract
-    // hash orphans the M8 vault — if contracts change, update this to match the new applied vault hash.
+    // hash orphans the deployed vault — if contracts change, update this to match the new applied hash.
     pub const ObsVaultPolicyId: [u8; 28] = [
         0x16, 0x8a, 0x97, 0x10, 0xe9, 0x91, 0xb7, 0x68, 0x42, 0x6b, 0x58, 0x01, 0x1f, 0xeb,
         0xec, 0x0f, 0xa3, 0xc5, 0xff, 0x6b, 0xeb, 0x49, 0x06, 0x5c, 0xc5, 0x24, 0x89, 0xc7,
@@ -864,7 +862,7 @@ parameter_types! {
 ///
 /// ⚠ MAINNET PREREQUISITE: `check_inherent`'s "every producer re-derives" is load-bearing only with
 /// MULTIPLE independent producers — on a single operator this is "D4-SHAPED, not D4-TRUST"; and every
-/// validator must run cardano-node + Cardano db-sync. See docs/IN-PROTOCOL-OBSERVATION.md §2/§8/§11.
+/// validator must run cardano-node + Cardano db-sync. See docs/IN-PROTOCOL-OBSERVATION.md.
 impl pallet_cardano_observer::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     // Max identities observed per block. This is a HARD CEILING on concurrent participants, not a batch
@@ -900,7 +898,8 @@ impl pallet_cardano_observer::Config for Runtime {
     // The 3-of-5 FollowerCommittee (sudo-free) gates the emergency weight-FREEZE flip — the same crown-jewel
     // origin as identity revoke / validator add-remove / authorize_upgrade. `EnforceWeight` defaults to
     // `true` (the observer is the sole writer from genesis); `set_enforcement(false)` freezes weight (verify
-    // but don't write) as an emergency revert (D4-SHAPED on a single operator, IN-PROTOCOL-OBSERVATION.md §2/§9).
+    // but don't write) as an emergency revert (D4-SHAPED on a single operator; see
+    // docs/IN-PROTOCOL-OBSERVATION.md).
     type EnforceOrigin = AuthorityOrigin;
     // pallet-timestamp implements `UnixTime` — the block's consensus clock for the stability sanity bound.
     type UnixTime = Timestamp;

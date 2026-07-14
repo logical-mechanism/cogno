@@ -100,11 +100,11 @@ def main():
         consume_nonce=accepting_nonce("cd" * 16),
     )
     # The identity hash is the L1 beacon name = blake2b_256(cbor.serialise(owner Address)) — the
-    # Plutus-Data CBOR (DR-01), NOT the raw CIP-19 bytes. test_beacon.py locks it to the Aiken value.
+    # Plutus-Data CBOR, NOT the raw CIP-19 bytes. test_beacon.py locks it to the Aiken value.
     addr = Address.decode(fx["signing_address"])
     expected = beacon_name_hex(addr)
     ok(idh == expected, f"verify_bind returns the L1 beacon-name identity hash ({idh[:16]}…)")
-    ok(identity_hash_hex(addr) == expected, "identity hash == the L1 beacon name (DR-01)")
+    ok(identity_hash_hex(addr) == expected, "identity hash == the L1 beacon name")
 
     print("\n[negative] tampered / wrong proofs are REJECTED")
 

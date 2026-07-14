@@ -36,7 +36,7 @@ export default function BookmarksPage() {
   const bookmarkIds = useBookmarkList(me);
   const idsKey = useMemo(() => bookmarkIds.map(String).sort().join(","), [bookmarkIds]);
 
-  // ── resolve saved ids → live posts (newest-first) ─────────────────────────────────────────────
+  // ── resolve saved ids → live posts (newest-first) ──────────────────────────────────────────────
   // A per-id cache of RESOLVED posts so removing one bookmark reorders from cache with NO refetch /
   // skeleton flash. Only SUCCESSES are cached — a failed thread() read (a transient RPC/WS blip and a
   // genuine miss are indistinguishable here) is left UNCACHED so it re-resolves on the next id change
@@ -125,12 +125,12 @@ export default function BookmarksPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, idsKey, me, retryNonce]);
 
-  // ── viewer-relative state (filled heart / active repost) ──────────────────────────────────────
+  // ── viewer-relative state (the filled heart) ──────────────────────────────────────────────────
   const postIds = useMemo(() => posts.map((p) => p.id), [posts]);
   const carriedStates = useMemo(() => carriedViewerStates(posts), [posts]);
   const viewerStates = useViewerStates(source, postIds, me, carriedStates);
 
-  // ── write hooks + per-card action bundle (identical wiring to Home/Explore) ───────────────────
+  // ── write hooks + per-card action bundle (identical wiring to Home/Explore) ────────────────────
   const vote = useVote(api, signer, votingPower ?? 0n);
   const { pin } = usePinPost(api, signer);
   const { toast } = useToaster();

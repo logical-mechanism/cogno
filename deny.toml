@@ -1,0 +1,56 @@
+# cargo-deny — the dependency-vulnerability gate (`cargo deny check advisories bans sources` in ci.yml).
+#
+# Every advisory below is TRANSITIVE, reached only through the pinned polkadot-sdk stable2606 train.
+# None of them is a crate this repo depends on directly, and none can be bumped without moving off the
+# SDK pin — so each is accepted here, with the reason, rather than silently muted. The value of the gate
+# is the NEXT advisory: one that lands on a crate we do control, or a fixable one in the SDK tree, turns
+# CI red instead of going unnoticed.
+#
+# Re-audit this list on every SDK bump. `cargo deny check advisories` warns on an ignore that no longer
+# matches anything, which is the signal that an entry can be deleted.
+#
+# The `licenses` check is deliberately NOT run. The dep graph carries GPL-3.0-only, GPL-3.0-or-later
+# WITH Classpath-exception-2.0, LGPL-2.1-or-later and MPL-2.0 crates from the SDK; an allow-list that
+# admits all of them gates nothing, and what those licenses mean for the distributed binary is a
+# statement for NOTICE, not a lint. See NOTICE.
+
+[advisories]
+version = 2
+ignore = [
+	# ── unpatched vulnerabilities in SDK-transitive crates ───────────────────────────────────────────
+	# litep2p 0.14.3 → hickory-resolver → hickory-proto 0.25.2. The DNS resolver behind sc-network's
+	# libp2p transport; only reachable by a peer we dial. Fixed upstream in the SDK's litep2p, not here.
+	{ id = "RUSTSEC-2026-0118", reason = "hickory-proto 0.25.2 via litep2p → sc-network; pinned by the SDK train" },
+	{ id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.25.2 via litep2p → sc-network; pinned by the SDK train" },
+	# sc-client-db → sysinfo → rayon → crossbeam-deque → crossbeam-epoch 0.9.18. The unsound path is the
+	# `fmt::Pointer` impl on a dangling Atomic/Shared; nothing in this tree formats one.
+	{ id = "RUSTSEC-2026-0204", reason = "crossbeam-epoch 0.9.18 via rayon → sc-client-db; the affected fmt::Pointer impl is never called" },
+	# sc-tracing → tracing-subscriber 0.3.19. ANSI escapes in log output. The node logs peer ids and
+	# extrinsic hashes, not attacker-chosen strings, and the logs are read by an operator, not replayed.
+	{ id = "RUSTSEC-2025-0055", reason = "tracing-subscriber 0.3.19 via sc-tracing; SDK-pinned log stack" },
+
+	# ── unmaintained, all SDK-transitive ─────────────────────────────────────────────────────────────
+	{ id = "RUSTSEC-2025-0161", reason = "libsecp256k1 via sp-core — the SDK's ECDSA backend; ours to accept only when the SDK replaces it" },
+	{ id = "RUSTSEC-2022-0061", reason = "parity-wasm via sp-version" },
+	{ id = "RUSTSEC-2024-0436", reason = "paste via frame-benchmarking" },
+	{ id = "RUSTSEC-2024-0370", reason = "proc-macro-error via aquamarine → frame-executive (build-time only)" },
+	{ id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 via subxt-macro → frame-benchmarking-cli (build-time only)" },
+	{ id = "RUSTSEC-2024-0384", reason = "instant via wasm-timer → sc-network" },
+	{ id = "RUSTSEC-2025-0057", reason = "fxhash via wasmtime → sc-executor-wasmtime" },
+]
+
+[bans]
+# The SDK tree carries hundreds of legitimate duplicate versions (bitflags 1/2, rand 0.8/0.9, …).
+# Deduplicating them is the SDK's job, not ours — warn so a NEW duplicate is visible, never fail.
+multiple-versions = "warn"
+# A `version = "*"` on a crates.io dep is a supply-chain hole (any future release resolves). The
+# workspace's own crates are path deps with no version and `publish = false`, which is not that —
+# allow-wildcard-paths exempts exactly those.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Every dependency resolves to crates.io today (`grep -c 'source = "git' Cargo.lock` → 0). A git
+# dependency appearing in the lockfile is a supply-chain change worth failing on.
+unknown-registry = "deny"
+unknown-git = "deny"

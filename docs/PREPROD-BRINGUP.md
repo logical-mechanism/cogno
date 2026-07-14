@@ -14,16 +14,30 @@ observed weight → frontend → federation into one sequence.
 
 ## Prerequisites (external infrastructure you run separately)
 
-- **Cardano `cardano-node` + db-sync (read-only), synced on preprod.** The node's observer reads db-sync. It
-  **must** be FULL / non-pruned (retains history back to the reference) and **`tx_in`-enabled** (NOT
-  `--consumed-tx-out` — spentness is read from `tx_in`; the read probes `EXISTS (SELECT 1 FROM tx_in)` and
-  **abstains fail-closed** otherwise). Expose a read-only role (e.g. `cogno_reader`) as `DBSYNC_URL`.
-  MAINNET PREREQUISITE: db-sync over TLS.
-- **The built node binary**, from a clean `cargo build --release` (pinned rustc 1.93.0). The **same** binary
-  must generate the genesis and run the node — a `--features runtime-benchmarks` build embeds a runtime a
-  normal node can't run, and a different build changes the genesis.
-- **Ogmios + Blockfrost** are needed only by the **frontend's** L1 lock/exit (tx submit + cost models). The
-  node never talks to them; skip for a first bring-up.
+The versions below are the ones this repo is built and run against. The one that matters for consensus is
+**db-sync**: the observer's SQL depends on its schema, and a wrong or pruned instance is the only prereq a
+bad choice can silently distort — so pin it.
+
+| Component | Version here | Why |
+|---|---|---|
+| [rustup](https://rustup.rs/) → rustc | **1.93.0** (auto-selected from [`rust-toolchain.toml`](../rust-toolchain.toml)) | the toolchain the pinned polkadot-sdk `stable2606` train is verified against |
+| [cardano-node](https://github.com/IntersectMBO/cardano-node) | **11.0.1**, synced on preprod | feeds db-sync |
+| [cardano-db-sync](https://github.com/IntersectMBO/cardano-db-sync) | **13.7.x** | the observer's sole Cardano read |
+| [PostgreSQL](https://www.postgresql.org/download/) | **16** | db-sync's database |
+| [Node.js](https://github.com/nvm-sh/nvm) (nvm, **not** snap) | **v22.12.0** | the frontend only |
+| [Ogmios](https://github.com/CardanoSolutions/ogmios) | **v6.14** (:1337) | frontend L1 lock/exit: tx submit + live cost models |
+| [Aiken](https://github.com/aiken-lang/aiken/releases) | **v1.1.22** ([`contracts/aiken.toml`](../contracts/aiken.toml)) | only to *check* the contract — do not rebuild it, the hash is live |
+
+- **db-sync must be FULL / non-pruned** (it retains history back to the reference) and **`tx_in`-enabled**
+  (NOT `--consumed-tx-out` — spentness is read from `tx_in`). Expose a read-only role (e.g. `cogno_reader`)
+  as `DBSYNC_URL`. A wrong or pruned db-sync does **not** silently fork the chain: the node's boot
+  `config_check` flags it, and the read's `EXISTS (SELECT 1 FROM tx_in)` gate makes the observer **abstain
+  fail-closed** rather than report a spent vault as still locked. MAINNET PREREQUISITE: db-sync over TLS.
+- **The built node binary**, from a clean `cargo build --release`. The **same** binary must generate the
+  genesis and run the node — a `--features runtime-benchmarks` build embeds a runtime a normal node can't
+  run, and a different build changes the genesis.
+- **Ogmios + Blockfrost** are needed only by the **frontend's** L1 lock/exit. The node never talks to them;
+  skip for a first bring-up.
 
 ## The loop at a glance
 
@@ -45,8 +59,10 @@ observed weight → frontend → federation into one sequence.
 
 ## Step 1 — Generate + archive the operator-keyed genesis
 
-There is **no committed chainspec**; you mint one once and keep it. From a checkout, with the clean release
-binary:
+The committed [`chainspecs/preprod.raw.json`](../chainspecs/preprod.raw.json) is a *tracking-node
+convenience* spec for the operator's **existing** live chain — it is not a genesis you can reuse. Your own
+network needs its own genesis, minted once from your own keys and kept out of the repo. That is this step.
+From a checkout, with the clean release binary:
 
 ```bash
 CLI=./target/release/cogno-chain-cli
@@ -145,7 +161,14 @@ $CLI committee members set --members <SEAT1_SS58>,<SEAT2_SS58>,<SEAT3_SS58> --co
 #    allowance so it can pay the fee-bearing `set-keys`; the NEW validator then registers its own session
 #    keys (real proof-of-possession); the committee admits its account. Changes apply at a session boundary.
 $CLI fuel set-allowance --account <NEW_VALIDATOR_SS58> --max 1000000000000000 --committee-signing-key-file seat1.skey --ws $WS
-$CLI validator set-keys ...                                         # run by the new validator
+
+#    On the NEW validator's OWN machine — it mints its own keys, then self-signs the registration:
+#      $CLI key gen --scheme sr25519 --out val-account.skey
+#      $CLI key gen --scheme sr25519 --out val-aura.skey
+#      $CLI key gen --scheme ed25519 --out val-grandpa.skey
+$CLI validator set-keys --account-signing-key-file val-account.skey \
+  --aura-signing-key-file val-aura.skey --grandpa-signing-key-file val-grandpa.skey --ws $WS
+
 $CLI validator add --validator <NEW_VALIDATOR_SS58> --committee-signing-key-file seat1.skey --ws $WS
 #    Fuel regenerates toward the allowance each period (never drains); `fuel revoke` cuts an account off.
 #    Drop --force-authoring once ≥2 validators peer (GRANDPA needs ≥2/3 online to finalize).
