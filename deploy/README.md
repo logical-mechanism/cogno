@@ -305,6 +305,11 @@ sudo install -d -o cogno -g cogno -m 0755 /var/www/cogno-maintenance
 sudo install -m 0644 deploy/maintenance/index.html /var/www/cogno-maintenance/index.html
 sudo install -m 0644 deploy/nginx/maintenance.conf /etc/nginx/maintenance.conf
 
+# Both of cogno.conf's sidecars, not just the new one. A box set up before security-headers.conf was
+# split out of the vhost will not have it, and the cp below starts `include`ing BOTH — see the note
+# under this block. Harmless to re-run if it is already there.
+sudo install -m 0644 deploy/nginx/security-headers.conf /etc/nginx/security-headers.conf
+
 # cogno.conf gained the `include` lines that arm the switch. It is a TEMPLATE — it says cogno.example.io —
 # so re-apply your domain after copying it, or `nginx -t` fails on a cert path that does not exist, the
 # `&&` short-circuits, and you are left with a broken vhost on disk and no reload.
@@ -312,6 +317,20 @@ sudo cp deploy/nginx/cogno.conf /etc/nginx/sites-available/cogno.conf
 sudo sed -i 's/cogno.example.io/<your-domain>/g' /etc/nginx/sites-available/cogno.conf
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+**Install both sidecars, even if you only came here for the maintenance one.** `cogno.conf` `include`s
+`security-headers.conf` *and* `maintenance.conf`, and a literal include of a missing file is a **fatal**
+config error — so copying the new vhost onto a droplet that never had `security-headers.conf` fails
+`nginx -t` with
+
+```
+[emerg] open() "/etc/nginx/security-headers.conf" failed (2: No such file or directory)
+```
+
+which is a real trap rather than a typo: the reload is merely *refused*, so the running nginx sails on with
+the old config in memory and the site looks fine — while the config **on disk** is broken. The next
+`systemctl restart`, reboot, or unattended certbot renewal reload is when you find out. Fix it before you
+walk away.
 
 The `index.html` line matters even though the workflow rsyncs the page on every run: without it, a **manual**
 arm (below) on a fresh box sets a flag with no page behind it, and visitors get nginx's built-in beige 503
