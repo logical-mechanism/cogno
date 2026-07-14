@@ -9,8 +9,7 @@
 use crate::{
     mock::*, AccountVoteTally, AccountVotes, ByAuthor, Capacity, Error, Event, FollowerCount,
     Following, FollowingCount, NextPostId, NextTopLevelSeq, PollTally, PollVotes, Polls, Posts,
-    RepliesByParent, ReplyCount, RepostCount, Reposts, TopLevelByAuthor, TopLevelPosts, VoteDir,
-    VoteTally, Votes,
+    RepliesByParent, ReplyCount, TopLevelByAuthor, TopLevelPosts, VoteDir, VoteTally, Votes,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -154,7 +153,92 @@ fn too_long_is_rejected() {
     });
 }
 
-// ── social engagement: quote / vote / repost / follow ───────────────────────────────────────────
+// ── the on-wire variant indices (the codec contract) ────────────────────────────────────────────
+
+#[test]
+fn event_and_error_variant_indices_are_pinned_on_the_wire() {
+    // A variant's index IS its wire format: the first byte of an encoded Event, and the first byte of a
+    // `DispatchError::Module`'s error payload. `Reposted`@6 and `AlreadyReposted`@5 were retired in spec
+    // 204 and their indices left VACANT — every surviving variant keeps the index it shipped with, so an
+    // already-deployed client cannot silently mis-decode (a shifted Error would report `SelfFollow` for
+    // an `AlreadyFollowing` failure). This test fails if anyone renumbers or inserts in the middle.
+    use codec::Encode;
+
+    let ev = |e: Event<Test>| e.encode()[0];
+    assert_eq!(ev(Event::PostCreated { id: 0, author: 1 }), 0);
+    assert_eq!(
+        ev(Event::CapacityForced {
+            who: 1,
+            cap_last: 0
+        }),
+        1
+    );
+    assert_eq!(
+        ev(Event::Voted {
+            id: 0,
+            who: 1,
+            dir: VoteDir::Up,
+            weight: 0
+        }),
+        2
+    );
+    assert_eq!(ev(Event::VoteCleared { id: 0, who: 1 }), 3);
+    assert_eq!(
+        ev(Event::AccountVoted {
+            target: 2,
+            who: 1,
+            dir: VoteDir::Up,
+            weight: 0
+        }),
+        4
+    );
+    assert_eq!(ev(Event::AccountVoteCleared { target: 2, who: 1 }), 5);
+    // 6 = Reposted: VACANT.
+    assert_eq!(
+        ev(Event::Followed {
+            follower: 1,
+            followee: 2
+        }),
+        7
+    );
+    assert_eq!(
+        ev(Event::Unfollowed {
+            follower: 1,
+            followee: 2
+        }),
+        8
+    );
+    assert_eq!(ev(Event::PollCreated { id: 0, author: 1 }), 9);
+    assert_eq!(
+        ev(Event::PollVoted {
+            id: 0,
+            who: 1,
+            option: 0,
+            weight: 0
+        }),
+        10
+    );
+
+    let er = |e: Error<Test>| e.encode()[0];
+    assert_eq!(er(Error::TooLong), 0);
+    assert_eq!(er(Error::NotFound), 1);
+    assert_eq!(er(Error::TooManyPosts), 2);
+    assert_eq!(er(Error::NotAllowed), 3);
+    assert_eq!(er(Error::NotVoted), 4);
+    // 5 = AlreadyReposted: VACANT.
+    assert_eq!(er(Error::SelfFollow), 6);
+    assert_eq!(er(Error::AlreadyFollowing), 7);
+    assert_eq!(er(Error::NotFollowing), 8);
+    assert_eq!(er(Error::NotEnoughOptions), 9);
+    assert_eq!(er(Error::TooManyOptions), 10);
+    assert_eq!(er(Error::OptionTooLong), 11);
+    assert_eq!(er(Error::PollNotFound), 12);
+    assert_eq!(er(Error::InvalidOption), 13);
+    assert_eq!(er(Error::SelfAccountVote), 14);
+    assert_eq!(er(Error::TargetNotAllowed), 15);
+}
+
+// ── social engagement: quote / vote / follow ────────────────────────────────────────────────────
 
 #[test]
 fn quote_post_sets_quote_and_emits_postcreated() {
@@ -614,39 +698,6 @@ fn account_tally_fold_determinism_property() {
 }
 
 #[test]
-fn repost_is_permanent_and_counts_once() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        assert_ok!(Microblog::post_message(
-            RuntimeOrigin::signed(1),
-            b"root".to_vec(),
-            None
-        ));
-        assert_ok!(Microblog::repost(RuntimeOrigin::signed(2), 0));
-        assert_eq!(RepostCount::<Test>::get(0), 1);
-        assert!(Reposts::<Test>::contains_key(0, 2));
-        System::assert_last_event(Event::Reposted { id: 0, who: 2 }.into());
-        // A second repost by the same account is rejected (permanent — there is no un-repost).
-        assert_noop!(
-            Microblog::repost(RuntimeOrigin::signed(2), 0),
-            Error::<Test>::AlreadyReposted
-        );
-        assert_eq!(RepostCount::<Test>::get(0), 1);
-    });
-}
-
-#[test]
-fn repost_nonexistent_post_is_rejected() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        assert_noop!(
-            Microblog::repost(RuntimeOrigin::signed(1), 99),
-            Error::<Test>::NotFound
-        );
-    });
-}
-
-#[test]
 fn follow_sets_edge_and_counts() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
@@ -748,10 +799,6 @@ fn engagement_calls_require_identity_gate() {
             Error::<Test>::NotAllowed
         );
         assert_noop!(
-            Microblog::repost(RuntimeOrigin::signed(2), 0),
-            Error::<Test>::NotAllowed
-        );
-        assert_noop!(
             Microblog::follow(RuntimeOrigin::signed(2), 1),
             Error::<Test>::NotAllowed
         );
@@ -776,7 +823,7 @@ fn create_poll_makes_a_post_and_stores_options() {
             b"best chain?".to_vec(),
             opts(3)
         ));
-        // The poll's question is an ordinary post (so it threads/quotes/reposts + shows in the feed).
+        // The poll's question is an ordinary post (so it threads/quotes + shows in the feed).
         let p = Posts::<Test>::get(0).expect("host post exists");
         assert_eq!(p.text.to_vec(), b"best chain?".to_vec());
         assert_eq!(p.parent, None);
@@ -1052,7 +1099,7 @@ fn ceiling_caps_the_linear_curve() {
 fn unlock_clamps_capacity_to_zero() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        TalkStake::apply_weight(&1, 100);
+        observe_weight(&1, 100);
         assert_ok!(Microblog::force_set_capacity(
             RuntimeOrigin::root(),
             1,
@@ -1061,9 +1108,21 @@ fn unlock_clamps_capacity_to_zero() {
         assert_eq!(Microblog::current_capacity(&1, 1), 1000);
         // Full unlock: weight → 0 makes cap = 0, so current clamps to min(0, …) = 0 — even though
         // the banked cap_last is 1000 and the row is NOT deleted.
-        TalkStake::apply_weight(&1, 0);
+        observe_weight(&1, 0);
         assert_eq!(Microblog::current_capacity(&1, 5), 0);
         assert!(Capacity::<Test>::get(1).is_some()); // row persists (relock-farm guard)
+
+        // RELOCK. Zero capacity while unlocked is only half the invariant — the bucket must not spring
+        // back when the weight returns. The 24 blocks spent at weight 0 earned nothing, and the pre-unlock
+        // bank is not restored, so the relocked account starts from EMPTY and charges up.
+        System::set_block_number(25);
+        observe_weight(&1, 100);
+        assert_eq!(
+            Microblog::current_capacity(&1, 25),
+            0,
+            "relock starts from empty — the zero-weight window banks nothing"
+        );
+        assert_eq!(Microblog::current_capacity(&1, 30), 500); // 5 blocks · weight 100
     });
 }
 
@@ -1089,11 +1148,139 @@ fn set_stake_does_not_credit_banked_capacity() {
     new_test_ext().execute_with(|| {
         System::set_block_number(10);
         Microblog::on_first_bind(&1); // cap_last 0 @10
-                                      // Raising weight lifts the future cap/rate but must not retroactively credit cap_last.
-        TalkStake::apply_weight(&1, 100);
+                                      // The observer credits weight 20 blocks after the bind (the real gap: a first lock is only
+                                      // observable a stability window after it lands). Raising weight lifts the future cap/rate but
+                                      // must not retroactively credit cap_last for a window the account spent with NO weight.
+        System::set_block_number(30);
+        observe_weight(&1, 100);
         let row = Capacity::<Test>::get(1).expect("row exists");
-        assert_eq!(row.cap_last, 0); // going-forward-only
-        assert_eq!(row.last_block, 10);
+        assert_eq!(row.cap_last, 0); // going-forward-only: the credit banks nothing
+                                     // Restamped to the credit block. Without the restamp the 20 unweighted blocks would be
+                                     // re-priced at the NEW weight on the very next read — the retro-credit.
+        assert_eq!(row.last_block, 30);
+        // The stored row alone does NOT prove the invariant: `current_capacity` regenerates on READ, so
+        // assert it there too — the bucket charges up from empty, it does not arrive full.
+        assert_eq!(Microblog::current_capacity(&1, 30), 0);
+        assert_eq!(Microblog::current_capacity(&1, 40), 1_000); // full only after cap/rate = 10 blocks
+    });
+}
+
+// ── the observer weight sink: settle-at-the-old-weight (the going-forward-only rule) ────────────
+// These drive `observe_weight` — the mock's copy of the runtime's `WeightSink` — because the sink, not
+// `TalkStake::apply_weight`, is what carries the settle. Weight only ever enters a real chain through it.
+
+#[test]
+fn zero_weight_period_earns_no_regen() {
+    new_test_ext().execute_with(|| {
+        // Bind at 10, but weight is only observed at 30: on the live chain a first lock is not visible
+        // until a stability window after the bind. Those 20 blocks are spent at ZERO weight.
+        System::set_block_number(10);
+        Microblog::on_first_bind(&1);
+        System::set_block_number(30);
+        observe_weight(&1, 100);
+
+        // The bucket regenerates at the weight held DURING the window, and that was zero — so the first
+        // lock buys an EMPTY bucket that charges up, not a full one. (Fill time is weight-independent:
+        // CapRatio/RegenPerBlock, here 10 blocks, so an un-settled window hands over a full battery.)
+        assert_eq!(Microblog::current_capacity(&1, 30), 0);
+        // Regen starts at the credit block, at the new weight: 5 blocks · 100 = 500 (ceiling 1000).
+        assert_eq!(Microblog::current_capacity(&1, 35), 500);
+    });
+}
+
+#[test]
+fn relock_after_observer_unlock_starts_from_empty() {
+    new_test_ext().execute_with(|| {
+        // Earn a full bucket: weight 100 ⇒ ceiling 1000, rate 100/block ⇒ full 10 blocks after the bind.
+        System::set_block_number(10);
+        observe_weight(&1, 100);
+        System::set_block_number(20);
+        assert_eq!(Microblog::current_capacity(&1, 20), 1_000, "bucket is full");
+
+        // The observer clamps the weight to 0 (the vault was emptied). Distinct from `on_revoke`, which
+        // restamps the row itself — nothing here restamps it but the sink's settle.
+        observe_weight(&1, 0);
+        assert_eq!(Microblog::current_capacity(&1, 20), 0);
+
+        // Idle 20 blocks unlocked, then relock.
+        System::set_block_number(40);
+        assert_eq!(Microblog::current_capacity(&1, 40), 0, "still zero unlocked");
+        observe_weight(&1, 100);
+        assert_eq!(
+            Microblog::current_capacity(&1, 40),
+            0,
+            "the relocked bucket starts EMPTY: the zero-weight window banked nothing and the pre-unlock \
+             bank is not restored"
+        );
+        assert_eq!(Microblog::current_capacity(&1, 45), 500);
+    });
+}
+
+#[test]
+fn unchanged_weight_writes_nothing_and_emits_no_event() {
+    new_test_ext().execute_with(|| {
+        let stake_set_events = || {
+            System::events()
+                .into_iter()
+                .filter(|e| {
+                    matches!(
+                        e.event,
+                        RuntimeEvent::TalkStake(pallet_talk_stake::Event::StakeSet { .. })
+                    )
+                })
+                .count()
+        };
+
+        System::set_block_number(10);
+        observe_weight(&1, 100); // first credit: one write, one StakeSet
+        assert_eq!(stake_set_events(), 1);
+
+        // The observer re-derives the FULL vault set every block and re-applies every credited account.
+        // An unchanged weight must cost NOTHING: no `AllowedStake` write, no event, and — critically — no
+        // capacity settle. Without the `previous != weight` guard this is an O(MaxObserved) write storm in
+        // a Mandatory inherent, and the settle would restamp every bucket on every block.
+        System::set_block_number(20);
+        observe_weight(&1, 100);
+        assert_eq!(
+            stake_set_events(),
+            1,
+            "no second StakeSet for an unchanged weight"
+        );
+        let row = Capacity::<Test>::get(1).expect("row exists");
+        assert_eq!(
+            row.last_block, 10,
+            "an unchanged weight does NOT restamp the bucket (no per-block settle storm)"
+        );
+        // And the bucket kept regenerating across the no-op observation, exactly as before.
+        assert_eq!(Microblog::current_capacity(&1, 20), 1_000);
+    });
+}
+
+#[test]
+fn raising_weight_does_not_retro_credit_at_the_new_weight() {
+    new_test_ext().execute_with(|| {
+        // A small lock idles for a long time: weight 10 ⇒ ceiling 100, so the bucket sits capped at 100.
+        System::set_block_number(10);
+        observe_weight(&1, 10);
+        System::set_block_number(1_010);
+        assert_eq!(
+            Microblog::current_capacity(&1, 1_010),
+            100,
+            "capped at the small lock's ceiling"
+        );
+
+        // Now escalate to weight 1000 (ceiling min(10_000, 5_000) = 5_000). The idle window was spent at
+        // weight 10 and is settled at weight 10 — it must NOT be re-priced at the new rate, which would
+        // hand over a full 5_000 battery for a lock that arrived one block ago.
+        observe_weight(&1, 1_000);
+        assert_eq!(
+            Microblog::current_capacity(&1, 1_010),
+            100,
+            "the raise carries over exactly the 100 settled at the OLD weight"
+        );
+        // From here it regenerates at the NEW rate toward the NEW ceiling.
+        assert_eq!(Microblog::current_capacity(&1, 1_011), 1_100);
+        assert_eq!(Microblog::current_capacity(&1, 1_020), 5_000);
     });
 }
 
@@ -1225,7 +1412,7 @@ fn bind_revoke_rebind_relock_farm_guard() {
         assert_eq!(providers(1), base + 1, "bind takes a provider ref");
 
         // Give the account real banked capacity (weight 100 ⇒ ceiling 1000).
-        TalkStake::apply_weight(&1, 100);
+        observe_weight(&1, 100);
         assert_ok!(Microblog::force_set_capacity(
             RuntimeOrigin::root(),
             1,
@@ -1265,6 +1452,38 @@ fn bind_revoke_rebind_relock_farm_guard() {
         assert_eq!(
             row2.last_block, 20,
             "rebind does NOT re-date the kept row (no relock first-touch)"
+        );
+
+        // ── The OTHER way to zero: the OBSERVER clamp (the user empties their vault). `on_revoke` above
+        // restamps the row itself; the observer's weight write does not, so on this path the settle in the
+        // sink is the ONLY thing standing between an unlock/relock cycle and a re-minted bucket.
+        // Weight is still 100 and the row was zeroed @20, so by block 40 it has legitimately recharged.
+        System::set_block_number(40);
+        assert_eq!(
+            Microblog::current_capacity(&1, 40),
+            1_000,
+            "recharged at the still-live weight"
+        );
+        observe_weight(&1, 0); // vault emptied — the observer clamps the weight to 0
+        assert_eq!(
+            Microblog::current_capacity(&1, 40),
+            0,
+            "zero weight ⇒ zero ceiling ⇒ no usable capacity"
+        );
+
+        // Idle 20 blocks unlocked, then relock. The zero-weight window earns nothing and the pre-unlock
+        // bank does not return: the relocked bucket starts EMPTY, exactly as at first bind.
+        System::set_block_number(60);
+        observe_weight(&1, 100);
+        assert_eq!(
+            Microblog::current_capacity(&1, 60),
+            0,
+            "observer-clamp relock starts from empty (relock-farm guard)"
+        );
+        assert_eq!(
+            Microblog::current_capacity(&1, 65),
+            500,
+            "and charges up from there at weight 100"
         );
     });
 }
@@ -1444,14 +1663,14 @@ mod capacity_extension {
     fn each_engagement_call_is_metered_at_its_constant() {
         new_test_ext().execute_with(|| {
             System::set_block_number(10);
-            // VoteCost 50, RepostCost 30, FollowCost 30 in the mock; cap ceiling 1000.
+            // VoteCost 50, FollowCost 30 in the mock; cap ceiling 1000.
             let vote = RuntimeCall::Microblog(crate::Call::vote {
                 post_id: 0,
                 dir: crate::VoteDir::Up,
             });
-            let repost = RuntimeCall::Microblog(crate::Call::repost { post_id: 0 });
+            let unfollow = RuntimeCall::Microblog(crate::Call::unfollow { target: 2 });
             let follow = RuntimeCall::Microblog(crate::Call::follow { target: 2 });
-            for (call, cost) in [(vote, 50u128), (repost, 30), (follow, 30)] {
+            for (call, cost) in [(vote, 50u128), (unfollow, 30), (follow, 30)] {
                 prime(1, 100, 1_000); // reset to a full bucket each iteration
                 let (priority, pre) = validate(1, &call).expect("affordable");
                 assert_eq!(
@@ -1532,7 +1751,6 @@ mod capacity_extension {
                 Some(50)
             );
             assert_eq!(cost(Call::clear_vote { post_id: 0 }), Some(50));
-            assert_eq!(cost(Call::repost { post_id: 0 }), Some(30));
             assert_eq!(cost(Call::follow { target: 2 }), Some(30));
             assert_eq!(cost(Call::unfollow { target: 2 }), Some(30));
             assert_eq!(
@@ -2021,6 +2239,133 @@ mod migration_v4 {
     }
 }
 
+mod migration_v5 {
+    use super::*;
+    use crate::migrations::v5::{retired, MigrateV4ToV5};
+    use crate::{CapacityState, Pallet};
+    use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+
+    #[test]
+    fn v4_to_v5_drops_repost_rows_and_settles_capacity_without_changing_it() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(100);
+            StorageVersion::new(4).put::<Pallet<Test>>();
+
+            // Pre-v5 state. The retired maps are NOT empty on the live chain — this migration deletes
+            // real rows, so seed some.
+            retired::Reposts::<Test>::insert(0u64, 9u64, ());
+            retired::Reposts::<Test>::insert(6u64, 9u64, ());
+            retired::RepostCount::<Test>::insert(0u64, 1u32);
+            retired::RepostCount::<Test>::insert(6u64, 1u32);
+
+            // Capacity rows with STALE `last_block`s — the pre-v5 norm, since only consume / on_revoke /
+            // force_set_capacity ever restamped one.
+            // acct 1: weight 100 (ceiling 1000), empty @90 ⇒ reads min(1000, 0 + 100·10) = 1000 (full).
+            TalkStake::apply_weight(&1, 100);
+            Capacity::<Test>::insert(
+                1,
+                CapacityState {
+                    cap_last: 0,
+                    last_block: 90,
+                },
+            );
+            // acct 2: weight 10 (ceiling 100), 40 banked @95 ⇒ reads min(100, 40 + 10·5) = 90.
+            TalkStake::apply_weight(&2, 10);
+            Capacity::<Test>::insert(
+                2,
+                CapacityState {
+                    cap_last: 40,
+                    last_block: 95,
+                },
+            );
+            // acct 3: UNLOCKED (weight 0) but still carrying a stale bank ⇒ reads min(0, …) = 0.
+            Capacity::<Test>::insert(
+                3,
+                CapacityState {
+                    cap_last: 500,
+                    last_block: 50,
+                },
+            );
+
+            let before: Vec<u128> = (1..=3)
+                .map(|a| Microblog::current_capacity(&a, 100))
+                .collect();
+            assert_eq!(before, vec![1_000, 90, 0]);
+
+            let _w = MigrateV4ToV5::<Test>::on_runtime_upgrade();
+
+            assert_eq!(
+                Pallet::<Test>::on_chain_storage_version(),
+                StorageVersion::new(5)
+            );
+            // (a) Both retired maps are fully drained — nothing orphaned under an undeclared prefix.
+            assert_eq!(retired::Reposts::<Test>::iter().count(), 0);
+            assert_eq!(retired::RepostCount::<Test>::iter().count(), 0);
+
+            // (b) Settling is OBSERVABLY NEUTRAL: every account reads back exactly what it read before.
+            let after: Vec<u128> = (1..=3)
+                .map(|a| Microblog::current_capacity(&a, 100))
+                .collect();
+            assert_eq!(after, before, "settling must not change readable capacity");
+            // It only MATERIALIZES that read into the row and restamps it, so no stale `last_block`
+            // survives the upgrade — including acct 3, whose unreachable 500 bank is now really gone.
+            for a in 1..=3u64 {
+                let row = Capacity::<Test>::get(a).expect("row kept");
+                assert_eq!(row.last_block, 100, "restamped to the upgrade block");
+                assert_eq!(row.cap_last, before[(a - 1) as usize]);
+            }
+            // And regen continues from there at the live weight (acct 2: 90 + 10 = its ceiling).
+            assert_eq!(Microblog::current_capacity(&2, 101), 100);
+        });
+    }
+
+    #[test]
+    fn v4_to_v5_is_version_guarded_so_a_re_run_cannot_re_settle() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(100);
+            StorageVersion::new(4).put::<Pallet<Test>>();
+            TalkStake::apply_weight(&1, 100);
+            Capacity::<Test>::insert(
+                1,
+                CapacityState {
+                    cap_last: 0,
+                    last_block: 90,
+                },
+            );
+
+            let _ = MigrateV4ToV5::<Test>::on_runtime_upgrade();
+            let settled = Capacity::<Test>::get(1).expect("row");
+            assert_eq!((settled.cap_last, settled.last_block), (1_000, 100));
+
+            // A re-run 100 blocks later must be a TRUE no-op — the version guard, not the settle math,
+            // is what makes that safe (a re-settle would restamp every row to the new block).
+            System::set_block_number(200);
+            let _ = MigrateV4ToV5::<Test>::on_runtime_upgrade();
+            let again = Capacity::<Test>::get(1).expect("row");
+            assert_eq!(
+                (again.cap_last, again.last_block),
+                (1_000, 100),
+                "the version guard makes a re-run a no-op"
+            );
+        });
+    }
+
+    #[test]
+    fn v4_to_v5_on_an_empty_chain_is_safe() {
+        // The `--dev` / fresh-chain case: no repost rows, no capacity rows. Must still advance cleanly.
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            StorageVersion::new(4).put::<Pallet<Test>>();
+            let _ = MigrateV4ToV5::<Test>::on_runtime_upgrade();
+            assert_eq!(
+                Pallet::<Test>::on_chain_storage_version(),
+                StorageVersion::new(5)
+            );
+            assert_eq!(Capacity::<Test>::iter().count(), 0);
+        });
+    }
+}
+
 // ── Asymmetric-safety property test ─────────────────────────────────────────────────────────
 
 /// **Clamp-latency ≤ grant-latency.** The weight writer's
@@ -2174,30 +2519,29 @@ mod node_reads {
         new_test_ext().execute_with(|| {
             System::set_block_number(1);
             let p0 = post(1, b"root");
-            // give voter 2 a non-zero voting power so the tally weight is observable, then Up-vote + repost
+            // give voter 2 a non-zero voting power so the tally weight is observable, then Up-vote
             pallet_talk_stake::VotingPower::<Test>::insert(2u64, 500u128);
             assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), p0, VoteDir::Up));
-            assert_ok!(Microblog::repost(RuntimeOrigin::signed(2), p0));
 
-            // the voter sees their own vote + repost; the tally reflects the snapshot weight
+            // the voter sees their own vote; the tally reflects the snapshot weight
             let seen = Microblog::feed_page(None, 10, Some(2));
             let mine = &seen.posts[0];
             assert_eq!(mine.my_vote, Some(VoteDir::Up));
-            assert!(mine.reposted);
             assert_eq!(mine.up_count, 1);
             assert_eq!(mine.up_weight, 500);
-            assert_eq!(mine.repost_count, 1);
+            // The two vestigial repost fields are still ON THE WIRE (the deployed frontend decodes them)
+            // but are now always 0/false — reposting was retired in spec 204.
+            assert_eq!(mine.repost_count, 0);
+            assert!(!mine.reposted);
 
             // a different viewer has no overlay, but the aggregates are still present
             let other = Microblog::feed_page(None, 10, Some(3));
             assert_eq!(other.posts[0].my_vote, None);
-            assert!(!other.posts[0].reposted);
             assert_eq!(other.posts[0].up_count, 1);
 
             // no viewer ⇒ no overlay
             let anon = Microblog::feed_page(None, 10, None);
             assert_eq!(anon.posts[0].my_vote, None);
-            assert!(!anon.posts[0].reposted);
         });
     }
 
@@ -2213,8 +2557,7 @@ mod node_reads {
                 b"quoting".to_vec(),
                 p0
             ));
-            // engagement on p0: one repost + one reply
-            assert_ok!(Microblog::repost(RuntimeOrigin::signed(3), p0));
+            // engagement on p0: one reply
             let _r = reply(4, b"re", p0);
             // a poll (top-level) by author 5
             let p3 = NextPostId::<Test>::get();
@@ -2228,8 +2571,8 @@ mod node_reads {
             assert_eq!(ids(&page), vec![p3, p1, p0]);
 
             let root = page.posts.iter().find(|p| p.id == p0).unwrap();
-            assert_eq!(root.repost_count, 1);
             assert_eq!(root.reply_count, 1);
+            assert_eq!(root.repost_count, 0); // vestigial since spec 204 — always 0
             assert!(!root.is_poll);
             assert_eq!(root.quoted, None);
 
@@ -2558,28 +2901,24 @@ mod node_reads {
     }
 
     #[test]
-    fn viewer_states_stamps_vote_and_repost_per_id() {
+    fn viewer_states_stamps_vote_per_id() {
         new_test_ext().execute_with(|| {
             System::set_block_number(1);
             let a = post(1, b"a"); // 0
             let b = post(1, b"b"); // 1
-            let c = post(1, b"c"); // 2
+            let c = post(1, b"c"); // 2 — not voted
             pallet_talk_stake::VotingPower::<Test>::insert(7u64, 100u128);
             assert_ok!(Microblog::vote(RuntimeOrigin::signed(7), a, VoteDir::Up));
             assert_ok!(Microblog::vote(RuntimeOrigin::signed(7), b, VoteDir::Down));
-            assert_ok!(Microblog::repost(RuntimeOrigin::signed(7), c));
 
             let st = Microblog::viewer_states(7, vec![a, b, c]);
             assert_eq!(st.len(), 3);
-            assert_eq!(
-                (st[0].post_id, st[0].my_vote, st[0].reposted),
-                (a, Some(VoteDir::Up), false)
-            );
-            assert_eq!(
-                (st[1].my_vote, st[1].reposted),
-                (Some(VoteDir::Down), false)
-            );
-            assert_eq!((st[2].my_vote, st[2].reposted), (None, true));
+            assert_eq!((st[0].post_id, st[0].my_vote), (a, Some(VoteDir::Up)));
+            assert_eq!(st[1].my_vote, Some(VoteDir::Down));
+            assert_eq!(st[2].my_vote, None);
+            // `reposted` is vestigial since spec 204: on the wire (the deployed frontend decodes it),
+            // always false.
+            assert!(st.iter().all(|s| !s.reposted));
         });
     }
 
@@ -2599,6 +2938,42 @@ mod node_reads {
             following.sort();
             assert_eq!(following, vec![2, 3]);
             assert_eq!(e.followers, vec![4]);
+        });
+    }
+}
+
+// ── TEMPORARY adversarial-verification probe (to be reverted) ────────────────
+#[cfg(feature = "try-runtime")]
+mod tmp_tryruntime_probe {
+    use super::*;
+    use crate::migrations::v5::{retired, MigrateV4ToV5};
+    use crate::{CapacityState, Pallet};
+    use frame_support::traits::{OnRuntimeUpgrade, StorageVersion};
+
+    #[test]
+    fn probe_pre_and_post_upgrade_actually_run() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(100);
+            StorageVersion::new(4).put::<Pallet<Test>>();
+
+            retired::Reposts::<Test>::insert(0u64, 9u64, ());
+            retired::Reposts::<Test>::insert(6u64, 9u64, ());
+            retired::RepostCount::<Test>::insert(0u64, 1u32);
+            retired::RepostCount::<Test>::insert(6u64, 1u32);
+
+            TalkStake::apply_weight(&1, 100);
+            Capacity::<Test>::insert(1, CapacityState { cap_last: 0, last_block: 90 });
+            TalkStake::apply_weight(&2, 10);
+            Capacity::<Test>::insert(2, CapacityState { cap_last: 40, last_block: 95 });
+            Capacity::<Test>::insert(3, CapacityState { cap_last: 500, last_block: 50 });
+
+            let state = MigrateV4ToV5::<Test>::pre_upgrade().expect("pre_upgrade failed");
+            println!("PROBE: pre_upgrade payload = {} bytes", state.len());
+            let _w = MigrateV4ToV5::<Test>::on_runtime_upgrade();
+            match MigrateV4ToV5::<Test>::post_upgrade(state) {
+                Ok(()) => println!("PROBE: post_upgrade PASSED"),
+                Err(e) => panic!("PROBE: post_upgrade FAILED: {:?}", e),
+            }
         });
     }
 }

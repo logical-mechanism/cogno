@@ -30,13 +30,6 @@ interface FakeSpec {
   byAuthor?: Map<string, bigint[]>;
   /** Viewer's votes: post id → direction (drives the node API's `my_vote` overlay). */
   votesByAccount?: Map<string, Map<bigint, "Up" | "Down">>;
-  /**
-   * Viewer's reposts: account → set of post ids. The CHAIN still has Reposts/RepostCount storage and
-   * the runtime still returns `reposted` / `repost_count` in its payload — repost was dropped from the
-   * FRONTEND only. The fake keeps emitting them on purpose, so these tests prove the client cleanly
-   * IGNORES fields the chain still sends, rather than choking on them.
-   */
-  repostsByAccount?: Map<string, Set<bigint>>;
 }
 
 const ZERO_TALLY = { up_weight: 0n, down_weight: 0n, up_count: 0, down_count: 0 };
@@ -53,15 +46,19 @@ function bin(s: string) {
 
 /**
  * Fold one post id from the spec into the `EnrichedPost` the spec-120 `MicroblogApi` returns — the
- * runtime-side equivalent of `enrichPosts` (same tally aggregates, reply/repost counts, poll flag,
- * profile snapshot, one-level quote, and the viewer overlay when `viewer` is given). This lets the
- * fake serve the node-read path so the parity suite can pin it against the keyed path.
+ * runtime-side equivalent of `enrichPosts` (same tally aggregates, reply count, poll flag, profile
+ * snapshot, one-level quote, and the viewer overlay when `viewer` is given). This lets the fake serve the
+ * node-read path so the parity suite can pin it against the keyed path.
+ *
+ * `repost_count` / `reposted` are hardcoded 0 / false because that is exactly what the runtime returns:
+ * reposting was retired in spec 204 and the storage behind those fields was DELETED by migration v5, but
+ * the fields stay on the wire so the deployed bundle keeps decoding. The fake must model the chain, not
+ * the chain we used to have — so it emits the dead values and the client must ignore them.
  */
 function enrichFor(spec: FakeSpec, id: bigint, viewer?: string) {
   const p = spec.posts.get(id)!;
   const t = spec.voteTally?.get(id) ?? ZERO_TALLY;
   const myDir = viewer ? spec.votesByAccount?.get(viewer)?.get(id) : undefined;
-  const reposted = viewer ? spec.repostsByAccount?.get(viewer)?.has(id) === true : false;
   const quotedPost = p.quote != null ? spec.posts.get(p.quote) : undefined;
   return {
     id,
@@ -78,7 +75,7 @@ function enrichFor(spec: FakeSpec, id: bigint, viewer?: string) {
     reply_count: spec.replyCount?.get(id) ?? 0,
     is_poll: false,
     my_vote: myDir ? { type: myDir } : undefined,
-    reposted,
+    reposted: false,
     author_display_name: bin(""),
     author_avatar: bin(""),
     quoted:
@@ -116,7 +113,6 @@ function makeFakeApi(spec: FakeSpec): CognoApi {
             Promise.resolve(spec.posts.has(id) ? wrap(spec.posts.get(id)!) : undefined),
         },
         VoteTally: { getValue: (id: bigint) => Promise.resolve(spec.voteTally?.get(id) ?? ZERO_TALLY) },
-        RepostCount: { getValue: () => Promise.resolve(0) },
         ReplyCount: { getValue: (id: bigint) => Promise.resolve(spec.replyCount?.get(id) ?? 0) },
         Polls: { getValue: () => Promise.resolve(undefined) },
         ByAuthor: { getValue: (a: string) => Promise.resolve(spec.byAuthor?.get(a) ?? []) },
@@ -323,7 +319,6 @@ describe("node-served reads", () => {
   it("stamps the viewer overlay (myVote) node-side when a viewer is passed", async () => {
     const spec = sampleSpec();
     spec.votesByAccount = new Map([["dave", new Map([[2n, "Up"]])]]);
-    spec.repostsByAccount = new Map([["dave", new Set([3n])]]);
     const api = makeFakeApi(spec);
     const page = await nodeGlobalFeedPage(api, { limit: 5, viewer: "dave" });
     const byId = new Map(page.posts.map((p) => [p.id, p]));

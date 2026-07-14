@@ -34,7 +34,7 @@ describe("extractPostId", () => {
   it("returns undefined when no Microblog event of the wanted name is present", () => {
     const events = [
       { type: "System", value: { type: "ExtrinsicSuccess", value: {} } },
-      microblogEvent("Reposted", { id: 9n }), // a different Microblog event — not the one queried
+      microblogEvent("VoteCleared", { id: 9n }), // a different Microblog event — not the one queried
     ];
     expect(extractPostId(events as never, "PostCreated")).toBeUndefined();
   });

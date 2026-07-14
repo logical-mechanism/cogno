@@ -6714,6 +6714,7 @@ dependencies = [
 name = "pallet-cardano-observer"
 version = "1.0.0"
 dependencies = [
+ "frame-benchmarking",
  "frame-support",
  "frame-system",
  "log",

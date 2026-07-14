@@ -14,8 +14,13 @@
 //! `v4` backfills the top-level-post index added in spec 121 — `TopLevelPosts` + `NextTopLevelSeq` +
 //! `TopLevelByAuthor` (from the top-level `Posts` rows, in id order) — so `feed_page` reads exactly N
 //! top-level posts (no reply over-scan) and the profile post count counts only top-level posts.
+//!
+//! `v5` is the first SUBTRACTIVE migration (spec 204): it drops the retired repost storage (`Reposts` +
+//! `RepostCount` — this DELETES live rows) and settles every capacity bucket onto the
+//! settle-at-the-old-weight invariant, observably neutral by construction.
 
 pub mod v1;
 pub mod v2;
 pub mod v3;
 pub mod v4;
+pub mod v5;

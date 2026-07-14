@@ -74,11 +74,19 @@ parameter_types! {
 }
 
 /// Runtime migrations (a tuple of `OnRuntimeUpgrade` types run by the Executive before the per-pallet
-/// hooks in the first block after a `setCode`). The all-Rust restart is a FRESH GENESIS, so there is no
-/// pre-200 storage to migrate: every pallet starts at its declared `STORAGE_VERSION` at genesis, so the
+/// hooks in the first block after a `setCode`). The all-Rust restart was a FRESH GENESIS, so there was no
+/// pre-200 storage to migrate: every pallet started at its declared `STORAGE_VERSION`, which is why the
 /// old microblog/profile v0→v4 `VersionedMigration`s (still present in the pallets, self-skipping) are
-/// deliberately NOT registered here. Add a new migration only for a future in-place governed upgrade.
-type SingleBlockMigrations = ();
+/// deliberately NOT registered here.
+///
+/// spec 204 is the first IN-PLACE governed upgrade of a chain that already holds state, so it carries the
+/// first live migration. `MigrateV4ToV5` drops the retired repost storage (`Reposts` + `RepostCount` — this
+/// DELETES rows the live chain holds) and settles every capacity bucket at its current weight. It is
+/// `VersionedMigration`-guarded on the microblog storage version moving 4 → 5, so it runs exactly once and
+/// self-skips on a re-run. Registering it is load-bearing: without it the on-chain storage version stays 4
+/// while the pallet code declares 5, and the repost rows orphan permanently under a prefix no pallet
+/// declares any more.
+type SingleBlockMigrations = (pallet_microblog::migrations::v5::MigrateV4ToV5<Runtime>,);
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
 /// cogno-chain permits EVERY call except:
@@ -392,6 +400,10 @@ impl pallet_transaction_payment::Config for Runtime {
 impl pallet_governed_upgrade::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type AuthorityOrigin = AuthorityOrigin;
+    // The one remaining hand-estimated placeholder, deliberately DEFERRED: the pallet has no `#[benchmarks]`
+    // module to generate from. Unlike the observer's `observe` and fuel's `regenerate`, `authorize_upgrade`
+    // is neither Mandatory nor billed from a hook — it is a single committee-gated call that writes one
+    // storage value, so an over-estimate costs a fraction of one 3-of-5 motion and can never crowd a block.
     type WeightInfo = ();
 }
 
@@ -475,10 +487,14 @@ impl pallet_governance_fuel::Config for Runtime {
     // Comfortably covers MaxValidators (32) + FollowerMaxMembers (7) with headroom.
     type MaxFundedAccounts = ConstU32<64>;
     type RegenPeriod = FuelRegenPeriod;
-    // Placeholder weights (like GovernedUpgrade): conservative DB-weight estimates so the on_initialize
-    // regeneration hook never under-charges. Graduating to a benchmarked `SubstrateWeight<Runtime>` (run
-    // `benchmark pallet --pallet pallet_governance_fuel`) is a deploy step.
-    type WeightInfo = ();
+    // Real benchmarked weights (spec 204). `regenerate(n)` is billed by the `on_initialize` hook on every
+    // `RegenPeriod` block and is linear in the funded-set size, so it cannot be skipped or refunded — it
+    // gets a measured number, not an estimate. At the `MaxFundedAccounts` ceiling (n = 64) the hook costs
+    // ~9.3 ms, 0.47% of the 2 s `max_block`; the funded set today is single digits. The hand-estimated
+    // placeholder this replaces OVER-charged by ~1.6x at that ceiling (it counted `TotalIssuance` as a
+    // write per account, but it is one key rewritten n times), so it was conservative rather than unsafe —
+    // this makes it honest.
+    type WeightInfo = pallet_governance_fuel::weights::SubstrateWeight<Runtime>;
 }
 
 // ── The FollowerCommittee — the mutable k-of-t authority behind the crown jewels ──
@@ -532,6 +548,12 @@ impl pallet_collective::Config<Instance1> for Runtime {
     // the 3/5 bar. NOT `PrimeDefaultVote` — with the proportion origin a prime default folds absentees into
     // aye and collapses the supermajority to a lone unopposed prime after the motion window (see AbstainAsNay).
     type DefaultVote = AbstainAsNay;
+    // UPSTREAM reference weights, not generated here — a deliberate choice, not an oversight. Parity
+    // measures these on the reference hardware the weight constants assume; the numbers a benchmark run on
+    // this dev box would produce are calibrated to a machine no validator is required to match, which is
+    // WORSE than upstream's for a pallet whose propose/close cost is a block-fill surface. `pallet_collective`
+    // stays listed in `define_benchmarks!` so a real run on production-representative hardware can graduate
+    // it later.
     type WeightInfo = pallet_collective::weights::SubstrateWeight<Runtime>;
     // SUDO-FREE: the committee polices ITSELF — rotation (`set_members`), disapprove, and kill are all
     // gated by the same `AuthorityOrigin` (≥3/5 of the committee). There is no root fallback. At the
@@ -731,10 +753,9 @@ impl pallet_microblog::Config for Runtime {
     type BaseCost = BaseCost;
     type PerByteCost = PerByteCost;
     // Per-action costs for the social engagement calls, all drawn from the SAME single talk-capacity
-    // battery as posting. DEV-tuned relative to BaseCost (= 50_000_000, one post): a vote/repost ≈
-    // 0.4 of a post, a follow ≈ 0.2. (quote_post reuses `post_cost`, so it has no constant here.)
+    // battery as posting. DEV-tuned relative to BaseCost (= 50_000_000, one post): a vote ≈ 0.4 of a
+    // post, a follow ≈ 0.2. (quote_post reuses `post_cost`, so it has no constant here.)
     type VoteCost = ConstU128<20_000_000>;
-    type RepostCost = ConstU128<20_000_000>;
     type FollowCost = ConstU128<10_000_000>;
     // Poll bounds: up to 4 options, each up to 80 bytes (the question reuses MaxLength = 512).
     type MaxPollOptions = ConstU32<4>;
@@ -779,15 +800,21 @@ impl pallet_cardano_observer::BeaconResolver<AccountId> for BeaconLookup {
     }
 }
 
-/// Weight-application adapter for pallet-cardano-observer: set the talk-stake weight (writes ONLY
-/// `AllowedStake`, going-forward-only) and ensure the relock-safe microblog capacity row exists. The
-/// lazy capacity meter reads the live weight, so `cap`/`rate` follow it and `weight = 0` collapses
+/// Weight-application adapter for pallet-cardano-observer.
+///
+/// Deliberately a ONE-LINE delegation. The going-forward-only rule — settle the capacity bucket at the OLD
+/// weight, then write `AllowedStake`, and only when the weight actually changed — is not a property of this
+/// adapter; it is a property of the capacity meter, so it lives with the meter in
+/// [`pallet_microblog::Pallet::apply_observed_weight`], which is the SOLE way weight may enter the chain.
+/// (It used to live here, hand-copied into microblog's test mock so the tests could reach it — which meant
+/// nothing tested the code that actually ran. Now the mock drives the same function the runtime does.)
+///
+/// The lazy capacity meter reads the live weight, so `cap`/`rate` follow it and `weight = 0` collapses
 /// capacity on the next read — deliberately NO per-block refill (that would defeat the spam meter).
 pub struct WeightApply;
 impl pallet_cardano_observer::WeightSink<AccountId> for WeightApply {
     fn set_weight(who: &AccountId, weight: u128) {
-        pallet_talk_stake::Pallet::<Runtime>::apply_weight(who, weight);
-        pallet_microblog::Pallet::<Runtime>::on_first_bind(who);
+        pallet_microblog::Pallet::<Runtime>::apply_observed_weight(who, weight);
     }
 }
 
@@ -811,11 +838,17 @@ impl pallet_cardano_observer::BoundStakeCredentials for BoundStakeCreds {
 
 /// Voting-power-application adapter: write the talk-stake `VotingPower` (the total-stake VOTE weight).
 /// Distinct from `WeightApply` (which sets the locked-ADA `AllowedStake` deposit weight + primes the
-/// microblog capacity row) — voting power touches neither capacity nor `AllowedStake`.
+/// microblog capacity row) — voting power touches neither capacity nor `AllowedStake`, so there is no
+/// bucket to settle here. The `previous != weight` guard is the same per-block economy as `WeightApply`'s:
+/// the observer re-derives the full stake set every block, and an unchanged account must not cost a write
+/// + a `VotingPowerSet` event in a Mandatory inherent.
 pub struct VotingPowerApply;
 impl pallet_cardano_observer::VotingPowerSink<AccountId> for VotingPowerApply {
     fn set_voting_power(who: &AccountId, weight: u128) {
-        pallet_talk_stake::Pallet::<Runtime>::apply_voting_power(who, weight);
+        let previous = pallet_talk_stake::VotingPower::<Runtime>::get(who);
+        if previous != weight {
+            pallet_talk_stake::Pallet::<Runtime>::apply_voting_power(who, weight);
+        }
     }
 }
 
@@ -853,6 +886,43 @@ parameter_types! {
     ];
 }
 
+/// Benchmark-only setup for pallet-cardano-observer. The pallet reaches cogno-gate / talk-stake /
+/// microblog only through the resolver + sink seams (no Cargo cycle), so its benchmark cannot bind an
+/// identity or seed a weight itself. This writes those rows directly, and every one of them is load-bearing
+/// for the WORST CASE — seed them wrong and the benchmark prices the cheap path:
+///
+/// - `CognoGate::AccountOf` / `AccountOfStakeCred`: the bindings the resolvers read. An UNBOUND entry is
+///   `continue`d — the cheapest possible per-entry path.
+/// - `TalkStake::AllowedStake` / `VotingPower`, seeded to `ObsMinLock`: the benchmark observes
+///   `MinLock + 1 + i`, which always differs, so `WeightApply`/`VotingPowerApply`'s `previous != weight`
+///   guard takes the WRITE branch rather than the no-op fast path.
+/// - The microblog capacity row: `settle_capacity_at` writes only when a row EXISTS and was last stamped
+///   before the current block, so without it the settle write is never measured. (The benchmark advances a
+///   block after this setup for the second half of that condition.)
+#[cfg(feature = "runtime-benchmarks")]
+pub struct ObserverBenchSetup;
+#[cfg(feature = "runtime-benchmarks")]
+impl pallet_cardano_observer::BenchmarkSetup<AccountId> for ObserverBenchSetup {
+    fn bench_bind_beacon(beacon: &[u8; 32], i: u32) {
+        let who = Self::bench_account(i);
+        let seed = <ObsMinLock as frame_support::traits::Get<u128>>::get();
+        pallet_cogno_gate::AccountOf::<Runtime>::insert(beacon, who.clone());
+        pallet_talk_stake::AllowedStake::<Runtime>::insert(&who, seed);
+        pallet_microblog::Pallet::<Runtime>::on_first_bind(&who);
+    }
+
+    fn bench_bind_stake_cred(cred: &[u8; 28], i: u32) {
+        let who = Self::bench_account(i);
+        let seed = <ObsMinLock as frame_support::traits::Get<u128>>::get();
+        pallet_cogno_gate::AccountOfStakeCred::<Runtime>::insert(cred, who.clone());
+        pallet_talk_stake::VotingPower::<Runtime>::insert(&who, seed);
+    }
+
+    fn bench_account(i: u32) -> AccountId {
+        frame_benchmarking::account("cardano-observer", i, 0)
+    }
+}
+
 /// Configure pallet-cardano-observer (in-protocol-observation, the D4 weight rung). It is the **SOLE
 /// weight writer**: every block the node-side `InherentDataProvider` carries a Cardano observation,
 /// `check_inherent` re-derives + verifies it on every importer (reject on mismatch), and the Mandatory
@@ -865,18 +935,51 @@ parameter_types! {
 /// validator must run cardano-node + Cardano db-sync. See docs/IN-PROTOCOL-OBSERVATION.md.
 impl pallet_cardano_observer::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
-    // Max identities observed per block. This is a HARD CEILING on concurrent participants, not a batch
-    // size: the observation is a FULL-SET snapshot re-derived every block (the unlock-clamp zeroes any
-    // identity absent from the CURRENT set, so a delta would wrongly clear unchanged accounts), carried in
-    // every block body and re-derived by every producer. Both axes are bounded by it — the vault set
-    // (`entries`) AND the bound-stake set (`stake_entries`) — and an observation over it makes
-    // `create_inherent` abstain (drops the whole inherent → the sole weight writer FREEZES), so the node
-    // now WARNs at 75% and ERRORs at/over it (surfaced via `ObserverConfig::max_observed`). 4096 gives
-    // ~4x headroom over the realistic preprod user base while staying well within the block-length budget
-    // (~48 B/vault + ~44 B/stake entry) and, with the O(N) unlock-clamp, a modest per-block weight. Raising
-    // it further is a one-line const bump within these budgets; REMOVING the ceiling (unbounded users) needs
-    // a delta/paged observation re-architecture (a separate milestone). It stays >= talk-stake's cap needs.
-    type MaxObserved = ConstU32<4096>;
+    // Max identities observed per block. A HARD CEILING on concurrent participants, not a batch size: the
+    // observation is a FULL-SET snapshot re-derived every block (the unlock-clamp zeroes any identity absent
+    // from the CURRENT set, so a delta would wrongly clear unchanged accounts), carried in every block body
+    // and re-derived by every producer. Both axes are bounded by it — the vault set (`entries`) AND the
+    // bound-stake set (`stake_entries`).
+    //
+    // 4096 -> 1024, because the REAL benchmarked cost says 4096 never fit. `observe` is Mandatory
+    // (`max_total: None`), so it cannot `ExhaustsResources` — an over-budget observation is not rejected,
+    // it just runs the block long and risks missing the 6 s Aura slot. The bound IS the budget:
+    //
+    //   observe(4096,4096,4096,4096) = 3.60  s ref_time = 180% of max_block (2 s) — never survivable
+    //   observe(1024,1024,1024,1024) = 0.885 s ref_time =  44% of max_block
+    //   observe(   7,   2,   7,   2) = 0.047 s ref_time = 2.4% of max_block — the live chain today
+    //
+    // 1024 is a 146x margin over the 7 live participants and leaves the block usable at the ceiling. The
+    // old hand-estimate priced the 4096 worst case at 8.2 ms — a 440x under-count of the only call in the
+    // chain that cannot be skipped.
+    //
+    // ⚠ These are CHARGES, not measurements, and the small end is a loose upper bound rather than a tight
+    // one. `observe`'s fitted base weight is ~42.6 ms (weights.rs), which is ~90% of that 47 ms live-chain
+    // figure — and an `observe` over empty vectors does ~6 reads / 4 writes and plainly cannot cost 42.6 ms
+    // (`set_enforcement`, one write + one event, measures 4.7 US). It is a regression artifact, not a
+    // constant: FRAME's benchmark CLI sweeps ONE component across its range while holding the others at
+    // their MAXIMUM, so with four components there is no datapoint anywhere near (0,0,0,0) and the
+    // intercept is pure extrapolation. Not fixable by re-running — the sampling design is the tool's, not
+    // ours — and it errs CONSERVATIVE (we over-charge the Mandatory inherent, never under-charge it), so
+    // it is safe. The cost is that ~2% of every block is reserved for work that is not happening. The
+    // per-entry coefficients, which are what actually govern scaling, are sound; do not read the base as
+    // the real cost of a quiet block.
+    //
+    // ⚠ RESIDUAL CEILING — this fix does NOT lift it. The observation is still a FULL SNAPSHOT of every
+    // bound identity in EVERY block, so per-block cost stays O(total participants), not O(changes): at the
+    // ceiling the observer alone charges half the block, every block, forever. `MaxObserved` remains a hard
+    // cap on concurrent participants, and an observation over it still makes `create_inherent` abstain
+    // (dropping the whole inherent → the sole weight writer FREEZES). All this buys is that hitting it is
+    // now LOUD and ON-CHAIN (`CardanoObserver::Stalled` + `ObservationStalled`) instead of silent, and that
+    // the cost is honestly priced instead of under-counted ~100x. Getting PAST the ceiling needs a
+    // delta/paged observation re-architecture — deliberately deferred, not solved here.
+    //
+    // ⚠ LOWERING this bound is itself a brick vector: `LastObserved` / `LastObservedStake` are
+    // `BoundedVec<_, MaxObserved>`, so a live vec longer than the bound fails to decode and `ValueQuery`
+    // hands back an EMPTY clamp basis — stranding the weight of every account that has since unlocked. The
+    // live vecs were verified at 7 and 2 entries before this drop, and the observer's `try_state` guard
+    // re-checks it against real state under `try-runtime` (docs/UPGRADES.md's pre-enactment dry-run).
+    type MaxObserved = ConstU32<1024>;
     // The same `stake-1` ceiling as talk-stake (max lockable lovelace = total ADA supply). An entry
     // above it is SKIPPED by the observer (never bricks the Mandatory block), not rejected.
     type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;
@@ -891,6 +994,13 @@ impl pallet_cardano_observer::Config for Runtime {
     // Read epoch_stake 1 epoch before the reference's epoch — a fully-closed (immutable) snapshot, and the
     // ~2-epoch manipulation-resistant lag Cardano itself uses (CIP-1694 voting power).
     type StakeEpochLookback = ConstU64<1>;
+    // The observation is authored every block, so 5 minutes of silence is not a hiccup — it is the sole
+    // weight writer stopped. Long enough to ride out a db-sync blip without crying wolf; short enough that
+    // a real freeze (a Cardano read that is down, or an observation over MaxObserved that makes
+    // `create_inherent` abstain) is on-chain and alertable within minutes rather than never. The alarm only
+    // ARMS once the chain has applied its first observation, so `--dev` (which has no db-sync and never
+    // observes at all) does not trip it every run — see the pallet's `on_initialize`.
+    type StallAfter = ConstU32<{ 5 * MINUTES }>;
     type BeaconResolver = BeaconLookup;
     type StakeResolver = StakeLookup;
     type WeightSink = WeightApply;
@@ -903,7 +1013,12 @@ impl pallet_cardano_observer::Config for Runtime {
     type EnforceOrigin = AuthorityOrigin;
     // pallet-timestamp implements `UnixTime` — the block's consensus clock for the stability sanity bound.
     type UnixTime = Timestamp;
-    type WeightInfo = ();
+    // Real FRAME benchmarks. `observe` is Mandatory and runs in EVERY block, so it is the one call whose
+    // weight can never be skipped or repriced by the fee market — the hand-estimate it replaces under-counted
+    // it by ~100x and reported proof_size 0 for every term.
+    type WeightInfo = pallet_cardano_observer::weights::SubstrateWeight<Runtime>;
+    #[cfg(feature = "runtime-benchmarks")]
+    type BenchmarkSetup = ObserverBenchSetup;
 }
 
 /// Configure pallet-profile (social-actions branch): the mutable per-account display profile. Gated

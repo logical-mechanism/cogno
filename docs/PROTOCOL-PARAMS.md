@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 203** — the runtime that's live on preprod.
+it. This is a snapshot of **spec_version 204** — the runtime that's live on preprod.
 
 Two things to keep in mind:
 
@@ -69,7 +69,7 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **203** | `VERSION` — `runtime/src/lib.rs` |
+| **spec_version** | **204** | `VERSION` — `runtime/src/lib.rs` |
 | transaction_version | 3 | `VERSION` — `runtime/src/lib.rs` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
@@ -118,7 +118,6 @@ spends from it. **These values are dev-tuned** — the v1 target is a ~5 h regen
 | `BaseCost` (per post) | 50,000,000 (= 1 post) | `BaseCost` |
 | `PerByteCost` | 50,000 / byte | `PerByteCost` |
 | `VoteCost` | 20,000,000 | `pallet_microblog::Config` |
-| `RepostCost` | 20,000,000 (repost is retired; constant still present) | `pallet_microblog::Config` |
 | `FollowCost` | 10,000,000 | `pallet_microblog::Config` |
 | `ProfileCost` (foreign) | 500,000,000 (= 10× `BaseCost`) | `ProfileCost` |
 | `CheckCapacity` tx longevity | 8 blocks | `longevity` — `pallets/microblog/src/lib.rs` |
@@ -155,7 +154,8 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 
 | Parameter | Value | Symbol / file |
 |---|---|---|
-| `MaxObserved` | 4096 (hard cap, full snapshot/block; node WARNs at 75%) | `pallet_cardano_observer::Config` |
+| `MaxObserved` | 1024 (hard cap, full snapshot/block; node WARNs at 75%) | `pallet_cardano_observer::Config` |
+| `StallAfter` | 50 blocks (5 min) before `ObservationStalled` latches | `pallet_cardano_observer::Config` |
 | `MinLock` | 100 ADA (100,000,000 lovelace) | `ObsMinLock` |
 | `MaxStakeWeight` | 45e15 lovelace (~total ADA supply; over-cap entry skipped) | `pallet_cardano_observer::Config` |
 | `MaxVotingPower` | 45e15 lovelace (over-cap entry skipped) | `pallet_cardano_observer::Config` |

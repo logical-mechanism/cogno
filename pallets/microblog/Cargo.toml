@@ -1,6 +1,6 @@
 [package]
 name = "pallet-microblog"
-description = "cogno-chain microblog pallet — feeless, capacity-metered posting and social engagement (posts, quotes, votes, polls, reposts, follows), gated by the CheckCapacity extension and the CognoGate identity gate, with node-served reads via MicroblogApi."
+description = "cogno-chain microblog pallet — feeless, capacity-metered posting and social engagement (posts, quotes, votes, polls, follows), gated by the CheckCapacity extension and the CognoGate identity gate, with node-served reads via MicroblogApi."
 version.workspace = true
 license = "Apache-2.0"
 authors.workspace = true

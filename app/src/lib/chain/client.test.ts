@@ -1,7 +1,7 @@
 // Pure-logic tests for the read/write boot guard. The guard compares the live runtime spec to
-// what the app was built against: a spec_name mismatch (wrong chain) must set ok=false; a failed
-// read must yield a not-ok guard WITH a reason rather than throwing (boot must never crash). The
-// descriptor spec_version is null here, so version is intentionally NOT gated.
+// what the app was built against: a spec_name mismatch (wrong chain) must set ok=false; a
+// spec_version mismatch must set ok=false (posting is blocked rather than mis-encoded); and a failed
+// read must yield a not-ok guard WITH a reason rather than throwing (boot must never crash).
 
 import { describe, it, expect } from "vitest";
 import { checkBootGuard } from "./client";
@@ -20,7 +20,7 @@ function apiWith(version: { spec_name: string; spec_version: number } | (() => n
 
 // The spec the descriptors are built against. `npm run check:spec` asserts this equals the runtime's
 // spec_version in runtime/src/lib.rs, so it cannot drift out from under these tests.
-const DESCRIPTOR_SPEC = 203;
+const DESCRIPTOR_SPEC = 204;
 
 describe("checkBootGuard", () => {
   it("ok=true when the spec_name AND spec_version match the descriptors", async () => {

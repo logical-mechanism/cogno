@@ -28,7 +28,7 @@ in [RELAY-NODE.md](RELAY-NODE.md); this doc is the frontend-dev loop on top of i
 1. **Build the node** — `cargo build --release`.
 
 2. **Run a tracking node.** The committed [`chainspecs/preprod.raw.json`](../chainspecs/preprod.raw.json)
-   already matches the live chain (spec 203, genesis `0x73eaa4bf…`) and has the validator's bootnode
+   already matches the live chain (spec 204, genesis `0x73eaa4bf…`) and has the validator's bootnode
    embedded, so there's no spec-building step:
 
    ```bash

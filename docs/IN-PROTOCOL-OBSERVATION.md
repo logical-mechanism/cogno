@@ -219,7 +219,7 @@ mechanism itself, which is complete and enforcing today.
 ## Key values and paths
 
 - Pallet: `pallet-cardano-observer` @ index 16 (`pallets/cardano-observer/src/lib.rs`); inherent id
-  `cgnoobsv`. Runtime **spec_version 203 / transaction_version 3**, genesis `0x73eaa4bf`.
+  `cgnoobsv`. Runtime **spec_version 204 / transaction_version 3**, genesis `0x73eaa4bf`.
 - Read + reduction: `cogno-dbsync/` (`dbsync.rs` = SQL/IO, `reduction.rs` = pure reduction). The
   on-chain result is read back with `cogno-chain-cli query weight` (over RPC).
 - Constants (`runtime/src/configs/mod.rs`): `MinLock = 100_000_000`; `MaxStakeWeight = MaxVotingPower =

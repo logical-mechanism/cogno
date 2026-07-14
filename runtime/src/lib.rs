@@ -68,7 +68,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // transaction extensions) or any change to consensus-visible behaviour that requires nodes to
     // upgrade in lockstep. Leave it alone for comments, bounds, logging and tests. The per-release
     // history lives in CHANGELOG.md, not here.
-    spec_version: 203,
+    spec_version: 204,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
@@ -165,7 +165,8 @@ pub type TxExtension = (
     pallet_microblog::CheckCapacity<Runtime>,
     // Wrap payment in `SkipCheckIfFeeless` so calls marked `#[pallet::feeless_if]`
     // (i.e. `post_message`) skip the fee. Feeless is per-call, not chain-wide — the microblog social
-    // writes (post_message/quote_post/vote/clear_vote/repost/follow/unfollow/create_poll/cast_poll_vote)
+    // writes (post_message/quote_post/vote/clear_vote/vote_account/clear_account_vote/follow/unfollow/
+    // create_poll/cast_poll_vote)
     // AND pallet-profile's four writes (set_profile/clear_profile/pin_post/unpin_post, since spec 117 —
     // metered against the one battery via the `ForeignCapacityCost` seam at `ProfileCost`) are feeless;
     // everything else stays fee-bearing. (Metadata-invisible: PAPI sees plain payment.)

@@ -118,7 +118,7 @@ If you changed the layout of *existing* storage, ship an `OnRuntimeUpgrade` migr
 
 ## Version rules
 
-- **`spec_version`** — bump on any logic/storage/metadata change (currently **203**). `apply` rejects
+- **`spec_version`** — bump on any logic/storage/metadata change (currently **204**). `apply` rejects
   a non-increasing value on-chain.
 - **`transaction_version`** — bump *only* when the extrinsic encoding changes (a new transaction
   extension, or changed call arguments). Adding a new call does **not** change it. Keeping it stable

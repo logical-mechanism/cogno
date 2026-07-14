@@ -19,8 +19,17 @@
 //!   up from empty, never a full bucket — closes the cheap-identity burst farm.
 //! - **The `Capacity` row is never deleted** on unlock; only `weight → 0` clamps it. So a
 //!   lock/unlock/relock cycle can't read a `None` first-touch and re-mint (relock farm).
-//! - **`consume` is the sole writer**; `current_capacity` is pure (safe in `validate()`).
-//! - **Going-forward-only**: weight changes (in talk-stake) never touch `cap_last`.
+//! - **`current_capacity` is PURE** (no writes — safe to call repeatedly in `validate()`); `consume`
+//!   is the only writer on the transaction path.
+//! - **Going-forward-only**: a weight change SETTLES the bucket at the OLD weight and restamps it, so
+//!   regen can never accrue across a window the account spent at a different weight. A raise lifts the
+//!   future `cap`/`rate` but credits nothing retroactively, and a zero-weight window banks nothing —
+//!   which is what makes the relock guard hold on the observer's unlock path (`weight → 0`), not just on
+//!   `on_revoke`.
+//! - **[`Pallet::apply_observed_weight`] is the SOLE way weight enters the chain.** It owns the
+//!   settle-then-apply order and the unchanged-weight guard; the runtime's observer `WeightSink` is a
+//!   one-line delegation to it. Never call `pallet_talk_stake::apply_weight` from anywhere else — doing so
+//!   changes the weight without settling and reintroduces the retro-credit farm.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -141,7 +150,9 @@ pub mod pallet {
     /// self-skips once the on-chain version has advanced past it.
     // v3 -> v4 (spec 121): backfill the top-level-post index (`TopLevelPosts` / `TopLevelByAuthor` /
     // `NextTopLevelSeq`) — see `migrations::v4`.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
+    // v4 -> v5 (spec 204): drop the retired repost storage and settle every capacity bucket onto the
+    // settle-at-the-old-weight invariant — see `migrations::v5`.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(5);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -195,9 +206,6 @@ pub mod pallet {
         /// Flat capacity cost of a `vote` or `clear_vote` (micro-capacity units).
         #[pallet::constant]
         type VoteCost: Get<u128>;
-        /// Flat capacity cost of a `repost` (micro-capacity units).
-        #[pallet::constant]
-        type RepostCost: Get<u128>;
         /// Flat capacity cost of a `follow` or `unfollow` (micro-capacity units).
         #[pallet::constant]
         type FollowCost: Get<u128>;
@@ -305,8 +313,8 @@ pub mod pallet {
     }
 
     /// A poll attached to a post: the fixed set of options voters choose between. The poll's question
-    /// IS the host post's `text`, so a poll is a first-class post (it threads / quotes / reposts and
-    /// shows in the feed); only the options + the stake-weighted per-option tally live here.
+    /// IS the host post's `text`, so a poll is a first-class post (it threads / quotes and shows in
+    /// the feed); only the options + the stake-weighted per-option tally live here.
     #[derive(
         Encode,
         Decode,
@@ -440,31 +448,25 @@ pub mod pallet {
     pub type AccountVoteTally<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, Tally, ValueQuery>;
 
-    /// Per-(post, account) repost edge. **Permanent** (treated like content — there is no `unrepost`);
-    /// a re-repost is rejected `AlreadyReposted`. `None` ⇒ that account has not reposted that post.
-    #[pallet::storage]
-    pub type Reposts<T: Config> =
-        StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, T::AccountId, (), OptionQuery>;
+    // The retired repost storage (`Reposts`, `RepostCount`) lived HERE. Both were dropped in spec 204
+    // together with the `repost` call; migration v5 clears their rows. Do not re-declare them — a
+    // re-declared prefix would resurrect state the migration deleted.
 
-    /// Per-post repost count (`ValueQuery` ⇒ default 0). Only ever increments (reposts are permanent).
-    #[pallet::storage]
-    pub type RepostCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
-
-    /// Per-parent reply count (`ValueQuery` ⇒ default 0): the number of direct replies a post has.
-    /// The denormalized aggregate mirroring [`RepostCount`] — lets a client read a post's reply count
-    /// with one keyed lookup instead of scanning every post for `parent == id`. Maintained in lockstep
-    /// with [`RepliesByParent`] on the reply-creation path. Content is append-only (`delete_post` was
-    /// removed before launch; `@1` is permanently vacant), so — exactly like `RepostCount` — it **only ever
-    /// increments**; there is no decrement path. Backfilled from existing `Posts` by migration v3.
+    /// Per-parent reply count (`ValueQuery` ⇒ default 0): the number of direct replies a post has. The
+    /// denormalized aggregate that lets a client read a post's reply count with one keyed lookup instead
+    /// of scanning every post for `parent == id`. Maintained in lockstep with [`RepliesByParent`] on the
+    /// reply-creation path. Content is append-only (`delete_post` was removed before launch; `@1` is
+    /// permanently vacant), so it **only ever increments**; there is no decrement path. Backfilled from
+    /// existing `Posts` by migration v3.
     #[pallet::storage]
     pub type ReplyCount<T: Config> = StorageMap<_, Blake2_128Concat, u64, u32, ValueQuery>;
 
     /// Reverse parent → replies index: `RepliesByParent[parent][reply_id] = ()` ⇒ `reply_id` is a
-    /// direct reply of `parent`. The keyed reverse lookup mirroring [`Reposts`], so a thread reads only
-    /// ONE parent's children via `getEntries(parent)` (prefix iteration) instead of folding the whole
-    /// post set. A `DoubleMap` (not a `BoundedVec<u64>`) deliberately: it imposes no per-post reply cap
-    /// and supports prefix pagination. Maintained in lockstep with [`ReplyCount`] on the reply-creation
-    /// path; append-only (no removal), backfilled from existing `Posts` by migration v3.
+    /// direct reply of `parent`. The keyed reverse lookup that lets a thread read only ONE parent's
+    /// children via `getEntries(parent)` (prefix iteration) instead of folding the whole post set. A
+    /// `DoubleMap` (not a `BoundedVec<u64>`) deliberately: it imposes no per-post reply cap and supports
+    /// prefix pagination. Maintained in lockstep with [`ReplyCount`] on the reply-creation path;
+    /// append-only (no removal), backfilled from existing `Posts` by migration v3.
     #[pallet::storage]
     pub type RepliesByParent<T: Config> =
         StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, u64, (), OptionQuery>;
@@ -556,15 +558,22 @@ pub mod pallet {
         ValueQuery,
     >;
 
+    // Variant indices are PINNED with `#[codec(index)]`, never implied by declaration order. `Reposted`
+    // (6) was retired in spec 204 and its index is permanently VACANT; without the pins, deleting it
+    // would have shifted `Followed`/`Unfollowed`/`PollCreated`/`PollVoted` down one and silently
+    // mis-decoded them in every client. Never renumber; a new variant takes the next free index (11).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
         /// A post was created (a plain post, a reply, or a quote — the shape is read from storage).
+        #[codec(index = 0)]
         PostCreated { id: u64, author: T::AccountId },
         /// A capacity bucket was force-set by the `ForceOrigin` (operator/migration/dev).
+        #[codec(index = 1)]
         CapacityForced { who: T::AccountId, cap_last: u128 },
         /// `who` (stake-`weight`) cast or changed a `dir` vote on post `id`. `weight` is the snapshot
         /// the tally was adjusted by — it lets an off-chain indexer fold the exact same tally.
+        #[codec(index = 2)]
         Voted {
             id: u64,
             who: T::AccountId,
@@ -572,9 +581,11 @@ pub mod pallet {
             weight: u128,
         },
         /// `who` cleared their vote on post `id` (the tally was adjusted by their stored weight).
+        #[codec(index = 3)]
         VoteCleared { id: u64, who: T::AccountId },
         /// `who` (stake-`weight`) cast or changed a `dir` reputation vote on account `target`.
         /// `weight` is the snapshot the tally was adjusted by — same fold-determinism contract as [`Voted`].
+        #[codec(index = 4)]
         AccountVoted {
             target: T::AccountId,
             who: T::AccountId,
@@ -582,25 +593,29 @@ pub mod pallet {
             weight: u128,
         },
         /// `who` cleared their reputation vote on account `target` (adjusted by their stored weight).
+        #[codec(index = 5)]
         AccountVoteCleared {
             target: T::AccountId,
             who: T::AccountId,
         },
-        /// `who` reposted post `id` (permanent — there is no un-repost).
-        Reposted { id: u64, who: T::AccountId },
+        // index 6 is PERMANENTLY VACANT: `Reposted` (retired in spec 204).
         /// `follower` started following `followee`.
+        #[codec(index = 7)]
         Followed {
             follower: T::AccountId,
             followee: T::AccountId,
         },
         /// `follower` stopped following `followee`.
+        #[codec(index = 8)]
         Unfollowed {
             follower: T::AccountId,
             followee: T::AccountId,
         },
         /// A poll was created (its question is the host post `id`'s text; options are in storage).
+        #[codec(index = 9)]
         PollCreated { id: u64, author: T::AccountId },
         /// `who` (stake-`weight`) cast or changed their vote on poll `id` to `option`.
+        #[codec(index = 10)]
         PollVoted {
             id: u64,
             who: T::AccountId,
@@ -609,41 +624,60 @@ pub mod pallet {
         },
     }
 
+    // Variant indices are PINNED with `#[codec(index)]`, never implied by declaration order — the index
+    // IS the wire format of a `DispatchError::Module`. `AlreadyReposted` (5) was retired in spec 204 and
+    // its index is permanently VACANT; without the pins, deleting it would have shifted the ten variants
+    // below it down one, so a client would report `SelfFollow` for an `AlreadyFollowing` failure. Never
+    // renumber; a new variant takes the next free index (16).
     #[pallet::error]
     pub enum Error<T> {
         /// The post text exceeded `MaxLength`.
+        #[codec(index = 0)]
         TooLong,
-        /// No post exists with the given id (a vote / repost / quote target that does not exist).
+        /// No post exists with the given id (a vote / quote target that does not exist).
+        #[codec(index = 1)]
         NotFound,
         /// The author has reached `MaxPostsPerAuthor` and cannot be indexed for another post.
+        #[codec(index = 2)]
         TooManyPosts,
         /// The caller has not bound a Cardano identity via the gate (`IdentityGate::is_allowed`
         /// returned `false`) — the anti-Sybil gate.
+        #[codec(index = 3)]
         NotAllowed,
         /// `clear_vote` was called but the caller has no vote on that post.
+        #[codec(index = 4)]
         NotVoted,
-        /// `repost` was called but the caller has already reposted that post (reposts are permanent).
-        AlreadyReposted,
+        // index 5 is PERMANENTLY VACANT: `AlreadyReposted` (retired in spec 204).
         /// `follow` was called with the caller as the target.
+        #[codec(index = 6)]
         SelfFollow,
         /// `follow` was called but the caller already follows that target.
+        #[codec(index = 7)]
         AlreadyFollowing,
         /// `unfollow` was called but the caller does not follow that target.
+        #[codec(index = 8)]
         NotFollowing,
         /// `create_poll` was called with fewer than 2 options.
+        #[codec(index = 9)]
         NotEnoughOptions,
         /// `create_poll` was called with more than `MaxPollOptions` options.
+        #[codec(index = 10)]
         TooManyOptions,
         /// A poll option label exceeded `MaxPollOptionLen`.
+        #[codec(index = 11)]
         OptionTooLong,
         /// `cast_poll_vote` referenced a post that is not a poll.
+        #[codec(index = 12)]
         PollNotFound,
         /// `cast_poll_vote` referenced an option index outside the poll's options.
+        #[codec(index = 13)]
         InvalidOption,
         /// `vote_account` was called with the caller as the target (you cannot vote your own account).
+        #[codec(index = 14)]
         SelfAccountVote,
         /// `vote_account` target is not identity-bound (`is_allowed` false) — reputation votes only
         /// apply to real, 1:1 Cardano-bound identities.
+        #[codec(index = 15)]
         TargetNotAllowed,
     }
 
@@ -689,6 +723,77 @@ pub mod pallet {
                     who,
                     CapacityState {
                         cap_last: 0,
+                        last_block: now,
+                    },
+                );
+            }
+        }
+
+        /// **The one and only way weight may enter the chain.** The runtime's observer `WeightSink` is a
+        /// one-line delegation to this, and `pallet-talk-stake::apply_weight` must never be called from
+        /// anywhere else — the going-forward-only rule lives HERE, not in the caller.
+        ///
+        /// Three things in one, and the ORDER is the invariant:
+        ///
+        /// 1. **The `previous != weight` guard.** The observer re-derives the FULL Cardano vault set every
+        ///    block and calls this for every credited account, so an unchanged account must cost nothing: no
+        ///    `AllowedStake` write, no `StakeSet` event, no capacity write. Without it, every credited
+        ///    account's row is rewritten every block — an O(MaxObserved) write storm inside a Mandatory
+        ///    inherent that cannot `ExhaustsResources` and would simply run the block past its Aura slot.
+        /// 2. **[`settle_capacity_at`] BEFORE `apply_weight`, with the PREVIOUS weight.** The bucket
+        ///    regenerates lazily from `(now - last_block)` priced at the account's CURRENT weight, and only
+        ///    `consume` / `on_revoke` / `force_set_capacity` restamp `last_block`. So without this settle a
+        ///    weight change re-prices the whole idle window at the NEW weight: an account first observed
+        ///    ~100 blocks after its bind is handed a FULL bucket instead of charging up from empty, and a
+        ///    relock after an observer unlock springs the old bucket back. Settling at the old weight closes
+        ///    that window (`previous == 0` settles to 0 — a zero-weight period banks nothing), which is what
+        ///    makes the relock guard hold on the observer's unlock path, not just on `on_revoke`. Reversed,
+        ///    it would settle at the NEW weight and bank the retro-credit into `cap_last`, making the bug
+        ///    permanent rather than merely visible on read.
+        /// 3. **[`on_first_bind`] OUTSIDE the guard**, because a first observation must prime the
+        ///    (relock-safe) row even when the account's weight happens to be unchanged. Idempotent — one
+        ///    `contains_key` read once primed.
+        pub fn apply_observed_weight(who: &T::AccountId, weight: u128) {
+            let previous = pallet_talk_stake::AllowedStake::<T>::get(who);
+            if previous != weight {
+                Self::settle_capacity_at(who, previous);
+                pallet_talk_stake::Pallet::<T>::apply_weight(who, weight);
+            }
+            Self::on_first_bind(who);
+        }
+
+        /// Settle the bucket at the OLD weight and restamp it to `now`. MUST be called while `old_weight`
+        /// is still the account's `AllowedStake` — i.e. BEFORE `apply_weight` overwrites it — so regen can
+        /// never accrue across a window the account spent at a different weight. `old_weight == 0` settles
+        /// to 0: a zero-weight period earns nothing and banks nothing. That is the relock guard.
+        ///
+        /// ⚑ Reached from the observer path only through [`apply_observed_weight`], which calls it ONLY when
+        /// the weight actually changes. Calling it unconditionally would rewrite every credited account's
+        /// row on every block (the observer re-derives the full set each block) — an O(MaxObserved) write
+        /// storm in a Mandatory inherent. Migration v5 calls it directly, once, to retire the last stale
+        /// `last_block` left over from before the settle existed.
+        ///
+        /// Observably neutral at the moment of the call: it stores exactly what [`current_capacity`]
+        /// already returns for `old_weight` at `now`, so settling changes no read — it only closes the
+        /// window so the NEXT one is priced at the weight actually held during it.
+        pub fn settle_capacity_at(who: &T::AccountId, old_weight: u128) {
+            let now = frame_system::Pallet::<T>::block_number();
+            if let Some(s) = Capacity::<T>::get(who) {
+                // Already settled this block — nothing accrued since, and re-settling would only
+                // re-clamp `cap_last` against the ceiling for no reason.
+                if s.last_block == now {
+                    return;
+                }
+                let cap = Self::capacity_ceiling(old_weight);
+                let elapsed: u128 = now.saturating_sub(s.last_block).saturated_into();
+                let regen = old_weight
+                    .saturating_mul(T::RegenPerBlock::get())
+                    .saturating_mul(elapsed);
+                let settled = core::cmp::min(cap, s.cap_last.saturating_add(regen));
+                Capacity::<T>::insert(
+                    who,
+                    CapacityState {
+                        cap_last: settled,
                         last_block: now,
                     },
                 );
@@ -752,8 +857,6 @@ pub mod pallet {
                 Call::vote_account { .. } | Call::clear_account_vote { .. } => {
                     Some(T::VoteCost::get())
                 }
-                // A repost is a flat amplification cost.
-                Call::repost { .. } => Some(T::RepostCost::get()),
                 // Follow / unfollow are a flat relationship cost (symmetric, no free-churn).
                 Call::follow { .. } | Call::unfollow { .. } => Some(T::FollowCost::get()),
                 // A poll is content priced by its question length; a poll vote is a flat signal cost.
@@ -883,10 +986,10 @@ pub mod pallet {
                     at,
                 },
             );
-            // Maintain the denormalized reply aggregates when this post is a reply (same lockstep
-            // pattern as `repost` → `RepostCount`/`Reposts`). `parent: Option<u64>` is `Copy`, so it is
-            // still readable after being moved into the `Post` above. Append-only content ⇒ increment
-            // only (there is no `delete`/decrement path).
+            // Maintain the denormalized reply aggregates when this post is a reply — the count and the
+            // reverse index in lockstep. `parent: Option<u64>` is `Copy`, so it is still readable after
+            // being moved into the `Post` above. Append-only content ⇒ increment only (there is no
+            // `delete`/decrement path).
             if let Some(parent_id) = parent {
                 ReplyCount::<T>::mutate(parent_id, |c| *c = c.saturating_add(1));
                 RepliesByParent::<T>::insert(parent_id, id, ());
@@ -952,8 +1055,8 @@ pub mod pallet {
         // ── social engagement calls (all FEELESS + capacity-metered through the SAME single battery
         //    as `post_message`; the [`CheckCapacity`] extension prices each via `metered_cost` and
         //    consumes on inclusion). Each is identity-gated in its body (belt-and-suspenders, like
-        //    `post_message`). Content (quote) is permanent; signals/relationships (vote, repost,
-        //    follow) follow their own rule: votes/follows toggle, reposts are permanent. ───────────
+        //    `post_message`). Content (quote) is permanent; the signal/relationship calls (vote,
+        //    follow) toggle. Quote is the sole amplification primitive. ─────────────────────────────
 
         /// Quote-post: create a post whose body is `text` and which references `quoted_id` via the
         /// `Post.quote` field (distinct from a reply's `parent`). Feeless + capacity-metered.
@@ -1175,33 +1278,10 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Repost post `post_id`. **Permanent** (treated like content — there is no un-repost);
-        /// a duplicate repost fails `AlreadyReposted`. Feeless + capacity-metered.
-        ///
-        /// ⚠ **RETIRED.** Reposting was dropped from the product: a bare repost surfaced nothing in any
-        /// feed and, unlike a quote or a stake-weighted vote, carried no weight, so it was redundant.
-        /// No client calls it and nothing renders `Reposts`/`RepostCount`. It still ships — live and
-        /// callable — only because removing a `call_index` is an on-wire break; the retirement (this call
-        /// plus the two storage maps) is scheduled for a future runtime upgrade. Do not build on it.
-        #[pallet::call_index(6)]
-        #[pallet::weight(<T as Config>::WeightInfo::repost())]
-        #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64| -> bool { true })]
-        pub fn repost(origin: OriginFor<T>, post_id: u64) -> DispatchResult {
-            let who = ensure_signed(origin)?;
-            if !T::IdentityGate::is_allowed(&who) {
-                log::debug!(target: LOG_TARGET, "repost rejected: identity not allowed for {who:?}");
-                return Err(Error::<T>::NotAllowed.into());
-            }
-            ensure!(Posts::<T>::contains_key(post_id), Error::<T>::NotFound);
-            ensure!(
-                !Reposts::<T>::contains_key(post_id, &who),
-                Error::<T>::AlreadyReposted
-            );
-            Reposts::<T>::insert(post_id, &who, ());
-            RepostCount::<T>::mutate(post_id, |c| *c = c.saturating_add(1));
-            Self::deposit_event(Event::Reposted { id: post_id, who });
-            Ok(())
-        }
+        // call_index 6 is PERMANENTLY VACANT: `repost` was retired in spec 204. A bare repost surfaced
+        // nothing in any feed and, unlike a quote or a stake-weighted vote, carried no weight — quote is
+        // the sole amplification primitive. Its storage (`Reposts`/`RepostCount`) went with it (migration
+        // v5). Never reuse index 6 (on-wire contract).
 
         /// Follow `target`. The caller (follower) must have a live identity binding; `target` is NOT
         /// existence-checked (it may bind later). Fails `SelfFollow` / `AlreadyFollowing`. Feeless.
@@ -1255,8 +1335,8 @@ pub mod pallet {
         }
 
         /// Create a stake-weighted poll. The `question` becomes a normal post (so the poll threads /
-        /// quotes / reposts and shows in the feed); `options` (2..=`MaxPollOptions`, each
-        /// ≤`MaxPollOptionLen`) are stored alongside. Feeless + capacity-metered like a post.
+        /// quotes and shows in the feed); `options` (2..=`MaxPollOptions`, each ≤`MaxPollOptionLen`)
+        /// are stored alongside. Feeless + capacity-metered like a post.
         #[pallet::call_index(9)]
         // spec 121 (Feature 3): a poll host is top-level, so it also runs `index_top_level` (2 reads +
         // 3 writes), not yet re-benchmarked — charge it manually.
@@ -1562,9 +1642,9 @@ where
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 // spec-120 node-served reads — the `MicroblogApi` runtime read API (docs/SCALE-NODE-READS.md).
 //
-// A feed page today costs the client ~5 keyed JSON-RPC reads PER POST (tally + repost + reply
-// count + poll + author profile) plus a per-card `Reposts.getEntries` scan — ~150 round-trips for
-// a 30-post page. The helpers below fold that whole loop into the runtime so ONE `state_call`
+// A keyed-read feed page costs the client several JSON-RPC reads PER POST (tally + reply count +
+// poll + author profile + the viewer's own vote) — ~150 round-trips for a 30-post page. The helpers
+// below fold that whole loop into the runtime so ONE `state_call`
 // returns a fully enriched, viewer-aware page, atomic at a single block. The DTOs are transport
 // only: codec + `TypeInfo`, NOT `MaxEncodedLen` (they carry unbounded post text); they are generic
 // over `AccountId` alone, so the API trait + impl live free of `T`. Author profile fields
@@ -1629,6 +1709,11 @@ pub struct QuotedSummary<AccountId> {
 }
 
 /// One enriched, viewer-aware post — everything a feed card renders, in a single shot.
+///
+/// ⚑ `repost_count` / `reposted` are VESTIGIAL (always `0` / `false` since spec 204, when reposting was
+/// retired). They are RETAINED, not removed: the deployed frontend bundle decodes this struct field-by-
+/// field, so dropping them would change the return encoding and break the live feed for every client
+/// that has not reloaded. Keeping them costs 5 bytes a post and keeps `MicroblogApi` at version 1.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct EnrichedPost<AccountId> {
     /// The post id.
@@ -1651,7 +1736,7 @@ pub struct EnrichedPost<AccountId> {
     pub up_count: u32,
     /// Down-vote count.
     pub down_count: u32,
-    /// Permanent repost count.
+    /// Vestigial — always `0` (reposting was retired in spec 204). Kept for wire compatibility.
     pub repost_count: u32,
     /// Direct-reply count.
     pub reply_count: u32,
@@ -1659,7 +1744,7 @@ pub struct EnrichedPost<AccountId> {
     pub is_poll: bool,
     /// Viewer overlay: the viewer's own vote (`None` if not voted / no viewer supplied).
     pub my_vote: Option<VoteDir>,
-    /// Viewer overlay: whether the viewer has reposted this post.
+    /// Vestigial — always `false` (reposting was retired in spec 204). Kept for wire compatibility.
     pub reposted: bool,
     /// Author display name (runtime-filled from pallet-profile; empty if unset).
     pub author_display_name: Vec<u8>,
@@ -1776,14 +1861,17 @@ pub struct PollView {
     pub total_votes: u32,
 }
 
-/// One post's viewer overlay, for the `viewer_states` batch read (filled-heart / active-repost).
+/// One post's viewer overlay, for the `viewer_states` batch read (the filled-heart state).
+///
+/// ⚑ `reposted` is VESTIGIAL (always `false` since spec 204) and RETAINED for the same wire-compatibility
+/// reason as [`EnrichedPost`]'s — the deployed frontend decodes this struct field-by-field.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct ViewerState {
     /// The queried post id.
     pub post_id: u64,
     /// The viewer's own vote on it (`None` if not voted).
     pub my_vote: Option<VoteDir>,
-    /// Whether the viewer has reposted it.
+    /// Vestigial — always `false` (reposting was retired in spec 204). Kept for wire compatibility.
     pub reposted: bool,
 }
 
@@ -1818,13 +1906,7 @@ impl<T: Config> Pallet<T> {
             quote,
         } = post;
         let tally = VoteTally::<T>::get(id);
-        let (my_vote, reposted) = match viewer {
-            Some(who) => (
-                Votes::<T>::get(id, who).map(|r| r.dir),
-                Reposts::<T>::contains_key(id, who),
-            ),
-            None => (None, false),
-        };
+        let my_vote = viewer.and_then(|who| Votes::<T>::get(id, who).map(|r| r.dir));
         // One-level quote resolution (the quoted author's profile is runtime-filled later).
         let quoted = quote.and_then(|qid| {
             Posts::<T>::get(qid).map(|qp| QuotedSummary {
@@ -1846,11 +1928,13 @@ impl<T: Config> Pallet<T> {
             down_weight: tally.down_weight,
             up_count: tally.up_count,
             down_count: tally.down_count,
-            repost_count: RepostCount::<T>::get(id),
+            // Vestigial since spec 204 (reposting retired) — the FIELDS stay on the wire so the deployed
+            // frontend keeps decoding, but there is no storage behind them any more.
+            repost_count: 0,
             reply_count: ReplyCount::<T>::get(id),
             is_poll: Polls::<T>::contains_key(id),
             my_vote,
-            reposted,
+            reposted: false,
             author_display_name: Vec::new(),
             author_avatar: Vec::new(),
             quoted,
@@ -1933,7 +2017,7 @@ impl<T: Config> Pallet<T> {
 
     /// Global "For-you" feed: top-level posts, newest-first, paged below the `before` cursor (a
     /// `TopLevelPosts` seq). Reads EXACTLY `limit` posts off the top-level spine — no reply over-scan.
-    /// `viewer` (when `Some`) stamps `my_vote`/`reposted` per post. (Author profiles are runtime-filled.)
+    /// `viewer` (when `Some`) stamps `my_vote` per post. (Author profiles are runtime-filled.)
     pub fn feed_page(
         before: Option<u64>,
         limit: u32,
@@ -2215,15 +2299,16 @@ impl<T: Config> Pallet<T> {
         PollVotes::<T>::get(host_id, &who).map(|r| r.option)
     }
 
-    /// The viewer's overlay (own vote + reposted) over a batch of post ids — the node-side replacement for
-    /// the client's per-card `Votes.get` + `Reposts.getEntries` scan. Bounded at [`MAX_VIEWER_IDS`] ids.
+    /// The viewer's own vote over a batch of post ids — the node-side replacement for the client's
+    /// per-card `Votes.get`. Bounded at [`MAX_VIEWER_IDS`] ids.
     pub fn viewer_states(who: T::AccountId, ids: Vec<u64>) -> Vec<ViewerState> {
         ids.into_iter()
             .take(MAX_VIEWER_IDS)
             .map(|post_id| ViewerState {
                 post_id,
                 my_vote: Votes::<T>::get(post_id, &who).map(|r| r.dir),
-                reposted: Reposts::<T>::contains_key(post_id, &who),
+                // Vestigial since spec 204 — see [`ViewerState`].
+                reposted: false,
             })
             .collect()
     }
@@ -2260,7 +2345,7 @@ sp_api::decl_runtime_apis! {
         AccountId: codec::Codec,
     {
         /// Global "For-you" feed: top-level posts, newest-first, paged below the `before` cursor
-        /// (`None` ⇒ from the head). `viewer` (when `Some`) stamps `my_vote`/`reposted` per post.
+        /// (`None` ⇒ from the head). `viewer` (when `Some`) stamps `my_vote` per post.
         fn feed_page(before: Option<u64>, limit: u32, viewer: Option<AccountId>) -> FeedPage<AccountId>;
         /// One author's top-level posts (the profile Posts tab), paged below `before_id` (a post id),
         /// same viewer semantics.
@@ -2306,7 +2391,7 @@ sp_api::decl_runtime_apis! {
         fn poll(host_id: u64) -> Option<PollView>;
         /// The viewer's own current choice in a poll (`None` if not voted / no poll).
         fn poll_choice(who: AccountId, host_id: u64) -> Option<u8>;
-        /// The viewer's overlay (own vote + reposted) over a batch of post ids.
+        /// The viewer's own vote over a batch of post ids.
         fn viewer_states(who: AccountId, ids: Vec<u64>) -> Vec<ViewerState>;
         /// The follow edges + exact counts for one account.
         fn follow_edges(who: AccountId) -> FollowEdges<AccountId>;

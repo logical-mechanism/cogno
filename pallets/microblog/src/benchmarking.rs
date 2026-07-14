@@ -222,20 +222,6 @@ mod benchmarks {
         Ok(())
     }
 
-    /// `repost` of a seeded post (the permanent amplification edge).
-    #[benchmark]
-    fn repost() -> Result<(), BenchmarkError> {
-        let caller: T::AccountId = whitelisted_caller();
-        T::IdentityGate::benchmark_set_allowed(&caller);
-        seed_post::<T>(&caller);
-
-        #[extrinsic_call]
-        _(RawOrigin::Signed(caller.clone()), 0u64);
-
-        assert_eq!(RepostCount::<T>::get(0u64), 1);
-        Ok(())
-    }
-
     /// `follow` a distinct target through the real gate.
     #[benchmark]
     fn follow() -> Result<(), BenchmarkError> {

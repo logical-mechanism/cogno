@@ -37,11 +37,13 @@ cogno-keyfile = { workspace = true }
 # `config.prometheus_registry()` (so chain-liveness alerts staying green can't mask a stale observer).
 substrate-prometheus-endpoint = { default-features = true, workspace = true }
 # Benchmark-only, and OPTIONAL on purpose. Both are used solely from `node/src/benchmarking.rs`, which
-# is itself `#[cfg(feature = "runtime-benchmarks")]`. Left non-optional they still land in the default
-# dependency graph, dragging 150 crates — including 18 strict `GPL-3.0-only` ones (the polkadot-*, xcm
-# and tracing-gum trees, pulled in via frame-benchmarking-cli -> cumulus-*) — into a binary this crate
-# licenses Apache-2.0. Gating them takes the shipped node to ZERO GPL-3.0-only crates; the `sc-*` stack
-# that remains is GPL-3.0-or-later WITH Classpath-exception-2.0, which permits exactly this linking.
+# is itself `#[cfg(feature = "runtime-benchmarks")]`. Enabling `runtime-benchmarks` adds 126 crates to
+# the graph — including 17 strict `GPL-3.0-only` ones (the polkadot-*, xcm and tracing-gum trees, pulled
+# in via frame-benchmarking-cli -> cumulus-*) — to a binary this crate licenses Apache-2.0. Gating them
+# keeps every one of those out of the shipped node. What remains is the `sc-*` stack
+# (GPL-3.0-or-later WITH Classpath-exception-2.0, which permits exactly this linking) plus
+# `pallet-skip-feeless-payment`, whose GPL-3.0-only metadata is an upstream slip contradicted by its own
+# Apache-2.0 source headers — see NOTICE.
 frame-benchmarking-cli = { default-features = true, optional = true, workspace = true }
 frame-metadata-hash-extension = { default-features = true, workspace = true }
 frame-system = { default-features = true, workspace = true }

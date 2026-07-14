@@ -91,7 +91,7 @@ check). Please make sure the relevant gates pass locally before opening a PR.
   each other's output.
 - **Pallet indices and `transaction_version` are on-wire contracts — never renumber.** Indices 6
   (Sudo, removed) and 12 (Anchor, removed) are permanently vacant; adding a pallet uses a new index.
-- **Spec-bump discipline.** Bump `spec_version` (currently **203**) *only* for encoding-affecting
+- **Spec-bump discipline.** Bump `spec_version` (currently **204**) *only* for encoding-affecting
   runtime changes (calls/storage/events/extensions); after a bump, regenerate the frontend's PAPI
   descriptors. Non-encoding changes (bounds, logging, docs, tests) must **not** bump it.
 - **Cardano is read exclusively through db-sync** via the `cogno-dbsync` crate, and its byte-identity

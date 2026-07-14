@@ -225,7 +225,7 @@ and synced first; there are no off-chain services to run — the node observes C
 ```
 cogno-chain/
 ├─ node/         # cogno-chain-node (Aura + GRANDPA + cardano-observer + read RPC)
-├─ runtime/      # cogno-chain-runtime (#[frame_support::runtime], spec 203 / tx 3)
+├─ runtime/      # cogno-chain-runtime (#[frame_support::runtime], spec 204 / tx 3)
 ├─ pallets/      # microblog, talk-stake, cogno-gate, governed-upgrade, validator-set,
 │                #   cardano-observer, profile, governance-fuel
 ├─ cli/          # cogno-chain-cli (all-Rust admin tool; typed RuntimeCall, keys by file)
@@ -266,7 +266,7 @@ never shift. A new pallet always takes a new index.
   npm deps, see [`ci/cip8-oracle/README.md`](ci/cip8-oracle/README.md). All four legs are gated in CI
   ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 - **Encoding discipline:** pallet indices and `transaction_version` are on-wire contracts. Bump
-  `spec_version` (currently 203) only for encoding-affecting changes, and regenerate PAPI descriptors
+  `spec_version` (currently 204) only for encoding-affecting changes, and regenerate PAPI descriptors
   afterward. See [docs/UPGRADES.md](docs/UPGRADES.md).
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) has the build/test matrix, the branch-per-unit +
   PR-into-`main` flow, commit conventions, and the gotchas that bite (live contract hash, nvm-vs-snap
@@ -275,6 +275,8 @@ never shift. A new pallet always takes a new index.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). Reused/reimplemented third-party code (the
-Polkadot SDK templates, the partner-chains consensus primitives, and the `substrate-validator-set`
-fork — all Apache-2.0) is attributed in [`NOTICE`](NOTICE).
+Licensed under the [Apache License, Version 2.0](LICENSE). Reused and reimplemented third-party code —
+the Polkadot SDK templates, the partner-chains consensus primitives, the `substrate-validator-set`
+fork, the Aiken stdlib compiled into the L1 script, and the fonts, icons and emoji artwork the frontend
+redistributes — is attributed in [`NOTICE`](NOTICE), which also sets out the licensing of the binaries
+this project builds.
