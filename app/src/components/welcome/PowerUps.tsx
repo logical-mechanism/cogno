@@ -268,10 +268,7 @@ function VaultCard({
 
   return (
     <div className={styles.card}>
-      <div className={styles.cardTitleRow}>
-        <h2 className={styles.cardTitle}>Lock ADA to post</h2>
-        <span className={styles.requiredChip}>Required to post</span>
-      </div>
+      <h2 className={styles.cardTitle}>Lock ADA to post</h2>
       <p className={styles.cardBody}>
         Lock 100 ADA in the vault to get posting capacity. You can unlock it anytime.
       </p>
@@ -369,10 +366,7 @@ function StakeCard({
 
   return (
     <div className={styles.card}>
-      <div className={styles.cardTitleRow}>
-        <h2 className={styles.cardTitle}>Add voting power</h2>
-        <span className={styles.requiredChip}>Required</span>
-      </div>
+      <h2 className={styles.cardTitle}>Add voting power</h2>
       <p className={styles.cardBody}>
         Prove your wallet&apos;s stake so your votes carry weight. This is required to finish setting up.
       </p>
