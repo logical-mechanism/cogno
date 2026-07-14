@@ -1,0 +1,88 @@
+name: maintenance-canary
+
+# One job: notice that you left the site in maintenance mode and forgot about it.
+#
+# This looks like a nice-to-have and is not, because of a gap you should know about: NOTHING in this
+# project watches the website. Prometheus scrapes exactly one target — the node's metrics port, on the
+# validator, which is a different box behind NAT (deploy/monitoring/prometheus.yml). There is no blackbox
+# exporter, no HTTP probe, no uptime monitor, and Alertmanager's receiver has every notifier commented out
+# ("AS SHIPPED THIS PAGES NOBODY", it says so itself). The app is `robots: noindex`, so there is no search
+# console signal either. If the site is dark, the ONLY thing that finds out is a human loading it.
+#
+# And maintenance mode makes that worse before it makes it better: deploy-app.yml's smoke check used to be
+# the one automated thing that would go red if the site stopped serving, and it now deliberately SKIPS while
+# a window is open. So this file puts a detector back. It is fifteen lines and it is the only "you left the
+# oven on" alarm you are going to get.
+#
+# It fails — loudly, and GitHub emails the repo owner on a failed scheduled run — if the public origin is
+# still answering with the maintenance page. A PLANNED window will therefore email you about once an hour
+# while it is open. That is not noise to be tuned out; that is the alarm working, and it is exactly the
+# signal that becomes valuable at 3am when the window was supposed to end at midnight. If a window is going
+# to be genuinely long, disable this workflow for the duration rather than learning to ignore it.
+#
+# It does NOT alarm on a site that is merely unreachable: it cannot tell a dead droplet from a GitHub runner
+# egress blip, and an alarm that cries wolf is worse than no alarm. This watches for one thing only.
+#
+# Two things GitHub will do to you here: scheduled workflows only run from the DEFAULT branch (so this does
+# nothing until it is merged), and GitHub disables schedules in a repository with no activity for 60 days —
+# which, on a quiet repo, is the day this silently stops protecting you.
+
+on:
+  schedule:
+    # Hourly, at :17 — off the hour on purpose. Everyone's cron lands on :00 and GitHub's scheduler queues
+    # get congested there, delaying runs by many minutes.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: is the site still in maintenance?
+        env:
+          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
+        run: |
+          if [ -z "${NEXT_PUBLIC_WS_URL:-}" ]; then
+            echo "::warning::vars.NEXT_PUBLIC_WS_URL is unset — nothing to probe."
+            exit 0
+          fi
+          case "$NEXT_PUBLIC_WS_URL" in
+            wss://?*) ;;
+            *) echo "::warning::vars.NEXT_PUBLIC_WS_URL is not a wss:// URL — nothing to probe."; exit 0 ;;
+          esac
+          origin="$(printf '%s' "$NEXT_PUBLIC_WS_URL" | sed -E 's#^wss://([^/]+).*#https://\1#')"
+
+          # NO --retry. The maintenance page sets `Retry-After: 120`, and curl honours a server-sent Retry-After
+          # in preference to --retry-delay — so retries here would sleep two minutes each, against the very
+          # response this workflow exists to detect. And -o to a REAL FILE, never /dev/null: curl truncates the
+          # output sink to rewind for a retry, /dev/null cannot be truncated, and the result is a write error
+          # with -w printing nothing at all.
+          #
+          # `|| true`, NOT `|| echo 000`: curl's -w already prints `000` itself on a transport failure, so
+          # `|| echo 000` CONCATENATES into `000000` — which matches nothing, silently killing the "no verdict"
+          # branch below and logging a green verdict this workflow never actually observed.
+          body="$RUNNER_TEMP/b"; hdr="$RUNNER_TEMP/h"
+          code=$(curl -sS --max-time 20 -D "$hdr" -o "$body" -w '%{http_code}' "$origin/" 2>/dev/null || true)
+
+          if [ "$code" = 503 ] && grep -qi '^x-cogno-maintenance:' "$hdr"; then
+            echo "::error::THE SITE IS IN MAINTENANCE MODE AND IS NOT SERVING USERS."
+            echo "::error::  $origin/ -> 503 + X-Cogno-Maintenance"
+            echo "::error::If that is intentional, ignore this (or disable this workflow for the window)."
+            echo "::error::If you forgot: Actions -> maintenance -> Run workflow -> state: off"
+            echo "::error::Armed at (from the droplet):"
+            echo "::error::  ssh <deploy-user>@<droplet> 'cat /var/www/cogno-maintenance/ON'"
+            exit 1
+          fi
+
+          if [ "$code" = 000 ]; then
+            echo "::warning::could not reach $origin/ — no verdict. This workflow only watches for maintenance"
+            echo "::warning::mode; it deliberately does not alarm on unreachability (it cannot tell a dead"
+            echo "::warning::droplet from a runner network blip, and a false alarm here would get it muted)."
+            exit 0
+          fi
+
+          echo "not in maintenance: $origin/ -> HTTP $code"

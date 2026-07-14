@@ -21,6 +21,12 @@ name: deploy-node
 # keys and faces nobody.)
 #
 # ── This takes the site down for a few seconds, and can take it down for good ──────────────────────
+# Consider parking the site behind the maintenance page first — Actions -> maintenance -> state: on —
+# so visitors get "cogno is down for maintenance" instead of a blank app for the duration. It does not
+# interfere with this workflow: maintenance mode deliberately leaves /rpc reachable, so the public
+# system_health probe at the end of this file still passes with a window open. (deploy/README.md,
+# "Maintenance mode".)
+#
 # Restarting cogno-relay drops the RPC that https://cogno.forum depends on for every read. A binary that
 # will not exec, or panics on boot, leaves the relay dead and the app blank. So the deploy is staged: CI
 # rsyncs the binary to a directory the unprivileged deploy user owns, and the only root-privileged step

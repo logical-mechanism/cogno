@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<!--
+  cogno-maintenance-page-v1
+
+  The charset declaration above is FIRST, before even this comment, and it has to be: a browser only scans
+  the first 1024 bytes for one, and nginx serves `text/html` with no charset parameter. Push it past that
+  window — which the comment you are reading, plus the base64 favicon below, would comfortably do — and a UA
+  is entitled to fall back to windows-1252 and render the em dash in <title> as mojibake.
+
+  The page nginx serves, under a 503, while /var/www/cogno-maintenance/ON exists. Deployed by
+  .github/workflows/maintenance.yml; wired up by deploy/nginx/maintenance.conf.
+
+  That first line is not a comment, it is an API: maintenance.yml's post-arm check and deploy-app.yml's
+  smoke-check skip both grep the response body for `cogno-maintenance-page-v1`. They also require the
+  503 status and the X-Cogno-Maintenance header — three signals, because each alone can be true for the
+  wrong reason. In particular the header is set by nginx even when THIS FILE IS MISSING (add_header fires
+  on @maintenance's config regardless of whether try_files found anything), so the body marker is the only
+  thing that proves the page actually rendered. Don't remove it, and don't let it drift.
+
+  THIS PAGE FETCHES NOTHING, and it has to be that way. While the flag is set, every app URL 503s —
+  including /favicon.ico and /icon.png — and an app deploy during the window rewrites /var/www/cogno with
+  `rsync --delete`, so any content-hashed chunk or font URL this page might have referenced is gone
+  anyway. A maintenance page that depends on a second request is a maintenance page that renders broken on
+  the day you need it. So: no stylesheet, no font file, no image URL. The big 😭 is a text glyph from the
+  visitor's own system emoji font, and the favicon is a base64 PNG inlined in the markup below.
+
+  Which the CSP in security-headers.conf permits, exactly: `script-src 'self' 'unsafe-inline'` and
+  `style-src 'self' 'unsafe-inline'` allow the inline <style>/<script>, and `img-src … data:` allows the
+  favicon. But `font-src 'self'` does NOT allow a data: webfont — so the type below is a system stack, not
+  the app's Inter Tight. It is meant to look like a close cousin of the app, not a pixel match.
+-->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cogno — down for maintenance</title>
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex,nofollow">
+<!-- The app's own noindex lives in the app's document head, which this page does not inherit — it is a
+     different document. Google will not index a 503 body anyway; this is the belt to that pair of braces. -->
+<!-- The 😭 favicon, inlined as a base64 PNG. A data: URI SVG with the emoji as <text> would be a
+     third the size, but it would depend on the renderer having an emoji font AND on the data: URL's
+     charset handling for the percent-encoded codepoint. A PNG has neither dependency: it is pixels.
+     `img-src 'self' data:` in the CSP is what permits it. Same glyph as the app's own tab icon
+     (app/src/app/icon.png), rasterized from Noto Color Emoji. -->
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAIdElEQVRYw+WXe4xcVR3HP79z7r0zOzuzj+6Ddmu3bKGBtkGwEYNQIxCNtb6ASrBEqELKqxoIBNL4SPAR0RiVWIkQbEWCNgohNjwKQfhDhFggRUAstNQ2dNml292d3ZnZmbmv8/OPO9ttK4jGf0w8yck5N/f87u/7e31/58L/+5B/59D0dwaInpuS/EX9RcnZQTwZEisLsJIDING6Oh0h0b9rMxkufnlNvfLNB+j87uH/DkB1yyAaOms6guUE5nPim48TyKniSRdGgiPSipJqpImOE7u/aqQ7iNxDOpEckIJxxasO/GcAar9YDN05tBYPSWA2St6ukzYzIDkDVsCAyFHSCqqAUzQBQqfacG9oM71bo3SreGZCG47ShgPvDWD67gHi8QnJLxz4GDn7fWm3K027BV8QA5jWepykugwITtEUNFZ0Jk11Jnlcw3STacu9kkxO03nN2+8OoLp1EcHZK4l2vnSR5L3NptMbMAWL+JnVs1OMZJLv4AEcram4SNGZFFdJdmkz3SCe2aVhROnK4SM6zeymsmUh4gfEO19eJTn7Y9PpDdh2SzVyDB+OSQDxBQnk2PX4vS+EThkeS2ikYEsepuStlJzd7KL4RHz/GA8cAWD8AE3TXjxzqyl6i2NPePSZGt/4yRi33zNBeSbFHK88OHqfAbSBMDyW8L07x7l18xhP/6WOa7NIwZ6Ndbc0RvYHk3cUjgVQ2boYrEGMXCx5c26SM2zbUWHLA2WWnBhwzfoe+k/wwcuU4QMeYFvTA2m9U08YGgq49kvzKJUsP713kh3P1pB2i8kH6/zu7nNMUKD56xVzAMQKGibdeOZS227trj0hjz9T47K13Vy/oZehoYBa0xE5xXiCiIBka7bP8sL4QiNSqnXHKUvzbPpqH6vPK3L/YxX2vR1ji36XeN668ovjdmbyDWjZgYigVk7Dl9PJGaJEuXB1B6vPK/LUMzWeerpGeSqmr99n9Sc6OfusdqzNMlA1kw8jx5NP1njiyQqTkxGdHT7nrypx0ZpO1EEzBsl7mJx/bnGpWajq3gTwqvcsBs8iqTtTfFNSAx85s4AEwvYnKmzdNkHTn0faOcTrL4/wyqtj3Hh9H+d9tNRSnsXykUer3LVlnCjfR+6EQQ6ODvP6PaM0GvO48pLurCwjkMBfZLxgBcKbEGNcHNL+heVg5JSs3ARjhVThwHBEcvIqeq+/j8rG35O76ocsOqmLt96Ks5pvDeeUicmE96/spmfjD1hw84M0r/kN8WmrKVcUbYUICxLYPNYsNYHP5J09eMYPqN75gm+62vqxc/Xt+7D+sgXsLt9Mo3sV6VRC57LlfO2cQXqC6aP1Y4xw+aXd1FyBTRODaK6D+H0fYODym/l87w1YW8OlLd6wAmIW5Ob1UB0exYjxMEFgEdqQOZcCtBVzSKGEOgeqhKlHvhhQaDet+CuqGZR8m6EtL6hmZ3Epzm/Dy/uZTa3vigioK/mLlmFciAeKOkUgPZ4iY7XE6mfdRkFVSKtNwpkpkhmDpjY7a1NsQYlKhsR5BFkkiZxP4myLKmeT1qHqknh0HyoGzyURrtyMvWLXNC3wtGbiMgBZrSouNsTlMzB9l5EfPBXJdWYfjaZxU3sID+8iDH1y7Vl9RxqQqDfL1hmOxIHT8ebIAfCLeMb6mJPaU5rJAU0UOQJASZ0lVR9v1t3BfCqLbqQZ16mNTJMkU1ktex7F0odJB88nOdiLqkMkMyBx9ohBKGgYOU2iA2kCXfOX4MX1Cr7pBtWXiF1KqhYvayiJWGICPEDEcPjQKLduvpro0D6iKDoSfwGCXI5c7yAjl/yc3mUrMKQkeERpkGl2mfVpvV7WVP8mVgjWvYbXfe0ktV91oqovEOlBjfVEfEGdEomHw2JEQSCKQsZGD2KrZbKePDfCZp2pGMJmo5V0SqKW0PlH2rWrR7hG4yWUvSIGSOeaEc10P4l7TBsOEoVUiZIAp14rAbMMFnMUBbdqdvbZiGlRdFZtibY84BQSJSlPOxeGD+JRPaYZ/W79fih4qSbul1pPRjVUSCFKfRQ7d+kQg6ohTSFNFeeymaZK6jI9R1dRiiVKPTRVkukZkqnpF4AHBaH3hnSuF1wBrA1nCA+NvZAbmP8zfL6lnudF1seJbV36FPED+ns8TlrkM7AwR0dX5t7qVMxbIxH7p4SaZECMzAIIcM2Q+O3DZY2T21zKaNDRDUzOAQDo3DDG5B0FF1cn7xBJTxbTtj4pinHWkrZC0FWybLquj+V94Bd8TKshuVSJGwl7D5W4RdtINXOtwxDOJCQjw3WdiW9T5GHrQffVk/98IQGYd90Mfyp+ZnqbXHzbH+pn7Xyu+SF8GyCSAfB9Q39/gO9ZXKwkTUfSdLgYfGvoP6GNIO+DKiLgVPhzZTkPywU7bhp84L6H229Ier+oxySvd/TDsh11Ns2/d5E15vYVJT19QR5O8y2VWMmZjBnLYQfzvREQg7b4VTJ2o5wUSfHJ2ywJHYbfdmzEddrVwH072z551bLn6/t2vxuAFll5Bu1JMIWag5JApy90+sp42MPXZ77NZ/2HWGvupyB1UGi4HNu5mMfdBXS0D1CwSqNF7E4sKO2C9gLBv7yWL3u0PksuZxiR7ad3mcGiB69VHeUIEpdZVaDW/NHkuj0fbP7RU4d71T8jvmn+9lOWdPcUBguOF8uON+tZo8qaj44BFwLPIsLuNYV39sDuNQWWP1JD0VcUc8sbNfcVK5w6FWl7q6E1DOn+kPy9e+pD21aOP6Eq6P6uQa1oce3eanzFSEOWToba1lJeR3UvcBciz8/qeM8/oyUP1cFrExfPdHhGBn2hD8GgTIAeVJgQRHd/qh2AxdsruDQV6wVdRhgMDL0ioMhhUT1IGk1hrO7+dMf/3t/xPwDhVCGerEoxdgAAAABJRU5ErkJggg==">
+
+<!-- Match the theme the visitor already chose in the app. Same storage key ('cg-theme'), same values, and
+     the same dark default as app/src/app/layout.tsx's boot script — so someone who set light mode does not
+     get flashbanged by an outage page. Runs before first paint, like the app's does. -->
+<script>(function(){try{var t=localStorage.getItem('cg-theme');if(t!=='light'&&t!=='dark')t='dark';document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='dark';}})();</script>
+
+<style>
+  /* Colors lifted from app/src/styles/tokens.css so this reads as the same product. If the app's palette
+     ever moves, this is a copy and will not follow it — which is fine, and the reason it is only six values. */
+  :root, [data-theme="dark"] {
+    --bg: #000000;
+    --text: #e7e9ea;
+    --text-secondary: #71767b;
+    --border: #2f3336;
+    --surface: #16181c;
+  }
+  [data-theme="light"] {
+    --bg: #ffffff;
+    --text: #0f1419;
+    --text-secondary: #536471;
+    --border: #eff3f4;
+    --surface: #f7f9f9;
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+
+  html, body { height: 100%; }
+
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  main {
+    width: 100%;
+    max-width: 420px;
+    padding: 40px 32px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--surface);
+    text-align: center;
+  }
+
+  .face {
+    font-size: 56px;
+    line-height: 1;
+    /* An emoji font stack, so the glyph is the real colour emoji rather than a monochrome fallback box. */
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  }
+
+  h1 {
+    margin-top: 20px;
+    font-size: 23px;
+    line-height: 1.25;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  p {
+    margin-top: 10px;
+    color: var(--text-secondary);
+    text-wrap: balance;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    main { animation: rise 220ms ease-out both; }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: none; }
+    }
+  }
+</style>
+</head>
+<body>
+  <main>
+    <div class="face" role="img" aria-label="Loudly crying face">&#128557;</div>
+    <h1>cogno is down for maintenance</h1>
+    <p>We&rsquo;re working on it. Check back shortly.</p>
+  </main>
+</body>
+</html>

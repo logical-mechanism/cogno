@@ -1,0 +1,386 @@
+name: maintenance
+
+# Put https://cogno.forum behind a "down for maintenance" page, and take it back out — from the Actions
+# tab, without SSHing into the droplet. This is the thing you run BEFORE a node upgrade, an app deploy you
+# want to land atomically, or anything else where a visitor arriving mid-change would see a broken site.
+#
+#   Actions -> maintenance -> Run workflow -> state: on   ... do the work ...   -> state: off
+#
+# ── How it works (30 seconds) ─────────────────────────────────────────────────────────────────────
+# The switch is ONE FILE on the droplet: /var/www/cogno-maintenance/ON. nginx stats it on every request
+# (deploy/nginx/maintenance.conf) and answers 503 with deploy/maintenance/index.html while it exists. No
+# reload, no restart, no root, no rebuild — and the node keeps running underneath, so `/rpc` stays up for
+# the whole window (deliberately: see the carve-out comment in cogno.conf, and step 6 below).
+#
+# The toggle is a single `rsync --delete` of a staged directory, and NOT an `ssh touch`/`ssh rm`. `on` stages
+# {index.html, ON}; `off` stages {index.html} and lets `--delete` remove the flag. One operation, idempotent,
+# no remote shell command anywhere in this workflow. That is on purpose: rsync is the only one of the two
+# primitives that survives a key jailed behind a forced `command="rrsync -wo <path>"` in authorized_keys —
+# rrsync cannot touch or rm. (deploy/README.md floats that hardening for the APP key, jailed to
+# /var/www/cogno. Note it would NOT cover this workflow as written: /var/www/cogno-maintenance is outside
+# that root, so a maintenance key would need its own jail. Keeping the toggle shell-free is what leaves that
+# door open at all.)
+#
+# ── The failure this workflow exists to prevent ───────────────────────────────────────────────────
+# Not "the site stays up" — that is merely annoying. The bad one is: you click `on`, it reports success,
+# and the site is STILL LIVE (nginx was never given maintenance.conf; or the directory mode is 0750, so
+# nginx's stat fails and the guard silently evaluates false). You now start tearing down the node with
+# users on the site. So `on` does not trust itself: it re-fetches the origin over HTTPS, requires the 503
+# AND the marker header AND the marker in the body, and if it cannot see all three it REMOVES THE FLAG IT
+# JUST WROTE and fails loudly. Both paths end in the state the verifier actually observed, never in a state
+# it merely intended.
+#
+# ── One-time server setup ─────────────────────────────────────────────────────────────────────────
+# Until these two exist on the droplet, the first `on` run fails (loudly, changing nothing):
+#   sudo install -d -o cogno -g cogno -m 0755 /var/www/cogno-maintenance
+#   sudo install -m 0644 deploy/nginx/maintenance.conf /etc/nginx/maintenance.conf
+#   # + the `include` lines in cogno.conf: cp it over, `nginx -t && systemctl reload nginx`
+# See "Maintenance mode" in deploy/README.md.
+#
+# ── Secrets: the same four as deploy-app.yml / deploy-node.yml. No new ones, and no new sudo. ──────
+#   secrets.DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY / DEPLOY_KNOWN_HOSTS
+#   vars.NEXT_PUBLIC_WS_URL     required here — it is where the public origin is derived from
+#
+# NOTE: `workflow_dispatch` only lists workflows that exist on the DEFAULT branch. You will not see a "Run
+# workflow" button for this until it is merged to main — that is GitHub, not a bug here. And a dispatch runs
+# the ref you pick, so it rsyncs THAT ref's maintenance page: always dispatch from `main`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: 'on = take the site down for maintenance. off = bring it back.'
+        required: true
+        type: choice
+        # Defaults to the site's NORMAL state, so a mis-click on "Run workflow" without reading cannot take
+        # a live site down. `off` against an already-off site is a no-op that re-runs the health checks.
+        default: 'off'
+        options:
+          - 'off'
+          - 'on'
+      force:
+        description: 'off only — lift WITHOUT verifying. For when the verifier itself is what is broken (expired cert, runner egress, DNS).'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Serialize maintenance runs against each other, and NOT against deploy-app / deploy-node. Sharing one
+# group across all three droplet workflows was tempting — it would close the race where an app deploy's
+# mid-flight `rsync --delete` is probed by this workflow's health checks — but the cost is unacceptable:
+# an EMERGENCY `maintenance on` would queue behind a running deploy-node, whose cold build takes up to two
+# hours. You must always be able to take the site down NOW. The race it would have closed is handled where
+# it actually matters instead: `off` never re-arms on a failed health probe (it only warns), so a transiently
+# half-synced docroot cannot flip maintenance back on behind your back.
+concurrency:
+  group: maintenance
+  cancel-in-progress: false
+
+jobs:
+  toggle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: resolve the target
+        env:
+          STATE: ${{ inputs.state }}
+          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
+        run: |
+          # An unrecognized state must never fall through into a branch that silently does nothing — or,
+          # worse, into the wrong one. `on`/`off` are also YAML booleans, so they can arrive quoted oddly.
+          case "$STATE" in
+            on|off) ;;
+            *) echo "::error::unknown state '$STATE' (expected 'on' or 'off')"; exit 1 ;;
+          esac
+          if [ -z "${NEXT_PUBLIC_WS_URL:-}" ]; then
+            echo "::error::vars.NEXT_PUBLIC_WS_URL is unset. It is where this workflow derives the public"
+            echo "::error::origin from, and without it nothing here can verify that the switch took effect —"
+            echo "::error::which is the only thing standing between you and a site you believe is dark."
+            exit 1
+          fi
+          # Assert the shape before trusting sed with it — the same guard deploy-app.yml applies. A non-matching
+          # input passes through sed UNCHANGED, so 'ws://host/rpc' would silently become the HOST_NAME, and every
+          # probe below would fail against it. On the `on` path that means arming the flag, failing to see it,
+          # and DISARMING the site while blaming the droplet for what is actually a typo in a repo variable.
+          case "$NEXT_PUBLIC_WS_URL" in
+            wss://?*) ;;
+            *) echo "::error::vars.NEXT_PUBLIC_WS_URL must be a wss:// URL (got '$NEXT_PUBLIC_WS_URL')"; exit 1 ;;
+          esac
+          # Strip the scheme, the path, AND any :port. The port has to go: curl's --resolve syntax is
+          # HOST:PORT:ADDR, so a HOST_NAME of 'cogno.forum:443' yields 'cogno.forum:443:443:<ip>' and curl
+          # rejects the whole entry ("Couldn't parse CURLOPT_RESOLVE entry"). wss://host:443/rpc is a shape
+          # deploy-app.yml would happily build and ship, so this is reachable, not hypothetical.
+          host="$(printf '%s' "$NEXT_PUBLIC_WS_URL" | sed -E 's#^wss://([^/:]+).*#\1#')"
+          echo "HOST_NAME=$host" >> "$GITHUB_ENV"
+          echo "state=$STATE  origin=https://$host"
+
+      - name: authorize ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: throw the switch
+        env:
+          STATE: ${{ inputs.state }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # Build BOTH stages. `off` is staged even on an `on` run, because the verify step needs it to
+          # disarm if it cannot confirm the flag took effect.
+          on_dir="$RUNNER_TEMP/stage-on"; off_dir="$RUNNER_TEMP/stage-off"
+          install -d "$on_dir" "$off_dir"
+          install -m 0644 deploy/maintenance/index.html "$on_dir/index.html"
+          install -m 0644 deploy/maintenance/index.html "$off_dir/index.html"
+
+          # 0644, because nginx's worker really does open() this one (unlike the flag, which it only stats).
+          # And it must be non-empty: the stage is rsynced with --delete, so an empty/absent page would not
+          # just render badly — it would DELETE the live page from the droplet, and a set flag with no page
+          # behind it serves nginx's built-in 503 instead of ours.
+          test -s "$on_dir/index.html" || { echo "::error::deploy/maintenance/index.html is missing or empty"; exit 1; }
+
+          # Stamp the flag with who armed it and when. The file's CONTENTS are never read by nginx (`-f` is
+          # a stat), so this costs nothing — but it means the box itself records the answer to "how long has
+          # this been on, and who did it", which is the question you will actually have.
+          printf 'armed %s by %s (run %s/actions/runs/%s)\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_ACTOR" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
+            > "$on_dir/ON"
+
+          [ "$STATE" = on ] && src="$on_dir" || src="$off_dir"
+          echo "STAGE_OFF=$off_dir" >> "$GITHUB_ENV"
+
+          # ONE rsync, and --delete is the load-bearing flag: on `off` it is what removes ON. (On `on` there
+          # is nothing to delete — the stage is a strict superset of what is there.) No remote shell command
+          # anywhere in this workflow, which is what keeps it compatible with an rrsync-jailed deploy key.
+          if ! rsync -az --delete \
+                 -e 'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' \
+                 "$src/" "$DEPLOY_USER@$DEPLOY_HOST:/var/www/cogno-maintenance/"; then
+            echo "::error::could not write /var/www/cogno-maintenance/ on the droplet — NOTHING WAS CHANGED."
+            echo "::error::/var/www is root-owned, so the deploy user cannot create that directory itself."
+            echo "::error::If this is the first run, do the one-time setup (deploy/README.md, 'Maintenance mode'):"
+            echo "::error::  sudo install -d -o <deploy-user> -g <deploy-user> -m 0755 /var/www/cogno-maintenance"
+            echo "::error::  sudo install -m 0644 deploy/nginx/maintenance.conf /etc/nginx/maintenance.conf"
+            echo "::error::  # then copy deploy/nginx/cogno.conf over and: nginx -t && systemctl reload nginx"
+            exit 1
+          fi
+          echo "switch thrown: state=$STATE"
+
+      - name: verify — the site must actually be in the state we just asked for
+        env:
+          STATE: ${{ inputs.state }}
+          FORCE: ${{ inputs.force }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          hdr="$RUNNER_TEMP/h"; body="$RUNNER_TEMP/b"
+
+          # Pin the probe to the box we just WROTE to, by IP, while still sending the real hostname for SNI
+          # and certificate validation. Writes go to secrets.DEPLOY_HOST; a naive check would resolve the
+          # origin through DNS and could therefore verify a DIFFERENT machine — behind a CDN, a blue/green
+          # swap, or after a DNS mistake. Two shapes, and the second is the dangerous one: arm box A, probe
+          # box B, see 200, and conclude maintenance is broken while A is dark; or see a cached 503 from an
+          # edge and report success while the origin is live and serving users.
+          resolve=()
+          case "$DEPLOY_HOST" in
+            ""|*[!0-9.]*)
+              echo "::warning::secrets.DEPLOY_HOST is not an IPv4 literal, so the checks below go through DNS"
+              echo "::warning::rather than being pinned to the box that was just written to." ;;
+            *) resolve=(--resolve "$HOST_NAME:443:$DEPLOY_HOST") ;;
+          esac
+
+          # Three curl details here, every one of which was a real bug before it was a comment.
+          #
+          # `-o "$body"` — a REAL FILE, never /dev/null. curl classifies HTTP 503 as retryable, and to rewind
+          # for a retry it TRUNCATES the output sink, which /dev/null cannot do; curl then dies with
+          # CURLE_WRITE_ERROR (23) and `-w` prints nothing at all. Every check in this file keys on seeing a
+          # 503, so /dev/null would make it blind to the one status it exists to detect.
+          #
+          # NO `--retry` — and this is the reason the point above is now moot rather than load-bearing. The
+          # maintenance page sets `Retry-After: 120` (cogno.conf), and curl OBEYS a server-sent Retry-After
+          # IN PREFERENCE TO `--retry-delay`. Verified on curl 8.5.0 (the runner's): `--retry 2 --retry-delay 1`
+          # against a 503 carrying `Retry-After: 6` slept 12s, not 2s. At `--retry 3` against our real page
+          # that is SIX MINUTES on a single probe of a correctly-parked site. Retries happen in the shell loop
+          # below instead, on our terms.
+          #
+          # `|| true`, NOT `|| echo 000`. curl's `-w '%{http_code}'` ALREADY prints `000` itself on a transport
+          # failure — so `|| echo 000` CONCATENATES and yields `000000`. Worse, when the transfer dies AFTER the
+          # headers arrive curl prints the real code first, giving `503000`, which compares equal to nothing.
+          # That was a live footgun: a correctly-parked site whose body stalled would fail is_maintenance, and
+          # the arm path below would then DISARM THE SITE IT JUST PARKED and blame the droplet for it.
+          probe() {  # $1 = path. echoes the status code; leaves headers in $hdr and body in $body.
+            curl -sS --max-time 20 "${resolve[@]}" \
+                 -D "$hdr" -o "$body" -w '%{http_code}' "https://$HOST_NAME$1" 2>/dev/null || true
+          }
+
+          # Three signals, all required. Status alone is ambiguous (nginx emits a bare 503 of its own when the
+          # page is missing, and so can an overloaded upstream). The header alone is worse than it looks: nginx
+          # sets it from @maintenance's config even when try_files found no page, so status+header can BOTH be
+          # true while the page is broken. Only the body marker proves our page actually rendered.
+          #
+          # The body grep works on the raw bytes because no probe here advertises Accept-Encoding. `gzip on` in
+          # cogno.conf always covers text/html, so adding `--compressed` to any of these would gzip the body and
+          # break the marker — on a CORRECTLY parked site, which the arm path would then disarm. Don't.
+          is_maintenance() {
+            [ "$1" = 503 ] \
+              && grep -qi '^x-cogno-maintenance:' "$hdr" \
+              && grep -qF 'cogno-maintenance-page-v1' "$body"
+          }
+
+          # Re-probe before concluding anything, because both conclusions are destructive: a failed arm-check
+          # DISARMS the site, and a failed lift-check fails the run red. One transport hiccup — a reset, a
+          # stalled body on a loaded droplet — must not be enough to undo correct work. Fixed sleeps, because
+          # curl's own --retry is unusable here (see above).
+          settled() {  # $1 = predicate. Retries it, leaving the final $code/$hdr/$body in place.
+            for i in 1 2 3; do
+              code=$(probe /)
+              "$1" "$code" && return 0
+              [ "$i" -lt 3 ] && sleep 3
+            done
+            return 1
+          }
+          is_200() { [ "$1" = 200 ]; }
+
+          # Deliberately NOT interpolating $DEPLOY_USER / $DEPLOY_HOST into any guidance below. They are
+          # `secrets.*`, and GitHub's log masker replaces every occurrence of a secret's VALUE with `***` —
+          # so the single most important line in this file would render as `ssh ***@*** 'rm -f …'`. (And if
+          # DEPLOY_USER is the literal string `cogno`, the masker eats it everywhere, including inside
+          # `/var/www/cogno-maintenance/ON`. Both are hostnames, not credentials — moving them to `vars.`
+          # would make these logs readable. The SSH key is the secret.)
+          hatch() {
+            echo "::error::MANUAL OVERRIDE — this takes the site out of maintenance without Actions:"
+            echo "::error::  ssh <deploy-user>@<droplet> 'rm -f /var/www/cogno-maintenance/ON'"
+            echo "::error::It takes effect on the very next request; there is nothing to reload."
+          }
+
+          if [ "$STATE" = on ]; then
+            if settled is_maintenance; then
+              echo "MAINTENANCE IS ON. https://$HOST_NAME/ -> 503 + the maintenance page."
+            else
+              # Do not leave a flag we could not confirm. An armed-but-inert flag is a landmine: the next
+              # `nginx -t && systemctl reload` — including the one certbot runs unattended, twice a day —
+              # would take the site dark hours later, from a flag nobody remembers writing, with no workflow
+              # run to attribute it to.
+              rsync -az --delete -e 'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes' \
+                "$STAGE_OFF/" "$DEPLOY_USER@$DEPLOY_HOST:/var/www/cogno-maintenance/" \
+                && disarmed=yes || disarmed=no
+              echo "::error::THE FLAG WAS WRITTEN BUT THE SITE IS NOT IN MAINTENANCE."
+              echo "::error::  https://$HOST_NAME/ -> HTTP $code (wanted 503 + X-Cogno-Maintenance + the page marker)"
+              echo "::error::The site is STILL SERVING USERS. Do not start work behind this."
+              echo "::error::Almost certainly: nginx on the droplet has never been given the switch. The flag is"
+              echo "::error::just a file — without the config that reads it, writing it does nothing. Install it:"
+              echo "::error::  sudo install -m 0644 deploy/nginx/maintenance.conf /etc/nginx/maintenance.conf"
+              echo "::error::  # cogno.conf ALSO gained the include lines. Copy it over, but re-apply your domain"
+              echo "::error::  # first — the committed copy is a template and says cogno.example.io:"
+              echo "::error::  sudo cp deploy/nginx/cogno.conf /etc/nginx/sites-available/cogno.conf"
+              echo "::error::  sudo sed -i 's/cogno.example.io/<your-domain>/g' /etc/nginx/sites-available/cogno.conf"
+              echo "::error::  sudo nginx -t && sudo systemctl reload nginx"
+              echo "::error::(A 200 here means the guard never fired. A 503 WITHOUT the page marker means the guard"
+              echo "::error::fired but the page did not render — check /var/www/cogno-maintenance/index.html.)"
+              if [ "$disarmed" = yes ]; then
+                echo "::error::The flag has been REMOVED again, so you are back to a clean, unarmed state."
+              else
+                echo "::error::WARNING: the flag could NOT be removed again — it is still on disk and INERT."
+                echo "::error::It will take the site down the moment nginx is next reloaded. Remove it now:"
+                hatch
+              fi
+              exit 1
+            fi
+
+            # The carve-out, asserted rather than assumed: /rpc must survive a window, or `cogno-chain-cli`
+            # and deploy-node's own final health check both break. A warning, not a failure — the relay being
+            # down is a real thing to know, but it is not a reason to refuse to take the site down.
+            rpc=$(curl -sS -m 10 "${resolve[@]}" -H 'Content-Type: application/json' \
+                    -d '{"jsonrpc":"2.0","id":1,"method":"system_health","params":[]}' \
+                    "https://$HOST_NAME/rpc" 2>/dev/null || true)
+            case "$rpc" in
+              *'"peers"'*) echo "RPC is still up, as intended: /rpc -> $rpc" ;;
+              *) echo "::warning::/rpc is not answering (${rpc:-<no response>}). Maintenance mode does not"
+                 echo "::warning::touch it, so the relay itself is down or nginx cannot reach it." ;;
+            esac
+            echo "::notice::Site is in maintenance. Remember to run this workflow again with state=off."
+
+          else
+            # ── off ──────────────────────────────────────────────────────────────────────────────────
+            if [ "$FORCE" = true ]; then
+              echo "::warning::force=true — the flag was removed and NOTHING was verified. Load https://$HOST_NAME/ yourself."
+              exit 0
+            fi
+
+            # THE LIFT ITSELF ALREADY HAPPENED — the rsync above removed the flag before any of this ran, and
+            # nothing below can put it back. That is the design, and it is the difference between a workflow
+            # and a trap: gating the lift on the site being fully HEALTHY means a stale nginx, an expired
+            # certificate, or a runner network blip can leave you UNABLE TO TURN MAINTENANCE OFF, using the
+            # very check that was meant to protect you. You turned it on to fix something; it must not refuse
+            # to let you finish. So there are exactly two hard failures here, and neither re-arms:
+            #
+            #   1. the flag is somehow STILL there (the rsync did not take) — you are not out, and must know;
+            #   2. the site does not answer 200 — you ARE out, but something else on the box is broken.
+            #
+            # Everything after those two is a warning, no matter how bad it looks. `force` skips even these.
+            # A clean 200 first time needs no second opinion; anything else gets re-probed, so that a single
+            # transport blip cannot turn a perfectly good lift red.
+            [ "$code" = 200 ] || settled is_200 || true
+
+            if is_maintenance "$code"; then
+              echo "::error::THE SITE IS STILL IN MAINTENANCE — the flag did not come off."
+              echo "::error::  https://$HOST_NAME/ -> 503 + X-Cogno-Maintenance"
+              hatch
+              exit 1
+            fi
+            if [ "$code" != 200 ]; then
+              echo "::error::MAINTENANCE IS LIFTED — the flag is gone — but https://$HOST_NAME/ -> HTTP $code (wanted 200)."
+              echo "::error::So the site is out of maintenance and still not serving. That is not maintenance mode"
+              echo "::error::and re-running this will not fix it; something else on the droplet is broken:"
+              echo "::error::  ssh <deploy-user>@<droplet> 'sudo nginx -t && sudo systemctl status nginx'"
+              exit 1
+            fi
+            echo "MAINTENANCE IS OFF. https://$HOST_NAME/ -> 200."
+
+            # Now the health checks that deploy-app.yml skips while a window is open — this is where they get
+            # run. Warnings only, per the gate rule above.
+            fail=0
+            addr=5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+            for url in "/u/$addr/" "/post/1/"; do
+              c=$(probe "$url"); [ "$c" = 200 ] || { echo "::warning::deep-link document $url -> HTTP ${c:-<none>} (want 200)"; fail=1; }
+            done
+            for url in "/u/$addr/index.txt" "/post/1/index.txt"; do
+              c=$(probe "$url")
+              ctype=$(grep -i '^content-type:' "$hdr" | head -1 || true)
+              case "$c:$ctype" in
+                200:*text/plain*) ;;
+                *) echo "::warning::RSC payload $url -> HTTP ${c:-<none>} (${ctype:-no content-type}); want 200 text/plain"; fail=1 ;;
+              esac
+            done
+            if [ "$fail" = 1 ]; then
+              echo "::warning::The SPA shell is not fully served. The site is UP and out of maintenance, but"
+              echo "::warning::in-app navigation to a profile or a thread will do a full document load, which"
+              echo "::warning::reboots the SPA and LOGS EVERY USER OUT (the posting key is memory-only). The"
+              echo "::warning::droplet's nginx is probably older than deploy/nginx/cogno.conf. Fix it:"
+              echo "::warning::  cp deploy/nginx/cogno.conf /etc/nginx/sites-available/cogno.conf"
+              echo "::warning::  nginx -t && systemctl reload nginx"
+            else
+              echo "SPA shell OK: documents and RSC payloads both resolve."
+            fi
+
+            # The check that matters most on the way out, and the one nothing else performs: HTML serving
+            # again does NOT mean the site works. If the relay did not come back from whatever you just did,
+            # every visitor gets a shell that connects to nothing.
+            rpc=$(curl -sS -m 10 "${resolve[@]}" -H 'Content-Type: application/json' \
+                    -d '{"jsonrpc":"2.0","id":1,"method":"system_health","params":[]}' \
+                    "https://$HOST_NAME/rpc" 2>/dev/null || true)
+            case "$rpc" in
+              *'"peers"'*) echo "RPC OK: /rpc -> $rpc" ;;
+              *) echo "::warning::THE SITE IS BACK BUT THE RELAY IS NOT ANSWERING (${rpc:-<no response>})."
+                 echo "::warning::Visitors will get an empty shell that loads nothing. The app is fine; the node"
+                 echo "::warning::is not. Look at it before you call this done:"
+                 echo "::warning::  ssh <deploy-user>@<droplet> 'journalctl -u cogno-relay -n 100 --no-pager'" ;;
+            esac
+          fi

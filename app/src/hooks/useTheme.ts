@@ -39,8 +39,15 @@ export function useTheme(): UseTheme {
   // Mirror the store onto the document. This must run for EVERY change, not only ones this tab made:
   // a `storage` event from another tab updates our store but cannot touch our document, so without it
   // the icon would flip while the page kept its old colours.
+  //
+  // theme-color is the same story one level out: it tints the mobile browser's own chrome (address bar,
+  // status bar). The pre-paint boot script in layout.tsx creates the meta so the FIRST paint matches; this
+  // keeps it matching afterwards. Without it, toggling to light leaves a black status bar over a white page
+  // until a full document reload — the exact mismatch the boot script exists to avoid on load.
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", theme === "light" ? "#ffffff" : "#000000");
   }, [theme]);
 
   const setTheme = useCallback((t: Theme) => store.commit(t), []);
