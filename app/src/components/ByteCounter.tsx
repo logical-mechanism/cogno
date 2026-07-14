@@ -3,13 +3,16 @@
 // ByteCounter — X's circular count ring, re-tuned to UTF-8 BYTES (D1).
 //
 // Measures `new TextEncoder().encode(value).length` — NOT value.length — against a byte cap
-// (512 post / 80 poll-option / 64 display_name / 256 bio / 128 avatar). Hard-blocks at the cap:
-// the ring fills, the remaining count appears near the limit, and at/over the cap it turns
-// --cg-danger and shows a negative count. Reports the measurement up to the Composer via onMeasure so
-// the CTA gates off the SAME bytes.
+// (512 post / 80 poll-option / 64 display_name / 256 bio / 128 avatar). The ring FILLS at the cap and
+// the remaining count appears near it; a draft sitting exactly ON the cap is legal (the chain's
+// BoundedVec accepts len == bound) and stays postable. Only a body strictly OVER the cap turns
+// --cg-danger with a negative count — reachable via the un-clamped @mention path, where a short-looking
+// `@name` serializes to a ~48-byte ss58. The measurement itself lives in @/lib/bytes (pure, unit-tested);
+// this reports it up to the Composer via onMeasure so the CTA gates off the SAME bytes.
 
 import { useEffect, useMemo, useRef } from "react";
 import styles from "./ByteCounter.module.css";
+import { measureBytes } from "@/lib/bytes";
 import type { ByteMeasure, ControlSize } from "./kit";
 
 export interface ByteCounterProps {
@@ -21,38 +24,11 @@ export interface ByteCounterProps {
   onMeasure?: (m: ByteMeasure) => void;
 }
 
-const encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
-
-/** UTF-8 byte length of a string — the canonical D1 measure. */
-export function utf8Bytes(s: string): number {
-  if (encoder) return encoder.encode(s).length;
-  // SSR/edge fallback (no TextEncoder): approximate via encodeURIComponent.
-  return unescape(encodeURIComponent(s)).length;
-}
-
-/**
- * Clamp a string to at most `maxBytes` UTF-8 bytes WITHOUT splitting a multibyte code point (D1).
- * Walks code points (for..of iterates by code point, not UTF-16 unit) and accumulates bytes.
- */
-export function clampToBytes(s: string, maxBytes: number): string {
-  let total = 0;
-  let out = "";
-  for (const ch of s) {
-    const b = utf8Bytes(ch);
-    if (total + b > maxBytes) break;
-    total += b;
-    out += ch;
-  }
-  return out;
-}
-
 const R = 10; // ring radius in the 24-viewBox
 const CIRC = 2 * Math.PI * R;
 
 export function ByteCounter({ value, maxBytes, warnAt = 32, size = "md", onMeasure }: ByteCounterProps) {
-  const bytes = useMemo(() => utf8Bytes(value), [value]);
-  const remaining = maxBytes - bytes;
-  const over = bytes >= maxBytes;
+  const { bytes, remaining, over } = useMemo(() => measureBytes(value, maxBytes), [value, maxBytes]);
   const near = remaining <= warnAt;
 
   // Report up to the parent. Keep the latest callback in a ref to avoid re-subscribing each render.
@@ -62,8 +38,9 @@ export function ByteCounter({ value, maxBytes, warnAt = 32, size = "md", onMeasu
     cbRef.current?.({ bytes, remaining, over });
   }, [bytes, remaining, over]);
 
+  // `frac` is clamped, so at AND over the cap the offset is 0 — a full ring (danger-coloured when over).
   const frac = Math.max(0, Math.min(1, bytes / Math.max(1, maxBytes)));
-  const dash = over ? CIRC : CIRC * (1 - frac);
+  const dash = CIRC * (1 - frac);
   const ringCls = over ? styles.over : near ? styles.near : styles.under;
 
   return (

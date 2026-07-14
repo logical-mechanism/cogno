@@ -164,12 +164,8 @@ export interface CapacityHint {
 }
 
 // ── ByteCounter measurement ──────────────────────────────────────────────────────────────────────
-/** The byte measurement a ByteCounter reports up to its Composer via onMeasure (UTF-8 bytes, never .length). */
-export interface ByteMeasure {
-  bytes: number;
-  remaining: number;
-  over: boolean;
-}
+/** Re-exported from the pure measure in @/lib/bytes (UTF-8 bytes, never .length; `over` is strictly-over). */
+export type { ByteMeasure } from "@/lib/bytes";
 
 // ── EmptyState / Skeleton variants ───────────────────────────────────────────────────────────────
 export type EmptyStateVariant =

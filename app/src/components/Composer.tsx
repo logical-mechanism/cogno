@@ -20,7 +20,8 @@
 import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { countImageUrls } from "@/lib/media";
 import { useMentions } from "@/hooks/useMentions";
-import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
+import { ByteCounter } from "./ByteCounter";
+import { utf8Bytes, clampToBytes } from "@/lib/bytes";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
 import { CapacityMeter } from "./CapacityMeter";
