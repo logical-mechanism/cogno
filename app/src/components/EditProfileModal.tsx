@@ -17,7 +17,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./EditProfileModal.module.css";
 import { ComposerModal } from "./ComposerModal";
-import { ByteCounter, utf8Bytes } from "./ByteCounter";
+import { ByteCounter } from "./ByteCounter";
+import { utf8Bytes } from "@/lib/bytes";
 import { Avatar } from "./Avatar";
 import { Loading } from "./Loading";
 import { useSession } from "./Providers";

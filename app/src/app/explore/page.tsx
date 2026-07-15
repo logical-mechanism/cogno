@@ -41,6 +41,7 @@ import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useFollow } from "@/hooks/useFollow";
+import { useBlockedSet } from "@/lib/blockStore";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
@@ -277,6 +278,14 @@ function ExploreView() {
   const [peopleNonce, setPeopleNonce] = useState(0);
   const peopleActive = mode === "query" && activeResultTab === "people" && peopleEnabled;
 
+  // A blocked account never shows in People results (hard suppression, viewer-side). Post results go
+  // through <Timeline>, which filters block + hide itself.
+  const blockedSet = useBlockedSet(me);
+  const visiblePeople = useMemo(
+    () => people.filter((p) => !blockedSet.has(p.author)),
+    [people, blockedSet],
+  );
+
   useEffect(() => {
     if (!source || !peopleActive || committedQ.length === 0) {
       setPeople([]);
@@ -325,14 +334,14 @@ function ExploreView() {
   const { toast } = useToaster();
 
   // ── per-card action bundle (identical wiring to the home Timeline) ─────────────────────────────
-  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast, follow });
 
   // The "/" focus shortcut is now app-wide (useSearchHotkey in AppShell) — no per-surface effect here.
 
   // ── result-count live summary (polite) ─────────────────────────────────────────────────────────
   // People fetches PEOPLE_LIMIT+1 as a truncation probe but ExploreList renders only PEOPLE_LIMIT, so the
   // announced count is clamped to what's on screen (else a screen reader says "21 people" over 20 rows).
-  const peopleShown = Math.min(people.length, PEOPLE_LIMIT);
+  const peopleShown = Math.min(visiblePeople.length, PEOPLE_LIMIT);
   const liveSummary =
     mode === "query"
       ? activeResultTab === "people"
@@ -373,7 +382,7 @@ function ExploreView() {
         )}
         {showTooShortHint && (
           <p className={styles.tooShortHint} role="status">
-            Keep typing to search — at least {MIN_QUERY_LEN} characters.
+            Type at least {MIN_QUERY_LEN} characters to search.
           </p>
         )}
       </header>
@@ -400,7 +409,7 @@ function ExploreView() {
           renderFirehose()
         ) : activeResultTab === "people" ? (
           <ExploreList
-            people={people}
+            people={visiblePeople}
             viewer={viewer}
             query={committedQ}
             loading={peopleLoading}

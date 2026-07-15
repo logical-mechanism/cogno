@@ -63,7 +63,7 @@ function toView(status: PendingCapacityStatus): View | null {
       return {
         title: "This is taking longer than expected",
         detail:
-          "Your lock confirmed on Cardano, but the chain hasn't credited your posting power yet. It should still land — check the transaction below, or dismiss this.",
+          "Your lock confirmed on Cardano, but the chain hasn't credited your posting power yet. It should still land. Check the transaction below, or dismiss this.",
         why: false,
         bar: null,
         spinner: false,
@@ -87,7 +87,7 @@ function toView(status: PendingCapacityStatus): View | null {
       if (almost) {
         return {
           title: "Almost there",
-          detail: "Any moment now — the chain is crediting your posting power.",
+          detail: "Any moment now. The chain is crediting your posting power.",
           why: false,
           bar: status.progress,
           spinner: true,

@@ -208,7 +208,7 @@ export function useIdentity(
           if (res.identityHash) {
             const who = await readAccountOf(api, res.identityHash).catch(() => undefined);
             if (who && who !== signer.ss58) {
-              throw new Error("the bound identity resolved to a different account — refusing to claim it");
+              throw new Error("the bound identity resolved to a different account; refusing to claim it");
             }
           }
           const nowBound = await isAccountBound(api, signer.ss58).catch(() => false);
@@ -240,7 +240,7 @@ export function useIdentity(
       // The runtime requires the account to be payment-bound first (NotPaymentBound). Pre-check for a
       // clear message; the on-chain rule (pool + dispatch) is the authority either way.
       if (bound !== true) {
-        setStakeError("register your posting key first — voting power needs an account that can already post");
+        setStakeError("register your posting key first; voting power needs an account that can already post");
         return;
       }
       setStakeBinding(true);

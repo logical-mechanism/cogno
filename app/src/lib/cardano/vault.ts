@@ -39,7 +39,7 @@ async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; 
   const [{ BrowserWallet }, cst] = await Promise.all([import("@meshsdk/core"), import("@meshsdk/core-cst")]);
   const wallet = await BrowserWallet.enable(walletId);
   if ((await wallet.getNetworkId()) !== 0) {
-    throw new Error("connect a PREPROD (testnet) wallet — this is a testnet showcase");
+    throw new Error("connect a Cardano wallet");
   }
   const address = await wallet.getChangeAddress();
   const props = cst.Address.fromBech32(address).getProps();
@@ -49,7 +49,7 @@ async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; 
   const paymentKeyHash = props.paymentPart.hash;
   const stakeKeyHash = props.delegationPart?.hash;
   if (!stakeKeyHash) {
-    throw new Error("wallet address has no stake credential — use a base (type-0) address");
+    throw new Error("wallet address has no stake credential; use a base (type-0) address");
   }
   const { serializePlutusScript } = await import("@meshsdk/core");
   const { address: vaultAddress } = serializePlutusScript({ code: APPLIED_CBOR, version: "V3" }, stakeKeyHash, 0, false);
@@ -62,7 +62,7 @@ function pickCollateral(collateral: UTxO[], utxos: UTxO[]): UTxO {
   const c =
     collateral[0] ??
     utxos.find((u) => u.output.amount.length === 1 && BigInt(u.output.amount[0].quantity) >= 5_000_000n);
-  if (!c) throw new Error("no collateral UTxO — fund the wallet with a pure-ADA UTxO of at least 5 ADA");
+  if (!c) throw new Error("no collateral UTxO; fund the wallet with a pure-ADA UTxO of at least 5 ADA");
   return c;
 }
 
@@ -84,7 +84,7 @@ export async function lockIntoVault(
   const { MeshTxBuilder } = await import("@meshsdk/core");
   const provider = await getProvider();
   const utxos = await wallet.getUtxos();
-  if (!utxos.length) throw new Error("your wallet has no UTxOs on preprod — fund it first");
+  if (!utxos.length) throw new Error("your wallet has no UTxOs; fund it first");
   const collateral = pickCollateral(await wallet.getCollateral(), utxos);
 
   const datum = vaultDatumCborHex(paymentKeyHash, stakeKeyHash);

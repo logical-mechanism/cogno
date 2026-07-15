@@ -297,7 +297,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const { pin } = usePinPost(api, signer);
   const { toast } = useToaster();
 
-  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast, follow });
 
   // ── derived header bits ──
   const hasProfile = !!(

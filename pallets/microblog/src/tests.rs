@@ -153,6 +153,26 @@ fn too_long_is_rejected() {
     });
 }
 
+/// The ACCEPTING side of the same boundary: `BoundedVec` admits `len == bound`, so a body of exactly
+/// `MaxLength` is a legal post. The frontend's byte counter gates on this (it must stay live at 512/512
+/// — a `>=` there greyed the Post button on the last byte the composer let you type), so pin it.
+#[test]
+fn exactly_max_length_is_accepted() {
+    new_test_ext().execute_with(|| {
+        let full = vec![0u8; 512]; // MaxLength = 512, inclusive
+        assert_ok!(Microblog::post_message(
+            RuntimeOrigin::signed(1),
+            full.clone(),
+            None
+        ));
+        assert_eq!(NextPostId::<Test>::get(), 1);
+        assert_eq!(
+            Posts::<Test>::get(0).expect("stored").text.into_inner(),
+            full
+        );
+    });
+}
+
 // ── the on-wire variant indices (the codec contract) ────────────────────────────────────────────
 
 #[test]

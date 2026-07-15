@@ -21,6 +21,7 @@ import { useViewerStates } from "@/hooks/useViewerStates";
 import { usePostActions } from "@/hooks/usePostActions";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
+import { useFollow } from "@/hooks/useFollow";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { useBookmarkList } from "@/lib/bookmarkStore";
@@ -108,7 +109,7 @@ export default function BookmarksPage() {
         const failed = results.filter((r) => !r.ok).length;
         setError(
           failed > 0
-            ? `Couldn't load ${failed} bookmark${failed === 1 ? "" : "s"} — check your connection.`
+            ? `Couldn't load ${failed} bookmark${failed === 1 ? "" : "s"}. Check your connection.`
             : null,
         );
       })
@@ -134,8 +135,9 @@ export default function BookmarksPage() {
   const vote = useVote(api, signer, votingPower ?? 0n);
   const { pin } = usePinPost(api, signer);
   const { toast } = useToaster();
+  const follow = useFollow(api, signer, source, me);
 
-  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast });
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast, follow });
 
   return (
     <>

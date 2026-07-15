@@ -40,6 +40,8 @@ import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
+import { useFollow } from "@/hooks/useFollow";
+import { useModeration } from "@/hooks/useModeration";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { nextPendingId, NO_VIEWER } from "@/lib/optimistic";
 import { useMutation } from "@/hooks/useMutation";
@@ -65,6 +67,9 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const router = useRouter();
   const { api, signer, source, viewer, votingPower, bestBlock } = useSession();
   const me = viewer.address ?? null;
+  // Block + hide are hard removals, applied to the reply list below (the focal itself is handled by
+  // PostCard: a blocked focal shows the stub, a hidden focal shows normally — you navigated to it).
+  const mod = useModeration(me);
 
   // The pre-flight capacity gate, matching every other composing surface. This one previously computed
   // only `noPostingPower` and never `rateLimited`, so the thread reply box — the highest-volume reply
@@ -108,7 +113,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     const { parent: _parent, ...rest } = root;
     return rest;
   }, [thread?.root]);
-  const replies = useMemo<CognoPost[]>(() => thread?.replies ?? [], [thread?.replies]);
+  const replies = useMemo<CognoPost[]>(
+    () => mod.filterPosts(thread?.replies ?? []),
+    [thread?.replies, mod],
+  );
   const ancestors = useMemo<CognoPost[]>(() => thread?.ancestors ?? [], [thread?.ancestors]);
 
   // Paged replies: the NEWEST N confirmed + ALL pending. Replies come chronological (oldest-first), and
@@ -147,6 +155,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
 
   const vote = useVote(api, signer, votingPower ?? 0n);
   const { pin } = usePinPost(api, signer);
+  const follow = useFollow(api, signer, source, me);
   const { failPending } = useOptimistic();
   const { run } = useMutation();
   const { toast } = useToaster();
@@ -244,7 +253,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     },
     [rootId, focusComposer, router],
   );
-  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast, onReplyReady });
+  const handlers = usePostActions({ viewer, viewerStates, vote, pin, toast, onReplyReady, follow });
 
   // ── scroll-to-focal once per id (X behavior: focal lands just under the sticky header) ──
   const focalRef = useRef<HTMLDivElement | null>(null);

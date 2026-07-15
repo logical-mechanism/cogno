@@ -12,7 +12,8 @@
 import { useCallback, useMemo } from "react";
 import type { KeyboardEvent } from "react";
 import { Composer, MAX_POST_BYTES } from "./Composer";
-import { ByteCounter, utf8Bytes, clampToBytes } from "./ByteCounter";
+import { ByteCounter } from "./ByteCounter";
+import { utf8Bytes, clampToBytes } from "@/lib/bytes";
 import { IconClose } from "./icons";
 import styles from "./PollComposer.module.css";
 import type { Viewer, PollDraft, ActionState, ComposerDraft } from "./kit";

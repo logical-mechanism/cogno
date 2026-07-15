@@ -6,7 +6,9 @@
 //      placeholder); submitting still lands on /explore.
 //   2. "Who to follow" — up to 3 suggestions (useWhoToFollow), each with a FollowButton (optimistic,
 //      useFollow). Node-served (FollowerCount ranking); hidden only when empty.
-//   3. Footer — ThemeToggle + an About link to /settings/. No trends, no premium upsell.
+//   3. Footer — one line: the About/Legal/Privacy links, then an icon-only ThemeToggle. (The labelled
+//      toggle lives in Settings → Appearance; a label here overflows the 350px rail.) No trends, no
+//      premium upsell.
 
 import { useCallback, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -114,13 +116,11 @@ export function RightRail() {
       )}
 
       <footer className={styles.footer}>
-        <div className={styles.footerRow}>
-          <ThemeToggle withLabel />
+        <nav className={styles.footerLinks} aria-label="About this app">
           <Link href="/settings/" className={styles.about}>
             About &amp; settings
           </Link>
-        </div>
-        <nav className={styles.footerLinks} aria-label="Legal">
+          <span aria-hidden="true">·</span>
           <Link href="/legal/" className={styles.about}>
             Legal
           </Link>
@@ -129,6 +129,7 @@ export function RightRail() {
             Privacy
           </Link>
         </nav>
+        <ThemeToggle />
       </footer>
     </aside>
   );

@@ -90,48 +90,16 @@
   gap: var(--cg-space-3);
 }
 
-/* Card title + "Optional" chip on one row. */
-.cardTitleRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--cg-space-2);
-}
-
-.optionalChip {
-  flex: none;
-  font-size: var(--cg-fs-xs);
-  font-weight: var(--cg-fw-semibold);
-  color: var(--cg-text-secondary);
-  background: var(--cg-bg-subtle);
-  border: 1px solid var(--cg-border);
-  border-radius: var(--cg-radius-pill);
-  padding: 2px var(--cg-space-2);
-  /* carries a `title` explaining what voting power is — signal it's hoverable help */
-  cursor: help;
-}
-
-/* "Required to post" chip — accent-weighted so the lock reads as the necessary step, not a boost. */
-.requiredChip {
-  flex: none;
-  font-size: var(--cg-fs-xs);
-  font-weight: var(--cg-fw-bold);
-  color: var(--cg-accent);
-  background: var(--cg-accent-wash);
-  border: 1px solid var(--cg-accent);
-  border-radius: var(--cg-radius-pill);
-  padding: 2px var(--cg-space-2);
-}
-
 .card {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--cg-space-2);
   padding: var(--cg-space-4);
   background: var(--cg-bg-elevated);
   border: 1px solid var(--cg-border);
   border-radius: var(--cg-radius-card);
-  text-align: left;
+  text-align: center;
 }
 
 .cardTitle {
@@ -151,12 +119,14 @@
 .cardActions {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--cg-space-2);
 }
 
 .cardRow {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--cg-space-3);
   margin-top: var(--cg-space-1);
 }

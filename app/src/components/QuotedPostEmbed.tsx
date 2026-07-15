@@ -17,7 +17,8 @@ import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
 import { PostBody } from "./PostBody";
 import { useNestedQuote } from "@/hooks/useNestedQuote";
-import type { QuotedRef } from "./kit";
+import { useBlocked } from "@/lib/blockStore";
+import type { QuotedRef, Ss58 } from "./kit";
 
 export interface QuotedPostEmbedProps {
   /** The quoted post reference (CognoPost.quote). */
@@ -34,6 +35,9 @@ export interface QuotedPostEmbedProps {
   unavailable?: boolean;
   /** The quoted post is itself a poll → show a small "Poll" chip (we never nest a live PollCard). */
   isPoll?: boolean;
+  /** The viewer's ss58, so a quoted BLOCKED author is suppressed here too (block is a hard removal;
+   *  without this a blocked account's content leaks through the quote embed of a non-blocked post). */
+  viewerId?: Ss58 | null;
 }
 
 export function QuotedPostEmbed({
@@ -42,8 +46,10 @@ export function QuotedPostEmbed({
   maxLines = 6,
   unavailable,
   isPoll,
+  viewerId,
 }: QuotedPostEmbedProps) {
   const missing = unavailable || (!quoted.text.trim() && !quoted.author);
+  const blocked = useBlocked(quoted.author, viewerId ?? null);
 
   // Does the quoted post ITSELF quote another post? The one-level seam can't carry that, so a shared
   // cache does one cheap keyed read (null until known / when it quotes nothing). We surface a subtle
@@ -83,6 +89,15 @@ export function QuotedPostEmbed({
     return (
       <div className={styles.stub} aria-label="Quoted post unavailable">
         This post is unavailable.
+      </div>
+    );
+  }
+
+  // A quoted post by a blocked author is suppressed like everywhere else (hard removal, no reveal).
+  if (blocked) {
+    return (
+      <div className={styles.stub} aria-label="Quoted a blocked account">
+        You&apos;ve blocked this account.
       </div>
     );
   }

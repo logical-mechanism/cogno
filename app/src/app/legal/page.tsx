@@ -24,7 +24,7 @@ export default function LegalPage() {
       <article className={styles.page}>
         <p className={styles.lead}>
           cogno is open source. There is no company account, no terms you clicked through, and no
-          service being sold to you — so this page is short.
+          service being sold to you. So this page is short.
         </p>
 
         <section className={styles.section}>
@@ -56,15 +56,14 @@ export default function LegalPage() {
           </p>
           <p className={styles.body}>
             It is provided <strong>as is, without warranties or conditions of any kind</strong>. That
-            is not boilerplate: this is a testnet chain run by one operator, and you should treat it
-            as one.
+            is not boilerplate. Use it at your own risk.
           </p>
         </section>
 
         <section className={styles.section}>
           <h2 className={styles.heading}>Third-party software in this page</h2>
           <p className={styles.body}>
-            This app is a static bundle that includes open-source code from other authors — among them
+            This app is a static bundle that includes open-source code from other authors, among them
             React, Next.js, polkadot-api, MeshJS and the Cardano SDK. Their licenses and copyright
             notices are reproduced in full here:
           </p>

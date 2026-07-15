@@ -24,6 +24,6 @@ export function preflightLock(p: LockPreflight): void {
   }
   const expected = beaconNameHex(p.paymentKeyHash, p.stakeKeyHash);
   if (p.beacon.toLowerCase() !== expected.toLowerCase()) {
-    throw new Error("beacon name does not equal blake2b_256(owner) — refusing to lock");
+    throw new Error("beacon name does not equal blake2b_256(owner); refusing to lock");
   }
 }

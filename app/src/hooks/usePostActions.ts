@@ -30,6 +30,7 @@ import { modalActions } from "@/lib/modalStore";
 import { sharePostWithToast, type ShareToast } from "@/lib/share";
 import { NO_VIEWER } from "@/lib/optimistic";
 import type { UseVote } from "./useVote";
+import type { UseFollow } from "./useFollow";
 import type { PostActionCallbacks, Viewer } from "@/components/kit";
 import type { CognoPost, ViewerPostState } from "@/lib/types";
 
@@ -52,6 +53,11 @@ export interface PostActionDeps {
    * composer) — so a reply is always authored where parentId === rootId and shows optimistically.
    */
   onReplyReady?: (post: CognoPost) => void;
+  /**
+   * The shared follow graph + toggle (one useFollow per surface, never per card — a per-card instance
+   * would fire N identical followEdges reads). Supplied → the ··· menu shows Follow/Unfollow the author.
+   */
+  follow?: UseFollow;
 }
 
 export function usePostActions({
@@ -61,8 +67,15 @@ export function usePostActions({
   pin,
   toast,
   onReplyReady,
+  follow,
 }: PostActionDeps): PostActionCallbacks {
   const router = useRouter();
+
+  // useFollow returns a FRESH object each render, but its callbacks are stable useCallbacks. Depend on
+  // those (not the object), or the memo below — and every PostCard's handlers — would bust every render.
+  const followIsFollowing = follow?.isFollowing;
+  const followDo = follow?.follow;
+  const followUndo = follow?.unfollow;
 
   return useMemo<PostActionCallbacks>(() => {
     /** The finish-setup bounce, in ONE place. Returns false when the caller must stop. Gates on
@@ -103,6 +116,27 @@ export function usePostActions({
         if (!ready()) return;
         pin(post.id);
       },
+      // Follow/unfollow from the ··· menu — only when the surface wired the shared follow graph.
+      isFollowing: followIsFollowing ? (target) => followIsFollowing(target) : undefined,
+      onToggleFollow:
+        followDo && followUndo
+          ? (target, next) => {
+              if (!ready()) return;
+              if (next) followDo(target);
+              else followUndo(target);
+            }
+          : undefined,
     };
-  }, [router, viewer.writeReady, viewerStates, vote, pin, toast, onReplyReady]);
+  }, [
+    router,
+    viewer.writeReady,
+    viewerStates,
+    vote,
+    pin,
+    toast,
+    onReplyReady,
+    followIsFollowing,
+    followDo,
+    followUndo,
+  ]);
 }

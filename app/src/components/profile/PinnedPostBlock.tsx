@@ -14,6 +14,8 @@
 
 import styles from "./PinnedPostBlock.module.css";
 import { PostCard } from "@/components/PostCard";
+import { useBlocked } from "@/lib/blockStore";
+import { useHidden } from "@/lib/hiddenStore";
 import type { CognoPost, ViewerPostState, Viewer, PostActionCallbacks } from "@/components/kit";
 
 export interface PinnedPostBlockProps {
@@ -39,6 +41,13 @@ function PinGlyph() {
 }
 
 export function PinnedPostBlock({ post, viewer, gate, handlers }: PinnedPostBlockProps) {
+  // Respect the viewer's own suppression: a hidden pinned post, or one by a blocked author, is dropped
+  // (the Posts tab below is filtered the same way by Timeline). Mute is left to PostCard's collapse.
+  const me = gate.status === "ready" ? (gate.address ?? null) : null;
+  const blocked = useBlocked(post.author, me);
+  const hidden = useHidden(post.id, me);
+  if (blocked || hidden) return null;
+
   return (
     <PostCard
       post={post}

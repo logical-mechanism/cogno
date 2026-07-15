@@ -35,7 +35,7 @@ export default function RouteError({
     <div className={styles.wrap} role="alert">
       <h1 className={styles.title}>Something broke on this page.</h1>
       <p className={styles.detail}>
-        The rest of the app is still running — you can navigate away, or try this page again.
+        The rest of the app is still running. You can navigate away, or try this page again.
       </p>
       {error.digest && <p className={styles.digest}>Reference: {error.digest}</p>}
       <div className={styles.actions}>
