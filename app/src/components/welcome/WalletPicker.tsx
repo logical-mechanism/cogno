@@ -45,14 +45,25 @@ export function WalletPicker({
   const [chosenId, setChosenId] = useState<string | null>(null);
 
   useEffect(() => {
-    let live = true;
-    void (async () => {
-      const list = await listCardanoWallets();
-      if (live) setWallets(list);
-    })();
-    return () => {
-      live = false;
-    };
+    // Enumerate installed CIP-30 wallets from window.cardano (a synchronous read — no MeshJS import, so
+    // the ~5.9 MB Cardano bundle stays deferred until the user actually connects). Some extensions inject
+    // window.cardano a tick after load, so if the first read is empty, re-check a few times over ~1.5 s
+    // before settling on the "no wallet found" empty-state (the null state keeps the loader up meanwhile).
+    const first = listCardanoWallets();
+    if (first.length > 0) {
+      setWallets(first);
+      return;
+    }
+    let tries = 0;
+    const id = setInterval(() => {
+      tries += 1;
+      const list = listCardanoWallets();
+      if (list.length > 0 || tries >= 6) {
+        setWallets(list);
+        clearInterval(id);
+      }
+    }, 250);
+    return () => clearInterval(id);
   }, []);
 
   // Esc cancels the in-flight signature (returns to the list).

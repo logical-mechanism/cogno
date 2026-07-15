@@ -17,6 +17,13 @@ export interface CardanoWalletInfo {
   icon?: string;
 }
 
+/** The shape of a CIP-30 wallet object injected at `window.cardano[key]` (enumeration fields only). */
+interface Cip30Injected {
+  name?: string;
+  icon?: string;
+  apiVersion?: string;
+}
+
 /** A signed bind proof, ready to submit via `cognoGate.link_identity_signed` (hex COSE blobs). */
 export interface BindProof {
   ok: boolean;
@@ -31,18 +38,36 @@ export interface BindProof {
   error?: string;
 }
 
-/** Installed CIP-30 wallets (Eternl, Lace, Nami, …). Empty if none / not a browser. */
-export async function listCardanoWallets(): Promise<CardanoWalletInfo[]> {
-  try {
-    const { BrowserWallet } = await import("@meshsdk/core");
-    return BrowserWallet.getInstalledWallets().map((w: { id: string; name: string; icon?: string }) => ({
-      id: w.id,
-      name: w.name,
-      icon: w.icon,
-    }));
-  } catch {
-    return [];
+/**
+ * Installed CIP-30 wallets (Eternl, Lace, Nami, …). Empty if none / not a browser.
+ *
+ * Reads `window.cardano` DIRECTLY rather than importing MeshJS's `BrowserWallet.getInstalledWallets()`.
+ * Enumerating wallets only needs the injected CIP-30 objects (name/icon/apiVersion), but importing
+ * `@meshsdk/core` for it drags the entire ~5.9 MB Cardano serialization+crypto bundle onto the page.
+ * That matters because AppShell's auth wall bounces every cold visitor to /welcome, which mounts
+ * WalletPicker, which lists wallets on mount — so the old import loaded + executed ~1.5 s of JS on
+ * EVERY first visit (the dominant PageSpeed cost / TBT). The heavy bundle now loads only when a user
+ * actually connects (deriveSignerFromWallet → BrowserWallet.enable). This mirrors MeshJS's
+ * getInstalledWallets() exactly — skip entries missing name/icon/apiVersion; rename nufiSnap →
+ * "MetaMask" — so the rendered list is identical. Keep it a `window.cardano` read; do NOT "simplify"
+ * it back to a MeshJS import.
+ */
+export function listCardanoWallets(): CardanoWalletInfo[] {
+  if (typeof window === "undefined") return [];
+  const cardano = (window as unknown as { cardano?: Record<string, Cip30Injected | undefined> }).cardano;
+  if (!cardano) return [];
+  const wallets: CardanoWalletInfo[] = [];
+  for (const key of Object.keys(cardano)) {
+    try {
+      const w = cardano[key];
+      // A CIP-30 wallet exposes name + icon + apiVersion; anything missing one is not an enumerable wallet.
+      if (!w || w.name === undefined || w.icon === undefined || w.apiVersion === undefined) continue;
+      wallets.push({ id: key, name: key === "nufiSnap" ? "MetaMask" : w.name, icon: w.icon });
+    } catch {
+      // a hostile/broken injected getter — skip it, never let one wallet break the list
+    }
   }
+  return wallets;
 }
 
 /** Crypto-random 16-byte nonce as 32 lowercase-hex chars (matches the pinned payload grammar). */

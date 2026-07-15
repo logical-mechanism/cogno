@@ -13,7 +13,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./ConnectWalletButton.module.css";
 import { Spinner } from "./icons";
-import { Loading } from "./Loading";
 import { useSession } from "./Providers";
 import { useToaster } from "./toast/ToasterProvider";
 import { listCardanoWallets } from "@/lib/cardano/cip8";
@@ -35,7 +34,6 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
   const { toast } = useToaster();
   const [open, setOpen] = useState(false);
   const [wallets, setWallets] = useState<CardanoWalletInfo[]>([]);
-  const [loadingWallets, setLoadingWallets] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -64,19 +62,16 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
   // Move focus into the picker once it opens and its wallet rows have rendered, so the announced
   // dialog actually receives focus (a11y: role="dialog" should not leave focus on the trigger behind it).
   useEffect(() => {
-    if (open && !deriving && !loadingWallets) {
+    if (open && !deriving) {
       pickerRef.current?.querySelector<HTMLElement>("button, [tabindex]")?.focus();
     }
-  }, [open, deriving, loadingWallets]);
+  }, [open, deriving]);
 
-  const openPicker = useCallback(async () => {
+  const openPicker = useCallback(() => {
+    // A synchronous window.cardano read (no MeshJS import) — the list is ready immediately on click,
+    // and the heavy Cardano bundle stays deferred until the user actually picks a wallet to connect.
     setOpen(true);
-    setLoadingWallets(true);
-    try {
-      setWallets(await listCardanoWallets());
-    } finally {
-      setLoadingWallets(false);
-    }
+    setWallets(listCardanoWallets());
   }, []);
 
   const pick = useCallback(
@@ -131,9 +126,7 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
       {open && !deriving && (
         <div ref={pickerRef} className={styles.picker} role="dialog" aria-label="Choose a Cardano wallet">
           <p className={styles.pickerTitle}>Choose a wallet</p>
-          {loadingWallets ? (
-            <Loading variant="panel" label="Looking for wallets…" />
-          ) : wallets.length === 0 ? (
+          {wallets.length === 0 ? (
             <p className={styles.pickerEmpty}>No CIP-30 wallet detected. Install one to continue.</p>
           ) : (
             <ul className={styles.list}>
