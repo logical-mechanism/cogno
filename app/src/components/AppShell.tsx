@@ -67,9 +67,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   // App-wide "/" → focus the SearchBar (works on every surface with a search box, not just /explore).
   useSearchHotkey();
 
-  // The welcome flow owns the full viewport — no LeftNav/RightRail/BottomTabBar/ComposeFab chrome.
+  // The welcome flow owns the full viewport — no LeftNav/RightRail/BottomTabBar/ComposeFab chrome. It is
+  // a <main> landmark (not a bare <div>): /welcome is the canonical cold-load landing, so without it the
+  // page a screen reader / Lighthouse first sees has no main region at all (a11y: landmark-one-main).
   if (onWelcome) {
-    return <div className={styles.standalone}>{children}</div>;
+    return <main className={styles.standalone}>{children}</main>;
   }
 
   // Logged-out on an app route: never flash the feed — but never flash a BLANK PAGE either. There is no
