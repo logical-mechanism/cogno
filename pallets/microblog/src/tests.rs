@@ -166,7 +166,10 @@ fn exactly_max_length_is_accepted() {
             None
         ));
         assert_eq!(NextPostId::<Test>::get(), 1);
-        assert_eq!(Posts::<Test>::get(0).expect("stored").text.into_inner(), full);
+        assert_eq!(
+            Posts::<Test>::get(0).expect("stored").text.into_inner(),
+            full
+        );
     });
 }
 
