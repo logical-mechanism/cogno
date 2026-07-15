@@ -54,20 +54,26 @@ export interface BindProof {
  */
 export function listCardanoWallets(): CardanoWalletInfo[] {
   if (typeof window === "undefined") return [];
-  const cardano = (window as unknown as { cardano?: Record<string, Cip30Injected | undefined> }).cardano;
-  if (!cardano) return [];
-  const wallets: CardanoWalletInfo[] = [];
-  for (const key of Object.keys(cardano)) {
-    try {
-      const w = cardano[key];
-      // A CIP-30 wallet exposes name + icon + apiVersion; anything missing one is not an enumerable wallet.
-      if (!w || w.name === undefined || w.icon === undefined || w.apiVersion === undefined) continue;
-      wallets.push({ id: key, name: key === "nufiSnap" ? "MetaMask" : w.name, icon: w.icon });
-    } catch {
-      // a hostile/broken injected getter — skip it, never let one wallet break the list
+  try {
+    const cardano = (window as unknown as { cardano?: Record<string, Cip30Injected | undefined> }).cardano;
+    if (!cardano) return [];
+    const wallets: CardanoWalletInfo[] = [];
+    for (const key of Object.keys(cardano)) {
+      try {
+        const w = cardano[key];
+        // A CIP-30 wallet exposes name + icon + apiVersion; anything missing one is not an enumerable wallet.
+        if (!w || w.name === undefined || w.icon === undefined || w.apiVersion === undefined) continue;
+        wallets.push({ id: key, name: key === "nufiSnap" ? "MetaMask" : w.name, icon: w.icon });
+      } catch {
+        // a hostile/broken injected getter for THIS wallet — skip it, never let one break the list
+      }
     }
+    return wallets;
+  } catch {
+    // window.cardano itself is a throwing getter / exotic proxy — honor the "empty if none" contract so a
+    // caller (WalletPicker's mount effect, ConnectWalletButton's click) never sees a throw.
+    return [];
   }
-  return wallets;
 }
 
 /** Crypto-random 16-byte nonce as 32 lowercase-hex chars (matches the pinned payload grammar). */
