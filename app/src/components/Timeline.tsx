@@ -66,11 +66,6 @@ export interface TimelineProps {
   onCompose?: () => void;
   /** Search term to <mark> in each card's body (set only on the search-results Timeline). */
   highlight?: string;
-  /**
-   * Apply the viewer's block/hide suppression to `posts` (default true). The one surface that sets this
-   * false is Settings → Hidden posts, which must SHOW hidden posts so they can be unhidden.
-   */
-  moderated?: boolean;
 }
 
 export function Timeline({
@@ -92,14 +87,13 @@ export function Timeline({
   onFlush,
   onCompose,
   highlight,
-  moderated = true,
 }: TimelineProps) {
   // Block + hide are hard removals (mute stays PostCard's soft collapse). Filtering the array here —
   // rather than rendering null per card — keeps the roving focus, the pill and the load-more tail
   // operating on exactly the cards on screen, and covers Home / Explore / Profile / Bookmarks at once.
   const me = gate.status === "ready" ? (gate.address ?? null) : null;
   const mod = useModeration(me);
-  const posts = moderated ? mod.filterPosts(inputPosts) : inputPosts;
+  const posts = mod.filterPosts(inputPosts);
 
   // Index of the keyboard-focused card (roving tabIndex). -1 = none focused yet.
   const [focusIdx, setFocusIdx] = useState(-1);
@@ -187,16 +181,24 @@ export function Timeline({
   }
 
   // ── empty ──
+  // Distinguish "nothing more to show" from "this page's posts were all suppressed but more pages
+  // exist". In the latter, showing the terminal EmptyState would omit the load-more tail and strand
+  // the feed (no way to reach page 2); render the tail instead so pagination keeps flowing.
   if (posts.length === 0) {
+    const moreToLoad = paginationCapable && hasMore;
     return (
       <div id="cg-timeline-panel" role="tabpanel" aria-label="Timeline" className={styles.list}>
         {error && <ErrorRow message={error} onRetry={onRetry} />}
-        <EmptyState
-          variant={emptyVariant}
-          title={emptyTitle}
-          description={emptyDescription}
-          action={emptyAction}
-        />
+        {moreToLoad ? (
+          <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />
+        ) : (
+          <EmptyState
+            variant={emptyVariant}
+            title={emptyTitle}
+            description={emptyDescription}
+            action={emptyAction}
+          />
+        )}
       </div>
     );
   }

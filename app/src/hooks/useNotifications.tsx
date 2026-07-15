@@ -171,7 +171,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   // key the set on its contents so it's stable across renders.
   const suppressedKey = [...mutedList, ...blockedList].join("|");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const mutedSet = useMemo(() => new Set([...mutedList, ...blockedList]), [suppressedKey]);
+  const suppressedSet = useMemo(() => new Set([...mutedList, ...blockedList]), [suppressedKey]);
 
   // Only the CURRENT account's fold is ever surfaced. A fold left over from the previous account is
   // dropped here rather than by an effect, so there is no frame in which it is visible.
@@ -181,8 +181,8 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const notifs = mine?.notifs ?? EMPTY_NOTIFS;
 
   const items = useMemo(
-    () => orderNotifs(notifs, readState.firstSeen, mutedSet),
-    [notifs, readState.firstSeen, mutedSet],
+    () => orderNotifs(notifs, readState.firstSeen, suppressedSet),
+    [notifs, readState.firstSeen, suppressedSet],
   );
   const unreadCount = useMemo(
     () => items.reduce((n, it) => n + (isUnreadOf(readState, it.key) ? 1 : 0), 0),

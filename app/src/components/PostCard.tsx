@@ -314,6 +314,7 @@ export function PostCard({
               quoted={post.quote}
               onOpen={handlers.onOpen}
               isPoll={false}
+              viewerId={me}
             />
           )}
 
