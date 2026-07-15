@@ -18,7 +18,11 @@ export const metadata: Metadata = {
   description:
     "Post text, read text. A feeless social chain where posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
   applicationName: "cogno",
-  robots: { index: false, follow: false },
+  // The site is indexable. It is a live, honestly-labeled service; being a preprod testnet is not a
+  // reason to hide it from search. (Only the app shell + static pages like /legal and /privacy are
+  // meaningfully crawlable — post content is client-rendered behind the connect wall — but the landing
+  // page being findable is the point.) This was the sole failing SEO audit (is-crawlable).
+  robots: { index: true, follow: true },
   // The tab icon is 😭 (U+1F62D), rasterized from Noto Color Emoji. The three files are App Router
   // metadata-file conventions — Next discovers `icon.png` / `apple-icon.png` / `favicon.ico` sitting next
   // to this layout and emits the <link> tags itself, so there is nothing to declare here. They live in
@@ -27,8 +31,8 @@ export const metadata: Metadata = {
   // by markup).
   //
   // openGraph is what a link to a post looks like when it is pasted into a chat or another social app.
-  // Without it, the unfurl falls back to a bare URL. `robots: noindex` above governs SEARCH indexing and
-  // does not suppress unfurls, so this is worth setting even on a noindex origin.
+  // Without it, the unfurl falls back to a bare URL. `robots` above governs SEARCH indexing; link
+  // unfurls are independent of it, so this is worth setting regardless.
   openGraph: {
     type: "website",
     siteName: "cogno",
