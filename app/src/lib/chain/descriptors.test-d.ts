@@ -5,19 +5,42 @@
 // re-introduces the hand-written shape, the corresponding `@ts-expect-error` stops being an error, and
 // TS fails the build with "Unused '@ts-expect-error' directive" — so these guards cannot silently rot.
 
-import type { RawPolls, RawPostValue, EnrichedPost, FeedPageRaw } from "./descriptors";
+import type {
+  RawPolls,
+  RawPostValue,
+  RawVoteRecord,
+  RawPollVote,
+  EnrichedPost,
+  FeedPageRaw,
+} from "./descriptors";
 
-// ── the poll bug ─────────────────────────────────────────────────────────────────────────────────
-// `Poll` is a single-field struct and PAPI unwraps it, so `Polls.getValue` returns the options Vec
-// DIRECTLY. The old hand-written type claimed a `{ options }` wrapper; `.options` was `undefined`,
-// `labels.map` threw, `usePoll` swallowed it, and EVERY poll rendered as a plain, unvotable post.
+// ── the poll shape (spec 205) ────────────────────────────────────────────────────────────────────
+// `Poll` gained a `close_at` field, so it is now a TWO-field struct — PAPI no longer unwraps it, and
+// `Polls.getValue` returns a `{ options, close_at }` WRAPPER (the reverse of the single-field-unwrap
+// gotcha the pre-205 shape hit). `.options` is the labels Vec; `.close_at` is the optional deadline.
 declare const poll: NonNullable<RawPolls>;
 
-// @ts-expect-error — there is no `{ options }` wrapper. Reading it is the bug that shipped.
-void poll.options;
+// The wrapper is real now — both fields are readable.
+void poll.options.map((label: Uint8Array) => label);
+void poll.close_at;
 
-// The bare array IS the options list.
-void poll.map((label: Uint8Array) => label);
+// @ts-expect-error — a two-field struct is NOT unwrapped, so the value is not itself the options array.
+void poll.map;
+
+// ── the single-field vote records DO unwrap (spec 205 dropped their `weight`) ──────────────────────
+// `VoteRecord { dir }` and `PollVoteRecord { option }` are now single-field, so PAPI unwraps them to the
+// bare `VoteDir` enum / `u8` index. Reading `.dir` / `.option` off the unwrapped value is the new bug to
+// guard against.
+declare const voteRecord: NonNullable<RawVoteRecord>;
+void voteRecord.type; // the bare VoteDir enum
+
+// @ts-expect-error — there is no `{ dir }` wrapper any more; the value IS the enum.
+void voteRecord.dir;
+
+declare const pollVote: NonNullable<RawPollVote>;
+
+// @ts-expect-error — there is no `{ option }` wrapper; the value IS the `u8` index (a number).
+void pollVote.option;
 
 // ── snake_case is the wire, camelCase is the client ──────────────────────────────────────────────
 // The raw shapes are on-the-wire (snake_case). Mixing them up with the client `CognoPost` (camelCase)

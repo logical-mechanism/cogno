@@ -55,7 +55,19 @@ impl pallet_microblog::Config for Test {
     type IdentityGate = CognoGate;
     // No foreign feeless pallets in this integration mock — meter nothing extra.
     type ForeignCost = ();
+    // No observer in this mock — the staker set stands in with the `VotingPower` keys (empty here, since
+    // these identity-gate integration tests do not exercise weighted tallies).
+    type StakerSet = MockStakerSet;
     type WeightInfo = ();
+}
+
+/// Staker set for the live weighted-tally join (see pallet-microblog). No cardano-observer in this mock,
+/// so it stands in with the accounts that have a `VotingPower` row.
+pub struct MockStakerSet;
+impl pallet_microblog::StakerSet<u64> for MockStakerSet {
+    fn stakers() -> Vec<u64> {
+        pallet_talk_stake::VotingPower::<Test>::iter_keys().collect()
+    }
 }
 
 impl pallet_cogno_gate::Config for Test {

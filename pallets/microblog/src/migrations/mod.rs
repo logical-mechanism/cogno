@@ -18,9 +18,14 @@
 //! `v5` is the first SUBTRACTIVE migration (spec 204): it drops the retired repost storage (`Reposts` +
 //! `RepostCount` — this DELETES live rows) and settles every capacity bucket onto the
 //! settle-at-the-old-weight invariant, observably neutral by construction.
+//!
+//! `v6` (spec 205) re-encodes every vote / tally / poll row to DROP the stored weight (keeping only the
+//! exact counts) and appends `Poll.close_at = None` — dynamic stake voting derives the weighted score
+//! live at read time instead of freezing it at cast time.
 
 pub mod v1;
 pub mod v2;
 pub mod v3;
 pub mod v4;
 pub mod v5;
+pub mod v6;

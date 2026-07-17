@@ -86,7 +86,15 @@ parameter_types! {
 /// self-skips on a re-run. Registering it is load-bearing: without it the on-chain storage version stays 4
 /// while the pallet code declares 5, and the repost rows orphan permanently under a prefix no pallet
 /// declares any more.
-type SingleBlockMigrations = (pallet_microblog::migrations::v5::MigrateV4ToV5<Runtime>,);
+///
+/// spec 205 APPENDS `MigrateV5ToV6` (dynamic stake voting): it re-encodes every vote / tally / poll row to
+/// drop the stored weight (keeping the counts) and defaults `Poll.close_at = None`. `MigrateV4ToV5` is kept
+/// (never replaced) as the self-skipping guard for any node still at v4 — each `VersionedMigration` runs
+/// only when the on-chain version matches its `from`, so the tuple is safe to grow.
+type SingleBlockMigrations = (
+    pallet_microblog::migrations::v5::MigrateV4ToV5<Runtime>,
+    pallet_microblog::migrations::v6::MigrateV5ToV6<Runtime>,
+);
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
 /// cogno-chain permits EVERY call except:
@@ -767,7 +775,48 @@ impl pallet_microblog::Config for Runtime {
     // Profile pallet's feeless writes share this one battery, priced at `ProfileCost` and gated at the
     // pool by `CheckCapacity` — so the whole app is feeless with no second transaction-extension.
     type ForeignCost = ProfileCapacityCost;
+    // The staker set for the LIVE weighted-tally join = the observer's currently-credited accounts. Bounded
+    // by `MaxObserved`; exactly the set of accounts with non-zero `VotingPower`. See `ObservedStakers`.
+    type StakerSet = ObservedStakers;
     type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
+}
+
+/// Staker-set provider for pallet-microblog's live weighted-tally join: the accounts the `cardano-observer`
+/// currently credits (`LastObservedStake`), which on a Cardano-observing chain is exactly the set with
+/// non-zero `VotingPower` (the observer writes both in the same inherent and clamps everything absent from
+/// it to `0`). Bounded by `MaxObserved`, so the read-time join is `O(MaxObserved)` per entity regardless of
+/// how viral a post is. Microblog stays free of a Cargo dependency on cardano-observer — the same
+/// loose-coupling seam as `WeightApply`/`BeaconLookup`.
+///
+/// FALLBACK for a no-observer chain (`--dev`/`local`): there the observer never runs, so `LastObservedStake`
+/// stays EMPTY while genesis seeds `pallet_talk_stake::VotingPower` directly (`genesis_config_presets`).
+/// Without a fallback every weighted vote/poll/reputation would read `0` on a dev chain even though voting
+/// power is seeded. So when `LastObservedStake` is empty we derive the set from the `VotingPower` map keys
+/// instead, capped at `MaxObserved`. This branch is UNREACHABLE on any chain that has ever observed: the
+/// observer writes `LastObservedStake` and `VotingPower` together, so a non-empty `VotingPower` there
+/// implies a non-empty `LastObservedStake` and the primary path is taken — the `VotingPower` map (which
+/// keeps stale `0` rows and can outgrow `MaxObserved`) is never the canonical source in production.
+pub struct ObservedStakers;
+impl pallet_microblog::StakerSet<AccountId> for ObservedStakers {
+    fn stakers() -> alloc::vec::Vec<AccountId> {
+        let observed: alloc::vec::Vec<AccountId> =
+            pallet_cardano_observer::LastObservedStake::<Runtime>::get()
+                .into_iter()
+                .map(|(_stake_cred, account)| account)
+                .collect();
+        if !observed.is_empty() {
+            return observed;
+        }
+        // No observation yet (dev/local genesis-seeded weight, or a chain before its first observation —
+        // where `VotingPower` is likewise empty and this yields nothing). Cap at `MaxObserved` to keep the
+        // join bounded even against a `VotingPower` map that has accumulated stale rows.
+        let cap = <<Runtime as pallet_cardano_observer::Config>::MaxObserved as frame_support::traits::Get<
+            u32,
+        >>::get() as usize;
+        pallet_talk_stake::VotingPower::<Runtime>::iter_keys()
+            .take(cap)
+            .collect()
+    }
 }
 
 /// Configure pallet-cogno-gate: the 1:1 Cardano-owner-Address ↔ posting-account binding —

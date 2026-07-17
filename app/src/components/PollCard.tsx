@@ -3,18 +3,21 @@
 // PollCard — an on-chain poll rendered inside its host PostCard (D4).
 //
 // 2–4 options as WEIGHTED percentage bars (option.weight / poll.totalWeight, via weightPercent), the
-// viewer's choice marked with a ✓, and a totals line. Polls NEVER expire on-chain, so the chip is a
-// STATIC "Open" (pre-vote) / "Live results" (post-vote) — NEVER a countdown/timer.
+// viewer's choice marked with a ✓, and a totals line. Weighted results are derived LIVE (they re-price as
+// stake moves) while the poll is OPEN. A poll MAY carry a block-number deadline (spec 205): once past it
+// voting stops and the chip shows "Closed" (the result reads live until someone finalizes it) → "Final
+// results" once frozen. An open poll's chip is "Open" (pre-vote) / "Live results" (post-vote).
 //
-// Results (bars + %) show once the viewer has voted (myChoice != null), OR always when `showResults`
-// is set (the detail variant reveals results regardless so the data is inspectable). Pre-vote in a
-// timeline card the options are clickable radio rows with no bars.
+// Results (bars + %) show once the viewer has voted (myChoice != null), when `showResults` is set (the
+// detail variant), OR whenever the poll is closed. Pre-vote in an open timeline card the options are
+// clickable radio rows with no bars.
 //
 // Re-cast REPLACES (chain semantics): a voter may switch options but there is no clear-poll-vote
 // extrinsic, so we never offer "remove vote" — only switching. Zero voting power still votes (a
 // zero-weight cast is valid and bumps `count` not `weight`); the surface owns that nudge.
 //
-// Presentational only: it takes a PollView + myChoice + onVote and NEVER builds an extrinsic.
+// Presentational only: it takes a PollView + myChoice + onVote (+ optional close state / onFinalize) and
+// NEVER builds an extrinsic.
 
 import { useCallback, useRef } from "react";
 import styles from "./PollCard.module.css";
@@ -37,6 +40,16 @@ export interface PollCardProps {
   pendingChoice?: number | null;
   /** Tighter bars inside a dense timeline card. */
   compact?: boolean;
+  /**
+   * Poll close state (spec 205): `"open"` (or omitted) = still votable; `"provisional"` = past its
+   * deadline, result reads live and can be finalized; `"final"` = frozen. Non-open states disable voting
+   * and always reveal results.
+   */
+  closeState?: "open" | "provisional" | "final";
+  /** Permissionlessly finalize a provisional poll (freezes the weighted result). Shown only when provisional. */
+  onFinalize?: () => void;
+  /** A finalize (`close_poll`) is in flight → spinner on the Finalize control. */
+  finalizing?: boolean;
 }
 
 export function PollCard({
@@ -47,9 +60,15 @@ export function PollCard({
   disabled,
   pendingChoice,
   compact,
+  closeState = "open",
+  onFinalize,
+  finalizing,
 }: PollCardProps) {
   const voted = myChoice != null;
-  const results = showResults || voted;
+  const closed = closeState !== "open";
+  // A closed poll accepts no votes and always shows results.
+  const votingDisabled = disabled || closed;
+  const results = showResults || voted || closed;
   const noWeight = poll.totalWeight <= 0n;
 
   // WAI-ARIA radiogroup: a single tab stop (the checked option, else the first) + arrow-key roving.
@@ -59,17 +78,17 @@ export function PollCard({
   const click = useCallback(
     (e: React.MouseEvent, index: number) => {
       e.stopPropagation();
-      if (disabled || index === myChoice) return;
+      if (votingDisabled || index === myChoice) return;
       onVote(index);
     },
-    [disabled, myChoice, onVote],
+    [votingDisabled, myChoice, onVote],
   );
 
   // Arrow keys MOVE FOCUS ONLY between options — they never cast (a poll vote is an irreversible
   // on-chain action, so casting stays on click / Enter / Space per the D4 comment above).
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (disabled) return; // disabled buttons aren't focusable, so nothing to rove
+      if (votingDisabled) return; // disabled buttons aren't focusable, so nothing to rove
       const dir =
         e.key === "ArrowDown" || e.key === "ArrowRight"
           ? 1
@@ -84,7 +103,7 @@ export function PollCard({
       if (cur < 0) cur = rovingPos;
       btns[(cur + dir + count) % count]?.focus();
     },
-    [disabled, poll.options.length, rovingPos],
+    [votingDisabled, poll.options.length, rovingPos],
   );
 
   return (
@@ -120,7 +139,7 @@ export function PollCard({
               className={`${styles.option} ${results ? styles.resultRow : styles.voteRow} ${
                 mine ? styles.mine : ""
               }`}
-              disabled={disabled}
+              disabled={votingDisabled}
               onClick={(e) => click(e, opt.index)}
             >
               {results && (
@@ -163,8 +182,28 @@ export function PollCard({
         <span className={styles.dot} aria-hidden>
           ·
         </span>
-        {/* NEVER a countdown — polls do not expire on-chain (D4). */}
-        <span className={styles.open}>{voted ? "Live results" : "Open"}</span>
+        {closeState === "final" ? (
+          <span className={styles.open}>Final results</span>
+        ) : closeState === "provisional" ? (
+          <>
+            <span className={styles.open}>Closed</span>
+            {onFinalize && (
+              <button
+                type="button"
+                className={styles.finalize}
+                disabled={finalizing}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFinalize();
+                }}
+              >
+                {finalizing ? <Spinner size="sm" /> : "Finalize"}
+              </button>
+            )}
+          </>
+        ) : (
+          <span className={styles.open}>{voted ? "Live results" : "Open"}</span>
+        )}
       </div>
     </div>
   );

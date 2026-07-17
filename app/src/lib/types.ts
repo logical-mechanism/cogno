@@ -4,7 +4,7 @@
 // and the React layer (hooks, components). The data layer IMPLEMENTS these shapes; the
 // React layer CONSUMES them. Nothing here imports React. The shapes are grounded against
 // polkadot-api 2.x and the descriptors generated from the live cogno-chain-runtime
-// (spec_version 203) — confirmed against the running node's metadata, not guessed.
+// (spec_version 205) — confirmed against the running node's metadata, not guessed.
 
 import type { PolkadotClient, TypedApi } from "polkadot-api";
 import type { PolkadotSigner } from "polkadot-api/signer";
@@ -91,6 +91,16 @@ export interface PollView {
   /** Σ option weight, for percent bars. */
   totalWeight: bigint;
   totalCount: number;
+  /**
+   * Optional block-number deadline (spec 205). `undefined` ⇒ the poll floats forever (never closes).
+   * `Some(b)` ⇒ voting is rejected once the best block reaches `b`, and the result can be FROZEN.
+   */
+  closeAt?: number;
+  /**
+   * `true` once `close_poll` has finalized the poll (a `PollResults` row exists) — the weighted result is
+   * frozen and no longer re-prices. Distinct from merely being past `closeAt` (that is "provisional").
+   */
+  finalized: boolean;
 }
 
 /** A compact reference to a quoted post for the `QuotedPostEmbed` (no recursion). */

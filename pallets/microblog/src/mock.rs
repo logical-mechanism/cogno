@@ -50,6 +50,17 @@ impl pallet_microblog::ForeignCapacityCost<RuntimeCall> for MockForeignCost {
     }
 }
 
+/// Mock staker set for the live weighted-tally join. The real runtime wires this to the observer's
+/// `LastObservedStake`; here there is no observer, so it stands in with the accounts that have a
+/// `VotingPower` row — i.e. every account a test has given voting power to. This is faithful: an account
+/// with no `VotingPower` is not in the set and its votes carry zero weight, exactly as on chain.
+pub struct MockStakerSet;
+impl pallet_microblog::StakerSet<u64> for MockStakerSet {
+    fn stakers() -> Vec<u64> {
+        pallet_talk_stake::VotingPower::<Test>::iter_keys().collect()
+    }
+}
+
 frame_support::construct_runtime!(
     pub enum Test {
         System: frame_system,
@@ -89,6 +100,7 @@ impl pallet_microblog::Config for Test {
     type ForceOrigin = EnsureRoot<u64>;
     type IdentityGate = MockIdentityGate;
     type ForeignCost = MockForeignCost;
+    type StakerSet = MockStakerSet;
     type WeightInfo = ();
 }
 

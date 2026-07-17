@@ -128,3 +128,24 @@
 .open {
   color: var(--cg-text-secondary);
 }
+
+/* The permissionless "Finalize" affordance on a provisional (past-deadline, unfrozen) poll. */
+.finalize {
+  margin-left: 0.5rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--cg-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.finalize:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.finalize:disabled {
+  cursor: default;
+  opacity: 0.7;
+}

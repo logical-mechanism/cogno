@@ -114,9 +114,14 @@ const MAX_PEOPLE_SCAN: u32 = 10_000;
 /// Cross-pallet fold: build a [`pallet_microblog::PersonSummary`] for `account` — display/avatar from
 /// pallet-profile, `weight` from talk-stake `AllowedStake`, `follower_count` from microblog. The runtime
 /// does these cross-pallet reads the microblog pallet deliberately cannot (no profile/talk-stake dep).
+///
+/// `account_tally` (the community reputation) is now derived LIVE from current stake — its exact counts
+/// come from `AccountVoteTally`, its weighted numbers from joining `stakers` (the shared staker→weight
+/// list, built ONCE per `state_call`) against each voter's `VotingPower`. See dynamic stake voting.
 fn person_summary(
     account: AccountId,
     prof: Option<&pallet_profile::Profile<Runtime>>,
+    stakers: &[(AccountId, u128)],
 ) -> pallet_microblog::PersonSummary<AccountId> {
     let (display_name, avatar) = match prof {
         Some(p) => (p.display_name.to_vec(), p.avatar.to_vec()),
@@ -125,7 +130,7 @@ fn person_summary(
     pallet_microblog::PersonSummary {
         weight: pallet_talk_stake::AllowedStake::<Runtime>::get(&account),
         follower_count: pallet_microblog::FollowerCount::<Runtime>::get(&account),
-        account_tally: pallet_microblog::AccountVoteTally::<Runtime>::get(&account),
+        account_tally: pallet_microblog::Pallet::<Runtime>::account_tally(&account, stakers),
         display_name,
         avatar,
         account,
@@ -401,12 +406,14 @@ impl_runtime_apis! {
                     ),
                     None => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
                 };
+            // Reputation tally derived LIVE from current stake (counts from storage, weights from the join).
+            let stakers = pallet_microblog::Pallet::<Runtime>::staker_weights();
             pallet_microblog::ProfileView {
                 identity_hash,
                 is_allowed,
                 weight: pallet_talk_stake::AllowedStake::<Runtime>::get(&who),
                 voting_power: pallet_talk_stake::VotingPower::<Runtime>::get(&who),
-                account_tally: pallet_microblog::AccountVoteTally::<Runtime>::get(&who),
+                account_tally: pallet_microblog::Pallet::<Runtime>::account_tally(&who, &stakers),
                 display_name,
                 bio,
                 avatar,
@@ -449,7 +456,9 @@ impl_runtime_apis! {
             }
             matches.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             matches.truncate(limit);
-            matches.into_iter().map(|(account, _, prof)| person_summary(account, Some(&prof))).collect()
+            // Build the staker→weight list ONCE and reuse it across the ≤`limit` reputation joins.
+            let stakers = pallet_microblog::Pallet::<Runtime>::staker_weights();
+            matches.into_iter().map(|(account, _, prof)| person_summary(account, Some(&prof), &stakers)).collect()
         }
 
         fn who_to_follow(limit: u32) -> Vec<pallet_microblog::PersonSummary<AccountId>> {
@@ -473,11 +482,13 @@ impl_runtime_apis! {
             }
             ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             ranked.truncate(limit);
+            // Build the staker→weight list ONCE and reuse it across the ≤`limit` reputation joins.
+            let stakers = pallet_microblog::Pallet::<Runtime>::staker_weights();
             ranked
                 .into_iter()
                 .map(|(account, _)| {
                     let prof = pallet_profile::Profiles::<Runtime>::get(&account);
-                    person_summary(account, prof.as_ref())
+                    person_summary(account, prof.as_ref(), &stakers)
                 })
                 .collect()
         }

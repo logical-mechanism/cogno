@@ -125,6 +125,9 @@ export type DraftStatus =
  */
 export const SECS_PER_BLOCK = 6;
 
+/** Blocks per day (`86400 / SECS_PER_BLOCK`) — converts a poll's close-deadline days to a block count. */
+export const BLOCKS_PER_DAY = Math.round(86_400 / SECS_PER_BLOCK);
+
 export function draftStatus(view: CapacityView, byteLen: number, K: CapacityConsts): DraftStatus {
   const need = postCost(byteLen, K);
   if (view.weight === 0n) return { kind: "no_weight", need }; // ⛔ no timer — needs weight

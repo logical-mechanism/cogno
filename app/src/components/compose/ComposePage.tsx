@@ -40,7 +40,9 @@ import {
   submitReply,
   submitQuote,
   submitCreatePoll,
+  resolveCloseAt,
 } from "@/lib/chain/mutations";
+import { useToaster } from "@/components/toast/ToasterProvider";
 import type { ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
 import type { CognoPost } from "@/lib/types";
 
@@ -64,7 +66,8 @@ const TITLES: Record<ComposerMode, string> = {
 export function ComposePage() {
   const router = useRouter();
   const params = useSearchParams();
-  const { api, signer, source, viewer } = useSession();
+  const { api, signer, source, viewer, bestBlock } = useSession();
+  const { toast } = useToaster();
 
   // ── Mode resolution: precedence reply > quote > poll > post; defensive against junk ids. ──
   const replyId = parseTargetId(params.get("reply"));
@@ -214,15 +217,28 @@ export function ComposePage() {
   );
 
   const onCreatePoll = useCallback(
-    (question: string, options: string[]) => {
+    async (question: string, options: string[], closeInDays?: number) => {
       if (viewer.status !== "ready") return void router.push("/welcome/");
       if (!api || !signer || question.trim().length === 0) return;
-      runWrite(submitCreatePoll(api, signer, question, options), optimisticPost(question, { isPoll: true }), {
+      // Convert the chosen deadline (days) to an absolute block-number `close_at`. If a deadline was
+      // requested but the chain height can't be read, surface it — never silently create a floating poll.
+      let closeAt: number | undefined;
+      try {
+        closeAt = await resolveCloseAt(api, bestBlock, closeInDays);
+      } catch {
+        toast({
+          id: "poll-deadline",
+          kind: "error",
+          message: "Couldn't set the poll deadline — check your connection and try again.",
+        });
+        return;
+      }
+      runWrite(submitCreatePoll(api, signer, question, options, closeAt), optimisticPost(question, { isPoll: true }), {
         pending: "Creating poll…",
         success: "Poll created",
       });
     },
-    [viewer.status, api, signer, runWrite, optimisticPost, router],
+    [viewer.status, api, signer, bestBlock, runWrite, optimisticPost, router, toast],
   );
 
   return (

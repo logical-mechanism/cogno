@@ -25,7 +25,14 @@ export interface InlinePollProps {
 export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
   const router = useRouter();
   const { source, api, signer, bestBlock } = useSession();
-  const { poll, myChoice, castVote } = usePoll(source, postId, api, signer, gate.address ?? null, bestBlock);
+  const { poll, myChoice, castVote, provisional, finalize, finalizing } = usePoll(
+    source,
+    postId,
+    api,
+    signer,
+    gate.address ?? null,
+    bestBlock,
+  );
   // Casting a poll vote is a mutating write — funnel an unfinished-setup viewer to /welcome instead of
   // casting. usePoll.castVote has NO gate of its own, so this is the single enforcement point for inline
   // poll votes (the mandatory stake step is not a pool gate, so the UI must hold the line).
@@ -36,7 +43,13 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
     },
     [gate.writeReady, router, castVote],
   );
+  // Finalizing (`close_poll`) is a permissionless mutating write too — same write-gate funnel.
+  const onFinalize = useCallback(() => {
+    if (!gate.writeReady) return void router.push("/welcome/");
+    finalize();
+  }, [gate.writeReady, router, finalize]);
   if (!poll) return null; // still loading / no tallies — the post body already rendered above
+  const closeState = poll.finalized ? "final" : provisional ? "provisional" : "open";
   return (
     <PollCard
       poll={poll}
@@ -45,6 +58,9 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
       showResults={detail}
       disabled={gate.status === "not-identity-bound"}
       compact={!detail}
+      closeState={closeState}
+      onFinalize={onFinalize}
+      finalizing={finalizing}
     />
   );
 }

@@ -67,14 +67,12 @@ interface StorageEntry {
   keyArgs: unknown[];
   value: unknown;
 }
-interface VoteValue {
-  dir: { type: "Up" | "Down" };
-  weight: bigint;
-}
-interface PollVoteValue {
-  option: number;
-  weight: bigint;
-}
+// Spec 205 / storage v6: the single-field `VoteRecord { dir }` and `PollVoteRecord { option }` are
+// UNWRAPPED by PAPI to the bare `VoteDir` enum / `u8` index (the stored `weight` field was dropped —
+// vote weight is now derived live). These reads go through hand-written casts on `getEntries` values, so
+// tsc does NOT catch the shape flip — the casts must be kept in lockstep with the descriptors by hand.
+type VoteValue = { type: "Up" | "Down" }; // the bare VoteDir enum
+type PollVoteValue = number; // the bare option index
 interface RawPost {
   author: Ss58;
   at: number;
@@ -130,7 +128,7 @@ export async function loadNotifications(
       const voter = e.keyArgs[e.keyArgs.length - 1] as Ss58;
       if (voter === me) continue;
       const v = e.value as VoteValue;
-      notifs.push({ key: `like:${postId}:${voter}`, kind: "like", actor: voter, postId, dir: v?.dir?.type });
+      notifs.push({ key: `like:${postId}:${voter}`, kind: "like", actor: voter, postId, dir: v?.type });
     }
   });
 
@@ -140,7 +138,7 @@ export async function loadNotifications(
       const voter = e.keyArgs[e.keyArgs.length - 1] as Ss58;
       if (voter === me) continue;
       const v = e.value as PollVoteValue;
-      notifs.push({ key: `poll:${postId}:${voter}`, kind: "pollvote", actor: voter, postId, option: v?.option });
+      notifs.push({ key: `poll:${postId}:${voter}`, kind: "pollvote", actor: voter, postId, option: v });
     }
   });
 
@@ -167,7 +165,7 @@ export async function loadNotifications(
     const voter = e.keyArgs[e.keyArgs.length - 1] as Ss58;
     if (voter === me) continue;
     const v = e.value as VoteValue;
-    notifs.push({ key: `rep:${voter}`, kind: "reputation", actor: voter, dir: v?.dir?.type });
+    notifs.push({ key: `rep:${voter}`, kind: "reputation", actor: voter, dir: v?.type });
   }
 
   // New followers (edge). actor = follower.

@@ -15,6 +15,7 @@
 import { Binary, Enum } from "polkadot-api";
 import type { Observable } from "rxjs";
 import { signSubmitWatch, submitPost, type SignableTx } from "@/lib/chain/post";
+import { BLOCKS_PER_DAY } from "@/lib/chain/capacity";
 import type { CognoApi, PostingSigner, TxUpdate, Ss58 } from "@/lib/types";
 
 /**
@@ -139,20 +140,43 @@ export function submitClearAccountVote(
  * options, each ≤ 80 bytes (validate at the call site with the ByteCounter). Emits `PostCreated`
  * (the host post's id) + `PollCreated`.
  */
+/**
+ * Resolve a composer's `closeInDays` deadline (spec 205) to an absolute block-number `close_at` for
+ * `create_poll`. `undefined` closeInDays ⇒ `undefined` (a floating, no-deadline poll). Prefers the live
+ * `bestBlock`; if that hasn't loaded yet it reads the chain head. THROWS when a deadline WAS requested but
+ * the chain height can't be read — so the caller surfaces the failure instead of silently creating a
+ * floating poll. (Shared by both compose surfaces so the derivation lives in exactly one place.)
+ */
+export async function resolveCloseAt(
+  api: CognoApi,
+  bestBlock: number | null | undefined,
+  closeInDays?: number,
+): Promise<number | undefined> {
+  if (!closeInDays) return undefined;
+  const now = bestBlock ?? Number(await api.query.System.Number.getValue());
+  if (!now || now <= 0) {
+    throw new Error("Couldn't read the chain height to set the poll deadline.");
+  }
+  return now + closeInDays * BLOCKS_PER_DAY;
+}
+
 export function submitCreatePoll(
   api: CognoApi,
   signer: PostingSigner,
   question: string,
   options: string[],
+  closeAt?: number,
 ): Observable<TxUpdate> {
   const tx = api.tx.Microblog.create_poll({
     question: Binary.fromText(question),
     options: options.map((o) => Binary.fromText(o)),
+    // `close_at: Option<BlockNumber>` (spec 205). PAPI encodes `undefined` as None (a floating poll).
+    close_at: closeAt,
   });
   return watchSigned(api, tx, signer, "PostCreated");
 }
 
-/** Cast / re-cast a poll vote (re-cast moves the voter's weight to the new option). */
+/** Cast / re-cast a poll vote (re-cast moves the voter's live weight to the new option). */
 export function submitPollVote(
   api: CognoApi,
   signer: PostingSigner,
@@ -163,6 +187,20 @@ export function submitPollVote(
     post_id: hostId,
     option,
   });
+  return watchSigned(api, tx, signer);
+}
+
+/**
+ * Finalize a poll past its deadline (spec 205): permissionless `close_poll`, which FREEZES the weighted
+ * result into `PollResults`. Idempotent on-chain (a second close is a no-op). The `PollClosed` event
+ * confirms it.
+ */
+export function submitClosePoll(
+  api: CognoApi,
+  signer: PostingSigner,
+  hostId: bigint,
+): Observable<TxUpdate> {
+  const tx = api.tx.Microblog.close_poll({ host_id: hostId });
   return watchSigned(api, tx, signer);
 }
 

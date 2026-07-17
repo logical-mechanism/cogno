@@ -1,8 +1,10 @@
 "use client";
 
 // usePoll — fetch a poll's options + stake-weighted tallies AND the viewer's existing choice, then
-// cast/re-cast the viewer's vote optimistically. Polls NEVER expire (no on-chain
-// deadline) — results are live and a re-cast moves the viewer's choice.
+// cast/re-cast the viewer's vote optimistically. Weighted results are derived LIVE by the node (they
+// re-price as stake moves), so a re-cast moves the viewer's choice and the numbers float — UNTIL the poll
+// is closed. A poll MAY carry a block-number `closeAt` deadline (spec 205): once the best block reaches it
+// voting stops, and anyone may permissionlessly `close_poll` to FREEZE the weighted result.
 //
 // RECONCILE (why this isn't a single reload-on-confirm): a vote confirms at `inBestBlock`, and the reads
 // target the best block — but there's still a narrow window where the read can resolve a hair before the
@@ -18,7 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation } from "./useMutation";
 import { useActionToast } from "./useActionToast";
-import { submitPollVote } from "@/lib/chain/mutations";
+import { submitPollVote, submitClosePoll } from "@/lib/chain/mutations";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, PostingSigner, PollView, Ss58 } from "@/lib/types";
 
@@ -28,6 +30,14 @@ export interface UsePoll {
   castVote: (option: number) => void;
   loading: boolean;
   error: string | null;
+  /** Voting is over: the deadline has passed (or the result is already frozen). No more casts. */
+  closed: boolean;
+  /** Past the deadline but NOT yet finalized — the result reads live and `finalize()` can freeze it. */
+  provisional: boolean;
+  /** Permissionlessly finalize a provisional poll (`close_poll`), freezing its weighted result. */
+  finalize: () => void;
+  /** A `close_poll` is in flight. */
+  finalizing: boolean;
 }
 
 /** Give up waiting for the read to reflect a cast after this many block re-reads (accept chain truth). */
@@ -52,7 +62,17 @@ export function usePoll(
   // After a cast: the option we're waiting for the chain read to confirm. While set, the optimistic
   // count is held and re-reads only "take" once the read reflects this option (or the retry budget runs).
   const [pendingOption, setPendingOption] = useState<number | null>(null);
+  const [finalizing, setFinalizing] = useState(false);
   const triesRef = useRef(0);
+
+  // Close state, derived from the poll's `closeAt` deadline + the current best block + its finalized flag.
+  // `closed` (voting over) = already finalized OR the best block has reached the deadline. `provisional` =
+  // past the deadline but not yet frozen (reads live; anyone may `finalize()`).
+  const finalized = poll?.finalized ?? false;
+  const pastDeadline =
+    poll?.closeAt != null && bestBlock != null && bestBlock >= poll.closeAt;
+  const closed = finalized || !!pastDeadline;
+  const provisional = !!pastDeadline && !finalized;
 
   // One read of the poll's tallies + the viewer's prior choice (null-soft on the choice read).
   const read = useCallback(async (): Promise<{ poll: PollView; choice: number | null } | null> => {
@@ -95,6 +115,8 @@ export function usePoll(
   const castVote = useCallback(
     (option: number) => {
       if (!api || !signer || hostId == null) return;
+      // A closed poll accepts no votes — the chain rejects it `PollClosed`, so don't optimistically move.
+      if (closed) return;
       const prev = myChoice;
       setMyChoice(option);
       // Optimistic: move the count from the previous option to the new one (true weights reconcile later).
@@ -132,8 +154,31 @@ export function usePoll(
         },
       });
     },
-    [api, signer, hostId, myChoice, run, read, fail],
+    [api, signer, hostId, closed, myChoice, run, read, fail],
   );
+
+  // Permissionlessly finalize a provisional poll: `close_poll` freezes the weighted result. On confirm,
+  // re-read so the card flips to the frozen "Final" state. Idempotent on-chain, so a race is harmless.
+  const finalize = useCallback(() => {
+    if (!api || !signer || hostId == null || !provisional || finalizing) return;
+    setFinalizing(true);
+    void run(submitClosePoll(api, signer, hostId), {
+      onConfirm: () => {
+        setFinalizing(false);
+        read()
+          .then((r) => {
+            if (!r) return;
+            setPoll(r.poll);
+            setMyChoice(r.choice);
+          })
+          .catch(() => {});
+      },
+      onError: (message) => {
+        setFinalizing(false);
+        fail(message);
+      },
+    });
+  }, [api, signer, hostId, provisional, finalizing, run, read, fail]);
 
   // Reconcile-reload: after a cast, re-read each block until the read reflects the cast option (or the
   // retry budget runs), then accept the true weighted tally + ✓. Silent (no loading flicker).
@@ -157,5 +202,5 @@ export function usePoll(
     };
   }, [pendingOption, bestBlock, read]);
 
-  return { poll, myChoice, castVote, loading, error };
+  return { poll, myChoice, castVote, loading, error, closed, provisional, finalize, finalizing };
 }
