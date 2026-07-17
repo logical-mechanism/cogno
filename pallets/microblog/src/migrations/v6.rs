@@ -99,7 +99,8 @@ pub(crate) mod old {
     use frame_support::{storage_alias, Blake2_128Concat};
 
     #[storage_alias]
-    pub type VoteTally<T: Config> = StorageMap<Pallet<T>, Blake2_128Concat, u64, OldTally, ValueQuery>;
+    pub type VoteTally<T: Config> =
+        StorageMap<Pallet<T>, Blake2_128Concat, u64, OldTally, ValueQuery>;
 
     #[storage_alias]
     pub type AccountVoteTally<T: Config> = StorageMap<
@@ -218,13 +219,19 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV5ToV6<T> {
     #[cfg(feature = "try-runtime")]
     fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
         #[allow(clippy::type_complexity)]
-        let (vote_tallies, account_tallies, poll_tallies, (votes, account_votes, poll_votes, polls)): (
+        let (
+            vote_tallies,
+            account_tallies,
+            poll_tallies,
+            (votes, account_votes, poll_votes, polls),
+        ): (
             Vec<(u64, (u32, u32))>,
             Vec<(T::AccountId, (u32, u32))>,
             Vec<((u64, u8), u32)>,
             (u64, u64, u64, u64),
-        ) = Decode::decode(&mut &state[..])
-            .map_err(|_| sp_runtime::TryRuntimeError::Other("microblog v6: bad pre_upgrade state"))?;
+        ) = Decode::decode(&mut &state[..]).map_err(|_| {
+            sp_runtime::TryRuntimeError::Other("microblog v6: bad pre_upgrade state")
+        })?;
 
         // Every vote-map row still DECODES under the new (lighter) type — i.e. no `weight` byte survived.
         // `iter().count()` fully decodes each value; comparing to `iter_keys().count()` catches any row

@@ -516,8 +516,8 @@ fn tally_count_fold_and_live_weight_property() {
             (3, 50, Some(VoteDir::Down)),
             (2, 250, Some(VoteDir::Up)), // same-dir reweight
             (4, 70, Some(VoteDir::Up)),
-            (3, 50, Some(VoteDir::Up)), // flip Down -> Up
-            (2, 250, None),             // clear
+            (3, 50, Some(VoteDir::Up)),    // flip Down -> Up
+            (2, 250, None),                // clear
             (4, 999, Some(VoteDir::Down)), // flip Up -> Down at new stake
         ];
         // Independent COUNT fold: last-seen direction per voter, reverse-then-apply.
@@ -578,8 +578,14 @@ fn account_vote_records_count_and_live_weight() {
         assert_eq!(stored.up_count, 1);
         assert_eq!(stored.down_count, 0);
         let t = account_weight(3);
-        assert_eq!((t.up_weight, t.down_weight, t.up_count, t.down_count), (100, 0, 1, 0));
-        assert_eq!(AccountVotes::<Test>::get(3, 2).expect("record").dir, VoteDir::Up);
+        assert_eq!(
+            (t.up_weight, t.down_weight, t.up_count, t.down_count),
+            (100, 0, 1, 0)
+        );
+        assert_eq!(
+            AccountVotes::<Test>::get(3, 2).expect("record").dir,
+            VoteDir::Up
+        );
         System::assert_last_event(
             Event::AccountVoted {
                 target: 3,
@@ -596,7 +602,11 @@ fn account_reputation_reprices_live_when_stake_moves() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         TalkStake::apply_voting_power(&2, 100);
-        assert_ok!(Microblog::vote_account(RuntimeOrigin::signed(2), 3, VoteDir::Up));
+        assert_ok!(Microblog::vote_account(
+            RuntimeOrigin::signed(2),
+            3,
+            VoteDir::Up
+        ));
         assert_eq!(account_weight(3).up_weight, 100);
         // The already-cast reputation vote re-prices as the voter's stake moves — no re-vote.
         TalkStake::apply_voting_power(&2, 400);
@@ -683,8 +693,16 @@ fn account_revote_same_direction_does_not_double_count() {
             3,
             VoteDir::Up
         )); // same dir, new stake
-        assert_eq!(AccountVoteTally::<Test>::get(3).up_count, 1, "count not double-incremented");
-        assert_eq!(account_weight(3).up_weight, 300, "weight reflects current stake");
+        assert_eq!(
+            AccountVoteTally::<Test>::get(3).up_count,
+            1,
+            "count not double-incremented"
+        );
+        assert_eq!(
+            account_weight(3).up_weight,
+            300,
+            "weight reflects current stake"
+        );
     });
 }
 
@@ -1076,7 +1094,11 @@ fn poll_close_rejects_votes_and_freezes_result() {
         // A frozen poll no longer re-prices: moving stake after the close leaves the result unchanged,
         // and a second close_poll is an idempotent no-op.
         TalkStake::apply_voting_power(&3, 5_000);
-        assert_eq!(poll_opt_weight(0, 1), 200, "frozen result must not re-price");
+        assert_eq!(
+            poll_opt_weight(0, 1),
+            200,
+            "frozen result must not re-price"
+        );
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0)); // idempotent
     });
 }
@@ -1097,7 +1119,11 @@ fn close_poll_rejects_floating_and_missing_polls() {
             Error::<Test>::PollNotClosable
         );
         // A non-poll post cannot be closed.
-        assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"hi".to_vec(), None));
+        assert_ok!(Microblog::post_message(
+            RuntimeOrigin::signed(1),
+            b"hi".to_vec(),
+            None
+        ));
         assert_noop!(
             Microblog::close_poll(RuntimeOrigin::signed(2), 1),
             Error::<Test>::PollNotFound
@@ -1967,7 +1993,7 @@ mod capacity_extension {
                 Some(50)
             ); // VoteCost
             assert_eq!(cost(Call::close_poll { host_id: 0 }), Some(50)); // VoteCost (finalize)
-               // Not metered.
+                                                                         // Not metered.
             assert_eq!(
                 cost(Call::force_set_capacity {
                     who: 1,
@@ -2596,33 +2622,65 @@ mod migration_v6 {
             // Old post-vote rows + tally (weights present).
             put(
                 Votes::<Test>::hashed_key_for(0, 2),
-                OldVoteRecord { dir: VoteDir::Up, weight: 100 }.encode(),
+                OldVoteRecord {
+                    dir: VoteDir::Up,
+                    weight: 100,
+                }
+                .encode(),
             );
             put(
                 Votes::<Test>::hashed_key_for(0, 3),
-                OldVoteRecord { dir: VoteDir::Down, weight: 50 }.encode(),
+                OldVoteRecord {
+                    dir: VoteDir::Down,
+                    weight: 50,
+                }
+                .encode(),
             );
             put(
                 VoteTally::<Test>::hashed_key_for(0),
-                OldTally { up_weight: 100, down_weight: 50, up_count: 1, down_count: 1 }.encode(),
+                OldTally {
+                    up_weight: 100,
+                    down_weight: 50,
+                    up_count: 1,
+                    down_count: 1,
+                }
+                .encode(),
             );
             // Old account-vote rows + tally.
             put(
                 AccountVotes::<Test>::hashed_key_for(9, 2),
-                OldVoteRecord { dir: VoteDir::Up, weight: 77 }.encode(),
+                OldVoteRecord {
+                    dir: VoteDir::Up,
+                    weight: 77,
+                }
+                .encode(),
             );
             put(
                 AccountVoteTally::<Test>::hashed_key_for(9),
-                OldTally { up_weight: 77, down_weight: 0, up_count: 1, down_count: 0 }.encode(),
+                OldTally {
+                    up_weight: 77,
+                    down_weight: 0,
+                    up_count: 1,
+                    down_count: 0,
+                }
+                .encode(),
             );
             // Old poll: choice + per-option tally + the poll itself (no close_at in v5).
             put(
                 PollVotes::<Test>::hashed_key_for(0, 2),
-                OldPollVoteRecord { option: 1, weight: 200 }.encode(),
+                OldPollVoteRecord {
+                    option: 1,
+                    weight: 200,
+                }
+                .encode(),
             );
             put(
                 PollTally::<Test>::hashed_key_for(0, 1),
-                OldOptionTally { weight: 200, count: 1 }.encode(),
+                OldOptionTally {
+                    weight: 200,
+                    count: 1,
+                }
+                .encode(),
             );
             let mut options: BoundedVec<BoundedVec<u8, _>, _> = Default::default();
             options.try_push(b"a".to_vec().try_into().unwrap()).unwrap();
@@ -2633,16 +2691,43 @@ mod migration_v6 {
             );
 
             let _w = MigrateV5ToV6::<Test>::on_runtime_upgrade();
-            assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(6));
+            assert_eq!(
+                Pallet::<Test>::on_chain_storage_version(),
+                StorageVersion::new(6)
+            );
 
             // Directions preserved; the stored records now carry ONLY the direction / option.
-            assert_eq!(Votes::<Test>::get(0, 2), Some(VoteRecord { dir: VoteDir::Up }));
-            assert_eq!(Votes::<Test>::get(0, 3), Some(VoteRecord { dir: VoteDir::Down }));
-            assert_eq!(AccountVotes::<Test>::get(9, 2), Some(VoteRecord { dir: VoteDir::Up }));
-            assert_eq!(PollVotes::<Test>::get(0, 2), Some(PollVoteRecord { option: 1 }));
+            assert_eq!(
+                Votes::<Test>::get(0, 2),
+                Some(VoteRecord { dir: VoteDir::Up })
+            );
+            assert_eq!(
+                Votes::<Test>::get(0, 3),
+                Some(VoteRecord { dir: VoteDir::Down })
+            );
+            assert_eq!(
+                AccountVotes::<Test>::get(9, 2),
+                Some(VoteRecord { dir: VoteDir::Up })
+            );
+            assert_eq!(
+                PollVotes::<Test>::get(0, 2),
+                Some(PollVoteRecord { option: 1 })
+            );
             // Counts preserved byte-for-byte; weights gone from the value types.
-            assert_eq!(VoteTally::<Test>::get(0), VoteCounts { up_count: 1, down_count: 1 });
-            assert_eq!(AccountVoteTally::<Test>::get(9), VoteCounts { up_count: 1, down_count: 0 });
+            assert_eq!(
+                VoteTally::<Test>::get(0),
+                VoteCounts {
+                    up_count: 1,
+                    down_count: 1
+                }
+            );
+            assert_eq!(
+                AccountVoteTally::<Test>::get(9),
+                VoteCounts {
+                    up_count: 1,
+                    down_count: 0
+                }
+            );
             assert_eq!(PollTally::<Test>::get(0, 1), OptionTally { count: 1 });
             // The poll re-encodes with the options preserved and a defaulted (floating) deadline.
             let poll = Polls::<Test>::get(0).expect("poll migrated");
@@ -2653,8 +2738,17 @@ mod migration_v6 {
 
             // Idempotency: a second run is a no-op (the guard skips now that on-chain version is 6).
             let _ = MigrateV5ToV6::<Test>::on_runtime_upgrade();
-            assert_eq!(VoteTally::<Test>::get(0), VoteCounts { up_count: 1, down_count: 1 });
-            assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(6));
+            assert_eq!(
+                VoteTally::<Test>::get(0),
+                VoteCounts {
+                    up_count: 1,
+                    down_count: 1
+                }
+            );
+            assert_eq!(
+                Pallet::<Test>::on_chain_storage_version(),
+                StorageVersion::new(6)
+            );
         });
     }
 }

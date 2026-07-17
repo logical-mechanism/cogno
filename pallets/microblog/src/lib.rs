@@ -620,7 +620,8 @@ pub mod pallet {
     /// finalized (floats forever, or is past `close_at` but nobody has called `close_poll` yet). Written
     /// once by `close_poll`; reads short-circuit to it. Empty at genesis, so v6 needs no backfill.
     #[pallet::storage]
-    pub type PollResults<T: Config> = StorageMap<_, Blake2_128Concat, u64, PollResult<T>, OptionQuery>;
+    pub type PollResults<T: Config> =
+        StorageMap<_, Blake2_128Concat, u64, PollResult<T>, OptionQuery>;
 
     // ── Feature 3 (spec 121): the top-level-post index. A dense, reply-free sequence of top-level
     //    (`parent == None`) post ids so `feed_page` reads EXACTLY N (no reply over-scan), plus a
