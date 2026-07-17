@@ -115,3 +115,31 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* Optional close-deadline picker (spec 205): a native <select> + a one-line explanatory hint. */
+.deadlineRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  margin-top: var(--cg-space-2);
+  flex-wrap: wrap;
+}
+.deadlineLabel {
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+  font-weight: 600;
+}
+.deadline {
+  padding: var(--cg-space-1) var(--cg-space-2);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg);
+  color: var(--cg-text);
+  font: inherit;
+  font-size: var(--cg-fs-sm);
+  cursor: pointer;
+}
+.deadline:focus-visible {
+  outline: 2px solid var(--cg-accent);
+  outline-offset: 1px;
+}

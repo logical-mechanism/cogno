@@ -136,6 +136,32 @@ impl<RuntimeCall> ForeignCapacityCost<RuntimeCall> for () {
     }
 }
 
+/// The bounded set of accounts that currently carry observed Cardano stake — the basis of every
+/// LIVE weighted tally (post votes, account reputation, polls). The read path never stores a vote's
+/// weight; instead it iterates THIS set and probes each staker's vote, summing their **current**
+/// `pallet_talk_stake::VotingPower`. That makes the weighted score exact, single-valued and bounded by
+/// one chain-wide constant (`MaxObserved`) rather than by how viral a post is — a hash-ordered voter
+/// prefix would be an arbitrary subset that can drop the highest-stake voter and let a new vote LOWER
+/// the score. See `docs/DYNAMIC-STAKE-VOTING-PLAN.md` §2.1.
+///
+/// The runtime wires this to `pallet_cardano_observer::LastObservedStake`, which is exactly the set of
+/// accounts with non-zero `VotingPower` (the observer writes `VotingPower` from that same credited set
+/// and clamps everything absent from it to `0`). It carries no Cargo dependency on cardano-observer —
+/// microblog is the depended-upon crate — the same no-cycle seam as [`IsAllowed`]/[`ForeignCapacityCost`].
+/// `()` yields the empty set (a dev/mock default with no observer).
+pub trait StakerSet<AccountId> {
+    /// The accounts with observed stake. Order-independent (the join sums), MaxObserved-bounded, and
+    /// may contain a duplicate account harmlessly — the join de-duplicates before reading weight.
+    fn stakers() -> Vec<AccountId>;
+}
+
+/// Default: no stakers (a chain with no observer). Every weighted join then reads `0`.
+impl<AccountId> StakerSet<AccountId> for () {
+    fn stakers() -> Vec<AccountId> {
+        Vec::new()
+    }
+}
+
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
@@ -153,7 +179,11 @@ pub mod pallet {
     // `NextTopLevelSeq`) — see `migrations::v4`.
     // v4 -> v5 (spec 204): drop the retired repost storage and settle every capacity bucket onto the
     // settle-at-the-old-weight invariant — see `migrations::v5`.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(5);
+    // v5 -> v6 (spec 205): stop STORING a vote's weight — drop the `weight` field from every vote/poll
+    // record and tally (keeping only exact COUNTS), add `Poll.close_at` + the `PollResults` snapshot map.
+    // Weighted scores are now derived LIVE at read time by joining the staker set against current
+    // `VotingPower`, so a vote re-prices as stake moves — see `migrations::v6`.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(6);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -229,6 +259,12 @@ pub mod pallet {
         /// `()` meters nothing foreign. See [`ForeignCapacityCost`].
         type ForeignCost: ForeignCapacityCost<<Self as frame_system::Config>::RuntimeCall>;
 
+        /// The bounded set of accounts with observed Cardano stake — the basis of the LIVE weighted-tally
+        /// join (post votes, account reputation, polls). The runtime wires it to
+        /// `pallet_cardano_observer::LastObservedStake`; `()` is the empty dev/mock default. See
+        /// [`StakerSet`] and `docs/DYNAMIC-STAKE-VOTING-PLAN.md`.
+        type StakerSet: StakerSet<Self::AccountId>;
+
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
     }
@@ -284,28 +320,44 @@ pub mod pallet {
         Down,
     }
 
-    /// One account's recorded vote on a post: its direction plus the voter's stake **weight snapshot
-    /// at vote time**. The snapshot is load-bearing: the denormalized [`VoteTally`] is adjusted by
-    /// reversing exactly this stored weight on a re-vote / clear (never by re-reading current stake),
-    /// so the tally cannot drift and an off-chain indexer folding the events reproduces it byte-exactly.
+    /// One account's recorded vote on a post: just its **direction** (spec 205 / storage v6). The vote's
+    /// weight is NO LONGER stored — a weighted score would go stale the moment the voter's stake moved.
+    /// Instead the weighted tally is derived LIVE at read time by joining the staker set against current
+    /// `VotingPower` (see [`Pallet::staker_weights`]). The stored [`VoteCounts`] keeps only exact,
+    /// never-stale counts, adjusted O(1) on a re-vote / clear.
     #[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
     pub struct VoteRecord {
         /// The vote direction.
         pub dir: VoteDir,
-        /// The voter's `pallet_talk_stake::VotingPower` (total Cardano stake) at the moment the vote
-        /// was cast.
-        pub weight: u128,
     }
 
-    /// The denormalized stake-weighted vote tally for one post. `ValueQuery` (default all-zero) so an
-    /// unvoted post reads cleanly with no `Option`/`Some(0)` ambiguity — the fold-determinism contract.
+    /// The denormalized COUNTS for one post's votes (spec 205 / storage v6 — the stored-weight fields
+    /// were removed; weighted scores are derived live). `ValueQuery` (default all-zero) so an unvoted
+    /// post reads cleanly with no `Option`/`Some(0)` ambiguity. Adjusted O(1) by `vote`/`clear_vote`.
+    /// This is the STORAGE value of [`VoteTally`] / [`AccountVoteTally`]; the 4-field [`Tally`] below is
+    /// the (unchanged) WIRE type the read API returns, with weights filled from the live join.
+    #[derive(
+        Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, Default, TypeInfo, MaxEncodedLen,
+    )]
+    pub struct VoteCounts {
+        /// Count of up-votes.
+        pub up_count: u32,
+        /// Count of down-votes.
+        pub down_count: u32,
+    }
+
+    /// The stake-weighted vote tally as returned by the node read API — up/down WEIGHT (summed live from
+    /// the staker set's current `VotingPower`) plus the exact up/down COUNTS. This is a WIRE-ONLY DTO
+    /// (`PersonSummary` / `ProfileView` embed it, and `EnrichedPost` carries the same four numbers flat);
+    /// its shape is deliberately UNCHANGED across the v6 storage cutover so the read API stays version 1
+    /// and the deployed frontend keeps decoding it — only the two weight fields now carry LIVE numbers.
     #[derive(
         Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, Default, TypeInfo, MaxEncodedLen,
     )]
     pub struct Tally {
-        /// Sum of up-voters' weight snapshots.
+        /// Sum of up-voters' CURRENT `VotingPower` (live join, never a frozen snapshot).
         pub up_weight: u128,
-        /// Sum of down-voters' weight snapshots.
+        /// Sum of down-voters' CURRENT `VotingPower`.
         pub down_weight: u128,
         /// Count of up-votes.
         pub up_count: u32,
@@ -330,27 +382,57 @@ pub mod pallet {
     pub struct Poll<T: Config> {
         /// The selectable options (each bounded to `MaxPollOptionLen`, up to `MaxPollOptions`).
         pub options: BoundedVec<BoundedVec<u8, T::MaxPollOptionLen>, T::MaxPollOptions>,
+        /// Optional close deadline as a block number (spec 205 / storage v6). `None` ⇒ the poll floats
+        /// forever (its weighted result re-prices with stake on every read); `Some(b)` ⇒ voting is
+        /// rejected once `now ≥ b` and the result can be FROZEN by a permissionless `close_poll`. Existing
+        /// polls migrate to `None` (the backward-compatible default).
+        pub close_at: Option<BlockNumberFor<T>>,
     }
 
-    /// One account's recorded poll choice: the chosen option index + the voter's stake weight snapshot
-    /// at cast time. Same drift-free contract as [`VoteRecord`]: a re-cast reverses THIS stored weight.
+    /// One account's recorded poll choice: just the chosen option index (spec 205 / storage v6 — the
+    /// stored weight was removed). Weighted per-option tallies are derived LIVE at read time from current
+    /// `VotingPower`, or read from the frozen [`PollResult`] once the poll is closed. The stored
+    /// [`OptionTally`] keeps only exact counts.
     #[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, TypeInfo, MaxEncodedLen)]
     pub struct PollVoteRecord {
         /// The chosen option index (`< options.len()`).
         pub option: u8,
-        /// The voter's `VotingPower` (total Cardano stake) weight at cast time.
-        pub weight: u128,
     }
 
-    /// The stake-weighted tally for a single poll option. `ValueQuery` (default zero) keyed per option.
+    /// The COUNT of accounts currently choosing a single poll option (spec 205 / storage v6 — the
+    /// stored-weight field was removed; per-option weight is derived live). `ValueQuery` (default zero)
+    /// keyed per option.
     #[derive(
         Encode, Decode, Clone, Copy, PartialEq, Eq, Debug, Default, TypeInfo, MaxEncodedLen,
     )]
     pub struct OptionTally {
-        /// Sum of the weight snapshots of accounts currently choosing this option.
-        pub weight: u128,
         /// Number of accounts currently choosing this option.
         pub count: u32,
+    }
+
+    /// The FROZEN weighted result of a closed poll (spec 205 / storage v6). Written once by the
+    /// permissionless `close_poll` at or after the poll's `close_at`: the exact per-option weight
+    /// (summed from `VotingPower` over the staker set at the execution block) and count. Present in
+    /// [`PollResults`] ⇒ the poll is finalized and reads return THIS instead of a live join, so an
+    /// unstake can no longer retroactively remove weight from a socially-concluded poll.
+    #[derive(
+        Encode,
+        Decode,
+        CloneNoBound,
+        PartialEqNoBound,
+        EqNoBound,
+        DebugNoBound,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    #[scale_info(skip_type_params(T))]
+    pub struct PollResult<T: Config> {
+        /// Frozen per-option weight (index-aligned with `Poll.options`).
+        pub option_weights: BoundedVec<u128, T::MaxPollOptions>,
+        /// Frozen per-option count (index-aligned with `Poll.options`).
+        pub option_counts: BoundedVec<u32, T::MaxPollOptions>,
+        /// The block at which `close_poll` executed and took this snapshot (`≥ close_at`).
+        pub closed_at: BlockNumberFor<T>,
     }
 
     /// The lazy token-bucket state for one identity (see docs/ECONOMICS.md).
@@ -411,9 +493,11 @@ pub mod pallet {
         OptionQuery,
     >;
 
-    /// Denormalized stake-weighted vote tally per post (`ValueQuery` ⇒ default all-zero).
+    /// Denormalized vote COUNTS per post (`ValueQuery` ⇒ default all-zero). Storage item name unchanged
+    /// (the on-chain prefix), only the value type dropped its weight fields in v6; the migration
+    /// re-encodes each row in place. Weighted numbers are derived live at read time.
     #[pallet::storage]
-    pub type VoteTally<T: Config> = StorageMap<_, Blake2_128Concat, u64, Tally, ValueQuery>;
+    pub type VoteTally<T: Config> = StorageMap<_, Blake2_128Concat, u64, VoteCounts, ValueQuery>;
 
     /// Reverse "liked posts" index: `VotesByAccount[account][post] = ()` means `account` currently
     /// UP-votes `post` (drives the profile Likes tab without a reverse scan). Maintained in lockstep by
@@ -443,11 +527,11 @@ pub mod pallet {
         OptionQuery,
     >;
 
-    /// Denormalized stake-weighted reputation tally per target account (`ValueQuery` ⇒ default
-    /// all-zero). Mirror of [`VoteTally`], target-keyed; the net score is `up_weight − down_weight`.
+    /// Denormalized reputation COUNTS per target account (`ValueQuery` ⇒ default all-zero). Mirror of
+    /// [`VoteTally`], target-keyed; the weighted net score is derived live at read time.
     #[pallet::storage]
     pub type AccountVoteTally<T: Config> =
-        StorageMap<_, Blake2_128Concat, T::AccountId, Tally, ValueQuery>;
+        StorageMap<_, Blake2_128Concat, T::AccountId, VoteCounts, ValueQuery>;
 
     // The retired repost storage (`Reposts`, `RepostCount`) lived HERE. Both were dropped in spec 204
     // together with the `repost` call; migration v5 clears their rows. Do not re-declare them — a
@@ -526,10 +610,17 @@ pub mod pallet {
         OptionQuery,
     >;
 
-    /// Stake-weighted tally per (poll, option). `ValueQuery` ⇒ default-zero per option.
+    /// Per-(poll, option) COUNT. `ValueQuery` ⇒ default-zero per option. Weighted per-option numbers are
+    /// derived live at read time (or read frozen from [`PollResults`] once the poll is closed).
     #[pallet::storage]
     pub type PollTally<T: Config> =
         StorageDoubleMap<_, Blake2_128Concat, u64, Blake2_128Concat, u8, OptionTally, ValueQuery>;
+
+    /// The FROZEN weighted result of each closed poll, keyed by host post id. `None` ⇒ the poll is not
+    /// finalized (floats forever, or is past `close_at` but nobody has called `close_poll` yet). Written
+    /// once by `close_poll`; reads short-circuit to it. Empty at genesis, so v6 needs no backfill.
+    #[pallet::storage]
+    pub type PollResults<T: Config> = StorageMap<_, Blake2_128Concat, u64, PollResult<T>, OptionQuery>;
 
     // ── Feature 3 (spec 121): the top-level-post index. A dense, reply-free sequence of top-level
     //    (`parent == None`) post ids so `feed_page` reads EXACTLY N (no reply over-scan), plus a
@@ -572,28 +663,27 @@ pub mod pallet {
         /// A capacity bucket was force-set by the `ForceOrigin` (operator/migration/dev).
         #[codec(index = 1)]
         CapacityForced { who: T::AccountId, cap_last: u128 },
-        /// `who` (stake-`weight`) cast or changed a `dir` vote on post `id`. `weight` is the snapshot
-        /// the tally was adjusted by — it lets an off-chain indexer fold the exact same tally.
+        /// `who` cast or changed a `dir` vote on post `id`. The `weight` field was DROPPED in spec 205:
+        /// weight is no longer stored (it is derived live from current stake), so the event carries only
+        /// the direction. Counts still fold from these events; the weighted score does not.
         #[codec(index = 2)]
         Voted {
             id: u64,
             who: T::AccountId,
             dir: VoteDir,
-            weight: u128,
         },
-        /// `who` cleared their vote on post `id` (the tally was adjusted by their stored weight).
+        /// `who` cleared their vote on post `id` (its count was decremented).
         #[codec(index = 3)]
         VoteCleared { id: u64, who: T::AccountId },
-        /// `who` (stake-`weight`) cast or changed a `dir` reputation vote on account `target`.
-        /// `weight` is the snapshot the tally was adjusted by — same fold-determinism contract as `Voted`.
+        /// `who` cast or changed a `dir` reputation vote on account `target`. `weight` DROPPED in spec 205
+        /// (weight is derived live) — same as `Voted`.
         #[codec(index = 4)]
         AccountVoted {
             target: T::AccountId,
             who: T::AccountId,
             dir: VoteDir,
-            weight: u128,
         },
-        /// `who` cleared their reputation vote on account `target` (adjusted by their stored weight).
+        /// `who` cleared their reputation vote on account `target` (its count was decremented).
         #[codec(index = 5)]
         AccountVoteCleared {
             target: T::AccountId,
@@ -615,21 +705,25 @@ pub mod pallet {
         /// A poll was created (its question is the host post `id`'s text; options are in storage).
         #[codec(index = 9)]
         PollCreated { id: u64, author: T::AccountId },
-        /// `who` (stake-`weight`) cast or changed their vote on poll `id` to `option`.
+        /// `who` cast or changed their vote on poll `id` to `option`. `weight` DROPPED in spec 205
+        /// (weight is derived live) — same as `Voted`.
         #[codec(index = 10)]
         PollVoted {
             id: u64,
             who: T::AccountId,
             option: u8,
-            weight: u128,
         },
+        /// Poll `host_id` was FINALIZED by `close_poll` — its weighted result is now frozen in
+        /// [`PollResults`] and no longer re-prices. Added in spec 205 at the next free index (11).
+        #[codec(index = 11)]
+        PollClosed { host_id: u64 },
     }
 
     // Variant indices are PINNED with `#[codec(index)]`, never implied by declaration order — the index
     // IS the wire format of a `DispatchError::Module`. `AlreadyReposted` (5) was retired in spec 204 and
     // its index is permanently VACANT; without the pins, deleting it would have shifted the ten variants
     // below it down one, so a client would report `SelfFollow` for an `AlreadyFollowing` failure. Never
-    // renumber; a new variant takes the next free index (16).
+    // renumber; a new variant takes the next free index (spec 205 appended 16 and 17).
     #[pallet::error]
     pub enum Error<T> {
         /// The post text exceeded `MaxLength`.
@@ -680,6 +774,15 @@ pub mod pallet {
         /// apply to real, 1:1 Cardano-bound identities.
         #[codec(index = 15)]
         TargetNotAllowed,
+        /// `cast_poll_vote` was called on a poll whose `close_at` deadline has passed (`now ≥ close_at`).
+        /// Added in spec 205 at the next free index (16).
+        #[codec(index = 16)]
+        PollClosed,
+        /// `close_poll` was called but the poll cannot be finalized now: it has no `close_at` (it floats
+        /// forever) or its `close_at` deadline has not yet been reached (`now < close_at`). Added in
+        /// spec 205 (17). (An ALREADY-finalized poll is not an error — `close_poll` is idempotent.)
+        #[codec(index = 17)]
+        PollNotClosable,
     }
 
     impl<T: Config> Pallet<T> {
@@ -863,6 +966,10 @@ pub mod pallet {
                 // A poll is content priced by its question length; a poll vote is a flat signal cost.
                 Call::create_poll { question, .. } => Some(Self::post_cost(question.len() as u32)),
                 Call::cast_poll_vote { .. } => Some(T::VoteCost::get()),
+                // Finalizing a poll is bounded public-good work; price it at the flat signal cost so it is
+                // pool-gated (a keeper needs capacity) rather than free-spammable. Idempotent after the
+                // first close, so the expensive path runs at most once per poll.
+                Call::close_poll { .. } => Some(T::VoteCost::get()),
                 // Everything else (force_set_capacity, the codec phantom) is unmetered.
                 _ => None,
             }
@@ -1102,12 +1209,12 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Cast or change a **stake-weighted** vote on post `post_id`. The vote's weight is the
-        /// caller's `pallet_talk_stake::VotingPower` snapshot at call time — the total Cardano stake
-        /// of the caller's bound stake credential, NOT the posting deposit (`AllowedStake`). Re-voting
-        /// (changing direction or re-voting the same direction at a new weight) deterministically
-        /// reverses the PREVIOUSLY-STORED weight from the tally before applying the fresh one — so the
-        /// tally never drifts and an indexer folding the `Voted` events reproduces it byte-exactly. Feeless.
+        /// Cast or change a **stake-weighted** vote on post `post_id`. The vote's weight is NO LONGER
+        /// stored (spec 205): only its direction and the exact up/down COUNTS are recorded here, and the
+        /// weighted score is derived LIVE at read time from the voter's CURRENT `VotingPower` (total
+        /// Cardano stake). So a vote automatically re-prices as the voter's stake moves — a gain lifts it,
+        /// a full unstake drops it to `0` — with no re-vote and no per-block work. Re-voting only flips the
+        /// O(1) count from one side to the other. Feeless.
         #[pallet::call_index(4)]
         #[pallet::weight(<T as Config>::WeightInfo::vote())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _dir: &VoteDir| -> bool { true })]
@@ -1118,35 +1225,21 @@ pub mod pallet {
                 return Err(Error::<T>::NotAllowed.into());
             }
             ensure!(Posts::<T>::contains_key(post_id), Error::<T>::NotFound);
-            let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT vote time
             VoteTally::<T>::mutate(post_id, |t| {
-                // 1. REVERSE the previously-stored record (if any) by its STORED weight — never by
-                //    re-reading current stake — so the tally cannot drift across a stake change.
+                // 1. Remove the previous direction's count (if this account already voted).
                 if let Some(prev) = Votes::<T>::get(post_id, &who) {
                     match prev.dir {
-                        VoteDir::Up => {
-                            t.up_weight = t.up_weight.saturating_sub(prev.weight);
-                            t.up_count = t.up_count.saturating_sub(1);
-                        }
-                        VoteDir::Down => {
-                            t.down_weight = t.down_weight.saturating_sub(prev.weight);
-                            t.down_count = t.down_count.saturating_sub(1);
-                        }
+                        VoteDir::Up => t.up_count = t.up_count.saturating_sub(1),
+                        VoteDir::Down => t.down_count = t.down_count.saturating_sub(1),
                     }
                 }
-                // 2. APPLY the new vote with the freshly-snapshotted weight.
+                // 2. Add the new direction's count.
                 match dir {
-                    VoteDir::Up => {
-                        t.up_weight = t.up_weight.saturating_add(weight);
-                        t.up_count = t.up_count.saturating_add(1);
-                    }
-                    VoteDir::Down => {
-                        t.down_weight = t.down_weight.saturating_add(weight);
-                        t.down_count = t.down_count.saturating_add(1);
-                    }
+                    VoteDir::Up => t.up_count = t.up_count.saturating_add(1),
+                    VoteDir::Down => t.down_count = t.down_count.saturating_add(1),
                 }
             });
-            Votes::<T>::insert(post_id, &who, VoteRecord { dir, weight });
+            Votes::<T>::insert(post_id, &who, VoteRecord { dir });
             // Reverse liked-posts index (Up = liked); switching to Down clears the like.
             match dir {
                 VoteDir::Up => VotesByAccount::<T>::insert(&who, post_id, ()),
@@ -1158,13 +1251,12 @@ pub mod pallet {
                 id: post_id,
                 who,
                 dir,
-                weight,
             });
             Ok(())
         }
 
-        /// Clear the caller's vote on post `post_id`, reversing exactly the stored weight from the
-        /// tally (so the fold stays deterministic). Fails `NotVoted` if there is no vote. Feeless.
+        /// Clear the caller's vote on post `post_id`, decrementing its stored direction's count. Fails
+        /// `NotVoted` if there is no vote. Feeless.
         #[pallet::call_index(5)]
         #[pallet::weight(<T as Config>::WeightInfo::clear_vote())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64| -> bool { true })]
@@ -1177,26 +1269,18 @@ pub mod pallet {
             let prev = Votes::<T>::take(post_id, &who).ok_or(Error::<T>::NotVoted)?;
             VotesByAccount::<T>::remove(&who, post_id); // clear any like in the reverse index
             VoteTally::<T>::mutate(post_id, |t| match prev.dir {
-                VoteDir::Up => {
-                    t.up_weight = t.up_weight.saturating_sub(prev.weight);
-                    t.up_count = t.up_count.saturating_sub(1);
-                }
-                VoteDir::Down => {
-                    t.down_weight = t.down_weight.saturating_sub(prev.weight);
-                    t.down_count = t.down_count.saturating_sub(1);
-                }
+                VoteDir::Up => t.up_count = t.up_count.saturating_sub(1),
+                VoteDir::Down => t.down_count = t.down_count.saturating_sub(1),
             });
             Self::deposit_event(Event::VoteCleared { id: post_id, who });
             Ok(())
         }
 
         /// Cast or change a **stake-weighted** reputation vote on account `target` — the community
-        /// anti-Sybil / anti-impersonation signal. Weight is the caller's `pallet_talk_stake::
-        /// VotingPower` snapshot at call time (total Cardano stake of the caller's bound stake
-        /// credential), identical to a post vote. Re-voting deterministically reverses the
-        /// PREVIOUSLY-STORED weight before applying the fresh one, so [`AccountVoteTally`] never drifts
-        /// and an indexer folding `AccountVoted` reproduces it byte-exactly. The target must itself be
-        /// identity-bound and cannot be the caller. Feeless + capacity-metered.
+        /// anti-Sybil / anti-impersonation signal. As with a post vote (spec 205), only the direction and
+        /// the exact up/down COUNTS are stored; the weighted reputation score is derived LIVE at read time
+        /// from each voter's CURRENT `VotingPower`, so it re-prices automatically as stake moves. The
+        /// target must itself be identity-bound and cannot be the caller. Feeless + capacity-metered.
         #[pallet::call_index(11)]
         #[pallet::weight(<T as Config>::WeightInfo::vote_account())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _target: &T::AccountId, _dir: &VoteDir| -> bool { true })]
@@ -1215,46 +1299,27 @@ pub mod pallet {
                 T::IdentityGate::is_allowed(&target),
                 Error::<T>::TargetNotAllowed
             );
-            let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT vote time
             AccountVoteTally::<T>::mutate(&target, |t| {
-                // 1. REVERSE the previously-stored record (if any) by its STORED weight — never by
-                //    re-reading current stake — so the tally cannot drift across a stake change.
+                // 1. Remove the previous direction's count (if this account already voted on `target`).
                 if let Some(prev) = AccountVotes::<T>::get(&target, &who) {
                     match prev.dir {
-                        VoteDir::Up => {
-                            t.up_weight = t.up_weight.saturating_sub(prev.weight);
-                            t.up_count = t.up_count.saturating_sub(1);
-                        }
-                        VoteDir::Down => {
-                            t.down_weight = t.down_weight.saturating_sub(prev.weight);
-                            t.down_count = t.down_count.saturating_sub(1);
-                        }
+                        VoteDir::Up => t.up_count = t.up_count.saturating_sub(1),
+                        VoteDir::Down => t.down_count = t.down_count.saturating_sub(1),
                     }
                 }
-                // 2. APPLY the new vote with the freshly-snapshotted weight.
+                // 2. Add the new direction's count.
                 match dir {
-                    VoteDir::Up => {
-                        t.up_weight = t.up_weight.saturating_add(weight);
-                        t.up_count = t.up_count.saturating_add(1);
-                    }
-                    VoteDir::Down => {
-                        t.down_weight = t.down_weight.saturating_add(weight);
-                        t.down_count = t.down_count.saturating_add(1);
-                    }
+                    VoteDir::Up => t.up_count = t.up_count.saturating_add(1),
+                    VoteDir::Down => t.down_count = t.down_count.saturating_add(1),
                 }
             });
-            AccountVotes::<T>::insert(&target, &who, VoteRecord { dir, weight });
-            Self::deposit_event(Event::AccountVoted {
-                target,
-                who,
-                dir,
-                weight,
-            });
+            AccountVotes::<T>::insert(&target, &who, VoteRecord { dir });
+            Self::deposit_event(Event::AccountVoted { target, who, dir });
             Ok(())
         }
 
-        /// Clear the caller's reputation vote on account `target`, reversing exactly the stored weight
-        /// from the tally (so the fold stays deterministic). Fails `NotVoted` if there is no vote. Feeless.
+        /// Clear the caller's reputation vote on account `target`, decrementing its stored direction's
+        /// count. Fails `NotVoted` if there is no vote. Feeless.
         #[pallet::call_index(12)]
         #[pallet::weight(<T as Config>::WeightInfo::clear_account_vote())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _target: &T::AccountId| -> bool { true })]
@@ -1266,14 +1331,8 @@ pub mod pallet {
             }
             let prev = AccountVotes::<T>::take(&target, &who).ok_or(Error::<T>::NotVoted)?;
             AccountVoteTally::<T>::mutate(&target, |t| match prev.dir {
-                VoteDir::Up => {
-                    t.up_weight = t.up_weight.saturating_sub(prev.weight);
-                    t.up_count = t.up_count.saturating_sub(1);
-                }
-                VoteDir::Down => {
-                    t.down_weight = t.down_weight.saturating_sub(prev.weight);
-                    t.down_count = t.down_count.saturating_sub(1);
-                }
+                VoteDir::Up => t.up_count = t.up_count.saturating_sub(1),
+                VoteDir::Down => t.down_count = t.down_count.saturating_sub(1),
             });
             Self::deposit_event(Event::AccountVoteCleared { target, who });
             Ok(())
@@ -1337,17 +1396,24 @@ pub mod pallet {
 
         /// Create a stake-weighted poll. The `question` becomes a normal post (so the poll threads /
         /// quotes and shows in the feed); `options` (2..=`MaxPollOptions`, each ≤`MaxPollOptionLen`)
-        /// are stored alongside. Feeless + capacity-metered like a post.
+        /// are stored alongside. `close_at` is an optional block-number deadline: `None` ⇒ the poll floats
+        /// forever (its weighted result re-prices with stake on every read); `Some(b)` ⇒ voting is
+        /// rejected once `now ≥ b` and the weighted result can be FROZEN by `close_poll`. Feeless +
+        /// capacity-metered like a post.
+        ///
+        /// ⚠ The `close_at` argument (added spec 205) is the ONLY call-arg change in this upgrade, so it
+        /// is what moves `transaction_version` 3 → 4.
         #[pallet::call_index(9)]
         // spec 121 (Feature 3): a poll host is top-level, so it also runs `index_top_level` (2 reads +
         // 3 writes), not yet re-benchmarked — charge it manually.
         #[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32)
 			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
-        #[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>| -> bool { true })]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>, _close_at: &Option<BlockNumberFor<T>>| -> bool { true })]
         pub fn create_poll(
             origin: OriginFor<T>,
             question: Vec<u8>,
             options: Vec<Vec<u8>>,
+            close_at: Option<BlockNumberFor<T>>,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             if !T::IdentityGate::is_allowed(&who) {
@@ -1389,6 +1455,7 @@ pub mod pallet {
                 id,
                 Poll {
                     options: bounded_options,
+                    close_at,
                 },
             );
             // A poll's host post is top-level — index it for exact-N feed/profile paging (Feature 3).
@@ -1405,10 +1472,11 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Cast or change a **stake-weighted** vote in poll `post_id` for `option`. Weight is the
-        /// caller's `pallet_talk_stake::VotingPower` snapshot (total Cardano stake of the bound stake
-        /// credential, NOT the posting deposit); a re-cast reverses the PREVIOUSLY-STORED weight from
-        /// the per-option tally before applying the fresh one (same drift-free fold as `vote`). Feeless.
+        /// Cast or change a **stake-weighted** vote in poll `post_id` for `option`. As with a post vote
+        /// (spec 205), only the chosen option and per-option COUNTS are stored; the weighted per-option
+        /// result is derived LIVE at read time from each voter's CURRENT `VotingPower`, re-pricing as stake
+        /// moves — until the poll is closed, when the weighted result is FROZEN. Rejected `PollClosed` once
+        /// the poll's `close_at` deadline has passed (`now ≥ close_at`). Feeless.
         #[pallet::call_index(10)]
         #[pallet::weight(<T as Config>::WeightInfo::cast_poll_vote())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _post_id: &u64, _option: &u8| -> bool { true })]
@@ -1423,26 +1491,88 @@ pub mod pallet {
                 (option as usize) < poll.options.len(),
                 Error::<T>::InvalidOption
             );
-            let weight = pallet_talk_stake::VotingPower::<T>::get(&who); // total-stake weight AT cast time
-                                                                         // 1. Reverse the previously-stored choice (if any) by its STORED weight — no drift.
+            // Reject a vote once the poll's deadline has passed — a closed poll's result is (or will be)
+            // frozen, so it must accept no further votes. `None` close_at ⇒ the poll floats open forever.
+            if let Some(close_at) = poll.close_at {
+                let now = frame_system::Pallet::<T>::block_number();
+                ensure!(now < close_at, Error::<T>::PollClosed);
+            }
+            // 1. Remove the previous choice's count (if this account already voted in the poll).
             if let Some(prev) = PollVotes::<T>::get(post_id, &who) {
                 PollTally::<T>::mutate(post_id, prev.option, |t| {
-                    t.weight = t.weight.saturating_sub(prev.weight);
                     t.count = t.count.saturating_sub(1);
                 });
             }
-            // 2. Apply the new choice with the freshly-snapshotted weight.
+            // 2. Add the new choice's count.
             PollTally::<T>::mutate(post_id, option, |t| {
-                t.weight = t.weight.saturating_add(weight);
                 t.count = t.count.saturating_add(1);
             });
-            PollVotes::<T>::insert(post_id, &who, PollVoteRecord { option, weight });
+            PollVotes::<T>::insert(post_id, &who, PollVoteRecord { option });
             Self::deposit_event(Event::PollVoted {
                 id: post_id,
                 who,
                 option,
-                weight,
             });
+            Ok(())
+        }
+
+        /// **Finalize** poll `host_id`: freeze its weighted per-option result. Permissionless (any
+        /// identity-bound account may trigger it — typically the frontend on first view past the
+        /// deadline, or any keeper). Callable once the poll's `close_at` deadline has passed
+        /// (`now ≥ close_at`) and not before; a poll with no `close_at` can never be finalized. Idempotent:
+        /// a call on an already-finalized poll is a no-op `Ok`.
+        ///
+        /// It computes the EXACT per-option weighted tally from the staker set's CURRENT `VotingPower`
+        /// (§2.1 — O(`MaxObserved` × `MaxPollOptions`) bounded consensus work) and writes it to
+        /// [`PollResults`], after which reads return the frozen result instead of a live join — so an
+        /// unstake can no longer retroactively remove weight from a socially-concluded poll. Feeless +
+        /// capacity-metered (priced at `VoteCost`).
+        #[pallet::call_index(13)]
+        #[pallet::weight(<T as Config>::WeightInfo::close_poll())]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _host_id: &u64| -> bool { true })]
+        pub fn close_poll(origin: OriginFor<T>, host_id: u64) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            if !T::IdentityGate::is_allowed(&who) {
+                log::debug!(target: LOG_TARGET, "close_poll rejected: identity not allowed for {who:?}");
+                return Err(Error::<T>::NotAllowed.into());
+            }
+            let poll = Polls::<T>::get(host_id).ok_or(Error::<T>::PollNotFound)?;
+            // Already finalized — idempotent no-op (a keeper may race here).
+            if PollResults::<T>::contains_key(host_id) {
+                log::debug!(target: LOG_TARGET, "close_poll: poll {host_id} already finalized (no-op)");
+                return Ok(());
+            }
+            // Only closable at/after a set deadline (`None` ⇒ floats forever, never closable).
+            let close_at = poll.close_at.ok_or(Error::<T>::PollNotClosable)?;
+            let now = frame_system::Pallet::<T>::block_number();
+            ensure!(now >= close_at, Error::<T>::PollNotClosable);
+
+            // The frozen weighted result: per-option weight summed from the staker set's CURRENT
+            // VotingPower (exact, single-valued, MaxObserved-bounded), plus the stored per-option count.
+            let stakers = Self::staker_weights();
+            let num_options = poll.options.len();
+            let weights = Self::poll_option_weights(host_id, num_options, &stakers);
+            let mut option_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
+            let mut option_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
+            for (i, w) in weights.into_iter().enumerate() {
+                let count = PollTally::<T>::get(host_id, i as u8).count;
+                // `poll.options.len() ≤ MaxPollOptions`, so both pushes are within bound.
+                option_weights
+                    .try_push(w)
+                    .map_err(|_| Error::<T>::TooManyOptions)?;
+                option_counts
+                    .try_push(count)
+                    .map_err(|_| Error::<T>::TooManyOptions)?;
+            }
+            PollResults::<T>::insert(
+                host_id,
+                PollResult {
+                    option_weights,
+                    option_counts,
+                    closed_at: now,
+                },
+            );
+            Self::deposit_event(Event::PollClosed { host_id });
             Ok(())
         }
     }
@@ -1896,9 +2026,102 @@ impl<T: Config> Pallet<T> {
         limit.clamp(1, MAX_PAGE)
     }
 
+    /// The current staker→weight list: every account with observed Cardano stake paired with its LIVE
+    /// `pallet_talk_stake::VotingPower`. This is the exact, `MaxObserved`-bounded basis of every weighted
+    /// tally (post votes, account reputation, live polls). Build it ONCE per read `state_call` and reuse
+    /// it across every post / account / poll on the page — a feed page then costs `|staker_set|` weight
+    /// reads + `|staker_set| × page_size` O(1) membership probes, independent of how viral a post is.
+    ///
+    /// De-duplicated by account (a single account can never be double-counted even if the injected set
+    /// somehow lists it twice), so the join is provably single-valued. See `docs/DYNAMIC-STAKE-VOTING-PLAN.md`.
+    pub fn staker_weights() -> Vec<(T::AccountId, u128)> {
+        let mut seen = alloc::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        for who in T::StakerSet::stakers() {
+            if seen.insert(who.clone()) {
+                let w = pallet_talk_stake::VotingPower::<T>::get(&who);
+                out.push((who, w));
+            }
+        }
+        out
+    }
+
+    /// Live weighted vote tally for a post: iterate the staker set, probe each staker's vote on `post_id`,
+    /// sum their CURRENT weight per direction. Exact + single-valued (it iterates stakers, never a
+    /// hash-ordered voter prefix). Returns `(up_weight, down_weight)`.
+    fn post_weighted(post_id: u64, stakers: &[(T::AccountId, u128)]) -> (u128, u128) {
+        let mut up = 0u128;
+        let mut down = 0u128;
+        for (who, w) in stakers {
+            if let Some(rec) = Votes::<T>::get(post_id, who) {
+                match rec.dir {
+                    VoteDir::Up => up = up.saturating_add(*w),
+                    VoteDir::Down => down = down.saturating_add(*w),
+                }
+            }
+        }
+        (up, down)
+    }
+
+    /// Live weighted reputation tally for account `target` (the account-vote mirror of
+    /// [`Self::post_weighted`]). Returns `(up_weight, down_weight)`.
+    fn account_weighted(target: &T::AccountId, stakers: &[(T::AccountId, u128)]) -> (u128, u128) {
+        let mut up = 0u128;
+        let mut down = 0u128;
+        for (who, w) in stakers {
+            if let Some(rec) = AccountVotes::<T>::get(target, who) {
+                match rec.dir {
+                    VoteDir::Up => up = up.saturating_add(*w),
+                    VoteDir::Down => down = down.saturating_add(*w),
+                }
+            }
+        }
+        (up, down)
+    }
+
+    /// The full reputation [`Tally`] (the WIRE type) for account `target`: exact up/down COUNTS from
+    /// storage + LIVE up/down weight from the staker-set join. Used by the runtime's `person_summary` /
+    /// `profile` reads (which build `stakers` once via [`Self::staker_weights`] and reuse it per row).
+    pub fn account_tally(target: &T::AccountId, stakers: &[(T::AccountId, u128)]) -> Tally {
+        let counts = AccountVoteTally::<T>::get(target);
+        let (up_weight, down_weight) = Self::account_weighted(target, stakers);
+        Tally {
+            up_weight,
+            down_weight,
+            up_count: counts.up_count,
+            down_count: counts.down_count,
+        }
+    }
+
+    /// Live per-option weight for a poll: one pass over the staker set, adding each staker's CURRENT
+    /// weight to whichever option they currently choose. Returns a `num_options`-length vec, index-aligned
+    /// with `Poll.options`. O(`|staker_set|`), not O(`|staker_set| × options`).
+    fn poll_option_weights(
+        host_id: u64,
+        num_options: usize,
+        stakers: &[(T::AccountId, u128)],
+    ) -> Vec<u128> {
+        let mut weights = alloc::vec![0u128; num_options];
+        for (who, w) in stakers {
+            if let Some(rec) = PollVotes::<T>::get(host_id, who) {
+                let idx = rec.option as usize;
+                if idx < num_options {
+                    weights[idx] = weights[idx].saturating_add(*w);
+                }
+            }
+        }
+        weights
+    }
+
     /// Build the enriched, viewer-aware view of an already-fetched `post`. Author-profile fields are
-    /// left empty — the runtime fills them from pallet-profile (no profile dependency here).
-    fn enrich(id: u64, post: Post<T>, viewer: Option<&T::AccountId>) -> EnrichedPost<T::AccountId> {
+    /// left empty — the runtime fills them from pallet-profile (no profile dependency here). `stakers`
+    /// is the shared staker→weight list ([`Self::staker_weights`]) used to derive the LIVE weighted score.
+    fn enrich(
+        id: u64,
+        post: Post<T>,
+        viewer: Option<&T::AccountId>,
+        stakers: &[(T::AccountId, u128)],
+    ) -> EnrichedPost<T::AccountId> {
         let Post {
             author,
             text,
@@ -1906,7 +2129,8 @@ impl<T: Config> Pallet<T> {
             at,
             quote,
         } = post;
-        let tally = VoteTally::<T>::get(id);
+        let counts = VoteTally::<T>::get(id);
+        let (up_weight, down_weight) = Self::post_weighted(id, stakers);
         let my_vote = viewer.and_then(|who| Votes::<T>::get(id, who).map(|r| r.dir));
         // One-level quote resolution (the quoted author's profile is runtime-filled later).
         let quoted = quote.and_then(|qid| {
@@ -1925,10 +2149,11 @@ impl<T: Config> Pallet<T> {
             parent,
             quote,
             at: at.saturated_into::<u32>(),
-            up_weight: tally.up_weight,
-            down_weight: tally.down_weight,
-            up_count: tally.up_count,
-            down_count: tally.down_count,
+            // Weighted score derived LIVE from current stake; counts are exact from storage.
+            up_weight,
+            down_weight,
+            up_count: counts.up_count,
+            down_count: counts.down_count,
             // Vestigial since spec 204 (reposting retired) — the FIELDS stay on the wire so the deployed
             // frontend keeps decoding, but there is no storage behind them any more.
             repost_count: 0,
@@ -1943,8 +2168,12 @@ impl<T: Config> Pallet<T> {
     }
 
     /// Fetch + enrich a post by id (`None` if it does not exist).
-    fn enriched_post(id: u64, viewer: Option<&T::AccountId>) -> Option<EnrichedPost<T::AccountId>> {
-        Posts::<T>::get(id).map(|post| Self::enrich(id, post, viewer))
+    fn enriched_post(
+        id: u64,
+        viewer: Option<&T::AccountId>,
+        stakers: &[(T::AccountId, u128)],
+    ) -> Option<EnrichedPost<T::AccountId>> {
+        Posts::<T>::get(id).map(|post| Self::enrich(id, post, viewer, stakers))
     }
 
     /// Scan the global id space newest-first for TOP-LEVEL posts (`parent == None`) that also pass
@@ -1956,6 +2185,7 @@ impl<T: Config> Pallet<T> {
         before: Option<u64>,
         limit: u32,
         viewer: Option<&T::AccountId>,
+        stakers: &[(T::AccountId, u128)],
         mut keep: F,
     ) -> FeedPage<T::AccountId>
     where
@@ -2001,7 +2231,7 @@ impl<T: Config> Pallet<T> {
             if let Some(id) = TopLevelPosts::<T>::get(seq) {
                 if let Some(post) = Posts::<T>::get(id) {
                     if keep(&post) {
-                        posts.push(Self::enrich(id, post, viewer));
+                        posts.push(Self::enrich(id, post, viewer, stakers));
                     }
                 }
             }
@@ -2024,7 +2254,8 @@ impl<T: Config> Pallet<T> {
         limit: u32,
         viewer: Option<T::AccountId>,
     ) -> FeedPage<T::AccountId> {
-        Self::scan_top_level_by_seq(before, limit, viewer.as_ref(), |_| true)
+        let stakers = Self::staker_weights();
+        Self::scan_top_level_by_seq(before, limit, viewer.as_ref(), &stakers, |_| true)
     }
 
     /// One author's top-level posts (the profile Posts tab), newest-first, paged below `before_id` (a
@@ -2038,6 +2269,7 @@ impl<T: Config> Pallet<T> {
         let limit = Self::clamp_limit(limit);
         let ids = TopLevelByAuthor::<T>::get(&author);
         let viewer_ref = viewer.as_ref();
+        let stakers = Self::staker_weights();
         let mut posts = Vec::new();
         let mut next_cursor = None;
         // `TopLevelByAuthor` is append-ordered (ascending id) and reply-free; iterate it newest-first.
@@ -2052,7 +2284,7 @@ impl<T: Config> Pallet<T> {
                 break;
             }
             if let Some(post) = Posts::<T>::get(id) {
-                posts.push(Self::enrich(id, post, viewer_ref));
+                posts.push(Self::enrich(id, post, viewer_ref, &stakers));
             }
         }
         FeedPage { posts, next_cursor }
@@ -2080,7 +2312,8 @@ impl<T: Config> Pallet<T> {
                 next_cursor: None,
             };
         }
-        Self::scan_top_level_by_seq(before, limit, Some(&viewer), |p| {
+        let stakers = Self::staker_weights();
+        Self::scan_top_level_by_seq(before, limit, Some(&viewer), &stakers, |p| {
             followees.contains(&p.author)
         })
     }
@@ -2089,7 +2322,8 @@ impl<T: Config> Pallet<T> {
     /// post itself, and its direct replies (chronological) — all enriched and viewer-aware.
     pub fn thread(focal: u64, viewer: Option<T::AccountId>) -> Thread<T::AccountId> {
         let viewer_ref = viewer.as_ref();
-        let focal_post = Self::enriched_post(focal, viewer_ref);
+        let stakers = Self::staker_weights();
+        let focal_post = Self::enriched_post(focal, viewer_ref, &stakers);
         // Walk `parent` up from the focal post, then reverse to root-first. `parent` is unvalidated at
         // post creation, so guard against a cyclic / self-referential chain with a visited-set (seeded
         // with the focal id) AND a depth cap — mirroring the client's `getThread` so the two agree.
@@ -2106,7 +2340,7 @@ impl<T: Config> Pallet<T> {
                     break;
                 }
                 depth = depth.saturating_add(1);
-                match Self::enriched_post(pid, viewer_ref) {
+                match Self::enriched_post(pid, viewer_ref, &stakers) {
                     Some(ap) => {
                         parent = ap.parent;
                         ancestors.push(ap);
@@ -2126,7 +2360,7 @@ impl<T: Config> Pallet<T> {
         let replies: Vec<_> = reply_ids
             .into_iter()
             .take(MAX_THREAD_REPLIES)
-            .filter_map(|reply_id| Self::enriched_post(reply_id, viewer_ref))
+            .filter_map(|reply_id| Self::enriched_post(reply_id, viewer_ref, &stakers))
             .collect();
         Thread {
             ancestors,
@@ -2154,6 +2388,7 @@ impl<T: Config> Pallet<T> {
         let limit = Self::clamp_limit(limit);
         let ids = ByAuthor::<T>::get(&author);
         let viewer_ref = viewer.as_ref();
+        let stakers = Self::staker_weights();
         let mut posts = Vec::new();
         let mut next_cursor = None;
         for &id in ids.iter().rev() {
@@ -2174,7 +2409,7 @@ impl<T: Config> Pallet<T> {
                 next_cursor = Some(id.saturating_add(1));
                 break;
             }
-            posts.push(Self::enrich(id, post, viewer_ref));
+            posts.push(Self::enrich(id, post, viewer_ref, &stakers));
         }
         FeedPage { posts, next_cursor }
     }
@@ -2193,6 +2428,7 @@ impl<T: Config> Pallet<T> {
         let mut liked: Vec<u64> = VotesByAccount::<T>::iter_key_prefix(&who).collect();
         liked.sort_unstable_by(|a, b| b.cmp(a)); // newest (highest id) first
         let viewer_ref = viewer.as_ref();
+        let stakers = Self::staker_weights();
         let mut posts = Vec::new();
         let mut next_cursor = None;
         for id in liked {
@@ -2206,7 +2442,7 @@ impl<T: Config> Pallet<T> {
                 break;
             }
             if let Some(post) = Posts::<T>::get(id) {
-                posts.push(Self::enrich(id, post, viewer_ref));
+                posts.push(Self::enrich(id, post, viewer_ref, &stakers));
             }
         }
         FeedPage { posts, next_cursor }
@@ -2244,6 +2480,7 @@ impl<T: Config> Pallet<T> {
         };
         let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
         let viewer_ref = viewer.as_ref();
+        let stakers = Self::staker_weights();
         let mut posts = Vec::new();
         let mut examined: u32 = 0;
         loop {
@@ -2257,7 +2494,7 @@ impl<T: Config> Pallet<T> {
             examined = examined.saturating_add(1);
             if let Some(post) = Posts::<T>::get(id) {
                 if contains_ci(&post.text, &term) {
-                    posts.push(Self::enrich(id, post, viewer_ref));
+                    posts.push(Self::enrich(id, post, viewer_ref, &stakers));
                 }
             }
             if id == 0 {
@@ -2273,19 +2510,46 @@ impl<T: Config> Pallet<T> {
     /// A poll's options + per-option stake-weighted tally + total current voters, keyed by the host post
     /// id. `None` if `host_id` is not a poll. `total_votes` is the sum of the per-option counts (each
     /// account has exactly one live choice, so this equals the distinct-voter count).
+    ///
+    /// If the poll is FINALIZED ([`PollResults`] present) the FROZEN per-option weight is returned;
+    /// otherwise the weight is derived LIVE from the staker set's current `VotingPower` (a poll past its
+    /// `close_at` but not yet finalized reads live — the frontend auto-triggers `close_poll` to freeze it).
+    /// The per-option COUNTS are always the exact stored values; the wire shape is unchanged.
     pub fn poll(host_id: u64) -> Option<PollView> {
         let poll = Polls::<T>::get(host_id)?;
         let mut options = Vec::with_capacity(poll.options.len());
         let mut total_votes: u32 = 0;
+        // Finalized — return the frozen snapshot (no live join, no staker-set read).
+        if let Some(result) = PollResults::<T>::get(host_id) {
+            for (i, opt) in poll.options.iter().enumerate() {
+                let count = result.option_counts.get(i).copied().unwrap_or(0);
+                let weight = result.option_weights.get(i).copied().unwrap_or(0);
+                total_votes = total_votes.saturating_add(count);
+                options.push(PollOptionView {
+                    index: i as u8,
+                    label: opt.to_vec(),
+                    weight,
+                    count,
+                });
+            }
+            return Some(PollView {
+                host_id,
+                options,
+                total_votes,
+            });
+        }
+        // Open (or past-deadline-but-unfinalized) — derive per-option weight live from current stake.
+        let stakers = Self::staker_weights();
+        let weights = Self::poll_option_weights(host_id, poll.options.len(), &stakers);
         for (i, opt) in poll.options.iter().enumerate() {
             let index = i as u8;
-            let tally = PollTally::<T>::get(host_id, index);
-            total_votes = total_votes.saturating_add(tally.count);
+            let count = PollTally::<T>::get(host_id, index).count;
+            total_votes = total_votes.saturating_add(count);
             options.push(PollOptionView {
                 index,
                 label: opt.to_vec(),
-                weight: tally.weight,
-                count: tally.count,
+                weight: weights.get(i).copied().unwrap_or(0),
+                count,
             });
         }
         Some(PollView {

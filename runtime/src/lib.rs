@@ -68,12 +68,15 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // transaction extensions) or any change to consensus-visible behaviour that requires nodes to
     // upgrade in lockstep. Leave it alone for comments, bounds, logging and tests. The per-release
     // history lives in CHANGELOG.md, not here.
-    spec_version: 204,
+    // spec 205: dynamic stake voting — vote/poll storage v5 → v6 (stored weight dropped, `Poll.close_at`
+    // + `PollResults` added, `close_poll` at call_index 13, `PollClosed` event/error, live weighted reads).
+    spec_version: 205,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
     // the `TxExtension` tuple. Metadata-only churn (new calls, new storage, doc strings) does not.
-    transaction_version: 3,
+    // 3 → 4: `create_poll` gained a `close_at: Option<BlockNumber>` argument (spec 205).
+    transaction_version: 4,
     system_version: 1,
 };
 

@@ -5,9 +5,10 @@
 // The poll QUESTION reuses the 512-byte textarea (controlled through the base Composer's text seam);
 // below it a <fieldset> of 2–4 option inputs, EACH with its own ByteCounter('sm', 80). The first two
 // options are mandatory (not removable); options 3 & 4 are removable; "+ Add option" disabled at 4.
-// NO expiry/duration picker — polls never expire (D4). Submit drops empty/whitespace options and
-// asserts 2 ≤ options ≤ 4 (each ≤ 80 bytes) before handing back through `submitCreatePoll(question,
-// options)`. CONTROLLED via `pollDraft` + `onChange`. PRESENTATIONAL — no mutation built here.
+// A deadline <select> (spec 205) offers an optional close time (No deadline / 1 / 3 / 7 days) — the
+// surface converts the chosen days to a block-number `close_at`. Submit drops empty/whitespace options
+// and asserts 2 ≤ options ≤ 4 (each ≤ 80 bytes) before handing back through `submitCreatePoll(question,
+// options, closeInDays)`. CONTROLLED via `pollDraft` + `onChange`. PRESENTATIONAL — no mutation built here.
 
 import { useCallback, useMemo } from "react";
 import type { KeyboardEvent } from "react";
@@ -35,8 +36,11 @@ export interface PollComposerProps {
   noPostingPower?: boolean;
   needsVotingPower?: boolean;
   autoFocus?: boolean;
-  /** Hand back the trimmed args; the surface calls mutations.submitCreatePoll(question, options). */
-  submitCreatePoll: (question: string, options: string[]) => void;
+  /**
+   * Hand back the trimmed args; the surface calls mutations.submitCreatePoll(question, options, closeAt).
+   * `closeInDays` is `undefined` for a floating (no-deadline) poll.
+   */
+  submitCreatePoll: (question: string, options: string[], closeInDays?: number) => void;
   /**
    * Flip back OUT of poll mode (to the plain composer). Optional: a surface that reaches PollComposer
    * one-way (Home, which opens the poll modal directly) omits it and shows no toggle. The in-modal
@@ -68,8 +72,19 @@ export function PollComposer({
   const options = useMemo(() => normalize(pollDraft.options), [pollDraft.options]);
 
   const setQuestion = useCallback(
-    (question: string) => onChange({ question, options }),
-    [onChange, options],
+    (question: string) => onChange({ question, options, closeInDays: pollDraft.closeInDays }),
+    [onChange, options, pollDraft.closeInDays],
+  );
+
+  const setCloseInDays = useCallback(
+    (days: number) =>
+      onChange({
+        question: pollDraft.question,
+        options,
+        // 0 = "No deadline" ⇒ a floating poll (undefined so the surface passes None).
+        closeInDays: days > 0 ? days : undefined,
+      }),
+    [onChange, options, pollDraft.question],
   );
 
   const setOption = useCallback(
@@ -77,22 +92,26 @@ export function PollComposer({
       // Hard-block past 80 bytes at the code-point boundary (D1).
       const clamped = utf8Bytes(value) > MAX_POLL_OPTION_BYTES ? clampToBytes(value, MAX_POLL_OPTION_BYTES) : value;
       const next = options.map((o, idx) => (idx === i ? clamped : o));
-      onChange({ question: pollDraft.question, options: next });
+      onChange({ question: pollDraft.question, options: next, closeInDays: pollDraft.closeInDays });
     },
-    [onChange, options, pollDraft.question],
+    [onChange, options, pollDraft.question, pollDraft.closeInDays],
   );
 
   const addOption = useCallback(() => {
     if (options.length >= MAX_POLL_OPTIONS) return;
-    onChange({ question: pollDraft.question, options: [...options, ""] });
-  }, [onChange, options, pollDraft.question]);
+    onChange({ question: pollDraft.question, options: [...options, ""], closeInDays: pollDraft.closeInDays });
+  }, [onChange, options, pollDraft.question, pollDraft.closeInDays]);
 
   const removeOption = useCallback(
     (i: number) => {
       if (i < MIN_POLL_OPTIONS) return; // first two are mandatory
-      onChange({ question: pollDraft.question, options: options.filter((_, idx) => idx !== i) });
+      onChange({
+        question: pollDraft.question,
+        options: options.filter((_, idx) => idx !== i),
+        closeInDays: pollDraft.closeInDays,
+      });
     },
-    [onChange, options, pollDraft.question],
+    [onChange, options, pollDraft.question, pollDraft.closeInDays],
   );
 
   // Focus an option input after the controlled re-render commits (setTimeout, not this render's DOM).
@@ -133,9 +152,9 @@ export function PollComposer({
       if (out.length < MIN_POLL_OPTIONS) return; // guard (CTA should already be disabled)
       // draft.text is the question with any @mention display tokens serialized to `@<ss58>` (the base
       // Composer owns that). Use it, NOT the raw pollDraft.question, so poll questions mention correctly.
-      submitCreatePoll(draft.text, out);
+      submitCreatePoll(draft.text, out, pollDraft.closeInDays);
     },
-    [options, submitCreatePoll],
+    [options, submitCreatePoll, pollDraft.closeInDays],
   );
 
   const fieldset = (
@@ -186,6 +205,28 @@ export function PollComposer({
         {!enoughOptions && <span className={styles.hint}>Add at least 2 options.</span>}
         <span className={styles.srOnly} aria-live="polite">
           {MAX_POLL_OPTIONS - options.length} option slots remaining
+        </span>
+      </div>
+
+      <div className={styles.deadlineRow}>
+        <label className={styles.deadlineLabel} htmlFor="cg-poll-deadline">
+          Deadline
+        </label>
+        <select
+          id="cg-poll-deadline"
+          className={styles.deadline}
+          value={pollDraft.closeInDays ?? 0}
+          onChange={(e) => setCloseInDays(Number(e.target.value))}
+        >
+          <option value={0}>No deadline</option>
+          <option value={1}>1 day</option>
+          <option value={3}>3 days</option>
+          <option value={7}>1 week</option>
+        </select>
+        <span className={styles.hint}>
+          {pollDraft.closeInDays
+            ? "Voting closes then; results can be finalized after."
+            : "The poll stays open and results stay live."}
         </span>
       </div>
     </fieldset>

@@ -79,29 +79,18 @@ mod benchmarks {
         Ok(())
     }
 
-    /// `vote` — worst case is the RE-VOTE flip path (an existing record is reversed, then the new
-    /// direction applied), with a non-zero stake so the weight snapshot is real.
+    /// `vote` — worst case is the RE-VOTE flip path (an existing count is decremented on one side, then
+    /// incremented on the other). Weight is no longer stored (spec 205), so no stake seed is needed.
     #[benchmark]
     fn vote() -> Result<(), BenchmarkError> {
         let caller: T::AccountId = whitelisted_caller();
         T::IdentityGate::benchmark_set_allowed(&caller);
         seed_post::<T>(&caller);
-        // `vote` snapshots `VotingPower` (total Cardano stake), NOT `AllowedStake` (posting deposit).
-        pallet_talk_stake::VotingPower::<T>::insert(&caller, 2_000u128);
         // Pre-existing Up vote (so `vote(Down)` exercises both the reverse and the apply branches).
-        Votes::<T>::insert(
-            0u64,
-            &caller,
-            VoteRecord {
-                dir: VoteDir::Up,
-                weight: 1_000u128,
-            },
-        );
+        Votes::<T>::insert(0u64, &caller, VoteRecord { dir: VoteDir::Up });
         VoteTally::<T>::insert(
             0u64,
-            Tally {
-                up_weight: 1_000,
-                down_weight: 0,
+            VoteCounts {
                 up_count: 1,
                 down_count: 0,
             },
@@ -116,25 +105,16 @@ mod benchmarks {
         Ok(())
     }
 
-    /// `clear_vote` of an existing vote (seeded), reversing its stored weight from the tally.
+    /// `clear_vote` of an existing vote (seeded), decrementing its direction's count.
     #[benchmark]
     fn clear_vote() -> Result<(), BenchmarkError> {
         let caller: T::AccountId = whitelisted_caller();
         T::IdentityGate::benchmark_set_allowed(&caller);
         seed_post::<T>(&caller);
-        Votes::<T>::insert(
-            0u64,
-            &caller,
-            VoteRecord {
-                dir: VoteDir::Up,
-                weight: 1_000u128,
-            },
-        );
+        Votes::<T>::insert(0u64, &caller, VoteRecord { dir: VoteDir::Up });
         VoteTally::<T>::insert(
             0u64,
-            Tally {
-                up_weight: 1_000,
-                down_weight: 0,
+            VoteCounts {
                 up_count: 1,
                 down_count: 0,
             },
@@ -147,31 +127,21 @@ mod benchmarks {
         Ok(())
     }
 
-    /// `vote_account` — worst case is the RE-VOTE flip path on an account target (an existing record
-    /// is reversed, then the new direction applied), with a non-zero `VotingPower` so the weight
-    /// snapshot is real. Both caller AND target go through the real identity gate — the target gate is
-    /// a load-bearing read (`vote_account` rejects an unbound target `TargetNotAllowed`).
+    /// `vote_account` — worst case is the RE-VOTE flip path on an account target (an existing count is
+    /// decremented on one side, then incremented on the other). Both caller AND target go through the real
+    /// identity gate — the target gate is a load-bearing read (`vote_account` rejects an unbound target
+    /// `TargetNotAllowed`).
     #[benchmark]
     fn vote_account() -> Result<(), BenchmarkError> {
         let caller: T::AccountId = whitelisted_caller();
         T::IdentityGate::benchmark_set_allowed(&caller);
         let target: T::AccountId = account("target", 0, 0);
         T::IdentityGate::benchmark_set_allowed(&target);
-        pallet_talk_stake::VotingPower::<T>::insert(&caller, 2_000u128);
         // Pre-existing Up vote (so `vote_account(Down)` exercises both the reverse and apply branches).
-        AccountVotes::<T>::insert(
-            &target,
-            &caller,
-            VoteRecord {
-                dir: VoteDir::Up,
-                weight: 1_000u128,
-            },
-        );
+        AccountVotes::<T>::insert(&target, &caller, VoteRecord { dir: VoteDir::Up });
         AccountVoteTally::<T>::insert(
             &target,
-            Tally {
-                up_weight: 1_000,
-                down_weight: 0,
+            VoteCounts {
                 up_count: 1,
                 down_count: 0,
             },
@@ -190,26 +160,17 @@ mod benchmarks {
         Ok(())
     }
 
-    /// `clear_account_vote` of an existing account vote (seeded), reversing its stored weight from the
-    /// target's tally. Only the caller is gated (clear does not re-check the target).
+    /// `clear_account_vote` of an existing account vote (seeded), decrementing its direction's count from
+    /// the target's tally. Only the caller is gated (clear does not re-check the target).
     #[benchmark]
     fn clear_account_vote() -> Result<(), BenchmarkError> {
         let caller: T::AccountId = whitelisted_caller();
         T::IdentityGate::benchmark_set_allowed(&caller);
         let target: T::AccountId = account("target", 0, 0);
-        AccountVotes::<T>::insert(
-            &target,
-            &caller,
-            VoteRecord {
-                dir: VoteDir::Up,
-                weight: 1_000u128,
-            },
-        );
+        AccountVotes::<T>::insert(&target, &caller, VoteRecord { dir: VoteDir::Up });
         AccountVoteTally::<T>::insert(
             &target,
-            Tally {
-                up_weight: 1_000,
-                down_weight: 0,
+            VoteCounts {
                 up_count: 1,
                 down_count: 0,
             },
@@ -264,14 +225,14 @@ mod benchmarks {
         let options = alloc::vec![opt; T::MaxPollOptions::get() as usize];
 
         #[extrinsic_call]
-        _(RawOrigin::Signed(caller.clone()), question, options);
+        _(RawOrigin::Signed(caller.clone()), question, options, None);
 
         assert!(Polls::<T>::contains_key(0u64));
         Ok(())
     }
 
-    /// `cast_poll_vote` — worst case is the RE-CAST path (an existing choice is reversed, then the new
-    /// option applied) with a non-zero stake.
+    /// `cast_poll_vote` — worst case is the RE-CAST path (an existing choice's count is decremented, then
+    /// the new option's incremented).
     #[benchmark]
     fn cast_poll_vote() -> Result<(), BenchmarkError> {
         let caller: T::AccountId = whitelisted_caller();
@@ -284,30 +245,58 @@ mod benchmarks {
             Default::default();
         options.try_push(opt.clone()).expect("room");
         options.try_push(opt).expect("room");
-        Polls::<T>::insert(0u64, Poll::<T> { options });
-        pallet_talk_stake::AllowedStake::<T>::insert(&caller, 2_000u128);
-        // Pre-existing choice (option 0) so the re-cast exercises reverse + apply.
-        PollVotes::<T>::insert(
+        Polls::<T>::insert(
             0u64,
-            &caller,
-            PollVoteRecord {
-                option: 0,
-                weight: 1_000u128,
+            Poll::<T> {
+                options,
+                close_at: None,
             },
         );
-        PollTally::<T>::insert(
-            0u64,
-            0u8,
-            OptionTally {
-                weight: 1_000,
-                count: 1,
-            },
-        );
+        // Pre-existing choice (option 0) so the re-cast exercises the reverse + apply count branches.
+        PollVotes::<T>::insert(0u64, &caller, PollVoteRecord { option: 0 });
+        PollTally::<T>::insert(0u64, 0u8, OptionTally { count: 1 });
 
         #[extrinsic_call]
         _(RawOrigin::Signed(caller.clone()), 0u64, 1u8);
 
         assert_eq!(PollTally::<T>::get(0u64, 1u8).count, 1);
+        Ok(())
+    }
+
+    /// `close_poll` — worst case finalizes a poll past its deadline, joining the staker set against
+    /// `VotingPower` + `PollVotes` to freeze the weighted result. The mock's `StakerSet` iterates the
+    /// `VotingPower` keys, so seed one staker + one poll vote so the join has a real row to sum. The block
+    /// is advanced past `close_at` so the finalize path (not the `PollNotClosable` reject) is measured.
+    #[benchmark]
+    fn close_poll() -> Result<(), BenchmarkError> {
+        let caller: T::AccountId = whitelisted_caller();
+        T::IdentityGate::benchmark_set_allowed(&caller);
+        seed_post::<T>(&caller);
+        let opt: BoundedVec<u8, T::MaxPollOptionLen> =
+            alloc::vec![b'a'].try_into().expect("1 <= MaxPollOptionLen");
+        let mut options: BoundedVec<BoundedVec<u8, T::MaxPollOptionLen>, T::MaxPollOptions> =
+            Default::default();
+        options.try_push(opt.clone()).expect("room");
+        options.try_push(opt).expect("room");
+        // A poll whose deadline is block 0 — already reached, so `close_poll` finalizes.
+        Polls::<T>::insert(
+            0u64,
+            Poll::<T> {
+                options,
+                close_at: Some(0u32.into()),
+            },
+        );
+        // One staker with a live poll vote, so the weighted join sums a real row.
+        pallet_talk_stake::VotingPower::<T>::insert(&caller, 1_000u128);
+        PollVotes::<T>::insert(0u64, &caller, PollVoteRecord { option: 0 });
+        PollTally::<T>::insert(0u64, 0u8, OptionTally { count: 1 });
+        // Advance a block so `now >= close_at` holds under any block-number type.
+        frame_system::Pallet::<T>::set_block_number(1u32.into());
+
+        #[extrinsic_call]
+        _(RawOrigin::Signed(caller.clone()), 0u64);
+
+        assert!(crate::PollResults::<T>::contains_key(0u64));
         Ok(())
     }
 

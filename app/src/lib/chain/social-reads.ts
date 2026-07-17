@@ -7,15 +7,19 @@
 // aggregate maps (`VoteTally`, `PollTally`) exactly so the client doesn't have to.
 // All weight/score values are u128 ⇒ bigint; counts are u32 ⇒ number.
 //
-// Storage shapes (verified against pallets/microblog/src/lib.rs):
-//   VoteTally(u64) -> Tally { up_weight:u128, down_weight:u128, up_count:u32, down_count:u32 }  (ValueQuery)
-//   Votes(u64, who) -> VoteRecord { dir: VoteDir, weight:u128 } | None                            (OptionQuery)
-//   Polls(u64) -> Poll { options: Vec<Vec<u8>> } | None  ⚠ PAPI UNWRAPS the single field → Binary[] (OptionQuery)
-//   PollTally(u64, u8) -> OptionTally { weight:u128, count:u32 }                                  (ValueQuery, DoubleMap)
-//   PollVotes(u64, who) -> PollVoteRecord { option:u8, weight:u128 } | None                       (OptionQuery)
+// Storage shapes (spec 205 / storage v6 — the chain NO LONGER STORES a vote's weight; weighted scores
+// are derived LIVE by the node and returned by the `MicroblogApi` reads. Only COUNTS live on-chain now):
+//   VoteTally(u64) -> VoteCounts { up_count:u32, down_count:u32 }                                 (ValueQuery)
+//   Votes(u64, who) -> VoteDir | None   ⚠ PAPI UNWRAPS the single-field `VoteRecord{dir}` → the enum   (OptionQuery)
+//   Polls(u64) -> { options: Binary[], close_at: number | undefined } | None                      (OptionQuery)
+//   PollTally(u64, u8) -> OptionTally { count:u32 }                                               (ValueQuery, DoubleMap)
+//   PollVotes(u64, who) -> u8 | None    ⚠ PAPI UNWRAPS the single-field `PollVoteRecord{option}` → the index (OptionQuery)
+//   PollResults(u64) -> { option_weights, option_counts, closed_at } | None                       (OptionQuery)
+// The WEIGHTED tallies (post votes, account reputation, poll options) are read from the node MicroblogApi
+// (`poll` / `profile`), which joins the bounded staker set against current `VotingPower`. See the
+// dynamic-stake-voting plan; and NEVER iterate `Votes` client-side to sum a weight.
 
 import { Binary } from "polkadot-api";
-import type { RawTally } from "./descriptors";
 import type { CognoApi, Ss58, PollView, ViewerPostState } from "@/lib/types";
 
 // Read at the BEST block, not the default (finalized). Writes confirm at `inBestBlock` — several blocks
@@ -35,11 +39,16 @@ export interface Tally {
 }
 
 /**
- * Decode a raw `Tally` (post-keyed or account-keyed — the chain uses the same struct for both).
- * `score = up − down`, and it MAY be negative. The `?? 0n` / `?? 0` guards are belt-and-braces: both
- * maps are ValueQuery so the value is always present, but a zero default costs nothing to assert.
+ * Map the node-derived, 4-field weighted tally DTO (`up_weight`/`down_weight`/`up_count`/`down_count`,
+ * the runtime `Tally` returned by `MicroblogApi.profile`) to the client `Tally`. `score = up − down`,
+ * and MAY be negative.
  */
-function toTally(t: RawTally): Tally {
+function fromRuntimeTally(t: {
+  up_weight: bigint;
+  down_weight: bigint;
+  up_count: number;
+  down_count: number;
+}): Tally {
   const upWeight = BigInt(t.up_weight ?? 0n);
   const downWeight = BigInt(t.down_weight ?? 0n);
   return {
@@ -51,17 +60,30 @@ function toTally(t: RawTally): Tally {
   };
 }
 
-/** The denormalized stake-weighted up/down tally for a post (default all-zero, ValueQuery). */
+/**
+ * The COUNT-only vote tally for a post, read straight from storage (`VoteTally`, ValueQuery). Spec 205
+ * dropped the stored weight, so this carries `upWeight = downWeight = score = 0n` — the WEIGHTED score is
+ * node-derived (feed/thread reads carry it). Only the (dead-except-in-tests) keyed feed fallback uses this.
+ */
 export async function readPostTally(api: CognoApi, id: bigint): Promise<Tally> {
-  return toTally(await api.query.Microblog.VoteTally.getValue(id, BEST));
+  const t = await api.query.Microblog.VoteTally.getValue(id, BEST);
+  return {
+    upWeight: 0n,
+    downWeight: 0n,
+    upCount: t.up_count ?? 0,
+    downCount: t.down_count ?? 0,
+    score: 0n,
+  };
 }
 
 /**
- * The denormalized stake-weighted REPUTATION tally for an account (`AccountVoteTally`, ValueQuery ⇒
- * default all-zero). The account analog of {@link readPostTally}.
+ * The stake-weighted REPUTATION tally for an account, derived LIVE by the node. Reads
+ * `MicroblogApi.profile(target).account_tally` (counts from `AccountVoteTally`, weights joined from the
+ * staker set's current `VotingPower`) — so it re-prices as stake moves. One node `state_call`.
  */
 export async function readAccountVoteTally(api: CognoApi, target: Ss58): Promise<Tally> {
-  return toTally(await api.query.Microblog.AccountVoteTally.getValue(target, BEST));
+  const p = await api.apis.MicroblogApi.profile(target, BEST);
+  return fromRuntimeTally(p.account_tally);
 }
 
 /**
@@ -85,8 +107,9 @@ export async function readViewerAccountVote(
   target: Ss58,
   who: Ss58,
 ): Promise<"Up" | "Down" | null> {
-  const vote = await api.query.Microblog.AccountVotes.getValue(target, who, BEST);
-  return vote ? (vote.dir.type === "Down" ? "Down" : "Up") : null;
+  // `AccountVotes` is now the single-field `VoteRecord { dir }`, which PAPI unwraps to the bare `VoteDir`.
+  const dir = await api.query.Microblog.AccountVotes.getValue(target, who, BEST);
+  return dir ? (dir.type === "Down" ? "Down" : "Up") : null;
 }
 
 
@@ -96,35 +119,44 @@ export async function readViewerPostState(
   id: bigint,
   who: Ss58,
 ): Promise<ViewerPostState> {
-  const vote = await api.query.Microblog.Votes.getValue(id, who, BEST);
-  return { myVote: vote ? (vote.dir.type === "Down" ? "Down" : "Up") : null };
+  // `Votes` is now the single-field `VoteRecord { dir }`, which PAPI unwraps to the bare `VoteDir`.
+  const dir = await api.query.Microblog.Votes.getValue(id, who, BEST);
+  return { myVote: dir ? (dir.type === "Down" ? "Down" : "Up") : null };
 }
 
 /**
- * A poll's options + per-option stake-weighted tally, assembled from `Polls` + `PollTally`.
+ * A poll's options + per-option WEIGHTED tally + close state.
  *
- * ⚠ Shape gotcha, now enforced by the compiler: `Poll` is a SINGLE-FIELD struct (`{ options }`), and
- * PAPI unwraps a single-field struct to its inner type — so `Polls.getValue` returns the options `Vec`
- * DIRECTLY (a `Binary[]`), NOT a `{ options }` wrapper. The hand-written type claimed the wrapper;
- * reading `.options` off an array yielded `undefined`, `labels.map` threw, `usePoll` swallowed it, and
- * EVERY poll rendered as a plain, unvotable post. `RawPolls` is derived from the descriptor, so the
- * wrapper is no longer expressible — this decode cannot regress the same way.
+ * The per-option weight is derived LIVE by the node (`MicroblogApi.poll`), which joins the bounded staker
+ * set against current `VotingPower` — or returns the FROZEN result once the poll is closed. `close_at`
+ * (the block-number deadline) and `finalized` (a `PollResults` row exists) come from storage PAPI-direct;
+ * the frontend derives `closed`/`provisional` from `close_at` + the current best block. Counts are exact.
+ *
+ * ⚠ Shape note: `Poll` is now a TWO-field struct (`{ options, close_at }`), so PAPI no longer unwraps it —
+ * `Polls.getValue` returns `{ options: Binary[]; close_at: number | undefined } | undefined`.
  */
 export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView> {
-  const labels = await api.query.Microblog.Polls.getValue(hostId, BEST);
-  if (!labels) return { hostId, options: [], totalWeight: 0n, totalCount: 0 };
-  const tallies = await Promise.all(
-    labels.map((_, i) => api.query.Microblog.PollTally.getValue(hostId, i, BEST)),
-  );
-  const options = labels.map((b, i) => ({
-    index: i,
-    label: Binary.toText(b),
-    weight: BigInt(tallies[i]?.weight ?? 0n),
-    count: tallies[i]?.count ?? 0,
+  const [view, meta, result] = await Promise.all([
+    api.apis.MicroblogApi.poll(hostId, BEST),
+    api.query.Microblog.Polls.getValue(hostId, BEST),
+    api.query.Microblog.PollResults.getValue(hostId, BEST),
+  ]);
+  if (!view) return { hostId, options: [], totalWeight: 0n, totalCount: 0, finalized: false };
+  const options = view.options.map((o) => ({
+    index: o.index,
+    label: Binary.toText(o.label),
+    weight: BigInt(o.weight),
+    count: o.count,
   }));
   const totalWeight = options.reduce((s, o) => s + o.weight, 0n);
-  const totalCount = options.reduce((s, o) => s + o.count, 0);
-  return { hostId, options, totalWeight, totalCount };
+  return {
+    hostId,
+    options,
+    totalWeight,
+    totalCount: view.total_votes,
+    closeAt: meta?.close_at ?? undefined,
+    finalized: result !== undefined,
+  };
 }
 
 /** The viewer's chosen option index in a poll, or null if they have not cast. */
@@ -133,6 +165,8 @@ export async function readViewerPollChoice(
   hostId: bigint,
   who: Ss58,
 ): Promise<number | null> {
-  const v = await api.query.Microblog.PollVotes.getValue(hostId, who, BEST);
-  return v ? v.option : null;
+  // `PollVotes` is now the single-field `PollVoteRecord { option }`, which PAPI unwraps to the bare index.
+  // `?? null` keeps option 0 (nullish coalescing only catches None → undefined).
+  const option = await api.query.Microblog.PollVotes.getValue(hostId, who, BEST);
+  return option ?? null;
 }

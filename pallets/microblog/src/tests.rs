@@ -14,6 +14,22 @@ use crate::{
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
 
+/// The LIVE weighted vote tally for a post `(up_weight, down_weight)`, read through the node read path.
+/// Spec 205 no longer STORES a vote's weight — it derives the weighted score from each voter's CURRENT
+/// `VotingPower` (the mock's `StakerSet` = the accounts with a `VotingPower` row). `VoteTally::get(id)`
+/// still carries the exact COUNTS. `thread(id).focal` enriches any existing post (top-level or reply).
+fn post_weight(id: u64) -> (u128, u128) {
+    let p = Microblog::thread(id, None).focal.expect("post exists");
+    (p.up_weight, p.down_weight)
+}
+
+/// The LIVE weighted reputation [`crate::Tally`] for an account — exact counts + current-stake weights,
+/// via the same staker-set join the runtime's `profile`/`person_summary` reads use.
+fn account_weight(target: u64) -> crate::Tally {
+    let stakers = Microblog::staker_weights();
+    Microblog::account_tally(&target, &stakers)
+}
+
 #[test]
 fn post_and_read_works() {
     new_test_ext().execute_with(|| {
@@ -133,6 +149,7 @@ fn top_level_and_quote_posts_do_not_touch_reply_aggregates() {
             RuntimeOrigin::signed(3),
             b"poll?".to_vec(),
             vec![b"a".to_vec(), b"b".to_vec()],
+            None,
         ));
 
         // None of these are replies, so the reply aggregates stay empty.
@@ -193,12 +210,13 @@ fn event_and_error_variant_indices_are_pinned_on_the_wire() {
         }),
         1
     );
+    // spec 205 dropped the `weight` field from Voted/AccountVoted/PollVoted (weight is now derived live),
+    // but the variant INDICES are unchanged — that is the on-wire contract this test guards.
     assert_eq!(
         ev(Event::Voted {
             id: 0,
             who: 1,
             dir: VoteDir::Up,
-            weight: 0
         }),
         2
     );
@@ -208,7 +226,6 @@ fn event_and_error_variant_indices_are_pinned_on_the_wire() {
             target: 2,
             who: 1,
             dir: VoteDir::Up,
-            weight: 0
         }),
         4
     );
@@ -234,10 +251,11 @@ fn event_and_error_variant_indices_are_pinned_on_the_wire() {
             id: 0,
             who: 1,
             option: 0,
-            weight: 0
         }),
         10
     );
+    // spec 205: PollClosed appended at the next free index.
+    assert_eq!(ev(Event::PollClosed { host_id: 0 }), 11);
 
     let er = |e: Error<Test>| e.encode()[0];
     assert_eq!(er(Error::TooLong), 0);
@@ -256,6 +274,9 @@ fn event_and_error_variant_indices_are_pinned_on_the_wire() {
     assert_eq!(er(Error::InvalidOption), 13);
     assert_eq!(er(Error::SelfAccountVote), 14);
     assert_eq!(er(Error::TargetNotAllowed), 15);
+    // spec 205: PollClosed / PollNotClosable appended at the next free indices.
+    assert_eq!(er(Error::PollClosed), 16);
+    assert_eq!(er(Error::PollNotClosable), 17);
 }
 
 // ── social engagement: quote / vote / follow ────────────────────────────────────────────────────
@@ -315,7 +336,7 @@ fn quote_post_too_long_is_rejected() {
 }
 
 #[test]
-fn vote_records_stake_weight_and_tally() {
+fn vote_records_count_and_live_weight() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         assert_ok!(Microblog::post_message(
@@ -325,20 +346,62 @@ fn vote_records_stake_weight_and_tally() {
         ));
         TalkStake::apply_voting_power(&2, 100);
         assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
+        // Counts are stored; the weight is derived LIVE from the voter's current VotingPower (100).
         let t = VoteTally::<Test>::get(0);
-        assert_eq!(t.up_weight, 100);
         assert_eq!(t.up_count, 1);
-        assert_eq!(t.down_weight, 0);
-        assert_eq!(Votes::<Test>::get(0, 2).expect("record").weight, 100);
+        assert_eq!(t.down_count, 0);
+        assert_eq!(post_weight(0), (100, 0));
+        // The stored record keeps only the direction (no weight snapshot).
+        assert_eq!(Votes::<Test>::get(0, 2).expect("record").dir, VoteDir::Up);
         System::assert_last_event(
             Event::Voted {
                 id: 0,
                 who: 2,
                 dir: VoteDir::Up,
-                weight: 100,
             }
             .into(),
         );
+    });
+}
+
+#[test]
+fn vote_weight_reprices_live_when_stake_moves() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(Microblog::post_message(
+            RuntimeOrigin::signed(1),
+            b"root".to_vec(),
+            None
+        ));
+        TalkStake::apply_voting_power(&2, 100);
+        assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
+        assert_eq!(post_weight(0), (100, 0));
+        // Stake grows — the SAME already-cast vote re-prices on the next read, no re-vote needed.
+        TalkStake::apply_voting_power(&2, 500);
+        assert_eq!(post_weight(0), (500, 0));
+        // A full unstake drops the vote's weight to 0 while the count still stands.
+        TalkStake::apply_voting_power(&2, 0);
+        assert_eq!(post_weight(0), (0, 0));
+        assert_eq!(VoteTally::<Test>::get(0).up_count, 1);
+    });
+}
+
+#[test]
+fn vote_weight_for_a_fresh_wallet_catches_up_when_stake_lands() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(Microblog::post_message(
+            RuntimeOrigin::signed(1),
+            b"root".to_vec(),
+            None
+        ));
+        // A wallet that reads 0 before its epoch snapshot lands still records a (0-weight) vote …
+        assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
+        assert_eq!(post_weight(0), (0, 0));
+        assert_eq!(VoteTally::<Test>::get(0).up_count, 1);
+        // … and it catches up the moment the observer credits its stake — no re-vote.
+        TalkStake::apply_voting_power(&2, 250);
+        assert_eq!(post_weight(0), (250, 0));
     });
 }
 
@@ -354,7 +417,7 @@ fn vote_on_nonexistent_post_is_rejected() {
 }
 
 #[test]
-fn revote_flip_reverses_stored_weight_not_current_stake() {
+fn revote_flip_moves_count_and_reprices_live() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         assert_ok!(Microblog::post_message(
@@ -365,20 +428,19 @@ fn revote_flip_reverses_stored_weight_not_current_stake() {
         // Vote Up at weight 100 …
         TalkStake::apply_voting_power(&2, 100);
         assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
-        // … then stake changes to 300 and the voter flips to Down. The Up side must reverse by the
-        // STORED 100 (to zero), and the Down side apply the fresh 300 — no drift.
+        // … then stake changes to 300 and the voter flips to Down. The count moves Up→Down (O(1)); the
+        // weight is derived live, so Down carries the voter's CURRENT 300 and Up drops to 0.
         TalkStake::apply_voting_power(&2, 300);
         assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Down));
         let t = VoteTally::<Test>::get(0);
-        assert_eq!(t.up_weight, 0);
         assert_eq!(t.up_count, 0);
-        assert_eq!(t.down_weight, 300);
         assert_eq!(t.down_count, 1);
+        assert_eq!(post_weight(0), (0, 300));
     });
 }
 
 #[test]
-fn revote_same_direction_updates_weight_not_count() {
+fn revote_same_direction_does_not_double_count() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         assert_ok!(Microblog::post_message(
@@ -389,15 +451,15 @@ fn revote_same_direction_updates_weight_not_count() {
         TalkStake::apply_voting_power(&2, 100);
         assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
         TalkStake::apply_voting_power(&2, 300);
-        assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up)); // same dir, new weight
+        assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up)); // same dir, new stake
         let t = VoteTally::<Test>::get(0);
-        assert_eq!(t.up_weight, 300, "weight replaced, not summed");
         assert_eq!(t.up_count, 1, "count not double-incremented");
+        assert_eq!(post_weight(0), (300, 0), "weight reflects current stake");
     });
 }
 
 #[test]
-fn clear_vote_reverses_exact_stored_weight() {
+fn clear_vote_drops_count_and_weight() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         assert_ok!(Microblog::post_message(
@@ -407,12 +469,11 @@ fn clear_vote_reverses_exact_stored_weight() {
         ));
         TalkStake::apply_voting_power(&2, 100);
         assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
-        // Stake balloons, then the vote is cleared — the reversal must use the stored 100, not 9999.
-        TalkStake::apply_voting_power(&2, 9999);
+        assert_eq!(post_weight(0), (100, 0));
         assert_ok!(Microblog::clear_vote(RuntimeOrigin::signed(2), 0));
         let t = VoteTally::<Test>::get(0);
-        assert_eq!(t.up_weight, 0);
         assert_eq!(t.up_count, 0);
+        assert_eq!(post_weight(0), (0, 0));
         assert!(Votes::<Test>::get(0, 2).is_none());
         System::assert_last_event(Event::VoteCleared { id: 0, who: 2 }.into());
     });
@@ -434,12 +495,13 @@ fn clear_vote_without_a_vote_is_rejected() {
     });
 }
 
-/// The fold-determinism invariant: an independent fold of the emitted `Voted`/`VoteCleared` events
-/// (reverse-then-apply with the SAME saturating math) must reproduce `VoteTally` byte-for-byte. We
-/// drive a sweep of votes/flips/clears across several accounts and compare the on-chain tally to a
-/// hand fold that mimics what an off-chain indexer does.
+/// The count-fold + live-weight invariant (spec 205). COUNTS still fold cleanly from the `Voted` /
+/// `VoteCleared` events (reverse-then-apply on the direction) and must reproduce `VoteTally` exactly. The
+/// WEIGHTED score no longer folds from events — it is derived live — so we cross-check it against a hand
+/// sum of each currently-voting account's CURRENT `VotingPower`. We drive a sweep of votes/flips/clears
+/// with concurrent stake changes and compare both.
 #[test]
-fn tally_fold_determinism_property() {
+fn tally_count_fold_and_live_weight_property() {
     use std::collections::BTreeMap;
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
@@ -454,25 +516,18 @@ fn tally_fold_determinism_property() {
             (3, 50, Some(VoteDir::Down)),
             (2, 250, Some(VoteDir::Up)), // same-dir reweight
             (4, 70, Some(VoteDir::Up)),
-            (3, 50, Some(VoteDir::Up)), // flip Down -> Up (weight unchanged here)
+            (3, 50, Some(VoteDir::Up)), // flip Down -> Up
             (2, 250, None),             // clear
-            (4, 999, Some(VoteDir::Down)), // flip Up -> Down at new weight
+            (4, 999, Some(VoteDir::Down)), // flip Up -> Down at new stake
         ];
-        // Independent fold: last-seen record per voter + the running tally, reverse-then-apply.
-        let mut seen: BTreeMap<u64, (VoteDir, u128)> = BTreeMap::new();
-        let (mut up_w, mut dn_w, mut up_c, mut dn_c) = (0u128, 0u128, 0u32, 0u32);
+        // Independent COUNT fold: last-seen direction per voter, reverse-then-apply.
+        let mut seen: BTreeMap<u64, VoteDir> = BTreeMap::new();
+        let (mut up_c, mut dn_c) = (0u32, 0u32);
         for &(voter, weight, action) in steps {
-            // Reverse a prior record if present.
-            if let Some((dir, w)) = seen.remove(&voter) {
+            if let Some(dir) = seen.remove(&voter) {
                 match dir {
-                    VoteDir::Up => {
-                        up_w = up_w.saturating_sub(w);
-                        up_c = up_c.saturating_sub(1);
-                    }
-                    VoteDir::Down => {
-                        dn_w = dn_w.saturating_sub(w);
-                        dn_c = dn_c.saturating_sub(1);
-                    }
+                    VoteDir::Up => up_c = up_c.saturating_sub(1),
+                    VoteDir::Down => dn_c = dn_c.saturating_sub(1),
                 }
             }
             match action {
@@ -480,34 +535,36 @@ fn tally_fold_determinism_property() {
                     TalkStake::apply_voting_power(&voter, weight);
                     assert_ok!(Microblog::vote(RuntimeOrigin::signed(voter), 0, dir));
                     match dir {
-                        VoteDir::Up => {
-                            up_w = up_w.saturating_add(weight);
-                            up_c = up_c.saturating_add(1);
-                        }
-                        VoteDir::Down => {
-                            dn_w = dn_w.saturating_add(weight);
-                            dn_c = dn_c.saturating_add(1);
-                        }
+                        VoteDir::Up => up_c = up_c.saturating_add(1),
+                        VoteDir::Down => dn_c = dn_c.saturating_add(1),
                     }
-                    seen.insert(voter, (dir, weight));
+                    seen.insert(voter, dir);
                 }
                 None => {
                     assert_ok!(Microblog::clear_vote(RuntimeOrigin::signed(voter), 0));
                 }
             }
         }
+        // Counts fold exactly.
         let t = VoteTally::<Test>::get(0);
-        assert_eq!(
-            (t.up_weight, t.down_weight, t.up_count, t.down_count),
-            (up_w, dn_w, up_c, dn_c)
-        );
+        assert_eq!((t.up_count, t.down_count), (up_c, dn_c));
+        // Live weight = sum of each still-voting account's CURRENT VotingPower on its current side.
+        let (mut up_w, mut dn_w) = (0u128, 0u128);
+        for (&voter, &dir) in seen.iter() {
+            let w = pallet_talk_stake::VotingPower::<Test>::get(voter);
+            match dir {
+                VoteDir::Up => up_w += w,
+                VoteDir::Down => dn_w += w,
+            }
+        }
+        assert_eq!(post_weight(0), (up_w, dn_w));
     });
 }
 
 // ── account reputation votes (stake-weighted up/down ON accounts) ───────────────────────────────
 
 #[test]
-fn account_vote_records_stake_weight_and_tally() {
+fn account_vote_records_count_and_live_weight() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         TalkStake::apply_voting_power(&2, 100);
@@ -516,20 +573,37 @@ fn account_vote_records_stake_weight_and_tally() {
             3,
             VoteDir::Up
         ));
-        let t = AccountVoteTally::<Test>::get(3);
-        assert_eq!(t.up_weight, 100);
-        assert_eq!(t.up_count, 1);
-        assert_eq!(t.down_weight, 0);
-        assert_eq!(AccountVotes::<Test>::get(3, 2).expect("record").weight, 100);
+        // Counts stored; weight derived live from the voter's current VotingPower (100).
+        let stored = AccountVoteTally::<Test>::get(3);
+        assert_eq!(stored.up_count, 1);
+        assert_eq!(stored.down_count, 0);
+        let t = account_weight(3);
+        assert_eq!((t.up_weight, t.down_weight, t.up_count, t.down_count), (100, 0, 1, 0));
+        assert_eq!(AccountVotes::<Test>::get(3, 2).expect("record").dir, VoteDir::Up);
         System::assert_last_event(
             Event::AccountVoted {
                 target: 3,
                 who: 2,
                 dir: VoteDir::Up,
-                weight: 100,
             }
             .into(),
         );
+    });
+}
+
+#[test]
+fn account_reputation_reprices_live_when_stake_moves() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        TalkStake::apply_voting_power(&2, 100);
+        assert_ok!(Microblog::vote_account(RuntimeOrigin::signed(2), 3, VoteDir::Up));
+        assert_eq!(account_weight(3).up_weight, 100);
+        // The already-cast reputation vote re-prices as the voter's stake moves — no re-vote.
+        TalkStake::apply_voting_power(&2, 400);
+        assert_eq!(account_weight(3).up_weight, 400);
+        TalkStake::apply_voting_power(&2, 0);
+        let t = account_weight(3);
+        assert_eq!((t.up_weight, t.up_count), (0, 1));
     });
 }
 
@@ -569,7 +643,7 @@ fn account_vote_requires_voter_identity() {
 }
 
 #[test]
-fn account_revote_flip_reverses_stored_weight_not_current_stake() {
+fn account_revote_flip_moves_count_and_reprices_live() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         TalkStake::apply_voting_power(&2, 100);
@@ -578,24 +652,23 @@ fn account_revote_flip_reverses_stored_weight_not_current_stake() {
             3,
             VoteDir::Up
         ));
-        // Stake changes to 300 and the voter flips to Down: the Up side reverses by the STORED 100
-        // (to zero) and the Down side applies the fresh 300 — no drift.
+        // Stake changes to 300 and the voter flips to Down: the count moves Up→Down; the live weight
+        // reflects the CURRENT 300 on the Down side and 0 on the Up side.
         TalkStake::apply_voting_power(&2, 300);
         assert_ok!(Microblog::vote_account(
             RuntimeOrigin::signed(2),
             3,
             VoteDir::Down
         ));
-        let t = AccountVoteTally::<Test>::get(3);
-        assert_eq!(t.up_weight, 0);
-        assert_eq!(t.up_count, 0);
-        assert_eq!(t.down_weight, 300);
-        assert_eq!(t.down_count, 1);
+        let stored = AccountVoteTally::<Test>::get(3);
+        assert_eq!((stored.up_count, stored.down_count), (0, 1));
+        let t = account_weight(3);
+        assert_eq!((t.up_weight, t.down_weight), (0, 300));
     });
 }
 
 #[test]
-fn account_revote_same_direction_updates_weight_not_count() {
+fn account_revote_same_direction_does_not_double_count() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         TalkStake::apply_voting_power(&2, 100);
@@ -609,15 +682,14 @@ fn account_revote_same_direction_updates_weight_not_count() {
             RuntimeOrigin::signed(2),
             3,
             VoteDir::Up
-        )); // same dir, new weight
-        let t = AccountVoteTally::<Test>::get(3);
-        assert_eq!(t.up_weight, 300, "weight replaced, not summed");
-        assert_eq!(t.up_count, 1, "count not double-incremented");
+        )); // same dir, new stake
+        assert_eq!(AccountVoteTally::<Test>::get(3).up_count, 1, "count not double-incremented");
+        assert_eq!(account_weight(3).up_weight, 300, "weight reflects current stake");
     });
 }
 
 #[test]
-fn clear_account_vote_reverses_exact_stored_weight() {
+fn clear_account_vote_drops_count_and_weight() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         TalkStake::apply_voting_power(&2, 100);
@@ -626,12 +698,10 @@ fn clear_account_vote_reverses_exact_stored_weight() {
             3,
             VoteDir::Up
         ));
-        // Stake balloons, then the vote is cleared — the reversal must use the stored 100, not 9999.
-        TalkStake::apply_voting_power(&2, 9999);
+        assert_eq!(account_weight(3).up_weight, 100);
         assert_ok!(Microblog::clear_account_vote(RuntimeOrigin::signed(2), 3));
-        let t = AccountVoteTally::<Test>::get(3);
-        assert_eq!(t.up_weight, 0);
-        assert_eq!(t.up_count, 0);
+        let t = account_weight(3);
+        assert_eq!((t.up_weight, t.up_count), (0, 0));
         assert!(AccountVotes::<Test>::get(3, 2).is_none());
         System::assert_last_event(Event::AccountVoteCleared { target: 3, who: 2 }.into());
     });
@@ -648,10 +718,11 @@ fn clear_account_vote_without_a_vote_is_rejected() {
     });
 }
 
-/// The account-vote analog of [`tally_fold_determinism_property`]: an independent fold of the
-/// `AccountVoted`/`AccountVoteCleared` events must reproduce `AccountVoteTally` byte-for-byte.
+/// The account-vote analog of [`tally_count_fold_and_live_weight_property`]: COUNTS fold from the
+/// `AccountVoted`/`AccountVoteCleared` events, and the live weighted reputation matches a hand sum of each
+/// currently-voting account's CURRENT `VotingPower`.
 #[test]
-fn account_tally_fold_determinism_property() {
+fn account_tally_count_fold_and_live_weight_property() {
     use std::collections::BTreeMap;
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
@@ -664,21 +735,15 @@ fn account_tally_fold_determinism_property() {
             (4, 70, Some(VoteDir::Up)),
             (3, 50, Some(VoteDir::Up)),    // flip Down -> Up
             (2, 250, None),                // clear
-            (4, 999, Some(VoteDir::Down)), // flip Up -> Down at new weight
+            (4, 999, Some(VoteDir::Down)), // flip Up -> Down at new stake
         ];
-        let mut seen: BTreeMap<u64, (VoteDir, u128)> = BTreeMap::new();
-        let (mut up_w, mut dn_w, mut up_c, mut dn_c) = (0u128, 0u128, 0u32, 0u32);
+        let mut seen: BTreeMap<u64, VoteDir> = BTreeMap::new();
+        let (mut up_c, mut dn_c) = (0u32, 0u32);
         for &(voter, weight, action) in steps {
-            if let Some((dir, w)) = seen.remove(&voter) {
+            if let Some(dir) = seen.remove(&voter) {
                 match dir {
-                    VoteDir::Up => {
-                        up_w = up_w.saturating_sub(w);
-                        up_c = up_c.saturating_sub(1);
-                    }
-                    VoteDir::Down => {
-                        dn_w = dn_w.saturating_sub(w);
-                        dn_c = dn_c.saturating_sub(1);
-                    }
+                    VoteDir::Up => up_c = up_c.saturating_sub(1),
+                    VoteDir::Down => dn_c = dn_c.saturating_sub(1),
                 }
             }
             match action {
@@ -690,16 +755,10 @@ fn account_tally_fold_determinism_property() {
                         dir
                     ));
                     match dir {
-                        VoteDir::Up => {
-                            up_w = up_w.saturating_add(weight);
-                            up_c = up_c.saturating_add(1);
-                        }
-                        VoteDir::Down => {
-                            dn_w = dn_w.saturating_add(weight);
-                            dn_c = dn_c.saturating_add(1);
-                        }
+                        VoteDir::Up => up_c = up_c.saturating_add(1),
+                        VoteDir::Down => dn_c = dn_c.saturating_add(1),
                     }
-                    seen.insert(voter, (dir, weight));
+                    seen.insert(voter, dir);
                 }
                 None => {
                     assert_ok!(Microblog::clear_account_vote(
@@ -709,7 +768,15 @@ fn account_tally_fold_determinism_property() {
                 }
             }
         }
-        let t = AccountVoteTally::<Test>::get(target);
+        let t = account_weight(target);
+        let (mut up_w, mut dn_w) = (0u128, 0u128);
+        for (&voter, &dir) in seen.iter() {
+            let w = pallet_talk_stake::VotingPower::<Test>::get(voter);
+            match dir {
+                VoteDir::Up => up_w += w,
+                VoteDir::Down => dn_w += w,
+            }
+        }
         assert_eq!(
             (t.up_weight, t.down_weight, t.up_count, t.down_count),
             (up_w, dn_w, up_c, dn_c)
@@ -841,16 +908,18 @@ fn create_poll_makes_a_post_and_stores_options() {
         assert_ok!(Microblog::create_poll(
             RuntimeOrigin::signed(1),
             b"best chain?".to_vec(),
-            opts(3)
+            opts(3),
+            None,
         ));
         // The poll's question is an ordinary post (so it threads/quotes + shows in the feed).
         let p = Posts::<Test>::get(0).expect("host post exists");
         assert_eq!(p.text.to_vec(), b"best chain?".to_vec());
         assert_eq!(p.parent, None);
         assert_eq!(p.quote, None);
-        // And the options live in the Polls side-map.
+        // And the options live in the Polls side-map; a poll with no deadline floats forever.
         let poll = Polls::<Test>::get(0).expect("poll exists");
         assert_eq!(poll.options.len(), 3);
+        assert_eq!(poll.close_at, None);
         assert_eq!(NextPostId::<Test>::get(), 1);
         System::assert_has_event(Event::PostCreated { id: 0, author: 1 }.into());
         System::assert_last_event(Event::PollCreated { id: 0, author: 1 }.into());
@@ -862,7 +931,7 @@ fn create_poll_needs_at_least_two_options() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         assert_noop!(
-            Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(1)),
+            Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(1), None),
             Error::<Test>::NotEnoughOptions
         );
         assert_eq!(NextPostId::<Test>::get(), 0);
@@ -875,7 +944,7 @@ fn create_poll_rejects_too_many_options() {
         System::set_block_number(1);
         // MaxPollOptions = 4 in the mock.
         assert_noop!(
-            Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(5)),
+            Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(5), None),
             Error::<Test>::TooManyOptions
         );
     });
@@ -890,45 +959,51 @@ fn create_poll_rejects_overlong_option() {
             Microblog::create_poll(
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
-                vec![b"ok".to_vec(), long]
+                vec![b"ok".to_vec(), long],
+                None,
             ),
             Error::<Test>::OptionTooLong
         );
     });
 }
 
+/// The live per-option weight for a poll option, read through `poll()` (the node read path).
+fn poll_opt_weight(host: u64, option: usize) -> u128 {
+    Microblog::poll(host).expect("poll exists").options[option].weight
+}
+
 #[test]
-fn cast_poll_vote_is_stake_weighted_and_deterministic_on_recast() {
+fn cast_poll_vote_counts_and_reprices_live_on_recast() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         assert_ok!(Microblog::create_poll(
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
-            opts(3)
+            opts(3),
+            None,
         ));
-        // Account 2 votes option 0 at weight 100.
+        // Account 2 votes option 0 at weight 100. Count is stored; weight is derived live.
         TalkStake::apply_voting_power(&2, 100);
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 0));
-        assert_eq!(PollTally::<Test>::get(0, 0).weight, 100);
         assert_eq!(PollTally::<Test>::get(0, 0).count, 1);
+        assert_eq!(poll_opt_weight(0, 0), 100);
         System::assert_last_event(
             Event::PollVoted {
                 id: 0,
                 who: 2,
                 option: 0,
-                weight: 100,
             }
             .into(),
         );
 
-        // Stake grows to 300, account 2 re-casts to option 1: option 0 reverses by the STORED 100
-        // (to zero), option 1 gets the fresh 300 — no drift.
+        // Stake grows to 300, account 2 re-casts to option 1: the count moves 0→1; the live weight puts
+        // the voter's CURRENT 300 on option 1 and 0 on option 0.
         TalkStake::apply_voting_power(&2, 300);
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 1));
-        assert_eq!(PollTally::<Test>::get(0, 0).weight, 0);
         assert_eq!(PollTally::<Test>::get(0, 0).count, 0);
-        assert_eq!(PollTally::<Test>::get(0, 1).weight, 300);
+        assert_eq!(poll_opt_weight(0, 0), 0);
         assert_eq!(PollTally::<Test>::get(0, 1).count, 1);
+        assert_eq!(poll_opt_weight(0, 1), 300);
         assert_eq!(PollVotes::<Test>::get(0, 2).expect("record").option, 1);
     });
 }
@@ -951,11 +1026,81 @@ fn cast_poll_vote_rejects_non_poll_and_bad_option() {
         assert_ok!(Microblog::create_poll(
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
-            opts(2)
+            opts(2),
+            None,
         ));
         assert_noop!(
             Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 1, 2), // poll id 1 has options 0,1
             Error::<Test>::InvalidOption
+        );
+    });
+}
+
+#[test]
+fn poll_close_rejects_votes_and_freezes_result() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // A poll that closes at block 10.
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"q".to_vec(),
+            opts(2),
+            Some(10),
+        ));
+        TalkStake::apply_voting_power(&2, 100);
+        TalkStake::apply_voting_power(&3, 200);
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 0));
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(3), 0, 1));
+        // Before the deadline the result is LIVE (re-prices with stake) and cannot be finalized yet.
+        assert_eq!(poll_opt_weight(0, 0), 100);
+        assert_noop!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 0),
+            Error::<Test>::PollNotClosable
+        );
+
+        // At/after the deadline: no more votes …
+        System::set_block_number(10);
+        assert_noop!(
+            Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 1),
+            Error::<Test>::PollClosed
+        );
+        // … the result reads live until finalized …
+        assert_eq!(poll_opt_weight(0, 1), 200);
+        // … then a permissionless close_poll FREEZES it.
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        assert!(crate::PollResults::<Test>::contains_key(0));
+        System::assert_last_event(Event::PollClosed { host_id: 0 }.into());
+        assert_eq!(poll_opt_weight(0, 0), 100);
+        assert_eq!(poll_opt_weight(0, 1), 200);
+
+        // A frozen poll no longer re-prices: moving stake after the close leaves the result unchanged,
+        // and a second close_poll is an idempotent no-op.
+        TalkStake::apply_voting_power(&3, 5_000);
+        assert_eq!(poll_opt_weight(0, 1), 200, "frozen result must not re-price");
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0)); // idempotent
+    });
+}
+
+#[test]
+fn close_poll_rejects_floating_and_missing_polls() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // A poll with no deadline can never be finalized.
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"q".to_vec(),
+            opts(2),
+            None,
+        ));
+        assert_noop!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 0),
+            Error::<Test>::PollNotClosable
+        );
+        // A non-poll post cannot be closed.
+        assert_ok!(Microblog::post_message(RuntimeOrigin::signed(1), b"hi".to_vec(), None));
+        assert_noop!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 1),
+            Error::<Test>::PollNotFound
         );
     });
 }
@@ -1779,7 +1924,8 @@ mod capacity_extension {
             assert_eq!(
                 cost(Call::create_poll {
                     question: vec![0u8; 5],
-                    options: vec![]
+                    options: vec![],
+                    close_at: None,
                 }),
                 Some(105)
             ); // post_cost
@@ -1790,6 +1936,7 @@ mod capacity_extension {
                 }),
                 Some(50)
             ); // VoteCost
+            assert_eq!(cost(Call::close_poll { host_id: 0 }), Some(50)); // VoteCost (finalize)
                // Not metered.
             assert_eq!(
                 cost(Call::force_set_capacity {
@@ -2209,6 +2356,7 @@ mod migration_v4 {
                 RuntimeOrigin::signed(1),
                 b"p".to_vec(),
                 vec![b"x".to_vec(), b"y".to_vec()],
+                None,
             ));
             let mut spine: Vec<(u64, u64)> = TopLevelPosts::<Test>::iter().collect();
             spine.sort();
@@ -2389,6 +2537,98 @@ mod migration_v5 {
     }
 }
 
+// Validates the v5 → v6 re-encode: write OLD-encoded (weight-bearing) vote / tally / poll rows directly
+// under the live prefixes, run the migration, and assert they decode as the lighter v6 types with the
+// DIRECTIONS / OPTIONS / COUNTS preserved, `Poll.close_at == None`, and the version-guard idempotency.
+mod migration_v6 {
+    use super::*;
+    use crate::migrations::v6::{
+        MigrateV5ToV6, OldOptionTally, OldPoll, OldPollVoteRecord, OldTally, OldVoteRecord,
+    };
+    use crate::{
+        AccountVotes, OptionTally, Pallet, PollResults, PollVoteRecord, VoteCounts, VoteRecord,
+    };
+    use codec::Encode;
+    use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+    use frame_support::BoundedVec;
+
+    fn put(key: Vec<u8>, bytes: Vec<u8>) {
+        sp_io::storage::set(&key, &bytes);
+    }
+
+    #[test]
+    fn v5_to_v6_drops_weight_keeps_counts_and_is_idempotent() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(3);
+            // The guard fires only at on-chain version 5.
+            StorageVersion::new(5).put::<Pallet<Test>>();
+
+            // Old post-vote rows + tally (weights present).
+            put(
+                Votes::<Test>::hashed_key_for(0, 2),
+                OldVoteRecord { dir: VoteDir::Up, weight: 100 }.encode(),
+            );
+            put(
+                Votes::<Test>::hashed_key_for(0, 3),
+                OldVoteRecord { dir: VoteDir::Down, weight: 50 }.encode(),
+            );
+            put(
+                VoteTally::<Test>::hashed_key_for(0),
+                OldTally { up_weight: 100, down_weight: 50, up_count: 1, down_count: 1 }.encode(),
+            );
+            // Old account-vote rows + tally.
+            put(
+                AccountVotes::<Test>::hashed_key_for(9, 2),
+                OldVoteRecord { dir: VoteDir::Up, weight: 77 }.encode(),
+            );
+            put(
+                AccountVoteTally::<Test>::hashed_key_for(9),
+                OldTally { up_weight: 77, down_weight: 0, up_count: 1, down_count: 0 }.encode(),
+            );
+            // Old poll: choice + per-option tally + the poll itself (no close_at in v5).
+            put(
+                PollVotes::<Test>::hashed_key_for(0, 2),
+                OldPollVoteRecord { option: 1, weight: 200 }.encode(),
+            );
+            put(
+                PollTally::<Test>::hashed_key_for(0, 1),
+                OldOptionTally { weight: 200, count: 1 }.encode(),
+            );
+            let mut options: BoundedVec<BoundedVec<u8, _>, _> = Default::default();
+            options.try_push(b"a".to_vec().try_into().unwrap()).unwrap();
+            options.try_push(b"b".to_vec().try_into().unwrap()).unwrap();
+            put(
+                Polls::<Test>::hashed_key_for(0),
+                OldPoll::<Test> { options }.encode(),
+            );
+
+            let _w = MigrateV5ToV6::<Test>::on_runtime_upgrade();
+            assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(6));
+
+            // Directions preserved; the stored records now carry ONLY the direction / option.
+            assert_eq!(Votes::<Test>::get(0, 2), Some(VoteRecord { dir: VoteDir::Up }));
+            assert_eq!(Votes::<Test>::get(0, 3), Some(VoteRecord { dir: VoteDir::Down }));
+            assert_eq!(AccountVotes::<Test>::get(9, 2), Some(VoteRecord { dir: VoteDir::Up }));
+            assert_eq!(PollVotes::<Test>::get(0, 2), Some(PollVoteRecord { option: 1 }));
+            // Counts preserved byte-for-byte; weights gone from the value types.
+            assert_eq!(VoteTally::<Test>::get(0), VoteCounts { up_count: 1, down_count: 1 });
+            assert_eq!(AccountVoteTally::<Test>::get(9), VoteCounts { up_count: 1, down_count: 0 });
+            assert_eq!(PollTally::<Test>::get(0, 1), OptionTally { count: 1 });
+            // The poll re-encodes with the options preserved and a defaulted (floating) deadline.
+            let poll = Polls::<Test>::get(0).expect("poll migrated");
+            assert_eq!(poll.options.len(), 2);
+            assert_eq!(poll.close_at, None);
+            // No results are finalized by the migration.
+            assert_eq!(PollResults::<Test>::iter().count(), 0);
+
+            // Idempotency: a second run is a no-op (the guard skips now that on-chain version is 6).
+            let _ = MigrateV5ToV6::<Test>::on_runtime_upgrade();
+            assert_eq!(VoteTally::<Test>::get(0), VoteCounts { up_count: 1, down_count: 1 });
+            assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(6));
+        });
+    }
+}
+
 // ── Asymmetric-safety property test ─────────────────────────────────────────────────────────
 
 /// **Clamp-latency ≤ grant-latency.** The weight writer's
@@ -2546,7 +2786,7 @@ mod node_reads {
             pallet_talk_stake::VotingPower::<Test>::insert(2u64, 500u128);
             assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), p0, VoteDir::Up));
 
-            // the voter sees their own vote; the tally reflects the snapshot weight
+            // the voter sees their own vote; the tally weight is derived LIVE from current stake
             let seen = Microblog::feed_page(None, 10, Some(2));
             let mine = &seen.posts[0];
             assert_eq!(mine.my_vote, Some(VoteDir::Up));
@@ -2588,6 +2828,7 @@ mod node_reads {
                 RuntimeOrigin::signed(5),
                 b"poll?".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
+                None,
             ));
 
             let page = Microblog::feed_page(None, 10, None);
@@ -2746,6 +2987,7 @@ mod node_reads {
                 RuntimeOrigin::signed(1),
                 b"poll?".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
+                None,
             ));
 
             // Three top-level posts (root + quote + poll); the reply is excluded from the spine.
@@ -2881,6 +3123,7 @@ mod node_reads {
                 RuntimeOrigin::signed(1),
                 b"fav?".to_vec(),
                 vec![b"red".to_vec(), b"blue".to_vec()],
+                None,
             ));
             pallet_talk_stake::VotingPower::<Test>::insert(2u64, 300u128);
             pallet_talk_stake::VotingPower::<Test>::insert(3u64, 200u128);
@@ -2898,7 +3141,7 @@ mod node_reads {
             assert_eq!(view.options[1].count, 0);
             assert_eq!(view.total_votes, 2);
 
-            // a re-cast moves voter 3 red→blue: total voters stays 2, weights follow the snapshots
+            // a re-cast moves voter 3 red→blue: total voters stays 2, weights follow live stake
             assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(3), host, 1));
             let view2 = Microblog::poll(host).unwrap();
             assert_eq!((view2.options[0].count, view2.options[0].weight), (1, 300));
@@ -2916,6 +3159,7 @@ mod node_reads {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 vec![b"x".to_vec(), b"y".to_vec()],
+                None,
             ));
             assert_eq!(Microblog::poll_choice(2, host), None); // not voted yet
             assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), host, 1));

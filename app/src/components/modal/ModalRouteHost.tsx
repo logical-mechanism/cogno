@@ -43,6 +43,7 @@ import {
   submitSetProfile,
   submitClearProfile,
 } from "@/lib/chain/mutations";
+import { BLOCKS_PER_DAY } from "@/lib/chain/capacity";
 import type { ComposerDraft, PollDraft, ModalKind } from "../kit";
 import type { CognoPost } from "@/lib/types";
 import type { ProfileFields } from "../EditProfileModal";
@@ -73,7 +74,7 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 
 export function ModalRouteHost() {
   const { state, close } = useModalStore();
-  const { api, signer, source, viewer } = useSession();
+  const { api, signer, source, viewer, bestBlock } = useSession();
   // Only the PROFILE overlay is still owned here — the compose overlay moved into useComposeWrite.
   const { patchProfile, confirmProfile, rollbackProfile } = useOptimistic();
   const { run } = useMutation();
@@ -252,14 +253,21 @@ export function ModalRouteHost() {
   );
 
   const onCreatePoll = useCallback(
-    (question: string, options: string[]) => {
+    async (question: string, options: string[], closeInDays?: number) => {
       if (!api || !signer || question.trim().length === 0) return;
-      runWrite(submitCreatePoll(api, signer, question, options), optimisticPost(question, { isPoll: true }), {
+      // Convert the chosen deadline (days) to an absolute block-number `close_at`. Prefer the live best
+      // block; if it hasn't loaded yet, read the chain head so the deadline is never silently dropped.
+      let closeAt: number | undefined;
+      if (closeInDays) {
+        const now = bestBlock ?? Number(await api.query.System.Number.getValue().catch(() => 0n));
+        closeAt = now > 0 ? now + closeInDays * BLOCKS_PER_DAY : undefined;
+      }
+      runWrite(submitCreatePoll(api, signer, question, options, closeAt), optimisticPost(question, { isPoll: true }), {
         pending: "Creating poll…",
         success: "Poll created",
       });
     },
-    [api, signer, runWrite, optimisticPost],
+    [api, signer, bestBlock, runWrite, optimisticPost],
   );
 
   // ── profile save/clear pipeline (feeless + capacity-metered, exactly like a post) ──────────────

@@ -144,15 +144,18 @@ export function submitCreatePoll(
   signer: PostingSigner,
   question: string,
   options: string[],
+  closeAt?: number,
 ): Observable<TxUpdate> {
   const tx = api.tx.Microblog.create_poll({
     question: Binary.fromText(question),
     options: options.map((o) => Binary.fromText(o)),
+    // `close_at: Option<BlockNumber>` (spec 205). PAPI encodes `undefined` as None (a floating poll).
+    close_at: closeAt,
   });
   return watchSigned(api, tx, signer, "PostCreated");
 }
 
-/** Cast / re-cast a poll vote (re-cast moves the voter's weight to the new option). */
+/** Cast / re-cast a poll vote (re-cast moves the voter's live weight to the new option). */
 export function submitPollVote(
   api: CognoApi,
   signer: PostingSigner,
@@ -163,6 +166,20 @@ export function submitPollVote(
     post_id: hostId,
     option,
   });
+  return watchSigned(api, tx, signer);
+}
+
+/**
+ * Finalize a poll past its deadline (spec 205): permissionless `close_poll`, which FREEZES the weighted
+ * result into `PollResults`. Idempotent on-chain (a second close is a no-op). The `PollClosed` event
+ * confirms it.
+ */
+export function submitClosePoll(
+  api: CognoApi,
+  signer: PostingSigner,
+  hostId: bigint,
+): Observable<TxUpdate> {
+  const tx = api.tx.Microblog.close_poll({ host_id: hostId });
   return watchSigned(api, tx, signer);
 }
 

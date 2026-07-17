@@ -144,6 +144,12 @@ export type ComposerMode = "post" | "reply" | "quote" | "poll";
 export interface PollDraft {
   question: string;
   options: string[];
+  /**
+   * Optional close deadline in DAYS (spec 205). `undefined` / `0` ⇒ the poll floats forever (no
+   * deadline). The surface converts this to a block-number `close_at` at submit time (`bestBlock +
+   * days × blocks-per-day`).
+   */
+  closeInDays?: number;
 }
 
 /** What a Composer hands back on submit; the surface maps it to the right extrinsic in @/lib/chain/mutations. */
