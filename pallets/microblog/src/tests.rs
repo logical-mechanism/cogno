@@ -1106,6 +1106,36 @@ fn close_poll_rejects_floating_and_missing_polls() {
 }
 
 #[test]
+fn close_poll_with_no_votes_freezes_an_all_zero_result() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // A poll that closes at block 5, on which NOBODY votes — this exercises the `total == 0`
+        // short-circuit in `close_poll` (freeze without the staker-set join).
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"q".to_vec(),
+            opts(3),
+            Some(5),
+        ));
+        System::set_block_number(5);
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        System::assert_last_event(Event::PollClosed { host_id: 0 }.into());
+
+        // The frozen result is present, all-zero, and index-aligned (one entry per option — NOT empty).
+        let result = crate::PollResults::<Test>::get(0).expect("finalized");
+        assert_eq!(result.option_weights.to_vec(), vec![0u128; 3]);
+        assert_eq!(result.option_counts.to_vec(), vec![0u32; 3]);
+        // And `poll()` reads the frozen snapshot back with zero voters and zero per-option weight.
+        let view = Microblog::poll(0).expect("poll exists");
+        assert_eq!(view.total_votes, 0);
+        assert_eq!(view.options.len(), 3);
+        for o in &view.options {
+            assert_eq!((o.weight, o.count), (0, 0));
+        }
+    });
+}
+
+#[test]
 fn too_many_posts_is_rejected_without_consuming_id() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);

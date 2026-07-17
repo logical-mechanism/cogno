@@ -250,16 +250,19 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 			.saturating_add(T::DbWeight::get().reads(6_u64))
 			.saturating_add(T::DbWeight::get().writes(3_u64))
 	}
-	/// `close_poll` joins the WHOLE staker set (`LastObservedStake`, ≤ `MaxObserved`) against `VotingPower`
-	/// + `PollVotes`, plus one `PollTally` read per option and a `PollResults` write. CONSERVATIVE HAND-ESTIMATE
-	/// PINNED TO `MaxObserved` = 1024 (≈ 2×1024 reads + overhead). ⚠ It does NOT auto-scale: if `MaxObserved`
-	/// is ever raised (e.g. the deferred 4096 bump) RAISE `reads(2_100)` in lockstep (≈ 8_200 at 4096), else a
-	/// permissionless finalize is under-charged and re-opens an O(MaxObserved) block-fill vector. The
-	/// auto-generated benchmark cannot catch this (it runs against an empty dev staker set), so this hand
-	/// value is authoritative until a `MaxObserved`-parameterised benchmark replaces it.
+	/// `close_poll` joins the WHOLE staker set (≤ `MaxObserved`) against `VotingPower` + `PollVotes`, plus one
+	/// `PollTally` read per option and a `PollResults` write. CONSERVATIVE HAND-ESTIMATE PINNED TO `MaxObserved`
+	/// = 1024. It must cover the WORST staker-set source, which is the `ObservedStakers` FALLBACK (empty
+	/// `LastObservedStake`): that path reads `VotingPower` TWICE — once to enumerate keys, once to read each
+	/// weight — plus one `PollVotes` read each, i.e. ≈ 3×1024 reads, not the 2×1024 of the primary
+	/// `LastObservedStake` path. Hence `reads(3_100)`. ⚠ Does NOT auto-scale: if `MaxObserved` is ever raised
+	/// (e.g. the deferred 4096 bump) RAISE this in lockstep (≈ 3×`MaxObserved` + overhead ≈ 12_300 at 4096),
+	/// else a permissionless finalize is under-charged and re-opens an O(MaxObserved) block-fill vector. The
+	/// auto-generated benchmark cannot catch this (it runs against a 1-staker dev set), so this hand value is
+	/// authoritative until a `MaxObserved`-parameterised benchmark replaces it.
 	fn close_poll() -> Weight {
 		Weight::from_parts(60_000_000, 8000)
-			.saturating_add(T::DbWeight::get().reads(2_100_u64))
+			.saturating_add(T::DbWeight::get().reads(3_100_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 	/// Storage: `TalkStake::AllowedStake` (r:1 w:0)
@@ -465,11 +468,12 @@ impl WeightInfo for () {
 			.saturating_add(RocksDbWeight::get().reads(6_u64))
 			.saturating_add(RocksDbWeight::get().writes(3_u64))
 	}
-	/// `close_poll` — conservative hand-estimate at the `MaxObserved` (1024) staker-set join ceiling; see
-	/// the `SubstrateWeight` impl. Over-charging is the safe direction for a permissionless call.
+	/// `close_poll` — conservative hand-estimate at the `MaxObserved` (1024) staker-set join ceiling, sized
+	/// for the ≈3×1024-read `ObservedStakers` fallback path; see the `SubstrateWeight` impl. Over-charging is
+	/// the safe direction for a permissionless call.
 	fn close_poll() -> Weight {
 		Weight::from_parts(60_000_000, 8000)
-			.saturating_add(RocksDbWeight::get().reads(2_100_u64))
+			.saturating_add(RocksDbWeight::get().reads(3_100_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 	/// Storage: `TalkStake::AllowedStake` (r:1 w:0)

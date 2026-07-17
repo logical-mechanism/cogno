@@ -1549,19 +1549,26 @@ pub mod pallet {
 
             // The frozen weighted result: per-option weight summed from the staker set's CURRENT
             // VotingPower (exact, single-valued, MaxObserved-bounded), plus the stored per-option count.
-            let stakers = Self::staker_weights();
             let num_options = poll.options.len();
-            let weights = Self::poll_option_weights(host_id, num_options, &stakers);
+            let counts: Vec<u32> = (0..num_options)
+                .map(|i| PollTally::<T>::get(host_id, i as u8).count)
+                .collect();
+            let total: u32 = counts.iter().copied().fold(0, |a, c| a.saturating_add(c));
+            // No votes ⇒ freeze an all-zero weighted result without the O(`|staker_set|`) staker-set join.
+            let weights = if total == 0 {
+                alloc::vec![0u128; num_options]
+            } else {
+                Self::poll_option_weights(host_id, num_options, &Self::staker_weights())
+            };
             let mut option_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
             let mut option_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
             for (i, w) in weights.into_iter().enumerate() {
-                let count = PollTally::<T>::get(host_id, i as u8).count;
                 // `poll.options.len() ≤ MaxPollOptions`, so both pushes are within bound.
                 option_weights
                     .try_push(w)
                     .map_err(|_| Error::<T>::TooManyOptions)?;
                 option_counts
-                    .try_push(count)
+                    .try_push(counts[i])
                     .map_err(|_| Error::<T>::TooManyOptions)?;
             }
             PollResults::<T>::insert(
@@ -2049,7 +2056,18 @@ impl<T: Config> Pallet<T> {
     /// Live weighted vote tally for a post: iterate the staker set, probe each staker's vote on `post_id`,
     /// sum their CURRENT weight per direction. Exact + single-valued (it iterates stakers, never a
     /// hash-ordered voter prefix). Returns `(up_weight, down_weight)`.
-    fn post_weighted(post_id: u64, stakers: &[(T::AccountId, u128)]) -> (u128, u128) {
+    ///
+    /// Short-circuits to `(0, 0)` when the already-read `counts` show the post has no votes at all — the
+    /// overwhelmingly common case in a feed. A zero count means no account holds a `Votes` record, so the
+    /// scan would sum nothing; skipping it keeps an unvoted post off the O(`|staker_set|`) path.
+    fn post_weighted(
+        post_id: u64,
+        counts: &VoteCounts,
+        stakers: &[(T::AccountId, u128)],
+    ) -> (u128, u128) {
+        if counts.up_count == 0 && counts.down_count == 0 {
+            return (0, 0);
+        }
         let mut up = 0u128;
         let mut down = 0u128;
         for (who, w) in stakers {
@@ -2064,8 +2082,15 @@ impl<T: Config> Pallet<T> {
     }
 
     /// Live weighted reputation tally for account `target` (the account-vote mirror of
-    /// [`Self::post_weighted`]). Returns `(up_weight, down_weight)`.
-    fn account_weighted(target: &T::AccountId, stakers: &[(T::AccountId, u128)]) -> (u128, u128) {
+    /// [`Self::post_weighted`]). Same zero-count short-circuit. Returns `(up_weight, down_weight)`.
+    fn account_weighted(
+        target: &T::AccountId,
+        counts: &VoteCounts,
+        stakers: &[(T::AccountId, u128)],
+    ) -> (u128, u128) {
+        if counts.up_count == 0 && counts.down_count == 0 {
+            return (0, 0);
+        }
         let mut up = 0u128;
         let mut down = 0u128;
         for (who, w) in stakers {
@@ -2084,7 +2109,7 @@ impl<T: Config> Pallet<T> {
     /// `profile` reads (which build `stakers` once via [`Self::staker_weights`] and reuse it per row).
     pub fn account_tally(target: &T::AccountId, stakers: &[(T::AccountId, u128)]) -> Tally {
         let counts = AccountVoteTally::<T>::get(target);
-        let (up_weight, down_weight) = Self::account_weighted(target, stakers);
+        let (up_weight, down_weight) = Self::account_weighted(target, &counts, stakers);
         Tally {
             up_weight,
             down_weight,
@@ -2130,7 +2155,7 @@ impl<T: Config> Pallet<T> {
             quote,
         } = post;
         let counts = VoteTally::<T>::get(id);
-        let (up_weight, down_weight) = Self::post_weighted(id, stakers);
+        let (up_weight, down_weight) = Self::post_weighted(id, &counts, stakers);
         let my_vote = viewer.and_then(|who| Votes::<T>::get(id, who).map(|r| r.dir));
         // One-level quote resolution (the quoted author's profile is runtime-filled later).
         let quoted = quote.and_then(|qid| {
@@ -2539,17 +2564,24 @@ impl<T: Config> Pallet<T> {
             });
         }
         // Open (or past-deadline-but-unfinalized) — derive per-option weight live from current stake.
-        let stakers = Self::staker_weights();
-        let weights = Self::poll_option_weights(host_id, poll.options.len(), &stakers);
+        let num_options = poll.options.len();
+        let counts: Vec<u32> = (0..num_options)
+            .map(|i| PollTally::<T>::get(host_id, i as u8).count)
+            .collect();
+        let total: u32 = counts.iter().copied().fold(0, |a, c| a.saturating_add(c));
+        total_votes = total;
+        // No live votes ⇒ every option weighs 0; skip the O(`|staker_set|`) staker-set join entirely.
+        let weights = if total == 0 {
+            alloc::vec![0u128; num_options]
+        } else {
+            Self::poll_option_weights(host_id, num_options, &Self::staker_weights())
+        };
         for (i, opt) in poll.options.iter().enumerate() {
-            let index = i as u8;
-            let count = PollTally::<T>::get(host_id, index).count;
-            total_votes = total_votes.saturating_add(count);
             options.push(PollOptionView {
-                index,
+                index: i as u8,
                 label: opt.to_vec(),
                 weight: weights.get(i).copied().unwrap_or(0),
-                count,
+                count: counts[i],
             });
         }
         Some(PollView {

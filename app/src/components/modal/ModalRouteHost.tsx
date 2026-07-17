@@ -40,10 +40,10 @@ import {
   submitReply,
   submitQuote,
   submitCreatePoll,
+  resolveCloseAt,
   submitSetProfile,
   submitClearProfile,
 } from "@/lib/chain/mutations";
-import { BLOCKS_PER_DAY } from "@/lib/chain/capacity";
 import type { ComposerDraft, PollDraft, ModalKind } from "../kit";
 import type { CognoPost } from "@/lib/types";
 import type { ProfileFields } from "../EditProfileModal";
@@ -255,19 +255,25 @@ export function ModalRouteHost() {
   const onCreatePoll = useCallback(
     async (question: string, options: string[], closeInDays?: number) => {
       if (!api || !signer || question.trim().length === 0) return;
-      // Convert the chosen deadline (days) to an absolute block-number `close_at`. Prefer the live best
-      // block; if it hasn't loaded yet, read the chain head so the deadline is never silently dropped.
+      // Convert the chosen deadline (days) to an absolute block-number `close_at`. If a deadline was
+      // requested but the chain height can't be read, surface it — never silently create a floating poll.
       let closeAt: number | undefined;
-      if (closeInDays) {
-        const now = bestBlock ?? Number(await api.query.System.Number.getValue().catch(() => 0n));
-        closeAt = now > 0 ? now + closeInDays * BLOCKS_PER_DAY : undefined;
+      try {
+        closeAt = await resolveCloseAt(api, bestBlock, closeInDays);
+      } catch {
+        toast({
+          id: "poll-deadline",
+          kind: "error",
+          message: "Couldn't set the poll deadline — check your connection and try again.",
+        });
+        return;
       }
       runWrite(submitCreatePoll(api, signer, question, options, closeAt), optimisticPost(question, { isPoll: true }), {
         pending: "Creating poll…",
         success: "Poll created",
       });
     },
-    [api, signer, bestBlock, runWrite, optimisticPost],
+    [api, signer, bestBlock, runWrite, optimisticPost, toast],
   );
 
   // ── profile save/clear pipeline (feeless + capacity-metered, exactly like a post) ──────────────

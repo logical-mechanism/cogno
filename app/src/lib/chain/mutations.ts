@@ -15,6 +15,7 @@
 import { Binary, Enum } from "polkadot-api";
 import type { Observable } from "rxjs";
 import { signSubmitWatch, submitPost, type SignableTx } from "@/lib/chain/post";
+import { BLOCKS_PER_DAY } from "@/lib/chain/capacity";
 import type { CognoApi, PostingSigner, TxUpdate, Ss58 } from "@/lib/types";
 
 /**
@@ -139,6 +140,26 @@ export function submitClearAccountVote(
  * options, each ≤ 80 bytes (validate at the call site with the ByteCounter). Emits `PostCreated`
  * (the host post's id) + `PollCreated`.
  */
+/**
+ * Resolve a composer's `closeInDays` deadline (spec 205) to an absolute block-number `close_at` for
+ * `create_poll`. `undefined` closeInDays ⇒ `undefined` (a floating, no-deadline poll). Prefers the live
+ * `bestBlock`; if that hasn't loaded yet it reads the chain head. THROWS when a deadline WAS requested but
+ * the chain height can't be read — so the caller surfaces the failure instead of silently creating a
+ * floating poll. (Shared by both compose surfaces so the derivation lives in exactly one place.)
+ */
+export async function resolveCloseAt(
+  api: CognoApi,
+  bestBlock: number | null | undefined,
+  closeInDays?: number,
+): Promise<number | undefined> {
+  if (!closeInDays) return undefined;
+  const now = bestBlock ?? Number(await api.query.System.Number.getValue());
+  if (!now || now <= 0) {
+    throw new Error("Couldn't read the chain height to set the poll deadline.");
+  }
+  return now + closeInDays * BLOCKS_PER_DAY;
+}
+
 export function submitCreatePoll(
   api: CognoApi,
   signer: PostingSigner,
