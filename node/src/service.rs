@@ -39,7 +39,7 @@ async fn build_cardano_idp(
     metrics: Option<Arc<crate::metrics::ObserverMetrics>>,
 ) -> CardanoObservationInherentDataProvider {
     match observe_for_parent(client, parent).await {
-        Some((obs, max_observed)) => {
+        Some((obs, max_observed, dbsync_tip_slot, lag_slots)) => {
             // Alarm on the silent-freeze condition: `create_inherent` bounds each axis with
             // `BoundedVec::try_from` (which SUCCEEDS at exactly `len == MaxObserved` and FAILS above it), so
             // the whole inherent is dropped — freezing the sole weight writer with no on-chain signal — only
@@ -62,6 +62,8 @@ async fn build_cardano_idp(
             if let Some(m) = &metrics {
                 m.record_observation(
                     obs.reference.slot,
+                    dbsync_tip_slot,
+                    lag_slots,
                     obs.entries.len(),
                     obs.stake_entries.len(),
                 );
@@ -93,7 +95,7 @@ async fn build_cardano_idp(
 async fn observe_for_parent(
     client: Arc<FullClient>,
     parent: <Block as BlockT>::Hash,
-) -> Option<(CardanoObservation, u32)> {
+) -> Option<(CardanoObservation, u32, u64, u64)> {
     // 1. consensus-pinned config (anchors, stability window, vault policy id, MaxObserved ceiling).
     let config = match client.runtime_api().observer_config(parent) {
         Ok(c) => c,
@@ -216,7 +218,14 @@ async fn observe_for_parent(
         "observed {} vault + {} stake entrie(s) as-of slot {} ({} db-sync match(es), {} bound cred(s), anchor block {})",
         obs.entries.len(), obs.stake_entries.len(), ref_slot, read.matches.len(), bound_creds.len(), hex_encode(&anchor_hash),
     );
-    Some((obs, max_observed))
+    // observer freshness: how far this node's db-sync tip trails the current (parent-derived) Cardano
+    // slot. `ref_slot + StabilitySlots` reconstructs that current slot (reference_slot subtracted it);
+    // the read already passed `tip >= ref` (§4a), so this lag is 0..=StabilitySlots on the landed path.
+    let dbsync_tip_slot = read.tip_slot;
+    let lag_slots = ref_slot
+        .saturating_add(config.stability_slots)
+        .saturating_sub(dbsync_tip_slot);
+    Some((obs, max_observed, dbsync_tip_slot, lag_slots))
 }
 
 /// The minimum period of blocks on which justifications will be

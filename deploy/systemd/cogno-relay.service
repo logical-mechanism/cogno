@@ -48,6 +48,18 @@ Environment=RUST_LOG=info,cardano-observer=error
 # --rpc-max-connections: the default of 100 caps you at 100 concurrent browser sockets, and the
 #   101st visitor is refused with no UX. --rpc-rate-limit bounds an anonymous caller; it is OFF
 #   by default. --rpc-rate-limit-trust-proxy-headers makes it count the real client, not nginx.
+# --rpc-max-request-size / --rpc-max-response-size (both default 15 MB) / --rpc-max-batch-request-len
+#   (default UNBOUNDED): the transport DoS caps.
+#   • request 8 MB — the runtime-upgrade extrinsic (`cogno-chain-cli upgrade apply`) transits THIS
+#     endpoint, submitted as a 0x-hex string (author_submitAndWatchExtrinsic), so the wire body is ~2×
+#     the compressed runtime WASM (≈0.5 MB today → ≈1 MB body). 8 MB halves the 15 MB default and still
+#     carries a runtime up to ~3.5 MB; every other call (post/vote/CIP-8 bind) is tiny. Raise this AND
+#     nginx's client_max_body_size together well before the compressed runtime approaches ~3.5 MB.
+#   • response 10 MB — every app read is a bounded/paginated runtime-API call (feeds truncate, edges cap
+#     at MAX_EDGES); nothing legitimate returns 10 MB. Caps a caller pulling the keyspace in one reply.
+#   • batch 16 — array-batching is the amplification vector per-request rate-limiting MISSES (one WS
+#     message, N heavy calls). PAPI issues discrete chainHead requests, not JSON-RPC array batches, so
+#     the app is unaffected; 16 is generous for any well-behaved batching client.
 # --state-pruning/--blocks-pruning archive: this node answers EVERY app read (feed / thread /
 #   search / profile) from its runtime API. A pruned node cannot serve them, and cannot serve
 #   history to any node syncing through it.
@@ -76,6 +88,9 @@ ExecStart=/usr/local/bin/cogno-chain-node run \
   --rpc-max-subscriptions-per-connection 256 \
   --rpc-rate-limit 600 \
   --rpc-rate-limit-trust-proxy-headers \
+  --rpc-max-request-size 8 \
+  --rpc-max-response-size 10 \
+  --rpc-max-batch-request-len 16 \
   --prometheus-port 9615 \
   --no-mdns
 Restart=always

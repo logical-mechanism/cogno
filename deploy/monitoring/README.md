@@ -18,12 +18,24 @@ Key metrics:
 
 - **Chain health** (`substrate_*`, built in): `substrate_block_height{status="best"|"finalized"}`,
   `substrate_sub_libp2p_peers_count`, plus the usual host/runtime series.
+- **RPC health** (`substrate_rpc_*`, built in — present because the node runs `--prometheus-port`):
+  `substrate_rpc_calls_time` (per-method latency histogram; runtime-API reads arrive as
+  `method="state_call"`, so this doubles as the *expensive-runtime-API-call* signal),
+  `substrate_rpc_calls_finished{is_error,is_rate_limited}` (error + rate-limit rates).
 - **Observer liveness** (`cogno_observer_*`, [node/src/metrics.rs](../../node/src/metrics.rs)):
   `cogno_observer_observations_total` (non-empty observations proposed) /
   `cogno_observer_abstains_total` (abstentions — db-sync unset/down/behind or pre-Shelley);
-  `cogno_observer_last_reference_slot` (Cardano slot of the latest non-empty observation);
-  `cogno_observer_observed_vaults` / `cogno_observer_observed_voters` (entry counts in the latest
-  observation). **These are updated only by the AUTHORING producer** — a tracking node leaves them at 0.
+  `cogno_observer_last_reference_slot` (Cardano slot of the latest non-empty observation) +
+  `cogno_observer_dbsync_tip_slot` (this node's db-sync tip) and `cogno_observer_lag_slots` (how far the
+  tip trails the current Cardano slot — the *observer lag*, ~0 healthy, climbs before it abstains);
+  `cogno_observer_observed_vaults` / `_observed_voters` vs `cogno_observer_max_observed` (the freeze
+  ceiling) and `cogno_observer_observations_oversize_total` (**a non-zero rate is a page** — the observe
+  inherent has started abstaining and weight is frozen). **These are updated only by the AUTHORING
+  producer** — a tracking node leaves them at 0.
+- **Host metrics** (`node_*`, from `node_exporter` — OPTIONAL, off by default): CPU / memory / disk and
+  the chain-DB mount. Enable the `node-exporter` scrape job in `prometheus.yml` (install one-liner is
+  there) to light up the "Host …" dashboard panels and the `HostDiskFilling` / `HostMemoryHigh` alerts.
+  A `cardano-node` scrape stub is there too, to compare cardano-node's own tip against the db-sync tip.
 
 ## Run it
 
@@ -51,8 +63,15 @@ scrape network or a proxy — never expose it publicly.
 - **cogno-node:** `NodeDown`, `FinalityStalled`, `BlockProductionStalled` (+ `NodeNoPeers`, shipped
   commented-out — a single `--force-authoring` validator runs at 0 peers by design).
 - **cogno-observer:** `ObserverAbstaining` (no non-empty observation in 15m — weight going stale),
-  `ObserverReferenceSlotStalled` (db-sync's Cardano tip frozen), `ObserverNoVaults` (observing, but the
-  locked-ADA vault set is empty — a broken vault scan on a live chain).
+  `ObserverReferenceSlotStalled` (db-sync's Cardano tip fully frozen), `ObserverNoVaults` (observing, but
+  the locked-ADA vault set is empty — a broken vault scan on a live chain), `ObserverOversize`
+  (**critical** — an observation exceeded `MaxObserved`, so the inherent abstains and weight is FROZEN;
+  raise `MaxObserved` via a governed upgrade), `ObserverApproachingMaxObserved` (within 10% of the
+  ceiling — raise it before it freezes), `ObserverLagHigh` (db-sync tip >300 slots behind — falling
+  behind before it fully stalls; scale the threshold up for mainnet's larger stability window).
+- **cogno-rpc:** `RpcErrorRateHigh` (sustained RPC error rate — a broken/abusive client or upstream fault).
+- **host** (requires the `node-exporter` scrape job): `HostDiskFilling` (**critical** — <10% free on the
+  chain-DB mount; with `MinAuthorities=1` the validator DB is the sole copy of history), `HostMemoryHigh`.
 
 Every rule has a `for:` window so a transient scrape miss doesn't page. The observer group's gauges are
 updated **only by the authoring producer**, so in the default single-validator topology `job="cogno-node"`

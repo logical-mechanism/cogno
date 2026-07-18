@@ -31,7 +31,19 @@ scrape_configs:
     static_configs:
       - targets: ["127.0.0.1:9615"]
 
-  # OPTIONAL: host metrics (CPU/mem/disk for the chain host) if you run node_exporter.
+  # OPTIONAL: host metrics (CPU / memory / disk / DB-mount usage). Drives the "Host …" Grafana panels and
+  # the HostDiskFilling / HostMemoryHigh alerts (both inert until this job is scraping — disk is the one
+  # that matters, since MinAuthorities=1 makes the validator DB the sole copy of chain history). Install:
+  #   curl -sL https://github.com/prometheus/node_exporter/releases/latest/download/node_exporter-*.linux-amd64.tar.gz | tar xz
+  #   ./node_exporter   # binds 127.0.0.1:9100 by default
+  # then uncomment:
   # - job_name: node-exporter
   #   static_configs:
   #     - targets: ["127.0.0.1:9100"]
+
+  # OPTIONAL: the Cardano node's own tip, to distinguish "db-sync stopped indexing" from "cardano-node is
+  # behind". Compare cardano_node_metrics_slotNum_int here against cogno_observer_dbsync_tip_slot from the
+  # cogno-node job. Requires cardano-node started with a Prometheus exporter on its EKG/metrics port.
+  # - job_name: cardano-node
+  #   static_configs:
+  #     - targets: ["127.0.0.1:12798"]
