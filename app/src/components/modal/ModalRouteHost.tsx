@@ -109,11 +109,14 @@ export function ModalRouteHost() {
   // Resolve the reply/quote target post through the SEAM (source.thread → root), never a concrete
   // reader. Only fetched while a reply/quote modal is open.
   const needsTarget = kind === "reply" || kind === "quote";
-  const { thread, loading: targetLoading } = useThread(source, needsTarget ? targetId : null);
+  const { thread, loading: targetLoading, error: targetError } = useThread(source, needsTarget ? targetId : null);
   const targetPost: CognoPost | null = needsTarget ? thread?.root ?? null : null;
-  // When the target is pruned / a transient read fails (targetPost null AND not loading) the render below
-  // degrades to a plain post composer (mirrors ComposePage.contextUnavailable), instead of pinning the
-  // modal on a dead "Loading…" spinner.
+  // When the read genuinely settles with no target — pruned OR a transient failure, both of which reject
+  // in source.thread so useThread stamps `error` — the render below degrades to a plain post composer
+  // (mirrors ComposePage.contextUnavailable) instead of pinning the modal on a dead "Loading…" spinner.
+  // The `error` gate is load-bearing: `loading` starts false and only flips true in a post-paint effect,
+  // and while `source` is still null the read never starts — so degrading on "!loading" alone flashed
+  // (and, with a null source, stuck) a false "This post is unavailable" over a perfectly valid post.
 
   const onClose = useCallback(() => {
     // Pop the pushed URL (if any) then clear the store. The popstate handler also calls close(); the
@@ -419,11 +422,13 @@ export function ModalRouteHost() {
     );
   }
 
-  // reply / quote wait for the target post before rendering the composer. While the read is in flight
-  // show the busy placeholder; once it resolves to "no target" (pruned / failed), degrade to a plain
-  // post composer so the modal is never a dead-end spinner (mirrors ComposePage).
+  // reply / quote wait for the target post before rendering the composer. While the read is in flight —
+  // or has not started yet (source still connecting; the load effect runs post-paint) — show the busy
+  // placeholder. Only once the read has actually FAILED (`targetError`; pruned + transient both reject in
+  // source.thread) degrade to a plain post composer, so the modal is never a dead-end spinner (mirrors
+  // ComposePage) yet never flashes a false "unavailable" over a valid, still-loading post.
   if (needsTarget && !targetPost) {
-    if (targetLoading) {
+    if (targetLoading || !targetError) {
       return (
         <ComposerModal title={title} onClose={onRequestClose}>
           <Loading variant="panel" label="Loading the post…" />

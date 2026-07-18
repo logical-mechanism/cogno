@@ -98,12 +98,13 @@ export function VaultSection() {
   const locked = vault.locked;
   const hasLock = locked != null && locked > 0n;
   const working = vault.phase === "working";
-  // After a submit the Cardano tx is still confirming (useVault polls the vault until it settles). Gate
-  // BOTH actions on the in-flight action so a just-locked user can't click Lock again (a duplicate
-  // 100-ADA lock) and a just-exited user can't re-click Exit while the row still reads "100 ADA locked".
-  const submitted = vault.phase === "submitted";
-  const lockInFlight = submitted && vault.lastAction === "lock";
-  const exitInFlight = submitted && vault.lastAction === "exit";
+  // After a submit the Cardano tx is still confirming — useVault polls the vault until it settles and
+  // exposes `confirming` for exactly that window. Gate BOTH actions on the in-flight action so a
+  // just-locked user can't click Lock again (a duplicate 100-ADA lock) and a just-exited user can't
+  // re-click Exit while the row still reads "100 ADA locked". (Deriving these from `phase === "submitted"`
+  // — which never resets — froze "Confirming exit…" on the card long after the exit had landed.)
+  const lockInFlight = vault.confirming && vault.lastAction === "lock";
+  const exitInFlight = vault.confirming && vault.lastAction === "exit";
   // The pending "crediting" notice replaces "No posting power yet" (and its lock-below note) while a
   // lock is in flight — the user already locked; don't tell them to lock again.
   const showingPending = postingPower != null && postingPower <= 0n && pending.kind !== "none";

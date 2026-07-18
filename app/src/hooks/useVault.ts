@@ -41,6 +41,9 @@ export interface UseVault {
   /** lovelace currently locked (null = none), once inspected. */
   locked: bigint | null;
   lockedKnown: boolean;
+  /** True only during the post-submit confirm poll — drives the "Confirming…" UI without leaning on the
+   *  sticky `submitted` phase (which never clears). */
+  confirming: boolean;
   /** resolve the vault state for a wallet without sending a tx. */
   inspect: (walletId: string) => void;
   lock: (walletId: string, lovelace?: bigint) => void;
@@ -61,6 +64,10 @@ export function useVault(): UseVault {
   const [info, setInfo] = useState<VaultInfo | null>(null);
   const [locked, setLocked] = useState<bigint | null>(null);
   const [lockedKnown, setLockedKnown] = useState(false);
+  // True only while pollUntilSettled is actively re-reading after a submit (the confirm window), so the UI
+  // can show "Confirming…" for exactly that span. Deliberately NOT derived from `phase === "submitted"`,
+  // which never resets — that left the card frozen on "Confirming exit…" long after the exit had landed.
+  const [confirming, setConfirming] = useState(false);
 
   // Re-entrancy guard for a tx run. MUST NOT live inside a setState updater: React StrictMode
   // double-invokes updater functions in dev, so launching the wallet interaction from there fired
@@ -91,6 +98,7 @@ export function useVault(): UseVault {
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     pollTries.current = 0;
+    setConfirming(false);
   }, []);
   // Clear any in-flight poll on unmount so it can't set state on a gone component.
   useEffect(() => clearPoll, [clearPoll]);
@@ -105,6 +113,7 @@ export function useVault(): UseVault {
   const pollUntilSettled = useCallback(
     (walletId: string, kind: VaultAction) => {
       clearPoll();
+      setConfirming(true);
       const settled = (l: bigint | null) =>
         kind === "lock" ? l != null && l > 0n : l == null || l === 0n;
       const tick = () => {
@@ -187,5 +196,5 @@ export function useVault(): UseVault {
     inFlight.current = false;
   }, [clearPoll]);
 
-  return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, inspect, lock, exit, reset };
+  return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, confirming, inspect, lock, exit, reset };
 }

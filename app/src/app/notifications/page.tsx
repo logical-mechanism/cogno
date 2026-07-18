@@ -119,10 +119,12 @@ export default function NotificationsPage() {
           // latter goes true on every 120s / live-head refold, so an established empty inbox would keep
           // flickering to a full-surface spinner whenever anyone else posts on an active chain.
           <Loading variant="surface" label="Loading notifications…" />
-        ) : feed.error && items.length === 0 ? (
-          // A failed fold stamps `loaded` (so `loading` clears) with items empty — without this branch it
-          // fell through to the misleading "No notifications yet", hiding real activity behind a false
-          // empty. Offer a retry instead.
+        ) : feed.error && feed.items.length === 0 ? (
+          // A failed fold stamps `loaded` (so `loading` clears) with the WHOLE fold empty — without this
+          // branch it fell through to the misleading "No notifications yet", hiding real activity behind a
+          // false empty. Test the UNFILTERED `feed.items`, not the tab-filtered `items`: a background
+          // refresh error leaves the prior fold intact, so on the Mentions tab with 0 mentions but other
+          // activity, keying on `items` would flash this error over the correct "No mentions yet". Retry.
           <EmptyState
             variant="generic"
             title="Couldn't load notifications"
