@@ -29,9 +29,15 @@ import { IconLink } from "@/components/icons";
 import { FollowCounts } from "./FollowCounts";
 import { AccountVoteControl, type AccountVoteView } from "./AccountVoteControl";
 import { resolveImageSrc } from "@/lib/media";
+import { sanitizeInline } from "@/lib/sanitize";
 import type { Ss58, Viewer } from "@/components/kit";
 
-/** Ensure a website value carries a scheme so the anchor href resolves (default https). */
+/**
+ * The href for a profile website. The value is caller-sanitized (bidi / invisible / Zalgo stripped); here
+ * we only ensure a scheme. A value that already starts with http(s):// is used as-is; ANYTHING ELSE is
+ * prefixed with `https://`, which also neutralizes a non-http scheme an attacker might set (e.g.
+ * `javascript:…` becomes the inert `https://javascript:…`). So this only ever emits an http(s) href.
+ */
 function websiteHref(raw: string): string {
   return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
 }
@@ -133,8 +139,10 @@ export function ProfileHeader({
 }: ProfileHeaderProps) {
   const bioText = bio?.trim() ?? "";
   const bannerSrc = banner?.trim() ?? "";
-  const locationText = location?.trim() ?? "";
-  const websiteText = website?.trim() ?? "";
+  // Location + website are single-line meta rendered as raw text / a link label — harden them (bidi,
+  // invisibles, Zalgo) the way names and bodies are. The bio flows through <PostBody>, which sanitizes.
+  const locationText = sanitizeInline(location ?? "");
+  const websiteText = sanitizeInline(website ?? "");
 
   return (
     <section className={styles.header} aria-label="Profile">
@@ -210,7 +218,11 @@ export function ProfileHeader({
 
         {(locationText.length > 0 || websiteText.length > 0) && (
           <div className={styles.meta}>
-            {locationText.length > 0 && <span className={styles.metaItem}>{locationText}</span>}
+            {locationText.length > 0 && (
+              <span className={styles.metaItem} dir="auto">
+                {locationText}
+              </span>
+            )}
             {websiteText.length > 0 && (
               <a
                 className={styles.metaLink}

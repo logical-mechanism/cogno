@@ -19,6 +19,11 @@ import { mentionLabel } from "@/lib/mentions";
 import styles from "./MentionChip.module.css";
 import type { Ss58 } from "@/lib/types";
 
+// NOTE: a blocked account @mentioned inside a THIRD party's post still renders their name here. Doing
+// otherwise needs the viewer's ss58, and the only source of it (useSession) changes every block — reading
+// it in this leaf would re-render every mention chip in the feed each block. Threading `me` down through
+// PostBody to reach here isn't worth it for that narrow residual: the blocked account's own posts, quotes,
+// replies, People rows and mention-autocomplete are all still suppressed.
 export function MentionChip({ ss58 }: { ss58: Ss58 }) {
   const profile = useAccountProfile(ss58);
   const name = profile?.displayName;

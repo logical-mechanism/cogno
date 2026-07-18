@@ -23,6 +23,7 @@ import { useCallback, useRef } from "react";
 import styles from "./PollCard.module.css";
 import { Spinner, IconCheck } from "./icons";
 import { weightPercent, formatWeight } from "@/lib/format";
+import { sanitizeInline } from "@/lib/sanitize";
 import type { PollView } from "./kit";
 
 export interface PollCardProps {
@@ -118,12 +119,15 @@ export function PollCard({
           const pct = noWeight ? 0 : weightPercent(opt.weight, poll.totalWeight);
           const mine = opt.index === myChoice;
           const pending = pendingChoice === opt.index;
+          // Option labels are attacker-controlled on-chain text → harden (bidi / invisible / Zalgo)
+          // before they reach the DOM or the accessible name.
+          const label = sanitizeInline(opt.label);
           // Accessible name carries the weighted % + the raw voter count (whale vs many-small).
           const ariaLabel = results
-            ? `${opt.label}, ${pct} percent, ${opt.count} ${opt.count === 1 ? "vote" : "votes"}${
+            ? `${label}, ${pct} percent, ${opt.count} ${opt.count === 1 ? "vote" : "votes"}${
                 mine ? ", your choice" : ""
               }`
-            : opt.label;
+            : label;
 
           return (
             <button
@@ -149,7 +153,9 @@ export function PollCard({
                   aria-hidden
                 />
               )}
-              <span className={styles.optLabel}>{opt.label}</span>
+              <span className={styles.optLabel} dir="auto">
+                {label}
+              </span>
               {results && (
                 <span className={styles.optMeta}>
                   {pending && <Spinner size="sm" />}

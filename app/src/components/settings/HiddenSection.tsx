@@ -17,6 +17,7 @@ import { Handle } from "@/components/Handle";
 import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useHiddenList, hiddenActionsFor } from "@/lib/hiddenStore";
+import { sanitizeInline } from "@/lib/sanitize";
 import type { CognoPost } from "@/lib/types";
 
 export function HiddenSection() {
@@ -78,7 +79,9 @@ export function HiddenSection() {
             <Avatar address={post.author} src={post.authorAvatar} size="md" name={post.authorDisplayName} />
             <span className={styles.who}>
               <Handle address={post.author} />
-              <span className={styles.snippet}>{post.text}</span>
+              <span className={styles.snippet} dir="auto">
+                {sanitizeInline(post.text)}
+              </span>
             </span>
           </Link>
           <button

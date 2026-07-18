@@ -1,0 +1,175 @@
+import { describe, it, expect } from "vitest";
+import { sanitizeText, sanitizeInline, MAX_MARKS, MAX_JOINERS } from "./sanitize";
+
+// Named code points as \u escapes, kept out of the assertions so the intent is legible.
+const RLO = "\u202E"; // right-to-left override
+const LRO = "\u202D";
+const PDF = "\u202C";
+const RLI = "\u2067";
+const PDI = "\u2069";
+const LRM = "\u200E";
+const ALM = "\u061C";
+const ZWSP = "\u200B";
+const WJ = "\u2060";
+const BOM = "\uFEFF";
+const SOFT_HYPHEN = "\u00AD";
+const ZWJ = "\u200D";
+const ZWNJ = "\u200C";
+const ACUTE = "\u0301"; // combining acute (Mn)
+const GRAVE = "\u0300"; // combining grave (Mn)
+const CIRCUMFLEX = "\u0302"; // combining circumflex (Mn)
+const ENCLOSING_CIRCLE = "\u20DD"; // Me
+const DEVANAGARI_AA = "\u093E"; // Mc (spacing) — legitimate, must survive
+
+describe("sanitizeText", () => {
+  it("passes normal multilingual text through unchanged", () => {
+    for (const s of ["Hello, world!", "世界へようこそ", "café", "Привет", "مرحبا", "🎉🚀"]) {
+      expect(sanitizeText(s)).toBe(s);
+    }
+  });
+
+  it("returns empty / falsy input untouched", () => {
+    expect(sanitizeText("")).toBe("");
+  });
+
+  describe("bidirectional controls (Trojan Source)", () => {
+    it("strips every explicit formatting, isolate and mark code", () => {
+      for (const c of [RLO, LRO, PDF, RLI, PDI, LRM, ALM]) {
+        expect(sanitizeText(`a${c}b`)).toBe("ab");
+      }
+    });
+
+    it("neutralizes a spoofed address so the render matches the bytes", () => {
+      // A name crafted to render reversed via an override collapses to its real code-point order.
+      expect(sanitizeText(`admin${RLO}xob${PDF}`)).toBe("adminxob");
+    });
+  });
+
+  describe("invisible separators", () => {
+    it("strips zero-width space, word-joiner, BOM and soft-hyphen", () => {
+      for (const c of [ZWSP, WJ, BOM, SOFT_HYPHEN]) {
+        expect(sanitizeText(`a${c}b`)).toBe("ab");
+      }
+    });
+
+    it("keeps a legitimate emoji ZWJ sequence intact", () => {
+      const family = `\u{1F468}${ZWJ}\u{1F469}${ZWJ}\u{1F467}`;
+      expect(sanitizeText(family)).toBe(family);
+    });
+
+    it("keeps ZWNJ used for shaping (Persian / Indic)", () => {
+      expect(sanitizeText(`a${ZWNJ}b`)).toBe(`a${ZWNJ}b`);
+    });
+
+    it("caps a hoarded run of joiners", () => {
+      const out = sanitizeText("x" + ZWJ.repeat(20) + "y");
+      expect([...out].filter((c) => c === ZWJ)).toHaveLength(MAX_JOINERS);
+      expect(out.startsWith("x")).toBe(true);
+      expect(out.endsWith("y")).toBe(true);
+    });
+  });
+
+  describe("Zalgo / combining-mark stacking", () => {
+    it("caps a long stack to MAX_MARKS per base", () => {
+      const out = sanitizeText("a" + ACUTE.repeat(40));
+      expect([...out].filter((c) => c === ACUTE)).toHaveLength(MAX_MARKS);
+      expect(out[0]).toBe("a");
+    });
+
+    it("caps enclosing marks (Me) too", () => {
+      const out = sanitizeText("o" + ENCLOSING_CIRCLE.repeat(10));
+      expect([...out].filter((c) => c === ENCLOSING_CIRCLE)).toHaveLength(MAX_MARKS);
+    });
+
+    it("keeps legitimate decomposed diacritics (Vietnamese ế = e + ◌̂ + ◌́)", () => {
+      const viet = "e" + CIRCUMFLEX + ACUTE;
+      expect(sanitizeText(viet)).toBe(viet);
+    });
+
+    it("keeps multiple marks that stay within the cap", () => {
+      const within = "a" + ACUTE + GRAVE + CIRCUMFLEX; // 3 marks ≤ MAX_MARKS
+      expect(sanitizeText(within)).toBe(within);
+    });
+
+    it("resets the counter per base — two bases each keep their own marks", () => {
+      const s = "a" + ACUTE.repeat(2) + "b" + ACUTE.repeat(2);
+      expect(sanitizeText(s)).toBe(s);
+    });
+
+    it("does NOT touch spacing combining marks (Mc, e.g. Devanagari vowel signs)", () => {
+      const dev = "क" + DEVANAGARI_AA.repeat(6); // spacing marks — legitimate, take horizontal room
+      expect(sanitizeText(dev)).toBe(dev);
+    });
+  });
+
+  describe("control characters", () => {
+    it("strips C0/C1 controls but keeps tab, newline and carriage return", () => {
+      expect(sanitizeText("a\u0000\u0007\u001Fb")).toBe("ab");
+      expect(sanitizeText("a\tb\nc\rd")).toBe("a\tb\nc\rd");
+    });
+  });
+
+  it("is idempotent", () => {
+    const nasty = `x${RLO}${ZWSP}` + "a" + ACUTE.repeat(30) + `${BOM}y`;
+    expect(sanitizeText(sanitizeText(nasty))).toBe(sanitizeText(nasty));
+  });
+});
+
+describe("sanitizeInline", () => {
+  it("collapses all whitespace (newlines, tabs, NBSP) to single spaces and trims", () => {
+    expect(sanitizeInline("  a\n\n\tb   ")).toBe("a b");
+    expect(sanitizeInline("a  b")).toBe("a b");
+  });
+
+  it("applies the same hardening as sanitizeText", () => {
+    expect(sanitizeInline(`name${RLO}evil${PDF}`)).toBe("nameevil");
+    expect(sanitizeInline("z" + ACUTE.repeat(50))).toBe("z" + ACUTE.repeat(MAX_MARKS));
+  });
+
+  it("defuses the mention/display-name newline-flood attack", () => {
+    // A 60-newline display name would otherwise grow every row that renders it.
+    expect(sanitizeInline("evil" + "\n".repeat(60) + "name")).toBe("evil name");
+  });
+
+  it("returns empty input untouched", () => {
+    expect(sanitizeInline("")).toBe("");
+  });
+});
+
+describe("audit regressions", () => {
+  const M = "\u0301"; // combining acute (Mn)
+  const ZWJ = "\u200D";
+
+  it("closes the interleave-a-joiner Zalgo bypass (caps marks per grapheme cluster)", () => {
+    const attack = "a" + (M.repeat(4) + ZWJ).repeat(25); // resets a per-run counter; not a per-cluster one
+    expect([...sanitizeText(attack)].filter((c) => c === M)).toHaveLength(MAX_MARKS);
+    expect(sanitizeText(sanitizeText(attack))).toBe(sanitizeText(attack)); // still idempotent
+  });
+
+  it("preserves fully-pointed Hebrew up to MAX_MARKS marks on one base", () => {
+    const heb = "\u05D0" + "\u05B7\u05BC\u05C1\u0591\u05AB"; // alef + 5 nonspacing points/accents
+    expect(sanitizeText(heb)).toBe(heb);
+  });
+
+  it("preserves a subdivision-flag emoji (the TAG block is deliberately NOT stripped)", () => {
+    const england = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+    expect(sanitizeText(england)).toBe(england);
+  });
+
+  it("preserves an emoji variation selector (VS16)", () => {
+    const heart = "\u2764\uFE0F";
+    expect(sanitizeText(heart)).toBe(heart);
+  });
+
+  it("strips Hangul/half-width fillers, deprecated formats and interlinear annotation", () => {
+    expect(sanitizeInline("a\u3164b")).toBe("ab"); // Hangul filler
+    expect(sanitizeInline("a\uFFA0b")).toBe("ab"); // half-width Hangul filler
+    expect(sanitizeInline("a\u206Ab")).toBe("ab"); // deprecated format code
+    expect(sanitizeInline("a\uFFF9b")).toBe("ab"); // interlinear annotation anchor
+  });
+
+  it("strips the braille blank from single-line fields but keeps it in a body", () => {
+    expect(sanitizeInline("\u2800\u2800bob")).toBe("bob"); // blank-name spoof
+    expect(sanitizeText("\u2800dots")).toBe("\u2800dots"); // legitimate braille content
+  });
+});

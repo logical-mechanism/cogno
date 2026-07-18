@@ -22,6 +22,7 @@ import { Spinner } from "./icons";
 import { useSession } from "./Providers";
 import { useFollow } from "@/hooks/useFollow";
 import { useAccountVoteFor } from "@/hooks/useAccountVote";
+import { sanitizeText, sanitizeInline } from "@/lib/sanitize";
 import type { AuthorRef } from "./kit";
 import type { ProfileView } from "@/lib/types";
 
@@ -194,7 +195,8 @@ function HoverPopover({
   const displayName = profile?.displayName ?? author.displayName;
   const avatar = profile?.avatar ?? author.avatar;
   const banned = profile?.banned ?? author.banned ?? false;
-  const bio = profile?.bio?.trim() ?? "";
+  // The hover bio renders as raw text here (not via <PostBody>), so harden it directly.
+  const bio = sanitizeText(profile?.bio?.trim() ?? "");
   const hasCounts = source != null && profile != null;
 
   const openProfile = useCallback(
@@ -221,7 +223,7 @@ function HoverPopover({
       className={styles.card}
       style={{ top: coords.top, left: coords.left }}
       role="dialog"
-      aria-label={`${displayName ?? author.address} profile`}
+      aria-label={`${sanitizeInline(displayName ?? "") || author.address} profile`}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       // Inside a clickable feed row conceptually, but portaled to <body> — stop clicks anyway.
@@ -266,7 +268,11 @@ function HoverPopover({
       </button>
       <Handle address={author.address} />
 
-      {bio.length > 0 && <p className={styles.bio}>{bio}</p>}
+      {bio.length > 0 && (
+        <p className={styles.bio} dir="auto">
+          {bio}
+        </p>
+      )}
 
       {hasCounts ? (
         <div className={styles.counts}>

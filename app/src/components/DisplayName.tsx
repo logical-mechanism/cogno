@@ -4,12 +4,15 @@
 // a stable `cogno-…` label derived from the ss58 when none is set (D6, names are non-unique). Bold,
 // --cg-text. Dimmed when the author's identity is revoked (D10 — the parent header renders the
 // "restricted" chip; here we only dim). Sanitised: display names are user input → rendered as TEXT,
-// never HTML.
+// never HTML, and run through `sanitizeInline` (lib/sanitize) so a name cannot carry bidi-override
+// spoofing, invisible padding, Zalgo mark-stacks, or line breaks into a row. dir="auto" keeps genuine
+// RTL names laid out correctly.
 
 import Link from "next/link";
 import styles from "./DisplayName.module.css";
 import { Highlight } from "./Highlight";
 import { fallbackDisplayName } from "@/lib/ss58";
+import { sanitizeInline } from "@/lib/sanitize";
 
 export interface DisplayNameProps {
   address: string;
@@ -31,7 +34,9 @@ export function DisplayName({
   truncate = true,
   highlight,
 }: DisplayNameProps) {
-  const label = displayName?.trim() || fallbackDisplayName(address);
+  // Sanitize BEFORE choosing the fallback: a name built entirely of strip-target code points sanitizes to
+  // empty, and must then fall back to the cogno-… label rather than render blank.
+  const label = sanitizeInline(displayName?.trim() ?? "") || fallbackDisplayName(address);
   const cls = [styles.name, truncate ? styles.truncate : "", authorRevoked ? styles.dim : ""]
     .filter(Boolean)
     .join(" ");
@@ -39,13 +44,13 @@ export function DisplayName({
 
   if (as === "a") {
     return (
-      <Link href={`/u/${address}/`} className={cls} title={address}>
+      <Link href={`/u/${address}/`} className={cls} title={address} dir="auto">
         {content}
       </Link>
     );
   }
   return (
-    <span className={cls} title={address}>
+    <span className={cls} title={address} dir="auto">
       {content}
     </span>
   );

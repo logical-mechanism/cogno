@@ -18,6 +18,8 @@ import { Handle } from "./Handle";
 import { PostBody } from "./PostBody";
 import { useNestedQuote } from "@/hooks/useNestedQuote";
 import { useBlocked } from "@/lib/blockStore";
+import { useHidden } from "@/lib/hiddenStore";
+import { sanitizeInline } from "@/lib/sanitize";
 import type { QuotedRef, Ss58 } from "./kit";
 
 export interface QuotedPostEmbedProps {
@@ -50,6 +52,8 @@ export function QuotedPostEmbed({
 }: QuotedPostEmbedProps) {
   const missing = unavailable || (!quoted.text.trim() && !quoted.author);
   const blocked = useBlocked(quoted.author, viewerId ?? null);
+  // A post the viewer HID must not resurface through a quote embed either (hide = "never show this one").
+  const hidden = useHidden(quoted.id, viewerId ?? null);
 
   // Does the quoted post ITSELF quote another post? The one-level seam can't carry that, so a shared
   // cache does one cheap keyed read (null until known / when it quotes nothing). We surface a subtle
@@ -102,6 +106,15 @@ export function QuotedPostEmbed({
     );
   }
 
+  // A quoted post the viewer hid is suppressed too — hide is reversible only via Unhide (no inline reveal).
+  if (hidden) {
+    return (
+      <div className={styles.stub} aria-label="Quoted a hidden post">
+        You&apos;ve hidden this post.
+      </div>
+    );
+  }
+
   const dim = quoted.authorRevoked;
 
   return (
@@ -114,7 +127,7 @@ export function QuotedPostEmbed({
       tabIndex={0}
       onClick={open}
       onKeyDown={onKeyDown}
-      aria-label={`Quoted post by ${quoted.displayName?.trim() || quoted.author}`}
+      aria-label={`Quoted post by ${sanitizeInline(quoted.displayName ?? "") || quoted.author}`}
     >
       <div className={styles.header}>
         <Avatar address={quoted.author} src={quoted.avatar} size="sm" dim={dim} />

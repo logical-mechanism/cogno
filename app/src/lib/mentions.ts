@@ -14,22 +14,25 @@
 // contract, so it must be deterministic and reversible.
 
 import { normalizeSs58, truncateSs58 } from "./ss58";
+import { sanitizeInline } from "./sanitize";
 import type { Ss58 } from "./types";
 
 /**
  * The text a rendered `@mention` shows: the mentioned account's display name, or — when they're
  * unbound / nameless / still loading — their truncated ss58 (`@5Grw…utQY`). Never empty.
  *
- * The name is COLLAPSED to single spaces, and that is load-bearing, not cosmetic. A display name is
- * attacker-controlled: `pallet-profile::set_profile` bounds it by LENGTH only (64 bytes, feelessly),
- * validating no characters, and the read path trims just the ends — so interior newlines and tabs
- * survive all the way to the DOM. A mention renders inside a post body, which is `white-space:
+ * The name is hardened via `sanitizeInline` (lib/sanitize), and that is load-bearing, not cosmetic. A
+ * display name is attacker-controlled: `pallet-profile::set_profile` bounds it by LENGTH only (64 bytes,
+ * feelessly), validating no characters, and the read path trims just the ends — so any code point
+ * survives all the way to the DOM. A mention renders inside a post body, which is `white-space:
  * pre-wrap`, so an un-collapsed name would render its newlines as HARD LINE BREAKS *inside somebody
  * else's post*: set your name to 62 newlines and every permanent, undeletable post that mentions you
- * grows to 63 lines in every feed, and its author cannot do a thing about it.
+ * grows to 63 lines in every feed, and its author cannot do a thing about it. `sanitizeInline` collapses
+ * the whitespace AND strips the bidi-override / invisible / Zalgo abuse that would otherwise ride a
+ * mention into a stranger's post.
  */
 export function mentionLabel(displayName: string | undefined, ss58: Ss58): string {
-  const collapsed = displayName?.replace(/\s+/g, " ").trim();
+  const collapsed = sanitizeInline(displayName ?? "");
   return collapsed ? collapsed : truncateSs58(ss58);
 }
 

@@ -14,6 +14,7 @@ import { useMemo, useState } from "react";
 import styles from "./Avatar.module.css";
 import { identiconFor } from "@/lib/identicon";
 import { resolveImageSrc } from "@/lib/media";
+import { sanitizeInline } from "@/lib/sanitize";
 import { reveal, unreveal, useRevealed } from "@/lib/reveal";
 import { useStakeRing } from "@/hooks/useStakeRing";
 import { IconEye, IconEyeOff } from "./icons";
@@ -88,7 +89,8 @@ export function Avatar({ address, src, size = "md", dim, name, eager, noRing, on
   // A remote/IPFS avatar stays covered until tapped; the offline identicon needs no cover. A `eager`
   // (trusted, own) avatar skips the cover and loads straight away.
   const gated = hasImg && !revealed && !eager;
-  const alt = `${name?.trim() || address} avatar`;
+  // The name is user input rendered into the accessible label — harden it (bidi / invisible / Zalgo).
+  const alt = `${sanitizeInline(name ?? "") || address} avatar`;
 
   // Stake-tier trust ring: monochrome by proven Cardano stake, red for a negative reputation. Shared,
   // batched reads (dedup with the ReputationBadge); self-hides (null) for the common fresh-chain case.
