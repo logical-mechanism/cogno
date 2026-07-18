@@ -14,31 +14,18 @@
 
 import Link from "next/link";
 import { ProfileHoverCard } from "./ProfileHoverCard";
-import { useSession } from "./Providers";
 import { useAccountProfile } from "@/hooks/useAccountProfile";
-import { useBlocked } from "@/lib/blockStore";
 import { mentionLabel } from "@/lib/mentions";
-import { truncateSs58 } from "@/lib/ss58";
 import styles from "./MentionChip.module.css";
 import type { Ss58 } from "@/lib/types";
 
+// NOTE: a blocked account @mentioned inside a THIRD party's post still renders their name here. Doing
+// otherwise needs the viewer's ss58, and the only source of it (useSession) changes every block — reading
+// it in this leaf would re-render every mention chip in the feed each block. Threading `me` down through
+// PostBody to reach here isn't worth it for that narrow residual: the blocked account's own posts, quotes,
+// replies, People rows and mention-autocomplete are all still suppressed.
 export function MentionChip({ ss58 }: { ss58: Ss58 }) {
   const profile = useAccountProfile(ss58);
-  const { viewer } = useSession();
-  const blocked = useBlocked(ss58, viewer.address ?? null);
-
-  // A blocked account @mentioned in a THIRD party's post collapses to a bare, non-linked, name-less token:
-  // block means never display their content or interactions — including their name + profile quick-view —
-  // even when the mention rides inside someone else's (unblocked) post. We can't remove it from that post's
-  // bytes, so we neutralize its identity surface instead.
-  if (blocked) {
-    return (
-      <span className={styles.mention} title={ss58}>
-        @{truncateSs58(ss58)}
-      </span>
-    );
-  }
-
   const name = profile?.displayName;
   // Resolved with a name → show it; unbound / nameless / loading → the truncated ss58 (never broken).
   // `mentionLabel` also COLLAPSES whitespace in the name — see its doc: a post body is `pre-wrap`, so

@@ -102,13 +102,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const rootParentId = thread?.root.parent;
   const ancestor = useMemo<{ id: bigint; label: string } | null>(() => {
     if (parentRef) {
-      return {
-        id: parentRef.id,
-        label: sanitizeInline(parentRef.displayName ?? "") || handleOf(parentRef.author),
-      };
+      // When the full ancestor chain isn't available this is the only surface for the parent, so it must
+      // honour block too (the chain path is filtered by mod.filterPosts) — else a blocked parent's name
+      // still shows in "Replying to …".
+      const label = mod.isBlocked(parentRef.author)
+        ? "a blocked account"
+        : sanitizeInline(parentRef.displayName ?? "") || handleOf(parentRef.author);
+      return { id: parentRef.id, label };
     }
     return rootParentId !== undefined ? { id: rootParentId, label: `#${rootParentId}` } : null;
-  }, [parentRef, rootParentId]);
+  }, [parentRef, rootParentId, mod]);
 
   const focal = useMemo<CognoPost | null>(() => {
     const root = thread?.root;
