@@ -5,7 +5,7 @@
   "title": "cogno-chain",
   "uid": "cogno-chain",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "tags": ["cogno-chain"],
   "timezone": "",
   "time": { "from": "now-6h", "to": "now" },
@@ -93,6 +93,102 @@
       "targets": [
         { "expr": "cogno_observer_observed_vaults{job=\"cogno-node\"}", "legendFormat": "vaults" },
         { "expr": "cogno_observer_observed_voters{job=\"cogno-node\"}", "legendFormat": "voters" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "RPC call latency (p50 / p99)",
+      "type": "timeseries",
+      "description": "Substrate's built-in RPC middleware (substrate_rpc_calls_time), present because the node runs --prometheus-port. The histogram is in MICROSECONDS, so the query divides by 1e6 to render seconds. Runtime-API reads (feed/thread/weight) arrive as method=\"state_call\", so a state_call spike here IS the expensive-runtime-API-call signal.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum(rate(substrate_rpc_calls_time_bucket{job=\"cogno-node\"}[5m])) by (le)) / 1e6", "legendFormat": "p99" },
+        { "expr": "histogram_quantile(0.50, sum(rate(substrate_rpc_calls_time_bucket{job=\"cogno-node\"}[5m])) by (le)) / 1e6", "legendFormat": "p50" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "RPC errors & rate-limited (per s)",
+      "type": "timeseries",
+      "description": "substrate_rpc_calls_finished split by is_error / is_rate_limited. A rate-limited climb means callers are hitting --rpc-rate-limit; an error climb means malformed or failing calls.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "targets": [
+        { "expr": "sum(rate(substrate_rpc_calls_finished{job=\"cogno-node\",is_error=\"true\"}[5m]))", "legendFormat": "errors/s" },
+        { "expr": "sum(rate(substrate_rpc_calls_finished{job=\"cogno-node\",is_rate_limited=\"true\"}[5m]))", "legendFormat": "rate-limited/s" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Observer lag (Cardano slots behind tip)",
+      "type": "timeseries",
+      "description": "cogno_observer_lag_slots: how far this node's db-sync tip trails the current Cardano slot. ~0 healthy; rides up toward StabilitySlots (600 on testnet) as db-sync falls behind; the observer abstains once it exceeds that.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
+      "targets": [
+        { "expr": "cogno_observer_lag_slots{job=\"cogno-node\"}", "legendFormat": "lag (slots)" }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "db-sync tip vs observed reference (slot)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
+      "targets": [
+        { "expr": "cogno_observer_dbsync_tip_slot{job=\"cogno-node\"}", "legendFormat": "db-sync tip" },
+        { "expr": "cogno_observer_last_reference_slot{job=\"cogno-node\"}", "legendFormat": "observed reference" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Observer set size vs MaxObserved ceiling",
+      "type": "timeseries",
+      "description": "The observed vault/voter counts against the MaxObserved ceiling (1024). At the ceiling the observe inherent abstains and weight FREEZES — see the ObserverOversize / ObserverApproachingMaxObserved alerts.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 38 },
+      "targets": [
+        { "expr": "cogno_observer_observed_vaults{job=\"cogno-node\"}", "legendFormat": "vaults" },
+        { "expr": "cogno_observer_observed_voters{job=\"cogno-node\"}", "legendFormat": "voters" },
+        { "expr": "cogno_observer_max_observed{job=\"cogno-node\"}", "legendFormat": "MaxObserved" }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Observer oversize (freeze) events — non-zero is a page",
+      "type": "stat",
+      "description": "cogno_observer_observations_oversize_total: an observation exceeded MaxObserved, so create_inherent abstains and the sole weight writer is frozen until MaxObserved is raised.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 38 },
+      "targets": [
+        { "expr": "cogno_observer_observations_oversize_total{job=\"cogno-node\"}", "legendFormat": "oversize events" }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Host CPU & memory % (needs node_exporter)",
+      "type": "timeseries",
+      "description": "Requires the node-exporter scrape job (commented in prometheus.yml). Shows no data until you run node_exporter on the host.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "targets": [
+        { "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)", "legendFormat": "cpu %" },
+        { "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100", "legendFormat": "mem %" }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Host disk used % — data mount (needs node_exporter)",
+      "type": "timeseries",
+      "description": "Requires node_exporter. With MinAuthorities=1 the validator DB is the sole copy of chain history — watch the /var/lib/cogno mount; see the HostDiskFilling alert.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "targets": [
+        { "expr": "100 * (1 - (node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\"}))", "legendFormat": "{{ mountpoint }}" }
       ]
     }
   ]

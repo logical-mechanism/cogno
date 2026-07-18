@@ -189,6 +189,19 @@ pub mod pallet {
     #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// Runs under `try-runtime` against a snapshot of REAL state (docs/UPGRADES.md's pre-enactment
+        /// dry-run), so every migration — the v6 cutover and each future one — is checked to preserve the
+        /// counter invariant before it is enacted. Delegates to the always-compiled
+        /// [`Pallet::check_tally_consistency`] so a unit test drives the SAME assertions (CI cannot run the
+        /// try-runtime hook) and the two can never drift apart.
+        #[cfg(feature = "try-runtime")]
+        fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
+            Self::check_tally_consistency().map_err(Into::into)
+        }
+    }
+
     /// The pallet's configuration trait. Tightly coupled to `pallet-talk-stake` (the weight
     /// source the capacity meter reads).
     #[pallet::config]
@@ -2032,6 +2045,162 @@ impl<T: Config> Pallet<T> {
     /// Clamp a requested page `limit` to `[1, MAX_PAGE]`.
     fn clamp_limit(limit: u32) -> u32 {
         limit.clamp(1, MAX_PAGE)
+    }
+
+    /// Storage-consistency invariant: every denormalized COUNTER equals the number of records it counts,
+    /// and every reverse index mirrors its forward edge. This is LOAD-BEARING, not cosmetic — the live
+    /// weighted tally short-circuits on a zero count (`post_weighted` / `account_weighted` / `poll` skip
+    /// the staker join when the count is 0), so a counter that under-reports its records would silently
+    /// read as ZERO weight while the vote records still exist. Always compiled (behind `test` OR
+    /// `try-runtime`) so a unit test drives the exact assertions the `try_state` hook runs at upgrade
+    /// time — CI does not execute try-runtime — and so the checker can never drift from the hook.
+    #[cfg(any(test, feature = "try-runtime"))]
+    pub(crate) fn check_tally_consistency() -> Result<(), &'static str> {
+        use alloc::collections::BTreeMap;
+
+        // 1. post votes: VoteTally counts == Votes rows, split by direction.
+        let mut post: BTreeMap<u64, (u32, u32)> = BTreeMap::new();
+        for (id, _voter, rec) in Votes::<T>::iter() {
+            let e = post.entry(id).or_default();
+            match rec.dir {
+                VoteDir::Up => e.0 = e.0.saturating_add(1),
+                VoteDir::Down => e.1 = e.1.saturating_add(1),
+            }
+        }
+        for (id, counts) in VoteTally::<T>::iter() {
+            let (up, down) = post.remove(&id).unwrap_or((0, 0));
+            if counts.up_count != up || counts.down_count != down {
+                return Err("VoteTally disagrees with the Votes records for a post");
+            }
+        }
+        if !post.is_empty() {
+            return Err("Votes records exist for a post with no VoteTally row");
+        }
+
+        // 2. account (reputation) votes: mirror of the post side, target-keyed.
+        let mut acct: BTreeMap<T::AccountId, (u32, u32)> = BTreeMap::new();
+        for (target, _voter, rec) in AccountVotes::<T>::iter() {
+            let e = acct.entry(target).or_default();
+            match rec.dir {
+                VoteDir::Up => e.0 = e.0.saturating_add(1),
+                VoteDir::Down => e.1 = e.1.saturating_add(1),
+            }
+        }
+        for (target, counts) in AccountVoteTally::<T>::iter() {
+            let (up, down) = acct.remove(&target).unwrap_or((0, 0));
+            if counts.up_count != up || counts.down_count != down {
+                return Err(
+                    "AccountVoteTally disagrees with the AccountVotes records for a target",
+                );
+            }
+        }
+        if !acct.is_empty() {
+            return Err("AccountVotes records exist for a target with no AccountVoteTally row");
+        }
+
+        // 3. poll options: PollTally[poll][option].count == the PollVotes choosing that option.
+        let mut poll: BTreeMap<(u64, u8), u32> = BTreeMap::new();
+        for (host, _voter, rec) in PollVotes::<T>::iter() {
+            let e = poll.entry((host, rec.option)).or_default();
+            *e = e.saturating_add(1);
+        }
+        for (host, option, tally) in PollTally::<T>::iter() {
+            let n = poll.remove(&(host, option)).unwrap_or(0);
+            if tally.count != n {
+                return Err("PollTally disagrees with the PollVotes records for an option");
+            }
+        }
+        if !poll.is_empty() {
+            return Err("PollVotes records exist for a (poll, option) with no PollTally row");
+        }
+
+        // 4. follow graph: FollowerCount / FollowingCount == rows, and every forward edge is mirrored.
+        let mut followers: BTreeMap<T::AccountId, u32> = BTreeMap::new();
+        for (target, _follower) in Followers::<T>::iter_keys() {
+            let e = followers.entry(target).or_default();
+            *e = e.saturating_add(1);
+        }
+        for (target, count) in FollowerCount::<T>::iter() {
+            if count != followers.remove(&target).unwrap_or(0) {
+                return Err("FollowerCount disagrees with the Followers rows");
+            }
+        }
+        if !followers.is_empty() {
+            return Err("Followers rows exist for a target with no FollowerCount row");
+        }
+        let mut following: BTreeMap<T::AccountId, u32> = BTreeMap::new();
+        for (who, _followee) in Following::<T>::iter_keys() {
+            let e = following.entry(who).or_default();
+            *e = e.saturating_add(1);
+        }
+        for (who, count) in FollowingCount::<T>::iter() {
+            if count != following.remove(&who).unwrap_or(0) {
+                return Err("FollowingCount disagrees with the Following rows");
+            }
+        }
+        if !following.is_empty() {
+            return Err("Following rows exist for a who with no FollowingCount row");
+        }
+        // Reverse-index lockstep: `Following[follower][followee]` ⇔ `Followers[followee][follower]`.
+        for (follower, followee) in Following::<T>::iter_keys() {
+            if !Followers::<T>::contains_key(&followee, &follower) {
+                return Err("a Following edge is missing its Followers mirror");
+            }
+        }
+        for (followee, follower) in Followers::<T>::iter_keys() {
+            if !Following::<T>::contains_key(&follower, &followee) {
+                return Err("a Followers edge is missing its Following mirror");
+            }
+        }
+
+        // 5. reply aggregate: ReplyCount == RepliesByParent rows (append-only, increment-only).
+        let mut replies: BTreeMap<u64, u32> = BTreeMap::new();
+        for (parent, _child) in RepliesByParent::<T>::iter_keys() {
+            let e = replies.entry(parent).or_default();
+            *e = e.saturating_add(1);
+        }
+        for (parent, count) in ReplyCount::<T>::iter() {
+            if count != replies.remove(&parent).unwrap_or(0) {
+                return Err("ReplyCount disagrees with the RepliesByParent rows");
+            }
+        }
+        if !replies.is_empty() {
+            return Err("RepliesByParent rows exist for a parent with no ReplyCount row");
+        }
+        // Anchor RepliesByParent to its TRUE forward edge — a `Post` with `parent == Some(par)` — not
+        // just to `ReplyCount` (its own derived counter). Without this, a reply-path edit that dropped
+        // BOTH aggregate writes would keep RepliesByParent and ReplyCount mutually consistent while
+        // silently diverging from the posts themselves. Mirror check, both directions (as for the vote /
+        // follow indexes above): the `id` side is always a real post; `par` is deliberately unvalidated
+        // (a reply may dangle under a not-yet-existing parent), so only the child is required to exist.
+        for (id, post) in Posts::<T>::iter() {
+            if let Some(par) = post.parent {
+                if !RepliesByParent::<T>::contains_key(par, id) {
+                    return Err("a reply post is missing its RepliesByParent entry");
+                }
+            }
+        }
+        for (par, child) in RepliesByParent::<T>::iter_keys() {
+            match Posts::<T>::get(child) {
+                Some(p) if p.parent == Some(par) => {}
+                _ => return Err("a RepliesByParent entry has no matching reply post"),
+            }
+        }
+
+        // 6. the "liked posts" reverse index: `VotesByAccount[account][post]` ⇔ an Up vote on `post`.
+        for (account, post) in VotesByAccount::<T>::iter_keys() {
+            match Votes::<T>::get(post, &account) {
+                Some(rec) if rec.dir == VoteDir::Up => {}
+                _ => return Err("VotesByAccount has an entry with no matching Up vote"),
+            }
+        }
+        for (post, account, rec) in Votes::<T>::iter() {
+            if rec.dir == VoteDir::Up && !VotesByAccount::<T>::contains_key(&account, post) {
+                return Err("an Up vote is missing its VotesByAccount entry");
+            }
+        }
+
+        Ok(())
     }
 
     /// The current staker→weight list: every account with observed Cardano stake paired with its LIVE

@@ -3332,3 +3332,212 @@ mod node_reads {
         });
     }
 }
+
+/// Property-based protocol-invariant tests (spec 205+). Generator-driven, complementing the hand-rolled
+/// table sweeps above. The headline check is the storage-consistency invariant that the new
+/// `Pallet::try_state` hook enforces at upgrade time: every denormalized counter equals the records it
+/// counts, and every reverse index mirrors its forward edge.
+#[cfg(test)]
+mod invariant_props {
+    use crate::mock::*;
+    use crate::{FollowerCount, Followers, PollResults, VoteCounts, VoteDir, VoteTally};
+    use frame_support::assert_ok;
+    use proptest::prelude::*;
+
+    /// One engagement action against a fixed cast of actors and seeded posts. The `u8` selectors are
+    /// reduced modulo the small cardinalities in [`apply`], so every generated op is addressable.
+    #[derive(Debug, Clone)]
+    enum Op {
+        Vote(u8, u8, bool),
+        ClearVote(u8, u8),
+        VoteAccount(u8, u8, bool),
+        ClearAccountVote(u8, u8),
+        Follow(u8, u8),
+        Unfollow(u8, u8),
+        PollVote(u8, u8),
+        Reply(u8, u8),
+    }
+
+    fn any_op() -> impl Strategy<Value = Op> {
+        (0u8..8, any::<u8>(), any::<u8>(), any::<bool>()).prop_map(|(kind, a, b, up)| match kind {
+            0 => Op::Vote(a, b, up),
+            1 => Op::ClearVote(a, b),
+            2 => Op::VoteAccount(a, b, up),
+            3 => Op::ClearAccountVote(a, b),
+            4 => Op::Follow(a, b),
+            5 => Op::Unfollow(a, b),
+            6 => Op::PollVote(a, b),
+            _ => Op::Reply(a, b),
+        })
+    }
+
+    const ACTORS: [u64; 4] = [1, 2, 3, 4];
+    /// Seeded post ids: `0` is the poll host, `1` and `2` are plain posts.
+    const POSTS: [u64; 3] = [0, 1, 2];
+
+    fn dir(up: bool) -> VoteDir {
+        if up {
+            VoteDir::Up
+        } else {
+            VoteDir::Down
+        }
+    }
+
+    /// Every op's `Result` is intentionally IGNORED: an invalid op (self-vote, unfollow-when-not-
+    /// following, a poll option out of range) rolls back and must leave the invariant intact — which is
+    /// exactly what the caller then asserts. The generator deliberately produces such invalid ops.
+    fn apply(op: &Op) {
+        let origin = |i: u8| RuntimeOrigin::signed(ACTORS[(i as usize) % ACTORS.len()]);
+        let acct = |i: u8| ACTORS[(i as usize) % ACTORS.len()];
+        let post = |i: u8| POSTS[(i as usize) % POSTS.len()];
+        match *op {
+            Op::Vote(x, p, up) => {
+                let _ = Microblog::vote(origin(x), post(p), dir(up));
+            }
+            Op::ClearVote(x, p) => {
+                let _ = Microblog::clear_vote(origin(x), post(p));
+            }
+            Op::VoteAccount(x, t, up) => {
+                let _ = Microblog::vote_account(origin(x), acct(t), dir(up));
+            }
+            Op::ClearAccountVote(x, t) => {
+                let _ = Microblog::clear_account_vote(origin(x), acct(t));
+            }
+            Op::Follow(x, t) => {
+                let _ = Microblog::follow(origin(x), acct(t));
+            }
+            Op::Unfollow(x, t) => {
+                let _ = Microblog::unfollow(origin(x), acct(t));
+            }
+            Op::PollVote(x, o) => {
+                let _ = Microblog::cast_poll_vote(origin(x), 0, o % 2);
+            }
+            Op::Reply(x, p) => {
+                let _ = Microblog::post_message(origin(x), b"r".to_vec(), Some(post(p)));
+            }
+        }
+    }
+
+    fn seed() {
+        System::set_block_number(1);
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"poll?".to_vec(),
+            vec![b"a".to_vec(), b"b".to_vec()],
+            None,
+        ));
+        assert_ok!(Microblog::post_message(
+            RuntimeOrigin::signed(1),
+            b"p1".to_vec(),
+            None
+        ));
+        assert_ok!(Microblog::post_message(
+            RuntimeOrigin::signed(1),
+            b"p2".to_vec(),
+            None
+        ));
+        // Give every actor voting power so the live weighted-tally join is exercised too (the invariant
+        // under test is the COUNTS, which are independent of weight).
+        for who in ACTORS {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// After an ARBITRARY sequence of engagement actions (valid and invalid), every denormalized
+        /// counter still equals the records it counts and every reverse index still mirrors its forward
+        /// edge — the invariant `try_state` pins. The generator-based analogue of the hand-rolled
+        /// `tally_count_fold_and_live_weight_property` sweep.
+        #[test]
+        fn tally_consistency_holds_under_arbitrary_engagement(
+            ops in prop::collection::vec(any_op(), 0..30),
+        ) {
+            new_test_ext().execute_with(|| {
+                seed();
+                for op in &ops {
+                    apply(op);
+                    let res = Microblog::check_tally_consistency();
+                    prop_assert!(res.is_ok(), "consistency broke after {:?}: {:?}", op, res);
+                }
+                Ok(())
+            })?;
+        }
+    }
+
+    #[test]
+    fn check_tally_consistency_catches_a_vote_counter_drift() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            assert_ok!(Microblog::post_message(
+                RuntimeOrigin::signed(1),
+                b"root".to_vec(),
+                None
+            ));
+            TalkStake::apply_voting_power(&2, 100);
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(2), 0, VoteDir::Up));
+            assert!(Microblog::check_tally_consistency().is_ok());
+            // Inflate the counter with no matching record — exactly the drift the live zero-count
+            // short-circuit would silently mis-read as zero weight.
+            VoteTally::<Test>::insert(
+                0,
+                VoteCounts {
+                    up_count: 99,
+                    down_count: 0,
+                },
+            );
+            assert!(Microblog::check_tally_consistency().is_err());
+        });
+    }
+
+    #[test]
+    fn check_tally_consistency_catches_a_follow_mirror_drift() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            assert_ok!(Microblog::follow(RuntimeOrigin::signed(1), 2));
+            assert!(Microblog::check_tally_consistency().is_ok());
+            // Drop the reverse mirror AND its follower-count together, so the counters stay internally
+            // consistent (0 followers == FollowerCount 0) and it is the reverse-index *mirror* check —
+            // not the count check — that must catch the now-unpaired forward edge Following[1][2].
+            Followers::<Test>::remove(2, 1);
+            FollowerCount::<Test>::insert(2, 0u32);
+            assert!(Microblog::check_tally_consistency().is_err());
+        });
+    }
+
+    #[test]
+    fn poll_result_is_frozen_against_a_later_unstake() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            assert_ok!(Microblog::create_poll(
+                RuntimeOrigin::signed(1),
+                b"q".to_vec(),
+                vec![b"a".to_vec(), b"b".to_vec()],
+                Some(10),
+            ));
+            TalkStake::apply_voting_power(&2, 100);
+            TalkStake::apply_voting_power(&3, 50);
+            assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 0));
+            assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(3), 0, 1));
+            System::set_block_number(10);
+            assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(1), 0));
+            let frozen = PollResults::<Test>::get(0).expect("poll finalized");
+            // The snapshot is index-aligned with the options, exact-counted, and weight-snapshotted.
+            assert_eq!(frozen.option_weights.len(), 2);
+            assert_eq!(frozen.option_counts.to_vec(), vec![1, 1]);
+            assert_eq!(frozen.option_weights.to_vec(), vec![100, 50]);
+            // The counts-consistency invariant must still hold once the poll is CLOSED — `close_poll`
+            // writes `PollResults` but leaves `PollVotes`/`PollTally` intact, so the checker (and the
+            // `try_state` hook it backs) must accept the coexistence. try_state runs against live chains
+            // that WILL contain closed polls; the proptest's floating poll never reaches this state.
+            assert!(Microblog::check_tally_consistency().is_ok());
+            // A voter unstakes AFTER close: the finalized result must NOT re-price.
+            TalkStake::apply_voting_power(&2, 0);
+            let after = PollResults::<Test>::get(0).expect("still finalized");
+            assert_eq!(after.option_weights.to_vec(), vec![100, 50]);
+            // …and the invariant still holds after the unstake (weight moved, counts unchanged).
+            assert!(Microblog::check_tally_consistency().is_ok());
+        });
+    }
+}

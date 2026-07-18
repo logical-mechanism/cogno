@@ -1065,3 +1065,81 @@ fn a_frozen_observation_still_stamps_the_clock() {
         assert_eq!(stalled_events(), 0);
     });
 }
+
+// ── idempotency + inherent-overrun (the observer boundary) ──────────────────────────────────────────
+
+/// Re-applying the SAME observation is idempotent at the observer level. A Substrate re-org re-executes
+/// the Mandatory `observe`, and re-derivation OVERWRITES the sink to the identical values — it NEVER
+/// accumulates. `slot == last.slot` is admitted (the monotonicity guard is `>=`), so an unchanged
+/// re-observation is legal and a no-op in effect. Complements talk-stake's downstream idempotency test
+/// with the observer-level guarantee.
+#[test]
+fn re_applying_the_same_observation_is_idempotent() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        bind_stake(S1, ALICE);
+        let slot = MAX_REFERENCE - 5;
+        let apply = || {
+            CardanoObserver::observe(
+                RuntimeOrigin::none(),
+                cref(slot),
+                COMMIT,
+                entries(&[(A, 200_000_000)]),
+                stk(&[(S1, 700_000_000)]),
+            )
+        };
+        assert_ok!(apply());
+        assert_eq!(weight_of(ALICE), 200_000_000);
+        assert_eq!(voting_power_of(ALICE), 700_000_000);
+        assert_eq!(crate::LastReference::<Test>::get(), Some(cref(slot)));
+
+        // Re-apply the identical reference + entries (the reorg-safe re-derive path).
+        assert_ok!(apply());
+        assert_eq!(
+            weight_of(ALICE),
+            200_000_000,
+            "re-derive is a pure overwrite, never a sum"
+        );
+        assert_eq!(voting_power_of(ALICE), 700_000_000);
+        assert_eq!(crate::LastReference::<Test>::get(), Some(cref(slot)));
+    });
+}
+
+/// `create_inherent` abstains — drops the WHOLE inherent — when an observation would exceed `MaxObserved`,
+/// rather than truncating it to a partial (fork-inducing) set. This is the silent-freeze PRECONDITION the
+/// node's `ObserverOversize` alert and `cogno_observer_observations_oversize_total` metric watch for.
+/// `BoundedVec::try_from` succeeds at EXACTLY `MaxObserved` and fails one above it — the boundary is pinned.
+#[test]
+fn create_inherent_abstains_when_the_observation_overruns_max_observed() {
+    new_test_ext().execute_with(|| {
+        let max = <<Test as crate::Config>::MaxObserved as frame_support::traits::Get<u32>>::get()
+            as usize;
+        // Distinct beacons; the value is irrelevant here (create_inherent neither resolves nor floors).
+        let beacon = |i: usize| {
+            let mut b = [0u8; 32];
+            b[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            b
+        };
+        let make = |n: usize| CardanoObservation {
+            reference: cref(1000),
+            inputs_commitment: COMMIT,
+            entries: (0..n).map(|i| (beacon(i), 200_000_000u128)).collect(),
+            stake_entries: vec![],
+        };
+
+        // Exactly MaxObserved fits — the inherent is produced.
+        let mut id_ok = InherentData::new();
+        put_obs(&mut id_ok, &make(max));
+        assert!(<CardanoObserver as ProvideInherent>::create_inherent(&id_ok).is_some());
+
+        // One over the ceiling — the whole inherent is dropped (author abstains, weight freezes).
+        let mut id_over = InherentData::new();
+        put_obs(&mut id_over, &make(max + 1));
+        assert!(
+            <CardanoObserver as ProvideInherent>::create_inherent(&id_over).is_none(),
+            "an observation exceeding MaxObserved must abstain, not truncate"
+        );
+    });
+}

@@ -87,3 +87,70 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "cogno observer sees 0 locked-ADA vaults while observing — vault scan broken (wrong script hash, or db-sync missing tx_in / pruned)?"
+
+      - alert: ObserverOversize
+        # THE SILENT-FREEZE PAGE. An observation's vault OR stake set EXCEEDED MaxObserved, so
+        # create_inherent's `BoundedVec::try_from` drops the WHOLE inherent — the sole weight writer stops
+        # updating with no other on-chain signal. increase()>0 over 15m catches even a single occurrence.
+        # Fix: raise MaxObserved via a governed runtime upgrade (or page the set) — see
+        # docs/IN-PROTOCOL-OBSERVATION.md. Critical, because weight is now frozen chain-wide.
+        expr: increase(cogno_observer_observations_oversize_total{job="cogno-node"}[15m]) > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "cogno observer observation EXCEEDED MaxObserved — the observe inherent is abstaining and Cardano weight is FROZEN; raise MaxObserved (governed upgrade)"
+
+      - alert: ObserverApproachingMaxObserved
+        # Early warning BEFORE the freeze: the observed set is within 10% of MaxObserved (1024). Written as
+        # a ratio (division ignores __name__, so vaults/max and voters/max match on {job,instance}); before
+        # the first observation both counts and max are 0, so 0/0 = NaN < 0.9 → no false pre-observe fire.
+        expr: cogno_observer_observed_vaults{job="cogno-node"} / cogno_observer_max_observed{job="cogno-node"} >= 0.9 or cogno_observer_observed_voters{job="cogno-node"} / cogno_observer_max_observed{job="cogno-node"} >= 0.9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "cogno observer set within 10% of MaxObserved — raise MaxObserved before an observation overruns it and freezes weight"
+
+      - alert: ObserverLagHigh
+        # The db-sync source is falling behind Cardano but NOT yet fully frozen (distinct from
+        # ObserverReferenceSlotStalled, which needs a 30m flatline). lag_slots rides 0..StabilitySlots on the
+        # healthy path (StabilitySlots=600 on this testnet) and the observer ABSTAINS once it exceeds 600, so
+        # 300 (~5 min behind, half the window) warns while observations still land. On mainnet
+        # (StabilitySlots=129600) scale this threshold up proportionally.
+        expr: cogno_observer_lag_slots{job="cogno-node"} > 300
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "cogno observer db-sync tip is >300 Cardano slots behind (~5 min) — db-sync is falling behind; it will start abstaining past 600"
+
+  # RPC health — from Substrate's built-in RPC middleware (substrate_rpc_*), exported on :9615 because the
+  # node runs --prometheus-port. Latency/error visibility for the public relay's read surface.
+  - name: cogno-rpc
+    rules:
+      - alert: RpcErrorRateHigh
+        # A sustained RPC error rate. Errors include benign client-side faults (bad params on a hand-typed
+        # call), so the threshold is high and the window long to avoid paging on noise — this is meant to
+        # catch a broken client hammering the relay or an upstream fault, not the odd 4xx. Tune per traffic.
+        expr: sum(rate(substrate_rpc_calls_finished{job="cogno-node",is_error="true"}[5m])) > 20
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "cogno relay RPC error rate >20/s for 15m — a broken/abusive client or an upstream fault"
+
+  # Host metrics — REQUIRE the node-exporter scrape job (shipped commented in prometheus.yml; uncomment it
+  # and run node_exporter to activate these). Until then they read no data and never fire. Disk is the one
+  # that matters most: with MinAuthorities=1 the validator DB is the SOLE copy of chain history.
+  - name: host
+    rules:
+      - alert: HostDiskFilling
+        expr: node_filesystem_avail_bytes{job="node-exporter",fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{job="node-exporter",fstype!~"tmpfs|overlay|squashfs"} < 0.10
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "cogno host filesystem {{ $labels.mountpoint }} has <10% free — if this is the chain-DB mount, MinAuthorities=1 means no second copy of history"
+
+      - alert: HostMemoryHigh
+        expr: (1 - node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) > 0.90
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "cogno host memory >90% used for 15m"

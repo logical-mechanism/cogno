@@ -239,3 +239,70 @@ fn genesis_seeds_initial_weights() {
         },
     );
 }
+
+/// Property-based invariants for the observer-written ledger (generator-driven, complementing the
+/// hand-rolled sweeps above). The ledger performs NO arithmetic on weights — it stores absolute values
+/// the observer supplies — so overflow/accumulation are structurally impossible; these fuzz the extremes
+/// (up to `u128::MAX`) to pin that down.
+#[cfg(test)]
+mod prop_invariants {
+    use crate::{mock::*, AllowedStake, Pallet, VotingPower};
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// `apply_weight` is a pure idempotent OVERWRITE across an ARBITRARY sequence of observations
+        /// (including `u128::MAX`): the store always equals the last-written value, never the running
+        /// sum, and never overflows — the on-chain half of the observer's largest-wins / never-sum rule.
+        #[test]
+        fn apply_weight_is_always_a_pure_overwrite(seq in prop::collection::vec(any::<u128>(), 1..24)) {
+            new_test_ext().execute_with(|| {
+                System::set_block_number(1);
+                let who = 7u64;
+                let mut running = 0u128;
+                for &w in &seq {
+                    Pallet::<Test>::apply_weight(&who, w);
+                    running = running.saturating_add(w);
+                    prop_assert_eq!(AllowedStake::<Test>::get(who), w);
+                }
+                let last = *seq.last().unwrap();
+                prop_assert_eq!(AllowedStake::<Test>::get(who), last);
+                // Never an accumulation: with >=2 distinct nonzero observations the store is below the sum
+                // (unless a single value already saturates, i.e. running == last).
+                if seq.iter().filter(|&&w| w > 0).count() >= 2 && running != last {
+                    prop_assert!(last < running);
+                }
+                Ok(())
+            })?;
+        }
+
+        /// `apply_weight` (AllowedStake) and `apply_voting_power` (VotingPower) are independent per-account
+        /// overwrites that never leak across accounts — over arbitrary (account, stake, voting_power)
+        /// triples with extreme values. Last write per account wins in each map, independently.
+        #[test]
+        fn stake_and_voting_power_are_independent_and_isolated(
+            entries in prop::collection::vec((0u64..8, any::<u128>(), any::<u128>()), 1..20),
+        ) {
+            new_test_ext().execute_with(|| {
+                use std::collections::BTreeMap;
+                System::set_block_number(1);
+                let mut expect_stake: BTreeMap<u64, u128> = BTreeMap::new();
+                let mut expect_vp: BTreeMap<u64, u128> = BTreeMap::new();
+                for &(who, s, vp) in &entries {
+                    Pallet::<Test>::apply_weight(&who, s);
+                    Pallet::<Test>::apply_voting_power(&who, vp);
+                    expect_stake.insert(who, s);
+                    expect_vp.insert(who, vp);
+                }
+                for (who, s) in &expect_stake {
+                    prop_assert_eq!(AllowedStake::<Test>::get(who), *s);
+                }
+                for (who, vp) in &expect_vp {
+                    prop_assert_eq!(VotingPower::<Test>::get(who), *vp);
+                }
+                Ok(())
+            })?;
+        }
+    }
+}
