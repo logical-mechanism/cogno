@@ -39,6 +39,11 @@
   .who {
     display: none;
   }
+  /* The guest connect pill (a nowrap accent button ≈160px wide) does not fit the 88px icon-only rail —
+     hide it here. A tablet guest reaches sign-in via the accent "Post" circle / Profile (both → /welcome). */
+  .connectRoot {
+    display: none;
+  }
 }
 
 /* The menu floats above the trigger (the rail base is sticky to viewport bottom). */

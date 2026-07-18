@@ -1,0 +1,60 @@
+/* The logged-out "join the conversation" banner at the top of the feed. Unlike the inline composer slot
+   (page.module.css .composerSlot, which is desktop/tablet only) this shows on ALL breakpoints — mobile
+   has no LeftNav Account widget, so this is a guest's clearest sign-in path there. The bottom border
+   matches the composer divider so it reads as a top-of-feed element rather than a floating card. */
+.card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-4);
+  padding: var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+  background: var(--cg-accent-wash);
+}
+
+.copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+  min-width: 0;
+}
+
+.title {
+  font-size: var(--cg-fs-lg);
+  font-weight: var(--cg-fw-extrabold);
+  letter-spacing: var(--cg-tracking-tight);
+  color: var(--cg-text);
+}
+
+.body {
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-secondary);
+}
+
+.cta {
+  flex: 0 0 auto;
+  padding: var(--cg-space-2) var(--cg-space-5);
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  font-size: var(--cg-fs-md);
+  font-weight: var(--cg-fw-bold);
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.cta:hover {
+  background: var(--cg-accent-hover);
+}
+
+/* Narrow: stack the copy over a full-width button so the CTA never gets cramped. */
+@media (max-width: 519px) {
+  .card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .cta {
+    width: 100%;
+  }
+}

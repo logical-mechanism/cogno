@@ -38,6 +38,20 @@ function isWelcomePath(pathname: string | null): boolean {
   return !!pathname && (pathname === "/welcome" || pathname.startsWith("/welcome/"));
 }
 
+// The read-only surfaces a LOGGED-OUT visitor may browse without signing in: the timeline, discovery, a
+// post, a profile, and the static legal pages. Everything else (compose, settings, notifications,
+// bookmarks — the write/config/personal surfaces) stays behind the wall and bounces a guest to /welcome.
+//
+// Matched by first path segment so it is trailing-slash- and dynamic-segment-proof under `output: export`
+// ("/" → "", "/post/1/" → "post", "/u/5Grw…/" → "u"). Fail-CLOSED: a route whose segment is not listed is
+// treated as private, so a newly-added route is walled until it is deliberately opened here. /welcome is
+// intentionally NOT listed — it is the onboarding canvas, handled by its own `onWelcome` branch below.
+const PUBLIC_SEGMENTS = new Set(["", "explore", "post", "u", "legal", "privacy"]);
+function isPublicPath(pathname: string | null): boolean {
+  if (!pathname) return false;
+  return PUBLIC_SEGMENTS.has(pathname.split("/")[1] ?? "");
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -47,22 +61,23 @@ export function AppShell({ children }: { children: ReactNode }) {
   // mid-signup and lives inside the welcome flow, not the app.
   const loggedIn = viewer.status === "ready";
   const onWelcome = isWelcomePath(pathname);
+  const publicRoute = isPublicPath(pathname);
 
-  // Hard auth wall (X-style): a logged-out visitor to ANY app route is bounced to the standalone
-  // welcome/join page. There is no persistent session — the posting key is re-derived from a wallet
-  // signature each visit and nothing is stored, so every fresh load starts logged-out. The welcome
-  // page is therefore the canonical landing; the feed only exists once you're bound.
+  // Soft auth wall (X-style logged-out browsing): a guest may READ the public surfaces (the timeline, a
+  // post, a profile, explore, the legal pages) but the WRITE/CONFIG surfaces (compose, settings,
+  // notifications, bookmarks) still bounce a logged-out visitor to the welcome/join page. There is no
+  // persistent session — the posting key is re-derived from a wallet signature each visit and nothing is
+  // stored, so every fresh load starts logged-out; the point is that reading no longer requires a bind
+  // (every write affordance itself already funnels to /welcome via `viewer.writeReady`).
   //
-  // The bounce REMEMBERS where you were going (`?next=`), and this is what makes a share link work at
-  // all. Every cold load is logged out, so pasting /post/123/ always hits this wall — and until now the
-  // wall threw the destination away and /welcome finished by sending you to the feed. The post you were
-  // sent was simply unreachable by its own link. The query string comes off `window.location` rather
-  // than useSearchParams(): this component wraps every route, and useSearchParams() here would force a
-  // client-side bailout for the whole app under `output: export`.
+  // The bounce REMEMBERS where you were going (`?next=`) so a deep-linked private route survives sign-in.
+  // A public deep link (a shared /post/123/) now simply opens for the guest — no bounce needed. The query
+  // string comes off `window.location` rather than useSearchParams(): this component wraps every route,
+  // and useSearchParams() here would force a client-side bailout for the whole app under `output: export`.
   useEffect(() => {
-    if (loggedIn || onWelcome) return;
+    if (loggedIn || onWelcome || publicRoute) return;
     router.replace(welcomeUrlFor(pathname, window.location.search));
-  }, [loggedIn, onWelcome, pathname, router]);
+  }, [loggedIn, onWelcome, publicRoute, pathname, router]);
 
   // App-wide "/" → focus the SearchBar (works on every surface with a search box, not just /explore).
   useSearchHotkey();
@@ -74,12 +89,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <main className={styles.standalone}>{children}</main>;
   }
 
-  // Logged-out on an app route: never flash the feed — but never flash a BLANK PAGE either. There is no
-  // persistent session (the posting key is re-derived from a wallet signature each visit), so this is
-  // every cold load and every hard refresh of every route, and it used to render `null`: a white screen
-  // until the redirect landed. Neutral copy on purpose — this covers both "your session is coming back"
-  // and "you are genuinely logged out and about to land on /welcome".
-  if (!loggedIn) return <Loading variant="screen" label="Loading…" />;
+  // Logged-out on a WALLED route: never flash its children (the redirect above is a post-paint effect, so
+  // without this the private page would render for one frame before the bounce lands) and never flash a
+  // BLANK PAGE either. A logged-out visitor to a PUBLIC route falls through to the shell below and browses
+  // read-only. Neutral copy on purpose — this covers both "your session is coming back" and "you are
+  // genuinely logged out and about to land on /welcome".
+  if (!loggedIn && !publicRoute) return <Loading variant="screen" label="Loading…" />;
 
   return (
     <div className={styles.shell}>

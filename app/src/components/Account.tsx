@@ -69,8 +69,13 @@ export function Account() {
   // entry. ConnectWalletButton picks "Connect wallet" vs "Finish setup" from viewer.status; the
   // latter routes to /welcome to complete the bind.
   if (!ready) {
+    // The "Connect wallet" / "Finish setup" pill is a fixed-width nowrap accent button — it does not fit
+    // the 88px icon-only tablet rail (≤1019px), so it is hidden there via `connectRoot`. A tablet guest
+    // still reaches sign-in through the prominent accent "Post" circle (and Profile), which funnel to
+    // /welcome. Desktop keeps the labeled button; mobile has no LeftNav (Home's sign-in card + the
+    // ComposeFab cover it).
     return (
-      <div className={styles.root}>
+      <div className={`${styles.root} ${styles.connectRoot}`}>
         <ConnectWalletButton
           viewer={viewer}
           onContinueSetup={() => router.push("/welcome/")}
