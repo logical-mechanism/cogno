@@ -19,9 +19,10 @@ export const metadata: Metadata = {
     "Post text, read text. A feeless social chain where posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
   applicationName: "cogno",
   // The site is indexable. It is a live, honestly-labeled service; being a preprod testnet is not a
-  // reason to hide it from search. (Only the app shell + static pages like /legal and /privacy are
-  // meaningfully crawlable — post content is client-rendered behind the connect wall — but the landing
-  // page being findable is the point.) This was the sole failing SEO audit (is-crawlable).
+  // reason to hide it from search. (The app shell + static pages like /legal and /privacy are
+  // meaningfully crawlable; the public read surfaces — the timeline, a post, a profile — are
+  // client-rendered but no longer behind a connect wall, so a shared link opens for anyone and the
+  // landing page is findable.) This was the sole failing SEO audit (is-crawlable).
   robots: { index: true, follow: true },
   // The tab icon is 😭 (U+1F62D), rasterized from Noto Color Emoji. The three files are App Router
   // metadata-file conventions — Next discovers `icon.png` / `apple-icon.png` / `favicon.ico` sitting next

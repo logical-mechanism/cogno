@@ -25,6 +25,7 @@ import { TimelineTabs, type TimelineTab } from "@/components/TimelineTabs";
 import { NewPostsPill } from "@/components/NewPostsPill";
 import { Timeline } from "@/components/Timeline";
 import { Composer } from "@/components/Composer";
+import { GuestSignInPrompt } from "@/components/GuestSignInPrompt";
 import { useSession } from "@/components/Providers";
 import { useLiveFeed } from "@/hooks/useLiveFeed";
 import { usePostActions } from "@/hooks/usePostActions";
@@ -273,6 +274,10 @@ export default function HomePage() {
           />
         </div>
       )}
+
+      {/* Logged-out (or mid-signup) → the sign-in nudge takes the composer's place. Self-hides when the
+          viewer is ready, and unlike the composer slot it shows on every breakpoint. */}
+      <GuestSignInPrompt />
 
       <NewPostsPill count={activeTab === "for-you" ? bufferedCount : 0} onClick={flushPending} />
 
