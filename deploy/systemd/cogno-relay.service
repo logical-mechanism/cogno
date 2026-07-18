@@ -50,11 +50,13 @@ Environment=RUST_LOG=info,cardano-observer=error
 #   by default. --rpc-rate-limit-trust-proxy-headers makes it count the real client, not nginx.
 # --rpc-max-request-size / --rpc-max-response-size (both default 15 MB) / --rpc-max-batch-request-len
 #   (default UNBOUNDED): the transport DoS caps.
-#   • request 8 MB — the runtime-upgrade extrinsic (`cogno-chain-cli upgrade apply`) transits THIS
-#     endpoint, submitted as a 0x-hex string (author_submitAndWatchExtrinsic), so the wire body is ~2×
-#     the compressed runtime WASM (≈0.5 MB today → ≈1 MB body). 8 MB halves the 15 MB default and still
-#     carries a runtime up to ~3.5 MB; every other call (post/vote/CIP-8 bind) is tiny. Raise this AND
-#     nginx's client_max_body_size together well before the compressed runtime approaches ~3.5 MB.
+#   • request 8 MB — THIS is the real cap on the runtime upgrade. The 0x-hex WASM extrinsic
+#     (`cogno-chain-cli upgrade apply`) is a WS subscription (author_submitAndWatchExtrinsic), and the
+#     SDK applies --rpc-max-request-size to BOTH HTTP and WS — unlike nginx's client_max_body_size,
+#     which only bounds HTTP request bodies and so never sees this. The wire body is ~2× the compressed
+#     WASM (≈0.5 MB today → ≈1 MB body). 8 MB halves the 15 MB default and still carries a runtime up to
+#     ~3.5 MB; every other call (post/vote/CIP-8 bind) is tiny. Raise THIS well before the compressed
+#     runtime approaches ~3.5 MB (keep nginx's client_max_body_size in step for the HTTP-POST path).
 #   • response 10 MB — every app read is a bounded/paginated runtime-API call (feeds truncate, edges cap
 #     at MAX_EDGES); nothing legitimate returns 10 MB. Caps a caller pulling the keyspace in one reply.
 #   • batch 16 — array-batching is the amplification vector per-request rate-limiting MISSES (one WS

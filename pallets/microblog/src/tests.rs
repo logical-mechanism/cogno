@@ -3527,10 +3527,17 @@ mod invariant_props {
             assert_eq!(frozen.option_weights.len(), 2);
             assert_eq!(frozen.option_counts.to_vec(), vec![1, 1]);
             assert_eq!(frozen.option_weights.to_vec(), vec![100, 50]);
+            // The counts-consistency invariant must still hold once the poll is CLOSED — `close_poll`
+            // writes `PollResults` but leaves `PollVotes`/`PollTally` intact, so the checker (and the
+            // `try_state` hook it backs) must accept the coexistence. try_state runs against live chains
+            // that WILL contain closed polls; the proptest's floating poll never reaches this state.
+            assert!(Microblog::check_tally_consistency().is_ok());
             // A voter unstakes AFTER close: the finalized result must NOT re-price.
             TalkStake::apply_voting_power(&2, 0);
             let after = PollResults::<Test>::get(0).expect("still finalized");
             assert_eq!(after.option_weights.to_vec(), vec![100, 50]);
+            // …and the invariant still holds after the unstake (weight moved, counts unchanged).
+            assert!(Microblog::check_tally_consistency().is_ok());
         });
     }
 }

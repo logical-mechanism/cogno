@@ -2167,6 +2167,25 @@ impl<T: Config> Pallet<T> {
         if !replies.is_empty() {
             return Err("RepliesByParent rows exist for a parent with no ReplyCount row");
         }
+        // Anchor RepliesByParent to its TRUE forward edge — a `Post` with `parent == Some(par)` — not
+        // just to `ReplyCount` (its own derived counter). Without this, a reply-path edit that dropped
+        // BOTH aggregate writes would keep RepliesByParent and ReplyCount mutually consistent while
+        // silently diverging from the posts themselves. Mirror check, both directions (as for the vote /
+        // follow indexes above): the `id` side is always a real post; `par` is deliberately unvalidated
+        // (a reply may dangle under a not-yet-existing parent), so only the child is required to exist.
+        for (id, post) in Posts::<T>::iter() {
+            if let Some(par) = post.parent {
+                if !RepliesByParent::<T>::contains_key(par, id) {
+                    return Err("a reply post is missing its RepliesByParent entry");
+                }
+            }
+        }
+        for (par, child) in RepliesByParent::<T>::iter_keys() {
+            match Posts::<T>::get(child) {
+                Some(p) if p.parent == Some(par) => {}
+                _ => return Err("a RepliesByParent entry has no matching reply post"),
+            }
+        }
 
         // 6. the "liked posts" reverse index: `VotesByAccount[account][post]` ⇔ an Up vote on `post`.
         for (account, post) in VotesByAccount::<T>::iter_keys() {
