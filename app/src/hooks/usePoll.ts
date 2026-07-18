@@ -38,6 +38,8 @@ export interface UsePoll {
   finalize: () => void;
   /** A `close_poll` is in flight. */
   finalizing: boolean;
+  /** Re-run the initial load — for an inline error row's Retry (a failed cold read never retries alone). */
+  reload: () => void;
 }
 
 /** Give up waiting for the read to reflect a cast after this many block re-reads (accept chain truth). */
@@ -64,6 +66,10 @@ export function usePoll(
   const [pendingOption, setPendingOption] = useState<number | null>(null);
   const [finalizing, setFinalizing] = useState(false);
   const triesRef = useRef(0);
+  // Bumped by `reload()` to re-arm the initial-load effect (an inline error row's Retry — a failed cold
+  // read otherwise never retries, since the reconcile loop only runs after a cast).
+  const [retryNonce, setRetryNonce] = useState(0);
+  const reload = useCallback(() => setRetryNonce((n) => n + 1), []);
 
   // Close state, derived from the poll's `closeAt` deadline + the current best block + its finalized flag.
   // `closed` (voting over) = already finalized OR the best block has reached the deadline. `provisional` =
@@ -110,7 +116,7 @@ export function usePoll(
     return () => {
       cancelled = true;
     };
-  }, [read, source, hostId]);
+  }, [read, source, hostId, retryNonce]);
 
   const castVote = useCallback(
     (option: number) => {
@@ -137,9 +143,22 @@ export function usePoll(
           setPendingOption(option);
         },
         onError: (message) => {
-          // Roll back to chain truth (the optimistic move + choice are undone by the fresh read)...
           setPendingOption(null);
           setMyChoice(prev);
+          // Revert the optimistic count DIRECTLY (inverse of the forward delta, same Math.max(0) clamp)
+          // so a rejected vote never leaves an inflated tally when the reconcile read below ALSO fails
+          // (unlike useVote's pure-local rollback, this used to depend entirely on that fallible read).
+          setPoll((cur) => {
+            if (!cur) return cur;
+            const options = cur.options.map((o) => {
+              let count = o.count;
+              if (option === o.index) count = Math.max(0, count - 1); // undo the optimistic +1
+              if (prev === o.index) count += 1; // restore the previous option's vote
+              return { ...o, count };
+            });
+            return { ...cur, options, totalCount: options.reduce((s, o) => s + o.count, 0) };
+          });
+          // Best-effort reconcile to chain truth on top (authoritative when it lands).
           read()
             .then((r) => {
               if (!r) return;
@@ -202,5 +221,5 @@ export function usePoll(
     };
   }, [pendingOption, bestBlock, read]);
 
-  return { poll, myChoice, castVote, loading, error, closed, provisional, finalize, finalizing };
+  return { poll, myChoice, castVote, loading, error, closed, provisional, finalize, finalizing, reload };
 }

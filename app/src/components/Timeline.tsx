@@ -187,7 +187,15 @@ export function Timeline({
   if (posts.length === 0) {
     const moreToLoad = paginationCapable && hasMore;
     return (
-      <div id="cg-timeline-panel" role="tabpanel" aria-label="Timeline" className={styles.list}>
+      // Keep the feed shortcuts (n compose, . flush) reachable even with no cards — a keyboard-first user
+      // on an empty feed otherwise loses the documented compose/flush keys and must reach for the mouse.
+      <div
+        id="cg-timeline-panel"
+        role="tabpanel"
+        aria-label="Timeline"
+        className={styles.list}
+        onKeyDown={onKeyDownList}
+      >
         {error && <ErrorRow message={error} onRetry={onRetry} />}
         {moreToLoad ? (
           <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />

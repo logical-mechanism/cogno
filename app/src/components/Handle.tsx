@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useCallback } from "react";
 import styles from "./Handle.module.css";
 import { truncateSs58 } from "@/lib/ss58";
+import { copyToClipboard } from "@/lib/share";
 import { useToaster } from "./toast/ToasterProvider";
 
 export interface HandleProps {
@@ -27,12 +28,14 @@ export function Handle({ address, truncate = "middle", as = "span", copyable }: 
     async (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(address);
-        toast({ kind: "success", message: "Address copied" });
-      } catch {
-        toast({ kind: "error", message: "Couldn't copy address" });
-      }
+      // copyToClipboard falls back to the legacy path in insecure contexts / in-app webviews where
+      // navigator.clipboard is undefined, so the address still copies there.
+      const ok = await copyToClipboard(address);
+      toast(
+        ok
+          ? { kind: "success", message: "Address copied" }
+          : { kind: "error", message: "Couldn't copy address" },
+      );
     },
     [address, toast],
   );

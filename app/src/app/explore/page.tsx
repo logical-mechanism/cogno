@@ -290,6 +290,11 @@ function ExploreView() {
     if (!source || !peopleActive || committedQ.length === 0) {
       setPeople([]);
       setPeopleError(null);
+      // Also clear the loading flag here: switching People→Latest mid-fetch cancels the in-flight
+      // promise (its `.finally` is skipped by the `!cancelled` guard) and re-runs this effect into the
+      // early return, which otherwise left `peopleLoading` stuck true — spinning the search field on the
+      // Latest tab over already-loaded results.
+      setPeopleLoading(false);
       return;
     }
     let cancelled = false;
@@ -347,7 +352,11 @@ function ExploreView() {
       ? activeResultTab === "people"
         ? peopleLoading
           ? ""
-          : `${peopleShown} ${peopleShown === 1 ? "person" : "people"} for ${committedQ}`
+          : peopleError
+            ? // Announce the failure, not a false "0 people" — else a screen reader hears no-results and
+              // never discovers the visible "Couldn't run that search." + Retry.
+              "Couldn't run that search."
+            : `${peopleShown} ${peopleShown === 1 ? "person" : "people"} for ${committedQ}`
         : latest.loading
           ? ""
           : `${activePosts.length} ${activePosts.length === 1 ? "result" : "results"} for ${committedQ}`

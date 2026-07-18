@@ -114,8 +114,23 @@ export default function NotificationsPage() {
             title="Sign in to see notifications"
             description="Connect your wallet to follow replies, likes, mentions and new followers."
           />
-        ) : (!feed.loaded || feed.loading) && items.length === 0 ? (
+        ) : !feed.loaded && items.length === 0 ? (
+          // Gate the blocking spinner on the INITIAL load only (`!feed.loaded`), not `feed.loading` — the
+          // latter goes true on every 120s / live-head refold, so an established empty inbox would keep
+          // flickering to a full-surface spinner whenever anyone else posts on an active chain.
           <Loading variant="surface" label="Loading notifications…" />
+        ) : feed.error && feed.items.length === 0 ? (
+          // A failed fold stamps `loaded` (so `loading` clears) with the WHOLE fold empty — without this
+          // branch it fell through to the misleading "No notifications yet", hiding real activity behind a
+          // false empty. Test the UNFILTERED `feed.items`, not the tab-filtered `items`: a background
+          // refresh error leaves the prior fold intact, so on the Mentions tab with 0 mentions but other
+          // activity, keying on `items` would flash this error over the correct "No mentions yet". Retry.
+          <EmptyState
+            variant="generic"
+            title="Couldn't load notifications"
+            description="Something went wrong reaching the node. Check your connection and try again."
+            action={{ label: "Retry", onClick: () => feed.refresh() }}
+          />
         ) : showEmpty ? (
           <EmptyState
             variant="generic"

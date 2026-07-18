@@ -303,21 +303,26 @@ export interface SpinnerProps {
   size?: "sm" | "md";
   label?: string;
   className?: string;
+  /** Render purely decorative — no role="status", no sr-only label — for use INSIDE an existing live
+   *  region (e.g. a Toast, which is itself role="status"/"alert") where a nested status region makes
+   *  NVDA/JAWS double-announce. */
+  decorative?: boolean;
 }
 
-export function Spinner({ size = "md", label = "Loading", className }: SpinnerProps) {
+export function Spinner({ size = "md", label = "Loading", className, decorative }: SpinnerProps) {
   return (
     <span
       className={[styles.spinner, size === "sm" ? styles.spinnerSm : styles.spinnerMd, className]
         .filter(Boolean)
         .join(" ")}
-      role="status"
+      role={decorative ? undefined : "status"}
+      aria-hidden={decorative || undefined}
     >
       <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false" className={styles.spinnerSvg}>
         <circle cx="12" cy="12" r="10" className={styles.spinnerTrack} strokeWidth="2.5" />
         <path d="M12 2a10 10 0 0110 10" className={styles.spinnerHead} strokeWidth="2.5" strokeLinecap="round" />
       </svg>
-      <span className={styles.srOnly}>{label}</span>
+      {!decorative && <span className={styles.srOnly}>{label}</span>}
     </span>
   );
 }

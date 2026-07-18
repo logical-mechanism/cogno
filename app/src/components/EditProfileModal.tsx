@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./EditProfileModal.module.css";
 import { ComposerModal } from "./ComposerModal";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { ByteCounter } from "./ByteCounter";
 import { utf8Bytes } from "@/lib/bytes";
 import { Avatar } from "./Avatar";
@@ -31,6 +32,11 @@ const MAX_AVATAR = 128;
 const MAX_BANNER = 256;
 const MAX_LOCATION = 64;
 const MAX_WEBSITE = 256;
+
+/** A dirtiness key: the six field values joined — good enough to gate the discard confirm. */
+function fieldsKey(name: string, bio: string, avatar: string, banner: string, location: string, website: string): string {
+  return [name, bio, avatar, banner, location, website].join("\u0000");
+}
 
 /** The six profile display fields, already trimmed. `set_profile` overwrites the whole record. */
 export interface ProfileFields {
@@ -90,9 +96,15 @@ export function EditProfileModal({
 
   const [loading, setLoading] = useState(true);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const confirmKeepRef = useRef<HTMLButtonElement | null>(null);
+  // Snapshot of the loaded field values, to detect unsaved edits on close (the composer confirms a
+  // discard; a profile edit should too — a stray Escape / backdrop tap must not silently drop the edits).
+  // Default to the empty-fields key so a blank / failed-to-load form (initialRef never reassigned) reads
+  // as pristine rather than dirty.
+  const initialRef = useRef<string>(fieldsKey("", "", "", "", "", ""));
 
   // Pre-fill from the viewer's current profile. An unretired optimistic patch (a save from moments ago,
   // still confirming) is the freshest truth, so it wins over the chain read; otherwise read
@@ -108,6 +120,9 @@ export function EditProfileModal({
       setBanner(patch.banner);
       setLocation(patch.location);
       setWebsite(patch.website);
+      initialRef.current = fieldsKey(
+        patch.displayName, patch.bio, patch.avatar, patch.banner, patch.location, patch.website,
+      );
       setLoading(false);
       return;
     }
@@ -122,6 +137,9 @@ export function EditProfileModal({
           setBanner(p.banner ?? "");
           setLocation(p.location ?? "");
           setWebsite(p.website ?? "");
+          initialRef.current = fieldsKey(
+            p.displayName ?? "", p.bio ?? "", p.avatar ?? "", p.banner ?? "", p.location ?? "", p.website ?? "",
+          );
         }
       } catch {
         /* leave blank — a missing/failed profile read just means an empty form */
@@ -161,6 +179,14 @@ export function EditProfileModal({
 
   const avatarSrc = avatar.trim().length > 0 ? avatar.trim() : null;
 
+  // Unsaved-edits guard: current fields vs the loaded snapshot. Route close through a discard confirm
+  // when dirty (Escape / ✕ / backdrop all reach ComposerModal.onClose, so intercept there + on Cancel).
+  const dirty = !loading && fieldsKey(name, bio, avatar, banner, location, website) !== initialRef.current;
+  const requestClose = useCallback(() => {
+    if (dirty) setConfirmDiscard(true);
+    else onClose();
+  }, [dirty, onClose]);
+
   // Hand the collected fields UP. The host applies the optimistic overlay, closes this modal at once,
   // and runs the feeless write to confirmation in the background (with the "Saving…" → done toast).
   const onSave = useCallback(() => {
@@ -181,7 +207,8 @@ export function EditProfileModal({
   }, [canWrite, onClearProfile]);
 
   return (
-    <ComposerModal title="Edit profile" onClose={onClose}>
+    <>
+    <ComposerModal title="Edit profile" onClose={requestClose}>
       <div className={styles.root}>
         <h2 className={styles.heading} tabIndex={-1} ref={headingRef}>
           Edit profile
@@ -330,7 +357,7 @@ export function EditProfileModal({
                 Clear profile
               </button>
               <div className={styles.actionsRight}>
-                <button type="button" className={styles.cancelBtn} onClick={onClose}>
+                <button type="button" className={styles.cancelBtn} onClick={requestClose}>
                   Cancel
                 </button>
                 <button
@@ -387,6 +414,21 @@ export function EditProfileModal({
         )}
       </div>
     </ComposerModal>
+    {confirmDiscard && (
+      <ConfirmDialog
+        title="Discard changes?"
+        body="Your unsaved profile edits will be lost."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        danger
+        onConfirm={() => {
+          setConfirmDiscard(false);
+          onClose();
+        }}
+        onCancel={() => setConfirmDiscard(false)}
+      />
+    )}
+    </>
   );
 }
 

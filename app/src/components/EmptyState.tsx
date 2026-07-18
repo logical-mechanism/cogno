@@ -32,7 +32,7 @@ function presetFor(v: EmptyStateVariant, query?: string, handle?: string): Prese
   switch (v) {
     case "feed":
       return {
-        title: "Welcome to cogno-chain",
+        title: "Welcome to cogno",
         description:
           "Your feed is empty. Find some people to follow.",
       };
@@ -46,7 +46,7 @@ function presetFor(v: EmptyStateVariant, query?: string, handle?: string): Prese
       return {
         title: "Search isn't ready yet",
         description:
-          "Search runs on the node. Connect to search posts and people, or check your endpoint in Settings.",
+          "Search runs on the node. Check your node endpoint in Settings to search posts and people.",
         icon: <IconSearch className={styles.glyph} />,
       };
     case "profile":

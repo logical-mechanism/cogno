@@ -136,10 +136,10 @@ export function WalletPicker({
           action={undefined}
           icon={
             <div className={styles.installLinks}>
-              <a href="https://eternl.io/" target="_blank" rel="noreferrer" className={styles.installLink}>
+              <a href="https://eternl.io/" target="_blank" rel="noopener noreferrer nofollow" className={styles.installLink}>
                 Install Eternl ↗
               </a>
-              <a href="https://www.lace.io/" target="_blank" rel="noreferrer" className={styles.installLink}>
+              <a href="https://www.lace.io/" target="_blank" rel="noopener noreferrer nofollow" className={styles.installLink}>
                 Install Lace ↗
               </a>
             </div>

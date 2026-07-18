@@ -69,17 +69,15 @@ export default function GlobalError({
           )}
           <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap" }}>
             {/* reset() re-mounts the tree — enough for a transient throw. A persistent one (dead endpoint)
-                just throws again, so the reload and the endpoint switcher are the real escapes. */}
+                just throws again, so Reload is the other real escape. No "Change node" link: there is no
+                node switcher anywhere (reconnect(url) has no callers), and /settings is walled — a cold
+                boot is always logged-out, so it would just bounce a stuck user onto onboarding. */}
             <button type="button" onClick={reset} style={BTN_PRIMARY}>
               Try again
             </button>
             <button type="button" onClick={() => window.location.reload()} style={BTN_SECONDARY}>
               Reload
             </button>
-            {/* A hard navigation, NOT next/link — the router is not available out here. */}
-            <a href="/settings/" style={{ ...BTN_SECONDARY, textDecoration: "none" }}>
-              Change node
-            </a>
           </div>
         </main>
       </body>

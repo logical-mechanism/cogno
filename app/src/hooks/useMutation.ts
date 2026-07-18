@@ -15,13 +15,15 @@
 // stream event, and `useVote` mounts inside the component that owns the timeline, so a single like
 // re-rendered the whole 50-card feed several times over to store a string nobody read.
 //
-// `pending` survives because it has one real consumer (useAccountVote → AccountVoteControl's disabled).
+// This hook no longer tracks a reactive `pending` flag: every call site now derives its own in-flight
+// state (useAccountVote → intent.inFlight, the composers → their optimistic ActionState), so a `pending`
+// here had no consumer and only added re-renders. It is gone; callers destructure `{ run }`.
 //
 // Toast policy: feeless social actions are SILENT on success (the optimistic UI already
 // showed the heart fill — we never toast "Liked!"). We surface ONLY failures. The caller decides
 // whether to toast a confirm (e.g. profile edits close a modal on success).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { Observable, Subscription } from "rxjs";
 import { useSession } from "@/components/Providers";
 import { classifyThrown, type ChainError } from "@/lib/chain/errors";
@@ -41,8 +43,6 @@ export interface RunOptions {
 }
 
 export interface UseMutation {
-  /** true between `run()` and the settle (confirm, error, or cancel). */
-  pending: boolean;
   /**
    * Subscribe a `TxUpdate` stream. The outcome arrives via `opts` — onConfirm at `inBestBlock`,
    * onError on `invalid`/`error`, onCancel if the hook unmounts still in flight.
@@ -55,7 +55,6 @@ export interface UseMutation {
 
 export function useMutation(): UseMutation {
   const { boot } = useSession();
-  const [pending, setPending] = useState(false);
   const subs = useRef<Set<{ sub: Subscription; cancel: () => void }>>(new Set());
 
   // Tear down any live subscriptions on unmount (a tx stream outliving the component is a leak). Each
@@ -93,13 +92,11 @@ export function useMutation(): UseMutation {
       opts?.onError?.(error);
       return Promise.resolve();
     }
-    setPending(true);
     return new Promise<void>((resolve) => {
       let settled = false;
       const settleOk = (u: TxUpdate) => {
         if (settled) return;
         settled = true;
-        setPending(false);
         opts?.onConfirm?.(u);
         resolve();
       };
@@ -108,7 +105,6 @@ export function useMutation(): UseMutation {
         // must not flip a confirmed tx to failed.
         if (settled) return;
         settled = true;
-        setPending(false);
         opts?.onError?.(error);
         resolve();
       };
@@ -144,7 +140,6 @@ export function useMutation(): UseMutation {
         cancel: () => {
           if (settled) return;
           settled = true;
-          setPending(false);
           opts?.onCancel?.();
           // Settle here too. This path used to flip `settled` and call onCancel WITHOUT resolving, so
           // the promise dangled forever on unmount-mid-flight. Harmless while every caller ignored it;
@@ -156,5 +151,5 @@ export function useMutation(): UseMutation {
     });
   }, [boot]);
 
-  return { pending, run };
+  return { run };
 }

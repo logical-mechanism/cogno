@@ -2,12 +2,12 @@
 
 // ExploreList — the People-tab list container. Renders the four list states for a
 // people search: loading → Skeleton variant='person' ×6; empty → people-flavoured `search`
-// EmptyState; error → inline `generic` EmptyState + Retry; results → a column of PersonResult rows.
+// EmptyState; error → inline `generic` EmptyState + Retry; results → a column of PersonRow rows.
 // People search is a single ranked window (SEARCH_PEOPLE has no cursor — pagination is a follow-up),
 // so there is no tail spinner / load-more here.
 
 import styles from "./ExploreList.module.css";
-import { PersonResult } from "./PersonResult";
+import { PersonRow } from "./PersonRow";
 import { Skeleton } from "@/components/Skeleton";
 import { EmptyState } from "@/components/EmptyState";
 import type { Suggestion, Viewer } from "@/components/kit";
@@ -80,7 +80,7 @@ export function ExploreList({
   return (
     <div className={styles.list}>
       {shown.map((p) => (
-        <PersonResult
+        <PersonRow
           key={p.author}
           person={p}
           viewer={viewer}

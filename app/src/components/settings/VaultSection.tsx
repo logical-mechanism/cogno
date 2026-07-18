@@ -98,6 +98,13 @@ export function VaultSection() {
   const locked = vault.locked;
   const hasLock = locked != null && locked > 0n;
   const working = vault.phase === "working";
+  // After a submit the Cardano tx is still confirming — useVault polls the vault until it settles and
+  // exposes `confirming` for exactly that window. Gate BOTH actions on the in-flight action so a
+  // just-locked user can't click Lock again (a duplicate 100-ADA lock) and a just-exited user can't
+  // re-click Exit while the row still reads "100 ADA locked". (Deriving these from `phase === "submitted"`
+  // — which never resets — froze "Confirming exit…" on the card long after the exit had landed.)
+  const lockInFlight = vault.confirming && vault.lastAction === "lock";
+  const exitInFlight = vault.confirming && vault.lastAction === "exit";
   // The pending "crediting" notice replaces "No posting power yet" (and its lock-below note) while a
   // lock is in flight — the user already locked; don't tell them to lock again.
   const showingPending = postingPower != null && postingPower <= 0n && pending.kind !== "none";
@@ -122,7 +129,8 @@ export function VaultSection() {
         )}
         {!showingPending && (
           <p className={styles.note}>
-            Posting requires locked ADA. Lock below to get the talk-capacity every post consumes.
+            Posting requires locked ADA. Lock below to earn the posting power every post spends — it
+            becomes available a few minutes after your lock confirms on Cardano.
           </p>
         )}
       </div>
@@ -145,6 +153,10 @@ export function VaultSection() {
               <Skeleton variant="line" width="100px" />
             ) : hasLock ? (
               <span className={styles.statusValue}>{formatAda(locked)} locked</span>
+            ) : lockInFlight ? (
+              <span className={styles.statusMuted}>Confirming lock…</span>
+            ) : exitInFlight ? (
+              <span className={styles.statusMuted}>Confirming exit…</span>
             ) : (
               <span className={styles.statusMuted}>No vault yet</span>
             )}
@@ -155,11 +167,15 @@ export function VaultSection() {
               type="button"
               className={styles.primaryBtn}
               onClick={onLock}
-              disabled={working || hasLock || !vault.lockedKnown}
+              disabled={working || lockInFlight || hasLock || !vault.lockedKnown}
             >
-              {working ? (
+              {working && vault.lastAction === "lock" ? (
                 <>
                   <Spinner size="sm" label="Submitting lock" /> Submitting lock…
+                </>
+              ) : lockInFlight ? (
+                <>
+                  <Spinner size="sm" label="Confirming lock" /> Confirming…
                 </>
               ) : hasLock ? (
                 "Already locked"
@@ -171,17 +187,26 @@ export function VaultSection() {
               type="button"
               className={styles.outlineBtn}
               onClick={onExit}
-              disabled={working || !hasLock}
+              disabled={working || exitInFlight || !hasLock}
             >
-              {working ? (
+              {working && vault.lastAction === "exit" ? (
                 <>
                   <Spinner size="sm" label="Submitting exit" /> Submitting exit…
+                </>
+              ) : exitInFlight ? (
+                <>
+                  <Spinner size="sm" label="Confirming exit" /> Confirming…
                 </>
               ) : (
                 "Exit vault"
               )}
             </button>
           </div>
+          {hasLock && !exitInFlight && (
+            <p className={styles.note}>
+              Exiting returns your 100 ADA and removes your posting power until you lock again.
+            </p>
+          )}
 
           {vault.phase === "submitted" && (
             <div className={styles.submittedRow}>

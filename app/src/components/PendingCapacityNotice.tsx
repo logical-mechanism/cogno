@@ -152,7 +152,14 @@ export function PendingCapacityNotice({
       {view.why && <p className={styles.why}>{WHY_LINE}</p>}
 
       {view.bar != null && (
-        <div className={styles.track} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(view.bar * 100)}>
+        <div
+          className={styles.track}
+          role="progressbar"
+          aria-label="Posting power crediting"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(view.bar * 100)}
+        >
           <div className={styles.fill} style={{ width: `${Math.round(view.bar * 100)}%` }} />
         </div>
       )}

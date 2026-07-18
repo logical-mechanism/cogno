@@ -2,7 +2,10 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  min-height: 100vh;
+  /* dvh, not vh: on mobile with a collapsing URL bar, 100vh is the LARGER viewport, so the centered
+     onboarding column overflows the visible area by the URL-bar height and leaves a persistent small
+     scroll even when the content fits (the ComposerModal mobile sheet already uses 100dvh). */
+  min-height: 100dvh;
   padding: var(--cg-space-8) var(--cg-space-4);
   background: var(--cg-bg);
 }
@@ -37,7 +40,10 @@
   width: 100%;
 }
 
-@media (max-width: 688px) {
+/* 687px, not 688px: the rest of the layout treats 688px as the first DESKTOP pixel (AppShell hides the
+   left column at max-width:687px; BottomTabBar/LeftNav switch at min-width:688px), so an inclusive 688
+   here put this mobile rule one pixel into desktop territory. */
+@media (max-width: 687px) {
   .root {
     padding: var(--cg-space-6) var(--cg-space-4);
   }

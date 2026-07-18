@@ -12,6 +12,8 @@ const fake = {
   changeAddress: "addr_test_vkey",
   // paymentPart.type: 0 = vkey (accepted), 1 = script (rejected).
   paymentType: 0 as number,
+  // 0 = preprod/testnet (accepted); 1 = mainnet (rejected before any derive).
+  networkId: 0 as number,
   signature: "aa".repeat(32), // 32-byte COSE signature hex (deterministic stand-in)
   signDataCalls: [] as Array<{ message: string; address: string }>,
 };
@@ -19,6 +21,7 @@ const fake = {
 vi.mock("@meshsdk/core", () => ({
   BrowserWallet: {
     enable: vi.fn(async (_id: string) => ({
+      getNetworkId: async () => fake.networkId,
       getChangeAddress: async () => fake.changeAddress,
       signData: async (message: string, address: string) => {
         fake.signDataCalls.push({ message, address });
@@ -42,6 +45,7 @@ import { deriveSignerFromWallet, DERIVE_MESSAGE } from "./wallet-derive";
 beforeEach(() => {
   fake.changeAddress = "addr_test_vkey";
   fake.paymentType = 0;
+  fake.networkId = 0;
   fake.signature = "aa".repeat(32);
   fake.signDataCalls = [];
 });
@@ -77,6 +81,12 @@ describe("deriveSignerFromWallet — determinism (no storage)", () => {
 });
 
 describe("deriveSignerFromWallet — defensive rejections (with logging)", () => {
+  it("rejects a wrong-network (mainnet) wallet BEFORE deriving, so no key is minted and no sign is asked", async () => {
+    fake.networkId = 1; // mainnet
+    await expect(deriveSignerFromWallet("eternl")).rejects.toThrow(/wrong network|preprod/i);
+    expect(fake.signDataCalls).toHaveLength(0);
+  });
+
   it("rejects a script/vault payment credential (type !== 0) and logs the credential type", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     fake.paymentType = 1; // script

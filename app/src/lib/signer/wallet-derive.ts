@@ -49,6 +49,14 @@ function hexToBytes(hex: string): Uint8Array {
 export async function deriveSignerFromWallet(walletId: string): Promise<DerivedAccount> {
   const [{ BrowserWallet }, cst] = await Promise.all([import("@meshsdk/core"), import("@meshsdk/core-cst")]);
   const wallet = await BrowserWallet.enable(walletId);
+  // Catch a wrong-network wallet HERE, before we derive a posting key. The key is a function of the
+  // wallet's signature, so a mainnet-flavoured connection would mint a DIFFERENT account than the preprod
+  // one — and the only network guard used to live at the vault LOCK, so the mismatch surfaced (with a
+  // misleading "connect a Cardano wallet" message) only after the PERMANENT identity + stake binds were
+  // already burned. `!== 0` matches the vault's preprod check (see lib/cardano/vault.ts).
+  if ((await wallet.getNetworkId()) !== 0) {
+    throw new Error("wrong network: switch your wallet to preprod (testnet), then reconnect");
+  }
   const signingAddress = await wallet.getChangeAddress();
   const props = cst.Address.fromBech32(signingAddress).getProps();
   if (props.paymentPart?.type !== 0) {

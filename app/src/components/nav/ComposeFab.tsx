@@ -23,8 +23,10 @@ export function ComposeFab() {
     else router.push("/welcome/");
   }, [viewer.writeReady, openCompose, router]);
 
-  // Hidden on the full-screen onboarding flow.
-  if (pathname.startsWith("/welcome")) return null;
+  // Hidden on the full-screen onboarding flow, and on the full-page /compose route — where a cold load /
+  // shared link renders ComposePage inside AppShell, and the FAB would float over it (tapping it would
+  // stack the modal composer on top of the page composer).
+  if (pathname.startsWith("/welcome") || pathname.startsWith("/compose")) return null;
 
   return (
     <button type="button" className={styles.fab} onClick={onClick} aria-label="Compose post">

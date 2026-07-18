@@ -129,6 +129,11 @@ export async function produceBindProof(opts: {
     ]);
 
     const wallet = await BrowserWallet.enable(opts.walletId);
+    // Belt-and-suspenders wrong-network guard (connect already blocks it): a mainnet-flavoured bind would
+    // commit a PERMANENT identity under an account that preprod can't reproduce. `!== 0` = preprod.
+    if ((await wallet.getNetworkId()) !== 0) {
+      throw new Error("wrong network: switch your wallet to preprod (testnet), then reconnect");
+    }
 
     // Pick a signing address the user controls whose PAYMENT credential is a verification key (type 0) —
     // never a script-payment (vault) address. The change address is always a base
@@ -211,6 +216,11 @@ export async function produceBindProofStake(opts: {
     ]);
 
     const wallet = await BrowserWallet.enable(opts.walletId);
+    // Belt-and-suspenders wrong-network guard (connect already blocks it): a mainnet-flavoured stake bind
+    // would anchor voting power to a credential preprod can't reproduce. `!== 0` = preprod.
+    if ((await wallet.getNetworkId()) !== 0) {
+      throw new Error("wrong network: switch your wallet to preprod (testnet), then reconnect");
+    }
 
     // The wallet's REWARD (stake) address — signing over it makes the wallet sign with the STAKE key.
     const rewardAddresses: string[] = await wallet.getRewardAddresses();

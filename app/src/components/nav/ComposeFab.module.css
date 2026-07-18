@@ -1,7 +1,9 @@
 .fab {
   position: fixed;
   right: var(--cg-space-4);
-  bottom: calc(var(--cg-header-h) + var(--cg-space-4) + env(safe-area-inset-bottom, 0));
+  /* Typed 0px fallback — a unitless 0 inside calc() invalidates the whole expression where env() is
+     unsupported (adding <number> to <length>), dropping the rule. */
+  bottom: calc(var(--cg-header-h) + var(--cg-space-4) + env(safe-area-inset-bottom, 0px));
   display: flex;
   align-items: center;
   justify-content: center;

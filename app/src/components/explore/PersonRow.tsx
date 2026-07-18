@@ -2,8 +2,8 @@
 
 // PersonRow — the shared "person" row primitive for the Explore People tab. A single
 // row = Avatar (md) + DisplayName + Handle (mono) + follower count + a FollowButton. It is the same
-// shape the RightRail who-to-follow uses, at a larger touch size; PersonResult is a thin wrapper over
-// it. A `Suggestion` carries no bio, so there is NO bio line (per the brief). The whole who-block
+// shape the RightRail who-to-follow uses, at a larger touch size; the Explore People list renders it
+// directly. A `Suggestion` carries no bio, so there is NO bio line (per the brief). The whole who-block
 // (avatar + names) is a link to the profile; the FollowButton sits outside the link so its click
 // doesn't navigate.
 
@@ -61,6 +61,9 @@ export function PersonRow({ person, viewer, isFollowing, onToggleFollow, highlig
               <span
                 className={`${styles.rep} ${repNeg ? styles.repDown : ""}`}
                 title="Community reputation (stake-weighted)"
+                // A title on a span isn't shown on touch or reliably announced — give the bare signed
+                // number an accessible name so its meaning doesn't depend on hover.
+                aria-label={`Community reputation ${rep}${repNeg ? ", disputed" : ""}`}
               >
                 {rep}
               </span>

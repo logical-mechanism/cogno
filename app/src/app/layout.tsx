@@ -50,6 +50,10 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   colorScheme: "dark light",
+  // Render edge-to-edge so the bottom-bar / FAB / main safe-area padding (env(safe-area-inset-bottom))
+  // actually resolves on home-indicator devices instead of collapsing to 0. Only bottom insets are used,
+  // and there is no standalone/PWA manifest, so this can't push content under a top notch in browser mode.
+  viewportFit: "cover",
 };
 
 // Pre-paint theme boot: read localStorage['cg-theme'] (default 'dark') and set

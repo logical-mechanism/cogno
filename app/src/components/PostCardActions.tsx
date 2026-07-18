@@ -18,7 +18,7 @@ import { useCallback } from "react";
 import styles from "./PostCardActions.module.css";
 import { IconReply, IconQuote, IconShare, IconDownvote } from "./icons";
 import { formatCount, formatSignedWeight } from "@/lib/format";
-import type { CognoPost, ViewerPostState, Viewer, ActionState } from "./kit";
+import type { CognoPost, ViewerPostState, Viewer } from "./kit";
 
 export interface PostCardActionsProps {
   post: CognoPost;
@@ -34,8 +34,6 @@ export interface PostCardActionsProps {
   onDownvote: (post: CognoPost, next: boolean) => void;
   /** Copy /post/[id] link → success toast (Share + the header "Copy link" item). */
   onCopyLink: (post: CognoPost) => void;
-  /** Optimistic state for the Like button (spinner overlay until ok). */
-  likeState?: ActionState;
   /** Compact row (e.g. inside a denser context). */
   dense?: boolean;
 }
@@ -49,13 +47,11 @@ export function PostCardActions({
   onLike,
   onDownvote,
   onCopyLink,
-  likeState = "idle",
   dense,
 }: PostCardActionsProps) {
   const up = viewer.myVote === "Up";
   const down = viewer.myVote === "Down";
   const notBound = gate.status === "not-identity-bound";
-  const likePending = likeState === "pending";
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -142,7 +138,7 @@ export function PostCardActions({
           className={`${styles.action} ${styles.up} ${up ? styles.upOn : ""}`}
           aria-label={`Upvote${post.upCount ? `, ${post.upCount} up` : ""}`}
           aria-pressed={up}
-          disabled={notBound || likePending}
+          disabled={notBound}
           title={notBound ? "Finish setup to vote." : "Upvote (stake-weighted)"}
           onClick={doUp}
         >
@@ -155,6 +151,7 @@ export function PostCardActions({
         <span
           className={`${styles.score} ${up ? styles.scoreUp : ""} ${down ? styles.scoreDown : ""}`}
           title="Net stake-weighted score"
+          aria-label={`Net stake-weighted score ${score}`}
         >
           {score}
         </span>
@@ -163,7 +160,7 @@ export function PostCardActions({
           className={`${styles.action} ${styles.down} ${down ? styles.downOn : ""}`}
           aria-label={`Downvote${post.downCount ? `, ${post.downCount} down` : ""}`}
           aria-pressed={down}
-          disabled={notBound || likePending}
+          disabled={notBound}
           title={notBound ? "Finish setup to vote." : "Downvote (stake-weighted)"}
           onClick={doDown}
         >

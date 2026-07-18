@@ -400,15 +400,31 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           )}
           <span
             className={styles.stat}
-            aria-label={`score ${formatSignedWeight(focal.score ?? 0n)} (weighted)`}
+            // These are stake-WEIGHTED (locked-ADA voting power), not raw like/dislike counts, so a large
+            // score next to a small Like count reads as a bug without this. A hover title carries the
+            // explanation; the aria-label spells it out for screen readers.
+            title="Stake-weighted score — sums the locked-ADA voting power behind each vote, not a raw count"
+            aria-label={`Stake-weighted score ${formatSignedWeight(focal.score ?? 0n)}`}
           >
             score <strong>{formatSignedWeight(focal.score ?? 0n)}</strong>
           </span>
           {(focal.upWeight ?? 0n) > 0n && (
-            <span className={styles.statMuted}>↑{formatWeight(focal.upWeight)}</span>
+            <span
+              className={styles.statMuted}
+              title="Up-vote weight (total locked-ADA voting power behind the up-votes)"
+              aria-label={`Up-vote weight ${formatWeight(focal.upWeight)}`}
+            >
+              ↑{formatWeight(focal.upWeight)}
+            </span>
           )}
           {(focal.downWeight ?? 0n) > 0n && (
-            <span className={styles.statMuted}>↓{formatWeight(focal.downWeight)}</span>
+            <span
+              className={styles.statMuted}
+              title="Down-vote weight (total locked-ADA voting power behind the down-votes)"
+              aria-label={`Down-vote weight ${formatWeight(focal.downWeight)}`}
+            >
+              ↓{formatWeight(focal.downWeight)}
+            </span>
           )}
         </div>
       </div>

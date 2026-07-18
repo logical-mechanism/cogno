@@ -5,11 +5,14 @@
   right: 0;
   display: flex;
   align-items: stretch;
-  height: var(--cg-header-h);
+  /* min-height, not height: under box-sizing:border-box a fixed height would make the safe-area
+     padding-bottom eat INTO the tab row (squishing the icons on a home-indicator device); min-height
+     lets the padding extend the bar below the row instead. */
+  min-height: var(--cg-header-h);
   background: var(--cg-bg);
   border-top: 1px solid var(--cg-border);
   z-index: var(--cg-z-sticky);
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .tab {

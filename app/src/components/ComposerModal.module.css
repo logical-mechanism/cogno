@@ -57,8 +57,10 @@
   /* the hosted Composer carries its own padding */
 }
 
-/* Mobile: full-screen sheet (no centered card) */
-@media (max-width: 688px) {
+/* Mobile: full-screen sheet (no centered card). 687px (not 688px) to align with AppShell's mobile
+   boundary — at exactly 688px the surrounding app is already in desktop/tablet layout, so an inclusive
+   688 made the composer jarringly go full-screen while everything around it was desktop. */
+@media (max-width: 687px) {
   .scrim {
     padding: 0;
     align-items: stretch;

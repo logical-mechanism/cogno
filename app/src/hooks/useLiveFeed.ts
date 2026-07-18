@@ -61,6 +61,12 @@ export function useLiveFeed(
   me: Ss58 | null,
   /** Best-block number — ticks the vote reconcile refetch (votes don't advance the head id). */
   bestBlock?: number | null,
+  /**
+   * The same device-local suppression the list applies at render (block/hide). Used ONLY to derive
+   * `newCount` so the pill counts the posts that will actually appear on flush — a buffered post from a
+   * blocked/hidden author is stripped on render, so counting it over-promised. Optional: omit → raw count.
+   */
+  moderate?: (posts: CognoPost[]) => CognoPost[],
 ): UseLiveFeed {
   const { overlay, dropPending, clearPost } = useOptimistic();
 
@@ -70,6 +76,10 @@ export function useLiveFeed(
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // `ready` reachable inside `refresh`'s async `.then` without adding it to the callback's deps (which
+  // would re-key the Home-reset subscription each time it flips). Only used to detect a failed cold seed.
+  const readyRef = useRef(ready);
+  readyRef.current = ready;
 
   // Membership refs (no re-render churn): which ids are loaded vs still buffered behind the pill.
   const loadedIds = useRef<Set<string>>(new Set());
@@ -263,6 +273,13 @@ export function useLiveFeed(
         setLoaded((prev) => mergeById(prev, pg.posts)); // by id: cannot duplicate, cannot drop
         setBuffered((prev) => prev.filter((p) => !fresh.has(String(p.id))));
         setError(null); // the read demonstrably works — retire any stale error row
+        // Recover a failed COLD load: when the initial seed never succeeded, `ready`/`cursor` were never
+        // armed, so a plain merge would leave the skeleton re-stuck on an empty recovered page and
+        // pagination dead (cursor null → hasMore false). Arm them here so Retry fully recovers the feed.
+        if (!readyRef.current) {
+          setReady(true);
+          setCursor(pg.endCursor);
+        }
       })
       .catch(() => {
         // Silent by design: this is a re-read of content already on screen, not a load.
@@ -278,6 +295,13 @@ export function useLiveFeed(
 
   // Overlay: prepend the pending optimistic cards + apply count patches over the loaded list.
   const posts = useMemo(() => mergeFeed(loaded, overlay), [loaded, overlay]);
+
+  // The pill count reflects what will actually be REVEALED on flush: buffered posts from blocked/hidden
+  // authors are stripped by the list at render, so counting the raw buffer promised rows that never show.
+  const newCount = useMemo(
+    () => (moderate ? moderate(buffered).length : buffered.length),
+    [buffered, moderate],
+  );
 
   // Presence-reconcile: retire a pending top-level post once its real twin LANDS in `loaded` (keyed by
   // `pendingKey`, the SAME key mergeFeed dedups on) — NOT on tx-confirm — so the optimistic→chain
@@ -335,7 +359,7 @@ export function useLiveFeed(
     hasMore: cursor != null,
     loadingMore,
     loadMore,
-    newCount: buffered.length,
+    newCount,
     flush,
     refresh,
   };

@@ -37,8 +37,12 @@ export interface PollCardProps {
   showResults?: boolean;
   /** Disable voting (e.g. not-identity-bound). The surface still renders the gate copy elsewhere. */
   disabled?: boolean;
-  /** The option index currently in flight (optimistic) → shows a spinner on that row. */
-  pendingChoice?: number | null;
+  /**
+   * Tooltip explaining WHY voting is disabled (e.g. "Finish setup to vote") — shown on each option only
+   * for the `disabled` gate, never for a closed poll (which is self-explanatory). Mirrors PostCardActions,
+   * which keeps the same not-bound copy on its vote controls, so the two controls on one card agree.
+   */
+  disabledHint?: string;
   /** Tighter bars inside a dense timeline card. */
   compact?: boolean;
   /**
@@ -59,7 +63,7 @@ export function PollCard({
   onVote,
   showResults,
   disabled,
-  pendingChoice,
+  disabledHint,
   compact,
   closeState = "open",
   onFinalize,
@@ -118,7 +122,6 @@ export function PollCard({
         {poll.options.map((opt, i) => {
           const pct = noWeight ? 0 : weightPercent(opt.weight, poll.totalWeight);
           const mine = opt.index === myChoice;
-          const pending = pendingChoice === opt.index;
           // Option labels are attacker-controlled on-chain text → harden (bidi / invisible / Zalgo)
           // before they reach the DOM or the accessible name.
           const label = sanitizeInline(opt.label);
@@ -139,6 +142,9 @@ export function PollCard({
               }}
               aria-checked={mine}
               aria-label={ariaLabel}
+              // Explain the gate on hover for the disabled (not-bound) case — a closed poll needs no such
+              // hint, so scope the title to the `disabled` prop, not the derived `votingDisabled`.
+              title={disabled && !closed ? disabledHint : undefined}
               tabIndex={i === rovingPos ? 0 : -1}
               className={`${styles.option} ${results ? styles.resultRow : styles.voteRow} ${
                 mine ? styles.mine : ""
@@ -158,16 +164,10 @@ export function PollCard({
               </span>
               {results && (
                 <span className={styles.optMeta}>
-                  {pending && <Spinner size="sm" />}
                   {mine && (
                     <IconCheck className={styles.check} style={{ width: "1em", height: "1em" }} />
                   )}
                   <span className={styles.pct}>{noWeight ? "—" : `${pct}%`}</span>
-                </span>
-              )}
-              {!results && pending && (
-                <span className={styles.optMeta}>
-                  <Spinner size="sm" />
                 </span>
               )}
             </button>

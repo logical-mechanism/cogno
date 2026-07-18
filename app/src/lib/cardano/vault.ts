@@ -39,7 +39,9 @@ async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; 
   const [{ BrowserWallet }, cst] = await Promise.all([import("@meshsdk/core"), import("@meshsdk/core-cst")]);
   const wallet = await BrowserWallet.enable(walletId);
   if ((await wallet.getNetworkId()) !== 0) {
-    throw new Error("connect a Cardano wallet");
+    // Name the cause: this used to say "connect a Cardano wallet", which misread as a connection problem
+    // rather than a network mismatch (connect + both binds now catch this earlier — see wallet-derive.ts).
+    throw new Error("wrong network: switch your wallet to preprod (testnet), then reconnect");
   }
   const address = await wallet.getChangeAddress();
   const props = cst.Address.fromBech32(address).getProps();

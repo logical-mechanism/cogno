@@ -9,8 +9,10 @@
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { PollCard } from "./PollCard";
+import { Skeleton } from "./Skeleton";
 import { useSession } from "./Providers";
 import { usePoll } from "@/hooks/usePoll";
+import styles from "./InlinePoll.module.css";
 import type { Viewer } from "./kit";
 
 export interface InlinePollProps {
@@ -25,7 +27,7 @@ export interface InlinePollProps {
 export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
   const router = useRouter();
   const { source, api, signer, bestBlock } = useSession();
-  const { poll, myChoice, castVote, provisional, finalize, finalizing } = usePoll(
+  const { poll, myChoice, castVote, loading, error, provisional, finalize, finalizing, reload } = usePoll(
     source,
     postId,
     api,
@@ -48,7 +50,29 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
     if (!gate.writeReady) return void router.push("/welcome/");
     finalize();
   }, [gate.writeReady, router, finalize]);
-  if (!poll) return null; // still loading / no tallies — the post body already rendered above
+  if (!poll) {
+    // Hold the poll's shape while the tallies load so the card doesn't paint body-only and then jump when
+    // they land; on a read failure show a Retry rather than silently rendering nothing.
+    if (loading) return <Skeleton variant="pollCard" />;
+    if (error) {
+      return (
+        <div role="status" className={styles.error}>
+          <span>Couldn&apos;t load this poll.</span>
+          <button
+            type="button"
+            className={styles.retry}
+            onClick={(e) => {
+              e.stopPropagation(); // don't open the post — this row lives inside a clickable card
+              reload();
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return null; // no tallies and not loading/errored — the post body already rendered above
+  }
   const closeState = poll.finalized ? "final" : provisional ? "provisional" : "open";
   return (
     <PollCard
@@ -57,6 +81,7 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
       onVote={onVote}
       showResults={detail}
       disabled={gate.status === "not-identity-bound"}
+      disabledHint="Finish setup to vote"
       compact={!detail}
       closeState={closeState}
       onFinalize={onFinalize}

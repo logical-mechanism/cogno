@@ -127,7 +127,29 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
         <div ref={pickerRef} className={styles.picker} role="dialog" aria-label="Choose a Cardano wallet">
           <p className={styles.pickerTitle}>Choose a wallet</p>
           {wallets.length === 0 ? (
-            <p className={styles.pickerEmpty}>No CIP-30 wallet detected. Install one to continue.</p>
+            <div className={styles.pickerEmpty}>
+              <p>No CIP-30 wallet detected. Install one to continue.</p>
+              {/* Give the guest a way forward — the same install links the /welcome WalletPicker offers,
+                  so both connect entry points behave consistently instead of a dead message here. */}
+              <div className={styles.installLinks}>
+                <a
+                  href="https://eternl.io/"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className={styles.installLink}
+                >
+                  Install Eternl ↗
+                </a>
+                <a
+                  href="https://www.lace.io/"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className={styles.installLink}
+                >
+                  Install Lace ↗
+                </a>
+              </div>
+            </div>
           ) : (
             <ul className={styles.list}>
               {wallets.map((w) => (

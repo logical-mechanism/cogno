@@ -17,6 +17,7 @@ import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { truncateSs58 } from "@/lib/ss58";
 import { setupStatus } from "@/lib/setup-status";
 import { formatAda } from "@/lib/format";
+import { copyToClipboard } from "@/lib/share";
 
 export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
   const { api, signerCtl, identity, sessionState } = useSession();
@@ -48,24 +49,19 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
   // return to satisfy the Rules of Hooks).
   const pending = usePendingCapacity(api, ss58, postingPower);
 
+  // Route through copyToClipboard (not navigator.clipboard directly): it falls back to the legacy
+  // hidden-textarea path in insecure contexts / in-app webviews where navigator.clipboard is undefined,
+  // so copying your own address still works inside a Twitter/Discord/Instagram browser.
   const copyAddress = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(ss58);
-      toast({ kind: "success", message: "Copied" });
-    } catch {
-      toast({ kind: "error", message: "Couldn't copy address" });
-    }
+    const ok = await copyToClipboard(ss58);
+    toast(ok ? { kind: "success", message: "Copied" } : { kind: "error", message: "Couldn't copy address" });
   }, [ss58, toast]);
 
   const copyWalletAddress = useCallback(async () => {
     const addr = signerCtl.walletAddress;
     if (!addr) return;
-    try {
-      await navigator.clipboard.writeText(addr);
-      toast({ kind: "success", message: "Copied" });
-    } catch {
-      toast({ kind: "error", message: "Couldn't copy address" });
-    }
+    const ok = await copyToClipboard(addr);
+    toast(ok ? { kind: "success", message: "Copied" } : { kind: "error", message: "Couldn't copy address" });
   }, [signerCtl.walletAddress, toast]);
 
   // disconnected (no wallet, no dev account): a single card with a connect prompt. The connect button

@@ -12,15 +12,20 @@ import { submitFollow, submitUnfollow } from "@/lib/chain/mutations";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, PostingSigner, Ss58, FollowEdges } from "@/lib/types";
 
+/** Optional per-call hooks so a surface with its OWN optimistic state (e.g. the profile header's
+ *  follower-count delta) can reconcile it against the write outcome, not just useFollow's isFollowing map. */
+export interface FollowCallbacks {
+  onError?: () => void;
+}
+
 export interface UseFollow {
   isFollowing: (target: Ss58) => boolean;
-  follow: (target: Ss58) => void;
-  unfollow: (target: Ss58) => void;
+  follow: (target: Ss58, cb?: FollowCallbacks) => void;
+  unfollow: (target: Ss58, cb?: FollowCallbacks) => void;
   followers: Ss58[];
   following: Ss58[];
   followerCount: number;
   followingCount: number;
-  pending: boolean;
 }
 
 export function useFollow(
@@ -29,7 +34,7 @@ export function useFollow(
   source: FeedSource | null,
   who: Ss58 | null,
 ): UseFollow {
-  const { run, pending } = useMutation();
+  const { run } = useMutation();
   const { fail, ok } = useActionToast();
   const [edges, setEdges] = useState<FollowEdges | null>(null);
   const [optimistic, setOptimistic] = useState<Record<string, boolean>>({});
@@ -68,13 +73,14 @@ export function useFollow(
   );
 
   const follow = useCallback(
-    (target: Ss58) => {
+    (target: Ss58, cb?: FollowCallbacks) => {
       if (!api || !signer) return;
       setOptimistic((p) => ({ ...p, [target]: true }));
       void run(submitFollow(api, signer, target), {
         onConfirm: () => ok("Following"),
         onError: (message) => {
           setOptimistic((p) => ({ ...p, [target]: false }));
+          cb?.onError?.(); // let a surface roll back its own optimistic count too
           fail(message);
         },
       });
@@ -83,13 +89,14 @@ export function useFollow(
   );
 
   const unfollow = useCallback(
-    (target: Ss58) => {
+    (target: Ss58, cb?: FollowCallbacks) => {
       if (!api || !signer) return;
       setOptimistic((p) => ({ ...p, [target]: false }));
       void run(submitUnfollow(api, signer, target), {
         onConfirm: () => ok("Unfollowed"),
         onError: (message) => {
           setOptimistic((p) => ({ ...p, [target]: true }));
+          cb?.onError?.();
           fail(message);
         },
       });
@@ -105,6 +112,5 @@ export function useFollow(
     following: edges?.following ?? [],
     followerCount: edges?.followerCount ?? 0,
     followingCount: edges?.followingCount ?? 0,
-    pending,
   };
 }

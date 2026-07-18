@@ -81,7 +81,7 @@ export function LeftNav() {
   return (
     <nav className={styles.nav} aria-label="Primary">
       <div className={styles.inner}>
-        <Link href="/" className={styles.wordmark} onClick={reTap("/")} aria-label="cogno-chain home">
+        <Link href="/" className={styles.wordmark} onClick={reTap("/")} aria-label="cogno home">
           <span className={styles.wordmarkText}>cogno</span>
         </Link>
 
@@ -96,7 +96,10 @@ export function LeftNav() {
                   onClick={reTap(href)}
                   className={`${styles.item} ${active ? styles.active : ""}`}
                   aria-current={active ? "page" : undefined}
-                  aria-label={count > 0 ? `${label} (${count} unread)` : undefined}
+                  // Always set the accessible name: at tablet width the visible .itemLabel is
+                  // display:none and the icon is aria-hidden, so without this the link announces as a
+                  // bare "link" to screen readers / voice control.
+                  aria-label={count > 0 ? `${label} (${count} unread)` : label}
                 >
                   <span className={styles.itemIcon}>
                     <Icon filled={active} size="var(--cg-icon-lg)" />

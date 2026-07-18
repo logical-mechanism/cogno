@@ -93,9 +93,17 @@ export function FollowsPanel({
         ? "You aren't following anyone yet."
         : `${handle} isn't following anyone yet.`;
 
+  // On your OWN profile the "Following" list IS your following set, so unfollowing a row there should drop
+  // the tab count immediately — but the count prop is the static chain counter and never moved. Apply the
+  // net change of your live toggles over the fetched set (0 or negative; a re-follow returns it to 0) on
+  // top of the chain baseline, so the number tracks the action instead of contradicting it. Other views'
+  // toggles change YOUR following count, not this profile's, so they leave these counts alone.
+  const followingDelta =
+    isSelf && edges ? edges.following.filter((a) => isFollowing(a)).length - edges.following.length : 0;
+
   const tabs: { id: FollowsSide; label: string; count: number }[] = [
     { id: "followers", label: "Followers", count: followerCount },
-    { id: "following", label: "Following", count: followingCount },
+    { id: "following", label: "Following", count: followingCount + followingDelta },
   ];
 
 

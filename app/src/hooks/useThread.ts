@@ -132,6 +132,12 @@ export function useThread(
       seeded.current = false;
       refetching.current = false;
       setBase(null);
+      // Drop any stale error when the target is DESELECTED (rootId null → e.g. a reply/quote modal
+      // closed) so it can't survive to the next target: ModalRouteHost degrades to a plain composer on
+      // `error`, and a leftover error from a prior failed target would flash a false "unavailable" on the
+      // first (pre-effect) render of the next one. Scoped to rootId==null so a transient source drop on a
+      // live thread (rootId still set) keeps its error card.
+      if (rootId == null) setError(null);
       prevRootId.current = rootId;
       return;
     }

@@ -30,7 +30,9 @@ function KindIcon({ kind }: { kind: ToastKind }) {
     case "success":
       return <IconCheck className={styles.icon} />;
     case "pending":
-      return <Spinner size="sm" />;
+      // Decorative: the Toast wrapper is already a live region, so a role="status" spinner inside it
+      // double-announces "Loading" on top of the toast message.
+      return <Spinner size="sm" decorative />;
     case "error":
       return <span className={styles.glyph} aria-hidden>!</span>;
     case "rate-limit":

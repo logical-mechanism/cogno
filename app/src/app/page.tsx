@@ -32,6 +32,7 @@ import { usePostActions } from "@/hooks/usePostActions";
 import { modalActions } from "@/lib/modalStore";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useViewerStates } from "@/hooks/useViewerStates";
+import { useModeration } from "@/hooks/useModeration";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useFollow } from "@/hooks/useFollow";
@@ -65,7 +66,11 @@ export default function HomePage() {
   // useLiveFeed owns the new-posts pill buffer (a fresh OTHER-author post waits behind the pill so
   // the scroll never jumps; the viewer's own optimistic + confirmed post injects directly) AND the
   // optimistic overlay + presence-reconcile. It pages by post id — NO full `watchEntries`.
-  const forYou = useLiveFeed(source, me, bestBlock);
+  // Same device-local suppression Timeline applies at render, handed to useLiveFeed so the pill's
+  // "N new posts" count matches the rows actually revealed on flush (a buffered post from a blocked/
+  // hidden author is stripped on render, so counting it made the pill promise more than it delivered).
+  const homeMod = useModeration(me);
+  const forYou = useLiveFeed(source, me, bestBlock, homeMod.filterPosts);
   const displayedForYou = forYou.posts;
   const bufferedCount = forYou.newCount;
   const ready = forYou.ready;
@@ -243,7 +248,10 @@ export default function HomePage() {
 
   // Following-tab loading/error mirror For-you.
   const followingLoading = followingEnabled && followingPage.loading && followingPage.posts.length === 0;
-  const forYouLoading = !ready && displayedForYou.length === 0;
+  // Exclude the error case: a failed cold read sets `feedError` but leaves `ready` false with an empty
+  // list, which would otherwise pin the primary Home surface on an infinite skeleton with no way to
+  // retry. Dropping it out of the loading gate lets Timeline fall through to the ErrorRow + Retry.
+  const forYouLoading = !ready && displayedForYou.length === 0 && !feedError;
 
   return (
     <>

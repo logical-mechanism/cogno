@@ -308,6 +308,7 @@ export function ComposePage() {
                 onTextChange={setText}
                 onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
+                retryInSeconds={retryInSeconds}
                 noPostingPower={noPostingPower}
                 needsVotingPower={needsVotingPower}
                 autoFocus
@@ -340,6 +341,7 @@ export function ComposePage() {
                 onTextChange={setText}
                 onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
+                retryInSeconds={retryInSeconds}
                 noPostingPower={noPostingPower}
                 needsVotingPower={needsVotingPower}
                 autoFocus
@@ -356,6 +358,7 @@ export function ComposePage() {
             onChange={setPollDraft}
             submitState={submitState}
             rateLimited={rateLimited}
+            retryInSeconds={retryInSeconds}
             noPostingPower={noPostingPower}
             needsVotingPower={needsVotingPower}
             autoFocus
