@@ -32,6 +32,7 @@ import { Loading } from "./Loading";
 import { IconBack } from "./icons";
 import { useSession } from "./Providers";
 import { welcomeUrlFor } from "@/lib/returnTo";
+import { rememberContentRoute } from "@/lib/onboardingReturn";
 
 /** /welcome is the standalone onboarding surface — it owns the whole canvas (no rails). */
 function isWelcomePath(pathname: string | null): boolean {
@@ -78,6 +79,16 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (loggedIn || onWelcome || publicRoute) return;
     router.replace(welcomeUrlFor(pathname, window.location.search));
   }, [loggedIn, onWelcome, publicRoute, pathname, router]);
+
+  // Remember the last CONTENT deep-link (a post / a profile) the visitor was reading, so finishing
+  // onboarding returns them THERE rather than the timeline — a shared /post link should reopen the post,
+  // not drop you on the feed. Home / explore / legal are intentionally not recorded (see
+  // rememberContentRoute); /welcome and walled routes have a non-returnable segment, so they never
+  // overwrite it. A public deep-link no longer bounces through the wall, so it carries no `?next=`; this
+  // is that case's fallback (the wall's `?next=` still wins for a walled deep-link).
+  useEffect(() => {
+    if (pathname) rememberContentRoute(pathname);
+  }, [pathname]);
 
   // App-wide "/" → focus the SearchBar (works on every surface with a search box, not just /explore).
   useSearchHotkey();

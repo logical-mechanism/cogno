@@ -15,6 +15,7 @@
 // module.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { ComposerModal } from "../ComposerModal";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
@@ -73,6 +74,7 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 }
 
 export function ModalRouteHost() {
+  const router = useRouter();
   const { state, close } = useModalStore();
   const { api, signer, source, viewer, bestBlock } = useSession();
   // Only the PROFILE overlay is still owned here — the compose overlay moved into useComposeWrite.
@@ -206,8 +208,16 @@ export function ModalRouteHost() {
 
 
 
+  // Session-gated submit reroutes to /welcome (mirrors ComposePage). The openers are already
+  // writeReady-gated, but the host renders for guests now that the shell does — so this is the backstop
+  // that keeps the write gate at the submit too, not only at the caller, for every compose surface.
   const onPost = useCallback(
     (draft: ComposerDraft) => {
+      if (viewer.status !== "ready") {
+        close();
+        router.push("/welcome/");
+        return;
+      }
       if (!api || !signer || draft.text.trim().length === 0) return;
       clearPostDraft(); // submitted → don't restore it next time
       runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text), {
@@ -215,11 +225,16 @@ export function ModalRouteHost() {
         success: "Posted",
       });
     },
-    [api, signer, runWrite, optimisticPost],
+    [viewer.status, api, signer, runWrite, optimisticPost, close, router],
   );
 
   const onReply = useCallback(
     (text: string) => {
+      if (viewer.status !== "ready") {
+        close();
+        router.push("/welcome/");
+        return;
+      }
       if (!api || !signer || !targetPost || text.trim().length === 0) return;
       runWrite(
         submitReply(api, signer, text, targetPost.id),
@@ -228,11 +243,16 @@ export function ModalRouteHost() {
         targetPost.id,
       );
     },
-    [api, signer, targetPost, runWrite, optimisticPost],
+    [viewer.status, api, signer, targetPost, runWrite, optimisticPost, close, router],
   );
 
   const onQuote = useCallback(
     (text: string) => {
+      if (viewer.status !== "ready") {
+        close();
+        router.push("/welcome/");
+        return;
+      }
       if (!api || !signer || !targetPost || text.trim().length === 0) return;
       runWrite(
         submitQuote(api, signer, text, targetPost.id),
@@ -249,11 +269,16 @@ export function ModalRouteHost() {
         { pending: "Quoting…", success: "Quoted" },
       );
     },
-    [api, signer, targetPost, runWrite, optimisticPost],
+    [viewer.status, api, signer, targetPost, runWrite, optimisticPost, close, router],
   );
 
   const onCreatePoll = useCallback(
     async (question: string, options: string[], closeInDays?: number) => {
+      if (viewer.status !== "ready") {
+        close();
+        router.push("/welcome/");
+        return;
+      }
       if (!api || !signer || question.trim().length === 0) return;
       // Convert the chosen deadline (days) to an absolute block-number `close_at`. If a deadline was
       // requested but the chain height can't be read, surface it — never silently create a floating poll.
@@ -273,7 +298,7 @@ export function ModalRouteHost() {
         success: "Poll created",
       });
     },
-    [api, signer, bestBlock, runWrite, optimisticPost, toast],
+    [viewer.status, api, signer, bestBlock, runWrite, optimisticPost, toast, close, router],
   );
 
   // ── profile save/clear pipeline (feeless + capacity-metered, exactly like a post) ──────────────
