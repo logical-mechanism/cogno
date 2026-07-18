@@ -99,6 +99,12 @@ futures = { version = "0.3.31" }
 jsonrpsee = { version = "0.24.11" }
 serde_json = { version = "1.0.132", default-features = false }
 
+# ── testing (dev-only) ───────────────────────────────────────────────────────────
+# Property-based invariant tests for the pallets (generator-driven sweeps over the tally/overflow/
+# idempotency invariants). A dev-dependency only — never compiled into the runtime wasm or a release
+# binary — so it adds no runtime attack surface; it IS in Cargo.lock, so cargo-deny audits its tree.
+proptest = { version = "1" }
+
 # ── FRAME ──────────────────────────────────────────────────────────────────────
 frame-benchmarking = { version = "49.0.0", default-features = false }
 frame-benchmarking-cli = { version = "58.0.0", default-features = false }

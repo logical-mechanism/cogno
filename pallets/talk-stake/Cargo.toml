@@ -23,6 +23,7 @@ log = { workspace = true }
 scale-info = { features = ["derive"], workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 sp-core = { default-features = true, workspace = true }
 sp-io = { default-features = true, workspace = true }
 sp-runtime = { default-features = true, workspace = true }
