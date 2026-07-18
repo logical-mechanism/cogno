@@ -1,0 +1,29 @@
+/* InlinePoll — the inline poll's own read-failure row (loading uses the shared pollCard Skeleton). */
+
+.error {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-2) 0;
+  color: var(--cg-text-muted);
+  font-size: var(--cg-fs-sm);
+}
+
+.retry {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--cg-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.retry:hover {
+  text-decoration: underline;
+}
+
+.retry:focus-visible {
+  outline: 2px solid var(--cg-accent);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}

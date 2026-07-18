@@ -1,10 +1,11 @@
 "use client";
 
-// CapacityMeter — a compact, always-on "talk points" indicator: how much of the viewer's regenerating
+// CapacityMeter — a compact, always-on "posting power" indicator: how much of the viewer's regenerating
 // talk-capacity is available right now (have / cap) and roughly how many posts that buys, so running
-// low is visible BEFORE a post is refused. Self-contained (reads the shared session + useHeads +
-// useCapacity), so it can sit in the Composer toolbar without the Composer taking on a capacity
-// subscription — it's purely advisory; the runtime's CheckCapacity is the authority.
+// low is visible BEFORE a post is refused. "Posting power" is the one canonical user-facing name for
+// this resource (docs + every other surface); keep it consistent here. Self-contained (reads the shared
+// session + useHeads + useCapacity), so it can sit in the Composer toolbar without the Composer taking
+// on a capacity subscription — it's purely advisory; the runtime's CheckCapacity is the authority.
 
 import styles from "./CapacityMeter.module.css";
 import { useSession } from "./Providers";
@@ -26,13 +27,17 @@ export function CapacityMeter() {
   const low = pct < 20;
 
   return (
+    // role="img" so the aria-label is announced as one discrete element (a bare div + aria-label is not
+    // reliably surfaced). "up to" because `posts` counts EMPTY posts (have / baseCost) — a real post also
+    // pays a per-byte cost, so this is an upper bound on how many will actually fit, not a guarantee.
     <div
       className={styles.meter}
-      title={`Talk points: about ${posts} post${posts === 1 ? "" : "s"} ready (regenerates over time)`}
+      role="img"
+      title={`Posting power: up to about ${posts} post${posts === 1 ? "" : "s"} before the rate limit (regenerates over time)`}
       aria-label={
         posts > 0
-          ? `Talk points: about ${posts} post${posts === 1 ? "" : "s"} ready`
-          : "Talk points: recharging"
+          ? `Posting power: up to about ${posts} post${posts === 1 ? "" : "s"} before the rate limit`
+          : "Posting power: recharging"
       }
     >
       <span className={styles.bar} aria-hidden>

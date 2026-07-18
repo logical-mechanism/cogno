@@ -80,7 +80,6 @@ export interface PowerUpsProps {
   pending: PendingCapacityStatus;
   /** the ss58 whose pending record can be dismissed (an overdue lock that never credits). */
   ss58?: string | null;
-  welcomeBack?: boolean;
   onGoToTimeline: () => void;
   onOpenSettings: () => void;
   /** Disconnect and return to the wallet picker — the escape when the wallet can't sign its stake. */
@@ -95,7 +94,6 @@ export function PowerUps({
   postingPower,
   pending,
   ss58,
-  welcomeBack,
   onGoToTimeline,
   onOpenSettings,
   onUseDifferentWallet,
@@ -109,7 +107,7 @@ export function PowerUps({
   if (stakeBound === true && hasPostingPower) {
     return (
       <section className={styles.step} aria-labelledby="welcome-heading">
-        <DoneBanner welcomeBack={welcomeBack} onGoToTimeline={onGoToTimeline} headingRef={headingRef} />
+        <DoneBanner onGoToTimeline={onGoToTimeline} headingRef={headingRef} />
       </section>
     );
   }
@@ -208,7 +206,7 @@ export function PowerUps({
           One step left to post
         </h1>
         <p className={styles.bannerLede}>
-          You can read right now. To post, lock ADA for posting capacity.
+          You can read right now. To post, lock ADA for posting power.
         </p>
       </div>
 
@@ -226,18 +224,16 @@ export function PowerUps({
 // ── DoneBanner ───────────────────────────────────────────────────────────────────────────────────
 
 function DoneBanner({
-  welcomeBack,
   onGoToTimeline,
   headingRef,
 }: {
-  welcomeBack?: boolean;
   onGoToTimeline: () => void;
   headingRef?: React.Ref<HTMLHeadingElement>;
 }) {
   return (
     <div className={styles.banner}>
       <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
-        {welcomeBack ? "Welcome back" : "You're all set"}
+        You&apos;re all set
       </h1>
       <p className={styles.bannerLede}>You can post, reply, quote, vote, and follow.</p>
       <button type="button" className={styles.primary} onClick={onGoToTimeline}>
@@ -270,7 +266,8 @@ function VaultCard({
     <div className={styles.card}>
       <h2 className={styles.cardTitle}>Lock ADA to post</h2>
       <p className={styles.cardBody}>
-        Lock 100 ADA in the vault to get posting capacity. You can unlock it anytime.
+        Lock 100 ADA in the vault to earn posting power. It becomes available a few minutes after your
+        lock confirms on Cardano. You can unlock it anytime.
       </p>
 
       {vault.phase === "submitted" ? (
@@ -368,7 +365,8 @@ function StakeCard({
     <div className={styles.card}>
       <h2 className={styles.cardTitle}>Add voting power</h2>
       <p className={styles.cardBody}>
-        Prove your wallet&apos;s stake so your votes carry weight. This is required to finish setting up.
+        Prove your wallet&apos;s stake so your votes carry weight. It&apos;s a required setup step —
+        separate from locking ADA next, which is what unlocks posting.
       </p>
 
       {stake.stakeBound === true ? (

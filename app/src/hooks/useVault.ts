@@ -67,6 +67,9 @@ export function useVault(): UseVault {
   // the tx twice — the second collided with the still-open wallet prompt and threw a spurious
   // "user declined". A plain ref keeps the guard in the event-handler body (not double-invoked).
   const inFlight = useRef(false);
+  // Bounded re-read poll after a submit (see pollUntilSettled). Cleared on unmount / reset / a new run.
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollTries = useRef(0);
 
   const busy = phase === "working";
 
@@ -84,8 +87,49 @@ export function useVault(): UseVault {
     })();
   }, []);
 
+  const clearPoll = useCallback(() => {
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+    pollTries.current = 0;
+  }, []);
+  // Clear any in-flight poll on unmount so it can't set state on a gone component.
+  useEffect(() => clearPoll, [clearPoll]);
+
+  // Re-read the vault until it reflects the submitted action, then stop. A lock/exit confirms on Cardano
+  // over several blocks (~20–60s on preprod); the old single 5s re-read almost always fired too early and
+  // left the card stale — still "No vault yet" after a lock (with a LIVE Lock button, inviting a duplicate
+  // 100-ADA lock) or still "100 ADA locked" after an exit. Bounded so a never-confirming tx can't poll
+  // forever; early-exit the instant the state matches so we don't hammer Blockfrost.
+  const POLL_EVERY_MS = 6000;
+  const POLL_MAX = 10; // ~60s of coverage
+  const pollUntilSettled = useCallback(
+    (walletId: string, kind: VaultAction) => {
+      clearPoll();
+      const settled = (l: bigint | null) =>
+        kind === "lock" ? l != null && l > 0n : l == null || l === 0n;
+      const tick = () => {
+        pollTries.current += 1;
+        void (async () => {
+          try {
+            const res = await fetchVaultState(walletId);
+            setInfo(res.info);
+            setLocked(res.locked);
+            setLockedKnown(true);
+            if (settled(res.locked)) return clearPoll();
+          } catch {
+            /* transient read failure — keep polling within the budget */
+          }
+          if (pollTries.current < POLL_MAX) pollTimer.current = setTimeout(tick, POLL_EVERY_MS);
+          else clearPoll();
+        })();
+      };
+      pollTimer.current = setTimeout(tick, POLL_EVERY_MS);
+    },
+    [clearPoll],
+  );
+
   const run = useCallback(
-    (action: () => Promise<{ txHash: string; info: VaultInfo }>, walletId: string) => {
+    (action: () => Promise<{ txHash: string; info: VaultInfo }>, walletId: string, kind: VaultAction) => {
       if (inFlight.current) return; // already running (double-click / re-render); never start twice
       inFlight.current = true;
       setError(null);
@@ -98,8 +142,8 @@ export function useVault(): UseVault {
           setInfo(res.info);
           setTxHash(res.txHash);
           setPhase("submitted");
-          // the lock/exit takes a few blocks to settle; re-read the vault then.
-          setTimeout(() => inspect(walletId), 5000);
+          // Re-read until the vault reflects this action (bounded); keeps the card + buttons truthful.
+          pollUntilSettled(walletId, kind);
         } catch (e) {
           // A user-declined wallet prompt is an expected cancel, not a failure: return to idle so the
           // user can just try again — no red "error" wall (matches the connect + CIP-8 bind flows). A
@@ -116,31 +160,32 @@ export function useVault(): UseVault {
         }
       })();
     },
-    [inspect],
+    [pollUntilSettled],
   );
 
   const lock = useCallback(
     (walletId: string, lovelace?: bigint) => {
       setLastAction("lock");
-      run(() => lockIntoVault(walletId, lovelace, (p) => setStep(p)), walletId);
+      run(() => lockIntoVault(walletId, lovelace, (p) => setStep(p)), walletId, "lock");
     },
     [run],
   );
   const exit = useCallback(
     (walletId: string) => {
       setLastAction("exit");
-      run(() => exitVault(walletId, (p) => setStep(p)), walletId);
+      run(() => exitVault(walletId, (p) => setStep(p)), walletId, "exit");
     },
     [run],
   );
   const reset = useCallback(() => {
+    clearPoll();
     setPhase("idle");
     setStep("idle");
     setError(null);
     setTxHash(null);
     setLastAction(null);
     inFlight.current = false;
-  }, []);
+  }, [clearPoll]);
 
   return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, inspect, lock, exit, reset };
 }

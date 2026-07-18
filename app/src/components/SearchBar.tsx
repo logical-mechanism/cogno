@@ -35,7 +35,7 @@ export function SearchBar({
   onChange,
   onSubmit,
   searchEnabled,
-  placeholder = "Search cogno-chain",
+  placeholder = "Search cogno",
   autoFocus,
   loading,
   recent,

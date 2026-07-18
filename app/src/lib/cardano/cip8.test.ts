@@ -13,6 +13,7 @@ const VKEY_REWARD_RAW = `e0${STAKE_CRED}`; // 0xe0 >> 4 = 0b1110 (vkey stake)
 const fake = {
   changeAddress: "addr_test_vkey",
   paymentType: 0 as number,
+  networkId: 0 as number, // 0 = preprod (accepted); 1 = mainnet (rejected before signing)
   vkHex: "11".repeat(32), // 32-byte vkey (accepted); "22".repeat(64) => extended (rejected)
   vkThrows: false,
   signature: "sigsig" as string,
@@ -26,6 +27,7 @@ const fake = {
 vi.mock("@meshsdk/core", () => ({
   BrowserWallet: {
     enable: vi.fn(async () => ({
+      getNetworkId: async () => fake.networkId,
       getChangeAddress: async () => fake.changeAddress,
       getRewardAddresses: async () => fake.rewardAddresses,
       signData: async (message: string, addr?: string) => {
@@ -59,6 +61,7 @@ const GENESIS = "cd".repeat(32); // 64-hex block-0 hash
 beforeEach(() => {
   fake.changeAddress = "addr_test_vkey";
   fake.paymentType = 0;
+  fake.networkId = 0;
   fake.vkHex = "11".repeat(32);
   fake.vkThrows = false;
   fake.signature = "sigsig";

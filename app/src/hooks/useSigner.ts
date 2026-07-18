@@ -7,18 +7,18 @@
 // signs the fixed derive-message and becomes that key; re-derive each session by connecting again.
 //
 // ADVANCED (hidden behind a toggle): the well-known dev accounts (//Alice…), for testing / operator
-// use without a wallet. We persist only the dev CHOICE (a URI), never any secret.
+// use without a wallet. Nothing is persisted — the wallet / dev choice is re-selected each session and
+// no secret is ever stored.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { DEV_ACCOUNTS, getDevSigner } from "@/lib/signer";
 import { deriveSignerFromWallet } from "@/lib/signer/wallet-derive";
 import { isUserRejection } from "@/lib/cardano/cip8";
 import { clearPostDraft } from "@/lib/composerDraftStore";
+import { recentSearchActions } from "@/lib/recentSearchStore";
 import type { PostingSigner } from "@/lib/types";
 
-const DEV_CHOICE_KEY = "cogno.signer.devChoice";
 const DEFAULT_DEV = "//Alice";
-const LAST_WALLET_KEY = "cogno.wallet.last"; // non-secret: the wallet id, to offer a one-click reconnect
 
 export interface UseSigner {
   /** The currently active posting signer (a wallet-derived key, or a dev account in advanced mode). */
@@ -34,8 +34,6 @@ export interface UseSigner {
   /** A sign-to-derive is in flight. */
   deriving: boolean;
   error: string | null;
-  /** A previously-connected wallet id, surfaced to offer a one-click reconnect. */
-  lastWalletId: string | null;
   /** Connect a CIP-30 wallet and derive the posting key from its signature. */
   connectWallet: (walletId: string) => Promise<boolean>;
   /** Drop the derived key (back to disconnected). */
@@ -54,22 +52,9 @@ export function useSigner(): UseSigner {
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [deriving, setDeriving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastWalletId, setLastWalletId] = useState<string | null>(null);
   // The default //Alice is a BACKGROUND signer, not an active identity: posting stays disabled
   // until the user connects a wallet or explicitly chooses a dev account (advanced).
   const [devChosen, setDevChosen] = useState(false);
-
-  const init = useRef(false);
-  useEffect(() => {
-    if (init.current) return;
-    init.current = true;
-    try {
-      const w = window.localStorage.getItem(LAST_WALLET_KEY);
-      if (w) setLastWalletId(w);
-    } catch {
-      /* localStorage may be unavailable (private mode); ignore */
-    }
-  }, []);
 
   // Monotonic "derive generation". A CIP-30 signData() has no abort handle, so Cancel/disconnect can't
   // stop an in-flight wallet prompt — but it CAN abandon it: bumping this invalidates the pending
@@ -88,12 +73,6 @@ export function useSigner(): UseSigner {
       setDevChosen(false);
       setConnectedWalletId(walletId);
       setWalletAddress(signingAddress);
-      try {
-        window.localStorage.setItem(LAST_WALLET_KEY, walletId);
-        setLastWalletId(walletId);
-      } catch {
-        /* best-effort */
-      }
       return true;
     } catch (e) {
       if (deriveGen.current !== gen) return false; // cancelled — swallow the late error too
@@ -122,9 +101,11 @@ export function useSigner(): UseSigner {
     setError(null);
     setDevChosen(false);
     setSigner(getDevSigner(DEFAULT_DEV));
-    // The unsent post draft is device-local and identity-agnostic — forget it on disconnect so it can't
-    // resurface in the NEXT account's composer on a shared device.
+    // Device-local, identity-agnostic state that must not resurface for the NEXT account on a shared
+    // device: the unsent post draft, and the recent-search terms (the set stores are per-account, but
+    // recent searches are a single device-global key, so clear them explicitly here).
     clearPostDraft();
+    recentSearchActions.clear();
   }, []);
 
   const setDevAccount = useCallback((uri: string) => {
@@ -133,11 +114,6 @@ export function useSigner(): UseSigner {
     setWalletAddress(null);
     setDevChosen(true);
     setSigner(getDevSigner(uri));
-    try {
-      window.localStorage.setItem(DEV_CHOICE_KEY, uri);
-    } catch {
-      /* best-effort; the choice is non-essential */
-    }
   }, []);
 
   const walletConnected = signer.kind === "derived";
@@ -149,7 +125,6 @@ export function useSigner(): UseSigner {
     walletAddress,
     deriving,
     error,
-    lastWalletId,
     connectWallet,
     disconnect,
     devAccounts: DEV_ACCOUNTS,

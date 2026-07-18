@@ -62,6 +62,9 @@ export interface UseMentions {
   suggestions: ReactNode;
   /** True while the popover is open (composer suppresses its own Enter handling then). */
   open: boolean;
+  /** The id of the currently-highlighted suggestion row, for the textarea's aria-activedescendant (so a
+   *  screen reader follows the highlight while focus stays on the textarea). Null when none is active. */
+  activeDescendant: string | null;
   /** Call after the textarea value changes to (re)detect the active `@query` at `caret`. */
   onTextInput: (value: string, caret: number) => void;
   /** Handle a keydown while open; returns true when it consumed the key (nav/select/close). */
@@ -265,11 +268,17 @@ export function useMentions(opts: {
       />
     ) : null;
 
+  // Mirrors MentionSuggestions' row ids (`${listId}-opt-${i}`); null unless the popover has a live
+  // highlight, so the textarea only advertises an activedescendant that actually exists in the listbox.
+  const activeDescendant =
+    open && canSearch && results.length > 0 ? `${listId}-opt-${activeIndex}` : null;
+
   return {
     serialize,
     markSubmitted,
     suggestions,
     open: open && canSearch,
+    activeDescendant,
     onTextInput,
     onKeyDown,
     dismiss: close,

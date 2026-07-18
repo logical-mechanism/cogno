@@ -117,8 +117,11 @@ export function RightRail() {
 
       <footer className={styles.footer}>
         <nav className={styles.footerLinks} aria-label="About this app">
+          {/* /settings is walled: for a logged-out guest (who sees this rail on public read surfaces) the
+              About content lives behind onboarding, so don't label the link as if About is reachable —
+              show plain "Settings" (which honestly routes them to sign in). Legal/Privacy are public. */}
           <Link href="/settings/" className={styles.about}>
-            About &amp; settings
+            {me ? "About & settings" : "Settings"}
           </Link>
           <span aria-hidden="true">·</span>
           <Link href="/legal/" className={styles.about}>

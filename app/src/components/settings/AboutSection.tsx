@@ -10,7 +10,7 @@ const SOURCE_URL = "https://github.com/logical-mechanism/cogno";
 export function AboutSection() {
   return (
     <div className={styles.card}>
-      <h3 className={styles.name}>cogno-chain</h3>
+      <h3 className={styles.name}>cogno</h3>
       <p className={styles.tagline}>A feeless place to post.</p>
       <a className={styles.link} href={SOURCE_URL} target="_blank" rel="noreferrer noopener">
         Source ↗

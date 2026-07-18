@@ -46,7 +46,7 @@ import { useVote } from "@/hooks/useVote";
 import { useAccountVoteFor } from "@/hooks/useAccountVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { isPlausibleSs58, handleOf } from "@/lib/ss58";
+import { isPlausibleSs58, handleOf, fallbackDisplayName } from "@/lib/ss58";
 import { sanitizeInline } from "@/lib/sanitize";
 import { useRouteSegment } from "@/lib/routeSegment";
 import type { ProfileArgs } from "@/lib/feed/source";
@@ -151,9 +151,9 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const followingCount = profile?.followingCount ?? 0;
 
   // Retire the optimistic delta once the reconciled base count catches up (so a landed follow isn't
-  // double-counted), and whenever the viewed profile changes — ProfileBody is NOT remounted across
-  // /u/A → /u/B, so a delta accrued on profile A must not leak onto B.
-  useEffect(() => setFollowDelta(0), [address, profile?.followerCount]);
+  // double-counted). ProfileBody is keyed on `address` in ProfileView, so /u/A → /u/B REMOUNTS it and the
+  // delta resets to 0 on its own — no `address` dep needed here.
+  useEffect(() => setFollowDelta(0), [profile?.followerCount]);
 
   const onToggleFollow = useCallback(
     (target: Ss58, next: boolean) => {
@@ -162,10 +162,13 @@ function ProfileBody({ address }: { address: Ss58 }) {
         return;
       }
       if (next) {
-        follow.follow(target);
+        // Roll the optimistic count back if the write fails — the button reverts via useFollow's own
+        // isFollowing map, but this local delta is only cleared when the BASE count changes, which a
+        // failed follow never does, so it would stay inflated by one until the profile changes.
+        follow.follow(target, { onError: () => setFollowDelta((d) => d - 1) });
         setFollowDelta((d) => d + 1);
       } else {
-        follow.unfollow(target);
+        follow.unfollow(target, { onError: () => setFollowDelta((d) => d + 1) });
         setFollowDelta((d) => d - 1);
       }
     },
@@ -203,21 +206,11 @@ function ProfileBody({ address }: { address: Ss58 }) {
     window.history.replaceState(null, "", url.toString()); // side-switch: no history stacking
   }, []);
 
-  // `follows` belongs to the address it was opened on. ProfileBody is REUSED (not remounted) across
-  // /u/A → /u/B, and a soft nav to another profile — e.g. tapping a PersonRow's <Link> inside the list
-  // — changes `address` but does NOT fire popstate, so without this the previous account's follow panel
-  // would render under the new /u/<b>/ URL. Re-derive `follows` from the new URL DURING render (React's
-  // "adjust state on a prop change" pattern — no wrong-surface flash); the popstate listener above still
-  // covers browser back/forward on the SAME profile.
-  const [followsAddr, setFollowsAddr] = useState(address);
-  if (followsAddr !== address) {
-    setFollowsAddr(address);
-    const v =
-      typeof window !== "undefined"
-        ? new URLSearchParams(window.location.search).get("follows")
-        : null;
-    setFollows(v === "followers" || v === "following" ? v : null);
-  }
+  // `follows` belongs to the address it was opened on, and it does: ProfileView keys ProfileBody on
+  // `address`, so a soft nav to another profile (a PersonRow <Link>, a mention chip) REMOUNTS this
+  // component and `follows` re-initializes from the new URL via its useState initializer above. The
+  // popstate listener covers browser back/forward on the SAME profile. (An earlier "adjust follows on a
+  // prop change" block guarded a reuse-across-profiles case the key makes impossible — it was dead.)
 
   // A list FollowButton just follows/unfollows (no header follower-count delta — that's for THIS
   // profile's own counter, driven by onToggleFollow above). Optimism lives in the useFollow hook.
@@ -309,8 +302,10 @@ function ProfileBody({ address }: { address: Ss58 }) {
     (profile?.location && profile.location.trim()) ||
     (profile?.website && profile.website.trim())
   );
-  // Sticky-header <h1> renders this raw (not via DisplayName) — harden it here.
-  const headerName = sanitizeInline(profile?.displayName?.trim() ?? "") || handleOf(address);
+  // Sticky-header <h1> renders this raw (not via DisplayName) — harden it here. Fall back to the SAME
+  // cogno-… name the body's <DisplayName> uses, not the @handle, so a nameless profile doesn't show two
+  // different "names" a few pixels apart (header "@5Grw…utQY" vs body "cogno-Grwkut").
+  const headerName = sanitizeInline(profile?.displayName?.trim() ?? "") || fallbackDisplayName(address);
   const postCount = profile?.postCount ?? 0;
   const banned = profile?.banned === true;
   const handle = handleOf(address);

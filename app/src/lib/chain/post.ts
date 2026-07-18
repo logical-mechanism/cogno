@@ -191,19 +191,25 @@ export function signSubmitWatch(
     let innerSub: { unsubscribe: () => void } | undefined;
     let cancelled = false;
     let settled = false;
+    // True once takeNonce has resolved (and thus incremented `inflight`) — i.e. this write actually
+    // reserved a slot. settle() must NOT release a slot this write never reserved: if teardown runs
+    // BEFORE takeNonce resolves, `inflight` reflects OTHER in-flight writes, so a settleNonce() there
+    // would steal a different write's slot (and then double-decrement once takeNonce resolves-cancelled).
+    let reserved = false;
     const settle = () => {
       if (settled) return;
       settled = true;
-      settleNonce(signer.ss58);
+      if (reserved) settleNonce(signer.ss58);
     };
 
     takeNonce(api, signer.ss58)
       .then((nonce) => {
+        // takeNonce resolved → it did `inflight += 1`; this write now owns a slot to release.
+        reserved = true;
         if (cancelled) {
-          // The teardown's guarded settle() already ran (clamped at 0, a no-op) BEFORE takeNonce
-          // resolved and did its `inflight += 1`. settle() here can't release that slot (settled is
-          // tripped), so decrement directly — otherwise inflight sticks at ≥1, settleNonce never hits 0,
-          // and next never resets to re-sync from chain.
+          // Unsubscribed before we got here: teardown's settle() already ran (reserved was still false
+          // → a no-op, correctly leaving other writes' slots alone), so release the slot we just
+          // reserved directly here — otherwise inflight sticks ≥1 and never resyncs from chain.
           settleNonce(signer.ss58);
           return;
         }

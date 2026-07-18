@@ -123,6 +123,15 @@ export function PollComposer({
   // submitting the form); Backspace on an empty removable option → delete it and focus the previous.
   const onOptionKeyDown = useCallback(
     (i: number, e: KeyboardEvent<HTMLInputElement>) => {
+      // ⌘/Ctrl+Enter submits from an option field too — parity with the question textarea, whose
+      // shortcut the composer advertises. Route it through the enclosing <form> so it hits the exact
+      // same validity-gated submit path (requestSubmit → Composer's onSubmit), rather than the
+      // option-navigation branch below swallowing every Enter.
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        e.currentTarget.form?.requestSubmit();
+        return;
+      }
       if (e.key === "Enter") {
         e.preventDefault();
         if (i < options.length - 1) {

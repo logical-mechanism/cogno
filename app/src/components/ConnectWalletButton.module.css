@@ -66,12 +66,31 @@
 
 .pickerEmpty {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--cg-space-2);
   padding: var(--cg-space-3);
   font-size: var(--cg-fs-sm);
   color: var(--cg-text-secondary);
   text-align: center;
+}
+
+.installLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cg-space-2);
+  justify-content: center;
+}
+
+.installLink {
+  color: var(--cg-accent);
+  font-weight: var(--cg-fw-semibold);
+  text-decoration: none;
+}
+
+.installLink:hover {
+  text-decoration: underline;
 }
 
 .list {

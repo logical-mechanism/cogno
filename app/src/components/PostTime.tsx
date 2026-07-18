@@ -26,8 +26,10 @@ export function PostTime({ at }: { at: number }) {
   const { bestBlock } = useSession();
   if (!at || bestBlock == null) return null; // optimistic (at=0) / heads not yet known → render nothing
   const label = formatAgo(Math.max(0, bestBlock - at) * SECS_PER_BLOCK);
+  // "now" reads as "just now · block #123", not the ungrammatical "~now ago · block #123".
+  const title = label === "now" ? `just now · block #${at}` : `~${label} ago · block #${at}`;
   return (
-    <span className={styles.time} title={`~${label} ago · block #${at}`}>
+    <span className={styles.time} title={title}>
       <span className={styles.dot} aria-hidden>
         ·
       </span>

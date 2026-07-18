@@ -172,8 +172,10 @@
   .main {
     border-left: none;
     border-right: none;
-    /* leave room for the fixed bottom tab bar */
-    padding-bottom: calc(var(--cg-header-h) + env(safe-area-inset-bottom, 0));
+    /* leave room for the fixed bottom tab bar. Typed 0px fallback: inside calc(), a unitless 0 makes the
+       whole expression invalid (adding <number> to <length>) in an engine that doesn't recognise env(),
+       dropping the declaration so content hides behind the bar. */
+    padding-bottom: calc(var(--cg-header-h) + env(safe-area-inset-bottom, 0px));
   }
 }
 

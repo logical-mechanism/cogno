@@ -11,6 +11,7 @@ import styles from "./DiagnosticsSection.module.css";
 import { useSession } from "@/components/Providers";
 import { useHeads } from "@/hooks/useHeads";
 import { useToaster } from "@/components/toast/ToasterProvider";
+import { copyToClipboard } from "@/lib/share";
 import { getGenesisHex } from "@/lib/chain/identity";
 
 function shortHex(hex: string | null, head = 10): string {
@@ -90,12 +91,10 @@ function Row({
 
   const onCopy = useCallback(async () => {
     if (!copy) return;
-    try {
-      await navigator.clipboard.writeText(copy);
-      toast({ kind: "success", message: "Copied" });
-    } catch {
-      toast({ kind: "error", message: "Couldn't copy" });
-    }
+    // Legacy-fallback copy so it also works in insecure contexts / in-app webviews (navigator.clipboard
+    // undefined) — the genesis/runtime hex should be copyable even there for support diagnostics.
+    const ok = await copyToClipboard(copy);
+    toast(ok ? { kind: "success", message: "Copied" } : { kind: "error", message: "Couldn't copy" });
   }, [copy, toast]);
 
   return (

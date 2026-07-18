@@ -62,3 +62,35 @@
   font-size: var(--cg-fs-sm);
   color: var(--cg-text-secondary);
 }
+
+.errorRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) 0;
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}
+
+.retry {
+  flex: 0 0 auto;
+  padding: var(--cg-space-1) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+}
+
+.retry:hover {
+  background: var(--cg-bg-hover);
+}
+
+.fallback {
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+  font-style: italic;
+}

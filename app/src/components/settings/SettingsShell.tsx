@@ -63,10 +63,18 @@ export function SettingsShell({
 }) {
   const tablistRef = useRef<HTMLDivElement | null>(null);
   const panelHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const prevDrilled = useRef(drilled);
 
-  // On drilling into a panel (mobile/tablet), move focus to the panel heading (a11y).
+  // Move focus with the drill (a11y): into a panel → the panel heading; back OUT → the section row we
+  // came from (a true→false transition), so keyboard/AT users on mobile don't drop to document.body and
+  // lose their place in the list.
   useEffect(() => {
-    if (drilled) panelHeadingRef.current?.focus();
+    if (drilled) {
+      panelHeadingRef.current?.focus();
+    } else if (prevDrilled.current) {
+      tablistRef.current?.querySelector<HTMLElement>(`[data-section="${active}"]`)?.focus();
+    }
+    prevDrilled.current = drilled;
   }, [drilled, active]);
 
   const activeHeading = SECTIONS.find((s) => s.id === active)?.heading ?? "Settings";

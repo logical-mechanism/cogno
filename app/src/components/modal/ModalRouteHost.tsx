@@ -67,7 +67,12 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
   // poll/compose share /compose/; edit-profile keeps the current URL (its fallback is /settings/).
   if (kind === "edit-profile") return;
   try {
-    window.history.pushState({ cgModal: kind }, "", url);
+    // A compose↔poll flip changes `kind` while ONE modal stays open — both live at /compose/. If a modal
+    // URL is already on the stack, REPLACE it rather than stacking a second /compose/ entry; otherwise
+    // onClose's single history.back() would pop to the earlier /compose/ instead of the originating page
+    // (and each flip would stack another polluting entry).
+    if (window.history.state?.cgModal) window.history.replaceState({ cgModal: kind }, "", url);
+    else window.history.pushState({ cgModal: kind }, "", url);
   } catch {
     /* history may be unavailable in some embeds; the overlay still works in-memory */
   }
@@ -104,8 +109,11 @@ export function ModalRouteHost() {
   // Resolve the reply/quote target post through the SEAM (source.thread → root), never a concrete
   // reader. Only fetched while a reply/quote modal is open.
   const needsTarget = kind === "reply" || kind === "quote";
-  const { thread } = useThread(source, needsTarget ? targetId : null);
+  const { thread, loading: targetLoading } = useThread(source, needsTarget ? targetId : null);
   const targetPost: CognoPost | null = needsTarget ? thread?.root ?? null : null;
+  // When the target is pruned / a transient read fails (targetPost null AND not loading) the render below
+  // degrades to a plain post composer (mirrors ComposePage.contextUnavailable), instead of pinning the
+  // modal on a dead "Loading…" spinner.
 
   const onClose = useCallback(() => {
     // Pop the pushed URL (if any) then clear the store. The popstate handler also calls close(); the
@@ -411,11 +419,46 @@ export function ModalRouteHost() {
     );
   }
 
-  // reply / quote wait for the target post before rendering the composer.
+  // reply / quote wait for the target post before rendering the composer. While the read is in flight
+  // show the busy placeholder; once it resolves to "no target" (pruned / failed), degrade to a plain
+  // post composer so the modal is never a dead-end spinner (mirrors ComposePage).
   if (needsTarget && !targetPost) {
+    if (targetLoading) {
+      return (
+        <ComposerModal title={title} onClose={onRequestClose}>
+          <Loading variant="panel" label="Loading the post…" />
+        </ComposerModal>
+      );
+    }
     return (
-      <ComposerModal title={title} onClose={onRequestClose}>
-        <Loading variant="panel" label="Loading the post…" />
+      <ComposerModal title="Compose post" onClose={onRequestClose}>
+        <Composer
+          viewer={viewer}
+          mode="post"
+          submitState={submitState}
+          noPostingPower={noPostingPower}
+          needsVotingPower={needsVotingPower}
+          rateLimited={rateLimited}
+          retryInSeconds={retryInSeconds}
+          text={text}
+          onTextChange={setText}
+          onSerializedChange={setSerialized}
+          autoFocus
+          onSubmit={onPost}
+          onDirtyChange={onComposerDirty}
+          contextAbove={
+            <p
+              role="status"
+              style={{
+                margin: "0 0 var(--cg-space-2)",
+                color: "var(--cg-text-muted)",
+                fontSize: "var(--cg-fs-sm)",
+              }}
+            >
+              This post is unavailable — posting as a new post instead.
+            </p>
+          }
+        />
       </ComposerModal>
     );
   }
@@ -476,6 +519,7 @@ export function ModalRouteHost() {
             noPostingPower={noPostingPower}
             needsVotingPower={needsVotingPower}
             rateLimited={rateLimited}
+            retryInSeconds={retryInSeconds}
             autoFocus
             submitCreatePoll={onCreatePoll}
             onTogglePoll={toCompose}

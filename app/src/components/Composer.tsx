@@ -192,6 +192,7 @@ export function Composer({
     markSubmitted,
     suggestions: mentionPopover,
     open: mentionsOpen,
+    activeDescendant: mentionActiveDescendant,
     onTextInput: syncMentionQuery,
     onKeyDown: mentionKeyDown,
     dismiss: dismissMentions,
@@ -381,6 +382,7 @@ export function Composer({
               role="combobox"
               aria-expanded={mentionsOpen}
               aria-controls={mentionsOpen ? listId : undefined}
+              aria-activedescendant={mentionActiveDescendant ?? undefined}
               aria-autocomplete="list"
               aria-describedby={`cg-composer-${mode}-meta`}
             />
