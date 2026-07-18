@@ -12,6 +12,7 @@ import { Composer } from "./Composer";
 import { Avatar } from "./Avatar";
 import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
+import { sanitizeInline } from "@/lib/sanitize";
 import styles from "./ReplyComposer.module.css";
 import type { Viewer, CognoPost, ActionState, ComposerDraft } from "./kit";
 
@@ -67,7 +68,9 @@ export function ReplyComposer({
             />
             <Handle address={replyTo.author} as="a" />
           </div>
-          <p className={styles.parentText}>{replyTo.text}</p>
+          <p className={styles.parentText} dir="auto">
+            {sanitizeInline(replyTo.text)}
+          </p>
         </div>
       </div>
       <p className={styles.replyingTo}>

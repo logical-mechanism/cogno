@@ -51,6 +51,7 @@ import { useToaster } from "@/components/toast/ToasterProvider";
 import { submitReply } from "@/lib/chain/mutations";
 import { formatCount, formatSignedWeight, formatWeight } from "@/lib/format";
 import { handleOf } from "@/lib/ss58";
+import { sanitizeInline } from "@/lib/sanitize";
 import type { CognoPost } from "@/lib/types";
 import type { ActionState, ComposerDraft } from "@/components/kit";
 
@@ -101,7 +102,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const rootParentId = thread?.root.parent;
   const ancestor = useMemo<{ id: bigint; label: string } | null>(() => {
     if (parentRef) {
-      return { id: parentRef.id, label: parentRef.displayName?.trim() || handleOf(parentRef.author) };
+      return {
+        id: parentRef.id,
+        label: sanitizeInline(parentRef.displayName ?? "") || handleOf(parentRef.author),
+      };
     }
     return rootParentId !== undefined ? { id: rootParentId, label: `#${rootParentId}` } : null;
   }, [parentRef, rootParentId]);
@@ -117,7 +121,12 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     () => mod.filterPosts(thread?.replies ?? []),
     [thread?.replies, mod],
   );
-  const ancestors = useMemo<CognoPost[]>(() => thread?.ancestors ?? [], [thread?.ancestors]);
+  // Suppress blocked authors + hidden posts in the ancestor chain too (the same hard filter the replies
+  // get) — otherwise a hidden/blocked parent renders in full above the focal post.
+  const ancestors = useMemo<CognoPost[]>(
+    () => mod.filterPosts(thread?.ancestors ?? []),
+    [thread?.ancestors, mod],
+  );
 
   // Paged replies: the NEWEST N confirmed + ALL pending. Replies come chronological (oldest-first), and
   // a just-posted reply is the NEWEST one — the target of the scroll-to-reply effect — so it must stay
@@ -294,8 +303,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // ── browser tab title: author + snippet, so multiple open post tabs are distinguishable ──
   useEffect(() => {
     if (typeof document === "undefined" || !focal) return;
-    const who = focal.authorDisplayName?.trim() || handleOf(focal.author);
-    const snippet = focal.text.trim().replace(/\s+/g, " ");
+    // Harden both halves — the browser tab title is user text, and a bidi override / newline there
+    // would corrupt the tab label (sanitizeInline also does the whitespace collapse).
+    const who = sanitizeInline(focal.authorDisplayName ?? "") || handleOf(focal.author);
+    const snippet = sanitizeInline(focal.text);
     const clipped = snippet.length > 60 ? `${snippet.slice(0, 60)}…` : snippet;
     document.title = clipped ? `${who} on cogno: “${clipped}”` : `${who} on cogno`;
     // No cleanup — the next route sets its own title.

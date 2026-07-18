@@ -47,6 +47,7 @@ import { useAccountVoteFor } from "@/hooks/useAccountVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { isPlausibleSs58, handleOf } from "@/lib/ss58";
+import { sanitizeInline } from "@/lib/sanitize";
 import { useRouteSegment } from "@/lib/routeSegment";
 import type { ProfileArgs } from "@/lib/feed/source";
 import type { CognoPost, Ss58 } from "@/components/kit";
@@ -308,7 +309,8 @@ function ProfileBody({ address }: { address: Ss58 }) {
     (profile?.location && profile.location.trim()) ||
     (profile?.website && profile.website.trim())
   );
-  const headerName = profile?.displayName?.trim() || handleOf(address);
+  // Sticky-header <h1> renders this raw (not via DisplayName) — harden it here.
+  const headerName = sanitizeInline(profile?.displayName?.trim() ?? "") || handleOf(address);
   const postCount = profile?.postCount ?? 0;
   const banned = profile?.banned === true;
   const handle = handleOf(address);

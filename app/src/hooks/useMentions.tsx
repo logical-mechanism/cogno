@@ -24,6 +24,7 @@ import {
   type SubmittedDraft,
 } from "@/lib/mentions";
 import { fallbackDisplayName, truncateSs58 } from "@/lib/ss58";
+import { useBlockedSet } from "@/lib/blockStore";
 import type { Suggestion } from "@/lib/types";
 
 const MENTION_LIMIT = 6;
@@ -78,6 +79,8 @@ export function useMentions(opts: {
   const { text, setText, taRef, listId } = opts;
   const { api, signer, source, viewer } = useSession();
   const me = viewer.address ?? null;
+  // Never suggest a blocked account in @mention autocomplete (block = no interactions with them).
+  const blocked = useBlockedSet(me);
   const { following } = useFollow(api, signer, source, me);
   // Hold the following set in a REF (not a memo in the search-effect deps): useFollow returns a fresh
   // `[]` on every render while its edges are null (in-flight / failed), which would otherwise make the
@@ -152,7 +155,7 @@ export function useMentions(opts: {
           // Client-side re-rank: (a) accounts the viewer follows first, (b) reputation net score desc,
           // (c) follower count desc — the strongest-signal-first ordering the task specifies.
           const followingSet = followingSetRef.current;
-          const ranked = [...people].sort((a, b) => {
+          const ranked = people.filter((p) => !blocked.has(p.author)).sort((a, b) => {
             const fa = followingSet.has(a.author) ? 0 : 1;
             const fb = followingSet.has(b.author) ? 0 : 1;
             if (fa !== fb) return fa - fb;
@@ -175,7 +178,7 @@ export function useMentions(opts: {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [open, query, source, canSearch]);
+  }, [open, query, source, canSearch, blocked]);
 
   const pick = useCallback(
     (s: Suggestion) => {

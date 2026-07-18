@@ -10,6 +10,7 @@ import { DisplayName } from "../DisplayName";
 import { Handle } from "../Handle";
 import { IconReply, IconLike, IconDownvote, IconBell, IconProfile, IconPoll } from "../icons";
 import { useAccountProfile } from "@/hooks/useAccountProfile";
+import { sanitizeInline } from "@/lib/sanitize";
 import type { IconProps } from "../icons";
 import type { Notif } from "@/lib/chain/notifications";
 import styles from "./NotificationRow.module.css";
@@ -74,7 +75,7 @@ export function NotificationRow({ notif, unread }: { notif: Notif; unread: boole
     <Link
       href={targetHref(notif)}
       className={`${styles.row} ${unread ? styles.unread : ""}`}
-      aria-label={`${profile?.displayName ?? notif.actor} ${verb(notif)}`}
+      aria-label={`${sanitizeInline(profile?.displayName ?? "") || notif.actor} ${verb(notif)}`}
     >
       <span className={`${styles.kind} ${toneClass(notif)}`} aria-hidden>
         <KindIcon n={notif} />

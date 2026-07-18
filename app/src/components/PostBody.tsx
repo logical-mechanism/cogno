@@ -19,11 +19,16 @@
 // (overflow-wrap: break-word). The node tree is built from PARSED SEGMENTS — never
 // dangerouslySetInnerHTML — so the text is XSS-safe; the only links we emit are anchors with
 // rel="noopener noreferrer nofollow", target=_blank, styled in --cg-accent.
+// The raw body is first run through `sanitizeText` (lib/sanitize) to defuse the VISUAL abuse React does
+// NOT stop — bidi-override spoofing (Trojan Source), invisible separators, Zalgo mark-stacking — and the
+// container is dir="auto" so genuine RTL still lays out. Sanitizing here (not at the data layer) keeps
+// the byte-identical text on the search / write paths untouched.
 
 import { useMemo } from "react";
 import Link from "next/link";
 import { isImageUrl, resolveImageSrc, URL_RE, TRAILING_PUNCT } from "@/lib/media";
 import { validSs58Prefix } from "@/lib/mentions";
+import { sanitizeText } from "@/lib/sanitize";
 import { RevealImage } from "./RevealImage";
 import { MentionChip } from "./MentionChip";
 import { Highlight } from "./Highlight";
@@ -136,14 +141,14 @@ function urlLabel(raw: string): string {
 }
 
 export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps) {
-  const segs = useMemo(() => segment(text), [text]);
+  const segs = useMemo(() => segment(sanitizeText(text)), [text]);
 
   const cls = [styles.body, size === "lg" ? styles.lg : styles.base, dim ? styles.dim : ""]
     .filter(Boolean)
     .join(" ");
 
   return (
-    <div className={cls}>
+    <div className={cls} dir="auto">
       {segs.map((s, i) => {
         if (s.kind === "image") {
           const resolved = resolveImageSrc(s.value);

@@ -13,6 +13,7 @@ import styles from "./FollowsPanel.module.css";
 import { StickyHeader } from "@/components/AppShell";
 import { Tabs } from "@/components/ui/Tabs";
 import { FollowsList } from "./FollowsList";
+import { useBlockedSet } from "@/lib/blockStore";
 import { handleOf } from "@/lib/ss58";
 import type { FeedSource } from "@/lib/feed/source";
 import { readErrorCopy } from "@/lib/chain/errors";
@@ -76,7 +77,11 @@ export function FollowsPanel({
     };
   }, [source, address, nonce]);
 
-  const people = side === "followers" ? (edges?.followers ?? []) : (edges?.following ?? []);
+  // A blocked account is hard-suppressed everywhere it would appear — including as a Followers / Following
+  // row on any profile (block = never display their content or interactions).
+  const blocked = useBlockedSet(viewer.address ?? null);
+  const all = side === "followers" ? (edges?.followers ?? []) : (edges?.following ?? []);
+  const people = all.filter((a) => !blocked.has(a));
   const handle = handleOf(address);
   const isSelf = viewer.address != null && viewer.address === address;
   const emptyTitle =
