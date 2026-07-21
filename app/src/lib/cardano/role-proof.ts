@@ -24,9 +24,17 @@ import { hexToBytes } from "@/lib/util/hex";
  *  proof, and the trailing `role=` token pins which role a proof is for. */
 const ROLE_DOMAIN = "cogno-chain/role/v1";
 
-/** The on-wire role token the payload's `role=` field carries. SPO is the only one lit for now; dRep/CC
- *  ride the identical pipeline in later phases. */
+/** The on-wire role token the payload's `role=` field carries. SPO + dRep are lit; CC rides the identical
+ *  pipeline once its observer branch lands. */
 export type RoleToken = "spo" | "drep" | "cc";
+
+/** The conventional secret-key filename shown in the baked command, per role (a placeholder path the
+ *  operator replaces with their real key file). */
+const SKEY_NAME: Record<RoleToken, string> = {
+  spo: "calidus.skey",
+  drep: "drep.skey",
+  cc: "cc-hot.skey",
+};
 
 /** A built role-proof request: the exact payload/address/command handed to the operator, held in the
  *  wizard between "generate command" and "paste result" so the pre-flight can compare byte-for-byte. */
@@ -157,11 +165,11 @@ export async function buildRoleProofRequest(opts: {
   const nonce = randomNonceHex();
   const payload = `${ROLE_DOMAIN};genesis=${genesis};account=${account};nonce=${nonce};role=${opts.role}`;
 
-  // The offline command. `calidus.skey` is a placeholder — the operator points it at their real secret
-  // key file. Single line so it copies cleanly; the payload is safe inside double quotes (only `;` `=`).
+  // The offline command. The `--secret-key` filename is a placeholder — the operator points it at their
+  // real key file. Single line so it copies cleanly; the payload is safe inside double quotes (only `;` `=`).
   const command =
     `cardano-signer sign --cip8 --data "${payload}" ` +
-    `--secret-key calidus.skey --address ${syntheticAddress} --json-extended`;
+    `--secret-key ${SKEY_NAME[opts.role]} --address ${syntheticAddress} --json-extended`;
 
   return {
     role: opts.role,

@@ -2,28 +2,32 @@
 
 // RolesSection — Settings › Verified roles. An optional, post-onboarding add-on (like the stake bind in
 // AccountSection): a payment-bound account proves control of a Cardano role key to earn a verified tag on
-// its profile. SPO first (Calidus pool key, CIP-0151); dRep / CC ride the same wizard in later phases.
+// its profile. One reusable RoleClaimCard drives each role (SPO via a Calidus pool key; dRep via a
+// key-based dRep key). CC rides the same card once its observer branch lands.
 //
-// Unlike the in-browser CIP-8 binds, the role key is an OFFLINE key — so the wizard bakes a fully-pinned
+// Unlike the in-browser CIP-8 binds, the role key is an OFFLINE key — so each card bakes a fully-pinned
 // `cardano-signer` command the operator runs on their key machine, then a strict paste-back pre-flight
-// (lib/cardano/role-proof) verifies the returned COSE blobs before the feeless, bare claim is submitted
-// (useRoles). The badge itself reads the observer-written `ObservedRoles`, so a claim only becomes a
-// visible tag once the chain confirms the pool is live.
+// (lib/cardano/role-proof) verifies the returned COSE blobs before the feeless claim is submitted. The
+// badge itself reads the observer-written `ObservedRoles`, so a claim only becomes a visible tag once the
+// chain confirms the pool / dRep is live.
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import styles from "./RolesSection.module.css";
 import { Spinner } from "@/components/icons";
 import { Loading } from "@/components/Loading";
 import { useSession } from "@/components/Providers";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { useRoles } from "@/hooks/useRoles";
+import { useRoles, type UseRoles } from "@/hooks/useRoles";
 import {
   buildRoleProofRequest,
   preflightRolePasteback,
   type RoleProofRequest,
+  type RoleToken,
 } from "@/lib/cardano/role-proof";
+import type { RoleKindType } from "@/lib/chain/roles";
 import { getGenesisHex } from "@/lib/chain/identity";
 import { copyToClipboard } from "@/lib/share";
+import type { CognoApi, PostingSigner } from "@/lib/types";
 
 /** `0x…`/bare 28-byte hex → `1a2b3c…c3d4` for a compact display. */
 function truncId(idHex: string): string {
@@ -31,45 +35,100 @@ function truncId(idHex: string): string {
   return h.length > 12 ? `${h.slice(0, 6)}…${h.slice(-4)}` : h;
 }
 
-export function RolesSection() {
-  const { api, client, signer, signerCtl, identity } = useSession();
-  const { toast } = useToaster();
-  const roles = useRoles(api, client, signer);
+/** Per-role copy for a claim card. */
+interface RoleSpec {
+  role: RoleToken;
+  kind: RoleKindType;
+  label: string; // short, e.g. "SPO"
+  title: string;
+  cardHint: string;
+  keyPlaceholder: string;
+  keyHint: ReactNode;
+}
 
+const ROLE_SPECS: RoleSpec[] = [
+  {
+    role: "spo",
+    kind: "Spo",
+    label: "SPO",
+    title: "Stake pool operator (SPO)",
+    cardHint:
+      "Prove you run a Cardano stake pool with your Calidus pool key (CIP-0151). A ✓ SPO tag shows on your profile once the chain confirms the pool is live — and clears automatically if it retires.",
+    keyPlaceholder: "calidus .vkey cborHex / 64-hex public key / 56-hex key hash",
+    keyHint: (
+      <>
+        Paste your Calidus <code>.vkey</code> file (or its hex), or the 28-byte key hash. This is a public
+        key — never your secret key.
+      </>
+    ),
+  },
+  {
+    role: "drep",
+    kind: "DRep",
+    label: "dRep",
+    title: "Delegated representative (dRep)",
+    cardHint:
+      "Prove you're a Cardano delegated representative with your dRep key (CIP-0105, key-based only). A ✓ dRep tag shows on your profile once the chain confirms the dRep is registered — and clears if it deregisters.",
+    keyPlaceholder: "drep .vkey cborHex / 64-hex public key / 56-hex dRep ID",
+    keyHint: (
+      <>
+        Paste your dRep <code>.vkey</code> file (or its hex), or the 28-byte dRep ID. Key-based dReps only
+        (a script dRep cannot sign). This is a public key — never your secret key.
+      </>
+    ),
+  },
+];
+
+function RoleClaimCard({
+  spec,
+  roles,
+  api,
+  signer,
+}: {
+  spec: RoleSpec;
+  roles: UseRoles;
+  api: CognoApi;
+  signer: PostingSigner;
+}) {
+  const { toast } = useToaster();
   const [keyInput, setKeyInput] = useState("");
   const [request, setRequest] = useState<RoleProofRequest | null>(null);
   const [building, setBuilding] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
   const [pasted, setPasted] = useState("");
   const [preflightError, setPreflightError] = useState<string | null>(null);
-  const [verifying, setVerifying] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
-  const postingEnabled = signerCtl.postingEnabled;
+  const observed = roles.observedFor(spec.kind);
+  const claimCred = roles.claimCredHex[spec.kind];
 
-  // Typing a new key invalidates a previously-built command (it committed the old key + a nonce).
   const onKeyInputChange = useCallback((v: string) => {
     setKeyInput(v);
     setRequest(null);
     setPasted("");
     setBuildError(null);
     setPreflightError(null);
+    setSubmitError(null);
   }, []);
 
   const onBuild = useCallback(async () => {
-    if (!api || building) return;
+    if (building) return;
     setBuilding(true);
     setBuildError(null);
     setRequest(null);
     setPasted("");
     setPreflightError(null);
+    setSubmitError(null);
     try {
-      // The live genesis the proof must commit (anti-cross-chain), read straight from the node.
       const genesisHex = await getGenesisHex(api);
       const req = await buildRoleProofRequest({
         keyInput,
         sr25519PubkeyHex: signer.publicKeyHex,
         genesisHex,
-        role: "spo",
+        role: spec.role,
       });
       setRequest(req);
     } catch (e) {
@@ -77,35 +136,201 @@ export function RolesSection() {
     } finally {
       setBuilding(false);
     }
-  }, [api, building, keyInput, signer.publicKeyHex]);
+  }, [api, building, keyInput, signer.publicKeyHex, spec.role]);
 
   const onVerifySubmit = useCallback(async () => {
-    if (!request || verifying || roles.claiming) return;
-    setVerifying(true);
+    if (!request || submitting) return;
+    setSubmitting(true);
     setPreflightError(null);
+    setSubmitError(null);
     try {
       const pf = await preflightRolePasteback(pasted, request);
       if (!pf.ok || !pf.coseSign1 || !pf.coseKey) {
         setPreflightError(pf.error || "the pasted proof failed pre-flight");
         return;
       }
-      const ok = await roles.claim(pf.coseSign1, pf.coseKey);
-      if (ok) {
-        toast({ kind: "success", message: "Role claim submitted" });
+      const res = await roles.claim(pf.coseSign1, pf.coseKey);
+      if (res.ok) {
+        toast({ kind: "success", message: `${spec.label} claim submitted` });
         setKeyInput("");
         setRequest(null);
         setPasted("");
+      } else {
+        setSubmitError(res.error || "the on-chain claim was rejected");
       }
     } finally {
-      setVerifying(false);
+      setSubmitting(false);
     }
-  }, [request, verifying, roles, pasted, toast]);
+  }, [request, submitting, pasted, roles, spec.label, toast]);
+
+  const onRemove = useCallback(async () => {
+    if (removing) return;
+    setRemoving(true);
+    setRemoveError(null);
+    const res = await roles.unclaim(spec.kind);
+    if (!res.ok) setRemoveError(res.error || "the on-chain removal was rejected");
+    setRemoving(false);
+  }, [removing, roles, spec.kind]);
 
   const copyCommand = useCallback(async () => {
     if (!request) return;
     const ok = await copyToClipboard(request.command);
     toast(ok ? { kind: "success", message: "Command copied" } : { kind: "error", message: "Couldn't copy" });
   }, [request, toast]);
+
+  const removeBtn = (
+    <button
+      type="button"
+      className={styles.outlineBtn}
+      onClick={onRemove}
+      disabled={removing}
+      aria-label={`Remove ${spec.label} role`}
+    >
+      {removing ? "Removing…" : "Remove"}
+    </button>
+  );
+
+  return (
+    <div className={styles.card}>
+      <h3 className={styles.cardTitle}>{spec.title}</h3>
+      <p className={styles.cardHint}>{spec.cardHint}</p>
+
+      {observed ? (
+        // ── verified: the observer confirmed a live role ──
+        <div className={styles.statusRow}>
+          <span className={styles.verifiedMark}>✓ Verified {spec.label}</span>
+          <span className={styles.mono}>{truncId(observed.id)}</span>
+          {removeBtn}
+        </div>
+      ) : claimCred ? (
+        // ── claimed, but the observer hasn't confirmed a live role yet ──
+        <div className={styles.statusRow}>
+          <span className={styles.pendingMark}>
+            <Spinner size="sm" label="Awaiting confirmation" /> Claimed — awaiting on-chain confirmation.
+          </span>
+          {removeBtn}
+        </div>
+      ) : (
+        // ── the claim wizard ──
+        <div className={styles.wizard}>
+          {/* Step 1 — enter the role key */}
+          <div className={styles.step}>
+            <div className={styles.stepHead}>
+              <span className={styles.stepNum}>1</span>
+              <span className={styles.stepTitle}>Enter your {spec.label} verification key</span>
+            </div>
+            <input
+              type="text"
+              className={styles.input}
+              value={keyInput}
+              onChange={(e) => onKeyInputChange(e.target.value)}
+              placeholder={spec.keyPlaceholder}
+              spellCheck={false}
+              autoComplete="off"
+              aria-label={`${spec.label} verification key`}
+            />
+            <p className={styles.hint}>{spec.keyHint}</p>
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              onClick={onBuild}
+              disabled={!keyInput.trim() || building}
+            >
+              {building ? (
+                <>
+                  <Spinner size="sm" label="Building" /> Building…
+                </>
+              ) : (
+                "Generate signing command"
+              )}
+            </button>
+            {buildError && (
+              <p className={styles.error} role="alert">
+                {buildError}
+              </p>
+            )}
+          </div>
+
+          {request && (
+            <>
+              {/* Step 2 — run offline */}
+              <div className={styles.step}>
+                <div className={styles.stepHead}>
+                  <span className={styles.stepNum}>2</span>
+                  <span className={styles.stepTitle}>Sign it offline with cardano-signer</span>
+                </div>
+                <p className={styles.hint}>
+                  Run this where your secret key lives (replace the <code>--secret-key</code> filename with
+                  its path). It produces a one-time proof and never exposes your key.
+                </p>
+                <pre className={styles.codeBlock}>{request.command}</pre>
+                <div className={styles.actions}>
+                  <button type="button" className={styles.outlineBtn} onClick={copyCommand}>
+                    Copy command
+                  </button>
+                </div>
+                <p className={styles.hintMono}>Signs over: {request.syntheticAddress}</p>
+              </div>
+
+              {/* Step 3 — paste + submit */}
+              <div className={styles.step}>
+                <div className={styles.stepHead}>
+                  <span className={styles.stepNum}>3</span>
+                  <span className={styles.stepTitle}>Paste the result</span>
+                </div>
+                <textarea
+                  className={styles.textarea}
+                  value={pasted}
+                  onChange={(e) => setPasted(e.target.value)}
+                  placeholder="Paste the cardano-signer --json-extended output"
+                  spellCheck={false}
+                  rows={4}
+                  aria-label="cardano-signer output"
+                />
+                <button
+                  type="button"
+                  className={styles.primaryBtn}
+                  onClick={onVerifySubmit}
+                  disabled={!pasted.trim() || submitting}
+                >
+                  {submitting ? (
+                    <>
+                      <Spinner size="sm" label="Submitting" /> Submitting…
+                    </>
+                  ) : (
+                    "Verify & submit"
+                  )}
+                </button>
+                {preflightError && (
+                  <p className={styles.error} role="alert">
+                    {preflightError}
+                  </p>
+                )}
+                {submitError && (
+                  <p className={styles.error} role="alert">
+                    {submitError}
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {removeError && (
+        <p className={styles.error} role="alert">
+          {removeError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function RolesSection() {
+  const { api, client, signer, signerCtl, identity } = useSession();
+  const roles = useRoles(api, client, signer);
+
+  const postingEnabled = signerCtl.postingEnabled;
 
   // ── disconnected: a single connect prompt (the global Account control owns the connect button) ──
   if (!postingEnabled) {
@@ -130,7 +355,7 @@ export function RolesSection() {
   }
 
   // ── payment-bound is a precondition (the runtime rejects a role claim from an unbound account) ──
-  if (identity.bound !== true) {
+  if (identity.bound !== true || !api) {
     return (
       <div className={styles.cards}>
         <div className={styles.card}>
@@ -143,176 +368,11 @@ export function RolesSection() {
     );
   }
 
-  const submitting = verifying || roles.claiming;
-  const submitLabel = roles.claiming
-    ? roles.claimPhase === "confirming"
-      ? "Confirming…"
-      : "Submitting…"
-    : verifying
-      ? "Verifying…"
-      : "Verify & submit";
-
   return (
     <div className={styles.cards}>
-      <div className={styles.card}>
-        <h3 className={styles.cardTitle}>Stake pool operator (SPO)</h3>
-        <p className={styles.cardHint}>
-          Prove you run a Cardano stake pool with your Calidus pool key (CIP-0151). A ✓ SPO tag shows on
-          your profile once the chain confirms the pool is live — and clears automatically if it retires.
-        </p>
-
-        {roles.spoObserved ? (
-          // ── verified: the observer confirmed a live pool ──
-          <div className={styles.statusRow}>
-            <span className={styles.verifiedMark}>✓ Verified SPO</span>
-            <span className={styles.mono}>{truncId(roles.spoObserved.id)}</span>
-            <button
-              type="button"
-              className={styles.outlineBtn}
-              onClick={() => roles.unclaim("Spo")}
-              disabled={roles.unclaiming}
-            >
-              {roles.unclaiming ? (
-                <>
-                  <Spinner size="sm" label="Removing" /> Removing…
-                </>
-              ) : (
-                "Remove"
-              )}
-            </button>
-          </div>
-        ) : roles.spoClaimCredHex ? (
-          // ── claimed, but the observer hasn't confirmed a live pool yet ──
-          <div className={styles.statusRow}>
-            <span className={styles.pendingMark}>
-              <Spinner size="sm" label="Awaiting confirmation" /> Claimed — awaiting on-chain confirmation
-              that your pool is live.
-            </span>
-            <button
-              type="button"
-              className={styles.outlineBtn}
-              onClick={() => roles.unclaim("Spo")}
-              disabled={roles.unclaiming}
-            >
-              {roles.unclaiming ? "Removing…" : "Remove"}
-            </button>
-          </div>
-        ) : (
-          // ── the claim wizard ──
-          <div className={styles.wizard}>
-            {/* Step 1 — enter the Calidus key */}
-            <div className={styles.step}>
-              <div className={styles.stepHead}>
-                <span className={styles.stepNum}>1</span>
-                <span className={styles.stepTitle}>Enter your Calidus verification key</span>
-              </div>
-              <input
-                type="text"
-                className={styles.input}
-                value={keyInput}
-                onChange={(e) => onKeyInputChange(e.target.value)}
-                placeholder="calidus .vkey cborHex / 64-hex public key / 56-hex key hash"
-                spellCheck={false}
-                autoComplete="off"
-                aria-label="Calidus verification key"
-              />
-              <p className={styles.hint}>
-                Paste your Calidus <code>.vkey</code> file (or its hex), or the 28-byte key hash. This is a
-                public key — never your secret key.
-              </p>
-              <button
-                type="button"
-                className={styles.primaryBtn}
-                onClick={onBuild}
-                disabled={!keyInput.trim() || building}
-              >
-                {building ? (
-                  <>
-                    <Spinner size="sm" label="Building" /> Building…
-                  </>
-                ) : (
-                  "Generate signing command"
-                )}
-              </button>
-              {buildError && (
-                <p className={styles.error} role="alert">
-                  {buildError}
-                </p>
-              )}
-            </div>
-
-            {request && (
-              <>
-                {/* Step 2 — run offline */}
-                <div className={styles.step}>
-                  <div className={styles.stepHead}>
-                    <span className={styles.stepNum}>2</span>
-                    <span className={styles.stepTitle}>Sign it offline with cardano-signer</span>
-                  </div>
-                  <p className={styles.hint}>
-                    Run this where your <code>calidus.skey</code> lives (replace <code>calidus.skey</code>{" "}
-                    with its path). It produces a one-time proof and never exposes your cold key.
-                  </p>
-                  <pre className={styles.codeBlock}>{request.command}</pre>
-                  <div className={styles.actions}>
-                    <button type="button" className={styles.outlineBtn} onClick={copyCommand}>
-                      Copy command
-                    </button>
-                  </div>
-                  <p className={styles.hintMono}>Signs over: {request.syntheticAddress}</p>
-                </div>
-
-                {/* Step 3 — paste + submit */}
-                <div className={styles.step}>
-                  <div className={styles.stepHead}>
-                    <span className={styles.stepNum}>3</span>
-                    <span className={styles.stepTitle}>Paste the result</span>
-                  </div>
-                  <textarea
-                    className={styles.textarea}
-                    value={pasted}
-                    onChange={(e) => setPasted(e.target.value)}
-                    placeholder="Paste the cardano-signer --json-extended output"
-                    spellCheck={false}
-                    rows={4}
-                    aria-label="cardano-signer output"
-                  />
-                  <button
-                    type="button"
-                    className={styles.primaryBtn}
-                    onClick={onVerifySubmit}
-                    disabled={!pasted.trim() || submitting}
-                  >
-                    {submitting ? (
-                      <>
-                        <Spinner size="sm" label={submitLabel} /> {submitLabel}
-                      </>
-                    ) : (
-                      submitLabel
-                    )}
-                  </button>
-                  {preflightError && (
-                    <p className={styles.error} role="alert">
-                      {preflightError}
-                    </p>
-                  )}
-                  {roles.claimError && (
-                    <p className={styles.error} role="alert">
-                      {roles.claimError}
-                    </p>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {roles.unclaimError && (
-          <p className={styles.error} role="alert">
-            {roles.unclaimError}
-          </p>
-        )}
-      </div>
+      {ROLE_SPECS.map((spec) => (
+        <RoleClaimCard key={spec.role} spec={spec} roles={roles} api={api} signer={signer} />
+      ))}
     </div>
   );
 }

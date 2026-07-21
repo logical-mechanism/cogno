@@ -22,7 +22,7 @@
 //!      history; ADA-only-at-address UTxOs are excluded by the asset `EXISTS`).
 
 use crate::reduction::{hex32, hex_bytes};
-use pallet_cardano_observer::{BeaconName, StakeCredential};
+use pallet_cardano_observer::{BeaconName, RoleCredential, StakeCredential};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -320,6 +320,10 @@ pub async fn read_stake_observation(
 ///      `pool_update` at slot ≤ ref outranks the latest effective `pool_retire`), for the liveness gate.
 ///   3. `owner_pools` — for each BOUND stake credential (`$2`), the pool it is declared an owner of (the
 ///      FREE `SpoOwner` path). Scoped by the bound set; the reduction filters to active pools.
+///   4. `live_dreps` — for each CLAIMED key-based dRep ID (`$3`), whether it is a currently-live dRep: the
+///      latest `drep_registration` at slot ≤ ref is NOT a deregistration (db-sync `deposit` sign: `+`
+///      register / `−` deregister / `NULL` update). Script dReps (`has_script`) can't CIP-8-sign, so they
+///      are excluded. The credential IS the display id (the drep ID), so no separate resolution is needed.
 ///
 /// MAINNET PREREQUISITE: `active_pools` returns ALL active pools (fine on preprod's small set; on mainnet
 /// scope it — e.g. only pools referenced by a claimed Calidus registration or owned by a bound credential).
@@ -347,11 +351,19 @@ owners AS ( \
   JOIN pool_hash ph ON ph.id = pu.hash_id \
   JOIN tx t ON t.id = pu.registered_tx_id JOIN block b ON b.id = t.block_id \
   WHERE b.slot_no <= (SELECT ref FROM params) \
-    AND substring(sa.hash_raw from 2 for 28) = ANY($2::bytea[])) \
+    AND substring(sa.hash_raw from 2 for 28) = ANY($2::bytea[])), \
+dreps AS ( \
+  SELECT encode(dh.raw,'hex') AS drep FROM drep_hash dh \
+  WHERE dh.has_script = false AND dh.raw = ANY($3::bytea[]) \
+    AND (SELECT (dr.deposit IS NULL OR dr.deposit >= 0) FROM drep_registration dr \
+         JOIN tx t ON t.id = dr.tx_id JOIN block b ON b.id = t.block_id \
+         WHERE dr.drep_hash_id = dh.id AND b.slot_no <= (SELECT ref FROM params) \
+         ORDER BY b.slot_no DESC, t.block_index DESC, dr.cert_index DESC LIMIT 1) IS TRUE) \
 SELECT (SELECT EXISTS (SELECT 1 FROM pool_hash)) AS pool_ok, \
        COALESCE((SELECT json_agg(encode(bytes,'hex')) FROM regs), '[]'::json) AS registrations, \
        COALESCE((SELECT json_agg(encode(hash_raw,'hex')) FROM active), '[]'::json) AS active_pools, \
-       COALESCE((SELECT json_agg(json_build_object('cred', cred, 'pool', pool)) FROM owners), '[]'::json) AS owner_pools";
+       COALESCE((SELECT json_agg(json_build_object('cred', cred, 'pool', pool)) FROM owners), '[]'::json) AS owner_pools, \
+       COALESCE((SELECT json_agg(drep) FROM dreps), '[]'::json) AS live_dreps";
 
 /// The raw ROLE read (pre-reduction). `registrations` are the verbatim label-867 metadata bytes;
 /// `active_pools` the 28-byte active pool IDs; `owner_pools` the `(28-byte stake credential, 28-byte
@@ -360,6 +372,9 @@ pub struct DbsyncRoleRead {
     pub registrations: Vec<Vec<u8>>,
     pub active_pools: Vec<[u8; 28]>,
     pub owner_pools: Vec<([u8; 28], [u8; 28])>,
+    /// The CLAIMED key-based dRep IDs (`$3`) that are currently LIVE (latest registration ≤ ref is not a
+    /// deregistration). For dReps the credential IS the display id, so the reduction emits these directly.
+    pub live_dreps: Vec<[u8; 28]>,
 }
 
 /// Read the raw ROLE material AS-OF `reference_slot`, in one snapshot. Fail-closed: any error, or an
@@ -369,6 +384,7 @@ pub async fn read_role_observation(
     url: &str,
     reference_slot: u64,
     bound_stake_creds: &[StakeCredential],
+    bound_drep_ids: &[RoleCredential],
 ) -> Result<DbsyncRoleRead, String> {
     let read = async {
         let mut slot = client_cell().lock().await;
@@ -378,10 +394,11 @@ pub async fn read_role_observation(
         let ref_i64 =
             i64::try_from(reference_slot).map_err(|_| "reference slot exceeds i64".to_string())?;
         let creds: Vec<&[u8]> = bound_stake_creds.iter().map(|c| c.as_slice()).collect();
+        let dreps: Vec<&[u8]> = bound_drep_ids.iter().map(|c| c.as_slice()).collect();
         let row = match slot
             .as_ref()
             .expect("just connected/validated above; qed")
-            .query_one(ROLE_OBSERVATION_SQL, &[&ref_i64, &creds])
+            .query_one(ROLE_OBSERVATION_SQL, &[&ref_i64, &creds, &dreps])
             .await
         {
             Ok(r) => r,
@@ -441,10 +458,22 @@ pub async fn read_role_observation(
                 hex_bytes::<28>(pool).ok_or("bad owner pool hex")?,
             ));
         }
+        let drep_rows = row
+            .try_get::<_, serde_json::Value>(4)
+            .map_err(|e| format!("db-sync live_dreps column decode failed: {e}"))?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| "db-sync live_dreps column was not a JSON array".to_string())?;
+        let mut live_dreps: Vec<[u8; 28]> = Vec::with_capacity(drep_rows.len());
+        for r in &drep_rows {
+            let hex = r.as_str().ok_or("live drep row not a string")?;
+            live_dreps.push(hex_bytes::<28>(hex).ok_or("bad drep id hex")?);
+        }
         Ok(DbsyncRoleRead {
             registrations,
             active_pools,
             owner_pools,
+            live_dreps,
         })
     };
 

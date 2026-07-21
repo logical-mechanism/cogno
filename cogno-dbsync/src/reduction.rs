@@ -272,14 +272,19 @@ pub fn canonical_role_entries(raw: Vec<RoleEntry>) -> Vec<RoleEntry> {
 ///   witness checks to registrations of pools that have a claimed key.
 /// - **Owner (free path)**: `owner_pools` is already `(bound stake credential, the pool it owns)` from the
 ///   SQL; emit an `SpoOwner` entry for each whose pool is ACTIVE.
+/// - **dRep**: `live_dreps` is already the set of CLAIMED, currently-live key-based dRep IDs from the SQL
+///   (the liveness join runs in-DB, no witness). The dRep ID IS the credential AND the display id, so each
+///   becomes a `DRep` entry directly. Nothing to verify here — the CIP-8 claim proved key control and the
+///   SQL proved liveness.
 ///
 /// `active_pools` is the set of currently-registered, non-retired pool IDs (as-of the reference), used to
-/// gate both paths on liveness.
+/// gate both SPO paths on liveness.
 pub fn reduce_role_observation(
     registrations: &[Vec<u8>],
     active_pools: &[[u8; 28]],
     owner_pools: &[([u8; 28], [u8; 28])],
     claimed_calidus: &[[u8; 28]],
+    live_dreps: &[[u8; 28]],
 ) -> Vec<RoleEntry> {
     let active: BTreeSet<[u8; 28]> = active_pools.iter().copied().collect();
     let claimed: BTreeSet<[u8; 28]> = claimed_calidus.iter().copied().collect();
@@ -334,6 +339,16 @@ pub fn reduce_role_observation(
                 id: *pool_id,
             });
         }
+    }
+
+    // dRep: the SQL already scoped `live_dreps` to CLAIMED + currently-live key-based dReps, and a dRep's
+    // credential IS its display id — so each is emitted directly (no witness, no liveness re-check here).
+    for drep_id in live_dreps.iter() {
+        entries.push(RoleEntry {
+            source: RoleSource::DRep,
+            credential: *drep_id,
+            id: *drep_id,
+        });
     }
 
     canonical_role_entries(entries)
@@ -717,7 +732,7 @@ mod tests {
         #[test]
         fn spo_calidus_happy_path() {
             let (bytes, pool, cal_hash) = reg(1, 2, 5);
-            let out = reduce_role_observation(&[bytes], &[pool], &[], &[cal_hash]);
+            let out = reduce_role_observation(&[bytes], &[pool], &[], &[cal_hash], &[]);
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].source, RoleSource::SpoCalidus);
             assert_eq!(out[0].credential, cal_hash);
@@ -728,14 +743,14 @@ mod tests {
         fn inactive_pool_is_not_tagged() {
             let (bytes, _pool, cal_hash) = reg(1, 2, 5);
             // pool NOT in active_pools ⇒ dropped.
-            assert!(reduce_role_observation(&[bytes], &[], &[], &[cal_hash]).is_empty());
+            assert!(reduce_role_observation(&[bytes], &[], &[], &[cal_hash], &[]).is_empty());
         }
 
         #[test]
         fn unclaimed_calidus_is_not_tagged() {
             let (bytes, pool, _cal_hash) = reg(1, 2, 5);
             // claimed set empty ⇒ nothing verified/emitted.
-            assert!(reduce_role_observation(&[bytes], &[pool], &[], &[]).is_empty());
+            assert!(reduce_role_observation(&[bytes], &[pool], &[], &[], &[]).is_empty());
         }
 
         #[test]
@@ -744,10 +759,10 @@ mod tests {
             let (r5, pool, cal5) = reg(1, 2, 5);
             let (r9, _pool, cal9) = reg(1, 3, 9);
             // A claim for the OLD (superseded) Calidus key is NOT tagged — the highest-nonce winner rotated.
-            let old = reduce_role_observation(&[r5.clone(), r9.clone()], &[pool], &[], &[cal5]);
+            let old = reduce_role_observation(&[r5.clone(), r9.clone()], &[pool], &[], &[cal5], &[]);
             assert!(old.is_empty(), "a superseded Calidus key must not be tagged");
             // A claim for the CURRENT (highest-nonce) key IS tagged.
-            let new = reduce_role_observation(&[r5, r9], &[pool], &[], &[cal9]);
+            let new = reduce_role_observation(&[r5, r9], &[pool], &[], &[cal9], &[]);
             assert_eq!(new.len(), 1);
             assert_eq!(new[0].id, pool);
         }
@@ -762,7 +777,7 @@ mod tests {
             // Splice the bogus witness onto a payload scoping the real pool by re-scoping: simplest — the
             // attacker's registration scopes ITS OWN pool, so it can't affect the real pool. Confirm the
             // real claim still resolves and the bogus one is inert.
-            let out = reduce_role_observation(&[real, bogus], &[pool], &[], &[cal_real]);
+            let out = reduce_role_observation(&[real, bogus], &[pool], &[], &[cal_real], &[]);
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].credential, cal_real);
             assert_eq!(out[0].id, pool);
@@ -772,13 +787,31 @@ mod tests {
         fn owner_free_path() {
             let stake: [u8; 28] = [0x33; 28];
             let pool: [u8; 28] = [0x44; 28];
-            let out = reduce_role_observation(&[], &[pool], &[(stake, pool)], &[]);
+            let out = reduce_role_observation(&[], &[pool], &[(stake, pool)], &[], &[]);
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].source, RoleSource::SpoOwner);
             assert_eq!(out[0].credential, stake);
             assert_eq!(out[0].id, pool);
             // inactive pool ⇒ no free tag.
-            assert!(reduce_role_observation(&[], &[], &[(stake, pool)], &[]).is_empty());
+            assert!(reduce_role_observation(&[], &[], &[(stake, pool)], &[], &[]).is_empty());
+        }
+
+        #[test]
+        fn drep_live_set_is_tagged_directly() {
+            // The SQL already returned only CLAIMED + currently-live key-based dReps; the reduction emits
+            // each as a `DRep` entry whose credential IS its display id. No pool/active gating applies.
+            let d1: [u8; 28] = [0xD1; 28];
+            let d2: [u8; 28] = [0xD2; 28];
+            let out = reduce_role_observation(&[], &[], &[], &[], &[d1, d2]);
+            assert_eq!(out.len(), 2);
+            for e in &out {
+                assert_eq!(e.source, RoleSource::DRep);
+                assert_eq!(e.credential, e.id); // dRep: credential == display id
+            }
+            assert!(out.iter().any(|e| e.id == d1));
+            assert!(out.iter().any(|e| e.id == d2));
+            // an empty live set ⇒ no dRep tag.
+            assert!(reduce_role_observation(&[], &[], &[], &[], &[]).is_empty());
         }
     }
 }

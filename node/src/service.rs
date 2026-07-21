@@ -209,10 +209,11 @@ async fn observe_for_parent(
             return None;
         }
     };
-    // 5b. the ROLE read (spec 206): the claimed role credentials (parent state) scope the SPO/Calidus
-    //     reduction; the SQL returns the raw label-867 registrations + active pools + the bound stake set's
-    //     pool ownerships. Same fail-closed discipline: any error ⇒ abstain.
-    let (claimed_calidus, _claimed_dreps, _claimed_committee) =
+    // 5b. the ROLE read: the claimed role credentials (parent state) scope the reduction; the SQL returns
+    //     the raw label-867 registrations + active pools + the bound stake set's pool ownerships (SPO), and
+    //     the CLAIMED, currently-live key-based dReps (`claimed_dreps` → the dRep liveness join runs in-DB).
+    //     Same fail-closed discipline: any error ⇒ abstain. (`_claimed_committee` awaits Phase C.)
+    let (claimed_calidus, claimed_dreps, _claimed_committee) =
         match client.runtime_api().bound_role_credentials(parent) {
             Ok(c) => c,
             Err(e) => {
@@ -220,18 +221,20 @@ async fn observe_for_parent(
                 return None;
             }
         };
-    let role_read = match dbsync::read_role_observation(&dbsync_url, ref_slot, &bound_creds).await {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!(target: "cardano-observer", "db-sync role read failed: {e} — abstaining (empty observation)");
-            return None;
-        }
-    };
+    let role_read =
+        match dbsync::read_role_observation(&dbsync_url, ref_slot, &bound_creds, &claimed_dreps).await {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!(target: "cardano-observer", "db-sync role read failed: {e} — abstaining (empty observation)");
+                return None;
+            }
+        };
     let role_entries = reduce_role_observation(
         &role_read.registrations,
         &role_read.active_pools,
         &role_read.owner_pools,
         &claimed_calidus,
+        &role_read.live_dreps,
     );
     // 6. reduce the db-sync matches (canonical largest-wins-per-beacon) + canonicalize the stake + role sets.
     let obs = build_observation(
