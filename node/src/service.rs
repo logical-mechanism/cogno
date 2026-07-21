@@ -15,7 +15,9 @@ use std::{sync::Arc, time::Duration};
 // (writer) and the cogno-chain-cli (read-only diagnostic) go through byte-identical code.
 use crate::cardano_observer::CardanoObservationInherentDataProvider;
 use cogno_dbsync::dbsync;
-use cogno_dbsync::reduction::{build_observation, hex_encode, reference_slot};
+use cogno_dbsync::reduction::{
+    build_observation, hex_encode, reduce_role_observation, reference_slot,
+};
 use pallet_cardano_observer::{CardanoObservation, CardanoObserverApi, CardanoRef};
 use sp_api::ProvideRuntimeApi;
 use sp_runtime::traits::Block as BlockT;
@@ -46,7 +48,11 @@ async fn build_cardano_idp(
             // once the count EXCEEDS the ceiling. ERROR on that actual freeze; WARN across the approach
             // (75%..=100%, so the at-capacity block that authors the LAST good observation is loud too).
             // Fires on the import path as well (metrics is None there) so any node seeing it warns.
-            let hi = obs.entries.len().max(obs.stake_entries.len()) as u32;
+            let hi = obs
+                .entries
+                .len()
+                .max(obs.stake_entries.len())
+                .max(obs.role_entries.len()) as u32;
             let frozen = max_observed > 0 && hi > max_observed;
             if frozen {
                 log::error!(
@@ -203,7 +209,31 @@ async fn observe_for_parent(
             return None;
         }
     };
-    // 6. reduce the db-sync matches (canonical largest-wins-per-beacon) + canonicalize the stake set.
+    // 5b. the ROLE read (spec 206): the claimed role credentials (parent state) scope the SPO/Calidus
+    //     reduction; the SQL returns the raw label-867 registrations + active pools + the bound stake set's
+    //     pool ownerships. Same fail-closed discipline: any error ⇒ abstain.
+    let (claimed_calidus, _claimed_dreps, _claimed_committee) =
+        match client.runtime_api().bound_role_credentials(parent) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!(target: "cardano-observer", "bound_role_credentials runtime API failed: {e:?} — abstaining");
+                return None;
+            }
+        };
+    let role_read = match dbsync::read_role_observation(&dbsync_url, ref_slot, &bound_creds).await {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!(target: "cardano-observer", "db-sync role read failed: {e} — abstaining (empty observation)");
+            return None;
+        }
+    };
+    let role_entries = reduce_role_observation(
+        &role_read.registrations,
+        &role_read.active_pools,
+        &role_read.owner_pools,
+        &claimed_calidus,
+    );
+    // 6. reduce the db-sync matches (canonical largest-wins-per-beacon) + canonicalize the stake + role sets.
     let obs = build_observation(
         CardanoRef {
             slot: ref_slot,
@@ -212,11 +242,12 @@ async fn observe_for_parent(
         &read.matches,
         &vault_hex,
         stake_entries,
+        role_entries,
     );
     log::debug!(
         target: "cardano-observer",
-        "observed {} vault + {} stake entrie(s) as-of slot {} ({} db-sync match(es), {} bound cred(s), anchor block {})",
-        obs.entries.len(), obs.stake_entries.len(), ref_slot, read.matches.len(), bound_creds.len(), hex_encode(&anchor_hash),
+        "observed {} vault + {} stake + {} role entrie(s) as-of slot {} ({} db-sync match(es), {} bound cred(s), {} registration(s), anchor block {})",
+        obs.entries.len(), obs.stake_entries.len(), obs.role_entries.len(), ref_slot, read.matches.len(), bound_creds.len(), role_read.registrations.len(), hex_encode(&anchor_hash),
     );
     // observer freshness: how far this node's db-sync tip trails the current (parent-derived) Cardano
     // slot. `ref_slot + StabilitySlots` reconstructs that current slot (reference_slot subtracted it);

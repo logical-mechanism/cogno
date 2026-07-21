@@ -16,7 +16,9 @@ it to Rust — its value is the independent lineage.
 | `verify.py` | The CIP-8 bind-proof verifier (COSE_Sign1 parse + `pycardano.cip.cip8.verify` + address/network check), returning the bound identity hash (or raising `VerifyError`). |
 | `beacon.py` | The beacon-name derivation (`blake2b_256(cbor(owner))`) — the L1 `token_name` / identity hash. |
 | `payload.py` | The pinned `cogno-chain/bind/v1;genesis=…;account=…;nonce=…` payload grammar. |
+| `role_payload.py` | The pinned `cogno-chain/role/v1;…;role=<spo\|drep\|cc>` ROLE payload grammar — the only new surface of the role-key proof (`cip8::verify_bind_proof_role`); its COSE crypto path is identical to the bind path already covered by `verify.py`/`test_agreement.py`. |
 | `test_agreement.py` | The oracle: generates real wallet-signed proofs via the headless MeshJS fixture (`app/scripts/m2-cip8-fixture.mjs`) and asserts the Python verifier accepts the valid ones + rejects the tampered ones — the same accept/reject the Rust verifier must produce. |
+| `test_role_payload.py` | Independent accept/reject cross-check of the role grammar (Python `re` regex vs the Rust hand-parser), mirroring the Rust `parse_role_payload_enforces_the_pinned_grammar` vectors. No deps. |
 | `test_beacon.py` | Unit tests for the beacon derivation. |
 | `requirements.txt` | `pycardano` + `cbor2`. |
 

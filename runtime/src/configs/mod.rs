@@ -840,6 +840,25 @@ impl pallet_cogno_gate::Config for Runtime {
     type WeightInfo = pallet_cogno_gate::weights::SubstrateWeight<Runtime>;
 }
 
+/// Verifiable Cardano role tags (SPO / dRep / CC, index 19). `claim_role_signed` is the PERMISSIONLESS
+/// self-proof — it reuses the cogno-gate crown-jewel CIP-8 verifier (`verify_bind_proof_role`) as a pure
+/// function, so no committee trust is needed to claim; the 3-of-5 `AuthorityOrigin` gates only
+/// `revoke_role` (the moderation ban, which tombstones the credential permanently). `IdentityGate =
+/// CognoGate` — a role claim requires a payment-bound account (a Settings add-on, never onboarding).
+/// `CardanoNetwork = 0` (testnet — the live preprod addresses). The `ObservedRoles` ledger the badge
+/// reads is written ONLY by the CardanoObserver inherent (see the `RoleSink` wiring below). ⚠ MAINNET
+/// PREREQUISITE: the role verifier shares the cogno-gate verifier's unaudited-crown-jewel status, and the
+/// weights here are conservative hand-set placeholders (benchmark before mainnet).
+impl pallet_cardano_roles::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    // Gated by the 3-of-5 FollowerCommittee (sudo-free) — gates `revoke_role` only.
+    type RoleAuthorityOrigin = AuthorityOrigin;
+    // A role claim requires an onboarded (payment-bound) account.
+    type IdentityGate = CognoGate;
+    type CardanoNetwork = ConstU8<0>;
+    type WeightInfo = ();
+}
+
 /// Beacon → bound account adapter for pallet-cardano-observer: the beacon name IS the cogno-gate
 /// `AccountOf` key (the 32-byte L1 beacon `token_name`), so the in-runtime lookup is a direct read.
 pub struct BeaconLookup;
@@ -898,6 +917,78 @@ impl pallet_cardano_observer::VotingPowerSink<AccountId> for VotingPowerApply {
         if previous != weight {
             pallet_talk_stake::Pallet::<Runtime>::apply_voting_power(who, weight);
         }
+    }
+}
+
+/// Role credential → bound account adapter for pallet-cardano-observer (spec 206): resolve the observed
+/// role credential via the reverse map named by its `RoleSource` — the roles-pallet `RoleCredIndex` for
+/// the claim-based sources, and cogno-gate `AccountOfStakeCred` for the free `SpoOwner` path.
+pub struct RoleLookup;
+impl pallet_cardano_observer::RoleResolver<AccountId> for RoleLookup {
+    fn resolve(
+        source: pallet_cardano_observer::RoleSource,
+        credential: &[u8; 28],
+    ) -> Option<AccountId> {
+        use pallet_cardano_observer::RoleSource;
+        use pallet_cardano_roles::RoleKind;
+        match source {
+            RoleSource::SpoCalidus => {
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::get(RoleKind::Spo, credential)
+            }
+            RoleSource::SpoOwner => {
+                pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(credential)
+            }
+            RoleSource::DRep => {
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::get(RoleKind::DRep, credential)
+            }
+            RoleSource::Committee => {
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::get(RoleKind::Committee, credential)
+            }
+        }
+    }
+}
+
+/// Observed-role sink adapter: overwrite `who`'s full observed-role set in pallet-cardano-roles (the map
+/// the profile badge reads). `apply_roles` is idempotent (no write/event on an unchanged re-derive) and
+/// clears the row when the set is empty (the observer's unlock clamp).
+pub struct RoleApply;
+impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
+    fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28])]) {
+        use pallet_cardano_roles::{ObservedRole, ObservedRoleSet, RoleKind};
+        let mut set: alloc::vec::Vec<ObservedRole> = alloc::vec::Vec::new();
+        for (kind_ix, id) in roles {
+            let kind = match kind_ix {
+                0 => RoleKind::Spo,
+                1 => RoleKind::DRep,
+                2 => RoleKind::Committee,
+                _ => continue,
+            };
+            set.push(ObservedRole { kind, id: *id });
+        }
+        let bounded = ObservedRoleSet::try_from(set).unwrap_or_default();
+        pallet_cardano_roles::Pallet::<Runtime>::apply_roles(who, bounded);
+    }
+}
+
+/// The claimed role credentials, for the node-side IDP (via the `CardanoObserverApi`): enumerate the
+/// roles-pallet `RoleCredIndex` keys per role at the parent block's state. The `SpoOwner` free path reuses
+/// [`BoundStakeCreds`].
+pub struct BoundRoleCreds;
+impl pallet_cardano_observer::BoundRoleCredentials for BoundRoleCreds {
+    fn claimed_calidus() -> alloc::vec::Vec<[u8; 28]> {
+        pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
+            pallet_cardano_roles::RoleKind::Spo,
+        )
+    }
+    fn claimed_dreps() -> alloc::vec::Vec<[u8; 28]> {
+        pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
+            pallet_cardano_roles::RoleKind::DRep,
+        )
+    }
+    fn claimed_committee() -> alloc::vec::Vec<[u8; 28]> {
+        pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
+            pallet_cardano_roles::RoleKind::Committee,
+        )
     }
 }
 
@@ -1054,6 +1145,10 @@ impl pallet_cardano_observer::Config for Runtime {
     type StakeResolver = StakeLookup;
     type WeightSink = WeightApply;
     type VotingPowerSink = VotingPowerApply;
+    // The role axis (spec 206): resolve observed role credentials to accounts + write the observed-role
+    // ledger the profile badge reads. Same enforce/freeze/clamp discipline as the weight/voting axes.
+    type RoleResolver = RoleLookup;
+    type RoleSink = RoleApply;
     // The 3-of-5 FollowerCommittee (sudo-free) gates the emergency weight-FREEZE flip — the same crown-jewel
     // origin as identity revoke / validator add-remove / authorize_upgrade. `EnforceWeight` defaults to
     // `true` (the observer is the sole writer from genesis); `set_enforcement(false)` freezes weight (verify

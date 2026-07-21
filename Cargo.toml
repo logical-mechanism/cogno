@@ -30,6 +30,9 @@ members = [
 	"pallets/governed-upgrade",
 	# Sudo-free governance: the committee-administered REGENERATING admin-fuel budget (index 18).
 	"pallets/governance-fuel",
+	# Verifiable Cardano role tags (SPO / dRep / CC): the CIP-8-proven claim ledger + the call-less
+	# observer-written observed-role ledger (index 19).
+	"pallets/cardano-roles",
 ]
 
 [workspace.package]
@@ -74,6 +77,10 @@ pallet-governed-upgrade = { path = "pallets/governed-upgrade", default-features 
 # an on_initialize regeneration hook). Non-transferable, mint-on-demand; the admin-side analogue of
 # talk-capacity. No sudo — AuthorityOrigin-gated. Index 18.
 pallet-governance-fuel = { path = "pallets/governance-fuel", default-features = false }
+# Verifiable Cardano role tags (SPO / dRep / CC, index 19): a CIP-8-proven claim ledger (calls the
+# cogno-gate role verifier, identity-gated) + a call-less observer-written observed-role ledger. The
+# observer confirms the claimed credential is a live pool / dRep / CC member (over db-sync).
+pallet-cardano-roles = { path = "pallets/cardano-roles", default-features = false }
 # The shared no-node deterministic Cardano db-sync reader + reduction (std-only). The node observation
 # inherent is the sole reader/writer; the CLI reads chain state over RPC only (no db-sync dependency).
 cogno-dbsync = { path = "cogno-dbsync" }

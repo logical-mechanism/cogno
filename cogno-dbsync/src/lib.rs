@@ -24,5 +24,6 @@
 //! snapshot, largest-UTxO-wins per beacon (never sum), and the `checked_*` reference-slot arithmetic. The
 //! CLI MUST use this crate unmodified (no koios, no alternate SQL) for its output to match the chain.
 
+pub mod calidus;
 pub mod dbsync;
 pub mod reduction;

@@ -278,6 +278,18 @@ impl_runtime_apis! {
             use pallet_cardano_observer::BoundStakeCredentials;
             crate::configs::BoundStakeCreds::bound_stake_credentials()
         }
+        fn bound_role_credentials() -> (
+            alloc::vec::Vec<[u8; 28]>,
+            alloc::vec::Vec<[u8; 28]>,
+            alloc::vec::Vec<[u8; 28]>,
+        ) {
+            use pallet_cardano_observer::BoundRoleCredentials;
+            (
+                crate::configs::BoundRoleCreds::claimed_calidus(),
+                crate::configs::BoundRoleCreds::claimed_dreps(),
+                crate::configs::BoundRoleCreds::claimed_committee(),
+            )
+        }
     }
 
     // spec-120 node-served reads: the runtime folds a whole enriched, viewer-aware feed / thread page

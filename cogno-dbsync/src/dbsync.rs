@@ -310,3 +310,163 @@ pub async fn read_stake_observation(
             )
         })?
 }
+
+/// The ROLE read (spec 206): the raw material the reduction needs to derive `role_entries`, in ONE MVCC
+/// snapshot (single `query_one` → consensus-deterministic):
+///   1. `registrations` — every label-867 (CIP-0151 Calidus) registration's RAW metadata bytes at block
+///      slot ≤ `reference_slot`. The reduction verifies each cold-key witness over these VERBATIM bytes
+///      (never the lossy `json` column) and resolves Calidus→pool.
+///   2. `active_pools` — the currently-registered, non-retired pool IDs as-of the reference (latest
+///      `pool_update` at slot ≤ ref outranks the latest effective `pool_retire`), for the liveness gate.
+///   3. `owner_pools` — for each BOUND stake credential (`$2`), the pool it is declared an owner of (the
+///      FREE `SpoOwner` path). Scoped by the bound set; the reduction filters to active pools.
+///
+/// MAINNET PREREQUISITE: `active_pools` returns ALL active pools (fine on preprod's small set; on mainnet
+/// scope it — e.g. only pools referenced by a claimed Calidus registration or owned by a bound credential).
+const ROLE_OBSERVATION_SQL: &str = "\
+WITH params AS (SELECT $1::bigint AS ref), \
+ep AS (SELECT b.epoch_no AS e FROM block b, params p WHERE b.slot_no <= p.ref ORDER BY b.slot_no DESC LIMIT 1), \
+regs AS ( \
+  SELECT tm.bytes AS bytes FROM tx_metadata tm \
+  JOIN tx t ON t.id = tm.tx_id JOIN block b ON b.id = t.block_id, params p \
+  WHERE tm.key = 867 AND tm.bytes IS NOT NULL AND b.slot_no <= p.ref), \
+active AS ( \
+  SELECT ph.hash_raw AS hash_raw FROM pool_hash ph \
+  WHERE COALESCE((SELECT max(pu.registered_tx_id) FROM pool_update pu \
+      JOIN tx t ON t.id = pu.registered_tx_id JOIN block b ON b.id = t.block_id \
+      WHERE pu.hash_id = ph.id AND b.slot_no <= (SELECT ref FROM params)), 0) \
+    > COALESCE((SELECT max(pr.announced_tx_id) FROM pool_retire pr \
+      JOIN tx t ON t.id = pr.announced_tx_id JOIN block b ON b.id = t.block_id \
+      WHERE pr.hash_id = ph.id AND b.slot_no <= (SELECT ref FROM params) \
+        AND pr.retiring_epoch <= (SELECT e FROM ep)), 0)), \
+owners AS ( \
+  SELECT DISTINCT encode(substring(sa.hash_raw from 2 for 28),'hex') AS cred, encode(ph.hash_raw,'hex') AS pool \
+  FROM pool_owner po \
+  JOIN stake_address sa ON sa.id = po.addr_id \
+  JOIN pool_update pu ON pu.id = po.pool_update_id \
+  JOIN pool_hash ph ON ph.id = pu.hash_id \
+  JOIN tx t ON t.id = pu.registered_tx_id JOIN block b ON b.id = t.block_id \
+  WHERE b.slot_no <= (SELECT ref FROM params) \
+    AND substring(sa.hash_raw from 2 for 28) = ANY($2::bytea[])) \
+SELECT (SELECT EXISTS (SELECT 1 FROM pool_hash)) AS pool_ok, \
+       COALESCE((SELECT json_agg(encode(bytes,'hex')) FROM regs), '[]'::json) AS registrations, \
+       COALESCE((SELECT json_agg(encode(hash_raw,'hex')) FROM active), '[]'::json) AS active_pools, \
+       COALESCE((SELECT json_agg(json_build_object('cred', cred, 'pool', pool)) FROM owners), '[]'::json) AS owner_pools";
+
+/// The raw ROLE read (pre-reduction). `registrations` are the verbatim label-867 metadata bytes;
+/// `active_pools` the 28-byte active pool IDs; `owner_pools` the `(28-byte stake credential, 28-byte
+/// pool ID)` ownership declarations for the bound stake set.
+pub struct DbsyncRoleRead {
+    pub registrations: Vec<Vec<u8>>,
+    pub active_pools: Vec<[u8; 28]>,
+    pub owner_pools: Vec<([u8; 28], [u8; 28])>,
+}
+
+/// Read the raw ROLE material AS-OF `reference_slot`, in one snapshot. Fail-closed: any error, or an
+/// unpopulated `pool_hash` (db-sync behind), returns `Err` ⇒ the caller abstains (never a partial/forking
+/// read). The reduction ([`crate::reduction::reduce_role_observation`]) turns this into `role_entries`.
+pub async fn read_role_observation(
+    url: &str,
+    reference_slot: u64,
+    bound_stake_creds: &[StakeCredential],
+) -> Result<DbsyncRoleRead, String> {
+    let read = async {
+        let mut slot = client_cell().lock().await;
+        if slot.as_ref().is_none_or(|c| c.is_closed()) {
+            *slot = Some(connect(url).await?);
+        }
+        let ref_i64 =
+            i64::try_from(reference_slot).map_err(|_| "reference slot exceeds i64".to_string())?;
+        let creds: Vec<&[u8]> = bound_stake_creds.iter().map(|c| c.as_slice()).collect();
+        let row = match slot
+            .as_ref()
+            .expect("just connected/validated above; qed")
+            .query_one(ROLE_OBSERVATION_SQL, &[&ref_i64, &creds])
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                *slot = None;
+                return Err(format!("db-sync role query failed: {e}"));
+            }
+        };
+        drop(slot);
+
+        // Fail-closed: pool_hash must be populated (else a behind db-sync would read no active pools →
+        // a false clamp of every SPO badge). `try_get`, never the panicking `Row::get`.
+        if !row
+            .try_get::<_, bool>(0)
+            .map_err(|e| format!("db-sync pool_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync pool_hash table is empty; the role read requires populated pool data — \
+                 abstaining (fail closed)"
+                    .to_string(),
+            );
+        }
+        let reg_rows = row
+            .try_get::<_, serde_json::Value>(1)
+            .map_err(|e| format!("db-sync registrations column decode failed: {e}"))?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| "db-sync registrations column was not a JSON array".to_string())?;
+        let mut registrations: Vec<Vec<u8>> = Vec::with_capacity(reg_rows.len());
+        for r in &reg_rows {
+            let hex = r.as_str().ok_or("registration row not a string")?;
+            registrations.push(hex_to_vec(hex).ok_or("bad registration hex")?);
+        }
+        let pool_rows = row
+            .try_get::<_, serde_json::Value>(2)
+            .map_err(|e| format!("db-sync active_pools column decode failed: {e}"))?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| "db-sync active_pools column was not a JSON array".to_string())?;
+        let mut active_pools: Vec<[u8; 28]> = Vec::with_capacity(pool_rows.len());
+        for r in &pool_rows {
+            let hex = r.as_str().ok_or("active pool row not a string")?;
+            active_pools.push(hex_bytes::<28>(hex).ok_or("bad pool id hex")?);
+        }
+        let owner_rows = row
+            .try_get::<_, serde_json::Value>(3)
+            .map_err(|e| format!("db-sync owner_pools column decode failed: {e}"))?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| "db-sync owner_pools column was not a JSON array".to_string())?;
+        let mut owner_pools: Vec<([u8; 28], [u8; 28])> = Vec::with_capacity(owner_rows.len());
+        for r in &owner_rows {
+            let cred = r.get("cred").and_then(|v| v.as_str()).ok_or("missing cred")?;
+            let pool = r.get("pool").and_then(|v| v.as_str()).ok_or("missing pool")?;
+            owner_pools.push((
+                hex_bytes::<28>(cred).ok_or("bad owner cred hex")?,
+                hex_bytes::<28>(pool).ok_or("bad owner pool hex")?,
+            ));
+        }
+        Ok(DbsyncRoleRead {
+            registrations,
+            active_pools,
+            owner_pools,
+        })
+    };
+
+    tokio::time::timeout(DBSYNC_TIMEOUT, read).await.map_err(|_| {
+        format!(
+            "db-sync role read timed out after {}s",
+            DBSYNC_TIMEOUT.as_secs()
+        )
+    })?
+}
+
+/// Decode a lowercase-hex string to bytes (variable length — for the raw label-867 registration bytes).
+fn hex_to_vec(s: &str) -> Option<Vec<u8>> {
+    let b = s.as_bytes();
+    if !b.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(b.len() / 2);
+    for chunk in b.chunks_exact(2) {
+        let hi = (chunk[0] as char).to_digit(16)? as u8;
+        let lo = (chunk[1] as char).to_digit(16)? as u8;
+        out.push((hi << 4) | lo);
+    }
+    Some(out)
+}

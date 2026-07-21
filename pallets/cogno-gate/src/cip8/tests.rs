@@ -337,3 +337,209 @@ fn cbor_reader_rejects_indefinite_and_non_minimal() {
     let mut r3 = Reader::new(&[0x58, 0x20]); // says bstr(32) but no body
     assert!(r3.bytes(64).is_err());
 }
+
+// ── 5. Role-key proof (verify_bind_proof_role) ────────────────────────────────────────────────────────
+// The payment/stake paths use REAL wallet fixtures. A role key is instead signed by cardano-signer /
+// a CIP-95 wallet over a SYNTHETIC enterprise address (payment credential = blake2b_224(role_key)).
+// We construct the identical COSE_Sign1 wire shape here and sign it with a deterministic ed25519 key,
+// so the positive + negative role cases are self-contained (no external signer) yet exercise the SAME
+// parse+verify path the crown jewel runs on-chain.
+
+use sp_core::{ed25519, Pair};
+
+/// Canonical CBOR byte-string head for `len` bytes (major type 2), definite length.
+fn bstr(content: &[u8]) -> Vec<u8> {
+    let len = content.len();
+    let mut out = if len <= 23 {
+        vec![0x40 | len as u8]
+    } else if len <= 0xff {
+        vec![0x58, len as u8]
+    } else {
+        vec![0x59, (len >> 8) as u8, (len & 0xff) as u8]
+    };
+    out.extend_from_slice(content);
+    out
+}
+
+fn hexs(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+fn role_payload(genesis: &[u8; 32], account: &[u8; 32], role: &str) -> Vec<u8> {
+    format!(
+        "cogno-chain/role/v1;genesis={};account={};nonce={};role={}",
+        hexs(genesis),
+        hexs(account),
+        rep("ab", 16),
+        role,
+    )
+    .into_bytes()
+}
+
+/// Build a signed role-key CIP-8 proof over an address of the given header (0x60 enterprise / 0x00
+/// base), returning `(cose_sign1, cose_key, expected_credential)`. Signs the VERBATIM Sig_structure
+/// with the fixed test ed25519 key — the same shape cardano-signer `--cip8 --address <enterprise>`
+/// emits (protected map {alg:-8, kid:pubkey, "address":addr}, empty unprotected, bstr payload, sig).
+fn build_role_proof(addr_header: u8, payload: &[u8]) -> (Vec<u8>, Vec<u8>, [u8; 28]) {
+    let pair = ed25519::Pair::from_seed(&[7u8; 32]);
+    let public = pair.public();
+    let pk: Vec<u8> = AsRef::<[u8]>::as_ref(&public).to_vec(); // 32 bytes
+    let cred = blake2b_224(&pk);
+    let mut addr = vec![addr_header];
+    addr.extend_from_slice(&cred);
+    if addr_header == 0x00 {
+        addr.extend_from_slice(&[0xb2u8; 28]); // arbitrary stake half for a base address
+    }
+    // protected content: map(3){ alg(1):-8, kid(4):pubkey, "address":addr }.
+    let mut prot = vec![0xa3u8];
+    prot.extend_from_slice(&[0x01, 0x27]); // alg = -8 (nint arg 7)
+    prot.push(0x04); // kid
+    prot.extend_from_slice(&bstr(&pk));
+    prot.push(0x67); // text(7)
+    prot.extend_from_slice(b"address");
+    prot.extend_from_slice(&bstr(&addr));
+    let protected_raw = bstr(&prot);
+    let payload_raw = bstr(payload);
+    // Sig_structure = 84 6a "Signature1" <protected_raw> 40 <payload_raw>.
+    let mut ss = vec![0x84u8, 0x6a];
+    ss.extend_from_slice(b"Signature1");
+    ss.extend_from_slice(&protected_raw);
+    ss.push(0x40);
+    ss.extend_from_slice(&payload_raw);
+    let signature = pair.sign(&ss);
+    let sig: Vec<u8> = AsRef::<[u8]>::as_ref(&signature).to_vec(); // 64 bytes
+    // cose_sign1 = 84 <protected_raw> a0 <payload_raw> <bstr sig>.
+    let mut cose = vec![0x84u8];
+    cose.extend_from_slice(&protected_raw);
+    cose.push(0xa0); // empty unprotected map
+    cose.extend_from_slice(&payload_raw);
+    cose.extend_from_slice(&bstr(&sig));
+    // cose_key = a4 kty(1):OKP(1) alg(3):-8 crv(-1):Ed25519(6) x(-2):bstr(pubkey).
+    let mut key = vec![0xa4u8, 0x01, 0x01, 0x03, 0x27, 0x20, 0x06, 0x21];
+    key.extend_from_slice(&bstr(&pk));
+    (cose, key, cred)
+}
+
+#[test]
+fn verifies_a_constructed_role_proof_enterprise_and_base() {
+    ext().execute_with(|| {
+        let genesis = [0x27u8; 32];
+        let account = [0x30u8; 32];
+        // Both an enterprise (0x60) and a base (0x00) VerificationKey-payment address bind the same
+        // 28-byte payment credential; the role path takes it regardless of the (ignored) stake part.
+        for header in [0x60u8, 0x00u8] {
+            let (cose, key, cred) = build_role_proof(header, &role_payload(&genesis, &account, "spo"));
+            let v = verify_bind_proof_role(&cose, &key, 0).expect("a role proof must verify");
+            assert_eq!(v.role, RoleClass::Spo);
+            assert_eq!(v.credential.as_slice(), cred.as_slice(), "binds the role-key hash");
+            assert_eq!(v.account, account, "commits the account");
+            assert_eq!(v.genesis, genesis, "carries the genesis");
+        }
+    });
+}
+
+#[test]
+fn role_proof_maps_each_role_token() {
+    ext().execute_with(|| {
+        let g = [0x27u8; 32];
+        let a = [0x30u8; 32];
+        for (tok, want) in [
+            ("spo", RoleClass::Spo),
+            ("drep", RoleClass::DRep),
+            ("cc", RoleClass::Committee),
+        ] {
+            let (cose, key, _) = build_role_proof(0x60, &role_payload(&g, &a, tok));
+            assert_eq!(verify_bind_proof_role(&cose, &key, 0).unwrap().role, want);
+        }
+    });
+}
+
+#[test]
+fn role_proof_rejects_unknown_role_and_bind_domain() {
+    ext().execute_with(|| {
+        let g = [0x27u8; 32];
+        let a = [0x30u8; 32];
+        // An unknown role token ⇒ BadRolePayload.
+        let (cose, key, _) = build_role_proof(0x60, &role_payload(&g, &a, "admin"));
+        assert_eq!(
+            verify_bind_proof_role(&cose, &key, 0),
+            Err(Cip8Error::BadRolePayload)
+        );
+        // A payment/stake BIND payload can never satisfy the role grammar (domain separation).
+        let bind = format!(
+            "cogno-chain/bind/v1;genesis={};account={};nonce={}",
+            rep("27", 32),
+            rep("30", 32),
+            rep("ab", 16),
+        );
+        let (cose2, key2, _) = build_role_proof(0x60, bind.as_bytes());
+        assert_eq!(
+            verify_bind_proof_role(&cose2, &key2, 0),
+            Err(Cip8Error::BadRolePayload)
+        );
+    });
+}
+
+#[test]
+fn role_proof_rejects_wrong_network_tamper_and_swapped_key() {
+    ext().execute_with(|| {
+        let (cose, key, _) = build_role_proof(0x60, &role_payload(&[0x27u8; 32], &[0x30u8; 32], "spo"));
+        // The synthetic enterprise address is network 0; verifying for mainnet (1) ⇒ WrongNetwork.
+        assert_eq!(
+            verify_bind_proof_role(&cose, &key, 1),
+            Err(Cip8Error::WrongNetwork)
+        );
+        // Flip a signature bit ⇒ SignatureInvalid.
+        let mut bad = cose.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0x01;
+        assert_eq!(
+            verify_bind_proof_role(&bad, &key, 0),
+            Err(Cip8Error::SignatureInvalid)
+        );
+        // A different COSE_Key: the signed protected header's KID == the real pubkey, so the
+        // single-key-source rule rejects BEFORE ed25519_verify.
+        let other = hx("a40101032720062158200000000000000000000000000000000000000000000000000000000000000001");
+        assert_eq!(
+            verify_bind_proof_role(&cose, &other, 0),
+            Err(Cip8Error::KeyMismatch)
+        );
+    });
+}
+
+#[test]
+fn parse_role_payload_enforces_the_pinned_grammar() {
+    let g = [0x27u8; 32];
+    let a = [0x30u8; 32];
+    let (gg, aa, role) = parse_role_payload(&role_payload(&g, &a, "drep")).unwrap();
+    assert_eq!(gg, g);
+    assert_eq!(aa, a);
+    assert_eq!(role, RoleClass::DRep);
+    // wrong domain (a bind payload) ⇒ BadRolePayload
+    assert_eq!(
+        parse_role_payload(b"cogno-chain/bind/v1;genesis=deadbeef").err(),
+        Some(Cip8Error::BadRolePayload)
+    );
+    // trailing byte after the role token ⇒ BadRolePayload
+    let mut trail = role_payload(&g, &a, "spo");
+    trail.push(b'x');
+    assert_eq!(
+        parse_role_payload(&trail).err(),
+        Some(Cip8Error::BadRolePayload)
+    );
+    // uppercase hex rejected (same [0-9a-f] strictness as the bind payload)
+    let up = format!(
+        "cogno-chain/role/v1;genesis={};account={};nonce={};role=spo",
+        rep("2A", 32),
+        rep("30", 32),
+        rep("ab", 16),
+    );
+    assert_eq!(
+        parse_role_payload(up.as_bytes()).err(),
+        Some(Cip8Error::BadRolePayload)
+    );
+}

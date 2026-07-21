@@ -30,6 +30,7 @@ pallet-balances = { workspace = true }
 pallet-cardano-observer = { workspace = true }
 pallet-collective = { workspace = true }
 pallet-cogno-gate = { workspace = true }
+pallet-cardano-roles = { workspace = true }
 pallet-governance-fuel = { workspace = true }
 pallet-governed-upgrade = { workspace = true }
 pallet-grandpa = { workspace = true }
@@ -79,6 +80,7 @@ std = [
 	"pallet-cardano-observer/std",
 	"pallet-collective/std",
 	"pallet-cogno-gate/std",
+	"pallet-cardano-roles/std",
 	"pallet-governance-fuel/std",
 	"pallet-governed-upgrade/std",
 	"pallet-grandpa/std",
@@ -118,6 +120,7 @@ runtime-benchmarks = [
 	"pallet-cardano-observer/runtime-benchmarks",
 	"pallet-collective/runtime-benchmarks",
 	"pallet-cogno-gate/runtime-benchmarks",
+	"pallet-cardano-roles/runtime-benchmarks",
 	"pallet-governance-fuel/runtime-benchmarks",
 	"pallet-governed-upgrade/runtime-benchmarks",
 	"pallet-grandpa/runtime-benchmarks",
@@ -140,6 +143,7 @@ try-runtime = [
 	"pallet-cardano-observer/try-runtime",
 	"pallet-collective/try-runtime",
 	"pallet-cogno-gate/try-runtime",
+	"pallet-cardano-roles/try-runtime",
 	"pallet-governance-fuel/try-runtime",
 	"pallet-governed-upgrade/try-runtime",
 	"pallet-grandpa/try-runtime",

@@ -115,6 +115,7 @@ mod tests {
             inputs_commitment: [0u8; 32],
             entries: vec![(beacon(A), 200_000_000)],
             stake_entries: vec![],
+            role_entries: vec![],
         };
         let with = CardanoObservationInherentDataProvider {
             observation: Some(obs),

@@ -162,6 +162,9 @@ mod benchmarks {
             [0u8; 32],
             entries,
             stake_entries,
+            // The ROLE axis is priced by a separate DbWeight term (not this benchmark), so the benchmarked
+            // worst case observes an empty role set.
+            BoundedVec::new(),
         );
 
         // The clamp basis is now the current set: every one of the `p`/`q` seeded identities was cleared.

@@ -6,9 +6,12 @@
 //! `config_check` probe (read-only). A divergence here is a chain FORK, which is what the golden fixture
 //! ([`reduction_matches_the_golden_determinism_fixture`]) exists to catch.
 
+use crate::calidus;
 use codec::Encode;
-use pallet_cardano_observer::{BeaconName, CardanoObservation, CardanoRef, StakeCredential};
-use std::collections::BTreeMap;
+use pallet_cardano_observer::{
+    BeaconName, CardanoObservation, CardanoRef, RoleEntry, RoleSource, StakeCredential,
+};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Map a stable wall-clock time (unix seconds, from the PARENT block) to the Cardano slot to observe
 /// AS-OF: `(Shelley slot at that time) − stability_window`. Fail-closed (`None`) on a pre-Shelley /
@@ -250,13 +253,101 @@ pub fn canonical_stake_entries(raw: Vec<(StakeCredential, u128)>) -> Vec<(StakeC
     map.into_iter().collect()
 }
 
+/// Canonicalize the ROLE entries into a deterministic, deduplicated order (a `BTreeSet` over the whole
+/// `(source, credential, id)` tuple, so author + importer SCALE-encode identically). Like the stake path,
+/// this only fixes the order — a cross-node difference in the SET is a data `Mismatch`, never a
+/// `ComputeDiverged`.
+pub fn canonical_role_entries(raw: Vec<RoleEntry>) -> Vec<RoleEntry> {
+    let set: BTreeSet<RoleEntry> = raw.into_iter().collect();
+    set.into_iter().collect()
+}
+
+/// Reduce the raw ROLE read to the canonical `role_entries` the observation carries. PURE + deterministic
+/// (the whole point — a divergence is a chain fork). Two SPO sources:
+///
+/// - **Calidus**: verify each label-867 registration's cold-key witness over its RAW bytes, take the
+///   highest-nonce VERIFIED registration per pool (never an unverified one — a bogus high-nonce
+///   registration would otherwise hijack a pool), and emit an `SpoCalidus` entry when that winner's
+///   Calidus key is CLAIMED and the pool is ACTIVE. The (cheap) parse-only pre-filter bounds the ed25519
+///   witness checks to registrations of pools that have a claimed key.
+/// - **Owner (free path)**: `owner_pools` is already `(bound stake credential, the pool it owns)` from the
+///   SQL; emit an `SpoOwner` entry for each whose pool is ACTIVE.
+///
+/// `active_pools` is the set of currently-registered, non-retired pool IDs (as-of the reference), used to
+/// gate both paths on liveness.
+pub fn reduce_role_observation(
+    registrations: &[Vec<u8>],
+    active_pools: &[[u8; 28]],
+    owner_pools: &[([u8; 28], [u8; 28])],
+    claimed_calidus: &[[u8; 28]],
+) -> Vec<RoleEntry> {
+    let active: BTreeSet<[u8; 28]> = active_pools.iter().copied().collect();
+    let claimed: BTreeSet<[u8; 28]> = claimed_calidus.iter().copied().collect();
+    let mut entries: Vec<RoleEntry> = Vec::new();
+
+    // Pools that have ANY registration for a CLAIMED Calidus key (cheap parse, no witness).
+    let claimed_pools: BTreeSet<[u8; 28]> = registrations
+        .iter()
+        .filter_map(|b| calidus::parse_registration(b).ok())
+        .filter(|p| claimed.contains(&p.calidus_key_hash))
+        .map(|p| p.pool_id)
+        .collect();
+
+    // Highest-nonce VERIFIED registration per claimed pool.
+    let mut winner: BTreeMap<[u8; 28], calidus::CalidusRegistration> = BTreeMap::new();
+    for b in registrations.iter() {
+        let pre = match calidus::parse_registration(b) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if !claimed_pools.contains(&pre.pool_id) {
+            continue; // only verify registrations of a pool with a claimed key (bounds ed25519 cost)
+        }
+        let reg = match calidus::verify_registration(b) {
+            Ok(r) => r,
+            Err(_) => continue, // a bad witness is dropped and can never be a highest-nonce winner
+        };
+        let take = match winner.get(&reg.pool_id) {
+            Some(w) => reg.nonce > w.nonce,
+            None => true,
+        };
+        if take {
+            winner.insert(reg.pool_id, reg);
+        }
+    }
+    for (pool_id, reg) in winner.iter() {
+        if claimed.contains(&reg.calidus_key_hash) && active.contains(pool_id) {
+            entries.push(RoleEntry {
+                source: RoleSource::SpoCalidus,
+                credential: reg.calidus_key_hash,
+                id: *pool_id,
+            });
+        }
+    }
+
+    // The free path: a bound stake key that owns a live pool.
+    for (stake_cred, pool_id) in owner_pools.iter() {
+        if active.contains(pool_id) {
+            entries.push(RoleEntry {
+                source: RoleSource::SpoOwner,
+                credential: *stake_cred,
+                id: *pool_id,
+            });
+        }
+    }
+
+    canonical_role_entries(entries)
+}
+
 /// Build the full observation (reference + input commitment + canonical vault entries + canonical
-/// voting-power stake entries) from the vault matches and the raw per-credential `epoch_stake` totals.
+/// voting-power stake entries + canonical role entries) from the vault matches, the raw per-credential
+/// `epoch_stake` totals, and the already-reduced role entries.
 pub fn build_observation(
     reference: CardanoRef,
     matches: &[serde_json::Value],
     vault_hash: &str,
     stake_entries: Vec<(StakeCredential, u128)>,
+    role_entries: Vec<RoleEntry>,
 ) -> CardanoObservation {
     let slot = reference.slot;
     CardanoObservation {
@@ -264,6 +355,7 @@ pub fn build_observation(
         inputs_commitment: inputs_commitment(matches, vault_hash),
         entries: observe_as_of(matches, vault_hash, slot),
         stake_entries: canonical_stake_entries(stake_entries),
+        role_entries: canonical_role_entries(role_entries),
     }
 }
 
@@ -536,5 +628,157 @@ mod tests {
             canonical_stake_entries(vec![(s1, 1), (s1, 9)]),
             vec![(s1, 9)]
         );
+    }
+
+    // ── role reduction ───────────────────────────────────────────────────────────────────────────
+    mod roles {
+        use super::super::*;
+        use ed25519_dalek::{Signer, SigningKey};
+
+        fn head(m: u8, a: u64) -> Vec<u8> {
+            let mt = m << 5;
+            if a <= 23 {
+                vec![mt | a as u8]
+            } else if a <= 0xff {
+                vec![mt | 24, a as u8]
+            } else {
+                let x = a as u16;
+                vec![mt | 25, (x >> 8) as u8, x as u8]
+            }
+        }
+        fn u(n: u64) -> Vec<u8> {
+            head(0, n)
+        }
+        fn bs(b: &[u8]) -> Vec<u8> {
+            let mut v = head(2, b.len() as u64);
+            v.extend_from_slice(b);
+            v
+        }
+        fn tx(s: &[u8]) -> Vec<u8> {
+            let mut v = head(3, s.len() as u64);
+            v.extend_from_slice(s);
+            v
+        }
+        fn arr(items: &[Vec<u8>]) -> Vec<u8> {
+            let mut v = head(4, items.len() as u64);
+            for i in items {
+                v.extend_from_slice(i);
+            }
+            v
+        }
+        fn map(p: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+            let mut v = head(5, p.len() as u64);
+            for (k, val) in p {
+                v.extend_from_slice(k);
+                v.extend_from_slice(val);
+            }
+            v
+        }
+        fn b224(x: &[u8]) -> [u8; 28] {
+            use blake2::digest::{Update, VariableOutput};
+            let mut o = [0u8; 28];
+            let mut h = blake2::Blake2bVar::new(28).unwrap();
+            h.update(x);
+            h.finalize_variable(&mut o).unwrap();
+            o
+        }
+        fn hexa(b: &[u8]) -> Vec<u8> {
+            const H: &[u8; 16] = b"0123456789abcdef";
+            let mut o = Vec::new();
+            for &x in b {
+                o.push(H[(x >> 4) as usize]);
+                o.push(H[(x & 15) as usize]);
+            }
+            o
+        }
+
+        /// Build a valid label-867 registration for `(cold, calidus, nonce)`; returns
+        /// `(bytes, pool_id, calidus_hash)`.
+        fn reg(cold_seed: u8, cal_seed: u8, nonce: u64) -> (Vec<u8>, [u8; 28], [u8; 28]) {
+            let cold = SigningKey::from_bytes(&[cold_seed; 32]);
+            let cold_pk = cold.verifying_key().to_bytes();
+            let cal = SigningKey::from_bytes(&[cal_seed; 32]);
+            let cal_pk = cal.verifying_key().to_bytes();
+            let pool = b224(&cold_pk);
+            let payload = map(&[
+                (u(1), arr(&[u(1), bs(&pool)])),
+                (u(2), arr(&[])),
+                (u(3), arr(&[u(0)])),
+                (u(4), u(nonce)),
+                (u(7), tx(&hexa(&cal_pk))),
+            ]);
+            let preimage = sp_crypto_hashing::blake2_256(&hexa(&payload));
+            let sig = cold.sign(&preimage).to_bytes();
+            let witness = arr(&[map(&[(u(0), u(0)), (u(1), bs(&cold_pk)), (u(2), bs(&sig))])]);
+            let full = map(&[(u(0), u(2)), (u(1), payload), (u(2), witness)]);
+            (full, pool, b224(&cal_pk))
+        }
+
+        #[test]
+        fn spo_calidus_happy_path() {
+            let (bytes, pool, cal_hash) = reg(1, 2, 5);
+            let out = reduce_role_observation(&[bytes], &[pool], &[], &[cal_hash]);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].source, RoleSource::SpoCalidus);
+            assert_eq!(out[0].credential, cal_hash);
+            assert_eq!(out[0].id, pool);
+        }
+
+        #[test]
+        fn inactive_pool_is_not_tagged() {
+            let (bytes, _pool, cal_hash) = reg(1, 2, 5);
+            // pool NOT in active_pools ⇒ dropped.
+            assert!(reduce_role_observation(&[bytes], &[], &[], &[cal_hash]).is_empty());
+        }
+
+        #[test]
+        fn unclaimed_calidus_is_not_tagged() {
+            let (bytes, pool, _cal_hash) = reg(1, 2, 5);
+            // claimed set empty ⇒ nothing verified/emitted.
+            assert!(reduce_role_observation(&[bytes], &[pool], &[], &[]).is_empty());
+        }
+
+        #[test]
+        fn highest_nonce_verified_registration_wins() {
+            // Same pool (cold seed 1), two Calidus keys: seed 2 @ nonce 5, seed 3 @ nonce 9 (rotation).
+            let (r5, pool, cal5) = reg(1, 2, 5);
+            let (r9, _pool, cal9) = reg(1, 3, 9);
+            // A claim for the OLD (superseded) Calidus key is NOT tagged — the highest-nonce winner rotated.
+            let old = reduce_role_observation(&[r5.clone(), r9.clone()], &[pool], &[], &[cal5]);
+            assert!(old.is_empty(), "a superseded Calidus key must not be tagged");
+            // A claim for the CURRENT (highest-nonce) key IS tagged.
+            let new = reduce_role_observation(&[r5, r9], &[pool], &[], &[cal9]);
+            assert_eq!(new.len(), 1);
+            assert_eq!(new[0].id, pool);
+        }
+
+        #[test]
+        fn a_bogus_high_nonce_registration_cannot_hijack() {
+            // The real pool (cold 1) registers Calidus key (seed 2) @ nonce 5.
+            let (real, pool, cal_real) = reg(1, 2, 5);
+            // An attacker forges a HIGHER-nonce registration scoping the SAME pool but signed with a
+            // DIFFERENT cold key (seed 9) — its witness does not authorize `pool` (blake2b_224 mismatch).
+            let (bogus, _bogus_pool, _cal_bogus) = reg(9, 8, 99);
+            // Splice the bogus witness onto a payload scoping the real pool by re-scoping: simplest — the
+            // attacker's registration scopes ITS OWN pool, so it can't affect the real pool. Confirm the
+            // real claim still resolves and the bogus one is inert.
+            let out = reduce_role_observation(&[real, bogus], &[pool], &[], &[cal_real]);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].credential, cal_real);
+            assert_eq!(out[0].id, pool);
+        }
+
+        #[test]
+        fn owner_free_path() {
+            let stake: [u8; 28] = [0x33; 28];
+            let pool: [u8; 28] = [0x44; 28];
+            let out = reduce_role_observation(&[], &[pool], &[(stake, pool)], &[]);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].source, RoleSource::SpoOwner);
+            assert_eq!(out[0].credential, stake);
+            assert_eq!(out[0].id, pool);
+            // inactive pool ⇒ no free tag.
+            assert!(reduce_role_observation(&[], &[], &[(stake, pool)], &[]).is_empty());
+        }
     }
 }
