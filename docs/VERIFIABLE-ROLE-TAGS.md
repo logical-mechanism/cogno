@@ -80,10 +80,19 @@ There are two SPO sources and one direct path each for dRep and CC:
   **cold** key. The reduction verifies that registration's cold-key witness over the *raw* on-chain
   metadata bytes (`cogno-dbsync/src/calidus.rs`) — both the bare-Ed25519 and the CIP-8/COSE witness forms
   — takes the highest-nonce *verified* registration per pool, and emits an entry when the winner's Calidus
-  key is claimed and the pool is active. The pool never exposes its cold key to cogno-chain.
+  key is claimed and the pool is active. The pool never exposes its cold key to cogno-chain. Crucially,
+  this entry names **no pool**: its display id is the blank `BLANK_ROLE_ID`, so the badge reads a generic
+  "verified SPO". The reason is that a Calidus registration is authorized by the pool cold key *alone* —
+  the Calidus key never counter-signs, and CIP-0151 defines no proof-of-possession for it — so any pool
+  can declare any public Calidus key, including one someone else has claimed. Naming the pool would let a
+  pool operator attribute their pool to that account (cross-pool impersonation); attesting only "controls a
+  Calidus key that a live pool authorized" is the honest, un-forgeable claim, and every pool authorizing
+  the same claimed key collapses to one badge.
 - **SPO via ownership** (`RoleSource::SpoOwner`) — the free path, no claim needed. A stake credential the
   account already bound (for voting power) that is declared an owner of a live pool in that pool's latest
-  registration certificate earns an SPO badge directly.
+  registration certificate earns an SPO badge directly. This path **does** name its pool (id = the poolID,
+  with a "verify on-chain" link): it is impersonation-proof, because a Cardano pool registration requires
+  each declared owner's stake-key witness, so a pool cannot list a stake key it does not control.
 - **dRep** (`RoleSource::DRep`). The SQL scopes to the claimed key-based dRep ids and keeps those whose
   latest `drep_registration` is not a deregistration; the credential *is* the display id.
 - **CC** — deferred. The claim side and the runtime plumbing exist, but the observer's liveness branch is
@@ -98,9 +107,12 @@ see [`IN-PROTOCOL-OBSERVATION.md`](IN-PROTOCOL-OBSERVATION.md).
 ### Several pools, several badges
 
 An account may operate more than one pool. The observed set (`ObservedRoleSet`) is deduplicated by the
-full `(kind, id)` pair, so the same pool seen via both its Calidus key and ownership collapses to one
-badge, while distinct pools each show their own. `MAX_OBSERVED_ROLES_PER_ACCOUNT` bounds the set; the
-runtime `RoleApply` sink truncates to it deterministically rather than dropping the whole set.
+full `(kind, id)` pair. Because each *ownership* badge carries its own poolID, a multi-pool operator who
+has bound the owner stake key of each pool shows one pool-named badge per pool. Calidus badges, by
+contrast, all carry the blank id, so they collapse to a single generic "verified SPO" — which is exactly
+what closes the impersonation (no per-pool Calidus badge can be minted for an account by a foreign pool).
+`MAX_OBSERVED_ROLES_PER_ACCOUNT` bounds the set; the runtime `RoleApply` sink truncates to it
+deterministically rather than dropping the whole set.
 
 ## Reading the badge (node-served, no N+1)
 
@@ -113,10 +125,12 @@ primitive `Vec<(u8, [u8; 28])>` — a role-kind index and a 28-byte display id �
 from `ObservedRole`. So a feed card, a thread, a quote embed, and a hover card all render badges with no
 extra read.
 
-On the frontend the badge is `app/src/components/RoleBadge.tsx`. It renders one chip per live role, each a
-"verify on-chain" link to cexplorer for the pool id / dRep id, and resolves a pool ticker or dRep name
-best-effort through Blockfrost (`app/src/lib/cardano/roleMeta.ts`, sanitized, degrading to a truncated id —
-never a fabricated name). The Settings claim wizard is `app/src/components/settings/RolesSection.tsx`.
+On the frontend the badge is `app/src/components/RoleBadge.tsx`. It renders one chip per live role. A
+pool-named badge (ownership SPO, dRep) is a "verify on-chain" link to cexplorer and resolves a pool ticker
+or dRep name best-effort through Blockfrost (`app/src/lib/cardano/roleMeta.ts`, sanitized, degrading to a
+truncated id — never a fabricated name). A Calidus SPO badge carries the blank id (`isBlankRoleId`), so it
+renders as a plain "✓ SPO" with no pool name and no link — it names no pool, by design. The Settings claim
+wizard is `app/src/components/settings/RolesSection.tsx`.
 
 ## Trust posture
 

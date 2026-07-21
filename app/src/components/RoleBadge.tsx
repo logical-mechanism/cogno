@@ -18,7 +18,7 @@ import { useEffect, useState } from "react";
 import styles from "./RoleBadge.module.css";
 import { useSession } from "@/components/Providers";
 import { resolvePoolMeta, resolveDRepName, roleExplorerUrl } from "@/lib/cardano/roleMeta";
-import type { ObservedRoleView, RoleKindType } from "@/lib/chain/roles";
+import { isBlankRoleId, type ObservedRoleView, type RoleKindType } from "@/lib/chain/roles";
 
 /** Short label per role. */
 const ROLE_LABEL: Record<RoleKindType, string> = { Spo: "SPO", DRep: "dRep", Committee: "CC" };
@@ -87,6 +87,7 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
     if (!set) return;
     let cancelled = false;
     for (const r of set) {
+      if (isBlankRoleId(r.id)) continue; // a generic Calidus SPO names no pool — nothing to resolve
       const nameKey = `${r.kind}:${r.id}`;
       if (names[nameKey] !== undefined) continue;
       void resolveRoleName(r.kind, r.id).then((label) => {
@@ -104,11 +105,14 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
   return (
     <>
       {set.map((r) => {
+        // A Calidus-derived SPO carries the BLANK id: it names no pool (a Calidus registration can't
+        // attest one), so it renders as a generic "✓ SPO" — no ticker, no detail, no verify link.
+        const blank = isBlankRoleId(r.id);
         const resolvedName = names[`${r.kind}:${r.id}`];
-        const detail = resolvedName ?? truncId(r.id);
-        const href = roleExplorerUrl(r.kind, r.id);
+        const detail = blank ? null : (resolvedName ?? truncId(r.id));
+        const href = blank ? null : roleExplorerUrl(r.kind, r.id);
         const label = `Verified Cardano ${ROLE_FULL[r.kind]}${resolvedName ? `, ${resolvedName}` : ""}`;
-        const title = `Verified Cardano ${ROLE_FULL[r.kind]} — ${detail}. The chain holds a live binding.${
+        const title = `Verified Cardano ${ROLE_FULL[r.kind]}${detail ? ` — ${detail}` : ""}. The chain holds a live binding.${
           href ? " Click to verify on-chain." : ""
         }`;
         const inner = (
@@ -117,9 +121,11 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
               ✓
             </span>
             <span className={styles.role}>{ROLE_LABEL[r.kind]}</span>
-            <span className={styles.detail} aria-hidden>
-              {detail}
-            </span>
+            {detail != null && (
+              <span className={styles.detail} aria-hidden>
+                {detail}
+              </span>
+            )}
           </>
         );
         // A link to the explorer when we can build one (SPO/dRep); a plain chip otherwise (CC / bad id).

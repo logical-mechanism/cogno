@@ -233,7 +233,9 @@ pub type RoleCredential = [u8; 28];
 )]
 pub enum RoleSource {
     /// SPO proven via a Calidus key: `credential` = the Calidus-key hash, resolved via the roles-pallet
-    /// `RoleCredIndex[Spo]`; `id` = the observer-resolved poolID.
+    /// `RoleCredIndex[Spo]`; `id` = the BLANK marker (`reduction::BLANK_ROLE_ID`), NOT a pool. A Calidus
+    /// registration is cold-key-signed only, so it cannot attest a specific pool without inviting
+    /// cross-pool impersonation — the badge names none. See `reduce_role_observation`.
     #[codec(index = 0)]
     SpoCalidus,
     /// SPO via the FREE path: `credential` = a bound stake credential that owns a live pool (resolved via
@@ -901,9 +903,9 @@ pub mod pallet {
                 };
                 let kind = entry.source.kind_index();
                 let set = role_sets.entry(account).or_default();
-                // Dedup by the full (kind, id): the SAME pool observed via both Calidus and pool ownership
-                // (same kind=SPO, same resolved poolID) collapses to one badge, but DISTINCT pools each
-                // yield their own SPO badge (an operator of several pools shows several). first-wins in the
+                // Dedup by the full (kind, id): every Calidus SPO entry carries the same BLANK id, so a
+                // multi-pool operator's Calidus entries collapse to ONE generic SPO badge; DISTINCT OWNED
+                // pools (SpoOwner, id = poolID) each yield their own pool-named SPO badge. first-wins in the
                 // deterministic `role_entries` order, so the per-account set stays byte-stable across nodes.
                 if set.iter().any(|(k, v)| *k == kind && *v == entry.id) {
                     continue;

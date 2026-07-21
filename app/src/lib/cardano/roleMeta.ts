@@ -14,7 +14,7 @@
 import { getBlockfrostProjectId } from "@/lib/config/endpoints";
 import { sanitizeInline } from "@/lib/sanitize";
 import { hexToBytes } from "@/lib/util/hex";
-import type { RoleKindType } from "@/lib/chain/roles";
+import { isBlankRoleId, type RoleKindType } from "@/lib/chain/roles";
 
 /** A resolved pool display name (both fields optional; at least one present when non-null). */
 export interface PoolMeta {
@@ -215,6 +215,9 @@ export function poolBech32(poolIdHex: string): string | null {
  * (CIP-129). The network is taken from the Blockfrost-projectId prefix.
  */
 export function roleExplorerUrl(kind: RoleKindType, idHex: string): string | null {
+  // A Calidus-derived SPO badge carries the BLANK id (no pool named), so there is no pool to link to —
+  // a generic "verified SPO". (Encoding a blank id as a pool would produce a bogus `pool1…` link.)
+  if (isBlankRoleId(idHex)) return null;
   const sub = explorerSub();
   if (kind === "Spo") {
     const id = poolBech32(idHex);

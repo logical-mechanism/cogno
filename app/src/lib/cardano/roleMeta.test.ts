@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { drepBech32, poolBech32, roleExplorerUrl } from "./roleMeta";
-import { mapObservedRolePairs } from "@/lib/chain/roles";
+import { isBlankRoleId, mapObservedRolePairs } from "@/lib/chain/roles";
 
 // The dRep display name resolves through Blockfrost's /governance/dreps/{drep_id} endpoint, which requires
 // the CIP-129 bech32 id (NOT the raw hex). This tiny local encoder replaces pulling in MeshJS, so pin it to
@@ -59,6 +59,23 @@ describe("roleExplorerUrl", () => {
   it("has no explorer page for a CC badge or a malformed id", () => {
     expect(roleExplorerUrl("Committee", POOL_HEX)).toBeNull();
     expect(roleExplorerUrl("Spo", "abcd")).toBeNull();
+  });
+
+  it("has no explorer page for a blank (Calidus) SPO id — it names no pool", () => {
+    const BLANK = `0x${"0".repeat(56)}`;
+    expect(roleExplorerUrl("Spo", BLANK)).toBeNull();
+    expect(roleExplorerUrl("Spo", "0".repeat(56))).toBeNull();
+  });
+});
+
+describe("isBlankRoleId", () => {
+  it("is true only for an all-zero id (the Calidus 'no pool' marker)", () => {
+    expect(isBlankRoleId(`0x${"0".repeat(56)}`)).toBe(true);
+    expect(isBlankRoleId("0".repeat(56))).toBe(true);
+    expect(isBlankRoleId("0x00")).toBe(true); // any all-zero hex
+    expect(isBlankRoleId(`0x${POOL_HEX}`)).toBe(false); // a real pool id
+    expect(isBlankRoleId(POOL_HEX)).toBe(false);
+    expect(isBlankRoleId("")).toBe(false);
   });
 });
 

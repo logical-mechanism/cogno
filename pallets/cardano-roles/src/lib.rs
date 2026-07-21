@@ -22,8 +22,9 @@
 //! [`ObservedRoles`] is written ONLY by the `cardano-observer` inherent (via the runtime's `RoleSink`
 //! → [`Pallet::apply_roles`]). Each block the observer reads db-sync, scoped to the CLAIMED
 //! credentials ([`Pallet::claimed_credentials`] → the `bound_role_credentials` runtime API), confirms
-//! each is a currently-live pool / dRep / seated CC member, resolves the display id (the **poolID**
-//! for SPO; the drepID / hot credential for dRep / CC), and writes the account's full observed set —
+//! each is a currently-live pool / dRep / seated CC member, resolves the display id (a **poolID** for an
+//! ownership SPO, the BLANK marker for a Calidus SPO — which names no pool, the drepID / hot credential
+//! for dRep / CC), and writes the account's full observed set —
 //! auto-revoking (clamp to empty) when a pool retires / a dRep deregisters / a CC term expires. The
 //! profile badge reads THIS map, so a badge only ever reflects a currently-live Cardano role.
 //! `ValueQuery` ⇒ an account with no live role reads the empty set for free. A fresh chain with no
@@ -49,8 +50,9 @@ pub use weights::*;
 pub const LOG_TARGET: &str = "runtime::cardano-roles";
 
 /// A 28-byte Cardano credential (a blake2b-224 key hash): the claimed role-key hash on the claim side
-/// (Calidus-key hash / drep ID / committee hot credential), and the observer-resolved display id on
-/// the observed side (the 28-byte poolID for SPO; the same drep ID / hot credential for dRep / CC).
+/// (Calidus-key hash / drep ID / committee hot credential), and the observer-resolved display id on the
+/// observed side (a poolID for an ownership SPO, the all-zero blank for a Calidus SPO; the same drep ID /
+/// hot credential for dRep / CC).
 pub type RoleCredential = [u8; 28];
 
 /// The maximum number of observed role BADGES one account can display at once. An account holds at most
@@ -136,8 +138,9 @@ pub mod pallet {
         }
     }
 
-    /// One entry in an account's observed-role set: a currently-live role + its display id (the
-    /// observer-resolved 28-byte poolID for SPO; the drep ID / hot credential for dRep / CC).
+    /// One entry in an account's observed-role set: a currently-live role + its display id (a poolID for
+    /// an ownership SPO, the all-zero blank for a Calidus SPO — which names no pool; the drep ID / hot
+    /// credential for dRep / CC).
     #[derive(
         Clone,
         PartialEq,

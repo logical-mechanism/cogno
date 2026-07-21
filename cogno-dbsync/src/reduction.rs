@@ -253,6 +253,12 @@ pub fn canonical_stake_entries(raw: Vec<(StakeCredential, u128)>) -> Vec<(StakeC
     map.into_iter().collect()
 }
 
+/// The blank (all-zero) display id an `SpoCalidus` entry carries INSTEAD of a pool id. A Calidus
+/// registration attests no specific pool (any pool's cold key can declare any Calidus key), so the badge
+/// names none — the FE renders a generic "verified SPO". A real 28-byte poolID is `blake2b_224(cold pubkey)`
+/// and is never all-zero, so this can never collide with an `SpoOwner` pool id.
+pub const BLANK_ROLE_ID: [u8; 28] = [0u8; 28];
+
 /// Canonicalize the ROLE entries into a deterministic, deduplicated order (a `BTreeSet` over the whole
 /// `(source, credential, id)` tuple, so author + importer SCALE-encode identically). Like the stake path,
 /// this only fixes the order — a cross-node difference in the SET is a data `Mismatch`, never a
@@ -269,7 +275,10 @@ pub fn canonical_role_entries(raw: Vec<RoleEntry>) -> Vec<RoleEntry> {
 ///   highest-nonce VERIFIED registration per pool (never an unverified one — a bogus high-nonce
 ///   registration would otherwise hijack a pool), and emit an `SpoCalidus` entry when that winner's
 ///   Calidus key is CLAIMED and the pool is ACTIVE. The (cheap) parse-only pre-filter bounds the ed25519
-///   witness checks to registrations of pools that have a claimed key.
+///   witness checks to registrations of pools that have a claimed key. The entry's display `id` is the
+///   blank [`BLANK_ROLE_ID`] (never the pool) — a Calidus registration cannot attest a specific pool, so
+///   naming one would be forgeable (see the emit loop). Multiple pools authorizing the same claimed key
+///   therefore collapse to a single generic badge.
 /// - **Owner (free path)**: `owner_pools` is already `(bound stake credential, the pool it owns)` from the
 ///   SQL; emit an `SpoOwner` entry for each whose pool is ACTIVE.
 /// - **dRep**: `live_dreps` is already the set of CLAIMED, currently-live key-based dRep IDs from the SQL
@@ -320,22 +329,23 @@ pub fn reduce_role_observation(
             winner.insert(reg.pool_id, reg);
         }
     }
-    // ⚠ ATTESTATION SEMANTICS (open design item): a CIP-0151 registration is authorized by the pool COLD
-    // key alone — the Calidus key does NOT counter-sign — so a pool can authorize ANY public Calidus key
-    // without that key holder's consent. An `SpoCalidus` entry therefore attests "this account controls a
-    // Calidus key that this pool authorized", NOT sole operatorship: a pool operator who reads a victim's
-    // public Calidus key (from the victim's on-chain claim) can register it under their OWN pool and surface
-    // that pool under the victim's profile. The free `SpoOwner` path below is not exposed to this (Cardano
-    // requires each declared owner's stake-key witness at pool registration). A robust fix (e.g. committing a
-    // specific pool in the role claim, or dropping cross-pool-ambiguous credentials — which trades the
-    // impersonation for a denial-of-badge griefing vector) is deliberately left for a design decision, not
-    // patched here in the consensus reduction. The badge is display-only.
+    // A Calidus registration is authorized by the pool COLD key ALONE — the Calidus key never
+    // counter-signs it (CIP-0151 / CIP-88-v2 define no proof-of-possession for the declared Calidus key),
+    // so a pool can declare ANY public Calidus key, including a victim's (recoverable from the victim's
+    // on-chain claim). If we named the pool on the badge, a pool operator could attribute their OWN pool to
+    // any account that had claimed that Calidus key (cross-pool impersonation). We close that by attesting
+    // only what the proof actually establishes — "controls a Calidus key that a currently-live pool
+    // authorized" — and NOT a specific pool: the emitted display `id` is the blank marker [`BLANK_ROLE_ID`],
+    // never the pool. Every pool authorizing the same claimed key thus collapses to ONE generic SPO badge
+    // (the observer dedups by (kind, id)), so no pool can be falsely attributed to the account. (The free
+    // `SpoOwner` path below DOES name its pool — it is impersonation-proof, since Cardano requires each
+    // declared owner's stake-key witness at pool registration.) The badge is display-only.
     for (pool_id, reg) in winner.iter() {
         if claimed.contains(&reg.calidus_key_hash) && active.contains(pool_id) {
             entries.push(RoleEntry {
                 source: RoleSource::SpoCalidus,
                 credential: reg.calidus_key_hash,
-                id: *pool_id,
+                id: BLANK_ROLE_ID, // NOT the pool — a Calidus registration attests no specific pool (see above)
             });
         }
     }
@@ -733,7 +743,8 @@ mod tests {
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].source, RoleSource::SpoCalidus);
             assert_eq!(out[0].credential, cal_hash);
-            assert_eq!(out[0].id, pool);
+            // The Calidus badge names NO pool (the blank marker) — a Calidus reg can't attest one.
+            assert_eq!(out[0].id, BLANK_ROLE_ID);
         }
 
         #[test]
@@ -758,10 +769,11 @@ mod tests {
             // A claim for the OLD (superseded) Calidus key is NOT tagged — the highest-nonce winner rotated.
             let old = reduce_role_observation(&[r5.clone(), r9.clone()], &[pool], &[], &[cal5], &[]);
             assert!(old.is_empty(), "a superseded Calidus key must not be tagged");
-            // A claim for the CURRENT (highest-nonce) key IS tagged.
+            // A claim for the CURRENT (highest-nonce) key IS tagged (with a blank, no-pool display id).
             let new = reduce_role_observation(&[r5, r9], &[pool], &[], &[cal9], &[]);
             assert_eq!(new.len(), 1);
-            assert_eq!(new[0].id, pool);
+            assert_eq!(new[0].credential, cal9);
+            assert_eq!(new[0].id, BLANK_ROLE_ID);
         }
 
         #[test]
@@ -777,7 +789,36 @@ mod tests {
             let out = reduce_role_observation(&[real, bogus], &[pool], &[], &[cal_real], &[]);
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].credential, cal_real);
-            assert_eq!(out[0].id, pool);
+            assert_eq!(out[0].id, BLANK_ROLE_ID);
+        }
+
+        #[test]
+        fn cross_pool_calidus_cannot_impersonate() {
+            // The impersonation regression test (was a live PoC before the blank-id fix). The victim
+            // operates pool P (cold seed 1) with Calidus key seed 2 and has CLAIMED hash(cal2). An ATTACKER
+            // runs their OWN active pool Q (cold seed 9) and posts a label-867 registration for Q that
+            // DECLARES the victim's Calidus key (seed 2) — validly signed by Q's cold key (the Calidus key
+            // never counter-signs, so nothing on Cardano stops it).
+            let (honest, pool_p, cal_hash) = reg(1, 2, 5);
+            let (attacker, pool_q, cal_hash2) = reg(9, 2, 5); // same Calidus seed 2, different cold key
+            assert_eq!(cal_hash, cal_hash2, "same Calidus key ⇒ same claimed credential");
+            assert_ne!(pool_p, pool_q, "distinct pools");
+            let out = reduce_role_observation(
+                &[honest, attacker],
+                &[pool_p, pool_q],
+                &[],
+                &[cal_hash],
+                &[],
+            );
+            // BEFORE the fix this emitted {hash, P} AND {hash, Q} (the victim badged for the attacker's
+            // pool). Now both carry the blank id, so they collapse to ONE generic SPO entry that names no
+            // pool — the attacker's pool can no longer be attributed to the victim.
+            assert_eq!(out.len(), 1, "the two pools collapse to one generic badge");
+            assert_eq!(out[0].source, RoleSource::SpoCalidus);
+            assert_eq!(out[0].credential, cal_hash);
+            assert_eq!(out[0].id, BLANK_ROLE_ID);
+            assert_ne!(out[0].id, pool_p, "names neither pool");
+            assert_ne!(out[0].id, pool_q, "names neither pool");
         }
 
         #[test]

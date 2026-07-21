@@ -24,7 +24,7 @@ import {
   type RoleProofRequest,
   type RoleToken,
 } from "@/lib/cardano/role-proof";
-import type { RoleKindType } from "@/lib/chain/roles";
+import { isBlankRoleId, type RoleKindType } from "@/lib/chain/roles";
 import { getGenesisHex } from "@/lib/chain/identity";
 import { copyToClipboard } from "@/lib/share";
 import type { CognoApi, PostingSigner } from "@/lib/types";
@@ -199,7 +199,8 @@ function RoleClaimCard({
         // ── verified: the observer confirmed a live role ──
         <div className={styles.statusRow}>
           <span className={styles.verifiedMark}>✓ Verified {spec.label}</span>
-          <span className={styles.mono}>{truncId(observed.id)}</span>
+          {/* A Calidus SPO names no pool (blank id) → show nothing; an ownership SPO / dRep shows its id. */}
+          {!isBlankRoleId(observed.id) && <span className={styles.mono}>{truncId(observed.id)}</span>}
           {/* Only offer "Remove" when a CLAIM backs the badge — a badge from the free SpoOwner path (live
               pool ownership, no `RoleClaimOf` entry) has nothing to unclaim, and unclaim_role would fail
               `NotClaimed` + can't-pay for a zero-balance account. Ownership-derived badges clear only when
