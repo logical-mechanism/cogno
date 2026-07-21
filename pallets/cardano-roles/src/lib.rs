@@ -320,8 +320,21 @@ pub mod pallet {
         /// Self-service release of a role claim. Signed by the claiming account. Removes both claim
         /// maps; the observer drops the account's badge for that role on its next observation (the
         /// credential is no longer in the scoping set). Does NOT tombstone (that is the committee ban).
+        ///
+        /// **Feeless** when the caller actually holds this claim (`feeless_if` below + the runtime's
+        /// `SkipCheckIfFeeless`) — so the same zero-balance posting account that CLAIMED can release its
+        /// own role, exactly like every other user write on this feeless chain. Unlike the claim (an
+        /// unsigned, `validate_unsigned`-gated call), this one is signed and NOT capacity-metered (the
+        /// runtime's `ForeignCost` prices only profile writes), so gating the fee waiver on an existing
+        /// claim IS its spam control: a no-op unclaim (no claim) is not subsidised — it falls back to
+        /// `ChargeTransactionPayment`, which a zero-balance account cannot pay. At most one free unclaim
+        /// per claim; re-claiming needs a fresh CIP-8 proof.
         #[pallet::call_index(1)]
         #[pallet::weight(T::WeightInfo::unclaim_role())]
+        #[pallet::feeless_if(|origin: &OriginFor<T>, role: &RoleKind| -> bool {
+            frame_system::ensure_signed(origin.clone())
+                .is_ok_and(|who| RoleClaimOf::<T>::contains_key(&who, *role))
+        })]
         pub fn unclaim_role(origin: OriginFor<T>, role: RoleKind) -> DispatchResult {
             let who = ensure_signed(origin)?;
             let credential = RoleClaimOf::<T>::take(&who, role).ok_or(Error::<T>::NotClaimed)?;

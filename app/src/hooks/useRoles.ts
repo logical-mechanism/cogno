@@ -9,15 +9,21 @@
 //
 // The claim is FEELESS + BARE (unsigned) — the offline role proof is the authorization — so there is no
 // in-browser signing step: the phases are `submitting` (the multi-second finalize wait) → `confirming`
-// (the `RoleClaimOf` readback), symmetric with the stake bind minus the wallet sign. There is no
-// self-service unclaim: `unclaim_role` is a signed, fee-bearing call and a posting account has no native
-// balance to pay for it, so removal is left to the observer (pool retires) / the committee (revoke).
+// (the `RoleClaimOf` readback), symmetric with the stake bind minus the wallet sign. `unclaim` is the one
+// SIGNED action (a self-service release), feeless via the pallet's `feeless_if`, so a zero-balance account
+// can remove its own tag; the observer additionally clears a tag when the pool retires.
 
 import { useCallback, useEffect, useState } from "react";
 import { Enum } from "polkadot-api";
 import type { PolkadotClient } from "polkadot-api";
 import type { CognoApi, PostingSigner } from "@/lib/types";
-import { submitClaimRoleFeeless, readRoleClaim, type ObservedRoleView } from "@/lib/chain/roles";
+import {
+  submitClaimRoleFeeless,
+  submitUnclaimRole,
+  readRoleClaim,
+  type ObservedRoleView,
+  type RoleKindType,
+} from "@/lib/chain/roles";
 
 /** The phase of an in-flight role claim (no in-browser sign — the proof is produced offline). */
 export type ClaimPhase = "idle" | "submitting" | "confirming";
@@ -39,6 +45,12 @@ export interface UseRoles {
    * {@link import("@/lib/cardano/role-proof").preflightRolePasteback}.
    */
   claim: (coseSign1Hex: string, coseKeyHex: string) => Promise<boolean>;
+  /** an unclaim is in flight. */
+  unclaiming: boolean;
+  unclaimError: string | null;
+  /** Self-service release of a role claim (signed by the posting account; feeless via the pallet's
+   *  `feeless_if`, so a zero-balance account can remove its own tag). */
+  unclaim: (role: RoleKindType) => Promise<void>;
 }
 
 export function useRoles(
@@ -51,6 +63,8 @@ export function useRoles(
   const [claiming, setClaiming] = useState(false);
   const [claimPhase, setClaimPhase] = useState<ClaimPhase>("idle");
   const [claimError, setClaimError] = useState<string | null>(null);
+  const [unclaiming, setUnclaiming] = useState(false);
+  const [unclaimError, setUnclaimError] = useState<string | null>(null);
 
   // Watch the observed role set + the SPO claim LIVE for the active key. Watched (not one-shot) because
   // the observer writes `ObservedRoles` a few blocks AFTER the claim lands, and later CLEARS it when the
@@ -61,6 +75,7 @@ export function useRoles(
     // first-emits (mirrors RoleBadge's watch reset + useIdentity's clear-on-key-change). Without this the
     // effect only unsub/resubscribes and `observed`/`spoClaimCredHex` would linger from the old account.
     setClaimError(null);
+    setUnclaimError(null);
     setObserved(null);
     setSpoClaimCredHex(null);
     if (!api) return;
@@ -113,6 +128,26 @@ export function useRoles(
     [api, client, claiming, signer.ss58],
   );
 
+  const unclaim = useCallback(
+    async (role: RoleKindType): Promise<void> => {
+      if (!api || unclaiming) return;
+      setUnclaiming(true);
+      setUnclaimError(null);
+      try {
+        const res = await submitUnclaimRole(api, signer, role);
+        if (!res.ok) {
+          throw new Error(res.error || "the on-chain unclaim was rejected");
+        }
+        // The live watches flip `spoClaimCredHex` / `observed` once the removal is in a block.
+      } catch (e) {
+        setUnclaimError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setUnclaiming(false);
+      }
+    },
+    [api, unclaiming, signer],
+  );
+
   const spoObserved = observed?.find((r) => r.kind === "Spo") ?? null;
 
   return {
@@ -123,5 +158,8 @@ export function useRoles(
     claimPhase,
     claimError,
     claim,
+    unclaiming,
+    unclaimError,
+    unclaim,
   };
 }

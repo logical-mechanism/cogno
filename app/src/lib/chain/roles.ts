@@ -1,12 +1,13 @@
-// CardanoRoles reads + the feeless claim WRITE (verifiable role tags — SPO first). The claim mirrors the
-// CIP-8 binds in lib/chain/identity.ts: `cardano-roles.claim_role_signed` is FEELESS + UNSIGNED (the
-// offline `cardano-signer` role proof IS the authorization — the runtime re-verifies it at pool admission
-// and on inclusion via `pallet_cardano_roles::validate_unsigned`), so there is no fee payer and no signing
+// CardanoRoles reads + writes (verifiable role tags — SPO first). The claim mirrors the CIP-8 binds in
+// lib/chain/identity.ts: `cardano-roles.claim_role_signed` is FEELESS + UNSIGNED (the offline
+// `cardano-signer` role proof IS the authorization — the runtime re-verifies it at pool admission and on
+// inclusion via `pallet_cardano_roles::validate_unsigned`), so there is no fee payer and no signing
 // account. It is built bare with `tx.getBareTx()` and broadcast with the low-level `client.submit`,
 // exactly like `submitLinkStakeFeeless` — which is what lets a zero-balance derived posting account submit
-// it. (There is deliberately NO self-service `unclaim_role` write here: it is a SIGNED, fee-bearing call,
-// and a posting account has no native balance to pay the fee — so the badge is managed by the observer,
-// which clears a tag the moment the pool retires / the claim is committee-revoked.)
+// it. `unclaim_role` is the one SIGNED write here (self-service release of a claim), but it is
+// `#[pallet::feeless_if]` when the caller holds the claim, so the SAME zero-balance account that claimed
+// can also release it. (The observer additionally clears a tag the moment the pool retires / the claim is
+// committee-revoked, so removal never depends solely on the user acting.)
 //
 // The badge reads `ObservedRoles` (the observer-written, liveness-gated map) — NOT the raw claim — so a
 // tag only ever shows while the credential is a currently-live Cardano role. The claim map (`RoleClaimOf`)
@@ -14,7 +15,7 @@
 
 import type { PolkadotClient } from "polkadot-api";
 import { Enum } from "polkadot-api";
-import type { CognoApi, Ss58 } from "@/lib/types";
+import type { CognoApi, Ss58, PostingSigner } from "@/lib/types";
 import { classifyDispatchError, classifyThrown, errorCopy } from "@/lib/chain/errors";
 import { hexToBytes } from "@/lib/util/hex";
 
@@ -87,6 +88,32 @@ export async function submitClaimRoleFeeless(
   } catch (e) {
     const err = classifyThrown(e);
     console.error("cogno: feeless claim_role_signed submission failed:", errorCopy(err), e);
+    return { ok: false, error: errorCopy(err) };
+  }
+}
+
+/**
+ * Self-service release of a role claim — the one SIGNED write here. Signed by the posting account (the
+ * runtime `ensure_signed`s and removes both claim maps; the observer drops the badge on its next
+ * observation). It is `#[pallet::feeless_if]` when the caller holds the claim, so a zero-balance account
+ * can release its own role. Does NOT tombstone (that is the committee's `revoke_role`). Uses PAPI's
+ * promise-shaped `signAndSubmit` (a one-off, so the default nonce is fine) and classifies the result like
+ * the feeless submits. Returns finalized ok / a classified error message.
+ */
+export async function submitUnclaimRole(
+  api: CognoApi,
+  signer: PostingSigner,
+  role: RoleKindType,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await api.tx.CardanoRoles.unclaim_role({ role: Enum(role) }).signAndSubmit(signer.signer);
+    if (!res.ok) {
+      return { ok: false, error: errorCopy(classifyDispatchError(res.dispatchError)) };
+    }
+    return { ok: true };
+  } catch (e) {
+    const err = classifyThrown(e);
+    console.error("cogno: unclaim_role submission failed:", errorCopy(err), e);
     return { ok: false, error: errorCopy(err) };
   }
 }

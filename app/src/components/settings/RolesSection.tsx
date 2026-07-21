@@ -166,6 +166,20 @@ export function RolesSection() {
           <div className={styles.statusRow}>
             <span className={styles.verifiedMark}>✓ Verified SPO</span>
             <span className={styles.mono}>{truncId(roles.spoObserved.id)}</span>
+            <button
+              type="button"
+              className={styles.outlineBtn}
+              onClick={() => roles.unclaim("Spo")}
+              disabled={roles.unclaiming}
+            >
+              {roles.unclaiming ? (
+                <>
+                  <Spinner size="sm" label="Removing" /> Removing…
+                </>
+              ) : (
+                "Remove"
+              )}
+            </button>
           </div>
         ) : roles.spoClaimCredHex ? (
           // ── claimed, but the observer hasn't confirmed a live pool yet ──
@@ -174,6 +188,14 @@ export function RolesSection() {
               <Spinner size="sm" label="Awaiting confirmation" /> Claimed — awaiting on-chain confirmation
               that your pool is live.
             </span>
+            <button
+              type="button"
+              className={styles.outlineBtn}
+              onClick={() => roles.unclaim("Spo")}
+              disabled={roles.unclaiming}
+            >
+              {roles.unclaiming ? "Removing…" : "Remove"}
+            </button>
           </div>
         ) : (
           // ── the claim wizard ──
@@ -283,6 +305,12 @@ export function RolesSection() {
               </>
             )}
           </div>
+        )}
+
+        {roles.unclaimError && (
+          <p className={styles.error} role="alert">
+            {roles.unclaimError}
+          </p>
         )}
       </div>
     </div>
