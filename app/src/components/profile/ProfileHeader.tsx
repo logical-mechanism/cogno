@@ -24,6 +24,7 @@ import { DisplayName } from "@/components/DisplayName";
 import { Handle } from "@/components/Handle";
 import { PostBody } from "@/components/PostBody";
 import { FollowButton } from "@/components/FollowButton";
+import { RoleBadge } from "@/components/RoleBadge";
 import { RevealImage } from "@/components/RevealImage";
 import { IconLink } from "@/components/icons";
 import { FollowCounts } from "./FollowCounts";
@@ -206,6 +207,9 @@ export function ProfileHeader({
           />
           <div className={styles.handleRow}>
             <Handle address={address} truncate="middle" copyable />
+            {/* Verified Cardano role tag(s) — self-fetching + live, so a retired/revoked role clears
+                promptly. Renders nothing when the account holds no live role. */}
+            <RoleBadge address={address} />
             {followsYou && <span className={styles.followsYou}>Follows you</span>}
           </div>
         </div>

@@ -1,0 +1,38 @@
+/* RoleBadge — a compact verified-role chip on the profile identity line. Sits inline after the handle,
+   next to the "Follows you" pill; never grows or wraps oddly (flex 0 0 auto, no line wrap). The app is
+   monochrome + danger — the verify check is the accent, the rest is quiet. */
+
+.badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: var(--cg-radius-pill);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-bold);
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--cg-text-secondary);
+  background: var(--cg-accent-wash);
+}
+
+/* the verified check — the one accent touch (a live on-chain binding). */
+.check {
+  color: var(--cg-accent);
+  font-weight: var(--cg-fw-bold);
+}
+
+.role {
+  color: var(--cg-text);
+}
+
+/* the resolved ticker/name or the truncated poolID — quiet, and clipped so a long ticker can't blow out
+   the identity line. */
+.detail {
+  color: var(--cg-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 16ch;
+}
