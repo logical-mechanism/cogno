@@ -142,15 +142,7 @@ pub mod pallet {
     /// an ownership SPO, the all-zero blank for a Calidus SPO — which names no pool; the drep ID / hot
     /// credential for dRep / CC).
     #[derive(
-        Clone,
-        PartialEq,
-        Eq,
-        Encode,
-        Decode,
-        DecodeWithMemTracking,
-        MaxEncodedLen,
-        TypeInfo,
-        Debug,
+        Clone, PartialEq, Eq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug,
     )]
     pub struct ObservedRole {
         pub kind: RoleKind,
@@ -376,14 +368,12 @@ pub mod pallet {
             role: RoleKind,
         ) -> DispatchResult {
             T::RoleAuthorityOrigin::ensure_origin(origin)?;
-            let credential = RoleClaimOf::<T>::take(&account, role).ok_or(Error::<T>::NotClaimed)?;
+            let credential =
+                RoleClaimOf::<T>::take(&account, role).ok_or(Error::<T>::NotClaimed)?;
             RoleCredIndex::<T>::remove(role, credential);
             TombstonedRoleCred::<T>::insert(role, credential, ());
             log::debug!(target: LOG_TARGET, "revoke_role: {account:?} {role:?} revoked + credential tombstoned");
-            Self::deposit_event(Event::RoleRevoked {
-                who: account,
-                role,
-            });
+            Self::deposit_event(Event::RoleRevoked { who: account, role });
             Ok(())
         }
     }
@@ -525,9 +515,8 @@ pub mod pallet {
                     cose_key,
                 } => {
                     // Verify the proof (audited crown jewel) + genesis + decode the committed account.
-                    let (account, role, credential) =
-                        Self::verify_role_proof(cose_sign1, cose_key)
-                            .map_err(|_| InvalidTransaction::BadProof)?;
+                    let (account, role, credential) = Self::verify_role_proof(cose_sign1, cose_key)
+                        .map_err(|_| InvalidTransaction::BadProof)?;
                     // A role attaches only to an onboarded identity — reject a non-participant at the pool
                     // (Custom 1; the FE submits a role claim only after onboarding, so this holds).
                     if !T::IdentityGate::is_allowed(&account) {

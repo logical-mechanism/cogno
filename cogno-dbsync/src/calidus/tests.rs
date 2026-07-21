@@ -269,6 +269,16 @@ fn distinct_calidus_keys_yield_distinct_credentials() {
     let (reg1, _, h1) = honest([1u8; 32], [2u8; 32], 1);
     let (reg2, _, h2) = honest([1u8; 32], [3u8; 32], 1); // same pool, rotated Calidus key
     assert_ne!(h1, h2);
-    assert_eq!(verify_registration(&encode(&reg1)).unwrap().calidus_key_hash, h1);
-    assert_eq!(verify_registration(&encode(&reg2)).unwrap().calidus_key_hash, h2);
+    assert_eq!(
+        verify_registration(&encode(&reg1))
+            .unwrap()
+            .calidus_key_hash,
+        h1
+    );
+    assert_eq!(
+        verify_registration(&encode(&reg2))
+            .unwrap()
+            .calidus_key_hash,
+        h2
+    );
 }

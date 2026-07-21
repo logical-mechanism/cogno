@@ -767,8 +767,12 @@ mod tests {
             let (r5, pool, cal5) = reg(1, 2, 5);
             let (r9, _pool, cal9) = reg(1, 3, 9);
             // A claim for the OLD (superseded) Calidus key is NOT tagged — the highest-nonce winner rotated.
-            let old = reduce_role_observation(&[r5.clone(), r9.clone()], &[pool], &[], &[cal5], &[]);
-            assert!(old.is_empty(), "a superseded Calidus key must not be tagged");
+            let old =
+                reduce_role_observation(&[r5.clone(), r9.clone()], &[pool], &[], &[cal5], &[]);
+            assert!(
+                old.is_empty(),
+                "a superseded Calidus key must not be tagged"
+            );
             // A claim for the CURRENT (highest-nonce) key IS tagged (with a blank, no-pool display id).
             let new = reduce_role_observation(&[r5, r9], &[pool], &[], &[cal9], &[]);
             assert_eq!(new.len(), 1);
@@ -801,7 +805,10 @@ mod tests {
             // never counter-signs, so nothing on Cardano stops it).
             let (honest, pool_p, cal_hash) = reg(1, 2, 5);
             let (attacker, pool_q, cal_hash2) = reg(9, 2, 5); // same Calidus seed 2, different cold key
-            assert_eq!(cal_hash, cal_hash2, "same Calidus key ⇒ same claimed credential");
+            assert_eq!(
+                cal_hash, cal_hash2,
+                "same Calidus key ⇒ same claimed credential"
+            );
             assert_ne!(pool_p, pool_q, "distinct pools");
             let out = reduce_role_observation(
                 &[honest, attacker],

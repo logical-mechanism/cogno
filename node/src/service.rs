@@ -213,22 +213,30 @@ async fn observe_for_parent(
     //     the raw label-867 registrations + active pools + the bound stake set's pool ownerships (SPO), and
     //     the CLAIMED, currently-live key-based dReps (`claimed_dreps` → the dRep liveness join runs in-DB).
     //     Same fail-closed discipline: any error ⇒ abstain. (`_claimed_committee` awaits Phase C.)
-    let (claimed_calidus, claimed_dreps, _claimed_committee) =
-        match client.runtime_api().bound_role_credentials(parent) {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!(target: "cardano-observer", "bound_role_credentials runtime API failed: {e:?} — abstaining");
-                return None;
-            }
-        };
-    let role_read =
-        match dbsync::read_role_observation(&dbsync_url, ref_slot, &bound_creds, &claimed_dreps).await {
-            Ok(r) => r,
-            Err(e) => {
-                log::warn!(target: "cardano-observer", "db-sync role read failed: {e} — abstaining (empty observation)");
-                return None;
-            }
-        };
+    let (claimed_calidus, claimed_dreps, _claimed_committee) = match client
+        .runtime_api()
+        .bound_role_credentials(parent)
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!(target: "cardano-observer", "bound_role_credentials runtime API failed: {e:?} — abstaining");
+            return None;
+        }
+    };
+    let role_read = match dbsync::read_role_observation(
+        &dbsync_url,
+        ref_slot,
+        &bound_creds,
+        &claimed_dreps,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!(target: "cardano-observer", "db-sync role read failed: {e} — abstaining (empty observation)");
+            return None;
+        }
+    };
     let role_entries = reduce_role_observation(
         &role_read.registrations,
         &role_read.active_pools,

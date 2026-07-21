@@ -112,7 +112,10 @@ impl<'a> Reader<'a> {
         Ok(s)
     }
     fn byte(&mut self) -> Result<u8, CalidusError> {
-        self.take(1)?.first().copied().ok_or(CalidusError::Truncated)
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or(CalidusError::Truncated)
     }
     /// Read a CBOR head → `(major_type, argument)`, enforcing minimal-length encoding and rejecting
     /// indefinite/reserved additional-info (28..=31).
@@ -189,7 +192,10 @@ impl<'a> Reader<'a> {
     fn bytes_raw(&mut self, max: usize) -> Result<(&'a [u8], &'a [u8]), CalidusError> {
         let start = self.pos;
         let content = self.bytes(max)?;
-        let raw = self.buf.get(start..self.pos).ok_or(CalidusError::Truncated)?;
+        let raw = self
+            .buf
+            .get(start..self.pos)
+            .ok_or(CalidusError::Truncated)?;
         Ok((raw, content))
     }
     /// Advance past one full CBOR item (recursively) — used to capture the payload/witness spans and to
@@ -197,7 +203,7 @@ impl<'a> Reader<'a> {
     fn skip_item(&mut self) -> Result<(), CalidusError> {
         let (mt, arg) = self.head()?;
         match mt {
-            0 | 1 => Ok(()),                    // uint / nint — the head already consumed it
+            0 | 1 => Ok(()), // uint / nint — the head already consumed it
             2 | 3 => self.take(arg as usize).map(|_| ()), // bstr / text — skip the content
             4 => {
                 for _ in 0..arg {
@@ -235,7 +241,6 @@ fn blake2b_224(input: &[u8]) -> [u8; 28] {
     }
     out
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // The verifier
@@ -590,7 +595,9 @@ fn parse_cose_sign1<'a>(
     if r.array_len().map_err(|_| CalidusError::BadRegistration)? != 4 {
         return Err(CalidusError::BadRegistration);
     }
-    let (protected_raw, _protected) = r.bytes_raw(256).map_err(|_| CalidusError::BadRegistration)?;
+    let (protected_raw, _protected) = r
+        .bytes_raw(256)
+        .map_err(|_| CalidusError::BadRegistration)?;
     r.skip_item()?; // unprotected header (`0` in the metadata form, or a map) — not signed material
     let (payload_raw, payload) = r.bytes_raw(64).map_err(|_| CalidusError::BadRegistration)?;
     let sb = r.bytes(64).map_err(|_| CalidusError::BadRegistration)?;

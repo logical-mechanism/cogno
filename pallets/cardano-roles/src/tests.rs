@@ -384,10 +384,22 @@ fn apply_roles_stores_multiple_spo_badges() {
         // A multi-pool operator: three distinct SPO badges + one dRep — all fit the grown
         // MAX_OBSERVED_ROLES_PER_ACCOUNT bound (formerly capped at one-per-kind = 3 total).
         let set = ObservedRoleSet::try_from(vec![
-            ObservedRole { kind: RoleKind::Spo, id: [0x11u8; 28] },
-            ObservedRole { kind: RoleKind::Spo, id: [0x22u8; 28] },
-            ObservedRole { kind: RoleKind::Spo, id: [0x33u8; 28] },
-            ObservedRole { kind: RoleKind::DRep, id: [0x44u8; 28] },
+            ObservedRole {
+                kind: RoleKind::Spo,
+                id: [0x11u8; 28],
+            },
+            ObservedRole {
+                kind: RoleKind::Spo,
+                id: [0x22u8; 28],
+            },
+            ObservedRole {
+                kind: RoleKind::Spo,
+                id: [0x33u8; 28],
+            },
+            ObservedRole {
+                kind: RoleKind::DRep,
+                id: [0x44u8; 28],
+            },
         ])
         .expect("four badges fit MAX_OBSERVED_ROLES_PER_ACCOUNT");
         crate::Pallet::<Test>::apply_roles(&ALICE, set.clone());
@@ -411,8 +423,16 @@ fn claimed_credentials_enumerates_the_scoping_set() {
         set_genesis();
         let (c1, k1, cred1) = spo_proof(7, ALICE);
         let (c2, k2, cred2) = spo_proof(9, BOB);
-        assert_ok!(CardanoRoles::claim_role_signed(RuntimeOrigin::none(), c1, k1));
-        assert_ok!(CardanoRoles::claim_role_signed(RuntimeOrigin::none(), c2, k2));
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            c1,
+            k1
+        ));
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            c2,
+            k2
+        ));
         let mut creds = crate::Pallet::<Test>::claimed_credentials(RoleKind::Spo);
         creds.sort();
         let mut want = vec![cred1, cred2];
@@ -445,7 +465,10 @@ fn validate_unsigned_admits_a_valid_claim() {
         )
         .expect("a valid claim is admitted");
         assert!(valid.propagate, "claims must gossip");
-        assert!(!valid.provides.is_empty(), "a `provides` tag dedupes the claim");
+        assert!(
+            !valid.provides.is_empty(),
+            "a `provides` tag dedupes the claim"
+        );
     });
 }
 

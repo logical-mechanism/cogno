@@ -456,8 +456,14 @@ pub async fn read_role_observation(
             .ok_or_else(|| "db-sync owner_pools column was not a JSON array".to_string())?;
         let mut owner_pools: Vec<([u8; 28], [u8; 28])> = Vec::with_capacity(owner_rows.len());
         for r in &owner_rows {
-            let cred = r.get("cred").and_then(|v| v.as_str()).ok_or("missing cred")?;
-            let pool = r.get("pool").and_then(|v| v.as_str()).ok_or("missing pool")?;
+            let cred = r
+                .get("cred")
+                .and_then(|v| v.as_str())
+                .ok_or("missing cred")?;
+            let pool = r
+                .get("pool")
+                .and_then(|v| v.as_str())
+                .ok_or("missing pool")?;
             owner_pools.push((
                 hex_bytes::<28>(cred).ok_or("bad owner cred hex")?,
                 hex_bytes::<28>(pool).ok_or("bad owner pool hex")?,
@@ -482,12 +488,14 @@ pub async fn read_role_observation(
         })
     };
 
-    tokio::time::timeout(DBSYNC_TIMEOUT, read).await.map_err(|_| {
-        format!(
-            "db-sync role read timed out after {}s",
-            DBSYNC_TIMEOUT.as_secs()
-        )
-    })?
+    tokio::time::timeout(DBSYNC_TIMEOUT, read)
+        .await
+        .map_err(|_| {
+            format!(
+                "db-sync role read timed out after {}s",
+                DBSYNC_TIMEOUT.as_secs()
+            )
+        })?
 }
 
 /// Decode a lowercase-hex string to bytes (variable length — for the raw label-867 registration bytes).

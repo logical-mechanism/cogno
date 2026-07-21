@@ -693,7 +693,8 @@ fn parse_payload(p: &[u8]) -> Result<([u8; 32], [u8; 32]), Cip8Error> {
 /// never be matched to another. The `role=` token must consume the input to the end (no trailing
 /// bytes). The nonce is validated for FORMAT only, exactly as in [`parse_payload`].
 fn parse_role_payload(p: &[u8]) -> Result<([u8; 32], [u8; 32], RoleClass), Cip8Error> {
-    let off = expect(p, 0, b"cogno-chain/role/v1;genesis=").map_err(|_| Cip8Error::BadRolePayload)?;
+    let off =
+        expect(p, 0, b"cogno-chain/role/v1;genesis=").map_err(|_| Cip8Error::BadRolePayload)?;
     let (genesis, off) = take_hex(p, off, 32).map_err(|_| Cip8Error::BadRolePayload)?;
     let off = expect(p, off, b";account=").map_err(|_| Cip8Error::BadRolePayload)?;
     let (account, off) = take_hex(p, off, 32).map_err(|_| Cip8Error::BadRolePayload)?;

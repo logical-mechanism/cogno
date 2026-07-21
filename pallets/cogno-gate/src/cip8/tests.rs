@@ -412,7 +412,7 @@ fn build_role_proof(addr_header: u8, payload: &[u8]) -> (Vec<u8>, Vec<u8>, [u8; 
     ss.extend_from_slice(&payload_raw);
     let signature = pair.sign(&ss);
     let sig: Vec<u8> = AsRef::<[u8]>::as_ref(&signature).to_vec(); // 64 bytes
-    // cose_sign1 = 84 <protected_raw> a0 <payload_raw> <bstr sig>.
+                                                                   // cose_sign1 = 84 <protected_raw> a0 <payload_raw> <bstr sig>.
     let mut cose = vec![0x84u8];
     cose.extend_from_slice(&protected_raw);
     cose.push(0xa0); // empty unprotected map
@@ -432,10 +432,15 @@ fn verifies_a_constructed_role_proof_enterprise_and_base() {
         // Both an enterprise (0x60) and a base (0x00) VerificationKey-payment address bind the same
         // 28-byte payment credential; the role path takes it regardless of the (ignored) stake part.
         for header in [0x60u8, 0x00u8] {
-            let (cose, key, cred) = build_role_proof(header, &role_payload(&genesis, &account, "spo"));
+            let (cose, key, cred) =
+                build_role_proof(header, &role_payload(&genesis, &account, "spo"));
             let v = verify_bind_proof_role(&cose, &key, 0).expect("a role proof must verify");
             assert_eq!(v.role, RoleClass::Spo);
-            assert_eq!(v.credential.as_slice(), cred.as_slice(), "binds the role-key hash");
+            assert_eq!(
+                v.credential.as_slice(),
+                cred.as_slice(),
+                "binds the role-key hash"
+            );
             assert_eq!(v.account, account, "commits the account");
             assert_eq!(v.genesis, genesis, "carries the genesis");
         }
@@ -487,7 +492,8 @@ fn role_proof_rejects_unknown_role_and_bind_domain() {
 #[test]
 fn role_proof_rejects_wrong_network_tamper_and_swapped_key() {
     ext().execute_with(|| {
-        let (cose, key, _) = build_role_proof(0x60, &role_payload(&[0x27u8; 32], &[0x30u8; 32], "spo"));
+        let (cose, key, _) =
+            build_role_proof(0x60, &role_payload(&[0x27u8; 32], &[0x30u8; 32], "spo"));
         // The synthetic enterprise address is network 0; verifying for mainnet (1) ⇒ WrongNetwork.
         assert_eq!(
             verify_bind_proof_role(&cose, &key, 1),
@@ -503,7 +509,9 @@ fn role_proof_rejects_wrong_network_tamper_and_swapped_key() {
         );
         // A different COSE_Key: the signed protected header's KID == the real pubkey, so the
         // single-key-source rule rejects BEFORE ed25519_verify.
-        let other = hx("a40101032720062158200000000000000000000000000000000000000000000000000000000000000001");
+        let other = hx(
+            "a40101032720062158200000000000000000000000000000000000000000000000000000000000000001",
+        );
         assert_eq!(
             verify_bind_proof_role(&cose, &other, 0),
             Err(Cip8Error::KeyMismatch)

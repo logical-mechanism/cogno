@@ -78,14 +78,16 @@ fn observed_role_pairs(who: &AccountId) -> Vec<(u8, [u8; 28])> {
         .collect()
 }
 
+/// The memoized author display fields for one author: (`display_name`, `avatar`, observed-role
+/// `(kind_index, id)` pairs). A named alias so `author_fields` / its cache don't trip `type_complexity`.
+type AuthorFields = (Vec<u8>, Vec<u8>, Vec<(u8, [u8; 28])>);
+/// Per-page author-fields memo, one entry per distinct author (see [`author_fields`]).
+type AuthorFieldsCache = alloc::collections::BTreeMap<AccountId, AuthorFields>;
+
 /// The author display fields for `who` — pallet-profile `display_name`/`avatar` plus the observed role
 /// badges (`(kind_index, id)` pairs) — memoized in `cache` so a page whose posts share an author (author
 /// feed / replies) does ONE profile read and ONE roles read for that author instead of one per post.
-#[allow(clippy::type_complexity)]
-fn author_fields(
-    cache: &mut alloc::collections::BTreeMap<AccountId, (Vec<u8>, Vec<u8>, Vec<(u8, [u8; 28])>)>,
-    who: &AccountId,
-) -> (Vec<u8>, Vec<u8>, Vec<(u8, [u8; 28])>) {
+fn author_fields(cache: &mut AuthorFieldsCache, who: &AccountId) -> AuthorFields {
     cache
         .entry(who.clone())
         .or_insert_with(|| {
@@ -102,8 +104,7 @@ fn author_fields(
 /// memoizing the per-account reads so an author-scoped page (whose posts all share one author) pays a
 /// single profile + roles read for that author rather than one per post.
 fn enrich_author_profiles(posts: &mut [pallet_microblog::EnrichedPost<AccountId>]) {
-    let mut cache: alloc::collections::BTreeMap<AccountId, (Vec<u8>, Vec<u8>, Vec<(u8, [u8; 28])>)> =
-        alloc::collections::BTreeMap::new();
+    let mut cache: AuthorFieldsCache = alloc::collections::BTreeMap::new();
     for p in posts.iter_mut() {
         let (name, avatar, roles) = author_fields(&mut cache, &p.author);
         if !name.is_empty() {
