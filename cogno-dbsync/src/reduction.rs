@@ -669,11 +669,6 @@ mod tests {
             v.extend_from_slice(b);
             v
         }
-        fn tx(s: &[u8]) -> Vec<u8> {
-            let mut v = head(3, s.len() as u64);
-            v.extend_from_slice(s);
-            v
-        }
         fn arr(items: &[Vec<u8>]) -> Vec<u8> {
             let mut v = head(4, items.len() as u64);
             for i in items {
@@ -697,15 +692,6 @@ mod tests {
             h.finalize_variable(&mut o).unwrap();
             o
         }
-        fn hexa(b: &[u8]) -> Vec<u8> {
-            const H: &[u8; 16] = b"0123456789abcdef";
-            let mut o = Vec::new();
-            for &x in b {
-                o.push(H[(x >> 4) as usize]);
-                o.push(H[(x & 15) as usize]);
-            }
-            o
-        }
 
         /// Build a valid label-867 registration for `(cold, calidus, nonce)`; returns
         /// `(bytes, pool_id, calidus_hash)`.
@@ -720,9 +706,10 @@ mod tests {
                 (u(2), arr(&[])),
                 (u(3), arr(&[u(0)])),
                 (u(4), u(nonce)),
-                (u(7), tx(&hexa(&cal_pk))),
+                (u(7), bs(&cal_pk)), // Calidus key: a raw 32-byte bstr (cardano-signer's on-chain form)
             ]);
-            let preimage = sp_crypto_hashing::blake2_256(&hexa(&payload));
+            // CIP-88-v2 preimage: blake2b-256 of the RAW payload CBOR (not a hex-encoding of it).
+            let preimage = sp_crypto_hashing::blake2_256(&payload);
             let sig = cold.sign(&preimage).to_bytes();
             let witness = arr(&[map(&[(u(0), u(0)), (u(1), bs(&cold_pk)), (u(2), bs(&sig))])]);
             let full = map(&[(u(0), u(2)), (u(1), payload), (u(2), witness)]);
