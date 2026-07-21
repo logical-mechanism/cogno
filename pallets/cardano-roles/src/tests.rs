@@ -378,6 +378,33 @@ fn apply_roles_writes_clears_and_is_idempotent() {
 }
 
 #[test]
+fn apply_roles_stores_multiple_spo_badges() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // A multi-pool operator: three distinct SPO badges + one dRep — all fit the grown
+        // MAX_OBSERVED_ROLES_PER_ACCOUNT bound (formerly capped at one-per-kind = 3 total).
+        let set = ObservedRoleSet::try_from(vec![
+            ObservedRole { kind: RoleKind::Spo, id: [0x11u8; 28] },
+            ObservedRole { kind: RoleKind::Spo, id: [0x22u8; 28] },
+            ObservedRole { kind: RoleKind::Spo, id: [0x33u8; 28] },
+            ObservedRole { kind: RoleKind::DRep, id: [0x44u8; 28] },
+        ])
+        .expect("four badges fit MAX_OBSERVED_ROLES_PER_ACCOUNT");
+        crate::Pallet::<Test>::apply_roles(&ALICE, set.clone());
+        assert_eq!(ObservedRoles::<Test>::get(ALICE), set);
+        // observed_roles() returns all four (three SPO + one dRep), so the badge UI can render each pool.
+        assert_eq!(crate::Pallet::<Test>::observed_roles(&ALICE).len(), 4);
+        assert_eq!(
+            crate::Pallet::<Test>::observed_roles(&ALICE)
+                .iter()
+                .filter(|r| r.kind == RoleKind::Spo)
+                .count(),
+            3,
+        );
+    });
+}
+
+#[test]
 fn claimed_credentials_enumerates_the_scoping_set() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);

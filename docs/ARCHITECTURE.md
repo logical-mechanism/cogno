@@ -43,7 +43,9 @@ beacon and releases the ADA. Custody never leaves Cardano; the app-chain only re
 
 The datum names **no app-chain account**. That binding is made separately, on the app-chain, by
 `pallet-cogno-gate`'s CIP-8 self-proof — which recomputes the same beacon name byte-for-byte, so the
-observer can join the two. See [`TRUSTLESS-IDENTITY.md`](TRUSTLESS-IDENTITY.md).
+observer can join the two. See [`TRUSTLESS-IDENTITY.md`](TRUSTLESS-IDENTITY.md). The same CIP-8 proof +
+observer pair also powers verified Cardano role badges (SPO / dRep / CC) on profiles — see
+[`VERIFIABLE-ROLE-TAGS.md`](VERIFIABLE-ROLE-TAGS.md).
 
 The contract is **live on preprod, and its script hash is load-bearing**: any production edit under
 `contracts/` recompiles the validator and moves the hash, orphaning the deployed vault. Treat it as

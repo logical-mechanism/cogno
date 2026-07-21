@@ -1,20 +1,23 @@
 "use client";
 
-// RoleBadge — the verifiable Cardano role chip(s) on a profile header (SPO + dRep). Self-fetching, like
-// ReputationBadge: it watches the observer-written `CardanoRoles.ObservedRoles` for the profile's account
-// LIVE, so a tag appears once the observer confirms the role is live and DISAPPEARS the moment the pool
-// retires / the dRep deregisters / the claim is unclaimed or revoked (the observer clamps the set). It
-// renders NOTHING while loading or when the account holds no live role — a lapsed role leaves no residue.
+// RoleBadge — the verifiable Cardano role chip(s) on an author identity line (SPO + dRep). Renders one
+// chip per LIVE observed role, so a multi-pool operator shows several ✓ SPO tags. Two data sources:
+//   • `roles` — a set supplied by the caller (the node-served feed/thread/quote/profile folds the observed
+//     roles onto each author, so a timeline card shows badges with NO extra per-author subscription); or
+//   • `address` — self-fetching fallback: watches `CardanoRoles.ObservedRoles` LIVE for that account (used
+//     where only an address is in hand). A tag appears once the observer confirms the role is live and
+//     DISAPPEARS the moment the pool retires / the dRep deregisters / the claim is unclaimed or revoked.
+// Renders NOTHING while loading or when the account holds no live role — a lapsed role leaves no residue.
 //
-// Display id: the chain gives the trustless 28-byte id (poolID for SPO, drepID for dRep); the ticker/name
-// is a best-effort Blockfrost lookup (lib/cardano/roleMeta, sanitized), degrading to the role label + a
-// truncated id when unresolved — never a fabricated name. Kept MeshJS-free so a profile page never pulls
-// the heavy Cardano bundle to render a badge.
+// Each chip is a "verify on-chain" link to cexplorer (the trustless 28-byte poolID/drepID → its explorer
+// page), so a viewer can confirm the binding independently. The ticker/name is a best-effort Blockfrost
+// lookup (lib/cardano/roleMeta, sanitized), degrading to the role label + a truncated id when unresolved —
+// never a fabricated name. Kept MeshJS-free so a profile / feed page never pulls the heavy Cardano bundle.
 
 import { useEffect, useState } from "react";
 import styles from "./RoleBadge.module.css";
 import { useSession } from "@/components/Providers";
-import { resolvePoolMeta, resolveDRepName } from "@/lib/cardano/roleMeta";
+import { resolvePoolMeta, resolveDRepName, roleExplorerUrl } from "@/lib/cardano/roleMeta";
 import type { ObservedRoleView, RoleKindType } from "@/lib/chain/roles";
 
 /** Short label per role. */
@@ -42,20 +45,26 @@ async function resolveRoleName(kind: RoleKindType, idHex: string): Promise<strin
   return null; // CC has no name registry
 }
 
-export function RoleBadge({ address }: { address: string }) {
+/**
+ * The verified role chip(s) for an author. Provide EITHER `roles` (the folded, node-served set — no
+ * subscription) OR `address` (self-fetch the live set). If both are given, `roles` wins.
+ */
+export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; address?: string }) {
   const { api } = useSession();
-  const [roles, setRoles] = useState<ObservedRoleView[] | null>(null);
+  const provided = roles !== undefined;
+  const [fetched, setFetched] = useState<ObservedRoleView[] | null>(null);
   // `${kind}:${id}` → resolved ticker/name. Absent = unresolved (show the truncated id).
   const [names, setNames] = useState<Record<string, string>>({});
 
-  // Live watch of the observed-role set for this profile. A serialized guard avoids a re-render every
+  // Self-fetch only when the caller did NOT supply `roles`. A serialized guard avoids a re-render every
   // block (watchValue re-emits per best block) when the set is unchanged.
   useEffect(() => {
+    if (provided) return; // the set is supplied — no subscription
     if (!api || !address) {
-      setRoles(null);
+      setFetched(null);
       return;
     }
-    setRoles(null);
+    setFetched(null);
     let last = " "; // sentinel distinct from any JSON
     const sub = api.query.CardanoRoles.ObservedRoles.watchValue(address, { at: "best" }).subscribe(
       ({ value }) => {
@@ -63,19 +72,21 @@ export function RoleBadge({ address }: { address: string }) {
         const key = JSON.stringify(next);
         if (key === last) return;
         last = key;
-        setRoles(next);
+        setFetched(next);
       },
-      () => setRoles([]),
+      () => setFetched([]),
     );
     return () => sub.unsubscribe();
-  }, [api, address]);
+  }, [provided, api, address]);
+
+  const set = provided ? roles : fetched;
 
   // Best-effort Blockfrost resolution of each role's display name. Cached in lib/cardano/roleMeta, so a
-  // repeat (re-render, second profile with the same id) never re-hits the network.
+  // repeat (re-render, second author with the same id) never re-hits the network.
   useEffect(() => {
-    if (!roles) return;
+    if (!set) return;
     let cancelled = false;
-    for (const r of roles) {
+    for (const r of set) {
       const nameKey = `${r.kind}:${r.id}`;
       if (names[nameKey] !== undefined) continue;
       void resolveRoleName(r.kind, r.id).then((label) => {
@@ -86,22 +97,22 @@ export function RoleBadge({ address }: { address: string }) {
     return () => {
       cancelled = true;
     };
-  }, [roles, names]);
+  }, [set, names]);
 
-  if (!roles || roles.length === 0) return null;
+  if (!set || set.length === 0) return null;
 
   return (
     <>
-      {roles.map((r) => {
+      {set.map((r) => {
         const resolvedName = names[`${r.kind}:${r.id}`];
         const detail = resolvedName ?? truncId(r.id);
-        return (
-          <span
-            key={`${r.kind}:${r.id}`}
-            className={styles.badge}
-            title={`Verified Cardano ${ROLE_FULL[r.kind]} — ${detail}. The chain holds a live binding.`}
-            aria-label={`Verified Cardano ${ROLE_FULL[r.kind]}${resolvedName ? `, ${resolvedName}` : ""}`}
-          >
+        const href = roleExplorerUrl(r.kind, r.id);
+        const label = `Verified Cardano ${ROLE_FULL[r.kind]}${resolvedName ? `, ${resolvedName}` : ""}`;
+        const title = `Verified Cardano ${ROLE_FULL[r.kind]} — ${detail}. The chain holds a live binding.${
+          href ? " Click to verify on-chain." : ""
+        }`;
+        const inner = (
+          <>
             <span className={styles.check} aria-hidden>
               ✓
             </span>
@@ -109,6 +120,26 @@ export function RoleBadge({ address }: { address: string }) {
             <span className={styles.detail} aria-hidden>
               {detail}
             </span>
+          </>
+        );
+        // A link to the explorer when we can build one (SPO/dRep); a plain chip otherwise (CC / bad id).
+        return href ? (
+          <a
+            key={`${r.kind}:${r.id}`}
+            className={styles.badge}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={title}
+            aria-label={`${label} — verify on-chain`}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            {inner}
+          </a>
+        ) : (
+          <span key={`${r.kind}:${r.id}`} className={styles.badge} title={title} aria-label={label}>
+            {inner}
           </span>
         );
       })}

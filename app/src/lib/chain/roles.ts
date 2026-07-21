@@ -31,6 +31,33 @@ export interface ObservedRoleView {
   id: string;
 }
 
+/** Kind index (SCALE `#[codec(index)]`) → RoleKindType, in declaration order. */
+const ROLE_KIND_BY_INDEX: readonly RoleKindType[] = ["Spo", "DRep", "Committee"];
+
+/**
+ * Map the node-served primitive role pairs — `[kind_index, id]`, how PAPI decodes the `Vec<(u8, [u8;28])>`
+ * the runtime folds into `ProfileView.observed_roles` / `EnrichedPost.author_roles` — to `ObservedRoleView[]`.
+ * Tolerant of the id arriving as a 0x-hex string or a `FixedSizeBinary`. Unknown kind indices are skipped.
+ */
+export function mapObservedRolePairs(
+  pairs: ReadonlyArray<readonly [number, unknown]> | undefined | null,
+): ObservedRoleView[] {
+  if (!pairs) return [];
+  const out: ObservedRoleView[] = [];
+  for (const [ix, rawId] of pairs) {
+    const kind = ROLE_KIND_BY_INDEX[ix];
+    if (!kind) continue;
+    const id =
+      typeof rawId === "string"
+        ? rawId
+        : typeof (rawId as { asHex?: () => string } | null)?.asHex === "function"
+          ? (rawId as { asHex: () => string }).asHex()
+          : undefined;
+    if (id) out.push({ kind, id });
+  }
+  return out;
+}
+
 /** Outcome of submitting a feeless role claim on-chain. */
 export interface RoleClaimResult {
   ok: boolean;

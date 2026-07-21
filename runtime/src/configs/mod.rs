@@ -955,7 +955,11 @@ pub struct RoleApply;
 impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
     fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28])]) {
         use pallet_cardano_roles::{ObservedRole, ObservedRoleSet, RoleKind};
-        let mut set: alloc::vec::Vec<ObservedRole> = alloc::vec::Vec::new();
+        // Build the bounded set by pushing until full, TRUNCATING not clearing: an account with more
+        // observed badges than the cap keeps the first N (the observer passes them in a deterministic
+        // order). The old `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
+        // wiped the ENTIRE set to empty; `try_push`-until-`Err` keeps a determinstic prefix instead.
+        let mut bounded = ObservedRoleSet::default();
         for (kind_ix, id) in roles {
             let kind = match kind_ix {
                 0 => RoleKind::Spo,
@@ -963,9 +967,10 @@ impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
                 2 => RoleKind::Committee,
                 _ => continue,
             };
-            set.push(ObservedRole { kind, id: *id });
+            if bounded.try_push(ObservedRole { kind, id: *id }).is_err() {
+                break; // at the cap — keep the first N (deterministic), drop the rest
+            }
         }
-        let bounded = ObservedRoleSet::try_from(set).unwrap_or_default();
         pallet_cardano_roles::Pallet::<Runtime>::apply_roles(who, bounded);
     }
 }

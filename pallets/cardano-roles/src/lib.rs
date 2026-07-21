@@ -53,8 +53,12 @@ pub const LOG_TARGET: &str = "runtime::cardano-roles";
 /// the observed side (the 28-byte poolID for SPO; the same drep ID / hot credential for dRep / CC).
 pub type RoleCredential = [u8; 28];
 
-/// The maximum number of distinct roles one account can hold — exactly the three [`RoleKind`]s.
-pub const MAX_ROLES_PER_ACCOUNT: u32 = 3;
+/// The maximum number of observed role BADGES one account can display at once. An account holds at most
+/// one dRep and one CC badge, but can hold SEVERAL SPO badges — one per pool it operates via a Calidus
+/// key and/or owns — so this is deliberately well above the three [`RoleKind`]s. The observer truncates
+/// to this cap (the runtime `RoleApply` sink keeps the first N in the deterministic observed order); the
+/// set is display-only, so a cap is a UI bound, not an economic one.
+pub const MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 16;
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -108,6 +112,18 @@ pub mod pallet {
             }
         }
 
+        /// The `#[codec(index)]` value (0 = SPO, 1 = dRep, 2 = CC) as a plain `u8`. Used to fold an
+        /// observed role into the microblog `ProfileView` / `EnrichedPost` as a primitive `(u8, id)` — the
+        /// runtime cannot name this on-wire type there without a Cargo cycle (microblog ← cardano-roles).
+        /// Mirrors the observer's `RoleSource::kind_index`.
+        pub fn index(self) -> u8 {
+            match self {
+                RoleKind::Spo => 0,
+                RoleKind::DRep => 1,
+                RoleKind::Committee => 2,
+            }
+        }
+
         /// Map a `#[codec(index)]` value (0/1/2) back to a `RoleKind` — used only by the `--dev`
         /// genesis seed. `None` for any other value.
         fn from_index(ix: u8) -> Option<Self> {
@@ -138,8 +154,9 @@ pub mod pallet {
         pub id: RoleCredential,
     }
 
-    /// An account's full observed-role set (at most one per [`RoleKind`]). The profile badge reads it.
-    pub type ObservedRoleSet = BoundedVec<ObservedRole, ConstU32<MAX_ROLES_PER_ACCOUNT>>;
+    /// An account's full observed-role set (≤ one dRep and one CC, but possibly several SPO). The profile
+    /// badge reads it.
+    pub type ObservedRoleSet = BoundedVec<ObservedRole, ConstU32<MAX_OBSERVED_ROLES_PER_ACCOUNT>>;
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -285,7 +302,7 @@ pub mod pallet {
                     })
                     .collect();
                 let bounded = ObservedRoleSet::try_from(set)
-                    .expect("genesis role set exceeds MAX_ROLES_PER_ACCOUNT");
+                    .expect("genesis role set exceeds MAX_OBSERVED_ROLES_PER_ACCOUNT");
                 if !bounded.is_empty() {
                     ObservedRoles::<T>::insert(who, bounded);
                 }

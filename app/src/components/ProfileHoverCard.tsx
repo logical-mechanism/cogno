@@ -16,6 +16,7 @@ import styles from "./ProfileHoverCard.module.css";
 import { Avatar } from "./Avatar";
 import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
+import { RoleBadge } from "./RoleBadge";
 import { FollowButton } from "./FollowButton";
 import { AccountVoteControl } from "./profile/AccountVoteControl";
 import { Spinner } from "./icons";
@@ -266,6 +267,8 @@ function HoverPopover({
       <button type="button" className={styles.nameBtn} onClick={openProfile}>
         <DisplayName address={author.address} displayName={displayName} authorRevoked={banned} />
       </button>
+      {/* Verified Cardano role tag(s) from the folded ProfileView — self-hides when none / still loading. */}
+      <RoleBadge roles={profile?.observedRoles} />
       <Handle address={author.address} />
 
       {bio.length > 0 && (

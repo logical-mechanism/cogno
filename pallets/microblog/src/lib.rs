@@ -1858,6 +1858,9 @@ pub struct QuotedSummary<AccountId> {
     pub author_display_name: Vec<u8>,
     /// The quoted author's avatar reference (runtime-filled; empty if unset).
     pub author_avatar: Vec<u8>,
+    /// The quoted author's live observed Cardano role badges as `(kind_index, id)` pairs (runtime-filled
+    /// from pallet-cardano-roles; empty if none). Same primitive shape as `author_display_name`.
+    pub author_roles: Vec<(u8, [u8; 28])>,
 }
 
 /// One enriched, viewer-aware post — everything a feed card renders, in a single shot.
@@ -1904,6 +1907,11 @@ pub struct EnrichedPost<AccountId> {
     pub author_avatar: Vec<u8>,
     /// One-level resolved quoted-post summary (when `quote` is `Some` and the target exists).
     pub quoted: Option<QuotedSummary<AccountId>>,
+    /// The author's live observed Cardano role badges as `(kind_index, id)` pairs (kind: 0=SPO, 1=dRep,
+    /// 2=CC; id: the 28-byte poolID / drepID / hot credential). Runtime-filled from pallet-cardano-roles
+    /// (empty if none), so a feed card shows a ✓ SPO/dRep tag with no extra per-author read. Same
+    /// primitive shape + no-Cargo-cycle rationale as `author_display_name`.
+    pub author_roles: Vec<(u8, [u8; 28])>,
 }
 
 /// One page of enriched posts plus the cursor to continue below. `next_cursor == None` ⇒ the scan
@@ -1987,6 +1995,11 @@ pub struct ProfileView<AccountId> {
     pub follower_count: u32,
     /// Accounts this account follows.
     pub following_count: u32,
+    /// The account's live observed Cardano role badges as primitive `(kind_index, id)` pairs (kind:
+    /// 0=SPO, 1=dRep, 2=CC; id: the 28-byte poolID / drepID / hot credential). Runtime-filled from
+    /// pallet-cardano-roles' observer-written `ObservedRoles` (empty if the account holds no live role).
+    /// A primitive so this crate needs no cardano-roles dependency (which would be a Cargo cycle).
+    pub observed_roles: Vec<(u8, [u8; 28])>,
 }
 
 /// One poll option with its stake-weighted tally, for [`PollView`].
@@ -2335,6 +2348,7 @@ impl<T: Config> Pallet<T> {
                 text: qp.text.into_inner(),
                 author_display_name: Vec::new(),
                 author_avatar: Vec::new(),
+                author_roles: Vec::new(),
             })
         });
         EnrichedPost {
@@ -2359,6 +2373,7 @@ impl<T: Config> Pallet<T> {
             author_display_name: Vec::new(),
             author_avatar: Vec::new(),
             quoted,
+            author_roles: Vec::new(),
         }
     }
 

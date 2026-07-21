@@ -1262,3 +1262,60 @@ fn observe_skips_an_unresolved_role_credential() {
         assert_eq!(observed_roles_of(ALICE), Vec::<(u8, [u8; 28])>::new());
     });
 }
+
+#[test]
+fn observe_credits_multiple_spo_badges_for_distinct_pools() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        // ALICE operates two distinct pools via two Calidus keys, both bound to her account.
+        let cal1: [u8; 28] = [0xC1; 28];
+        let cal2: [u8; 28] = [0xC2; 28];
+        let pool_a: [u8; 28] = [0xA0; 28];
+        let pool_b: [u8; 28] = [0xB0; 28];
+        bind_role(cal1, ALICE);
+        bind_role(cal2, ALICE);
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 1),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[
+                (RoleSource::SpoCalidus, cal1, pool_a),
+                (RoleSource::SpoCalidus, cal2, pool_b),
+            ]),
+        ));
+        // Both distinct SPO pools show as separate badges (dedup is by (kind, id), not by kind).
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool_a), (0u8, pool_b)]);
+    });
+}
+
+#[test]
+fn observe_collapses_the_same_pool_seen_via_two_sources() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        // The SAME pool observed via BOTH a Calidus key and pool ownership → one SPO badge, not two.
+        let cal: [u8; 28] = [0xCA; 28];
+        let stake: [u8; 28] = [0x5A; 28];
+        let pool: [u8; 28] = [0xF0; 28];
+        bind_role(cal, ALICE);
+        bind_role(stake, ALICE);
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 1),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[
+                (RoleSource::SpoCalidus, cal, pool),
+                (RoleSource::SpoOwner, stake, pool),
+            ]),
+        ));
+        // Same (kind=SPO, id=pool) from both sources collapses to a single badge.
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool)]);
+    });
+}

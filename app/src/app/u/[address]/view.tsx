@@ -391,6 +391,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
         <>
           <ProfileHeader
             address={address}
+            observedRoles={profile?.observedRoles}
             displayName={profile?.displayName}
             bio={canProfiles ? profile?.bio : undefined}
             avatar={profile?.avatar}

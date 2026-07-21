@@ -25,6 +25,7 @@ import { Handle } from "./Handle";
 import { PostTime } from "./PostTime";
 import { ProfileHoverCard } from "./ProfileHoverCard";
 import { ReputationBadge } from "./ReputationBadge";
+import { RoleBadge } from "./RoleBadge";
 import { IconMore } from "./icons";
 import type { AuthorRef, OverflowMenuItem, AvatarSize } from "./kit";
 
@@ -142,6 +143,9 @@ export function PostCardHeader({
           {/* Community reputation next to the name — a quick good-actor/troll signal (self-hidden when
               unknown or net-zero, so most rows stay clean). */}
           <ReputationBadge address={author.address} />
+          {/* Verified Cardano role tag(s), folded onto the post node-side (no per-author subscription);
+              renders nothing when the author holds no live role. */}
+          <RoleBadge roles={author.roles} />
           <Handle address={author.address} />
           {at != null && <PostTime at={at} />}
           {dim && (

@@ -2,8 +2,8 @@
 
 Guidance for working in this repo. See [README.md](README.md) for the user-facing overview and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design; per-mechanism depth lives in the
-focused docs it links (`IN-PROTOCOL-OBSERVATION`, `ECONOMICS`, `TRUSTLESS-IDENTITY`, `SCALE-NODE-READS`)
-and the operator runbooks (`PREPROD-BRINGUP`, `RELAY-NODE`, `UPGRADES`, `D2-custody-runbook`).
+focused docs it links (`IN-PROTOCOL-OBSERVATION`, `ECONOMICS`, `TRUSTLESS-IDENTITY`, `SCALE-NODE-READS`,
+`VERIFIABLE-ROLE-TAGS`) and the operator runbooks (`PREPROD-BRINGUP`, `RELAY-NODE`, `UPGRADES`, `D2-custody-runbook`).
 
 ## What this is
 

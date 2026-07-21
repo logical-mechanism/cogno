@@ -14,6 +14,7 @@
 import { getBlockfrostProjectId } from "@/lib/config/endpoints";
 import { sanitizeInline } from "@/lib/sanitize";
 import { hexToBytes } from "@/lib/util/hex";
+import type { RoleKindType } from "@/lib/chain/roles";
 
 /** A resolved pool display name (both fields optional; at least one present when non-null). */
 export interface PoolMeta {
@@ -182,4 +183,46 @@ export async function resolveDRepName(credHex: string): Promise<string | null> {
 
   drepInflight.set(cred, p);
   return p;
+}
+
+// ── "verify on-chain" explorer deep-links ────────────────────────────────────────────────────────
+// The chain gives the trustless 28-byte id; this turns it into a cexplorer URL so a viewer can confirm
+// the pool / dRep independently. Network follows the same Blockfrost-projectId prefix as the name lookups
+// (bech32 pool/drep ids are themselves network-agnostic — only the explorer subdomain differs).
+
+/** The cexplorer subdomain for the configured network (`""` = mainnet). */
+function explorerSub(): string {
+  const projectId = getBlockfrostProjectId();
+  if (projectId.startsWith("mainnet")) return "";
+  if (projectId.startsWith("preview")) return "preview.";
+  return "preprod.";
+}
+
+/**
+ * The CIP-5 bech32 pool id (`pool1…`) for a 28-byte pool hash (0x-prefixed or bare hex). Plain bech32,
+ * hrp `pool`, with NO CIP-129 header byte (only dRep / committee ids carry one). Reuses the shared
+ * encoder. `null` if the input isn't 28 bytes. Exported for the golden-vector test.
+ */
+export function poolBech32(poolIdHex: string): string | null {
+  const id = poolIdHex.replace(/^0x/, "").toLowerCase();
+  if (!/^[0-9a-f]{56}$/.test(id)) return null;
+  return bech32Encode("pool", hexToBytes(id));
+}
+
+/**
+ * A cexplorer "verify on-chain" URL for an observed role's display id, or `null` when there is no stable
+ * explorer page (a CC hot credential) or the id is malformed. SPO → `/pool/pool1…`; dRep → `/drep/drep1…`
+ * (CIP-129). The network is taken from the Blockfrost-projectId prefix.
+ */
+export function roleExplorerUrl(kind: RoleKindType, idHex: string): string | null {
+  const sub = explorerSub();
+  if (kind === "Spo") {
+    const id = poolBech32(idHex);
+    return id ? `https://${sub}cexplorer.io/pool/${id}` : null;
+  }
+  if (kind === "DRep") {
+    const id = drepBech32(idHex);
+    return id ? `https://${sub}cexplorer.io/drep/${id}` : null;
+  }
+  return null; // CC: a hot credential has no canonical explorer page
 }

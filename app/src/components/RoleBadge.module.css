@@ -16,6 +16,16 @@
   white-space: nowrap;
   color: var(--cg-text-secondary);
   background: var(--cg-accent-wash);
+  text-decoration: none; /* the chip is an <a> (verify on-chain) — no underline by default */
+}
+
+/* the "verify on-chain" affordance: only when the chip is a link (SPO / dRep). */
+a.badge {
+  cursor: pointer;
+}
+a.badge:hover .role,
+a.badge:focus-visible .role {
+  text-decoration: underline;
 }
 
 /* the verified check — the one accent touch (a live on-chain binding). */

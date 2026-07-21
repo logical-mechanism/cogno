@@ -901,9 +901,11 @@ pub mod pallet {
                 };
                 let kind = entry.source.kind_index();
                 let set = role_sets.entry(account).or_default();
-                // One entry per role kind (an account SPO'd via both Calidus and pool ownership collapses to
-                // a single SPO badge — first-wins in the deterministic `role_entries` order).
-                if set.iter().any(|(k, _)| *k == kind) {
+                // Dedup by the full (kind, id): the SAME pool observed via both Calidus and pool ownership
+                // (same kind=SPO, same resolved poolID) collapses to one badge, but DISTINCT pools each
+                // yield their own SPO badge (an operator of several pools shows several). first-wins in the
+                // deterministic `role_entries` order, so the per-account set stays byte-stable across nodes.
+                if set.iter().any(|(k, v)| *k == kind && *v == entry.id) {
                     continue;
                 }
                 set.push((kind, entry.id));
