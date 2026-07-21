@@ -341,9 +341,11 @@ pub fn verify_registration(metadata_867_bytes: &[u8]) -> Result<CalidusRegistrat
     })
 }
 
-/// Parse the Registration Payload map → `(poolID, calidus pubkey, nonce)`. Enforces the scope shape
-/// `[1, h'poolID28']`, requires the validation method to be `[0]` (Ed25519; `[2]` ⇒ Unsupported), and
-/// decodes the hex-text Calidus key. Feature-set + any CIP-details field are skipped.
+/// Parse the Registration Payload map → `(poolID, calidus pubkey, nonce, method)`. Enforces the scope
+/// shape `[1, h'poolID28']`, requires the validation method to be `[0]` (bare Ed25519) or `[2]` (CIP-8 /
+/// COSE) — any other id fails closed as `UnsupportedValidationMethod` — and decodes the RAW 32-byte
+/// Calidus verification key (a bstr, `cardano-signer`'s on-chain form). Feature-set + any CIP-details
+/// field are skipped.
 fn parse_payload(bytes: &[u8]) -> Result<Payload, CalidusError> {
     let mut r = Reader::new(bytes);
     let n = r.map_len().map_err(|_| CalidusError::BadPayload)?;

@@ -1319,3 +1319,60 @@ fn observe_collapses_the_same_pool_seen_via_two_sources() {
         assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool)]);
     });
 }
+
+#[test]
+fn re_enable_clamps_a_role_that_lapsed_during_a_freeze() {
+    // The role analog of `re_enable_clamps_a_stake_cred_that_dropped_out_during_a_freeze`:
+    // `LastObservedRoles` must be HELD while frozen, so a role that lapses mid-freeze is cleared on
+    // re-enable (not evicted-unzeroed into a stale-positive badge). Verifies the per-ACCOUNT clamp basis.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        let cal: [u8; 28] = [0xCA; 28];
+        let pool: [u8; 28] = [0xF0; 28];
+        bind_role(cal, ALICE);
+        // Credit ALICE's SPO badge under enforce.
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 20),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[(RoleSource::SpoCalidus, cal, pool)]),
+        ));
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool)]);
+
+        // Freeze, then observe WITHOUT the role (the pool lapsed): the badge is held, not cleared.
+        freeze();
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 15),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[]),
+        ));
+        assert_eq!(
+            observed_roles_of(ALICE),
+            vec![(0u8, pool)],
+            "frozen: ALICE's role badge is held (RoleSink never called)"
+        );
+
+        // Re-enable with the role still absent: the clamp basis was held, so ALICE is cleared now.
+        enforce();
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 10),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[]),
+        ));
+        assert_eq!(
+            observed_roles_of(ALICE),
+            Vec::<(u8, [u8; 28])>::new(),
+            "the role that lapsed mid-freeze is clamped on re-enable"
+        );
+    });
+}

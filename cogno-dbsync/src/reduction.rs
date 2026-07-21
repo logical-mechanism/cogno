@@ -320,6 +320,16 @@ pub fn reduce_role_observation(
             winner.insert(reg.pool_id, reg);
         }
     }
+    // ⚠ ATTESTATION SEMANTICS (open design item): a CIP-0151 registration is authorized by the pool COLD
+    // key alone — the Calidus key does NOT counter-sign — so a pool can authorize ANY public Calidus key
+    // without that key holder's consent. An `SpoCalidus` entry therefore attests "this account controls a
+    // Calidus key that this pool authorized", NOT sole operatorship: a pool operator who reads a victim's
+    // public Calidus key (from the victim's on-chain claim) can register it under their OWN pool and surface
+    // that pool under the victim's profile. The free `SpoOwner` path below is not exposed to this (Cardano
+    // requires each declared owner's stake-key witness at pool registration). A robust fix (e.g. committing a
+    // specific pool in the role claim, or dropping cross-pool-ambiguous credentials — which trades the
+    // impersonation for a denial-of-badge griefing vector) is deliberately left for a design decision, not
+    // patched here in the consensus reduction. The badge is display-only.
     for (pool_id, reg) in winner.iter() {
         if claimed.contains(&reg.calidus_key_hash) && active.contains(pool_id) {
             entries.push(RoleEntry {

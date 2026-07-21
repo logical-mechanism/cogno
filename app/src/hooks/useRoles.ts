@@ -65,17 +65,33 @@ export function useRoles(
     setClaimCredHex(emptyClaims());
     if (!api) return;
     const subs: { unsubscribe: () => void }[] = [];
+    // `watchValue({ at: "best" })` re-emits every best block; deduping the emit against a serialized guard
+    // (as RoleBadge's self-fetch does) avoids a re-render of every RoleClaimCard each block when the set
+    // is unchanged.
+    let lastObserved = " "; // sentinel distinct from any JSON
     subs.push(
       api.query.CardanoRoles.ObservedRoles.watchValue(signer.ss58, { at: "best" }).subscribe(
-        ({ value }) => setObserved((value ?? []).map((r) => ({ kind: r.kind.type, id: r.id }))),
+        ({ value }) => {
+          const next: ObservedRoleView[] = (value ?? []).map((r) => ({ kind: r.kind.type, id: r.id }));
+          const key = JSON.stringify(next);
+          if (key === lastObserved) return;
+          lastObserved = key;
+          setObserved(next);
+        },
         () => setObserved([]),
       ),
     );
     for (const role of CLAIMABLE_ROLES) {
       subs.push(
         api.query.CardanoRoles.RoleClaimOf.watchValue(signer.ss58, Enum(role), { at: "best" }).subscribe(
-          ({ value }) => setClaimCredHex((prev) => ({ ...prev, [role]: value ?? null })),
-          () => setClaimCredHex((prev) => ({ ...prev, [role]: null })),
+          // Bail out of the state update (return the same `prev` reference) when the claim credential is
+          // unchanged, so a per-block re-emit doesn't force a re-render.
+          ({ value }) =>
+            setClaimCredHex((prev) => {
+              const next = value ?? null;
+              return prev[role] === next ? prev : { ...prev, [role]: next };
+            }),
+          () => setClaimCredHex((prev) => (prev[role] === null ? prev : { ...prev, [role]: null })),
         ),
       );
     }
