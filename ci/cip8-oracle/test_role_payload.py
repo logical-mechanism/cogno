@@ -41,6 +41,9 @@ def test_rejects_bad_grammar():
     assert _rejects(f"cogno-chain/role/v1;genesis={'2A' * 32};account={A};nonce={N};role=spo")
     # trailing byte after the role token
     assert _rejects(role_payload.build(G, A, N, "spo") + "x")
+    # trailing NEWLINE after the role token — the on-chain scanner rejects it, so the `\Z` anchor here
+    # must too (a plain `$` would wrongly ACCEPT it, diverging from the runtime).
+    assert _rejects(role_payload.build(G, A, N, "spo") + "\n")
     # missing the role= field entirely
     assert _rejects(f"cogno-chain/role/v1;genesis={G};account={A};nonce={N}")
     # short genesis

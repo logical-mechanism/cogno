@@ -660,11 +660,13 @@ pub mod pallet {
             T::DbWeight::get().reads_writes(3, 2)
         }
 
-        /// Both unlock-clamp bases are `BoundedVec<_, MaxObserved>`. LOWERING `MaxObserved` under live state
+        /// All three unlock-clamp bases (vault `LastObserved`, stake `LastObservedStake`, role
+        /// `LastObservedRoles`) are `BoundedVec<_, MaxObserved>`. LOWERING `MaxObserved` under live state
         /// therefore has teeth: a stored vec longer than the new bound fails to decode, and `ValueQuery`
         /// answers a decode failure with the DEFAULT — an EMPTY basis — so every account that has since
-        /// unlocked keeps its weight forever, silently. `get()` cannot see that (it IS the thing that
-        /// swallows it); `decode_len` reads the raw length prefix and is bound-independent, so it can.
+        /// unlocked keeps its weight (or its role badge) forever, silently. `get()` cannot see that (it IS
+        /// the thing that swallows it); `decode_len` reads the raw length prefix and is bound-independent,
+        /// so it can.
         ///
         /// This runs under `try-runtime` against a snapshot of REAL state (docs/UPGRADES.md's pre-enactment
         /// dry-run), which is the only place a bound drop can be caught BEFORE it is on-chain.
@@ -678,6 +680,10 @@ pub mod pallet {
             ensure!(
                 LastObservedStake::<T>::decode_len().unwrap_or(0) <= bound,
                 "LastObservedStake is longer than MaxObserved — the stake clamp basis will not decode"
+            );
+            ensure!(
+                LastObservedRoles::<T>::decode_len().unwrap_or(0) <= bound,
+                "LastObservedRoles is longer than MaxObserved — the role clamp basis will not decode"
             );
             Ok(())
         }

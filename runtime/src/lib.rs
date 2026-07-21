@@ -75,8 +75,9 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
     // the `TxExtension` tuple. Metadata-only churn (new calls, new storage, doc strings) does not.
-    // 3 → 4: `create_poll` gained a `close_at: Option<BlockNumber>` argument (spec 205).
-    transaction_version: 5,
+    // 3 → 4: `create_poll` gained a `close_at: Option<BlockNumber>` argument (spec 205). Spec 206 adds the
+    // CardanoRoles pallet (new calls/storage only, `TxExtension` byte-identical), so it STAYS 4.
+    transaction_version: 4,
     system_version: 1,
 };
 

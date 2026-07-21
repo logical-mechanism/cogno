@@ -314,12 +314,16 @@ pub async fn read_stake_observation(
 /// The ROLE read (spec 206): the raw material the reduction needs to derive `role_entries`, in ONE MVCC
 /// snapshot (single `query_one` → consensus-deterministic):
 ///   1. `registrations` — every label-867 (CIP-0151 Calidus) registration's RAW metadata bytes at block
-///      slot ≤ `reference_slot`. The reduction verifies each cold-key witness over these VERBATIM bytes
-///      (never the lossy `json` column) and resolves Calidus→pool.
+///      slot ≤ `reference_slot`, ordered by `tx_metadata.id` so the array is byte-deterministic across
+///      db-sync instances (the reduction's highest-nonce-wins tie-break is order-sensitive). The reduction
+///      verifies each cold-key witness over these VERBATIM bytes (never the lossy `json` column) and
+///      resolves Calidus→pool.
 ///   2. `active_pools` — the currently-registered, non-retired pool IDs as-of the reference (latest
 ///      `pool_update` at slot ≤ ref outranks the latest effective `pool_retire`), for the liveness gate.
-///   3. `owner_pools` — for each BOUND stake credential (`$2`), the pool it is declared an owner of (the
-///      FREE `SpoOwner` path). Scoped by the bound set; the reduction filters to active pools.
+///   3. `owner_pools` — for each BOUND stake credential (`$2`), the pool it is declared an owner of, taken
+///      ONLY from that pool's LATEST registration cert at slot ≤ ref (a Cardano registration replaces the
+///      full owner set, so an owner dropped by a re-registration must not linger). The FREE `SpoOwner`
+///      path; scoped by the bound set; the reduction filters to active pools.
 ///   4. `live_dreps` — for each CLAIMED key-based dRep ID (`$3`), whether it is a currently-live dRep: the
 ///      latest `drep_registration` at slot ≤ ref is NOT a deregistration (db-sync `deposit` sign: `+`
 ///      register / `−` deregister / `NULL` update). Script dReps (`has_script`) can't CIP-8-sign, so they
@@ -331,7 +335,7 @@ const ROLE_OBSERVATION_SQL: &str = "\
 WITH params AS (SELECT $1::bigint AS ref), \
 ep AS (SELECT b.epoch_no AS e FROM block b, params p WHERE b.slot_no <= p.ref ORDER BY b.slot_no DESC LIMIT 1), \
 regs AS ( \
-  SELECT tm.bytes AS bytes FROM tx_metadata tm \
+  SELECT tm.id AS id, tm.bytes AS bytes FROM tx_metadata tm \
   JOIN tx t ON t.id = tm.tx_id JOIN block b ON b.id = t.block_id, params p \
   WHERE tm.key = 867 AND tm.bytes IS NOT NULL AND b.slot_no <= p.ref), \
 active AS ( \
@@ -349,9 +353,10 @@ owners AS ( \
   JOIN stake_address sa ON sa.id = po.addr_id \
   JOIN pool_update pu ON pu.id = po.pool_update_id \
   JOIN pool_hash ph ON ph.id = pu.hash_id \
-  JOIN tx t ON t.id = pu.registered_tx_id JOIN block b ON b.id = t.block_id \
-  WHERE b.slot_no <= (SELECT ref FROM params) \
-    AND substring(sa.hash_raw from 2 for 28) = ANY($2::bytea[])), \
+  WHERE substring(sa.hash_raw from 2 for 28) = ANY($2::bytea[]) \
+    AND pu.registered_tx_id = (SELECT max(pu2.registered_tx_id) FROM pool_update pu2 \
+        JOIN tx t2 ON t2.id = pu2.registered_tx_id JOIN block b2 ON b2.id = t2.block_id \
+        WHERE pu2.hash_id = ph.id AND b2.slot_no <= (SELECT ref FROM params))), \
 dreps AS ( \
   SELECT encode(dh.raw,'hex') AS drep FROM drep_hash dh \
   WHERE dh.has_script = false AND dh.raw = ANY($3::bytea[]) \
@@ -360,7 +365,7 @@ dreps AS ( \
          WHERE dr.drep_hash_id = dh.id AND b.slot_no <= (SELECT ref FROM params) \
          ORDER BY b.slot_no DESC, t.block_index DESC, dr.cert_index DESC LIMIT 1) IS TRUE) \
 SELECT (SELECT EXISTS (SELECT 1 FROM pool_hash)) AS pool_ok, \
-       COALESCE((SELECT json_agg(encode(bytes,'hex')) FROM regs), '[]'::json) AS registrations, \
+       COALESCE((SELECT json_agg(encode(bytes,'hex') ORDER BY id) FROM regs), '[]'::json) AS registrations, \
        COALESCE((SELECT json_agg(encode(hash_raw,'hex')) FROM active), '[]'::json) AS active_pools, \
        COALESCE((SELECT json_agg(json_build_object('cred', cred, 'pool', pool)) FROM owners), '[]'::json) AS owner_pools, \
        COALESCE((SELECT json_agg(drep) FROM dreps), '[]'::json) AS live_dreps";

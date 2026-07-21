@@ -16,9 +16,11 @@ import re
 
 DOMAIN = "cogno-chain/role/v1"
 ROLES = ("spo", "drep", "cc")
+# `\A` / `\Z` anchor the WHOLE string — NOT `^`/`$`, whose `$` also matches just before a trailing
+# newline, which would ACCEPT `…;role=spo\n` that the on-chain byte scanner (rest == b"spo") rejects.
 _RE = re.compile(
-    r"^cogno-chain/role/v1;genesis=([0-9a-f]{64});account=([0-9a-f]{64});"
-    r"nonce=([0-9a-f]{32});role=(spo|drep|cc)$"
+    r"\Acogno-chain/role/v1;genesis=([0-9a-f]{64});account=([0-9a-f]{64});"
+    r"nonce=([0-9a-f]{32});role=(spo|drep|cc)\Z"
 )
 
 

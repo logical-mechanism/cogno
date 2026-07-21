@@ -200,7 +200,11 @@ function RoleClaimCard({
         <div className={styles.statusRow}>
           <span className={styles.verifiedMark}>✓ Verified {spec.label}</span>
           <span className={styles.mono}>{truncId(observed.id)}</span>
-          {removeBtn}
+          {/* Only offer "Remove" when a CLAIM backs the badge — a badge from the free SpoOwner path (live
+              pool ownership, no `RoleClaimOf` entry) has nothing to unclaim, and unclaim_role would fail
+              `NotClaimed` + can't-pay for a zero-balance account. Ownership-derived badges clear only when
+              the pool retires, not by a user action. */}
+          {claimCred && removeBtn}
         </div>
       ) : claimCred ? (
         // ── claimed, but the observer hasn't confirmed a live role yet ──
