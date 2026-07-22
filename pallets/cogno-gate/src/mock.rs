@@ -50,6 +50,7 @@ impl pallet_microblog::Config for Test {
     type FollowCost = ConstU128<30>;
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<32>;
+    type MaxAnchorUrlLen = ConstU32<256>;
     type ForceOrigin = EnsureRoot<u64>;
     // The REAL gate — this is what makes the mock an integration test.
     type IdentityGate = CognoGate;

@@ -109,6 +109,9 @@ type SingleBlockMigrations = (
     // spec 208: freeze the SPO/dRep chambers into `PollResult` (`PollResults` re-encode, empty snapshots
     // on existing rows — a no-op on the live chain, which has none). See `migrations::v8`.
     pallet_microblog::migrations::v8::MigrateV7ToV8<Runtime>,
+    // spec 209: append `Poll.action` (the optional governance-action tag) to every poll; existing polls
+    // migrate to `action = None` (a no-op on the live chain, which has no polls). See `migrations::v9`.
+    pallet_microblog::migrations::v9::MigrateV8ToV9<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -783,6 +786,9 @@ impl pallet_microblog::Config for Runtime {
     // Poll bounds: up to 4 options, each up to 80 bytes (the question reuses MaxLength = 512).
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<80>;
+    // Governance poll anchor URL: a link to the off-chain proposal doc (GitHub/IPFS). 256 bytes covers a
+    // long URL + an IPFS CID; the proposal BODY is never stored on-chain.
+    type MaxAnchorUrlLen = ConstU32<256>;
     // Gated by the 3-of-5 FollowerCommittee (sudo-free).
     type ForceOrigin = AuthorityOrigin;
     // Gate posting on a live Cardano-identity binding (the anti-Sybil anchor).
