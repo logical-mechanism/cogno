@@ -20,7 +20,7 @@ function apiWith(version: { spec_name: string; spec_version: number } | (() => n
 
 // The spec the descriptors are built against. `npm run check:spec` asserts this equals the runtime's
 // spec_version in runtime/src/lib.rs, so it cannot drift out from under these tests.
-const DESCRIPTOR_SPEC = 208;
+const DESCRIPTOR_SPEC = 209;
 
 describe("checkBootGuard", () => {
   it("ok=true when the spec_name AND spec_version match the descriptors", async () => {

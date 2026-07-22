@@ -19,6 +19,8 @@ import type {
   ViewerPostState,
   PollView,
   PollOptionView,
+  PollKindName,
+  GovActionType,
   ProfileView,
   ThreadView,
   Suggestion,
@@ -37,6 +39,8 @@ export type {
   ViewerPostState,
   PollView,
   PollOptionView,
+  PollKindName,
+  GovActionType,
   ProfileView,
   ThreadView,
   Suggestion,
@@ -155,10 +159,17 @@ export interface PollDraft {
    */
   closeInDays?: number;
   /**
-   * The poll's lens (spec 207). `undefined` / `"Stake"` ⇒ a regular stake poll; `"Governance"` ⇒ a
-   * governance poll that also surfaces the SPO + dRep chambers.
+   * The poll's chamber lens (spec 207/209). `undefined` / `"Stake"` ⇒ a regular stake poll; `"Governance"`
+   * ⇒ both SPO + dRep chambers; `"Spo"` / `"Drep"` ⇒ that one chamber only.
    */
-  kind?: "Stake" | "Governance";
+  kind?: PollKindName;
+  /**
+   * Optional governance-action tag (spec 209): present ⇒ this chamber poll is a pre-submission temperature
+   * check on a specific CIP-1694 action. `actionType` = which action; `anchorUrl` = a link to the
+   * off-chain proposal document (GitHub/IPFS). Only valid on a chamber `kind` (cleared when `kind` is
+   * `"Stake"`).
+   */
+  govAction?: { actionType: GovActionType; anchorUrl: string };
 }
 
 /** What a Composer hands back on submit; the surface maps it to the right extrinsic in @/lib/chain/mutations. */

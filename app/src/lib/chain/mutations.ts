@@ -16,7 +16,14 @@ import { Binary, Enum } from "polkadot-api";
 import type { Observable } from "rxjs";
 import { signSubmitWatch, submitPost, type SignableTx } from "@/lib/chain/post";
 import { BLOCKS_PER_DAY } from "@/lib/chain/capacity";
-import type { CognoApi, PostingSigner, TxUpdate, Ss58 } from "@/lib/types";
+import type {
+  CognoApi,
+  PostingSigner,
+  TxUpdate,
+  Ss58,
+  PollKindName,
+  GovActionType,
+} from "@/lib/types";
 
 /**
  * Sign a signed write with a client-managed nonce (see signSubmitWatch / lib/chain/nonce). Every
@@ -166,15 +173,26 @@ export function submitCreatePoll(
   question: string,
   options: string[],
   closeAt?: number,
-  kind: "Stake" | "Governance" = "Stake",
+  kind: PollKindName = "Stake",
+  action?: { actionType: GovActionType; anchorUrl: string },
 ): Observable<TxUpdate> {
   const tx = api.tx.Microblog.create_poll({
     question: Binary.fromText(question),
     options: options.map((o) => Binary.fromText(o)),
     // `close_at: Option<BlockNumber>` (spec 205). PAPI encodes `undefined` as None (a floating poll).
     close_at: closeAt,
-    // `kind: PollKind` (spec 207). `Stake` = a regular poll; `Governance` adds the SPO + dRep chambers.
+    // `kind: PollKind` (spec 207/209). `Stake` = regular; `Governance` = both chambers; `Spo`/`Drep` = one.
     kind: Enum(kind),
+    // `action: Option<GovActionInput>` (spec 209): the optional governance-action tag — a CIP-1694 type +
+    // a link to the OFF-CHAIN proposal doc. `undefined` ⇒ a plain poll. Only valid on a chamber kind (the
+    // runtime rejects an action on a `Stake` poll). The doc hash is left to a later revision.
+    action: action
+      ? {
+          action_type: Enum(action.actionType),
+          anchor_url: Binary.fromText(action.anchorUrl),
+          anchor_hash: undefined,
+        }
+      : undefined,
   });
   return watchSigned(api, tx, signer, "PostCreated");
 }

@@ -96,6 +96,32 @@ export interface PollOptionView {
   drepCount: number; // dRep chamber: distinct dReps choosing this option
 }
 
+/** A poll's lens (spec 207/209) — who is tallied: `Stake` everyone (own stake); `Governance` both the SPO
+ *  and dRep chambers; `Spo` / `Drep` only that one chamber. */
+export type PollKindName = "Stake" | "Governance" | "Spo" | "Drep";
+
+/** The seven CIP-1694 on-chain governance-action types a chamber poll can pre-check (spec 209). Mirrors the
+ *  runtime `GovActionType`. */
+export type GovActionType =
+  | "Info"
+  | "NoConfidence"
+  | "UpdateCommittee"
+  | "NewConstitution"
+  | "HardFork"
+  | "ParamChange"
+  | "TreasuryWithdrawal";
+
+/** A chamber poll's optional governance-action tag (spec 209): the CIP-1694 action type plus an ANCHOR — a
+ *  link to the OFF-CHAIN proposal document (its home stays GitHub/IPFS) and an optional document hash.
+ *  Cogno stores the link, never the proposal body. */
+export interface GovActionView {
+  actionType: GovActionType;
+  /** Link to the off-chain proposal document (GitHub/IPFS). */
+  anchorUrl: string;
+  /** Optional blake2b-256 hash of the document at `anchorUrl`, hex-encoded (`0x…`). */
+  anchorHash?: string;
+}
+
 /** A poll attached to a host post (`Poll.id == host post id`; the question IS the host post's text). */
 export interface PollView {
   hostId: bigint;
@@ -104,11 +130,17 @@ export interface PollView {
   totalWeight: bigint;
   totalCount: number;
   /**
-   * The poll's lens (spec 207). `"Stake"` (regular) — everyone votes by their own stake; the chamber
-   * fields are all zero. `"Governance"` — the SPO + dRep chambers on each option are populated, a
-   * display-only Cardano-community temperature check.
+   * The poll's lens (spec 207/209). `"Stake"` — everyone votes by their own stake; the chamber fields are
+   * all zero. `"Governance"` — both SPO + dRep chambers on each option are populated. `"Spo"` / `"Drep"` —
+   * ONLY that one chamber is populated (the other lens's fields stay zero). A display-only Cardano
+   * temperature check.
    */
-  kind: "Stake" | "Governance";
+  kind: PollKindName;
+  /**
+   * The governance-action tag (spec 209) when this poll is a pre-submission temperature check on a specific
+   * CIP-1694 action — its type + a link to the off-chain proposal. `undefined` for a plain poll.
+   */
+  action?: GovActionView;
   /**
    * Optional block-number deadline (spec 205). `undefined` ⇒ the poll floats forever (never closes).
    * `Some(b)` ⇒ voting is rejected once the best block reaches `b`, and the result can be FROZEN.
