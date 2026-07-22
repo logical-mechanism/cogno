@@ -260,8 +260,9 @@ pub fn canonical_stake_entries(raw: Vec<(StakeCredential, u128)>) -> Vec<(StakeC
 pub const BLANK_ROLE_ID: [u8; 28] = [0u8; 28];
 
 /// Canonicalize the ROLE entries into a deterministic, deduplicated order (a `BTreeSet` over the whole
-/// `(source, credential, id)` tuple, so author + importer SCALE-encode identically). Like the stake path,
-/// this only fixes the order — a cross-node difference in the SET is a data `Mismatch`, never a
+/// `(source, credential, id, weight)` tuple, so author + importer SCALE-encode identically; `weight` is
+/// deterministic per `(source, id)`, so it never splits an otherwise-identical entry into two). Like the
+/// stake path, this only fixes the order — a cross-node difference in the SET is a data `Mismatch`, never a
 /// `ComputeDiverged`.
 pub fn canonical_role_entries(raw: Vec<RoleEntry>) -> Vec<RoleEntry> {
     let set: BTreeSet<RoleEntry> = raw.into_iter().collect();

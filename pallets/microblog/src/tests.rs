@@ -1304,6 +1304,118 @@ fn co_owners_split_makes_the_pool_abstain_and_stake_polls_have_no_chambers() {
 }
 
 #[test]
+fn governance_poll_skips_zero_weight_roles() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for who in [10u64, 11, 12, 13, 14] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            vec![b"yes".to_vec(), b"no".to_vec()],
+            None,
+            PollKind::Governance,
+        ));
+        let host = 0u64;
+        // One genuinely-delegated role per chamber, plus three ZERO-weight roles that must contribute
+        // NOTHING (the `if weight == 0 { continue }` skip): a blank Calidus SPO (names no pool → id all-zero),
+        // an undelegated owned pool, and an undelegated dRep.
+        set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]); // real SPO → "yes"
+        set_chamber_roles(11, vec![(0, [0u8; 28], 0)]); // blank Calidus SPO (weight 0) → "yes"
+        set_chamber_roles(12, vec![(0, POOL_Q, 0)]); // undelegated owned pool (weight 0) → "no"
+        set_chamber_roles(13, vec![(1, DREP_D, 0)]); // undelegated dRep (weight 0) → "yes"
+        set_chamber_roles(14, vec![(1, [0xEE; 28], 7_000_000)]); // real dRep → "no"
+        for (who, opt) in [(10u64, 0u8), (11, 0), (12, 1), (13, 0), (14, 1)] {
+            assert_ok!(Microblog::cast_poll_vote(
+                RuntimeOrigin::signed(who),
+                host,
+                opt
+            ));
+        }
+
+        let view = Microblog::poll(host).expect("poll exists");
+        // SPO chamber: only the delegated pool P (15M) counts; the blank Calidus and the undelegated pool
+        // are skipped — so "no" has NO pool despite voter 12 holding a (zero-weight) SPO role.
+        assert_eq!(
+            (view.options[0].spo_weight, view.options[0].spo_count),
+            (15_000_000, 1)
+        );
+        assert_eq!(
+            (view.options[1].spo_weight, view.options[1].spo_count),
+            (0, 0)
+        );
+        // dRep chamber: only the delegated dRep (7M, on "no"); the undelegated dRep on "yes" is skipped.
+        assert_eq!(
+            (view.options[0].drep_weight, view.options[0].drep_count),
+            (0, 0)
+        );
+        assert_eq!(
+            (view.options[1].drep_weight, view.options[1].drep_count),
+            (7_000_000, 1)
+        );
+        // The HOLDER lens still counts EVERY voter regardless of chamber weight: yes = 10+11+13 = 300,
+        // no = 12+14 = 200.
+        assert_eq!((view.options[0].weight, view.options[0].count), (300, 3));
+        assert_eq!((view.options[1].weight, view.options[1].count), (200, 2));
+    });
+}
+
+#[test]
+fn finalized_governance_poll_freezes_holder_lens_but_keeps_chambers_live() {
+    // Locks the deliberate spec-207 semantics: `PollResults` freezes only the (binding) HOLDER lens; the
+    // SPO/dRep chambers are display-only and ALWAYS derived live, so a finalized governance poll's chamber
+    // tallies still re-price with the observed delegated stake. A future change that froze (or broke) the
+    // chambers would trip this test.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        TalkStake::apply_voting_power(&10, 100);
+        TalkStake::apply_voting_power(&11, 200);
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"ratify?".to_vec(),
+            vec![b"yes".to_vec(), b"no".to_vec()],
+            Some(10),
+            PollKind::Governance,
+        ));
+        set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]); // SPO → "yes"
+        set_chamber_roles(11, vec![(1, DREP_D, 7_000_000)]); // dRep → "no"
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 1));
+
+        // Freeze the poll at its deadline.
+        System::set_block_number(10);
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        assert!(crate::PollResults::<Test>::contains_key(0));
+
+        let frozen = Microblog::poll(0).expect("poll");
+        assert_eq!(frozen.kind, 1, "kind survives finalization");
+        assert_eq!(
+            (frozen.options[0].weight, frozen.options[0].count),
+            (100, 1)
+        );
+        assert_eq!(
+            (frozen.options[1].weight, frozen.options[1].count),
+            (200, 1)
+        );
+        assert_eq!(frozen.options[0].spo_weight, 15_000_000);
+        assert_eq!(frozen.options[1].drep_weight, 7_000_000);
+
+        // After the freeze, move BOTH the holder stake AND the observed delegated stake behind each role.
+        TalkStake::apply_voting_power(&10, 999); // holder re-stake …
+        set_chamber_roles(10, vec![(0, POOL_P, 1_000_000)]); // … pool P sheds delegation …
+        set_chamber_roles(11, vec![(1, DREP_D, 2_000_000)]); // … dRep D sheds delegation.
+
+        let after = Microblog::poll(0).expect("poll");
+        // HOLDER lens is FROZEN — it does not re-price (still 100 on "yes").
+        assert_eq!((after.options[0].weight, after.options[0].count), (100, 1));
+        // CHAMBERS are display-only and always LIVE — they DO re-price to the new delegated stake.
+        assert_eq!(after.options[0].spo_weight, 1_000_000);
+        assert_eq!(after.options[1].drep_weight, 2_000_000);
+    });
+}
+
+#[test]
 fn too_many_posts_is_rejected_without_consuming_id() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
