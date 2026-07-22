@@ -1428,6 +1428,40 @@ fn finalized_governance_poll_freezes_both_holder_lens_and_chambers() {
 }
 
 #[test]
+fn close_poll_refunds_weight_and_freezes_chambers() {
+    // spec 208: close_poll declares a worst-case weight sized for a FULL observed set (both O(MaxObserved)
+    // joins) and then REFUNDS via `actual_weight` down to the rows it actually scanned. This locks that the
+    // refund is WIRED — a bare `Ok` leaves `actual_weight = None`, whereas the refund always sets it.
+    // (The mock's `DbWeight` is zero, so the reads-based surcharge can't be shown by magnitude here; the
+    // presence of `actual_weight` is the behavioural lock. `actual ≤ declared` holds by construction — the
+    // scanned set is ≤ `MaxObservedAccounts`.)
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        TalkStake::apply_voting_power(&10, 100);
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            vec![b"yes".to_vec(), b"no".to_vec()],
+            Some(5),
+            PollKind::Governance,
+        ));
+        set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]);
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
+        System::set_block_number(5);
+
+        let post = Microblog::close_poll(RuntimeOrigin::signed(2), 0).expect("closes");
+        assert!(
+            post.actual_weight.is_some(),
+            "close_poll must refund via actual_weight (not a bare Ok)"
+        );
+        // And the freeze happened (chambers stored, non-empty for this governance poll with a voter).
+        assert!(
+            crate::PollResults::<Test>::get(0).is_some_and(|r| !r.option_spo_weights.is_empty())
+        );
+    });
+}
+
+#[test]
 fn too_many_posts_is_rejected_without_consuming_id() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);

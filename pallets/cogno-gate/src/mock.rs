@@ -60,6 +60,7 @@ impl pallet_microblog::Config for Test {
     type StakerSet = MockStakerSet;
     // No governance-poll chambers exercised in these identity-gate integration tests.
     type ChamberRoles = ();
+    type MaxObservedAccounts = ConstU32<64>;
     type WeightInfo = ();
 }
 

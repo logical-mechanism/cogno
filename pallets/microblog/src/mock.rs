@@ -133,6 +133,7 @@ impl pallet_microblog::Config for Test {
     type ForeignCost = MockForeignCost;
     type StakerSet = MockStakerSet;
     type ChamberRoles = MockChamberRoles;
+    type MaxObservedAccounts = ConstU32<64>;
     type WeightInfo = ();
 }
 

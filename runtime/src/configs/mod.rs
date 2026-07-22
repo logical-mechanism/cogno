@@ -796,6 +796,9 @@ impl pallet_microblog::Config for Runtime {
     // Governance-poll chambers (spec 207): read each voter's observed roles + delegated-stake weight from
     // pallet-cardano-roles' `ObservedRoles`. See `ChamberRolesProvider`.
     type ChamberRoles = ChamberRolesProvider;
+    // The staker set AND the role-holder set are both bounded by the observer's `MaxObserved`; `close_poll`
+    // uses this to declare its worst-case weight (then refunds to the rows actually scanned). Single source.
+    type MaxObservedAccounts = <Runtime as pallet_cardano_observer::Config>::MaxObserved;
     type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
 }
 
