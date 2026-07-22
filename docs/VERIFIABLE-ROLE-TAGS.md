@@ -4,8 +4,12 @@ A profile can carry a **verified role tag** — stake pool operator (**SPO**), d
 (**dRep**), or Constitutional Committee member (**CC**) — that means what it says: the account proved
 control of the Cardano role key, and the chain confirms the key is a currently-live role on Cardano. No
 operator hand-waves a badge on; the runtime verifies the proof and the observer verifies the liveness.
-The badge is display-only — it buys no posting power, no vote weight — but it is trustless, and it
-disappears the moment the underlying Cardano role does.
+The badge buys no posting power, and no vote weight on a regular stake poll or a reputation vote. The one
+place a role does more than decorate a profile is a **governance poll** (spec 207), where a verified SPO
+votes with its pool's delegated stake and a verified dRep with its delegated voting stake — in a separate,
+non-binding chamber tally, never mixed into the ordinary stake vote. See
+[Governance polls](#governance-polls-spec-207). Either way the tag is trustless, and it disappears the
+moment the underlying Cardano role does.
 
 It reuses the same two pieces the rest of the chain is built on: the CIP-8 self-proof
 ([`TRUSTLESS-IDENTITY.md`](TRUSTLESS-IDENTITY.md)) and the deterministic Cardano observer
@@ -131,6 +135,45 @@ or dRep name best-effort through Blockfrost (`app/src/lib/cardano/roleMeta.ts`, 
 truncated id — never a fabricated name). A Calidus SPO badge carries the blank id (`isBlankRoleId`), so it
 renders as a plain "✓ SPO" with no pool name and no link — it names no pool, by design. The Settings claim
 wizard is `app/src/components/settings/RolesSection.tsx`.
+
+## Governance polls (spec 207)
+
+A poll carries a **kind**. A regular **stake poll** is the default: everyone votes, each weighted by their
+own `VotingPower` (their bound credential's `epoch_stake`), exactly as before. A **governance poll** — a
+Cardano-community temperature check — takes the same single vote and *also* tallies it through two extra
+lenses, so a verified SPO or dRep can weigh in "as if it were a real Cardano vote":
+
+- the **SPO chamber**, where a voting `SpoOwner` counts for its pool's total delegated (block-production)
+  stake, and
+- the **dRep chamber**, where a voting dRep counts for its total delegated voting stake.
+
+The three lenses are reported **side by side and never summed** — the same way Cardano shows the SPO, dRep,
+and CC results of a governance action separately. That separation is the whole point: a delegator's own
+ADA already counts once when *they* vote in the holder tally, so folding a pool's or dRep's aggregate into
+the *same* number would double-count it. Keeping each chamber in its own lane means nothing is counted
+twice, and the governance poll reads as three honest, independent signals.
+
+Where the chamber weight comes from is the same deterministic observer that drives everything else. Each
+`ObservedRole` now carries a `weight` — for an `SpoOwner`, its pool's `SUM(epoch_stake)` at the observed
+epoch; for a dRep, its `SUM(drep_distr)` — read in the node's role reduction (`cogno-dbsync`), bounded to
+the pools owned by / dReps claimed by bound accounts (not an all-of-Cardano scan), and sealed into the
+inherent like the vault and voting-power reads. A **blank Calidus SPO carries no weight** (it names no
+pool, so it cannot speak for one), which means the SPO chamber only ever reflects impersonation-proof
+`SpoOwner` pools.
+
+The tally itself (`Pallet::poll_chamber_weights`, `pallets/microblog/src/lib.rs`) is a read-time
+derivation over the poll's voters, **deduplicated by pool**: a pool's stake counts once even if several of
+its declared owners voted, and if those owners *split* across options the pool abstains rather than being
+assigned arbitrarily. dReps need no such dedup — the claim ledger is 1:1. The chambers are **display-only
+and always live**: they decide nothing on-chain, they are never frozen (a closed poll still freezes only
+the holder tally), and — like every badge — a chamber weight vanishes the moment the underlying Cardano
+role does. `poll()`'s `PollView` carries all three lenses per option (`weight`/`count`, `spo_weight`/
+`spo_count`, `drep_weight`/`drep_count`); a stake poll simply reports zero in the chamber columns.
+
+This is deliberately *influence*, not *control*: a governance poll is a non-binding signal, not a gate on
+any privileged call. The chamber-tally primitive is, however, exactly what a future stake-weighted
+governance layer would need — so it is built once here and could later gate upgrades or committee actions,
+a decision left open on purpose.
 
 ## Trust posture
 

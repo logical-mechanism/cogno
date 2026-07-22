@@ -75,6 +75,13 @@ Locking 100 ADA buys you a posting rate; it does not, by itself, buy vote weight
 whole delegated stake. Both live in the call-less **`pallet-talk-stake`** ledger (`AllowedStake` and
 `VotingPower`), keyed by posting account.
 
+There is one further, opt-in weight (spec 207) that neither of these drives: on a **governance poll** a
+verified SPO or dRep also counts for its *delegated* Cardano stake — the pool's total delegated stake, or
+the dRep's delegated voting stake — in a separate, display-only chamber tally kept beside the ordinary
+`VotingPower` vote and never summed with it. That weight rides with the role tag (`ObservedRole.weight`),
+not talk-stake, and only ever applies to a governance-kind poll. See
+[`VERIFIABLE-ROLE-TAGS.md`](VERIFIABLE-ROLE-TAGS.md#governance-polls-spec-207).
+
 ## Where the weight comes from
 
 Weight is not self-declared and there is no trusted `set_stake` extrinsic. It enters the chain through
