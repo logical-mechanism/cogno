@@ -288,15 +288,24 @@ pub fn canonical_role_entries(raw: Vec<RoleEntry>) -> Vec<RoleEntry> {
 ///
 /// `active_pools` is the set of currently-registered, non-retired pool IDs (as-of the reference), used to
 /// gate both SPO paths on liveness.
+///
+/// `pool_stake` / `drep_stake` (spec 207) carry the delegated-stake CHAMBER WEIGHT for governance polls:
+/// the owned pool's total delegated block-production stake, and the dRep's total delegated voting stake,
+/// at the as-of epoch. Each becomes the corresponding `RoleEntry.weight` (looked up by id; absent ⇒ 0). A
+/// `SpoCalidus` entry names no pool, so it carries weight 0.
 pub fn reduce_role_observation(
     registrations: &[Vec<u8>],
     active_pools: &[[u8; 28]],
     owner_pools: &[([u8; 28], [u8; 28])],
     claimed_calidus: &[[u8; 28]],
     live_dreps: &[[u8; 28]],
+    pool_stake: &[([u8; 28], u128)],
+    drep_stake: &[([u8; 28], u128)],
 ) -> Vec<RoleEntry> {
     let active: BTreeSet<[u8; 28]> = active_pools.iter().copied().collect();
     let claimed: BTreeSet<[u8; 28]> = claimed_calidus.iter().copied().collect();
+    let pool_weight: BTreeMap<[u8; 28], u128> = pool_stake.iter().copied().collect();
+    let drep_weight: BTreeMap<[u8; 28], u128> = drep_stake.iter().copied().collect();
     let mut entries: Vec<RoleEntry> = Vec::new();
 
     // Pools that have ANY registration for a CLAIMED Calidus key (cheap parse, no witness).
@@ -346,28 +355,33 @@ pub fn reduce_role_observation(
                 source: RoleSource::SpoCalidus,
                 credential: reg.calidus_key_hash,
                 id: BLANK_ROLE_ID, // NOT the pool — a Calidus registration attests no specific pool (see above)
+                weight: 0,         // the blank badge names no pool ⇒ no chamber weight
             });
         }
     }
 
-    // The free path: a bound stake key that owns a live pool.
+    // The free path: a bound stake key that owns a live pool. The chamber weight is that pool's total
+    // delegated stake at the as-of epoch (0 for an undelegated pool).
     for (stake_cred, pool_id) in owner_pools.iter() {
         if active.contains(pool_id) {
             entries.push(RoleEntry {
                 source: RoleSource::SpoOwner,
                 credential: *stake_cred,
                 id: *pool_id,
+                weight: pool_weight.get(pool_id).copied().unwrap_or(0),
             });
         }
     }
 
     // dRep: the SQL already scoped `live_dreps` to CLAIMED + currently-live key-based dReps, and a dRep's
     // credential IS its display id — so each is emitted directly (no witness, no liveness re-check here).
+    // The chamber weight is the dRep's total delegated voting stake at the as-of epoch (0 if it has none).
     for drep_id in live_dreps.iter() {
         entries.push(RoleEntry {
             source: RoleSource::DRep,
             credential: *drep_id,
             id: *drep_id,
+            weight: drep_weight.get(drep_id).copied().unwrap_or(0),
         });
     }
 
@@ -739,26 +753,30 @@ mod tests {
         #[test]
         fn spo_calidus_happy_path() {
             let (bytes, pool, cal_hash) = reg(1, 2, 5);
-            let out = reduce_role_observation(&[bytes], &[pool], &[], &[cal_hash], &[]);
+            let out = reduce_role_observation(&[bytes], &[pool], &[], &[cal_hash], &[], &[], &[]);
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].source, RoleSource::SpoCalidus);
             assert_eq!(out[0].credential, cal_hash);
             // The Calidus badge names NO pool (the blank marker) — a Calidus reg can't attest one.
             assert_eq!(out[0].id, BLANK_ROLE_ID);
+            // …and names no pool ⇒ carries no chamber weight, even if the pool is huge.
+            assert_eq!(out[0].weight, 0);
         }
 
         #[test]
         fn inactive_pool_is_not_tagged() {
             let (bytes, _pool, cal_hash) = reg(1, 2, 5);
             // pool NOT in active_pools ⇒ dropped.
-            assert!(reduce_role_observation(&[bytes], &[], &[], &[cal_hash], &[]).is_empty());
+            assert!(
+                reduce_role_observation(&[bytes], &[], &[], &[cal_hash], &[], &[], &[]).is_empty()
+            );
         }
 
         #[test]
         fn unclaimed_calidus_is_not_tagged() {
             let (bytes, pool, _cal_hash) = reg(1, 2, 5);
             // claimed set empty ⇒ nothing verified/emitted.
-            assert!(reduce_role_observation(&[bytes], &[pool], &[], &[], &[]).is_empty());
+            assert!(reduce_role_observation(&[bytes], &[pool], &[], &[], &[], &[], &[]).is_empty());
         }
 
         #[test]
@@ -767,14 +785,21 @@ mod tests {
             let (r5, pool, cal5) = reg(1, 2, 5);
             let (r9, _pool, cal9) = reg(1, 3, 9);
             // A claim for the OLD (superseded) Calidus key is NOT tagged — the highest-nonce winner rotated.
-            let old =
-                reduce_role_observation(&[r5.clone(), r9.clone()], &[pool], &[], &[cal5], &[]);
+            let old = reduce_role_observation(
+                &[r5.clone(), r9.clone()],
+                &[pool],
+                &[],
+                &[cal5],
+                &[],
+                &[],
+                &[],
+            );
             assert!(
                 old.is_empty(),
                 "a superseded Calidus key must not be tagged"
             );
             // A claim for the CURRENT (highest-nonce) key IS tagged (with a blank, no-pool display id).
-            let new = reduce_role_observation(&[r5, r9], &[pool], &[], &[cal9], &[]);
+            let new = reduce_role_observation(&[r5, r9], &[pool], &[], &[cal9], &[], &[], &[]);
             assert_eq!(new.len(), 1);
             assert_eq!(new[0].credential, cal9);
             assert_eq!(new[0].id, BLANK_ROLE_ID);
@@ -790,7 +815,8 @@ mod tests {
             // Splice the bogus witness onto a payload scoping the real pool by re-scoping: simplest — the
             // attacker's registration scopes ITS OWN pool, so it can't affect the real pool. Confirm the
             // real claim still resolves and the bogus one is inert.
-            let out = reduce_role_observation(&[real, bogus], &[pool], &[], &[cal_real], &[]);
+            let out =
+                reduce_role_observation(&[real, bogus], &[pool], &[], &[cal_real], &[], &[], &[]);
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].credential, cal_real);
             assert_eq!(out[0].id, BLANK_ROLE_ID);
@@ -816,6 +842,8 @@ mod tests {
                 &[],
                 &[cal_hash],
                 &[],
+                &[],
+                &[],
             );
             // BEFORE the fix this emitted {hash, P} AND {hash, Q} (the victim badged for the attacker's
             // pool). Now both carry the blank id, so they collapse to ONE generic SPO entry that names no
@@ -832,13 +860,33 @@ mod tests {
         fn owner_free_path() {
             let stake: [u8; 28] = [0x33; 28];
             let pool: [u8; 28] = [0x44; 28];
-            let out = reduce_role_observation(&[], &[pool], &[(stake, pool)], &[], &[]);
+            // The owned pool has 15_000_000 ADA delegated → that becomes the SpoOwner chamber weight.
+            let out = reduce_role_observation(
+                &[],
+                &[pool],
+                &[(stake, pool)],
+                &[],
+                &[],
+                &[(pool, 15_000_000_000_000)],
+                &[],
+            );
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].source, RoleSource::SpoOwner);
             assert_eq!(out[0].credential, stake);
             assert_eq!(out[0].id, pool);
+            assert_eq!(
+                out[0].weight, 15_000_000_000_000,
+                "SpoOwner carries its pool's total delegated stake as the chamber weight"
+            );
+            // An owned pool absent from the stake sum (no delegators) ⇒ 0 chamber weight (present, not
+            // dropped): the SPO still gets a badge, just with no weight.
+            let z = reduce_role_observation(&[], &[pool], &[(stake, pool)], &[], &[], &[], &[]);
+            assert_eq!(z.len(), 1);
+            assert_eq!(z[0].weight, 0);
             // inactive pool ⇒ no free tag.
-            assert!(reduce_role_observation(&[], &[], &[(stake, pool)], &[], &[]).is_empty());
+            assert!(
+                reduce_role_observation(&[], &[], &[(stake, pool)], &[], &[], &[], &[]).is_empty()
+            );
         }
 
         #[test]
@@ -847,7 +895,9 @@ mod tests {
             // each as a `DRep` entry whose credential IS its display id. No pool/active gating applies.
             let d1: [u8; 28] = [0xD1; 28];
             let d2: [u8; 28] = [0xD2; 28];
-            let out = reduce_role_observation(&[], &[], &[], &[], &[d1, d2]);
+            // d1 has delegated voting stake; d2 has none.
+            let out =
+                reduce_role_observation(&[], &[], &[], &[], &[d1, d2], &[], &[(d1, 42_000_000)]);
             assert_eq!(out.len(), 2);
             for e in &out {
                 assert_eq!(e.source, RoleSource::DRep);
@@ -855,8 +905,11 @@ mod tests {
             }
             assert!(out.iter().any(|e| e.id == d1));
             assert!(out.iter().any(|e| e.id == d2));
+            // the dRep chamber weight is that dRep's delegated voting stake (absent ⇒ 0).
+            assert_eq!(out.iter().find(|e| e.id == d1).unwrap().weight, 42_000_000);
+            assert_eq!(out.iter().find(|e| e.id == d2).unwrap().weight, 0);
             // an empty live set ⇒ no dRep tag.
-            assert!(reduce_role_observation(&[], &[], &[], &[], &[]).is_empty());
+            assert!(reduce_role_observation(&[], &[], &[], &[], &[], &[], &[]).is_empty());
         }
     }
 }

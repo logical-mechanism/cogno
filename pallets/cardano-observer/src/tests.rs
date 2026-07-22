@@ -1199,13 +1199,27 @@ fn create_inherent_abstains_when_the_observation_overruns_max_observed() {
 fn roles(
     items: &[(RoleSource, [u8; 28], [u8; 28])],
 ) -> BoundedVec<RoleEntry, <Test as crate::Config>::MaxObserved> {
+    // The credit/clamp tests don't exercise chamber weight — default it to 0. `roles_w` below carries a
+    // weight for the spec-207 chamber-weight flow test.
+    roles_w(
+        &items
+            .iter()
+            .map(|(s, c, i)| (*s, *c, *i, 0u128))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn roles_w(
+    items: &[(RoleSource, [u8; 28], [u8; 28], u128)],
+) -> BoundedVec<RoleEntry, <Test as crate::Config>::MaxObserved> {
     BoundedVec::try_from(
         items
             .iter()
-            .map(|(source, credential, id)| RoleEntry {
+            .map(|(source, credential, id, weight)| RoleEntry {
                 source: *source,
                 credential: *credential,
                 id: *id,
+                weight: *weight,
             })
             .collect::<Vec<_>>(),
     )
@@ -1262,6 +1276,33 @@ fn observe_skips_an_unresolved_role_credential() {
             roles(&[(RoleSource::SpoCalidus, [0x11; 28], [0u8; 28])]),
         ));
         assert_eq!(observed_roles_of(ALICE), Vec::<(u8, [u8; 28])>::new());
+    });
+}
+
+#[test]
+fn observe_carries_chamber_weight_into_the_role_set() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        let stake: [u8; 28] = [0x1A; 28];
+        let pool: [u8; 28] = [0xA0; 28];
+        bind_role(stake, ALICE);
+        // The SpoOwner entry carries the pool's delegated stake (spec 207) — it must land verbatim in the
+        // observed set the governance-poll SPO chamber reads.
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 1),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles_w(&[(RoleSource::SpoOwner, stake, pool, 15_000_000_000_000)]),
+        ));
+        assert_eq!(
+            observed_roles_full_of(ALICE),
+            vec![(0u8, pool, 15_000_000_000_000u128)],
+            "the pool's delegated stake is carried into the observed role set as its chamber weight"
+        );
     });
 }
 

@@ -228,6 +228,7 @@ async fn observe_for_parent(
         ref_slot,
         &bound_creds,
         &claimed_dreps,
+        config.stake_epoch_lookback,
     )
     .await
     {
@@ -243,6 +244,8 @@ async fn observe_for_parent(
         &role_read.owner_pools,
         &claimed_calidus,
         &role_read.live_dreps,
+        &role_read.pool_stake,
+        &role_read.drep_stake,
     );
     // 6. reduce the db-sync matches (canonical largest-wins-per-beacon) + canonicalize the stake + role sets.
     let obs = build_observation(

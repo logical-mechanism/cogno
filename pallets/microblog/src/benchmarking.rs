@@ -225,7 +225,13 @@ mod benchmarks {
         let options = alloc::vec![opt; T::MaxPollOptions::get() as usize];
 
         #[extrinsic_call]
-        _(RawOrigin::Signed(caller.clone()), question, options, None);
+        _(
+            RawOrigin::Signed(caller.clone()),
+            question,
+            options,
+            None,
+            crate::PollKind::Stake,
+        );
 
         assert!(Polls::<T>::contains_key(0u64));
         Ok(())

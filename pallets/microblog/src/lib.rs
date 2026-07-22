@@ -162,6 +162,26 @@ impl<AccountId> StakerSet<AccountId> for () {
     }
 }
 
+/// The observed-role provider for GOVERNANCE-POLL chambers (spec 207). Given an account, returns its
+/// observed roles as `(kind_index, display_id, chamber_weight)` — the same triples the cardano-observer
+/// writes to pallet-cardano-roles' `ObservedRoles`. The runtime wires this to read that map; `()` yields
+/// no roles (a dev/mock default with no observer). Carries no Cargo dependency on cardano-roles —
+/// microblog is the depended-upon crate — the same no-cycle seam as [`StakerSet`] / [`IsAllowed`].
+pub trait ChamberRoles<AccountId> {
+    /// `who`'s observed roles: `(kind_index, display_id, chamber_weight)`. `kind_index` is 0 = SPO,
+    /// 1 = dRep, 2 = CC (mirrors `RoleKind::index`); `chamber_weight` is the role's delegated Cardano
+    /// stake (0 for a blank Calidus SPO / CC). Empty if the account holds no live role. Only ever read for
+    /// a `PollKind::Governance` poll's chamber tally, and only off-chain (a node-served read).
+    fn roles_of(who: &AccountId) -> Vec<(u8, [u8; 28], u128)>;
+}
+
+/// Default: no roles (a chain with no observer). Every chamber tally is then empty.
+impl<AccountId> ChamberRoles<AccountId> for () {
+    fn roles_of(_who: &AccountId) -> Vec<(u8, [u8; 28], u128)> {
+        Vec::new()
+    }
+}
+
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
@@ -183,7 +203,7 @@ pub mod pallet {
     // record and tally (keeping only exact COUNTS), add `Poll.close_at` + the `PollResults` snapshot map.
     // Weighted scores are now derived LIVE at read time by joining the staker set against current
     // `VotingPower`, so a vote re-prices as stake moves — see `migrations::v6`.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(6);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(7);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -277,6 +297,12 @@ pub mod pallet {
         /// `pallet_cardano_observer::LastObservedStake`; `()` is the empty dev/mock default. See
         /// [`StakerSet`] and `docs/DYNAMIC-STAKE-VOTING-PLAN.md`.
         type StakerSet: StakerSet<Self::AccountId>;
+
+        /// The observed-role provider for GOVERNANCE-POLL chambers (spec 207): `who → (kind, id, weight)`.
+        /// The runtime wires it to pallet-cardano-roles' `ObservedRoles`; `()` is the empty dev/mock
+        /// default (no chambers). Only read off-chain, for a `PollKind::Governance` poll. See
+        /// [`ChamberRoles`] and `docs/VERIFIABLE-ROLE-TAGS.md`.
+        type ChamberRoles: ChamberRoles<Self::AccountId>;
 
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
@@ -378,6 +404,34 @@ pub mod pallet {
         pub down_count: u32,
     }
 
+    /// What lenses a poll is tallied through (spec 207 / storage v7). `#[codec(index)]` PINS the on-wire
+    /// discriminant (it rides in `Poll` storage + the `create_poll` arg) — append only.
+    #[derive(
+        Encode,
+        Decode,
+        DecodeWithMemTracking,
+        Clone,
+        Copy,
+        PartialEq,
+        Eq,
+        Debug,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    pub enum PollKind {
+        /// A regular stake poll: everyone votes, weighted by their own Cardano `VotingPower` (the existing
+        /// behaviour). This is the default, and the shape every pre-v7 poll migrates to.
+        #[codec(index = 0)]
+        Stake,
+        /// A governance poll (a Cardano-community "temperature check"): the same single vote is ALSO tallied
+        /// through the SPO chamber (weighted by each voting owner's pool's delegated stake) and the dRep
+        /// chamber (weighted by each voting dRep's delegated voting stake). The three lenses are reported
+        /// separately (never summed), so there is no double-counting. DISPLAY-ONLY — a chamber tally decides
+        /// nothing on-chain; it is a verifiable, non-binding signal.
+        #[codec(index = 1)]
+        Governance,
+    }
+
     /// A poll attached to a post: the fixed set of options voters choose between. The poll's question
     /// IS the host post's `text`, so a poll is a first-class post (it threads / quotes and shows in
     /// the feed); only the options + the stake-weighted per-option tally live here.
@@ -400,6 +454,9 @@ pub mod pallet {
         /// rejected once `now ≥ b` and the result can be FROZEN by a permissionless `close_poll`. Existing
         /// polls migrate to `None` (the backward-compatible default).
         pub close_at: Option<BlockNumberFor<T>>,
+        /// The poll's lens (spec 207 / storage v7): `Stake` (regular) or `Governance` (adds the SPO + dRep
+        /// chambers at read time). Pre-v7 polls migrate to `Stake`.
+        pub kind: PollKind,
     }
 
     /// One account's recorded poll choice: just the chosen option index (spec 205 / storage v6 — the
@@ -1415,19 +1472,21 @@ pub mod pallet {
         /// rejected once `now ≥ b` and the weighted result can be FROZEN by `close_poll`. Feeless +
         /// capacity-metered like a post.
         ///
-        /// ⚠ The `close_at` argument (added spec 205) is the ONLY call-arg change in this upgrade, so it
-        /// is what moves `transaction_version` 3 → 4.
+        /// ⚠ The `close_at` argument (added spec 205) moved `transaction_version` 3 → 4; the `kind`
+        /// argument (added spec 207, for governance polls) moves it 4 → 5. Both are `create_poll` call-arg
+        /// changes — the only ones in their respective upgrades.
         #[pallet::call_index(9)]
         // spec 121 (Feature 3): a poll host is top-level, so it also runs `index_top_level` (2 reads +
         // 3 writes), not yet re-benchmarked — charge it manually.
         #[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32)
 			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
-        #[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>, _close_at: &Option<BlockNumberFor<T>>| -> bool { true })]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>, _close_at: &Option<BlockNumberFor<T>>, _kind: &PollKind| -> bool { true })]
         pub fn create_poll(
             origin: OriginFor<T>,
             question: Vec<u8>,
             options: Vec<Vec<u8>>,
             close_at: Option<BlockNumberFor<T>>,
+            kind: PollKind,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             if !T::IdentityGate::is_allowed(&who) {
@@ -1470,6 +1529,7 @@ pub mod pallet {
                 Poll {
                     options: bounded_options,
                     close_at,
+                    kind,
                 },
             );
             // A poll's host post is top-level — index it for exact-N feed/profile paging (Feature 3).
@@ -2002,17 +2062,30 @@ pub struct ProfileView<AccountId> {
     pub observed_roles: Vec<(u8, [u8; 28])>,
 }
 
-/// One poll option with its stake-weighted tally, for [`PollView`].
+/// One poll option with its per-lens tallies, for [`PollView`]. The `weight`/`count` are the HOLDER
+/// (stake) lens (every voter × own `VotingPower`); the `spo_*`/`drep_*` fields (spec 207) are the SPO and
+/// dRep CHAMBER lenses — populated only for a `PollKind::Governance` poll, `0` for a `Stake` poll. The
+/// three lenses are index-aligned and reported SEPARATELY (never summed): no double-counting.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct PollOptionView {
     /// The 0-based option index (matches the on-chain option index).
     pub index: u8,
     /// The option label bytes.
     pub label: Vec<u8>,
-    /// Sum of the weight snapshots of accounts currently choosing this option.
+    /// HOLDER lens: sum of the `VotingPower` of accounts currently choosing this option.
     pub weight: u128,
-    /// Number of accounts currently choosing this option.
+    /// HOLDER lens: number of accounts currently choosing this option.
     pub count: u32,
+    /// SPO CHAMBER lens (spec 207): total delegated pool stake of the pools whose owner(s) chose this
+    /// option (deduped per pool). `0` for a `Stake` poll.
+    pub spo_weight: u128,
+    /// SPO CHAMBER lens: number of distinct pools choosing this option. `0` for a `Stake` poll.
+    pub spo_count: u32,
+    /// dRep CHAMBER lens (spec 207): total delegated voting stake of the dReps who chose this option. `0`
+    /// for a `Stake` poll.
+    pub drep_weight: u128,
+    /// dRep CHAMBER lens: number of distinct dReps choosing this option. `0` for a `Stake` poll.
+    pub drep_count: u32,
 }
 
 /// A poll's options + per-option tally + total current voters, for the poll card (`poll(host_id)`).
@@ -2024,6 +2097,9 @@ pub struct PollView {
     pub options: Vec<PollOptionView>,
     /// Total current voters (the sum of the per-option counts — each account has exactly one choice).
     pub total_votes: u32,
+    /// The poll's lens (spec 207): `0` = Stake (regular), `1` = Governance (the `spo_*`/`drep_*` fields
+    /// on each option are populated). Mirrors [`PollKind`]'s `#[codec(index)]`.
+    pub kind: u8,
 }
 
 /// One post's viewer overlay, for the `viewer_states` batch read (the filled-heart state).
@@ -2319,6 +2395,82 @@ impl<T: Config> Pallet<T> {
             }
         }
         weights
+    }
+
+    /// Live SPO + dRep CHAMBER tallies for a `PollKind::Governance` poll (spec 207): the per-option
+    /// delegated-stake weight and distinct-role count for the SPO chamber and the dRep chamber. These are
+    /// the "vote as if it were a Cardano governance action" lenses — reported SEPARATELY from the holder
+    /// (stake) tally and from each other, so nothing is double-counted. DISPLAY-ONLY: never frozen
+    /// on-chain, always derived live, and only computed off-chain (a node-served read), so its cost is not
+    /// consensus weight.
+    ///
+    /// It iterates the poll's ACTUAL voters (bounded by turnout — a governance poll on this social chain,
+    /// not an all-stakers scan) and reads each voter's observed roles via [`Config::ChamberRoles`]. The
+    /// SPO chamber is DEDUPED by pool id — a pool's delegated stake counts ONCE even if several declared
+    /// owners of it voted; if those owners SPLIT across options the pool ABSTAINS (its weight is dropped)
+    /// rather than being assigned arbitrarily. The dRep chamber needs no dedup (the claim ledger is 1:1
+    /// drep↔account). Blank Calidus SPOs and undelegated pools/dReps carry weight 0 and are skipped, so the
+    /// SPO chamber reflects only impersonation-proof, delegated `SpoOwner` pools. The result is independent
+    /// of voter-iteration order.
+    ///
+    /// Returns `(spo_weights, spo_counts, drep_weights, drep_counts)`, each a `num_options`-length vec
+    /// index-aligned with `Poll.options`.
+    fn poll_chamber_weights(
+        host_id: u64,
+        num_options: usize,
+    ) -> (Vec<u128>, Vec<u32>, Vec<u128>, Vec<u32>) {
+        use alloc::collections::BTreeMap;
+        // pool id → (chosen option, delegated stake, conflicted?) — collapse a co-owned pool to ONE vote.
+        let mut pool_choice: BTreeMap<[u8; 28], (u8, u128, bool)> = BTreeMap::new();
+        // drep id → (chosen option, delegated voting stake). 1:1 drep↔account, so no conflict handling.
+        let mut drep_choice: BTreeMap<[u8; 28], (u8, u128)> = BTreeMap::new();
+        for (voter, rec) in PollVotes::<T>::iter_prefix(host_id) {
+            let opt = rec.option;
+            if (opt as usize) >= num_options {
+                continue;
+            }
+            for (kind, id, weight) in T::ChamberRoles::roles_of(&voter) {
+                if weight == 0 {
+                    continue; // a blank Calidus SPO / undelegated pool or dRep contributes nothing
+                }
+                match kind {
+                    0 => {
+                        // SPO chamber: dedup by pool; owners split across options ⇒ the pool abstains.
+                        pool_choice
+                            .entry(id)
+                            .and_modify(|e| {
+                                if e.0 != opt {
+                                    e.2 = true;
+                                }
+                            })
+                            .or_insert((opt, weight, false));
+                    }
+                    1 => {
+                        // dRep chamber: an id appears for a single voter (1:1) — just record it.
+                        drep_choice.entry(id).or_insert((opt, weight));
+                    }
+                    _ => {} // CC (2) has no chamber (deferred) — ignore.
+                }
+            }
+        }
+        let mut spo_weights = alloc::vec![0u128; num_options];
+        let mut spo_counts = alloc::vec![0u32; num_options];
+        for (_pool, (opt, weight, conflict)) in pool_choice {
+            if conflict {
+                continue; // declared owners disagreed → the pool casts no chamber vote
+            }
+            let i = opt as usize;
+            spo_weights[i] = spo_weights[i].saturating_add(weight);
+            spo_counts[i] = spo_counts[i].saturating_add(1);
+        }
+        let mut drep_weights = alloc::vec![0u128; num_options];
+        let mut drep_counts = alloc::vec![0u32; num_options];
+        for (_drep, (opt, weight)) in drep_choice {
+            let i = opt as usize;
+            drep_weights[i] = drep_weights[i].saturating_add(weight);
+            drep_counts[i] = drep_counts[i].saturating_add(1);
+        }
+        (spo_weights, spo_counts, drep_weights, drep_counts)
     }
 
     /// Build the enriched, viewer-aware view of an already-fetched `post`. Author-profile fields are
@@ -2727,9 +2879,28 @@ impl<T: Config> Pallet<T> {
     /// The per-option COUNTS are always the exact stored values; the wire shape is unchanged.
     pub fn poll(host_id: u64) -> Option<PollView> {
         let poll = Polls::<T>::get(host_id)?;
-        let mut options = Vec::with_capacity(poll.options.len());
+        let num_options = poll.options.len();
+        let kind_ix = match poll.kind {
+            PollKind::Stake => 0u8,
+            PollKind::Governance => 1u8,
+        };
+        // The SPO + dRep CHAMBER lenses (spec 207) are ALWAYS live (never frozen) and computed ONLY for a
+        // governance poll; a stake poll gets all-zero chamber columns. Derived once, reused in either the
+        // frozen or the live holder-tally branch below.
+        let (spo_w, spo_c, drep_w, drep_c) = if matches!(poll.kind, PollKind::Governance) {
+            Self::poll_chamber_weights(host_id, num_options)
+        } else {
+            (
+                alloc::vec![0u128; num_options],
+                alloc::vec![0u32; num_options],
+                alloc::vec![0u128; num_options],
+                alloc::vec![0u32; num_options],
+            )
+        };
+        let mut options = Vec::with_capacity(num_options);
         let mut total_votes: u32 = 0;
-        // Finalized — return the frozen snapshot (no live join, no staker-set read).
+        // Finalized — the HOLDER lens is the frozen snapshot (no live join, no staker-set read); the
+        // chambers are still live (they carry no frozen record — a temperature check, not a binding vote).
         if let Some(result) = PollResults::<T>::get(host_id) {
             for (i, opt) in poll.options.iter().enumerate() {
                 let count = result.option_counts.get(i).copied().unwrap_or(0);
@@ -2740,16 +2911,20 @@ impl<T: Config> Pallet<T> {
                     label: opt.to_vec(),
                     weight,
                     count,
+                    spo_weight: spo_w.get(i).copied().unwrap_or(0),
+                    spo_count: spo_c.get(i).copied().unwrap_or(0),
+                    drep_weight: drep_w.get(i).copied().unwrap_or(0),
+                    drep_count: drep_c.get(i).copied().unwrap_or(0),
                 });
             }
             return Some(PollView {
                 host_id,
                 options,
                 total_votes,
+                kind: kind_ix,
             });
         }
-        // Open (or past-deadline-but-unfinalized) — derive per-option weight live from current stake.
-        let num_options = poll.options.len();
+        // Open (or past-deadline-but-unfinalized) — derive the holder per-option weight live from stake.
         let counts: Vec<u32> = (0..num_options)
             .map(|i| PollTally::<T>::get(host_id, i as u8).count)
             .collect();
@@ -2767,12 +2942,17 @@ impl<T: Config> Pallet<T> {
                 label: opt.to_vec(),
                 weight: weights.get(i).copied().unwrap_or(0),
                 count: counts[i],
+                spo_weight: spo_w.get(i).copied().unwrap_or(0),
+                spo_count: spo_c.get(i).copied().unwrap_or(0),
+                drep_weight: drep_w.get(i).copied().unwrap_or(0),
+                drep_count: drep_c.get(i).copied().unwrap_or(0),
             });
         }
         Some(PollView {
             host_id,
             options,
             total_votes,
+            kind: kind_ix,
         })
     }
 

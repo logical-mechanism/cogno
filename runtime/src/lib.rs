@@ -70,14 +70,18 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // history lives in CHANGELOG.md, not here.
     // spec 205: dynamic stake voting — vote/poll storage v5 → v6 (stored weight dropped, `Poll.close_at`
     // + `PollResults` added, `close_poll` at call_index 13, `PollClosed` event/error, live weighted reads).
-    spec_version: 206,
+    // spec 207: governance polls — `RoleEntry`/`ObservedRole` gain a delegated-stake `weight` (observer
+    // payload + roles storage v0 → v1), `Poll` gains `kind` (Stake | Governance, microblog storage v6 → v7),
+    // and `poll()`'s `PollView`/`PollOptionView` gain the SPO + dRep chamber lenses.
+    spec_version: 207,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
     // the `TxExtension` tuple. Metadata-only churn (new calls, new storage, doc strings) does not.
     // 3 → 4: `create_poll` gained a `close_at: Option<BlockNumber>` argument (spec 205). Spec 206 adds the
-    // CardanoRoles pallet (new calls/storage only, `TxExtension` byte-identical), so it STAYS 4.
-    transaction_version: 4,
+    // CardanoRoles pallet (new calls/storage only, `TxExtension` byte-identical), so it STAYED 4.
+    // 4 → 5: `create_poll` gained a `kind: PollKind` argument (spec 207).
+    transaction_version: 5,
     system_version: 1,
 };
 

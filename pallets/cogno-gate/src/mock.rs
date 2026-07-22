@@ -58,6 +58,8 @@ impl pallet_microblog::Config for Test {
     // No observer in this mock — the staker set stands in with the `VotingPower` keys (empty here, since
     // these identity-gate integration tests do not exercise weighted tallies).
     type StakerSet = MockStakerSet;
+    // No governance-poll chambers exercised in these identity-gate integration tests.
+    type ChamberRoles = ();
     type WeightInfo = ();
 }
 

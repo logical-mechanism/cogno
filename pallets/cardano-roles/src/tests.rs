@@ -334,7 +334,12 @@ fn revoke_requires_authority_origin() {
 // ── the observed ledger (apply_roles — the observer's sink) ─────────────────────────────────────────
 
 fn observed(kind: RoleKind, id: RoleCredential) -> ObservedRoleSet {
-    ObservedRoleSet::try_from(vec![ObservedRole { kind, id }]).unwrap()
+    ObservedRoleSet::try_from(vec![ObservedRole {
+        kind,
+        id,
+        weight: 0,
+    }])
+    .unwrap()
 }
 
 #[test]
@@ -350,7 +355,8 @@ fn apply_roles_writes_clears_and_is_idempotent() {
             crate::Pallet::<Test>::observed_roles(&ALICE),
             vec![ObservedRole {
                 kind: RoleKind::Spo,
-                id: pool_id
+                id: pool_id,
+                weight: 0
             }]
         );
         System::assert_has_event(
@@ -387,18 +393,22 @@ fn apply_roles_stores_multiple_spo_badges() {
             ObservedRole {
                 kind: RoleKind::Spo,
                 id: [0x11u8; 28],
+                weight: 0,
             },
             ObservedRole {
                 kind: RoleKind::Spo,
                 id: [0x22u8; 28],
+                weight: 0,
             },
             ObservedRole {
                 kind: RoleKind::Spo,
                 id: [0x33u8; 28],
+                weight: 0,
             },
             ObservedRole {
                 kind: RoleKind::DRep,
                 id: [0x44u8; 28],
+                weight: 0,
             },
         ])
         .expect("four badges fit MAX_OBSERVED_ROLES_PER_ACCOUNT");

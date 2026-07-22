@@ -42,6 +42,8 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+pub mod migrations;
+
 pub mod weights;
 pub use weights::*;
 
@@ -140,20 +142,34 @@ pub mod pallet {
 
     /// One entry in an account's observed-role set: a currently-live role + its display id (a poolID for
     /// an ownership SPO, the all-zero blank for a Calidus SPO — which names no pool; the drep ID / hot
-    /// credential for dRep / CC).
+    /// credential for dRep / CC) + the `weight` a GOVERNANCE-POLL chamber weights this role's vote by
+    /// (spec 207).
+    ///
+    /// `weight` is the role's delegated Cardano stake at the observed epoch: an ownership SPO's pool's
+    /// total delegated (block-production) stake, a dRep's total delegated voting stake; `0` for a blank
+    /// Calidus SPO (names no pool) and CC. It is DISPLAY-ONLY chamber input for governance polls — it does
+    /// NOT touch talk-stake `VotingPower` (a regular stake vote is unchanged), and a non-governance poll
+    /// never reads it. The observer overwrites the whole set each epoch, so it tracks the live delegation.
     #[derive(
         Clone, PartialEq, Eq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug,
     )]
     pub struct ObservedRole {
         pub kind: RoleKind,
         pub id: RoleCredential,
+        pub weight: u128,
     }
 
     /// An account's full observed-role set (≤ one dRep and one CC, but possibly several SPO). The profile
     /// badge reads it.
     pub type ObservedRoleSet = BoundedVec<ObservedRole, ConstU32<MAX_OBSERVED_ROLES_PER_ACCOUNT>>;
 
+    /// Storage version. `1` (spec 207) adds the governance-poll chamber `weight` to every
+    /// [`ObservedRole`]; the pallet shipped (spec 206) without an explicit version, i.e. the implicit `0`,
+    /// so [`migrations::MigrateV0ToV1`] moves it `0 → 1` (a no-op when `ObservedRoles` is empty).
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     #[pallet::config]
@@ -276,12 +292,14 @@ pub mod pallet {
     /// so a badge renders with no db-sync. EMPTY on preprod/mainnet (the observer credits real roles
     /// from block 0). Genesis is NOT an extrinsic, so this preserves "the observer is the only setter".
     /// The role is given as its `#[codec(index)]` value (0 = SPO, 1 = dRep, 2 = CC) so the genesis
-    /// config stays serde-serializable without deriving serde on the on-wire types.
+    /// config stays serde-serializable without deriving serde on the on-wire types. Each role also carries
+    /// its chamber `weight` (spec 207) — the delegated stake a governance poll weights it by; seed a
+    /// non-zero value on a `--dev`/`local` chain to exercise the SPO/dRep chambers with no db-sync.
     #[pallet::genesis_config]
     #[derive(frame_support::DefaultNoBound)]
     pub struct GenesisConfig<T: Config> {
         #[allow(clippy::type_complexity)]
-        pub initial_observed_roles: Vec<(T::AccountId, Vec<(u8, RoleCredential)>)>,
+        pub initial_observed_roles: Vec<(T::AccountId, Vec<(u8, RoleCredential, u128)>)>,
     }
 
     #[pallet::genesis_build]
@@ -290,10 +308,11 @@ pub mod pallet {
             for (who, roles) in &self.initial_observed_roles {
                 let set: Vec<ObservedRole> = roles
                     .iter()
-                    .map(|(ix, id)| ObservedRole {
+                    .map(|(ix, id, weight)| ObservedRole {
                         kind: RoleKind::from_index(*ix)
                             .expect("genesis role index must be 0 (SPO), 1 (dRep) or 2 (CC)"),
                         id: *id,
+                        weight: *weight,
                     })
                     .collect();
                 let bounded = ObservedRoleSet::try_from(set)

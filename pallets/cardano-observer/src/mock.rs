@@ -30,8 +30,9 @@ impl frame_system::Config for Test {
     type Block = Block;
 }
 
-/// The observed-role record a `MockRoleSink::set_roles` records: `(role_kind_index, display_id)` pairs.
-type ObservedRoleRec = Vec<(u8, [u8; 28])>;
+/// The observed-role record a `MockRoleSink::set_roles` records: `(role_kind_index, display_id,
+/// chamber_weight)` triples (spec 207).
+type ObservedRoleRec = Vec<(u8, [u8; 28], u128)>;
 
 thread_local! {
     static BINDINGS: RefCell<BTreeMap<[u8; 32], AccountId>> = const { RefCell::new(BTreeMap::new()) };
@@ -118,17 +119,29 @@ pub fn bind_role(credential: [u8; 28], who: AccountId) {
     });
 }
 
-/// Observed-role sink stand-in — records the last `(kind_index, id)` set written per account.
+/// Observed-role sink stand-in — records the last `(kind_index, id, chamber_weight)` set written per
+/// account.
 pub struct MockRoleSink;
 impl crate::RoleSink<AccountId> for MockRoleSink {
-    fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28])]) {
+    fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28], u128)]) {
         OBSERVED_ROLES.with(|m| {
             m.borrow_mut().insert(*who, roles.to_vec());
         });
     }
 }
-/// The role set last written for `who` (empty if never written / cleared).
+/// The role set last written for `who` (empty if never written / cleared), WEIGHT PROJECTED OUT — the
+/// `(kind_index, id)` view the credit/clamp tests assert against.
 pub fn observed_roles_of(who: AccountId) -> Vec<(u8, [u8; 28])> {
+    OBSERVED_ROLES.with(|m| {
+        m.borrow()
+            .get(&who)
+            .map(|v| v.iter().map(|(k, id, _w)| (*k, *id)).collect())
+            .unwrap_or_default()
+    })
+}
+/// The FULL role set last written for `who` (kind_index, id, chamber weight) — for the spec-207
+/// chamber-weight flow tests.
+pub fn observed_roles_full_of(who: AccountId) -> Vec<(u8, [u8; 28], u128)> {
     OBSERVED_ROLES.with(|m| m.borrow().get(&who).cloned().unwrap_or_default())
 }
 /// Whether `set_voting_power` was ever called for `who` (distinguishes "skipped" from "set to 0").
