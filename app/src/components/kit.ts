@@ -154,6 +154,11 @@ export interface PollDraft {
    * days × blocks-per-day`).
    */
   closeInDays?: number;
+  /**
+   * The poll's lens (spec 207). `undefined` / `"Stake"` ⇒ a regular stake poll; `"Governance"` ⇒ a
+   * governance poll that also surfaces the SPO + dRep chambers.
+   */
+  kind?: "Stake" | "Governance";
 }
 
 /** What a Composer hands back on submit; the surface maps it to the right extrinsic in @/lib/chain/mutations. */

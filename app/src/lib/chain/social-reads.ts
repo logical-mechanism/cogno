@@ -132,8 +132,11 @@ export async function readViewerPostState(
  * (the block-number deadline) and `finalized` (a `PollResults` row exists) come from storage PAPI-direct;
  * the frontend derives `closed`/`provisional` from `close_at` + the current best block. Counts are exact.
  *
- * ⚠ Shape note: `Poll` is now a TWO-field struct (`{ options, close_at }`), so PAPI no longer unwraps it —
- * `Polls.getValue` returns `{ options: Binary[]; close_at: number | undefined } | undefined`.
+ * ⚠ Shape note: `Poll` is now a THREE-field struct (`{ options, close_at, kind }` — spec 207 added the
+ * governance-poll `kind`), so PAPI keeps it wrapped — `Polls.getValue` returns
+ * `{ options: Binary[]; close_at: number | undefined; kind: ... } | undefined`. The `MicroblogApi.poll`
+ * view is the read of record for the tally; its `kind` is a plain `u8` (0 = Stake, 1 = Governance), and
+ * each option carries the SPO + dRep chamber lenses alongside the holder weight/count.
  */
 export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView> {
   const [view, meta, result] = await Promise.all([
@@ -141,12 +144,24 @@ export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView>
     api.query.Microblog.Polls.getValue(hostId, BEST),
     api.query.Microblog.PollResults.getValue(hostId, BEST),
   ]);
-  if (!view) return { hostId, options: [], totalWeight: 0n, totalCount: 0, finalized: false };
+  if (!view)
+    return {
+      hostId,
+      options: [],
+      totalWeight: 0n,
+      totalCount: 0,
+      finalized: false,
+      kind: "Stake",
+    };
   const options = view.options.map((o) => ({
     index: o.index,
     label: Binary.toText(o.label),
     weight: BigInt(o.weight),
     count: o.count,
+    spoWeight: BigInt(o.spo_weight),
+    spoCount: o.spo_count,
+    drepWeight: BigInt(o.drep_weight),
+    drepCount: o.drep_count,
   }));
   const totalWeight = options.reduce((s, o) => s + o.weight, 0n);
   return {
@@ -156,6 +171,7 @@ export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView>
     totalCount: view.total_votes,
     closeAt: meta?.close_at ?? undefined,
     finalized: result !== undefined,
+    kind: view.kind === 1 ? "Governance" : "Stake",
   };
 }
 

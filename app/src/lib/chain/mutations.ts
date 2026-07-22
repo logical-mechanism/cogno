@@ -166,12 +166,15 @@ export function submitCreatePoll(
   question: string,
   options: string[],
   closeAt?: number,
+  kind: "Stake" | "Governance" = "Stake",
 ): Observable<TxUpdate> {
   const tx = api.tx.Microblog.create_poll({
     question: Binary.fromText(question),
     options: options.map((o) => Binary.fromText(o)),
     // `close_at: Option<BlockNumber>` (spec 205). PAPI encodes `undefined` as None (a floating poll).
     close_at: closeAt,
+    // `kind: PollKind` (spec 207). `Stake` = a regular poll; `Governance` adds the SPO + dRep chambers.
+    kind: Enum(kind),
   });
   return watchSigned(api, tx, signer, "PostCreated");
 }

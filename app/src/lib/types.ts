@@ -82,21 +82,33 @@ export interface CognoPost {
   myVote?: "Up" | "Down" | null;
 }
 
-/** A 0-indexed poll option with its stake-weighted tally. */
+/** A 0-indexed poll option with its per-lens tally. `weight`/`count` are the HOLDER (stake) lens; the
+ *  `spo*`/`drep*` fields (spec 207) are the SPO and dRep CHAMBER lenses — non-zero only on a
+ *  `kind === "Governance"` poll, and reported SEPARATELY from the holder lens (never summed). */
 export interface PollOptionView {
   index: number; // 0..=3
   label: string; // UTF-8 option text (<= 80 bytes)
-  weight: bigint; // sum of weight snapshots currently choosing this option
-  count: number; // accounts currently choosing this option
+  weight: bigint; // HOLDER lens: sum of VotingPower currently choosing this option
+  count: number; // HOLDER lens: accounts currently choosing this option
+  spoWeight: bigint; // SPO chamber: total delegated pool stake choosing this option (0 for a stake poll)
+  spoCount: number; // SPO chamber: distinct pools choosing this option
+  drepWeight: bigint; // dRep chamber: total delegated voting stake choosing this option (0 for a stake poll)
+  drepCount: number; // dRep chamber: distinct dReps choosing this option
 }
 
 /** A poll attached to a host post (`Poll.id == host post id`; the question IS the host post's text). */
 export interface PollView {
   hostId: bigint;
   options: PollOptionView[];
-  /** Σ option weight, for percent bars. */
+  /** Σ option weight (HOLDER lens), for percent bars. */
   totalWeight: bigint;
   totalCount: number;
+  /**
+   * The poll's lens (spec 207). `"Stake"` (regular) — everyone votes by their own stake; the chamber
+   * fields are all zero. `"Governance"` — the SPO + dRep chambers on each option are populated, a
+   * display-only Cardano-community temperature check.
+   */
+  kind: "Stake" | "Governance";
   /**
    * Optional block-number deadline (spec 205). `undefined` ⇒ the poll floats forever (never closes).
    * `Some(b)` ⇒ voting is rejected once the best block reaches `b`, and the result can be FROZEN.

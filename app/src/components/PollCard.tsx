@@ -24,7 +24,7 @@ import styles from "./PollCard.module.css";
 import { Spinner, IconCheck } from "./icons";
 import { weightPercent, formatWeight } from "@/lib/format";
 import { sanitizeInline } from "@/lib/sanitize";
-import type { PollView } from "./kit";
+import type { PollView, PollOptionView } from "./kit";
 
 export interface PollCardProps {
   /** The poll: options/weights/counts + totals (poll.hostId == the host post id). */
@@ -188,6 +188,16 @@ export function PollCard({
         <span className={styles.dot} aria-hidden>
           ·
         </span>
+        {poll.kind === "Governance" && (
+          <>
+            <span className={styles.govPill} title="A Cardano-community temperature check: SPO & dRep chambers below (display-only)">
+              Governance
+            </span>
+            <span className={styles.dot} aria-hidden>
+              ·
+            </span>
+          </>
+        )}
         {closeState === "final" ? (
           <span className={styles.open}>Final results</span>
         ) : closeState === "provisional" ? (
@@ -211,6 +221,50 @@ export function PollCard({
           <span className={styles.open}>{voted ? "Live results" : "Open"}</span>
         )}
       </div>
+
+      {poll.kind === "Governance" && results && (
+        <div className={styles.chambers}>
+          {(
+            [
+              { key: "spo", title: "SPO chamber", unit: "pool", w: (o: PollOptionView) => o.spoWeight, c: (o: PollOptionView) => o.spoCount },
+              { key: "drep", title: "dRep chamber", unit: "dRep", w: (o: PollOptionView) => o.drepWeight, c: (o: PollOptionView) => o.drepCount },
+            ] as const
+          ).map((ch) => {
+            const total = poll.options.reduce((s, o) => s + ch.w(o), 0n);
+            const voters = poll.options.reduce((s, o) => s + ch.c(o), 0);
+            return (
+              <div key={ch.key} className={styles.chamber}>
+                <div className={styles.chamberHead}>
+                  <span className={styles.chamberTitle}>{ch.title}</span>
+                  <span className={styles.chamberMeta}>
+                    {total > 0n
+                      ? `${formatWeight(total)} · ${voters} ${ch.unit}${voters === 1 ? "" : "s"}`
+                      : `no ${ch.unit}s voted`}
+                  </span>
+                </div>
+                {total > 0n && (
+                  <div className={styles.chamberBars}>
+                    {poll.options.map((o) => {
+                      const pct = weightPercent(ch.w(o), total);
+                      return (
+                        <div key={o.index} className={styles.chamberRow}>
+                          <span className={styles.chamberLabel} dir="auto">
+                            {sanitizeInline(o.label)}
+                          </span>
+                          <span className={styles.chamberBarTrack} aria-hidden>
+                            <span className={styles.chamberBar} style={{ width: `${pct}%` }} />
+                          </span>
+                          <span className={styles.chamberPct}>{pct}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
