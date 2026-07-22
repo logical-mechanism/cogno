@@ -1499,8 +1499,16 @@ fn spo_only_poll_populates_spo_chamber_and_suppresses_drep() {
         let host = 0u64;
         set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]); // SPO pool → "yes"
         set_chamber_roles(11, vec![(1, DREP_D, 7_000_000)]); // dRep → "yes" (must NOT surface)
-        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), host, 0));
-        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), host, 0));
+        assert_ok!(Microblog::cast_poll_vote(
+            RuntimeOrigin::signed(10),
+            host,
+            0
+        ));
+        assert_ok!(Microblog::cast_poll_vote(
+            RuntimeOrigin::signed(11),
+            host,
+            0
+        ));
 
         let view = Microblog::poll(host).expect("poll exists");
         assert_eq!(view.kind, 2, "spo-only poll");
@@ -1544,8 +1552,16 @@ fn drep_only_poll_populates_drep_chamber_and_suppresses_spo() {
         let host = 0u64;
         set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]); // SPO pool → "yes" (must NOT surface)
         set_chamber_roles(11, vec![(1, DREP_D, 7_000_000)]); // dRep → "yes"
-        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), host, 0));
-        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), host, 0));
+        assert_ok!(Microblog::cast_poll_vote(
+            RuntimeOrigin::signed(10),
+            host,
+            0
+        ));
+        assert_ok!(Microblog::cast_poll_vote(
+            RuntimeOrigin::signed(11),
+            host,
+            0
+        ));
 
         let view = Microblog::poll(host).expect("poll exists");
         assert_eq!(view.kind, 3, "drep-only poll");
@@ -1686,7 +1702,10 @@ fn governance_action_tag_round_trips_through_storage_and_view() {
             .action
             .expect("action stored");
         assert_eq!(stored.action_type, crate::GovActionType::TreasuryWithdrawal);
-        assert_eq!(stored.anchor_url.to_vec(), b"https://github.com/x/y".to_vec());
+        assert_eq!(
+            stored.anchor_url.to_vec(),
+            b"https://github.com/x/y".to_vec()
+        );
         assert_eq!(stored.anchor_hash, None);
         // View form: action_type as the pinned u8 (6 = TreasuryWithdrawal) + the same anchor bytes.
         let view_action = Microblog::poll(host)
@@ -1696,6 +1715,56 @@ fn governance_action_tag_round_trips_through_storage_and_view() {
         assert_eq!(view_action.action_type, 6u8);
         assert_eq!(view_action.anchor_url, b"https://github.com/x/y".to_vec());
         assert_eq!(view_action.anchor_hash, None);
+    });
+}
+
+#[test]
+fn governance_action_tag_allowed_on_single_chamber_kinds() {
+    // The gov-action tag is gated on `kind.has_chambers()`, which the single-chamber `Spo`/`Drep` kinds
+    // satisfy — so an action tag rides on them exactly like on `Governance` (this guards the `Stake`-only
+    // rejection from ever widening to reject a valid single-chamber tag). Both round-trip: the typed
+    // `GovAction` in storage and the pinned-u8 action type in the node-served view.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // (host id, poll kind, action type, its pinned u8) — NextPostId allocates 0 then 1.
+        let cases = [
+            (0u64, PollKind::Spo, crate::GovActionType::ParamChange, 5u8),
+            (
+                1u64,
+                PollKind::Drep,
+                crate::GovActionType::NewConstitution,
+                3u8,
+            ),
+        ];
+        for (host, kind, action_type, ix) in cases {
+            assert_ok!(Microblog::create_poll(
+                RuntimeOrigin::signed(1),
+                b"gov?".to_vec(),
+                vec![b"yes".to_vec(), b"no".to_vec()],
+                None,
+                kind,
+                Some(crate::GovActionInput {
+                    action_type,
+                    anchor_url: b"https://ipfs.io/ipfs/cid".to_vec(),
+                    anchor_hash: None,
+                }),
+            ));
+            let stored = Polls::<Test>::get(host)
+                .expect("poll")
+                .action
+                .expect("action stored on a single-chamber poll");
+            assert_eq!(stored.action_type, action_type);
+            assert_eq!(
+                stored.anchor_url.to_vec(),
+                b"https://ipfs.io/ipfs/cid".to_vec()
+            );
+            let view_action = Microblog::poll(host)
+                .expect("poll")
+                .action
+                .expect("action in view");
+            assert_eq!(view_action.action_type, ix);
+            assert_eq!(view_action.anchor_url, b"https://ipfs.io/ipfs/cid".to_vec());
+        }
     });
 }
 

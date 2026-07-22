@@ -557,9 +557,7 @@ pub mod pallet {
     /// The `create_poll` call-argument form of [`GovAction`]: an UNBOUNDED `anchor_url` (bounded on store,
     /// mirroring how `question` / `options` arrive unbounded). `None` ⇒ a plain stake/chamber poll with no
     /// governance-action tag.
-    #[derive(
-        Encode, Decode, DecodeWithMemTracking, Clone, PartialEq, Eq, Debug, TypeInfo,
-    )]
+    #[derive(Encode, Decode, DecodeWithMemTracking, Clone, PartialEq, Eq, Debug, TypeInfo)]
     pub struct GovActionInput {
         /// Which CIP-1694 action type this poll pre-checks.
         pub action_type: GovActionType,
@@ -1834,35 +1832,32 @@ pub mod pallet {
             };
             // spec 208: FREEZE the SPO + dRep chambers for a chamber poll (a stake poll freezes none —
             // empty vecs read back as 0), so a concluded poll's chambers no longer re-price as delegation
-            // later moves. spec 209: an `Spo`/`Drep`-only poll freezes ONLY its declared chamber, leaving the
-            // other empty. The tally iterates the bounded role-holder set (like the holder join above), so
-            // this stays O(`MaxObserved`)-bounded on-chain. `total == 0` means NO votes at all (so no
-            // role-holder voted either) ⇒ empty chambers, skipping the join exactly like the holder lens.
-            let (cspo_w, cspo_c, cdrep_w, cdrep_c, r_len) =
-                if total > 0 && poll.kind.has_chambers() {
-                    let holders = T::ChamberRoles::role_holders();
-                    let r = holders.len();
-                    let (mut a, mut b, mut c, mut d) =
-                        Self::poll_chamber_weights(host_id, num_options, &holders);
-                    // Keep only the chamber(s) this poll declares; empty the other (reads back as 0).
-                    if !poll.kind.has_spo() {
-                        a = alloc::vec![];
-                        b = alloc::vec![];
-                    }
-                    if !poll.kind.has_drep() {
-                        c = alloc::vec![];
-                        d = alloc::vec![];
-                    }
-                    (a, b, c, d, r)
-                } else {
-                    (
-                        alloc::vec![],
-                        alloc::vec![],
-                        alloc::vec![],
-                        alloc::vec![],
-                        0usize,
-                    )
-                };
+            // later moves. spec 209: `poll_chamber_weights` freezes ONLY the chamber(s) this poll's kind
+            // declares (`has_spo`/`has_drep`) — an `Spo`/`Drep`-only poll leaves the other EMPTY. The tally
+            // iterates the bounded role-holder set (like the holder join above), so this stays
+            // O(`MaxObserved`)-bounded on-chain. `total == 0` means NO votes at all (so no role-holder voted
+            // either) ⇒ empty chambers, skipping the join exactly like the holder lens.
+            let (cspo_w, cspo_c, cdrep_w, cdrep_c, r_len) = if total > 0 && poll.kind.has_chambers()
+            {
+                let holders = T::ChamberRoles::role_holders();
+                let r = holders.len();
+                let (a, b, c, d) = Self::poll_chamber_weights(
+                    host_id,
+                    num_options,
+                    &holders,
+                    poll.kind.has_spo(),
+                    poll.kind.has_drep(),
+                );
+                (a, b, c, d, r)
+            } else {
+                (
+                    alloc::vec![],
+                    alloc::vec![],
+                    alloc::vec![],
+                    alloc::vec![],
+                    0usize,
+                )
+            };
             let mut option_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
             let mut option_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
             for (i, w) in weights.into_iter().enumerate() {
@@ -2699,12 +2694,21 @@ impl<T: Config> Pallet<T> {
     /// the SPO chamber reflects only impersonation-proof, delegated `SpoOwner` pools. The result is
     /// independent of holder-iteration order.
     ///
-    /// Returns `(spo_weights, spo_counts, drep_weights, drep_counts)`, each a `num_options`-length vec
-    /// index-aligned with `Poll.options`.
+    /// `want_spo` / `want_drep` (spec 209) select which chamber(s) this poll's [`PollKind`] surfaces:
+    /// `Governance` passes both, an `Spo`/`Drep`-only poll passes a single `true`, and a `Stake` poll never
+    /// calls this. An unrequested chamber is neither accumulated nor materialized — it is returned as an
+    /// EMPTY vec, which every reader treats as 0 (`.get(i).unwrap_or(0)`) and which `close_poll` freezes as
+    /// the empty snapshot. Centralizing the lens here keeps the suppression rule in ONE place (no
+    /// caller-side zeroing) and skips the discarded chamber's whole aggregation.
+    ///
+    /// Returns `(spo_weights, spo_counts, drep_weights, drep_counts)`: each REQUESTED chamber is a
+    /// `num_options`-length vec index-aligned with `Poll.options`; each unrequested chamber is empty.
     fn poll_chamber_weights(
         host_id: u64,
         num_options: usize,
         holders: &[T::AccountId],
+        want_spo: bool,
+        want_drep: bool,
     ) -> (Vec<u128>, Vec<u32>, Vec<u128>, Vec<u32>) {
         use alloc::collections::BTreeMap;
         // pool id → (chosen option, delegated stake, conflicted?) — collapse a co-owned pool to ONE vote.
@@ -2725,7 +2729,7 @@ impl<T: Config> Pallet<T> {
                     continue; // a blank Calidus SPO / undelegated pool or dRep contributes nothing
                 }
                 match kind {
-                    0 => {
+                    0 if want_spo => {
                         // SPO chamber: dedup by pool; owners split across options ⇒ the pool abstains.
                         pool_choice
                             .entry(id)
@@ -2736,31 +2740,43 @@ impl<T: Config> Pallet<T> {
                             })
                             .or_insert((opt, weight, false));
                     }
-                    1 => {
+                    1 if want_drep => {
                         // dRep chamber: an id appears for a single voter (1:1) — just record it.
                         drep_choice.entry(id).or_insert((opt, weight));
                     }
-                    _ => {} // CC (2) has no chamber (deferred) — ignore.
+                    // CC (2), or a chamber this poll's kind does not surface — ignore.
+                    _ => {}
                 }
             }
         }
-        let mut spo_weights = alloc::vec![0u128; num_options];
-        let mut spo_counts = alloc::vec![0u32; num_options];
-        for (_pool, (opt, weight, conflict)) in pool_choice {
-            if conflict {
-                continue; // declared owners disagreed → the pool casts no chamber vote
+        // A requested chamber materializes a `num_options`-length vec; an unrequested one stays empty.
+        let (spo_weights, spo_counts) = if want_spo {
+            let mut weights = alloc::vec![0u128; num_options];
+            let mut counts = alloc::vec![0u32; num_options];
+            for (_pool, (opt, weight, conflict)) in pool_choice {
+                if conflict {
+                    continue; // declared owners disagreed → the pool casts no chamber vote
+                }
+                let i = opt as usize;
+                weights[i] = weights[i].saturating_add(weight);
+                counts[i] = counts[i].saturating_add(1);
             }
-            let i = opt as usize;
-            spo_weights[i] = spo_weights[i].saturating_add(weight);
-            spo_counts[i] = spo_counts[i].saturating_add(1);
-        }
-        let mut drep_weights = alloc::vec![0u128; num_options];
-        let mut drep_counts = alloc::vec![0u32; num_options];
-        for (_drep, (opt, weight)) in drep_choice {
-            let i = opt as usize;
-            drep_weights[i] = drep_weights[i].saturating_add(weight);
-            drep_counts[i] = drep_counts[i].saturating_add(1);
-        }
+            (weights, counts)
+        } else {
+            (alloc::vec![], alloc::vec![])
+        };
+        let (drep_weights, drep_counts) = if want_drep {
+            let mut weights = alloc::vec![0u128; num_options];
+            let mut counts = alloc::vec![0u32; num_options];
+            for (_drep, (opt, weight)) in drep_choice {
+                let i = opt as usize;
+                weights[i] = weights[i].saturating_add(weight);
+                counts[i] = counts[i].saturating_add(1);
+            }
+            (weights, counts)
+        } else {
+            (alloc::vec![], alloc::vec![])
+        };
         (spo_weights, spo_counts, drep_weights, drep_counts)
     }
 
@@ -3220,14 +3236,23 @@ impl<T: Config> Pallet<T> {
                 options,
                 total_votes,
                 kind: kind_ix,
-                action: action.clone(),
+                // Moved, not cloned: this branch returns, so the open branch below still owns `action`.
+                action,
             });
         }
-        // Open (or past-deadline-but-unfinalized) — derive the holder per-option weight live from stake,
-        // and the SPO/dRep chambers live for a governance poll (a stake poll gets all-zero chambers).
-        let (mut spo_w, mut spo_c, mut drep_w, mut drep_c) = if poll.kind.has_chambers() {
+        // Open (or past-deadline-but-unfinalized) — derive the holder per-option weight live from stake, and
+        // the SPO/dRep chambers live for a chamber poll (a stake poll gets all-zero chambers). The kind's
+        // `has_spo`/`has_drep` select the surfaced chamber(s): an `Spo`/`Drep`-only poll gets the other back
+        // as an EMPTY vec (read as 0 below via `.get(i).unwrap_or(0)`).
+        let (spo_w, spo_c, drep_w, drep_c) = if poll.kind.has_chambers() {
             let holders = T::ChamberRoles::role_holders();
-            Self::poll_chamber_weights(host_id, num_options, &holders)
+            Self::poll_chamber_weights(
+                host_id,
+                num_options,
+                &holders,
+                poll.kind.has_spo(),
+                poll.kind.has_drep(),
+            )
         } else {
             (
                 alloc::vec![0u128; num_options],
@@ -3236,15 +3261,6 @@ impl<T: Config> Pallet<T> {
                 alloc::vec![0u32; num_options],
             )
         };
-        // Surface only the chamber(s) this poll declares: an `Spo`/`Drep`-only poll zeroes the other lens.
-        if !poll.kind.has_spo() {
-            spo_w = alloc::vec![0u128; num_options];
-            spo_c = alloc::vec![0u32; num_options];
-        }
-        if !poll.kind.has_drep() {
-            drep_w = alloc::vec![0u128; num_options];
-            drep_c = alloc::vec![0u32; num_options];
-        }
         let counts: Vec<u32> = (0..num_options)
             .map(|i| PollTally::<T>::get(host_id, i as u8).count)
             .collect();
