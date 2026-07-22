@@ -24,6 +24,8 @@ import { DisplayName } from "@/components/DisplayName";
 import { Handle } from "@/components/Handle";
 import { PostBody } from "@/components/PostBody";
 import { FollowButton } from "@/components/FollowButton";
+import { RoleBadge } from "@/components/RoleBadge";
+import type { ObservedRoleView } from "@/lib/chain/roles";
 import { RevealImage } from "@/components/RevealImage";
 import { IconLink } from "@/components/icons";
 import { FollowCounts } from "./FollowCounts";
@@ -69,6 +71,9 @@ function bannerStyle(address: string): React.CSSProperties {
 export interface ProfileHeaderProps {
   /** ss58 of the profile being viewed (always present — validated upstream). */
   address: Ss58;
+  /** The account's live observed Cardano role badges, from the (already-fetched) ProfileView — rendered
+   *  from this folded set rather than a self-fetch, so the profile page opens no extra subscription. */
+  observedRoles?: ObservedRoleView[];
   displayName?: string;
   bio?: string;
   avatar?: string;
@@ -112,6 +117,7 @@ export interface ProfileHeaderProps {
 
 export function ProfileHeader({
   address,
+  observedRoles,
   displayName,
   bio,
   avatar,
@@ -206,6 +212,9 @@ export function ProfileHeader({
           />
           <div className={styles.handleRow}>
             <Handle address={address} truncate="middle" copyable />
+            {/* Verified Cardano role tag(s) — self-fetching + live, so a retired/revoked role clears
+                promptly. Renders nothing when the account holds no live role. */}
+            <RoleBadge roles={observedRoles} />
             {followsYou && <span className={styles.followsYou}>Follows you</span>}
           </div>
         </div>

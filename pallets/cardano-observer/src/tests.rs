@@ -4,7 +4,8 @@
 
 use crate::mock::*;
 use crate::{
-    BeaconName, CardanoObservation, CardanoRef, Error, Event, InherentError, INHERENT_IDENTIFIER,
+    BeaconName, CardanoObservation, CardanoRef, Error, Event, InherentError, RoleEntry, RoleSource,
+    INHERENT_IDENTIFIER,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -48,6 +49,9 @@ fn stk(
 fn no_stake() -> BoundedVec<(crate::StakeCredential, u128), <Test as crate::Config>::MaxObserved> {
     BoundedVec::new()
 }
+fn no_roles() -> BoundedVec<crate::RoleEntry, <Test as crate::Config>::MaxObserved> {
+    BoundedVec::new()
+}
 
 fn put_obs(id: &mut InherentData, obs: &CardanoObservation) {
     id.put_data(INHERENT_IDENTIFIER, obs)
@@ -80,6 +84,7 @@ fn create_inherent_builds_the_observe_call_from_node_data() {
             inputs_commitment: COMMIT2,
             entries: vec![(A, 200_000_000), (B, 300_000_000)],
             stake_entries: vec![(S1, 700_000_000)],
+            role_entries: vec![],
         };
         let mut id = InherentData::new();
         put_obs(&mut id, &obs);
@@ -91,6 +96,7 @@ fn create_inherent_builds_the_observe_call_from_node_data() {
                 inputs_commitment,
                 entries,
                 stake_entries,
+                role_entries: _,
             } => {
                 assert_eq!(reference, cref(1000));
                 assert_eq!(
@@ -126,6 +132,7 @@ fn check_inherent_matches_local_read() {
             inputs_commitment: COMMIT,
             entries: vec![(A, 200_000_000)],
             stake_entries: vec![],
+            role_entries: vec![],
         };
         let mut id = InherentData::new();
         put_obs(&mut id, &obs);
@@ -134,6 +141,7 @@ fn check_inherent_matches_local_read() {
             inputs_commitment: COMMIT,
             entries: entries(&[(A, 200_000_000)]),
             stake_entries: no_stake(),
+            role_entries: no_roles(),
         };
         assert!(<CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok());
     });
@@ -149,6 +157,7 @@ fn check_inherent_mismatch_is_fatal() {
             inputs_commitment: COMMIT,
             entries: vec![(A, 200_000_000)],
             stake_entries: vec![],
+            role_entries: vec![],
         };
         let mut id = InherentData::new();
         put_obs(&mut id, &local);
@@ -157,6 +166,7 @@ fn check_inherent_mismatch_is_fatal() {
             inputs_commitment: COMMIT2,
             entries: entries(&[(A, 999_000_000)]),
             stake_entries: no_stake(),
+            role_entries: no_roles(),
         };
         let err =
             <CardanoObserver as ProvideInherent>::check_inherent(&lying_call, &id).unwrap_err();
@@ -173,6 +183,7 @@ fn check_inherent_mismatch_is_fatal() {
             inputs_commitment: COMMIT,
             entries: entries(&[(A, 200_000_000)]),
             stake_entries: no_stake(),
+            role_entries: no_roles(),
         };
         assert!(matches!(
             <CardanoObserver as ProvideInherent>::check_inherent(&wrong_ref, &id).unwrap_err(),
@@ -192,6 +203,7 @@ fn check_inherent_compute_diverged_when_same_inputs_different_output() {
             inputs_commitment: COMMIT,
             entries: vec![(A, 200_000_000)],
             stake_entries: vec![],
+            role_entries: vec![],
         };
         let mut id = InherentData::new();
         put_obs(&mut id, &local);
@@ -200,6 +212,7 @@ fn check_inherent_compute_diverged_when_same_inputs_different_output() {
             inputs_commitment: COMMIT,
             entries: entries(&[(A, 999_000_000)]),
             stake_entries: no_stake(),
+            role_entries: no_roles(),
         };
         let err =
             <CardanoObserver as ProvideInherent>::check_inherent(&diverged_call, &id).unwrap_err();
@@ -225,6 +238,7 @@ fn check_inherent_accepts_when_entries_agree_despite_commitment_diff() {
             inputs_commitment: COMMIT,
             entries: vec![(A, 200_000_000)],
             stake_entries: vec![],
+            role_entries: vec![],
         };
         let mut id = InherentData::new();
         put_obs(&mut id, &local);
@@ -233,6 +247,7 @@ fn check_inherent_accepts_when_entries_agree_despite_commitment_diff() {
             inputs_commitment: COMMIT2,
             entries: entries(&[(A, 200_000_000)]),
             stake_entries: no_stake(),
+            role_entries: no_roles(),
         };
         assert!(
             <CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok(),
@@ -259,6 +274,7 @@ fn check_inherent_rejects_a_forged_sealed_block_hash_anchor() {
             inputs_commitment: COMMIT,
             entries: vec![(A, 200_000_000)],
             stake_entries: vec![],
+            role_entries: vec![],
         };
         let mut id = InherentData::new();
         put_obs(&mut id, &local);
@@ -270,6 +286,7 @@ fn check_inherent_rejects_a_forged_sealed_block_hash_anchor() {
             inputs_commitment: COMMIT,
             entries: entries(&[(A, 200_000_000)]),
             stake_entries: no_stake(),
+            role_entries: no_roles(),
         };
         let err = <CardanoObserver as ProvideInherent>::check_inherent(&forged, &id).unwrap_err();
         assert!(
@@ -290,6 +307,7 @@ fn check_inherent_rejects_a_forged_sealed_block_hash_anchor() {
             inputs_commitment: COMMIT,
             entries: entries(&[(A, 200_000_000)]),
             stake_entries: no_stake(),
+            role_entries: no_roles(),
         };
         assert!(<CardanoObserver as ProvideInherent>::check_inherent(&honest, &id).is_ok());
     });
@@ -306,6 +324,7 @@ fn check_inherent_cannot_verify_when_local_source_behind_is_non_fatal() {
             inputs_commitment: COMMIT,
             entries: entries(&[(A, 200_000_000)]),
             stake_entries: no_stake(),
+            role_entries: no_roles(),
         };
         let err = <CardanoObserver as ProvideInherent>::check_inherent(&call, &id).unwrap_err();
         assert!(matches!(err, InherentError::CannotVerify));
@@ -323,6 +342,7 @@ fn observe_call_is_recognised_as_an_inherent() {
         inputs_commitment: COMMIT,
         entries: entries(&[]),
         stake_entries: no_stake(),
+        role_entries: no_roles(),
     };
     assert!(<CardanoObserver as ProvideInherent>::is_inherent(&call));
 }
@@ -342,6 +362,7 @@ fn observe_applies_weight_to_bound_accounts_and_skips_unbound() {
             COMMIT,
             entries(&[(A, 200_000_000), (B, 500_000_000)]),
             no_stake(),
+            no_roles(),
         ));
         assert_eq!(
             weight_of(ALICE),
@@ -375,7 +396,8 @@ fn observe_applies_min_lock_floor() {
             cref(MAX_REFERENCE - 1),
             COMMIT,
             entries(&[(A, MIN_LOCK - 1)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         assert_eq!(weight_of(ALICE), 0, "below MIN_LOCK ⇒ weight 0");
     });
@@ -396,6 +418,7 @@ fn observe_skips_over_max_stake_weight_without_bricking_the_block() {
             COMMIT,
             entries(&[(A, 200_000_000), (B, MAX_STAKE_WEIGHT + 1)]),
             no_stake(),
+            no_roles(),
         ));
         assert_eq!(weight_of(ALICE), 200_000_000, "A still credited");
         assert!(
@@ -427,7 +450,8 @@ fn observe_clamps_accounts_that_dropped_out_to_zero() {
             cref(MAX_REFERENCE - 10),
             COMMIT,
             entries(&[(A, 200_000_000), (B, 300_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         assert_eq!(weight_of(ALICE), 200_000_000);
         assert_eq!(weight_of(BOB), 300_000_000);
@@ -437,7 +461,8 @@ fn observe_clamps_accounts_that_dropped_out_to_zero() {
             cref(MAX_REFERENCE - 5),
             COMMIT,
             entries(&[(A, 200_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         assert_eq!(weight_of(ALICE), 200_000_000, "A persists");
         assert_eq!(
@@ -461,7 +486,8 @@ fn frozen_mode_verifies_but_never_writes_weight() {
             cref(MAX_REFERENCE - 1),
             COMMIT,
             entries(&[(A, 200_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         // The WeightSink (talk-stake/microblog) is NEVER called while frozen — weight holds at its last value.
         assert!(
@@ -494,7 +520,8 @@ fn frozen_mode_clamp_still_writes_nothing() {
             cref(MAX_REFERENCE - 10),
             COMMIT,
             entries(&[(A, 200_000_000), (B, 300_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         assert!(!was_written(BOB));
         // B drops out: the clamp path runs (counter tracked) but the WeightSink is STILL never called.
@@ -503,7 +530,8 @@ fn frozen_mode_clamp_still_writes_nothing() {
             cref(MAX_REFERENCE - 5),
             COMMIT,
             entries(&[(A, 200_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         assert!(!was_written(BOB), "no AllowedStake write while frozen");
     });
@@ -525,7 +553,8 @@ fn re_enable_clamps_an_account_that_unlocked_during_a_freeze() {
             cref(MAX_REFERENCE - 20),
             COMMIT,
             entries(&[(A, 200_000_000), (B, 300_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         assert_eq!(weight_of(BOB), 300_000_000);
 
@@ -536,7 +565,8 @@ fn re_enable_clamps_an_account_that_unlocked_during_a_freeze() {
             cref(MAX_REFERENCE - 15),
             COMMIT,
             entries(&[(A, 200_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         assert_eq!(
             weight_of(BOB),
@@ -551,7 +581,8 @@ fn re_enable_clamps_an_account_that_unlocked_during_a_freeze() {
             cref(MAX_REFERENCE - 10),
             COMMIT,
             entries(&[(A, 200_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         assert_eq!(
             weight_of(ALICE),
@@ -579,7 +610,8 @@ fn re_enable_clamps_a_stake_cred_that_dropped_out_during_a_freeze() {
             cref(MAX_REFERENCE - 20),
             COMMIT,
             entries(&[]),
-            stk(&[(S1, 800_000_000), (S2, 300_000_000)])
+            stk(&[(S1, 800_000_000), (S2, 300_000_000)]),
+            no_roles(),
         ));
         assert_eq!(voting_power_of(BOB), 300_000_000);
 
@@ -589,7 +621,8 @@ fn re_enable_clamps_a_stake_cred_that_dropped_out_during_a_freeze() {
             cref(MAX_REFERENCE - 15),
             COMMIT,
             entries(&[]),
-            stk(&[(S1, 800_000_000)])
+            stk(&[(S1, 800_000_000)]),
+            no_roles(),
         ));
         assert_eq!(
             voting_power_of(BOB),
@@ -603,7 +636,8 @@ fn re_enable_clamps_a_stake_cred_that_dropped_out_during_a_freeze() {
             cref(MAX_REFERENCE - 10),
             COMMIT,
             entries(&[]),
-            stk(&[(S1, 800_000_000)])
+            stk(&[(S1, 800_000_000)]),
+            no_roles(),
         ));
         assert_eq!(
             voting_power_of(BOB),
@@ -663,7 +697,8 @@ fn observe_rejects_a_regressing_reference() {
             cref(MAX_REFERENCE - 5),
             COMMIT,
             entries(&[(A, 200_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
         // A later block proposing an OLDER reference than the chain already holds is rejected.
         assert_noop!(
@@ -672,7 +707,8 @@ fn observe_rejects_a_regressing_reference() {
                 cref(MAX_REFERENCE - 6),
                 COMMIT,
                 entries(&[(A, 200_000_000)]),
-                no_stake()
+                no_stake(),
+                no_roles(),
             ),
             Error::<Test>::ReferenceRegressed
         );
@@ -690,7 +726,8 @@ fn observe_rejects_a_too_fresh_reference() {
                 cref(MAX_REFERENCE + 1),
                 COMMIT,
                 entries(&[(A, 200_000_000)]),
-                no_stake()
+                no_stake(),
+                no_roles(),
             ),
             Error::<Test>::ReferenceTooFresh
         );
@@ -700,7 +737,8 @@ fn observe_rejects_a_too_fresh_reference() {
             cref(MAX_REFERENCE),
             COMMIT,
             entries(&[(A, 200_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         ));
     });
 }
@@ -715,7 +753,8 @@ fn observe_requires_the_none_origin() {
             cref(MAX_REFERENCE - 1),
             COMMIT,
             entries(&[(A, 200_000_000)]),
-            no_stake()
+            no_stake(),
+            no_roles(),
         )
         .is_err());
     });
@@ -735,6 +774,7 @@ fn observe_applies_voting_power_to_bound_stake_creds_and_skips_unbound() {
             COMMIT,
             entries(&[]),
             stk(&[(S1, 800_000_000), (S2, 999_000_000)]),
+            no_roles(),
         ));
         // No MIN_LOCK floor: the full observed stake is the voting power.
         assert_eq!(
@@ -746,7 +786,7 @@ fn observe_applies_voting_power_to_bound_stake_creds_and_skips_unbound() {
             !vp_was_written(BOB),
             "unbound S2 is skipped (bind precedes voting power)"
         );
-        System::assert_last_event(
+        System::assert_has_event(
             Event::VotingPowerObserved {
                 reference_slot: MAX_REFERENCE - 1,
                 credited: 1,
@@ -772,13 +812,14 @@ fn observe_skips_voting_power_over_max_without_bricking_the_block() {
             COMMIT,
             entries(&[]),
             stk(&[(S1, 800_000_000), (S2, MAX_STAKE_WEIGHT + 1)]),
+            no_roles(),
         ));
         assert_eq!(voting_power_of(ALICE), 800_000_000);
         assert!(
             !vp_was_written(BOB),
             "the over-cap stake is skipped (not consensus-pinned, block not bricked)"
         );
-        System::assert_last_event(
+        System::assert_has_event(
             Event::VotingPowerObserved {
                 reference_slot: MAX_REFERENCE - 1,
                 credited: 1,
@@ -802,7 +843,8 @@ fn observe_clamps_dropped_stake_creds_to_zero() {
             cref(MAX_REFERENCE - 10),
             COMMIT,
             entries(&[]),
-            stk(&[(S1, 800_000_000), (S2, 300_000_000)])
+            stk(&[(S1, 800_000_000), (S2, 300_000_000)]),
+            no_roles(),
         ));
         assert_eq!(voting_power_of(ALICE), 800_000_000);
         assert_eq!(voting_power_of(BOB), 300_000_000);
@@ -812,7 +854,8 @@ fn observe_clamps_dropped_stake_creds_to_zero() {
             cref(MAX_REFERENCE - 5),
             COMMIT,
             entries(&[]),
-            stk(&[(S1, 800_000_000)])
+            stk(&[(S1, 800_000_000)]),
+            no_roles(),
         ));
         assert_eq!(voting_power_of(ALICE), 800_000_000, "S1 persists");
         assert_eq!(
@@ -834,13 +877,14 @@ fn frozen_mode_verifies_voting_power_but_never_writes_it() {
             cref(MAX_REFERENCE - 1),
             COMMIT,
             entries(&[]),
-            stk(&[(S1, 800_000_000)])
+            stk(&[(S1, 800_000_000)]),
+            no_roles(),
         ));
         assert!(
             !vp_was_written(ALICE),
             "frozen mode must NOT apply voting power"
         );
-        System::assert_last_event(
+        System::assert_has_event(
             Event::VotingPowerObserved {
                 reference_slot: MAX_REFERENCE - 1,
                 credited: 1,
@@ -863,6 +907,7 @@ fn check_inherent_rejects_differing_stake_entries_as_mismatch() {
             inputs_commitment: COMMIT,
             entries: vec![(A, 200_000_000)],
             stake_entries: vec![(S1, 800_000_000)],
+            role_entries: vec![],
         };
         let mut id = InherentData::new();
         put_obs(&mut id, &local);
@@ -871,6 +916,7 @@ fn check_inherent_rejects_differing_stake_entries_as_mismatch() {
             inputs_commitment: COMMIT,
             entries: entries(&[(A, 200_000_000)]),
             stake_entries: stk(&[(S1, 999_000_000)]), // different stake read
+            role_entries: no_roles(),
         };
         let err = <CardanoObserver as ProvideInherent>::check_inherent(&lying, &id).unwrap_err();
         assert!(
@@ -885,6 +931,7 @@ fn check_inherent_rejects_differing_stake_entries_as_mismatch() {
             inputs_commitment: COMMIT,
             entries: entries(&[(A, 200_000_000)]),
             stake_entries: stk(&[(S1, 800_000_000)]),
+            role_entries: no_roles(),
         };
         assert!(<CardanoObserver as ProvideInherent>::check_inherent(&honest, &id).is_ok());
     });
@@ -927,6 +974,7 @@ fn observe_once(slot: u64) {
         COMMIT,
         entries(&[(A, 200_000_000)]),
         no_stake(),
+        no_roles(),
     ));
 }
 
@@ -1088,6 +1136,7 @@ fn re_applying_the_same_observation_is_idempotent() {
                 COMMIT,
                 entries(&[(A, 200_000_000)]),
                 stk(&[(S1, 700_000_000)]),
+                no_roles(),
             )
         };
         assert_ok!(apply());
@@ -1127,6 +1176,7 @@ fn create_inherent_abstains_when_the_observation_overruns_max_observed() {
             inputs_commitment: COMMIT,
             entries: (0..n).map(|i| (beacon(i), 200_000_000u128)).collect(),
             stake_entries: vec![],
+            role_entries: vec![],
         };
 
         // Exactly MaxObserved fits — the inherent is produced.
@@ -1140,6 +1190,199 @@ fn create_inherent_abstains_when_the_observation_overruns_max_observed() {
         assert!(
             <CardanoObserver as ProvideInherent>::create_inherent(&id_over).is_none(),
             "an observation exceeding MaxObserved must abstain, not truncate"
+        );
+    });
+}
+
+// ── ROLE observation (spec 206): the observe role loop + unlock clamp ────────────────────────────────
+
+fn roles(
+    items: &[(RoleSource, [u8; 28], [u8; 28])],
+) -> BoundedVec<RoleEntry, <Test as crate::Config>::MaxObserved> {
+    BoundedVec::try_from(
+        items
+            .iter()
+            .map(|(source, credential, id)| RoleEntry {
+                source: *source,
+                credential: *credential,
+                id: *id,
+            })
+            .collect::<Vec<_>>(),
+    )
+    .expect("within MaxObserved")
+}
+
+#[test]
+fn observe_credits_then_clamps_roles() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        let cal: [u8; 28] = [0xCA; 28];
+        // A real SpoCalidus entry carries the BLANK display id (no pool named — the reduction's
+        // `BLANK_ROLE_ID`); the observer resolves the credential to ALICE and writes SPO(kind 0, blank).
+        let blank: [u8; 28] = [0u8; 28];
+        bind_role(cal, ALICE);
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 2),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[(RoleSource::SpoCalidus, cal, blank)]),
+        ));
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, blank)]);
+        // A later observation WITHOUT the role entry → the unlock clamp clears ALICE's roles.
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 1),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[]),
+        ));
+        assert_eq!(observed_roles_of(ALICE), Vec::<(u8, [u8; 28])>::new());
+    });
+}
+
+#[test]
+fn observe_skips_an_unresolved_role_credential() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        // A role credential that resolves to no account (never bound) is skipped, not an error. (A real
+        // SpoCalidus entry carries the blank display id; the credential [0x11;28] is what resolves.)
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 1),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[(RoleSource::SpoCalidus, [0x11; 28], [0u8; 28])]),
+        ));
+        assert_eq!(observed_roles_of(ALICE), Vec::<(u8, [u8; 28])>::new());
+    });
+}
+
+#[test]
+fn observe_credits_a_badge_per_owned_pool() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        // The multi-pool operator: ALICE owns two distinct pools via two bound stake credentials (the
+        // SpoOwner free path names the pool, so distinct pools show as distinct badges — dedup is by
+        // (kind, id)). (The Calidus path can NOT name a pool, so it never yields per-pool badges.)
+        let stake_a: [u8; 28] = [0x1A; 28];
+        let stake_b: [u8; 28] = [0x2B; 28];
+        let pool_a: [u8; 28] = [0xA0; 28];
+        let pool_b: [u8; 28] = [0xB0; 28];
+        bind_role(stake_a, ALICE);
+        bind_role(stake_b, ALICE);
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 1),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[
+                (RoleSource::SpoOwner, stake_a, pool_a),
+                (RoleSource::SpoOwner, stake_b, pool_b),
+            ]),
+        ));
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool_a), (0u8, pool_b)]);
+    });
+}
+
+#[test]
+fn observe_collapses_calidus_badges_and_keeps_owner_pool() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        // ALICE holds TWO Calidus SPO claims (two keys, two pools) and ALSO owns a pool via a stake key.
+        // A real SpoCalidus entry carries the BLANK id (no pool named), so the two Calidus badges COLLAPSE
+        // to a single generic SPO badge — an attacker declaring ALICE's Calidus key under a foreign pool
+        // cannot mint a distinct false pool badge. The SpoOwner badge still names its pool alongside.
+        let cal1: [u8; 28] = [0xC1; 28];
+        let cal2: [u8; 28] = [0xC2; 28];
+        let stake: [u8; 28] = [0x5A; 28];
+        let pool: [u8; 28] = [0xF0; 28];
+        let blank: [u8; 28] = [0u8; 28];
+        bind_role(cal1, ALICE);
+        bind_role(cal2, ALICE);
+        bind_role(stake, ALICE);
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 1),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[
+                (RoleSource::SpoCalidus, cal1, blank),
+                (RoleSource::SpoCalidus, cal2, blank),
+                (RoleSource::SpoOwner, stake, pool),
+            ]),
+        ));
+        // One generic Calidus SPO (blank) + one pool-named owner SPO — the two Calidus keys collapse.
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, blank), (0u8, pool)]);
+    });
+}
+
+#[test]
+fn re_enable_clamps_a_role_that_lapsed_during_a_freeze() {
+    // The role analog of `re_enable_clamps_a_stake_cred_that_dropped_out_during_a_freeze`:
+    // `LastObservedRoles` must be HELD while frozen, so a role that lapses mid-freeze is cleared on
+    // re-enable (not evicted-unzeroed into a stale-positive badge). Verifies the per-ACCOUNT clamp basis.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        let cal: [u8; 28] = [0xCA; 28];
+        let blank: [u8; 28] = [0u8; 28]; // the generic Calidus SPO id (no pool named)
+        bind_role(cal, ALICE);
+        // Credit ALICE's SPO badge under enforce.
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 20),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[(RoleSource::SpoCalidus, cal, blank)]),
+        ));
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, blank)]);
+
+        // Freeze, then observe WITHOUT the role (the pool lapsed): the badge is held, not cleared.
+        freeze();
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 15),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[]),
+        ));
+        assert_eq!(
+            observed_roles_of(ALICE),
+            vec![(0u8, blank)],
+            "frozen: ALICE's role badge is held (RoleSink never called)"
+        );
+
+        // Re-enable with the role still absent: the clamp basis was held, so ALICE is cleared now.
+        enforce();
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 10),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            roles(&[]),
+        ));
+        assert_eq!(
+            observed_roles_of(ALICE),
+            Vec::<(u8, [u8; 28])>::new(),
+            "the role that lapsed mid-freeze is clamped on re-enable"
         );
     });
 }

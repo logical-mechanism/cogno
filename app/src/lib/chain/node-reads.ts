@@ -22,6 +22,7 @@ import { Binary } from "polkadot-api";
 import { binTextOpt, type IdPage, type RawThread } from "./reads";
 import type { EnrichedPost, FeedPageRaw, PersonSummaryRaw } from "./descriptors";
 import type { CognoApi, CognoPost, Ss58, QuotedRef, ViewerPostState, Suggestion } from "@/lib/types";
+import { mapObservedRolePairs } from "@/lib/chain/roles";
 
 const MAX_PAGE = 100;
 
@@ -54,6 +55,7 @@ function mapQuoted(q: EnrichedPost["quoted"]): QuotedRef | undefined {
     authorRevoked: false,
     displayName: binTextOpt(q.author_display_name),
     avatar: binTextOpt(q.author_avatar),
+    authorRoles: mapObservedRolePairs(q.author_roles),
   };
 }
 
@@ -87,6 +89,7 @@ export function mapEnrichedPost(e: EnrichedPost, hasViewer: boolean): CognoPost 
     replyCount: e.reply_count ?? 0,
     authorDisplayName: binTextOpt(e.author_display_name),
     authorAvatar: binTextOpt(e.author_avatar),
+    authorRoles: mapObservedRolePairs(e.author_roles),
   };
   // The viewer overlay, stamped node-side — lets useViewerStates skip its per-card vote read.
   // Only set it when a viewer was actually in the request (see the doc comment above).

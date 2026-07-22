@@ -1,0 +1,218 @@
+/* RolesSection — Settings › Verified roles. Card + multi-step claim wizard. Reuses the AccountSection
+   visual language (bordered subtle cards, pill buttons) with a stepper + a mono command block. */
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-4);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-subtle);
+  padding: var(--cg-space-4) var(--cg-space-5);
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text-secondary);
+}
+
+.cardHint {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}
+
+.prompt {
+  margin: 0;
+  font-size: var(--cg-fs-md);
+  color: var(--cg-text);
+}
+
+/* current-status row (verified / pending) */
+.statusRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  flex-wrap: wrap;
+}
+
+.verifiedMark {
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  color: var(--cg-text);
+}
+
+.pendingMark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}
+
+.mono {
+  font-family: var(--cg-font-mono);
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
+/* the wizard + its steps */
+.wizard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-4);
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+}
+
+.stepHead {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+}
+
+.stepNum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent-wash);
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-bold);
+}
+
+.stepTitle {
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+}
+
+.input,
+.textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg);
+  color: var(--cg-text);
+  font-family: var(--cg-font-mono);
+  font-size: var(--cg-fs-xs);
+  padding: var(--cg-space-2) var(--cg-space-3);
+}
+
+.textarea {
+  resize: vertical;
+  min-height: 76px;
+  line-height: 1.5;
+}
+
+.input:focus-visible,
+.textarea:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}
+
+.hint {
+  margin: 0;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-muted);
+}
+
+.hintMono {
+  margin: 0;
+  font-family: var(--cg-font-mono);
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* the baked cardano-signer command — scrolls horizontally, never blows out the card width */
+.codeBlock {
+  margin: 0;
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg);
+  color: var(--cg-text);
+  font-family: var(--cg-font-mono);
+  font-size: var(--cg-fs-xs);
+  line-height: 1.6;
+  padding: var(--cg-space-3);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  flex-wrap: wrap;
+}
+
+.error {
+  margin: 0;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-danger);
+}
+
+.primaryBtn,
+.outlineBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cg-space-2);
+  border-radius: var(--cg-radius-pill);
+  font-family: var(--cg-font-ui);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  padding: var(--cg-space-2) var(--cg-space-4);
+  cursor: pointer;
+  border: 1px solid transparent;
+  align-self: flex-start;
+}
+
+.primaryBtn {
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+}
+
+.primaryBtn:hover:not(:disabled) {
+  background: var(--cg-accent-hover);
+}
+
+.outlineBtn {
+  background: transparent;
+  color: var(--cg-text);
+  border-color: var(--cg-border);
+}
+
+.outlineBtn:hover:not(:disabled) {
+  background: var(--cg-bg-hover);
+}
+
+.primaryBtn:disabled,
+.outlineBtn:disabled {
+  opacity: var(--cg-disabled-opacity);
+  cursor: not-allowed;
+}
+
+.primaryBtn:focus-visible,
+.outlineBtn:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}

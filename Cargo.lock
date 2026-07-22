@@ -1555,6 +1555,7 @@ dependencies = [
  "pallet-aura",
  "pallet-balances",
  "pallet-cardano-observer",
+ "pallet-cardano-roles",
  "pallet-cogno-gate",
  "pallet-collective",
  "pallet-governance-fuel",
@@ -1593,6 +1594,8 @@ dependencies = [
 name = "cogno-dbsync"
 version = "1.0.0"
 dependencies = [
+ "blake2 0.10.6",
+ "ed25519-dalek",
  "log",
  "pallet-cardano-observer",
  "parity-scale-codec",
@@ -6738,6 +6741,24 @@ dependencies = [
  "sp-api",
  "sp-core",
  "sp-inherents",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
+name = "pallet-cardano-roles"
+version = "1.0.0"
+dependencies = [
+ "blake2 0.10.6",
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "pallet-cogno-gate",
+ "pallet-microblog",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
  "sp-io",
  "sp-runtime",
 ]

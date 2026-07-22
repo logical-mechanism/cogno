@@ -15,6 +15,7 @@ import styles from "./QuotedPostEmbed.module.css";
 import { Avatar } from "./Avatar";
 import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
+import { RoleBadge } from "./RoleBadge";
 import { PostBody } from "./PostBody";
 import { useNestedQuote } from "@/hooks/useNestedQuote";
 import { useBlocked } from "@/lib/blockStore";
@@ -136,6 +137,7 @@ export function QuotedPostEmbed({
           displayName={quoted.displayName}
           authorRevoked={dim}
         />
+        <RoleBadge roles={quoted.authorRoles} />
         <Handle address={quoted.author} />
         {dim && <span className={styles.restricted}>This account has been restricted</span>}
         {isPoll && <span className={styles.pollChip}>Poll</span>}

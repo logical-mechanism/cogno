@@ -69,6 +69,7 @@ function authorOf(post: CognoPost): AuthorRef {
     displayName: post.authorDisplayName,
     avatar: post.authorAvatar,
     banned: post.authorRevoked === true,
+    roles: post.authorRoles,
   };
 }
 

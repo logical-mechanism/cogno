@@ -110,6 +110,7 @@ mod tests {
             inputs_commitment: [0u8; 32],
             entries: vec![],
             stake_entries: vec![],
+            role_entries: vec![],
         }
     }
 

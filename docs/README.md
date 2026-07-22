@@ -39,6 +39,8 @@ Then the focused deep-dives, if you want the detail:
 - **[IN-PROTOCOL-OBSERVATION.md](IN-PROTOCOL-OBSERVATION.md)** — how the node reads Cardano
   deterministically to credit weight.
 - **[TRUSTLESS-IDENTITY.md](TRUSTLESS-IDENTITY.md)** — the on-chain CIP-8 identity proof.
+- **[VERIFIABLE-ROLE-TAGS.md](VERIFIABLE-ROLE-TAGS.md)** — verified SPO / dRep / CC profile badges, proven
+  by CIP-8 and confirmed live by the observer.
 - **[SCALE-NODE-READS.md](SCALE-NODE-READS.md)** — why the node serves reads directly, with no
   external indexer.
 - **[PROTOCOL-PARAMS.md](PROTOCOL-PARAMS.md)** — every tunable (block time, capacity costs, bounds,

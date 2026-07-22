@@ -226,6 +226,7 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       followingCount,
       profileRec,
       pinned,
+      observedRolesRaw,
     ] = await Promise.all([
         // The header "N posts" is the author's TOP-LEVEL post count, matching the top-level cards in
         // the Posts tab below — served O(1) off the on-chain `TopLevelByAuthor` counter. The keyed
@@ -245,6 +246,9 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
         // reason as the sibling read in useAccountProfile; see `BEST` in lib/chain/node-reads.
         api.query.Profile.Profiles.getValue(account, { at: "best" }),
         api.query.Profile.PinnedPost.getValue(account),
+        // The observer-written live role badges (SPO/dRep) the profile header + hover card render. Slow-
+        // moving observer state, so the finalized default is fine (no read-after-write freshness need).
+        api.query.CardanoRoles.ObservedRoles.getValue(account),
         // (The spec-202 account reputation tally + the viewer's own vote used to be read here. They now
         // live in their own session cache — `useAccountVoteState` — because the vote control needs them
         // FRESH after a write and this read is not invalidated by one. Reading them here as well meant a
@@ -308,6 +312,7 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       pinnedPostId: pinned == null ? undefined : BigInt(pinned),
       followerCount: Number(followerCount ?? 0),
       followingCount: Number(followingCount ?? 0),
+      observedRoles: (observedRolesRaw ?? []).map((r) => ({ kind: r.kind.type, id: r.id })),
       page: {
         posts,
         endCursor,

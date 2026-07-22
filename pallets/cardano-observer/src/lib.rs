@@ -138,6 +138,13 @@ pub struct CardanoObservation {
     /// `inputs_commitment`), this is a DIRECT read of immutable per-epoch totals for an on-chain-known set,
     /// so there is no reduction to diverge — a cross-node difference is always a data `Mismatch`.
     pub stake_entries: alloc::vec::Vec<(StakeCredential, u128)>,
+    /// The ROLE observation (spec 206): for every CLAIMED role credential that resolves to a currently-live
+    /// Cardano role (an active pool via a Calidus registration, a bound stake key that owns a live pool, and
+    /// — in later phases — a live dRep / seated CC member), a [`RoleEntry`] carrying the role source, the
+    /// credential (which the runtime resolves to an account), and the display id. Canonical-sorted; like
+    /// `stake_entries` it is a DIRECT read (the Calidus-witness verification is over immutable on-chain
+    /// bytes), so a cross-node difference is always a data `Mismatch`, never a `ComputeDiverged`.
+    pub role_entries: alloc::vec::Vec<RoleEntry>,
 }
 
 /// The inherent error. The node-side `try_handle_error` branches on this: `Mismatch` and
@@ -204,6 +211,108 @@ pub trait BoundStakeCredentials {
     fn bound_stake_credentials() -> alloc::vec::Vec<StakeCredential>;
 }
 
+/// A 28-byte Cardano credential in the role axis (a claimed role-key hash, or an observer-resolved
+/// display id such as a poolID). Same width as [`StakeCredential`]; named distinctly for the role code.
+pub type RoleCredential = [u8; 28];
+
+/// WHICH Cardano role a [`RoleEntry`] carries + HOW the runtime resolves its credential to an account.
+/// On-wire in `role_entries` (the inherent), so `#[codec(index)]` PINS every discriminant — append only.
+#[derive(
+    Encode,
+    Decode,
+    DecodeWithMemTracking,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Debug,
+    TypeInfo,
+    MaxEncodedLen,
+)]
+pub enum RoleSource {
+    /// SPO proven via a Calidus key: `credential` = the Calidus-key hash, resolved via the roles-pallet
+    /// `RoleCredIndex[Spo]`; `id` = the BLANK marker (`reduction::BLANK_ROLE_ID`), NOT a pool. A Calidus
+    /// registration is cold-key-signed only, so it cannot attest a specific pool without inviting
+    /// cross-pool impersonation — the badge names none. See `reduce_role_observation`.
+    #[codec(index = 0)]
+    SpoCalidus,
+    /// SPO via the FREE path: `credential` = a bound stake credential that owns a live pool (resolved via
+    /// cogno-gate `AccountOfStakeCred`); `id` = the owned poolID. No cogno-chain claim needed.
+    #[codec(index = 1)]
+    SpoOwner,
+    /// dRep: `credential` = the drep ID (= `id`), resolved via `RoleCredIndex[DRep]`.
+    #[codec(index = 2)]
+    DRep,
+    /// Constitutional Committee: `credential` = the hot credential (= `id`), resolved via
+    /// `RoleCredIndex[Committee]`.
+    #[codec(index = 3)]
+    Committee,
+}
+
+impl RoleSource {
+    /// The OBSERVED role-kind index the sink writes (0 = SPO, 1 = dRep, 2 = CC) — both SPO sources
+    /// collapse to SPO. Matches the roles pallet's `RoleKind` `#[codec(index)]` values.
+    pub fn kind_index(&self) -> u8 {
+        match self {
+            RoleSource::SpoCalidus | RoleSource::SpoOwner => 0,
+            RoleSource::DRep => 1,
+            RoleSource::Committee => 2,
+        }
+    }
+}
+
+/// One observed live-role fact the node's reduction produces: a role `source` + the `credential` that
+/// resolves it to an account + the `id` the profile badge displays. Canonical-sorted (by `source`, then
+/// `credential`, then `id`) in the reduction, so the on-wire order is deterministic — a direct read (like
+/// `stake_entries`), so a cross-node difference is always a data `Mismatch`, never a `ComputeDiverged`.
+#[derive(
+    Encode,
+    Decode,
+    DecodeWithMemTracking,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Debug,
+    TypeInfo,
+    MaxEncodedLen,
+)]
+pub struct RoleEntry {
+    pub source: RoleSource,
+    pub credential: RoleCredential,
+    pub id: RoleCredential,
+}
+
+/// Resolve a role credential to its bound account, via the reverse map named by `source`. Implemented in
+/// the runtime (roles-pallet `RoleCredIndex` + cogno-gate `AccountOfStakeCred` for the free path); a
+/// fixture map in tests. The role analog of [`StakeResolver`], but source-tagged.
+pub trait RoleResolver<AccountId> {
+    fn resolve(source: RoleSource, credential: &RoleCredential) -> Option<AccountId>;
+}
+
+/// Overwrite `who`'s full observed-role set (each `(role_kind_index, display_id)`), or CLEAR it when the
+/// slice is empty (the unlock clamp). Implemented by a roles-pallet adapter in the runtime
+/// (`apply_roles`); a recorder in tests. The role analog of [`VotingPowerSink`], but set-valued.
+pub trait RoleSink<AccountId> {
+    fn set_roles(who: &AccountId, roles: &[(u8, RoleCredential)]);
+}
+
+/// The claimed role credentials the node-side IDP scopes its db-sync role read to (so it reads only for
+/// cogno-chain claimants, not all Cardano pools/dReps). Exposed via [`CardanoObserverApi`]. The
+/// `SpoOwner` free path reuses [`BoundStakeCredentials`], so this returns only the CLAIM-based
+/// credentials. Implemented in the runtime by enumerating the roles-pallet `RoleCredIndex`.
+pub trait BoundRoleCredentials {
+    /// The claimed Calidus-key hashes (`RoleCredIndex[Spo]` keys) — the SPO/Calidus scoping set.
+    fn claimed_calidus() -> alloc::vec::Vec<RoleCredential>;
+    /// The claimed dRep IDs (`RoleCredIndex[DRep]` keys) — the dRep scoping set (Phase B).
+    fn claimed_dreps() -> alloc::vec::Vec<RoleCredential>;
+    /// The claimed committee hot credentials (`RoleCredIndex[Committee]` keys) — the CC scoping set (Phase C).
+    fn claimed_committee() -> alloc::vec::Vec<RoleCredential>;
+}
+
 /// Benchmark-only setup seam. This pallet is deliberately decoupled from cogno-gate / talk-stake /
 /// microblog by the resolver + sink traits above (no Cargo cycle), so `observe`'s benchmark cannot bind a
 /// beacon or seed a weight by itself — the runtime implements this to write those collaborators' rows
@@ -258,6 +367,15 @@ sp_api::decl_runtime_apis! {
         /// The set of currently-bound stake credentials (cogno-gate `AccountOfStakeCred` keys) — the
         /// credentials the node must read `epoch_stake` for, evaluated at the parent block's state.
         fn bound_stake_credentials() -> alloc::vec::Vec<StakeCredential>;
+        /// The claimed role credentials (roles-pallet `RoleCredIndex` keys) — the set the node scopes its
+        /// db-sync ROLE read to, evaluated at the parent block's state. Returns the three per-role vectors
+        /// `(claimed_calidus, claimed_dreps, claimed_committee)`; the SPO/owner free path reuses
+        /// [`Self::bound_stake_credentials`].
+        fn bound_role_credentials() -> (
+            alloc::vec::Vec<RoleCredential>,
+            alloc::vec::Vec<RoleCredential>,
+            alloc::vec::Vec<RoleCredential>,
+        );
     }
 }
 
@@ -330,6 +448,11 @@ pub mod pallet {
         type WeightSink: WeightSink<Self::AccountId>;
         /// Apply voting power (talk-stake `apply_voting_power` adapter in the runtime).
         type VotingPowerSink: VotingPowerSink<Self::AccountId>;
+        /// Role credential → bound account, source-tagged (roles-pallet `RoleCredIndex` + cogno-gate
+        /// `AccountOfStakeCred` for the free path, in the runtime).
+        type RoleResolver: RoleResolver<Self::AccountId>;
+        /// Apply an account's full observed-role set (roles-pallet `apply_roles` adapter in the runtime).
+        type RoleSink: RoleSink<Self::AccountId>;
         /// Origin allowed to flip the enforce flag ([`Call::set_enforcement`]) — the emergency weight-freeze
         /// control. In the runtime this is `AuthorityOrigin` (the 3-of-5 FollowerCommittee; sudo-free), the
         /// same origin that gates identity `revoke`, validator add/remove, and `authorize_upgrade`.
@@ -377,6 +500,14 @@ pub mod pallet {
     #[pallet::storage]
     pub type LastObservedStake<T: Config> =
         StorageValue<_, BoundedVec<(StakeCredential, T::AccountId), T::MaxObserved>, ValueQuery>;
+
+    /// The previously-credited accounts in the ROLE axis — the role unlock-clamp basis
+    /// (`LastObservedRoles \ current` → cleared), mirroring [`LastObservedStake`]. Roles are per-ACCOUNT
+    /// (an account may hold SPO + dRep + CC at once), so the basis is the account set, not a per-credential
+    /// list — the observer overwrites each current account's FULL set and clears the accounts that dropped out.
+    #[pallet::storage]
+    pub type LastObservedRoles<T: Config> =
+        StorageValue<_, BoundedVec<T::AccountId, T::MaxObserved>, ValueQuery>;
 
     /// The block in which the last observation was APPLIED — the stall alarm's clock. `0` means "none
     /// yet": block 0 is genesis and carries no extrinsics, so a real observation can never stamp it. The
@@ -448,6 +579,18 @@ pub mod pallet {
         /// total length of the gap.
         #[codec(index = 4)]
         ObservationResumed { blocks: BlockNumberFor<T> },
+        /// The ROLE half of the same verified observation (spec 206): `credited` accounts had their live
+        /// role set written, `cleared` accounts had all roles clamped away (a pool retired / a claim was
+        /// unclaimed or revoked). `enforced` mirrors the other two: `true` means written to `ObservedRoles`;
+        /// `false` means frozen (verified but not applied). Per-account role events are emitted by the
+        /// roles pallet's `apply_roles`; this is the aggregate for the observation.
+        #[codec(index = 5)]
+        RolesObserved {
+            reference_slot: u64,
+            credited: u32,
+            cleared: u32,
+            enforced: bool,
+        },
     }
 
     #[pallet::error]
@@ -519,11 +662,13 @@ pub mod pallet {
             T::DbWeight::get().reads_writes(3, 2)
         }
 
-        /// Both unlock-clamp bases are `BoundedVec<_, MaxObserved>`. LOWERING `MaxObserved` under live state
+        /// All three unlock-clamp bases (vault `LastObserved`, stake `LastObservedStake`, role
+        /// `LastObservedRoles`) are `BoundedVec<_, MaxObserved>`. LOWERING `MaxObserved` under live state
         /// therefore has teeth: a stored vec longer than the new bound fails to decode, and `ValueQuery`
         /// answers a decode failure with the DEFAULT — an EMPTY basis — so every account that has since
-        /// unlocked keeps its weight forever, silently. `get()` cannot see that (it IS the thing that
-        /// swallows it); `decode_len` reads the raw length prefix and is bound-independent, so it can.
+        /// unlocked keeps its weight (or its role badge) forever, silently. `get()` cannot see that (it IS
+        /// the thing that swallows it); `decode_len` reads the raw length prefix and is bound-independent,
+        /// so it can.
         ///
         /// This runs under `try-runtime` against a snapshot of REAL state (docs/UPGRADES.md's pre-enactment
         /// dry-run), which is the only place a bound drop can be caught BEFORE it is on-chain.
@@ -537,6 +682,10 @@ pub mod pallet {
             ensure!(
                 LastObservedStake::<T>::decode_len().unwrap_or(0) <= bound,
                 "LastObservedStake is longer than MaxObserved — the stake clamp basis will not decode"
+            );
+            ensure!(
+                LastObservedRoles::<T>::decode_len().unwrap_or(0) <= bound,
+                "LastObservedRoles is longer than MaxObserved — the role clamp basis will not decode"
             );
             Ok(())
         }
@@ -571,7 +720,17 @@ pub mod pallet {
                 stake_entries.len() as u32,
                 LastObserved::<T>::decode_len().unwrap_or(0) as u32,
                 LastObservedStake::<T>::decode_len().unwrap_or(0) as u32,
-            ),
+            )
+            // The ROLE axis is not (yet) in `WeightInfo::observe`'s benchmark; add a conservative DbWeight
+            // term for it — a resolver read per entry + a sink write per credited/cleared account. (A
+            // MAINNET PREREQUISITE is to fold it into the benchmark, as with the vault/stake terms.)
+            .saturating_add(<T as frame_system::Config>::DbWeight::get().reads_writes(
+                (role_entries.len() as u64)
+                    .saturating_mul(2)
+                    .saturating_add(LastObservedRoles::<T>::decode_len().unwrap_or(0) as u64),
+                (role_entries.len() as u64)
+                    .saturating_add(LastObservedRoles::<T>::decode_len().unwrap_or(0) as u64),
+            )),
             DispatchClass::Mandatory,
         ))]
         pub fn observe(
@@ -580,6 +739,7 @@ pub mod pallet {
             inputs_commitment: [u8; 32],
             entries: BoundedVec<(BeaconName, u128), T::MaxObserved>,
             stake_entries: BoundedVec<(StakeCredential, u128), T::MaxObserved>,
+            role_entries: BoundedVec<RoleEntry, T::MaxObserved>,
         ) -> DispatchResult {
             ensure_none(origin)?; // inherents dispatch with the None origin
 
@@ -727,6 +887,60 @@ pub mod pallet {
                 LastObservedStake::<T>::put(vp_credited_set);
             }
 
+            // ── ROLES (SPO / dRep / CC) — the same enforce/freeze/clamp discipline, but PER ACCOUNT (an
+            // account may hold several roles at once). Aggregate the canonical `role_entries` per resolved
+            // account (≤ one entry per role kind — first-wins in the canonical order), overwrite each
+            // account's FULL observed set, then clamp the accounts that dropped out to empty.
+            let mut role_sets: alloc::collections::BTreeMap<
+                T::AccountId,
+                alloc::vec::Vec<(u8, RoleCredential)>,
+            > = alloc::collections::BTreeMap::new();
+            for entry in role_entries.iter() {
+                // credential → account via the reverse map named by `source` (unresolved ⇒ skip, not error).
+                let account = match T::RoleResolver::resolve(entry.source, &entry.credential) {
+                    Some(a) => a,
+                    None => continue,
+                };
+                let kind = entry.source.kind_index();
+                let set = role_sets.entry(account).or_default();
+                // Dedup by the full (kind, id): every Calidus SPO entry carries the same BLANK id, so a
+                // multi-pool operator's Calidus entries collapse to ONE generic SPO badge; DISTINCT OWNED
+                // pools (SpoOwner, id = poolID) each yield their own pool-named SPO badge. first-wins in the
+                // deterministic `role_entries` order, so the per-account set stays byte-stable across nodes.
+                if set.iter().any(|(k, v)| *k == kind && *v == entry.id) {
+                    continue;
+                }
+                set.push((kind, entry.id));
+            }
+            let mut role_credited: u32 = 0;
+            let mut role_current: BoundedVec<T::AccountId, T::MaxObserved> = BoundedVec::new();
+            for (account, roles) in role_sets.iter() {
+                if enforce {
+                    T::RoleSink::set_roles(account, roles);
+                }
+                let _ = role_current.try_push(account.clone());
+                role_credited = role_credited.saturating_add(1);
+            }
+            // Unlock clamp: an account credited last time but absent now → clear ALL its roles. Same freeze
+            // discipline as the other axes: hold the `LastObservedRoles` basis while frozen so an account
+            // whose role lapses DURING a freeze is cleared on re-enable, not evicted-unzeroed into a
+            // stale-positive badge.
+            let current_accounts: alloc::collections::BTreeSet<T::AccountId> =
+                role_sets.keys().cloned().collect();
+            let role_prev = LastObservedRoles::<T>::get();
+            let mut role_cleared: u32 = 0;
+            for account in role_prev.iter() {
+                if !current_accounts.contains(account) {
+                    if enforce {
+                        T::RoleSink::set_roles(account, &[]);
+                    }
+                    role_cleared = role_cleared.saturating_add(1);
+                }
+            }
+            if enforce {
+                LastObservedRoles::<T>::put(role_current);
+            }
+
             LastReference::<T>::put(&reference);
 
             // The stall alarm's clock, stamped on every APPLIED observation — including a FROZEN one: the
@@ -753,6 +967,12 @@ pub mod pallet {
                 credited: vp_credited,
                 cleared: vp_cleared,
                 skipped: vp_skipped,
+                enforced: enforce,
+            });
+            Self::deposit_event(Event::RolesObserved {
+                reference_slot: reference.slot,
+                credited: role_credited,
+                cleared: role_cleared,
                 enforced: enforce,
             });
             Ok(())
@@ -827,11 +1047,13 @@ pub mod pallet {
                 .flatten()?;
             let entries = BoundedVec::try_from(obs.entries).ok()?;
             let stake_entries = BoundedVec::try_from(obs.stake_entries).ok()?;
+            let role_entries = BoundedVec::try_from(obs.role_entries).ok()?;
             Some(Call::observe {
                 reference: obs.reference,
                 inputs_commitment: obs.inputs_commitment,
                 entries,
                 stake_entries,
+                role_entries,
             })
         }
 
@@ -842,13 +1064,20 @@ pub mod pallet {
         /// commitment ⇒ `Mismatch` (saw different Cardano data); an identical commitment ⇒ `ComputeDiverged`
         /// (same data, different reduction — a determinism bug / version skew).
         fn check_inherent(call: &Self::Call, data: &InherentData) -> Result<(), Self::Error> {
-            let (reference, inputs_commitment, entries, stake_entries) = match call {
+            let (reference, inputs_commitment, entries, stake_entries, role_entries) = match call {
                 Call::observe {
                     reference,
                     inputs_commitment,
                     entries,
                     stake_entries,
-                } => (reference, inputs_commitment, entries, stake_entries),
+                    role_entries,
+                } => (
+                    reference,
+                    inputs_commitment,
+                    entries,
+                    stake_entries,
+                    role_entries,
+                ),
                 _ => return Ok(()),
             };
             let local = match data
@@ -867,10 +1096,11 @@ pub mod pallet {
             if reference == &local.reference
                 && entries.as_slice() == local.entries.as_slice()
                 && stake_entries.as_slice() == local.stake_entries.as_slice()
+                && role_entries.as_slice() == local.role_entries.as_slice()
             {
-                // Outputs agree (vault entries AND voting-power stake entries) ⇒ accept, REGARDLESS of the
-                // input commitment: two honest nodes whose raw candidate sets differ only in UTxOs the
-                // reduction drops (too-fresh / spent) still reduce to the same entries.
+                // Outputs agree (vault entries AND voting-power stake entries AND role entries) ⇒ accept,
+                // REGARDLESS of the input commitment: two honest nodes whose raw candidate sets differ only
+                // in UTxOs the reduction drops (too-fresh / spent) still reduce to the same entries.
                 return Ok(());
             }
             // The reads disagree (fatal either way). `ComputeDiverged` is reserved for the VAULT reduction:

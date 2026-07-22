@@ -11,6 +11,9 @@ import type { PolkadotSigner } from "polkadot-api/signer";
 import type { cogno } from "@polkadot-api/descriptors";
 // errors.ts is a LEAF (it imports nothing) — safe to depend on from here without a cycle.
 import type { ChainError } from "@/lib/chain/errors";
+// `import type` is fully erased, so this type-only reference (roles.ts also imports types from here) is
+// not a runtime cycle — it just names the observer-written role-badge shape the node folds onto authors.
+import type { ObservedRoleView } from "@/lib/chain/roles";
 
 /** The typed API for the cogno-chain runtime (Microblog @ pallet index 10). */
 export type CognoApi = TypedApi<typeof cogno>;
@@ -67,6 +70,9 @@ export interface CognoPost {
   authorAvatar?: string;
   /** Author posting power (lovelace); undefined until staked. */
   authorWeight?: bigint;
+  /** The author's live observed Cardano role badges (SPO/dRep), folded node-side onto each post so a feed
+   *  card shows a ✓ tag without a per-author read. Empty/undefined when the author holds no live role. */
+  authorRoles?: ObservedRoleView[];
 
   // ── viewer overlay (node-served reads only) ──
   /**
@@ -112,6 +118,8 @@ export interface QuotedRef {
   /** Resolved from Profile when available. */
   displayName?: string;
   avatar?: string;
+  /** The quoted author's live observed Cardano role badges (folded node-side; empty/undefined if none). */
+  authorRoles?: ObservedRoleView[];
 }
 
 /** The viewer's own relationship to a post — drives the active/filled action icons. */
@@ -212,6 +220,9 @@ export interface ProfileView {
   /** Follower/following counts (node-served, off the denormalised counters). */
   followerCount?: number;
   followingCount?: number;
+  /** The account's live observed Cardano role badges (SPO/dRep), read from the observer-written
+   *  `ObservedRoles`. Empty/undefined when the account holds no live role. */
+  observedRoles?: ObservedRoleView[];
   // (The spec-202 account reputation tally + the viewer's own vote used to hang here. They are read
   // through their own session cache now — see hooks/useAccountVoteState — so that a vote can invalidate
   // them and the control re-reads. Leaving them on ProfileView would have been a trap: nothing

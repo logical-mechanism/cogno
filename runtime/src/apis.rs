@@ -56,51 +56,76 @@ fn enrich_author_profile(p: &mut pallet_microblog::EnrichedPost<AccountId>) {
         p.author_display_name = prof.display_name.into_inner();
         p.author_avatar = prof.avatar.into_inner();
     }
+    p.author_roles = observed_role_pairs(&p.author);
     if let Some(q) = p.quoted.as_mut() {
         if let Some(prof) = pallet_profile::Profiles::<Runtime>::get(&q.author) {
             q.author_display_name = prof.display_name.into_inner();
             q.author_avatar = prof.avatar.into_inner();
         }
+        q.author_roles = observed_role_pairs(&q.author);
     }
 }
 
-/// The pallet-profile display fields for `who` (empty when no profile row), memoized in `cache` so a
-/// page whose posts share an author (author feed / replies) does ONE `Profiles::get` for that author
-/// instead of one per post.
-fn profile_fields(
-    cache: &mut alloc::collections::BTreeMap<AccountId, (Vec<u8>, Vec<u8>)>,
-    who: &AccountId,
-) -> (Vec<u8>, Vec<u8>) {
+/// The observer-written live role BADGES for `who` as the primitive `(kind_index, id)` pairs the
+/// microblog wire DTOs carry — kind 0=SPO / 1=dRep / 2=CC, id the 28-byte poolID / drepID / hot
+/// credential. pallet-microblog cannot name `pallet_cardano_roles::ObservedRole` (a Cargo cycle), so the
+/// runtime maps it down here, mirroring how it fills `author_display_name` from pallet-profile. Empty
+/// when the account holds no live role.
+fn observed_role_pairs(who: &AccountId) -> Vec<(u8, [u8; 28])> {
+    pallet_cardano_roles::Pallet::<Runtime>::observed_roles(who)
+        .into_iter()
+        .map(|r| (r.kind.index(), r.id))
+        .collect()
+}
+
+/// The memoized author display fields for one author: (`display_name`, `avatar`, observed-role
+/// `(kind_index, id)` pairs). A named alias so `author_fields` / its cache don't trip `type_complexity`.
+type AuthorFields = (Vec<u8>, Vec<u8>, Vec<(u8, [u8; 28])>);
+/// Per-page author-fields memo, one entry per distinct author (see [`author_fields`]).
+type AuthorFieldsCache = alloc::collections::BTreeMap<AccountId, AuthorFields>;
+
+/// The author display fields for `who` — pallet-profile `display_name`/`avatar` plus the observed role
+/// badges (`(kind_index, id)` pairs) — memoized in `cache` so a page whose posts share an author (author
+/// feed / replies) does ONE profile read and ONE roles read for that author instead of one per post.
+fn author_fields(cache: &mut AuthorFieldsCache, who: &AccountId) -> AuthorFields {
     cache
         .entry(who.clone())
-        .or_insert_with(|| match pallet_profile::Profiles::<Runtime>::get(who) {
-            Some(prof) => (prof.display_name.into_inner(), prof.avatar.into_inner()),
-            None => (Vec::new(), Vec::new()),
+        .or_insert_with(|| {
+            let (name, avatar) = match pallet_profile::Profiles::<Runtime>::get(who) {
+                Some(prof) => (prof.display_name.into_inner(), prof.avatar.into_inner()),
+                None => (Vec::new(), Vec::new()),
+            };
+            (name, avatar, observed_role_pairs(who))
         })
         .clone()
 }
 
-/// Fill author profiles across a slice of enriched posts (see [`enrich_author_profile`]), memoizing the
-/// pallet-profile read per distinct account so an author-scoped page (whose posts all share one author)
-/// pays a single `Profiles::get` for that author rather than one per post.
+/// Fill author profiles + role badges across a slice of enriched posts (see [`enrich_author_profile`]),
+/// memoizing the per-account reads so an author-scoped page (whose posts all share one author) pays a
+/// single profile + roles read for that author rather than one per post.
 fn enrich_author_profiles(posts: &mut [pallet_microblog::EnrichedPost<AccountId>]) {
-    let mut cache: alloc::collections::BTreeMap<AccountId, (Vec<u8>, Vec<u8>)> =
-        alloc::collections::BTreeMap::new();
+    let mut cache: AuthorFieldsCache = alloc::collections::BTreeMap::new();
     for p in posts.iter_mut() {
-        let (name, avatar) = profile_fields(&mut cache, &p.author);
+        let (name, avatar, roles) = author_fields(&mut cache, &p.author);
         if !name.is_empty() {
             p.author_display_name = name;
         }
         if !avatar.is_empty() {
             p.author_avatar = avatar;
         }
+        if !roles.is_empty() {
+            p.author_roles = roles;
+        }
         if let Some(q) = p.quoted.as_mut() {
-            let (qn, qa) = profile_fields(&mut cache, &q.author);
+            let (qn, qa, qr) = author_fields(&mut cache, &q.author);
             if !qn.is_empty() {
                 q.author_display_name = qn;
             }
             if !qa.is_empty() {
                 q.author_avatar = qa;
+            }
+            if !qr.is_empty() {
+                q.author_roles = qr;
             }
         }
     }
@@ -278,6 +303,18 @@ impl_runtime_apis! {
             use pallet_cardano_observer::BoundStakeCredentials;
             crate::configs::BoundStakeCreds::bound_stake_credentials()
         }
+        fn bound_role_credentials() -> (
+            alloc::vec::Vec<[u8; 28]>,
+            alloc::vec::Vec<[u8; 28]>,
+            alloc::vec::Vec<[u8; 28]>,
+        ) {
+            use pallet_cardano_observer::BoundRoleCredentials;
+            (
+                crate::configs::BoundRoleCreds::claimed_calidus(),
+                crate::configs::BoundRoleCreds::claimed_dreps(),
+                crate::configs::BoundRoleCreds::claimed_committee(),
+            )
+        }
     }
 
     // spec-120 node-served reads: the runtime folds a whole enriched, viewer-aware feed / thread page
@@ -424,6 +461,7 @@ impl_runtime_apis! {
                 post_count: pallet_microblog::Pallet::<Runtime>::top_level_post_count(&who),
                 follower_count: pallet_microblog::FollowerCount::<Runtime>::get(&who),
                 following_count: pallet_microblog::FollowingCount::<Runtime>::get(&who),
+                observed_roles: observed_role_pairs(&who),
                 account: who,
             }
         }

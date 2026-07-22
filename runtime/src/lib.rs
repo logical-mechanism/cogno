@@ -70,12 +70,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // history lives in CHANGELOG.md, not here.
     // spec 205: dynamic stake voting — vote/poll storage v5 → v6 (stored weight dropped, `Poll.close_at`
     // + `PollResults` added, `close_poll` at call_index 13, `PollClosed` event/error, live weighted reads).
-    spec_version: 205,
+    spec_version: 206,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
     // the `TxExtension` tuple. Metadata-only churn (new calls, new storage, doc strings) does not.
-    // 3 → 4: `create_poll` gained a `close_at: Option<BlockNumber>` argument (spec 205).
+    // 3 → 4: `create_poll` gained a `close_at: Option<BlockNumber>` argument (spec 205). Spec 206 adds the
+    // CardanoRoles pallet (new calls/storage only, `TxExtension` byte-identical), so it STAYS 4.
     transaction_version: 4,
     system_version: 1,
 };
@@ -320,4 +321,15 @@ mod runtime {
     // transaction_version STAYS 3 (the `TxExtension` tuple is byte-identical). Next free index 19.
     #[runtime::pallet_index(18)]
     pub type GovernanceFuel = pallet_governance_fuel;
+
+    // 19 = CardanoRoles: verifiable Cardano role tags (SPO / dRep / CC). Two ledgers: a PERMISSIONLESS
+    // CIP-8 role-key claim ledger (`claim_role_signed` reuses the cogno-gate crown-jewel verifier via a
+    // pure function; the 3-of-5 FollowerCommittee gates only `revoke_role`), and a CALL-LESS
+    // observer-written observed-role ledger (`ObservedRoles`) the profile badge reads. Declared AFTER
+    // CognoGate (@8, whose `PkhOf` gates a claim to a payment-bound account) and the CardanoObserver
+    // (@16, the sole writer of `ObservedRoles`). Additive (new calls/storage/events/metadata):
+    // spec_version bumps, transaction_version STAYS the same (the `TxExtension` tuple is byte-identical).
+    // Next free index 20.
+    #[runtime::pallet_index(19)]
+    pub type CardanoRoles = pallet_cardano_roles;
 }

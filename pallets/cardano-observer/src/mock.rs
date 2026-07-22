@@ -30,11 +30,16 @@ impl frame_system::Config for Test {
     type Block = Block;
 }
 
+/// The observed-role record a `MockRoleSink::set_roles` records: `(role_kind_index, display_id)` pairs.
+type ObservedRoleRec = Vec<(u8, [u8; 28])>;
+
 thread_local! {
     static BINDINGS: RefCell<BTreeMap<[u8; 32], AccountId>> = const { RefCell::new(BTreeMap::new()) };
     static WEIGHTS: RefCell<BTreeMap<AccountId, u128>> = const { RefCell::new(BTreeMap::new()) };
     static STAKE_BINDINGS: RefCell<BTreeMap<[u8; 28], AccountId>> = const { RefCell::new(BTreeMap::new()) };
     static VOTING_POWERS: RefCell<BTreeMap<AccountId, u128>> = const { RefCell::new(BTreeMap::new()) };
+    static ROLE_BINDINGS: RefCell<BTreeMap<[u8; 28], AccountId>> = const { RefCell::new(BTreeMap::new()) };
+    static OBSERVED_ROLES: RefCell<BTreeMap<AccountId, ObservedRoleRec>> = const { RefCell::new(BTreeMap::new()) };
     static NOW_SECS: RefCell<u64> = const { RefCell::new(0) };
 }
 
@@ -96,6 +101,35 @@ impl VotingPowerSink<AccountId> for MockVotingPowerSink {
 /// The voting power last written for `who` (0 if never written).
 pub fn voting_power_of(who: AccountId) -> u128 {
     VOTING_POWERS.with(|w| w.borrow().get(&who).copied().unwrap_or(0))
+}
+
+/// Role credential → account resolver stand-in (any `RoleSource` resolves via one fixture map — the
+/// tests bind a credential once with [`bind_role`]).
+pub struct MockRoleResolver;
+impl crate::RoleResolver<AccountId> for MockRoleResolver {
+    fn resolve(_source: crate::RoleSource, credential: &[u8; 28]) -> Option<AccountId> {
+        ROLE_BINDINGS.with(|m| m.borrow().get(credential).copied())
+    }
+}
+/// Bind a role credential to an account for the resolver.
+pub fn bind_role(credential: [u8; 28], who: AccountId) {
+    ROLE_BINDINGS.with(|m| {
+        m.borrow_mut().insert(credential, who);
+    });
+}
+
+/// Observed-role sink stand-in — records the last `(kind_index, id)` set written per account.
+pub struct MockRoleSink;
+impl crate::RoleSink<AccountId> for MockRoleSink {
+    fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28])]) {
+        OBSERVED_ROLES.with(|m| {
+            m.borrow_mut().insert(*who, roles.to_vec());
+        });
+    }
+}
+/// The role set last written for `who` (empty if never written / cleared).
+pub fn observed_roles_of(who: AccountId) -> Vec<(u8, [u8; 28])> {
+    OBSERVED_ROLES.with(|m| m.borrow().get(&who).cloned().unwrap_or_default())
 }
 /// Whether `set_voting_power` was ever called for `who` (distinguishes "skipped" from "set to 0").
 pub fn vp_was_written(who: AccountId) -> bool {
@@ -164,6 +198,8 @@ impl pallet_cardano_observer::Config for Test {
     type StakeResolver = MockStakeResolver;
     type WeightSink = MockSink;
     type VotingPowerSink = MockVotingPowerSink;
+    type RoleResolver = MockRoleResolver;
+    type RoleSink = MockRoleSink;
     // Root-only in the mock (the runtime uses the 3-of-5 AuthorityOrigin); enough to exercise the gate.
     type EnforceOrigin = frame_system::EnsureRoot<AccountId>;
     type UnixTime = MockTime;

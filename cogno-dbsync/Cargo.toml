@@ -32,6 +32,12 @@ codec = { features = ["std"], workspace = true }
 # moved to the dedicated `sp-crypto-hashing` crate. blake2_256 is byte-identical (same blake2b impl),
 # so the golden observation-equivalence fixture is unaffected.
 sp-crypto-hashing = { workspace = true, features = ["std"] }
+# CIP-0151 Calidus pool-key registration verification (label 867): blake2b-224 (the Cardano key hash;
+# NOT an sp-crypto-hashing fn, so the RustCrypto variable-output blake2 — the same 0.10.x the cogno-gate
+# verifier uses) + ed25519 verification of the cold-key witness over the registration preimage. Both are
+# consensus-critical + golden-fixture-pinned (a divergence is a chain fork), so the impl is PINNED here.
+blake2 = { version = "0.10.6", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std"] }
 # `BeaconName`/`StakeCredential`/`CardanoObservation`/`CardanoRef` — the node-keyed on-wire observation
 # types the reduced records produce (std for the native host build).
 pallet-cardano-observer = { features = ["std"], workspace = true }

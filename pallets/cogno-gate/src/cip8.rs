@@ -77,6 +77,49 @@ pub struct VerifiedStakeProof {
     pub genesis: [u8; 32],
 }
 
+/// The Cardano ROLE a role-key proof asserts, committed in the `role=` field of the
+/// `cogno-chain/role/v1;…` payload so a proof minted for one role can never be replayed to claim
+/// another (and, with the distinct domain, so a payment/stake bind proof can never be replayed as a
+/// role proof or vice-versa). Kept plain — this is a pure-verifier return, not stored state; the
+/// `pallet-cardano-roles` claim ledger has its own on-wire `RoleKind` and maps from this.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum RoleClass {
+    /// Stake pool operator (the proven key is a Calidus pool key — the observer later links it to a
+    /// pool via the label-867 registration).
+    Spo,
+    /// Delegated representative (the proven key is a key-based dRep key; its hash IS the dRep ID).
+    DRep,
+    /// Constitutional Committee member (the proven key is a committee HOT key; its hash IS the hot
+    /// credential).
+    Committee,
+}
+
+/// A verified ROLE-key self-proof ([`verify_bind_proof_role`]) — a CIP-8 a RAW Cardano role key
+/// (Calidus / dRep / committee-hot, signed by `cardano-signer --cip8` or a CIP-95 wallet) produced
+/// over a SYNTHETIC enterprise address whose payment credential is `blake2b_224(role_key)`. The
+/// caller asserts `genesis` == the chain genesis, checks `role` matches the extrinsic, and binds
+/// `account` ↔ `credential` (1:1 per role, non-tombstoned).
+///
+/// Distinct from the other two proofs: it proves control of a role key WITHOUT interpreting any
+/// Cardano registration — the "is this credential actually a live pool / dRep / CC member" question
+/// is answered off this proof entirely, by the cardano-observer over authenticated on-chain state.
+/// So this path carries NO witness logic; it is a near-verbatim clone of [`verify_bind_proof`]
+/// differing only in step 4 (return the bare 28-byte credential, no beacon hashing) and step 5 (the
+/// `role/v1` payload grammar).
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifiedRoleProof {
+    /// The role the signed payload committed (`role=` field).
+    pub role: RoleClass,
+    /// The 28-byte role-key hash = the synthetic enterprise address's payment credential =
+    /// `blake2b_224(role_pubkey)`. For SPO this is the Calidus-key hash; for dRep/CC it is the
+    /// dRep ID / hot credential directly.
+    pub credential: [u8; 28],
+    /// The 32-byte sr25519 account the signed payload commits (the bind target).
+    pub account: [u8; 32],
+    /// The genesis hash the signed payload commits (caller checks == this chain's genesis).
+    pub genesis: [u8; 32],
+}
+
 /// Every failure mode is a typed, fail-closed reject — never a panic.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Cip8Error {
@@ -108,6 +151,8 @@ pub enum Cip8Error {
     AddressKeyMismatch,
     /// The signed payload does not match the pinned `cogno-chain/bind/v1;…` grammar.
     BadPayload,
+    /// The signed payload does not match the pinned `cogno-chain/role/v1;…;role=<spo|drep|cc>` grammar.
+    BadRolePayload,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -641,6 +686,39 @@ fn parse_payload(p: &[u8]) -> Result<([u8; 32], [u8; 32]), Cip8Error> {
     Ok((g, a))
 }
 
+/// Parse the pinned ROLE payload, returning `(genesis[32], account[32], role)`. Grammar:
+/// `cogno-chain/role/v1;genesis=<64hex>;account=<64hex>;nonce=<32hex>;role=<spo|drep|cc>`. The
+/// `role/v1` domain (vs `bind/v1`) and the trailing `role=` token are the anti-cross-replay pins:
+/// a payment/stake bind proof can never satisfy this grammar, and a proof minted for one role can
+/// never be matched to another. The `role=` token must consume the input to the end (no trailing
+/// bytes). The nonce is validated for FORMAT only, exactly as in [`parse_payload`].
+fn parse_role_payload(p: &[u8]) -> Result<([u8; 32], [u8; 32], RoleClass), Cip8Error> {
+    let off =
+        expect(p, 0, b"cogno-chain/role/v1;genesis=").map_err(|_| Cip8Error::BadRolePayload)?;
+    let (genesis, off) = take_hex(p, off, 32).map_err(|_| Cip8Error::BadRolePayload)?;
+    let off = expect(p, off, b";account=").map_err(|_| Cip8Error::BadRolePayload)?;
+    let (account, off) = take_hex(p, off, 32).map_err(|_| Cip8Error::BadRolePayload)?;
+    let off = expect(p, off, b";nonce=").map_err(|_| Cip8Error::BadRolePayload)?;
+    let (_nonce, off) = take_hex(p, off, 16).map_err(|_| Cip8Error::BadRolePayload)?; // format-checked
+    let off = expect(p, off, b";role=").map_err(|_| Cip8Error::BadRolePayload)?;
+    // The role token runs to end-of-input; matching the exact remainder also rejects trailing bytes.
+    let rest = p.get(off..).ok_or(Cip8Error::BadRolePayload)?;
+    let role = if rest == b"spo" {
+        RoleClass::Spo
+    } else if rest == b"drep" {
+        RoleClass::DRep
+    } else if rest == b"cc" {
+        RoleClass::Committee
+    } else {
+        return Err(Cip8Error::BadRolePayload);
+    };
+    let mut g = [0u8; 32];
+    let mut a = [0u8; 32];
+    g.copy_from_slice(genesis.get(..32).ok_or(Cip8Error::BadRolePayload)?);
+    a.copy_from_slice(account.get(..32).ok_or(Cip8Error::BadRolePayload)?);
+    Ok((g, a, role))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // The entry point
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -754,6 +832,74 @@ pub fn verify_bind_proof_stake(
 
     Ok(VerifiedStakeProof {
         stake_credential,
+        account,
+        genesis,
+    })
+}
+
+/// Verify a CIP-8 ROLE-key self-proof (a raw Cardano role key — Calidus / dRep / committee-hot —
+/// signing over a SYNTHETIC enterprise address whose payment credential is `blake2b_224(role_key)`).
+/// Returns the verified `(role, credential, account, genesis)` or a typed reject. PURE — no storage,
+/// no panics. The caller asserts `genesis` == the chain genesis, checks `role`, and binds
+/// `account` ↔ `credential` 1:1 for that role.
+///
+/// ⚠ Steps 1, 2 and (the crypto of) 3 are IDENTICAL to [`verify_bind_proof`] (the same
+/// single-key-source rule, the same verbatim `Sig_structure` Ed25519 check, the same address→payment
+/// credential bind) and MUST stay in lockstep with it — only step 4/5 differ: the returned identity
+/// is the BARE 28-byte payment credential (the role-key hash, no `plutus_data_cbor` / beacon
+/// hashing), and the payload is the `role/v1` grammar. There is deliberately NO Cardano-registration
+/// interpretation here — proving control of the key is the whole job; the cardano-observer decides
+/// whether that key is a live pool / dRep / CC member. An enterprise or base VerificationKey-payment
+/// address is accepted (the FE mints an enterprise one); the stake part, if any, is irrelevant to the
+/// role and is ignored — cross-replay is closed by the distinct `role/v1` domain + `role=` token, not
+/// by the address shape.
+pub fn verify_bind_proof_role(
+    cose_sign1: &[u8],
+    cose_key: &[u8],
+    expected_network: NetworkId,
+) -> Result<VerifiedRoleProof, Cip8Error> {
+    // 1. Parse the COSE_Sign1 (verbatim protected/payload elements) + the COSE_Key (single key source).
+    let cose = parse_cose_sign1(cose_sign1)?;
+    let pubkey = parse_cose_key(cose_key)?;
+    let (kid, address) = parse_protected(cose.protected_content)?;
+    // If a KID rides in the (signed) protected header, it MUST be the same key we verify + hash.
+    if let Some(kid) = kid {
+        if kid != pubkey {
+            return Err(Cip8Error::KeyMismatch);
+        }
+    }
+
+    // 2. Ed25519-verify over the verbatim Sig_structure with the COSE_Key pubkey.
+    let message = sig_structure(cose.protected_raw, cose.payload_raw);
+    let mut pk = [0u8; 32];
+    pk.copy_from_slice(pubkey.get(..32).ok_or(Cip8Error::BadKey)?);
+    let mut sig = [0u8; 64];
+    sig.copy_from_slice(cose.signature.get(..64).ok_or(Cip8Error::BadCose)?);
+    let ok = sp_io::crypto::ed25519_verify(
+        &sp_core::ed25519::Signature::from_raw(sig),
+        &message,
+        &sp_core::ed25519::Public::from_raw(pk),
+    );
+    if !ok {
+        return Err(Cip8Error::SignatureInvalid);
+    }
+
+    // 3. Bind the verified key to the address: blake2b-224(pubkey) == the address payment credential.
+    let (payment_vkh, _stake) = parse_address(address, expected_network)?;
+    if blake2b_224(&pk) != *payment_vkh {
+        return Err(Cip8Error::AddressKeyMismatch);
+    }
+
+    // 4. Credential = the bare 28-byte role-key hash (the payment credential; no beacon hashing).
+    let mut credential = [0u8; 28];
+    credential.copy_from_slice(payment_vkh.get(..28).ok_or(Cip8Error::BadAddress)?);
+
+    // 5. The signed payload commits the genesis + account + role (the `role/v1` grammar).
+    let (genesis, account, role) = parse_role_payload(cose.payload_content)?;
+
+    Ok(VerifiedRoleProof {
+        role,
+        credential,
         account,
         genesis,
     })

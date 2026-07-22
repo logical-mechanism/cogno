@@ -1,0 +1,65 @@
+[package]
+name = "pallet-cardano-roles"
+description = "cogno-chain cardano-roles pallet — verifiable Cardano role tags (SPO / dRep / Constitutional Committee). A permissionless CIP-8 role-key self-proof (reusing the cogno-gate crown-jewel verifier) binds an account to a role credential; the call-less observed-role ledger is written ONLY by the cardano-observer inherent, which confirms the credential is a live pool / dRep / CC member over db-sync."
+version.workspace = true
+license = "Apache-2.0"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lints]
+workspace = true
+
+[dependencies]
+codec = { features = ["derive"], workspace = true }
+frame-benchmarking = { optional = true, workspace = true }
+frame-support = { workspace = true }
+frame-system = { workspace = true }
+log = { workspace = true }
+scale-info = { features = ["derive"], workspace = true }
+# The CIP-8 ROLE-key verifier (`cip8::verify_bind_proof_role`) lives in cogno-gate — a pure function,
+# reused here so the crown-jewel COSE/ed25519 code has a single home + audit surface. cogno-gate
+# depends on microblog, so `cardano-roles -> cogno-gate -> microblog` is a diamond, not a cycle.
+pallet-cogno-gate = { workspace = true }
+# The `IsAllowed` identity-gate trait (a role claim requires a payment-bound account) lives in
+# microblog, the depended-upon crate — same decoupling pallet-profile uses.
+pallet-microblog = { workspace = true }
+
+[dev-dependencies]
+sp-core = { default-features = true, workspace = true }
+sp-io = { default-features = true, workspace = true }
+sp-runtime = { default-features = true, workspace = true }
+# blake2b-224 to construct the synthetic enterprise address in role-proof test fixtures (matching the
+# cogno-gate verifier's own address→credential bind). Same 0.10.x the verifier uses.
+blake2 = { version = "0.10.6", default-features = true }
+
+[features]
+default = ["std"]
+std = [
+	"codec/std",
+	"frame-benchmarking?/std",
+	"frame-support/std",
+	"frame-system/std",
+	"log/std",
+	"scale-info/std",
+	"pallet-cogno-gate/std",
+	"pallet-microblog/std",
+]
+runtime-benchmarks = [
+	"frame-benchmarking/runtime-benchmarks",
+	"frame-support/runtime-benchmarks",
+	"frame-system/runtime-benchmarks",
+	"pallet-cogno-gate/runtime-benchmarks",
+	"pallet-microblog/runtime-benchmarks",
+]
+try-runtime = [
+	"frame-support/try-runtime",
+	"frame-system/try-runtime",
+	"pallet-cogno-gate/try-runtime",
+	"pallet-microblog/try-runtime",
+]

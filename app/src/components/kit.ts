@@ -27,6 +27,7 @@ import type {
   TxUpdate,
   TxPhase,
 } from "@/lib/types";
+import type { ObservedRoleView } from "@/lib/chain/roles";
 import type { ReactNode } from "react";
 
 // ── Re-exports of the seam types the kit binds to (single import site) ───────────────────────────
@@ -87,6 +88,9 @@ export interface AuthorRef {
   avatar?: string;
   /** Author identity revoked → render dimmed + "restricted" chip (D10). Never hide. */
   banned: boolean;
+  /** The author's live observed Cardano role badges (folded node-side onto the post); empty/undefined
+   *  when the author holds no live role. Lets the identity line show a ✓ SPO/dRep tag with no extra read. */
+  roles?: ObservedRoleView[];
 }
 
 // ── Optimistic per-action state machine ──────────────────────────────────────────────────────────
