@@ -1362,11 +1362,11 @@ fn governance_poll_skips_zero_weight_roles() {
 }
 
 #[test]
-fn finalized_governance_poll_freezes_holder_lens_but_keeps_chambers_live() {
-    // Locks the deliberate spec-207 semantics: `PollResults` freezes only the (binding) HOLDER lens; the
-    // SPO/dRep chambers are display-only and ALWAYS derived live, so a finalized governance poll's chamber
-    // tallies still re-price with the observed delegated stake. A future change that froze (or broke) the
-    // chambers would trip this test.
+fn finalized_governance_poll_freezes_both_holder_lens_and_chambers() {
+    // spec 208: `close_poll` freezes the SPO/dRep chambers into `PollResult` alongside the holder lens, so
+    // a concluded governance poll's chambers can no longer be retroactively re-priced by moving delegation
+    // — the same guarantee the holder lens already had against an unstake. This test moves BOTH the holder
+    // stake and the observed delegated stake AFTER finalization and asserts NEITHER lens changes.
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         TalkStake::apply_voting_power(&10, 100);
@@ -1398,8 +1398,15 @@ fn finalized_governance_poll_freezes_holder_lens_but_keeps_chambers_live() {
             (frozen.options[1].weight, frozen.options[1].count),
             (200, 1)
         );
-        assert_eq!(frozen.options[0].spo_weight, 15_000_000);
-        assert_eq!(frozen.options[1].drep_weight, 7_000_000);
+        // Chambers were frozen at close: pool P (15M) on "yes", dRep D (7M) on "no".
+        assert_eq!(
+            (frozen.options[0].spo_weight, frozen.options[0].spo_count),
+            (15_000_000, 1)
+        );
+        assert_eq!(
+            (frozen.options[1].drep_weight, frozen.options[1].drep_count),
+            (7_000_000, 1)
+        );
 
         // After the freeze, move BOTH the holder stake AND the observed delegated stake behind each role.
         TalkStake::apply_voting_power(&10, 999); // holder re-stake …
@@ -1407,11 +1414,16 @@ fn finalized_governance_poll_freezes_holder_lens_but_keeps_chambers_live() {
         set_chamber_roles(11, vec![(1, DREP_D, 2_000_000)]); // … dRep D sheds delegation.
 
         let after = Microblog::poll(0).expect("poll");
-        // HOLDER lens is FROZEN — it does not re-price (still 100 on "yes").
+        // BOTH lenses are FROZEN — neither re-prices to the post-close changes.
         assert_eq!((after.options[0].weight, after.options[0].count), (100, 1));
-        // CHAMBERS are display-only and always LIVE — they DO re-price to the new delegated stake.
-        assert_eq!(after.options[0].spo_weight, 1_000_000);
-        assert_eq!(after.options[1].drep_weight, 2_000_000);
+        assert_eq!(
+            after.options[0].spo_weight, 15_000_000,
+            "frozen SPO chamber must not re-price after close"
+        );
+        assert_eq!(
+            after.options[1].drep_weight, 7_000_000,
+            "frozen dRep chamber must not re-price after close"
+        );
     });
 }
 

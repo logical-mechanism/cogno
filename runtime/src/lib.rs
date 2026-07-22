@@ -73,7 +73,10 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // spec 207: governance polls — `RoleEntry`/`ObservedRole` gain a delegated-stake `weight` (observer
     // payload + roles storage v0 → v1), `Poll` gains `kind` (Stake | Governance, microblog storage v6 → v7),
     // and `poll()`'s `PollView`/`PollOptionView` gain the SPO + dRep chamber lenses.
-    spec_version: 207,
+    // spec 208: `close_poll` FREEZES a governance poll's SPO/dRep chambers into `PollResult` (four new
+    // chamber-snapshot vecs, microblog storage v7 → v8), so a concluded poll's chambers no longer re-price
+    // live. Storage/read-shape change only — `TxExtension` byte-identical, so `transaction_version` STAYS 5.
+    spec_version: 208,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

@@ -35,7 +35,7 @@ const EXPECTED_SPEC_NAME = "cogno-chain-runtime";
  * The spec_version genuinely is NOT statically readable from the descriptors (SCALE metadata does not
  * carry it; it lives in the RuntimeVersion runtime API), so a checked constant is the honest mechanism.
  */
-const DESCRIPTOR_SPEC_VERSION: number | null = 207;
+const DESCRIPTOR_SPEC_VERSION: number | null = 208;
 
 /** Heartbeat window: if no new best block arrives within this, we surface "reconnecting". */
 const BLOCK_HEARTBEAT_MS = 30_000;

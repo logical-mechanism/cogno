@@ -170,14 +170,24 @@ impl<AccountId> StakerSet<AccountId> for () {
 pub trait ChamberRoles<AccountId> {
     /// `who`'s observed roles: `(kind_index, display_id, chamber_weight)`. `kind_index` is 0 = SPO,
     /// 1 = dRep, 2 = CC (mirrors `RoleKind::index`); `chamber_weight` is the role's delegated Cardano
-    /// stake (0 for a blank Calidus SPO / CC). Empty if the account holds no live role. Only ever read for
-    /// a `PollKind::Governance` poll's chamber tally, and only off-chain (a node-served read).
+    /// stake (0 for a blank Calidus SPO / CC). Empty if the account holds no live role. Read for a
+    /// `PollKind::Governance` poll's chamber tally — both live (a node-served read) and, since spec 208,
+    /// on-chain when `close_poll` FREEZES the chambers.
     fn roles_of(who: &AccountId) -> Vec<(u8, [u8; 28], u128)>;
+
+    /// The set of accounts that currently hold ANY observed role (spec 208). Bounded by the observer's
+    /// `MaxObserved`, exactly like [`StakerSet::stakers`] — so the chamber tally can iterate this bounded
+    /// set (point-looking-up each holder's vote) instead of the UNBOUNDED voter set, making it safe to
+    /// compute on-chain in `close_poll`. A holder who did not vote contributes nothing. `()` yields none.
+    fn role_holders() -> Vec<AccountId>;
 }
 
 /// Default: no roles (a chain with no observer). Every chamber tally is then empty.
 impl<AccountId> ChamberRoles<AccountId> for () {
     fn roles_of(_who: &AccountId) -> Vec<(u8, [u8; 28], u128)> {
+        Vec::new()
+    }
+    fn role_holders() -> Vec<AccountId> {
         Vec::new()
     }
 }
@@ -203,7 +213,10 @@ pub mod pallet {
     // record and tally (keeping only exact COUNTS), add `Poll.close_at` + the `PollResults` snapshot map.
     // Weighted scores are now derived LIVE at read time by joining the staker set against current
     // `VotingPower`, so a vote re-prices as stake moves — see `migrations::v6`.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(7);
+    // v6 -> v7 (spec 207): add `Poll.kind` (Stake | Governance) — see `migrations::v7`.
+    // v7 -> v8 (spec 208): append the frozen SPO/dRep CHAMBER snapshot to `PollResult`, so `close_poll`
+    // freezes a governance poll's chambers instead of leaving them to re-price live — see `migrations::v8`.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(8);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -480,11 +493,13 @@ pub mod pallet {
         pub count: u32,
     }
 
-    /// The FROZEN weighted result of a closed poll (spec 205 / storage v6). Written once by the
-    /// permissionless `close_poll` at or after the poll's `close_at`: the exact per-option weight
-    /// (summed from `VotingPower` over the staker set at the execution block) and count. Present in
-    /// [`PollResults`] ⇒ the poll is finalized and reads return THIS instead of a live join, so an
-    /// unstake can no longer retroactively remove weight from a socially-concluded poll.
+    /// The FROZEN weighted result of a closed poll (spec 205 / storage v6, extended spec 208 / v8).
+    /// Written once by the permissionless `close_poll` at or after the poll's `close_at`: the exact
+    /// per-option HOLDER weight (summed from `VotingPower` over the staker set at the execution block) and
+    /// count, plus (spec 208, governance polls only) the frozen SPO + dRep CHAMBER snapshot. Present in
+    /// [`PollResults`] ⇒ the poll is finalized and reads return THIS instead of a live join, so neither an
+    /// unstake (holder lens) nor a later delegation move (chambers) can retroactively re-price a
+    /// socially-concluded poll.
     #[derive(
         Encode,
         Decode,
@@ -497,10 +512,18 @@ pub mod pallet {
     )]
     #[scale_info(skip_type_params(T))]
     pub struct PollResult<T: Config> {
-        /// Frozen per-option weight (index-aligned with `Poll.options`).
+        /// Frozen HOLDER-lens per-option weight (index-aligned with `Poll.options`).
         pub option_weights: BoundedVec<u128, T::MaxPollOptions>,
         /// Frozen per-option count (index-aligned with `Poll.options`).
         pub option_counts: BoundedVec<u32, T::MaxPollOptions>,
+        /// Frozen SPO-chamber per-option weight (spec 208). EMPTY for a `PollKind::Stake` poll ⇒ read as 0.
+        pub option_spo_weights: BoundedVec<u128, T::MaxPollOptions>,
+        /// Frozen SPO-chamber per-option distinct-pool count (spec 208). Empty for a stake poll.
+        pub option_spo_counts: BoundedVec<u32, T::MaxPollOptions>,
+        /// Frozen dRep-chamber per-option weight (spec 208). Empty for a stake poll.
+        pub option_drep_weights: BoundedVec<u128, T::MaxPollOptions>,
+        /// Frozen dRep-chamber per-option distinct-dRep count (spec 208). Empty for a stake poll.
+        pub option_drep_counts: BoundedVec<u32, T::MaxPollOptions>,
         /// The block at which `close_poll` executed and took this snapshot (`≥ close_at`).
         pub closed_at: BlockNumberFor<T>,
     }
@@ -1596,11 +1619,12 @@ pub mod pallet {
         /// (`now ≥ close_at`) and not before; a poll with no `close_at` can never be finalized. Idempotent:
         /// a call on an already-finalized poll is a no-op `Ok`.
         ///
-        /// It computes the EXACT per-option weighted tally from the staker set's CURRENT `VotingPower`
-        /// (§2.1 — O(`MaxObserved` × `MaxPollOptions`) bounded consensus work) and writes it to
-        /// [`PollResults`], after which reads return the frozen result instead of a live join — so an
-        /// unstake can no longer retroactively remove weight from a socially-concluded poll. Feeless +
-        /// capacity-metered (priced at `VoteCost`).
+        /// It computes the EXACT per-option HOLDER tally from the staker set's CURRENT `VotingPower`, and
+        /// (spec 208, governance polls) the SPO + dRep CHAMBER snapshot from the observed role-holder set
+        /// (§2.1 — both O(`MaxObserved` × `MaxPollOptions`) bounded consensus work), and writes them to
+        /// [`PollResults`], after which reads return the frozen result instead of a live join — so neither
+        /// an unstake (holder lens) nor a later delegation move (chambers) can retroactively re-price a
+        /// socially-concluded poll. Feeless + capacity-metered (priced at `VoteCost`).
         #[pallet::call_index(13)]
         #[pallet::weight(<T as Config>::WeightInfo::close_poll())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _host_id: &u64| -> bool { true })]
@@ -1634,6 +1658,17 @@ pub mod pallet {
             } else {
                 Self::poll_option_weights(host_id, num_options, &Self::staker_weights())
             };
+            // spec 208: FREEZE the SPO + dRep chambers for a governance poll (a stake poll freezes none —
+            // empty vecs read back as 0), so a concluded poll's chambers no longer re-price as delegation
+            // later moves. The tally iterates the bounded role-holder set (like the holder join above), so
+            // this stays O(`MaxObserved`)-bounded on-chain. `total == 0` means NO votes at all (so no
+            // role-holder voted either) ⇒ empty chambers, skipping the join exactly like the holder lens.
+            let (cspo_w, cspo_c, cdrep_w, cdrep_c) =
+                if total > 0 && matches!(poll.kind, PollKind::Governance) {
+                    Self::poll_chamber_weights(host_id, num_options)
+                } else {
+                    (alloc::vec![], alloc::vec![], alloc::vec![], alloc::vec![])
+                };
             let mut option_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
             let mut option_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
             for (i, w) in weights.into_iter().enumerate() {
@@ -1645,11 +1680,35 @@ pub mod pallet {
                     .try_push(counts[i])
                     .map_err(|_| Error::<T>::TooManyOptions)?;
             }
+            // Chamber snapshots: `num_options` entries for a governance poll, empty for a stake poll (the
+            // loop below runs `num_options` times or 0 — every push is within `MaxPollOptions`).
+            let mut option_spo_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
+            let mut option_spo_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
+            let mut option_drep_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
+            let mut option_drep_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
+            for i in 0..cspo_w.len() {
+                option_spo_weights
+                    .try_push(cspo_w[i])
+                    .map_err(|_| Error::<T>::TooManyOptions)?;
+                option_spo_counts
+                    .try_push(cspo_c[i])
+                    .map_err(|_| Error::<T>::TooManyOptions)?;
+                option_drep_weights
+                    .try_push(cdrep_w[i])
+                    .map_err(|_| Error::<T>::TooManyOptions)?;
+                option_drep_counts
+                    .try_push(cdrep_c[i])
+                    .map_err(|_| Error::<T>::TooManyOptions)?;
+            }
             PollResults::<T>::insert(
                 host_id,
                 PollResult {
                     option_weights,
                     option_counts,
+                    option_spo_weights,
+                    option_spo_counts,
+                    option_drep_weights,
+                    option_drep_counts,
                     closed_at: now,
                 },
             );
@@ -2397,21 +2456,23 @@ impl<T: Config> Pallet<T> {
         weights
     }
 
-    /// Live SPO + dRep CHAMBER tallies for a `PollKind::Governance` poll (spec 207): the per-option
-    /// delegated-stake weight and distinct-role count for the SPO chamber and the dRep chamber. These are
-    /// the "vote as if it were a Cardano governance action" lenses — reported SEPARATELY from the holder
-    /// (stake) tally and from each other, so nothing is double-counted. DISPLAY-ONLY: never frozen
-    /// on-chain, always derived live, and only computed off-chain (a node-served read), so its cost is not
-    /// consensus weight.
+    /// SPO + dRep CHAMBER tallies for a `PollKind::Governance` poll: the per-option delegated-stake weight
+    /// and distinct-role count for the SPO chamber and the dRep chamber. These are the "vote as if it were
+    /// a Cardano governance action" lenses — reported SEPARATELY from the holder (stake) tally and from each
+    /// other, so nothing is double-counted. DISPLAY-ONLY (a temperature check, binding nothing on-chain).
+    /// Derived LIVE for an open poll and FROZEN at `close_poll` (spec 208), so a concluded poll's chambers
+    /// stop re-pricing as delegation later moves.
     ///
-    /// It iterates the poll's ACTUAL voters (bounded by turnout — a governance poll on this social chain,
-    /// not an all-stakers scan) and reads each voter's observed roles via [`Config::ChamberRoles`]. The
-    /// SPO chamber is DEDUPED by pool id — a pool's delegated stake counts ONCE even if several declared
-    /// owners of it voted; if those owners SPLIT across options the pool ABSTAINS (its weight is dropped)
-    /// rather than being assigned arbitrarily. The dRep chamber needs no dedup (the claim ledger is 1:1
-    /// drep↔account). Blank Calidus SPOs and undelegated pools/dReps carry weight 0 and are skipped, so the
-    /// SPO chamber reflects only impersonation-proof, delegated `SpoOwner` pools. The result is independent
-    /// of voter-iteration order.
+    /// It iterates the BOUNDED observed role-holder set ([`Config::ChamberRoles::role_holders`], ≤ the
+    /// observer's `MaxObserved`) and point-looks-up each holder's poll vote — NOT the unbounded voter set —
+    /// so it is O(`MaxObserved`)-bounded and safe to compute on-chain in `close_poll`, exactly like the
+    /// holder-lens join in [`Self::poll_option_weights`]. A role-holder who did not vote contributes nothing;
+    /// a voter with no role contributes nothing — the same result either way. The SPO chamber is DEDUPED by
+    /// pool id — a pool's delegated stake counts ONCE even if several declared owners of it voted; if those
+    /// owners SPLIT across options the pool ABSTAINS (its weight is dropped) rather than being assigned
+    /// arbitrarily. The dRep chamber needs no dedup (the claim ledger is 1:1 drep↔account). Blank Calidus
+    /// SPOs and undelegated pools/dReps carry weight 0 and are skipped, so the SPO chamber reflects only
+    /// impersonation-proof, delegated `SpoOwner` pools. The result is independent of holder-iteration order.
     ///
     /// Returns `(spo_weights, spo_counts, drep_weights, drep_counts)`, each a `num_options`-length vec
     /// index-aligned with `Poll.options`.
@@ -2424,12 +2485,16 @@ impl<T: Config> Pallet<T> {
         let mut pool_choice: BTreeMap<[u8; 28], (u8, u128, bool)> = BTreeMap::new();
         // drep id → (chosen option, delegated voting stake). 1:1 drep↔account, so no conflict handling.
         let mut drep_choice: BTreeMap<[u8; 28], (u8, u128)> = BTreeMap::new();
-        for (voter, rec) in PollVotes::<T>::iter_prefix(host_id) {
+        for holder in T::ChamberRoles::role_holders() {
+            // Only role-holders who actually voted this poll contribute (a point read, not a prefix scan).
+            let Some(rec) = PollVotes::<T>::get(host_id, &holder) else {
+                continue;
+            };
             let opt = rec.option;
             if (opt as usize) >= num_options {
                 continue;
             }
-            for (kind, id, weight) in T::ChamberRoles::roles_of(&voter) {
+            for (kind, id, weight) in T::ChamberRoles::roles_of(&holder) {
                 if weight == 0 {
                     continue; // a blank Calidus SPO / undelegated pool or dRep contributes nothing
                 }
@@ -2873,10 +2938,11 @@ impl<T: Config> Pallet<T> {
     /// id. `None` if `host_id` is not a poll. `total_votes` is the sum of the per-option counts (each
     /// account has exactly one live choice, so this equals the distinct-voter count).
     ///
-    /// If the poll is FINALIZED ([`PollResults`] present) the FROZEN per-option weight is returned;
-    /// otherwise the weight is derived LIVE from the staker set's current `VotingPower` (a poll past its
-    /// `close_at` but not yet finalized reads live — the frontend auto-triggers `close_poll` to freeze it).
-    /// The per-option COUNTS are always the exact stored values; the wire shape is unchanged.
+    /// If the poll is FINALIZED ([`PollResults`] present) the FROZEN per-option holder weight AND (spec 208)
+    /// the frozen SPO/dRep chamber snapshot are returned; otherwise both are derived LIVE (the holder weight
+    /// from the staker set's current `VotingPower`, the chambers from the observed role-holders — a poll
+    /// past its `close_at` but not yet finalized reads live, and the frontend auto-triggers `close_poll` to
+    /// freeze it). The per-option COUNTS are always the exact stored values; the wire shape is unchanged.
     pub fn poll(host_id: u64) -> Option<PollView> {
         let poll = Polls::<T>::get(host_id)?;
         let num_options = poll.options.len();
@@ -2884,23 +2950,11 @@ impl<T: Config> Pallet<T> {
             PollKind::Stake => 0u8,
             PollKind::Governance => 1u8,
         };
-        // The SPO + dRep CHAMBER lenses (spec 207) are ALWAYS live (never frozen) and computed ONLY for a
-        // governance poll; a stake poll gets all-zero chamber columns. Derived once, reused in either the
-        // frozen or the live holder-tally branch below.
-        let (spo_w, spo_c, drep_w, drep_c) = if matches!(poll.kind, PollKind::Governance) {
-            Self::poll_chamber_weights(host_id, num_options)
-        } else {
-            (
-                alloc::vec![0u128; num_options],
-                alloc::vec![0u32; num_options],
-                alloc::vec![0u128; num_options],
-                alloc::vec![0u32; num_options],
-            )
-        };
         let mut options = Vec::with_capacity(num_options);
         let mut total_votes: u32 = 0;
-        // Finalized — the HOLDER lens is the frozen snapshot (no live join, no staker-set read); the
-        // chambers are still live (they carry no frozen record — a temperature check, not a binding vote).
+        // Finalized — return the FROZEN snapshot: both the HOLDER lens and (spec 208) the SPO/dRep CHAMBERS
+        // are read from `PollResult`, so a concluded governance poll's chambers no longer re-price as
+        // delegation later moves. A stake poll's chamber vecs are empty ⇒ read back as 0.
         if let Some(result) = PollResults::<T>::get(host_id) {
             for (i, opt) in poll.options.iter().enumerate() {
                 let count = result.option_counts.get(i).copied().unwrap_or(0);
@@ -2911,10 +2965,10 @@ impl<T: Config> Pallet<T> {
                     label: opt.to_vec(),
                     weight,
                     count,
-                    spo_weight: spo_w.get(i).copied().unwrap_or(0),
-                    spo_count: spo_c.get(i).copied().unwrap_or(0),
-                    drep_weight: drep_w.get(i).copied().unwrap_or(0),
-                    drep_count: drep_c.get(i).copied().unwrap_or(0),
+                    spo_weight: result.option_spo_weights.get(i).copied().unwrap_or(0),
+                    spo_count: result.option_spo_counts.get(i).copied().unwrap_or(0),
+                    drep_weight: result.option_drep_weights.get(i).copied().unwrap_or(0),
+                    drep_count: result.option_drep_counts.get(i).copied().unwrap_or(0),
                 });
             }
             return Some(PollView {
@@ -2924,7 +2978,18 @@ impl<T: Config> Pallet<T> {
                 kind: kind_ix,
             });
         }
-        // Open (or past-deadline-but-unfinalized) — derive the holder per-option weight live from stake.
+        // Open (or past-deadline-but-unfinalized) — derive the holder per-option weight live from stake,
+        // and the SPO/dRep chambers live for a governance poll (a stake poll gets all-zero chambers).
+        let (spo_w, spo_c, drep_w, drep_c) = if matches!(poll.kind, PollKind::Governance) {
+            Self::poll_chamber_weights(host_id, num_options)
+        } else {
+            (
+                alloc::vec![0u128; num_options],
+                alloc::vec![0u32; num_options],
+                alloc::vec![0u128; num_options],
+                alloc::vec![0u32; num_options],
+            )
+        };
         let counts: Vec<u32> = (0..num_options)
             .map(|i| PollTally::<T>::get(host_id, i as u8).count)
             .collect();

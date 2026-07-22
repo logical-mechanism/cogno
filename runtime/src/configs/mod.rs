@@ -97,11 +97,18 @@ parameter_types! {
 /// `ObservedRole` (the observer re-derives the live delegated stake next block). Both are
 /// `VersionedMigration`-guarded and no-op on empty state, so a chain that gains the roles pallet in the same
 /// upgrade migrates a fresh (empty) `ObservedRoles` harmlessly.
+///
+/// spec 208 APPENDS `MigrateV7ToV8`: `close_poll` now FREEZES a governance poll's SPO/dRep chambers, so
+/// `PollResult` grows four chamber-snapshot vecs; the migration re-encodes every `PollResults` row with
+/// empty snapshots (no-op on the live chain, which has no `PollResults` rows).
 type SingleBlockMigrations = (
     pallet_microblog::migrations::v5::MigrateV4ToV5<Runtime>,
     pallet_microblog::migrations::v6::MigrateV5ToV6<Runtime>,
     pallet_microblog::migrations::v7::MigrateV6ToV7<Runtime>,
     pallet_cardano_roles::migrations::MigrateV0ToV1<Runtime>,
+    // spec 208: freeze the SPO/dRep chambers into `PollResult` (`PollResults` re-encode, empty snapshots
+    // on existing rows — a no-op on the live chain, which has none). See `migrations::v8`.
+    pallet_microblog::migrations::v8::MigrateV7ToV8<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -803,6 +810,18 @@ impl pallet_microblog::ChamberRoles<AccountId> for ChamberRolesProvider {
         pallet_cardano_roles::Pallet::<Runtime>::observed_roles(who)
             .into_iter()
             .map(|r| (r.kind.index(), r.id, r.weight))
+            .collect()
+    }
+    // The observed role-holder set — the `ObservedRoles` keys. Bounded by the observer's `MaxObserved` (it
+    // clears every account that drops out), and defensively capped at that same bound so the on-chain
+    // chamber freeze (`close_poll`) stays O(`MaxObserved`) even against a map with stale rows — mirroring
+    // `ObservedStakers::stakers`.
+    fn role_holders() -> alloc::vec::Vec<AccountId> {
+        let cap = <<Runtime as pallet_cardano_observer::Config>::MaxObserved as frame_support::traits::Get<
+            u32,
+        >>::get() as usize;
+        pallet_cardano_roles::ObservedRoles::<Runtime>::iter_keys()
+            .take(cap)
             .collect()
     }
 }

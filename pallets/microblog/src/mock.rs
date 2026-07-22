@@ -72,11 +72,15 @@ thread_local! {
         const { RefCell::new(std::collections::BTreeMap::new()) };
 }
 
-/// Mock chamber-role provider — returns whatever [`set_chamber_roles`] seeded for the account.
+/// Mock chamber-role provider — returns whatever [`set_chamber_roles`] seeded for the account, and the
+/// seeded accounts as the bounded role-holder set the on-chain chamber tally iterates.
 pub struct MockChamberRoles;
 impl pallet_microblog::ChamberRoles<u64> for MockChamberRoles {
     fn roles_of(who: &u64) -> ChamberRoleRec {
         CHAMBER_ROLES.with(|m| m.borrow().get(who).cloned().unwrap_or_default())
+    }
+    fn role_holders() -> Vec<u64> {
+        CHAMBER_ROLES.with(|m| m.borrow().keys().copied().collect())
     }
 }
 
