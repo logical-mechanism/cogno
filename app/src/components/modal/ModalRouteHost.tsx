@@ -284,7 +284,12 @@ export function ModalRouteHost() {
   );
 
   const onCreatePoll = useCallback(
-    async (question: string, options: string[], closeInDays?: number) => {
+    async (
+      question: string,
+      options: string[],
+      closeInDays?: number,
+      kind?: "Stake" | "Governance",
+    ) => {
       if (viewer.status !== "ready") {
         close();
         router.push("/welcome/");
@@ -304,10 +309,11 @@ export function ModalRouteHost() {
         });
         return;
       }
-      runWrite(submitCreatePoll(api, signer, question, options, closeAt), optimisticPost(question, { isPoll: true }), {
-        pending: "Creating poll…",
-        success: "Poll created",
-      });
+      runWrite(
+        submitCreatePoll(api, signer, question, options, closeAt, kind),
+        optimisticPost(question, { isPoll: true }),
+        { pending: "Creating poll…", success: "Poll created" },
+      );
     },
     [viewer.status, api, signer, bestBlock, runWrite, optimisticPost, toast, close, router],
   );

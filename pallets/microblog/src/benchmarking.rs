@@ -225,7 +225,13 @@ mod benchmarks {
         let options = alloc::vec![opt; T::MaxPollOptions::get() as usize];
 
         #[extrinsic_call]
-        _(RawOrigin::Signed(caller.clone()), question, options, None);
+        _(
+            RawOrigin::Signed(caller.clone()),
+            question,
+            options,
+            None,
+            crate::PollKind::Stake,
+        );
 
         assert!(Polls::<T>::contains_key(0u64));
         Ok(())
@@ -250,6 +256,7 @@ mod benchmarks {
             Poll::<T> {
                 options,
                 close_at: None,
+                kind: crate::PollKind::Stake,
             },
         );
         // Pre-existing choice (option 0) so the re-cast exercises the reverse + apply count branches.
@@ -263,10 +270,12 @@ mod benchmarks {
         Ok(())
     }
 
-    /// `close_poll` — worst case finalizes a poll past its deadline, joining the staker set against
-    /// `VotingPower` + `PollVotes` to freeze the weighted result. The mock's `StakerSet` iterates the
-    /// `VotingPower` keys, so seed one staker + one poll vote so the join has a real row to sum. The block
-    /// is advanced past `close_at` so the finalize path (not the `PollNotClosable` reject) is measured.
+    /// `close_poll` — worst case finalizes a GOVERNANCE poll past its deadline: it joins the staker set
+    /// against `VotingPower` + `PollVotes` to freeze the HOLDER weight AND (spec 208) runs the bounded
+    /// role-holder join to freeze the SPO/dRep chambers. `PollKind::Governance` exercises that freeze
+    /// branch; seed one staker + one poll vote so the holder join has a real row to sum (the runtime's
+    /// role-holder set is empty here, so the chamber join measures its branch overhead). The block is
+    /// advanced past `close_at` so the finalize path (not the `PollNotClosable` reject) is measured.
     #[benchmark]
     fn close_poll() -> Result<(), BenchmarkError> {
         let caller: T::AccountId = whitelisted_caller();
@@ -278,12 +287,14 @@ mod benchmarks {
             Default::default();
         options.try_push(opt.clone()).expect("room");
         options.try_push(opt).expect("room");
-        // A poll whose deadline is block 0 — already reached, so `close_poll` finalizes.
+        // A poll whose deadline is block 0 — already reached, so `close_poll` finalizes. Governance so the
+        // spec-208 chamber-freeze branch is exercised.
         Polls::<T>::insert(
             0u64,
             Poll::<T> {
                 options,
                 close_at: Some(0u32.into()),
+                kind: crate::PollKind::Governance,
             },
         );
         // One staker with a live poll vote, so the weighted join sums a real row.

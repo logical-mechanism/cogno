@@ -264,9 +264,16 @@ impl RoleSource {
 }
 
 /// One observed live-role fact the node's reduction produces: a role `source` + the `credential` that
-/// resolves it to an account + the `id` the profile badge displays. Canonical-sorted (by `source`, then
-/// `credential`, then `id`) in the reduction, so the on-wire order is deterministic — a direct read (like
+/// resolves it to an account + the `id` the profile badge displays + the `weight` a GOVERNANCE-POLL
+/// chamber weights this role's vote by (spec 207). Canonical-sorted (by `source`, then `credential`, then
+/// `id`, then `weight`) in the reduction, so the on-wire order is deterministic — a direct read (like
 /// `stake_entries`), so a cross-node difference is always a data `Mismatch`, never a `ComputeDiverged`.
+///
+/// `weight` is the role's delegated Cardano stake at the as-of epoch: for `SpoOwner`, the owned pool's
+/// total delegated (block-production) stake; for `DRep`, the dRep's total delegated voting stake; `0` for
+/// `SpoCalidus` (the blank badge names no pool, so it carries no chamber weight) and `Committee`. It is
+/// deterministic per `(source, id)` — the sums come from the same reduction — so it never makes an
+/// otherwise-identical entry diverge across nodes.
 #[derive(
     Encode,
     Decode,
@@ -284,6 +291,7 @@ pub struct RoleEntry {
     pub source: RoleSource,
     pub credential: RoleCredential,
     pub id: RoleCredential,
+    pub weight: u128,
 }
 
 /// Resolve a role credential to its bound account, via the reverse map named by `source`. Implemented in
@@ -293,11 +301,13 @@ pub trait RoleResolver<AccountId> {
     fn resolve(source: RoleSource, credential: &RoleCredential) -> Option<AccountId>;
 }
 
-/// Overwrite `who`'s full observed-role set (each `(role_kind_index, display_id)`), or CLEAR it when the
-/// slice is empty (the unlock clamp). Implemented by a roles-pallet adapter in the runtime
-/// (`apply_roles`); a recorder in tests. The role analog of [`VotingPowerSink`], but set-valued.
+/// Overwrite `who`'s full observed-role set (each `(role_kind_index, display_id, chamber_weight)`), or
+/// CLEAR it when the slice is empty (the unlock clamp). `chamber_weight` (spec 207) is the role's
+/// delegated Cardano stake for governance-poll chambers (0 for a blank Calidus / CC badge). Implemented by
+/// a roles-pallet adapter in the runtime (`apply_roles`); a recorder in tests. The role analog of
+/// [`VotingPowerSink`], but set-valued.
 pub trait RoleSink<AccountId> {
-    fn set_roles(who: &AccountId, roles: &[(u8, RoleCredential)]);
+    fn set_roles(who: &AccountId, roles: &[(u8, RoleCredential, u128)]);
 }
 
 /// The claimed role credentials the node-side IDP scopes its db-sync role read to (so it reads only for
@@ -893,7 +903,7 @@ pub mod pallet {
             // account's FULL observed set, then clamp the accounts that dropped out to empty.
             let mut role_sets: alloc::collections::BTreeMap<
                 T::AccountId,
-                alloc::vec::Vec<(u8, RoleCredential)>,
+                alloc::vec::Vec<(u8, RoleCredential, u128)>,
             > = alloc::collections::BTreeMap::new();
             for entry in role_entries.iter() {
                 // credential → account via the reverse map named by `source` (unresolved ⇒ skip, not error).
@@ -907,10 +917,12 @@ pub mod pallet {
                 // multi-pool operator's Calidus entries collapse to ONE generic SPO badge; DISTINCT OWNED
                 // pools (SpoOwner, id = poolID) each yield their own pool-named SPO badge. first-wins in the
                 // deterministic `role_entries` order, so the per-account set stays byte-stable across nodes.
-                if set.iter().any(|(k, v)| *k == kind && *v == entry.id) {
+                // The chamber `weight` rides with the (kind, id) — it is deterministic per id, so first-wins
+                // keeps the canonical value.
+                if set.iter().any(|(k, v, _w)| *k == kind && *v == entry.id) {
                     continue;
                 }
-                set.push((kind, entry.id));
+                set.push((kind, entry.id, entry.weight));
             }
             let mut role_credited: u32 = 0;
             let mut role_current: BoundedVec<T::AccountId, T::MaxObserved> = BoundedVec::new();

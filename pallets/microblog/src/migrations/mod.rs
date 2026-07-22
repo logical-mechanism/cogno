@@ -22,6 +22,14 @@
 //! `v6` (spec 205) re-encodes every vote / tally / poll row to DROP the stored weight (keeping only the
 //! exact counts) and appends `Poll.close_at = None` — dynamic stake voting derives the weighted score
 //! live at read time instead of freezing it at cast time.
+//!
+//! `v7` (spec 207) appends `Poll.kind = Stake` to every poll — governance polls (the SPO + dRep chambers)
+//! add a `kind` discriminant, and every existing poll is a regular stake poll. The chamber tallies are a
+//! read-time addition, not stored, so `Poll` is the only storage item touched.
+//!
+//! `v8` (spec 208) appends the frozen SPO/dRep chamber snapshot to every `PollResult`, so `close_poll`
+//! freezes a governance poll's chambers instead of leaving them to re-price live at read time. Existing
+//! (Stake) results migrate to empty snapshots; `PollResult` is the only storage item touched.
 
 pub mod v1;
 pub mod v2;
@@ -29,3 +37,5 @@ pub mod v3;
 pub mod v4;
 pub mod v5;
 pub mod v6;
+pub mod v7;
+pub mod v8;

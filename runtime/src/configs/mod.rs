@@ -91,9 +91,24 @@ parameter_types! {
 /// drop the stored weight (keeping the counts) and defaults `Poll.close_at = None`. `MigrateV4ToV5` is kept
 /// (never replaced) as the self-skipping guard for any node still at v4 — each `VersionedMigration` runs
 /// only when the on-chain version matches its `from`, so the tuple is safe to grow.
+///
+/// spec 207 APPENDS two more (governance polls): `MigrateV6ToV7` appends `Poll.kind = Stake` to every poll,
+/// and `pallet_cardano_roles::migrations::MigrateV0ToV1` appends the chamber `weight = 0` to every
+/// `ObservedRole` (the observer re-derives the live delegated stake next block). Both are
+/// `VersionedMigration`-guarded and no-op on empty state, so a chain that gains the roles pallet in the same
+/// upgrade migrates a fresh (empty) `ObservedRoles` harmlessly.
+///
+/// spec 208 APPENDS `MigrateV7ToV8`: `close_poll` now FREEZES a governance poll's SPO/dRep chambers, so
+/// `PollResult` grows four chamber-snapshot vecs; the migration re-encodes every `PollResults` row with
+/// empty snapshots (no-op on the live chain, which has no `PollResults` rows).
 type SingleBlockMigrations = (
     pallet_microblog::migrations::v5::MigrateV4ToV5<Runtime>,
     pallet_microblog::migrations::v6::MigrateV5ToV6<Runtime>,
+    pallet_microblog::migrations::v7::MigrateV6ToV7<Runtime>,
+    pallet_cardano_roles::migrations::MigrateV0ToV1<Runtime>,
+    // spec 208: freeze the SPO/dRep chambers into `PollResult` (`PollResults` re-encode, empty snapshots
+    // on existing rows — a no-op on the live chain, which has none). See `migrations::v8`.
+    pallet_microblog::migrations::v8::MigrateV7ToV8<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -778,7 +793,40 @@ impl pallet_microblog::Config for Runtime {
     // The staker set for the LIVE weighted-tally join = the observer's currently-credited accounts. Bounded
     // by `MaxObserved`; exactly the set of accounts with non-zero `VotingPower`. See `ObservedStakers`.
     type StakerSet = ObservedStakers;
+    // Governance-poll chambers (spec 207): read each voter's observed roles + delegated-stake weight from
+    // pallet-cardano-roles' `ObservedRoles`. See `ChamberRolesProvider`.
+    type ChamberRoles = ChamberRolesProvider;
+    // The staker set AND the role-holder set are both bounded by the observer's `MaxObserved`; `close_poll`
+    // uses this to declare its worst-case weight (then refunds to the rows actually scanned). Single source.
+    type MaxObservedAccounts = <Runtime as pallet_cardano_observer::Config>::MaxObserved;
     type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
+}
+
+/// Observed-role provider for pallet-microblog's GOVERNANCE-POLL chambers (spec 207): each voter's live
+/// role set + chamber weight, read from pallet-cardano-roles' observer-written `ObservedRoles` and lowered
+/// to the primitive `(kind_index, display_id, delegated_stake)` triples microblog consumes (it cannot name
+/// the on-wire `ObservedRole` type there without a Cargo cycle). Mirrors how `observed_role_pairs`
+/// (apis.rs) folds roles into the badge — only read off-chain, for a `PollKind::Governance` poll.
+pub struct ChamberRolesProvider;
+impl pallet_microblog::ChamberRoles<AccountId> for ChamberRolesProvider {
+    fn roles_of(who: &AccountId) -> alloc::vec::Vec<(u8, [u8; 28], u128)> {
+        pallet_cardano_roles::Pallet::<Runtime>::observed_roles(who)
+            .into_iter()
+            .map(|r| (r.kind.index(), r.id, r.weight))
+            .collect()
+    }
+    // The observed role-holder set — the `ObservedRoles` keys. Bounded by the observer's `MaxObserved` (it
+    // clears every account that drops out), and defensively capped at that same bound so the on-chain
+    // chamber freeze (`close_poll`) stays O(`MaxObserved`) even against a map with stale rows — mirroring
+    // `ObservedStakers::stakers`.
+    fn role_holders() -> alloc::vec::Vec<AccountId> {
+        let cap = <<Runtime as pallet_cardano_observer::Config>::MaxObserved as frame_support::traits::Get<
+            u32,
+        >>::get() as usize;
+        pallet_cardano_roles::ObservedRoles::<Runtime>::iter_keys()
+            .take(cap)
+            .collect()
+    }
 }
 
 /// Staker-set provider for pallet-microblog's live weighted-tally join: the accounts the `cardano-observer`
@@ -953,21 +1001,29 @@ impl pallet_cardano_observer::RoleResolver<AccountId> for RoleLookup {
 /// clears the row when the set is empty (the observer's unlock clamp).
 pub struct RoleApply;
 impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
-    fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28])]) {
+    fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28], u128)]) {
         use pallet_cardano_roles::{ObservedRole, ObservedRoleSet, RoleKind};
         // Build the bounded set by pushing until full, TRUNCATING not clearing: an account with more
         // observed badges than the cap keeps the first N (the observer passes them in a deterministic
         // order). The old `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
         // wiped the ENTIRE set to empty; `try_push`-until-`Err` keeps a determinstic prefix instead.
+        // `weight` (spec 207) is the governance-poll chamber weight, carried through verbatim.
         let mut bounded = ObservedRoleSet::default();
-        for (kind_ix, id) in roles {
+        for (kind_ix, id, weight) in roles {
             let kind = match kind_ix {
                 0 => RoleKind::Spo,
                 1 => RoleKind::DRep,
                 2 => RoleKind::Committee,
                 _ => continue,
             };
-            if bounded.try_push(ObservedRole { kind, id: *id }).is_err() {
+            if bounded
+                .try_push(ObservedRole {
+                    kind,
+                    id: *id,
+                    weight: *weight,
+                })
+                .is_err()
+            {
                 break; // at the cap — keep the first N (deterministic), drop the rest
             }
         }

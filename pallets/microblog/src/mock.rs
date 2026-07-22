@@ -61,6 +61,37 @@ impl pallet_microblog::StakerSet<u64> for MockStakerSet {
     }
 }
 
+/// One account's seeded observed chamber roles: `(kind_index, display_id, chamber_weight)` triples.
+type ChamberRoleRec = Vec<(u8, [u8; 28], u128)>;
+
+thread_local! {
+    /// Seeded observed chamber roles per account (spec 207). The real runtime reads pallet-cardano-roles'
+    /// `ObservedRoles`; here a governance-poll test seeds them directly via [`set_chamber_roles`]. Empty ⇒
+    /// no roles (a stake poll's chambers stay all-zero).
+    static CHAMBER_ROLES: RefCell<std::collections::BTreeMap<u64, ChamberRoleRec>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Mock chamber-role provider — returns whatever [`set_chamber_roles`] seeded for the account, and the
+/// seeded accounts as the bounded role-holder set the on-chain chamber tally iterates.
+pub struct MockChamberRoles;
+impl pallet_microblog::ChamberRoles<u64> for MockChamberRoles {
+    fn roles_of(who: &u64) -> ChamberRoleRec {
+        CHAMBER_ROLES.with(|m| m.borrow().get(who).cloned().unwrap_or_default())
+    }
+    fn role_holders() -> Vec<u64> {
+        CHAMBER_ROLES.with(|m| m.borrow().keys().copied().collect())
+    }
+}
+
+/// Seed `who`'s observed chamber roles (`(kind_index, display_id, chamber_weight)`) for a governance-poll
+/// chamber-tally test. `kind_index`: 0 = SPO, 1 = dRep, 2 = CC.
+pub fn set_chamber_roles(who: u64, roles: ChamberRoleRec) {
+    CHAMBER_ROLES.with(|m| {
+        m.borrow_mut().insert(who, roles);
+    });
+}
+
 frame_support::construct_runtime!(
     pub enum Test {
         System: frame_system,
@@ -101,6 +132,8 @@ impl pallet_microblog::Config for Test {
     type IdentityGate = MockIdentityGate;
     type ForeignCost = MockForeignCost;
     type StakerSet = MockStakerSet;
+    type ChamberRoles = MockChamberRoles;
+    type MaxObservedAccounts = ConstU32<64>;
     type WeightInfo = ();
 }
 

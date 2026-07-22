@@ -8,8 +8,8 @@
 
 use crate::{
     mock::*, AccountVoteTally, AccountVotes, ByAuthor, Capacity, Error, Event, FollowerCount,
-    Following, FollowingCount, NextPostId, NextTopLevelSeq, PollTally, PollVotes, Polls, Posts,
-    RepliesByParent, ReplyCount, TopLevelByAuthor, TopLevelPosts, VoteDir, VoteTally, Votes,
+    Following, FollowingCount, NextPostId, NextTopLevelSeq, PollKind, PollTally, PollVotes, Polls,
+    Posts, RepliesByParent, ReplyCount, TopLevelByAuthor, TopLevelPosts, VoteDir, VoteTally, Votes,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -150,6 +150,7 @@ fn top_level_and_quote_posts_do_not_touch_reply_aggregates() {
             b"poll?".to_vec(),
             vec![b"a".to_vec(), b"b".to_vec()],
             None,
+            PollKind::Stake
         ));
 
         // None of these are replies, so the reply aggregates stay empty.
@@ -928,6 +929,7 @@ fn create_poll_makes_a_post_and_stores_options() {
             b"best chain?".to_vec(),
             opts(3),
             None,
+            PollKind::Stake
         ));
         // The poll's question is an ordinary post (so it threads/quotes + shows in the feed).
         let p = Posts::<Test>::get(0).expect("host post exists");
@@ -949,7 +951,13 @@ fn create_poll_needs_at_least_two_options() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         assert_noop!(
-            Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(1), None),
+            Microblog::create_poll(
+                RuntimeOrigin::signed(1),
+                b"q".to_vec(),
+                opts(1),
+                None,
+                PollKind::Stake
+            ),
             Error::<Test>::NotEnoughOptions
         );
         assert_eq!(NextPostId::<Test>::get(), 0);
@@ -962,7 +970,13 @@ fn create_poll_rejects_too_many_options() {
         System::set_block_number(1);
         // MaxPollOptions = 4 in the mock.
         assert_noop!(
-            Microblog::create_poll(RuntimeOrigin::signed(1), b"q".to_vec(), opts(5), None),
+            Microblog::create_poll(
+                RuntimeOrigin::signed(1),
+                b"q".to_vec(),
+                opts(5),
+                None,
+                PollKind::Stake
+            ),
             Error::<Test>::TooManyOptions
         );
     });
@@ -979,6 +993,7 @@ fn create_poll_rejects_overlong_option() {
                 b"q".to_vec(),
                 vec![b"ok".to_vec(), long],
                 None,
+                PollKind::Stake
             ),
             Error::<Test>::OptionTooLong
         );
@@ -999,6 +1014,7 @@ fn cast_poll_vote_counts_and_reprices_live_on_recast() {
             b"q".to_vec(),
             opts(3),
             None,
+            PollKind::Stake
         ));
         // Account 2 votes option 0 at weight 100. Count is stored; weight is derived live.
         TalkStake::apply_voting_power(&2, 100);
@@ -1046,6 +1062,7 @@ fn cast_poll_vote_rejects_non_poll_and_bad_option() {
             b"q".to_vec(),
             opts(2),
             None,
+            PollKind::Stake
         ));
         assert_noop!(
             Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 1, 2), // poll id 1 has options 0,1
@@ -1064,6 +1081,7 @@ fn poll_close_rejects_votes_and_freezes_result() {
             b"q".to_vec(),
             opts(2),
             Some(10),
+            PollKind::Stake
         ));
         TalkStake::apply_voting_power(&2, 100);
         TalkStake::apply_voting_power(&3, 200);
@@ -1113,6 +1131,7 @@ fn close_poll_rejects_floating_and_missing_polls() {
             b"q".to_vec(),
             opts(2),
             None,
+            PollKind::Stake
         ));
         assert_noop!(
             Microblog::close_poll(RuntimeOrigin::signed(2), 0),
@@ -1142,6 +1161,7 @@ fn close_poll_with_no_votes_freezes_an_all_zero_result() {
             b"q".to_vec(),
             opts(3),
             Some(5),
+            PollKind::Stake
         ));
         System::set_block_number(5);
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
@@ -1158,6 +1178,286 @@ fn close_poll_with_no_votes_freezes_an_all_zero_result() {
         for o in &view.options {
             assert_eq!((o.weight, o.count), (0, 0));
         }
+    });
+}
+
+// ── governance polls (spec 207): the SPO + dRep chambers ─────────────────────────────────────────────
+
+const POOL_P: [u8; 28] = [0xAA; 28];
+const POOL_Q: [u8; 28] = [0xBB; 28];
+const DREP_D: [u8; 28] = [0xDD; 28];
+
+#[test]
+fn governance_poll_reports_spo_and_drep_chambers_deduped_by_pool() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // Voters need VotingPower to carry the HOLDER lens; the chambers come from their observed roles.
+        for who in [10u64, 11, 12, 13] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"ratify?".to_vec(),
+            vec![b"yes".to_vec(), b"no".to_vec()],
+            None,
+            PollKind::Governance,
+        ));
+        let host = 0u64;
+        // Pool P (15M ADA) is CO-OWNED by 10 and 11; pool Q (5M) by 12; dRep D (7M) is held by 13.
+        set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]);
+        set_chamber_roles(11, vec![(0, POOL_P, 15_000_000)]); // same pool as 10
+        set_chamber_roles(12, vec![(0, POOL_Q, 5_000_000)]);
+        set_chamber_roles(13, vec![(1, DREP_D, 7_000_000)]);
+        // Votes: 10→yes, 11→yes (same pool + same option ⇒ P counts ONCE), 12→no, 13→yes.
+        assert_ok!(Microblog::cast_poll_vote(
+            RuntimeOrigin::signed(10),
+            host,
+            0
+        ));
+        assert_ok!(Microblog::cast_poll_vote(
+            RuntimeOrigin::signed(11),
+            host,
+            0
+        ));
+        assert_ok!(Microblog::cast_poll_vote(
+            RuntimeOrigin::signed(12),
+            host,
+            1
+        ));
+        assert_ok!(Microblog::cast_poll_vote(
+            RuntimeOrigin::signed(13),
+            host,
+            0
+        ));
+
+        let view = Microblog::poll(host).expect("poll exists");
+        assert_eq!(view.kind, 1, "governance poll");
+        // HOLDER lens (own VotingPower, unchanged behaviour): yes = 10+11+13 = 300; no = 12 = 100.
+        assert_eq!((view.options[0].weight, view.options[0].count), (300, 3));
+        assert_eq!((view.options[1].weight, view.options[1].count), (100, 1));
+        // SPO chamber: yes → pool P (15M) counted ONCE despite two owners; no → pool Q (5M).
+        assert_eq!(
+            (view.options[0].spo_weight, view.options[0].spo_count),
+            (15_000_000, 1)
+        );
+        assert_eq!(
+            (view.options[1].spo_weight, view.options[1].spo_count),
+            (5_000_000, 1)
+        );
+        // dRep chamber: yes → D (7M); no → none.
+        assert_eq!(
+            (view.options[0].drep_weight, view.options[0].drep_count),
+            (7_000_000, 1)
+        );
+        assert_eq!(
+            (view.options[1].drep_weight, view.options[1].drep_count),
+            (0, 0)
+        );
+    });
+}
+
+#[test]
+fn co_owners_split_makes_the_pool_abstain_and_stake_polls_have_no_chambers() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for who in [10u64, 11] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        // A GOVERNANCE poll where the two co-owners of pool P disagree.
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            vec![b"yes".to_vec(), b"no".to_vec()],
+            None,
+            PollKind::Governance,
+        ));
+        set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]);
+        set_chamber_roles(11, vec![(0, POOL_P, 15_000_000)]);
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0)); // yes
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 1)); // no
+        let gov = Microblog::poll(0).expect("poll");
+        // Owners split ⇒ the pool casts no chamber vote at all (its weight is dropped, not assigned).
+        assert_eq!(gov.options[0].spo_weight, 0);
+        assert_eq!(gov.options[1].spo_weight, 0);
+        assert_eq!(gov.options[0].spo_count, 0);
+        assert_eq!(gov.options[1].spo_count, 0);
+
+        // A STAKE poll (the default) never surfaces chambers, even when the voter holds a role.
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"plain?".to_vec(),
+            vec![b"a".to_vec(), b"b".to_vec()],
+            None,
+            PollKind::Stake,
+        ));
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 1, 0));
+        let plain = Microblog::poll(1).expect("poll");
+        assert_eq!(plain.kind, 0);
+        assert_eq!(plain.options[0].weight, 100); // holder lens still works
+        for o in &plain.options {
+            assert_eq!(
+                (o.spo_weight, o.spo_count, o.drep_weight, o.drep_count),
+                (0, 0, 0, 0)
+            );
+        }
+    });
+}
+
+#[test]
+fn governance_poll_skips_zero_weight_roles() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for who in [10u64, 11, 12, 13, 14] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            vec![b"yes".to_vec(), b"no".to_vec()],
+            None,
+            PollKind::Governance,
+        ));
+        let host = 0u64;
+        // One genuinely-delegated role per chamber, plus three ZERO-weight roles that must contribute
+        // NOTHING (the `if weight == 0 { continue }` skip): a blank Calidus SPO (names no pool → id all-zero),
+        // an undelegated owned pool, and an undelegated dRep.
+        set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]); // real SPO → "yes"
+        set_chamber_roles(11, vec![(0, [0u8; 28], 0)]); // blank Calidus SPO (weight 0) → "yes"
+        set_chamber_roles(12, vec![(0, POOL_Q, 0)]); // undelegated owned pool (weight 0) → "no"
+        set_chamber_roles(13, vec![(1, DREP_D, 0)]); // undelegated dRep (weight 0) → "yes"
+        set_chamber_roles(14, vec![(1, [0xEE; 28], 7_000_000)]); // real dRep → "no"
+        for (who, opt) in [(10u64, 0u8), (11, 0), (12, 1), (13, 0), (14, 1)] {
+            assert_ok!(Microblog::cast_poll_vote(
+                RuntimeOrigin::signed(who),
+                host,
+                opt
+            ));
+        }
+
+        let view = Microblog::poll(host).expect("poll exists");
+        // SPO chamber: only the delegated pool P (15M) counts; the blank Calidus and the undelegated pool
+        // are skipped — so "no" has NO pool despite voter 12 holding a (zero-weight) SPO role.
+        assert_eq!(
+            (view.options[0].spo_weight, view.options[0].spo_count),
+            (15_000_000, 1)
+        );
+        assert_eq!(
+            (view.options[1].spo_weight, view.options[1].spo_count),
+            (0, 0)
+        );
+        // dRep chamber: only the delegated dRep (7M, on "no"); the undelegated dRep on "yes" is skipped.
+        assert_eq!(
+            (view.options[0].drep_weight, view.options[0].drep_count),
+            (0, 0)
+        );
+        assert_eq!(
+            (view.options[1].drep_weight, view.options[1].drep_count),
+            (7_000_000, 1)
+        );
+        // The HOLDER lens still counts EVERY voter regardless of chamber weight: yes = 10+11+13 = 300,
+        // no = 12+14 = 200.
+        assert_eq!((view.options[0].weight, view.options[0].count), (300, 3));
+        assert_eq!((view.options[1].weight, view.options[1].count), (200, 2));
+    });
+}
+
+#[test]
+fn finalized_governance_poll_freezes_both_holder_lens_and_chambers() {
+    // spec 208: `close_poll` freezes the SPO/dRep chambers into `PollResult` alongside the holder lens, so
+    // a concluded governance poll's chambers can no longer be retroactively re-priced by moving delegation
+    // — the same guarantee the holder lens already had against an unstake. This test moves BOTH the holder
+    // stake and the observed delegated stake AFTER finalization and asserts NEITHER lens changes.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        TalkStake::apply_voting_power(&10, 100);
+        TalkStake::apply_voting_power(&11, 200);
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"ratify?".to_vec(),
+            vec![b"yes".to_vec(), b"no".to_vec()],
+            Some(10),
+            PollKind::Governance,
+        ));
+        set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]); // SPO → "yes"
+        set_chamber_roles(11, vec![(1, DREP_D, 7_000_000)]); // dRep → "no"
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 1));
+
+        // Freeze the poll at its deadline.
+        System::set_block_number(10);
+        assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
+        assert!(crate::PollResults::<Test>::contains_key(0));
+
+        let frozen = Microblog::poll(0).expect("poll");
+        assert_eq!(frozen.kind, 1, "kind survives finalization");
+        assert_eq!(
+            (frozen.options[0].weight, frozen.options[0].count),
+            (100, 1)
+        );
+        assert_eq!(
+            (frozen.options[1].weight, frozen.options[1].count),
+            (200, 1)
+        );
+        // Chambers were frozen at close: pool P (15M) on "yes", dRep D (7M) on "no".
+        assert_eq!(
+            (frozen.options[0].spo_weight, frozen.options[0].spo_count),
+            (15_000_000, 1)
+        );
+        assert_eq!(
+            (frozen.options[1].drep_weight, frozen.options[1].drep_count),
+            (7_000_000, 1)
+        );
+
+        // After the freeze, move BOTH the holder stake AND the observed delegated stake behind each role.
+        TalkStake::apply_voting_power(&10, 999); // holder re-stake …
+        set_chamber_roles(10, vec![(0, POOL_P, 1_000_000)]); // … pool P sheds delegation …
+        set_chamber_roles(11, vec![(1, DREP_D, 2_000_000)]); // … dRep D sheds delegation.
+
+        let after = Microblog::poll(0).expect("poll");
+        // BOTH lenses are FROZEN — neither re-prices to the post-close changes.
+        assert_eq!((after.options[0].weight, after.options[0].count), (100, 1));
+        assert_eq!(
+            after.options[0].spo_weight, 15_000_000,
+            "frozen SPO chamber must not re-price after close"
+        );
+        assert_eq!(
+            after.options[1].drep_weight, 7_000_000,
+            "frozen dRep chamber must not re-price after close"
+        );
+    });
+}
+
+#[test]
+fn close_poll_refunds_weight_and_freezes_chambers() {
+    // spec 208: close_poll declares a worst-case weight sized for a FULL observed set (both O(MaxObserved)
+    // joins) and then REFUNDS via `actual_weight` down to the rows it actually scanned. This locks that the
+    // refund is WIRED — a bare `Ok` leaves `actual_weight = None`, whereas the refund always sets it.
+    // (The mock's `DbWeight` is zero, so the reads-based surcharge can't be shown by magnitude here; the
+    // presence of `actual_weight` is the behavioural lock. `actual ≤ declared` holds by construction — the
+    // scanned set is ≤ `MaxObservedAccounts`.)
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        TalkStake::apply_voting_power(&10, 100);
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"gov?".to_vec(),
+            vec![b"yes".to_vec(), b"no".to_vec()],
+            Some(5),
+            PollKind::Governance,
+        ));
+        set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]);
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
+        System::set_block_number(5);
+
+        let post = Microblog::close_poll(RuntimeOrigin::signed(2), 0).expect("closes");
+        assert!(
+            post.actual_weight.is_some(),
+            "close_poll must refund via actual_weight (not a bare Ok)"
+        );
+        // And the freeze happened (chambers stored, non-empty for this governance poll with a voter).
+        assert!(
+            crate::PollResults::<Test>::get(0).is_some_and(|r| !r.option_spo_weights.is_empty())
+        );
     });
 }
 
@@ -1982,6 +2282,7 @@ mod capacity_extension {
                     question: vec![0u8; 5],
                     options: vec![],
                     close_at: None,
+                    kind: PollKind::Stake
                 }),
                 Some(105)
             ); // post_cost
@@ -2413,6 +2714,7 @@ mod migration_v4 {
                 b"p".to_vec(),
                 vec![b"x".to_vec(), b"y".to_vec()],
                 None,
+                PollKind::Stake
             ));
             let mut spine: Vec<(u64, u64)> = TopLevelPosts::<Test>::iter().collect();
             spine.sort();
@@ -2953,6 +3255,7 @@ mod node_reads {
                 b"poll?".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
                 None,
+                PollKind::Stake
             ));
 
             let page = Microblog::feed_page(None, 10, None);
@@ -3112,6 +3415,7 @@ mod node_reads {
                 b"poll?".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
                 None,
+                PollKind::Stake
             ));
 
             // Three top-level posts (root + quote + poll); the reply is excluded from the spine.
@@ -3248,6 +3552,7 @@ mod node_reads {
                 b"fav?".to_vec(),
                 vec![b"red".to_vec(), b"blue".to_vec()],
                 None,
+                PollKind::Stake
             ));
             pallet_talk_stake::VotingPower::<Test>::insert(2u64, 300u128);
             pallet_talk_stake::VotingPower::<Test>::insert(3u64, 200u128);
@@ -3284,6 +3589,7 @@ mod node_reads {
                 b"q".to_vec(),
                 vec![b"x".to_vec(), b"y".to_vec()],
                 None,
+                PollKind::Stake
             ));
             assert_eq!(Microblog::poll_choice(2, host), None); // not voted yet
             assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), host, 1));
@@ -3340,7 +3646,7 @@ mod node_reads {
 #[cfg(test)]
 mod invariant_props {
     use crate::mock::*;
-    use crate::{FollowerCount, Followers, PollResults, VoteCounts, VoteDir, VoteTally};
+    use crate::{FollowerCount, Followers, PollKind, PollResults, VoteCounts, VoteDir, VoteTally};
     use frame_support::assert_ok;
     use proptest::prelude::*;
 
@@ -3425,6 +3731,7 @@ mod invariant_props {
             b"poll?".to_vec(),
             vec![b"a".to_vec(), b"b".to_vec()],
             None,
+            PollKind::Stake
         ));
         assert_ok!(Microblog::post_message(
             RuntimeOrigin::signed(1),
@@ -3515,6 +3822,7 @@ mod invariant_props {
                 b"q".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
                 Some(10),
+                PollKind::Stake
             ));
             TalkStake::apply_voting_power(&2, 100);
             TalkStake::apply_voting_power(&3, 50);

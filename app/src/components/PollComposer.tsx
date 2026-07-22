@@ -37,10 +37,16 @@ export interface PollComposerProps {
   needsVotingPower?: boolean;
   autoFocus?: boolean;
   /**
-   * Hand back the trimmed args; the surface calls mutations.submitCreatePoll(question, options, closeAt).
-   * `closeInDays` is `undefined` for a floating (no-deadline) poll.
+   * Hand back the trimmed args; the surface calls mutations.submitCreatePoll(question, options, closeAt,
+   * kind). `closeInDays` is `undefined` for a floating (no-deadline) poll; `kind` selects a regular stake
+   * poll ("Stake", the default) or a governance poll ("Governance", the SPO + dRep chambers).
    */
-  submitCreatePoll: (question: string, options: string[], closeInDays?: number) => void;
+  submitCreatePoll: (
+    question: string,
+    options: string[],
+    closeInDays?: number,
+    kind?: "Stake" | "Governance",
+  ) => void;
   /**
    * Flip back OUT of poll mode (to the plain composer). Optional: a surface that reaches PollComposer
    * one-way (Home, which opens the poll modal directly) omits it and shows no toggle. The in-modal
@@ -70,21 +76,23 @@ export function PollComposer({
   onTogglePoll,
 }: PollComposerProps) {
   const options = useMemo(() => normalize(pollDraft.options), [pollDraft.options]);
+  // Spread `...pollDraft` in every mutation so a change to one field (question / a choice / deadline /
+  // kind) preserves the others — notably the spec-207 `kind`.
 
   const setQuestion = useCallback(
-    (question: string) => onChange({ question, options, closeInDays: pollDraft.closeInDays }),
-    [onChange, options, pollDraft.closeInDays],
+    (question: string) => onChange({ ...pollDraft, question, options }),
+    [onChange, options, pollDraft],
   );
 
   const setCloseInDays = useCallback(
-    (days: number) =>
-      onChange({
-        question: pollDraft.question,
-        options,
-        // 0 = "No deadline" ⇒ a floating poll (undefined so the surface passes None).
-        closeInDays: days > 0 ? days : undefined,
-      }),
-    [onChange, options, pollDraft.question],
+    // 0 = "No deadline" ⇒ a floating poll (undefined so the surface passes None).
+    (days: number) => onChange({ ...pollDraft, options, closeInDays: days > 0 ? days : undefined }),
+    [onChange, options, pollDraft],
+  );
+
+  const setKind = useCallback(
+    (kind: PollDraft["kind"]) => onChange({ ...pollDraft, options, kind }),
+    [onChange, options, pollDraft],
   );
 
   const setOption = useCallback(
@@ -92,26 +100,22 @@ export function PollComposer({
       // Hard-block past 80 bytes at the code-point boundary (D1).
       const clamped = utf8Bytes(value) > MAX_POLL_OPTION_BYTES ? clampToBytes(value, MAX_POLL_OPTION_BYTES) : value;
       const next = options.map((o, idx) => (idx === i ? clamped : o));
-      onChange({ question: pollDraft.question, options: next, closeInDays: pollDraft.closeInDays });
+      onChange({ ...pollDraft, options: next });
     },
-    [onChange, options, pollDraft.question, pollDraft.closeInDays],
+    [onChange, options, pollDraft],
   );
 
   const addOption = useCallback(() => {
     if (options.length >= MAX_POLL_OPTIONS) return;
-    onChange({ question: pollDraft.question, options: [...options, ""], closeInDays: pollDraft.closeInDays });
-  }, [onChange, options, pollDraft.question, pollDraft.closeInDays]);
+    onChange({ ...pollDraft, options: [...options, ""] });
+  }, [onChange, options, pollDraft]);
 
   const removeOption = useCallback(
     (i: number) => {
       if (i < MIN_POLL_OPTIONS) return; // first two are mandatory
-      onChange({
-        question: pollDraft.question,
-        options: options.filter((_, idx) => idx !== i),
-        closeInDays: pollDraft.closeInDays,
-      });
+      onChange({ ...pollDraft, options: options.filter((_, idx) => idx !== i) });
     },
-    [onChange, options, pollDraft.question, pollDraft.closeInDays],
+    [onChange, options, pollDraft],
   );
 
   // Focus an option input after the controlled re-render commits (setTimeout, not this render's DOM).
@@ -161,9 +165,9 @@ export function PollComposer({
       if (out.length < MIN_POLL_OPTIONS) return; // guard (CTA should already be disabled)
       // draft.text is the question with any @mention display tokens serialized to `@<ss58>` (the base
       // Composer owns that). Use it, NOT the raw pollDraft.question, so poll questions mention correctly.
-      submitCreatePoll(draft.text, out, pollDraft.closeInDays);
+      submitCreatePoll(draft.text, out, pollDraft.closeInDays, pollDraft.kind);
     },
-    [options, submitCreatePoll, pollDraft.closeInDays],
+    [options, submitCreatePoll, pollDraft.closeInDays, pollDraft.kind],
   );
 
   const fieldset = (
@@ -214,6 +218,26 @@ export function PollComposer({
         {!enoughOptions && <span className={styles.hint}>Add at least 2 options.</span>}
         <span className={styles.srOnly} aria-live="polite">
           {MAX_POLL_OPTIONS - options.length} option slots remaining
+        </span>
+      </div>
+
+      <div className={styles.deadlineRow}>
+        <label className={styles.deadlineLabel} htmlFor="cg-poll-kind">
+          Poll type
+        </label>
+        <select
+          id="cg-poll-kind"
+          className={styles.deadline}
+          value={pollDraft.kind ?? "Stake"}
+          onChange={(e) => setKind(e.target.value as PollDraft["kind"])}
+        >
+          <option value="Stake">Stake — everyone votes</option>
+          <option value="Governance">Governance — SPO &amp; dRep chambers</option>
+        </select>
+        <span className={styles.hint}>
+          {pollDraft.kind === "Governance"
+            ? "Verified SPOs & dReps also weigh in with their delegated stake — a display-only Cardano temperature check."
+            : "A regular stake-weighted poll."}
         </span>
       </div>
 

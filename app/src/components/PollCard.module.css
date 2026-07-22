@@ -149,3 +149,98 @@
   cursor: default;
   opacity: 0.7;
 }
+
+/* ── Governance chambers (spec 207): the SPO + dRep delegated-stake lenses, shown beneath the holder
+   tally on a governance poll. Deliberately quieter than the main options — a supplementary, display-only
+   signal, never the headline result. ── */
+
+.govPill {
+  padding: 0 0.4em;
+  border: 1px solid var(--cg-accent);
+  border-radius: 999px;
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  line-height: 1.5;
+}
+
+.chambers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
+  margin-top: var(--cg-space-3);
+  padding-top: var(--cg-space-3);
+  border-top: 1px solid var(--cg-border);
+}
+
+.chamber {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+}
+
+.chamberHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cg-space-2);
+}
+
+.chamberTitle {
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+}
+
+.chamberMeta {
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.chamberBars {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+}
+
+.chamberRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
+.chamberLabel {
+  flex: 0 0 30%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chamberBarTrack {
+  flex: 1 1 auto;
+  height: 0.5rem;
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg-elevated);
+  overflow: hidden;
+}
+
+.chamberBar {
+  display: block;
+  height: 100%;
+  background: var(--cg-accent);
+  opacity: 0.55;
+  border-radius: var(--cg-radius-input);
+  transition: width var(--cg-motion-base) var(--cg-ease-out);
+}
+
+.chamberPct {
+  flex: 0 0 auto;
+  min-width: 2.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--cg-text);
+}

@@ -32,8 +32,8 @@
 //! stays as the self-skipping guard for any node still at v4.
 
 use crate::{
-    AccountVoteTally, AccountVotes, Config, OptionTally, Pallet, Poll, PollTally, PollVoteRecord,
-    PollVotes, Polls, VoteCounts, VoteDir, VoteRecord, VoteTally, Votes,
+    AccountVoteTally, AccountVotes, Config, OptionTally, Pallet, Poll, PollKind, PollTally,
+    PollVoteRecord, PollVotes, Polls, VoteCounts, VoteDir, VoteRecord, VoteTally, Votes,
 };
 use frame_support::{
     migrations::VersionedMigration,
@@ -167,11 +167,17 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV5ToV6<T> {
             Some(OptionTally { count: old.count })
         });
         // Polls: append `close_at: None` (existing polls float forever, the backward-compatible default).
+        // `translate` writes the CURRENT `Poll` type, which since spec 207 also carries `kind`. This v5→v6
+        // step therefore has to set it too — every pre-v7 poll is a regular stake poll. When this runs in a
+        // combined v5→v7 upgrade, the v6→v7 migration then re-reads these rows via its trailing-byte-
+        // tolerant `OldPoll` (options + close_at) and re-affirms the same `kind = Stake`; when the chain is
+        // already at v6 it reads genuine v6 rows. Either path lands on `kind = Stake`.
         Polls::<T>::translate::<OldPoll<T>, _>(|_id, old| {
             rows = rows.saturating_add(1);
             Some(Poll {
                 options: old.options,
                 close_at: None::<BlockNumberFor<T>>,
+                kind: PollKind::Stake,
             })
         });
 
