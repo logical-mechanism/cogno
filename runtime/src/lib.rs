@@ -80,7 +80,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // an optional `action` governance-action tag (CIP-1694 type + off-chain anchor link, microblog storage
     // v8 → v9), and `create_poll` gains an `action` argument (→ `transaction_version` 6). `PollView` gains
     // the four kinds + the `action` view.
-    spec_version: 209,
+    // spec 210: `verify_bind_proof_role` (cogno-gate CIP-8) also accepts the BARE 28-byte role credential a
+    // CIP-95 wallet embeds as the COSE "address" when signing with a dRep key (Eternl/Lace in-wallet role
+    // claims), in addition to a headered vkey-payment address. Verifier logic only — no call/storage/event
+    // change, so `transaction_version` STAYS 6 and the SCALE metadata is byte-identical.
+    spec_version: 210,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

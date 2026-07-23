@@ -385,15 +385,30 @@ fn role_payload(genesis: &[u8; 32], account: &[u8; 32], role: &str) -> Vec<u8> {
 /// with the fixed test ed25519 key — the same shape cardano-signer `--cip8 --address <enterprise>`
 /// emits (protected map {alg:-8, kid:pubkey, "address":addr}, empty unprotected, bstr payload, sig).
 fn build_role_proof(addr_header: u8, payload: &[u8]) -> (Vec<u8>, Vec<u8>, [u8; 28]) {
+    build_role_proof_with_addr(
+        |cred| {
+            let mut addr = vec![addr_header];
+            addr.extend_from_slice(cred);
+            if addr_header == 0x00 {
+                addr.extend_from_slice(&[0xb2u8; 28]); // arbitrary stake half for a base address
+            }
+            addr
+        },
+        payload,
+    )
+}
+
+/// As [`build_role_proof`], but the "address" bytes are produced by `make_addr(cred)` — so a test can
+/// embed the BARE 28-byte credential (a CIP-95 wallet's dRep signData form) instead of a headered address.
+fn build_role_proof_with_addr(
+    make_addr: impl FnOnce(&[u8; 28]) -> Vec<u8>,
+    payload: &[u8],
+) -> (Vec<u8>, Vec<u8>, [u8; 28]) {
     let pair = ed25519::Pair::from_seed(&[7u8; 32]);
     let public = pair.public();
     let pk: Vec<u8> = AsRef::<[u8]>::as_ref(&public).to_vec(); // 32 bytes
     let cred = blake2b_224(&pk);
-    let mut addr = vec![addr_header];
-    addr.extend_from_slice(&cred);
-    if addr_header == 0x00 {
-        addr.extend_from_slice(&[0xb2u8; 28]); // arbitrary stake half for a base address
-    }
+    let addr = make_addr(&cred);
     // protected content: map(3){ alg(1):-8, kid(4):pubkey, "address":addr }.
     let mut prot = vec![0xa3u8];
     prot.extend_from_slice(&[0x01, 0x27]); // alg = -8 (nint arg 7)
@@ -444,6 +459,53 @@ fn verifies_a_constructed_role_proof_enterprise_and_base() {
             assert_eq!(v.account, account, "commits the account");
             assert_eq!(v.genesis, genesis, "carries the genesis");
         }
+    });
+}
+
+#[test]
+fn verifies_a_role_proof_over_a_bare_28_byte_credential() {
+    ext().execute_with(|| {
+        let genesis = [0x27u8; 32];
+        let account = [0x30u8; 32];
+        // A CIP-95 wallet (Eternl) signing with a dRep key embeds the BARE 28-byte credential as the COSE
+        // "address" — no header byte. The role verifier binds it directly.
+        let (cose, key, cred) =
+            build_role_proof_with_addr(|c| c.to_vec(), &role_payload(&genesis, &account, "drep"));
+        let v = verify_bind_proof_role(&cose, &key, 0)
+            .expect("a bare-credential role proof must verify");
+        assert_eq!(v.role, RoleClass::DRep);
+        assert_eq!(
+            v.credential.as_slice(),
+            cred.as_slice(),
+            "binds the bare credential"
+        );
+        assert_eq!(v.account, account);
+        assert_eq!(v.genesis, genesis);
+        // The bare form carries no network nibble, so it is network-agnostic (verifies for any expected id).
+        assert!(
+            verify_bind_proof_role(&cose, &key, 1).is_ok(),
+            "a bare credential has no network to mismatch"
+        );
+    });
+}
+
+#[test]
+fn verifies_the_real_eternl_cip95_drep_proof() {
+    ext().execute_with(|| {
+        // A REAL Eternl (preprod) CIP-95 `signData` result over the `role/v1` payload, signed with the
+        // account's dRep key. The COSE "address" is the bare 28-byte dRep credential and the unprotected
+        // header carries `hashed:false`. Golden vector: this exact wallet output must keep verifying, and
+        // its credential must equal the dRep id `drep1ytah77nvma8thq037ynn9sqf59rpsjfpnq2a0rtltfnyvjchvqhux`.
+        // Single line, verbatim from the wallet (a flipped byte breaks the ed25519 check) — do not reflow.
+        let cose = hx("845829a201276761646472657373581cfb7f7a6cdf4ebb81f1f12732c009a1461849219815d78d7f5a66464ba166686173686564f458d6636f676e6f2d636861696e2f726f6c652f76313b67656e657369733d373365616134626635666163626233663866376337343739616564613838646565316539643564643631653466666239386266346366396161333035656630393b6163636f756e743d616339386436346134333138393437343462623632393734356538336636323235333664343564336431363131653165653930366438653161313765646132323b6e6f6e63653d38633233613036303866663633326330656362663462333430376563356637343b726f6c653d647265705840594b8f747f1498bc34f81d6df23bab60ae8cbb72a81243f733f6769e45894a2a1209c8934be4eac66bf8fa0e9fa6de29049045c579e64372e9dee661fd0ddd0d");
+        let key =
+            hx("a4010103272006215820a8b9f295b0a90030b753de569ba9470eb3e9803911a87246eb2898cad3402ea0");
+        let v = verify_bind_proof_role(&cose, &key, 0).expect("Eternl's real dRep proof must verify");
+        assert_eq!(v.role, RoleClass::DRep);
+        assert_eq!(
+            hexs(&v.credential),
+            "fb7f7a6cdf4ebb81f1f12732c009a1461849219815d78d7f5a66464b"
+        );
     });
 }
 

@@ -108,6 +108,12 @@ describe("paymentCredFromAddress — the wallet pre-flight's runtime-mirror addr
     expect(paymentCredFromAddress(bytes(`60${CRED}`), 0)).toBe(CRED);
   });
 
+  it("accepts the bare 28-byte credential a CIP-95 wallet embeds (no header, network-agnostic)", () => {
+    // Eternl's dRep signData address form. 28 bytes = the credential directly, any expected network.
+    expect(paymentCredFromAddress(bytes(CRED), 0)).toBe(CRED);
+    expect(paymentCredFromAddress(bytes(CRED), 1)).toBe(CRED);
+  });
+
   it("accepts a base vkey-payment address (type-0 / type-2, 57 bytes)", () => {
     expect(paymentCredFromAddress(bytes(`00${CRED}${STAKE}`), 0)).toBe(CRED); // vkey stake
     expect(paymentCredFromAddress(bytes(`20${CRED}${STAKE}`), 0)).toBe(CRED); // script stake

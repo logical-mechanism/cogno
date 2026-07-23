@@ -286,6 +286,10 @@ function candidateHexes(input: string): string[] {
  * enterprise address the offline command pins — so we check the credential, not the whole-address bytes.
  */
 export function paymentCredFromAddress(addr: Uint8Array, expectedNetwork: number): string | null {
+  // A CIP-95 wallet (Eternl) embeds the BARE 28-byte role credential as the "address" — no header byte,
+  // no network nibble. Accept it directly (the runtime does too, spec 210); length disambiguates it from a
+  // headered address (29 / 57 bytes, never 28).
+  if (addr.length === 28) return toHex(addr);
   if (addr.length < 29) return null;
   const header = addr[0];
   const addrType = header >> 4;
