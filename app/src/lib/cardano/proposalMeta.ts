@@ -60,6 +60,41 @@ export function proposalHttpUrl(anchorUrl: string): string | null {
   }
 }
 
+/** Hosts whose proposal doc we fetch EAGERLY (on render, to surface the title at a glance), because they're
+ *  neutral content hosts — a poll author can't use them to harvest a passive reader's IP: GitHub (raw / gist
+ *  / user-content), our IPFS gateway, and the well-known public IPFS gateways. Any OTHER (author-chosen)
+ *  host stays click-to-preview, so merely scrolling a timeline never pings it. Suffix-matched, so
+ *  `raw.githubusercontent.com` matches `githubusercontent.com` and `<cid>.ipfs.dweb.link` matches `dweb.link`.
+ *  Extend deliberately: every entry is a host trusted NOT to leak the reader's IP back to the poll author. */
+const NEUTRAL_HOSTS = [
+  "ipfs.io",
+  "dweb.link",
+  "cf-ipfs.com",
+  "cloudflare-ipfs.com",
+  "pinata.cloud",
+  "nftstorage.link",
+  "w3s.link",
+  "githubusercontent.com",
+  "github.com",
+] as const;
+
+/**
+ * True when the anchor resolves to a fetchable https URL on a NEUTRAL host (see `NEUTRAL_HOSTS`) — the polls
+ * whose title we surface at a glance (fetched on render). An author-controlled host returns false: its title
+ * appears only after an explicit Preview click, so scrolling a timeline can't leak the reader's IP to it.
+ * Pure; exported for the golden-vector test.
+ */
+export function isNeutralProposalHost(anchorUrl: string): boolean {
+  const url = proposalHttpUrl(anchorUrl);
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return NEUTRAL_HOSTS.some((h) => host === h || host.endsWith("." + h));
+  } catch {
+    return false;
+  }
+}
+
 /** Read a string field that may be a plain string or a JSON-LD `{ "@value": "…" }` object (CIP-100/108). */
 function ldString(v: unknown): string {
   if (typeof v === "string") return v;

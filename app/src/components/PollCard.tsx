@@ -186,24 +186,13 @@ export function PollCard({
       onKeyDown={onKeyDown}
     >
       {poll.action && (
-        <>
-          <div className={styles.govAction}>
-            <span className={styles.govActionType}>{GOV_ACTION_LABEL[poll.action.actionType]}</span>
-            {proposalUrl && (
-              <a
-                className={styles.govLink}
-                href={proposalUrl}
-                target="_blank"
-                rel="noopener noreferrer nofollow"
-                onClick={(e) => e.stopPropagation()}
-              >
-                View proposal ↗
-              </a>
-            )}
-          </div>
-          {/* Read the CIP-108 proposal contents IN the poll (on-demand), not just a link out. */}
-          <ProposalPreview action={poll.action} />
-        </>
+        // The whole governance-action tag: the CIP-1694 type pill + the on-demand inline proposal reader
+        // (or a single "View proposal ↗" fallback when the anchor can't be previewed in-browser).
+        <ProposalPreview
+          action={poll.action}
+          typeLabel={GOV_ACTION_LABEL[poll.action.actionType]}
+          openUrl={proposalUrl}
+        />
       )}
       {hasVotingRows && (
       <div className={styles.options}>

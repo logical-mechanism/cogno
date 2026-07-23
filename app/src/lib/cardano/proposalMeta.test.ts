@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { proposalHttpUrl, parseProposalDoc, resolveProposal } from "./proposalMeta";
+import {
+  proposalHttpUrl,
+  parseProposalDoc,
+  resolveProposal,
+  isNeutralProposalHost,
+} from "./proposalMeta";
 
 describe("proposalHttpUrl", () => {
   it("passes https through", () => {
@@ -21,6 +26,35 @@ describe("proposalHttpUrl", () => {
     expect(proposalHttpUrl("not a url")).toBeNull();
     expect(proposalHttpUrl("")).toBeNull();
     expect(proposalHttpUrl("ipfs://")).toBeNull();
+  });
+});
+
+describe("isNeutralProposalHost", () => {
+  it("accepts GitHub raw / gist / user-content", () => {
+    expect(isNeutralProposalHost("https://raw.githubusercontent.com/x/y/z.json")).toBe(true);
+    expect(isNeutralProposalHost("https://gist.githubusercontent.com/x/y/raw/z.json")).toBe(true);
+    expect(isNeutralProposalHost("https://github.com/x/y/blob/z.json")).toBe(true);
+  });
+  it("accepts our IPFS gateway and ipfs:// (which resolves there)", () => {
+    expect(isNeutralProposalHost("ipfs://bafyCID/doc.json")).toBe(true);
+    expect(isNeutralProposalHost("https://ipfs.io/ipfs/bafyCID")).toBe(true);
+  });
+  it("accepts well-known public IPFS gateways, incl. subdomain gateways", () => {
+    expect(isNeutralProposalHost("https://gateway.pinata.cloud/ipfs/bafyCID")).toBe(true);
+    expect(isNeutralProposalHost("https://bafyCID.ipfs.dweb.link/doc.json")).toBe(true);
+  });
+  it("rejects an author-controlled host (would leak a passive reader's IP)", () => {
+    expect(isNeutralProposalHost("https://evil.example/track?cid=x")).toBe(false);
+    expect(isNeutralProposalHost("https://ipfs.mypool.io/ipfs/bafyCID")).toBe(false);
+  });
+  it("rejects anything not fetchable in-browser (http mixed-content, junk)", () => {
+    expect(isNeutralProposalHost("http://raw.githubusercontent.com/x/y/z.json")).toBe(false);
+    expect(isNeutralProposalHost("not a url")).toBe(false);
+    expect(isNeutralProposalHost("")).toBe(false);
+  });
+  it("is not fooled by a lookalike host suffix", () => {
+    expect(isNeutralProposalHost("https://github.com.evil.example/x.json")).toBe(false);
+    expect(isNeutralProposalHost("https://notgithub.com/x.json")).toBe(false);
   });
 });
 
