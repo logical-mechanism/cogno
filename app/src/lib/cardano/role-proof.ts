@@ -18,6 +18,7 @@
 import { blake2b } from "blakejs";
 import { bech32 } from "bech32";
 import { hexToBytes } from "@/lib/util/hex";
+import { isUserRejection } from "@/lib/cardano/cip8";
 
 /** The domain separator + payload grammar the runtime verifier pins (cip8.rs::parse_role_payload):
  *  `cogno-chain/role/v1;genesis=<64hex>;account=<64hex>;nonce=<32hex>;role=<spo|drep|cc>`. Distinct from
@@ -385,5 +386,66 @@ export async function preflightRolePasteback(
     return { ok: true, coseSign1, coseKey };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** CIP-129 header byte for a KEY-based dRep credential (0x22 = dRep + key-hash). */
+const CIP129_DREP_KEY = 0x22;
+
+/** Encode a 28-byte credential (56 hex) as a CIP-129 `drep1…` id. Used only to hand a wallet a well-formed
+ *  DRepID when the user pasted a non-bech32 form — MeshJS routes `signData(payload, "drep1…")` to CIP-95 by
+ *  the `drep1` prefix, so we always pass it a `drep1…`. Pure. */
+export function encodeDrepId(credentialHex: string): string {
+  const cred = normHex(credentialHex);
+  if (!/^[0-9a-f]{56}$/.test(cred)) throw new Error("credential is not a 28-byte (56 hex) key hash");
+  const bytes = Uint8Array.from([CIP129_DREP_KEY, ...hexToBytes(cred)]);
+  return bech32.encode("drep", bech32.toWords(bytes), 128);
+}
+
+/**
+ * IN-BROWSER role proof via a CIP-95 wallet (the wallet-pops-up path — no offline `cardano-signer`). Enables
+ * the wallet WITH the CIP-95 extension, signs the pinned `role/v1` payload with the account's dRep key
+ * (`cip95.signData`, reached via MeshJS's `signData(payload, "drep1…")` routing), and runs the SAME paste-back
+ * pre-flight the offline path uses. Returns the two COSE blobs to submit, or a structured error (never throws)
+ * — a wallet without CIP-95 / a declined prompt / a mismatched key each degrades to a specific, actionable
+ * message so the card can fall back to the offline command. dRep only: a Calidus pool key isn't in a wallet.
+ */
+export async function produceRoleProofWallet(opts: {
+  walletId: string;
+  /** the already-built request (payload + synthetic address + credential) to sign + verify against. */
+  request: RoleProofRequest;
+  /** the pasted key input — a `drep1…` id is passed straight through; any other form is re-encoded to one. */
+  keyInput: string;
+}): Promise<RolePasteback> {
+  try {
+    const { BrowserWallet } = await import("@meshsdk/core");
+    // Request the CIP-95 governance extension — without it the wallet exposes no dRep key / signData.
+    const wallet = await BrowserWallet.enable(opts.walletId, [{ cip: 95 }]);
+    if ((await wallet.getNetworkId()) !== 0) {
+      return { ok: false, error: "wrong network: switch your wallet to preprod (testnet), then reconnect" };
+    }
+    // Capability gate: a wallet without CIP-95 returns no dRep key → point at the offline command.
+    const pubDRep = await wallet.getPubDRepKey().catch(() => undefined);
+    if (!pubDRep) {
+      return {
+        ok: false,
+        error: "this wallet doesn't offer in-wallet dRep signing (CIP-95) — use the offline command instead",
+      };
+    }
+    // Hand the wallet a well-formed drep1… (so MeshJS routes to cip95.signData) and the pinned payload.
+    const raw = opts.keyInput.trim();
+    const drepId = raw.toLowerCase().startsWith("drep1") ? raw : encodeDrepId(opts.request.credentialHex);
+    const sig = (await wallet.signData(opts.request.payload, drepId)) as { signature: string; key: string };
+    // Reuse the offline path's pre-flight verbatim — validates payload/address/credential/bounds byte-for-byte.
+    return await preflightRolePasteback(JSON.stringify(sig), opts.request);
+  } catch (e) {
+    if (isUserRejection(e)) return { ok: false, error: "signing was cancelled in the wallet" };
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("cogno: produceRoleProofWallet failed:", msg);
+    // A missing cip95 surfaces as a TypeError on `.signData` — steer to the fallback rather than a raw error.
+    if (/cip95|signData|undefined/i.test(msg)) {
+      return { ok: false, error: "this wallet couldn't sign with the dRep key (CIP-95) — use the offline command instead" };
+    }
+    return { ok: false, error: msg };
   }
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { bech32 } from "bech32";
-import { deriveRoleCredential } from "./role-proof";
+import { deriveRoleCredential, encodeDrepId } from "./role-proof";
 
 // deriveRoleCredential is the pure, MeshJS-free half of the role-proof flow (blakejs only): it turns an
 // operator's entered Calidus key into the 28-byte credential the synthetic address commits. A bug here
@@ -84,5 +84,16 @@ describe("deriveRoleCredential — bech32 (wallet-facing) forms", () => {
 
   it("rejects a drep1… pasted into the SPO (Calidus) field", () => {
     expect(() => deriveRoleCredential(DREP_ID, "spo")).toThrow(/not a Calidus key/);
+  });
+
+  it("encodeDrepId re-encodes a credential to the exact CIP-129 drep1… id (round-trips)", () => {
+    // Used to hand a CIP-95 wallet a well-formed drep1… when the user pasted a non-bech32 form.
+    expect(encodeDrepId(DREP_CRED)).toBe(DREP_ID);
+    expect(encodeDrepId(`0x${DREP_CRED}`)).toBe(DREP_ID);
+    expect(deriveRoleCredential(encodeDrepId(DREP_CRED), "drep").credentialHex).toBe(DREP_CRED);
+  });
+
+  it("encodeDrepId rejects a non-28-byte credential", () => {
+    expect(() => encodeDrepId("abcd")).toThrow();
   });
 });
