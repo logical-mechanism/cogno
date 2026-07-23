@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { bech32 } from "bech32";
-import { deriveRoleCredential, encodeDrepId } from "./role-proof";
+import { deriveRoleCredential, encodeDrepId, paymentCredFromAddress } from "./role-proof";
 
 // deriveRoleCredential is the pure, MeshJS-free half of the role-proof flow (blakejs only): it turns an
 // operator's entered Calidus key into the 28-byte credential the synthetic address commits. A bug here
@@ -95,5 +95,38 @@ describe("deriveRoleCredential — bech32 (wallet-facing) forms", () => {
 
   it("encodeDrepId rejects a non-28-byte credential", () => {
     expect(() => encodeDrepId("abcd")).toThrow();
+  });
+});
+
+describe("paymentCredFromAddress — the wallet pre-flight's runtime-mirror address check", () => {
+  const CRED = "fb7f7a6cdf4ebb81f1f12732c009a1461849219815d78d7f5a66464b";
+  const bytes = (hex: string) => Uint8Array.from(hex.match(/../g)!.map((b) => parseInt(b, 16)));
+  const STAKE = "00".repeat(28);
+
+  it("accepts an enterprise vkey-payment address on the expected network (type-6, 29 bytes)", () => {
+    // header 0x60 = enterprise(0b0110) + network 0. This is exactly the synthetic address the client builds.
+    expect(paymentCredFromAddress(bytes(`60${CRED}`), 0)).toBe(CRED);
+  });
+
+  it("accepts a base vkey-payment address (type-0 / type-2, 57 bytes)", () => {
+    expect(paymentCredFromAddress(bytes(`00${CRED}${STAKE}`), 0)).toBe(CRED); // vkey stake
+    expect(paymentCredFromAddress(bytes(`20${CRED}${STAKE}`), 0)).toBe(CRED); // script stake
+  });
+
+  it("rejects the wrong network (mirrors the runtime's WrongNetwork)", () => {
+    expect(paymentCredFromAddress(bytes(`61${CRED}`), 0)).toBeNull(); // enterprise on network 1
+    expect(paymentCredFromAddress(bytes(`60${CRED}`), 1)).toBeNull(); // expected network 1
+  });
+
+  it("rejects script-payment, pointer, and reward/stake-only addresses (unsupported types)", () => {
+    expect(paymentCredFromAddress(bytes(`70${CRED}`), 0)).toBeNull(); // enterprise SCRIPT payment
+    expect(paymentCredFromAddress(bytes(`e0${CRED}`), 0)).toBeNull(); // reward (stake-only)
+    expect(paymentCredFromAddress(bytes(`40${CRED}${STAKE}`), 0)).toBeNull(); // pointer/base-ish type 4
+  });
+
+  it("rejects a wrong-length body for the claimed type", () => {
+    expect(paymentCredFromAddress(bytes(`60${CRED}00`), 0)).toBeNull(); // enterprise must be 29 bytes
+    expect(paymentCredFromAddress(bytes(`00${CRED}`), 0)).toBeNull(); // base must be 57 bytes
+    expect(paymentCredFromAddress(bytes("60"), 0)).toBeNull(); // too short
   });
 });

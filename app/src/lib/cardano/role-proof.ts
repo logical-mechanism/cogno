@@ -279,19 +279,43 @@ function candidateHexes(input: string): string[] {
 }
 
 /**
- * Paste-back pre-flight: verify the operator's `cardano-signer` output against THIS session's request
- * before submitting. Mirrors the runtime verifier's checks on-device (best-effort — the runtime is the
- * authority): find the COSE_Sign1 + COSE_Key, then assert
+ * The payment credential (28-byte hex) of a Cardano address IF it is a VerificationKey-payment base or
+ * enterprise address on `expectedNetwork` — else null. A byte-exact mirror of the runtime's `parse_address`
+ * (cip8.rs): the EXACT set of addresses the on-chain role verifier accepts. Used by the WALLET pre-flight,
+ * where a CIP-95 `signData` embeds the wallet's OWN key-hash address (its choice) rather than the synthetic
+ * enterprise address the offline command pins — so we check the credential, not the whole-address bytes.
+ */
+export function paymentCredFromAddress(addr: Uint8Array, expectedNetwork: number): string | null {
+  if (addr.length < 29) return null;
+  const header = addr[0];
+  const addrType = header >> 4;
+  const network = header & 0x0f;
+  if (network !== expectedNetwork) return null;
+  // base vkey-payment (0b0000 vkey-stake / 0b0010 script-stake) = 57 bytes; enterprise vkey-payment
+  // (0b0110) = 29 bytes. In every accepted type the payment credential is bytes 1..29.
+  if (addrType === 0b0000 || addrType === 0b0010) return addr.length === 57 ? toHex(addr.slice(1, 29)) : null;
+  if (addrType === 0b0110) return addr.length === 29 ? toHex(addr.slice(1, 29)) : null;
+  return null;
+}
+
+/**
+ * Paste-back pre-flight: verify the signer output against THIS session's request before submitting. Mirrors
+ * the runtime verifier's checks on-device (best-effort — the runtime is the authority): find the COSE_Sign1
+ * + COSE_Key, then assert
  *   1. the COSE_Key holds a 32-byte Ed25519 key (no 64-byte extended keys — the runtime rejects them),
- *   2. `blake2b_224(pubkey) == credential` (the key really is the claimed Calidus credential),
- *   3. the embedded signing address == the synthetic address (they signed the right address),
+ *   2. `blake2b_224(pubkey) == credential` (the key really is the claimed role credential),
+ *   3. the embedded signing address binds the role credential (see `addressMatch` below),
  *   4. the signed payload == the app-generated payload, byte-for-byte (right chain / account / role / nonce),
  *   5. the COSE blobs fit the on-chain bounds (cose_sign1 ≤ 512, cose_key ≤ 128).
- * Returns the two blobs on success, or a specific, actionable error. Never throws.
+ * `addressMatch` (default `"exact"`) — the OFFLINE path passes our exact `--address`, so require byte-equality
+ * with the synthetic address. The WALLET path passes `"credential"`: the wallet chooses the embedded address,
+ * so accept any vkey-payment address on our network whose payment credential IS the role credential (exactly
+ * what the runtime does). Returns the two blobs on success, or a specific, actionable error. Never throws.
  */
 export async function preflightRolePasteback(
   pasted: string,
   req: RoleProofRequest,
+  opts: { addressMatch?: "exact" | "credential" } = {},
 ): Promise<RolePasteback> {
   try {
     const cands = candidateHexes(pasted);
@@ -353,20 +377,40 @@ export async function preflightRolePasteback(
       };
     }
 
-    // (3) embedded address == the synthetic role address (they passed the exact --address).
-    const addrHex = cst.bytesToHex(new Uint8Array(cs.getAddress())).toLowerCase();
-    if (addrHex !== req.syntheticAddressHex) {
-      return { ok: false, error: "the signed address isn't the synthetic role address — pass the exact --address shown" };
+    // (3) the embedded signing address. Offline: byte-equal the synthetic address (exact --address passed).
+    // Wallet (CIP-95): the wallet embeds its own key-hash address, so require only that it's a vkey-payment
+    // address on our network binding the role credential — the same acceptance the runtime enforces.
+    const addrBytes = new Uint8Array(cs.getAddress());
+    const addrHex = cst.bytesToHex(addrBytes).toLowerCase();
+    if ((opts.addressMatch ?? "exact") === "exact") {
+      if (addrHex !== req.syntheticAddressHex) {
+        return { ok: false, error: "the signed address isn't the synthetic role address — pass the exact --address shown" };
+      }
+    } else {
+      const expectedNetwork = parseInt(req.syntheticAddressHex.slice(0, 2), 16) & 0x0f;
+      const pc = paymentCredFromAddress(addrBytes, expectedNetwork);
+      if (pc === null) {
+        return {
+          ok: false,
+          error: `the wallet signed over an unsupported address (${addrHex}) — need a key-payment address on network ${expectedNetwork}`,
+        };
+      }
+      if (pc !== req.credentialHex) {
+        return {
+          ok: false,
+          error: `the wallet signed for credential ${pc.slice(0, 12)}…, not this dRep (${req.credentialHex.slice(0, 12)}…) — is this dRep in the connected account?`,
+        };
+      }
     }
 
     // (1) 32-byte Ed25519 key only (a 64-byte extended key is rejected on-chain).
     if (pubkey.length !== 32) {
       return { ok: false, error: "the signing key is not a 32-byte Ed25519 key" };
     }
-    // (2) the key really is the claimed Calidus credential.
+    // (2) the key really is the claimed role credential.
     const credHex = toHex(blake2b(pubkey, undefined, 28));
     if (credHex !== req.credentialHex) {
-      return { ok: false, error: "blake2b_224(signing key) ≠ the Calidus credential — you signed with a different key" };
+      return { ok: false, error: "blake2b_224(signing key) ≠ the role credential — you signed with a different key" };
     }
     // Belt-and-suspenders single-key-source check (the runtime enforces kid == key when a kid is present):
     // if the COSE_Sign1 carries its own key, it must equal the COSE_Key.
@@ -436,8 +480,16 @@ export async function produceRoleProofWallet(opts: {
     const raw = opts.keyInput.trim();
     const drepId = raw.toLowerCase().startsWith("drep1") ? raw : encodeDrepId(opts.request.credentialHex);
     const sig = (await wallet.signData(opts.request.payload, drepId)) as { signature: string; key: string };
-    // Reuse the offline path's pre-flight verbatim — validates payload/address/credential/bounds byte-for-byte.
-    return await preflightRolePasteback(JSON.stringify(sig), opts.request);
+    // Same pre-flight as the offline path, but in CREDENTIAL mode: the wallet embeds ITS OWN key-hash address
+    // (not the synthetic one), so we bind on the credential, exactly as the runtime does.
+    const pf = await preflightRolePasteback(JSON.stringify(sig), opts.request, { addressMatch: "credential" });
+    if (!pf.ok) {
+      // Surface what the wallet actually produced — the CIP-95 embedded-address shape varies by wallet.
+      console.error(
+        `cogno: dRep wallet sign failed pre-flight (${pf.error}). raw signData=${JSON.stringify(sig)}`,
+      );
+    }
+    return pf;
   } catch (e) {
     if (isUserRejection(e)) return { ok: false, error: "signing was cancelled in the wallet" };
     const msg = e instanceof Error ? e.message : String(e);
