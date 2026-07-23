@@ -245,6 +245,21 @@
   color: var(--cg-text);
 }
 
+/* Chamber gate (spec 209): a single-chamber (SPO/dRep) poll the viewer can't vote in because they don't
+   hold that Cardano role. Quiet amber left-rule — it explains a disabled control, it isn't an error. */
+.gateNotice {
+  margin-top: var(--cg-space-2);
+  padding: var(--cg-space-2) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-left: 3px solid var(--cg-warning);
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg-subtle);
+  /* Full-strength text — on the subtle fill, --cg-text-secondary is only ~3.4:1 (fails WCAG AA). */
+  color: var(--cg-text);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-sm);
+}
+
 /* Governance-action tag (spec 209): the CIP-1694 action type + a link to the off-chain proposal, shown
    above the poll options. */
 .govAction {

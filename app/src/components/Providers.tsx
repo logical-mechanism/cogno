@@ -37,6 +37,7 @@ import { NotificationsProvider } from "@/hooks/useNotifications";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, ConnStatus, BootGuard, PostingSigner } from "@/lib/types";
 import type { Viewer, ViewerStatus } from "@/components/kit";
+import type { RoleKindType } from "@/lib/chain/roles";
 
 export interface Session {
   // ── connection (one socket) ──
@@ -65,6 +66,13 @@ export interface Session {
   source: FeedSource | null;
   /** Live best-block number (one shared head subscription) — drives relative post times, capacity, etc. */
   bestBlock: number | null;
+  /**
+   * The active posting account's live observed Cardano roles (`CardanoRoles.ObservedRoles`) — SPO / dRep /
+   * committee. `null` while loading or when no posting account is chosen; `[]` once known to hold none.
+   * Watched ONCE here (not per-card) so every poll surface can gate a single-chamber poll on the viewer's
+   * chamber membership without each InlinePoll re-subscribing for the same account.
+   */
+  viewerRoles: readonly RoleKindType[] | null;
 }
 
 const SessionContext = createContext<Session | null>(null);
@@ -125,6 +133,32 @@ function ChainProvider({ children }: { children: ReactNode }) {
     const sub = api.query.TalkStake.AllowedStake.watchValue(active, { at: "best" }).subscribe(
       ({ value: w }) => setPostingPower((w as bigint) ?? 0n),
       () => setPostingPower(0n),
+    );
+    return () => sub.unsubscribe();
+  }, [api, signerCtl.postingEnabled, signer.ss58]);
+
+  // The active account's live observed Cardano roles, watched globally (same pattern as `postingPower`)
+  // so a single-chamber poll can gate voting on the viewer's chamber membership without each poll card
+  // re-reading `ObservedRoles` for the same account. `null` = not connected / UNKNOWN (still loading, or a
+  // read error) → the chamber gate FAILS OPEN; `[]` = confirmed to hold no live role → a non-member is
+  // blocked. The gate is FE-only (the chain accepts anyone's vote; a non-member's never enters the
+  // chamber), so `null`/fail-open is the safe direction — we must never wrongly block a real SPO/dRep.
+  const [viewerRoles, setViewerRoles] = useState<readonly RoleKindType[] | null>(null);
+  useEffect(() => {
+    const active = signerCtl.postingEnabled ? signer.ss58 : null;
+    if (!api || !active) {
+      setViewerRoles(null);
+      return;
+    }
+    // Reset to UNKNOWN (fail-open) whenever the active account changes, so a chamber poll is never briefly
+    // gated on the PREVIOUS account's roles while this account's ObservedRoles resolves.
+    setViewerRoles(null);
+    // Same decode as `papi-source`'s ObservedRoles read: each entry is `{ kind: { type }, id }`. On a
+    // subscription error fall back to `null` (UNKNOWN → fail-open), NOT `[]` — `[]` is a CONFIRMED
+    // non-member and would wrongly block a real SPO/dRep from voting after a transient RPC hiccup.
+    const sub = api.query.CardanoRoles.ObservedRoles.watchValue(active, { at: "best" }).subscribe(
+      ({ value }) => setViewerRoles((value ?? []).map((r) => r.kind.type)),
+      () => setViewerRoles(null),
     );
     return () => sub.unsubscribe();
   }, [api, signerCtl.postingEnabled, signer.ss58]);
@@ -193,8 +227,9 @@ function ChainProvider({ children }: { children: ReactNode }) {
       viewer,
       source,
       bestBlock,
+      viewerRoles,
     }),
-    [api, client, status, boot, wsUrl, reconnect, signer, signerCtl, identity, sessionState, viewer, source, bestBlock],
+    [api, client, status, boot, wsUrl, reconnect, signer, signerCtl, identity, sessionState, viewer, source, bestBlock, viewerRoles],
   );
 
   // ReputationProvider + AccountProfileProvider live INSIDE the session context (they read `api` via

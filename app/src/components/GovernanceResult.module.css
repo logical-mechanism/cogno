@@ -1,0 +1,128 @@
+/* GovernanceResult — per-chamber approval vs the CIP-1694 threshold, for an action-tagged governance poll.
+   No background fill: the readout sits on the card's own bg, where --cg-text-secondary clears WCAG AA. */
+
+.gov {
+  margin-top: var(--cg-space-3);
+  padding-top: var(--cg-space-3);
+  border-top: 1px solid var(--cg-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
+}
+
+.chamber {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cg-space-2);
+}
+
+.title {
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+}
+
+/* status pills next to the chamber title */
+.meets {
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.below {
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* "within" — the approval sits inside a threshold RANGE (ParamChange): it ratifies for some parameter
+   groups but not the strictest. Full-strength text, NOT --cg-warning — amber is only ~4.24:1 on the card's
+   light bg (fails WCAG AA at this size), so the "it depends" signal is carried by the amber gauge fill/band
+   below, not the pill text. Told apart from the accent "meets" and the dimmer "below" by the word + weight. */
+.partial {
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.approval {
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.novote {
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
+/* the approval gauge: a track with a Yes fill and a vertical threshold marker */
+.track {
+  position: relative;
+  height: 0.6rem;
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg-elevated);
+  overflow: visible; /* the marker overhangs the track top/bottom */
+}
+
+.fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: var(--cg-radius-input);
+  transition: width var(--cg-motion-base) var(--cg-ease-out);
+}
+
+.fillMeets {
+  background: var(--cg-accent);
+  opacity: 0.55;
+}
+
+.fillBelow {
+  background: var(--cg-text-muted);
+  opacity: 0.5;
+}
+
+/* the "within-range" fill: amber, matching the band + marker — the approval cleared the loosest group bar
+   but not the strictest, so it is neither the accent "meets" nor the muted "below". */
+.fillPartial {
+  background: var(--cg-warning);
+  opacity: 0.5;
+}
+
+/* the range band (ParamChange: threshold varies by parameter group) */
+.band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--cg-warning);
+  opacity: 0.18;
+}
+
+/* the threshold marker line — high contrast, overhanging the track so it reads as "the bar to clear" */
+.marker {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: var(--cg-text);
+  border-radius: 1px;
+}
+
+.meta {
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  font-variant-numeric: tabular-nums;
+}

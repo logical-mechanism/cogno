@@ -126,13 +126,28 @@ export function usePoll(
       const prev = myChoice;
       setMyChoice(option);
       // Optimistic: move the count from the previous option to the new one (true weights reconcile later).
+      // For a single-chamber (`Spo`/`Drep`) poll the HEADLINE reads that chamber's count/weight — not the
+      // holder count — so ALSO move the chamber count, else the first member to vote would see "0 dReps ·
+      // weighted —" with a ✓ (reading as if it didn't register) until the reconcile re-read lands. The
+      // caster is a confirmed chamber member (they passed the FE gate), so bumping that chamber is right;
+      // the chamber WEIGHT stays 0 until reconcile (their delegated stake is unknown client-side).
       setPoll((cur) => {
         if (!cur) return cur;
         const options = cur.options.map((o) => {
           let count = o.count;
-          if (prev === o.index) count = Math.max(0, count - 1);
-          if (option === o.index) count += 1;
-          return { ...o, count };
+          let spoCount = o.spoCount;
+          let drepCount = o.drepCount;
+          if (prev === o.index) {
+            count = Math.max(0, count - 1);
+            if (cur.kind === "Spo") spoCount = Math.max(0, spoCount - 1);
+            if (cur.kind === "Drep") drepCount = Math.max(0, drepCount - 1);
+          }
+          if (option === o.index) {
+            count += 1;
+            if (cur.kind === "Spo") spoCount += 1;
+            if (cur.kind === "Drep") drepCount += 1;
+          }
+          return { ...o, count, spoCount, drepCount };
         });
         return { ...cur, options, totalCount: options.reduce((s, o) => s + o.count, 0) };
       });
@@ -145,16 +160,27 @@ export function usePoll(
         onError: (message) => {
           setPendingOption(null);
           setMyChoice(prev);
-          // Revert the optimistic count DIRECTLY (inverse of the forward delta, same Math.max(0) clamp)
-          // so a rejected vote never leaves an inflated tally when the reconcile read below ALSO fails
-          // (unlike useVote's pure-local rollback, this used to depend entirely on that fallible read).
+          // Revert the optimistic count DIRECTLY (inverse of the forward delta, same Math.max(0) clamp,
+          // including the single-chamber count) so a rejected vote never leaves an inflated tally when the
+          // reconcile read below ALSO fails (unlike useVote's pure-local rollback, this used to depend
+          // entirely on that fallible read).
           setPoll((cur) => {
             if (!cur) return cur;
             const options = cur.options.map((o) => {
               let count = o.count;
-              if (option === o.index) count = Math.max(0, count - 1); // undo the optimistic +1
-              if (prev === o.index) count += 1; // restore the previous option's vote
-              return { ...o, count };
+              let spoCount = o.spoCount;
+              let drepCount = o.drepCount;
+              if (option === o.index) {
+                count = Math.max(0, count - 1); // undo the optimistic +1
+                if (cur.kind === "Spo") spoCount = Math.max(0, spoCount - 1);
+                if (cur.kind === "Drep") drepCount = Math.max(0, drepCount - 1);
+              }
+              if (prev === o.index) {
+                count += 1; // restore the previous option's vote
+                if (cur.kind === "Spo") spoCount += 1;
+                if (cur.kind === "Drep") drepCount += 1;
+              }
+              return { ...o, count, spoCount, drepCount };
             });
             return { ...cur, options, totalCount: options.reduce((s, o) => s + o.count, 0) };
           });

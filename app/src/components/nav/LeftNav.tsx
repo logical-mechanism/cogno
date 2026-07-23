@@ -4,9 +4,9 @@
 // full-width accent "Post" pill + the Account mini-widget. Tablet (688–1019px): the same rail
 // collapses to icons only (CSS) and the Post pill becomes a round accent icon button.
 //
-// Items (top→bottom): cogno wordmark → / · Home · Explore · Profile · Bookmarks · Settings · Post ·
-// Account. (Bookmarks is the desktop/tablet reach for the device-local /bookmarks list; on mobile the
-// bottom bar stays a locked 4 tabs, so a Settings launcher covers it there.)
+// Items (top→bottom): cogno wordmark → / · Home · Explore · Governance · Notifications · Profile ·
+// Bookmarks · Settings · Post · Account. (Bookmarks is the desktop/tablet reach for the device-local
+// /bookmarks list; the mobile bottom bar carries its own tab set — see BottomTabBar.)
 // Active state uses usePathname() with FILLED icons (X-style). Profile resolves to /u/<me>/ when
 // connected, else /welcome/. The "Post" pill opens the compose modal overlay
 // (modalStore.openCompose). Reads the gate from useSession(); never builds an extrinsic.
@@ -16,7 +16,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import styles from "./LeftNav.module.css";
 import { Account } from "../Account";
-import { IconHome, IconSearch, IconProfile, IconBookmark, IconSettings, IconCompose, IconBell } from "../icons";
+import { IconHome, IconSearch, IconProfile, IconBookmark, IconSettings, IconCompose, IconBell, IconPoll } from "../icons";
 import { useSession } from "../Providers";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useNavReTap } from "@/hooks/useNavReTap";
@@ -48,6 +48,12 @@ export function LeftNav() {
   const items: NavItem[] = [
     { label: "Home", href: "/", Icon: IconHome, match: (p) => p === "/" },
     { label: "Explore", href: "/explore/", Icon: IconSearch, match: (p) => p.startsWith("/explore") },
+    {
+      label: "Governance",
+      href: "/governance/",
+      Icon: IconPoll,
+      match: (p) => p.startsWith("/governance"),
+    },
     {
       label: "Notifications",
       href: "/notifications/",

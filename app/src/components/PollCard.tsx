@@ -22,20 +22,19 @@
 import { useCallback, useRef } from "react";
 import styles from "./PollCard.module.css";
 import { Spinner, IconCheck } from "./icons";
+import { ProposalPreview } from "./ProposalPreview";
+import { GovernanceResult } from "./GovernanceResult";
+import { classifyChoice, GOV_ACTION_LABEL } from "@/lib/cardano/governance";
 import { weightPercent, formatWeight } from "@/lib/format";
 import { sanitizeInline } from "@/lib/sanitize";
-import type { PollView, PollOptionView, GovActionType } from "./kit";
-
-/** Human labels for the CIP-1694 governance-action types (spec 209). */
-const GOV_ACTION_LABEL: Record<GovActionType, string> = {
-  Info: "Info action",
-  NoConfidence: "Motion of no-confidence",
-  UpdateCommittee: "Update the Constitutional Committee",
-  NewConstitution: "New Constitution / guardrails",
-  HardFork: "Hard-fork initiation",
-  ParamChange: "Protocol-parameter change",
-  TreasuryWithdrawal: "Treasury withdrawal",
-};
+import {
+  primaryLens,
+  showsChamberBlock,
+  lensWeight,
+  lensCount,
+  lensVoters,
+} from "@/lib/poll";
+import type { PollView, PollOptionView } from "./kit";
 
 /** Does a poll kind surface the SPO / dRep chamber? (Mirrors the runtime — an Spo/Drep-only poll shows one.) */
 const kindHasSpo = (k: PollView["kind"]) => k === "Governance" || k === "Spo";
@@ -85,6 +84,13 @@ export interface PollCardProps {
   onFinalize?: () => void;
   /** A finalize (`close_poll`) is in flight → spinner on the Finalize control. */
   finalizing?: boolean;
+  /**
+   * A visible notice explaining why voting is blocked here — set by the surface for a single-chamber poll
+   * (`Spo` / `Drep`) the viewer can't vote in because they don't hold that Cardano role. Distinct from
+   * `disabledHint` (a per-option tooltip): a touch user gets no hover, so the reason must be on the page.
+   * Only pass while the poll is OPEN — a closed poll is disabled for everyone and needs no such notice.
+   */
+  gateNotice?: string;
 }
 
 export function PollCard({
@@ -98,13 +104,42 @@ export function PollCard({
   closeState = "open",
   onFinalize,
   finalizing,
+  gateNotice,
 }: PollCardProps) {
   const voted = myChoice != null;
   const closed = closeState !== "open";
   // A closed poll accepts no votes and always shows results.
   const votingDisabled = disabled || closed;
   const results = showResults || voted || closed;
-  const noWeight = poll.totalWeight <= 0n;
+  // Governance-vote mode: an action-tagged poll whose options are the canonical Yes/No(/Abstain). Its
+  // RESULTS read out per-chamber against the real CIP-1694 threshold (GovernanceResult) instead of plain
+  // weighted bars; pre-vote it still shows the Yes/No/Abstain rows so a member can cast.
+  const govMode =
+    poll.action != null &&
+    poll.options.some((o) => classifyChoice(o.label) === "yes") &&
+    poll.options.some((o) => classifyChoice(o.label) === "no");
+  // Keep the vote buttons whenever the viewer can still cast — even on the detail view, where `results` is
+  // forced (a guest funnels to /welcome on click). In govMode the buttons stay plain radios (`rowResults`
+  // suppresses the per-option bars) because the standings live in the GovernanceResult readout below.
+  const castable = !votingDisabled;
+  const rowResults = results && !govMode;
+  // The poll renders interactive radio options (a real ARIA radiogroup) exactly when the viewer can cast —
+  // for a govMode poll the readout can stand alone (closed / blocked non-member), and an empty radiogroup
+  // is an invalid relationship, so the container is a plain group then.
+  const hasVotingRows = !govMode || castable;
+  // The lens the headline bars read: a single-chamber (`Spo`/`Drep`) poll reads out THAT chamber directly
+  // (delegated stake, distinct pools/dReps); `Stake`/`Governance` keep the holder (own-stake) lens. All the
+  // headline math — %, the totals line, the accessible counts — routes through this lens.
+  const lens = primaryLens(poll.kind);
+  const totalWeight =
+    lens === "holder"
+      ? poll.totalWeight
+      : poll.options.reduce((s, o) => s + lensWeight(o, lens), 0n);
+  const totalCount =
+    lens === "holder"
+      ? poll.totalCount
+      : poll.options.reduce((s, o) => s + lensCount(o, lens), 0);
+  const noWeight = totalWeight <= 0n;
   // A tagged governance poll (spec 209): a safe link to the off-chain proposal, or null if unsafe/absent.
   const proposalUrl = poll.action ? safeUrl(poll.action.anchorUrl) : null;
 
@@ -146,36 +181,42 @@ export function PollCard({
   return (
     <div
       className={`${styles.poll} ${compact ? styles.compact : ""}`}
-      role="radiogroup"
-      aria-label="Poll"
+      role={hasVotingRows ? "radiogroup" : "group"}
+      aria-label={hasVotingRows ? "Poll" : "Poll results"}
       onKeyDown={onKeyDown}
     >
       {poll.action && (
-        <div className={styles.govAction}>
-          <span className={styles.govActionType}>{GOV_ACTION_LABEL[poll.action.actionType]}</span>
-          {proposalUrl && (
-            <a
-              className={styles.govLink}
-              href={proposalUrl}
-              target="_blank"
-              rel="noopener noreferrer nofollow"
-              onClick={(e) => e.stopPropagation()}
-            >
-              View proposal ↗
-            </a>
-          )}
-        </div>
+        <>
+          <div className={styles.govAction}>
+            <span className={styles.govActionType}>{GOV_ACTION_LABEL[poll.action.actionType]}</span>
+            {proposalUrl && (
+              <a
+                className={styles.govLink}
+                href={proposalUrl}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                onClick={(e) => e.stopPropagation()}
+              >
+                View proposal ↗
+              </a>
+            )}
+          </div>
+          {/* Read the CIP-108 proposal contents IN the poll (on-demand), not just a link out. */}
+          <ProposalPreview action={poll.action} />
+        </>
       )}
+      {hasVotingRows && (
       <div className={styles.options}>
         {poll.options.map((opt, i) => {
-          const pct = noWeight ? 0 : weightPercent(opt.weight, poll.totalWeight);
+          const pct = noWeight ? 0 : weightPercent(lensWeight(opt, lens), totalWeight);
           const mine = opt.index === myChoice;
           // Option labels are attacker-controlled on-chain text → harden (bidi / invisible / Zalgo)
           // before they reach the DOM or the accessible name.
           const label = sanitizeInline(opt.label);
-          // Accessible name carries the weighted % + the raw voter count (whale vs many-small).
-          const ariaLabel = results
-            ? `${label}, ${pct} percent, ${opt.count} ${opt.count === 1 ? "vote" : "votes"}${
+          // Accessible name carries the weighted % + the raw voter count in the headline lens (whale vs
+          // many-small; distinct pools/dReps for a single-chamber poll).
+          const ariaLabel = rowResults
+            ? `${label}, ${pct} percent, ${lensVoters(lensCount(opt, lens), lens)}${
                 mine ? ", your choice" : ""
               }`
             : label;
@@ -194,13 +235,13 @@ export function PollCard({
               // hint, so scope the title to the `disabled` prop, not the derived `votingDisabled`.
               title={disabled && !closed ? disabledHint : undefined}
               tabIndex={i === rovingPos ? 0 : -1}
-              className={`${styles.option} ${results ? styles.resultRow : styles.voteRow} ${
+              className={`${styles.option} ${rowResults ? styles.resultRow : styles.voteRow} ${
                 mine ? styles.mine : ""
               }`}
               disabled={votingDisabled}
               onClick={(e) => click(e, opt.index)}
             >
-              {results && (
+              {rowResults && (
                 <span
                   className={`${styles.bar} ${mine ? styles.barMine : ""}`}
                   style={{ width: `${pct}%` }}
@@ -210,7 +251,7 @@ export function PollCard({
               <span className={styles.optLabel} dir="auto">
                 {label}
               </span>
-              {results && (
+              {rowResults && (
                 <span className={styles.optMeta}>
                   {mine && (
                     <IconCheck className={styles.check} style={{ width: "1em", height: "1em" }} />
@@ -222,25 +263,42 @@ export function PollCard({
           );
         })}
       </div>
+      )}
+
+      {gateNotice && (
+        // aria-live: when the viewer's roles resolve to a confirmed non-member mid-view (options flip to
+        // disabled and can steal focus), the reason is announced instead of silently appearing.
+        <p className={styles.gateNotice} role="note" aria-live="polite">
+          {gateNotice}
+        </p>
+      )}
+
+      {/* Governance readout: per-chamber approval vs the real CIP-1694 bar. Shown WITH the vote buttons
+          above (not instead), so a member can still cast on the detail view. */}
+      {govMode && results && <GovernanceResult poll={poll} action={poll.action!} />}
 
       <div className={styles.totals}>
-        <span className={styles.voters}>
-          {poll.totalCount} {poll.totalCount === 1 ? "voter" : "voters"}
-        </span>
+        <span className={styles.voters}>{lensVoters(totalCount, lens)}</span>
         <span className={styles.dot} aria-hidden>
           ·
         </span>
-        <span className={styles.weighted}>
-          {noWeight ? "weighted —" : `${formatWeight(poll.totalWeight)} weighted`}
-        </span>
-        <span className={styles.dot} aria-hidden>
-          ·
-        </span>
+        {/* In governance-vote mode the holder "weighted" total is noise — GovernanceResult carries the
+            real per-chamber stake — so drop it and go straight to the pill/state. */}
+        {!govMode && (
+          <>
+            <span className={styles.weighted}>
+              {noWeight ? "weighted —" : `${formatWeight(totalWeight)} weighted`}
+            </span>
+            <span className={styles.dot} aria-hidden>
+              ·
+            </span>
+          </>
+        )}
         {chamberPill(poll.kind) && (
           <>
             <span
               className={styles.govPill}
-              title="A Cardano-community temperature check — chamber tallies below (display-only)"
+              title="A Cardano-community temperature check — chamber-weighted, display-only"
             >
               {chamberPill(poll.kind)}
             </span>
@@ -273,7 +331,7 @@ export function PollCard({
         )}
       </div>
 
-      {(kindHasSpo(poll.kind) || kindHasDrep(poll.kind)) && results && (
+      {showsChamberBlock(poll.kind) && results && !govMode && (
         <div className={styles.chambers}>
           {(
             [

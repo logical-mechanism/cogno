@@ -1,0 +1,75 @@
+/* /governance — the compact governance-poll discovery list. */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+  text-decoration: none;
+  color: inherit;
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.row:hover {
+  background: var(--cg-bg-elevated);
+}
+
+.row:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: calc(-1 * var(--cg-focus-ring-width));
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-2);
+}
+
+/* the CIP-1694 action type, as a bordered pill (mirrors PollCard's govActionType) */
+.action {
+  padding: 0 0.4em;
+  border: 1px solid var(--cg-accent);
+  border-radius: 999px;
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  line-height: 1.5;
+}
+
+.state {
+  flex: 0 0 auto;
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text-secondary);
+}
+
+.state[data-state="open"] {
+  color: var(--cg-accent);
+}
+
+.question {
+  margin: 0;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-md);
+  line-height: var(--cg-lh-md);
+  overflow-wrap: break-word;
+}
+
+.eligible {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0 0.4em;
+  border-radius: var(--cg-radius-sm);
+  background: var(--cg-accent-wash);
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+}
