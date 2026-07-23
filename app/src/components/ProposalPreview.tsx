@@ -125,29 +125,29 @@ export function ProposalPreview({
 
   return (
     <div className={styles.block} ref={rootRef}>
-      <div className={styles.row}>
-        <span className={styles.type}>{typeLabel}</span>
-        {href ? (
-          <button type="button" className={styles.toggle} aria-expanded={open} onClick={toggle}>
-            <span className={`${styles.caret} ${open ? styles.caretOpen : ""}`} aria-hidden>
-              ▸
-            </span>
-            {open ? "Hide proposal" : "Preview proposal"}
-          </button>
-        ) : openUrl ? (
-          // No inline preview for this anchor — a single link out is the whole tag's affordance.
-          sourceLink("View proposal ↗", openUrl)
-        ) : null}
-      </div>
-
-      {/* The glanceable proposal title — so a viewer tells one Treasury withdrawal from the next without
-          opening anything. Only present once resolved (an eager neutral-host fetch, or a prior open); hidden
-          while the panel is open, where the title already heads the content. Clamped to two lines. */}
+      {/* Stacked one per line — title, then the action-type pill, then the preview link. The glanceable
+          title LEADS so a viewer tells one Treasury withdrawal from the next without opening anything; it's
+          present once resolved (an eager neutral-host fetch, or a prior open) and hidden while the panel is
+          open, where the title already heads the content. Clamped to two lines. */}
       {!open && meta?.title && (
         <p className={styles.glanceTitle} dir="auto">
           {meta.title}
         </p>
       )}
+
+      <span className={styles.type}>{typeLabel}</span>
+
+      {href ? (
+        <button type="button" className={styles.toggle} aria-expanded={open} onClick={toggle}>
+          <span className={`${styles.caret} ${open ? styles.caretOpen : ""}`} aria-hidden>
+            ▸
+          </span>
+          {open ? "Hide proposal" : "Preview proposal"}
+        </button>
+      ) : openUrl ? (
+        // No inline preview for this anchor — a single link out is the whole tag's affordance.
+        sourceLink("View proposal ↗", openUrl)
+      ) : null}
 
       {open && href && (
         // Swallow clicks inside the panel (text selection, the source link) so they don't bubble up to the
