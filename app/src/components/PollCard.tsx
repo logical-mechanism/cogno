@@ -24,7 +24,7 @@ import styles from "./PollCard.module.css";
 import { Spinner, IconCheck } from "./icons";
 import { ProposalPreview } from "./ProposalPreview";
 import { GovernanceResult } from "./GovernanceResult";
-import { classifyChoice } from "@/lib/cardano/governance";
+import { classifyChoice, GOV_ACTION_LABEL } from "@/lib/cardano/governance";
 import { weightPercent, formatWeight } from "@/lib/format";
 import { sanitizeInline } from "@/lib/sanitize";
 import {
@@ -34,18 +34,7 @@ import {
   lensCount,
   lensVoters,
 } from "@/lib/poll";
-import type { PollView, PollOptionView, GovActionType } from "./kit";
-
-/** Human labels for the CIP-1694 governance-action types (spec 209). */
-const GOV_ACTION_LABEL: Record<GovActionType, string> = {
-  Info: "Info action",
-  NoConfidence: "Motion of no-confidence",
-  UpdateCommittee: "Update the Constitutional Committee",
-  NewConstitution: "New Constitution / guardrails",
-  HardFork: "Hard-fork initiation",
-  ParamChange: "Protocol-parameter change",
-  TreasuryWithdrawal: "Treasury withdrawal",
-};
+import type { PollView, PollOptionView } from "./kit";
 
 /** Does a poll kind surface the SPO / dRep chamber? (Mirrors the runtime — an Spo/Drep-only poll shows one.) */
 const kindHasSpo = (k: PollView["kind"]) => k === "Governance" || k === "Spo";

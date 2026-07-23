@@ -16,7 +16,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import styles from "./LeftNav.module.css";
 import { Account } from "../Account";
-import { IconHome, IconSearch, IconProfile, IconBookmark, IconSettings, IconCompose, IconBell } from "../icons";
+import { IconHome, IconSearch, IconProfile, IconBookmark, IconSettings, IconCompose, IconBell, IconPoll } from "../icons";
 import { useSession } from "../Providers";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useNavReTap } from "@/hooks/useNavReTap";
@@ -48,6 +48,12 @@ export function LeftNav() {
   const items: NavItem[] = [
     { label: "Home", href: "/", Icon: IconHome, match: (p) => p === "/" },
     { label: "Explore", href: "/explore/", Icon: IconSearch, match: (p) => p.startsWith("/explore") },
+    {
+      label: "Governance",
+      href: "/governance/",
+      Icon: IconPoll,
+      match: (p) => p.startsWith("/governance"),
+    },
     {
       label: "Notifications",
       href: "/notifications/",

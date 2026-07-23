@@ -4,6 +4,7 @@ import {
   approvalRatio,
   actionChambers,
   actionKind,
+  actionBodies,
   chamberVote,
   FALLBACK_THRESHOLDS,
 } from "./governance";
@@ -117,6 +118,15 @@ describe("chamberVote — fold options into a chamber's Yes/No/Abstain", () => {
     expect(v.total).toBe(80n); // the 30 "Maybe" weight is in the total …
     expect(v.voters).toBe(8);
     expect(approvalRatio(v.yes, v.no)).toBeCloseTo(1, 6); // … but not the ratio denominator
+  });
+});
+
+describe("actionBodies — threshold-independent tally bodies (for eligibility)", () => {
+  it("matches actionChambers' bodies without needing thresholds", () => {
+    expect(actionBodies("TreasuryWithdrawal")).toEqual(["drep"]);
+    expect(actionBodies("HardFork")).toEqual(["spo", "drep"]);
+    expect(actionBodies("NewConstitution")).toEqual(["drep"]);
+    expect(actionBodies("Info")).toEqual(["spo", "drep"]);
   });
 });
 

@@ -17,6 +17,17 @@
 
 import type { GovActionType, PollOptionView } from "@/lib/types";
 
+/** Human labels for the seven CIP-1694 governance-action types (the poll tag + the discovery list chip). */
+export const GOV_ACTION_LABEL: Record<GovActionType, string> = {
+  Info: "Info action",
+  NoConfidence: "Motion of no-confidence",
+  UpdateCommittee: "Update the Constitutional Committee",
+  NewConstitution: "New Constitution / guardrails",
+  HardFork: "Hard-fork initiation",
+  ParamChange: "Protocol-parameter change",
+  TreasuryWithdrawal: "Treasury withdrawal",
+};
+
 /** A ratification threshold as a fraction, possibly a RANGE — ParamChange's dRep threshold varies by the
  *  parameter group (network/economic/technical 0.67, governance 0.75) and a poll doesn't pin the group. */
 export interface Threshold {
@@ -196,6 +207,12 @@ export function actionChambers(action: GovActionType, t: VotingThresholds): GovC
     case "TreasuryWithdrawal":
       return { tallied: [drep(one(t.drep.treasuryWithdrawal))], advisory: false };
   }
+}
+
+/** The stake bodies (SPO / dRep) cogno tallies for an action — threshold-independent, for eligibility /
+ *  discovery ("can this viewer vote?"). Same list `actionChambers` produces, without needing thresholds. */
+export function actionBodies(action: GovActionType): ("spo" | "drep")[] {
+  return actionChambers(action, FALLBACK_THRESHOLDS).tallied.map((c) => c.body);
 }
 
 /**
