@@ -1,0 +1,122 @@
+/* ProposalPreview — the on-demand inline CIP-108 proposal reader under a governance-poll's action tag. */
+
+.wrap {
+  margin-top: var(--cg-space-2);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--cg-accent);
+  font: inherit;
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+}
+
+.toggle:hover {
+  text-decoration: underline;
+}
+
+.toggle:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}
+
+.caret {
+  display: inline-block;
+  transition: transform var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.caretOpen {
+  transform: rotate(90deg);
+}
+
+.panel {
+  margin-top: var(--cg-space-2);
+  padding: var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg-subtle);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  /* Full-strength text: on the subtle panel fill, --cg-text-secondary is only ~3.4:1 (fails WCAG AA). */
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+}
+
+.propTitle {
+  margin: 0 0 var(--cg-space-2);
+  color: var(--cg-text);
+  font-size: var(--cg-fs-md);
+  font-weight: var(--cg-fw-semibold);
+  line-height: var(--cg-lh-md);
+  overflow-wrap: break-word;
+}
+
+.field {
+  margin-top: var(--cg-space-2);
+}
+
+.field:first-child {
+  margin-top: 0;
+}
+
+/* Section label. Distinguished from the body by CASE + weight + size + letter-spacing, NOT by a dim color —
+   on the subtle panel fill any color below --cg-text fails WCAG AA, so hierarchy is carried by typography. */
+.fieldLabel {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fieldBody {
+  margin: 0;
+  /* The reading content: full-strength text for legibility (was --cg-text-secondary, ~3.4:1 on the fill). */
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  /* Preserve the doc's own paragraph breaks (sanitizeText keeps them); wrap long tokens. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.caveat {
+  margin: var(--cg-space-3) 0 0;
+  padding-top: var(--cg-space-2);
+  border-top: 1px solid var(--cg-border);
+  /* The unverified-source disclaimer — kept a readable footnote by size + separator, not by a dim color. */
+  color: var(--cg-text);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+}
+
+.link {
+  color: var(--cg-accent);
+  font-weight: var(--cg-fw-semibold);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}

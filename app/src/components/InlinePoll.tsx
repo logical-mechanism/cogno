@@ -12,6 +12,7 @@ import { PollCard } from "./PollCard";
 import { Skeleton } from "./Skeleton";
 import { useSession } from "./Providers";
 import { usePoll } from "@/hooks/usePoll";
+import { chamberBlocksViewer, chamberRequiredRole, roleLabel } from "@/lib/poll";
 import styles from "./InlinePoll.module.css";
 import type { Viewer } from "./kit";
 
@@ -26,7 +27,7 @@ export interface InlinePollProps {
 
 export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
   const router = useRouter();
-  const { source, api, signer, bestBlock } = useSession();
+  const { source, api, signer, bestBlock, viewerRoles } = useSession();
   const { poll, myChoice, castVote, loading, error, provisional, finalize, finalizing, reload } = usePoll(
     source,
     postId,
@@ -74,14 +75,31 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
     return null; // no tallies and not loading/errored — the post body already rendered above
   }
   const closeState = poll.finalized ? "final" : provisional ? "provisional" : "open";
+  // Chamber gate (spec 209): a single-chamber `Spo`/`Drep` poll accepts only that chamber's role-holders —
+  // a non-member's cast would never enter the tally, so we block it rather than record a phantom vote. Only
+  // gate while OPEN (a closed poll is disabled for everyone). `viewerRoles === null` fails open, so a member
+  // is never blocked mid-load. A blocked non-member still READS the result (showResults), they just can't cast.
+  const notBound = gate.status === "not-identity-bound";
+  const blocked = closeState === "open" && chamberBlocksViewer(poll.kind, viewerRoles);
+  const required = chamberRequiredRole(poll.kind);
+  const label = required ? roleLabel(required) : "";
+  const disabledHint = notBound
+    ? "Finish setup to vote"
+    : blocked
+      ? `Only ${label}s can vote`
+      : undefined;
+  const gateNotice = blocked
+    ? `Only accounts with a live Cardano ${label} role can vote in this ${label}-only poll.`
+    : undefined;
   return (
     <PollCard
       poll={poll}
       myChoice={myChoice}
       onVote={onVote}
-      showResults={detail}
-      disabled={gate.status === "not-identity-bound"}
-      disabledHint="Finish setup to vote"
+      showResults={detail || blocked}
+      disabled={notBound || blocked}
+      disabledHint={disabledHint}
+      gateNotice={gateNotice}
       compact={!detail}
       closeState={closeState}
       onFinalize={onFinalize}

@@ -22,8 +22,16 @@
 import { useCallback, useRef } from "react";
 import styles from "./PollCard.module.css";
 import { Spinner, IconCheck } from "./icons";
+import { ProposalPreview } from "./ProposalPreview";
 import { weightPercent, formatWeight } from "@/lib/format";
 import { sanitizeInline } from "@/lib/sanitize";
+import {
+  primaryLens,
+  showsChamberBlock,
+  lensWeight,
+  lensCount,
+  lensVoters,
+} from "@/lib/poll";
 import type { PollView, PollOptionView, GovActionType } from "./kit";
 
 /** Human labels for the CIP-1694 governance-action types (spec 209). */
@@ -85,6 +93,13 @@ export interface PollCardProps {
   onFinalize?: () => void;
   /** A finalize (`close_poll`) is in flight → spinner on the Finalize control. */
   finalizing?: boolean;
+  /**
+   * A visible notice explaining why voting is blocked here — set by the surface for a single-chamber poll
+   * (`Spo` / `Drep`) the viewer can't vote in because they don't hold that Cardano role. Distinct from
+   * `disabledHint` (a per-option tooltip): a touch user gets no hover, so the reason must be on the page.
+   * Only pass while the poll is OPEN — a closed poll is disabled for everyone and needs no such notice.
+   */
+  gateNotice?: string;
 }
 
 export function PollCard({
@@ -98,13 +113,26 @@ export function PollCard({
   closeState = "open",
   onFinalize,
   finalizing,
+  gateNotice,
 }: PollCardProps) {
   const voted = myChoice != null;
   const closed = closeState !== "open";
   // A closed poll accepts no votes and always shows results.
   const votingDisabled = disabled || closed;
   const results = showResults || voted || closed;
-  const noWeight = poll.totalWeight <= 0n;
+  // The lens the headline bars read: a single-chamber (`Spo`/`Drep`) poll reads out THAT chamber directly
+  // (delegated stake, distinct pools/dReps); `Stake`/`Governance` keep the holder (own-stake) lens. All the
+  // headline math — %, the totals line, the accessible counts — routes through this lens.
+  const lens = primaryLens(poll.kind);
+  const totalWeight =
+    lens === "holder"
+      ? poll.totalWeight
+      : poll.options.reduce((s, o) => s + lensWeight(o, lens), 0n);
+  const totalCount =
+    lens === "holder"
+      ? poll.totalCount
+      : poll.options.reduce((s, o) => s + lensCount(o, lens), 0);
+  const noWeight = totalWeight <= 0n;
   // A tagged governance poll (spec 209): a safe link to the off-chain proposal, or null if unsafe/absent.
   const proposalUrl = poll.action ? safeUrl(poll.action.anchorUrl) : null;
 
@@ -151,31 +179,36 @@ export function PollCard({
       onKeyDown={onKeyDown}
     >
       {poll.action && (
-        <div className={styles.govAction}>
-          <span className={styles.govActionType}>{GOV_ACTION_LABEL[poll.action.actionType]}</span>
-          {proposalUrl && (
-            <a
-              className={styles.govLink}
-              href={proposalUrl}
-              target="_blank"
-              rel="noopener noreferrer nofollow"
-              onClick={(e) => e.stopPropagation()}
-            >
-              View proposal ↗
-            </a>
-          )}
-        </div>
+        <>
+          <div className={styles.govAction}>
+            <span className={styles.govActionType}>{GOV_ACTION_LABEL[poll.action.actionType]}</span>
+            {proposalUrl && (
+              <a
+                className={styles.govLink}
+                href={proposalUrl}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                onClick={(e) => e.stopPropagation()}
+              >
+                View proposal ↗
+              </a>
+            )}
+          </div>
+          {/* Read the CIP-108 proposal contents IN the poll (on-demand), not just a link out. */}
+          <ProposalPreview action={poll.action} />
+        </>
       )}
       <div className={styles.options}>
         {poll.options.map((opt, i) => {
-          const pct = noWeight ? 0 : weightPercent(opt.weight, poll.totalWeight);
+          const pct = noWeight ? 0 : weightPercent(lensWeight(opt, lens), totalWeight);
           const mine = opt.index === myChoice;
           // Option labels are attacker-controlled on-chain text → harden (bidi / invisible / Zalgo)
           // before they reach the DOM or the accessible name.
           const label = sanitizeInline(opt.label);
-          // Accessible name carries the weighted % + the raw voter count (whale vs many-small).
+          // Accessible name carries the weighted % + the raw voter count in the headline lens (whale vs
+          // many-small; distinct pools/dReps for a single-chamber poll).
           const ariaLabel = results
-            ? `${label}, ${pct} percent, ${opt.count} ${opt.count === 1 ? "vote" : "votes"}${
+            ? `${label}, ${pct} percent, ${lensVoters(lensCount(opt, lens), lens)}${
                 mine ? ", your choice" : ""
               }`
             : label;
@@ -223,15 +256,21 @@ export function PollCard({
         })}
       </div>
 
+      {gateNotice && (
+        // aria-live: when the viewer's roles resolve to a confirmed non-member mid-view (options flip to
+        // disabled and can steal focus), the reason is announced instead of silently appearing.
+        <p className={styles.gateNotice} role="note" aria-live="polite">
+          {gateNotice}
+        </p>
+      )}
+
       <div className={styles.totals}>
-        <span className={styles.voters}>
-          {poll.totalCount} {poll.totalCount === 1 ? "voter" : "voters"}
-        </span>
+        <span className={styles.voters}>{lensVoters(totalCount, lens)}</span>
         <span className={styles.dot} aria-hidden>
           ·
         </span>
         <span className={styles.weighted}>
-          {noWeight ? "weighted —" : `${formatWeight(poll.totalWeight)} weighted`}
+          {noWeight ? "weighted —" : `${formatWeight(totalWeight)} weighted`}
         </span>
         <span className={styles.dot} aria-hidden>
           ·
@@ -240,7 +279,7 @@ export function PollCard({
           <>
             <span
               className={styles.govPill}
-              title="A Cardano-community temperature check — chamber tallies below (display-only)"
+              title="A Cardano-community temperature check — chamber-weighted, display-only"
             >
               {chamberPill(poll.kind)}
             </span>
@@ -273,7 +312,7 @@ export function PollCard({
         )}
       </div>
 
-      {(kindHasSpo(poll.kind) || kindHasDrep(poll.kind)) && results && (
+      {showsChamberBlock(poll.kind) && results && (
         <div className={styles.chambers}>
           {(
             [
