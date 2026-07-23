@@ -1,14 +1,14 @@
 "use client";
 
-// BottomTabBar — the mobile (<688px) fixed bottom navigation. 5 tabs:
-// Home · Explore · Notifications · Profile · Settings. Compose is the FAB (ComposeFab), never a tab
-// (X-exact). Active item = filled icon + accent tint; Notifications carries an unread badge. Profile
+// BottomTabBar — the mobile (<688px) fixed bottom navigation. 6 icon-only tabs:
+// Home · Explore · Governance · Notifications · Profile · Settings. Compose is the FAB (ComposeFab), never a
+// tab (X-exact). Active item = filled icon + accent tint; Notifications carries an unread badge. Profile
 // resolves to /u/<me>/ when connected, else /welcome/.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import styles from "./BottomTabBar.module.css";
-import { IconHome, IconSearch, IconProfile, IconSettings, IconBell } from "../icons";
+import { IconHome, IconSearch, IconProfile, IconSettings, IconBell, IconPoll } from "../icons";
 import { useSession } from "../Providers";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useNavReTap } from "@/hooks/useNavReTap";
@@ -33,6 +33,12 @@ export function BottomTabBar() {
   const tabs: Tab[] = [
     { label: "Home", href: "/", Icon: IconHome, match: (p) => p === "/" },
     { label: "Explore", href: "/explore/", Icon: IconSearch, match: (p) => p.startsWith("/explore") },
+    {
+      label: "Governance",
+      href: "/governance/",
+      Icon: IconPoll,
+      match: (p) => p.startsWith("/governance"),
+    },
     {
       label: "Notifications",
       href: "/notifications/",
