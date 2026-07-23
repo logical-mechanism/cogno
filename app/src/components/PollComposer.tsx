@@ -22,6 +22,7 @@ import { Composer, MAX_POST_BYTES } from "./Composer";
 import { ByteCounter } from "./ByteCounter";
 import { utf8Bytes, clampToBytes } from "@/lib/bytes";
 import { IconClose } from "./icons";
+import { actionKind } from "@/lib/cardano/governance";
 import styles from "./PollComposer.module.css";
 import type {
   Viewer,
@@ -188,6 +189,9 @@ export function PollComposer({
   const options = useMemo(() => normalize(pollDraft.options), [pollDraft.options]);
   const kind: PollKindName = pollDraft.kind ?? "Stake";
   const govAction = pollDraft.govAction;
+  // Full governance mode: while an action is tagged, the choices are locked to the on-chain Yes/No/Abstain
+  // tri-state and the chamber(s) are set by the action type — so the poll is comparable to the real vote.
+  const govLocked = !!govAction;
   // Spread `...pollDraft` in every mutation so a change to one field (question / a choice / deadline /
   // kind / gov-action) preserves the others.
 
@@ -220,11 +224,12 @@ export function PollComposer({
         onChange({ ...pollDraft, options, govAction: undefined });
         return;
       }
-      // Enabling: preset the options to Yes/No/Abstain when the author hasn't typed any yet.
-      const allEmpty = options.every((o) => o.trim().length === 0);
+      // Full governance mode: lock the choices to the on-chain tri-state and set the chamber(s) this action
+      // is actually decided by, so the reader can read it out against the real CIP-1694 threshold.
       onChange({
         ...pollDraft,
-        options: allEmpty ? [...YES_NO_ABSTAIN] : options,
+        options: [...YES_NO_ABSTAIN],
+        kind: actionKind("Info"),
         govAction: { actionType: "Info", anchorUrl: "" },
       });
     },
@@ -233,12 +238,14 @@ export function PollComposer({
 
   const setActionType = useCallback(
     (actionType: GovActionType) =>
+      // The action type drives the tallied chamber(s): dRep-led actions → a dRep poll, the rest → both.
       onChange({
         ...pollDraft,
-        options,
+        options: [...YES_NO_ABSTAIN],
+        kind: actionKind(actionType),
         govAction: { actionType, anchorUrl: govAction?.anchorUrl ?? "" },
       }),
-    [onChange, options, pollDraft, govAction],
+    [onChange, pollDraft, govAction],
   );
 
   const setAnchorUrl = useCallback(
@@ -325,19 +332,11 @@ export function PollComposer({
   const govOk = !govAction || (!anchorTooLong && !anchorUnsafe);
   const extraValid = enoughOptions && !anyOptionOver && govOk;
 
-  // The metadata of the currently-selected action type, and whether the chosen kind covers the chambers
-  // that vote it on Cardano (a non-blocking nudge — since every action is dRep-voted, an SPO-only poll on
-  // any real action warns; picking Stake hides the section entirely).
+  // The metadata of the currently-selected action type (its on-chain voting note). The kind is auto-set
+  // from the action, so there is no chamber mismatch to warn about.
   const selectedAction = govAction
     ? GOV_ACTIONS.find((a) => a.value === govAction.actionType)
     : undefined;
-  const chamberMismatch = !selectedAction
-    ? null
-    : selectedAction.spo && !kindHasSpo(kind)
-      ? "On Cardano this action is also decided by SPOs — consider a kind that includes the SPO chamber."
-      : selectedAction.drep && !kindHasDrep(kind)
-        ? "On Cardano this action is decided by dReps — pick a kind that includes the dRep chamber."
-        : null;
 
   const onSubmit = useCallback(
     (draft: ComposerDraft) => {
@@ -362,7 +361,7 @@ export function PollComposer({
     <fieldset className={styles.fieldset}>
       <legend className={styles.srOnly}>Poll choices</legend>
       {options.map((opt, i) => {
-        const removable = i >= MIN_POLL_OPTIONS;
+        const removable = i >= MIN_POLL_OPTIONS && !govLocked;
         return (
           <div className={styles.optionRow} key={i}>
             <label className={styles.srOnly} htmlFor={`cg-poll-option-${i}`}>
@@ -377,8 +376,10 @@ export function PollComposer({
               onChange={(e) => setOption(i, e.target.value)}
               onKeyDown={(e) => onOptionKeyDown(i, e)}
               aria-invalid={utf8Bytes(opt) > MAX_POLL_OPTION_BYTES || undefined}
+              // Governance votes are the fixed on-chain tri-state — the choices aren't editable.
+              disabled={govLocked}
             />
-            <ByteCounter value={opt} maxBytes={MAX_POLL_OPTION_BYTES} size="sm" />
+            {!govLocked && <ByteCounter value={opt} maxBytes={MAX_POLL_OPTION_BYTES} size="sm" />}
             {removable && (
               <button
                 type="button"
@@ -394,19 +395,25 @@ export function PollComposer({
       })}
 
       <div className={styles.addRow}>
-        <button
-          type="button"
-          className={styles.addOption}
-          onClick={addOption}
-          disabled={options.length >= MAX_POLL_OPTIONS}
-          aria-disabled={options.length >= MAX_POLL_OPTIONS || undefined}
-        >
-          + Add option
-        </button>
-        {!enoughOptions && <span className={styles.hint}>Add at least 2 options.</span>}
-        <span className={styles.srOnly} aria-live="polite">
-          {MAX_POLL_OPTIONS - options.length} option slots remaining
-        </span>
+        {govLocked ? (
+          <span className={styles.hint}>Governance votes are Yes / No / Abstain.</span>
+        ) : (
+          <>
+            <button
+              type="button"
+              className={styles.addOption}
+              onClick={addOption}
+              disabled={options.length >= MAX_POLL_OPTIONS}
+              aria-disabled={options.length >= MAX_POLL_OPTIONS || undefined}
+            >
+              + Add option
+            </button>
+            {!enoughOptions && <span className={styles.hint}>Add at least 2 options.</span>}
+            <span className={styles.srOnly} aria-live="polite">
+              {MAX_POLL_OPTIONS - options.length} option slots remaining
+            </span>
+          </>
+        )}
       </div>
 
       <div className={styles.deadlineRow}>
@@ -418,6 +425,8 @@ export function PollComposer({
           className={styles.deadline}
           value={kind}
           onChange={(e) => setKind(e.target.value as PollKindName)}
+          // Locked while an action is tagged — the chamber(s) are set by the action type.
+          disabled={govLocked}
         >
           <optgroup label="Everyone">
             <option value="Stake">Stake — everyone votes</option>
@@ -428,7 +437,9 @@ export function PollComposer({
             <option value="Drep">dRep only</option>
           </optgroup>
         </select>
-        <span className={styles.hint}>{KIND_HINT[kind]}</span>
+        <span className={styles.hint}>
+          {govLocked ? "Chambers set automatically from the governance action." : KIND_HINT[kind]}
+        </span>
       </div>
 
       {kindIsChamber(kind) && (
@@ -462,11 +473,6 @@ export function PollComposer({
                 </select>
               </div>
               {selectedAction && <span className={styles.govNote}>{selectedAction.note}</span>}
-              {chamberMismatch && (
-                <span className={styles.govWarn} role="status">
-                  {chamberMismatch}
-                </span>
-              )}
 
               <div className={styles.govUrlRow}>
                 <label className={styles.srOnly} htmlFor="cg-poll-gov-url">
