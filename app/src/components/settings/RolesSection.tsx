@@ -69,11 +69,12 @@ const ROLE_SPECS: RoleSpec[] = [
     title: "Delegated representative (dRep)",
     cardHint:
       "Prove you're a Cardano delegated representative with your dRep key (CIP-0105, key-based only). A ✓ dRep tag shows on your profile once the chain confirms the dRep is registered — and clears if it deregisters.",
-    keyPlaceholder: "drep .vkey cborHex / 64-hex public key / 56-hex dRep ID",
+    keyPlaceholder: "drep1… id  /  drep .vkey cborHex  /  56-hex dRep ID",
     keyHint: (
       <>
-        Paste your dRep <code>.vkey</code> file (or its hex), or the 28-byte dRep ID. Key-based dReps only
-        (a script dRep cannot sign). This is a public key — never your secret key.
+        Paste your dRep id (<code>drep1…</code>, straight from your wallet), or your dRep <code>.vkey</code>{" "}
+        file / its hex. Key-based dReps only (a script dRep cannot sign). This is public — never your secret
+        key.
       </>
     ),
   },
@@ -224,14 +225,16 @@ function RoleClaimCard({
               <span className={styles.stepNum}>1</span>
               <span className={styles.stepTitle}>Enter your {spec.label} verification key</span>
             </div>
-            <input
-              type="text"
-              className={styles.input}
+            {/* A wrapping textarea, not a single-line input: a bech32 id / .vkey JSON is long, and the
+                settings column is narrow — this keeps the whole value visible instead of scrolling off. */}
+            <textarea
+              className={styles.keyField}
               value={keyInput}
               onChange={(e) => onKeyInputChange(e.target.value)}
               placeholder={spec.keyPlaceholder}
               spellCheck={false}
               autoComplete="off"
+              rows={2}
               aria-label={`${spec.label} verification key`}
             />
             <p className={styles.hint}>{spec.keyHint}</p>

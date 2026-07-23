@@ -16,6 +16,7 @@
 // by lib/signer/wallet-derive.ts) and safe to import at module scope.
 
 import { blake2b } from "blakejs";
+import { bech32 } from "bech32";
 import { hexToBytes } from "@/lib/util/hex";
 
 /** The domain separator + payload grammar the runtime verifier pins (cip8.rs::parse_role_payload):
@@ -35,6 +36,63 @@ const SKEY_NAME: Record<RoleToken, string> = {
   drep: "drep.skey",
   cc: "cc-hot.skey",
 };
+
+/** Human role label for the parser's error copy (the SPO role's key is a Calidus key). */
+const ROLE_LABEL: Record<RoleToken, string> = { spo: "Calidus", drep: "dRep", cc: "CC hot" };
+
+/** The bech32 HRPs accepted per role — an ALLOWLIST, so an `addr…` / `pool…` / `stake…` pasted into the
+ *  wrong field is rejected outright rather than silently mis-derived (a 29-byte enterprise address would
+ *  otherwise decode to the right length and look like a CIP-129 credential). Each role covers the id
+ *  (CIP-105 28-byte / CIP-129 29-byte), the verification key (`_vk`), and the key hash (`_vkh`). */
+const ROLE_BECH32_HRPS: Record<RoleToken, readonly string[]> = {
+  spo: ["calidus", "calidus_vk", "calidus_vkh"],
+  drep: ["drep", "drep_vk", "drep_vkh"],
+  cc: ["cc_hot", "cc_hot_vk", "cc_hot_vkh"],
+};
+
+/**
+ * Try to decode a bech32 role id/key (`drep1…`, `drep_vk1…`, `calidus_vk1…`, …) into the 28-byte credential
+ * the synthetic address commits. Returns null when `s` isn't bech32 at all, so the caller falls through to
+ * the hex/JSON paths. THROWS a specific error when it IS bech32 but wrong for this role (foreign HRP, a
+ * script credential, or an unexpected length) — those are user mistakes worth naming, not silent fall-through.
+ *   • 32-byte payload → a verification key → credential = blake2b_224(key);
+ *   • 28-byte payload → CIP-105 id / key hash → the bare credential;
+ *   • 29-byte payload → CIP-129 id (1 header byte + 28-byte cred): low nibble 3 = a SCRIPT credential (can't
+ *     sign) → rejected; otherwise the header is stripped.
+ */
+function decodeBech32Credential(
+  s: string,
+  role: RoleToken,
+): { credentialHex: string; fromKeyHash: boolean } | null {
+  let prefix: string;
+  let data: Uint8Array;
+  try {
+    const dec = bech32.decode(s, 128);
+    prefix = dec.prefix.toLowerCase();
+    data = Uint8Array.from(bech32.fromWords(dec.words));
+  } catch {
+    return null; // not bech32 — let the hex paths try
+  }
+  const label = ROLE_LABEL[role];
+  if (!ROLE_BECH32_HRPS[role].includes(prefix)) {
+    throw new Error(`that's a "${prefix}…" key, not a ${label} key — paste your ${label} key`);
+  }
+  if (data.length === 32) {
+    return { credentialHex: toHex(blake2b(data, undefined, 28)), fromKeyHash: false };
+  }
+  if (data.length === 28) {
+    return { credentialHex: toHex(data), fromKeyHash: true };
+  }
+  if (data.length === 29) {
+    if ((data[0] & 0x0f) === 0x03) {
+      throw new Error(`that ${label} is script-based — only a key-based ${label} can sign`);
+    }
+    return { credentialHex: toHex(data.slice(1)), fromKeyHash: true };
+  }
+  throw new Error(
+    `that ${label} bech32 key decoded to ${data.length} bytes — expected a 28/29-byte id or a 32-byte key`,
+  );
+}
 
 /** A built role-proof request: the exact payload/address/command handed to the operator, held in the
  *  wizard between "generate command" and "paste result" so the pre-flight can compare byte-for-byte. */
@@ -87,19 +145,24 @@ function normHex(s: string): string {
 const hexByteLen = (h: string) => normHex(h).length / 2;
 
 /**
- * Derive the 28-byte role credential from an operator's entered Calidus key. Accepts the forms an
- * operator has on disk after `cardano-signer keygen --cip 0151`:
+ * Derive the 28-byte role credential from an operator's entered role key. Accepts the forms a user has,
+ * whether from a wallet or from disk (`cardano-signer keygen`):
+ *   • a bech32 id / key — the canonical wallet-facing form: `drep1…` (CIP-105/129 dRep id), `drep_vk1…`,
+ *     `calidus_vk1…`, etc. (see `decodeBech32Credential`),
  *   • a `.vkey` JSON (its `cborHex` field is used),
  *   • a CBOR-hex verification key (`5820` + 32-byte pubkey),
  *   • a bare 32-byte Ed25519 verification key (64 hex) → credential = `blake2b_224(pubkey)`,
  *   • a bare 28-byte key hash / credential (56 hex) → used directly.
- * Bech32 (`calidus_vk1…`) is intentionally not decoded here (it would take a direct dep on `bech32`,
- * which is only transitive); paste the `.vkey` file or its hex instead. The runtime is the authority —
- * this only pins the address the command signs over.
+ * `role` scopes the error copy and the bech32 HRP allowlist. The runtime is the authority — this only pins
+ * the address the offline command signs over.
  */
-export function deriveRoleCredential(keyInput: string): { credentialHex: string; fromKeyHash: boolean } {
+export function deriveRoleCredential(
+  keyInput: string,
+  role: RoleToken,
+): { credentialHex: string; fromKeyHash: boolean } {
+  const label = ROLE_LABEL[role];
   let raw = keyInput.trim();
-  if (!raw) throw new Error("enter your Calidus verification key");
+  if (!raw) throw new Error(`enter your ${label} verification key`);
   // A pasted `.vkey` file → pull out its cborHex.
   if (raw.startsWith("{")) {
     try {
@@ -109,9 +172,14 @@ export function deriveRoleCredential(keyInput: string): { credentialHex: string;
       // not JSON after all — fall through and treat the whole thing as hex
     }
   }
+  // A bech32 id/key (`drep1…`, `calidus_vk1…`) — the form a wallet shows. Non-bech32 input returns null and
+  // falls through to the hex paths; a bech32 string that's wrong for this role throws a named error.
+  const fromBech32 = decodeBech32Credential(raw, role);
+  if (fromBech32) return fromBech32;
+
   let hex = normHex(raw);
   if (!/^[0-9a-f]+$/.test(hex)) {
-    throw new Error("Calidus key is not hex or a .vkey JSON");
+    throw new Error(`${label} key is not hex, a .vkey JSON, or a bech32 id`);
   }
   // Strip a CBOR bytestring header (0x5820 = a 32-byte bstr) if the cborHex form was pasted.
   if (hex.length === 68 && hex.startsWith("5820")) hex = hex.slice(4);
@@ -124,7 +192,7 @@ export function deriveRoleCredential(keyInput: string): { credentialHex: string;
     return { credentialHex: hex, fromKeyHash: true };
   }
   throw new Error(
-    "expected a 32-byte Calidus verification key (64 hex / .vkey cborHex) or its 28-byte key hash (56 hex)",
+    `expected a 32-byte ${label} verification key (64 hex / .vkey cborHex), its 28-byte key hash (56 hex), or a bech32 id`,
   );
 }
 
@@ -150,7 +218,7 @@ export async function buildRoleProofRequest(opts: {
   if (!/^[0-9a-f]{64}$/.test(account)) throw new Error("posting account is not a 32-byte hex pubkey");
   if (!/^[0-9a-f]{64}$/.test(genesis)) throw new Error("chain genesis is not a 32-byte hex hash");
 
-  const { credentialHex, fromKeyHash } = deriveRoleCredential(opts.keyInput);
+  const { credentialHex, fromKeyHash } = deriveRoleCredential(opts.keyInput, opts.role);
 
   const cst = await import("@meshsdk/core-cst");
   // The synthetic enterprise address (network 0 / preprod, key-hash payment credential). cardano-signer
