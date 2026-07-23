@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { proposalHttpUrl, parseProposalDoc } from "./proposalMeta";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { proposalHttpUrl, parseProposalDoc, resolveProposal } from "./proposalMeta";
 
 describe("proposalHttpUrl", () => {
   it("passes https through", () => {
@@ -81,5 +81,83 @@ describe("parseProposalDoc", () => {
     const huge = "x".repeat(5000);
     const m = parseProposalDoc({ body: { abstract: huge } })!;
     expect(m.abstract!.length).toBeLessThanOrEqual(1200);
+  });
+});
+
+// A hand-rolled Response so the streaming `readCapped` path runs deterministically, independent of the
+// environment's global Response/fetch implementation.
+function fakeResponse(bodyStr: string, status = 200): Response {
+  const bytes = new TextEncoder().encode(bodyStr);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (h: string) => (h.toLowerCase() === "content-length" ? String(bytes.byteLength) : null) },
+    body: {
+      getReader() {
+        let sent = false;
+        return {
+          async read() {
+            if (sent) return { done: true, value: undefined };
+            sent = true;
+            return { done: false, value: bytes };
+          },
+          async cancel() {},
+        };
+      },
+    },
+    async text() {
+      return bodyStr;
+    },
+  } as unknown as Response;
+}
+
+describe("resolveProposal caching (terminal vs transient)", () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("does NOT cache a transient failure — a later call retries and can succeed", async () => {
+    const url = "https://gov.example/retry-after-transient.json";
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline")) // no response arrived → transient
+      .mockResolvedValueOnce(fakeResponse(JSON.stringify({ body: { title: "Recovered" } })));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    expect(await resolveProposal(url)).toBeNull(); // transient failure → null, must not be cached
+    expect((await resolveProposal(url))?.title).toBe("Recovered"); // retry hits the network again
+    expect(fetchMock).toHaveBeenCalledTimes(2); // proves the transient result was not cached
+  });
+
+  it("DOES cache a terminal failure (404) — a later call is served from cache, no re-fetch", async () => {
+    const url = "https://gov.example/terminal-404.json";
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse("", 404));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    expect(await resolveProposal(url)).toBeNull();
+    expect(await resolveProposal(url)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // a settled 404 is not re-fetched
+  });
+
+  it("caches malformed JSON as terminal — a later call does not re-fetch", async () => {
+    const url = "https://gov.example/bad-json.json";
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse("{ not valid json"));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    expect(await resolveProposal(url)).toBeNull();
+    expect(await resolveProposal(url)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // a response arrived; bad JSON won't improve on retry
+  });
+
+  it("DOES cache a terminal success — a later call is served from cache", async () => {
+    const url = "https://gov.example/terminal-ok.json";
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(JSON.stringify({ body: { title: "Cached" } })));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    expect((await resolveProposal(url))?.title).toBe("Cached");
+    expect((await resolveProposal(url))?.title).toBe("Cached");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

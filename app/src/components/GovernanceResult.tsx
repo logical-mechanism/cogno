@@ -18,18 +18,22 @@ import {
   actionChambers,
   approvalRatio,
   chamberVote,
+  ratificationVerdict,
   FALLBACK_THRESHOLDS,
   type Threshold,
 } from "@/lib/cardano/governance";
 import { resolveGovParams, type GovParams } from "@/lib/cardano/govParams";
+import { lensVoters, lensVoterUnit } from "@/lib/poll";
 import type { PollView, GovActionView } from "@/lib/types";
 
 const pctOf = (f: number) => Math.round(f * 100);
 const thresholdLabel = (t: Threshold) =>
   t.min === t.max ? `${pctOf(t.min)}%` : `${pctOf(t.min)}–${pctOf(t.max)}%`;
 
-/** `n` participating stake-holders of a chamber, pluralized. */
-const voters = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+/** The chamber-title-side pill style + label word for each ratification verdict. `partial` (a range the
+ *  poll sits inside) is deliberately NOT the green "meets" — it reads "within" so it never over-signals. */
+const VERDICT_STYLE = { meets: styles.meets, partial: styles.partial, below: styles.below } as const;
+const VERDICT_WORD = { meets: "meets", partial: "within", below: "below" } as const;
 
 function ChamberRow({
   poll,
@@ -45,13 +49,19 @@ function ChamberRow({
   totalActiveStake: bigint | null;
 }) {
   const v = chamberVote(poll.options, body);
-  const unit = body === "spo" ? "pool" : "dRep";
+  const unit = lensVoterUnit(body);
   const title = body === "spo" ? "SPO chamber" : "dRep chamber";
   const ratio = approvalRatio(v.yes, v.no); // Yes/(Yes+No), abstain excluded — null if none cast
   const showBar = !advisory && threshold != null;
-  // Compare the DISPLAYED (rounded) percentages, not the raw ratio, so the readout is self-consistent — an
-  // exact 0.505 shown as "51% Yes" must never read "below 51%".
-  const meets = ratio != null && threshold != null && pctOf(ratio) >= pctOf(threshold.min);
+  // meets / partial / below vs the threshold (a RANGE for ParamChange → "partial" when inside it, so a poll
+  // between the loosest and strictest group bar is never mislabeled a flat "meets"). null unless there's a
+  // real threshold + a cast ratio to judge; the head only renders it in that branch.
+  const verdict = ratio != null && threshold != null ? ratificationVerdict(ratio, threshold) : null;
+  const meets = verdict === "meets";
+  // Gauge fill mirrors the verdict — accent for a true "meets", amber while "partial" (inside a range),
+  // muted otherwise — so the bar never disagrees with the pill/label above it (a null ratio → 0-width).
+  const fillClass =
+    verdict === "meets" ? styles.fillMeets : verdict === "partial" ? styles.fillPartial : styles.fillBelow;
   // Coverage: participating chamber stake as a share of total active stake (best-effort, 2 dp).
   const coverage =
     totalActiveStake && totalActiveStake > 0n
@@ -69,8 +79,8 @@ function ChamberRow({
         ) : advisory ? (
           <span className={styles.approval}>{pctOf(ratio)}% Yes</span>
         ) : (
-          <span className={meets ? styles.meets : styles.below}>
-            {pctOf(ratio)}% Yes · {meets ? "meets" : "below"} {thresholdLabel(threshold!)}
+          <span className={VERDICT_STYLE[verdict!]}>
+            {pctOf(ratio)}% Yes · {VERDICT_WORD[verdict!]} {thresholdLabel(threshold!)}
           </span>
         )}
       </div>
@@ -82,11 +92,13 @@ function ChamberRow({
           aria-label={
             ratio == null
               ? `${title}: no Yes/No votes; needs ${thresholdLabel(threshold!)} to ratify`
-              : `${title}: ${pctOf(ratio)} percent Yes, ${meets ? "meets" : "below"} the ${thresholdLabel(threshold!)} ratification bar`
+              : verdict === "partial"
+                ? `${title}: ${pctOf(ratio)} percent Yes, within the ${thresholdLabel(threshold!)} ratification range — clears for some parameter groups, not all`
+                : `${title}: ${pctOf(ratio)} percent Yes, ${meets ? "meets" : "below"} the ${thresholdLabel(threshold!)} ratification bar`
           }
         >
           <span
-            className={`${styles.fill} ${meets ? styles.fillMeets : styles.fillBelow}`}
+            className={`${styles.fill} ${fillClass}`}
             style={{ width: `${pctOf(ratio ?? 0)}%` }}
           />
           {threshold!.min !== threshold!.max && (
@@ -107,7 +119,7 @@ function ChamberRow({
         {v.total > 0n ? `${formatWeight(v.total)} ₳` : "no stake"}
         {coverage != null && v.total > 0n && <> · {coverage}% of active stake</>}
         {" · "}
-        {voters(v.voters, unit)}
+        {lensVoters(v.voters, body)}
         {v.abstain > 0n && <> · {formatWeight(v.abstain)} ₳ abstained</>}
       </div>
     </div>

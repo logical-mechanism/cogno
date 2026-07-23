@@ -44,6 +44,17 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* "within" — the approval sits inside a threshold RANGE (ParamChange): it ratifies for some parameter
+   groups but not the strictest. Full-strength text, NOT --cg-warning — amber is only ~4.24:1 on the card's
+   light bg (fails WCAG AA at this size), so the "it depends" signal is carried by the amber gauge fill/band
+   below, not the pill text. Told apart from the accent "meets" and the dimmer "below" by the word + weight. */
+.partial {
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+  font-variant-numeric: tabular-nums;
+}
+
 .approval {
   font-size: var(--cg-fs-xs);
   font-weight: var(--cg-fw-semibold);
@@ -81,6 +92,13 @@
 
 .fillBelow {
   background: var(--cg-text-muted);
+  opacity: 0.5;
+}
+
+/* the "within-range" fill: amber, matching the band + marker — the approval cleared the loosest group bar
+   but not the strictest, so it is neither the accent "meets" nor the muted "below". */
+.fillPartial {
+  background: var(--cg-warning);
   opacity: 0.5;
 }
 

@@ -109,7 +109,8 @@ async function readCapped(res: Response, capBytes: number): Promise<string | nul
   const reader = res.body?.getReader();
   if (!reader) {
     const text = await res.text();
-    return text.length > capBytes ? null : text;
+    // Measure BYTES (not `.length`, which counts UTF-16 code units) so a multibyte doc can't slip the cap.
+    return new TextEncoder().encode(text).byteLength > capBytes ? null : text;
   }
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -133,15 +134,18 @@ async function readCapped(res: Response, capBytes: number): Promise<string | nul
   return new TextDecoder().decode(buf);
 }
 
-// Per-URL caches: a resolved value (or `null` = tried, nothing usable) so a re-open / a second poll linking
-// the same doc never re-fetches; and an in-flight promise so concurrent expanders share one call.
+// Per-URL caches. `resolved` holds only TERMINAL outcomes — a parsed value, or `null` when a RESPONSE came
+// back but yielded nothing usable (bad status, oversized, malformed JSON, empty doc) — so a re-open / a
+// second poll linking the same doc never re-fetches a settled result. A TRANSIENT failure (offline / CORS /
+// abort / timeout, where NO response arrived) is deliberately NOT cached, so a later open can retry once the
+// network recovers. `inflight` shares one call between concurrent expanders.
 const resolved = new Map<string, ProposalMeta | null>();
 const inflight = new Map<string, Promise<ProposalMeta | null>>();
 
 /**
  * Fetch + parse the proposal doc for `anchorUrl` (on demand), or null when it can't be loaded/parsed.
- * Cached per session; never throws. Keyed on the RESOLVED https URL so `ipfs://x` and its gateway form
- * share a cache entry.
+ * TERMINAL outcomes are cached per session; a transient network failure is NOT, so it stays retryable.
+ * Never throws. Keyed on the RESOLVED https URL so `ipfs://x` and its gateway form share a cache entry.
  */
 export async function resolveProposal(anchorUrl: string): Promise<ProposalMeta | null> {
   const url = proposalHttpUrl(anchorUrl);
@@ -150,24 +154,37 @@ export async function resolveProposal(anchorUrl: string): Promise<ProposalMeta |
   const existing = inflight.get(url);
   if (existing) return existing;
 
+  // Cache + return a SETTLED (terminal) outcome — re-fetching it would change nothing.
+  const settle = (meta: ProposalMeta | null): ProposalMeta | null => {
+    resolved.set(url, meta);
+    return meta;
+  };
+
   const p = (async (): Promise<ProposalMeta | null> => {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
     try {
       const res = await fetch(url, { signal: ctl.signal, redirect: "follow" });
-      if (!res.ok) return null; // 404 / 403 / 429 → degrade gracefully
+      // A response arrived: every conclusion from here is TERMINAL (a retry won't change it) → cache it.
+      if (!res.ok) return settle(null); // 404 / 403 / 429 → degrade gracefully
       const declared = Number(res.headers.get("content-length") ?? "0");
-      if (declared > MAX_DOC_BYTES) return null; // fast-refuse when the host DOES declare an oversized doc
+      if (declared > MAX_DOC_BYTES) return settle(null); // host DOES declare an oversized doc
       const text = await readCapped(res, MAX_DOC_BYTES);
-      if (text === null) return null; // over the cap mid-stream → refuse
-      return parseProposalDoc(JSON.parse(text));
+      if (text === null) return settle(null); // over the cap mid-stream → refuse
+      let json: unknown;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        return settle(null); // malformed JSON — won't improve on retry
+      }
+      return settle(parseProposalDoc(json));
     } catch {
-      return null; // offline / CORS / abort / bad JSON — degrade, never surface a throw
+      // Transient (offline / CORS / abort / timeout): NO response arrived — don't cache, allow a later retry.
+      return null;
     } finally {
       clearTimeout(timer);
     }
   })().then((meta) => {
-    resolved.set(url, meta);
     inflight.delete(url);
     return meta;
   });

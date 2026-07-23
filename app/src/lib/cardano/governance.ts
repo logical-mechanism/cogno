@@ -106,6 +106,25 @@ export function approvalRatio(yesWeight: bigint, noWeight: bigint): number | nul
   return Number((yesWeight * 1_000_000n) / denom) / 1_000_000;
 }
 
+/** Where a chamber's approval ratio sits relative to its ratification threshold — comparing DISPLAYED
+ *  (rounded) percentages so the verdict always matches the shown numbers (an exact 0.505 shown as "51%"
+ *  must never read "below 51%").
+ *
+ *  For a single-value threshold this is a plain meets/below. For a RANGE (ParamChange, whose dRep bar
+ *  varies by parameter group and a poll can't pin the group) a ratio inside `[min, max)` is `"partial"` —
+ *  it ratifies for SOME groups but not the strictest — reported honestly instead of a flat "meets" against
+ *  the range floor (which would over-signal ratification). A null ratio (no Yes/No cast) is `"below"`. */
+export function ratificationVerdict(
+  ratio: number | null,
+  t: Threshold,
+): "meets" | "partial" | "below" {
+  if (ratio === null) return "below";
+  const pr = Math.round(ratio * 100);
+  if (pr >= Math.round(t.max * 100)) return "meets"; // clears even the strictest group → truly ratifies
+  if (pr < Math.round(t.min * 100)) return "below"; // under the loosest group → clears nothing
+  return "partial"; // inside the range → ratifies for some parameter groups, not all
+}
+
 /** One chamber's Yes/No/Abstain stake + distinct voter count, folded from the poll options by their
  *  canonical label. `total` = the participating chamber stake (the coverage numerator). */
 export interface ChamberVote {

@@ -7,8 +7,8 @@
 // the per-chamber readout + the vote controls live.
 //
 // Reads are public, so this works for a guest (they just funnel to /welcome to cast). Sorted open →
-// closed → final; newest-first within each group (from the read). Reach: LeftNav (desktop/tablet) + a
-// Settings launcher (mobile — the bottom bar is a locked set).
+// closed → final; newest-first within each group (from the read). Reach: the Governance nav item in
+// LeftNav (desktop/tablet) and the Governance tab in the mobile bottom bar.
 
 import { useMemo } from "react";
 import Link from "next/link";

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   classifyChoice,
   approvalRatio,
+  ratificationVerdict,
   actionChambers,
   actionKind,
   actionBodies,
@@ -118,6 +119,33 @@ describe("chamberVote — fold options into a chamber's Yes/No/Abstain", () => {
     expect(v.total).toBe(80n); // the 30 "Maybe" weight is in the total …
     expect(v.voters).toBe(8);
     expect(approvalRatio(v.yes, v.no)).toBeCloseTo(1, 6); // … but not the ratio denominator
+  });
+});
+
+describe("ratificationVerdict", () => {
+  const one = (n: number) => ({ min: n, max: n });
+  const range = { min: 0.67, max: 0.75 };
+
+  it("single-value threshold → plain meets/below on the rounded percent", () => {
+    expect(ratificationVerdict(0.6, one(0.51))).toBe("meets");
+    expect(ratificationVerdict(0.51, one(0.51))).toBe("meets"); // exactly on the bar
+    expect(ratificationVerdict(0.5, one(0.51))).toBe("below");
+  });
+
+  it("rounds like the display (0.505 shown as 51% must read 'meets 51%')", () => {
+    expect(ratificationVerdict(0.505, one(0.51))).toBe("meets");
+  });
+
+  it("a null ratio (no Yes/No cast) is 'below'", () => {
+    expect(ratificationVerdict(null, one(0.67))).toBe("below");
+  });
+
+  it("range threshold → 'partial' inside [min, max), never a flat 'meets' at the floor", () => {
+    expect(ratificationVerdict(0.8, range)).toBe("meets"); // clears even the strictest group
+    expect(ratificationVerdict(0.75, range)).toBe("meets"); // exactly the strictest group
+    expect(ratificationVerdict(0.7, range)).toBe("partial"); // inside → some groups only
+    expect(ratificationVerdict(0.67, range)).toBe("partial"); // on the floor but under the ceiling
+    expect(ratificationVerdict(0.6, range)).toBe("below"); // under the loosest group
   });
 });
 
