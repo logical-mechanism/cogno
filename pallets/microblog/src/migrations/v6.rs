@@ -178,6 +178,9 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV5ToV6<T> {
                 options: old.options,
                 close_at: None::<BlockNumberFor<T>>,
                 kind: PollKind::Stake,
+                // spec 209: `Poll.action` appended later; a v5/v6-era poll is untagged. A downstream
+                // v8→v9 re-read drops this trailing field and re-affirms `None` (trailing-byte tolerant).
+                action: None,
             })
         });
 

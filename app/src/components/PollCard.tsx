@@ -24,7 +24,37 @@ import styles from "./PollCard.module.css";
 import { Spinner, IconCheck } from "./icons";
 import { weightPercent, formatWeight } from "@/lib/format";
 import { sanitizeInline } from "@/lib/sanitize";
-import type { PollView, PollOptionView } from "./kit";
+import type { PollView, PollOptionView, GovActionType } from "./kit";
+
+/** Human labels for the CIP-1694 governance-action types (spec 209). */
+const GOV_ACTION_LABEL: Record<GovActionType, string> = {
+  Info: "Info action",
+  NoConfidence: "Motion of no-confidence",
+  UpdateCommittee: "Update the Constitutional Committee",
+  NewConstitution: "New Constitution / guardrails",
+  HardFork: "Hard-fork initiation",
+  ParamChange: "Protocol-parameter change",
+  TreasuryWithdrawal: "Treasury withdrawal",
+};
+
+/** Does a poll kind surface the SPO / dRep chamber? (Mirrors the runtime — an Spo/Drep-only poll shows one.) */
+const kindHasSpo = (k: PollView["kind"]) => k === "Governance" || k === "Spo";
+const kindHasDrep = (k: PollView["kind"]) => k === "Governance" || k === "Drep";
+
+/** A short pill label for a chamber poll (null for a plain Stake poll). */
+function chamberPill(k: PollView["kind"]): string | null {
+  return k === "Governance" ? "Governance" : k === "Spo" ? "SPO poll" : k === "Drep" ? "dRep poll" : null;
+}
+
+/** Only allow an http(s) proposal link — on-chain text is attacker-controlled, so never render `javascript:`. */
+function safeUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface PollCardProps {
   /** The poll: options/weights/counts + totals (poll.hostId == the host post id). */
@@ -75,6 +105,8 @@ export function PollCard({
   const votingDisabled = disabled || closed;
   const results = showResults || voted || closed;
   const noWeight = poll.totalWeight <= 0n;
+  // A tagged governance poll (spec 209): a safe link to the off-chain proposal, or null if unsafe/absent.
+  const proposalUrl = poll.action ? safeUrl(poll.action.anchorUrl) : null;
 
   // WAI-ARIA radiogroup: a single tab stop (the checked option, else the first) + arrow-key roving.
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -118,6 +150,22 @@ export function PollCard({
       aria-label="Poll"
       onKeyDown={onKeyDown}
     >
+      {poll.action && (
+        <div className={styles.govAction}>
+          <span className={styles.govActionType}>{GOV_ACTION_LABEL[poll.action.actionType]}</span>
+          {proposalUrl && (
+            <a
+              className={styles.govLink}
+              href={proposalUrl}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              onClick={(e) => e.stopPropagation()}
+            >
+              View proposal ↗
+            </a>
+          )}
+        </div>
+      )}
       <div className={styles.options}>
         {poll.options.map((opt, i) => {
           const pct = noWeight ? 0 : weightPercent(opt.weight, poll.totalWeight);
@@ -188,10 +236,13 @@ export function PollCard({
         <span className={styles.dot} aria-hidden>
           ·
         </span>
-        {poll.kind === "Governance" && (
+        {chamberPill(poll.kind) && (
           <>
-            <span className={styles.govPill} title="A Cardano-community temperature check: SPO & dRep chambers below (display-only)">
-              Governance
+            <span
+              className={styles.govPill}
+              title="A Cardano-community temperature check — chamber tallies below (display-only)"
+            >
+              {chamberPill(poll.kind)}
             </span>
             <span className={styles.dot} aria-hidden>
               ·
@@ -222,14 +273,16 @@ export function PollCard({
         )}
       </div>
 
-      {poll.kind === "Governance" && results && (
+      {(kindHasSpo(poll.kind) || kindHasDrep(poll.kind)) && results && (
         <div className={styles.chambers}>
           {(
             [
-              { key: "spo", title: "SPO chamber", unit: "pool", w: (o: PollOptionView) => o.spoWeight, c: (o: PollOptionView) => o.spoCount },
-              { key: "drep", title: "dRep chamber", unit: "dRep", w: (o: PollOptionView) => o.drepWeight, c: (o: PollOptionView) => o.drepCount },
+              { key: "spo", title: "SPO chamber", unit: "pool", show: kindHasSpo(poll.kind), w: (o: PollOptionView) => o.spoWeight, c: (o: PollOptionView) => o.spoCount },
+              { key: "drep", title: "dRep chamber", unit: "dRep", show: kindHasDrep(poll.kind), w: (o: PollOptionView) => o.drepWeight, c: (o: PollOptionView) => o.drepCount },
             ] as const
-          ).map((ch) => {
+          )
+            .filter((ch) => ch.show)
+            .map((ch) => {
             const total = poll.options.reduce((s, o) => s + ch.w(o), 0n);
             const voters = poll.options.reduce((s, o) => s + ch.c(o), 0);
             return (

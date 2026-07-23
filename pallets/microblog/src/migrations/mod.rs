@@ -30,6 +30,10 @@
 //! `v8` (spec 208) appends the frozen SPO/dRep chamber snapshot to every `PollResult`, so `close_poll`
 //! freezes a governance poll's chambers instead of leaving them to re-price live at read time. Existing
 //! (Stake) results migrate to empty snapshots; `PollResult` is the only storage item touched.
+//!
+//! `v9` (spec 209) appends `Poll.action` (the optional governance-action tag) to every poll, alongside the
+//! two new `Spo`/`Drep` `PollKind` variants (which need no data change — their discriminants are new).
+//! Existing polls migrate to `action = None`; `Poll` is the only storage item touched.
 
 pub mod v1;
 pub mod v2;
@@ -39,3 +43,4 @@ pub mod v5;
 pub mod v6;
 pub mod v7;
 pub mod v8;
+pub mod v9;

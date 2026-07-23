@@ -1,16 +1,17 @@
-//! Storage migration **v6 → v7** (spec 207): add `Poll.kind`.
+//! Storage migration **v8 → v9** (spec 209): add `Poll.action`.
 //!
-//! Governance polls (the SPO + dRep chambers) add a `kind` discriminant to every poll. Every existing
-//! poll is a regular STAKE poll, so this appends `kind = PollKind::Stake` to each [`crate::Polls`] row —
-//! a pure, lossless re-encode: every poll keeps its `options` + `close_at` unchanged, and the chamber
-//! tallies are a read-time addition, not stored. `Poll` is the ONLY storage item whose shape changed, so
-//! it is the only map translated.
+//! spec 209 adds two new [`crate::PollKind`] variants (`Spo`, `Drep`) and an optional governance-action
+//! tag to every poll. The new enum variants need no data change (existing rows are `Stake`/`Governance`,
+//! whose discriminants are unmoved), but the appended `Poll.action` field does: every existing poll is
+//! untagged, so this appends `action = None` to each [`crate::Polls`] row — a pure, lossless re-encode
+//! that keeps `options` + `close_at` + `kind` unchanged. `Poll` is the ONLY storage item whose shape
+//! changed, so it is the only map translated.
 //!
 //! Like the earlier poll re-encodes, correctness rests on `translate` visiting EVERY row (the appended
-//! `kind` needs a trailing byte a v6 row does not have, so an un-migrated row genuinely cannot decode as
+//! `Option` needs a trailing byte a v8 row does not have, so an un-migrated row genuinely cannot decode as
 //! the new `Poll`), and `post_upgrade` proves the row count survived and every migrated poll defaulted to
-//! `Stake`. Wired into the runtime's `SingleBlockMigrations` behind [`VersionedMigration`], so it runs
-//! exactly once (on-chain version 6 → 7) and self-skips on re-run.
+//! `action = None`. Wired into the runtime's `SingleBlockMigrations` behind [`VersionedMigration`], so it
+//! runs exactly once (on-chain version 8 → 9) and self-skips on re-run.
 
 use crate::{Config, Pallet, Poll, PollKind, Polls};
 use frame_support::{
@@ -28,7 +29,7 @@ use alloc::vec::Vec;
 #[cfg(feature = "try-runtime")]
 use frame_support::ensure;
 
-/// The **v6** on-chain encoding of a poll — [`Poll`] MINUS the appended `kind`.
+/// The **v8** on-chain encoding of a poll — [`Poll`] MINUS the appended `action`.
 #[derive(
     Encode, Decode, CloneNoBound, PartialEqNoBound, EqNoBound, DebugNoBound, TypeInfo, MaxEncodedLen,
 )]
@@ -36,30 +37,29 @@ use frame_support::ensure;
 pub struct OldPoll<T: Config> {
     pub options: BoundedVec<BoundedVec<u8, T::MaxPollOptionLen>, T::MaxPollOptions>,
     pub close_at: Option<BlockNumberFor<T>>,
+    pub kind: PollKind,
 }
 
-/// The unchecked inner migration wrapped by [`MigrateV6ToV7`]. Register `MigrateV6ToV7` (the
+/// The unchecked inner migration wrapped by [`MigrateV8ToV9`]. Register `MigrateV8ToV9` (the
 /// version-guarded wrapper), never this directly, so it stays idempotent.
-pub struct InnerMigrateV6ToV7<T: Config>(core::marker::PhantomData<T>);
+pub struct InnerMigrateV8ToV9<T: Config>(core::marker::PhantomData<T>);
 
-impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV6ToV7<T> {
+impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV8ToV9<T> {
     fn on_runtime_upgrade() -> Weight {
         let mut rows: u64 = 0;
-        // Every existing poll is a regular stake poll: append `kind = Stake`, keep options + close_at.
+        // Every existing poll is untagged: append `action = None`, keep options + close_at + kind.
         Polls::<T>::translate::<OldPoll<T>, _>(|_id, old| {
             rows = rows.saturating_add(1);
             Some(Poll {
                 options: old.options,
                 close_at: old.close_at,
-                kind: PollKind::Stake,
-                // spec 209: `Poll.action` appended later; a v6/v7-era poll is untagged. A downstream v8→v9
-                // re-read drops this trailing field and re-affirms `None` (trailing-byte tolerant).
+                kind: old.kind,
                 action: None,
             })
         });
         log::info!(
             target: crate::LOG_TARGET,
-            "migration v6->v7: re-encoded {rows} poll row(s) to add Poll.kind = Stake",
+            "migration v8->v9: re-encoded {rows} poll row(s) to add Poll.action = None",
         );
         // 1 read + 1 write per re-encoded row.
         T::DbWeight::get().reads_writes(rows, rows)
@@ -69,36 +69,36 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV6ToV7<T> {
     fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
         // Row count via `iter_keys` (decodes only keys — value-type-independent, so it reads pre-migration).
         let polls = Polls::<T>::iter_keys().count() as u64;
-        log::info!(target: crate::LOG_TARGET, "migration v6->v7 pre: {polls} Polls");
+        log::info!(target: crate::LOG_TARGET, "migration v8->v9 pre: {polls} Polls");
         Ok(polls.encode())
     }
 
     #[cfg(feature = "try-runtime")]
     fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
         let polls: u64 = Decode::decode(&mut &state[..]).map_err(|_| {
-            sp_runtime::TryRuntimeError::Other("microblog v7: bad pre_upgrade state")
+            sp_runtime::TryRuntimeError::Other("microblog v9: bad pre_upgrade state")
         })?;
         // Every row still DECODES under the new `Poll` type (an un-migrated row would fail), and the count
         // is unchanged.
         ensure!(
             Polls::<T>::iter().count() as u64 == polls,
-            "microblog v7: Polls row count changed / a row failed to decode"
+            "microblog v9: Polls row count changed / a row failed to decode"
         );
-        // Every migrated poll defaults to the regular stake lens.
+        // Every migrated poll defaults to no governance-action tag.
         ensure!(
-            Polls::<T>::iter().all(|(_, p)| matches!(p.kind, PollKind::Stake)),
-            "microblog v7: every migrated poll must default to kind == Stake"
+            Polls::<T>::iter().all(|(_, p)| p.action.is_none()),
+            "microblog v9: every migrated poll must default to action == None"
         );
         Ok(())
     }
 }
 
-/// The public migration: gates [`InnerMigrateV6ToV7`] on `Pallet`'s storage version moving 6 → 7.
-/// Idempotent — runs the inner migration only when the on-chain version is exactly 6, then writes 7.
-pub type MigrateV6ToV7<T> = VersionedMigration<
-    6,
-    7,
-    InnerMigrateV6ToV7<T>,
+/// The public migration: gates [`InnerMigrateV8ToV9`] on `Pallet`'s storage version moving 8 → 9.
+/// Idempotent — runs the inner migration only when the on-chain version is exactly 8, then writes 9.
+pub type MigrateV8ToV9<T> = VersionedMigration<
+    8,
+    9,
+    InnerMigrateV8ToV9<T>,
     Pallet<T>,
     <T as frame_system::Config>::DbWeight,
 >;

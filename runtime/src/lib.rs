@@ -76,7 +76,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // spec 208: `close_poll` FREEZES a governance poll's SPO/dRep chambers into `PollResult` (four new
     // chamber-snapshot vecs, microblog storage v7 → v8), so a concluded poll's chambers no longer re-price
     // live. Storage/read-shape change only — `TxExtension` byte-identical, so `transaction_version` STAYS 5.
-    spec_version: 208,
+    // spec 209: governance-poll flavors — `PollKind` gains `Spo`/`Drep` (chamber-only lenses), `Poll` gains
+    // an optional `action` governance-action tag (CIP-1694 type + off-chain anchor link, microblog storage
+    // v8 → v9), and `create_poll` gains an `action` argument (→ `transaction_version` 6). `PollView` gains
+    // the four kinds + the `action` view.
+    spec_version: 209,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
@@ -84,7 +88,8 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // 3 → 4: `create_poll` gained a `close_at: Option<BlockNumber>` argument (spec 205). Spec 206 adds the
     // CardanoRoles pallet (new calls/storage only, `TxExtension` byte-identical), so it STAYED 4.
     // 4 → 5: `create_poll` gained a `kind: PollKind` argument (spec 207).
-    transaction_version: 5,
+    // 5 → 6: `create_poll` gained an `action: Option<GovActionInput>` argument (spec 209).
+    transaction_version: 6,
     system_version: 1,
 };
 

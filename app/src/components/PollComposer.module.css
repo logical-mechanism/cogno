@@ -143,3 +143,75 @@
   outline: 2px solid var(--cg-accent);
   outline-offset: 1px;
 }
+
+/* Governance-action section (spec 209): revealed under a chamber poll kind. A pre-submission
+   temperature-check tag — the CIP-1694 action type + a link to the off-chain proposal. */
+.govSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  margin-top: var(--cg-space-2);
+  padding: var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-accent-wash);
+}
+.govToggle {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--cg-space-2);
+  cursor: pointer;
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text);
+}
+.govToggle input {
+  margin-top: 2px;
+  accent-color: var(--cg-accent);
+  cursor: pointer;
+}
+.govToggleText {
+  font-weight: var(--cg-fw-semibold);
+}
+.govFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  padding-top: var(--cg-space-1);
+}
+.govUrlRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+}
+.govUrlInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--cg-space-2) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-input);
+  background: var(--cg-bg);
+  color: var(--cg-text);
+  font-family: var(--cg-font-ui);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+}
+.govUrlInput::placeholder {
+  color: var(--cg-text-muted);
+}
+.govUrlInput:focus-visible {
+  outline: none;
+  border-color: var(--cg-accent);
+}
+.govUrlInput[aria-invalid="true"] {
+  border-color: var(--cg-danger);
+}
+.govNote {
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-sm);
+}
+.govWarn {
+  color: var(--cg-warning, var(--cg-accent));
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-sm);
+}

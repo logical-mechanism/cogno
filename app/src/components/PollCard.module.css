@@ -244,3 +244,36 @@
   font-variant-numeric: tabular-nums;
   color: var(--cg-text);
 }
+
+/* Governance-action tag (spec 209): the CIP-1694 action type + a link to the off-chain proposal, shown
+   above the poll options. */
+.govAction {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cg-space-2);
+  margin-bottom: var(--cg-space-2);
+}
+.govActionType {
+  padding: 0 0.4em;
+  border: 1px solid var(--cg-accent);
+  border-radius: 999px;
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  line-height: 1.5;
+}
+.govLink {
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-accent);
+  text-decoration: none;
+}
+.govLink:hover {
+  text-decoration: underline;
+}
+.govLink:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-input);
+}

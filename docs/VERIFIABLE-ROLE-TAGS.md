@@ -136,7 +136,7 @@ truncated id — never a fabricated name). A Calidus SPO badge carries the blank
 renders as a plain "✓ SPO" with no pool name and no link — it names no pool, by design. The Settings claim
 wizard is `app/src/components/settings/RolesSection.tsx`.
 
-## Governance polls (spec 207)
+## Governance polls (spec 207–209)
 
 A poll carries a **kind**. A regular **stake poll** is the default: everyone votes, each weighted by their
 own `VotingPower` (their bound credential's `epoch_stake`), exactly as before. A **governance poll** — a
@@ -146,6 +146,11 @@ lenses, so a verified SPO or dRep can weigh in "as if it were a real Cardano vot
 - the **SPO chamber**, where a voting `SpoOwner` counts for its pool's total delegated (block-production)
   stake, and
 - the **dRep chamber**, where a voting dRep counts for its total delegated voting stake.
+
+Because some Cardano actions are decided by only one body, a governance poll can also open **just one
+chamber**: an **SPO-only** poll tallies only the SPO chamber, a **dRep-only** poll only the dRep chamber.
+`Governance` opens both; `Stake` opens neither. Whichever chamber a poll does not use reports zero and, at
+close, freezes empty (spec 209).
 
 The three lenses are reported **side by side and never summed** — the same way Cardano shows the SPO, dRep,
 and CC results of a governance action separately. That separation is the whole point: a delegator's own
@@ -164,16 +169,36 @@ pool, so it cannot speak for one), which means the SPO chamber only ever reflect
 The tally itself (`Pallet::poll_chamber_weights`, `pallets/microblog/src/lib.rs`) is a read-time
 derivation over the poll's voters, **deduplicated by pool**: a pool's stake counts once even if several of
 its declared owners voted, and if those owners *split* across options the pool abstains rather than being
-assigned arbitrarily. dReps need no such dedup — the claim ledger is 1:1. The chambers are **display-only
-and always live**: they decide nothing on-chain, they are never frozen (a closed poll still freezes only
-the holder tally), and — like every badge — a chamber weight vanishes the moment the underlying Cardano
-role does. `poll()`'s `PollView` carries all three lenses per option (`weight`/`count`, `spo_weight`/
-`spo_count`, `drep_weight`/`drep_count`); a stake poll simply reports zero in the chamber columns.
+assigned arbitrarily. dReps need no such dedup — the claim ledger is 1:1. The chambers are **display-only**: they decide nothing on-chain, and — like every badge — a chamber weight
+vanishes the moment the underlying Cardano role does. While a poll is open they read **live** (re-pricing
+as delegation moves); once `close_poll` finalizes it, the chamber snapshot is **frozen** alongside the
+holder tally (spec 208), so a socially-concluded poll no longer re-prices as delegation later shifts.
+`poll()`'s `PollView` carries all three lenses per option (`weight`/`count`, `spo_weight`/`spo_count`,
+`drep_weight`/`drep_count`); a poll simply reports zero in a chamber it does not use.
 
 This is deliberately *influence*, not *control*: a governance poll is a non-binding signal, not a gate on
 any privileged call. The chamber-tally primitive is, however, exactly what a future stake-weighted
 governance layer would need — so it is built once here and could later gate upgrades or committee actions,
 a decision left open on purpose.
+
+### Governance-action temperature checks (spec 209)
+
+A chamber poll can be tagged as a **pre-submission temperature check on a specific Cardano governance
+action**. The tag carries the CIP-1694 **action type** (Info, No-confidence, Update-committee,
+New-constitution, Hard-fork, Parameter-change, Treasury-withdrawal) and an **anchor** — a link to the
+off-chain proposal document (its home stays GitHub/IPFS, exactly like a real action's anchor). Cogno
+stores the *type and the link*, never the proposal body: the chain is the discussion and the
+stake-weighted signal, not the drafting tool.
+
+The point is cheap iteration. A real governance action locks a **100,000-ADA deposit** — refundable on
+enactment or expiry, so the cost is not a burned fee but a large capital lock-up on an **immutable**
+on-chain object. If reviewers want the wording or parameters changed, the only recourse is to let it fail
+or expire (up to ~30 days) and resubmit with a fresh lock. A governance poll lets a draft converge *before*
+any of that, signalled by the exact bodies — SPOs and dReps — that will vote it on-chain. It mirrors
+Cardano's own **Info action** (a non-binding Yes/No/Abstain tripartite signal that never enacts) but free,
+editable, and ahead of submission. Which chamber a poll opens should match who decides the action on
+Cardano — SPOs vote on only four of the seven types; dReps on all of them — and the poll creator nudges
+toward a matching kind, but never enforces it: the tag is a label, not a gate.
 
 ## Trust posture
 

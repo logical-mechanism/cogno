@@ -44,7 +44,7 @@ import {
 } from "@/lib/chain/mutations";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import type { ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
-import type { CognoPost } from "@/lib/types";
+import type { CognoPost, PollKindName, GovActionType } from "@/lib/types";
 
 /** Only a canonical decimal u64 is a valid reply/quote target; reject anything else (no BigInt throw). */
 function parseTargetId(raw: string | null): bigint | null {
@@ -221,7 +221,8 @@ export function ComposePage() {
       question: string,
       options: string[],
       closeInDays?: number,
-      kind?: "Stake" | "Governance",
+      kind?: PollKindName,
+      action?: { actionType: GovActionType; anchorUrl: string },
     ) => {
       if (viewer.status !== "ready") return void router.push("/welcome/");
       if (!api || !signer || question.trim().length === 0) return;
@@ -239,7 +240,7 @@ export function ComposePage() {
         return;
       }
       runWrite(
-        submitCreatePoll(api, signer, question, options, closeAt, kind),
+        submitCreatePoll(api, signer, question, options, closeAt, kind, action),
         optimisticPost(question, { isPoll: true }),
         { pending: "Creating poll…", success: "Poll created" },
       );

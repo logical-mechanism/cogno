@@ -231,6 +231,7 @@ mod benchmarks {
             options,
             None,
             crate::PollKind::Stake,
+            None,
         );
 
         assert!(Polls::<T>::contains_key(0u64));
@@ -257,6 +258,7 @@ mod benchmarks {
                 options,
                 close_at: None,
                 kind: crate::PollKind::Stake,
+                action: None,
             },
         );
         // Pre-existing choice (option 0) so the re-cast exercises the reverse + apply count branches.
@@ -295,6 +297,7 @@ mod benchmarks {
                 options,
                 close_at: Some(0u32.into()),
                 kind: crate::PollKind::Governance,
+                action: None,
             },
         );
         // One staker with a live poll vote, so the weighted join sums a real row.

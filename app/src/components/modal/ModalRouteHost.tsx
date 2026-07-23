@@ -46,7 +46,7 @@ import {
   submitClearProfile,
 } from "@/lib/chain/mutations";
 import type { ComposerDraft, PollDraft, ModalKind } from "../kit";
-import type { CognoPost } from "@/lib/types";
+import type { CognoPost, PollKindName, GovActionType } from "@/lib/types";
 import type { ProfileFields } from "../EditProfileModal";
 
 const TITLES: Record<Exclude<ModalKind, null>, string> = {
@@ -288,7 +288,8 @@ export function ModalRouteHost() {
       question: string,
       options: string[],
       closeInDays?: number,
-      kind?: "Stake" | "Governance",
+      kind?: PollKindName,
+      action?: { actionType: GovActionType; anchorUrl: string },
     ) => {
       if (viewer.status !== "ready") {
         close();
@@ -310,7 +311,7 @@ export function ModalRouteHost() {
         return;
       }
       runWrite(
-        submitCreatePoll(api, signer, question, options, closeAt, kind),
+        submitCreatePoll(api, signer, question, options, closeAt, kind, action),
         optimisticPost(question, { isPoll: true }),
         { pending: "Creating poll…", success: "Poll created" },
       );

@@ -20,7 +20,27 @@
 // dynamic-stake-voting plan; and NEVER iterate `Votes` client-side to sum a weight.
 
 import { Binary } from "polkadot-api";
-import type { CognoApi, Ss58, PollView, ViewerPostState } from "@/lib/types";
+import type {
+  CognoApi,
+  Ss58,
+  PollView,
+  PollKindName,
+  GovActionType,
+  ViewerPostState,
+} from "@/lib/types";
+
+/** `PollView.kind` (a runtime `u8`, mirroring `PollKind`'s `#[codec(index)]`) → the app union. */
+const POLL_KIND_BY_IX: PollKindName[] = ["Stake", "Governance", "Spo", "Drep"];
+/** `GovActionView.action_type` (a runtime `u8`, mirroring `GovActionType`'s `#[codec(index)]`) → the app union. */
+const GOV_ACTION_BY_IX: GovActionType[] = [
+  "Info",
+  "NoConfidence",
+  "UpdateCommittee",
+  "NewConstitution",
+  "HardFork",
+  "ParamChange",
+  "TreasuryWithdrawal",
+];
 
 // Read at the BEST block, not the default (finalized). Writes confirm at `inBestBlock` — several blocks
 // before finalization — so a finalized read of a just-cast vote/poll is STALE, and the optimistic UI
@@ -132,11 +152,11 @@ export async function readViewerPostState(
  * (the block-number deadline) and `finalized` (a `PollResults` row exists) come from storage PAPI-direct;
  * the frontend derives `closed`/`provisional` from `close_at` + the current best block. Counts are exact.
  *
- * ⚠ Shape note: `Poll` is now a THREE-field struct (`{ options, close_at, kind }` — spec 207 added the
- * governance-poll `kind`), so PAPI keeps it wrapped — `Polls.getValue` returns
- * `{ options: Binary[]; close_at: number | undefined; kind: ... } | undefined`. The `MicroblogApi.poll`
- * view is the read of record for the tally; its `kind` is a plain `u8` (0 = Stake, 1 = Governance), and
- * each option carries the SPO + dRep chamber lenses alongside the holder weight/count.
+ * ⚠ Shape note: `Poll` is now a FOUR-field struct (`{ options, close_at, kind, action }` — spec 209 added
+ * the optional governance-action `action`), so PAPI keeps it wrapped. The `MicroblogApi.poll` view is the
+ * read of record for the tally; its `kind` is a plain `u8` (0 = Stake, 1 = Governance, 2 = Spo, 3 = Drep),
+ * each option carries the SPO + dRep chamber lenses alongside the holder weight/count, and `action` is the
+ * optional CIP-1694 tag (`{ action_type: u8, anchor_url, anchor_hash? }`).
  */
 export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView> {
   const [view, meta, result] = await Promise.all([
@@ -171,7 +191,16 @@ export async function readPoll(api: CognoApi, hostId: bigint): Promise<PollView>
     totalCount: view.total_votes,
     closeAt: meta?.close_at ?? undefined,
     finalized: result !== undefined,
-    kind: view.kind === 1 ? "Governance" : "Stake",
+    kind: POLL_KIND_BY_IX[view.kind] ?? "Stake",
+    // spec 209: the optional governance-action tag — CIP-1694 type + a link to the off-chain proposal.
+    action: view.action
+      ? {
+          actionType: GOV_ACTION_BY_IX[view.action.action_type] ?? "Info",
+          anchorUrl: Binary.toText(view.action.anchor_url),
+          // `anchor_hash: Option<[u8;32]>` decodes as `SizedHex<32>` (a `0x…` hex string) or undefined.
+          anchorHash: view.action.anchor_hash ?? undefined,
+        }
+      : undefined,
   };
 }
 

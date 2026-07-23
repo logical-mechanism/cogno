@@ -216,7 +216,7 @@ pub mod pallet {
     // v6 -> v7 (spec 207): add `Poll.kind` (Stake | Governance) — see `migrations::v7`.
     // v7 -> v8 (spec 208): append the frozen SPO/dRep CHAMBER snapshot to `PollResult`, so `close_poll`
     // freezes a governance poll's chambers instead of leaving them to re-price live — see `migrations::v8`.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(8);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(9);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -293,6 +293,10 @@ pub mod pallet {
         /// Maximum length, in bytes, of a single poll option's label.
         #[pallet::constant]
         type MaxPollOptionLen: Get<u32>;
+        /// Maximum length, in bytes, of a governance poll's anchor URL — the link to the off-chain
+        /// proposal document (spec 209). (`create_poll` rejects a longer or empty anchor.)
+        #[pallet::constant]
+        type MaxAnchorUrlLen: Get<u32>;
 
         /// Origin allowed to force a capacity row (operator/migration). Wired to the 3-of-5
         /// committee in the runtime; there is no sudo. `cogno-gate`'s bind calls
@@ -452,6 +456,115 @@ pub mod pallet {
         /// nothing on-chain; it is a verifiable, non-binding signal.
         #[codec(index = 1)]
         Governance,
+        /// SPO chamber ONLY (spec 209): the same single vote is tallied only through the SPO chamber
+        /// (delegated pool stake), with no dRep lens. For SPO-specific signals. DISPLAY-ONLY, like
+        /// `Governance`.
+        #[codec(index = 2)]
+        Spo,
+        /// dRep chamber ONLY (spec 209): the same single vote is tallied only through the dRep chamber
+        /// (delegated voting stake), with no SPO lens. Maps to the dRep-decided Cardano actions (treasury
+        /// withdrawal, new constitution, non-security parameter changes). DISPLAY-ONLY, like `Governance`.
+        #[codec(index = 3)]
+        Drep,
+    }
+
+    impl PollKind {
+        /// Whether this poll surfaces the SPO chamber (delegated pool stake).
+        pub fn has_spo(&self) -> bool {
+            matches!(self, PollKind::Governance | PollKind::Spo)
+        }
+        /// Whether this poll surfaces the dRep chamber (delegated voting stake).
+        pub fn has_drep(&self) -> bool {
+            matches!(self, PollKind::Governance | PollKind::Drep)
+        }
+        /// Whether this poll surfaces ANY governance chamber (⇒ the bounded role-holder join runs at read
+        /// time and `close_poll` freezes a chamber snapshot). A `Stake` poll has none.
+        pub fn has_chambers(&self) -> bool {
+            self.has_spo() || self.has_drep()
+        }
+    }
+
+    /// The seven CIP-1694 on-chain governance ACTION TYPES (spec 209). Tagging a chamber poll with one marks
+    /// it as a pre-submission "temperature check" on that kind of Cardano governance action — a cheap,
+    /// editable, off-chain signal from the SPO + dRep bodies that will later vote on-chain, taken BEFORE
+    /// anyone locks the 100_000-ADA (refundable) deposit into an immutable on-chain action. DISPLAY/context
+    /// only: WHICH chambers actually tally is the poll's [`PollKind`], not this. `#[codec(index)]` PINS the
+    /// on-wire discriminant (it rides in `Poll` storage + the `create_poll` arg) — append only.
+    #[derive(
+        Encode,
+        Decode,
+        DecodeWithMemTracking,
+        Clone,
+        Copy,
+        PartialEq,
+        Eq,
+        Debug,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    pub enum GovActionType {
+        /// Info action — records an opinion on-chain, never enacts. The closest on-chain analogue to this
+        /// whole feature (a non-binding tripartite temperature check).
+        #[codec(index = 0)]
+        Info,
+        /// Motion of no-confidence in the Constitutional Committee.
+        #[codec(index = 1)]
+        NoConfidence,
+        /// Update/replace the Constitutional Committee or change its threshold/terms.
+        #[codec(index = 2)]
+        UpdateCommittee,
+        /// Amend the Constitution text or its guardrails script.
+        #[codec(index = 3)]
+        NewConstitution,
+        /// Hard-fork initiation (a non-backwards-compatible major protocol-version bump).
+        #[codec(index = 4)]
+        HardFork,
+        /// Protocol-parameter change. (Whether it is security-relevant — and so whether SPOs also vote on
+        /// Cardano — is authoring guidance reflected in the chosen [`PollKind`], not stored here.)
+        #[codec(index = 5)]
+        ParamChange,
+        /// Treasury withdrawal (moves ADA out of the on-chain treasury).
+        #[codec(index = 6)]
+        TreasuryWithdrawal,
+    }
+
+    /// A chamber poll's optional governance-action tag (spec 209): the CIP-1694 action TYPE plus an ANCHOR —
+    /// a link to the OFF-CHAIN proposal document (its home stays GitHub/IPFS, exactly like a real Cardano
+    /// action's anchor) and an optional blake2b-256 hash of that document for integrity. Present only on a
+    /// chamber poll (`PollKind` ∈ {Governance, Spo, Drep}); a `Stake` poll never carries one. Cogno stores
+    /// the LINK, never the proposal body.
+    #[derive(
+        Encode,
+        Decode,
+        CloneNoBound,
+        PartialEqNoBound,
+        EqNoBound,
+        DebugNoBound,
+        TypeInfo,
+        MaxEncodedLen,
+    )]
+    #[scale_info(skip_type_params(T))]
+    pub struct GovAction<T: Config> {
+        /// Which CIP-1694 action type this poll pre-checks.
+        pub action_type: GovActionType,
+        /// A link to the off-chain proposal document (≤ [`Config::MaxAnchorUrlLen`] bytes).
+        pub anchor_url: BoundedVec<u8, T::MaxAnchorUrlLen>,
+        /// Optional blake2b-256 hash of the document at `anchor_url` (integrity; mirrors a real Cardano
+        /// anchor's `dataHash`).
+        pub anchor_hash: Option<[u8; 32]>,
+    }
+
+    /// The `create_poll` call-argument form of [`GovAction`]: an UNBOUNDED `anchor_url` (bounded on store,
+    /// mirroring how `question` / `options` arrive unbounded). `None` ⇒ a plain stake/chamber poll with no
+    /// governance-action tag.
+    #[derive(Encode, Decode, DecodeWithMemTracking, Clone, PartialEq, Eq, Debug, TypeInfo)]
+    pub struct GovActionInput {
+        /// Which CIP-1694 action type this poll pre-checks.
+        pub action_type: GovActionType,
+        /// A link to the off-chain proposal document; bounded to [`Config::MaxAnchorUrlLen`] on store.
+        pub anchor_url: Vec<u8>,
+        /// Optional blake2b-256 hash of the document at `anchor_url`.
+        pub anchor_hash: Option<[u8; 32]>,
     }
 
     /// A poll attached to a post: the fixed set of options voters choose between. The poll's question
@@ -476,9 +589,15 @@ pub mod pallet {
         /// rejected once `now ≥ b` and the result can be FROZEN by a permissionless `close_poll`. Existing
         /// polls migrate to `None` (the backward-compatible default).
         pub close_at: Option<BlockNumberFor<T>>,
-        /// The poll's lens (spec 207 / storage v7): `Stake` (regular) or `Governance` (adds the SPO + dRep
-        /// chambers at read time). Pre-v7 polls migrate to `Stake`.
+        /// The poll's lens (spec 207 / storage v7, extended spec 209): `Stake` (regular), `Governance`
+        /// (both SPO + dRep chambers), `Spo` (SPO chamber only) or `Drep` (dRep chamber only). Chambers are
+        /// derived at read time. Pre-v7 polls migrate to `Stake`.
         pub kind: PollKind,
+        /// Optional governance-action tag (spec 209 / storage v9): marks a chamber poll as a pre-submission
+        /// temperature check on a specific CIP-1694 action, carrying its type + a link to the off-chain
+        /// proposal. `None` for a plain poll (and always `None` for a `Stake` poll). Pre-v9 polls migrate to
+        /// `None`.
+        pub action: Option<GovAction<T>>,
     }
 
     /// One account's recorded poll choice: just the chosen option index (spec 205 / storage v6 — the
@@ -886,6 +1005,14 @@ pub mod pallet {
         /// spec 205 (17). (An ALREADY-finalized poll is not an error — `close_poll` is idempotent.)
         #[codec(index = 17)]
         PollNotClosable,
+        /// `create_poll` attached a governance action to a non-chamber (`Stake`) poll — a gov-action tag
+        /// only makes sense on a chamber poll (`Governance` / `Spo` / `Drep`). Added spec 209 (18).
+        #[codec(index = 18)]
+        GovActionRequiresChamber,
+        /// `create_poll`'s governance-action `anchor_url` was empty or exceeded `MaxAnchorUrlLen`. Added
+        /// spec 209 (19).
+        #[codec(index = 19)]
+        InvalidAnchor,
     }
 
     impl<T: Config> Pallet<T> {
@@ -1505,20 +1632,22 @@ pub mod pallet {
         /// capacity-metered like a post.
         ///
         /// ⚠ The `close_at` argument (added spec 205) moved `transaction_version` 3 → 4; the `kind`
-        /// argument (added spec 207, for governance polls) moves it 4 → 5. Both are `create_poll` call-arg
-        /// changes — the only ones in their respective upgrades.
+        /// argument (added spec 207, for governance polls) moved it 4 → 5; the `action` argument (added
+        /// spec 209, the optional governance-action tag) moves it 5 → 6. Each is a `create_poll` call-arg
+        /// change — the only one in its respective upgrade.
         #[pallet::call_index(9)]
         // spec 121 (Feature 3): a poll host is top-level, so it also runs `index_top_level` (2 reads +
         // 3 writes), not yet re-benchmarked — charge it manually.
         #[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32)
 			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
-        #[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>, _close_at: &Option<BlockNumberFor<T>>, _kind: &PollKind| -> bool { true })]
+        #[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>, _close_at: &Option<BlockNumberFor<T>>, _kind: &PollKind, _action: &Option<GovActionInput>| -> bool { true })]
         pub fn create_poll(
             origin: OriginFor<T>,
             question: Vec<u8>,
             options: Vec<Vec<u8>>,
             close_at: Option<BlockNumberFor<T>>,
             kind: PollKind,
+            action: Option<GovActionInput>,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             if !T::IdentityGate::is_allowed(&who) {
@@ -1541,6 +1670,26 @@ pub mod pallet {
                     .map_err(|_| Error::<T>::TooManyOptions)?;
             }
 
+            // Governance-action tag (spec 209): only valid on a CHAMBER poll (a `Stake` poll has no body to
+            // signal to), and its anchor URL must be present and within bound. Cogno stores the LINK to the
+            // off-chain proposal, never the proposal body.
+            let action = match action {
+                None => None,
+                Some(input) => {
+                    ensure!(kind.has_chambers(), Error::<T>::GovActionRequiresChamber);
+                    ensure!(!input.anchor_url.is_empty(), Error::<T>::InvalidAnchor);
+                    let anchor_url: BoundedVec<u8, T::MaxAnchorUrlLen> = input
+                        .anchor_url
+                        .try_into()
+                        .map_err(|_| Error::<T>::InvalidAnchor)?;
+                    Some(GovAction {
+                        action_type: input.action_type,
+                        anchor_url,
+                        anchor_hash: input.anchor_hash,
+                    })
+                }
+            };
+
             let id = NextPostId::<T>::get();
             ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
                 .map_err(|_| Error::<T>::TooManyPosts)?;
@@ -1562,6 +1711,7 @@ pub mod pallet {
                     options: bounded_options,
                     close_at,
                     kind,
+                    action,
                 },
             );
             // A poll's host post is top-level — index it for exact-N feed/profile paging (Feature 3).
@@ -1680,26 +1830,34 @@ pub mod pallet {
                 let s = stakers.len();
                 (Self::poll_option_weights(host_id, num_options, &stakers), s)
             };
-            // spec 208: FREEZE the SPO + dRep chambers for a governance poll (a stake poll freezes none —
+            // spec 208: FREEZE the SPO + dRep chambers for a chamber poll (a stake poll freezes none —
             // empty vecs read back as 0), so a concluded poll's chambers no longer re-price as delegation
-            // later moves. The tally iterates the bounded role-holder set (like the holder join above), so
-            // this stays O(`MaxObserved`)-bounded on-chain. `total == 0` means NO votes at all (so no
-            // role-holder voted either) ⇒ empty chambers, skipping the join exactly like the holder lens.
-            let (cspo_w, cspo_c, cdrep_w, cdrep_c, r_len) =
-                if total > 0 && matches!(poll.kind, PollKind::Governance) {
-                    let holders = T::ChamberRoles::role_holders();
-                    let r = holders.len();
-                    let (a, b, c, d) = Self::poll_chamber_weights(host_id, num_options, &holders);
-                    (a, b, c, d, r)
-                } else {
-                    (
-                        alloc::vec![],
-                        alloc::vec![],
-                        alloc::vec![],
-                        alloc::vec![],
-                        0usize,
-                    )
-                };
+            // later moves. spec 209: `poll_chamber_weights` freezes ONLY the chamber(s) this poll's kind
+            // declares (`has_spo`/`has_drep`) — an `Spo`/`Drep`-only poll leaves the other EMPTY. The tally
+            // iterates the bounded role-holder set (like the holder join above), so this stays
+            // O(`MaxObserved`)-bounded on-chain. `total == 0` means NO votes at all (so no role-holder voted
+            // either) ⇒ empty chambers, skipping the join exactly like the holder lens.
+            let (cspo_w, cspo_c, cdrep_w, cdrep_c, r_len) = if total > 0 && poll.kind.has_chambers()
+            {
+                let holders = T::ChamberRoles::role_holders();
+                let r = holders.len();
+                let (a, b, c, d) = Self::poll_chamber_weights(
+                    host_id,
+                    num_options,
+                    &holders,
+                    poll.kind.has_spo(),
+                    poll.kind.has_drep(),
+                );
+                (a, b, c, d, r)
+            } else {
+                (
+                    alloc::vec![],
+                    alloc::vec![],
+                    alloc::vec![],
+                    alloc::vec![],
+                    0usize,
+                )
+            };
             let mut option_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
             let mut option_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
             for (i, w) in weights.into_iter().enumerate() {
@@ -1717,6 +1875,9 @@ pub mod pallet {
             let mut option_spo_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
             let mut option_drep_weights: BoundedVec<u128, T::MaxPollOptions> = Default::default();
             let mut option_drep_counts: BoundedVec<u32, T::MaxPollOptions> = Default::default();
+            // SPO and dRep chambers push INDEPENDENTLY: an `Spo`/`Drep`-only poll has one chamber populated
+            // (`num_options` entries) and the other empty, so a single shared-index loop would over-read the
+            // empty one. Each empty chamber simply stays empty (reads back as 0).
             for i in 0..cspo_w.len() {
                 option_spo_weights
                     .try_push(cspo_w[i])
@@ -1724,6 +1885,8 @@ pub mod pallet {
                 option_spo_counts
                     .try_push(cspo_c[i])
                     .map_err(|_| Error::<T>::TooManyOptions)?;
+            }
+            for i in 0..cdrep_w.len() {
                 option_drep_weights
                     .try_push(cdrep_w[i])
                     .map_err(|_| Error::<T>::TooManyOptions)?;
@@ -2193,9 +2356,27 @@ pub struct PollView {
     pub options: Vec<PollOptionView>,
     /// Total current voters (the sum of the per-option counts — each account has exactly one choice).
     pub total_votes: u32,
-    /// The poll's lens (spec 207): `0` = Stake (regular), `1` = Governance (the `spo_*`/`drep_*` fields
-    /// on each option are populated). Mirrors [`PollKind`]'s `#[codec(index)]`.
+    /// The poll's lens (spec 207, extended 209): `0` = Stake, `1` = Governance (both chambers), `2` = Spo
+    /// (SPO chamber only), `3` = Drep (dRep chamber only). Mirrors [`PollKind`]'s `#[codec(index)]`. On a
+    /// non-`Governance` chamber poll, only the declared chamber's `spo_*`/`drep_*` fields are populated.
     pub kind: u8,
+    /// The governance-action tag (spec 209) if this poll is a pre-submission temperature check on a
+    /// specific CIP-1694 action; `None` for a plain poll.
+    pub action: Option<GovActionView>,
+}
+
+/// A poll's optional governance-action tag for [`PollView`] (spec 209): the CIP-1694 action type as a
+/// pinned `u8` (mirroring [`GovActionType`]'s `#[codec(index)]`), the anchor link to the off-chain
+/// proposal document, and an optional blake2b-256 document hash. `None` on a plain poll.
+#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
+pub struct GovActionView {
+    /// CIP-1694 action type: 0 Info · 1 NoConfidence · 2 UpdateCommittee · 3 NewConstitution ·
+    /// 4 HardFork · 5 ParamChange · 6 TreasuryWithdrawal.
+    pub action_type: u8,
+    /// Link to the off-chain proposal document (its home stays GitHub/IPFS, like a real Cardano anchor).
+    pub anchor_url: Vec<u8>,
+    /// Optional blake2b-256 hash of the document at `anchor_url`.
+    pub anchor_hash: Option<[u8; 32]>,
 }
 
 /// One post's viewer overlay, for the `viewer_states` batch read (the filled-heart state).
@@ -2513,12 +2694,21 @@ impl<T: Config> Pallet<T> {
     /// the SPO chamber reflects only impersonation-proof, delegated `SpoOwner` pools. The result is
     /// independent of holder-iteration order.
     ///
-    /// Returns `(spo_weights, spo_counts, drep_weights, drep_counts)`, each a `num_options`-length vec
-    /// index-aligned with `Poll.options`.
+    /// `want_spo` / `want_drep` (spec 209) select which chamber(s) this poll's [`PollKind`] surfaces:
+    /// `Governance` passes both, an `Spo`/`Drep`-only poll passes a single `true`, and a `Stake` poll never
+    /// calls this. An unrequested chamber is neither accumulated nor materialized — it is returned as an
+    /// EMPTY vec, which every reader treats as 0 (`.get(i).unwrap_or(0)`) and which `close_poll` freezes as
+    /// the empty snapshot. Centralizing the lens here keeps the suppression rule in ONE place (no
+    /// caller-side zeroing) and skips the discarded chamber's whole aggregation.
+    ///
+    /// Returns `(spo_weights, spo_counts, drep_weights, drep_counts)`: each REQUESTED chamber is a
+    /// `num_options`-length vec index-aligned with `Poll.options`; each unrequested chamber is empty.
     fn poll_chamber_weights(
         host_id: u64,
         num_options: usize,
         holders: &[T::AccountId],
+        want_spo: bool,
+        want_drep: bool,
     ) -> (Vec<u128>, Vec<u32>, Vec<u128>, Vec<u32>) {
         use alloc::collections::BTreeMap;
         // pool id → (chosen option, delegated stake, conflicted?) — collapse a co-owned pool to ONE vote.
@@ -2539,7 +2729,7 @@ impl<T: Config> Pallet<T> {
                     continue; // a blank Calidus SPO / undelegated pool or dRep contributes nothing
                 }
                 match kind {
-                    0 => {
+                    0 if want_spo => {
                         // SPO chamber: dedup by pool; owners split across options ⇒ the pool abstains.
                         pool_choice
                             .entry(id)
@@ -2550,31 +2740,43 @@ impl<T: Config> Pallet<T> {
                             })
                             .or_insert((opt, weight, false));
                     }
-                    1 => {
+                    1 if want_drep => {
                         // dRep chamber: an id appears for a single voter (1:1) — just record it.
                         drep_choice.entry(id).or_insert((opt, weight));
                     }
-                    _ => {} // CC (2) has no chamber (deferred) — ignore.
+                    // CC (2), or a chamber this poll's kind does not surface — ignore.
+                    _ => {}
                 }
             }
         }
-        let mut spo_weights = alloc::vec![0u128; num_options];
-        let mut spo_counts = alloc::vec![0u32; num_options];
-        for (_pool, (opt, weight, conflict)) in pool_choice {
-            if conflict {
-                continue; // declared owners disagreed → the pool casts no chamber vote
+        // A requested chamber materializes a `num_options`-length vec; an unrequested one stays empty.
+        let (spo_weights, spo_counts) = if want_spo {
+            let mut weights = alloc::vec![0u128; num_options];
+            let mut counts = alloc::vec![0u32; num_options];
+            for (_pool, (opt, weight, conflict)) in pool_choice {
+                if conflict {
+                    continue; // declared owners disagreed → the pool casts no chamber vote
+                }
+                let i = opt as usize;
+                weights[i] = weights[i].saturating_add(weight);
+                counts[i] = counts[i].saturating_add(1);
             }
-            let i = opt as usize;
-            spo_weights[i] = spo_weights[i].saturating_add(weight);
-            spo_counts[i] = spo_counts[i].saturating_add(1);
-        }
-        let mut drep_weights = alloc::vec![0u128; num_options];
-        let mut drep_counts = alloc::vec![0u32; num_options];
-        for (_drep, (opt, weight)) in drep_choice {
-            let i = opt as usize;
-            drep_weights[i] = drep_weights[i].saturating_add(weight);
-            drep_counts[i] = drep_counts[i].saturating_add(1);
-        }
+            (weights, counts)
+        } else {
+            (alloc::vec![], alloc::vec![])
+        };
+        let (drep_weights, drep_counts) = if want_drep {
+            let mut weights = alloc::vec![0u128; num_options];
+            let mut counts = alloc::vec![0u32; num_options];
+            for (_drep, (opt, weight)) in drep_choice {
+                let i = opt as usize;
+                weights[i] = weights[i].saturating_add(weight);
+                counts[i] = counts[i].saturating_add(1);
+            }
+            (weights, counts)
+        } else {
+            (alloc::vec![], alloc::vec![])
+        };
         (spo_weights, spo_counts, drep_weights, drep_counts)
     }
 
@@ -2989,7 +3191,25 @@ impl<T: Config> Pallet<T> {
         let kind_ix = match poll.kind {
             PollKind::Stake => 0u8,
             PollKind::Governance => 1u8,
+            PollKind::Spo => 2u8,
+            PollKind::Drep => 3u8,
         };
+        // The governance-action tag (spec 209), if any, mirrored to the wire view: action type as a pinned
+        // u8 (matching `GovActionType`'s `#[codec(index)]`) + the anchor link + optional document hash. It is
+        // static creation-time data, identical whether the poll is live or finalized.
+        let action = poll.action.as_ref().map(|a| GovActionView {
+            action_type: match a.action_type {
+                GovActionType::Info => 0u8,
+                GovActionType::NoConfidence => 1u8,
+                GovActionType::UpdateCommittee => 2u8,
+                GovActionType::NewConstitution => 3u8,
+                GovActionType::HardFork => 4u8,
+                GovActionType::ParamChange => 5u8,
+                GovActionType::TreasuryWithdrawal => 6u8,
+            },
+            anchor_url: a.anchor_url.to_vec(),
+            anchor_hash: a.anchor_hash,
+        });
         let mut options = Vec::with_capacity(num_options);
         let mut total_votes: u32 = 0;
         // Finalized — return the FROZEN snapshot: both the HOLDER lens and (spec 208) the SPO/dRep CHAMBERS
@@ -3016,13 +3236,23 @@ impl<T: Config> Pallet<T> {
                 options,
                 total_votes,
                 kind: kind_ix,
+                // Moved, not cloned: this branch returns, so the open branch below still owns `action`.
+                action,
             });
         }
-        // Open (or past-deadline-but-unfinalized) — derive the holder per-option weight live from stake,
-        // and the SPO/dRep chambers live for a governance poll (a stake poll gets all-zero chambers).
-        let (spo_w, spo_c, drep_w, drep_c) = if matches!(poll.kind, PollKind::Governance) {
+        // Open (or past-deadline-but-unfinalized) — derive the holder per-option weight live from stake, and
+        // the SPO/dRep chambers live for a chamber poll (a stake poll gets all-zero chambers). The kind's
+        // `has_spo`/`has_drep` select the surfaced chamber(s): an `Spo`/`Drep`-only poll gets the other back
+        // as an EMPTY vec (read as 0 below via `.get(i).unwrap_or(0)`).
+        let (spo_w, spo_c, drep_w, drep_c) = if poll.kind.has_chambers() {
             let holders = T::ChamberRoles::role_holders();
-            Self::poll_chamber_weights(host_id, num_options, &holders)
+            Self::poll_chamber_weights(
+                host_id,
+                num_options,
+                &holders,
+                poll.kind.has_spo(),
+                poll.kind.has_drep(),
+            )
         } else {
             (
                 alloc::vec![0u128; num_options],
@@ -3059,6 +3289,7 @@ impl<T: Config> Pallet<T> {
             options,
             total_votes,
             kind: kind_ix,
+            action,
         })
     }
 
