@@ -44,12 +44,12 @@ function classifyError(raw: string): BindError {
   }
   if (/different account|registered to another|refusing to claim|already.*linked/.test(m)) {
     return {
-      copy: "That wallet is already linked to a different posting key. Use a different wallet.",
+      copy: "That wallet is already linked to another account. Use a different wallet.",
       danger: true,
     };
   }
   if (/could not produce|cip-8|proof|malformed|script payment|extended key|not a 32-byte|exceeds the/.test(m)) {
-    return { copy: `Couldn't create the proof: ${raw}`, danger: false };
+    return { copy: `Couldn't sign your registration: ${raw}`, danger: false };
   }
   if (/still shows your account unbound|didn'?t take|still unbound/.test(m)) {
     return { copy: "Registration didn't take. Try again.", danger: false };
@@ -67,7 +67,7 @@ const BIND_STEPS: { key: Exclude<BindPhase, "idle">; label: string }[] = [
 
 const BIND_NARRATION: Record<Exclude<BindPhase, "idle">, string> = {
   signing: "Approve the signature in your wallet…",
-  submitting: "Submitting your registration to the network…",
+  submitting: "Submitting your registration…",
   confirming: "Confirming on-chain…",
 };
 
@@ -83,9 +83,9 @@ export function BindStep({
   const bindError = useMemo(() => (error ? classifyError(error) : null), [error]);
 
   const disabledReason = !bootOk
-    ? "The app needs an update to register. Reading still works."
+    ? "This app needs an update to register. Reading still works."
     : !chainReady
-      ? "Connecting to the network…"
+      ? "Connecting…"
       : null;
   const disabled = binding || !!disabledReason;
 
@@ -96,7 +96,7 @@ export function BindStep({
       </h1>
 
       <p className={styles.body}>
-        Register to claim this account. Your wallet signs once to prove it&apos;s yours.
+        Your wallet signs once to prove this account is yours.
       </p>
 
       {/* The consent block. Every line below is a property of the chain, not a policy we could soften:
@@ -110,17 +110,15 @@ export function BindStep({
         <p className={styles.consentLead}>This is permanent. There is no undo.</p>
         <ul className={styles.consentList}>
           <li>
-            <strong>Your wallet becomes public.</strong> This account is linked 1:1 to your Cardano
-            wallet on-chain, and the stake step that follows publishes your stake credential. From it
-            anyone can read the balances, NFTs and staking history behind everything you ever post.
+            <strong>Your wallet becomes public.</strong> Anyone can see the balances, NFTs and
+            staking history behind everything you post.
           </li>
           <li>
-            <strong>Posts can never be deleted.</strong> Not by you, not by anyone. The chain has no
-            delete.
+            <strong>Posts can never be deleted.</strong> Not by you, not by anyone.
           </li>
           <li>
-            <strong>You cannot unregister.</strong> Only the chain&apos;s committee can revoke a
-            binding, and a revoked wallet is blocked from ever registering again.
+            <strong>You cannot unregister.</strong> Only the cogno committee can remove your
+            registration, and that wallet can never register again.
           </li>
         </ul>
       </div>

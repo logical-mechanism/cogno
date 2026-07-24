@@ -2,7 +2,7 @@
 
 // AccountConfirm — Step 2 of onboarding. Shows the derived posting account
 // the user is about to register: a big identicon Avatar (from signer.ss58), the DisplayName fallback
-// + a copyable Handle, and "derived from <wallet>". Primary "Continue" → subStep 'bind'; secondary
+// + a copyable Handle, and "from <wallet>". Primary "Continue" → subStep 'bind'; secondary
 // "Use a different wallet" → useSigner.disconnect() (back to Step 1). Display-only, no chain call.
 
 import styles from "./AccountConfirm.module.css";
@@ -12,7 +12,7 @@ import { Handle } from "@/components/Handle";
 
 export interface AccountConfirmProps {
   ss58: string;
-  /** the wallet id the key was derived from (for "derived from <wallet>"). */
+  /** the wallet id the key was derived from (for "from <wallet>"). */
   walletName: string;
   onContinue: () => void;
   onUseDifferent: () => void;
@@ -36,12 +36,8 @@ export function AccountConfirm({
         <Avatar address={ss58} size="xl" name="Your account avatar" />
         <DisplayName address={ss58} truncate={false} />
         <Handle address={ss58} copyable />
-        <p className={styles.derived}>derived from {walletName}</p>
+        <p className={styles.derived}>from {walletName}</p>
       </div>
-
-      <p className={styles.note}>
-        Your posting key was created from your wallet signature.
-      </p>
 
       <button type="button" className={styles.primary} onClick={onContinue}>
         Continue

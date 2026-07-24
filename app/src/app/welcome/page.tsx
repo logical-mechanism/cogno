@@ -51,13 +51,13 @@ function classifyConnectError(raw: string): { inline: string | null; toast: stri
   const m = raw.toLowerCase();
   if (/script payment credential|script\/vault|non-vkey|script\/contract/.test(m)) {
     return {
-      inline: "That's a script/contract address. Connect a normal wallet account.",
+      inline: "That's a script address. Connect a normal wallet account.",
       toast: null,
     };
   }
   if (/wrong network|mainnet|preprod|network id|network mismatch/.test(m)) {
     return {
-      inline: "Switch your wallet to the correct Cardano network, then reconnect.",
+      inline: "Wrong network. Switch your wallet to preprod, then reconnect.",
       toast: null,
     };
   }
@@ -213,7 +213,7 @@ export default function WelcomePage() {
     signerCtl.disconnect();
     toast({
       kind: "info",
-      message: "Cancelled. If your wallet still shows a signature request, you can reject it there.",
+      message: "Cancelled. If your wallet still asks to sign, reject it there.",
     });
   }, [signerCtl, toast]);
 

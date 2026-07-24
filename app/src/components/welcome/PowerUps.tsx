@@ -41,8 +41,8 @@ const STAKE_STEPS: { key: Exclude<BindPhase, "idle">; label: string }[] = [
   { key: "confirming", label: "Confirm on-chain" },
 ];
 const STAKE_NARRATION: Record<Exclude<BindPhase, "idle">, string> = {
-  signing: "Approve the stake signature in your wallet…",
-  submitting: "Submitting your voting power to the network…",
+  signing: "Approve the signature in your wallet…",
+  submitting: "Submitting your voting power…",
   confirming: "Confirming on-chain…",
 };
 
@@ -52,8 +52,8 @@ const VAULT_STEPS: { key: Exclude<VaultStep, "idle">; label: string }[] = [
   { key: "submitting", label: "Submit to Cardano" },
 ];
 const VAULT_NARRATION: Record<Exclude<VaultStep, "idle">, string> = {
-  preparing: "Building the lock transaction…",
-  signing: "Confirm the transaction in your wallet…",
+  preparing: "Preparing the lock transaction…",
+  signing: "Approve the transaction in your wallet…",
   submitting: "Submitting to Cardano…",
 };
 
@@ -138,10 +138,6 @@ export function PowerUps({
           <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
             Add voting power to continue
           </h1>
-          <p className={styles.bannerLede}>
-            Prove your wallet&apos;s stake to finish setting up. It&apos;s required, and comes before
-            locking ADA.
-          </p>
         </div>
 
         <div className={styles.cards}>
@@ -149,7 +145,7 @@ export function PowerUps({
         </div>
 
         <button type="button" className={styles.readOnly} onClick={onGoToTimeline}>
-          Browse the timeline (read-only)
+          Browse the timeline
         </button>
       </section>
     );
@@ -205,9 +201,7 @@ export function PowerUps({
         <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
           One step left to post
         </h1>
-        <p className={styles.bannerLede}>
-          You can read right now. To post, lock ADA for posting power.
-        </p>
+        <p className={styles.bannerLede}>Reading is always open.</p>
       </div>
 
       <div className={styles.cards}>
@@ -215,7 +209,7 @@ export function PowerUps({
       </div>
 
       <button type="button" className={styles.readOnly} onClick={onGoToTimeline}>
-        Browse the timeline (read-only)
+        Browse the timeline
       </button>
     </section>
   );
@@ -235,7 +229,6 @@ function DoneBanner({
       <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
         You&apos;re all set
       </h1>
-      <p className={styles.bannerLede}>You can post, reply, quote, vote, and follow.</p>
       <button type="button" className={styles.primary} onClick={onGoToTimeline}>
         Go to your timeline
       </button>
@@ -266,13 +259,13 @@ function VaultCard({
     <div className={styles.card}>
       <h2 className={styles.cardTitle}>Lock ADA to post</h2>
       <p className={styles.cardBody}>
-        Lock 100 ADA in the vault to earn posting power. It becomes available a few minutes after your
-        lock confirms on Cardano. You can unlock it anytime.
+        Lock 100 ADA to earn posting power. It arrives a few minutes after your lock confirms, and you
+        can get your ADA back anytime.
       </p>
 
       {vault.phase === "submitted" ? (
         <>
-          <p className={styles.cardOk}>Locked ✓. Crediting your posting power…</p>
+          <p className={styles.cardOk}>Locked. Crediting your posting power…</p>
           {vault.txHash && <CardanoTxLink txHash={vault.txHash} label="Lock transaction" />}
         </>
       ) : !vault.available ? (
@@ -365,8 +358,7 @@ function StakeCard({
     <div className={styles.card}>
       <h2 className={styles.cardTitle}>Add voting power</h2>
       <p className={styles.cardBody}>
-        Prove your wallet&apos;s stake so your votes carry weight. It&apos;s a required setup step.
-        Locking ADA comes next, and that&apos;s what unlocks posting.
+        Prove your wallet&apos;s stake so your votes carry weight. Locking ADA comes next.
       </p>
 
       {stake.stakeBound === true ? (
@@ -379,7 +371,7 @@ function StakeCard({
       ) : cantStakeSign ? (
         <div className={styles.cardActions}>
           <p className={styles.cardError} role="alert">
-            This wallet can&apos;t prove its stake. Reconnect with Eternl or Lace to finish setting up.
+            This wallet can&apos;t prove its stake. Try Eternl or Lace.
           </p>
           <div className={styles.cardRow}>
             <button type="button" className={styles.cardCta} onClick={onUseDifferentWallet}>
