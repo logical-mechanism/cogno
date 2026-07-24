@@ -143,6 +143,10 @@ function urlLabel(raw: string): string {
 export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps) {
   const segs = useMemo(() => segment(sanitizeText(text)), [text]);
 
+  // Empty body ⇒ render nothing (no empty box / spacing). A governance poll's post text is optional — its
+  // subject is the tagged proposal — so a legitimately empty body reaches here; don't leave a gap for it.
+  if (segs.length === 0) return null;
+
   const cls = [styles.body, size === "lg" ? styles.lg : styles.base, dim ? styles.dim : ""]
     .filter(Boolean)
     .join(" ");

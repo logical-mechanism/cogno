@@ -539,6 +539,10 @@ export function PollComposer({
       autoFocus={autoFocus}
       text={pollDraft.question}
       onTextChange={setQuestion}
+      // A chamber (governance) poll is identified by its tagged proposal's title, so its question is
+      // optional author commentary — allow an empty one, and say so. A general poll still needs a question.
+      allowEmptyText={kindIsChamber(kind)}
+      placeholder={kindIsChamber(kind) ? "Add your take on this proposal (optional)" : undefined}
       onTogglePoll={onTogglePoll}
       pollActive={onTogglePoll ? true : undefined}
       extraValid={extraValid}
