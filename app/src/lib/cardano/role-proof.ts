@@ -450,47 +450,112 @@ export function encodeDrepId(credentialHex: string): string {
   return bech32.encode("drep", bech32.toWords(bytes), 128);
 }
 
+/** Minimal structural view of the MeshJS BrowserWallet methods the SPO address scan needs. */
+type AddressWallet = {
+  getUsedAddresses: () => Promise<string[]>;
+  getUnusedAddresses: () => Promise<string[]>;
+  getChangeAddress: () => Promise<string>;
+};
+
 /**
- * IN-BROWSER role proof via a CIP-95 wallet (the wallet-pops-up path — no offline `cardano-signer`). Enables
- * the wallet WITH the CIP-95 extension, signs the pinned `role/v1` payload with the account's dRep key
- * (`cip95.signData`, reached via MeshJS's `signData(payload, "drep1…")` routing), and runs the SAME paste-back
- * pre-flight the offline path uses. Returns the two COSE blobs to submit, or a structured error (never throws)
- * — a wallet without CIP-95 / a declined prompt / a mismatched key each degrades to a specific, actionable
- * message so the card can fall back to the offline command. dRep only: a Calidus pool key isn't in a wallet.
+ * Find a bech32 address the wallet controls whose PAYMENT credential is `credHex` (network 0 / preprod), by
+ * scanning its used + unused + change addresses. Used for the SPO/Calidus wallet path: Eternl derives the
+ * Calidus key from the wallet's ROOT payment credential, so the address holding it is one of these — and
+ * `signData` over it signs with that payment key (= the Calidus key). Returns null if none matches (the
+ * connected wallet doesn't control the pasted Calidus key). Never throws.
+ */
+async function findAddressForCredential(
+  wallet: AddressWallet,
+  cst: typeof import("@meshsdk/core-cst"),
+  credHex: string,
+): Promise<string | null> {
+  const addrs = new Set<string>();
+  const collect = async (p: Promise<string[]>) => {
+    try {
+      (await p).forEach((a) => addrs.add(a));
+    } catch {
+      /* a wallet may not expose one of the lists — try the others */
+    }
+  };
+  await collect(wallet.getUsedAddresses());
+  await collect(wallet.getUnusedAddresses());
+  try {
+    addrs.add(await wallet.getChangeAddress());
+  } catch {
+    /* no change address — fine */
+  }
+  for (const a of addrs) {
+    try {
+      const bytes = hexToBytes(String(cst.Address.fromBech32(a).toBytes()));
+      if (paymentCredFromAddress(bytes, 0) === credHex) return a;
+    } catch {
+      /* not a parseable/vkey-payment address — skip */
+    }
+  }
+  return null;
+}
+
+/**
+ * IN-BROWSER role proof via the connected wallet (the wallet-pops-up path — no offline `cardano-signer`).
+ * Signs the pinned `role/v1` payload and runs the SAME paste-back pre-flight the offline path uses, in
+ * CREDENTIAL mode (the wallet embeds its own key-hash address, not the synthetic one). Two role paths:
+ *   • dRep — the wallet derives the dRep key from its seed (CIP-95); enable `[{cip:95}]` and sign via
+ *     MeshJS's `signData(payload, "drep1…")` routing to `cip95.signData`.
+ *   • SPO — a Calidus key has NO wallet API. Eternl derives it from the wallet's root payment credential,
+ *     so we find the wallet address carrying the Calidus credential and plain-`signData` over it.
+ * Returns the two COSE blobs to submit, or a structured error (never throws) — a declined prompt / a wallet
+ * that can't reach the key each degrades to a specific message so the card can fall back to the offline command.
  */
 export async function produceRoleProofWallet(opts: {
   walletId: string;
-  /** the already-built request (payload + synthetic address + credential) to sign + verify against. */
+  /** the already-built request (payload + synthetic address + credential + role) to sign + verify against. */
   request: RoleProofRequest;
-  /** the pasted key input — a `drep1…` id is passed straight through; any other form is re-encoded to one. */
+  /** the pasted key input — for dRep a `drep1…` id is passed straight through / re-encoded; unused for SPO. */
   keyInput: string;
 }): Promise<RolePasteback> {
+  const role = opts.request.role;
   try {
     const { BrowserWallet } = await import("@meshsdk/core");
-    // Request the CIP-95 governance extension — without it the wallet exposes no dRep key / signData.
-    const wallet = await BrowserWallet.enable(opts.walletId, [{ cip: 95 }]);
+    // dRep signing needs the CIP-95 extension; SPO signs with an ordinary payment key (no extension).
+    const wallet = await BrowserWallet.enable(opts.walletId, role === "drep" ? [{ cip: 95 }] : []);
     if ((await wallet.getNetworkId()) !== 0) {
       return { ok: false, error: "wrong network: switch your wallet to preprod (testnet), then reconnect" };
     }
-    // Capability gate: a wallet without CIP-95 returns no dRep key → point at the offline command.
-    const pubDRep = await wallet.getPubDRepKey().catch(() => undefined);
-    if (!pubDRep) {
-      return {
-        ok: false,
-        error: "this wallet doesn't offer in-wallet dRep signing (CIP-95) — use the offline command instead",
-      };
+
+    let sig: { signature: string; key: string };
+    if (role === "drep") {
+      // Capability gate: a wallet without CIP-95 returns no dRep key → point at the offline command.
+      const pubDRep = await wallet.getPubDRepKey().catch(() => undefined);
+      if (!pubDRep) {
+        return {
+          ok: false,
+          error: "this wallet doesn't offer in-wallet dRep signing (CIP-95) — use the offline command instead",
+        };
+      }
+      // Hand the wallet a well-formed drep1… (so MeshJS routes to cip95.signData) and the pinned payload.
+      const raw = opts.keyInput.trim();
+      const drepId = raw.toLowerCase().startsWith("drep1") ? raw : encodeDrepId(opts.request.credentialHex);
+      sig = (await wallet.signData(opts.request.payload, drepId)) as { signature: string; key: string };
+    } else {
+      // SPO/Calidus: sign over the wallet address that carries the Calidus credential (its root payment key).
+      const cst = await import("@meshsdk/core-cst");
+      const address = await findAddressForCredential(wallet, cst, opts.request.credentialHex);
+      if (!address) {
+        return {
+          ok: false,
+          error:
+            "this wallet doesn't control that Calidus key — connect the wallet it's derived from, or use the offline command",
+        };
+      }
+      sig = (await wallet.signData(opts.request.payload, address)) as { signature: string; key: string };
     }
-    // Hand the wallet a well-formed drep1… (so MeshJS routes to cip95.signData) and the pinned payload.
-    const raw = opts.keyInput.trim();
-    const drepId = raw.toLowerCase().startsWith("drep1") ? raw : encodeDrepId(opts.request.credentialHex);
-    const sig = (await wallet.signData(opts.request.payload, drepId)) as { signature: string; key: string };
-    // Same pre-flight as the offline path, but in CREDENTIAL mode: the wallet embeds ITS OWN key-hash address
-    // (not the synthetic one), so we bind on the credential, exactly as the runtime does.
+
+    // Same pre-flight as the offline path, but in CREDENTIAL mode (the wallet chose the embedded address).
     const pf = await preflightRolePasteback(JSON.stringify(sig), opts.request, { addressMatch: "credential" });
     if (!pf.ok) {
-      // Surface what the wallet actually produced — the CIP-95 embedded-address shape varies by wallet.
+      // Surface what the wallet actually produced — the embedded-address shape varies by wallet.
       console.error(
-        `cogno: dRep wallet sign failed pre-flight (${pf.error}). raw signData=${JSON.stringify(sig)}`,
+        `cogno: ${role} wallet sign failed pre-flight (${pf.error}). raw signData=${JSON.stringify(sig)}`,
       );
     }
     return pf;
@@ -499,7 +564,7 @@ export async function produceRoleProofWallet(opts: {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("cogno: produceRoleProofWallet failed:", msg);
     // A missing cip95 surfaces as a TypeError on `.signData` — steer to the fallback rather than a raw error.
-    if (/cip95|signData|undefined/i.test(msg)) {
+    if (role === "drep" && /cip95|signData|undefined/i.test(msg)) {
       return { ok: false, error: "this wallet couldn't sign with the dRep key (CIP-95) — use the offline command instead" };
     }
     return { ok: false, error: msg };

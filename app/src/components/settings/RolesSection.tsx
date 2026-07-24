@@ -45,9 +45,12 @@ interface RoleSpec {
   cardHint: string;
   keyPlaceholder: string;
   keyHint: ReactNode;
-  /** The key can be signed IN-WALLET (CIP-95): true for dRep. A Calidus pool key isn't in a CIP-30 wallet,
-   *  so SPO stays offline-command only. */
+  /** The key can be signed IN-WALLET (dRep via CIP-95; SPO via the wallet's root payment key, from which
+   *  Eternl derives the Calidus key). Both then also offer the offline command as a fallback. */
   walletSignable?: boolean;
+  /** One-line note shown under the wallet-sign buttons (role-specific: dRep needs CIP-95, SPO needs the
+   *  wallet the Calidus key derives from). Only rendered when `walletSignable`. */
+  walletHint?: string;
 }
 
 const ROLE_SPECS: RoleSpec[] = [
@@ -57,7 +60,9 @@ const ROLE_SPECS: RoleSpec[] = [
     label: "SPO",
     title: "Stake pool operator (SPO)",
     cardHint: "Prove control of your Calidus pool key (CIP-0151); the tag clears if the pool retires.",
-    keyPlaceholder: "calidus .vkey cborHex / 64-hex public key / 56-hex key hash",
+    walletSignable: true,
+    walletHint: "Signs with your wallet's Calidus key (its root payment key). No key file, no CLI.",
+    keyPlaceholder: "calidus1… id / calidus_vk1… / .vkey cborHex / 56-hex key hash",
     keyHint: "Public key — never your secret key.",
   },
   {
@@ -67,6 +72,7 @@ const ROLE_SPECS: RoleSpec[] = [
     title: "Delegated representative (dRep)",
     cardHint: "Prove control of your dRep key (CIP-0105); the tag clears if you deregister.",
     walletSignable: true,
+    walletHint: "Needs a CIP-95 wallet (Eternl, Lace). No key file, no CLI.",
     keyPlaceholder: "drep1… id  /  drep .vkey cborHex  /  56-hex dRep ID",
     keyHint: "Key-based dReps only (script dReps can't sign). Public key — never your secret key.",
   },
@@ -303,7 +309,7 @@ function RoleClaimCard({
                     {building ? "Preparing…" : "Sign offline instead"}
                   </button>
                 </div>
-                <p className={styles.hint}>Needs a CIP-95 wallet (Eternl, Lace). No key file, no CLI.</p>
+                {spec.walletHint && <p className={styles.hint}>{spec.walletHint}</p>}
                 {walletError && (
                   <p className={styles.error} role="alert">
                     {walletError}
