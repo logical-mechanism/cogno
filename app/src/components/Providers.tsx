@@ -25,6 +25,7 @@ import { useFeedSource } from "@/hooks/useFeedSource";
 import { useHeads } from "@/hooks/useHeads";
 import { useSelfProfile } from "@/hooks/useSelfProfile";
 import { deriveSessionState, type SessionState } from "@/lib/session";
+import { useDocumentVisible, useFrozenWhileHidden } from "@/lib/visibility";
 import { ToasterProvider } from "@/components/toast/ToasterProvider";
 import { OptimisticProvider } from "@/hooks/useOptimistic";
 import { ReputationProvider } from "@/hooks/useReputation";
@@ -33,6 +34,7 @@ import { AccountVoteProvider } from "@/hooks/useAccountVote";
 import { AuthorWeightProvider } from "@/hooks/useAuthorWeight";
 import { NestedQuoteProvider } from "@/hooks/useNestedQuote";
 import { AccountProfileProvider } from "@/hooks/useAccountProfile";
+import { FollowEdgesProvider } from "@/hooks/useFollowEdges";
 import { NotificationsProvider } from "@/hooks/useNotifications";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, ConnStatus, BootGuard, PostingSigner } from "@/lib/types";
@@ -64,8 +66,6 @@ export interface Session {
   viewer: Viewer;
   /** The feed reader seam (the PAPI-direct node reader). Null before connect. */
   source: FeedSource | null;
-  /** Live best-block number (one shared head subscription) — drives relative post times, capacity, etc. */
-  bestBlock: number | null;
   /**
    * The active posting account's live observed Cardano roles (`CardanoRoles.ObservedRoles`) — SPO / dRep /
    * committee. `null` while loading or when no posting account is chosen; `[]` once known to hold none.
@@ -76,6 +76,25 @@ export interface Session {
 }
 
 const SessionContext = createContext<Session | null>(null);
+
+/**
+ * The live best-block number, in its OWN context — deliberately not a field of {@link Session}.
+ *
+ * It is the only value in the provider stack that changes on a fixed ~6s tick, and while it lived on
+ * the session context every one of the 41 `useSession()` consumers re-rendered every block, whether or
+ * not it cared about block height — into a component tree with no `React.memo` boundaries, so a Home
+ * with five "load more" pages reconciled 250 PostCards every 6 seconds for a number most of them never
+ * read. Split out, a block tick re-renders exactly the components that ask for it (PostTime, the
+ * capacity meter, the live re-read effects) and nothing else.
+ *
+ * `null` until the first head arrives. Consumers must handle that — it is not "block 0".
+ */
+const BlockContext = createContext<number | null>(null);
+
+/** The live best-block number (null until the first head lands). See {@link BlockContext}. */
+export function useBestBlock(): number | null {
+  return useContext(BlockContext);
+}
 
 /** Map the rich SessionState to the coarse Viewer.status triad (of the kit). */
 function viewerStatusOf(s: SessionState): ViewerStatus {
@@ -99,23 +118,28 @@ function ChainProvider({ children }: { children: ReactNode }) {
   const signerCtl = useSigner();
   const signer = signerCtl.signer;
 
-  const identity = useIdentity(api, client, signer);
+  // `postingEnabled` gates the identity reads off the BACKGROUND //Alice default — see the param doc
+  // on useIdentity. Same guard `postingPower` and `viewerRoles` below already apply.
+  const identity = useIdentity(api, client, signer, signerCtl.postingEnabled);
 
   // The feed reader seam — the PAPI-direct node reader, memoized on [api] inside the hook.
   const source = useFeedSource(api);
 
   // One shared head subscription for all block-relative UI (post times, capacity, live profile).
-  const bestBlock = useHeads(client).best?.number ?? null;
+  // Deliberately NOT part of the session context value — see BlockContext below.
+  //
+  // FROZEN WHILE THE TAB IS HIDDEN. Every per-block refetch in the app keys off this number — the
+  // thread re-read on /post, the profile re-read on /u, the feed's vote-reconcile page-1 fetch — so
+  // holding it still is how a backgrounded tab stops working. It snaps to the live value in ONE step
+  // when the tab comes back, so returning costs a single catch-up tick, not one per elapsed block.
+  const visible = useDocumentVisible();
+  const liveBlock = useHeads(client).best?.number ?? null;
+  const bestBlock = useFrozenWhileHidden(liveBlock, visible);
 
   // The viewer's OWN profile (display name + avatar) for app chrome — the composer avatar/name, the
   // account menu, optimistic pending-post authorship. Only for a real chosen account; live + overlay-
   // merged so an edit shows instantly. Fed into the Viewer below.
-  const self = useSelfProfile(
-    source,
-    signerCtl.postingEnabled ? signer.ss58 : null,
-    signerCtl.postingEnabled,
-    bestBlock,
-  );
+  const self = useSelfProfile(api, signerCtl.postingEnabled ? signer.ss58 : null, signerCtl.postingEnabled);
 
   // The active account's posting power (TalkStake.AllowedStake = locked-ADA weight), watched globally so
   // `viewer.writeReady` can gate EVERY write affordance on the same "fully set up" signal instead of each
@@ -226,22 +250,27 @@ function ChainProvider({ children }: { children: ReactNode }) {
       sessionState,
       viewer,
       source,
-      bestBlock,
       viewerRoles,
     }),
-    [api, client, status, boot, wsUrl, reconnect, signer, signerCtl, identity, sessionState, viewer, source, bestBlock, viewerRoles],
+    [api, client, status, boot, wsUrl, reconnect, signer, signerCtl, identity, sessionState, viewer, source, viewerRoles],
   );
 
   // ReputationProvider + AccountProfileProvider live INSIDE the session context (they read `api` via
   // useSession) so the whole tree shares one batched, cached lookup each — AccountVoteTally for the
   // author-reputation badges, and Profile.Profiles for @mention chips + notification actor rows.
+  // BlockContext sits INSIDE the session context: a block tick then re-renders only this subtree's
+  // block consumers, and never invalidates `value` itself.
   return (
     <SessionContext.Provider value={value}>
+      <BlockContext.Provider value={bestBlock}>
       <ReputationProvider>
         <AccountVoteStateProvider>
           <AuthorWeightProvider>
             <NestedQuoteProvider>
               <AccountProfileProvider>
+                {/* One shared follow graph per account. Home alone asked for the viewer's four times
+                    (this page, RightRail's useFollow, useWhoToFollow, the followees probe). */}
+                <FollowEdgesProvider>
                 {/* The account-vote WRITE side. It must outlive every surface that can cast a vote: a
                     hover card unmounts ~200ms after the mouse leaves, and useMutation kills an unsettled
                     run's callbacks when its caller unmounts — so a vote cast from a popover would lose
@@ -250,11 +279,13 @@ function ChainProvider({ children }: { children: ReactNode }) {
                 <AccountVoteProvider>
                   <NotificationsProvider>{children}</NotificationsProvider>
                 </AccountVoteProvider>
+                </FollowEdgesProvider>
               </AccountProfileProvider>
             </NestedQuoteProvider>
           </AuthorWeightProvider>
         </AccountVoteStateProvider>
       </ReputationProvider>
+      </BlockContext.Provider>
     </SessionContext.Provider>
   );
 }

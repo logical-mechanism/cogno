@@ -16,7 +16,7 @@ import { StickyHeader } from "@/components/AppShell";
 import { EmptyState } from "@/components/EmptyState";
 import { Loading } from "@/components/Loading";
 import { ProposalTitle } from "@/components/ProposalTitle";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useGovernancePolls } from "@/hooks/useGovernancePolls";
 import { GOV_ACTION_LABEL } from "@/lib/cardano/governance";
 import { eligibleToVote, govCloseState } from "@/lib/chain/governance-feed";
@@ -26,7 +26,8 @@ const STATE_LABEL = { open: "Open", provisional: "Closed", final: "Final" } as c
 const RANK = { open: 0, provisional: 1, final: 2 } as const;
 
 export default function GovernancePage() {
-  const { api, viewerRoles, bestBlock } = useSession();
+  const { api, viewerRoles } = useSession();
+  const bestBlock = useBestBlock();
   const { polls, error, reload } = useGovernancePolls(api);
 
   // Sort open first, then closed-unfinalized, then final; the read already ordered newest-first, and the

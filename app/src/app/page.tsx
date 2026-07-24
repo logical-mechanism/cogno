@@ -26,11 +26,12 @@ import { NewPostsPill } from "@/components/NewPostsPill";
 import { Timeline } from "@/components/Timeline";
 import { Composer } from "@/components/Composer";
 import { GuestSignInPrompt } from "@/components/GuestSignInPrompt";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useLiveFeed } from "@/hooks/useLiveFeed";
 import { usePostActions } from "@/hooks/usePostActions";
 import { modalActions } from "@/lib/modalStore";
 import { useFeedPage } from "@/hooks/useFeed";
+import { useFollowEdgesFor } from "@/hooks/useFollowEdges";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useModeration } from "@/hooks/useModeration";
 import { useVote } from "@/hooks/useVote";
@@ -52,7 +53,8 @@ import type { ActionState, ComposerDraft } from "@/components/kit";
 
 export default function HomePage() {
   const router = useRouter();
-  const { api, signer, source, viewer, votingPower, bestBlock } = useSession();
+  const { api, signer, source, viewer, votingPower } = useSession();
+  const bestBlock = useBestBlock();
 
   const me = viewer.address ?? null;
   const canFollow = source != null;
@@ -79,25 +81,12 @@ export default function HomePage() {
   // ── Following: paged followee feed ─────────────────────────────────────────────────────────────
   // We resolve the followee set through the page seam's `followeeOf`. Skip the query (and show the
   // follows empty-state) when disconnected or the viewer follows nobody.
-  const [followeesEmpty, setFolloweesEmpty] = useState(false);
-  useEffect(() => {
-    if (!source || !canFollow || !me) {
-      setFolloweesEmpty(false);
-      return;
-    }
-    let cancelled = false;
-    source
-      .followEdges(me)
-      .then((e) => {
-        if (!cancelled) setFolloweesEmpty(e.following.length === 0);
-      })
-      .catch(() => {
-        if (!cancelled) setFolloweesEmpty(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [source, canFollow, me]);
+  // Through the shared follow-graph cache (hooks/useFollowEdges) — this used to be a fourth,
+  // independent `followEdges(me)` read on every Home load, alongside the two useFollow mounts (this
+  // page and RightRail) and useWhoToFollow. `null` while unknown reads as "not empty", so the tab shows
+  // its loading/empty state rather than flashing the wrong "Not following anyone yet".
+  const viewerEdges = useFollowEdgesFor(source && canFollow && me ? me : undefined);
+  const followeesEmpty = viewerEdges != null && viewerEdges.following.length === 0;
 
   const followingQuery = useMemo<FeedQuery>(
     () => ({

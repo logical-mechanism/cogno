@@ -15,7 +15,7 @@
 // second thing a caller can accidentally hand it.
 
 import { useMemo } from "react";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useCapacity } from "./useCapacity";
 import { draftStatus, SECS_PER_BLOCK } from "@/lib/chain/capacity";
 
@@ -52,7 +52,8 @@ export interface ComposerGate {
  *   a degenerate case.
  */
 export function useComposerGate(gateText: string): ComposerGate {
-  const { api, viewer, identity, bestBlock } = useSession();
+  const { api, viewer, identity } = useSession();
+  const bestBlock = useBestBlock();
   const { view, consts } = useCapacity(api, viewer.address ?? null, bestBlock);
 
   const rateLimited = useMemo(() => {

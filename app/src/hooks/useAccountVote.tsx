@@ -33,7 +33,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useMutation } from "./useMutation";
 import { useActionToast } from "./useActionToast";
 import { useAccountTally, useInvalidateReputation } from "./useReputation";
@@ -58,7 +58,8 @@ interface AccountVoteCtx {
 const Context = createContext<AccountVoteCtx | null>(null);
 
 export function AccountVoteProvider({ children }: { children: ReactNode }) {
-  const { api, signer, viewer, votingPower, bestBlock } = useSession();
+  const { api, signer, viewer, votingPower } = useSession();
+  const bestBlock = useBestBlock();
   const me = viewer.address ?? null;
   const { run } = useMutation();
   const { fail } = useActionToast();

@@ -39,6 +39,7 @@ import {
   nodeSearchPeople,
   nodeWhoToFollow,
   nodeLikesPage,
+  nodeFollowEdges,
 } from "@/lib/chain/node-reads";
 import {
   readPoll,
@@ -336,20 +337,26 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     return readViewerPostState(api, post, who);
   }
 
-  // ── follow graph: both directions node-served (forward Following + reverse Followers, spec-118) ──
+  // ── follow graph: both directions + the counters, node-served in ONE state_call ──
+  // `MicroblogApi.follow_edges` replaces the four-read fan-out this used to be (two full prefix scans
+  // over the account's edge set plus two counters). The keyed readFollowees/readFollowers above stay as
+  // the resilience fallback, exactly like `thread`'s: an account with a very large edge set can blow the
+  // state_call resource limit, and a follow-graph read carries no cursor, so falling back is safe.
   async function followEdges(who: Ss58): Promise<FollowEdges> {
-    const [following, followers, followerCount, followingCount] = await Promise.all([
-      readFollowees(api, who),
-      readFollowers(api, who),
-      api.query.Microblog.FollowerCount.getValue(who),
-      api.query.Microblog.FollowingCount.getValue(who),
-    ]);
-    return {
-      following,
-      followers,
-      followerCount: Number(followerCount ?? 0),
-      followingCount: Number(followingCount ?? 0),
-    };
+    return nodeFollowEdges(api, who).catch(async () => {
+      const [following, followers, followerCount, followingCount] = await Promise.all([
+        readFollowees(api, who),
+        readFollowers(api, who),
+        api.query.Microblog.FollowerCount.getValue(who),
+        api.query.Microblog.FollowingCount.getValue(who),
+      ]);
+      return {
+        following,
+        followers,
+        followerCount: Number(followerCount ?? 0),
+        followingCount: Number(followingCount ?? 0),
+      };
+    });
   }
 
   // ── who-to-follow: `who_to_follow` — ByAuthor members ranked by follower count, INCLUDING

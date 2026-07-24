@@ -91,6 +91,8 @@ export interface Batcher<K, V> {
   flush: (api: CognoApi) => Promise<Array<{ key: string; value: V }>>;
   /** Uncommit keys so the next `request` re-reads them. */
   invalidate: (keys: K[]) => string[];
+  /** Forget EVERYTHING — every committed key and the pending queue. For an endpoint change. */
+  reset: () => void;
   queued: () => number;
   /** Test-only view of what is committed (in-flight or resolved). */
   isCommitted: (key: K) => boolean;
@@ -112,6 +114,10 @@ export function createBatcher<K, V>(spec: ChainCacheSpec<K, V>): Batcher<K, V> {
       const ks = keys.map(spec.toKey);
       for (const k of ks) requested.delete(k);
       return ks;
+    },
+    reset() {
+      requested.clear();
+      queue.clear();
     },
     async flush(api) {
       const batch = [...queue.entries()];
@@ -220,8 +226,28 @@ export function createChainCache<K, V>(spec: ChainCacheSpec<K, V>): ChainCache<K
       [batcher, request],
     );
 
-    // When the socket connects (api null → ready), fetch anything registered while it was still offline.
+    // A DIFFERENT chain answers differently. `values` is plain state and `requested` lives in a ref, so
+    // both used to survive `useChain.reconnect(url)` — and `requested` actively PREVENTED a re-read.
+    // After switching endpoints in Settings, every already-committed key (an author's reputation, the
+    // stake ring's voting power, a quoted post's body, a display name) kept serving the PREVIOUS chain's
+    // answer for the rest of the session, indistinguishable from real data.
+    //
+    // A key here is a bare account/id with no chain in it, so there is nothing to compare — the only
+    // sound move is to forget everything the moment the socket identity changes.
+    //
+    // Compare against the last NON-NULL api, not against "did this effect run before". The initial
+    // null → ready transition is a connect, not a chain change, and resetting there would clear the
+    // very queue this effect exists to flush: keys registered while the socket was still offline would
+    // be dropped, and an already-mounted consumer never re-requests on its own, so they would never be
+    // read at all.
+    const lastApi = useRef<CognoApi | null>(null);
     useEffect(() => {
+      if (api && lastApi.current && lastApi.current !== api) {
+        batcher.reset();
+        setValues(new Map());
+      }
+      if (api) lastApi.current = api;
+      // When the socket connects (api null → ready), fetch anything registered while it was offline.
       if (api && batcher.queued() > 0) scheduleFlush();
     }, [api, batcher, scheduleFlush]);
 

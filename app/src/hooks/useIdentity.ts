@@ -7,7 +7,7 @@
 // readback. The wallet sign, the on-chain submit, and the readback are distinct steps, surfaced as one
 // `binding` flag here but narrated by the UI.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PolkadotClient } from "polkadot-api";
 import type { CognoApi, PostingSigner } from "@/lib/types";
 import {
@@ -92,6 +92,15 @@ export function useIdentity(
   api: CognoApi | null,
   client: PolkadotClient | null,
   signer: PostingSigner,
+  /**
+   * The posting key is one the user actually chose (`signerCtl.postingEnabled`). False means the
+   * BACKGROUND `//Alice` default, which nobody selected and which `deriveSessionState` already reports
+   * as "disconnected" before it ever looks at `bound` — so reading the chain for it was pure waste:
+   * one timed `AccountOf` read plus TWO permanent per-block `watchValue` subscriptions on every guest
+   * page load, for the whole life of the tab. Providers applies exactly this guard to `postingPower`
+   * and `viewerRoles`; this closes the third case.
+   */
+  enabled: boolean,
 ): UseIdentity {
   const [bound, setBound] = useState<boolean | null>(null);
   const [binding, setBinding] = useState(false);
@@ -115,11 +124,17 @@ export function useIdentity(
   // never flashes the wrong onboarding step for a frame (an effect runs post-paint, which would). The
   // ref guard makes it one-shot per key. A bare socket (api) reconnect keeps the same key, so `bound` is
   // NOT cleared there — that would needlessly bounce a logged-in user off the auth wall.
-  const boundKeyRef = useRef<string | null>(null);
-  if (boundKeyRef.current !== signer.ss58) {
-    boundKeyRef.current = signer.ss58;
+  //
+  // Keyed on the ACTIVE key, which is null while disabled — so flipping `enabled` (a connect, a
+  // restore, a disconnect) re-arms the loading state exactly like a key change does.
+  const activeKey = enabled ? signer.ss58 : null;
+  const boundKeyRef = useRef<string | null | undefined>(undefined);
+  if (boundKeyRef.current !== activeKey) {
+    boundKeyRef.current = activeKey;
     setBound(null);
-    setCheckingBound(true); // show the neutral "deciding" state until the effect's read resolves/times out
+    // Only a REAL key is worth a "deciding" state. For the background //Alice default there is nothing
+    // to decide, and holding `checkingBound` true would make the auth wall wait on a read we never issue.
+    setCheckingBound(activeKey !== null);
   }
 
   const refresh = useCallback(() => {
@@ -127,18 +142,18 @@ export function useIdentity(
     // from chain state. Clear it whenever the key/chain changes (this callback re-runs on [api, ss58])
     // so a stale signing-address can't survive a wallet switch to a different — already-bound — account.
     setBoundAddress(null);
-    if (!api) {
+    if (!api || !activeKey) {
       setBound(null);
       setCheckingBound(false);
       return;
     }
     // Time-bound the read so a hung node can't wedge `checkingBound`; on timeout/error we fall through to
     // bound=null → the connect step, where the user keeps agency. (checkingBound was set true in render.)
-    withTimeout(isAccountBound(api, signer.ss58), BOUND_READ_TIMEOUT_MS)
+    withTimeout(isAccountBound(api, activeKey), BOUND_READ_TIMEOUT_MS)
       .then(setBound)
       .catch(() => setBound(null))
       .finally(() => setCheckingBound(false));
-  }, [api, signer.ss58]);
+  }, [api, activeKey]);
 
   // Re-check whenever the chain or the active posting key changes.
   useEffect(() => {
@@ -152,7 +167,7 @@ export function useIdentity(
   useEffect(() => {
     // A stale per-attempt error must not survive a key/chain switch (this effect re-runs on [api, ss58]).
     setStakeError(null);
-    if (!api) {
+    if (!api || !activeKey) {
       setStakeBound(null);
       setVotingPower(null);
       setBoundStakeCredHex(null);
@@ -160,14 +175,14 @@ export function useIdentity(
     }
     // PAPI v2: watchValue takes an options object and emits { block, value } (not the bare value); a
     // fixed-size [u8;28] credential decodes to a 0x-hex string (no `.asHex()`).
-    const s1 = api.query.CognoGate.StakeCredOf.watchValue(signer.ss58, { at: "best" }).subscribe(
+    const s1 = api.query.CognoGate.StakeCredOf.watchValue(activeKey, { at: "best" }).subscribe(
       ({ value: cred }) => {
         setStakeBound(cred !== undefined);
         setBoundStakeCredHex(cred ?? null);
       },
       () => setStakeBound(null),
     );
-    const s2 = api.query.TalkStake.VotingPower.watchValue(signer.ss58, { at: "best" }).subscribe(
+    const s2 = api.query.TalkStake.VotingPower.watchValue(activeKey, { at: "best" }).subscribe(
       ({ value: w }) => setVotingPower((w as bigint) ?? 0n),
       () => setVotingPower(null),
     );
@@ -175,7 +190,7 @@ export function useIdentity(
       s1.unsubscribe();
       s2.unsubscribe();
     };
-  }, [api, signer.ss58]);
+  }, [api, activeKey]);
 
   const bind = useCallback(
     (walletId: string) => {
@@ -296,21 +311,44 @@ export function useIdentity(
     [api, client, stakeBinding, bound, signer],
   );
 
-  return {
-    bound,
-    binding,
-    bindPhase,
-    checkingBound,
-    error,
-    boundAddress,
-    bind,
-    refresh,
-    stakeBound,
-    votingPower,
-    boundStakeCredHex,
-    stakeBinding,
-    stakeBindPhase,
-    stakeError,
-    bindStake,
-  };
+  // MEMOIZED, and that matters well beyond this file: this object goes straight into the session
+  // context value in Providers. A fresh literal per render made that context's own `useMemo` a no-op,
+  // so every best block (~6s) re-rendered all 41 useSession consumers into a tree with no memo
+  // boundaries. Same reason useChain and useSigner memoize theirs.
+  return useMemo(
+    () => ({
+      bound,
+      binding,
+      bindPhase,
+      checkingBound,
+      error,
+      boundAddress,
+      bind,
+      refresh,
+      stakeBound,
+      votingPower,
+      boundStakeCredHex,
+      stakeBinding,
+      stakeBindPhase,
+      stakeError,
+      bindStake,
+    }),
+    [
+      bound,
+      binding,
+      bindPhase,
+      checkingBound,
+      error,
+      boundAddress,
+      bind,
+      refresh,
+      stakeBound,
+      votingPower,
+      boundStakeCredHex,
+      stakeBinding,
+      stakeBindPhase,
+      stakeError,
+      bindStake,
+    ],
+  );
 }

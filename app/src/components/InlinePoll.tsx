@@ -10,7 +10,7 @@ import { useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { PollCard } from "./PollCard";
 import { Skeleton } from "./Skeleton";
-import { useSession } from "./Providers";
+import { useSession, useBestBlock } from "./Providers";
 import { usePoll } from "@/hooks/usePoll";
 import { chamberBlocksViewer, chamberRequiredRole, roleLabel } from "@/lib/poll";
 import styles from "./InlinePoll.module.css";
@@ -27,7 +27,8 @@ export interface InlinePollProps {
 
 export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
   const router = useRouter();
-  const { source, api, signer, bestBlock, viewerRoles } = useSession();
+  const { source, api, signer, viewerRoles } = useSession();
+  const bestBlock = useBestBlock();
   const { poll, myChoice, castVote, loading, error, provisional, finalize, finalizing, reload } = usePoll(
     source,
     postId,

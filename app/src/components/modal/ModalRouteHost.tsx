@@ -24,7 +24,7 @@ import { ReplyComposer } from "../ReplyComposer";
 import { QuoteComposer } from "../QuoteComposer";
 import { PollComposer } from "../PollComposer";
 import { EditProfileModal } from "../EditProfileModal";
-import { useSession } from "../Providers";
+import { useSession, useBestBlock } from "../Providers";
 import { modalActions, useModalStore } from "@/lib/modalStore";
 import { useMutation } from "@/hooks/useMutation";
 import { useOptimistic } from "@/hooks/useOptimistic";
@@ -81,7 +81,8 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 export function ModalRouteHost() {
   const router = useRouter();
   const { state, close } = useModalStore();
-  const { api, signer, source, viewer, bestBlock } = useSession();
+  const { api, signer, source, viewer } = useSession();
+  const bestBlock = useBestBlock();
   // Only the PROFILE overlay is still owned here — the compose overlay moved into useComposeWrite.
   const { patchProfile, confirmProfile, rollbackProfile } = useOptimistic();
   const { run } = useMutation();

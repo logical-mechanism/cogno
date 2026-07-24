@@ -18,7 +18,7 @@ import { PostBody } from "@/components/PostBody";
 import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
 import { EmptyState } from "@/components/EmptyState";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useMutation } from "@/hooks/useMutation";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { useToaster } from "@/components/toast/ToasterProvider";
@@ -37,7 +37,8 @@ interface ProfilePreview {
 }
 
 export function ProfileSection() {
-  const { api, signer, source, signerCtl, identity, viewer, bestBlock } = useSession();
+  const { api, signer, source, signerCtl, identity, viewer } = useSession();
+  const bestBlock = useBestBlock();
   const router = useRouter();
   const { run } = useMutation();
   const { overlay } = useOptimistic();

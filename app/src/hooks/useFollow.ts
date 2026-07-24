@@ -8,9 +8,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useMutation } from "./useMutation";
 import { useActionToast } from "./useActionToast";
+import { useFollowEdgesFor, useInvalidateFollowEdges } from "./useFollowEdges";
 import { submitFollow, submitUnfollow } from "@/lib/chain/mutations";
 import type { FeedSource } from "@/lib/feed/source";
-import type { CognoApi, PostingSigner, Ss58, FollowEdges } from "@/lib/types";
+import type { CognoApi, PostingSigner, Ss58 } from "@/lib/types";
 
 /** Optional per-call hooks so a surface with its OWN optimistic state (e.g. the profile header's
  *  follower-count delta) can reconcile it against the write outcome, not just useFollow's isFollowing map. */
@@ -36,27 +37,13 @@ export function useFollow(
 ): UseFollow {
   const { run } = useMutation();
   const { fail, ok } = useActionToast();
-  const [edges, setEdges] = useState<FollowEdges | null>(null);
   const [optimistic, setOptimistic] = useState<Record<string, boolean>>({});
-
-  useEffect(() => {
-    if (!source || !who) {
-      setEdges(null);
-      return;
-    }
-    let cancelled = false;
-    source
-      .followEdges(who)
-      .then((e) => {
-        if (!cancelled) setEdges(e);
-      })
-      .catch(() => {
-        if (!cancelled) setEdges(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [source, who]);
+  // The SHARED cache, not a per-hook read. Home mounts this hook twice (the page and RightRail) and
+  // two other surfaces ask the same question on the same load; through the cache that is one
+  // state_call for all four. `source` is no longer read here, but stays in the signature as the
+  // reader-gate every call site already passes.
+  const edges = useFollowEdgesFor(source && who ? who : undefined);
+  const invalidateEdges = useInvalidateFollowEdges();
 
   // Clear optimistic overrides when the viewer changes: a prior viewer's entries must not win over
   // the freshly-fetched edges (isFollowing prefers `optimistic`) after an in-place wallet/account switch.
@@ -77,7 +64,14 @@ export function useFollow(
       if (!api || !signer) return;
       setOptimistic((p) => ({ ...p, [target]: true }));
       void run(submitFollow(api, signer, target), {
-        onConfirm: () => ok("Following"),
+        onConfirm: () => {
+          ok("Following");
+          // The write is the ONLY thing that moves this graph, so an explicit invalidation is the whole
+          // cache-coherence story: both ends of the new edge are re-read, which also refreshes the
+          // target's follower count on their profile.
+          if (who) invalidateEdges(who, target);
+          else invalidateEdges(target);
+        },
         onError: (message) => {
           setOptimistic((p) => ({ ...p, [target]: false }));
           cb?.onError?.(); // let a surface roll back its own optimistic count too
@@ -85,7 +79,7 @@ export function useFollow(
         },
       });
     },
-    [api, signer, run, fail, ok],
+    [api, signer, run, fail, ok, who, invalidateEdges],
   );
 
   const unfollow = useCallback(
@@ -93,7 +87,11 @@ export function useFollow(
       if (!api || !signer) return;
       setOptimistic((p) => ({ ...p, [target]: false }));
       void run(submitUnfollow(api, signer, target), {
-        onConfirm: () => ok("Unfollowed"),
+        onConfirm: () => {
+          ok("Unfollowed");
+          if (who) invalidateEdges(who, target);
+          else invalidateEdges(target);
+        },
         onError: (message) => {
           setOptimistic((p) => ({ ...p, [target]: true }));
           cb?.onError?.();
@@ -101,7 +99,7 @@ export function useFollow(
         },
       });
     },
-    [api, signer, run, fail, ok],
+    [api, signer, run, fail, ok, who, invalidateEdges],
   );
 
   return {

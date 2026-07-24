@@ -7,7 +7,7 @@
 // and tears the client down on unmount or when the endpoint changes. Every other
 // hook/component receives `api` / `client` from here — there is exactly one socket.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PolkadotClient } from "polkadot-api";
 import { createChain, watchConnStatus, checkBootGuard } from "@/lib/chain/client";
 import { getActiveWsUrl } from "@/lib/config/endpoints";
@@ -115,13 +115,18 @@ export function useChain(): UseChain {
     };
   }, [handle]);
 
-  return {
-    handle,
-    api: handle?.api ?? null,
-    client: handle?.client ?? null,
-    status,
-    boot,
-    wsUrl: handle?.wsUrl ?? null,
-    reconnect,
-  };
+  // MEMOIZED — this object is spread into the session context value, and a fresh literal per render
+  // defeated that context's `useMemo` entirely (see the note in useIdentity's return).
+  return useMemo(
+    () => ({
+      handle,
+      api: handle?.api ?? null,
+      client: handle?.client ?? null,
+      status,
+      boot,
+      wsUrl: handle?.wsUrl ?? null,
+      reconnect,
+    }),
+    [handle, status, boot, reconnect],
+  );
 }

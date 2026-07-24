@@ -30,7 +30,7 @@ import { ReplyComposer } from "@/components/ReplyComposer";
 import { QuoteComposer } from "@/components/QuoteComposer";
 import { PollComposer } from "@/components/PollComposer";
 import { Loading } from "@/components/Loading";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useThread } from "@/hooks/useThread";
 import { useComposerGate } from "@/hooks/useComposerGate";
 import { useComposeWrite } from "@/hooks/useComposeWrite";
@@ -66,7 +66,8 @@ const TITLES: Record<ComposerMode, string> = {
 export function ComposePage() {
   const router = useRouter();
   const params = useSearchParams();
-  const { api, signer, source, viewer, bestBlock } = useSession();
+  const { api, signer, source, viewer } = useSession();
+  const bestBlock = useBestBlock();
   const { toast } = useToaster();
 
   // ── Mode resolution: precedence reply > quote > poll > post; defensive against junk ids. ──

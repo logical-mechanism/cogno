@@ -6,7 +6,7 @@
 // bestBlock (one subscription for the whole app), so it's cheap to render per card.
 
 import styles from "./PostTime.module.css";
-import { useSession } from "./Providers";
+import { useBestBlock } from "./Providers";
 import { SECS_PER_BLOCK } from "@/lib/chain/capacity";
 
 
@@ -23,7 +23,7 @@ function formatAgo(seconds: number): string {
 }
 
 export function PostTime({ at }: { at: number }) {
-  const { bestBlock } = useSession();
+  const bestBlock = useBestBlock();
   if (!at || bestBlock == null) return null; // optimistic (at=0) / heads not yet known → render nothing
   const label = formatAgo(Math.max(0, bestBlock - at) * SECS_PER_BLOCK);
   // "now" reads as "just now · block #123", not the ungrammatical "~now ago · block #123".

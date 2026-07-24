@@ -21,7 +21,15 @@
 import { Binary } from "polkadot-api";
 import { binTextOpt, type IdPage, type RawThread } from "./reads";
 import type { EnrichedPost, FeedPageRaw, PersonSummaryRaw } from "./descriptors";
-import type { CognoApi, CognoPost, Ss58, QuotedRef, ViewerPostState, Suggestion } from "@/lib/types";
+import type {
+  CognoApi,
+  CognoPost,
+  Ss58,
+  QuotedRef,
+  ViewerPostState,
+  Suggestion,
+  FollowEdges,
+} from "@/lib/types";
 import { mapObservedRolePairs } from "@/lib/chain/roles";
 
 const MAX_PAGE = 100;
@@ -340,6 +348,28 @@ function personSummaryToSuggestion(r: PersonSummaryRaw): Suggestion {
 export async function nodeWhoToFollow(api: CognoApi, limit: number): Promise<Suggestion[]> {
   const rows = await microblogApi(api).who_to_follow(clampLimit(limit));
   return rows.map(personSummaryToSuggestion);
+}
+
+/**
+ * One account's follow graph — both directions plus the exact counters — in ONE `state_call`
+ * (`MicroblogApi.follow_edges`).
+ *
+ * This replaces a four-read fan-out: `Following.getEntries(who)` and `Followers.getEntries(who)` are
+ * both FULL prefix scans of the account's edge set, and each came with its own counter read. The
+ * runtime API was already generated and on the wire; it simply had no caller.
+ *
+ * Finalized default on purpose — no per-viewer overlay here, and the follow graph is not a
+ * read-after-write surface (the write path carries its own optimistic override in useFollow). Same
+ * reasoning as `search_people` / `who_to_follow` above; do not "helpfully" add BEST.
+ */
+export async function nodeFollowEdges(api: CognoApi, who: Ss58): Promise<FollowEdges> {
+  const e = await microblogApi(api).follow_edges(who);
+  return {
+    following: e.following as Ss58[],
+    followers: e.followers as Ss58[],
+    followerCount: Number(e.follower_count ?? 0),
+    followingCount: Number(e.following_count ?? 0),
+  };
 }
 
 /**

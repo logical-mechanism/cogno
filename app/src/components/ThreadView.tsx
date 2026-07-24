@@ -33,7 +33,7 @@ import { EmptyState } from "./EmptyState";
 import { Skeleton } from "./Skeleton";
 import { NotFoundInline } from "./AppShell";
 import { Spinner } from "./icons";
-import { useSession } from "./Providers";
+import { useSession, useBestBlock } from "./Providers";
 import { useThread } from "@/hooks/useThread";
 import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -66,7 +66,8 @@ export interface ThreadViewProps {
 
 export function ThreadView({ rootId }: ThreadViewProps) {
   const router = useRouter();
-  const { api, signer, source, viewer, votingPower, bestBlock } = useSession();
+  const { api, signer, source, viewer, votingPower } = useSession();
+  const bestBlock = useBestBlock();
   const me = viewer.address ?? null;
   // Block + hide are hard removals, applied to the reply list below (the focal itself is handled by
   // PostCard: a blocked focal shows the stub, a hidden focal shows normally — you navigated to it).
