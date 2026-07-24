@@ -15,6 +15,7 @@ import Link from "next/link";
 import { StickyHeader } from "@/components/AppShell";
 import { EmptyState } from "@/components/EmptyState";
 import { Loading } from "@/components/Loading";
+import { ProposalTitle } from "@/components/ProposalTitle";
 import { useSession } from "@/components/Providers";
 import { useGovernancePolls } from "@/hooks/useGovernancePolls";
 import { GOV_ACTION_LABEL } from "@/lib/cardano/governance";
@@ -68,9 +69,9 @@ export default function GovernancePage() {
                       {STATE_LABEL[state]}
                     </span>
                   </div>
-                  <p className={styles.question} dir="auto">
-                    {p.question || "Untitled poll"}
-                  </p>
+                  {/* The linked proposal's title identifies the row — NOT the poll's raw post text. Fetched
+                      at a glance only for neutral hosts (privacy); otherwise a muted default. */}
+                  <ProposalTitle anchorUrl={p.anchorUrl} className={styles.question} />
                   {eligible && <span className={styles.eligible}>You can vote</span>}
                 </Link>
               </li>

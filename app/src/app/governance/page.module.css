@@ -63,6 +63,12 @@
   overflow-wrap: break-word;
 }
 
+/* A resolved proposal title reads as primary text (above); a fallback state — loading, no title, bad
+   metadata, or a gated host — is muted so it doesn't masquerade as a real title. */
+.question[data-muted="true"] {
+  color: var(--cg-text-secondary);
+}
+
 .eligible {
   align-self: flex-start;
   margin-top: 2px;
