@@ -129,7 +129,7 @@ export function VaultSection() {
         )}
         {!showingPending && (
           <p className={styles.note}>
-            Posting requires locked ADA. Lock below to earn the posting power every post spends — it
+            Posting requires locked ADA. Lock below to earn the posting power every post spends. It
             becomes available a few minutes after your lock confirms on Cardano.
           </p>
         )}

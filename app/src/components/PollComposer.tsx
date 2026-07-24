@@ -67,11 +67,11 @@ const kindIsChamber = (k?: PollKindName) => kindHasSpo(k) || kindHasDrep(k);
 
 /** One-line description of the selected poll kind. */
 const KIND_HINT: Record<PollKindName, string> = {
-  Stake: "A regular stake-weighted poll — everyone votes.",
+  Stake: "A regular stake-weighted poll that everyone can vote in.",
   Governance:
-    "Verified SPOs & dReps also weigh in with their delegated stake — a display-only Cardano temperature check.",
-  Spo: "Only verified SPOs are tallied, by their pool's delegated stake — a display-only signal.",
-  Drep: "Only verified dReps are tallied, by their delegated voting stake — a display-only signal.",
+    "Verified SPOs & dReps also weigh in with their delegated stake, as a display-only Cardano temperature check.",
+  Spo: "Only verified SPOs are tallied, by their pool's delegated stake. It's a display-only signal.",
+  Drep: "Only verified dReps are tallied, by their delegated voting stake. It's a display-only signal.",
 };
 
 // The seven CIP-1694 governance actions. `spo`/`drep` = which bodies vote on Cardano (drives the guidance
@@ -88,7 +88,7 @@ const GOV_ACTIONS: {
     label: "Info action",
     spo: true,
     drep: true,
-    note: "A non-binding on-chain signal — both SPOs and dReps record votes. The closest analogue to this poll.",
+    note: "A non-binding on-chain signal where both SPOs and dReps record votes. The closest analogue to this poll.",
   },
   {
     value: "NoConfidence",
@@ -109,7 +109,7 @@ const GOV_ACTIONS: {
     label: "New Constitution / guardrails",
     spo: false,
     drep: true,
-    note: "Decided by dReps (and the Constitutional Committee) — SPOs do not vote on Cardano.",
+    note: "Decided by dReps (and the Constitutional Committee). SPOs don't vote on Cardano.",
   },
   {
     value: "HardFork",
@@ -123,14 +123,14 @@ const GOV_ACTIONS: {
     label: "Protocol-parameter change",
     spo: false,
     drep: true,
-    note: "Usually dReps only — SPOs also vote when a security-group parameter is touched.",
+    note: "Usually dReps only, though SPOs also vote when a security-group parameter is touched.",
   },
   {
     value: "TreasuryWithdrawal",
     label: "Treasury withdrawal",
     spo: false,
     drep: true,
-    note: "Decided by dReps (and the Constitutional Committee) — SPOs do not vote on Cardano.",
+    note: "Decided by dReps (and the Constitutional Committee). SPOs don't vote on Cardano.",
   },
 ];
 
@@ -429,10 +429,10 @@ export function PollComposer({
           disabled={govLocked}
         >
           <optgroup label="Everyone">
-            <option value="Stake">Stake — everyone votes</option>
+            <option value="Stake">Stake (everyone votes)</option>
           </optgroup>
           <optgroup label="Governance chambers">
-            <option value="Governance">SPO &amp; dRep — both chambers</option>
+            <option value="Governance">SPO &amp; dRep (both chambers)</option>
             <option value="Spo">SPO only</option>
             <option value="Drep">dRep only</option>
           </optgroup>

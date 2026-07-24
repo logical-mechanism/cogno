@@ -114,7 +114,7 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
         const detail = showsName ? (resolvedName ?? truncId(r.id)) : null;
         const href = blank ? null : roleExplorerUrl(r.kind, r.id);
         const label = `Verified Cardano ${ROLE_FULL[r.kind]}${resolvedName ? `, ${resolvedName}` : ""}`;
-        const title = `Verified Cardano ${ROLE_FULL[r.kind]}${detail ? ` — ${detail}` : ""}. The chain holds a live binding.${
+        const title = `Verified Cardano ${ROLE_FULL[r.kind]}${detail ? ` (${detail})` : ""}. The chain holds a live binding.${
           href ? " Click to verify on-chain." : ""
         }`;
         const inner = (
@@ -139,7 +139,7 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
             target="_blank"
             rel="noopener noreferrer"
             title={title}
-            aria-label={`${label} — verify on-chain`}
+            aria-label={`${label}. Verify on-chain`}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >

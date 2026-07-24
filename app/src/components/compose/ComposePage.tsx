@@ -235,7 +235,7 @@ export function ComposePage() {
         toast({
           id: "poll-deadline",
           kind: "error",
-          message: "Couldn't set the poll deadline — check your connection and try again.",
+          message: "Couldn't set the poll deadline. Check your connection and try again.",
         });
         return;
       }

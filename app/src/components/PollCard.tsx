@@ -287,7 +287,7 @@ export function PollCard({
           <>
             <span
               className={styles.govPill}
-              title="A Cardano-community temperature check — chamber-weighted, display-only"
+              title="A chamber-weighted, display-only temperature check from the Cardano community"
             >
               {chamberPill(poll.kind)}
             </span>

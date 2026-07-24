@@ -93,7 +93,7 @@ function ChamberRow({
             ratio == null
               ? `${title}: no Yes/No votes; needs ${thresholdLabel(threshold!)} to ratify`
               : verdict === "partial"
-                ? `${title}: ${pctOf(ratio)} percent Yes, within the ${thresholdLabel(threshold!)} ratification range — clears for some parameter groups, not all`
+                ? `${title}: ${pctOf(ratio)} percent Yes, within the ${thresholdLabel(threshold!)} ratification range, which clears for some parameter groups but not all`
                 : `${title}: ${pctOf(ratio)} percent Yes, ${meets ? "meets" : "below"} the ${thresholdLabel(threshold!)} ratification bar`
           }
         >

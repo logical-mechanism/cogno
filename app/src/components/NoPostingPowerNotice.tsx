@@ -43,7 +43,7 @@ export function NoPostingPowerNotice() {
         <span className={styles.glyph} aria-hidden>
           🔑
         </span>
-        <span className={styles.text}>Finish setting up your account to post — add voting power.</span>
+        <span className={styles.text}>Your account setup isn&apos;t finished. Add voting power to post.</span>
         <Link href="/welcome/" className={styles.action}>
           Finish setup
         </Link>

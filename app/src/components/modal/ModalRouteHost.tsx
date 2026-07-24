@@ -306,7 +306,7 @@ export function ModalRouteHost() {
         toast({
           id: "poll-deadline",
           kind: "error",
-          message: "Couldn't set the poll deadline — check your connection and try again.",
+          message: "Couldn't set the poll deadline. Check your connection and try again.",
         });
         return;
       }
@@ -467,7 +467,7 @@ export function ModalRouteHost() {
                 fontSize: "var(--cg-fs-sm)",
               }}
             >
-              This post is unavailable — posting as a new post instead.
+              This post is unavailable. Posting as a new post instead.
             </p>
           }
         />

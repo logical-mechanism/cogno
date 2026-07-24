@@ -365,8 +365,8 @@ function StakeCard({
     <div className={styles.card}>
       <h2 className={styles.cardTitle}>Add voting power</h2>
       <p className={styles.cardBody}>
-        Prove your wallet&apos;s stake so your votes carry weight. It&apos;s a required setup step —
-        separate from locking ADA next, which is what unlocks posting.
+        Prove your wallet&apos;s stake so your votes carry weight. It&apos;s a required setup step.
+        Locking ADA comes next, and that&apos;s what unlocks posting.
       </p>
 
       {stake.stakeBound === true ? (

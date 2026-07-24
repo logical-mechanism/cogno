@@ -403,7 +403,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
             // These are stake-WEIGHTED (locked-ADA voting power), not raw like/dislike counts, so a large
             // score next to a small Like count reads as a bug without this. A hover title carries the
             // explanation; the aria-label spells it out for screen readers.
-            title="Stake-weighted score — sums the locked-ADA voting power behind each vote, not a raw count"
+            title="Stake-weighted score: sums the locked-ADA voting power behind each vote, not a raw count"
             aria-label={`Stake-weighted score ${formatSignedWeight(focal.score ?? 0n)}`}
           >
             score <strong>{formatSignedWeight(focal.score ?? 0n)}</strong>
