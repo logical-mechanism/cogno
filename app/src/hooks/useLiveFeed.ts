@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
 import { mergeFeed, pendingKey, viewerPatchSettled } from "@/lib/optimistic";
 import { bridgeFetchSize, mergeById, partitionFresh } from "@/lib/feed/live";
+import { feedSnapshotKey, saveFeedSnapshot, takeFeedSnapshot } from "@/lib/feed/snapshot";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import type { FeedSource } from "@/lib/feed/source";
 import { readErrorCopy } from "@/lib/chain/errors";
@@ -119,25 +120,72 @@ export function useLiveFeed(
     }
   }, []);
 
+  // The snapshot slot this feed's state is held in across an unmount (see lib/feed/snapshot).
+  const snapshotKey = useMemo(() => feedSnapshotKey("forYou", me), [me]);
+
+  // Hand the loaded page + cursor + scroll position to the next mount. HomePage unmounts on EVERY
+  // client navigation (AppShell swaps only <main>), so without this, Back from a post re-seeds 50
+  // posts, throws away every "load more" page below them, and lands the reader at the top.
+  //
+  // Refs, not state: this runs in an unmount cleanup, where the state closed over by the effect is
+  // whatever it was when the effect last ran, not what is on screen.
+  const loadedRef = useRef(loaded);
+  loadedRef.current = loaded;
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
+  useEffect(() => {
+    return () => {
+      saveFeedSnapshot(snapshotKey, {
+        posts: loadedRef.current,
+        cursor: cursorRef.current,
+        scrollY: typeof window === "undefined" ? 0 : window.scrollY,
+      });
+    };
+  }, [snapshotKey]);
+
   // Reset + (re)subscribe whenever the source changes.
   useEffect(() => {
     epochRef.current += 1;
-    loadedIds.current = new Set();
     bufferedIds.current = new Set();
-    setLoaded([]);
     setBuffered([]);
-    setCursor(null);
-    setReady(false);
     setError(null);
     // The epoch bump above orphans any in-flight load-more, and its `.finally` is epoch-gated — so
     // without this, a source change mid-load-more leaves `loadingMore` true forever and `loadMore`
     // dead-returns on its own guard for the rest of the session.
     setLoadingMore(false);
+
+    // Restore the page this feed was showing when it last unmounted, if it is for THIS viewer and
+    // tab. It is a fast first paint, not a source of truth: `seeded` is left false below when there is
+    // no snapshot, and either way the head subscription immediately brings the feed current. The pill
+    // buffer is deliberately NOT restored — it is a "since you last looked" counter, and the reader
+    // just looked.
+    const restored = source ? takeFeedSnapshot(snapshotKey) : null;
+    if (restored) {
+      loadedIds.current = new Set(restored.posts.map((p) => String(p.id)));
+      setLoaded(restored.posts);
+      setCursor(restored.cursor);
+      setReady(true);
+      // After paint, so the document is tall enough for the offset to exist. `instant` because this is
+      // a restoration, not a navigation — a smooth scroll from the top would be a visible lurch.
+      const y = restored.scrollY;
+      if (y > 0 && typeof window !== "undefined") {
+        requestAnimationFrame(() => window.scrollTo({ top: y, behavior: "instant" }));
+      }
+    } else {
+      loadedIds.current = new Set();
+      setLoaded([]);
+      setCursor(null);
+      setReady(false);
+    }
     if (!source) return;
 
     let cancelled = false;
-    let seeded = false;
+    // A restored page counts as seeded: the head subscription's first emission should BRIDGE from it,
+    // not re-seed over it (which would reset the cursor and drop the paged tail all over again).
+    let seeded = restored != null;
     let seeding = false;
+    // Unknown at restore time — the first head emission adopts it, and `lastHead == null` makes that
+    // emission fetch one page rather than trying to bridge a gap it cannot measure.
     let lastHead: bigint | null = null;
 
     const fail = (e: unknown, fallback: string) => {
@@ -212,7 +260,7 @@ export function useLiveFeed(
       cancelled = true;
       sub?.unsubscribe();
     };
-  }, [source, baseQuery, applyFresh]);
+  }, [source, baseQuery, applyFresh, snapshotKey]);
 
   const loadMore = useCallback(() => {
     if (!source || loadingMore || cursor == null) return;

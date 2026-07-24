@@ -41,7 +41,10 @@ export default function PrivacyPage() {
           <h2 className={styles.heading}>What we collect</h2>
           <p className={styles.body}>Nothing. Specifically:</p>
           <ul className={styles.list}>
-            <li>No account, no email, no password. Your identity is a key you hold.</li>
+            <li>
+              No account, no email, no password. Your identity is a key you hold — and one we cannot
+              hold for you, because it never leaves your browser.
+            </li>
             <li>No analytics, no tracking pixels, no advertising, no third-party scripts.</li>
             <li>No cookies.</li>
             <li>
@@ -50,9 +53,12 @@ export default function PrivacyPage() {
             </li>
           </ul>
           <p className={styles.body}>
-            Bookmarks, muted accounts and which notifications you have read are stored in your own
-            browser, on your own device. Clearing your browser data erases them. They are never sent
-            anywhere.
+            Bookmarks, muted accounts, blocked accounts and which notifications you have read are
+            stored in your own browser, on your own device. So is your address, so that refreshing the
+            page keeps you signed in — that address is already public on the chain, it is the author
+            of every post you write. Your posting key is not stored: it is re-derived from a wallet
+            signature the first time you post in a session. Signing out erases all of it, and so does
+            clearing your browser data. None of it is ever sent anywhere.
           </p>
         </section>
 

@@ -52,6 +52,16 @@
   color: var(--cg-text);
 }
 
+/* What this device remembers, and what it does not. `--cg-text`, not `--cg-text-muted` like
+   .optionalNote: on the `--cg-bg-subtle` card fill that is the only text token that clears WCAG AA
+   (secondary lands at 3.44:1 in dark), and this is load-bearing copy about stored data, not a hint. */
+.hint {
+  margin: 0;
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-text);
+}
+
 .walletRow,
 .acctRow {
   display: flex;

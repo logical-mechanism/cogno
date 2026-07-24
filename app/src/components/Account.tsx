@@ -60,9 +60,18 @@ export function Account() {
     [router],
   );
 
-  const onDisconnect = useCallback(() => {
+  const onSignOut = useCallback(() => {
     setOpen(false);
     signerCtl.disconnect();
+  }, [signerCtl]);
+
+  // A RESTORED session (the account came back from a refresh, but no seed is in memory yet). Writing
+  // would open the sign prompt on its own — this is the same prompt, offered up front, so the state is
+  // visible rather than a surprise mid-post, and so a shared browser has an obvious "not you?" exit
+  // right next to the handle. Failure needs no handling here: `unlock` already stores the message on
+  // `signerCtl.error`, and a decline is a non-event.
+  const onUnlock = useCallback(() => {
+    void signerCtl.unlock().catch(() => {});
   }, [signerCtl]);
 
   // Not fully set up (not connected, or connected but not identity-bound) → the connect/finish-setup
@@ -103,6 +112,17 @@ export function Account() {
         </span>
       </button>
 
+      {signerCtl.restored && (
+        <button
+          type="button"
+          className={styles.unlock}
+          onClick={onUnlock}
+          disabled={signerCtl.deriving}
+        >
+          {signerCtl.deriving ? "Check your wallet…" : "Sign to post"}
+        </button>
+      )}
+
       {open && (
         <div className={styles.menu} role="menu">
           <button type="button" role="menuitem" className={styles.menuItem} onClick={() => go(`/u/${me}/`)}>
@@ -111,13 +131,16 @@ export function Account() {
           <button type="button" role="menuitem" className={styles.menuItem} onClick={() => go("/settings/")}>
             Settings
           </button>
+          {/* "Sign out", not "Disconnect": this now also forgets WHICH ACCOUNT this device was signed
+              in as, so the next load is a clean guest session. That is the escape hatch for a shared
+              browser, and the label has to say so. */}
           <button
             type="button"
             role="menuitem"
             className={`${styles.menuItem} ${styles.danger}`}
-            onClick={onDisconnect}
+            onClick={onSignOut}
           >
-            Disconnect
+            Sign out
           </button>
         </div>
       )}

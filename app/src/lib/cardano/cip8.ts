@@ -17,11 +17,19 @@ export interface CardanoWalletInfo {
   icon?: string;
 }
 
-/** The shape of a CIP-30 wallet object injected at `window.cardano[key]` (enumeration fields only). */
+/** The shape of a CIP-30 wallet object injected at `window.cardano[key]` (enumeration + probe fields). */
 interface Cip30Injected {
   name?: string;
   icon?: string;
   apiVersion?: string;
+  isEnabled?: () => Promise<boolean>;
+  enable?: () => Promise<Cip30Api>;
+}
+
+/** The slice of the enabled CIP-30 API the identity probe needs. */
+interface Cip30Api {
+  getNetworkId?: () => Promise<number>;
+  getChangeAddress?: () => Promise<string>;
 }
 
 /** A signed bind proof, ready to submit via `cognoGate.link_identity_signed` (hex COSE blobs). */
@@ -73,6 +81,77 @@ export function listCardanoWallets(): CardanoWalletInfo[] {
     // window.cardano itself is a throwing getter / exotic proxy — honor the "empty if none" contract so a
     // caller (WalletPicker's mount effect, ConnectWalletButton's click) never sees a throw.
     return [];
+  }
+}
+
+/** The verdict of {@link probeWalletIdentity}. */
+export type WalletProbe =
+  /** The grant survives, the network is preprod, and the wallet's change address is `addressHex`. */
+  | { ok: true; addressHex: string }
+  /**
+   * Could not confirm. `unavailable` = the extension is gone or this origin's grant has lapsed (or the
+   * wallet is locked) — inconclusive, so a caller must NOT treat it as a mismatch. `mismatch` = the
+   * wallet answered and it is a DIFFERENT account or the wrong network, which IS conclusive.
+   */
+  | { ok: false; kind: "unavailable" | "mismatch"; reason: string };
+
+/**
+ * Ask an already-authorized wallet, WITHOUT a popup, which account it is currently on.
+ *
+ * This is the guard on the restored session (lib/sessionRestore.ts). The posting key is
+ * `blake2b_256(COSE_Sign1 over the wallet's change address)`, so a multi-account wallet — Eternl and
+ * Lace both hold several accounts behind one extension — derives a DIFFERENT posting key after the user
+ * switches account. A remembered `{walletId, ss58}` pair has no way to notice on its own: the app would
+ * confidently render account #1's handle, avatar and (because the device stores are ss58-keyed) its
+ * bookmarks, mutes and block list, until a write silently swapped the identity underneath. The same
+ * blind spot covers the network — `deriveSignerFromWallet` refuses `getNetworkId() !== 0` precisely
+ * because a mainnet-flavoured connection mints a different account, and a remembered ss58 would sail
+ * straight past that check.
+ *
+ * NO POPUP: CIP-30 `isEnabled()` resolves without prompting, and `enable()` is silent for an origin the
+ * user has already authorized — the app already depends on that (useVault's post-lock poll calls
+ * `enable()` every 6s for up to 10 ticks). A locked wallet may still show its unlock UI, which is why a
+ * failure here is reported as `unavailable` and left inconclusive rather than dropping the session.
+ *
+ * Reads `window.cardano` DIRECTLY — see the note on {@link listCardanoWallets}: importing MeshJS here
+ * would drag the ~5.9 MB Cardano bundle onto every cold load, which is exactly what the restore is
+ * meant to avoid. The address comes back in CIP-30's raw hex form, which is why the session record
+ * keeps `walletAddressHex` alongside the bech32 one it displays.
+ */
+export async function probeWalletIdentity(walletId: string): Promise<WalletProbe> {
+  if (typeof window === "undefined") {
+    return { ok: false, kind: "unavailable", reason: "not a browser" };
+  }
+  try {
+    const cardano = (window as unknown as { cardano?: Record<string, Cip30Injected | undefined> }).cardano;
+    const w = cardano?.[walletId];
+    if (!w || typeof w.isEnabled !== "function" || typeof w.enable !== "function") {
+      return { ok: false, kind: "unavailable", reason: `wallet "${walletId}" is not installed` };
+    }
+    if (!(await w.isEnabled())) {
+      return { ok: false, kind: "unavailable", reason: `wallet "${walletId}" has not authorized this site` };
+    }
+    const api = await w.enable();
+    if (typeof api?.getNetworkId !== "function" || typeof api.getChangeAddress !== "function") {
+      return { ok: false, kind: "unavailable", reason: `wallet "${walletId}" returned an incomplete API` };
+    }
+    // Same rule as the vault's and the derive's: 0 = preprod. A mainnet-flavoured wallet is a genuine
+    // mismatch (it would derive a different posting key), not an inconclusive read.
+    if ((await api.getNetworkId()) !== 0) {
+      return { ok: false, kind: "mismatch", reason: "the wallet is not on preprod (testnet)" };
+    }
+    const addressHex = await api.getChangeAddress();
+    if (typeof addressHex !== "string" || addressHex.length === 0) {
+      return { ok: false, kind: "unavailable", reason: "the wallet returned no change address" };
+    }
+    return { ok: true, addressHex: addressHex.toLowerCase() };
+  } catch (e) {
+    // A throwing injected getter, a rejected enable(), a wallet mid-upgrade — all inconclusive.
+    return {
+      ok: false,
+      kind: "unavailable",
+      reason: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 

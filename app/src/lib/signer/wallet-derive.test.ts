@@ -10,6 +10,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // A controllable fake wallet: tests set the change address + the signature it returns.
 const fake = {
   changeAddress: "addr_test_vkey",
+  // The SAME address in CIP-30's raw hex form. Address.toBytes() returns a HexBlob (a branded string),
+  // which is why the module stringifies it — the mock mirrors that.
+  changeAddressHex: "00DEADBEEF",
   // paymentPart.type: 0 = vkey (accepted), 1 = script (rejected).
   paymentType: 0 as number,
   // 0 = preprod/testnet (accepted); 1 = mainnet (rejected before any derive).
@@ -36,6 +39,7 @@ vi.mock("@meshsdk/core-cst", () => ({
   Address: {
     fromBech32: (_a: string) => ({
       getProps: () => ({ paymentPart: { type: fake.paymentType, hash: "ph" } }),
+      toBytes: () => fake.changeAddressHex,
     }),
   },
 }));
@@ -44,6 +48,7 @@ import { deriveSignerFromWallet, DERIVE_MESSAGE } from "./wallet-derive";
 
 beforeEach(() => {
   fake.changeAddress = "addr_test_vkey";
+  fake.changeAddressHex = "00DEADBEEF";
   fake.paymentType = 0;
   fake.networkId = 0;
   fake.signature = "aa".repeat(32);
@@ -56,6 +61,10 @@ describe("deriveSignerFromWallet — determinism (no storage)", () => {
     expect(a.signer.kind).toBe("derived");
     expect(a.signer.publicKeyHex).toMatch(/^0x[0-9a-f]{64}$/);
     expect(a.signingAddress).toBe("addr_test_vkey");
+    // The hex encoding is what the no-popup restore probe compares against (a raw CIP-30
+    // `getChangeAddress()` returns hex, not bech32), and wallets differ on hex case — so it must come
+    // back lowercased or every restore would look like an account switch.
+    expect(a.signingAddressHex).toBe("00deadbeef");
   });
 
   it("SAME signature => SAME posting key (the 'derive each session, store nothing' claim)", async () => {

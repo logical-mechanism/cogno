@@ -23,7 +23,11 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
   const { api, signerCtl, identity, sessionState } = useSession();
   const { toast } = useToaster();
 
-  const walletConnected = signerCtl.walletConnected;
+  // A WALLET session — derived (a seed in memory) or restored (the account came back from a refresh,
+  // seed not yet re-derived). Both have a connected wallet worth showing; only a dev account does not.
+  // Keying the card on `walletConnected` alone made the whole "Connected wallet" block vanish after a
+  // page reload, which is precisely the state this section exists to explain.
+  const walletSession = signerCtl.walletConnected || signerCtl.restored;
   const postingEnabled = signerCtl.postingEnabled;
   const ss58 = signerCtl.signer.ss58;
   const walletId = signerCtl.connectedWalletId;
@@ -151,8 +155,8 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
         )}
       </div>
 
-      {/* Connected wallet card (only when a real wallet is connected, not a dev account) */}
-      {walletConnected && walletId && (
+      {/* Connected wallet card (a real wallet session — derived or restored — never a dev account) */}
+      {walletSession && walletId && (
         <div className={styles.card}>
           <h3 className={styles.cardTitle}>Connected wallet</h3>
           <div className={styles.walletRow}>
@@ -175,10 +179,18 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
                 </>
               )}
             </span>
+            {/* "Sign out" rather than "Disconnect": besides dropping the key it now also forgets which
+                account this device was signed in as (lib/sessionRestore), which is what stops the next
+                person on a shared browser from seeing this handle. The line below says so plainly. */}
             <button type="button" className={styles.outlineBtn} onClick={signerCtl.disconnect}>
-              Disconnect
+              Sign out
             </button>
           </div>
+          <p className={styles.hint}>
+            {signerCtl.restored
+              ? "This device remembers your address so a refresh keeps you signed in. Your posting key is not stored — the first time you post, your wallet asks you to approve one signature. Signing out forgets the address."
+              : "This device remembers your address so a refresh keeps you signed in. Your posting key is never stored. Signing out forgets the address."}
+          </p>
         </div>
       )}
 
