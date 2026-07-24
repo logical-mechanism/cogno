@@ -56,7 +56,7 @@ export function FollowsList({
         <EmptyState
           variant="generic"
           title="Couldn't load this list."
-          description="Something went wrong reaching the node."
+          description="Check your connection and try again."
           action={onRetry ? { label: "Retry", onClick: onRetry } : undefined}
         />
       </div>

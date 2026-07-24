@@ -72,10 +72,10 @@ export function AccountVoteControl({
           <button
             type="button"
             className={`${styles.action} ${styles.up} ${up ? styles.upOn : ""}`}
-            aria-label={`Endorse this account${vote.upCount ? `, ${vote.upCount} up` : ""}`}
+            aria-label={`Endorse this account${vote.upCount ? `, ${vote.upCount} endorsement${vote.upCount === 1 ? "" : "s"}` : ""}`}
             aria-pressed={up}
             disabled={notBound || pending}
-            title={notBound ? "Finish setup to vote." : "Endorse (stake-weighted)"}
+            title={notBound ? "Finish setup to vote" : "Endorse"}
             onClick={onUp}
           >
             <span className={`${styles.iconWrap} ${up ? styles.pop : ""}`}>
@@ -91,7 +91,7 @@ export function AccountVoteControl({
         )}
         <span
           className={`${styles.score} ${up ? styles.scoreUp : ""} ${down ? styles.scoreDown : ""}`}
-          title="Net stake-weighted reputation score"
+          title="Net reputation score"
         >
           {score}
         </span>
@@ -99,10 +99,10 @@ export function AccountVoteControl({
           <button
             type="button"
             className={`${styles.action} ${styles.down} ${down ? styles.downOn : ""}`}
-            aria-label={`Dispute this account${vote.downCount ? `, ${vote.downCount} down` : ""}`}
+            aria-label={`Dispute this account${vote.downCount ? `, ${vote.downCount} dispute${vote.downCount === 1 ? "" : "s"}` : ""}`}
             aria-pressed={down}
             disabled={notBound || pending}
-            title={notBound ? "Finish setup to vote." : "Dispute (stake-weighted)"}
+            title={notBound ? "Finish setup to vote" : "Dispute"}
             onClick={onDown}
           >
             <span className={styles.iconWrap}>
