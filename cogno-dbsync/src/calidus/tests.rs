@@ -242,7 +242,10 @@ fn verifies_a_db_sync_wrapped_method2_registration() {
         "resolves the Calidus key hash (== the on-chain claim credential)",
     );
     // The same bytes with the wrapper stripped resolve identically (the fix is a no-op on the bare form).
-    assert_eq!(verify_registration(&wrapped), verify_registration(&wrapped[4..]));
+    assert_eq!(
+        verify_registration(&wrapped),
+        verify_registration(&wrapped[4..])
+    );
 }
 
 #[test]
