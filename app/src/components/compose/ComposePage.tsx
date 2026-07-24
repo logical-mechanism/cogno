@@ -225,7 +225,10 @@ export function ComposePage() {
       action?: { actionType: GovActionType; anchorUrl: string },
     ) => {
       if (viewer.status !== "ready") return void router.push("/welcome/");
-      if (!api || !signer || question.trim().length === 0) return;
+      // A chamber (governance) poll may carry an empty question — its subject is the tagged proposal, so the
+      // Composer enables submit with blank text (allowEmptyText). Don't re-impose a non-empty gate here or the
+      // enabled CTA would silently no-op; the runtime accepts an empty question and PollComposer gates options.
+      if (!api || !signer) return;
       // Convert the chosen deadline (days) to an absolute block-number `close_at`. If a deadline was
       // requested but the chain height can't be read, surface it — never silently create a floating poll.
       let closeAt: number | undefined;

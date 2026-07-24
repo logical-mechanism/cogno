@@ -468,7 +468,7 @@ export function Composer({
                     ? "Lock ADA to post"
                     : overLimit
                       ? `Too long. Trim to ${maxBytes} bytes`
-                      : !nonEmpty
+                      : !allowEmptyText && !nonEmpty
                         ? "Write something first"
                         : rateLimited
                           ? "You're over the rate limit"

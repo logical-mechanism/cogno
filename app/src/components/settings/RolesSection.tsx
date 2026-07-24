@@ -61,7 +61,12 @@ const ROLE_SPECS: RoleSpec[] = [
     title: "Stake pool operator (SPO)",
     cardHint:
       "Prove you control your pool's Calidus key (CIP-0151). The tag comes off on its own if the pool retires.",
-    walletSignable: true,
+    // SPO wallet-sign is OFF on the live chain. Eternl's raw Calidus `signData` embeds a CIP-0151 `0xa1‖cred`
+    // address, which the runtime (spec 210) rejects with `WrongNetwork` — the claim would always fail in the
+    // pool. Runtime support lands with spec 211; the wallet pre-flight already accepts the 0xa1 form, so flip
+    // this back to `true` when spec 211 deploys. Until then the offline command is the only SPO path that can
+    // actually confirm, so it stands alone (no dead "Sign with wallet" CTA).
+    walletSignable: false,
     walletHint:
       "Eternl can sign with your Calidus key. Just connect the account it lives on, or sign offline instead.",
     keyPlaceholder: "calidus1… id / calidus_vk1… / .vkey cborHex / 56-hex key hash",

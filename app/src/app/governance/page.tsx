@@ -69,9 +69,13 @@ export default function GovernancePage() {
                       {STATE_LABEL[state]}
                     </span>
                   </div>
-                  {/* The linked proposal's title identifies the row — NOT the poll's raw post text. Fetched
-                      at a glance only for neutral hosts (privacy); otherwise a muted default. */}
-                  <ProposalTitle anchorUrl={p.anchorUrl} className={styles.question} />
+                  {/* The linked proposal's title identifies the row when we can resolve it (neutral hosts
+                      only, for privacy); otherwise the poll's own question keeps the row distinguishable. */}
+                  <ProposalTitle
+                    anchorUrl={p.anchorUrl}
+                    fallback={p.question}
+                    className={styles.question}
+                  />
                   {eligible && <span className={styles.eligible}>You can vote</span>}
                 </Link>
               </li>

@@ -296,7 +296,10 @@ export function ModalRouteHost() {
         router.push("/welcome/");
         return;
       }
-      if (!api || !signer || question.trim().length === 0) return;
+      // Chamber polls may have an empty question (subject = the tagged proposal); the Composer already gates
+      // submit (allowEmptyText + option validity) and the runtime accepts it, so no non-empty gate here — else
+      // the enabled CTA silently no-ops.
+      if (!api || !signer) return;
       // Convert the chosen deadline (days) to an absolute block-number `close_at`. If a deadline was
       // requested but the chain height can't be read, surface it — never silently create a floating poll.
       let closeAt: number | undefined;

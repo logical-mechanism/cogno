@@ -185,7 +185,10 @@ const inflight = new Map<string, Promise<ProposalMeta | null>>();
  * TERMINAL outcomes are cached per session; a transient network failure is NOT, so it stays retryable.
  * Never throws. Keyed on the RESOLVED https URL so `ipfs://x` and its gateway form share a cache entry.
  */
-export async function resolveProposal(anchorUrl: string): Promise<ProposalMeta | null> {
+export async function resolveProposal(
+  anchorUrl: string,
+  opts?: { noRedirect?: boolean },
+): Promise<ProposalMeta | null> {
   const url = proposalHttpUrl(anchorUrl);
   if (!url) return null;
   if (resolved.has(url)) return resolved.get(url) ?? null;
@@ -202,7 +205,15 @@ export async function resolveProposal(anchorUrl: string): Promise<ProposalMeta |
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
     try {
-      const res = await fetch(url, { signal: ctl.signal, redirect: "follow" });
+      // `noRedirect` (the EAGER feed-render path) refuses to follow redirects: the browser can't read a
+      // cross-origin `Location`, so `isNeutralProposalHost` only vouches for the FIRST hop — following would
+      // let an author bounce a neutral gateway (e.g. `<cid>.ipfs.dweb.link` via a `_redirects` file) to a
+      // host they control and harvest a passive reader's IP. `redirect: "error"` throws on a 3xx, which the
+      // catch below treats as a transient (uncached) failure — the on-demand Preview may still follow it.
+      const res = await fetch(url, {
+        signal: ctl.signal,
+        redirect: opts?.noRedirect ? "error" : "follow",
+      });
       // A response arrived: every conclusion from here is TERMINAL (a retry won't change it) → cache it.
       if (!res.ok) return settle(null); // 404 / 403 / 429 → degrade gracefully
       const declared = Number(res.headers.get("content-length") ?? "0");

@@ -539,9 +539,7 @@ export async function produceRoleProofWallet(opts: {
       const calidusId = raw.toLowerCase().startsWith("calidus1")
         ? raw
         : encodeCalidusId(opts.request.credentialHex);
-      console.info(`cogno: Calidus wallet sign — calidusId=${calidusId}; via raw signData`);
       sig = await api.signData(calidusId, utf8ToHexLocal(opts.request.payload));
-      console.info(`cogno: Calidus wallet sign — raw signData=${JSON.stringify(sig)}`);
     }
 
     // Same pre-flight as the offline path, but in CREDENTIAL mode: the wallet embeds ITS OWN key-hash address
