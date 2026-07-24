@@ -8,15 +8,17 @@
 // on a capacity subscription — it's purely advisory; the runtime's CheckCapacity is the authority.
 
 import styles from "./CapacityMeter.module.css";
-import { useSession } from "./Providers";
-import { useHeads } from "@/hooks/useHeads";
+import { useSession, useBestBlock } from "./Providers";
 import { useCapacity } from "@/hooks/useCapacity";
 import { postsOf } from "@/lib/chain/capacity";
 
 export function CapacityMeter() {
-  const { api, client, viewer } = useSession();
-  const heads = useHeads(client);
-  const { view, consts } = useCapacity(api, viewer.address ?? null, heads.best?.number ?? null);
+  const { api, viewer } = useSession();
+  // useBestBlock (the shared, visibility-frozen head), not a private useHeads subscription: a
+  // second subscription re-renders on every block even while the tab is hidden, which is exactly
+  // what freezing the shared one is for.
+  const bestBlock = useBestBlock();
+  const { view, consts } = useCapacity(api, viewer.address ?? null, bestBlock);
 
   // Only meaningful once bound with a non-zero capacity ceiling (weight > 0). Setup/welcome covers
   // the "add posting power" case, so we don't render an empty meter there.

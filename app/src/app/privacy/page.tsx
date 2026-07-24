@@ -57,8 +57,13 @@ export default function PrivacyPage() {
             stored in your own browser, on your own device. So is your address, so that refreshing the
             page keeps you signed in — that address is already public on the chain, it is the author
             of every post you write. Your posting key is not stored: it is re-derived from a wallet
-            signature the first time you post in a session. Signing out erases all of it, and so does
-            clearing your browser data. None of it is ever sent anywhere.
+            signature the first time you post in a session. None of it is ever sent anywhere.
+          </p>
+          <p className={styles.body}>
+            Signing out forgets your address, so the next person to open this browser starts as a
+            stranger. It deliberately leaves your bookmarks, mutes, blocks and read notifications
+            alone — those are yours, and signing back in should not hand you an empty app. Clearing
+            your browser data erases everything, including those.
           </p>
         </section>
 

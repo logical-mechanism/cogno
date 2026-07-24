@@ -142,9 +142,20 @@ export function useIdentity(
     // from chain state. Clear it whenever the key/chain changes (this callback re-runs on [api, ss58])
     // so a stale signing-address can't survive a wallet switch to a different — already-bound — account.
     setBoundAddress(null);
-    if (!api || !activeKey) {
+    if (!activeKey) {
       setBound(null);
-      setCheckingBound(false);
+      setCheckingBound(false); // no key → nothing to decide
+      return;
+    }
+    if (!api) {
+      // A REAL key with no socket yet. This is not "decided", it is "not started" — and on a cold
+      // reload with a restored session it is the NORMAL path: `activeKey` becomes non-null one commit
+      // before `api` exists (useChain resolves the endpoint in one effect and creates the handle in a
+      // second). Clearing `checkingBound` here dropped AppShell's `deciding` guard before the bound
+      // read had even been issued, so the wall could bounce a restored user to /welcome during their
+      // own WS handshake. Stay armed; the [api, activeKey] re-run below issues the read once the
+      // socket lands, and the unreachable-node case is bounded by the effect underneath.
+      setBound(null);
       return;
     }
     // Time-bound the read so a hung node can't wedge `checkingBound`; on timeout/error we fall through to
@@ -159,6 +170,16 @@ export function useIdentity(
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // The backstop for "armed, but the socket never arrived". `refresh` deliberately leaves
+  // `checkingBound` true while it waits for `api`, and an unreachable node means it waits forever —
+  // which would pin a returning user on the auth wall's full-screen loader with no way out. Release it
+  // on the same budget the read itself gets, so an offline node degrades to the connect step instead.
+  useEffect(() => {
+    if (!checkingBound || api) return;
+    const t = setTimeout(() => setCheckingBound(false), BOUND_READ_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [checkingBound, api]);
 
   // Watch the stake (voting-power) state LIVE for the active key: the bound stake credential
   // (`CognoGate.StakeCredOf`, OptionQuery) and the voting power it confers (`TalkStake.VotingPower`,

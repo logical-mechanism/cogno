@@ -18,10 +18,13 @@ import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
 import { ConnectWalletButton } from "./ConnectWalletButton";
 import { useSession } from "./Providers";
+import { useToaster } from "./toast/ToasterProvider";
+import { isUserRejection } from "@/lib/cardano/cip8";
 
 export function Account() {
   const router = useRouter();
   const { viewer, signerCtl } = useSession();
+  const { toast } = useToaster();
   const me = viewer.address;
   // The avatar chip means "fully set up" (identity-bound). A connected-but-unbound session is NOT
   // done — it falls through to ConnectWalletButton, which shows the "Finish setup" nudge.
@@ -71,8 +74,14 @@ export function Account() {
   // right next to the handle. Failure needs no handling here: `unlock` already stores the message on
   // `signerCtl.error`, and a decline is a non-event.
   const onUnlock = useCallback(() => {
-    void signerCtl.unlock().catch(() => {});
-  }, [signerCtl]);
+    void signerCtl.unlock().catch((e: unknown) => {
+      // A decline is a non-event, but a REAL failure must be said out loud — the account-switch case
+      // signs the user out, and silently swapping the chip back to "Connect wallet" with no
+      // explanation is the worst version of that.
+      if (isUserRejection(e)) return;
+      toast({ kind: "error", message: e instanceof Error ? e.message : "Could not unlock your posting key." });
+    });
+  }, [signerCtl, toast]);
 
   // Not fully set up (not connected, or connected but not identity-bound) → the connect/finish-setup
   // entry. ConnectWalletButton picks "Connect wallet" vs "Finish setup" from viewer.status; the
@@ -117,9 +126,9 @@ export function Account() {
           type="button"
           className={styles.unlock}
           onClick={onUnlock}
-          disabled={signerCtl.deriving}
+          disabled={signerCtl.unlocking}
         >
-          {signerCtl.deriving ? "Check your wallet…" : "Sign to post"}
+          {signerCtl.unlocking ? "Check your wallet…" : "Sign to post"}
         </button>
       )}
 

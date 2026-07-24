@@ -23,11 +23,11 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
   const { api, signerCtl, identity, sessionState } = useSession();
   const { toast } = useToaster();
 
-  // A WALLET session — derived (a seed in memory) or restored (the account came back from a refresh,
-  // seed not yet re-derived). Both have a connected wallet worth showing; only a dev account does not.
-  // Keying the card on `walletConnected` alone made the whole "Connected wallet" block vanish after a
-  // page reload, which is precisely the state this section exists to explain.
-  const walletSession = signerCtl.walletConnected || signerCtl.restored;
+  // Derived (a seed in memory) or restored (the account came back from a refresh, seed not yet
+  // re-derived). Both have a connected wallet worth showing; only a dev account does not. Keying the
+  // card on `walletConnected` made the whole "Connected wallet" block vanish after a page reload,
+  // which is precisely the state this section exists to explain.
+  const walletSession = signerCtl.walletSession;
   const postingEnabled = signerCtl.postingEnabled;
   const ss58 = signerCtl.signer.ss58;
   const walletId = signerCtl.connectedWalletId;
@@ -188,8 +188,8 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
           </div>
           <p className={styles.hint}>
             {signerCtl.restored
-              ? "This device remembers your address so a refresh keeps you signed in. Your posting key is not stored — the first time you post, your wallet asks you to approve one signature. Signing out forgets the address."
-              : "This device remembers your address so a refresh keeps you signed in. Your posting key is never stored. Signing out forgets the address."}
+              ? "This device remembers your address so a refresh keeps you signed in. Your posting key is not stored — the first time you post, your wallet asks you to approve one signature. Signing out forgets the address; your bookmarks, mutes and blocks stay."
+              : "This device remembers your address so a refresh keeps you signed in. Your posting key is never stored. Signing out forgets the address; your bookmarks, mutes and blocks stay."}
           </p>
         </div>
       )}

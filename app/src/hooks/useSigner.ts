@@ -44,8 +44,23 @@ export interface UseSigner {
   signer: PostingSigner;
   /** The active posting key can sign RIGHT NOW (a seed is in memory). False for a restored session. */
   canSign: boolean;
-  /** The active posting key is a wallet-derived key (the product flow is "connected"). */
+  /**
+   * The active posting key is a wallet-derived key with its SEED IN MEMORY.
+   *
+   * Narrower than it used to be: a restored session is backed by the same wallet but is not
+   * `walletConnected`, because it cannot sign until it unlocks. Most callers asking "is a Cardano
+   * wallet behind this session?" want {@link UseSigner.walletSession} instead — this one means
+   * "can sign right now", and getting the two confused makes a surface tell a returning user to
+   * connect a wallet they are already connected to.
+   */
   walletConnected: boolean;
+  /**
+   * A Cardano wallet backs this session — derived OR restored. This is the gate for anything the
+   * WALLET does rather than the posting key: the vault lock/exit (which uses `wallet.signTx`, a
+   * Cardano key the posting seed cannot produce), the CIP-8 binds and role claims (bare unsigned
+   * extrinsics that need no posting key at all), and any surface that just displays the connection.
+   */
+  walletSession: boolean;
   /** Posting is enabled: a wallet is connected or restored, OR a dev account was chosen (advanced). */
   postingEnabled: boolean;
   /**
@@ -62,8 +77,21 @@ export interface UseSigner {
   connectedWalletId: string | null;
   /** The connected wallet address (its identity/stake key). */
   walletAddress: string | null;
-  /** A sign-to-derive is in flight (a fresh connect OR an unlock). */
+  /**
+   * A fresh CONNECT is in flight — there is no active identity yet and the app is waiting on a wallet
+   * signature to mint one. `deriveSessionState` reads this as "connecting", which collapses
+   * `viewer.status` to "not-connected", so it must NEVER be raised for a session that already knows
+   * who it is. See {@link UseSigner.unlocking}.
+   */
   deriving: boolean;
+  /**
+   * An UNLOCK is in flight: a restored session already has its identity and is re-deriving the seed so
+   * it can sign. Deliberately a separate flag from {@link UseSigner.deriving} — sharing one collapsed
+   * `sessionState` to "connecting" mid-prompt, which made the auth wall redirect the user to /welcome
+   * while their wallet popup was still open, and made the account chip's own "Check your wallet…"
+   * label unreachable.
+   */
+  unlocking: boolean;
   error: string | null;
   /** Connect a CIP-30 wallet and derive the posting key from its signature. */
   connectWallet: (walletId: string) => Promise<boolean>;
@@ -91,6 +119,10 @@ export function useSigner(): UseSigner {
   const [connectedWalletId, setConnectedWalletId] = useState<string | null>(null);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [deriving, setDeriving] = useState(false);
+  // Kept apart from `deriving` deliberately — see the doc on UseSigner.unlocking. `deriving` feeds
+  // deriveSessionState, so raising it for a session that already has an identity would report the user
+  // as "not connected" for the duration of their own wallet prompt.
+  const [unlocking, setUnlocking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The default //Alice is a BACKGROUND signer, not an active identity: posting stays disabled
   // until the user connects a wallet, has a restored session, or explicitly chooses a dev account.
@@ -226,11 +258,22 @@ export function useSigner(): UseSigner {
     const rec: RestoredSession | null = record;
     if (!rec) throw new Error("no session to unlock — connect your wallet");
 
+    // The SAME abandonment generation `connectWallet` uses. A CIP-30 signData() has no abort handle,
+    // so a sign-out during an unlock cannot stop the popup — but it must stop the popup's late
+    // approval from silently reviving the session the user just ended. Without this guard, approving a
+    // prompt after signing out re-ran setChosen + saveRestoredSession and wrote the record back.
+    const gen = ++deriveGen.current;
     const run = (async () => {
-      setDeriving(true);
+      setUnlocking(true);
       setError(null);
       try {
         const { signer: s, signingAddress, signingAddressHex } = await deriveSignerFromWallet(rec.walletId);
+        if (deriveGen.current !== gen) {
+          // Abandoned mid-prompt (sign-out, or a fresh connect superseded this). Do not touch state,
+          // and do not resurrect the record — but still reject, so the write that asked for the
+          // signature fails cleanly instead of hanging on a promise that never settles.
+          throw new Error("the session ended before the signature arrived");
+        }
         // THE authoritative identity check. The probe is a cheap proxy; this is the real thing — if the
         // wallet has moved to a different account, the key we just derived does not match the account
         // the app has been rendering (and the tx it is about to sign was built for THAT account). Fail
@@ -258,10 +301,13 @@ export function useSigner(): UseSigner {
         if (!isUserRejection(e)) {
           console.error(`cogno: unlock("${rec.walletId}") failed:`, e);
         }
-        setError(e instanceof Error ? e.message : String(e));
+        // An abandoned unlock's error belongs to a session that no longer exists — surfacing it would
+        // paint a failure on whatever the user did next.
+        if (deriveGen.current === gen) setError(e instanceof Error ? e.message : String(e));
         throw e;
       } finally {
-        setDeriving(false);
+        // Only the CURRENT unlock owns the spinner (same rule as connectWallet's).
+        if (deriveGen.current === gen) setUnlocking(false);
         inFlightUnlock.current = null;
       }
     })();
@@ -274,9 +320,10 @@ export function useSigner(): UseSigner {
   unlockRef.current = unlock;
 
   const disconnect = useCallback(() => {
-    deriveGen.current++; // abandon any in-flight derive so its late resolution can't revive this session
+    deriveGen.current++; // abandon any in-flight derive/unlock so a late approval can't revive this session
     inFlightUnlock.current = null;
     setDeriving(false); // release the "Check your wallet" spinner immediately (makes Cancel actually work)
+    setUnlocking(false);
     setConnectedWalletId(null);
     setWalletAddress(null);
     setError(null);
@@ -314,6 +361,7 @@ export function useSigner(): UseSigner {
       signer,
       canSign: !restored,
       walletConnected,
+      walletSession: walletConnected || restored,
       postingEnabled: walletConnected || restored || devChosen,
       restored,
       // Undecided while the client has not hydrated (no record can be known yet), and while a restored
@@ -323,6 +371,7 @@ export function useSigner(): UseSigner {
       connectedWalletId,
       walletAddress,
       deriving,
+      unlocking,
       error,
       connectWallet,
       unlock,
@@ -340,6 +389,7 @@ export function useSigner(): UseSigner {
       connectedWalletId,
       walletAddress,
       deriving,
+      unlocking,
       error,
       connectWallet,
       unlock,

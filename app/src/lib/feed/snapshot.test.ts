@@ -13,10 +13,11 @@ import {
 import type { CognoPost } from "@/lib/types";
 
 const post = (id: bigint): CognoPost => ({ id, author: "5Alice", text: `p${id}`, at: 1 });
-const snap = (ids: bigint[], cursor: string | null = "10", scrollY = 0) => ({
+const snap = (ids: bigint[], cursor: string | null = "10", scrollY = 0, head: bigint | null = 99n) => ({
   posts: ids.map(post),
   cursor,
   scrollY,
+  head,
 });
 
 const ME = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
@@ -42,13 +43,23 @@ describe("feedSnapshotKey", () => {
 });
 
 describe("save / take", () => {
-  it("hands the page, cursor and scroll position to the next mount", () => {
+  it("hands the page, cursor, scroll position and head to the next mount", () => {
     const k = feedSnapshotKey("forYou", ME);
-    saveFeedSnapshot(k, snap([3n, 2n, 1n], "1", 1200));
+    saveFeedSnapshot(k, snap([3n, 2n, 1n], "1", 1200, 4321n));
     const got = takeFeedSnapshot(k);
     expect(got?.posts.map((p) => p.id)).toEqual([3n, 2n, 1n]);
     expect(got?.cursor).toBe("1");
     expect(got?.scrollY).toBe(1200);
+    // The head is what lets the restoring mount bridge the REAL gap. Without it, useLiveFeed's head
+    // handler falls through to a hard-coded one-page catch-up and SILENTLY skips everything older than
+    // the newest page — then marks itself current, so those posts never arrive.
+    expect(got?.head).toBe(4321n);
+  });
+
+  it("round-trips a null head (a feed that never saw an emission), distinct from a missing one", () => {
+    const k = feedSnapshotKey("forYou", ME);
+    saveFeedSnapshot(k, snap([1n], "1", 0, null));
+    expect(takeFeedSnapshot(k)?.head).toBeNull();
   });
 
   it("is CONSUMING: a second take gets nothing, so a third mount cannot replay a stale page", () => {

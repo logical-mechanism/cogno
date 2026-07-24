@@ -33,7 +33,11 @@ export function VaultSection() {
   const actionRef = useRef<"lock" | "exit" | null>(null);
   const walletId = signerCtl.connectedWalletId;
   const ss58 = signerCtl.signer.ss58;
-  const connected = signerCtl.walletConnected && !!walletId;
+  // `walletSession`, not `walletConnected`: locking and exiting the vault are `wallet.signTx` +
+  // `wallet.submitTx` on the CARDANO key, which a restored session has exactly as much access to as a
+  // freshly-derived one. Keying this on `walletConnected` told every returning user to "connect a
+  // wallet" they were already connected to, and hid the vault controls behind a refresh.
+  const connected = signerCtl.walletSession && !!walletId;
 
   // On-chain posting power (the weight the observer inherent granted). Watched — it lands only after the
   // lock clears the observer's stability window (see usePendingCapacity, which shows the ETA).

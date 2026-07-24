@@ -33,8 +33,7 @@ import { ProfileHeader } from "@/components/profile/ProfileHeader";
 import { ProfileTabs, type ProfileTab } from "@/components/profile/ProfileTabs";
 import { FollowsPanel } from "@/components/profile/FollowsPanel";
 import { PinnedPostBlock } from "@/components/profile/PinnedPostBlock";
-import { useSession } from "@/components/Providers";
-import { useHeads } from "@/hooks/useHeads";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { NO_VIEWER } from "@/lib/optimistic";
 import { usePostActions } from "@/hooks/usePostActions";
 import { modalActions } from "@/lib/modalStore";
@@ -95,8 +94,11 @@ export function ProfileView() {
 function ProfileBody({ address }: { address: Ss58 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { api, client, signer, source, viewer, votingPower } = useSession();
-  const bestBlock = useHeads(client).best?.number ?? null;
+  const { api, signer, source, viewer, votingPower } = useSession();
+  // useBestBlock (the shared, visibility-frozen head), not a private useHeads subscription: a
+  // second subscription re-renders on every block even while the tab is hidden, which is exactly
+  // what freezing the shared one is for.
+  const bestBlock = useBestBlock();
 
   const me = viewer.address ?? null;
   const isSelf = me != null && me === address;

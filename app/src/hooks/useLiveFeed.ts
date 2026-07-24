@@ -133,12 +133,16 @@ export function useLiveFeed(
   loadedRef.current = loaded;
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
+  // The head this page is current as of. Written by the head subscription below and carried in the
+  // snapshot so the restoring mount can bridge the REAL gap instead of guessing a page.
+  const headRef = useRef<bigint | null>(null);
   useEffect(() => {
     return () => {
       saveFeedSnapshot(snapshotKey, {
         posts: loadedRef.current,
         cursor: cursorRef.current,
         scrollY: typeof window === "undefined" ? 0 : window.scrollY,
+        head: headRef.current,
       });
     };
   }, [snapshotKey]);
@@ -165,6 +169,13 @@ export function useLiveFeed(
       setLoaded(restored.posts);
       setCursor(restored.cursor);
       setReady(true);
+      // Mirror into the save refs SYNCHRONOUSLY. `takeFeedSnapshot` consumes, and the refs only catch
+      // up on the next render — so an unmount between this line and that render would save an empty
+      // page (which `saveFeedSnapshot` refuses) and the restored page would be gone for good. React 19
+      // StrictMode does exactly that on every dev mount: setup → cleanup → setup, with no render in
+      // between, which ate the snapshot on every `next dev` navigation.
+      loadedRef.current = restored.posts;
+      cursorRef.current = restored.cursor;
       // After paint, so the document is tall enough for the offset to exist. `instant` because this is
       // a restoration, not a navigation — a smooth scroll from the top would be a visible lurch.
       const y = restored.scrollY;
@@ -184,9 +195,18 @@ export function useLiveFeed(
     // not re-seed over it (which would reset the cursor and drop the paged tail all over again).
     let seeded = restored != null;
     let seeding = false;
-    // Unknown at restore time — the first head emission adopts it, and `lastHead == null` makes that
-    // emission fetch one page rather than trying to bridge a gap it cannot measure.
-    let lastHead: bigint | null = null;
+    // Restored from the snapshot, so the first head emission bridges the ACTUAL gap. Leaving this null
+    // made the bridge fall through to a hard-coded one-page read: a reader who spent longer than a
+    // page's worth of chain on a thread came back to a feed that had silently skipped everything older
+    // than the newest 50 — and then set `lastHead` to the new head, so nothing ever went back for them.
+    let lastHead: bigint | null = restored?.head ?? null;
+    headRef.current = lastHead;
+    // Move both together — the local drives the bridge, the ref is what the snapshot carries to the
+    // next mount. Two assignment sites that could drift is exactly how the gap-bridging bug happened.
+    const setHead = (h: bigint | null) => {
+      lastHead = h;
+      headRef.current = h;
+    };
 
     const fail = (e: unknown, fallback: string) => {
       if (!cancelled) setError(readErrorCopy(e, fallback));
@@ -202,7 +222,7 @@ export function useLiveFeed(
           if (cancelled) return;
           seeded = true;
           seeding = false;
-          lastHead = h;
+          setHead(h);
           pg.posts.forEach((p) => loadedIds.current.add(String(p.id)));
           setLoaded(pg.posts);
           setCursor(pg.endCursor);
@@ -222,7 +242,7 @@ export function useLiveFeed(
         if (h == null) {
           // Empty chain: seed an empty list so the UI leaves "loading".
           seeded = true;
-          lastHead = null;
+          setHead(null);
           setLoaded([]);
           setCursor(null);
           setReady(true);
@@ -244,7 +264,7 @@ export function useLiveFeed(
         .then((pg) => {
           if (cancelled) return;
           applyFresh(pg.posts);
-          lastHead = h;
+          setHead(h);
         })
         .catch(() => {
           // Transient liveness refetch failure — the next head tick retries (lastHead unadvanced).

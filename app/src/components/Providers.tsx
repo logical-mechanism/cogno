@@ -181,7 +181,17 @@ function ChainProvider({ children }: { children: ReactNode }) {
     // subscription error fall back to `null` (UNKNOWN → fail-open), NOT `[]` — `[]` is a CONFIRMED
     // non-member and would wrongly block a real SPO/dRep from voting after a transient RPC hiccup.
     const sub = api.query.CardanoRoles.ObservedRoles.watchValue(active, { at: "best" }).subscribe(
-      ({ value }) => setViewerRoles((value ?? []).map((r) => r.kind.type)),
+      ({ value }) => {
+        const next = (value ?? []).map((r) => r.kind.type);
+        // KEEP THE PREVIOUS ARRAY when the roles have not actually changed. `watchValue` is a
+        // per-block poll and `.map` mints a fresh array every time, so a plain setState re-rendered
+        // ChainProvider — and therefore invalidated the session context value — every ~6s for an
+        // unchanged answer. That is exactly the churn splitting bestBlock out of this context was
+        // meant to stop; roles move on the observer's schedule (minutes at best), never per block.
+        setViewerRoles((prev) =>
+          prev && prev.length === next.length && prev.every((r, i) => r === next[i]) ? prev : next,
+        );
+      },
       () => setViewerRoles(null),
     );
     return () => sub.unsubscribe();

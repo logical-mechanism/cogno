@@ -10,13 +10,14 @@
 // `undefined` after a reload, so `stringSetStore` routed the reads to its separate `anon` bucket: your
 // block list was still on disk and simply not read. A refresh un-blocked everyone you had blocked.
 //
-// THE LINE THIS DOES NOT CROSS. The four fields below are the whole record, and none of them is a
+// THE LINE THIS DOES NOT CROSS. The five fields below are the whole record, and none of them is a
 // secret. `ss58` is the `author` field on every post you have written, the key in
 // `CognoGate.AccountOf`, and the URL of your own profile page; `publicKeyHex` is that same account as
-// bytes; `walletId` is a CIP-30 extension name. Only `walletAddress` is not published on cogno-chain
-// (it is public on the CARDANO ledger, but the chain stores only the 32-byte identity hash and the
-// 28-byte stake credential) — it is here so a restore can detect an in-wallet account switch, and it
-// is cleared on sign-out.
+// bytes; `walletId` is a CIP-30 extension name. Only the wallet address (carried in two encodings,
+// bech32 for display and CIP-30 hex for the no-popup probe) is not published on cogno-chain — it is
+// public on the CARDANO ledger, but the chain stores only the 32-byte identity hash and the 28-byte
+// stake credential. It is here so a restore can detect an in-wallet account switch, and it is cleared
+// on sign-out.
 //
 // NEVER PUT HERE: the COSE_Sign1 signature, its blake2b_256 (which IS the sr25519 mini-secret), or the
 // PolkadotSigner. Every "nothing is stored" claim in the repo — lib/signer/wallet-derive.ts,

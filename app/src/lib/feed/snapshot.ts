@@ -29,6 +29,16 @@ export interface FeedSnapshot {
   cursor: string | null;
   /** document scrollY at the moment the surface unmounted. */
   scrollY: number;
+  /**
+   * The NextPostId head this page was current as of, so the restoring mount can bridge the REAL gap.
+   *
+   * Load-bearing, not bookkeeping. useLiveFeed's head handler sizes its catch-up read from
+   * `newHead - lastHead`; without a restored `lastHead` it falls through to a hard-coded one-page
+   * default, so a reader who spent longer than 50 posts' worth of chain on a thread would come back
+   * to a feed that silently skipped everything past the first page — with no gap marker, because the
+   * bridge then sets `lastHead` to the new head and considers itself caught up.
+   */
+  head: bigint | null;
 }
 
 /**
