@@ -13,7 +13,7 @@
 // it, so they all stop together and all catch up together on the single re-emission when the tab comes
 // back. Nothing goes stale silently — coming back is exactly one tick.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** true when the document is visible (and on the server / before mount, where there is nothing to hide). */
 export function useDocumentVisible(): boolean {
@@ -44,9 +44,12 @@ export function useDocumentVisible(): boolean {
  * result runs once to catch up, not once per block that elapsed while the tab was away.
  */
 export function useFrozenWhileHidden<T>(value: T, visible: boolean): T {
-  const [held, setHeld] = useState(value);
-  useEffect(() => {
-    if (visible) setHeld(value);
-  }, [visible, value]);
-  return visible ? value : held;
+  // A ref, NOT state. Holding the last-seen value in state meant every new block cost TWO renders of
+  // the component that owns this hook — one for the incoming value, then one more for the `setHeld`
+  // that mirrored it — which is the opposite of the point. A ref written during render tracks the
+  // value for free, and the only render this hook needs to cause is the one `visible` already causes
+  // when the tab comes back.
+  const held = useRef(value);
+  if (visible) held.current = value;
+  return held.current;
 }

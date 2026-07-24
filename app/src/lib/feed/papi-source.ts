@@ -79,18 +79,6 @@ async function readWeight(api: CognoApi, account: Ss58): Promise<bigint | undefi
   return v == null ? undefined : BigInt(v);
 }
 
-/** The accounts `who` follows — the forward `Following` double-map (key2 = followee). */
-async function readFollowees(api: CognoApi, who: Ss58): Promise<Ss58[]> {
-  const entries = await api.query.Microblog.Following.getEntries(who);
-  return entries.map((e) => e.keyArgs[1] as Ss58);
-}
-
-/** The accounts following `who` — the reverse `Followers` double-map (key2 = follower; spec-118). */
-async function readFollowers(api: CognoApi, who: Ss58): Promise<Ss58[]> {
-  const entries = await api.query.Microblog.Followers.getEntries(who);
-  return entries.map((e) => e.keyArgs[1] as Ss58);
-}
-
 /** Decode a pallet-profile `BoundedVec<u8>` field (PAPI Binary) to a trimmed string, or undefined.
  *  The shared decoder (reads.ts `binTextOpt`) so feed + profile reads can't disagree on empty/trim. */
 const profileText = binTextOpt;
@@ -339,24 +327,10 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
 
   // ── follow graph: both directions + the counters, node-served in ONE state_call ──
   // `MicroblogApi.follow_edges` replaces the four-read fan-out this used to be (two full prefix scans
-  // over the account's edge set plus two counters). The keyed readFollowees/readFollowers above stay as
-  // the resilience fallback, exactly like `thread`'s: an account with a very large edge set can blow the
-  // state_call resource limit, and a follow-graph read carries no cursor, so falling back is safe.
-  async function followEdges(who: Ss58): Promise<FollowEdges> {
-    return nodeFollowEdges(api, who).catch(async () => {
-      const [following, followers, followerCount, followingCount] = await Promise.all([
-        readFollowees(api, who),
-        readFollowers(api, who),
-        api.query.Microblog.FollowerCount.getValue(who),
-        api.query.Microblog.FollowingCount.getValue(who),
-      ]);
-      return {
-        following,
-        followers,
-        followerCount: Number(followerCount ?? 0),
-        followingCount: Number(followingCount ?? 0),
-      };
-    });
+  // over the account's edge set plus two counters). Its keyed fallback lives in `nodeFollowEdges`, not
+  // here: the shared useFollowEdges cache calls that function directly and needs the same resilience.
+  function followEdges(who: Ss58): Promise<FollowEdges> {
+    return nodeFollowEdges(api, who);
   }
 
   // ── who-to-follow: `who_to_follow` — ByAuthor members ranked by follower count, INCLUDING

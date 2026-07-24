@@ -58,11 +58,17 @@ export function useSelfProfile(
     // default the watch would keep re-emitting the PRE-save row over the optimistic overlay until
     // finality caught up. Same rule and same reason as the sibling read in papi-source's `profile()`.
     const sub = api.query.Profile.Profiles.watchValue(ss58, { at: "best" }).subscribe(
-      ({ value: rec }) =>
-        setBase({
-          displayName: binTextOpt(rec?.display_name),
-          avatar: binTextOpt(rec?.avatar),
-        }),
+      ({ value: rec }) => {
+        const displayName = binTextOpt(rec?.display_name);
+        const avatar = binTextOpt(rec?.avatar);
+        // KEEP THE PREVIOUS OBJECT when nothing actually changed. `watchValue` is a per-block poll, so
+        // a plain `setBase({...})` mints a fresh object every ~6s and re-renders ChainProvider (which
+        // owns this hook) for an unchanged answer — the same churn the sibling ObservedRoles watch in
+        // Providers guards against, and a profile moves far less often than roles do.
+        setBase((prev) =>
+          prev.displayName === displayName && prev.avatar === avatar ? prev : { displayName, avatar },
+        );
+      },
       // Keep the last good value on a subscription error — a first-load miss just leaves the identicon,
       // and blanking a working avatar because of a transient hiccup is the worse failure.
       () => {},

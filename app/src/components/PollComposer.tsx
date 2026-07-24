@@ -331,6 +331,10 @@ export function PollComposer({
   const anchorUnsafe = govAction ? !isSafeAnchorUrl(govAction.anchorUrl) : false;
   const govOk = !govAction || (!anchorTooLong && !anchorUnsafe);
   const extraValid = enoughOptions && !anyOptionOver && govOk;
+  // The question may be left blank only when the tagged proposal supplies the poll's subject — a chamber
+  // kind AND an action tag. Otherwise the question is the only thing naming the poll, so it stays
+  // mandatory (`govOk` above already forces a tagged poll's anchor to be a real http(s) link).
+  const optionalQuestion = kindIsChamber(kind) && !!govAction;
 
   // The metadata of the currently-selected action type (its on-chain voting note). The kind is auto-set
   // from the action, so there is no chamber mismatch to warn about.
@@ -539,10 +543,13 @@ export function PollComposer({
       autoFocus={autoFocus}
       text={pollDraft.question}
       onTextChange={setQuestion}
-      // A chamber (governance) poll is identified by its tagged proposal's title, so its question is
-      // optional author commentary — allow an empty one, and say so. A general poll still needs a question.
-      allowEmptyText={kindIsChamber(kind)}
-      placeholder={kindIsChamber(kind) ? "Add your take (optional)" : undefined}
+      // An empty question is allowed ONLY when something else identifies the poll — i.e. a TAGGED
+      // governance action, whose proposal title is what the feed row and the poll card headline. The
+      // chamber kind alone is not enough: "SPO only" can be picked straight from the kind dropdown with
+      // no action attached, and an untagged chamber poll with no question has nothing to name it at all
+      // (PostBody renders an empty body as nothing), leaving a bare Yes/No/Abstain card in the timeline.
+      allowEmptyText={optionalQuestion}
+      placeholder={optionalQuestion ? "Add your take (optional)" : undefined}
       onTogglePoll={onTogglePoll}
       pollActive={onTogglePoll ? true : undefined}
       extraValid={extraValid}

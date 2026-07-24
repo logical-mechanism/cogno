@@ -358,18 +358,41 @@ export async function nodeWhoToFollow(api: CognoApi, limit: number): Promise<Sug
  * both FULL prefix scans of the account's edge set, and each came with its own counter read. The
  * runtime API was already generated and on the wire; it simply had no caller.
  *
- * Finalized default on purpose — no per-viewer overlay here, and the follow graph is not a
- * read-after-write surface (the write path carries its own optimistic override in useFollow). Same
- * reasoning as `search_people` / `who_to_follow` above; do not "helpfully" add BEST.
+ * BEST, not the runtime-API finalized default: this IS a read-after-write surface. `useFollow`
+ * invalidates the shared follow-edges cache from an `onConfirm` that fires at `inBestBlock`, blocks
+ * before finalization — at the finalized default that re-read returns the PRE-follow graph and the
+ * cache COMMITS it, so the Following tab keeps saying "Not following anyone yet" and who-to-follow
+ * keeps suggesting the account you just followed, for the rest of the session. `useFollow`'s own
+ * optimistic map does not cover those two (they read the cache directly, with no override).
  */
 export async function nodeFollowEdges(api: CognoApi, who: Ss58): Promise<FollowEdges> {
-  const e = await microblogApi(api).follow_edges(who);
-  return {
-    following: e.following as Ss58[],
-    followers: e.followers as Ss58[],
-    followerCount: Number(e.follower_count ?? 0),
-    followingCount: Number(e.following_count ?? 0),
-  };
+  try {
+    const e = await microblogApi(api).follow_edges(who, BEST);
+    return {
+      following: e.following as Ss58[],
+      followers: e.followers as Ss58[],
+      followerCount: Number(e.follower_count ?? 0),
+      followingCount: Number(e.following_count ?? 0),
+    };
+  } catch {
+    // The keyed fallback lives HERE, not in one caller: an account with a very large edge set can blow
+    // the state_call resource limit, and both callers (papi-source's `followEdges` and the shared
+    // useFollowEdges cache) need to survive that. The cache's error policy is `retry`, which for a
+    // permanently-over-limit account means an already-mounted Follow button never resolves at all.
+    // A follow-graph read carries no cursor, so falling back to the two prefix scans is safe.
+    const [following, followers, followerCount, followingCount] = await Promise.all([
+      api.query.Microblog.Following.getEntries(who, BEST),
+      api.query.Microblog.Followers.getEntries(who, BEST),
+      api.query.Microblog.FollowerCount.getValue(who, BEST),
+      api.query.Microblog.FollowingCount.getValue(who, BEST),
+    ]);
+    return {
+      following: following.map((e) => e.keyArgs[1] as Ss58),
+      followers: followers.map((e) => e.keyArgs[1] as Ss58),
+      followerCount: Number(followerCount ?? 0),
+      followingCount: Number(followingCount ?? 0),
+    };
+  }
 }
 
 /**

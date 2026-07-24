@@ -37,7 +37,18 @@ function openDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
     let settled = false;
     const done = (db: IDBDatabase | null) => {
-      if (settled) return;
+      if (settled) {
+        // The open timed out and then succeeded anyway. Nobody holds this handle, so close it: an
+        // abandoned open connection keeps the database pinned and makes the NEXT version's
+        // `onupgradeneeded` fire `onblocked` instead — a leak that turns one slow open into a
+        // permanently unusable cache.
+        try {
+          db?.close();
+        } catch {
+          /* already closing */
+        }
+        return;
+      }
       settled = true;
       resolve(db);
     };

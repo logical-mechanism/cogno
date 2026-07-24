@@ -306,9 +306,14 @@ export function useSigner(): UseSigner {
         if (deriveGen.current === gen) setError(e instanceof Error ? e.message : String(e));
         throw e;
       } finally {
-        // Only the CURRENT unlock owns the spinner (same rule as connectWallet's).
-        if (deriveGen.current === gen) setUnlocking(false);
-        inFlightUnlock.current = null;
+        // Only the CURRENT unlock owns the spinner — AND the single-flight slot. An abandoned unlock
+        // clearing it unconditionally would drop a NEWER unlock's promise out of the slot (sign out
+        // mid-prompt, sign back in, write: the old prompt's late rejection frees the slot and the next
+        // write opens a SECOND wallet popup alongside the one already on screen).
+        if (deriveGen.current === gen) {
+          setUnlocking(false);
+          inFlightUnlock.current = null;
+        }
       }
     })();
     inFlightUnlock.current = run;
