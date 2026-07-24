@@ -21,6 +21,7 @@ import { useRoles, type UseRoles } from "@/hooks/useRoles";
 import {
   buildRoleProofRequest,
   preflightRolePasteback,
+  produceRoleProofWallet,
   type RoleProofRequest,
   type RoleToken,
 } from "@/lib/cardano/role-proof";
@@ -44,6 +45,9 @@ interface RoleSpec {
   cardHint: string;
   keyPlaceholder: string;
   keyHint: ReactNode;
+  /** The key can be signed IN-WALLET (CIP-95): true for dRep. A Calidus pool key isn't in a CIP-30 wallet,
+   *  so SPO stays offline-command only. */
+  walletSignable?: boolean;
 }
 
 const ROLE_SPECS: RoleSpec[] = [
@@ -69,11 +73,13 @@ const ROLE_SPECS: RoleSpec[] = [
     title: "Delegated representative (dRep)",
     cardHint:
       "Prove you're a Cardano delegated representative with your dRep key (CIP-0105, key-based only). A ✓ dRep tag shows on your profile once the chain confirms the dRep is registered — and clears if it deregisters.",
-    keyPlaceholder: "drep .vkey cborHex / 64-hex public key / 56-hex dRep ID",
+    walletSignable: true,
+    keyPlaceholder: "drep1… id  /  drep .vkey cborHex  /  56-hex dRep ID",
     keyHint: (
       <>
-        Paste your dRep <code>.vkey</code> file (or its hex), or the 28-byte dRep ID. Key-based dReps only
-        (a script dRep cannot sign). This is a public key — never your secret key.
+        Paste your dRep id (<code>drep1…</code>, straight from your wallet), or your dRep <code>.vkey</code>{" "}
+        file / its hex. Key-based dReps only (a script dRep cannot sign). This is public — never your secret
+        key.
       </>
     ),
   },
@@ -84,11 +90,14 @@ function RoleClaimCard({
   roles,
   api,
   signer,
+  walletId,
 }: {
   spec: RoleSpec;
   roles: UseRoles;
   api: CognoApi;
   signer: PostingSigner;
+  /** the connected CIP-30 wallet id — needed for the in-wallet (CIP-95) signing path; null if disconnected. */
+  walletId: string | null;
 }) {
   const { toast } = useToaster();
   const [keyInput, setKeyInput] = useState("");
@@ -99,6 +108,8 @@ function RoleClaimCard({
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [walletSigning, setWalletSigning] = useState(false);
+  const [walletError, setWalletError] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
 
@@ -112,6 +123,7 @@ function RoleClaimCard({
     setBuildError(null);
     setPreflightError(null);
     setSubmitError(null);
+    setWalletError(null);
   }, []);
 
   const onBuild = useCallback(async () => {
@@ -137,6 +149,47 @@ function RoleClaimCard({
       setBuilding(false);
     }
   }, [api, building, keyInput, signer.publicKeyHex, spec.role]);
+
+  // The wallet-pops-up path (dRep, CIP-95): build the request, have the wallet sign the pinned payload with
+  // its dRep key, pre-flight, and submit — all in one click. On ANY failure the offline command stays
+  // available as the fallback, so `walletError` is a nudge, not a dead end.
+  const onWalletSign = useCallback(async () => {
+    if (walletSigning) return;
+    if (!walletId) {
+      setWalletError("connect a Cardano wallet first");
+      return;
+    }
+    setWalletSigning(true);
+    setWalletError(null);
+    setBuildError(null);
+    try {
+      const genesisHex = await getGenesisHex(api);
+      const req = await buildRoleProofRequest({
+        keyInput,
+        sr25519PubkeyHex: signer.publicKeyHex,
+        genesisHex,
+        role: spec.role,
+      });
+      const pf = await produceRoleProofWallet({ walletId, request: req, keyInput });
+      if (!pf.ok || !pf.coseSign1 || !pf.coseKey) {
+        setWalletError(pf.error || "the wallet couldn't produce a valid proof");
+        return;
+      }
+      const res = await roles.claim(pf.coseSign1, pf.coseKey);
+      if (res.ok) {
+        toast({ kind: "success", message: `${spec.label} claim submitted` });
+        setKeyInput("");
+        setRequest(null);
+        setPasted("");
+      } else {
+        setWalletError(res.error || "the on-chain claim was rejected");
+      }
+    } catch (e) {
+      setWalletError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWalletSigning(false);
+    }
+  }, [walletSigning, walletId, api, keyInput, signer.publicKeyHex, spec.role, spec.label, roles, toast]);
 
   const onVerifySubmit = useCallback(async () => {
     if (!request || submitting) return;
@@ -224,31 +277,71 @@ function RoleClaimCard({
               <span className={styles.stepNum}>1</span>
               <span className={styles.stepTitle}>Enter your {spec.label} verification key</span>
             </div>
-            <input
-              type="text"
-              className={styles.input}
+            {/* A wrapping textarea, not a single-line input: a bech32 id / .vkey JSON is long, and the
+                settings column is narrow — this keeps the whole value visible instead of scrolling off. */}
+            <textarea
+              className={styles.keyField}
               value={keyInput}
               onChange={(e) => onKeyInputChange(e.target.value)}
               placeholder={spec.keyPlaceholder}
               spellCheck={false}
               autoComplete="off"
+              rows={2}
               aria-label={`${spec.label} verification key`}
             />
             <p className={styles.hint}>{spec.keyHint}</p>
-            <button
-              type="button"
-              className={styles.primaryBtn}
-              onClick={onBuild}
-              disabled={!keyInput.trim() || building}
-            >
-              {building ? (
-                <>
-                  <Spinner size="sm" label="Building" /> Building…
-                </>
-              ) : (
-                "Generate signing command"
-              )}
-            </button>
+            {spec.walletSignable ? (
+              <>
+                <div className={styles.actions}>
+                  <button
+                    type="button"
+                    className={styles.primaryBtn}
+                    onClick={onWalletSign}
+                    disabled={!keyInput.trim() || walletSigning}
+                  >
+                    {walletSigning ? (
+                      <>
+                        <Spinner size="sm" label="Signing" /> Waiting for wallet…
+                      </>
+                    ) : (
+                      "Sign with wallet"
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.outlineBtn}
+                    onClick={onBuild}
+                    disabled={!keyInput.trim() || building}
+                  >
+                    {building ? "Preparing…" : "Sign offline instead"}
+                  </button>
+                </div>
+                <p className={styles.hint}>
+                  Signs the proof with your dRep key inside your wallet (needs CIP-95 — Eternl, Lace). No key
+                  file, no CLI. If your wallet can&apos;t, sign offline instead.
+                </p>
+                {walletError && (
+                  <p className={styles.error} role="alert">
+                    {walletError}
+                  </p>
+                )}
+              </>
+            ) : (
+              <button
+                type="button"
+                className={styles.primaryBtn}
+                onClick={onBuild}
+                disabled={!keyInput.trim() || building}
+              >
+                {building ? (
+                  <>
+                    <Spinner size="sm" label="Building" /> Building…
+                  </>
+                ) : (
+                  "Generate signing command"
+                )}
+              </button>
+            )}
             {buildError && (
               <p className={styles.error} role="alert">
                 {buildError}
@@ -376,7 +469,14 @@ export function RolesSection() {
   return (
     <div className={styles.cards}>
       {ROLE_SPECS.map((spec) => (
-        <RoleClaimCard key={spec.role} spec={spec} roles={roles} api={api} signer={signer} />
+        <RoleClaimCard
+          key={spec.role}
+          spec={spec}
+          roles={roles}
+          api={api}
+          signer={signer}
+          walletId={signerCtl.connectedWalletId}
+        />
       ))}
     </div>
   );

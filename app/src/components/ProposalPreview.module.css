@@ -1,14 +1,34 @@
-/* ProposalPreview — the on-demand inline CIP-108 proposal reader under a governance-poll's action tag. */
+/* ProposalPreview — the governance-action tag under a poll: the CIP-1694 action pill + the on-demand
+   inline CIP-108 proposal reader (or a single fallback link when the anchor can't be previewed). */
 
-.wrap {
-  margin-top: var(--cg-space-2);
+/* The whole tag block: title, action pill, and preview link STACKED one per line (each sizes to its own
+   content, left-aligned). The bottom margin is deliberate BREATHING ROOM — it keeps the "Preview proposal"
+   toggle well clear of the Yes/No vote buttons below, so opening the preview can't be a misclicked vote. */
+.block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--cg-space-2);
+  margin-bottom: var(--cg-space-4);
+}
+
+/* The CIP-1694 action-type pill. */
+.type {
+  padding: 0 0.5em;
+  border: 1px solid var(--cg-accent);
+  border-radius: 999px;
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-semibold);
+  line-height: 1.5;
 }
 
 .toggle {
   display: inline-flex;
   align-items: center;
   gap: var(--cg-space-1);
-  padding: 0;
+  /* A little vertical padding so the toggle has a comfortable tap target, distinct from the pill. */
+  padding: var(--cg-space-1) 0;
   border: 0;
   background: none;
   color: var(--cg-accent);
@@ -28,6 +48,23 @@
   border-radius: var(--cg-radius-sm);
 }
 
+/* The glanceable proposal title — leads the stacked tag (collapsed state). Clamped to two lines so a long
+   title can't push the vote buttons around; sits on the card fill, where --cg-text passes WCAG AA. The
+   stack gap owns its spacing, so no margin here. */
+.glanceTitle {
+  margin: 0;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-medium);
+  line-height: var(--cg-lh-sm);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+
 .caret {
   display: inline-block;
   transition: transform var(--cg-motion-fast) var(--cg-ease-standard);
@@ -38,7 +75,7 @@
 }
 
 .panel {
-  margin-top: var(--cg-space-2);
+  margin-top: var(--cg-space-3);
   padding: var(--cg-space-3);
   border: 1px solid var(--cg-border);
   border-radius: var(--cg-radius-input);

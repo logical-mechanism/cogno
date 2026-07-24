@@ -849,10 +849,12 @@ pub fn verify_bind_proof_stake(
 /// is the BARE 28-byte payment credential (the role-key hash, no `plutus_data_cbor` / beacon
 /// hashing), and the payload is the `role/v1` grammar. There is deliberately NO Cardano-registration
 /// interpretation here — proving control of the key is the whole job; the cardano-observer decides
-/// whether that key is a live pool / dRep / CC member. An enterprise or base VerificationKey-payment
-/// address is accepted (the FE mints an enterprise one); the stake part, if any, is irrelevant to the
-/// role and is ignored — cross-replay is closed by the distinct `role/v1` domain + `role=` token, not
-/// by the address shape.
+/// whether that key is a live pool / dRep / CC member. The "address" is accepted in EITHER form,
+/// disambiguated by length: an enterprise or base VerificationKey-payment address (the offline
+/// `cardano-signer` path mints an enterprise one; the stake part, if any, is ignored), OR the bare
+/// 28-byte role credential a CIP-95 wallet embeds when signing with a dRep key (a key hash, no network
+/// nibble). Cross-replay is closed by the distinct `role/v1` domain + `role=` token and the payload's
+/// `genesis`, not by the address shape or a network nibble.
 pub fn verify_bind_proof_role(
     cose_sign1: &[u8],
     cose_key: &[u8],
@@ -884,8 +886,21 @@ pub fn verify_bind_proof_role(
         return Err(Cip8Error::SignatureInvalid);
     }
 
-    // 3. Bind the verified key to the address: blake2b-224(pubkey) == the address payment credential.
-    let (payment_vkh, _stake) = parse_address(address, expected_network)?;
+    // 3. Bind the verified key to the address' payment credential: blake2b-224(pubkey) == it.
+    //    Two "address" forms are accepted, disambiguated by length (a headered vkey-payment address is 29
+    //    or 57 bytes, never 28):
+    //      • a HEADERED vkey-payment base/enterprise address (the offline `cardano-signer --address` path)
+    //        — parsed + network-checked as before;
+    //      • the BARE 28-byte role credential (a key hash), which a CIP-95 wallet (e.g. Eternl) embeds
+    //        directly as the COSE "address" when signing with a dRep key. It carries no network nibble —
+    //        fine, because a role credential is network-agnostic and the payload's `genesis` is the
+    //        anti-cross-chain guard. The bind is identical (blake2b_224(pubkey) == the credential).
+    let payment_vkh: &[u8] = if address.len() == 28 {
+        address
+    } else {
+        let (vkh, _stake) = parse_address(address, expected_network)?;
+        vkh
+    };
     if blake2b_224(&pk) != *payment_vkh {
         return Err(Cip8Error::AddressKeyMismatch);
     }

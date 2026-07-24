@@ -102,8 +102,8 @@
   color: var(--cg-text);
 }
 
-.input,
-.textarea {
+.textarea,
+.keyField {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--cg-border);
@@ -112,17 +112,24 @@
   color: var(--cg-text);
   font-family: var(--cg-font-mono);
   font-size: var(--cg-fs-xs);
+  line-height: 1.5;
   padding: var(--cg-space-2) var(--cg-space-3);
+  resize: vertical;
 }
 
 .textarea {
-  resize: vertical;
   min-height: 76px;
-  line-height: 1.5;
 }
 
-.input:focus-visible,
-.textarea:focus-visible {
+/* The role-key entry: a short wrapping textarea. `overflow-wrap: anywhere` breaks a long space-less bech32
+   id so it wraps within the narrow column rather than overflowing. */
+.keyField {
+  min-height: 52px;
+  overflow-wrap: anywhere;
+}
+
+.textarea:focus-visible,
+.keyField:focus-visible {
   outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
   outline-offset: var(--cg-focus-ring-offset);
 }
