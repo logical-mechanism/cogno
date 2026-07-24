@@ -56,32 +56,19 @@ const ROLE_SPECS: RoleSpec[] = [
     kind: "Spo",
     label: "SPO",
     title: "Stake pool operator (SPO)",
-    cardHint:
-      "Prove you run a Cardano stake pool with your Calidus pool key (CIP-0151). A ✓ SPO tag shows on your profile once the chain confirms the pool is live — and clears automatically if it retires.",
+    cardHint: "Prove control of your Calidus pool key (CIP-0151); the tag clears if the pool retires.",
     keyPlaceholder: "calidus .vkey cborHex / 64-hex public key / 56-hex key hash",
-    keyHint: (
-      <>
-        Paste your Calidus <code>.vkey</code> file (or its hex), or the 28-byte key hash. This is a public
-        key — never your secret key.
-      </>
-    ),
+    keyHint: "Public key — never your secret key.",
   },
   {
     role: "drep",
     kind: "DRep",
     label: "dRep",
     title: "Delegated representative (dRep)",
-    cardHint:
-      "Prove you're a Cardano delegated representative with your dRep key (CIP-0105, key-based only). A ✓ dRep tag shows on your profile once the chain confirms the dRep is registered — and clears if it deregisters.",
+    cardHint: "Prove control of your dRep key (CIP-0105); the tag clears if you deregister.",
     walletSignable: true,
     keyPlaceholder: "drep1… id  /  drep .vkey cborHex  /  56-hex dRep ID",
-    keyHint: (
-      <>
-        Paste your dRep id (<code>drep1…</code>, straight from your wallet), or your dRep <code>.vkey</code>{" "}
-        file / its hex. Key-based dReps only (a script dRep cannot sign). This is public — never your secret
-        key.
-      </>
-    ),
+    keyHint: "Key-based dReps only (script dReps can't sign). Public key — never your secret key.",
   },
 ];
 
@@ -316,10 +303,7 @@ function RoleClaimCard({
                     {building ? "Preparing…" : "Sign offline instead"}
                   </button>
                 </div>
-                <p className={styles.hint}>
-                  Signs the proof with your dRep key inside your wallet (needs CIP-95 — Eternl, Lace). No key
-                  file, no CLI. If your wallet can&apos;t, sign offline instead.
-                </p>
+                <p className={styles.hint}>Needs a CIP-95 wallet (Eternl, Lace). No key file, no CLI.</p>
                 {walletError && (
                   <p className={styles.error} role="alert">
                     {walletError}
@@ -358,8 +342,8 @@ function RoleClaimCard({
                   <span className={styles.stepTitle}>Sign it offline with cardano-signer</span>
                 </div>
                 <p className={styles.hint}>
-                  Run this where your secret key lives (replace the <code>--secret-key</code> filename with
-                  its path). It produces a one-time proof and never exposes your key.
+                  Run where your secret key lives; point <code>--secret-key</code> at its file. Key stays
+                  local.
                 </p>
                 <pre className={styles.codeBlock}>{request.command}</pre>
                 <div className={styles.actions}>
