@@ -17,7 +17,7 @@
 import { useEffect, useState } from "react";
 import styles from "./RoleBadge.module.css";
 import { useSession } from "@/components/Providers";
-import { resolvePoolMeta, resolveDRepName, roleExplorerUrl } from "@/lib/cardano/roleMeta";
+import { resolvePoolMeta, roleExplorerUrl } from "@/lib/cardano/roleMeta";
 import { isBlankRoleId, type ObservedRoleView, type RoleKindType } from "@/lib/chain/roles";
 
 /** Short label per role. */
@@ -35,14 +35,12 @@ function truncId(idHex: string): string {
   return h.length > 12 ? `${h.slice(0, 6)}…${h.slice(-4)}` : h;
 }
 
-/** Resolve a role's display name via Blockfrost (SPO → pool ticker/name, dRep → dRep name), or null. */
-async function resolveRoleName(kind: RoleKindType, idHex: string): Promise<string | null> {
-  if (kind === "Spo") {
-    const meta = await resolvePoolMeta(idHex);
-    return meta?.ticker || meta?.name || null;
-  }
-  if (kind === "DRep") return resolveDRepName(idHex);
-  return null; // CC has no name registry
+/** Resolve a pool-owner SPO's ticker/name via Blockfrost, or null. Only a pool-owner SPO shows an inline
+ *  name: a Calidus SPO is blank (names no pool), and dRep/CC render as clean icon+label chips — their id
+ *  would be a long inline tag, so it lives in the tooltip + the verify-on-chain link instead. */
+async function resolvePoolName(idHex: string): Promise<string | null> {
+  const meta = await resolvePoolMeta(idHex);
+  return meta?.ticker || meta?.name || null;
 }
 
 /**
@@ -87,10 +85,12 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
     if (!set) return;
     let cancelled = false;
     for (const r of set) {
-      if (isBlankRoleId(r.id)) continue; // a generic Calidus SPO names no pool — nothing to resolve
+      // Only a pool-owner SPO shows an inline name; a blank Calidus SPO names no pool, and dRep/CC carry
+      // no inline detail — so there is nothing to resolve for those.
+      if (r.kind !== "Spo" || isBlankRoleId(r.id)) continue;
       const nameKey = `${r.kind}:${r.id}`;
       if (names[nameKey] !== undefined) continue;
-      void resolveRoleName(r.kind, r.id).then((label) => {
+      void resolvePoolName(r.id).then((label) => {
         if (cancelled || !label) return;
         setNames((prev) => ({ ...prev, [nameKey]: label }));
       });
@@ -105,11 +105,13 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
   return (
     <>
       {set.map((r) => {
-        // A Calidus-derived SPO carries the BLANK id: it names no pool (a Calidus registration can't
-        // attest one), so it renders as a generic "✓ SPO" — no ticker, no detail, no verify link.
+        // Only a pool-owner SPO shows an inline name (its short ticker / id). A Calidus SPO is blank (names
+        // no pool) → generic "✓ SPO", no verify link. dRep + CC render as clean icon+label chips — a dRep
+        // id is a long inline tag, so it lives in the tooltip + the verify-on-chain link, not inline.
         const blank = isBlankRoleId(r.id);
-        const resolvedName = names[`${r.kind}:${r.id}`];
-        const detail = blank ? null : (resolvedName ?? truncId(r.id));
+        const showsName = r.kind === "Spo" && !blank;
+        const resolvedName = showsName ? names[`${r.kind}:${r.id}`] : undefined;
+        const detail = showsName ? (resolvedName ?? truncId(r.id)) : null;
         const href = blank ? null : roleExplorerUrl(r.kind, r.id);
         const label = `Verified Cardano ${ROLE_FULL[r.kind]}${resolvedName ? `, ${resolvedName}` : ""}`;
         const title = `Verified Cardano ${ROLE_FULL[r.kind]}${detail ? ` — ${detail}` : ""}. The chain holds a live binding.${
