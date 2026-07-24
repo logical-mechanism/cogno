@@ -59,23 +59,27 @@ const ROLE_SPECS: RoleSpec[] = [
     kind: "Spo",
     label: "SPO",
     title: "Stake pool operator (SPO)",
-    cardHint: "Prove control of your Calidus pool key (CIP-0151); the tag clears if the pool retires.",
+    cardHint:
+      "Prove you control your pool's Calidus key (CIP-0151). The tag comes off on its own if the pool retires.",
     walletSignable: true,
     walletHint:
-      "Signs in Eternl with your Calidus key — connect the account it's derived from. Or sign offline.",
+      "Eternl can sign with your Calidus key. Just connect the account it lives on, or sign offline instead.",
     keyPlaceholder: "calidus1… id / calidus_vk1… / .vkey cborHex / 56-hex key hash",
-    keyHint: "Public key — never your secret key.",
+    keyHint: "This is a public key, so never paste your secret one.",
   },
   {
     role: "drep",
     kind: "DRep",
     label: "dRep",
     title: "Delegated representative (dRep)",
-    cardHint: "Prove control of your dRep key (CIP-0105); the tag clears if you deregister.",
+    cardHint:
+      "Prove you control your dRep key (CIP-0105). The tag comes off on its own if you deregister.",
     walletSignable: true,
-    walletHint: "Needs a CIP-95 wallet (Eternl, Lace). No key file, no CLI.",
+    walletHint:
+      "You'll need a CIP-95 wallet like Eternl or Lace. You won't have to find a key file or open a terminal.",
     keyPlaceholder: "drep1… id  /  drep .vkey cborHex  /  56-hex dRep ID",
-    keyHint: "Key-based dReps only (script dReps can't sign). Public key — never your secret key.",
+    keyHint:
+      "This only works if your dRep is key-based, since a script dRep can't sign. It's a public key, so never paste your secret one.",
   },
 ];
 
@@ -258,7 +262,7 @@ function RoleClaimCard({
         // ── claimed, but the observer hasn't confirmed a live role yet ──
         <div className={styles.statusRow}>
           <span className={styles.pendingMark}>
-            <Spinner size="sm" label="Awaiting confirmation" /> Claimed — awaiting on-chain confirmation.
+            <Spinner size="sm" label="Awaiting confirmation" /> Claimed. Waiting for the chain to confirm.
           </span>
           {removeBtn}
         </div>
@@ -349,8 +353,8 @@ function RoleClaimCard({
                   <span className={styles.stepTitle}>Sign it offline with cardano-signer</span>
                 </div>
                 <p className={styles.hint}>
-                  Run where your secret key lives; point <code>--secret-key</code> at its file. Key stays
-                  local.
+                  Run this where your secret key lives, and point <code>--secret-key</code> at the file.
+                  Your key never leaves the machine.
                 </p>
                 <pre className={styles.codeBlock}>{request.command}</pre>
                 <div className={styles.actions}>
