@@ -60,8 +60,8 @@ const ROLE_SPECS: RoleSpec[] = [
     label: "SPO",
     title: "Stake pool operator (SPO)",
     cardHint: "Prove control of your Calidus pool key (CIP-0151); the tag clears if the pool retires.",
-    walletSignable: true,
-    walletHint: "Signs with your wallet's Calidus key (its root payment key). No key file, no CLI.",
+    // SPO is offline-only: no wallet exposes Calidus signing to a dApp, and a Calidus key is typically a
+    // standalone key not held in the connected wallet. Prove control with the cardano-signer command + skey.
     keyPlaceholder: "calidus1… id / calidus_vk1… / .vkey cborHex / 56-hex key hash",
     keyHint: "Public key — never your secret key.",
   },
