@@ -401,7 +401,7 @@ export function Composer({
             <p className={styles.imageChip} role="note">
               <span aria-hidden>🖼</span>{" "}
               {imageLinkCount === 1
-                ? "Image link, shown when the post is opened"
+                ? "Image link, shown when opened"
                 : `${imageLinkCount} image links, shown when opened`}
             </p>
           )}
@@ -412,7 +412,7 @@ export function Composer({
         <p className={styles.sessionPrompt} role="status">
           {viewer.status === "not-connected"
             ? "Connect a wallet to post."
-            : "Finish setting up your account to post."}
+            : "Finish setup to post."}
         </p>
       )}
 
@@ -463,7 +463,7 @@ export function Composer({
               sessionGated
                 ? undefined
                 : needsVotingPower
-                  ? "Add voting power to finish setup"
+                  ? "Add voting power to post"
                   : noPostingPower
                     ? "Lock ADA to post"
                     : overLimit

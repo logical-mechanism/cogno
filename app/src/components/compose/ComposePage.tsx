@@ -239,7 +239,7 @@ export function ComposePage() {
         toast({
           id: "poll-deadline",
           kind: "error",
-          message: "Couldn't set the poll deadline. Check your connection and try again.",
+          message: "Couldn't set the poll deadline. Try again.",
         });
         return;
       }
@@ -264,7 +264,7 @@ export function ComposePage() {
       <div className={styles.body}>
         {/* reply/quote: hydrate the target post for context; busy placeholder then the composer. */}
         {needsTarget && targetLoading && (
-          <Loading variant="panel" label="Loading the post…" />
+          <Loading variant="panel" label="Loading post…" />
         )}
 
         {/* Missing/pruned target → muted stub, but keep the composer usable. */}

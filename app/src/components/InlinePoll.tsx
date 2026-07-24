@@ -90,7 +90,7 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
       ? `Only ${label}s can vote`
       : undefined;
   const gateNotice = blocked
-    ? `Only accounts with a live Cardano ${label} role can vote in this ${label}-only poll.`
+    ? `Only verified ${label}s can vote in this poll.`
     : undefined;
   return (
     <PollCard

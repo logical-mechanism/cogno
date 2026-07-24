@@ -310,7 +310,7 @@ export function ModalRouteHost() {
         toast({
           id: "poll-deadline",
           kind: "error",
-          message: "Couldn't set the poll deadline. Check your connection and try again.",
+          message: "Couldn't set the poll deadline. Try again.",
         });
         return;
       }
@@ -442,7 +442,7 @@ export function ModalRouteHost() {
     if (targetLoading || !targetError) {
       return (
         <ComposerModal title={title} onClose={onRequestClose}>
-          <Loading variant="panel" label="Loading the post…" />
+          <Loading variant="panel" label="Loading post…" />
         </ComposerModal>
       );
     }

@@ -276,7 +276,7 @@ export function PollCard({
         {!govMode && (
           <>
             <span className={styles.weighted}>
-              {noWeight ? "weighted —" : `${formatWeight(totalWeight)} weighted`}
+              {noWeight ? "no weight" : `${formatWeight(totalWeight)} weighted`}
             </span>
             <span className={styles.dot} aria-hidden>
               ·
@@ -287,7 +287,7 @@ export function PollCard({
           <>
             <span
               className={styles.govPill}
-              title="A chamber-weighted, display-only temperature check from the Cardano community"
+              title="A temperature check, not a vote on Cardano."
             >
               {chamberPill(poll.kind)}
             </span>
@@ -324,8 +324,8 @@ export function PollCard({
         <div className={styles.chambers}>
           {(
             [
-              { key: "spo", title: "SPO chamber", unit: "pool", show: kindHasSpo(poll.kind), w: (o: PollOptionView) => o.spoWeight, c: (o: PollOptionView) => o.spoCount },
-              { key: "drep", title: "dRep chamber", unit: "dRep", show: kindHasDrep(poll.kind), w: (o: PollOptionView) => o.drepWeight, c: (o: PollOptionView) => o.drepCount },
+              { key: "spo", title: "SPOs", unit: "pool", show: kindHasSpo(poll.kind), w: (o: PollOptionView) => o.spoWeight, c: (o: PollOptionView) => o.spoCount },
+              { key: "drep", title: "dReps", unit: "dRep", show: kindHasDrep(poll.kind), w: (o: PollOptionView) => o.drepWeight, c: (o: PollOptionView) => o.drepCount },
             ] as const
           )
             .filter((ch) => ch.show)

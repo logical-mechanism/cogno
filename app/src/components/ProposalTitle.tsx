@@ -13,9 +13,9 @@
 // It renders one line: the resolved title when we have it, otherwise the poll's own `fallback` question
 // (muted, so it can't masquerade as a resolved title) so two rows stay distinguishable. Only when the poll
 // has NO question either (an empty chamber poll) does it drop to a muted default describing the state —
-//   • "No title provided"  — the doc loaded but carries no title
+//   • "Untitled proposal"  — the doc loaded but carries no title
 //   • "Couldn't load proposal"  — the fetch/parse failed (bad metadata)
-//   • "Open to view proposal"  — a host we won't auto-fetch (author-controlled / not fetchable)
+//   • "Open the poll to see the proposal"  — a host we won't auto-fetch (author-controlled / not fetchable)
 // Both the resolved title and the `fallback` are already hardened + capped upstream, so both are safe to render.
 
 import { useEffect, useRef, useState } from "react";
@@ -29,9 +29,9 @@ type State =
   | { kind: "failed" }; // fetch / parse failed
 
 const DEFAULT_TEXT: Record<Exclude<State["kind"], "title">, string> = {
-  gated: "Open to view proposal",
+  gated: "Open the poll to see the proposal",
   loading: "Loading proposal…",
-  "no-title": "No title provided",
+  "no-title": "Untitled proposal",
   failed: "Couldn't load proposal",
 };
 

@@ -54,7 +54,7 @@ export default function GovernancePage() {
       ) : sorted.length === 0 ? (
         <EmptyState
           title="No governance polls yet"
-          description="Governance polls are pre-submission temperature checks on Cardano governance actions. Tag one when you create a poll."
+          description="Tag a Cardano governance action when you create a poll, and it shows up here."
         />
       ) : (
         <ul className={styles.list}>
