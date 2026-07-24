@@ -172,7 +172,7 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
                     className={styles.walletAddr}
                     onClick={copyWalletAddress}
                     title={signerCtl.walletAddress}
-                    aria-label={`Copy wallet address ${signerCtl.walletAddress}`}
+                    aria-label="Copy wallet address"
                   >
                     {truncateSs58(signerCtl.walletAddress)}
                   </button>
@@ -188,8 +188,8 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
           </div>
           <p className={styles.hint}>
             {signerCtl.restored
-              ? "This device remembers your address so a refresh keeps you signed in. Your posting key is not stored — the first time you post, your wallet asks you to approve one signature. Signing out forgets the address; your bookmarks, mutes and blocks stay."
-              : "This device remembers your address so a refresh keeps you signed in. Your posting key is never stored. Signing out forgets the address; your bookmarks, mutes and blocks stay."}
+              ? "This device remembers your address, not your posting key. Your wallet asks for one signature the first time you post. Signing out forgets the address; your bookmarks, mutes and blocks stay."
+              : "This device remembers your address until you sign out. Your posting key is never stored; your bookmarks, mutes and blocks stay."}
           </p>
         </div>
       )}
@@ -227,7 +227,7 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
         {identity.bound && (
           <>
             <p className={styles.optionalNote}>
-              Required to post. Also sets how much weight your votes carry.
+              Required to post. Sets your vote weight.
             </p>
             <div className={styles.statRow}>
               <span className={styles.statLabel}>Voting power</span>

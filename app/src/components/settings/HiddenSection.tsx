@@ -131,7 +131,7 @@ export function HiddenSection() {
     return (
       <EmptyState
         title="No hidden posts"
-        description="Hide a post from the ··· menu on it. Hiding is saved on this device, per account, and only hides the post for you. It never affects anyone else."
+        description="Hide a post from the ··· menu on it. Hiding is saved on this device, per account, and only hides the post for you."
       />
     );
   }

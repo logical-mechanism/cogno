@@ -58,14 +58,12 @@ export function DiagnosticsSection() {
 
   return (
     <div className={styles.card}>
-      <p className={styles.note}>Read-only.</p>
-
       <Row label="Connection" value={connLabel} dot={connDot} />
       <Row label="Genesis" value={shortHex(genesis)} mono title={genesis ?? undefined} copy={genesis ?? undefined} />
-      <Row label="Runtime" value={runtime ? `spec ${runtime.specV} · tx ${runtime.txV}` : "—"} mono />
+      <Row label="Network version" value={runtime ? `spec ${runtime.specV} · tx ${runtime.txV}` : "—"} mono />
       {/* Best + finalized on their OWN lines — the combined "#n / #n" overflowed the value column. */}
       <Row label="Best" value={heads.best ? `#${heads.best.number}` : "—"} mono />
-      <Row label="Finalized" value={heads.finalized ? `#${heads.finalized.number}` : "—"} mono />
+      <Row label="Confirmed" value={heads.finalized ? `#${heads.finalized.number}` : "—"} mono />
     </div>
   );
 }

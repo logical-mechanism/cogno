@@ -21,7 +21,7 @@ export function MutedSection() {
     return (
       <EmptyState
         title="No muted accounts"
-        description="Mute an account from the ··· menu on any of its posts. Muting is saved on this device, per account, and only hides posts for you. It never affects anyone else."
+        description="Mute an account from the ··· menu on any of its posts. Muting is saved on this device, per account, and only hides their posts for you."
       />
     );
   }

@@ -60,7 +60,7 @@ const ROLE_SPECS: RoleSpec[] = [
     label: "SPO",
     title: "Stake pool operator (SPO)",
     cardHint:
-      "Prove you control your pool's Calidus key (CIP-0151). The tag comes off on its own if the pool retires.",
+      "Prove you control your pool's Calidus key. The tag comes off if the pool retires.",
     // SPO wallet-sign is OFF on the live chain. Eternl's raw Calidus `signData` embeds a CIP-0151 `0xa1‖cred`
     // address, which the runtime (spec 210) rejects with `WrongNetwork` — the claim would always fail in the
     // pool. Runtime support lands with spec 211; the wallet pre-flight already accepts the 0xa1 form, so flip
@@ -68,7 +68,7 @@ const ROLE_SPECS: RoleSpec[] = [
     // actually confirm, so it stands alone (no dead "Sign with wallet" CTA).
     walletSignable: false,
     walletHint:
-      "Eternl can sign with your Calidus key. Just connect the account it lives on, or sign offline instead.",
+      "Eternl can sign with your Calidus key. Connect the account it lives on, or sign offline.",
     keyPlaceholder: "calidus1… id / calidus_vk1… / .vkey cborHex / 56-hex key hash",
     keyHint: "This is a public key, so never paste your secret one.",
   },
@@ -78,13 +78,12 @@ const ROLE_SPECS: RoleSpec[] = [
     label: "dRep",
     title: "Delegated representative (dRep)",
     cardHint:
-      "Prove you control your dRep key (CIP-0105). The tag comes off on its own if you deregister.",
+      "Prove you control your dRep key. The tag comes off if you deregister.",
     walletSignable: true,
-    walletHint:
-      "You'll need a CIP-95 wallet like Eternl or Lace. You won't have to find a key file or open a terminal.",
-    keyPlaceholder: "drep1… id  /  drep .vkey cborHex  /  56-hex dRep ID",
+    walletHint: "Needs a wallet that can sign with your dRep key, like Eternl or Lace.",
+    keyPlaceholder: "drep1… id / drep .vkey cborHex / 56-hex dRep ID",
     keyHint:
-      "This only works if your dRep is key-based, since a script dRep can't sign. It's a public key, so never paste your secret one.",
+      "Only key-based dReps can sign. This is a public key, so never paste your secret one.",
   },
 ];
 
@@ -159,7 +158,7 @@ function RoleClaimCard({
   const onWalletSign = useCallback(async () => {
     if (walletSigning) return;
     if (!walletId) {
-      setWalletError("connect a Cardano wallet first");
+      setWalletError("Connect a wallet first.");
       return;
     }
     setWalletSigning(true);
@@ -175,7 +174,7 @@ function RoleClaimCard({
       });
       const pf = await produceRoleProofWallet({ walletId, request: req, keyInput });
       if (!pf.ok || !pf.coseSign1 || !pf.coseKey) {
-        setWalletError(pf.error || "the wallet couldn't produce a valid proof");
+        setWalletError(pf.error || "Wallet signing failed. Sign offline instead.");
         return;
       }
       const res = await roles.claim(pf.coseSign1, pf.coseKey);
@@ -185,7 +184,7 @@ function RoleClaimCard({
         setRequest(null);
         setPasted("");
       } else {
-        setWalletError(res.error || "the on-chain claim was rejected");
+        setWalletError(res.error || "Couldn't submit the claim.");
       }
     } catch (e) {
       setWalletError(e instanceof Error ? e.message : String(e));
@@ -202,7 +201,7 @@ function RoleClaimCard({
     try {
       const pf = await preflightRolePasteback(pasted, request);
       if (!pf.ok || !pf.coseSign1 || !pf.coseKey) {
-        setPreflightError(pf.error || "the pasted proof failed pre-flight");
+        setPreflightError(pf.error || "Couldn't verify that output. Paste the full command result.");
         return;
       }
       const res = await roles.claim(pf.coseSign1, pf.coseKey);
@@ -212,7 +211,7 @@ function RoleClaimCard({
         setRequest(null);
         setPasted("");
       } else {
-        setSubmitError(res.error || "the on-chain claim was rejected");
+        setSubmitError(res.error || "Couldn't submit the claim.");
       }
     } finally {
       setSubmitting(false);
@@ -224,7 +223,7 @@ function RoleClaimCard({
     setRemoving(true);
     setRemoveError(null);
     const res = await roles.unclaim(spec.kind);
-    if (!res.ok) setRemoveError(res.error || "the on-chain removal was rejected");
+    if (!res.ok) setRemoveError(res.error || "Couldn't remove the tag.");
     setRemoving(false);
   }, [removing, roles, spec.kind]);
 
@@ -267,7 +266,7 @@ function RoleClaimCard({
         // ── claimed, but the observer hasn't confirmed a live role yet ──
         <div className={styles.statusRow}>
           <span className={styles.pendingMark}>
-            <Spinner size="sm" label="Awaiting confirmation" /> Claimed. Waiting for the chain to confirm.
+            <Spinner size="sm" label="Awaiting confirmation" /> Claimed. Waiting for confirmation.
           </span>
           {removeBtn}
         </div>
@@ -355,11 +354,10 @@ function RoleClaimCard({
               <div className={styles.step}>
                 <div className={styles.stepHead}>
                   <span className={styles.stepNum}>2</span>
-                  <span className={styles.stepTitle}>Sign it offline with cardano-signer</span>
+                  <span className={styles.stepTitle}>Sign offline with cardano-signer</span>
                 </div>
                 <p className={styles.hint}>
-                  Run this where your secret key lives, and point <code>--secret-key</code> at the file.
-                  Your key never leaves the machine.
+                  Run this where your secret key lives. Point <code>--secret-key</code> at the file.
                 </p>
                 <pre className={styles.codeBlock}>{request.command}</pre>
                 <div className={styles.actions}>
@@ -367,7 +365,6 @@ function RoleClaimCard({
                     Copy command
                   </button>
                 </div>
-                <p className={styles.hintMono}>Signs over: {request.syntheticAddress}</p>
               </div>
 
               {/* Step 3 — paste + submit */}
@@ -380,7 +377,7 @@ function RoleClaimCard({
                   className={styles.textarea}
                   value={pasted}
                   onChange={(e) => setPasted(e.target.value)}
-                  placeholder="Paste the cardano-signer --json-extended output"
+                  placeholder="cardano-signer --json-extended output"
                   spellCheck={false}
                   rows={4}
                   aria-label="cardano-signer output"
@@ -435,7 +432,7 @@ export function RolesSection() {
     return (
       <div className={styles.cards}>
         <div className={styles.card}>
-          <p className={styles.prompt}>Connect a Cardano wallet to claim a verified role.</p>
+          <p className={styles.prompt}>Connect a wallet to claim a verified role.</p>
         </div>
       </div>
     );
@@ -457,10 +454,7 @@ export function RolesSection() {
     return (
       <div className={styles.cards}>
         <div className={styles.card}>
-          <h3 className={styles.cardTitle}>Verified roles</h3>
-          <p className={styles.prompt}>
-            Register your posting key first. A verified role attaches to an account that can already post.
-          </p>
+          <p className={styles.prompt}>Register your account first to claim a role.</p>
         </div>
       </div>
     );

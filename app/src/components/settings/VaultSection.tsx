@@ -74,7 +74,7 @@ export function VaultSection() {
       ok(
         action === "lock"
           ? "Lock submitted. Crediting your posting power"
-          : "Exit submitted. Your posting power will update",
+          : "Exit submitted",
       );
       actionRef.current = null;
     } else if (vault.phase === "error" && vault.error) {
@@ -133,8 +133,8 @@ export function VaultSection() {
         )}
         {!showingPending && (
           <p className={styles.note}>
-            Posting requires locked ADA. Lock below to earn the posting power every post spends. It
-            becomes available a few minutes after your lock confirms on Cardano.
+            Posting power comes from locked ADA. It lands a few minutes after your lock confirms on
+            Cardano.
           </p>
         )}
       </div>

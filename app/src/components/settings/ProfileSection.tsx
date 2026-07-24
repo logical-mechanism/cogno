@@ -163,7 +163,7 @@ export function ProfileSection() {
   if (signerCtl.postingEnabled && bound === false) {
     return (
       <div className={styles.card}>
-        <p className={styles.prompt}>Finish setting up your account to edit your profile.</p>
+        <p className={styles.prompt}>Finish setup to edit your profile.</p>
         <button
           type="button"
           className={styles.primaryBtn}
@@ -293,7 +293,7 @@ export function ProfileSection() {
             </button>
           </div>
         ) : (
-          <EmptyState variant="generic" title="No pinned post" description="Pin a post from its menu to feature it here." />
+          <EmptyState variant="generic" title="No pinned post" description="Pin a post from the ··· menu on it." />
         )}
       </div>
     </div>

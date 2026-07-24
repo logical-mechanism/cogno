@@ -13,7 +13,7 @@ export function AppearanceSection() {
       <div className={styles.row}>
         <div className={styles.rowText}>
           <span className={styles.label}>Theme</span>
-          <span className={styles.hint}>Light or dark. Saved on this device.</span>
+          <span className={styles.hint}>Saved on this device.</span>
         </div>
         <ThemeToggle withLabel />
       </div>

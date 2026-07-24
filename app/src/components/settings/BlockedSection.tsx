@@ -25,7 +25,7 @@ export function BlockedSection() {
     return (
       <EmptyState
         title="No blocked accounts"
-        description="Block an account from the ··· menu on any of its posts. Blocking is saved on this device, per account, and hides everything from them for you. It never affects anyone else."
+        description="Block an account from the ··· menu on any of its posts. Blocking is saved on this device, per account, and hides everything from them for you."
       />
     );
   }
