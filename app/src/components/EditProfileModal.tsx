@@ -219,7 +219,7 @@ export function EditProfileModal({
         <NoPostingPowerNotice />
 
         {loading ? (
-          <Loading variant="panel" label="Loading your profile…" />
+          <Loading variant="panel" label="Loading profile…" />
         ) : (
           <>
             {/* Display name */}
@@ -251,7 +251,7 @@ export function EditProfileModal({
                   className={styles.textarea}
                   value={bio}
                   onChange={(e) => setBio(e.target.value)}
-                  placeholder="Say something about yourself"
+                  placeholder="About you"
                   rows={3}                />
                 <ByteCounter value={bio} maxBytes={MAX_BIO} size="sm" />
               </div>
@@ -300,7 +300,6 @@ export function EditProfileModal({
                 />
                 <ByteCounter value={banner} maxBytes={MAX_BANNER} size="sm" />
               </div>
-              <p className={styles.hint}>A link or IPFS CID for your header image.</p>
             </div>
 
             {/* Location */}
@@ -342,7 +341,7 @@ export function EditProfileModal({
 
             {overLimit && (
               <p className={styles.error} aria-live="polite">
-                One of your fields is over its byte limit.
+                A field is too long.
               </p>
             )}
 
@@ -417,7 +416,7 @@ export function EditProfileModal({
     {confirmDiscard && (
       <ConfirmDialog
         title="Discard changes?"
-        body="Your unsaved profile edits will be lost."
+        body="Your unsaved edits will be lost."
         confirmLabel="Discard"
         cancelLabel="Keep editing"
         danger

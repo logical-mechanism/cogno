@@ -108,7 +108,7 @@ export function PostCardActions({
         className={`${styles.action} ${styles.reply}`}
         aria-label={`Reply${post.replyCount ? `, ${post.replyCount}` : ""}`}
         disabled={notBound}
-        title={notBound ? "Finish setup to reply." : "Reply"}
+        title={notBound ? "Finish setup to reply" : "Reply"}
         onClick={doReply}
       >
         <span className={styles.iconWrap}>
@@ -123,7 +123,7 @@ export function PostCardActions({
         className={`${styles.action} ${styles.quote}`}
         aria-label="Quote"
         disabled={notBound}
-        title={notBound ? "Finish setup to quote." : "Quote"}
+        title={notBound ? "Finish setup to quote" : "Quote"}
         onClick={doQuote}
       >
         <span className={styles.iconWrap}>
@@ -136,10 +136,10 @@ export function PostCardActions({
         <button
           type="button"
           className={`${styles.action} ${styles.up} ${up ? styles.upOn : ""}`}
-          aria-label={`Upvote${post.upCount ? `, ${post.upCount} up` : ""}`}
+          aria-label={`Upvote${post.upCount ? `, ${post.upCount} upvote${post.upCount === 1 ? "" : "s"}` : ""}`}
           aria-pressed={up}
           disabled={notBound}
-          title={notBound ? "Finish setup to vote." : "Upvote (stake-weighted)"}
+          title={notBound ? "Finish setup to vote" : "Upvote"}
           onClick={doUp}
         >
           <span className={`${styles.iconWrap} ${up ? styles.pop : ""}`}>
@@ -158,10 +158,10 @@ export function PostCardActions({
         <button
           type="button"
           className={`${styles.action} ${styles.down} ${down ? styles.downOn : ""}`}
-          aria-label={`Downvote${post.downCount ? `, ${post.downCount} down` : ""}`}
+          aria-label={`Downvote${post.downCount ? `, ${post.downCount} downvote${post.downCount === 1 ? "" : "s"}` : ""}`}
           aria-pressed={down}
           disabled={notBound}
-          title={notBound ? "Finish setup to vote." : "Downvote (stake-weighted)"}
+          title={notBound ? "Finish setup to vote" : "Downvote"}
           onClick={doDown}
         >
           <span className={styles.iconWrap}>

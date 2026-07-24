@@ -33,9 +33,9 @@ function verb(n: Notif): string {
     case "mention":
       return "mentioned you";
     case "like":
-      return n.dir === "Down" ? "downvoted your post" : "liked your post";
+      return n.dir === "Down" ? "downvoted your post" : "upvoted your post";
     case "reputation":
-      return n.dir === "Down" ? "disputed your reputation" : "endorsed your reputation";
+      return n.dir === "Down" ? "disputed your account" : "endorsed your account";
     case "follow":
       return "followed you";
     case "pollvote":

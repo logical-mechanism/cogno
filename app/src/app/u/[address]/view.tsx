@@ -318,19 +318,19 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const emptyForTab = useMemo(() => {
     if (activeTab === "replies") {
       return isSelf
-        ? { variant: "replies" as const, title: "You haven't replied to anything yet." }
+        ? { variant: "replies" as const, title: "You haven't replied yet." }
         : { variant: "replies" as const, title: `${handle} hasn't replied yet.` };
     }
     if (activeTab === "likes") {
       return isSelf
-        ? { variant: "profile" as const, title: "Posts you like show up here." }
-        : { variant: "profile" as const, title: `${handle} hasn't liked any posts yet.` };
+        ? { variant: "profile" as const, title: "Posts you upvote show up here." }
+        : { variant: "profile" as const, title: `${handle} hasn't upvoted anything yet.` };
     }
     // Posts (also the who-is-this-when-unbound fallback: never a 404, the empty shell).
     return isSelf
       ? {
           variant: "profile" as const,
-          title: hasProfile ? "You haven't posted anything yet." : "Set up your profile and post something.",
+          title: hasProfile ? "You haven't posted yet." : "Post something to get started.",
           action: { label: "Compose", onClick: () => modalActions.openCompose() },
         }
       : { variant: "profile" as const, title: `${handle} hasn't posted yet.` };

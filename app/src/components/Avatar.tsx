@@ -125,8 +125,8 @@ export function Avatar({ address, src, size = "md", dim, name, eager, noRing, on
           reveal(resolvedSrc as string);
         }}
         role="img"
-        aria-label={`Show ${alt}`}
-        title={`Show ${alt}`}
+        aria-label="Show avatar"
+        title="Show avatar"
       >
         <IconEye className={styles.coverIcon} aria-hidden />
       </span>
@@ -165,8 +165,8 @@ export function Avatar({ address, src, size = "md", dim, name, eager, noRing, on
         e.stopPropagation();
         unreveal(resolvedSrc as string);
       }}
-      aria-label={`Hide ${alt}`}
-      title={`Hide ${alt}`}
+      aria-label="Hide avatar"
+      title="Hide avatar"
     >
       <IconEyeOff className={styles.hideIcon} aria-hidden />
     </span>

@@ -296,20 +296,13 @@ export default function HomePage() {
             me == null
               ? "Follow people to see their posts"
               : followeesEmpty
-                ? "Not following anyone yet."
-                : "No posts from people you follow yet"
-          }
-          emptyDescription={
-            me == null
-              ? "When you connect and follow accounts, their posts show up here."
-              : followeesEmpty
-                ? undefined
-                : "When the accounts you follow post, it'll show up here."
+                ? "Not following anyone yet"
+                : "Nobody you follow has posted yet"
           }
           emptyAction={
             me == null
-              ? { label: "Connect", onClick: () => router.push("/welcome/") }
-              : { label: "Find people to follow", onClick: () => router.push("/explore/") }
+              ? { label: "Sign in", onClick: () => router.push("/welcome/") }
+              : { label: "Find people", onClick: () => router.push("/explore/") }
           }
           onCompose={onCompose}
           onFlush={flushPending}

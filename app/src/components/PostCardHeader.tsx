@@ -149,8 +149,8 @@ export function PostCardHeader({
           <Handle address={author.address} />
           {at != null && <PostTime at={at} />}
           {dim && (
-            <span className={styles.restricted} title="This account's identity binding was revoked">
-              This account has been restricted
+            <span className={styles.restricted} title="Identity revoked">
+              Restricted
             </span>
           )}
           {headerExtra}
@@ -163,7 +163,7 @@ export function PostCardHeader({
             ref={btnRef}
             type="button"
             className={styles.moreBtn}
-            aria-label="More"
+            aria-label="Post options"
             aria-haspopup="menu"
             aria-expanded={open}
             aria-controls={open ? menuId : undefined}

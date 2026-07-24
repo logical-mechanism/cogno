@@ -23,7 +23,7 @@ export function ReputationBadge({ address }: { address: string }) {
   return (
     <span
       className={`${styles.badge} ${view.tone === "down" ? styles.down : styles.up}`}
-      title="Community reputation (stake-weighted). Higher means more endorsed by the community; a negative score is disputed."
+      title="Community reputation (stake-weighted). Negative means disputed."
       // Spell the direction out — the +/− sign glyph (a U+2212 minus for negatives) is unreliably
       // announced by screen readers, so "endorsed"/"disputed" carries the good-actor/troll signal.
       aria-label={`Community reputation: ${view.tone === "down" ? "disputed" : "endorsed"}, ${view.label}`}

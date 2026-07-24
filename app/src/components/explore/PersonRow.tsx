@@ -44,7 +44,6 @@ export function PersonRow({ person, viewer, isFollowing, onToggleFollow, highlig
       <Link
         href={`/u/${person.author}/`}
         className={styles.who}
-        aria-label={`Profile ${person.author}`}
       >
         <Avatar address={person.author} src={person.avatar} size="md" name={person.displayName} />
         <span className={styles.text}>

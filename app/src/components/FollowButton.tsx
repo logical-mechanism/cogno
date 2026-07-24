@@ -49,7 +49,7 @@ export function FollowButton({
       : "Follow";
 
   const ariaLabel = isFollowing
-    ? `Following ${handleOf(target)}, click to unfollow`
+    ? `Following ${handleOf(target)}`
     : `Follow ${handleOf(target)}`;
 
   const cls = [
@@ -68,7 +68,7 @@ export function FollowButton({
       aria-pressed={isFollowing}
       aria-label={ariaLabel}
       disabled={pending || notBound}
-      title={notBound ? "Finish setup to follow accounts." : undefined}
+      title={notBound ? "Finish setup to follow" : undefined}
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
       onFocus={() => setHovering(true)}

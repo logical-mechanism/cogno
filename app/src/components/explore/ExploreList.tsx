@@ -51,7 +51,7 @@ export function ExploreList({
         <EmptyState
           variant="generic"
           title="Couldn't run that search."
-          description="Something went wrong reaching the node."
+          description="Check your connection and try again."
           action={onRetry ? { label: "Retry", onClick: onRetry } : undefined}
         />
       </div>
@@ -65,7 +65,7 @@ export function ExploreList({
           variant="search"
           query={query}
           title={`No people found for "${query}"`}
-          description="Display names are set in profiles."
+          description="Search matches display names only."
         />
       </div>
     );
@@ -91,7 +91,7 @@ export function ExploreList({
       ))}
       {truncated && (
         <p className={styles.truncated}>
-          Showing the top {limit} people. Refine your search to narrow it.
+          Showing the top {limit} people. Refine your search to see others.
         </p>
       )}
     </div>
