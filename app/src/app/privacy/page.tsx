@@ -19,21 +19,19 @@ export default function PrivacyPage() {
       <article className={styles.page}>
         <p className={styles.lead}>
           cogno has no accounts, no analytics, no cookies and no server that stores anything about
-          you. That means there is very little to say here, but the little there is matters.
+          you.
         </p>
 
         <section className={styles.section}>
           <h2 className={styles.heading}>What you post is permanent</h2>
           <p className={styles.callout}>
-            Posts cannot be deleted. Not by you, not by us, not by anyone. There is no delete
-            function in the chain. That is a deliberate design choice, not an oversight. Anything you
-            publish is written to a public blockchain, replicated to every node, and stays there.
-            Assume it is permanent and world-readable before you press post.
+            Posts cannot be deleted. Not by you, not by us, not by anyone. Anything you publish is
+            written to a public blockchain, replicated to every node, and stays there. Assume it is
+            permanent and world-readable before you press post.
           </p>
           <p className={styles.body}>
             Your address, your posts, your votes, your follows and your profile are all public chain
-            data. Anyone can read them, index them, and keep their own copy, forever, without asking
-            us.
+            data. Anyone can read them, index them, and keep their own copy forever.
           </p>
         </section>
 
@@ -42,27 +40,26 @@ export default function PrivacyPage() {
           <p className={styles.body}>Nothing. Specifically:</p>
           <ul className={styles.list}>
             <li>
-              No account, no email, no password. Your identity is a key you hold — and one we cannot
-              hold for you, because it never leaves your browser.
+              No account, no email, no password. Your identity is a key you hold, and it never leaves
+              your browser.
             </li>
             <li>No analytics, no tracking pixels, no advertising, no third-party scripts.</li>
             <li>No cookies.</li>
             <li>
-              No database. This app is a static page. There is no server of ours for your data to sit
-              on.
+              No database. This app is a static page, with no server of ours for your data to sit on.
             </li>
           </ul>
           <p className={styles.body}>
             Bookmarks, muted accounts, blocked accounts and which notifications you have read are
             stored in your own browser, on your own device. So is your address, so that refreshing the
-            page keeps you signed in — that address is already public on the chain, it is the author
+            page keeps you signed in. That address is already public on the chain: it is the author
             of every post you write. Your posting key is not stored: it is re-derived from a wallet
             signature the first time you post in a session. None of it is ever sent anywhere.
           </p>
           <p className={styles.body}>
             Signing out forgets your address, so the next person to open this browser starts as a
             stranger. It deliberately leaves your bookmarks, mutes, blocks and read notifications
-            alone — those are yours, and signing back in should not hand you an empty app. Clearing
+            alone: those are yours, and signing back in should not hand you an empty app. Clearing
             your browser data erases everything, including those.
           </p>
         </section>
@@ -70,8 +67,8 @@ export default function PrivacyPage() {
         <section className={styles.section}>
           <h2 className={styles.heading}>What the network can see</h2>
           <p className={styles.body}>
-            Reading and posting means your browser talks to computers, and those computers see an IP
-            address, the same as with any website. Two of them are worth naming:
+            Reading and posting means your browser talks to servers, and they see your IP address,
+            like any website. Two are worth naming:
           </p>
           <ul className={styles.list}>
             <li>
@@ -80,22 +77,20 @@ export default function PrivacyPage() {
             </li>
             <li>
               <strong>Blockfrost</strong>, a third-party Cardano service your browser calls directly
-              when you lock or unlock ADA in the vault. That is their service, under their terms, not
-              ours.
+              when you lock or exit ADA in the vault. It runs under their terms, not ours.
             </li>
           </ul>
           <p className={styles.body}>
-            We keep no logs of this for any purpose beyond running the node, and we do not build
-            profiles from it.
+            We keep logs only to run the node, and we do not build profiles from them.
           </p>
         </section>
 
         <section className={styles.section}>
           <h2 className={styles.heading}>Deleting your data</h2>
           <p className={styles.body}>
-            We cannot delete your posts, because we do not hold them and the chain does not permit it.
-            We have no account to close and no profile to erase. Everything we could delete on your
-            behalf is already stored only on your own device, where you can clear it yourself.
+            We cannot delete your posts: we do not hold them, and the chain does not permit it. There
+            is no account to close and no profile to erase. Everything else is on your device, where
+            you can clear it yourself.
           </p>
         </section>
 

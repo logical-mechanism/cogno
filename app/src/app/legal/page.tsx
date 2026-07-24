@@ -24,7 +24,7 @@ export default function LegalPage() {
       <article className={styles.page}>
         <p className={styles.lead}>
           cogno is open source. There is no company account, no terms you clicked through, and no
-          service being sold to you. So this page is short.
+          service being sold to you.
         </p>
 
         <section className={styles.section}>
@@ -43,7 +43,7 @@ export default function LegalPage() {
             <a className={styles.link} href={REPO} target="_blank" rel="noreferrer noopener">
               github.com/logical-mechanism/cogno
             </a>
-            , and every upstream it borrows from is credited in{" "}
+            , and the code it builds on is credited in{" "}
             <a
               className={styles.link}
               href={`${REPO}/blob/main/NOTICE`}
@@ -55,17 +55,17 @@ export default function LegalPage() {
             .
           </p>
           <p className={styles.body}>
-            It is provided <strong>as is, without warranties or conditions of any kind</strong>. That
-            is not boilerplate. Use it at your own risk.
+            It is provided <strong>as is, without warranties or conditions of any kind</strong>. Use
+            it at your own risk.
           </p>
         </section>
 
         <section className={styles.section}>
-          <h2 className={styles.heading}>Third-party software in this page</h2>
+          <h2 className={styles.heading}>Third-party software</h2>
           <p className={styles.body}>
-            This app is a static bundle that includes open-source code from other authors, among them
-            React, Next.js, polkadot-api, MeshJS and the Cardano SDK. Their licenses and copyright
-            notices are reproduced in full here:
+            This app bundles open-source code from other authors, among them React, Next.js,
+            polkadot-api, MeshJS and the Cardano SDK. Their licenses and copyright notices are
+            reproduced in full here:
           </p>
           <p className={styles.body}>
             <a
@@ -92,11 +92,11 @@ export default function LegalPage() {
         </section>
 
         <section className={styles.section}>
-          <h2 className={styles.heading}>Names that are not ours</h2>
+          <h2 className={styles.heading}>Trademarks</h2>
           <p className={styles.body}>
             Cardano, Polkadot, Substrate and the wallet brands this app can connect to are trademarks
-            of their respective owners. cogno names them to say truthfully what it is built on and
-            what it reads. It is not affiliated with, sponsored by, or endorsed by any of them.
+            of their respective owners. cogno is not affiliated with, sponsored by, or endorsed by any
+            of them.
           </p>
         </section>
 
