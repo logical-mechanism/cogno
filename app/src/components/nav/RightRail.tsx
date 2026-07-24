@@ -93,7 +93,7 @@ export function RightRail() {
           <h2 className={styles.cardTitle}>Who to follow</h2>
           {suggestions.map((s) => (
             <div className={styles.person} key={s.author}>
-              <Link href={`/u/${s.author}/`} className={styles.personLink} aria-label={`Profile ${s.author}`}>
+              <Link href={`/u/${s.author}/`} className={styles.personLink}>
                 <Avatar address={s.author} src={s.avatar} size="md" name={s.displayName} />
                 <span className={styles.personWho}>
                   <DisplayName address={s.author} displayName={s.displayName} truncate />
@@ -117,11 +117,11 @@ export function RightRail() {
 
       <footer className={styles.footer}>
         <nav className={styles.footerLinks} aria-label="About this app">
-          {/* /settings is walled: for a logged-out guest (who sees this rail on public read surfaces) the
-              About content lives behind onboarding, so don't label the link as if About is reachable —
-              show plain "Settings" (which honestly routes them to sign in). Legal/Privacy are public. */}
+          {/* Labelled "Settings" for everyone: About is a section inside /settings, and LeftNav and
+              BottomTabBar both name this destination Settings. /settings is walled, so a logged-out
+              guest is routed to sign in. Legal/Privacy are public. */}
           <Link href="/settings/" className={styles.about}>
-            {me ? "About & settings" : "Settings"}
+            Settings
           </Link>
           <span aria-hidden="true">·</span>
           <Link href="/legal/" className={styles.about}>

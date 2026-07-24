@@ -66,7 +66,7 @@ export function Toast({ spec, onDismiss, onMouseEnter, onMouseLeave, onFocus, on
       <button
         type="button"
         className={styles.close}
-        aria-label="Dismiss notification"
+        aria-label="Dismiss"
         onClick={() => onDismiss(id)}
       >
         <IconClose className={styles.icon} />

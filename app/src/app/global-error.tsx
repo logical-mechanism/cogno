@@ -59,7 +59,7 @@ export default function GlobalError({
             cogno couldn&apos;t start.
           </h1>
           <p style={{ margin: "0 0 1.25rem", color: "#71767b", lineHeight: 1.5 }}>
-            Something failed while connecting to the chain. This is usually a bad node endpoint or a
+            This is usually a dropped connection or a
             dropped connection.
           </p>
           {error.digest && (

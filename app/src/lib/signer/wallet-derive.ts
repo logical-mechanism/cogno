@@ -62,7 +62,7 @@ export async function deriveSignerFromWallet(walletId: string): Promise<DerivedA
   // misleading "connect a Cardano wallet" message) only after the PERMANENT identity + stake binds were
   // already burned. `!== 0` matches the vault's preprod check (see lib/cardano/vault.ts).
   if ((await wallet.getNetworkId()) !== 0) {
-    throw new Error("wrong network: switch your wallet to preprod (testnet), then reconnect");
+    throw new Error("Switch your wallet to preprod (testnet), then reconnect.");
   }
   const signingAddress = await wallet.getChangeAddress();
   const address = cst.Address.fromBech32(signingAddress);

@@ -14,16 +14,16 @@ export interface LockPreflight {
 
 export function preflightLock(p: LockPreflight): void {
   if (!/^[0-9a-f]{56}$/i.test(p.paymentKeyHash)) {
-    throw new Error("owner payment key hash is not a 28-byte verification-key hash");
+    throw new Error("Couldn't read your wallet address. Reconnect and try again.");
   }
   if (!/^[0-9a-f]{56}$/i.test(p.stakeKeyHash)) {
-    throw new Error("owner stake key hash is not a 28-byte key hash (use a base address)");
+    throw new Error("Use a wallet address that has a stake key.");
   }
   if (p.lockLovelace < MIN_LOCK) {
     throw new Error(`lock must be at least ${MIN_LOCK} lovelace (the min_lock floor)`);
   }
   const expected = beaconNameHex(p.paymentKeyHash, p.stakeKeyHash);
   if (p.beacon.toLowerCase() !== expected.toLowerCase()) {
-    throw new Error("beacon name does not equal blake2b_256(owner); refusing to lock");
+    throw new Error("Nothing was locked. Reconnect your wallet and try again.");
   }
 }

@@ -138,9 +138,9 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
 
     let reason: string | undefined;
     if (!nameMatches) {
-      reason = `Runtime spec_name "${nodeSpecName}" does not match expected "${EXPECTED_SPEC_NAME}". This is not a cogno-chain node.`;
+      reason = "This isn't a cogno node. Check the address you connected to.";
     } else if (!versionMatches) {
-      reason = `Runtime spec_version ${nodeSpecVersion} does not match the version this app was built against (${DESCRIPTOR_SPEC_VERSION}). Posting is blocked to avoid mis-encoding; reads remain best-effort.`;
+      reason = `App and network versions don't match (app ${DESCRIPTOR_SPEC_VERSION}, network ${nodeSpecVersion}). Reading still works; posting is off.`;
     }
 
     return {
@@ -151,12 +151,15 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
       reason,
     };
   } catch (err) {
+    // `reason` is user-facing copy, so the raw throw goes to the console instead of the UI —
+    // a boot failure stays diagnosable without spelling a stack trace at the reader.
+    console.warn("[cogno] boot guard could not read the runtime version:", stringifyError(err));
     return {
       ok: false,
       nodeSpecName: "",
       nodeSpecVersion: 0,
       descriptorSpecVersion: DESCRIPTOR_SPEC_VERSION,
-      reason: `Could not read runtime version: ${stringifyError(err)}`,
+      reason: "Can't reach cogno. Check your connection and try again.",
     };
   }
 }

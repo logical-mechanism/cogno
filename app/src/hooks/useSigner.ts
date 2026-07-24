@@ -256,7 +256,7 @@ export function useSigner(): UseSigner {
     if (chosen) return chosen; // a seed is already in memory (fresh connect, dev account, or a prior unlock)
     if (inFlightUnlock.current) return inFlightUnlock.current;
     const rec: RestoredSession | null = record;
-    if (!rec) throw new Error("no session to unlock — connect your wallet");
+    if (!rec) throw new Error("no session to unlock. Connect your wallet");
 
     // The SAME abandonment generation `connectWallet` uses. A CIP-30 signData() has no abort handle,
     // so a sign-out during an unlock cannot stop the popup — but it must stop the popup's late
@@ -282,7 +282,7 @@ export function useSigner(): UseSigner {
           clearRestoredSession();
           setProbeState("mismatch");
           throw new Error(
-            "this wallet is now on a different account — sign in again to post from it",
+            "this wallet is now on a different account. Sign in again to post from it",
           );
         }
         setChosen(s);

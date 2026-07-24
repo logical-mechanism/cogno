@@ -177,7 +177,7 @@ export function useThread(
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        if (cold) setError(readErrorCopy(e, "Could not load the thread."));
+        if (cold) setError(readErrorCopy(e, "Couldn't load this thread."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

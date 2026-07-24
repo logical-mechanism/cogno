@@ -357,7 +357,7 @@ export function ModalRouteHost() {
           // Re-toast under the SAME id on purpose: "profile-save" is the sticky pending toast above,
           // which has NO auto-dismiss (pending: null). Replacing it in place is the only thing that
           // clears it. Route this through useActionToast.fail() — whose toast ids are "rate-limit" and
-          // a fresh nextId() — and "Saving your profile…" spins on the app-wide toast bus forever.
+          // a fresh nextId() — and "Saving profile…" spins on the app-wide toast bus forever.
           toast({
             id: "profile-save",
             kind: error.kind === "rate-limit" ? "rate-limit" : "error",
@@ -395,7 +395,7 @@ export function ModalRouteHost() {
           fields.website,
         ),
         fields,
-        "Saving your profile…",
+        "Saving profile…",
         "Profile updated",
       );
     },
@@ -412,7 +412,7 @@ export function ModalRouteHost() {
       location: "",
       website: "",
     };
-    runProfileWrite(submitClearProfile(api, signer), empty, "Clearing your profile…", "Profile cleared");
+    runProfileWrite(submitClearProfile(api, signer), empty, "Clearing profile…", "Profile cleared");
   }, [api, signer, runProfileWrite]);
 
   const title = useMemo(() => (kind ? TITLES[kind] : ""), [kind]);
@@ -471,7 +471,7 @@ export function ModalRouteHost() {
                 fontSize: "var(--cg-fs-sm)",
               }}
             >
-              This post is unavailable. Posting as a new post instead.
+              This post is unavailable. Your text will post on its own.
             </p>
           }
         />

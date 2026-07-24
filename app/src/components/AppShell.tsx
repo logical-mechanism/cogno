@@ -213,9 +213,9 @@ export interface NotFoundInlineProps {
 
 export function NotFoundInline({ kind = "page" }: NotFoundInlineProps) {
   const copy: Record<NonNullable<NotFoundInlineProps["kind"]>, { title: string; description: string }> = {
-    post: { title: "This post doesn't exist", description: "It may have never existed, or the link is malformed." },
+    post: { title: "This post doesn't exist", description: "Check the link and try again." },
     profile: { title: "This account doesn't exist", description: "Check the address and try again." },
-    page: { title: "This page doesn't exist", description: "The link may be broken or the page may have moved." },
+    page: { title: "This page doesn't exist", description: "Check the link and try again." },
   };
   const { title, description } = copy[kind];
 
@@ -230,7 +230,7 @@ export function NotFoundInline({ kind = "page" }: NotFoundInlineProps) {
       />
       <div className={styles.notFoundHome}>
         <Link href="/" className={styles.homeLink}>
-          Go to Home
+          Go home
         </Link>
       </div>
     </>

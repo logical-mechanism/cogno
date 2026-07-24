@@ -87,7 +87,7 @@ export function useMutation(): UseMutation {
       // turned every write on an incompatible node into an unhandled rejection.
       const error: ChainError = {
         kind: "raw",
-        detail: boot.reason ?? "This app is not compatible with the connected node.",
+        detail: boot.reason ?? "This app doesn't match this network.",
       };
       opts?.onError?.(error);
       return Promise.resolve();

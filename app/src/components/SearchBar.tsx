@@ -95,7 +95,7 @@ export function SearchBar({
           aria-label={placeholder}
           disabled={!searchEnabled}
           aria-disabled={!searchEnabled || undefined}
-          title={searchEnabled ? undefined : "Search is available once connected to a node."}
+          title={searchEnabled ? undefined : "Available once connected."}
           autoFocus={autoFocus}
           spellCheck={false}
           autoComplete="off"

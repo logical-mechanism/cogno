@@ -103,7 +103,7 @@ export function useRoles(
       coseSign1Hex: string,
       coseKeyHex: string,
     ): Promise<{ ok: boolean; role?: RoleKindType; error?: string }> => {
-      if (!api || !client) return { ok: false, error: "not connected" };
+      if (!api || !client) return { ok: false, error: "Not connected to the network." };
       try {
         // Submit the offline proof feelessly, as a bare/unsigned extrinsic — no fee, no signing account.
         // `client.submit` resolves on FINALIZATION (the multi-second wait).
@@ -118,7 +118,7 @@ export function useRoles(
           console.error(
             `cogno: role claim submitted but the chain shows no claim for ${signer.ss58.slice(0, 8)}… (role ${res.role ?? "Spo"})`,
           );
-          return { ok: false, role: res.role, error: "role claim submitted, but the chain still shows no claim" };
+          return { ok: false, role: res.role, error: "claim submitted, but it hasn't landed yet. Try again in a moment" };
         }
         return { ok: true, role: res.role };
       } catch (e) {
@@ -130,7 +130,7 @@ export function useRoles(
 
   const unclaim = useCallback(
     async (role: RoleKindType): Promise<{ ok: boolean; error?: string }> => {
-      if (!api) return { ok: false, error: "not connected" };
+      if (!api) return { ok: false, error: "Not connected to the network." };
       return submitUnclaimRole(api, signer, role);
     },
     [api, signer],

@@ -199,8 +199,8 @@ export async function produceBindProof(opts: {
   const genesis = opts.genesisHex.replace(/^0x/, "").toLowerCase();
   try {
     // The payload grammar pins 64-hex genesis + 64-hex account; refuse to sign a malformed commitment.
-    if (!/^[0-9a-f]{64}$/.test(account)) throw new Error("posting account is not a 32-byte hex pubkey");
-    if (!/^[0-9a-f]{64}$/.test(genesis)) throw new Error("chain genesis is not a 32-byte hex hash");
+    if (!/^[0-9a-f]{64}$/.test(account)) throw new Error("Your account key looks malformed. Reconnect your wallet.");
+    if (!/^[0-9a-f]{64}$/.test(genesis)) throw new Error("Got a malformed reply from the network. Try again.");
 
     const [{ BrowserWallet }, cst] = await Promise.all([
       import("@meshsdk/core"),
@@ -211,7 +211,7 @@ export async function produceBindProof(opts: {
     // Belt-and-suspenders wrong-network guard (connect already blocks it): a mainnet-flavoured bind would
     // commit a PERMANENT identity under an account that preprod can't reproduce. `!== 0` = preprod.
     if ((await wallet.getNetworkId()) !== 0) {
-      throw new Error("wrong network: switch your wallet to preprod (testnet), then reconnect");
+      throw new Error("Switch your wallet to preprod (testnet), then reconnect.");
     }
 
     // Pick a signing address the user controls whose PAYMENT credential is a verification key (type 0) —
@@ -223,7 +223,7 @@ export async function produceBindProof(opts: {
       console.error(
         `cogno: bind aborted — wallet "${opts.walletId}" change address has a non-vkey payment credential (type=${props.paymentPart?.type}); never bind from a script/vault address`,
       );
-      throw new Error("signing address has a script payment credential; bind from a normal wallet address, never a script/vault address");
+      throw new Error("That's a script payment credential. Connect a normal wallet account.");
     }
 
     // Build the EXACT payload IN-BROWSER (no follower): the nonce is client-generated and on-chain it is
@@ -242,7 +242,7 @@ export async function produceBindProof(opts: {
       const vkHex = typeof vk === "string" ? vk : (vk as { hex?: () => string }).hex?.() ?? String(vk);
       const vkLen = vkHex.replace(/^0x/, "").length / 2;
       if (vkLen === 64) {
-        throw new Error("signing key is a 64-byte extended key; only 32-byte CIP-30 keys are accepted");
+        throw new Error("This wallet's extended key isn't supported. Try another wallet.");
       }
     } catch (e) {
       if (e instanceof Error && e.message.includes("extended key")) throw e;
@@ -251,8 +251,8 @@ export async function produceBindProof(opts: {
 
     // The on-chain args are bounded (cose_sign1 <= 512 bytes, cose_key <= 128 bytes); a blob over the
     // bound would be rejected at decode, so fail early with a clear message.
-    if (hexByteLen(sig.signature) > 512) throw new Error("CIP-8 signature exceeds the 512-byte on-chain bound");
-    if (hexByteLen(sig.key) > 128) throw new Error("CIP-8 key exceeds the 128-byte on-chain bound");
+    if (hexByteLen(sig.signature) > 512) throw new Error("Your wallet's signature exceeds the size the network accepts.");
+    if (hexByteLen(sig.key) > 128) throw new Error("Your wallet's key exceeds the size the network accepts.");
 
     return { ok: true, coseSign1: sig.signature, coseKey: sig.key, signingAddress };
   } catch (e) {
@@ -286,8 +286,8 @@ export async function produceBindProofStake(opts: {
   const account = opts.sr25519PubkeyHex.replace(/^0x/, "").toLowerCase();
   const genesis = opts.genesisHex.replace(/^0x/, "").toLowerCase();
   try {
-    if (!/^[0-9a-f]{64}$/.test(account)) throw new Error("posting account is not a 32-byte hex pubkey");
-    if (!/^[0-9a-f]{64}$/.test(genesis)) throw new Error("chain genesis is not a 32-byte hex hash");
+    if (!/^[0-9a-f]{64}$/.test(account)) throw new Error("Your account key looks malformed. Reconnect your wallet.");
+    if (!/^[0-9a-f]{64}$/.test(genesis)) throw new Error("Got a malformed reply from the network. Try again.");
 
     const [{ BrowserWallet }, cst] = await Promise.all([
       import("@meshsdk/core"),
@@ -298,23 +298,23 @@ export async function produceBindProofStake(opts: {
     // Belt-and-suspenders wrong-network guard (connect already blocks it): a mainnet-flavoured stake bind
     // would anchor voting power to a credential preprod can't reproduce. `!== 0` = preprod.
     if ((await wallet.getNetworkId()) !== 0) {
-      throw new Error("wrong network: switch your wallet to preprod (testnet), then reconnect");
+      throw new Error("Switch your wallet to preprod (testnet), then reconnect.");
     }
 
     // The wallet's REWARD (stake) address — signing over it makes the wallet sign with the STAKE key.
     const rewardAddresses: string[] = await wallet.getRewardAddresses();
     if (!rewardAddresses.length) {
-      throw new Error("wallet exposes no reward address; use Eternl (a base address with a stake key)");
+      throw new Error("This wallet has no reward address. Use Eternl or Lace.");
     }
     const rewardAddress = rewardAddresses[0];
 
     // Parse the 29-byte reward address (header + 28-byte stake credential). Require a vkey stake reward
     // (header type 0b1110); a SCRIPT-stake reward (0b1111) is not a votable identity here.
     const rewardRaw = cst.Address.fromBech32(rewardAddress).toBytes().toString();
-    if (rewardRaw.length !== 58) throw new Error("reward address is not 29 bytes; unexpected address shape");
+    if (rewardRaw.length !== 58) throw new Error("Couldn't read this wallet's reward address.");
     const addrType = parseInt(rewardRaw.slice(0, 2), 16) >> 4;
     if (addrType !== 0b1110) {
-      throw new Error(`reward address has a script stake credential (type ${addrType}); only vkey stake keys can bind`);
+      throw new Error(`Script stake keys can't be linked (type ${addrType}). Use a wallet with a normal stake key.`);
     }
     const stakeCredentialHex = rewardRaw.slice(2);
 
@@ -329,14 +329,14 @@ export async function produceBindProofStake(opts: {
       const vk = cst.getPublicKeyFromCoseKey(sig.key);
       const vkHex = typeof vk === "string" ? vk : (vk as { hex?: () => string }).hex?.() ?? String(vk);
       if (vkHex.replace(/^0x/, "").length / 2 === 64) {
-        throw new Error("signing key is a 64-byte extended key; only 32-byte CIP-30 keys are accepted");
+        throw new Error("This wallet's extended key isn't supported. Try another wallet.");
       }
     } catch (e) {
       if (e instanceof Error && e.message.includes("extended key")) throw e;
     }
 
-    if (hexByteLen(sig.signature) > 512) throw new Error("CIP-8 signature exceeds the 512-byte on-chain bound");
-    if (hexByteLen(sig.key) > 128) throw new Error("CIP-8 key exceeds the 128-byte on-chain bound");
+    if (hexByteLen(sig.signature) > 512) throw new Error("Your wallet's signature exceeds the size the network accepts.");
+    if (hexByteLen(sig.key) > 128) throw new Error("Your wallet's key exceeds the size the network accepts.");
 
     return { ok: true, coseSign1: sig.signature, coseKey: sig.key, signingAddress: rewardAddress, stakeCredentialHex };
   } catch (e) {

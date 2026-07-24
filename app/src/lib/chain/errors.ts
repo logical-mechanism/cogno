@@ -62,7 +62,7 @@ const MODULE_COPY: Record<string, string> = {
   // ── Microblog ──
   "Microblog::TooLong": "That post is too long.",
   "Microblog::NotFound": "That post no longer exists.",
-  "Microblog::TooManyPosts": "You've reached the maximum number of posts for one account.",
+  "Microblog::TooManyPosts": "You've reached your post limit.",
   "Microblog::NotAllowed": "You need a linked Cardano identity to do that.",
   "Microblog::NotVoted": "You haven't voted on that.",
   "Microblog::SelfFollow": "You can't follow yourself.",
@@ -91,8 +91,8 @@ const MODULE_COPY: Record<string, string> = {
   "CognoGate::ProofInvalid": "That signature didn't verify. Try signing again.",
   "CognoGate::WrongGenesis": "That signature was made for a different chain.",
   "CognoGate::IdentityTombstoned": "That Cardano identity has been revoked.",
-  "CognoGate::NotPaymentBound": "Link your payment identity before linking a stake key.",
-  "CognoGate::AccountAlreadyStakeBound": "This account already has a stake key linked.",
+  "CognoGate::NotPaymentBound": "Register your account first.",
+  "CognoGate::AccountAlreadyStakeBound": "Your stake key is already linked.",
   "CognoGate::StakeCredAlreadyBound": "That stake key is already linked to another account.",
   "CognoGate::StakeCredTombstoned": "That stake key has been revoked.",
 };
@@ -119,7 +119,7 @@ function isTagged(v: unknown): v is { type: string; value: unknown } {
  * shipped before, and is the honest floor: a wrong sentence is worse than an opaque one.
  */
 export function classifyDispatchError(err: RawDispatchError | undefined): ChainError {
-  if (!err) return { kind: "raw", detail: "Transaction failed (no dispatch error reported)." };
+  if (!err) return { kind: "raw", detail: "Transaction failed. Try again." };
   if (err.type === "Module" && isTagged(err.value)) {
     const pallet = err.value;
     if (isTagged(pallet.value)) {
@@ -185,6 +185,6 @@ const UNREACHABLE =
 export function readErrorCopy(err: unknown, fallback: string): string {
   const raw = err instanceof Error ? err.message : typeof err === "string" ? err : "";
   if (!raw) return fallback;
-  if (UNREACHABLE.test(raw)) return "Can't reach the node. Check your endpoint in Settings.";
+  if (UNREACHABLE.test(raw)) return "Can't reach cogno. Check your connection and try again.";
   return errorCopy(classifyThrown(err));
 }

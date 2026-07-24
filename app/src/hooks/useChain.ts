@@ -107,7 +107,7 @@ export function useChain(): UseChain {
           reason:
             err instanceof Error
               ? err.message
-              : "boot guard probe failed (node unreachable?)",
+              : "Can't reach cogno. Check your connection and try again.",
         });
       });
     return () => {

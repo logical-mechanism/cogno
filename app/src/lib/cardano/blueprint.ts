@@ -24,9 +24,12 @@ export async function assertBlueprintIntegrity(): Promise<void> {
   const { resolveScriptHash } = await import("@meshsdk/core");
   const h = resolveScriptHash(APPLIED_CBOR, "V3");
   if (h !== VAULT_HASH) {
-    throw new Error(
-      `talk_vault artifact integrity check failed: applied CBOR hashes to ${h}, expected ${VAULT_HASH}. Re-run contracts/scripts/regen-vault.mjs.`,
+    // The throw reaches the user (it blocks both lock and exit), so it stays plain; the hashes and
+    // the operator's fix go to the console, where whoever shipped the mismatched artifact will look.
+    console.error(
+      `[cogno] talk_vault artifact integrity check failed: applied CBOR hashes to ${h}, expected ${VAULT_HASH}. Re-run contracts/scripts/regen-vault.mjs.`,
     );
+    throw new Error("Vault contract check failed. Locking and exiting are disabled.");
   }
   asserted = true;
 }

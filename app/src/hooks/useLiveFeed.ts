@@ -230,7 +230,7 @@ export function useLiveFeed(
         })
         .catch((e: unknown) => {
           seeding = false;
-          fail(e, "Could not load the feed.");
+          fail(e, "Couldn't load the feed.");
         });
     };
 
@@ -273,7 +273,7 @@ export function useLiveFeed(
 
     const sub = source.liveHeadId().subscribe({
       next: handleHead,
-      error: (e: unknown) => fail(e, "The live feed errored."),
+      error: (e: unknown) => fail(e, "Live updates stopped."),
     });
 
     return () => {
@@ -296,7 +296,7 @@ export function useLiveFeed(
         setCursor(pg.endCursor);
       })
       .catch((e: unknown) => {
-        if (epochRef.current === epoch) setError(readErrorCopy(e, "Could not load more."));
+        if (epochRef.current === epoch) setError(readErrorCopy(e, "Couldn't load more."));
       })
       .finally(() => {
         if (epochRef.current === epoch) setLoadingMore(false);

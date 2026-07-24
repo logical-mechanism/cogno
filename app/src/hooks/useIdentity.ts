@@ -226,7 +226,7 @@ export function useIdentity(
           // (2) the wallet signs the pinned payload ONCE (built in-browser; no trusted follower).
           const proof = await produceBindProof({ walletId, sr25519PubkeyHex: signer.publicKeyHex, genesisHex });
           if (!proof.ok || !proof.coseSign1 || !proof.coseKey) {
-            throw new Error(proof.error || "could not produce the CIP-8 bind proof");
+            throw new Error(proof.error || "your wallet didn't return a usable proof");
           }
           // (3) submit the self-proof on-chain, FEELESSLY, as a bare/unsigned extrinsic. No fee, no
           //     funded relay — the CIP-8 proof is the authorization and the runtime is the sole verifier,
@@ -236,7 +236,7 @@ export function useIdentity(
           setBindPhase("submitting");
           const res = await submitLinkIdentityFeeless(client, api, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
-            throw new Error(res.error || "the on-chain bind was rejected");
+            throw new Error(res.error || "the registration was rejected");
           }
           // (4) AccountOf readback: confirm the verified identity resolves to MY account, the
           //     belt-and-suspenders 1:1 check (the proof already commits my account cryptographically).
@@ -244,7 +244,7 @@ export function useIdentity(
           if (res.identityHash) {
             const who = await readAccountOf(api, res.identityHash).catch(() => undefined);
             if (who && who !== signer.ss58) {
-              throw new Error("the bound identity resolved to a different account; refusing to claim it");
+              throw new Error("That identity is already linked to a different account.");
             }
           }
           const nowBound = await isAccountBound(api, signer.ss58).catch(() => false);
@@ -252,7 +252,7 @@ export function useIdentity(
             console.error(
               `cogno: bind submitted but the chain shows ${signer.ss58.slice(0, 8)}… unbound (wallet "${walletId}", identity ${res.identityHash?.slice(0, 10)}…)`,
             );
-            throw new Error("bind submitted, but the chain still shows your account unbound");
+            throw new Error("Registration didn't take. Try again.");
           }
           setBound(true);
           setBoundAddress(proof.signingAddress ?? null);
@@ -276,7 +276,7 @@ export function useIdentity(
       // The runtime requires the account to be payment-bound first (NotPaymentBound). Pre-check for a
       // clear message; the on-chain rule (pool + dispatch) is the authority either way.
       if (bound !== true) {
-        setStakeError("register your posting key first; voting power needs an account that can already post");
+        setStakeError("Register your account first.");
         return;
       }
       setStakeBinding(true);
@@ -290,7 +290,7 @@ export function useIdentity(
           //     Requires a wallet that signs over a reward address (Eternl/Lace); the UI gates this.
           const proof = await produceBindProofStake({ walletId, sr25519PubkeyHex: signer.publicKeyHex, genesisHex });
           if (!proof.ok || !proof.coseSign1 || !proof.coseKey) {
-            throw new Error(proof.error || "could not produce the CIP-8 stake proof");
+            throw new Error(proof.error || "your wallet didn't return a usable stake proof");
           }
           // (3) submit the stake self-proof FEELESSLY, as a bare/unsigned extrinsic — same as the payment
           //     bind, no fee and no funded relay. The runtime requires the account already be payment-bound
@@ -299,7 +299,7 @@ export function useIdentity(
           setStakeBindPhase("submitting");
           const res = await submitLinkStakeFeeless(client, api, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
-            throw new Error(res.error || "the on-chain stake bind was rejected");
+            throw new Error(res.error || "the network rejected it");
           }
           // (4) StakeCredOf readback — symmetric with the payment bind's confirm step: don't declare
           //     "voting power added" until the chain actually shows a stake credential bound to this key.
@@ -309,7 +309,7 @@ export function useIdentity(
             console.error(
               `cogno: stake bind submitted but the chain shows ${signer.ss58.slice(0, 8)}… with no stake bound (wallet "${walletId}")`,
             );
-            throw new Error("voting-power bind submitted, but the chain still shows no stake bound");
+            throw new Error("it didn't take. Try again");
           }
           // The live watch (above) flips stakeBound and surfaces the voting power once observed; seed
           // boundStakeCredHex from the LOCALLY-PROVEN credential (what the runtime binds) so the UI

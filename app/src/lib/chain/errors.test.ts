@@ -63,7 +63,7 @@ describe("classifyDispatchError", () => {
   });
 
   it("reports a missing dispatch error rather than inventing one", () => {
-    expect(errorCopy(classifyDispatchError(undefined))).toMatch(/no dispatch error/i);
+    expect(errorCopy(classifyDispatchError(undefined))).toMatch(/transaction failed/i);
   });
 });
 
