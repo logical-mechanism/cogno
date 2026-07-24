@@ -484,14 +484,24 @@ async function findAddressForCredential(
   } catch {
     /* no change address — fine */
   }
+  const seen: string[] = [];
   for (const a of addrs) {
     try {
       const bytes = hexToBytes(String(cst.Address.fromBech32(a).toBytes()));
-      if (paymentCredFromAddress(bytes, 0) === credHex) return a;
+      const pc = paymentCredFromAddress(bytes, 0);
+      if (pc) seen.push(pc);
+      if (pc === credHex) return a;
     } catch {
       /* not a parseable/vkey-payment address — skip */
     }
   }
+  // Diagnostic: no wallet address carries the Calidus credential. Log the target + what the wallet exposed,
+  // so it's clear whether the Calidus key simply isn't in THIS wallet (→ standalone key, use the offline
+  // command) or the wallet just didn't surface its root address (→ we widen the scan).
+  console.warn(
+    `cogno: Calidus wallet sign — no address matches credential ${credHex}. ` +
+      `wallet exposed ${seen.length} payment credential(s): ${seen.join(", ") || "(none)"}`,
+  );
   return null;
 }
 
