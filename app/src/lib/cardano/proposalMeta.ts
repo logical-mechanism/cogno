@@ -28,7 +28,10 @@ const MAX_DOC_BYTES = 256 * 1024;
 const FETCH_TIMEOUT_MS = 8000;
 /** Per-field character caps (applied AFTER sanitize): generous enough to read, capped so a hostile doc
  *  can't flood the DOM. */
-const CAP = { title: 160, abstract: 1200, motivation: 2000, rationale: 2000 } as const;
+// Per-field DISPLAY caps (chars). Generous on purpose — a real proposal shouldn't visibly truncate; raise
+// further if one does. Independent of `MAX_DOC_BYTES` (the whole-doc OOM guard above), which stays well
+// clear of the summed field caps so a legitimate doc is never refused outright.
+const CAP = { title: 300, abstract: 5000, motivation: 10000, rationale: 10000 } as const;
 
 /**
  * Map an anchor URL to a fetchable/browsable https URL, or null if the scheme isn't safe to LOAD in the

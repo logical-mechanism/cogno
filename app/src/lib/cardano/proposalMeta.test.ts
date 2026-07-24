@@ -112,9 +112,9 @@ describe("parseProposalDoc", () => {
   });
 
   it("caps an over-long field", () => {
-    const huge = "x".repeat(5000);
+    const huge = "x".repeat(12000);
     const m = parseProposalDoc({ body: { abstract: huge } })!;
-    expect(m.abstract!.length).toBeLessThanOrEqual(1200);
+    expect(m.abstract!.length).toBeLessThanOrEqual(5000); // CAP.abstract
   });
 });
 
