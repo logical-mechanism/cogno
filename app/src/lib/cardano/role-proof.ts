@@ -484,24 +484,14 @@ async function findAddressForCredential(
   } catch {
     /* no change address — fine */
   }
-  const seen: string[] = [];
   for (const a of addrs) {
     try {
       const bytes = hexToBytes(String(cst.Address.fromBech32(a).toBytes()));
-      const pc = paymentCredFromAddress(bytes, 0);
-      if (pc) seen.push(pc);
-      if (pc === credHex) return a;
+      if (paymentCredFromAddress(bytes, 0) === credHex) return a;
     } catch {
       /* not a parseable/vkey-payment address — skip */
     }
   }
-  // Diagnostic: no wallet address carries the Calidus credential. Log the target + what the wallet exposed,
-  // so it's clear whether the Calidus key simply isn't in THIS wallet (→ standalone key, use the offline
-  // command) or the wallet just didn't surface its root address (→ we widen the scan).
-  console.warn(
-    `cogno: Calidus wallet sign — no address matches credential ${credHex}. ` +
-      `wallet exposed ${seen.length} payment credential(s): ${seen.join(", ") || "(none)"}`,
-  );
   return null;
 }
 
@@ -547,17 +537,20 @@ export async function produceRoleProofWallet(opts: {
       const drepId = raw.toLowerCase().startsWith("drep1") ? raw : encodeDrepId(opts.request.credentialHex);
       sig = (await wallet.signData(opts.request.payload, drepId)) as { signature: string; key: string };
     } else {
-      // SPO/Calidus: sign over the wallet address that carries the Calidus credential (its root payment key).
+      // SPO/Calidus: a wallet may hold the Calidus key either as an ordinary ADDRESS (Calidus == its root
+      // payment key) OR as a DEDICATED key it derives (Eternl's "Calidus key signing"), recognized by the
+      // address' credential. Try an exposed wallet address first; else hand the wallet the SYNTHETIC
+      // enterprise address for the credential and let its Calidus signer recognize it.
       const cst = await import("@meshsdk/core-cst");
-      const address = await findAddressForCredential(wallet, cst, opts.request.credentialHex);
-      if (!address) {
-        return {
-          ok: false,
-          error:
-            "this wallet doesn't control that Calidus key — connect the wallet it's derived from, or use the offline command",
-        };
-      }
+      const found = await findAddressForCredential(wallet, cst, opts.request.credentialHex);
+      const address = found ?? opts.request.syntheticAddress;
+      // Diagnostics (this path is still being nailed down against Eternl) — what we ask for, what we get back.
+      console.info(
+        `cogno: Calidus wallet sign — credential=${opts.request.credentialHex}; signing over ` +
+          `${found ? "a matched wallet address" : "the synthetic Calidus address"}: ${address}`,
+      );
       sig = (await wallet.signData(opts.request.payload, address)) as { signature: string; key: string };
+      console.info(`cogno: Calidus wallet sign — raw signData=${JSON.stringify(sig)}`);
     }
 
     // Same pre-flight as the offline path, but in CREDENTIAL mode (the wallet chose the embedded address).
