@@ -35,10 +35,10 @@ export function CapacityMeter() {
     <div
       className={styles.meter}
       role="img"
-      title={`Posting power: up to about ${posts} post${posts === 1 ? "" : "s"} before the rate limit (regenerates over time)`}
+      title={`Posting power: up to ${posts} more post${posts === 1 ? "" : "s"}, recharges over time`}
       aria-label={
         posts > 0
-          ? `Posting power: up to about ${posts} post${posts === 1 ? "" : "s"} before the rate limit`
+          ? `Posting power: up to ${posts} more post${posts === 1 ? "" : "s"}`
           : "Posting power: recharging"
       }
     >

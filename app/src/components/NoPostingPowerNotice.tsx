@@ -45,7 +45,7 @@ export function NoPostingPowerNotice() {
         <span className={styles.glyph} aria-hidden>
           🔑
         </span>
-        <span className={styles.text}>Your account setup isn&apos;t finished. Add voting power to post.</span>
+        <span className={styles.text}>Add voting power to post.</span>
         <Link href="/welcome/" className={styles.action}>
           Finish setup
         </Link>
@@ -72,7 +72,7 @@ export function NoPostingPowerNotice() {
       <span className={styles.glyph} aria-hidden>
         🔒
       </span>
-      <span className={styles.text}>You don&apos;t have posting power yet. Lock ADA to post.</span>
+      <span className={styles.text}>You don&apos;t have posting power yet.</span>
       <Link href="/settings#vault" className={styles.action}>
         Lock ADA
       </Link>

@@ -78,7 +78,7 @@ export function setupStatus(
         phase: "disconnected",
         ready: false,
         headline: "Not connected",
-        detail: "Connect a Cardano wallet to post. Reading is always open.",
+        detail: "Connect a Cardano wallet to post.",
         next: { kind: "connect", label: "Connect wallet" },
       };
     case "connecting":
@@ -86,7 +86,7 @@ export function setupStatus(
         phase: "connecting",
         ready: false,
         headline: "Connecting…",
-        detail: "Approve the signature in your wallet to sign in.",
+        detail: "Approve the signature in your wallet.",
         next: null,
       };
     case "connected_unbound":
@@ -94,7 +94,7 @@ export function setupStatus(
         phase: "unbound",
         ready: false,
         headline: "Register your account",
-        detail: "Register your identity to claim this account.",
+        detail: "Your wallet signs once to prove it's yours.",
         next: { kind: "bind", label: "Finish setup" },
       };
     case "binding":
@@ -102,7 +102,7 @@ export function setupStatus(
         phase: "binding",
         ready: false,
         headline: "Finishing setup…",
-        detail: "Registering your identity on the network.",
+        detail: "Registering your identity.",
         next: null,
       };
     case "bound":
@@ -128,7 +128,7 @@ function boundStatus(
       phase: "checking_power",
       ready: false,
       headline: "Almost there",
-      detail: "You're registered. Checking your setup…",
+      detail: "Checking your setup…",
       next: null,
     };
   }
@@ -138,7 +138,7 @@ function boundStatus(
       phase: "needs_voting_power",
       ready: false,
       headline: "Add voting power to continue",
-      detail: "Prove your wallet's stake to finish setting up your account.",
+      detail: "Prove your wallet's stake so your votes carry weight.",
       next: { kind: "stake", label: "Add voting power" },
     };
   }
@@ -149,7 +149,7 @@ function boundStatus(
       phase: "ready",
       ready: true,
       headline: "You're all set",
-      detail: "You can post, reply, quote, vote, and follow.",
+      detail: "You can post, vote, and follow.",
       next: null,
     };
   }
@@ -159,7 +159,7 @@ function boundStatus(
       phase: "checking_power",
       ready: false,
       headline: "Almost there",
-      detail: "You're registered. Checking your posting power…",
+      detail: "Checking your posting power…",
       next: null,
     };
   }
@@ -170,7 +170,7 @@ function boundStatus(
       phase: "crediting",
       ready: false,
       headline: "Posting power crediting",
-      detail: "Your lock is confirmed on Cardano. Posting unlocks once the chain settles it.",
+      detail: "Lock confirmed on Cardano. Posting unlocks in a few minutes.",
       next: null,
     };
   }
@@ -179,7 +179,7 @@ function boundStatus(
     phase: "needs_power",
     ready: false,
     headline: "One step left to post",
-    detail: "You're registered. Lock ADA to get posting capacity.",
+    detail: "Lock 100 ADA to get posting power.",
     next: { kind: "lock", label: "Lock ADA" },
   };
 }

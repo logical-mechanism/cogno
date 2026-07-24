@@ -61,9 +61,9 @@ function toView(status: PendingCapacityStatus): View | null {
       };
     case "overdue":
       return {
-        title: "This is taking longer than expected",
+        title: "Taking longer than expected",
         detail:
-          "Your lock confirmed on Cardano, but the chain hasn't credited your posting power yet. It should still land. Check the transaction below, or dismiss this.",
+          "Your lock confirmed on Cardano, but your posting power hasn't landed yet. It should still land.",
         why: false,
         bar: null,
         spinner: false,
@@ -73,9 +73,9 @@ function toView(status: PendingCapacityStatus): View | null {
     case "crediting": {
       if (status.frozen) {
         return {
-          title: "Posting will unlock soon",
+          title: "Posting power on the way",
           detail:
-            "Your lock is confirmed. The chain's Cardano observer is paused right now; your posting power lands once it resumes. Reading stays open.",
+            "Your lock is confirmed. Crediting is paused right now; your posting power lands once it resumes.",
           why: false,
           bar: null,
           spinner: true,
@@ -87,7 +87,7 @@ function toView(status: PendingCapacityStatus): View | null {
       if (almost) {
         return {
           title: "Almost there",
-          detail: "Any moment now. The chain is crediting your posting power.",
+          detail: "Crediting your posting power…",
           why: false,
           bar: status.progress,
           spinner: true,
@@ -98,8 +98,8 @@ function toView(status: PendingCapacityStatus): View | null {
       const eta = formatEta(status.etaMs);
       const abs = status.etaMs > 60 * 60 * 1000 ? ` (around ${formatAbsolute(status.unlockAtMs)})` : "";
       return {
-        title: "You'll be able to post soon",
-        detail: `Locked on Cardano ✓. Posting unlocks ${eta}${abs}. Reading stays open the whole time.`,
+        title: "Lock confirmed",
+        detail: `Posting unlocks ${eta}${abs}.`,
         why: true,
         bar: status.progress,
         spinner: false,
@@ -111,7 +111,7 @@ function toView(status: PendingCapacityStatus): View | null {
 }
 
 const WHY_LINE =
-  "The chain waits for Cardano to settle first, so a rollback can't take your locked weight back.";
+  "We wait for Cardano to settle first, so a rollback can't take your posting power back.";
 
 /** The status title (e.g. for a surface that wants to render it as its own heading). Null when none. */
 export function pendingTitle(status: PendingCapacityStatus): string | null {
