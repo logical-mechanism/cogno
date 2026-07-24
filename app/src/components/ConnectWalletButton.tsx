@@ -83,7 +83,7 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
       toast(
         ok
           ? { kind: "success", message: "Wallet connected" }
-          : { kind: "info", message: "Connection cancelled. Tap Connect to try again." },
+          : { kind: "info", message: "Connection cancelled" },
       );
     },
     [connectWallet, toast],
@@ -124,11 +124,11 @@ export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: Co
       </button>
 
       {open && !deriving && (
-        <div ref={pickerRef} className={styles.picker} role="dialog" aria-label="Choose a Cardano wallet">
+        <div ref={pickerRef} className={styles.picker} role="dialog" aria-label="Choose a wallet">
           <p className={styles.pickerTitle}>Choose a wallet</p>
           {wallets.length === 0 ? (
             <div className={styles.pickerEmpty}>
-              <p>No CIP-30 wallet detected. Install one to continue.</p>
+              <p>No Cardano wallet found. Install one to continue.</p>
               {/* Give the guest a way forward — the same install links the /welcome WalletPicker offers,
                   so both connect entry points behave consistently instead of a dead message here. */}
               <div className={styles.installLinks}>

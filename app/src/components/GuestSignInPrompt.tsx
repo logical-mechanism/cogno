@@ -31,7 +31,7 @@ export function GuestSignInPrompt() {
         <p className={styles.body}>
           {unfinished
             ? "Finish setting up your account to post, vote, and follow."
-            : "Reading is open to everyone. Sign in with a Cardano wallet to post, vote, and follow."}
+            : "Sign in with a Cardano wallet to post, vote, and follow."}
         </p>
       </div>
       <button type="button" className={styles.cta} onClick={() => router.push("/welcome/")}>

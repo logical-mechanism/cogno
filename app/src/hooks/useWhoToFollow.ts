@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useBlockedSet } from "@/lib/blockStore";
+import { useFollowEdgesFor } from "./useFollowEdges";
 import type { FeedSource } from "@/lib/feed/source";
 import type { Ss58, Suggestion } from "@/lib/types";
 
@@ -20,7 +21,6 @@ export function useWhoToFollow(
   limit: number,
 ): UseWhoToFollow {
   const [raw, setRaw] = useState<Suggestion[]>([]);
-  const [following, setFollowing] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -46,22 +46,10 @@ export function useWhoToFollow(
     };
   }, [source, who, limit]);
 
-  useEffect(() => {
-    if (!source || !who ) {
-      setFollowing(new Set());
-      return;
-    }
-    let cancelled = false;
-    source
-      .followEdges(who)
-      .then((e) => {
-        if (!cancelled) setFollowing(new Set(e.following));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [source, who]);
+  // Shared cache: this used to issue its own `followEdges(who)` alongside the two useFollow mounts and
+  // Home's followees probe — four reads of one answer per load. See hooks/useFollowEdges.
+  const edges = useFollowEdgesFor(source && who ? who : undefined);
+  const following = useMemo(() => new Set(edges?.following ?? []), [edges]);
 
   // A blocked account never appears as a suggestion (hard suppression, viewer-side).
   const blocked = useBlockedSet(who);

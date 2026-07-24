@@ -37,8 +37,10 @@ describe("checkBootGuard", () => {
   it("ok=false with a reason on a spec_name mismatch (this is not a cogno-chain node)", async () => {
     const g = await checkBootGuard(apiWith({ spec_name: "kusama", spec_version: DESCRIPTOR_SPEC }));
     expect(g.ok).toBe(false);
-    expect(g.reason).toMatch(/spec_name/i);
-    expect(g.reason).toContain("kusama");
+    // `reason` is user-facing copy, so it names no runtime internals; the offending spec_name is
+    // still returned structurally for Diagnostics.
+    expect(g.reason).toMatch(/isn't a cogno node/i);
+    expect(g.nodeSpecName).toBe("kusama");
   });
 
   // This case used to assert the OPPOSITE ("does NOT gate on spec_version"), pinning the hole:
@@ -47,7 +49,8 @@ describe("checkBootGuard", () => {
   it("DOES gate on spec_version — a bumped runtime is an encoding mismatch, not a compatible node", async () => {
     const g = await checkBootGuard(apiWith({ spec_name: "cogno-chain-runtime", spec_version: 999 }));
     expect(g.ok).toBe(false);
-    expect(g.reason).toMatch(/spec_version/i);
+    // Both versions stay IN the copy — the user can report them — but the word spec_version does not.
+    expect(g.reason).toMatch(/versions don't match/i);
     expect(g.reason).toContain("999");
     expect(g.reason).toContain(String(DESCRIPTOR_SPEC));
   });
@@ -59,8 +62,8 @@ describe("checkBootGuard", () => {
       }),
     );
     expect(g.ok).toBe(false);
-    expect(g.reason).toMatch(/could not read runtime version/i);
-    expect(g.reason).toContain("System.Version constant missing");
+    // The raw throw goes to console.warn, not into user-facing copy.
+    expect(g.reason).toMatch(/can't reach cogno/i);
     // The shape stays well-formed so the UI can render it.
     expect(g.nodeSpecName).toBe("");
     expect(g.nodeSpecVersion).toBe(0);

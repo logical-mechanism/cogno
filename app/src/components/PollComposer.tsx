@@ -67,11 +67,11 @@ const kindIsChamber = (k?: PollKindName) => kindHasSpo(k) || kindHasDrep(k);
 
 /** One-line description of the selected poll kind. */
 const KIND_HINT: Record<PollKindName, string> = {
-  Stake: "A regular stake-weighted poll — everyone votes.",
+  Stake: "Everyone votes, weighted by stake.",
   Governance:
-    "Verified SPOs & dReps also weigh in with their delegated stake — a display-only Cardano temperature check.",
-  Spo: "Only verified SPOs are tallied, by their pool's delegated stake — a display-only signal.",
-  Drep: "Only verified dReps are tallied, by their delegated voting stake — a display-only signal.",
+    "Everyone votes. Verified SPOs and dReps are also tallied separately, by delegated stake.",
+  Spo: "Only verified SPOs are tallied, by pool stake.",
+  Drep: "Only verified dReps are tallied, by voting stake.",
 };
 
 // The seven CIP-1694 governance actions. `spo`/`drep` = which bodies vote on Cardano (drives the guidance
@@ -85,10 +85,10 @@ const GOV_ACTIONS: {
 }[] = [
   {
     value: "Info",
-    label: "Info action",
+    label: "Info",
     spo: true,
     drep: true,
-    note: "A non-binding on-chain signal — both SPOs and dReps record votes. The closest analogue to this poll.",
+    note: "A non-binding vote by dReps and SPOs. The closest match to this poll.",
   },
   {
     value: "NoConfidence",
@@ -99,17 +99,17 @@ const GOV_ACTIONS: {
   },
   {
     value: "UpdateCommittee",
-    label: "Update the Constitutional Committee",
+    label: "Update the committee",
     spo: true,
     drep: true,
     note: "Decided by dReps and SPOs together.",
   },
   {
     value: "NewConstitution",
-    label: "New Constitution / guardrails",
+    label: "New Constitution",
     spo: false,
     drep: true,
-    note: "Decided by dReps (and the Constitutional Committee) — SPOs do not vote on Cardano.",
+    note: "Decided by dReps and the Constitutional Committee, not SPOs.",
   },
   {
     value: "HardFork",
@@ -123,14 +123,14 @@ const GOV_ACTIONS: {
     label: "Protocol-parameter change",
     spo: false,
     drep: true,
-    note: "Usually dReps only — SPOs also vote when a security-group parameter is touched.",
+    note: "Decided by dReps, plus SPOs when a security-group parameter changes.",
   },
   {
     value: "TreasuryWithdrawal",
     label: "Treasury withdrawal",
     spo: false,
     drep: true,
-    note: "Decided by dReps (and the Constitutional Committee) — SPOs do not vote on Cardano.",
+    note: "Decided by dReps and the Constitutional Committee, not SPOs.",
   },
 ];
 
@@ -331,6 +331,10 @@ export function PollComposer({
   const anchorUnsafe = govAction ? !isSafeAnchorUrl(govAction.anchorUrl) : false;
   const govOk = !govAction || (!anchorTooLong && !anchorUnsafe);
   const extraValid = enoughOptions && !anyOptionOver && govOk;
+  // The question may be left blank only when the tagged proposal supplies the poll's subject — a chamber
+  // kind AND an action tag. Otherwise the question is the only thing naming the poll, so it stays
+  // mandatory (`govOk` above already forces a tagged poll's anchor to be a real http(s) link).
+  const optionalQuestion = kindIsChamber(kind) && !!govAction;
 
   // The metadata of the currently-selected action type (its on-chain voting note). The kind is auto-set
   // from the action, so there is no chamber mismatch to warn about.
@@ -406,11 +410,11 @@ export function PollComposer({
               disabled={options.length >= MAX_POLL_OPTIONS}
               aria-disabled={options.length >= MAX_POLL_OPTIONS || undefined}
             >
-              + Add option
+              + Add choice
             </button>
-            {!enoughOptions && <span className={styles.hint}>Add at least 2 options.</span>}
+            {!enoughOptions && <span className={styles.hint}>Add at least 2 choices.</span>}
             <span className={styles.srOnly} aria-live="polite">
-              {MAX_POLL_OPTIONS - options.length} option slots remaining
+              {MAX_POLL_OPTIONS - options.length} more choices allowed
             </span>
           </>
         )}
@@ -429,16 +433,16 @@ export function PollComposer({
           disabled={govLocked}
         >
           <optgroup label="Everyone">
-            <option value="Stake">Stake — everyone votes</option>
+            <option value="Stake">Stake</option>
           </optgroup>
-          <optgroup label="Governance chambers">
-            <option value="Governance">SPO &amp; dRep — both chambers</option>
+          <optgroup label="Verified roles">
+            <option value="Governance">SPO &amp; dRep</option>
             <option value="Spo">SPO only</option>
             <option value="Drep">dRep only</option>
           </optgroup>
         </select>
         <span className={styles.hint}>
-          {govLocked ? "Chambers set automatically from the governance action." : KIND_HINT[kind]}
+          {govLocked ? "The action type sets who votes." : KIND_HINT[kind]}
         </span>
       </div>
 
@@ -450,7 +454,7 @@ export function PollComposer({
               checked={!!govAction}
               onChange={(e) => toggleGovAction(e.target.checked)}
             />
-            <span className={styles.govToggleText}>Temperature-check a Cardano governance action</span>
+            <span className={styles.govToggleText}>Poll on a Cardano governance action</span>
           </label>
 
           {govAction && (
@@ -491,10 +495,10 @@ export function PollComposer({
                 <ByteCounter value={govAction.anchorUrl} maxBytes={MAX_ANCHOR_URL_BYTES} size="sm" />
               </div>
               {anchorEmpty ? (
-                <span className={styles.hint}>Add a link to the proposal document.</span>
+                <span className={styles.hint}>Add a link to the proposal.</span>
               ) : anchorUnsafe ? (
                 <span className={styles.hint}>
-                  Enter a full link starting with https:// (a GitHub or IPFS-gateway URL).
+                  Enter a full link starting with https://
                 </span>
               ) : null}
             </div>
@@ -519,8 +523,8 @@ export function PollComposer({
         </select>
         <span className={styles.hint}>
           {pollDraft.closeInDays
-            ? "Voting closes then; results can be finalized after."
-            : "The poll stays open and results stay live."}
+            ? "Voting closes at the deadline, then anyone can finalize the result."
+            : "The poll stays open with live results."}
         </span>
       </div>
     </fieldset>
@@ -539,6 +543,13 @@ export function PollComposer({
       autoFocus={autoFocus}
       text={pollDraft.question}
       onTextChange={setQuestion}
+      // An empty question is allowed ONLY when something else identifies the poll — i.e. a TAGGED
+      // governance action, whose proposal title is what the feed row and the poll card headline. The
+      // chamber kind alone is not enough: "SPO only" can be picked straight from the kind dropdown with
+      // no action attached, and an untagged chamber poll with no question has nothing to name it at all
+      // (PostBody renders an empty body as nothing), leaving a bare Yes/No/Abstain card in the timeline.
+      allowEmptyText={optionalQuestion}
+      placeholder={optionalQuestion ? "Add your take (optional)" : undefined}
       onTogglePoll={onTogglePoll}
       pollActive={onTogglePoll ? true : undefined}
       extraValid={extraValid}

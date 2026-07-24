@@ -11,6 +11,7 @@ import { createClient, type PolkadotClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { cogno } from "@polkadot-api/descriptors";
 import { Observable, type Subscription } from "rxjs";
+import { getCachedMetadata, setCachedMetadata } from "./metadataCache";
 import type { ChainHandle, ConnStatus, BootGuard, CognoApi } from "@/lib/types";
 
 /**
@@ -44,9 +45,27 @@ const DESCRIPTOR_SPEC_VERSION: number | null = 210;
 /** Heartbeat window: if no new best block arrives within this, we surface "reconnecting". */
 const BLOCK_HEARTBEAT_MS = 30_000;
 
-/** Build a chain handle: a fresh PAPI client + the typed cogno API + the endpoint it speaks to. */
+/**
+ * Build a chain handle: a fresh PAPI client + the typed cogno API + the endpoint it speaks to.
+ *
+ * The metadata hooks are the one thing here that is not obvious. PAPI cannot decode anything until it
+ * has the runtime metadata, so without them EVERY page load pulled ~134 KB of SCALE (≈268 KB as hex
+ * over the WebSocket, where nginx's gzip does not reach) serially, ahead of the first typed read — the
+ * single largest item on the reload critical path. A hit skips that fetch entirely.
+ *
+ * NOT the `getMetadata` exported by `@polkadot-api/descriptors`: that function is
+ * `const metadatas = {}` followed by a lookup into it, so it throws and returns null for every
+ * codeHash, unconditionally. Passing it is a literal no-op — this needs our own store
+ * (lib/chain/metadataCache.ts), which is content-addressed by codeHash and therefore cannot serve the
+ * wrong runtime.
+ */
 export function createChain(wsUrl: string): ChainHandle {
-  const client = createClient(getWsProvider(wsUrl));
+  const client = createClient(getWsProvider(wsUrl), {
+    getMetadata: (codeHash) => getCachedMetadata(codeHash),
+    // Fire-and-forget by contract (PAPI ignores the return value). A failed write just means the next
+    // load fetches from the chain again.
+    setMetadata: (codeHash, metadata) => void setCachedMetadata(codeHash, metadata),
+  });
   const api = client.getTypedApi(cogno);
   return { client, api, wsUrl };
 }
@@ -119,9 +138,9 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
 
     let reason: string | undefined;
     if (!nameMatches) {
-      reason = `Runtime spec_name "${nodeSpecName}" does not match expected "${EXPECTED_SPEC_NAME}". This is not a cogno-chain node.`;
+      reason = "This isn't a cogno node. Check the address you connected to.";
     } else if (!versionMatches) {
-      reason = `Runtime spec_version ${nodeSpecVersion} does not match the version this app was built against (${DESCRIPTOR_SPEC_VERSION}). Posting is blocked to avoid mis-encoding; reads remain best-effort.`;
+      reason = `App and network versions don't match (app ${DESCRIPTOR_SPEC_VERSION}, network ${nodeSpecVersion}). Reading still works; posting is off.`;
     }
 
     return {
@@ -132,12 +151,15 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
       reason,
     };
   } catch (err) {
+    // `reason` is user-facing copy, so the raw throw goes to the console instead of the UI —
+    // a boot failure stays diagnosable without spelling a stack trace at the reader.
+    console.warn("[cogno] boot guard could not read the runtime version:", stringifyError(err));
     return {
       ok: false,
       nodeSpecName: "",
       nodeSpecVersion: 0,
       descriptorSpecVersion: DESCRIPTOR_SPEC_VERSION,
-      reason: `Could not read runtime version: ${stringifyError(err)}`,
+      reason: "Can't reach cogno. Check your connection and try again.",
     };
   }
 }

@@ -33,7 +33,7 @@ import { EmptyState } from "./EmptyState";
 import { Skeleton } from "./Skeleton";
 import { NotFoundInline } from "./AppShell";
 import { Spinner } from "./icons";
-import { useSession } from "./Providers";
+import { useSession, useBestBlock } from "./Providers";
 import { useThread } from "@/hooks/useThread";
 import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -66,7 +66,8 @@ export interface ThreadViewProps {
 
 export function ThreadView({ rootId }: ThreadViewProps) {
   const router = useRouter();
-  const { api, signer, source, viewer, votingPower, bestBlock } = useSession();
+  const { api, signer, source, viewer, votingPower } = useSession();
+  const bestBlock = useBestBlock();
   const me = viewer.address ?? null;
   // Block + hide are hard removals, applied to the reply list below (the focal itself is handled by
   // PostCard: a blocked focal shows the stub, a hidden focal shows normally — you navigated to it).
@@ -329,7 +330,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
       <section className={styles.thread} aria-label="Conversation">
         <EmptyState
           title="Couldn't load this post."
-          description="Something went wrong reading the thread."
           // `useThread.reload()`, not `router.refresh()` — under `output: 'export'` there is no RSC
           // payload to refetch, so the old Retry did nothing whatsoever. This one is load-bearing: a
           // failed COLD read leaves the hook unseeded, and the per-block live refetch skips unseeded
@@ -395,15 +395,15 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         <div className={styles.stats} role="group" aria-label="Post statistics">
           {(focal.upCount ?? 0) > 0 && (
             <span className={styles.stat}>
-              <strong>{formatCount(focal.upCount)}</strong> Likes
+              <strong>{formatCount(focal.upCount)}</strong> Upvotes
             </span>
           )}
           <span
             className={styles.stat}
-            // These are stake-WEIGHTED (locked-ADA voting power), not raw like/dislike counts, so a large
+            // These are stake-WEIGHTED (the voter's proven Cardano stake), not raw like/dislike counts, so a large
             // score next to a small Like count reads as a bug without this. A hover title carries the
             // explanation; the aria-label spells it out for screen readers.
-            title="Stake-weighted score — sums the locked-ADA voting power behind each vote, not a raw count"
+            title="Adds up the voting power behind each vote, not a raw count"
             aria-label={`Stake-weighted score ${formatSignedWeight(focal.score ?? 0n)}`}
           >
             score <strong>{formatSignedWeight(focal.score ?? 0n)}</strong>
@@ -411,7 +411,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           {(focal.upWeight ?? 0n) > 0n && (
             <span
               className={styles.statMuted}
-              title="Up-vote weight (total locked-ADA voting power behind the up-votes)"
+              title="Voting power behind the up-votes"
               aria-label={`Up-vote weight ${formatWeight(focal.upWeight)}`}
             >
               ↑{formatWeight(focal.upWeight)}
@@ -420,7 +420,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           {(focal.downWeight ?? 0n) > 0n && (
             <span
               className={styles.statMuted}
-              title="Down-vote weight (total locked-ADA voting power behind the down-votes)"
+              title="Voting power behind the down-votes"
               aria-label={`Down-vote weight ${formatWeight(focal.downWeight)}`}
             >
               ↓{formatWeight(focal.downWeight)}

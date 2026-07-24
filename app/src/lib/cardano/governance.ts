@@ -19,10 +19,10 @@ import type { GovActionType, PollOptionView } from "@/lib/types";
 
 /** Human labels for the seven CIP-1694 governance-action types (the poll tag + the discovery list chip). */
 export const GOV_ACTION_LABEL: Record<GovActionType, string> = {
-  Info: "Info action",
+  Info: "Info",
   NoConfidence: "Motion of no-confidence",
-  UpdateCommittee: "Update the Constitutional Committee",
-  NewConstitution: "New Constitution / guardrails",
+  UpdateCommittee: "Update the committee",
+  NewConstitution: "New Constitution",
   HardFork: "Hard-fork initiation",
   ParamChange: "Protocol-parameter change",
   TreasuryWithdrawal: "Treasury withdrawal",

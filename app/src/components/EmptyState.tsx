@@ -32,9 +32,8 @@ function presetFor(v: EmptyStateVariant, query?: string, handle?: string): Prese
   switch (v) {
     case "feed":
       return {
-        title: "Welcome to cogno",
-        description:
-          "Your feed is empty. Find some people to follow.",
+        title: "Your feed is empty",
+        description: "Be the first to post.",
       };
     case "search":
       return {
@@ -44,17 +43,16 @@ function presetFor(v: EmptyStateVariant, query?: string, handle?: string): Prese
       };
     case "search-unavailable":
       return {
-        title: "Search isn't ready yet",
-        description:
-          "Search runs on the node. Check your node endpoint in Settings to search posts and people.",
+        title: "Search unavailable",
+        description: "Search needs a node connection.",
         icon: <IconSearch className={styles.glyph} />,
       };
     case "profile":
-      return { title: handle ? `${handle} hasn't posted yet.` : "No posts yet." };
+      return { title: handle ? `${handle} hasn't posted yet.` : "No posts yet" };
     case "replies":
       return { title: "No replies yet", description: "Be the first to reply." };
     case "follows":
-      return { title: "Not following anyone yet." };
+      return { title: "Not following anyone yet" };
     case "generic":
     default:
       return { title: "Nothing here yet" };

@@ -30,7 +30,7 @@ export function ProfileTabs({ active, onChange, showReplies, showLikes }: Profil
   const tabs = useMemo<TabDef<ProfileTab>[]>(() => {
     const out: TabDef<ProfileTab>[] = [{ id: "posts", label: "Posts" }];
     if (showReplies) out.push({ id: "replies", label: "Replies" });
-    if (showLikes) out.push({ id: "likes", label: "Likes" });
+    if (showLikes) out.push({ id: "likes", label: "Upvotes" });
     return out;
   }, [showReplies, showLikes]);
 

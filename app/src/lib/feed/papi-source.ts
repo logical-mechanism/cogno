@@ -39,6 +39,7 @@ import {
   nodeSearchPeople,
   nodeWhoToFollow,
   nodeLikesPage,
+  nodeFollowEdges,
 } from "@/lib/chain/node-reads";
 import {
   readPoll,
@@ -76,18 +77,6 @@ async function isRevoked(api: CognoApi, account: Ss58): Promise<boolean> {
 async function readWeight(api: CognoApi, account: Ss58): Promise<bigint | undefined> {
   const v = await api.query.TalkStake.AllowedStake.getValue(account);
   return v == null ? undefined : BigInt(v);
-}
-
-/** The accounts `who` follows — the forward `Following` double-map (key2 = followee). */
-async function readFollowees(api: CognoApi, who: Ss58): Promise<Ss58[]> {
-  const entries = await api.query.Microblog.Following.getEntries(who);
-  return entries.map((e) => e.keyArgs[1] as Ss58);
-}
-
-/** The accounts following `who` — the reverse `Followers` double-map (key2 = follower; spec-118). */
-async function readFollowers(api: CognoApi, who: Ss58): Promise<Ss58[]> {
-  const entries = await api.query.Microblog.Followers.getEntries(who);
-  return entries.map((e) => e.keyArgs[1] as Ss58);
 }
 
 /** Decode a pallet-profile `BoundedVec<u8>` field (PAPI Binary) to a trimmed string, or undefined.
@@ -336,20 +325,12 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     return readViewerPostState(api, post, who);
   }
 
-  // ── follow graph: both directions node-served (forward Following + reverse Followers, spec-118) ──
-  async function followEdges(who: Ss58): Promise<FollowEdges> {
-    const [following, followers, followerCount, followingCount] = await Promise.all([
-      readFollowees(api, who),
-      readFollowers(api, who),
-      api.query.Microblog.FollowerCount.getValue(who),
-      api.query.Microblog.FollowingCount.getValue(who),
-    ]);
-    return {
-      following,
-      followers,
-      followerCount: Number(followerCount ?? 0),
-      followingCount: Number(followingCount ?? 0),
-    };
+  // ── follow graph: both directions + the counters, node-served in ONE state_call ──
+  // `MicroblogApi.follow_edges` replaces the four-read fan-out this used to be (two full prefix scans
+  // over the account's edge set plus two counters). Its keyed fallback lives in `nodeFollowEdges`, not
+  // here: the shared useFollowEdges cache calls that function directly and needs the same resilience.
+  function followEdges(who: Ss58): Promise<FollowEdges> {
+    return nodeFollowEdges(api, who);
   }
 
   // ── who-to-follow: `who_to_follow` — ByAuthor members ranked by follower count, INCLUDING

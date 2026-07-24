@@ -21,9 +21,18 @@ function mockApi(polls: Entry[], results: Entry[], posts: Record<string, { text:
 describe("readGovernancePolls", () => {
   it("keeps only action-tagged polls, decodes the type, marks finalized, newest first", async () => {
     const polls: Entry[] = [
-      { keyArgs: [1n], value: { action: { action_type: { type: "TreasuryWithdrawal" } }, close_at: 100 } },
+      {
+        keyArgs: [1n],
+        value: {
+          action: {
+            action_type: { type: "TreasuryWithdrawal" },
+            anchor_url: Binary.fromText("https://example.org/p.json"),
+          },
+          close_at: 100,
+        },
+      },
       { keyArgs: [2n], value: { action: undefined, close_at: undefined } }, // plain poll — dropped
-      { keyArgs: [3n], value: { action: { action_type: 4 }, close_at: undefined } }, // HardFork via u8 fallback
+      { keyArgs: [3n], value: { action: { action_type: 4 }, close_at: undefined } }, // HardFork, no anchor
     ];
     const results: Entry[] = [{ keyArgs: [1n], value: {} }]; // poll 1 is finalized
     const posts = {
@@ -33,10 +42,12 @@ describe("readGovernancePolls", () => {
     const out = await readGovernancePolls(mockApi(polls, results, posts));
     expect(out.map((p) => p.hostId)).toEqual([3n, 1n]); // newest (higher id) first
     expect(out[0]).toMatchObject({ hostId: 3n, actionType: "HardFork", question: "Fork now?", finalized: false });
+    expect(out[0].anchorUrl).toBeUndefined(); // no anchor on this action → undefined
     expect(out[1]).toMatchObject({
       hostId: 1n,
       actionType: "TreasuryWithdrawal",
       question: "Fund the thing?",
+      anchorUrl: "https://example.org/p.json",
       closeAt: 100,
       finalized: true,
     });

@@ -24,7 +24,7 @@ import { ReplyComposer } from "../ReplyComposer";
 import { QuoteComposer } from "../QuoteComposer";
 import { PollComposer } from "../PollComposer";
 import { EditProfileModal } from "../EditProfileModal";
-import { useSession } from "../Providers";
+import { useSession, useBestBlock } from "../Providers";
 import { modalActions, useModalStore } from "@/lib/modalStore";
 import { useMutation } from "@/hooks/useMutation";
 import { useOptimistic } from "@/hooks/useOptimistic";
@@ -81,7 +81,8 @@ function pushModalUrl(kind: Exclude<ModalKind, null>, targetId?: string) {
 export function ModalRouteHost() {
   const router = useRouter();
   const { state, close } = useModalStore();
-  const { api, signer, source, viewer, bestBlock } = useSession();
+  const { api, signer, source, viewer } = useSession();
+  const bestBlock = useBestBlock();
   // Only the PROFILE overlay is still owned here — the compose overlay moved into useComposeWrite.
   const { patchProfile, confirmProfile, rollbackProfile } = useOptimistic();
   const { run } = useMutation();
@@ -296,7 +297,10 @@ export function ModalRouteHost() {
         router.push("/welcome/");
         return;
       }
-      if (!api || !signer || question.trim().length === 0) return;
+      // Chamber polls may have an empty question (subject = the tagged proposal); the Composer already gates
+      // submit (allowEmptyText + option validity) and the runtime accepts it, so no non-empty gate here — else
+      // the enabled CTA silently no-ops.
+      if (!api || !signer) return;
       // Convert the chosen deadline (days) to an absolute block-number `close_at`. If a deadline was
       // requested but the chain height can't be read, surface it — never silently create a floating poll.
       let closeAt: number | undefined;
@@ -306,7 +310,7 @@ export function ModalRouteHost() {
         toast({
           id: "poll-deadline",
           kind: "error",
-          message: "Couldn't set the poll deadline — check your connection and try again.",
+          message: "Couldn't set the poll deadline. Try again.",
         });
         return;
       }
@@ -353,7 +357,7 @@ export function ModalRouteHost() {
           // Re-toast under the SAME id on purpose: "profile-save" is the sticky pending toast above,
           // which has NO auto-dismiss (pending: null). Replacing it in place is the only thing that
           // clears it. Route this through useActionToast.fail() — whose toast ids are "rate-limit" and
-          // a fresh nextId() — and "Saving your profile…" spins on the app-wide toast bus forever.
+          // a fresh nextId() — and "Saving profile…" spins on the app-wide toast bus forever.
           toast({
             id: "profile-save",
             kind: error.kind === "rate-limit" ? "rate-limit" : "error",
@@ -391,7 +395,7 @@ export function ModalRouteHost() {
           fields.website,
         ),
         fields,
-        "Saving your profile…",
+        "Saving profile…",
         "Profile updated",
       );
     },
@@ -408,7 +412,7 @@ export function ModalRouteHost() {
       location: "",
       website: "",
     };
-    runProfileWrite(submitClearProfile(api, signer), empty, "Clearing your profile…", "Profile cleared");
+    runProfileWrite(submitClearProfile(api, signer), empty, "Clearing profile…", "Profile cleared");
   }, [api, signer, runProfileWrite]);
 
   const title = useMemo(() => (kind ? TITLES[kind] : ""), [kind]);
@@ -438,7 +442,7 @@ export function ModalRouteHost() {
     if (targetLoading || !targetError) {
       return (
         <ComposerModal title={title} onClose={onRequestClose}>
-          <Loading variant="panel" label="Loading the post…" />
+          <Loading variant="panel" label="Loading post…" />
         </ComposerModal>
       );
     }
@@ -467,7 +471,7 @@ export function ModalRouteHost() {
                 fontSize: "var(--cg-fs-sm)",
               }}
             >
-              This post is unavailable — posting as a new post instead.
+              This post is unavailable. Your text will post on its own.
             </p>
           }
         />

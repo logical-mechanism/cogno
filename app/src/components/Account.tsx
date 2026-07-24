@@ -18,10 +18,13 @@ import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
 import { ConnectWalletButton } from "./ConnectWalletButton";
 import { useSession } from "./Providers";
+import { useToaster } from "./toast/ToasterProvider";
+import { isUserRejection } from "@/lib/cardano/cip8";
 
 export function Account() {
   const router = useRouter();
   const { viewer, signerCtl } = useSession();
+  const { toast } = useToaster();
   const me = viewer.address;
   // The avatar chip means "fully set up" (identity-bound). A connected-but-unbound session is NOT
   // done — it falls through to ConnectWalletButton, which shows the "Finish setup" nudge.
@@ -60,10 +63,25 @@ export function Account() {
     [router],
   );
 
-  const onDisconnect = useCallback(() => {
+  const onSignOut = useCallback(() => {
     setOpen(false);
     signerCtl.disconnect();
   }, [signerCtl]);
+
+  // A RESTORED session (the account came back from a refresh, but no seed is in memory yet). Writing
+  // would open the sign prompt on its own — this is the same prompt, offered up front, so the state is
+  // visible rather than a surprise mid-post, and so a shared browser has an obvious "not you?" exit
+  // right next to the handle. Failure needs no handling here: `unlock` already stores the message on
+  // `signerCtl.error`, and a decline is a non-event.
+  const onUnlock = useCallback(() => {
+    void signerCtl.unlock().catch((e: unknown) => {
+      // A decline is a non-event, but a REAL failure must be said out loud — the account-switch case
+      // signs the user out, and silently swapping the chip back to "Connect wallet" with no
+      // explanation is the worst version of that.
+      if (isUserRejection(e)) return;
+      toast({ kind: "error", message: e instanceof Error ? e.message : "Could not unlock your posting key." });
+    });
+  }, [signerCtl, toast]);
 
   // Not fully set up (not connected, or connected but not identity-bound) → the connect/finish-setup
   // entry. ConnectWalletButton picks "Connect wallet" vs "Finish setup" from viewer.status; the
@@ -103,6 +121,17 @@ export function Account() {
         </span>
       </button>
 
+      {signerCtl.restored && (
+        <button
+          type="button"
+          className={styles.unlock}
+          onClick={onUnlock}
+          disabled={signerCtl.unlocking}
+        >
+          {signerCtl.unlocking ? "Check your wallet…" : "Sign to post"}
+        </button>
+      )}
+
       {open && (
         <div className={styles.menu} role="menu">
           <button type="button" role="menuitem" className={styles.menuItem} onClick={() => go(`/u/${me}/`)}>
@@ -111,13 +140,16 @@ export function Account() {
           <button type="button" role="menuitem" className={styles.menuItem} onClick={() => go("/settings/")}>
             Settings
           </button>
+          {/* "Sign out", not "Disconnect": this now also forgets WHICH ACCOUNT this device was signed
+              in as, so the next load is a clean guest session. That is the escape hatch for a shared
+              browser, and the label has to say so. */}
           <button
             type="button"
             role="menuitem"
             className={`${styles.menuItem} ${styles.danger}`}
-            onClick={onDisconnect}
+            onClick={onSignOut}
           >
-            Disconnect
+            Sign out
           </button>
         </div>
       )}

@@ -46,7 +46,7 @@ export function Handle({ address, truncate = "middle", as = "span", copyable }: 
         type="button"
         className={`${styles.handle} ${styles.copyBtn}`}
         title={address}
-        aria-label={`Copy address ${address}`}
+        aria-label="Copy address"
         onClick={onCopy}
       >
         {label}
@@ -60,7 +60,7 @@ export function Handle({ address, truncate = "middle", as = "span", copyable }: 
         href={`/u/${address}/`}
         className={styles.handle}
         title={address}
-        aria-label={`Profile ${address}`}
+        aria-label={`Profile ${label}`}
       >
         {label}
       </Link>

@@ -351,8 +351,16 @@ export interface PostingSigner {
   label: string;
   /** The PAPI signer passed to `tx.*.signSubmitAndWatch(signer)`. */
   signer: PolkadotSigner;
-  /** Provenance of the key. */
-  kind: "dev" | "derived";
+  /**
+   * Provenance of the key.
+   *
+   * `restored` is a session rebuilt from the device-local {@link RestoredSession} record after a
+   * refresh: the ss58 and public key are real (so every READ is correct and every device-local store
+   * finds its bucket), but no seed is in memory. Its `signer` derives one on first use, which opens
+   * the wallet's sign prompt — so a write from a restored session costs exactly one popup and then
+   * promotes the session to `derived`. See lib/signer/index.ts `signerFromRestored`.
+   */
+  kind: "dev" | "derived" | "restored";
 }
 
 /** Phases of a submitted extrinsic. */

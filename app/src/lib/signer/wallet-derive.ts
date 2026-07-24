@@ -30,8 +30,15 @@ export const DERIVE_MESSAGE =
 
 export interface DerivedAccount {
   signer: PostingSigner;
-  /** the wallet address the posting key was derived from (its identity/stake key). */
+  /** the wallet address the posting key was derived from (its identity/stake key), bech32 — for display. */
   signingAddress: string;
+  /**
+   * The SAME address in CIP-30's raw hex form. Carried because that is what an un-popped
+   * `window.cardano[id].getChangeAddress()` returns, and comparing the two encodings is how a restored
+   * session detects an in-wallet account switch without importing MeshJS (see cip8.ts
+   * `probeWalletIdentity`). Derived here for free — this function already parses the bech32 address.
+   */
+  signingAddressHex: string;
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -55,10 +62,11 @@ export async function deriveSignerFromWallet(walletId: string): Promise<DerivedA
   // misleading "connect a Cardano wallet" message) only after the PERMANENT identity + stake binds were
   // already burned. `!== 0` matches the vault's preprod check (see lib/cardano/vault.ts).
   if ((await wallet.getNetworkId()) !== 0) {
-    throw new Error("wrong network: switch your wallet to preprod (testnet), then reconnect");
+    throw new Error("Switch your wallet to preprod (testnet), then reconnect.");
   }
   const signingAddress = await wallet.getChangeAddress();
-  const props = cst.Address.fromBech32(signingAddress).getProps();
+  const address = cst.Address.fromBech32(signingAddress);
+  const props = address.getProps();
   if (props.paymentPart?.type !== 0) {
     // Critical security boundary: a script/vault payment credential is never a user vkey we can
     // derive a posting key from. Log the credential type so a mis-connected wallet is diagnosable.
@@ -76,5 +84,10 @@ export async function deriveSignerFromWallet(walletId: string): Promise<DerivedA
   // seed = blake2b_256 of the COSE_Sign1 signature bytes (deterministic for a given wallet+message).
   const seed = blake2b(hexToBytes(sig.signature), undefined, 32);
   const signer = signerFromSeed(seed, { label: "wallet key", kind: "derived" });
-  return { signer, signingAddress };
+  return {
+    signer,
+    signingAddress,
+    // Lowercased so the restore comparison is encoding-stable (wallets differ on hex case).
+    signingAddressHex: String(address.toBytes()).toLowerCase(),
+  };
 }

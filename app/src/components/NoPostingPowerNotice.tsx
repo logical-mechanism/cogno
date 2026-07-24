@@ -17,18 +17,20 @@
 
 import Link from "next/link";
 import styles from "./NoPostingPowerNotice.module.css";
-import { useSession } from "./Providers";
-import { useHeads } from "@/hooks/useHeads";
+import { useSession, useBestBlock } from "./Providers";
 import { useCapacity } from "@/hooks/useCapacity";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { pendingLockActions } from "@/lib/pendingLockStore";
 import { PendingCapacityNotice } from "./PendingCapacityNotice";
 
 export function NoPostingPowerNotice() {
-  const { api, client, viewer, identity } = useSession();
-  const heads = useHeads(client);
+  const { api, viewer, identity } = useSession();
+  // useBestBlock (the shared, visibility-frozen head), not a private useHeads subscription: a
+  // second subscription re-renders on every block even while the tab is hidden, which is exactly
+  // what freezing the shared one is for.
+  const bestBlock = useBestBlock();
   const ss58 = viewer.address ?? null;
-  const { view } = useCapacity(api, ss58, heads.best?.number ?? null);
+  const { view } = useCapacity(api, ss58, bestBlock);
   const pending = usePendingCapacity(api, ss58, view?.weight ?? null);
 
   // Only for a ready (identity-bound) account.
@@ -43,7 +45,7 @@ export function NoPostingPowerNotice() {
         <span className={styles.glyph} aria-hidden>
           🔑
         </span>
-        <span className={styles.text}>Finish setting up your account to post — add voting power.</span>
+        <span className={styles.text}>Add voting power to post.</span>
         <Link href="/welcome/" className={styles.action}>
           Finish setup
         </Link>
@@ -70,7 +72,7 @@ export function NoPostingPowerNotice() {
       <span className={styles.glyph} aria-hidden>
         🔒
       </span>
-      <span className={styles.text}>You don&apos;t have posting power yet. Lock ADA to post.</span>
+      <span className={styles.text}>You don&apos;t have posting power yet.</span>
       <Link href="/settings#vault" className={styles.action}>
         Lock ADA
       </Link>

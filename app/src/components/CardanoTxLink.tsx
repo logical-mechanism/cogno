@@ -25,7 +25,7 @@ export function CardanoTxLink({ txHash, label = "Transaction" }: CardanoTxLinkPr
       href={cardanoscanTxUrl(txHash)}
       target="_blank"
       rel="noopener noreferrer nofollow"
-      aria-label={`View transaction ${txHash} on Cardanoscan`}
+      aria-label={`View this transaction on Cardanoscan`}
     >
       {label} <span className={styles.hash}>{truncateHash(txHash)}</span>
       <span className={styles.arrow} aria-hidden>

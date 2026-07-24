@@ -5,7 +5,7 @@
 // When the live watch() snapshot gains fresh top-of-feed items from OTHER accounts (the viewer's own
 // optimistic post injects directly, NOT here), Home buffers them behind this pill rather than jumping
 // the scroll. It renders sticky just under the tabs. Click → flush the buffer + scroll to top. It is a
-// real <button> (aria-label "Show N new posts"), never a focus trap, and does not steal focus when it
+// real <button> (aria-label "Show N posts"), never a focus trap, and does not steal focus when it
 // appears. The pill is a primary CTA, so it carries the accent fill (the one sanctioned accent use
 // alongside the Post CTA + focus ring).
 
@@ -40,7 +40,7 @@ export function NewPostsPill({
         type="button"
         className={styles.pill}
         onClick={onClick}
-        aria-label={`Show ${count} new ${word}`}
+        aria-label={label}
       >
         {label}
       </button>

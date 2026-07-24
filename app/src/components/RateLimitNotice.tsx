@@ -20,7 +20,7 @@ export interface RateLimitNoticeProps {
 function copy(retryInSeconds?: number | null): string {
   if (retryInSeconds != null && retryInSeconds > 0) {
     const n = Math.ceil(retryInSeconds);
-    return `You're over the rate limit. You can post again in ~${n}s.`;
+    return `You're over the rate limit. Try again in ~${n}s.`;
   }
   return RATE_LIMIT_COPY;
 }

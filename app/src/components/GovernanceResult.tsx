@@ -50,7 +50,7 @@ function ChamberRow({
 }) {
   const v = chamberVote(poll.options, body);
   const unit = lensVoterUnit(body);
-  const title = body === "spo" ? "SPO chamber" : "dRep chamber";
+  const title = body === "spo" ? "SPOs" : "dReps";
   const ratio = approvalRatio(v.yes, v.no); // Yes/(Yes+No), abstain excluded — null if none cast
   const showBar = !advisory && threshold != null;
   // meets / partial / below vs the threshold (a RANGE for ParamChange → "partial" when inside it, so a poll
@@ -75,7 +75,7 @@ function ChamberRow({
         {v.total === 0n ? (
           <span className={styles.novote}>no {unit}s voted</span>
         ) : ratio == null ? (
-          <span className={styles.novote}>only abstains</span>
+          <span className={styles.novote}>all abstained</span>
         ) : advisory ? (
           <span className={styles.approval}>{pctOf(ratio)}% Yes</span>
         ) : (
@@ -91,10 +91,10 @@ function ChamberRow({
           role="img"
           aria-label={
             ratio == null
-              ? `${title}: no Yes/No votes; needs ${thresholdLabel(threshold!)} to ratify`
+              ? `${title}: no Yes or No votes, needs ${thresholdLabel(threshold!)} to pass`
               : verdict === "partial"
-                ? `${title}: ${pctOf(ratio)} percent Yes, within the ${thresholdLabel(threshold!)} ratification range — clears for some parameter groups, not all`
-                : `${title}: ${pctOf(ratio)} percent Yes, ${meets ? "meets" : "below"} the ${thresholdLabel(threshold!)} ratification bar`
+                ? `${title}: ${pctOf(ratio)} percent Yes, enough for some parameter groups but not all`
+                : `${title}: ${pctOf(ratio)} percent Yes, ${meets ? "meets" : "below"} the ${thresholdLabel(threshold!)} needed to pass`
           }
         >
           <span

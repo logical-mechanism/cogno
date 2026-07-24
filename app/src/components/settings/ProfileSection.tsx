@@ -18,7 +18,7 @@ import { PostBody } from "@/components/PostBody";
 import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
 import { EmptyState } from "@/components/EmptyState";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useMutation } from "@/hooks/useMutation";
 import { useOptimistic } from "@/hooks/useOptimistic";
 import { useToaster } from "@/components/toast/ToasterProvider";
@@ -37,7 +37,8 @@ interface ProfilePreview {
 }
 
 export function ProfileSection() {
-  const { api, signer, source, signerCtl, identity, viewer, bestBlock } = useSession();
+  const { api, signer, source, signerCtl, identity, viewer } = useSession();
+  const bestBlock = useBestBlock();
   const router = useRouter();
   const { run } = useMutation();
   const { overlay } = useOptimistic();
@@ -162,7 +163,7 @@ export function ProfileSection() {
   if (signerCtl.postingEnabled && bound === false) {
     return (
       <div className={styles.card}>
-        <p className={styles.prompt}>Finish setting up your account to edit your profile.</p>
+        <p className={styles.prompt}>Finish setup to edit your profile.</p>
         <button
           type="button"
           className={styles.primaryBtn}
@@ -292,7 +293,7 @@ export function ProfileSection() {
             </button>
           </div>
         ) : (
-          <EmptyState variant="generic" title="No pinned post" description="Pin a post from its menu to feature it here." />
+          <EmptyState variant="generic" title="No pinned post" description="Pin a post from the ··· menu on it." />
         )}
       </div>
     </div>

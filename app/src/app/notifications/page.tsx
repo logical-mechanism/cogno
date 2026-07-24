@@ -112,7 +112,7 @@ export default function NotificationsPage() {
           <EmptyState
             variant="generic"
             title="Sign in to see notifications"
-            description="Connect your wallet to follow replies, likes, mentions and new followers."
+            description="Sign in with a Cardano wallet to see your activity."
           />
         ) : !feed.loaded && items.length === 0 ? (
           // Gate the blocking spinner on the INITIAL load only (`!feed.loaded`), not `feed.loading` — the
@@ -128,7 +128,7 @@ export default function NotificationsPage() {
           <EmptyState
             variant="generic"
             title="Couldn't load notifications"
-            description="Something went wrong reaching the node. Check your connection and try again."
+            description="Check your connection and try again."
             action={{ label: "Retry", onClick: () => feed.refresh() }}
           />
         ) : showEmpty ? (
@@ -137,7 +137,7 @@ export default function NotificationsPage() {
             title={tab === "mentions" ? "No mentions yet" : "No notifications yet"}
             description={
               tab === "mentions"
-                ? "When someone @mentions you in a post, it shows up here."
+                ? "Mentions of you show up here."
                 : "Replies, likes, mentions, poll votes and new followers show up here."
             }
           />
@@ -148,7 +148,7 @@ export default function NotificationsPage() {
             ))}
             {feed.truncated && tab === "all" && (
               <p className={styles.truncated}>
-                Showing your most recent activity. Older items aren’t listed.
+                Activity on your older posts isn’t listed.
               </p>
             )}
           </div>

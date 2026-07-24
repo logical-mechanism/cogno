@@ -14,7 +14,8 @@ import {
   mnemonicToEntropy,
   ss58Address,
 } from "@polkadot-labs/hdkd-helpers";
-import { toHex } from "@polkadot-api/utils";
+import { fromHex, toHex } from "@polkadot-api/utils";
+import type { PolkadotSigner } from "polkadot-api/signer";
 import type { PostingSigner } from "@/lib/types";
 
 /** Well-known dev accounts, derived from the standard dev mnemonic. */
@@ -74,4 +75,45 @@ export function signerFromSeed(
   const { path = "", label = "wallet key", kind = "derived" } = opts;
   const kp = sr25519CreateDerive(seed)(path) as Sr25519KeyPair;
   return toPostingSigner(kp, label, kind);
+}
+
+/**
+ * Rebuild a signer from the PUBLIC half alone (lib/sessionRestore.ts), deferring the seed until a write
+ * actually needs it. This is what makes a page refresh stop logging the user out.
+ *
+ * WHY A LAZY SIGNER AND NOT A THROWING STUB PLUS A `canSign` FLAG. A `PolkadotSigner` needs the public
+ * key to BUILD and encode an extrinsic and the secret only to SIGN one — and we have the public key.
+ * So the restored signer is a real signer whose `signTx` awaits `unlock()` (one CIP-8 wallet prompt)
+ * and then delegates to the freshly-derived key. Every existing write path is untouched: the two call
+ * sites that ever materialize `.signer` (lib/chain/post.ts's submit funnel and `unclaim_role`) neither
+ * know nor care, and a declined prompt rejects `signTx`, which the tx stream already turns into the
+ * same rollback-and-toast a failed post takes.
+ *
+ * The alternative — a stub that throws, plus a `canSign` term ANDed into `viewer.writeReady` — would
+ * have had to thread through 48 `writeReady` references, and every write affordance routes a
+ * not-writeReady user to /welcome, whose step machine reads `sessionState` alone and bounces a
+ * fully-set-up account straight back: a loop with no signature prompt in it. This shape has no such
+ * failure mode because a restored session IS writeReady; the popup simply arrives at submit time.
+ *
+ * `unlock` MUST verify that the key it derives reproduces this exact ss58 before returning — a
+ * multi-account wallet (Eternl, Lace) switched to a different account derives a DIFFERENT posting key,
+ * and signing a tx built for one account with another account's key is not a recoverable state.
+ */
+export function signerFromRestored(
+  rec: { ss58: string; publicKeyHex: string },
+  unlock: () => Promise<PostingSigner>,
+): PostingSigner {
+  const publicKey = fromHex(rec.publicKeyHex);
+  return {
+    ss58: rec.ss58 as PostingSigner["ss58"],
+    publicKeyHex: rec.publicKeyHex,
+    label: "wallet key",
+    kind: "restored",
+    signer: {
+      publicKey,
+      signTx: async (...args: Parameters<PolkadotSigner["signTx"]>) =>
+        (await unlock()).signer.signTx(...args),
+      signBytes: async (data: Uint8Array) => (await unlock()).signer.signBytes(data),
+    },
+  };
 }

@@ -12,7 +12,7 @@ import { Loading } from "@/components/Loading";
 
 export default function ComposeRoute() {
   return (
-    <Suspense fallback={<Loading variant="surface" label="Opening the composer…" />}>
+    <Suspense fallback={<Loading variant="surface" label="Opening composer…" />}>
       <ComposePage />
     </Suspense>
   );

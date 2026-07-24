@@ -21,7 +21,15 @@
 import { Binary } from "polkadot-api";
 import { binTextOpt, type IdPage, type RawThread } from "./reads";
 import type { EnrichedPost, FeedPageRaw, PersonSummaryRaw } from "./descriptors";
-import type { CognoApi, CognoPost, Ss58, QuotedRef, ViewerPostState, Suggestion } from "@/lib/types";
+import type {
+  CognoApi,
+  CognoPost,
+  Ss58,
+  QuotedRef,
+  ViewerPostState,
+  Suggestion,
+  FollowEdges,
+} from "@/lib/types";
 import { mapObservedRolePairs } from "@/lib/chain/roles";
 
 const MAX_PAGE = 100;
@@ -340,6 +348,51 @@ function personSummaryToSuggestion(r: PersonSummaryRaw): Suggestion {
 export async function nodeWhoToFollow(api: CognoApi, limit: number): Promise<Suggestion[]> {
   const rows = await microblogApi(api).who_to_follow(clampLimit(limit));
   return rows.map(personSummaryToSuggestion);
+}
+
+/**
+ * One account's follow graph — both directions plus the exact counters — in ONE `state_call`
+ * (`MicroblogApi.follow_edges`).
+ *
+ * This replaces a four-read fan-out: `Following.getEntries(who)` and `Followers.getEntries(who)` are
+ * both FULL prefix scans of the account's edge set, and each came with its own counter read. The
+ * runtime API was already generated and on the wire; it simply had no caller.
+ *
+ * BEST, not the runtime-API finalized default: this IS a read-after-write surface. `useFollow`
+ * invalidates the shared follow-edges cache from an `onConfirm` that fires at `inBestBlock`, blocks
+ * before finalization — at the finalized default that re-read returns the PRE-follow graph and the
+ * cache COMMITS it, so the Following tab keeps saying "Not following anyone yet" and who-to-follow
+ * keeps suggesting the account you just followed, for the rest of the session. `useFollow`'s own
+ * optimistic map does not cover those two (they read the cache directly, with no override).
+ */
+export async function nodeFollowEdges(api: CognoApi, who: Ss58): Promise<FollowEdges> {
+  try {
+    const e = await microblogApi(api).follow_edges(who, BEST);
+    return {
+      following: e.following as Ss58[],
+      followers: e.followers as Ss58[],
+      followerCount: Number(e.follower_count ?? 0),
+      followingCount: Number(e.following_count ?? 0),
+    };
+  } catch {
+    // The keyed fallback lives HERE, not in one caller: an account with a very large edge set can blow
+    // the state_call resource limit, and both callers (papi-source's `followEdges` and the shared
+    // useFollowEdges cache) need to survive that. The cache's error policy is `retry`, which for a
+    // permanently-over-limit account means an already-mounted Follow button never resolves at all.
+    // A follow-graph read carries no cursor, so falling back to the two prefix scans is safe.
+    const [following, followers, followerCount, followingCount] = await Promise.all([
+      api.query.Microblog.Following.getEntries(who, BEST),
+      api.query.Microblog.Followers.getEntries(who, BEST),
+      api.query.Microblog.FollowerCount.getValue(who, BEST),
+      api.query.Microblog.FollowingCount.getValue(who, BEST),
+    ]);
+    return {
+      following: following.map((e) => e.keyArgs[1] as Ss58),
+      followers: followers.map((e) => e.keyArgs[1] as Ss58),
+      followerCount: Number(followerCount ?? 0),
+      followingCount: Number(followingCount ?? 0),
+    };
+  }
 }
 
 /**

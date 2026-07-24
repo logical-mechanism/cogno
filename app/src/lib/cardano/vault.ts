@@ -41,17 +41,17 @@ async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; 
   if ((await wallet.getNetworkId()) !== 0) {
     // Name the cause: this used to say "connect a Cardano wallet", which misread as a connection problem
     // rather than a network mismatch (connect + both binds now catch this earlier — see wallet-derive.ts).
-    throw new Error("wrong network: switch your wallet to preprod (testnet), then reconnect");
+    throw new Error("Switch your wallet to preprod (testnet), then reconnect.");
   }
   const address = await wallet.getChangeAddress();
   const props = cst.Address.fromBech32(address).getProps();
   if (props.paymentPart?.type !== 0) {
-    throw new Error("connect a normal wallet address (vkey payment), not a script/vault address");
+    throw new Error("Connect a normal wallet address, not a script address.");
   }
   const paymentKeyHash = props.paymentPart.hash;
   const stakeKeyHash = props.delegationPart?.hash;
   if (!stakeKeyHash) {
-    throw new Error("wallet address has no stake credential; use a base (type-0) address");
+    throw new Error("This wallet address has no stake key. Use a base address.");
   }
   const { serializePlutusScript } = await import("@meshsdk/core");
   const { address: vaultAddress } = serializePlutusScript({ code: APPLIED_CBOR, version: "V3" }, stakeKeyHash, 0, false);
@@ -64,7 +64,7 @@ function pickCollateral(collateral: UTxO[], utxos: UTxO[]): UTxO {
   const c =
     collateral[0] ??
     utxos.find((u) => u.output.amount.length === 1 && BigInt(u.output.amount[0].quantity) >= 5_000_000n);
-  if (!c) throw new Error("no collateral UTxO; fund the wallet with a pure-ADA UTxO of at least 5 ADA");
+  if (!c) throw new Error("Your wallet needs an ADA-only collateral UTxO of at least 5 ADA.");
   return c;
 }
 
@@ -86,7 +86,7 @@ export async function lockIntoVault(
   const { MeshTxBuilder } = await import("@meshsdk/core");
   const provider = await getProvider();
   const utxos = await wallet.getUtxos();
-  if (!utxos.length) throw new Error("your wallet has no UTxOs; fund it first");
+  if (!utxos.length) throw new Error("Your wallet is empty. Add ADA first.");
   const collateral = pickCollateral(await wallet.getCollateral(), utxos);
 
   const datum = vaultDatumCborHex(paymentKeyHash, stakeKeyHash);
@@ -126,7 +126,7 @@ export async function exitVault(
 
   const vaultUtxos = await provider.fetchAddressUTxOs(info.vaultAddress, info.unit);
   const target = vaultUtxos[0];
-  if (!target) throw new Error("no live vault found for this wallet to exit");
+  if (!target) throw new Error("No locked ADA found for this wallet.");
 
   const utxos = await wallet.getUtxos();
   const collateral = pickCollateral(await wallet.getCollateral(), utxos);

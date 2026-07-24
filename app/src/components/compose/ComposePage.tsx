@@ -30,7 +30,7 @@ import { ReplyComposer } from "@/components/ReplyComposer";
 import { QuoteComposer } from "@/components/QuoteComposer";
 import { PollComposer } from "@/components/PollComposer";
 import { Loading } from "@/components/Loading";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useThread } from "@/hooks/useThread";
 import { useComposerGate } from "@/hooks/useComposerGate";
 import { useComposeWrite } from "@/hooks/useComposeWrite";
@@ -66,7 +66,8 @@ const TITLES: Record<ComposerMode, string> = {
 export function ComposePage() {
   const router = useRouter();
   const params = useSearchParams();
-  const { api, signer, source, viewer, bestBlock } = useSession();
+  const { api, signer, source, viewer } = useSession();
+  const bestBlock = useBestBlock();
   const { toast } = useToaster();
 
   // ── Mode resolution: precedence reply > quote > poll > post; defensive against junk ids. ──
@@ -225,7 +226,10 @@ export function ComposePage() {
       action?: { actionType: GovActionType; anchorUrl: string },
     ) => {
       if (viewer.status !== "ready") return void router.push("/welcome/");
-      if (!api || !signer || question.trim().length === 0) return;
+      // A chamber (governance) poll may carry an empty question — its subject is the tagged proposal, so the
+      // Composer enables submit with blank text (allowEmptyText). Don't re-impose a non-empty gate here or the
+      // enabled CTA would silently no-op; the runtime accepts an empty question and PollComposer gates options.
+      if (!api || !signer) return;
       // Convert the chosen deadline (days) to an absolute block-number `close_at`. If a deadline was
       // requested but the chain height can't be read, surface it — never silently create a floating poll.
       let closeAt: number | undefined;
@@ -235,7 +239,7 @@ export function ComposePage() {
         toast({
           id: "poll-deadline",
           kind: "error",
-          message: "Couldn't set the poll deadline — check your connection and try again.",
+          message: "Couldn't set the poll deadline. Try again.",
         });
         return;
       }
@@ -260,7 +264,7 @@ export function ComposePage() {
       <div className={styles.body}>
         {/* reply/quote: hydrate the target post for context; busy placeholder then the composer. */}
         {needsTarget && targetLoading && (
-          <Loading variant="panel" label="Loading the post…" />
+          <Loading variant="panel" label="Loading post…" />
         )}
 
         {/* Missing/pruned target → muted stub, but keep the composer usable. */}

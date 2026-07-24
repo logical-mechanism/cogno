@@ -108,3 +108,44 @@ describe("batching", () => {
     expect(got.map((g) => g.key).sort()).toEqual(["alice", "bob", "carol"]);
   });
 });
+
+describe("reset (an endpoint change) is TOTAL", () => {
+  it("forgets committed keys, so the same key is re-read against the new chain", async () => {
+    const read = vi.fn().mockResolvedValueOnce(1n).mockResolvedValueOnce(2n);
+    const h = createBatcher<string, bigint>({
+      name: "t",
+      toKey: (a) => a,
+      read,
+      onError: { mode: "retry" },
+    });
+
+    h.request("alice");
+    expect(await h.flush(api)).toEqual([{ key: "alice", value: 1n }]);
+    expect(h.isCommitted("alice")).toBe(true);
+
+    h.reset(); // the socket now speaks to a DIFFERENT chain
+    expect(h.isCommitted("alice")).toBe(false);
+    h.request("alice");
+    expect(await h.flush(api)).toEqual([{ key: "alice", value: 2n }]);
+  });
+
+  it("DISCARDS a flush already in flight — the old chain's answer must not land after the reset", async () => {
+    // The whole point of reset is "this map now describes a chain we no longer talk to". A read that was
+    // already out when it fired resolves afterwards, and merging it would put exactly the values the
+    // reset just dropped straight back into the cache — indistinguishable from real data.
+    let release: (v: bigint) => void = () => {};
+    const read = vi.fn(() => new Promise<bigint>((r) => (release = r)));
+    const h = createBatcher<string, bigint>({
+      name: "t",
+      toKey: (a) => a,
+      read,
+      onError: { mode: "retry" },
+    });
+
+    h.request("alice");
+    const inFlight = h.flush(api);
+    h.reset();
+    release(1n); // the PREVIOUS chain's answer arrives
+    expect(await inFlight).toEqual([]);
+  });
+});

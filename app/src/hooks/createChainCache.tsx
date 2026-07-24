@@ -91,6 +91,14 @@ export interface Batcher<K, V> {
   flush: (api: CognoApi) => Promise<Array<{ key: string; value: V }>>;
   /** Uncommit keys so the next `request` re-reads them. */
   invalidate: (keys: K[]) => string[];
+  /**
+   * Forget EVERYTHING — every committed key and the pending queue. For an endpoint change.
+   *
+   * It also bumps the batcher's generation, which is what makes the forgetting COMPLETE: a `flush`
+   * already in flight against the previous socket resolves after this and would otherwise merge the
+   * PREVIOUS chain's answers straight back into the map this just emptied.
+   */
+  reset: () => void;
   queued: () => number;
   /** Test-only view of what is committed (in-flight or resolved). */
   isCommitted: (key: K) => boolean;
@@ -99,6 +107,7 @@ export interface Batcher<K, V> {
 export function createBatcher<K, V>(spec: ChainCacheSpec<K, V>): Batcher<K, V> {
   const requested = new Set<string>(); // committed to a fetch (in-flight or resolved)
   const queue = new Map<string, K>(); // registered, waiting for the next batch
+  let generation = 0; // bumped by reset(); an older generation's flush result is discarded
 
   return {
     request(key) {
@@ -113,7 +122,13 @@ export function createBatcher<K, V>(spec: ChainCacheSpec<K, V>): Batcher<K, V> {
       for (const k of ks) requested.delete(k);
       return ks;
     },
+    reset() {
+      generation += 1;
+      requested.clear();
+      queue.clear();
+    },
     async flush(api) {
+      const gen = generation;
       const batch = [...queue.entries()];
       queue.clear();
       for (const [k] of batch) requested.add(k);
@@ -133,6 +148,9 @@ export function createBatcher<K, V>(spec: ChainCacheSpec<K, V>): Batcher<K, V> {
           }
         }),
       );
+      // A reset landed while these reads were in flight ⇒ they answer for a chain this cache has
+      // already forgotten. Drop them wholesale rather than merging another chain's values back in.
+      if (gen !== generation) return [];
       // Filter on the ENVELOPE, never the value — `null` is a legitimate value (divergence 2).
       return entries.filter((e): e is { key: string; value: V } => e !== null);
     },
@@ -151,6 +169,9 @@ export function createChainCache<K, V>(spec: ChainCacheSpec<K, V>): ChainCache<K
   function Provider({ children }: { children: ReactNode }) {
     const { api } = useSession();
     const [values, setValues] = useState<Map<string, V>>(new Map());
+    // Bumped by the endpoint-change reset below. It exists ONLY to change `request`'s identity, which
+    // is the one thing that makes an already-mounted `useValue` ask again — see the note on the reset.
+    const [resetEpoch, setResetEpoch] = useState(0);
 
     // Reach the LATEST api from the deferred (microtask) flush closure without re-subscribing on identity.
     const apiRef = useRef(api);
@@ -198,7 +219,14 @@ export function createChainCache<K, V>(spec: ChainCacheSpec<K, V>): ChainCache<K
         batcher.request(key);
         if (batcher.queued() > before) scheduleFlush();
       },
-      [batcher, scheduleFlush],
+      // `resetEpoch` is deliberately a dependency even though the body never reads it: `useValue`'s
+      // registration effect is keyed on [key, request], so a NEW identity here is the only signal that
+      // reaches an already-mounted consumer. Without it, the endpoint-change reset below empties the
+      // map and nothing ever re-fills it — every display name on screen collapses to a raw ss58 and
+      // stays that way for the rest of the session (the exact failure mode `invalidate` re-queues to
+      // avoid, which `reset` cannot do because it holds only string keys, not the original K).
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [batcher, scheduleFlush, resetEpoch],
     );
 
     const invalidate = useCallback(
@@ -220,8 +248,31 @@ export function createChainCache<K, V>(spec: ChainCacheSpec<K, V>): ChainCache<K
       [batcher, request],
     );
 
-    // When the socket connects (api null → ready), fetch anything registered while it was still offline.
+    // A DIFFERENT chain answers differently. `values` is plain state and `requested` lives in a ref, so
+    // both used to survive `useChain.reconnect(url)` — and `requested` actively PREVENTED a re-read.
+    // After switching endpoints in Settings, every already-committed key (an author's reputation, the
+    // stake ring's voting power, a quoted post's body, a display name) kept serving the PREVIOUS chain's
+    // answer for the rest of the session, indistinguishable from real data.
+    //
+    // A key here is a bare account/id with no chain in it, so there is nothing to compare — the only
+    // sound move is to forget everything the moment the socket identity changes.
+    //
+    // Compare against the last NON-NULL api, not against "did this effect run before". The initial
+    // null → ready transition is a connect, not a chain change, and resetting there would clear the
+    // very queue this effect exists to flush: keys registered while the socket was still offline would
+    // be dropped, and an already-mounted consumer never re-requests on its own, so they would never be
+    // read at all.
+    const lastApi = useRef<CognoApi | null>(null);
     useEffect(() => {
+      if (api && lastApi.current && lastApi.current !== api) {
+        batcher.reset();
+        setValues(new Map());
+        // Re-key `request` so every MOUNTED consumer registers again against the new chain. Dropping
+        // the values without this traded "stale data from the old chain" for "no data, forever".
+        setResetEpoch((n) => n + 1);
+      }
+      if (api) lastApi.current = api;
+      // When the socket connects (api null → ready), fetch anything registered while it was offline.
       if (api && batcher.queued() > 0) scheduleFlush();
     }, [api, batcher, scheduleFlush]);
 

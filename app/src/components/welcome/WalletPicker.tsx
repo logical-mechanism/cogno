@@ -131,8 +131,8 @@ export function WalletPicker({
       ) : wallets.length === 0 ? (
         <EmptyState
           variant="generic"
-          title="No Cardano wallet found."
-          description="Install a CIP-30 wallet, then refresh this page."
+          title="No Cardano wallet found"
+          description="Install a Cardano wallet, then refresh."
           action={undefined}
           icon={
             <div className={styles.installLinks}>

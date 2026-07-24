@@ -139,7 +139,7 @@ export function QuotedPostEmbed({
         />
         <RoleBadge roles={quoted.authorRoles} />
         <Handle address={quoted.author} />
-        {dim && <span className={styles.restricted}>This account has been restricted</span>}
+        {dim && <span className={styles.restricted}>Account restricted</span>}
         {isPoll && <span className={styles.pollChip}>Poll</span>}
       </div>
 
@@ -154,7 +154,7 @@ export function QuotedPostEmbed({
           type="button"
           className={styles.quotePill}
           onClick={openInner}
-          aria-label="This post also quotes another post; open it"
+          aria-label="Open the post this one quotes"
         >
           Quoted post →
         </button>

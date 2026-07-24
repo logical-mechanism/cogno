@@ -16,7 +16,7 @@ void FONTS_LOADED;
 export const metadata: Metadata = {
   title: "cogno",
   description:
-    "Post text, read text. A feeless social chain where posting and voting are metered by Cardano-sourced talk-capacity, not fees.",
+    "Post text, read text. A feeless social app where ADA locked on Cardano is your posting power.",
   applicationName: "cogno",
   // The site is indexable. It is a live, honestly-labeled service; being a preprod testnet is not a
   // reason to hide it from search. (The app shell + static pages like /legal and /privacy are

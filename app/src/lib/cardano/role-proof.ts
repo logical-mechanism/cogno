@@ -76,7 +76,7 @@ function decodeBech32Credential(
   }
   const label = ROLE_LABEL[role];
   if (!ROLE_BECH32_HRPS[role].includes(prefix)) {
-    throw new Error(`that's a "${prefix}…" key, not a ${label} key — paste your ${label} key`);
+    throw new Error(`that's a "${prefix}…" key, not a ${label} key. Paste your ${label} key`);
   }
   if (data.length === 32) {
     return { credentialHex: toHex(blake2b(data, undefined, 28)), fromKeyHash: false };
@@ -86,12 +86,12 @@ function decodeBech32Credential(
   }
   if (data.length === 29) {
     if ((data[0] & 0x0f) === 0x03) {
-      throw new Error(`that ${label} is script-based — only a key-based ${label} can sign`);
+      throw new Error(`That ${label} is script-based. Only a key-based ${label} can sign.`);
     }
     return { credentialHex: toHex(data.slice(1)), fromKeyHash: true };
   }
   throw new Error(
-    `that ${label} bech32 key decoded to ${data.length} bytes — expected a 28/29-byte id or a 32-byte key`,
+    `that ${label} key is the wrong length. Check you copied the whole thing`,
   );
 }
 
@@ -180,7 +180,7 @@ export function deriveRoleCredential(
 
   let hex = normHex(raw);
   if (!/^[0-9a-f]+$/.test(hex)) {
-    throw new Error(`${label} key is not hex, a .vkey JSON, or a bech32 id`);
+    throw new Error(`that isn't a ${label} key. Paste your ${label} id, verification key, or .vkey file`);
   }
   // Strip a CBOR bytestring header (0x5820 = a 32-byte bstr) if the cborHex form was pasted.
   if (hex.length === 68 && hex.startsWith("5820")) hex = hex.slice(4);
@@ -193,7 +193,7 @@ export function deriveRoleCredential(
     return { credentialHex: hex, fromKeyHash: true };
   }
   throw new Error(
-    `expected a 32-byte ${label} verification key (64 hex / .vkey cborHex), its 28-byte key hash (56 hex), or a bech32 id`,
+    `that isn't a ${label} key. Paste your ${label} id, verification key, or .vkey file`,
   );
 }
 
@@ -216,8 +216,8 @@ export async function buildRoleProofRequest(opts: {
 }): Promise<RoleProofRequest> {
   const account = normHex(opts.sr25519PubkeyHex);
   const genesis = normHex(opts.genesisHex);
-  if (!/^[0-9a-f]{64}$/.test(account)) throw new Error("posting account is not a 32-byte hex pubkey");
-  if (!/^[0-9a-f]{64}$/.test(genesis)) throw new Error("chain genesis is not a 32-byte hex hash");
+  if (!/^[0-9a-f]{64}$/.test(account)) throw new Error("Your account key looks malformed. Reconnect your wallet.");
+  if (!/^[0-9a-f]{64}$/.test(genesis)) throw new Error("Got a malformed reply from the network. Try again.");
 
   const { credentialHex, fromKeyHash } = deriveRoleCredential(opts.keyInput, opts.role);
 
@@ -327,7 +327,7 @@ export async function preflightRolePasteback(
   try {
     const cands = candidateHexes(pasted);
     if (cands.length === 0) {
-      return { ok: false, error: "no hex found in the pasted output — paste the cardano-signer --json-extended result" };
+      return { ok: false, error: "that isn't cardano-signer output. Paste the whole --json-extended result" };
     }
 
     const cst = await import("@meshsdk/core-cst");
@@ -367,10 +367,10 @@ export async function preflightRolePasteback(
     }
 
     if (!coseKey || !pubkey) {
-      return { ok: false, error: "couldn't find the COSE_Key in the pasted output" };
+      return { ok: false, error: "couldn't find the key in that output. Paste the whole result" };
     }
     if (!coseSign1) {
-      return { ok: false, error: "couldn't find the COSE_Sign1 signature in the pasted output" };
+      return { ok: false, error: "couldn't find the signature in that output. Paste the whole result" };
     }
 
     const cs = cst.CoseSign1.fromCbor(coseSign1);
@@ -380,7 +380,7 @@ export async function preflightRolePasteback(
     if (payloadHex !== cst.utf8ToHex(req.payload).toLowerCase()) {
       return {
         ok: false,
-        error: "the signed payload doesn't match this session — regenerate the command and sign again",
+        error: "that signature doesn't match this command. Regenerate it and sign again",
       };
     }
 
@@ -391,7 +391,7 @@ export async function preflightRolePasteback(
     const addrHex = cst.bytesToHex(addrBytes).toLowerCase();
     if ((opts.addressMatch ?? "exact") === "exact") {
       if (addrHex !== req.syntheticAddressHex) {
-        return { ok: false, error: "the signed address isn't the synthetic role address — pass the exact --address shown" };
+        return { ok: false, error: "re-run the command with the exact --address shown above" };
       }
     } else {
       const expectedNetwork = parseInt(req.syntheticAddressHex.slice(0, 2), 16) & 0x0f;
@@ -399,13 +399,13 @@ export async function preflightRolePasteback(
       if (pc === null) {
         return {
           ok: false,
-          error: `the wallet signed over an unsupported address (${addrHex}) — need a key-payment address on network ${expectedNetwork}`,
+          error: "the wallet signed with an unsupported address. Use the offline command instead",
         };
       }
       if (pc !== req.credentialHex) {
         return {
           ok: false,
-          error: `the wallet signed for credential ${pc.slice(0, 12)}…, not this dRep (${req.credentialHex.slice(0, 12)}…) — is this dRep in the connected account?`,
+          error: `the connected wallet account doesn't hold this ${ROLE_LABEL[req.role]} key. Switch accounts and try again`,
         };
       }
     }
@@ -417,22 +417,22 @@ export async function preflightRolePasteback(
     // (2) the key really is the claimed role credential.
     const credHex = toHex(blake2b(pubkey, undefined, 28));
     if (credHex !== req.credentialHex) {
-      return { ok: false, error: "blake2b_224(signing key) ≠ the role credential — you signed with a different key" };
+      return { ok: false, error: "you signed with a different key than the one you entered" };
     }
     // Belt-and-suspenders single-key-source check (the runtime enforces kid == key when a kid is present):
     // if the COSE_Sign1 carries its own key, it must equal the COSE_Key.
     try {
       const embedded = new Uint8Array(cs.getPublicKey());
       if (embedded.length === 32 && toHex(embedded) !== toHex(pubkey)) {
-        return { ok: false, error: "the COSE_Sign1 key and COSE_Key disagree — re-run the command cleanly" };
+        return { ok: false, error: "that output mixes two different keys. Re-run the command" };
       }
     } catch {
       // no embedded key in the signature header — fine, the address is the binding
     }
 
     // (5) on-chain size bounds (decode would reject an over-bound blob).
-    if (hexByteLen(coseSign1) > 512) return { ok: false, error: "COSE_Sign1 exceeds the 512-byte on-chain bound" };
-    if (hexByteLen(coseKey) > 128) return { ok: false, error: "COSE_Key exceeds the 128-byte on-chain bound" };
+    if (hexByteLen(coseSign1) > 512) return { ok: false, error: "the signature is too long to submit" };
+    if (hexByteLen(coseKey) > 128) return { ok: false, error: "the key is too long to submit" };
 
     return { ok: true, coseSign1, coseKey };
   } catch (e) {
@@ -510,14 +510,14 @@ export async function produceRoleProofWallet(opts: {
       // Request the CIP-95 governance extension — without it the wallet exposes no dRep key / signData.
       const wallet = await BrowserWallet.enable(opts.walletId, [{ cip: 95 }]);
       if ((await wallet.getNetworkId()) !== 0) {
-        return { ok: false, error: "wrong network: switch your wallet to preprod (testnet), then reconnect" };
+        return { ok: false, error: "Switch your wallet to preprod (testnet), then reconnect." };
       }
       // Capability gate: a wallet without CIP-95 returns no dRep key → point at the offline command.
       const pubDRep = await wallet.getPubDRepKey().catch(() => undefined);
       if (!pubDRep) {
         return {
           ok: false,
-          error: "this wallet doesn't offer in-wallet dRep signing (CIP-95) — use the offline command instead",
+          error: "this wallet can't sign as a dRep. Sign offline instead",
         };
       }
       // Hand the wallet a well-formed drep1… (so MeshJS routes to cip95.signData) and the pinned payload.
@@ -530,18 +530,16 @@ export async function produceRoleProofWallet(opts: {
       const injected = (
         globalThis as unknown as { cardano?: Record<string, { enable: () => Promise<Cip30Api> }> }
       ).cardano?.[opts.walletId];
-      if (!injected) return { ok: false, error: "wallet not found — reconnect it and try again" };
+      if (!injected) return { ok: false, error: "Wallet not found. Reconnect and try again." };
       const api = await injected.enable();
       if ((await api.getNetworkId()) !== 0) {
-        return { ok: false, error: "wrong network: switch your wallet to preprod (testnet), then reconnect" };
+        return { ok: false, error: "Switch your wallet to preprod (testnet), then reconnect." };
       }
       const raw = opts.keyInput.trim();
       const calidusId = raw.toLowerCase().startsWith("calidus1")
         ? raw
         : encodeCalidusId(opts.request.credentialHex);
-      console.info(`cogno: Calidus wallet sign — calidusId=${calidusId}; via raw signData`);
       sig = await api.signData(calidusId, utf8ToHexLocal(opts.request.payload));
-      console.info(`cogno: Calidus wallet sign — raw signData=${JSON.stringify(sig)}`);
     }
 
     // Same pre-flight as the offline path, but in CREDENTIAL mode: the wallet embeds ITS OWN key-hash address
@@ -555,7 +553,7 @@ export async function produceRoleProofWallet(opts: {
     }
     return pf;
   } catch (e) {
-    if (isUserRejection(e)) return { ok: false, error: "signing was cancelled in the wallet" };
+    if (isUserRejection(e)) return { ok: false, error: "Signing cancelled." };
     const msg = e instanceof Error ? e.message : String(e);
     console.error("cogno: produceRoleProofWallet failed:", msg);
     // Eternl's Calidus lookup miss → the connected account isn't the one holding this Calidus key.
@@ -563,12 +561,12 @@ export async function produceRoleProofWallet(opts: {
       return {
         ok: false,
         error:
-          "the connected wallet account doesn't hold this Calidus key — switch to the Eternl account it's derived from (its path's account), reconnect, and try again",
+          "the connected wallet account doesn't hold this Calidus key. Switch accounts in Eternl and reconnect",
       };
     }
     // A missing cip95 surfaces as a TypeError on `.signData` — steer to the fallback rather than a raw error.
     if (role === "drep" && /cip95|signData|undefined/i.test(msg)) {
-      return { ok: false, error: "this wallet couldn't sign with the dRep key (CIP-95) — use the offline command instead" };
+      return { ok: false, error: "this wallet can't sign as a dRep. Sign offline instead" };
     }
     return { ok: false, error: msg };
   }

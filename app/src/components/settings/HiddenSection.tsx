@@ -131,7 +131,7 @@ export function HiddenSection() {
     return (
       <EmptyState
         title="No hidden posts"
-        description="Hide a post from the ··· menu on it. Hiding is saved on this device, per account, and only hides the post for you. It never affects anyone else."
+        description="Hide a post from the ··· menu on it. Hiding is saved on this device, per account, and only hides the post for you."
       />
     );
   }
@@ -179,7 +179,7 @@ export function HiddenSection() {
           <div key={String(id)} className={styles.row}>
             <Link href={`/post/${id}/`} className={styles.link} aria-label="Open hidden post">
               <span className={styles.who}>
-                <span className={styles.fallback}>Post #{String(id)} — couldn&apos;t load</span>
+                <span className={styles.fallback}>Couldn&apos;t load post #{String(id)}</span>
               </span>
             </Link>
             <button type="button" className={styles.unhide} onClick={() => unhide(id)}>

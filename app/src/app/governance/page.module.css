@@ -61,6 +61,19 @@
   font-size: var(--cg-fs-md);
   line-height: var(--cg-lh-md);
   overflow-wrap: break-word;
+  /* Clamp: the title is an author-controlled off-chain string (up to CAP.title chars), so bound it to keep
+     the list scannable — one row can't wall off the feed. Mirrors ProposalPreview's .glanceTitle. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+/* A resolved proposal title reads as primary text (above); a fallback state — loading, no title, bad
+   metadata, or a gated host — is muted so it doesn't masquerade as a real title. */
+.question[data-muted="true"] {
+  color: var(--cg-text-secondary);
 }
 
 .eligible {

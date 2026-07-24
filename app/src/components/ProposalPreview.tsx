@@ -185,7 +185,7 @@ export function ProposalPreview({
                 );
               })}
               <p className={styles.caveat}>
-                Unverified · fetched off-chain, may have changed since the poll was created.{" "}
+                Unverified · may have changed since the poll was created.{" "}
                 {sourceLink("View source ↗", href)}
               </p>
             </>

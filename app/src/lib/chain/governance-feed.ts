@@ -37,12 +37,31 @@ function actionTypeOf(raw: unknown): GovActionType {
   return "Info";
 }
 
+/** Decode the GovAction's `anchor_url` (a `Binary`) into a plain string, length-capped, or `undefined`.
+ *  NOT sanitized for display — it is used only as a URL (parsed/validated in `proposalMeta`), never rendered. */
+function decodeAnchor(raw: unknown): string | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw === "string") return raw.slice(0, 2048) || undefined;
+  try {
+    // The on-chain anchor is a `Binary` (BoundedVec<u8>) — decode it the same way this file decodes the
+    // post text. Cast via the fn's own parameter type (`Binary` is a value here, not a usable type name);
+    // a non-Binary shape throws and falls through to `undefined`.
+    const s = Binary.toText(raw as Parameters<typeof Binary.toText>[0]);
+    return s ? s.slice(0, 2048) || undefined : undefined; // defensive cap on an author-provided URL
+  } catch {
+    return undefined;
+  }
+}
+
 /** A governance poll as the discovery list needs it (no tally — that loads when the poll is opened). */
 export interface GovPollSummary {
   hostId: bigint;
   actionType: GovActionType;
-  /** The host post's text (the question), sanitized + truncated. */
+  /** The host post's text (the question), sanitized + truncated. Kept as data; the feed row shows the
+   *  resolved proposal title instead. */
   question: string;
+  /** The CIP-1694 proposal's off-chain anchor URL (decoded, length-capped), for the glanceable title. */
+  anchorUrl?: string;
   /** Block-number deadline, or undefined for a floating poll. */
   closeAt?: number;
   /** `true` once `close_poll` has frozen the result. */
@@ -74,6 +93,7 @@ export async function readGovernancePolls(api: CognoApi): Promise<GovPollSummary
         hostId,
         actionType: actionTypeOf(e.value.action?.action_type),
         question,
+        anchorUrl: decodeAnchor(e.value.action?.anchor_url),
         closeAt: e.value.close_at ?? undefined,
         finalized: finalized.has(hostId),
       };

@@ -33,7 +33,11 @@ export function VaultSection() {
   const actionRef = useRef<"lock" | "exit" | null>(null);
   const walletId = signerCtl.connectedWalletId;
   const ss58 = signerCtl.signer.ss58;
-  const connected = signerCtl.walletConnected && !!walletId;
+  // `walletSession`, not `walletConnected`: locking and exiting the vault are `wallet.signTx` +
+  // `wallet.submitTx` on the CARDANO key, which a restored session has exactly as much access to as a
+  // freshly-derived one. Keying this on `walletConnected` told every returning user to "connect a
+  // wallet" they were already connected to, and hid the vault controls behind a refresh.
+  const connected = signerCtl.walletSession && !!walletId;
 
   // On-chain posting power (the weight the observer inherent granted). Watched — it lands only after the
   // lock clears the observer's stability window (see usePendingCapacity, which shows the ETA).
@@ -70,7 +74,7 @@ export function VaultSection() {
       ok(
         action === "lock"
           ? "Lock submitted. Crediting your posting power"
-          : "Exit submitted. Your posting power will update",
+          : "Exit submitted",
       );
       actionRef.current = null;
     } else if (vault.phase === "error" && vault.error) {
@@ -129,8 +133,8 @@ export function VaultSection() {
         )}
         {!showingPending && (
           <p className={styles.note}>
-            Posting requires locked ADA. Lock below to earn the posting power every post spends — it
-            becomes available a few minutes after your lock confirms on Cardano.
+            Posting power comes from locked ADA. It lands a few minutes after your lock confirms on
+            Cardano.
           </p>
         )}
       </div>

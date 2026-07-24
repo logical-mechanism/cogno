@@ -95,7 +95,7 @@ export function useFeedPage(
         if (cancelled) return;
         applyPage(null);
         setPosts([]);
-        setError(readErrorCopy(err, "Could not load the page."));
+        setError(readErrorCopy(err, "Couldn't load posts."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -126,7 +126,7 @@ export function useFeedPage(
       })
       .catch((err: unknown) => {
         if (queryKeyRef.current !== dispatchedKey) return;
-        setError(readErrorCopy(err, "Could not load more."));
+        setError(readErrorCopy(err, "Couldn't load more."));
       })
       .finally(() => {
         if (queryKeyRef.current === dispatchedKey) setLoading(false);

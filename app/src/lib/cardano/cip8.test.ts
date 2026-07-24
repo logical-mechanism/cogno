@@ -114,7 +114,7 @@ describe("produceBindProof — malformed commitment (refuse before signing)", ()
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await produceBindProof({ walletId: "eternl", sr25519PubkeyHex: "deadbeef", genesisHex: GENESIS });
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/32-byte hex pubkey/i);
+    expect(res.error).toMatch(/account key looks malformed/i);
     expect(fake.signDataCalls).toHaveLength(0); // NEVER signed
   });
 
@@ -122,7 +122,7 @@ describe("produceBindProof — malformed commitment (refuse before signing)", ()
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await produceBindProof({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: "0xnotahash" });
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/32-byte hex hash/i);
+    expect(res.error).toMatch(/malformed reply from the network/i);
     expect(fake.signDataCalls).toHaveLength(0);
   });
 });
@@ -158,7 +158,7 @@ describe("produceBindProof — address + key defense", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await produceBindProof({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/512-byte on-chain bound/i);
+    expect(res.error).toMatch(/signature exceeds the size/i);
   });
 });
 
@@ -196,7 +196,7 @@ describe("produceBindProofStake — reward-address defense (refuse before signin
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/script stake credential/i);
+    expect(res.error).toMatch(/script stake keys can't be linked/i);
     expect(fake.signDataCalls).toHaveLength(0);
   });
 
@@ -205,7 +205,7 @@ describe("produceBindProofStake — reward-address defense (refuse before signin
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/29 bytes/i);
+    expect(res.error).toMatch(/couldn't read this wallet's reward address/i);
     expect(fake.signDataCalls).toHaveLength(0);
   });
 
@@ -213,7 +213,7 @@ describe("produceBindProofStake — reward-address defense (refuse before signin
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: "deadbeef", genesisHex: GENESIS });
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/32-byte hex pubkey/i);
+    expect(res.error).toMatch(/account key looks malformed/i);
     expect(fake.signDataCalls).toHaveLength(0);
   });
 });
@@ -232,6 +232,6 @@ describe("produceBindProofStake — key + size defense", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await produceBindProofStake({ walletId: "eternl", sr25519PubkeyHex: ACCOUNT, genesisHex: GENESIS });
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/512-byte on-chain bound/i);
+    expect(res.error).toMatch(/signature exceeds the size/i);
   });
 });

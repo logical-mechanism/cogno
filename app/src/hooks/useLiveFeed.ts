@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOptimistic } from "./useOptimistic";
 import { mergeFeed, pendingKey, viewerPatchSettled } from "@/lib/optimistic";
 import { bridgeFetchSize, mergeById, partitionFresh } from "@/lib/feed/live";
+import { feedSnapshotKey, saveFeedSnapshot, takeFeedSnapshot } from "@/lib/feed/snapshot";
 import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import type { FeedSource } from "@/lib/feed/source";
 import { readErrorCopy } from "@/lib/chain/errors";
@@ -119,26 +120,93 @@ export function useLiveFeed(
     }
   }, []);
 
+  // The snapshot slot this feed's state is held in across an unmount (see lib/feed/snapshot).
+  const snapshotKey = useMemo(() => feedSnapshotKey("forYou", me), [me]);
+
+  // Hand the loaded page + cursor + scroll position to the next mount. HomePage unmounts on EVERY
+  // client navigation (AppShell swaps only <main>), so without this, Back from a post re-seeds 50
+  // posts, throws away every "load more" page below them, and lands the reader at the top.
+  //
+  // Refs, not state: this runs in an unmount cleanup, where the state closed over by the effect is
+  // whatever it was when the effect last ran, not what is on screen.
+  const loadedRef = useRef(loaded);
+  loadedRef.current = loaded;
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
+  // The head this page is current as of. Written by the head subscription below and carried in the
+  // snapshot so the restoring mount can bridge the REAL gap instead of guessing a page.
+  const headRef = useRef<bigint | null>(null);
+  useEffect(() => {
+    return () => {
+      saveFeedSnapshot(snapshotKey, {
+        posts: loadedRef.current,
+        cursor: cursorRef.current,
+        scrollY: typeof window === "undefined" ? 0 : window.scrollY,
+        head: headRef.current,
+      });
+    };
+  }, [snapshotKey]);
+
   // Reset + (re)subscribe whenever the source changes.
   useEffect(() => {
     epochRef.current += 1;
-    loadedIds.current = new Set();
     bufferedIds.current = new Set();
-    setLoaded([]);
     setBuffered([]);
-    setCursor(null);
-    setReady(false);
     setError(null);
     // The epoch bump above orphans any in-flight load-more, and its `.finally` is epoch-gated — so
     // without this, a source change mid-load-more leaves `loadingMore` true forever and `loadMore`
     // dead-returns on its own guard for the rest of the session.
     setLoadingMore(false);
+
+    // Restore the page this feed was showing when it last unmounted, if it is for THIS viewer and
+    // tab. It is a fast first paint, not a source of truth: `seeded` is left false below when there is
+    // no snapshot, and either way the head subscription immediately brings the feed current. The pill
+    // buffer is deliberately NOT restored — it is a "since you last looked" counter, and the reader
+    // just looked.
+    const restored = source ? takeFeedSnapshot(snapshotKey) : null;
+    if (restored) {
+      loadedIds.current = new Set(restored.posts.map((p) => String(p.id)));
+      setLoaded(restored.posts);
+      setCursor(restored.cursor);
+      setReady(true);
+      // Mirror into the save refs SYNCHRONOUSLY. `takeFeedSnapshot` consumes, and the refs only catch
+      // up on the next render — so an unmount between this line and that render would save an empty
+      // page (which `saveFeedSnapshot` refuses) and the restored page would be gone for good. React 19
+      // StrictMode does exactly that on every dev mount: setup → cleanup → setup, with no render in
+      // between, which ate the snapshot on every `next dev` navigation.
+      loadedRef.current = restored.posts;
+      cursorRef.current = restored.cursor;
+      // After paint, so the document is tall enough for the offset to exist. `instant` because this is
+      // a restoration, not a navigation — a smooth scroll from the top would be a visible lurch.
+      const y = restored.scrollY;
+      if (y > 0 && typeof window !== "undefined") {
+        requestAnimationFrame(() => window.scrollTo({ top: y, behavior: "instant" }));
+      }
+    } else {
+      loadedIds.current = new Set();
+      setLoaded([]);
+      setCursor(null);
+      setReady(false);
+    }
     if (!source) return;
 
     let cancelled = false;
-    let seeded = false;
+    // A restored page counts as seeded: the head subscription's first emission should BRIDGE from it,
+    // not re-seed over it (which would reset the cursor and drop the paged tail all over again).
+    let seeded = restored != null;
     let seeding = false;
-    let lastHead: bigint | null = null;
+    // Restored from the snapshot, so the first head emission bridges the ACTUAL gap. Leaving this null
+    // made the bridge fall through to a hard-coded one-page read: a reader who spent longer than a
+    // page's worth of chain on a thread came back to a feed that had silently skipped everything older
+    // than the newest 50 — and then set `lastHead` to the new head, so nothing ever went back for them.
+    let lastHead: bigint | null = restored?.head ?? null;
+    headRef.current = lastHead;
+    // Move both together — the local drives the bridge, the ref is what the snapshot carries to the
+    // next mount. Two assignment sites that could drift is exactly how the gap-bridging bug happened.
+    const setHead = (h: bigint | null) => {
+      lastHead = h;
+      headRef.current = h;
+    };
 
     const fail = (e: unknown, fallback: string) => {
       if (!cancelled) setError(readErrorCopy(e, fallback));
@@ -154,7 +222,7 @@ export function useLiveFeed(
           if (cancelled) return;
           seeded = true;
           seeding = false;
-          lastHead = h;
+          setHead(h);
           pg.posts.forEach((p) => loadedIds.current.add(String(p.id)));
           setLoaded(pg.posts);
           setCursor(pg.endCursor);
@@ -162,7 +230,7 @@ export function useLiveFeed(
         })
         .catch((e: unknown) => {
           seeding = false;
-          fail(e, "Could not load the feed.");
+          fail(e, "Couldn't load the feed.");
         });
     };
 
@@ -174,7 +242,7 @@ export function useLiveFeed(
         if (h == null) {
           // Empty chain: seed an empty list so the UI leaves "loading".
           seeded = true;
-          lastHead = null;
+          setHead(null);
           setLoaded([]);
           setCursor(null);
           setReady(true);
@@ -196,7 +264,7 @@ export function useLiveFeed(
         .then((pg) => {
           if (cancelled) return;
           applyFresh(pg.posts);
-          lastHead = h;
+          setHead(h);
         })
         .catch(() => {
           // Transient liveness refetch failure — the next head tick retries (lastHead unadvanced).
@@ -205,14 +273,14 @@ export function useLiveFeed(
 
     const sub = source.liveHeadId().subscribe({
       next: handleHead,
-      error: (e: unknown) => fail(e, "The live feed errored."),
+      error: (e: unknown) => fail(e, "Live updates stopped."),
     });
 
     return () => {
       cancelled = true;
       sub?.unsubscribe();
     };
-  }, [source, baseQuery, applyFresh]);
+  }, [source, baseQuery, applyFresh, snapshotKey]);
 
   const loadMore = useCallback(() => {
     if (!source || loadingMore || cursor == null) return;
@@ -228,7 +296,7 @@ export function useLiveFeed(
         setCursor(pg.endCursor);
       })
       .catch((e: unknown) => {
-        if (epochRef.current === epoch) setError(readErrorCopy(e, "Could not load more."));
+        if (epochRef.current === epoch) setError(readErrorCopy(e, "Couldn't load more."));
       })
       .finally(() => {
         if (epochRef.current === epoch) setLoadingMore(false);

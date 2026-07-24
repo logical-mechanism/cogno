@@ -60,7 +60,7 @@
   outline-offset: var(--cg-focus-ring-offset);
 }
 
-/* Secondary "Browse the timeline (read-only)" escape — never blocks reading, but visually quiet so
+/* Secondary "Browse the timeline" escape — never blocks reading, but visually quiet so
    locking ADA stays the primary action when there's no posting power yet. */
 .readOnly {
   align-self: center;

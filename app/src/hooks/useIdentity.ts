@@ -7,7 +7,7 @@
 // readback. The wallet sign, the on-chain submit, and the readback are distinct steps, surfaced as one
 // `binding` flag here but narrated by the UI.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PolkadotClient } from "polkadot-api";
 import type { CognoApi, PostingSigner } from "@/lib/types";
 import {
@@ -92,6 +92,15 @@ export function useIdentity(
   api: CognoApi | null,
   client: PolkadotClient | null,
   signer: PostingSigner,
+  /**
+   * The posting key is one the user actually chose (`signerCtl.postingEnabled`). False means the
+   * BACKGROUND `//Alice` default, which nobody selected and which `deriveSessionState` already reports
+   * as "disconnected" before it ever looks at `bound` — so reading the chain for it was pure waste:
+   * one timed `AccountOf` read plus TWO permanent per-block `watchValue` subscriptions on every guest
+   * page load, for the whole life of the tab. Providers applies exactly this guard to `postingPower`
+   * and `viewerRoles`; this closes the third case.
+   */
+  enabled: boolean,
 ): UseIdentity {
   const [bound, setBound] = useState<boolean | null>(null);
   const [binding, setBinding] = useState(false);
@@ -115,11 +124,17 @@ export function useIdentity(
   // never flashes the wrong onboarding step for a frame (an effect runs post-paint, which would). The
   // ref guard makes it one-shot per key. A bare socket (api) reconnect keeps the same key, so `bound` is
   // NOT cleared there — that would needlessly bounce a logged-in user off the auth wall.
-  const boundKeyRef = useRef<string | null>(null);
-  if (boundKeyRef.current !== signer.ss58) {
-    boundKeyRef.current = signer.ss58;
+  //
+  // Keyed on the ACTIVE key, which is null while disabled — so flipping `enabled` (a connect, a
+  // restore, a disconnect) re-arms the loading state exactly like a key change does.
+  const activeKey = enabled ? signer.ss58 : null;
+  const boundKeyRef = useRef<string | null | undefined>(undefined);
+  if (boundKeyRef.current !== activeKey) {
+    boundKeyRef.current = activeKey;
     setBound(null);
-    setCheckingBound(true); // show the neutral "deciding" state until the effect's read resolves/times out
+    // Only a REAL key is worth a "deciding" state. For the background //Alice default there is nothing
+    // to decide, and holding `checkingBound` true would make the auth wall wait on a read we never issue.
+    setCheckingBound(activeKey !== null);
   }
 
   const refresh = useCallback(() => {
@@ -127,23 +142,44 @@ export function useIdentity(
     // from chain state. Clear it whenever the key/chain changes (this callback re-runs on [api, ss58])
     // so a stale signing-address can't survive a wallet switch to a different — already-bound — account.
     setBoundAddress(null);
-    if (!api) {
+    if (!activeKey) {
       setBound(null);
-      setCheckingBound(false);
+      setCheckingBound(false); // no key → nothing to decide
+      return;
+    }
+    if (!api) {
+      // A REAL key with no socket yet. This is not "decided", it is "not started" — and on a cold
+      // reload with a restored session it is the NORMAL path: `activeKey` becomes non-null one commit
+      // before `api` exists (useChain resolves the endpoint in one effect and creates the handle in a
+      // second). Clearing `checkingBound` here dropped AppShell's `deciding` guard before the bound
+      // read had even been issued, so the wall could bounce a restored user to /welcome during their
+      // own WS handshake. Stay armed; the [api, activeKey] re-run below issues the read once the
+      // socket lands, and the unreachable-node case is bounded by the effect underneath.
+      setBound(null);
       return;
     }
     // Time-bound the read so a hung node can't wedge `checkingBound`; on timeout/error we fall through to
     // bound=null → the connect step, where the user keeps agency. (checkingBound was set true in render.)
-    withTimeout(isAccountBound(api, signer.ss58), BOUND_READ_TIMEOUT_MS)
+    withTimeout(isAccountBound(api, activeKey), BOUND_READ_TIMEOUT_MS)
       .then(setBound)
       .catch(() => setBound(null))
       .finally(() => setCheckingBound(false));
-  }, [api, signer.ss58]);
+  }, [api, activeKey]);
 
   // Re-check whenever the chain or the active posting key changes.
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // The backstop for "armed, but the socket never arrived". `refresh` deliberately leaves
+  // `checkingBound` true while it waits for `api`, and an unreachable node means it waits forever —
+  // which would pin a returning user on the auth wall's full-screen loader with no way out. Release it
+  // on the same budget the read itself gets, so an offline node degrades to the connect step instead.
+  useEffect(() => {
+    if (!checkingBound || api) return;
+    const t = setTimeout(() => setCheckingBound(false), BOUND_READ_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [checkingBound, api]);
 
   // Watch the stake (voting-power) state LIVE for the active key: the bound stake credential
   // (`CognoGate.StakeCredOf`, OptionQuery) and the voting power it confers (`TalkStake.VotingPower`,
@@ -152,7 +188,7 @@ export function useIdentity(
   useEffect(() => {
     // A stale per-attempt error must not survive a key/chain switch (this effect re-runs on [api, ss58]).
     setStakeError(null);
-    if (!api) {
+    if (!api || !activeKey) {
       setStakeBound(null);
       setVotingPower(null);
       setBoundStakeCredHex(null);
@@ -160,14 +196,14 @@ export function useIdentity(
     }
     // PAPI v2: watchValue takes an options object and emits { block, value } (not the bare value); a
     // fixed-size [u8;28] credential decodes to a 0x-hex string (no `.asHex()`).
-    const s1 = api.query.CognoGate.StakeCredOf.watchValue(signer.ss58, { at: "best" }).subscribe(
+    const s1 = api.query.CognoGate.StakeCredOf.watchValue(activeKey, { at: "best" }).subscribe(
       ({ value: cred }) => {
         setStakeBound(cred !== undefined);
         setBoundStakeCredHex(cred ?? null);
       },
       () => setStakeBound(null),
     );
-    const s2 = api.query.TalkStake.VotingPower.watchValue(signer.ss58, { at: "best" }).subscribe(
+    const s2 = api.query.TalkStake.VotingPower.watchValue(activeKey, { at: "best" }).subscribe(
       ({ value: w }) => setVotingPower((w as bigint) ?? 0n),
       () => setVotingPower(null),
     );
@@ -175,7 +211,7 @@ export function useIdentity(
       s1.unsubscribe();
       s2.unsubscribe();
     };
-  }, [api, signer.ss58]);
+  }, [api, activeKey]);
 
   const bind = useCallback(
     (walletId: string) => {
@@ -190,7 +226,7 @@ export function useIdentity(
           // (2) the wallet signs the pinned payload ONCE (built in-browser; no trusted follower).
           const proof = await produceBindProof({ walletId, sr25519PubkeyHex: signer.publicKeyHex, genesisHex });
           if (!proof.ok || !proof.coseSign1 || !proof.coseKey) {
-            throw new Error(proof.error || "could not produce the CIP-8 bind proof");
+            throw new Error(proof.error || "your wallet didn't return a usable proof");
           }
           // (3) submit the self-proof on-chain, FEELESSLY, as a bare/unsigned extrinsic. No fee, no
           //     funded relay — the CIP-8 proof is the authorization and the runtime is the sole verifier,
@@ -200,7 +236,7 @@ export function useIdentity(
           setBindPhase("submitting");
           const res = await submitLinkIdentityFeeless(client, api, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
-            throw new Error(res.error || "the on-chain bind was rejected");
+            throw new Error(res.error || "the registration was rejected");
           }
           // (4) AccountOf readback: confirm the verified identity resolves to MY account, the
           //     belt-and-suspenders 1:1 check (the proof already commits my account cryptographically).
@@ -208,7 +244,7 @@ export function useIdentity(
           if (res.identityHash) {
             const who = await readAccountOf(api, res.identityHash).catch(() => undefined);
             if (who && who !== signer.ss58) {
-              throw new Error("the bound identity resolved to a different account; refusing to claim it");
+              throw new Error("That identity is already linked to a different account.");
             }
           }
           const nowBound = await isAccountBound(api, signer.ss58).catch(() => false);
@@ -216,7 +252,7 @@ export function useIdentity(
             console.error(
               `cogno: bind submitted but the chain shows ${signer.ss58.slice(0, 8)}… unbound (wallet "${walletId}", identity ${res.identityHash?.slice(0, 10)}…)`,
             );
-            throw new Error("bind submitted, but the chain still shows your account unbound");
+            throw new Error("Registration didn't take. Try again.");
           }
           setBound(true);
           setBoundAddress(proof.signingAddress ?? null);
@@ -240,7 +276,7 @@ export function useIdentity(
       // The runtime requires the account to be payment-bound first (NotPaymentBound). Pre-check for a
       // clear message; the on-chain rule (pool + dispatch) is the authority either way.
       if (bound !== true) {
-        setStakeError("register your posting key first; voting power needs an account that can already post");
+        setStakeError("Register your account first.");
         return;
       }
       setStakeBinding(true);
@@ -254,7 +290,7 @@ export function useIdentity(
           //     Requires a wallet that signs over a reward address (Eternl/Lace); the UI gates this.
           const proof = await produceBindProofStake({ walletId, sr25519PubkeyHex: signer.publicKeyHex, genesisHex });
           if (!proof.ok || !proof.coseSign1 || !proof.coseKey) {
-            throw new Error(proof.error || "could not produce the CIP-8 stake proof");
+            throw new Error(proof.error || "your wallet didn't return a usable stake proof");
           }
           // (3) submit the stake self-proof FEELESSLY, as a bare/unsigned extrinsic — same as the payment
           //     bind, no fee and no funded relay. The runtime requires the account already be payment-bound
@@ -263,7 +299,7 @@ export function useIdentity(
           setStakeBindPhase("submitting");
           const res = await submitLinkStakeFeeless(client, api, proof.coseSign1, proof.coseKey);
           if (!res.ok) {
-            throw new Error(res.error || "the on-chain stake bind was rejected");
+            throw new Error(res.error || "the network rejected it");
           }
           // (4) StakeCredOf readback — symmetric with the payment bind's confirm step: don't declare
           //     "voting power added" until the chain actually shows a stake credential bound to this key.
@@ -273,7 +309,7 @@ export function useIdentity(
             console.error(
               `cogno: stake bind submitted but the chain shows ${signer.ss58.slice(0, 8)}… with no stake bound (wallet "${walletId}")`,
             );
-            throw new Error("voting-power bind submitted, but the chain still shows no stake bound");
+            throw new Error("it didn't take. Try again");
           }
           // The live watch (above) flips stakeBound and surfaces the voting power once observed; seed
           // boundStakeCredHex from the LOCALLY-PROVEN credential (what the runtime binds) so the UI
@@ -296,21 +332,44 @@ export function useIdentity(
     [api, client, stakeBinding, bound, signer],
   );
 
-  return {
-    bound,
-    binding,
-    bindPhase,
-    checkingBound,
-    error,
-    boundAddress,
-    bind,
-    refresh,
-    stakeBound,
-    votingPower,
-    boundStakeCredHex,
-    stakeBinding,
-    stakeBindPhase,
-    stakeError,
-    bindStake,
-  };
+  // MEMOIZED, and that matters well beyond this file: this object goes straight into the session
+  // context value in Providers. A fresh literal per render made that context's own `useMemo` a no-op,
+  // so every best block (~6s) re-rendered all 41 useSession consumers into a tree with no memo
+  // boundaries. Same reason useChain and useSigner memoize theirs.
+  return useMemo(
+    () => ({
+      bound,
+      binding,
+      bindPhase,
+      checkingBound,
+      error,
+      boundAddress,
+      bind,
+      refresh,
+      stakeBound,
+      votingPower,
+      boundStakeCredHex,
+      stakeBinding,
+      stakeBindPhase,
+      stakeError,
+      bindStake,
+    }),
+    [
+      bound,
+      binding,
+      bindPhase,
+      checkingBound,
+      error,
+      boundAddress,
+      bind,
+      refresh,
+      stakeBound,
+      votingPower,
+      boundStakeCredHex,
+      stakeBinding,
+      stakeBindPhase,
+      stakeError,
+      bindStake,
+    ],
+  );
 }

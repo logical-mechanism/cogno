@@ -29,6 +29,42 @@
   line-height: var(--cg-lh-xs);
 }
 
+/* "Sign to post" — the restored-session chip. A refresh brings the account back for reading; this is
+   both the honest label for that state and the one-tap way out of it. */
+.unlock {
+  display: block;
+  width: 100%;
+  margin-top: var(--cg-space-1);
+  padding: var(--cg-space-1) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  transition:
+    background var(--cg-motion-fast) var(--cg-ease-standard),
+    color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+.unlock:hover:not(:disabled) {
+  background: var(--cg-bg-hover);
+  color: var(--cg-text);
+}
+
+.unlock:disabled {
+  cursor: default;
+  opacity: var(--cg-disabled-opacity);
+}
+
+/* Same rule as .who — the icon-only tablet rail has no room for it. */
+@media (max-width: 1019px) {
+  .unlock {
+    display: none;
+  }
+}
+
 /* Tablet icon-only rail (≤1019px): collapse to just the avatar, matching the rest of LeftNav. */
 @media (max-width: 1019px) {
   .trigger {

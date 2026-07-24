@@ -118,6 +118,12 @@ export interface ComposerProps {
    * poll-options validity (PollComposer) or a quote's non-empty rule. Default true.
    */
   extraValid?: boolean;
+  /**
+   * Allow submitting with EMPTY text — skip the non-empty gate (the byte-limit + `extraValid` still apply).
+   * Used for a governance (chamber) poll: its subject is the tagged proposal's title, so the post text is
+   * optional author commentary, not the poll's identity. Default false (every other mode requires text).
+   */
+  allowEmptyText?: boolean;
   /** Controlled text (PollComposer drives the question through here); uncontrolled when omitted. */
   text?: string;
   onTextChange?: (text: string) => void;
@@ -162,6 +168,7 @@ export function Composer({
   pollActive,
   emoji = true,
   extraValid = true,
+  allowEmptyText = false,
   text: controlledText,
   onTextChange,
   onSerializedChange,
@@ -250,11 +257,12 @@ export function Composer({
     [text, maxBytes, setText, clampable, syncMentionQuery],
   );
 
-  // Validity (precedence): for a quote the chain allows empty text but the UI requires a
-  // non-whitespace byte; reply/post require non-empty too; poll requires a non-empty question.
+  // Validity (precedence): most modes require a non-whitespace byte (quote/reply/post, and a general poll's
+  // question). A governance/chamber poll passes `allowEmptyText`: its subject is the tagged proposal's
+  // title, so its question may be empty (optional commentary). The byte-limit + `extraValid` always apply.
   const nonEmpty = text.trim().length > 0;
   const overLimit = measure.over;
-  const textValid = nonEmpty && !overLimit && extraValid;
+  const textValid = (allowEmptyText || nonEmpty) && !overLimit && extraValid;
 
   // Report dirtiness up so the surface can confirm a discard on close (uncontrolled reply/quote text
   // lives only in this component, so the surface can't see it any other way).
@@ -393,7 +401,7 @@ export function Composer({
             <p className={styles.imageChip} role="note">
               <span aria-hidden>🖼</span>{" "}
               {imageLinkCount === 1
-                ? "Image link, shown when the post is opened"
+                ? "Image link, shown when opened"
                 : `${imageLinkCount} image links, shown when opened`}
             </p>
           )}
@@ -404,7 +412,7 @@ export function Composer({
         <p className={styles.sessionPrompt} role="status">
           {viewer.status === "not-connected"
             ? "Connect a wallet to post."
-            : "Finish setting up your account to post."}
+            : "Finish setup to post."}
         </p>
       )}
 
@@ -455,12 +463,12 @@ export function Composer({
               sessionGated
                 ? undefined
                 : needsVotingPower
-                  ? "Add voting power to finish setup"
+                  ? "Add voting power to post"
                   : noPostingPower
                     ? "Lock ADA to post"
                     : overLimit
                       ? `Too long. Trim to ${maxBytes} bytes`
-                      : !nonEmpty
+                      : !allowEmptyText && !nonEmpty
                         ? "Write something first"
                         : rateLimited
                           ? "You're over the rate limit"

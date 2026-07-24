@@ -25,7 +25,7 @@ export function WelcomeShell({ step = 1, loading = false, children }: WelcomeShe
   return (
     <div className={styles.root}>
       <div className={styles.column}>
-        <Link href="/" className={styles.wordmark} aria-label="cogno-chain home">
+        <Link href="/" className={styles.wordmark} aria-label="cogno home">
           <span className={styles.wordmarkText}>cogno</span>
         </Link>
 

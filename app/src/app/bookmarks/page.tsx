@@ -155,7 +155,7 @@ export default function BookmarksPage() {
         paginationCapable={false}
         emptyVariant="feed"
         emptyTitle="No bookmarks yet"
-        emptyDescription="Save a post from the ··· menu to find it here. Bookmarks are kept on this device only."
+        emptyDescription="Save a post from the ··· menu. Bookmarks stay on this device."
         emptyAction={{ label: "Explore", onClick: () => router.push("/explore/") }}
       />
     </>

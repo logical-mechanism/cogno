@@ -248,7 +248,7 @@ export function ProfileHeader({
 
         {banned && (
           <p className={styles.restricted} role="note">
-            This account has been restricted.
+            Account restricted.
           </p>
         )}
 

@@ -122,7 +122,7 @@ export function useProfile(
       .catch((e: unknown) => {
         // Only surface an error on the initial load; a silent refresh failure keeps the last data.
         if (!cancelled && firstForKey) {
-          setError(readErrorCopy(e, "Could not load the profile."));
+          setError(readErrorCopy(e, "Couldn't load this profile."));
         }
       })
       .finally(() => {

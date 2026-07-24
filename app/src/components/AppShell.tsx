@@ -56,7 +56,7 @@ function isPublicPath(pathname: string | null): boolean {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { viewer } = useSession();
+  const { viewer, signerCtl, identity } = useSession();
 
   // "Logged in" = an identity-bound session (a real account). A connected-but-unbound wallet is still
   // mid-signup and lives inside the welcome flow, not the app.
@@ -64,21 +64,40 @@ export function AppShell({ children }: { children: ReactNode }) {
   const onWelcome = isWelcomePath(pathname);
   const publicRoute = isPublicPath(pathname);
 
+  // Whether this visitor HAS a session is not yet knowable. Two distinct windows, both of which end:
+  //
+  //  • `signerCtl.restoring` — the pre-hydration render (a localStorage read there would be a #418
+  //    mismatch under `output: export`, so the remembered account cannot be read yet) plus the
+  //    no-popup wallet probe, time-boxed in useSigner.
+  //  • `identity.checkingBound` — the restored key's on-chain bound read, which useIdentity sets true
+  //    DURING RENDER on a key change and time-boxes to 10s. `deriveSessionState` reports "disconnected"
+  //    the whole time `bound === null`, so without this a restored user is bounced during their own
+  //    bound read. /welcome already waits on exactly this via its own `showLoader`.
+  //
+  // Ordering matters here and is easy to get wrong: Providers WRAPS AppShell, so React runs this
+  // (descendant) effect FIRST — the wall would `router.replace` the URL to /welcome before an
+  // ancestor-level restore could land. That is why the restore is derived during render in useSigner
+  // rather than installed by an effect, and why this flag is read rather than assumed.
+  const deciding = signerCtl.restoring || identity.checkingBound;
+
   // Soft auth wall (X-style logged-out browsing): a guest may READ the public surfaces (the timeline, a
   // post, a profile, explore, the legal pages) but the WRITE/CONFIG surfaces (compose, settings,
-  // notifications, bookmarks) still bounce a logged-out visitor to the welcome/join page. There is no
-  // persistent session — the posting key is re-derived from a wallet signature each visit and nothing is
-  // stored, so every fresh load starts logged-out; the point is that reading no longer requires a bind
-  // (every write affordance itself already funnels to /welcome via `viewer.writeReady`).
+  // notifications, bookmarks) still bounce a logged-out visitor to the welcome/join page. Reading never
+  // requires a bind (every write affordance itself already funnels to /welcome via `viewer.writeReady`).
+  //
+  // `deciding` is the guard that makes a page refresh stop logging people out: the session is rebuilt
+  // from lib/sessionRestore one render AFTER hydration, and this effect fires on the commit before it.
+  // Without the guard the wall wins the race, rewrites the URL to /welcome, and the restore lands on a
+  // page the user never asked for.
   //
   // The bounce REMEMBERS where you were going (`?next=`) so a deep-linked private route survives sign-in.
   // A public deep link (a shared /post/123/) now simply opens for the guest — no bounce needed. The query
   // string comes off `window.location` rather than useSearchParams(): this component wraps every route,
   // and useSearchParams() here would force a client-side bailout for the whole app under `output: export`.
   useEffect(() => {
-    if (loggedIn || onWelcome || publicRoute) return;
+    if (deciding || loggedIn || onWelcome || publicRoute) return;
     router.replace(welcomeUrlFor(pathname, window.location.search));
-  }, [loggedIn, onWelcome, publicRoute, pathname, router]);
+  }, [deciding, loggedIn, onWelcome, publicRoute, pathname, router]);
 
   // Remember the last CONTENT deep-link (a post / a profile) the visitor was reading, so finishing
   // onboarding returns them THERE rather than the timeline — a shared /post link should reopen the post,
@@ -105,6 +124,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   // BLANK PAGE either. A logged-out visitor to a PUBLIC route falls through to the shell below and browses
   // read-only. Neutral copy on purpose — this covers both "your session is coming back" and "you are
   // genuinely logged out and about to land on /welcome".
+  //
+  // It also covers the whole `deciding` window for free, because `loggedIn` is false throughout it. Do
+  // NOT add `deciding` to this condition: it is true on the pre-hydration render for EVERY visitor, so a
+  // first-time guest would get a full-screen spinner where the timeline should paint — the exact LCP
+  // regression the landing-page work went to some trouble to remove.
   if (!loggedIn && !publicRoute) return <Loading variant="screen" label="Loading…" />;
 
   return (
@@ -189,9 +213,9 @@ export interface NotFoundInlineProps {
 
 export function NotFoundInline({ kind = "page" }: NotFoundInlineProps) {
   const copy: Record<NonNullable<NotFoundInlineProps["kind"]>, { title: string; description: string }> = {
-    post: { title: "This post doesn't exist", description: "It may have never existed, or the link is malformed." },
+    post: { title: "This post doesn't exist", description: "Check the link and try again." },
     profile: { title: "This account doesn't exist", description: "Check the address and try again." },
-    page: { title: "This page doesn't exist", description: "The link may be broken or the page may have moved." },
+    page: { title: "This page doesn't exist", description: "Check the link and try again." },
   };
   const { title, description } = copy[kind];
 
@@ -206,7 +230,7 @@ export function NotFoundInline({ kind = "page" }: NotFoundInlineProps) {
       />
       <div className={styles.notFoundHome}>
         <Link href="/" className={styles.homeLink}>
-          Go to Home
+          Go home
         </Link>
       </div>
     </>
