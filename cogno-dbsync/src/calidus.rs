@@ -271,7 +271,31 @@ pub struct CalidusParsed {
 
 /// Parse the top-level registration → `(payload fields, payload byte-span, witness byte-span)`. Shared by
 /// [`parse_registration`] (parse-only) and [`verify_registration`] (parse + witness).
+/// db-sync stores a metadatum in `tx_metadata.bytes` WRAPPED as the singleton map `{ 867: value }` (the
+/// whole metadata entry keyed by its label), whereas `cardano-signer` / the CIP-88 spec — and every fixture
+/// here — speak in terms of the bare registration VALUE (the `a3{0,1,2}` map). Strip a `{867: …}` wrapper
+/// when present so the observer parses either form; leave anything else untouched (a bare value is already
+/// a `map(3)`, so it is returned as-is — no `{867:}` shape to descend into). Descending is byte-preserving:
+/// `parse_all` still spans the payload/witness inside the value verbatim, so the CIP-88 preimage is
+/// unchanged. WITHOUT this, every real db-sync-sourced Calidus registration fails `BadVersion` (the parser
+/// reads label 867 as the version key) and no SPO badge can ever confirm.
+fn strip_label_wrapper(bytes: &[u8]) -> &[u8] {
+    let mut r = Reader::new(bytes);
+    if r.map_len() != Ok(1) {
+        return bytes; // not a singleton map ⇒ not a label wrapper (a bare value is map(3))
+    }
+    if r.uint() != Ok(867) {
+        return bytes; // singleton, but not keyed by the CIP-88 label ⇒ leave it
+    }
+    let start = r.pos;
+    if r.skip_item().is_err() || r.remaining() != 0 {
+        return bytes; // malformed value span ⇒ fall back to the raw bytes (parse_all fails closed)
+    }
+    bytes.get(start..r.pos).unwrap_or(bytes)
+}
+
 fn parse_all(bytes: &[u8]) -> Result<(Payload, &[u8], &[u8]), CalidusError> {
+    let bytes = strip_label_wrapper(bytes);
     let mut r = Reader::new(bytes);
     let n = r.map_len()?;
     let mut version: Option<u64> = None;

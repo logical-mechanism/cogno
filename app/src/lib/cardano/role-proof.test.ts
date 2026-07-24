@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { bech32 } from "bech32";
-import { deriveRoleCredential, encodeDrepId, paymentCredFromAddress } from "./role-proof";
+import { deriveRoleCredential, encodeDrepId, encodeCalidusId, paymentCredFromAddress } from "./role-proof";
 
 // deriveRoleCredential is the pure, MeshJS-free half of the role-proof flow (blakejs only): it turns an
 // operator's entered Calidus key into the 28-byte credential the synthetic address commits. A bug here
@@ -96,6 +96,15 @@ describe("deriveRoleCredential — bech32 (wallet-facing) forms", () => {
   it("encodeDrepId rejects a non-28-byte credential", () => {
     expect(() => encodeDrepId("abcd")).toThrow();
   });
+
+  it("encodeCalidusId round-trips a credential to the exact CIP-0151 calidus1… id", () => {
+    // A real Eternl-derived Calidus id + its 28-byte credential (0xa1 header stripped).
+    const CALIDUS_ID = "calidus158wejm9pza929cedhwkcsprtgs8l2carehs8z6jkse2qp3s48wjer";
+    const CALIDUS_CRED = "dd996ca1174aa2e32dbbad88046b440ff563a3cde0716a56865400c6";
+    expect(encodeCalidusId(CALIDUS_CRED)).toBe(CALIDUS_ID);
+    expect(deriveRoleCredential(CALIDUS_ID, "spo").credentialHex).toBe(CALIDUS_CRED);
+    expect(() => encodeCalidusId("abcd")).toThrow();
+  });
 });
 
 describe("paymentCredFromAddress — the wallet pre-flight's runtime-mirror address check", () => {
@@ -112,6 +121,12 @@ describe("paymentCredFromAddress — the wallet pre-flight's runtime-mirror addr
     // Eternl's dRep signData address form. 28 bytes = the credential directly, any expected network.
     expect(paymentCredFromAddress(bytes(CRED), 0)).toBe(CRED);
     expect(paymentCredFromAddress(bytes(CRED), 1)).toBe(CRED);
+  });
+
+  it("accepts the CIP-0151 Calidus 0xa1 form (0xa1 + 28-byte hash, network-agnostic)", () => {
+    // Eternl's Calidus signData embeds `0xa1 ‖ credential`. Strip the header; no network nibble.
+    expect(paymentCredFromAddress(bytes(`a1${CRED}`), 0)).toBe(CRED);
+    expect(paymentCredFromAddress(bytes(`a1${CRED}`), 1)).toBe(CRED);
   });
 
   it("accepts a base vkey-payment address (type-0 / type-2, 57 bytes)", () => {

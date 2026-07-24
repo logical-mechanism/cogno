@@ -222,6 +222,33 @@ fn verifies_a_real_cardano_signer_method2_registration() {
 }
 
 #[test]
+fn verifies_a_db_sync_wrapped_method2_registration() {
+    // REGRESSION: db-sync returns `tx_metadata.bytes` WRAPPED as the singleton map `{867: value}`, not the
+    // bare value the other fixtures use. This is a REAL on-chain preprod registration (tx 08704b0b…, slot
+    // 129161675) verbatim from `tx_metadata.bytes` — the exact bytes the observer's role read hands to the
+    // parser. Before `strip_label_wrapper`, this failed `BadVersion` (label 867 read as the version key), so
+    // no live SPO's Calidus badge could ever confirm. It must verify and resolve the same identity as the
+    // bare form.
+    let wrapped = hx("a1190363a3000201a5018201581c1e3105f23f2ac91b3fb4c35fa4fe301421028e356e114944e902005b0280038102041a0b853211075820fcaef08c759e6a5eaa4e32a6bf5c3c42a8af22dae21326cfa953d9190b8a70400281a201a4010103272006215820087932a594533b96a2abd339715dd222835d36856ac2c0b8fcd171e3ec944b8e02845829a201276761646472657373581c1e3105f23f2ac91b3fb4c35fa4fe301421028e356e114944e902005b00582027244aaf287764d2660db19604c973388ac2d48109771835027ce7420de386af5840f0b8c2003e3da0532098564968055b75a4c2b3dd11343e6e43cc2936dba3a0c0d48617fce57ecf13b0174136eb747e30dfc74fff4ca7e3296a39074426926f0e");
+    let got = verify_registration(&wrapped).expect("a db-sync-wrapped registration must verify");
+    assert_eq!(
+        got.pool_id,
+        hx("1e3105f23f2ac91b3fb4c35fa4fe301421028e356e114944e902005b").as_slice(),
+        "resolves the scoped pool ID through the {{867:}} wrapper",
+    );
+    assert_eq!(
+        got.calidus_key_hash,
+        hx("dd996ca1174aa2e32dbbad88046b440ff563a3cde0716a56865400c6").as_slice(),
+        "resolves the Calidus key hash (== the on-chain claim credential)",
+    );
+    // The same bytes with the wrapper stripped resolve identically (the fix is a no-op on the bare form).
+    assert_eq!(
+        verify_registration(&wrapped),
+        verify_registration(&wrapped[4..])
+    );
+}
+
+#[test]
 fn rejects_a_tampered_real_method2_signature() {
     // Flip the last byte of the golden vector (inside the 64-byte COSE signature) ⇒ the COSE signature no
     // longer verifies over the Sig_structure ⇒ WitnessInvalid (fails closed, never a false positive).

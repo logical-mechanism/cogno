@@ -45,9 +45,12 @@ interface RoleSpec {
   cardHint: string;
   keyPlaceholder: string;
   keyHint: ReactNode;
-  /** The key can be signed IN-WALLET (CIP-95): true for dRep. A Calidus pool key isn't in a CIP-30 wallet,
-   *  so SPO stays offline-command only. */
+  /** The key can be signed IN-WALLET (dRep via CIP-95; SPO via the wallet's root payment key, from which
+   *  Eternl derives the Calidus key). Both then also offer the offline command as a fallback. */
   walletSignable?: boolean;
+  /** One-line note shown under the wallet-sign buttons (role-specific: dRep needs CIP-95, SPO needs the
+   *  wallet the Calidus key derives from). Only rendered when `walletSignable`. */
+  walletHint?: string;
 }
 
 const ROLE_SPECS: RoleSpec[] = [
@@ -56,32 +59,23 @@ const ROLE_SPECS: RoleSpec[] = [
     kind: "Spo",
     label: "SPO",
     title: "Stake pool operator (SPO)",
-    cardHint:
-      "Prove you run a Cardano stake pool with your Calidus pool key (CIP-0151). A ✓ SPO tag shows on your profile once the chain confirms the pool is live — and clears automatically if it retires.",
-    keyPlaceholder: "calidus .vkey cborHex / 64-hex public key / 56-hex key hash",
-    keyHint: (
-      <>
-        Paste your Calidus <code>.vkey</code> file (or its hex), or the 28-byte key hash. This is a public
-        key — never your secret key.
-      </>
-    ),
+    cardHint: "Prove control of your Calidus pool key (CIP-0151); the tag clears if the pool retires.",
+    walletSignable: true,
+    walletHint:
+      "Signs in Eternl with your Calidus key — connect the account it's derived from. Or sign offline.",
+    keyPlaceholder: "calidus1… id / calidus_vk1… / .vkey cborHex / 56-hex key hash",
+    keyHint: "Public key — never your secret key.",
   },
   {
     role: "drep",
     kind: "DRep",
     label: "dRep",
     title: "Delegated representative (dRep)",
-    cardHint:
-      "Prove you're a Cardano delegated representative with your dRep key (CIP-0105, key-based only). A ✓ dRep tag shows on your profile once the chain confirms the dRep is registered — and clears if it deregisters.",
+    cardHint: "Prove control of your dRep key (CIP-0105); the tag clears if you deregister.",
     walletSignable: true,
+    walletHint: "Needs a CIP-95 wallet (Eternl, Lace). No key file, no CLI.",
     keyPlaceholder: "drep1… id  /  drep .vkey cborHex  /  56-hex dRep ID",
-    keyHint: (
-      <>
-        Paste your dRep id (<code>drep1…</code>, straight from your wallet), or your dRep <code>.vkey</code>{" "}
-        file / its hex. Key-based dReps only (a script dRep cannot sign). This is public — never your secret
-        key.
-      </>
-    ),
+    keyHint: "Key-based dReps only (script dReps can't sign). Public key — never your secret key.",
   },
 ];
 
@@ -316,10 +310,7 @@ function RoleClaimCard({
                     {building ? "Preparing…" : "Sign offline instead"}
                   </button>
                 </div>
-                <p className={styles.hint}>
-                  Signs the proof with your dRep key inside your wallet (needs CIP-95 — Eternl, Lace). No key
-                  file, no CLI. If your wallet can&apos;t, sign offline instead.
-                </p>
+                {spec.walletHint && <p className={styles.hint}>{spec.walletHint}</p>}
                 {walletError && (
                   <p className={styles.error} role="alert">
                     {walletError}
@@ -358,8 +349,8 @@ function RoleClaimCard({
                   <span className={styles.stepTitle}>Sign it offline with cardano-signer</span>
                 </div>
                 <p className={styles.hint}>
-                  Run this where your secret key lives (replace the <code>--secret-key</code> filename with
-                  its path). It produces a one-time proof and never exposes your key.
+                  Run where your secret key lives; point <code>--secret-key</code> at its file. Key stays
+                  local.
                 </p>
                 <pre className={styles.codeBlock}>{request.command}</pre>
                 <div className={styles.actions}>
