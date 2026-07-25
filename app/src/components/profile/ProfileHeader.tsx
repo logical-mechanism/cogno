@@ -213,8 +213,9 @@ export function ProfileHeader({
           <div className={styles.handleRow}>
             <Handle address={address} truncate="middle" copyable />
             {/* Verified Cardano role tag(s) — self-fetching + live, so a retired/revoked role clears
-                promptly. Renders nothing when the account holds no live role. */}
-            <RoleBadge roles={observedRoles} />
+                promptly. Renders nothing when the account holds no live role. `detailed` here (the full
+                profile view) shows an SPO's pool ticker inline; feed/quote/hover chips stay clean. */}
+            <RoleBadge roles={observedRoles} detailed />
             {followsYou && <span className={styles.followsYou}>Follows you</span>}
           </div>
         </div>

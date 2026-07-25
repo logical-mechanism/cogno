@@ -10,9 +10,12 @@
 // Renders NOTHING while loading or when the account holds no live role — a lapsed role leaves no residue.
 //
 // Each chip is a "verify on-chain" link to cexplorer (the trustless 28-byte poolID/drepID → its explorer
-// page), so a viewer can confirm the binding independently. The ticker/name is a best-effort Blockfrost
-// lookup (lib/cardano/roleMeta, sanitized), degrading to the role label + a truncated id when unresolved —
-// never a fabricated name. Kept MeshJS-free so a profile / feed page never pulls the heavy Cardano bundle.
+// page), so a viewer can confirm the binding independently. By default the chip is COMPACT — a clean
+// "✓ SPO" / "✓ dRep" with no inline id/name — which is what a feed card, thread, quote embed, or hover
+// card wants (identity lines stay short, and no per-author Blockfrost lookup runs). Only the full profile
+// view passes `detailed`, which adds an SPO's pool ticker/name inline (a best-effort Blockfrost lookup via
+// lib/cardano/roleMeta, sanitized, degrading to a truncated poolID — never a fabricated name). Kept
+// MeshJS-free so a profile / feed page never pulls the heavy Cardano bundle.
 
 import { useEffect, useState } from "react";
 import styles from "./RoleBadge.module.css";
@@ -46,8 +49,21 @@ async function resolvePoolName(idHex: string): Promise<string | null> {
 /**
  * The verified role chip(s) for an author. Provide EITHER `roles` (the folded, node-served set — no
  * subscription) OR `address` (self-fetch the live set). If both are given, `roles` wins.
+ *
+ * `detailed` (default false) shows an SPO's inline pool ticker/name (and resolves it via Blockfrost). Leave
+ * it off for compact contexts (feed / post / quote / hover) — clean "✓ SPO" chips — and pass it only on the
+ * full profile view. dRep / CC are always clean icon+label chips regardless; the full id stays one click
+ * away on the verify-on-chain link.
  */
-export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; address?: string }) {
+export function RoleBadge({
+  roles,
+  address,
+  detailed = false,
+}: {
+  roles?: ObservedRoleView[];
+  address?: string;
+  detailed?: boolean;
+}) {
   const { api } = useSession();
   const provided = roles !== undefined;
   const [fetched, setFetched] = useState<ObservedRoleView[] | null>(null);
@@ -79,10 +95,12 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
 
   const set = provided ? roles : fetched;
 
-  // Best-effort Blockfrost resolution of each role's display name. Cached in lib/cardano/roleMeta, so a
-  // repeat (re-render, second author with the same id) never re-hits the network.
+  // Best-effort Blockfrost resolution of each SPO's pool name — ONLY in `detailed` (profile) mode, since a
+  // compact chip shows no inline name. Cached in lib/cardano/roleMeta, so a repeat (re-render, second author
+  // with the same id) never re-hits the network; skipping it entirely keeps the feed free of per-author
+  // Blockfrost calls.
   useEffect(() => {
-    if (!set) return;
+    if (!detailed || !set) return;
     let cancelled = false;
     for (const r of set) {
       // Only an SPO shows an inline pool name (ownership or Calidus); dRep/CC carry no inline detail, and a
@@ -98,19 +116,19 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
     return () => {
       cancelled = true;
     };
-  }, [set, names]);
+  }, [detailed, set, names]);
 
   if (!set || set.length === 0) return null;
 
   return (
     <>
       {set.map((r) => {
-        // Every SPO (ownership or Calidus) shows an inline name — its short ticker / id — plus a verify
-        // link; an mSPO renders one chip per pool. dRep + CC render as clean icon+label chips: a dRep id is
-        // a long inline tag, so it lives in the verify-on-chain link, not inline. (`blank` is
-        // a defensive all-zero-id guard → generic "✓ SPO", no link, for a degenerate id.)
+        // In `detailed` (profile) mode an SPO (ownership or Calidus) shows an inline name — its short
+        // ticker / id — plus a verify link; an mSPO renders one chip per pool. Everywhere else, and for
+        // dRep + CC in every mode, the chip is a clean icon+label: the id/name stays on the verify-on-chain
+        // link, not inline. (`blank` is a defensive all-zero-id guard → generic "✓ SPO", no link.)
         const blank = isBlankRoleId(r.id);
-        const showsName = r.kind === "Spo" && !blank;
+        const showsName = detailed && r.kind === "Spo" && !blank;
         const resolvedName = showsName ? names[`${r.kind}:${r.id}`] : undefined;
         const detail = showsName ? (resolvedName ?? truncId(r.id)) : null;
         const href = blank ? null : roleExplorerUrl(r.kind, r.id);
