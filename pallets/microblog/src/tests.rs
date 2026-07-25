@@ -1195,6 +1195,8 @@ fn close_poll_with_no_votes_freezes_an_all_zero_result() {
 
 const POOL_P: [u8; 28] = [0xAA; 28];
 const POOL_Q: [u8; 28] = [0xBB; 28];
+const POOL_R: [u8; 28] = [0xCC; 28];
+const POOL_S: [u8; 28] = [0xEE; 28];
 const DREP_D: [u8; 28] = [0xDD; 28];
 
 #[test]
@@ -1268,6 +1270,58 @@ fn governance_poll_reports_spo_and_drep_chambers_deduped_by_pool() {
 }
 
 #[test]
+fn governance_poll_sums_an_mspos_declaring_pools_deduped_by_pool() {
+    // The load-bearing mSPO edge (case b, tally half): a SINGLE account holds SEVERAL SPO roles — one per
+    // live pool whose cold key declared its ONE Calidus key (an operator running several pools). The SPO
+    // chamber keys on POOL id, so the account's DISTINCT pools SUM into its chamber weight and the count
+    // reflects the number of distinct pools — exactly the aggregate stake it would vote with on Cardano.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        for who in [20u64, 21] {
+            TalkStake::apply_voting_power(&who, 100);
+        }
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"ratify?".to_vec(),
+            vec![b"yes".to_vec(), b"no".to_vec()],
+            None,
+            PollKind::Governance,
+            None,
+        ));
+        let host = 0u64;
+        // Account 20 is an mSPO: pools P (15M), Q (5M), R (3M) all declare its one Calidus key. The trailing
+        // duplicate of P (the SAME pool reached twice — e.g. once via the owner path, once via Calidus) must
+        // be deduped by pool id, counted ONCE (case e at the tally level).
+        set_chamber_roles(
+            20,
+            vec![
+                (0, POOL_P, 15_000_000),
+                (0, POOL_Q, 5_000_000),
+                (0, POOL_R, 3_000_000),
+                (0, POOL_P, 15_000_000), // shared pool via a second path → deduped, not double-counted
+            ],
+        );
+        // Account 21 holds a single pool S (2M).
+        set_chamber_roles(21, vec![(0, POOL_S, 2_000_000)]);
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(20), host, 0)); // yes
+        assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(21), host, 1)); // no
+
+        let view = Microblog::poll(host).expect("poll exists");
+        // yes → the mSPO's DISTINCT pools SUM: 15M + 5M + 3M = 23M across 3 distinct pools (P counted once).
+        assert_eq!(
+            (view.options[0].spo_weight, view.options[0].spo_count),
+            (23_000_000, 3),
+            "an mSPO's declaring pools sum into its SPO-chamber weight; count = distinct pools (P deduped)"
+        );
+        // no → account 21's single pool.
+        assert_eq!(
+            (view.options[1].spo_weight, view.options[1].spo_count),
+            (2_000_000, 1)
+        );
+    });
+}
+
+#[test]
 fn co_owners_split_makes_the_pool_abstain_and_stake_polls_have_no_chambers() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
@@ -1333,11 +1387,11 @@ fn governance_poll_skips_zero_weight_roles() {
         ));
         let host = 0u64;
         // One genuinely-delegated role per chamber, plus three ZERO-weight roles that must contribute
-        // NOTHING (the `if weight == 0 { continue }` skip): a blank Calidus SPO (names no pool → id all-zero),
-        // an undelegated owned pool, and an undelegated dRep.
+        // NOTHING (the `if weight == 0 { continue }` skip): two pools with no delegators (weight 0, from
+        // either SPO source) and an undelegated dRep.
         set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]); // real SPO → "yes"
-        set_chamber_roles(11, vec![(0, [0u8; 28], 0)]); // blank Calidus SPO (weight 0) → "yes"
-        set_chamber_roles(12, vec![(0, POOL_Q, 0)]); // undelegated owned pool (weight 0) → "no"
+        set_chamber_roles(11, vec![(0, POOL_R, 0)]); // undelegated pool (weight 0) → "yes"
+        set_chamber_roles(12, vec![(0, POOL_Q, 0)]); // undelegated pool (weight 0) → "no"
         set_chamber_roles(13, vec![(1, DREP_D, 0)]); // undelegated dRep (weight 0) → "yes"
         set_chamber_roles(14, vec![(1, [0xEE; 28], 7_000_000)]); // real dRep → "no"
         for (who, opt) in [(10u64, 0u8), (11, 0), (12, 1), (13, 0), (14, 1)] {

@@ -115,7 +115,11 @@ function RoleClaimCard({
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
 
-  const observed = roles.observedFor(spec.kind);
+  // An SPO can hold SEVERAL live entries (one per pool for an mSPO), so read the full set for this kind —
+  // `observed` (the first) still drives the presence gate + the pending/wizard branches, which are the same
+  // for one or many. dRep/CC are 1:1, so their list has at most one.
+  const observedList = (roles.observed ?? []).filter((r) => r.kind === spec.kind);
+  const observed = observedList[0] ?? null;
   const claimCred = roles.claimCredHex[spec.kind];
 
   const onKeyInputChange = useCallback((v: string) => {
@@ -254,8 +258,15 @@ function RoleClaimCard({
         // ── verified: the observer confirmed a live role ──
         <div className={styles.statusRow}>
           <span className={styles.verifiedMark}>✓ Verified {spec.label}</span>
-          {/* A Calidus SPO names no pool (blank id) → show nothing; an ownership SPO / dRep shows its id. */}
-          {!isBlankRoleId(observed.id) && <span className={styles.mono}>{truncId(observed.id)}</span>}
+          {/* An SPO names its pool(s) — an mSPO shows one id per declaring pool; a dRep shows its drepID.
+              (The blank guard is defensive — no live role carries an all-zero id.) */}
+          {observedList
+            .filter((r) => !isBlankRoleId(r.id))
+            .map((r) => (
+              <span key={r.id} className={styles.mono}>
+                {truncId(r.id)}
+              </span>
+            ))}
           {/* Only offer "Remove" when a CLAIM backs the badge — a badge from the free SpoOwner path (live
               pool ownership, no `RoleClaimOf` entry) has nothing to unclaim, and unclaim_role would fail
               `NotClaimed` + can't-pay for a zero-balance account. Ownership-derived badges clear only when

@@ -22,9 +22,10 @@
 //! [`ObservedRoles`] is written ONLY by the `cardano-observer` inherent (via the runtime's `RoleSink`
 //! → [`Pallet::apply_roles`]). Each block the observer reads db-sync, scoped to the CLAIMED
 //! credentials ([`Pallet::claimed_credentials`] → the `bound_role_credentials` runtime API), confirms
-//! each is a currently-live pool / dRep / seated CC member, resolves the display id (a **poolID** for an
-//! ownership SPO, the BLANK marker for a Calidus SPO — which names no pool, the drepID / hot credential
-//! for dRep / CC), and writes the account's full observed set —
+//! each is a currently-live pool / dRep / seated CC member, resolves the display id (a **poolID** for BOTH
+//! SPO sources — ownership names its owned pool, and a Calidus SPO names the live pool whose cold key
+//! authorized its key, so an mSPO yields one entry per pool; the drepID / hot credential for dRep / CC),
+//! and writes the account's full observed set —
 //! auto-revoking (clamp to empty) when a pool retires / a dRep deregisters / a CC term expires. The
 //! profile badge reads THIS map, so a badge only ever reflects a currently-live Cardano role.
 //! `ValueQuery` ⇒ an account with no live role reads the empty set for free. A fresh chain with no
@@ -141,15 +142,15 @@ pub mod pallet {
     }
 
     /// One entry in an account's observed-role set: a currently-live role + its display id (a poolID for
-    /// an ownership SPO, the all-zero blank for a Calidus SPO — which names no pool; the drep ID / hot
-    /// credential for dRep / CC) + the `weight` a GOVERNANCE-POLL chamber weights this role's vote by
-    /// (spec 207).
+    /// EITHER SPO source — ownership names its owned pool, Calidus names the live pool whose cold key
+    /// authorized its key; the drep ID / hot credential for dRep / CC) + the `weight` a GOVERNANCE-POLL
+    /// chamber weights this role's vote by (spec 207). An mSPO holds one entry per declaring pool.
     ///
-    /// `weight` is the role's delegated Cardano stake at the observed epoch: an ownership SPO's pool's
-    /// total delegated (block-production) stake, a dRep's total delegated voting stake; `0` for a blank
-    /// Calidus SPO (names no pool) and CC. It is DISPLAY-ONLY chamber input for governance polls — it does
-    /// NOT touch talk-stake `VotingPower` (a regular stake vote is unchanged), and a non-governance poll
-    /// never reads it. The observer overwrites the whole set each epoch, so it tracks the live delegation.
+    /// `weight` is the role's delegated Cardano stake at the observed epoch: an SPO's named pool's total
+    /// delegated (block-production) stake, a dRep's total delegated voting stake; `0` for CC and for a pool
+    /// with no delegators. It is DISPLAY-ONLY chamber input for governance polls — it does NOT touch
+    /// talk-stake `VotingPower` (a regular stake vote is unchanged), and a non-governance poll never reads
+    /// it. The observer overwrites the whole set each epoch, so it tracks the live delegation.
     #[derive(
         Clone, PartialEq, Eq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug,
     )]

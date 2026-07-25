@@ -238,13 +238,47 @@ async fn observe_for_parent(
             return None;
         }
     };
+    // 5c. the SPO chamber weight (`pool_stake`): the pools that OWN a bound stake credential PLUS the pools
+    //     whose cold key declared a CLAIMED Calidus key (the SAME `claimed_pools` set the reduction derives —
+    //     a cheap parse-only pass over the registrations, NO witness). This set is only knowable AFTER the
+    //     role read returns the registrations (Calidus→pool lives in the label-867 CBOR), so it can't be a
+    //     column of that query. Union them into a `BTreeSet` (sorted + deduped ⇒ byte-deterministic query
+    //     input), then read their delegated stake scoped to that set — otherwise a Calidus SPO's chamber
+    //     weight is always 0. Same fail-closed discipline: any error ⇒ abstain.
+    let mut pool_id_set: std::collections::BTreeSet<[u8; 28]> = role_read
+        .owner_pools
+        .iter()
+        .map(|(_, pool)| *pool)
+        .collect();
+    for reg in &role_read.registrations {
+        if let Ok(parsed) = cogno_dbsync::calidus::parse_registration(reg) {
+            if claimed_calidus.contains(&parsed.calidus_key_hash) {
+                pool_id_set.insert(parsed.pool_id);
+            }
+        }
+    }
+    let pool_ids: Vec<[u8; 28]> = pool_id_set.into_iter().collect();
+    let pool_stake = match dbsync::read_pool_stake(
+        &dbsync_url,
+        &pool_ids,
+        ref_slot,
+        config.stake_epoch_lookback,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!(target: "cardano-observer", "db-sync pool_stake read failed: {e} — abstaining (empty observation)");
+            return None;
+        }
+    };
     let role_entries = reduce_role_observation(
         &role_read.registrations,
         &role_read.active_pools,
         &role_read.owner_pools,
         &claimed_calidus,
         &role_read.live_dreps,
-        &role_read.pool_stake,
+        &pool_stake,
         &role_read.drep_stake,
     );
     // 6. reduce the db-sync matches (canonical largest-wins-per-beacon) + canonicalize the stake + role sets.
