@@ -233,9 +233,10 @@ pub type RoleCredential = [u8; 28];
 )]
 pub enum RoleSource {
     /// SPO proven via a Calidus key: `credential` = the Calidus-key hash, resolved via the roles-pallet
-    /// `RoleCredIndex[Spo]`; `id` = the BLANK marker (`reduction::BLANK_ROLE_ID`), NOT a pool. A Calidus
-    /// registration is cold-key-signed only, so it cannot attest a specific pool without inviting
-    /// cross-pool impersonation — the badge names none. See `reduce_role_observation`.
+    /// `RoleCredIndex[Spo]`; `id` = the specific live pool whose cold key authorized that Calidus key. An
+    /// mSPO declaring one key from several pools yields ONE entry per pool (each cold-key-signed), so the
+    /// chamber tally sums their delegated stake. Unlike `SpoOwner` it is CLAIM-backed (user-removable); a
+    /// pool naming a key it doesn't co-own can only affect DISPLAY, never weight. See `reduce_role_observation`.
     #[codec(index = 0)]
     SpoCalidus,
     /// SPO via the FREE path: `credential` = a bound stake credential that owns a live pool (resolved via
@@ -269,11 +270,10 @@ impl RoleSource {
 /// `id`, then `weight`) in the reduction, so the on-wire order is deterministic — a direct read (like
 /// `stake_entries`), so a cross-node difference is always a data `Mismatch`, never a `ComputeDiverged`.
 ///
-/// `weight` is the role's delegated Cardano stake at the as-of epoch: for `SpoOwner`, the owned pool's
-/// total delegated (block-production) stake; for `DRep`, the dRep's total delegated voting stake; `0` for
-/// `SpoCalidus` (the blank badge names no pool, so it carries no chamber weight) and `Committee`. It is
-/// deterministic per `(source, id)` — the sums come from the same reduction — so it never makes an
-/// otherwise-identical entry diverge across nodes.
+/// `weight` is the role's delegated Cardano stake at the as-of epoch: for `SpoOwner` / `SpoCalidus`, the
+/// named pool's total delegated (block-production) stake; for `DRep`, the dRep's total delegated voting
+/// stake; `0` for `Committee`. It is deterministic per `(source, id)` — the sums come from the same
+/// reduction — so it never makes an otherwise-identical entry diverge across nodes.
 #[derive(
     Encode,
     Decode,
@@ -303,8 +303,9 @@ pub trait RoleResolver<AccountId> {
 
 /// Overwrite `who`'s full observed-role set (each `(role_kind_index, display_id, chamber_weight)`), or
 /// CLEAR it when the slice is empty (the unlock clamp). `chamber_weight` (spec 207) is the role's
-/// delegated Cardano stake for governance-poll chambers (0 for a blank Calidus / CC badge). Implemented by
-/// a roles-pallet adapter in the runtime (`apply_roles`); a recorder in tests. The role analog of
+/// delegated Cardano stake for governance-poll chambers — a pool's delegated stake for BOTH SPO sources,
+/// a dRep's delegated voting stake, 0 for a CC badge or a pool with no delegators. Implemented by a
+/// roles-pallet adapter in the runtime (`apply_roles`); a recorder in tests. The role analog of
 /// [`VotingPowerSink`], but set-valued.
 pub trait RoleSink<AccountId> {
     fn set_roles(who: &AccountId, roles: &[(u8, RoleCredential, u128)]);
@@ -913,9 +914,9 @@ pub mod pallet {
                 };
                 let kind = entry.source.kind_index();
                 let set = role_sets.entry(account).or_default();
-                // Dedup by the full (kind, id): every Calidus SPO entry carries the same BLANK id, so a
-                // multi-pool operator's Calidus entries collapse to ONE generic SPO badge; DISTINCT OWNED
-                // pools (SpoOwner, id = poolID) each yield their own pool-named SPO badge. first-wins in the
+                // Dedup by the full (kind, id): both SPO sources key on the pool id, so an mSPO's several
+                // pools each yield their own pool-named SPO badge, while the SAME pool reached via both the
+                // owner and Calidus paths collapses to ONE entry (never double-counted). first-wins in the
                 // deterministic `role_entries` order, so the per-account set stays byte-stable across nodes.
                 // The chamber `weight` rides with the (kind, id) — it is deterministic per id, so first-wins
                 // keeps the canonical value.

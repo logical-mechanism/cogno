@@ -61,7 +61,7 @@ describe("roleExplorerUrl", () => {
     expect(roleExplorerUrl("Spo", "abcd")).toBeNull();
   });
 
-  it("has no explorer page for a blank (Calidus) SPO id — it names no pool", () => {
+  it("has no explorer page for a degenerate all-zero id (defensive — no live SPO carries one)", () => {
     const BLANK = `0x${"0".repeat(56)}`;
     expect(roleExplorerUrl("Spo", BLANK)).toBeNull();
     expect(roleExplorerUrl("Spo", "0".repeat(56))).toBeNull();
@@ -69,7 +69,7 @@ describe("roleExplorerUrl", () => {
 });
 
 describe("isBlankRoleId", () => {
-  it("is true only for an all-zero id (the Calidus 'no pool' marker)", () => {
+  it("is true only for an all-zero id (a defensive guard — every live SPO names a real pool)", () => {
     expect(isBlankRoleId(`0x${"0".repeat(56)}`)).toBe(true);
     expect(isBlankRoleId("0".repeat(56))).toBe(true);
     expect(isBlankRoleId("0x00")).toBe(true); // any all-zero hex

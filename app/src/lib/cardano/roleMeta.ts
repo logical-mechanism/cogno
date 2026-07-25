@@ -215,8 +215,9 @@ export function poolBech32(poolIdHex: string): string | null {
  * (CIP-129). The network is taken from the Blockfrost-projectId prefix.
  */
 export function roleExplorerUrl(kind: RoleKindType, idHex: string): string | null {
-  // A Calidus-derived SPO badge carries the BLANK id (no pool named), so there is no pool to link to —
-  // a generic "verified SPO". (Encoding a blank id as a pool would produce a bogus `pool1…` link.)
+  // Defensive: a hypothetical all-zero id names no pool, so there is nothing to link to. Every LIVE SPO —
+  // ownership or Calidus — now carries a real poolID, so this guard only avoids building a bogus `pool1…`
+  // link from a degenerate id.
   if (isBlankRoleId(idHex)) return null;
   const sub = explorerSub();
   if (kind === "Spo") {

@@ -23,22 +23,22 @@ import { hexToBytes } from "@/lib/util/hex";
  *  fieldless enum value as `{ type: RoleKindType }` and takes an arg as `Enum(RoleKindType)`. */
 export type RoleKindType = "Spo" | "DRep" | "Committee";
 
-/** One entry from the observer-written `ObservedRoles` set: a currently-live role + its display id (an
- *  ownership-derived SPO carries the 28-byte poolID; a Calidus-derived SPO carries the BLANK id — see
- *  {@link isBlankRoleId}; a dRep the drepID), as 0x-hex. */
+/** One entry from the observer-written `ObservedRoles` set: a currently-live role + its display id. Both
+ *  SPO sources — ownership AND Calidus — carry the 28-byte poolID of the live pool they name; a dRep the
+ *  drepID; a CC the hot credential. As 0x-hex. An mSPO (one operator, several pools declaring one Calidus
+ *  key) holds SEVERAL SPO entries, one per pool. */
 export interface ObservedRoleView {
   kind: RoleKindType;
-  /** 0x-prefixed 28-byte display id (poolID for an ownership SPO; all-zero blank for a Calidus SPO). */
+  /** 0x-prefixed 28-byte display id (a poolID for an SPO — ownership or Calidus; the drepID for a dRep). */
   id: string;
 }
 
 /**
- * True when a role's display id is the all-zero BLANK marker (the node reduction's `BLANK_ROLE_ID`). A
- * Calidus SPO registration attests no specific pool (any pool's cold key can declare any Calidus key — the
- * key never counter-signs), so a Calidus-derived SPO badge names NO pool and renders as a generic
- * "verified SPO": no pool ticker, no cexplorer link. An ownership SPO carries a real poolID
- * (`blake2b_224(cold pubkey)`, never all-zero) and is unaffected. This is what closes the cross-pool
- * impersonation — a pool operator cannot attribute their pool to an account by declaring its Calidus key.
+ * True when a role's display id is the all-zero id — a DEFENSIVE guard, no longer produced on any live
+ * path. Every observed SPO now names a real poolID (`blake2b_224(cold pubkey)`, never all-zero): the
+ * ownership path always did, and a confirmed Calidus SPO now names the specific live pool whose cold key
+ * authorized its key (an mSPO yields one per pool). This guard remains only so a hypothetical all-zero id
+ * renders as a plain "verified SPO" (no ticker, no cexplorer link) rather than a bogus `pool1…` link.
  */
 export function isBlankRoleId(idHex: string): boolean {
   const h = idHex.replace(/^0x/i, "");

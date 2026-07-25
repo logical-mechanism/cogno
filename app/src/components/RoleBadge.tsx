@@ -35,9 +35,9 @@ function truncId(idHex: string): string {
   return h.length > 12 ? `${h.slice(0, 6)}…${h.slice(-4)}` : h;
 }
 
-/** Resolve a pool-owner SPO's ticker/name via Blockfrost, or null. Only a pool-owner SPO shows an inline
- *  name: a Calidus SPO is blank (names no pool), and dRep/CC render as clean icon+label chips — their id
- *  would be a long inline tag, so it lives in the tooltip + the verify-on-chain link instead. */
+/** Resolve an SPO's pool ticker/name via Blockfrost, or null. Only an SPO shows an inline name — both
+ *  sources (ownership AND Calidus) now name a pool; dRep/CC render as clean icon+label chips, since their
+ *  id would be a long inline tag, so it lives in the verify-on-chain link instead. */
 async function resolvePoolName(idHex: string): Promise<string | null> {
   const meta = await resolvePoolMeta(idHex);
   return meta?.ticker || meta?.name || null;
@@ -85,8 +85,8 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
     if (!set) return;
     let cancelled = false;
     for (const r of set) {
-      // Only a pool-owner SPO shows an inline name; a blank Calidus SPO names no pool, and dRep/CC carry
-      // no inline detail — so there is nothing to resolve for those.
+      // Only an SPO shows an inline pool name (ownership or Calidus); dRep/CC carry no inline detail, and a
+      // defensive all-zero id names no pool — so there is nothing to resolve for those.
       if (r.kind !== "Spo" || isBlankRoleId(r.id)) continue;
       const nameKey = `${r.kind}:${r.id}`;
       if (names[nameKey] !== undefined) continue;
@@ -105,9 +105,10 @@ export function RoleBadge({ roles, address }: { roles?: ObservedRoleView[]; addr
   return (
     <>
       {set.map((r) => {
-        // Only a pool-owner SPO shows an inline name (its short ticker / id). A Calidus SPO is blank (names
-        // no pool) → generic "✓ SPO", no verify link. dRep + CC render as clean icon+label chips — a dRep
-        // id is a long inline tag, so it lives in the tooltip + the verify-on-chain link, not inline.
+        // Every SPO (ownership or Calidus) shows an inline name — its short ticker / id — plus a verify
+        // link; an mSPO renders one chip per pool. dRep + CC render as clean icon+label chips: a dRep id is
+        // a long inline tag, so it lives in the verify-on-chain link, not inline. (`blank` is
+        // a defensive all-zero-id guard → generic "✓ SPO", no link, for a degenerate id.)
         const blank = isBlankRoleId(r.id);
         const showsName = r.kind === "Spo" && !blank;
         const resolvedName = showsName ? names[`${r.kind}:${r.id}`] : undefined;

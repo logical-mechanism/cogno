@@ -1233,9 +1233,9 @@ fn observe_credits_then_clamps_roles() {
         enforce();
         bind(A, ALICE);
         let cal: [u8; 28] = [0xCA; 28];
-        // A real SpoCalidus entry carries the BLANK display id (no pool named — the reduction's
-        // `BLANK_ROLE_ID`); the observer resolves the credential to ALICE and writes SPO(kind 0, blank).
-        let blank: [u8; 28] = [0u8; 28];
+        // A SpoCalidus entry now names the live pool whose cold key authorized the key; the observer
+        // resolves the credential to ALICE and writes SPO(kind 0, pool).
+        let pool: [u8; 28] = [0x9B; 28];
         bind_role(cal, ALICE);
         assert_ok!(CardanoObserver::observe(
             RuntimeOrigin::none(),
@@ -1243,9 +1243,9 @@ fn observe_credits_then_clamps_roles() {
             COMMIT,
             entries(&[(A, 200_000_000)]),
             no_stake(),
-            roles(&[(RoleSource::SpoCalidus, cal, blank)]),
+            roles(&[(RoleSource::SpoCalidus, cal, pool)]),
         ));
-        assert_eq!(observed_roles_of(ALICE), vec![(0u8, blank)]);
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool)]);
         // A later observation WITHOUT the role entry → the unlock clamp clears ALICE's roles.
         assert_ok!(CardanoObserver::observe(
             RuntimeOrigin::none(),
@@ -1265,15 +1265,15 @@ fn observe_skips_an_unresolved_role_credential() {
         System::set_block_number(1);
         enforce();
         bind(A, ALICE);
-        // A role credential that resolves to no account (never bound) is skipped, not an error. (A real
-        // SpoCalidus entry carries the blank display id; the credential [0x11;28] is what resolves.)
+        // A role credential that resolves to no account (never bound) is skipped, not an error. (The
+        // credential [0x11;28] is what resolves; [0x9B;28] is the declaring pool the entry names.)
         assert_ok!(CardanoObserver::observe(
             RuntimeOrigin::none(),
             cref(MAX_REFERENCE - 1),
             COMMIT,
             entries(&[(A, 200_000_000)]),
             no_stake(),
-            roles(&[(RoleSource::SpoCalidus, [0x11; 28], [0u8; 28])]),
+            roles(&[(RoleSource::SpoCalidus, [0x11; 28], [0x9B; 28])]),
         ));
         assert_eq!(observed_roles_of(ALICE), Vec::<(u8, [u8; 28])>::new());
     });
@@ -1314,7 +1314,8 @@ fn observe_credits_a_badge_per_owned_pool() {
         bind(A, ALICE);
         // The multi-pool operator: ALICE owns two distinct pools via two bound stake credentials (the
         // SpoOwner free path names the pool, so distinct pools show as distinct badges — dedup is by
-        // (kind, id)). (The Calidus path can NOT name a pool, so it never yields per-pool badges.)
+        // (kind, id)). (The Calidus path now ALSO names its pool, so it yields per-pool badges the same way —
+        // see `observe_credits_a_badge_per_declaring_pool_and_dedups_shared_pools`.)
         let stake_a: [u8; 28] = [0x1A; 28];
         let stake_b: [u8; 28] = [0x2B; 28];
         let pool_a: [u8; 28] = [0xA0; 28];
@@ -1337,22 +1338,21 @@ fn observe_credits_a_badge_per_owned_pool() {
 }
 
 #[test]
-fn observe_collapses_calidus_badges_and_keeps_owner_pool() {
+fn observe_credits_a_badge_per_declaring_pool_and_dedups_shared_pools() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         enforce();
         bind(A, ALICE);
-        // ALICE holds TWO Calidus SPO claims (two keys, two pools) and ALSO owns a pool via a stake key.
-        // A real SpoCalidus entry carries the BLANK id (no pool named), so the two Calidus badges COLLAPSE
-        // to a single generic SPO badge — an attacker declaring ALICE's Calidus key under a foreign pool
-        // cannot mint a distinct false pool badge. The SpoOwner badge still names its pool alongside.
-        let cal1: [u8; 28] = [0xC1; 28];
-        let cal2: [u8; 28] = [0xC2; 28];
+        // The mSPO at the observer level (case e): ALICE's ONE Calidus credential `cal` is declared by TWO
+        // live pools (p1, p2 — an operator running two pools), so the reduction emits one SpoCalidus entry
+        // PER pool (each cold-key-signed). ALICE also OWNS p2 via a stake key. The observer dedups by
+        // (kind, id): p1 (Calidus) and p2 (Calidus == owner) leave DISTINCT badges {p1, p2}, and the SHARED
+        // pool p2 collapses to ONE badge — no pool double-counted across the owner + Calidus paths.
+        let cal: [u8; 28] = [0xCA; 28];
         let stake: [u8; 28] = [0x5A; 28];
-        let pool: [u8; 28] = [0xF0; 28];
-        let blank: [u8; 28] = [0u8; 28];
-        bind_role(cal1, ALICE);
-        bind_role(cal2, ALICE);
+        let p1: [u8; 28] = [0xB1; 28];
+        let p2: [u8; 28] = [0xB2; 28];
+        bind_role(cal, ALICE);
         bind_role(stake, ALICE);
         assert_ok!(CardanoObserver::observe(
             RuntimeOrigin::none(),
@@ -1360,14 +1360,18 @@ fn observe_collapses_calidus_badges_and_keeps_owner_pool() {
             COMMIT,
             entries(&[(A, 200_000_000)]),
             no_stake(),
-            roles(&[
-                (RoleSource::SpoCalidus, cal1, blank),
-                (RoleSource::SpoCalidus, cal2, blank),
-                (RoleSource::SpoOwner, stake, pool),
+            // Canonical order (SpoCalidus < SpoOwner, then by id): the two Calidus pools, then the owner.
+            roles_w(&[
+                (RoleSource::SpoCalidus, cal, p1, 1_000_000),
+                (RoleSource::SpoCalidus, cal, p2, 2_000_000),
+                (RoleSource::SpoOwner, stake, p2, 2_000_000),
             ]),
         ));
-        // One generic Calidus SPO (blank) + one pool-named owner SPO — the two Calidus keys collapse.
-        assert_eq!(observed_roles_of(ALICE), vec![(0u8, blank), (0u8, pool)]);
+        // One badge per DISTINCT pool: p1 (Calidus) + p2 (Calidus, == the owner pool, deduped to one).
+        assert_eq!(
+            observed_roles_full_of(ALICE),
+            vec![(0u8, p1, 1_000_000u128), (0u8, p2, 2_000_000u128)],
+        );
     });
 }
 
@@ -1381,7 +1385,7 @@ fn re_enable_clamps_a_role_that_lapsed_during_a_freeze() {
         enforce();
         bind(A, ALICE);
         let cal: [u8; 28] = [0xCA; 28];
-        let blank: [u8; 28] = [0u8; 28]; // the generic Calidus SPO id (no pool named)
+        let pool: [u8; 28] = [0x9B; 28]; // the Calidus SPO's declaring pool id
         bind_role(cal, ALICE);
         // Credit ALICE's SPO badge under enforce.
         assert_ok!(CardanoObserver::observe(
@@ -1390,9 +1394,9 @@ fn re_enable_clamps_a_role_that_lapsed_during_a_freeze() {
             COMMIT,
             entries(&[(A, 200_000_000)]),
             no_stake(),
-            roles(&[(RoleSource::SpoCalidus, cal, blank)]),
+            roles(&[(RoleSource::SpoCalidus, cal, pool)]),
         ));
-        assert_eq!(observed_roles_of(ALICE), vec![(0u8, blank)]);
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool)]);
 
         // Freeze, then observe WITHOUT the role (the pool lapsed): the badge is held, not cleared.
         freeze();
@@ -1406,7 +1410,7 @@ fn re_enable_clamps_a_role_that_lapsed_during_a_freeze() {
         ));
         assert_eq!(
             observed_roles_of(ALICE),
-            vec![(0u8, blank)],
+            vec![(0u8, pool)],
             "frozen: ALICE's role badge is held (RoleSink never called)"
         );
 

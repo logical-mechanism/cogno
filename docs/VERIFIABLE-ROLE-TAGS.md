@@ -83,15 +83,21 @@ There are two SPO sources and one direct path each for dRep and CC:
   one-time CIP-0151 / CIP-88-v2 registration (transaction metadata label **867**) signed by the pool
   **cold** key. The reduction verifies that registration's cold-key witness over the *raw* on-chain
   metadata bytes (`cogno-dbsync/src/calidus.rs`) — both the bare-Ed25519 and the CIP-8/COSE witness forms
-  — takes the highest-nonce *verified* registration per pool, and emits an entry when the winner's Calidus
-  key is claimed and the pool is active. The pool never exposes its cold key to cogno-chain. Crucially,
-  this entry names **no pool**: its display id is the blank `BLANK_ROLE_ID`, so the badge reads a generic
-  "verified SPO". The reason is that a Calidus registration is authorized by the pool cold key *alone* —
-  the Calidus key never counter-signs, and CIP-0151 defines no proof-of-possession for it — so any pool
-  can declare any public Calidus key, including one someone else has claimed. Naming the pool would let a
-  pool operator attribute their pool to that account (cross-pool impersonation); attesting only "controls a
-  Calidus key that a live pool authorized" is the honest, un-forgeable claim, and every pool authorizing
-  the same claimed key collapses to one badge.
+  — takes the highest-nonce *verified* registration per pool, and emits an entry for **each live pool**
+  whose cold key authorized the claimed key. The pool never exposes its cold key to cogno-chain. The entry
+  **names that specific pool** (id = the poolID, with a "verify on-chain" link) and carries the pool's
+  total delegated stake as its chamber weight, exactly like the ownership path below. An **mSPO** — one
+  operator running several pools, each declaring the same Calidus key from its own cold key — therefore
+  earns one pool-named badge per pool, and the governance-poll chamber SUMS those per-pool weights into the
+  operator's true aggregate (the stake they would vote with on Cardano). Every label-867 registration is
+  cold-key-signed, so "pool P declares key K" is cryptographic proof that P's node key authorized K: the
+  chamber **weight can never be fabricated** — it is always real on-chain delegation — and the highest-nonce
+  winner is unique per pool, so a pool's stake resolves to at most one Calidus account and is never
+  double-counted. The one residual edge is **cosmetic**: because the Calidus key never counter-signs
+  (CIP-0151 defines no proof-of-possession for it), a pool *can* declare a public Calidus key someone else
+  has claimed, making that pool's *ticker* appear on the victim's profile. That is display-only — it cannot
+  inflate or steal vote weight — and, unlike the ownership path, a Calidus badge is claim-backed, so its
+  holder can remove it.
 - **SPO via ownership** (`RoleSource::SpoOwner`) — the free path, no claim needed. A stake credential the
   account already bound (for voting power) that is declared an owner of a live pool in that pool's latest
   registration certificate earns an SPO badge directly. This path **does** name its pool (id = the poolID,
@@ -111,12 +117,11 @@ see [`IN-PROTOCOL-OBSERVATION.md`](IN-PROTOCOL-OBSERVATION.md).
 ### Several pools, several badges
 
 An account may operate more than one pool. The observed set (`ObservedRoleSet`) is deduplicated by the
-full `(kind, id)` pair. Because each *ownership* badge carries its own poolID, a multi-pool operator who
-has bound the owner stake key of each pool shows one pool-named badge per pool. Calidus badges, by
-contrast, all carry the blank id, so they collapse to a single generic "verified SPO" — which is exactly
-what closes the impersonation (no per-pool Calidus badge can be minted for an account by a foreign pool).
-`MAX_OBSERVED_ROLES_PER_ACCOUNT` bounds the set; the runtime `RoleApply` sink truncates to it
-deterministically rather than dropping the whole set.
+full `(kind, id)` pair, so **every** SPO badge — ownership OR Calidus — carries its own poolID and a
+multi-pool operator shows one pool-named badge per pool. A pool an account reaches by *both* paths (it owns
+the stake key and it declared a claimed Calidus key) collapses to a single badge, since the two share the
+same `(kind, id)`. `MAX_OBSERVED_ROLES_PER_ACCOUNT` bounds the set; the runtime `RoleApply` sink truncates
+to it deterministically rather than dropping the whole set.
 
 ## Reading the badge (node-served, no N+1)
 
@@ -129,12 +134,14 @@ primitive `Vec<(u8, [u8; 28])>` — a role-kind index and a 28-byte display id �
 from `ObservedRole`. So a feed card, a thread, a quote embed, and a hover card all render badges with no
 extra read.
 
-On the frontend the badge is `app/src/components/RoleBadge.tsx`. It renders one chip per live role. A
-pool-named badge (ownership SPO, dRep) is a "verify on-chain" link to cexplorer and resolves a pool ticker
-or dRep name best-effort through Blockfrost (`app/src/lib/cardano/roleMeta.ts`, sanitized, degrading to a
-truncated id — never a fabricated name). A Calidus SPO badge carries the blank id (`isBlankRoleId`), so it
-renders as a plain "✓ SPO" with no pool name and no link — it names no pool, by design. The Settings claim
-wizard is `app/src/components/settings/RolesSection.tsx`.
+On the frontend the badge is `app/src/components/RoleBadge.tsx`. It renders one chip per live role — so a
+multi-pool operator shows several ✓ SPO chips. **Every** SPO chip (ownership OR Calidus) shows an inline
+pool ticker/name and a "verify on-chain" link to cexplorer, resolving the name best-effort through
+Blockfrost (`app/src/lib/cardano/roleMeta.ts`, sanitized, degrading to a truncated poolID — never a
+fabricated name). A dRep chip is a clean "✓ dRep": its long id is carried by the verify-on-chain link
+rather than shown inline. `isBlankRoleId` survives only as a defensive guard — a degenerate all-zero id
+names no pool, so it renders as a plain "✓ SPO" with no link. The Settings claim wizard is
+`app/src/components/settings/RolesSection.tsx`.
 
 ## Governance polls (spec 207–209)
 
@@ -143,8 +150,8 @@ own `VotingPower` (their bound credential's `epoch_stake`), exactly as before. A
 Cardano-community temperature check — takes the same single vote and *also* tallies it through two extra
 lenses, so a verified SPO or dRep can weigh in "as if it were a real Cardano vote":
 
-- the **SPO chamber**, where a voting `SpoOwner` counts for its pool's total delegated (block-production)
-  stake, and
+- the **SPO chamber**, where a voting SPO — via ownership OR a claimed Calidus key — counts for its
+  pool's total delegated (block-production) stake, and
 - the **dRep chamber**, where a voting dRep counts for its total delegated voting stake.
 
 Because some Cardano actions are decided by only one body, a governance poll can also open **just one
@@ -159,12 +166,15 @@ the *same* number would double-count it. Keeping each chamber in its own lane me
 twice, and the governance poll reads as three honest, independent signals.
 
 Where the chamber weight comes from is the same deterministic observer that drives everything else. Each
-`ObservedRole` now carries a `weight` — for an `SpoOwner`, its pool's `SUM(epoch_stake)` at the observed
-epoch; for a dRep, its `SUM(drep_distr)` — read in the node's role reduction (`cogno-dbsync`), bounded to
-the pools owned by / dReps claimed by bound accounts (not an all-of-Cardano scan), and sealed into the
-inherent like the vault and voting-power reads. A **blank Calidus SPO carries no weight** (it names no
-pool, so it cannot speak for one), which means the SPO chamber only ever reflects impersonation-proof
-`SpoOwner` pools.
+`ObservedRole` now carries a `weight` — for **either** SPO source, its pool's `SUM(epoch_stake)` at the
+observed epoch; for a dRep, its `SUM(drep_distr)` — read in the node's role reduction (`cogno-dbsync`),
+bounded to the pools owned by (or declared via a claimed Calidus key by) / dReps claimed by bound accounts
+(not an all-of-Cardano scan), and sealed into the inherent like the vault and voting-power reads. Both SPO
+paths weight by real, cold-key-signed pool delegation, so the SPO chamber reflects the true governance stake
+of every pool a voter operates; a pool with no delegators carries weight 0 and is skipped. The node scopes
+the pool-stake read to `owner_pools ∪ claimed-Calidus pools` (a superset of the pools the reduction emits
+SPO entries for), sharing the `reduction::claimed_calidus_pools` helper verbatim with the reduction so the
+scope can never fall short of what the reduction needs.
 
 The tally itself (`Pallet::poll_chamber_weights`, `pallets/microblog/src/lib.rs`) is a read-time
 derivation over the poll's voters, **deduplicated by pool**: a pool's stake counts once even if several of

@@ -253,12 +253,6 @@ pub fn canonical_stake_entries(raw: Vec<(StakeCredential, u128)>) -> Vec<(StakeC
     map.into_iter().collect()
 }
 
-/// The blank (all-zero) display id an `SpoCalidus` entry carries INSTEAD of a pool id. A Calidus
-/// registration attests no specific pool (any pool's cold key can declare any Calidus key), so the badge
-/// names none — the FE renders a generic "verified SPO". A real 28-byte poolID is `blake2b_224(cold pubkey)`
-/// and is never all-zero, so this can never collide with an `SpoOwner` pool id.
-pub const BLANK_ROLE_ID: [u8; 28] = [0u8; 28];
-
 /// Canonicalize the ROLE entries into a deterministic, deduplicated order (a `BTreeSet` over the whole
 /// `(source, credential, id, weight)` tuple, so author + importer SCALE-encode identically; `weight` is
 /// deterministic per `(source, id)`, so it never splits an otherwise-identical entry into two). Like the
@@ -274,12 +268,13 @@ pub fn canonical_role_entries(raw: Vec<RoleEntry>) -> Vec<RoleEntry> {
 ///
 /// - **Calidus**: verify each label-867 registration's cold-key witness over its RAW bytes, take the
 ///   highest-nonce VERIFIED registration per pool (never an unverified one — a bogus high-nonce
-///   registration would otherwise hijack a pool), and emit an `SpoCalidus` entry when that winner's
-///   Calidus key is CLAIMED and the pool is ACTIVE. The (cheap) parse-only pre-filter bounds the ed25519
-///   witness checks to registrations of pools that have a claimed key. The entry's display `id` is the
-///   blank [`BLANK_ROLE_ID`] (never the pool) — a Calidus registration cannot attest a specific pool, so
-///   naming one would be forgeable (see the emit loop). Multiple pools authorizing the same claimed key
-///   therefore collapse to a single generic badge.
+///   registration would otherwise hijack a pool), and emit an `SpoCalidus` entry — stamped with THAT
+///   pool's id and delegated stake — for every live pool whose winner names a CLAIMED Calidus key. The
+///   (cheap) parse-only pre-filter bounds the ed25519 witness checks to registrations of pools that have a
+///   claimed key. An mSPO (one operator, several pools declaring the same key from their own cold keys)
+///   yields one entry PER pool; the chamber tally dedups by pool, so the per-pool weights SUM to the
+///   operator's true governance stake. Soundness rests on each declaration being cold-key-signed (see the
+///   emit loop for the full argument, incl. the cosmetic display-only ticker edge).
 /// - **Owner (free path)**: `owner_pools` is already `(bound stake credential, the pool it owns)` from the
 ///   SQL; emit an `SpoOwner` entry for each whose pool is ACTIVE.
 /// - **dRep**: `live_dreps` is already the set of CLAIMED, currently-live key-based dRep IDs from the SQL
@@ -290,10 +285,32 @@ pub fn canonical_role_entries(raw: Vec<RoleEntry>) -> Vec<RoleEntry> {
 /// `active_pools` is the set of currently-registered, non-retired pool IDs (as-of the reference), used to
 /// gate both SPO paths on liveness.
 ///
+/// The pools that have ANY label-867 registration declaring one of the CLAIMED Calidus keys — a cheap,
+/// parse-only pass (NO witness verification). This is exactly the set the node service must UNION into the
+/// owned pools when scoping the `pool_stake` read, AND the set [`reduce_role_observation`] restricts its
+/// (expensive) witness verification to. Both call this ONE definition so the two crates can never drift:
+/// if the service scoped `pool_stake` to a smaller set than the reduction emits, a Calidus SPO's chamber
+/// weight would silently read 0. The result is a `BTreeSet` (sorted + deduped ⇒ byte-deterministic query
+/// input). Order-independent of the registration order.
+pub fn claimed_calidus_pools(
+    registrations: &[Vec<u8>],
+    claimed_calidus: &[[u8; 28]],
+) -> BTreeSet<[u8; 28]> {
+    let claimed: BTreeSet<[u8; 28]> = claimed_calidus.iter().copied().collect();
+    registrations
+        .iter()
+        .filter_map(|b| calidus::parse_registration(b).ok())
+        .filter(|p| claimed.contains(&p.calidus_key_hash))
+        .map(|p| p.pool_id)
+        .collect()
+}
+
 /// `pool_stake` / `drep_stake` (spec 207) carry the delegated-stake CHAMBER WEIGHT for governance polls:
-/// the owned pool's total delegated block-production stake, and the dRep's total delegated voting stake,
-/// at the as-of epoch. Each becomes the corresponding `RoleEntry.weight` (looked up by id; absent ⇒ 0). A
-/// `SpoCalidus` entry names no pool, so it carries weight 0.
+/// a pool's total delegated block-production stake, and a dRep's total delegated voting stake, at the
+/// as-of epoch. Each becomes the corresponding `RoleEntry.weight` (looked up by id; absent ⇒ 0). BOTH SPO
+/// sources (`SpoOwner` and `SpoCalidus`) weight by their pool's stake, so `pool_stake` MUST cover the
+/// Calidus-authorized pools, not just owned ones — the node service scopes the read to `owner_pools` ∪
+/// [`claimed_calidus_pools`] before calling this.
 pub fn reduce_role_observation(
     registrations: &[Vec<u8>],
     active_pools: &[[u8; 28]],
@@ -309,13 +326,9 @@ pub fn reduce_role_observation(
     let drep_weight: BTreeMap<[u8; 28], u128> = drep_stake.iter().copied().collect();
     let mut entries: Vec<RoleEntry> = Vec::new();
 
-    // Pools that have ANY registration for a CLAIMED Calidus key (cheap parse, no witness).
-    let claimed_pools: BTreeSet<[u8; 28]> = registrations
-        .iter()
-        .filter_map(|b| calidus::parse_registration(b).ok())
-        .filter(|p| claimed.contains(&p.calidus_key_hash))
-        .map(|p| p.pool_id)
-        .collect();
+    // Pools that have ANY registration for a CLAIMED Calidus key (cheap parse, no witness). The SAME
+    // derivation the node service unions into its `pool_stake` scope — shared so the two can never drift.
+    let claimed_pools = claimed_calidus_pools(registrations, claimed_calidus);
 
     // Highest-nonce VERIFIED registration per claimed pool.
     let mut winner: BTreeMap<[u8; 28], calidus::CalidusRegistration> = BTreeMap::new();
@@ -339,24 +352,37 @@ pub fn reduce_role_observation(
             winner.insert(reg.pool_id, reg);
         }
     }
-    // A Calidus registration is authorized by the pool COLD key ALONE — the Calidus key never
-    // counter-signs it (CIP-0151 / CIP-88-v2 define no proof-of-possession for the declared Calidus key),
-    // so a pool can declare ANY public Calidus key, including a victim's (recoverable from the victim's
-    // on-chain claim). If we named the pool on the badge, a pool operator could attribute their OWN pool to
-    // any account that had claimed that Calidus key (cross-pool impersonation). We close that by attesting
-    // only what the proof actually establishes — "controls a Calidus key that a currently-live pool
-    // authorized" — and NOT a specific pool: the emitted display `id` is the blank marker [`BLANK_ROLE_ID`],
-    // never the pool. Every pool authorizing the same claimed key thus collapses to ONE generic SPO badge
-    // (the observer dedups by (kind, id)), so no pool can be falsely attributed to the account. (The free
-    // `SpoOwner` path below DOES name its pool — it is impersonation-proof, since Cardano requires each
-    // declared owner's stake-key witness at pool registration.) The badge is display-only.
+    // Emit ONE `SpoCalidus` entry PER live pool whose cold key authorized this claimed Calidus key, each
+    // stamped with THAT pool's id and its total delegated (block-production) stake. An mSPO — one operator
+    // running several pools, each declaring the SAME Calidus key from its OWN cold key — therefore yields
+    // one entry per pool; the governance-poll chamber tally dedups by POOL id, so those per-pool weights SUM
+    // into the operator's true aggregate: exactly the stake they would vote with on Cardano.
+    //
+    // SOUNDNESS — why summing every declaring pool is correct, and why there is deliberately NO "single
+    // pool" guard: every label-867 registration is signed by the pool COLD key, so "pool P declares key K"
+    // is cryptographic proof that P's node key authorized K. Weight is therefore always REAL on-chain
+    // delegation — it cannot be fabricated. The highest-nonce-VERIFIED winner is unique per pool, so a
+    // pool's stake resolves to at most ONE Calidus account and can never be double-counted across accounts
+    // (the chamber tally additionally dedups by pool, covering any owner-path/Calidus-path overlap on the
+    // same pool). To pull a pool's weight onto an account you would need that pool's cold key to declare a
+    // key you hold — which you cannot forge — so an account only ever accumulates pools its operator
+    // controls. Restricting an mSPO to a single pool would UNDER-count a real operator, so we attribute all.
+    //
+    // DISPLAY (the one residual edge, kept honest): the Calidus key never counter-signs the registration
+    // (CIP-0151 / CIP-88-v2 define no proof-of-possession for the declared Calidus key), so a pool CAN
+    // declare any public Calidus key, including a victim's (recoverable from the victim's on-chain claim).
+    // That lets a pool operator make their pool's TICKER appear on an account that claimed a key they
+    // declared — cosmetic/reputation only; it cannot inflate or steal vote weight (the soundness argument
+    // above holds regardless of what is displayed). The badge is display-only and, unlike `SpoOwner`, is
+    // CLAIM-BACKED (user-removable). The free `SpoOwner` path below is impersonation-proof end to end —
+    // Cardano requires each declared owner's stake-key witness at pool registration.
     for (pool_id, reg) in winner.iter() {
         if claimed.contains(&reg.calidus_key_hash) && active.contains(pool_id) {
             entries.push(RoleEntry {
                 source: RoleSource::SpoCalidus,
                 credential: reg.calidus_key_hash,
-                id: BLANK_ROLE_ID, // NOT the pool — a Calidus registration attests no specific pool (see above)
-                weight: 0,         // the blank badge names no pool ⇒ no chamber weight
+                id: *pool_id, // the specific live pool whose cold key authorized this claimed Calidus key
+                weight: pool_weight.get(pool_id).copied().unwrap_or(0), // that pool's delegated stake
             });
         }
     }
@@ -753,15 +779,31 @@ mod tests {
 
         #[test]
         fn spo_calidus_happy_path() {
+            // Case (a): ONE live pool declares a claimed key ⇒ SpoCalidus { id: pool, weight: pool stake }.
             let (bytes, pool, cal_hash) = reg(1, 2, 5);
-            let out = reduce_role_observation(&[bytes], &[pool], &[], &[cal_hash], &[], &[], &[]);
+            // The pool has 12_000_000 ADA delegated → that becomes the SpoCalidus chamber weight.
+            let out = reduce_role_observation(
+                &[bytes],
+                &[pool],
+                &[],
+                &[cal_hash],
+                &[],
+                &[(pool, 12_000_000_000_000)],
+                &[],
+            );
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].source, RoleSource::SpoCalidus);
             assert_eq!(out[0].credential, cal_hash);
-            // The Calidus badge names NO pool (the blank marker) — a Calidus reg can't attest one.
-            assert_eq!(out[0].id, BLANK_ROLE_ID);
-            // …and names no pool ⇒ carries no chamber weight, even if the pool is huge.
-            assert_eq!(out[0].weight, 0);
+            // The Calidus badge now names the SPECIFIC live pool whose cold key authorized the key…
+            assert_eq!(out[0].id, pool);
+            // …and carries THAT pool's delegated stake as its chamber weight (the mSPO governance model).
+            assert_eq!(out[0].weight, 12_000_000_000_000);
+            // A confirmed Calidus whose pool has no stake row ⇒ 0 weight (present, not dropped).
+            let (b2, pool2, cal2) = reg(3, 4, 1);
+            let z = reduce_role_observation(&[b2], &[pool2], &[], &[cal2], &[], &[], &[]);
+            assert_eq!(z.len(), 1);
+            assert_eq!(z[0].id, pool2);
+            assert_eq!(z[0].weight, 0);
         }
 
         #[test]
@@ -799,11 +841,11 @@ mod tests {
                 old.is_empty(),
                 "a superseded Calidus key must not be tagged"
             );
-            // A claim for the CURRENT (highest-nonce) key IS tagged (with a blank, no-pool display id).
+            // A claim for the CURRENT (highest-nonce) key IS tagged, naming the pool that rotated to it.
             let new = reduce_role_observation(&[r5, r9], &[pool], &[], &[cal9], &[], &[], &[]);
             assert_eq!(new.len(), 1);
             assert_eq!(new[0].credential, cal9);
-            assert_eq!(new[0].id, BLANK_ROLE_ID);
+            assert_eq!(new[0].id, pool);
         }
 
         #[test]
@@ -820,41 +862,141 @@ mod tests {
                 reduce_role_observation(&[real, bogus], &[pool], &[], &[cal_real], &[], &[], &[]);
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].credential, cal_real);
-            assert_eq!(out[0].id, BLANK_ROLE_ID);
+            assert_eq!(out[0].id, pool);
         }
 
         #[test]
-        fn cross_pool_calidus_cannot_impersonate() {
-            // The impersonation regression test (was a live PoC before the blank-id fix). The victim
-            // operates pool P (cold seed 1) with Calidus key seed 2 and has CLAIMED hash(cal2). An ATTACKER
-            // runs their OWN active pool Q (cold seed 9) and posts a label-867 registration for Q that
-            // DECLARES the victim's Calidus key (seed 2) — validly signed by Q's cold key (the Calidus key
-            // never counter-signs, so nothing on Cardano stops it).
-            let (honest, pool_p, cal_hash) = reg(1, 2, 5);
-            let (attacker, pool_q, cal_hash2) = reg(9, 2, 5); // same Calidus seed 2, different cold key
+        fn two_pools_declaring_one_key_each_get_their_own_entry() {
+            // Two DISTINCT pools declare the SAME Calidus key from their OWN cold keys — the legitimate mSPO
+            // shape (one operator, two pools), which is ALSO the shape a display-only cross-pool cosmetic
+            // takes. Pool P (cold seed 1) and pool Q (cold seed 9) both declare Calidus seed 2; the account
+            // claimed hash(cal2).
+            let (reg_p, pool_p, cal_hash) = reg(1, 2, 5);
+            let (reg_q, pool_q, cal_hash2) = reg(9, 2, 5); // same Calidus seed 2, different cold key
             assert_eq!(
                 cal_hash, cal_hash2,
                 "same Calidus key ⇒ same claimed credential"
             );
             assert_ne!(pool_p, pool_q, "distinct pools");
             let out = reduce_role_observation(
-                &[honest, attacker],
+                &[reg_p, reg_q],
                 &[pool_p, pool_q],
                 &[],
                 &[cal_hash],
                 &[],
-                &[],
+                &[(pool_p, 3_000_000), (pool_q, 4_000_000)],
                 &[],
             );
-            // BEFORE the fix this emitted {hash, P} AND {hash, Q} (the victim badged for the attacker's
-            // pool). Now both carry the blank id, so they collapse to ONE generic SPO entry that names no
-            // pool — the attacker's pool can no longer be attributed to the victim.
-            assert_eq!(out.len(), 1, "the two pools collapse to one generic badge");
-            assert_eq!(out[0].source, RoleSource::SpoCalidus);
-            assert_eq!(out[0].credential, cal_hash);
-            assert_eq!(out[0].id, BLANK_ROLE_ID);
-            assert_ne!(out[0].id, pool_p, "names neither pool");
-            assert_ne!(out[0].id, pool_q, "names neither pool");
+            // Each cold-key-signed declaration yields its OWN pool-named entry (weight = that pool's stake).
+            // For a real mSPO the chamber tally then SUMS the two pools; a cosmetic cross-pool declaration is
+            // DISPLAY-only and cannot inflate or steal weight — the operator can only spend their OWN pool's
+            // governance weight, and a pool resolves to at most one Calidus account (the per-pool highest-
+            // nonce winner), so no pool is ever double-counted across accounts.
+            assert_eq!(out.len(), 2, "one entry per declaring pool");
+            for e in &out {
+                assert_eq!(e.source, RoleSource::SpoCalidus);
+                assert_eq!(e.credential, cal_hash);
+            }
+            assert_eq!(
+                out.iter().find(|e| e.id == pool_p).map(|e| e.weight),
+                Some(3_000_000)
+            );
+            assert_eq!(
+                out.iter().find(|e| e.id == pool_q).map(|e| e.weight),
+                Some(4_000_000)
+            );
+        }
+
+        #[test]
+        fn mspo_emits_one_entry_per_declaring_pool_with_its_own_stake() {
+            // Case (b), reduction half — the load-bearing mSPO edge: ONE operator runs THREE pools P1,P2,P3,
+            // each declaring the SAME Calidus key K from its OWN cold key. The account claimed hash(K).
+            let (r1, p1, cal) = reg(1, 7, 5);
+            let (r2, p2, cal2) = reg(2, 7, 5);
+            let (r3, p3, cal3) = reg(3, 7, 5);
+            assert_eq!(cal, cal2);
+            assert_eq!(cal, cal3);
+            assert!(p1 != p2 && p2 != p3 && p1 != p3, "three distinct pools");
+            let out = reduce_role_observation(
+                &[r1, r2, r3],
+                &[p1, p2, p3],
+                &[],
+                &[cal],
+                &[],
+                &[(p1, 1_000_000), (p2, 2_000_000), (p3, 3_000_000)],
+                &[],
+            );
+            // Three SpoCalidus entries, one per pool, each carrying its OWN pool id + delegated stake. The
+            // chamber tally (pallet-microblog) dedups by pool and SUMS them to 6_000_000 across a distinct
+            // pool count of 3 — asserted in the microblog governance-poll test.
+            assert_eq!(out.len(), 3);
+            for e in &out {
+                assert_eq!(e.source, RoleSource::SpoCalidus);
+                assert_eq!(e.credential, cal);
+            }
+            let w = |pool: [u8; 28]| out.iter().find(|e| e.id == pool).map(|e| e.weight);
+            assert_eq!(w(p1), Some(1_000_000));
+            assert_eq!(w(p2), Some(2_000_000));
+            assert_eq!(w(p3), Some(3_000_000));
+            // Case (c): a pool that declares the claimed key but is NOT active ⇒ its entry is dropped.
+            let (r1b, p1b, calb) = reg(1, 7, 5);
+            let (r2b, _p2b, _c2) = reg(2, 7, 5);
+            let out2 = reduce_role_observation(
+                &[r1b, r2b],
+                &[p1b], // only P1 active; P2 omitted from active_pools
+                &[],
+                &[calb],
+                &[],
+                &[(p1b, 1_000_000)],
+                &[],
+            );
+            assert_eq!(out2.len(), 1);
+            assert_eq!(out2[0].id, p1b);
+        }
+
+        #[test]
+        fn claimed_calidus_pools_is_the_pool_scope_both_paths_share() {
+            // The shared helper the node service unions into its `pool_stake` scope AND the reduction
+            // restricts witness verification to. It returns EVERY pool declaring a claimed key (active or
+            // not, highest-nonce or not — scope must be a superset of what the reduction emits), and NO pool
+            // that only declares an UNCLAIMED key. Order-independent, byte-deterministic (a BTreeSet).
+            let (rp, pool_p, cal) = reg(1, 7, 5); // pool P declares claimed key K
+            let (rq, pool_q, cal_q) = reg(2, 7, 9); // pool Q also declares K (mSPO), higher nonce
+            let (ro, pool_o, cal_o) = reg(3, 8, 1); // pool O declares a DIFFERENT, unclaimed key
+            assert_eq!(cal, cal_q);
+            assert_ne!(cal, cal_o);
+            let regs = [ro.clone(), rq.clone(), rp.clone()]; // deliberately out of order
+            let got = claimed_calidus_pools(&regs, &[cal]);
+            assert_eq!(
+                got,
+                [pool_p, pool_q].into_iter().collect(),
+                "both pools declaring the claimed key; the unclaimed-key pool O is excluded"
+            );
+            assert!(
+                !got.contains(&pool_o),
+                "a pool declaring only an unclaimed key is out of scope"
+            );
+            // Superset property: the scope covers every pool the reduction actually emits an entry for.
+            let emitted: std::collections::BTreeSet<[u8; 28]> = reduce_role_observation(
+                &regs,
+                &[pool_p, pool_q, pool_o],
+                &[],
+                &[cal],
+                &[],
+                &[],
+                &[],
+            )
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+            assert!(
+                emitted.is_subset(&got),
+                "the shared scope must cover every emitted pool, else its weight silently reads 0"
+            );
+            // Input order does not change the (sorted, deduped) result.
+            assert_eq!(got, claimed_calidus_pools(&[rp, rq, ro], &[cal]));
+            let _ = cal_q;
+            let _ = cal_o;
         }
 
         #[test]

@@ -328,25 +328,24 @@ pub async fn read_stake_observation(
 ///      latest `drep_registration` at slot ≤ ref is NOT a deregistration (db-sync `deposit` sign: `+`
 ///      register / `−` deregister / `NULL` update). Script dReps (`has_script`) can't CIP-8-sign, so they
 ///      are excluded. The credential IS the display id (the drep ID), so no separate resolution is needed.
-///   5. `pool_stake` (spec 207, the GOVERNANCE-POLL chamber weight) — for each OWNED pool (the `owners`
-///      set above), its TOTAL delegated (block-production) stake `SUM(epoch_stake.amount)` at the as-of
-///      epoch `ep − $4` (the SAME immutable, lookback-shifted epoch the voting-power read uses, so the
-///      chamber weight lags one epoch consistently). Bounded by the owned-pool set (NOT an all-pools scan),
-///      so it inherits the same scoping the free SPO path already has. A pool with no delegators is absent
-///      here ⇒ 0 weight (correct). This is the delegated stake the SPO chamber weights an owner's vote by.
-///   6. `drep_stake` (spec 207) — for each CLAIMED key-based dRep (`$3`), its TOTAL delegated VOTING stake
-///      `SUM(drep_distr.amount)` at the same as-of epoch (`drep_distr` is the Conway per-epoch dRep power
-///      distribution). Bounded by the claimed-dRep set. This is the delegated stake the dRep chamber
-///      weights a dRep's vote by. Predefined dReps (`drep_always_abstain`/`_no_confidence`, `raw IS NULL`)
-///      are excluded automatically by the `= ANY($3)` scoping.
+///   5. `drep_stake` (spec 207, the dRep GOVERNANCE-POLL chamber weight) — for each CLAIMED key-based dRep
+///      (`$3`), its TOTAL delegated VOTING stake `SUM(drep_distr.amount)` at the as-of epoch `ep − $4`
+///      (the SAME immutable, lookback-shifted epoch the voting-power read uses; `drep_distr` is the Conway
+///      per-epoch dRep power distribution). Bounded by the claimed-dRep set. This is the delegated stake the
+///      dRep chamber weights a dRep's vote by. Predefined dReps (`drep_always_abstain`/`_no_confidence`,
+///      `raw IS NULL`) are excluded automatically by the `= ANY($3)` scoping.
 ///
-/// The two stake sums are DISPLAY-ONLY chamber weights (a governance-poll temperature check), computed in
-/// the deterministic reduction so every node agrees byte-for-byte — a divergence is a chain fork, exactly
-/// like the vault/voting-power reads. `::text` totals (pool/dRep stake exceeds 2^53).
+/// The SPO chamber weight (`pool_stake`) is read SEPARATELY by [`read_pool_stake`], scoped to
+/// `owner_pools ∪ claimed-Calidus pools` — a set only known AFTER the reduction parses these
+/// `registrations` (Calidus→pool lives inside the CBOR), so it cannot be a column of this query. `drep_stake`
+/// is a DISPLAY-ONLY chamber weight computed in the deterministic reduction so every node agrees
+/// byte-for-byte — a divergence is a chain fork, exactly like the vault/voting-power reads. `::text` totals
+/// (dRep stake exceeds 2^53).
 ///
 /// MAINNET PREREQUISITE: `active_pools` returns ALL active pools (fine on preprod's small set; on mainnet
 /// scope it — e.g. only pools referenced by a claimed Calidus registration or owned by a bound credential).
-/// `pool_stake`/`drep_stake` are ALREADY scoped (owned pools / claimed dReps), so they need no such change.
+/// `drep_stake` is ALREADY scoped (claimed dReps), and [`read_pool_stake`] is scoped to the union pool set,
+/// so neither needs that change.
 const ROLE_OBSERVATION_SQL: &str = "\
 WITH params AS (SELECT $1::bigint AS ref, $4::bigint AS lookback), \
 ep AS (SELECT b.epoch_no AS e FROM block b, params p WHERE b.slot_no <= p.ref ORDER BY b.slot_no DESC LIMIT 1), \
@@ -381,12 +380,6 @@ dreps AS ( \
          JOIN tx t ON t.id = dr.tx_id JOIN block b ON b.id = t.block_id \
          WHERE dr.drep_hash_id = dh.id AND b.slot_no <= (SELECT ref FROM params) \
          ORDER BY b.slot_no DESC, t.block_index DESC, dr.cert_index DESC LIMIT 1) IS TRUE), \
-pool_stake AS ( \
-  SELECT encode(ph.hash_raw,'hex') AS id, SUM(es.amount)::text AS stake \
-  FROM epoch_stake es JOIN pool_hash ph ON ph.id = es.pool_id \
-  WHERE es.epoch_no = (SELECT te FROM target) \
-    AND ph.hash_raw IN (SELECT DISTINCT decode(pool,'hex') FROM owners) \
-  GROUP BY ph.hash_raw), \
 drep_stake AS ( \
   SELECT encode(dh.raw,'hex') AS id, SUM(dd.amount)::text AS stake \
   FROM drep_distr dd JOIN drep_hash dh ON dh.id = dd.hash_id \
@@ -398,9 +391,7 @@ SELECT (SELECT EXISTS (SELECT 1 FROM pool_hash)) AS pool_ok, \
        COALESCE((SELECT json_agg(encode(hash_raw,'hex')) FROM active), '[]'::json) AS active_pools, \
        COALESCE((SELECT json_agg(json_build_object('cred', cred, 'pool', pool)) FROM owners), '[]'::json) AS owner_pools, \
        COALESCE((SELECT json_agg(drep) FROM dreps), '[]'::json) AS live_dreps, \
-       (SELECT EXISTS (SELECT 1 FROM epoch_stake WHERE epoch_no = (SELECT te FROM target))) AS estake_target_ok, \
        (SELECT EXISTS (SELECT 1 FROM drep_distr WHERE epoch_no = (SELECT te FROM target))) AS drep_target_ok, \
-       COALESCE((SELECT json_agg(json_build_object('id', id, 'stake', stake)) FROM pool_stake), '[]'::json) AS pool_stake, \
        COALESCE((SELECT json_agg(json_build_object('id', id, 'stake', stake)) FROM drep_stake), '[]'::json) AS drep_stake";
 
 /// The raw ROLE read (pre-reduction). `registrations` are the verbatim label-867 metadata bytes;
@@ -413,13 +404,10 @@ pub struct DbsyncRoleRead {
     /// The CLAIMED key-based dRep IDs (`$3`) that are currently LIVE (latest registration ≤ ref is not a
     /// deregistration). For dReps the credential IS the display id, so the reduction emits these directly.
     pub live_dreps: Vec<[u8; 28]>,
-    /// (spec 207) `(owned poolID, total delegated block-production stake)` at the as-of epoch — the SPO
-    /// governance-poll chamber weight. Bounded by the owned-pool set; an undelegated owned pool is absent
-    /// (⇒ 0). The reduction attaches this as `SpoOwner`'s `RoleEntry.weight`.
-    pub pool_stake: Vec<([u8; 28], u128)>,
     /// (spec 207) `(claimed dRep ID, total delegated voting stake)` at the as-of epoch — the dRep
     /// governance-poll chamber weight. Bounded by the claimed-dRep set. The reduction attaches this as
-    /// `DRep`'s `RoleEntry.weight`.
+    /// `DRep`'s `RoleEntry.weight`. The SPO counterpart (`pool_stake`) is read separately by
+    /// [`read_pool_stake`] once the reduction's Calidus→pool set is known.
     pub drep_stake: Vec<([u8; 28], u128)>,
 }
 
@@ -531,24 +519,14 @@ pub async fn read_role_observation(
             live_dreps.push(hex_bytes::<28>(hex).ok_or("bad drep id hex")?);
         }
 
-        // ── CHAMBER WEIGHTS (spec 207): the delegated-stake sums for governance polls. Fail-closed like
-        // the voting-power read — if there ARE owned pools / live dReps but the target epoch is not yet
-        // snapshotted, a behind db-sync would read 0 stake for a real pool/dRep → a false chamber weight
-        // and a cross-node fork; abstain instead. (When the sets are empty there is nothing to weight, so
-        // the missing snapshot is irrelevant and we do NOT abstain.)
-        let estake_target_ok = row
-            .try_get::<_, bool>(5)
-            .map_err(|e| format!("db-sync estake_target_ok column decode failed: {e}"))?;
+        // ── dRep CHAMBER WEIGHT (spec 207): the delegated-voting-stake sum for governance polls. Fail-closed
+        // like the voting-power read — if there ARE live dReps but the target epoch is not yet snapshotted, a
+        // behind db-sync would read 0 stake for a real dRep → a false chamber weight and a cross-node fork;
+        // abstain instead. (An empty live-dRep set has nothing to weight, so the missing snapshot is
+        // irrelevant and we do NOT abstain.) The SPO counterpart is guarded identically in `read_pool_stake`.
         let drep_target_ok = row
-            .try_get::<_, bool>(6)
+            .try_get::<_, bool>(5)
             .map_err(|e| format!("db-sync drep_target_ok column decode failed: {e}"))?;
-        if !owner_pools.is_empty() && !estake_target_ok {
-            return Err(
-                "db-sync has no epoch_stake snapshot for the chamber-weight target epoch yet (source \
-                 behind) — abstaining (defer/CannotVerify)"
-                    .to_string(),
-            );
-        }
         if !live_dreps.is_empty() && !drep_target_ok {
             return Err(
                 "db-sync has no drep_distr snapshot for the chamber-weight target epoch yet (source \
@@ -556,15 +534,13 @@ pub async fn read_role_observation(
                     .to_string(),
             );
         }
-        let pool_stake = parse_id_stake(&row, 7, "pool_stake")?;
-        let drep_stake = parse_id_stake(&row, 8, "drep_stake")?;
+        let drep_stake = parse_id_stake(&row, 6, "drep_stake")?;
 
         Ok(DbsyncRoleRead {
             registrations,
             active_pools,
             owner_pools,
             live_dreps,
-            pool_stake,
             drep_stake,
         })
     };
@@ -574,6 +550,94 @@ pub async fn read_role_observation(
         .map_err(|_| {
             format!(
                 "db-sync role read timed out after {}s",
+                DBSYNC_TIMEOUT.as_secs()
+            )
+        })?
+}
+
+/// The SPO GOVERNANCE-POLL chamber-weight read (spec 207): for each pool in `$3`, its TOTAL delegated
+/// (block-production) stake `SUM(epoch_stake.amount)` at the as-of epoch `ep − $2` (the SAME immutable,
+/// lookback-shifted epoch [`read_role_observation`]'s `drep_stake` and the voting-power read use, so the SPO
+/// chamber weight lags one epoch consistently). Read SEPARATELY from the role read because its pool set is
+/// `owner_pools ∪ claimed-Calidus pools` — the Calidus→pool half lives inside the label-867 CBOR and is only
+/// known AFTER the reduction parses the registrations, so the node service computes the (sorted, deduped)
+/// set and passes it here. Scoped by `= ANY($3)` (bounded — mainnet-safe, no MAINNET PREREQUISITE widening).
+/// A pool with no delegators is absent ⇒ 0 weight (correct). `::text` totals (pool stake exceeds 2^53).
+const POOL_STAKE_SQL: &str = "\
+WITH params AS (SELECT $1::bigint AS ref, $2::bigint AS lookback), \
+ep AS (SELECT b.epoch_no AS e FROM block b, params p WHERE b.slot_no <= p.ref ORDER BY b.slot_no DESC LIMIT 1), \
+target AS (SELECT (SELECT e FROM ep) - (SELECT lookback FROM params) AS te), \
+pool_stake AS ( \
+  SELECT encode(ph.hash_raw,'hex') AS id, SUM(es.amount)::text AS stake \
+  FROM epoch_stake es JOIN pool_hash ph ON ph.id = es.pool_id \
+  WHERE es.epoch_no = (SELECT te FROM target) \
+    AND ph.hash_raw = ANY($3::bytea[]) \
+  GROUP BY ph.hash_raw) \
+SELECT (SELECT EXISTS (SELECT 1 FROM epoch_stake WHERE epoch_no = (SELECT te FROM target))) AS target_ok, \
+       COALESCE((SELECT json_agg(json_build_object('id', id, 'stake', stake)) FROM pool_stake), '[]'::json) AS pool_stake";
+
+/// Read the SPO chamber weight — each pool's total delegated block-production stake — for every pool in
+/// `pool_ids`, AS-OF the epoch derived from `reference_slot` (minus `lookback`). `pool_ids` is
+/// `owner_pools ∪ claimed-Calidus pools`, sorted + deduped by the node service (byte-determinism of the
+/// query input). Fail-closed: any error, or a target epoch not yet snapshotted while there ARE pools to
+/// weight, returns `Err` ⇒ the caller abstains (empty observation, never a partial/forking read). `pool_ids`
+/// empty ⇒ `Ok(empty)` (nothing to weight — not an abstain), mirroring [`read_stake_observation`]'s
+/// empty-set short-circuit. Determinism matches the other reads: a fixed reference slot / immutable target
+/// epoch means this separate snapshot reads byte-identical settled history on every node.
+pub async fn read_pool_stake(
+    url: &str,
+    pool_ids: &[[u8; 28]],
+    reference_slot: u64,
+    lookback: u64,
+) -> Result<Vec<([u8; 28], u128)>, String> {
+    if pool_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let read = async {
+        let mut slot = client_cell().lock().await;
+        if slot.as_ref().is_none_or(|c| c.is_closed()) {
+            *slot = Some(connect(url).await?);
+        }
+        let ref_i64 =
+            i64::try_from(reference_slot).map_err(|_| "reference slot exceeds i64".to_string())?;
+        let lookback_i64 =
+            i64::try_from(lookback).map_err(|_| "lookback exceeds i64".to_string())?;
+        let ids: Vec<&[u8]> = pool_ids.iter().map(|p| p.as_slice()).collect();
+        let row = match slot
+            .as_ref()
+            .expect("just connected/validated above; qed")
+            .query_one(POOL_STAKE_SQL, &[&ref_i64, &lookback_i64, &ids])
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                *slot = None;
+                return Err(format!("db-sync pool_stake query failed: {e}"));
+            }
+        };
+        drop(slot);
+
+        // Fail-closed: the target epoch must be snapshotted (there ARE pools to weight — guaranteed by the
+        // non-empty `pool_ids` short-circuit above), else a behind db-sync would read 0 for a real pool → a
+        // false chamber weight and a cross-node fork. `try_get`, never the panicking `Row::get`.
+        if !row
+            .try_get::<_, bool>(0)
+            .map_err(|e| format!("db-sync pool_stake target_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync has no epoch_stake snapshot for the SPO chamber-weight target epoch yet (source \
+                 behind) — abstaining (defer/CannotVerify)"
+                    .to_string(),
+            );
+        }
+        parse_id_stake(&row, 1, "pool_stake")
+    };
+
+    tokio::time::timeout(DBSYNC_TIMEOUT, read)
+        .await
+        .map_err(|_| {
+            format!(
+                "db-sync pool_stake read timed out after {}s",
                 DBSYNC_TIMEOUT.as_secs()
             )
         })?

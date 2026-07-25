@@ -22,9 +22,10 @@
 //! [`ObservedRoles`] is written ONLY by the `cardano-observer` inherent (via the runtime's `RoleSink`
 //! → [`Pallet::apply_roles`]). Each block the observer reads db-sync, scoped to the CLAIMED
 //! credentials ([`Pallet::claimed_credentials`] → the `bound_role_credentials` runtime API), confirms
-//! each is a currently-live pool / dRep / seated CC member, resolves the display id (a **poolID** for an
-//! ownership SPO, the BLANK marker for a Calidus SPO — which names no pool, the drepID / hot credential
-//! for dRep / CC), and writes the account's full observed set —
+//! each is a currently-live pool / dRep / seated CC member, resolves the display id (a **poolID** for BOTH
+//! SPO sources — ownership names its owned pool, and a Calidus SPO names the live pool whose cold key
+//! authorized its key, so an mSPO yields one entry per pool; the drepID / hot credential for dRep / CC),
+//! and writes the account's full observed set —
 //! auto-revoking (clamp to empty) when a pool retires / a dRep deregisters / a CC term expires. The
 //! profile badge reads THIS map, so a badge only ever reflects a currently-live Cardano role.
 //! `ValueQuery` ⇒ an account with no live role reads the empty set for free. A fresh chain with no
@@ -53,15 +54,24 @@ pub const LOG_TARGET: &str = "runtime::cardano-roles";
 
 /// A 28-byte Cardano credential (a blake2b-224 key hash): the claimed role-key hash on the claim side
 /// (Calidus-key hash / drep ID / committee hot credential), and the observer-resolved display id on the
-/// observed side (a poolID for an ownership SPO, the all-zero blank for a Calidus SPO; the same drep ID /
-/// hot credential for dRep / CC).
+/// observed side (a poolID for EITHER SPO source — ownership names its owned pool, Calidus names the live
+/// pool whose cold key authorized its key; the same drep ID / hot credential for dRep / CC).
 pub type RoleCredential = [u8; 28];
 
 /// The maximum number of observed role BADGES one account can display at once. An account holds at most
 /// one dRep and one CC badge, but can hold SEVERAL SPO badges — one per pool it operates via a Calidus
-/// key and/or owns — so this is deliberately well above the three [`RoleKind`]s. The observer truncates
-/// to this cap (the runtime `RoleApply` sink keeps the first N in the deterministic observed order); the
-/// set is display-only, so a cap is a UI bound, not an economic one.
+/// key and/or owns (an mSPO now consumes one slot PER declaring pool) — so this is deliberately well above
+/// the three [`RoleKind`]s. The observer truncates to this cap (the runtime `RoleApply` sink keeps the
+/// first N in the deterministic CANONICAL observed order); the set is display-only, so a cap is a UI bound,
+/// not an economic one.
+///
+/// ⚠ MAINNET PREREQUISITE (a deterministic under-count, NOT a fork): the canonical order sorts every SPO
+/// entry before dRep/CC (`RoleSource` declaration order), so a very large mSPO — one Calidus key declared
+/// by >~14 live pools — that is ALSO a dRep would have its dRep/CC badge (and its dRep-chamber weight)
+/// truncated away, not just its surplus SPO pools; and an mSPO past the cap under-counts its own
+/// SPO-chamber weight. Unreachable on preprod's small pool set. Before a network with large mSPOs, raise
+/// this cap and/or reserve one slot per non-SPO kind in `RoleApply` — a RUNTIME change (coordinated
+/// upgrade), deliberately out of scope for the node-side Calidus mSPO weighting that surfaced it.
 pub const MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 16;
 
 #[frame_support::pallet]
@@ -141,15 +151,15 @@ pub mod pallet {
     }
 
     /// One entry in an account's observed-role set: a currently-live role + its display id (a poolID for
-    /// an ownership SPO, the all-zero blank for a Calidus SPO — which names no pool; the drep ID / hot
-    /// credential for dRep / CC) + the `weight` a GOVERNANCE-POLL chamber weights this role's vote by
-    /// (spec 207).
+    /// EITHER SPO source — ownership names its owned pool, Calidus names the live pool whose cold key
+    /// authorized its key; the drep ID / hot credential for dRep / CC) + the `weight` a GOVERNANCE-POLL
+    /// chamber weights this role's vote by (spec 207). An mSPO holds one entry per declaring pool.
     ///
-    /// `weight` is the role's delegated Cardano stake at the observed epoch: an ownership SPO's pool's
-    /// total delegated (block-production) stake, a dRep's total delegated voting stake; `0` for a blank
-    /// Calidus SPO (names no pool) and CC. It is DISPLAY-ONLY chamber input for governance polls — it does
-    /// NOT touch talk-stake `VotingPower` (a regular stake vote is unchanged), and a non-governance poll
-    /// never reads it. The observer overwrites the whole set each epoch, so it tracks the live delegation.
+    /// `weight` is the role's delegated Cardano stake at the observed epoch: an SPO's named pool's total
+    /// delegated (block-production) stake, a dRep's total delegated voting stake; `0` for CC and for a pool
+    /// with no delegators. It is DISPLAY-ONLY chamber input for governance polls — it does NOT touch
+    /// talk-stake `VotingPower` (a regular stake vote is unchanged), and a non-governance poll never reads
+    /// it. The observer overwrites the whole set each epoch, so it tracks the live delegation.
     #[derive(
         Clone, PartialEq, Eq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug,
     )]
