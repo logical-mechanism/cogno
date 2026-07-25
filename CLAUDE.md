@@ -4,8 +4,8 @@ Guidance for working in this repo. See [README.md](README.md) for the user-facin
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design; per-mechanism depth lives in the
 focused docs under `docs/` (`IN-PROTOCOL-OBSERVATION`, `ECONOMICS`, `TRUSTLESS-IDENTITY`, `SCALE-NODE-READS`,
 `VERIFIABLE-ROLE-TAGS`) and the operator runbooks (`PREPROD-BRINGUP`, `RELAY-NODE`, `UPGRADES`,
-`D2-custody-runbook`). `PROTOCOL-PARAMS` maps each tunable to the file + symbol that sets it, but it is a
-spec-204 snapshot that predates `cardano-roles` — trust it for the pointer, read the value off the code.
+`D2-custody-runbook`). `PROTOCOL-PARAMS` maps every tunable to the file + symbol that sets it — keep it
+in step on a spec bump, and re-snapshot the header's `spec_version` when you do.
 
 ## What this is
 
