@@ -7,7 +7,6 @@ import {
   hotScore,
   isUndifferentiated,
   RANK_WINDOW,
-  MIN_RANKABLE,
   SORTS,
 } from "./rank";
 import type { CognoPost, Ss58 } from "@/lib/types";
@@ -209,8 +208,4 @@ describe("window constants", () => {
     expect(RANK_WINDOW).toBe(100);
   });
 
-  it("keeps the sort control hidden on a corpus too small to rank", () => {
-    expect(MIN_RANKABLE).toBeGreaterThan(1);
-    expect(MIN_RANKABLE).toBeLessThan(RANK_WINDOW);
-  });
 });

@@ -283,22 +283,36 @@ export async function nodeMembersFeedPage(
   if (scoped.length === 0) return { posts: [], nextCursor: null };
   const target = clampLimit(opts.limit);
 
-  const pages = await Promise.all(
+  // allSettled, NOT all: one member's failed state_call (a transient RPC blip on any of up to
+  // MAX_FEED_MEMBERS reads) would otherwise reject the whole page and blank a timeline that could still
+  // show every other member. A rejected member is treated as "unknown, possibly more" below so its posts
+  // are never silently declared absent.
+  const settled = await Promise.allSettled(
     scoped.map((m) =>
       nodeAuthorFeedPage(api, m, { beforeId: opts.beforeId, limit: target, viewer: opts.viewer }),
     ),
   );
+  const pages = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+  const anyMemberFailed = settled.length !== pages.length;
+  // Every member failed ⇒ this is a read failure, not an empty list. Surface it rather than rendering an
+  // authoritative-looking "nobody posted" over a page we never actually read.
+  if (pages.length === 0) {
+    throw new Error("list timeline: every member read failed");
+  }
 
   const merged = pages
     .flatMap((p) => p.posts)
     .sort((a, b) => (a.id === b.id ? 0 : a.id > b.id ? -1 : 1));
   const slice = merged.slice(0, target);
 
-  // Nothing more to read only when we returned EVERYTHING we fetched and every member was exhausted.
+  // Nothing more to read only when we returned EVERYTHING we fetched AND every member was exhausted AND
+  // no member's read failed (a failed member may hold older posts we haven't seen).
   const anyMemberHasMore = pages.some((p) => p.nextCursor !== null);
   const truncated = merged.length > slice.length;
   const nextCursor =
-    slice.length > 0 && (truncated || anyMemberHasMore) ? slice[slice.length - 1].id : null;
+    slice.length > 0 && (truncated || anyMemberHasMore || anyMemberFailed)
+      ? slice[slice.length - 1].id
+      : null;
 
   return { posts: slice, nextCursor };
 }

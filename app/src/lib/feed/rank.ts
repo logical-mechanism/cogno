@@ -26,19 +26,16 @@ import { SECS_PER_BLOCK } from "@/lib/chain/capacity";
  *
  * 100 is the hard ceiling on BOTH sides — the client clamps (`node-reads` MAX_PAGE) and so does the
  * runtime (`clamp_limit`) — so a larger request is silently clamped rather than honoured. Asking for
- * more would mean several sequential `state_call`s at DIFFERENT best blocks, which would make ages and
- * engagement come from two clocks and quietly falsify the "one window" claim. One call, one block.
+ * more would mean several sequential pages, each a fresh read, so the window would stop being one
+ * coherent snapshot.
+ *
+ * CAVEAT, so the comment does not overclaim: the UNFILTERED firehose fills this in one `state_call`
+ * (the recency spine is dense). A ROLE-LENSED window does not — the reader chases its cursor up to
+ * FILTERED_LENS_MAX_HOPS times, each hop a separate read at `{at:"best"}`, so a lensed window can span a
+ * few blocks. The ranking is unaffected in practice (ages are relative to one frozen reference block and
+ * a few blocks is seconds against an hours-scale decay), but it is not literally "one call, one block".
  */
 export const RANK_WINDOW = 100;
-
-/**
- * Below this many posts in the window, a sort control is not offered at all.
- *
- * With only a handful of posts every comparator returns approximately the recency order, so the control
- * would have one reachable state — exactly the defect that got the old order toggle deleted. Hide it
- * rather than ship a control that appears to do nothing.
- */
-export const MIN_RANKABLE = 10;
 
 /** The sort modes the ranked window supports. `latest` is the recency spine (not a ranking). */
 export const SORTS = ["latest", "hot", "replies", "stake"] as const;

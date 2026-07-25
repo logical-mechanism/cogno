@@ -19,6 +19,8 @@ import type { Ss58 } from "./types";
 const store = createViewerScopedStringSetStore({
   prefix: "cg-blocked",
   isValid: (v) => v.length > 0,
+  // Shipped device-global before per-account bucketing, so its bare key is claimable once.
+  claimLegacy: true,
 });
 
 /** Block actions bound to `who` (null = the signed-out device bucket). */

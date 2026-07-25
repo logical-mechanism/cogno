@@ -17,6 +17,8 @@ import type { Ss58 } from "./types";
 const store = createViewerScopedStringSetStore({
   prefix: "cg-bookmarks",
   isValid: (v) => /^\d+$/.test(v),
+  // Shipped device-global before per-account bucketing, so its bare key is claimable once.
+  claimLegacy: true,
 });
 
 /** Bookmark actions bound to `who` (null = the signed-out device bucket). */

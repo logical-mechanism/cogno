@@ -15,9 +15,13 @@
 //
 // THE CAPS BELOW ARE DELIBERATELY EQUAL TO THE BOUNDS A FUTURE ON-CHAIN `Lists` MAP WOULD USE
 // (8 lists / 64 members / a 48-BYTE name). Getting them right now is what makes "publish this list"
-// later a lossless copy instead of a lossy one that silently truncates a user's list. `publishedSlot` is
-// the other half of that seam: nothing writes it today, but `parse` tolerates it from day one — `parse`
-// runs on the WRITE path too, so a field it didn't know about would be stripped on the next commit.
+// later a lossless copy instead of a lossy one that silently truncates a user's list.
+//
+// `publishedSlot` is the other half of that seam: nothing writes it today, but BOTH `parse` and
+// `serialize` carry it. Both halves are needed and for different reasons — `parse` so a slot survives a
+// reload, and `serialize` so an unrelated mutation (adding a member) doesn't drop it on the next commit.
+// `serialize` is the load-bearing one: it projects fields EXPLICITLY, so a field omitted there is
+// destroyed on write even though `parse` understood it.
 
 import { createViewerScopedStore } from "./viewerScopedStore";
 import { normalizeSs58 } from "./ss58";
@@ -42,7 +46,7 @@ export interface LocalList {
   /**
    * Forward-compat seam for publishing: the on-chain `u8` slot this list occupies once published.
    * NOTHING writes this today. It exists so a later publish flow can map a device-local id to a chain
-   * slot without a stored-format change (and so `parse` never strips it).
+   * slot without a stored-format change — which requires both `parse` and `serialize` to carry it.
    */
   publishedSlot?: number;
 }
@@ -58,10 +62,11 @@ export function isValidListName(name: string): boolean {
 /**
  * Coerce one unknown parsed value into a valid `LocalList`, or null.
  *
- * Hard validation on BOTH paths (`parse` runs on read AND before every write): a member that isn't a
- * checksum-valid address would be interpolated into a chain read and either error or silently return
- * nothing, so invalid members are DROPPED rather than kept. Over-long collections are truncated to the
- * cap here — the write path refuses to exceed it, so this only fires on hand-edited storage.
+ * This runs on READ (`parse`). localStorage is not trustworthy input — it survives across sessions and can
+ * be hand-edited — and a member that isn't a checksum-valid address would be interpolated into a chain
+ * read and either error or silently return nothing, so invalid members are DROPPED rather than kept.
+ * Over-long collections are capped here too; the write path refuses to exceed the cap, so that only fires
+ * on storage someone edited by hand.
  */
 function coerceList(raw: unknown): LocalList | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -81,6 +86,10 @@ function coerceList(raw: unknown): LocalList | null {
     if (members.length >= MAX_LIST_MEMBERS) break;
   }
 
+  // Sorted, so the in-memory value and the persisted value agree. They did not before: `serialize` sorted
+  // while the committed in-memory array kept insertion order, so a list's member order changed across a
+  // reload — and member order decides WHICH members the timeline's capped fan-out actually reads.
+  members.sort();
   const list: LocalList = { id: r.id, name: r.name, members };
   // Tolerate (and preserve) the publish seam. A non-integer / out-of-range slot is dropped, not kept.
   if (
@@ -108,14 +117,15 @@ const store = createViewerScopedStore<readonly LocalList[]>({
     }
     return out;
   },
-  // Key order is fixed (not sorted by id — list ORDER is user-meaningful) but each list's members are
-  // sorted, so the cross-tab change-detector doesn't read member insertion order as a change.
+  // List ORDER is user-meaningful, so lists are not reordered. Members are already sorted by the write
+  // path, so this is a straight projection — it must NOT sort here, or the persisted form would differ
+  // from the in-memory one again. `publishedSlot` is projected through explicitly (see the header).
   serialize: (lists) =>
     JSON.stringify(
       lists.map((l) => ({
         id: l.id,
         name: l.name,
-        members: [...l.members].sort(),
+        members: l.members,
         ...(l.publishedSlot !== undefined ? { publishedSlot: l.publishedSlot } : {}),
       })),
     ),
@@ -144,6 +154,13 @@ export interface LocalListActions {
   toggleMember: (id: string, address: string) => void;
 }
 
+/** Members are held SORTED everywhere — in memory, on disk, and after a reload — so the order that
+ *  decides which members a capped fan-out reads cannot change under the user. */
+function withMember(l: LocalList, addr: Ss58): LocalList {
+  if (l.members.includes(addr) || l.members.length >= MAX_LIST_MEMBERS) return l;
+  return { ...l, members: [...l.members, addr].sort() };
+}
+
 /** List actions bound to `who` (null = the signed-out device bucket). */
 export function localListActionsFor(who: Ss58 | null): LocalListActions {
   const mapList = (id: string, fn: (l: LocalList) => LocalList) =>
@@ -165,11 +182,7 @@ export function localListActionsFor(who: Ss58 | null): LocalListActions {
     addMember: (id, address) => {
       const norm = normalizeSs58(address);
       if (norm === null) return;
-      mapList(id, (l) =>
-        l.members.includes(norm as Ss58) || l.members.length >= MAX_LIST_MEMBERS
-          ? l
-          : { ...l, members: [...l.members, norm as Ss58] },
-      );
+      mapList(id, (l) => withMember(l, norm as Ss58));
     },
     removeMember: (id, address) => {
       const norm = normalizeSs58(address);
@@ -182,9 +195,7 @@ export function localListActionsFor(who: Ss58 | null): LocalListActions {
       mapList(id, (l) =>
         l.members.includes(norm as Ss58)
           ? { ...l, members: l.members.filter((m) => m !== norm) }
-          : l.members.length >= MAX_LIST_MEMBERS
-            ? l
-            : { ...l, members: [...l.members, norm as Ss58] },
+          : withMember(l, norm as Ss58),
       );
     },
   };

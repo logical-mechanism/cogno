@@ -155,7 +155,9 @@ describe("membership", () => {
     const id = a.create("Devs") as string;
     for (const addr of [ALICE, BOB, CHARLIE, DAVE]) a.addMember(id, addr);
     const members = m.readLocalLists(VIEWER)[0].members;
-    expect(members).toEqual([ALICE, BOB, CHARLIE, DAVE]);
+    // SORTED, not insertion order — see `withMember`. Member order decides which members the capped
+    // fan-out reads, so it must not depend on the order they happened to be added in.
+    expect(members).toEqual([ALICE, BOB, CHARLIE, DAVE].slice().sort());
     expect(members.length).toBeLessThan(m.MAX_LIST_MEMBERS);
   });
 
@@ -173,19 +175,19 @@ describe("membership", () => {
     });
     // All 200 collapse to the 4 distinct addresses (dedupe runs before the cap), proving dedupe and
     // that the cap is never exceeded.
-    expect(m.readLocalLists(VIEWER)[0].members).toEqual([ALICE, BOB, CHARLIE, DAVE]);
+    expect(m.readLocalLists(VIEWER)[0].members).toEqual([ALICE, BOB, CHARLIE, DAVE].slice().sort());
     expect(m.readLocalLists(VIEWER)[0].members.length).toBeLessThanOrEqual(m.MAX_LIST_MEMBERS);
   });
 });
 
-describe("parse hardening (runs on BOTH read and write)", () => {
+describe("parse hardening (localStorage is untrusted input)", () => {
   it("drops invalid members from stored data instead of trusting it", async () => {
     const m = await load({
       [`cg-lists:${VIEWER}`]: [
         { id: "a", name: "Mixed", members: [ALICE, "junk", 42, null, BOB, ALICE] },
       ],
     });
-    expect(m.readLocalLists(VIEWER)[0].members).toEqual([ALICE, BOB]);
+    expect(m.readLocalLists(VIEWER)[0].members).toEqual([ALICE, BOB].slice().sort());
   });
 
   it("drops whole entries that are structurally wrong", async () => {
@@ -274,5 +276,26 @@ describe("per-account bucketing", () => {
     const m = await load({ "cg-lists": [{ id: "x", name: "Legacy", members: [] }] });
     expect(m.readLocalLists(VIEWER)).toEqual([]);
     expect(storage.getItem("cg-lists")).not.toBeNull(); // untouched, not migrated away
+  });
+});
+
+describe("member order is STABLE across a reload", () => {
+  // Regression guard: `serialize` used to sort while the committed in-memory array kept insertion order,
+  // so a list's member order changed on reload — and that order decides WHICH members the capped fan-out
+  // reads, i.e. whose posts appear in the timeline.
+  it("in-memory order equals persisted order equals post-reload order", async () => {
+    const m = await load();
+    const a = m.localListActionsFor(VIEWER);
+    const id = a.create("Devs") as string;
+    for (const addr of [DAVE, ALICE, CHARLIE, BOB]) a.addMember(id, addr);
+
+    const inMemory = [...m.readLocalLists(VIEWER)[0].members];
+    const onDisk = (persisted()[0] as { members: string[] }).members;
+    expect(onDisk).toEqual(inMemory);
+
+    // Re-read through `parse` (what a reload does) — same order again.
+    const raw = storage.getItem(`cg-lists:${VIEWER}`);
+    const m2 = await load({ [`cg-lists:${VIEWER}`]: JSON.parse(raw as string) });
+    expect([...m2.readLocalLists(VIEWER)[0].members]).toEqual(inMemory);
   });
 });

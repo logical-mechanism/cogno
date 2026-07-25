@@ -62,7 +62,6 @@ import {
   rankWindow,
   isUndifferentiated,
   RANK_WINDOW,
-  MIN_RANKABLE,
   type Sort,
 } from "@/lib/feed/rank";
 import { topicOfQuery } from "@/lib/topics";
@@ -456,18 +455,28 @@ function ExploreView() {
     () => (isRanked(sort) ? rankWindow(firehose.posts, sort, headBlock) : firehose.posts),
     [firehose.posts, sort, headBlock],
   );
-  const undifferentiated = useMemo(
-    () => isUndifferentiated(firehose.posts, sort),
-    [firehose.posts, sort],
-  );
-  // Offer the controls only where they can be honoured: a served source, DEFAULT mode, and a window big
-  // enough that an order has more than one reachable outcome. HIDE, never disable.
+  // When every post ties on the active key the ranking reproduces recency, and the disclosure says so.
+  // This — NOT a window-size threshold — is how a corpus too small to order tells the truth. A threshold
+  // was worse in three ways: it hid the "Everyone" chip that clears an active LENS (one click in, no
+  // click out), it hid a ranking that was still being applied to a deep-linked `?s=`, and because the
+  // un-ranked fallback paginates, the growing window would cross the threshold and switch the ranking on
+  // mid-scroll over an array assembled from several reads at different blocks.
+  const undifferentiated = useMemo(() => isUndifferentiated(firehose.posts, sort), [firehose.posts, sort]);
+
+  // Show the controls wherever they are HONOURED: a served source, in DEFAULT mode. Both axes are applied
+  // in exactly that case, so the control and the effect can never disagree.
   //
   // DISCONNECTED is excluded deliberately: `renderFirehose()` still mounts there over an always-empty
   // array, so a shared /explore/?s=hot opened while the chain is unreachable would otherwise render
   // nothing underneath a ranking claim.
-  const showFirehoseControls =
-    source != null && mode === "default" && firehose.posts.length >= MIN_RANKABLE;
+  const showFirehoseControls = source != null && mode === "default";
+
+  // A LENS can legitimately find nothing in the stretch it scanned, and the reader still hands back a
+  // cursor. Left alone, Timeline would render its auto-loading tail (an IntersectionObserver) over an
+  // empty list and re-fire forever, chasing the whole chain in bounded batches to keep rendering nothing.
+  // Stop advertising more in that case: the empty state explains the scope and the reader can widen it by
+  // clearing the lens.
+  const lensFoundNothing = lens !== null && firehose.posts.length === 0;
 
   return (
     <>
@@ -502,8 +511,8 @@ function ExploreView() {
             topic={topic}
             followed={topicFollowed}
             onToggleFollow={() => topicActions.toggle(topic)}
-            count={latest.posts.length}
             loading={latestLoading}
+            empty={!latest.loading && latest.posts.length === 0}
           />
         )}
         {mode === "default" && <FollowedTopics topics={followedTopics} />}
@@ -578,6 +587,10 @@ function ExploreView() {
     // refresh merge ends in a sort by id, which would silently dissolve the ranking back into recency —
     // reading to the user as a broken control rather than a design limit. One window, no pagination.
     const ranked = isRanked(sort);
+    const frozen = ranked || lensFoundNothing;
+    // The lens copy must not claim a scan happened where none did: DISCONNECTED mounts this same tree
+    // with no source and an always-empty array.
+    const lensEmpty = lens !== null && source != null;
     return (
       <Timeline
         posts={rankedPosts}
@@ -586,15 +599,15 @@ function ExploreView() {
         handlers={handlers}
         loading={firehoseLoading}
         error={firehose.error}
-        hasMore={ranked ? false : firehose.hasNextPage}
-        onLoadMore={ranked ? undefined : firehose.loadMore}
+        hasMore={frozen ? false : firehose.hasNextPage}
+        onLoadMore={frozen ? undefined : firehose.loadMore}
         loadingMore={firehose.loading}
-        paginationCapable={ranked ? false : paginationCapable}
+        paginationCapable={frozen ? false : paginationCapable}
         emptyVariant="feed"
-        emptyTitle={lens !== null ? "No posts found from these accounts" : "Nothing here yet"}
+        emptyTitle={lensEmpty ? "Nothing from these accounts yet" : "Nothing here yet"}
         emptyDescription={
-          lens !== null
-            ? "Nobody with a live badge has posted in the stretch we scanned."
+          lensEmpty
+            ? `No posts by accounts with a live ${lens === "Spo" ? "SPO" : "dRep"} badge turned up in the recent posts we scanned. Choose Everyone to clear the filter.`
             : "Be the first to post."
         }
         emptyAction={{ label: "Go home", onClick: () => router.push("/") }}

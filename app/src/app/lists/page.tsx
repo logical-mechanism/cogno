@@ -58,21 +58,38 @@ export default function ListsPage() {
 
   const [draftName, setDraftName] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Delete is a two-step: the first click arms, the second confirms. A list is device-local and
+  // unrecoverable, and the id is cleared on any other interaction so an armed button can't be hit by
+  // accident later.
+  const [armedDeleteId, setArmedDeleteId] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [draftRename, setDraftRename] = useState("");
 
   // The selected list, resolved from the live store each render so a rename/removal is reflected without
-  // a second source of truth. Falls back to the first list so the surface is never blank with lists present.
+  // a second source of truth.
+  //
+  // NO `?? lists[0]` FALLBACK, deliberately: auto-selecting on mount would fire the timeline's fan-out
+  // (one read per member, up to MAX_FEED_MEMBERS concurrently) before the reader asked for any list. It
+  // also made delete dangerous — the selection silently advanced to the next list, so a second click
+  // landed on a list the user never chose.
   const selected = useMemo(
-    () => lists.find((l) => l.id === selectedId) ?? lists[0] ?? null,
+    () => (selectedId === null ? null : lists.find((l) => l.id === selectedId) ?? null),
     [lists, selectedId],
   );
+
+  const select = useCallback((id: string) => {
+    setSelectedId(id);
+    setArmedDeleteId(null);
+    setRenaming(false);
+  }, []);
 
   const onCreate = useCallback(() => {
     const id = actions.create(draftName);
     if (id !== null) {
-      setSelectedId(id);
+      select(id);
       setDraftName("");
     }
-  }, [actions, draftName]);
+  }, [actions, draftName, select]);
 
   // ── the selected list's timeline ────────────────────────────────────────────────────────────────
   const members = useMemo(() => selected?.members ?? [], [selected]);
@@ -152,7 +169,7 @@ export default function ListsPage() {
                 key={l.id}
                 type="button"
                 className={`${styles.chip} ${selected?.id === l.id ? styles.chipActive : ""}`}
-                onClick={() => setSelectedId(l.id)}
+                onClick={() => select(l.id)}
                 aria-pressed={selected?.id === l.id}
               >
                 {/* Raw name stored; sanitize at RENDER only (never before a byte count or a write). */}
@@ -166,23 +183,63 @@ export default function ListsPage() {
         {selected && (
           <div className={styles.detail}>
             <div className={styles.detailHead}>
-              <h2 className={styles.detailTitle}>{sanitizeInline(selected.name)}</h2>
+              {renaming ? (
+                <input
+                  className={styles.input}
+                  value={draftRename}
+                  autoFocus
+                  aria-label="Rename list"
+                  onChange={(e) => setDraftRename(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      actions.rename(selected.id, draftRename);
+                      setRenaming(false);
+                    }
+                    if (e.key === "Escape") setRenaming(false);
+                  }}
+                  onBlur={() => {
+                    actions.rename(selected.id, draftRename);
+                    setRenaming(false);
+                  }}
+                />
+              ) : (
+                <h2 className={styles.detailTitle}>{sanitizeInline(selected.name)}</h2>
+              )}
+              {!renaming && (
+                <button
+                  type="button"
+                  className={styles.chip}
+                  onClick={() => {
+                    setDraftRename(selected.name);
+                    setRenaming(true);
+                    setArmedDeleteId(null);
+                  }}
+                >
+                  Rename
+                </button>
+              )}
+              {/* Two-step: arm, then confirm. Deleting a device-local list cannot be undone. */}
               <button
                 type="button"
                 className={styles.danger}
                 onClick={() => {
-                  actions.remove(selected.id);
-                  setSelectedId(null);
+                  if (armedDeleteId === selected.id) {
+                    actions.remove(selected.id);
+                    setSelectedId(null);
+                    setArmedDeleteId(null);
+                  } else {
+                    setArmedDeleteId(selected.id);
+                  }
                 }}
               >
-                Delete list
+                {armedDeleteId === selected.id ? "Tap again to delete" : "Delete list"}
               </button>
             </div>
 
             {selected.members.length === 0 ? (
               <p className={styles.note}>
-                No accounts yet. Add someone from the ··· menu on any post or profile. Up to{" "}
-                {MAX_LIST_MEMBERS} accounts per list.
+                No accounts yet. Open the ··· menu on any post by someone else and choose &ldquo;Add to{" "}
+                {sanitizeInline(selected.name)}&rdquo;. Up to {MAX_LIST_MEMBERS} accounts per list.
               </p>
             ) : (
               <ul className={styles.members}>
@@ -226,7 +283,13 @@ export default function ListsPage() {
           paginationCapable={source != null}
           emptyVariant="feed"
           emptyTitle="No posts from this list yet"
-          emptyDescription="Nobody in this list has posted."
+          // Scope-accurate: the fan-out reads each member's TOP-LEVEL index (replies excluded), and only
+          // the first MAX_FEED_MEMBERS of them. "Nobody has posted" would claim more than was read.
+          emptyDescription={
+            truncatedMembers
+              ? `No top-level posts from the first ${MAX_FEED_MEMBERS} accounts in this list.`
+              : "No top-level posts from these accounts. Replies aren't shown here."
+          }
           emptyAction={{ label: "Explore", onClick: () => router.push("/explore/") }}
         />
       ) : null}

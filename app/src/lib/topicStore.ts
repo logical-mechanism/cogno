@@ -17,14 +17,10 @@ import { createViewerScopedStringSetStore } from "./stringSetStore";
 import { canonicalTag, isCanonicalTag } from "./topics";
 import type { Ss58 } from "./types";
 
-/**
- * How many followed topics the merged strip previews at once.
- *
- * This is a COST bound, not a taste bound. Each previewed topic is its own `search_posts` scan, and
- * every one of those rebuilds `staker_weights()` over up to `MaxObserved` (1024) accounts node-side. The
- * strip therefore previews the first few and links the rest rather than fanning out over all of them.
- */
-export const MAX_PREVIEWED_TOPICS = 3;
+// NOTE ON COST: the followed-topics strip LINKS to each topic rather than previewing any of them. A
+// preview would be its own `search_posts` scan, and each of those rebuilds `staker_weights()` over up to
+// `MaxObserved` accounts node-side — so N followed topics would be N of those on mount to render rows
+// nobody asked for. If a preview is ever added, it needs a hard cap and a `maxHops` budget.
 
 const store = createViewerScopedStringSetStore({
   prefix: "cg-topics",

@@ -41,12 +41,19 @@ export interface ViewerScopedStringSetOpts {
    */
   prefix: string;
   isValid: (value: string) => boolean;
+  /**
+   * One-shot claim of the pre-namespacing BARE `prefix` key. ONLY for the stores that shipped
+   * device-global before being bucketed (bookmarks, mutes). Defaults to false: a store that was
+   * per-account from birth has nothing to claim, and reading a bare key it never wrote would adopt
+   * whatever else happens to live there.
+   */
+  claimLegacy?: boolean;
 }
 
 export function createViewerScopedStringSetStore(
   opts: ViewerScopedStringSetOpts,
 ): ViewerScopedStringSetStore {
-  const { prefix, isValid } = opts;
+  const { prefix, isValid, claimLegacy = false } = opts;
 
   const store = createViewerScopedStore<ReadonlySet<string>>({
     prefix,
@@ -62,8 +69,7 @@ export function createViewerScopedStringSetStore(
     // Sorted, so the cross-tab change-detector (which compares serialized forms) doesn't read insertion
     // order as a change and churn a re-render.
     serialize: (set) => JSON.stringify([...set].sort()),
-    // bookmarks + mutes shipped device-global before being bucketed, so their bare key is claimable.
-    claimLegacy: true,
+    claimLegacy,
   });
 
   function actionsFor(who: string | null): ViewerScopedSetActions {

@@ -19,31 +19,41 @@ export interface TopicHeaderProps {
   topic: string;
   followed: boolean;
   onToggleFollow: () => void;
-  /** Posts currently on screen for this topic — reported as "found", never as a total. */
-  count: number;
+  /** True while the first page is still resolving. */
   loading: boolean;
+  /** True when the scan came back with nothing for this topic. */
+  empty: boolean;
 }
 
-export function TopicHeader({ topic, followed, onToggleFollow, count, loading }: TopicHeaderProps) {
+export function TopicHeader({ topic, followed, onToggleFollow, loading, empty }: TopicHeaderProps) {
   return (
     <div className={styles.bar}>
       <div className={styles.text}>
         <p className={styles.tag}>{tagLabel(topic)}</p>
+        {/* NO POST COUNT HERE, deliberately. Any number this band could show is the count BEFORE the
+            timeline drops blocked authors and hidden posts, so it would contradict the rows underneath —
+            including sitting over a no-results state. And an "N posts" figure reads as a total, which it
+            can never be: the topic feed is a BOUNDED scan of recent posts that stops with a continuation
+            cursor, so absence here is never absence from the chain. */}
         <p className={styles.note}>
           {loading
             ? "Looking for posts with this tag…"
-            : count === 0
-              ? "No posts carry this tag yet."
-              : `${count} post${count === 1 ? "" : "s"} found with this tag.`}
+            : empty
+              ? "Nothing with this tag in the recent posts we scanned."
+              : "Posts tagged this, newest first, from the recent posts we scanned."}
         </p>
       </div>
+      {/* "Save"/"Saved", not "Follow"/"Following": every other Follow control in this app spends a CHAIN
+          write on a real follow edge, and reusing the word for a device-local reading preference would
+          imply this one does too. The title spells out where it lives. */}
       <button
         type="button"
         className={`${styles.follow} ${followed ? styles.followActive : ""}`}
         onClick={onToggleFollow}
         aria-pressed={followed}
+        title="Saved on this device only — not written to the chain"
       >
-        {followed ? "Following" : "Follow topic"}
+        {followed ? "Saved" : "Save topic"}
       </button>
     </div>
   );
