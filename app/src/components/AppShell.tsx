@@ -17,16 +17,18 @@
 // Also exports StickyHeader (the blurred per-surface header every page composes) and NotFoundInline
 // (the in-app not-found state for an invalid dynamic param / unknown route).
 
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import styles from "./AppShell.module.css";
 import { LeftNav } from "./nav/LeftNav";
 import { RightRail } from "./nav/RightRail";
 import { useSearchHotkey } from "@/hooks/useSearchHotkey";
+import { useHelpHotkey } from "@/hooks/useHelpHotkey";
 import { BottomTabBar } from "./nav/BottomTabBar";
 import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
+import { ShortcutsDialog } from "./ShortcutsDialog";
 import { EmptyState } from "./EmptyState";
 import { Loading } from "./Loading";
 import { IconBack } from "./icons";
@@ -112,6 +114,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   // App-wide "/" → focus the SearchBar (works on every surface with a search box, not just /explore).
   useSearchHotkey();
 
+  // App-wide "?" → the shortcuts sheet. Local state, NOT a ModalKind: the modal router pushes a URL
+  // per kind, and a help sheet has no business in the address bar.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
+  useHelpHotkey(openShortcuts);
+
   // The welcome flow owns the full viewport — no LeftNav/RightRail/BottomTabBar/ComposeFab chrome. It is
   // a <main> landmark (not a bare <div>): /welcome is the canonical cold-load landing, so without it the
   // page a screen reader / Lighthouse first sees has no main region at all (a11y: landmark-one-main).
@@ -157,6 +165,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       {/* overlays — never block the reads behind them */}
       <ModalRouteHost />
+      {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
     </div>
   );
 }

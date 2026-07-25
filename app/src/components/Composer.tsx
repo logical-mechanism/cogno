@@ -26,7 +26,8 @@ import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
 import { CapacityMeter } from "./CapacityMeter";
 import { Avatar } from "./Avatar";
-import { Spinner, IconPoll } from "./icons";
+import { Spinner, IconPoll, IconEye } from "./icons";
+import { PostBody } from "./PostBody";
 import { Loading } from "./Loading";
 import styles from "./Composer.module.css";
 import type {
@@ -177,6 +178,9 @@ export function Composer({
   onDirtyChange,
   draftExtras,
 }: ComposerProps) {
+  // Preview toggle: render the body exactly as it will appear on chain. Local to the composer — a
+  // reader-facing concern, nothing persisted.
+  const [preview, setPreview] = useState(false);
   const [innerText, setInnerText] = useState("");
   const isControlled = controlledText !== undefined;
   const text = isControlled ? controlledText : innerText;
@@ -208,6 +212,10 @@ export function Composer({
   // The SERIALIZED body — what actually gets posted, and what the byte counter / capacity gate must
   // measure (each `@name` token expands to a ~48-byte ss58, so a short-looking draft can exceed 512).
   const serializedText = useMemo(() => serializeDraft(text), [serializeDraft, text]);
+  // EFFECTIVE preview state. Never trust the raw toggle: submitting clears the text, which hides the
+  // toggle — and a latched `preview` would then leave the textarea hidden with no control to unhide it,
+  // i.e. a blank, unusable composer. Deriving it means an empty draft is always editable.
+  const previewing = preview && serializedText.trim().length > 0;
   useEffect(() => {
     onSerializedChange?.(serializedText);
   }, [serializedText, onSerializedChange]);
@@ -375,7 +383,11 @@ export function Composer({
             <textarea
               id={`cg-composer-${mode}`}
               ref={taRef}
-              className={styles.textarea}
+              className={`${styles.textarea} ${previewing ? styles.textareaHidden : ""}`}
+              // While previewing the field stays mounted (see the CSS) but must not be reachable or
+              // announced — the preview pane below is what the author is reading.
+              aria-hidden={previewing || undefined}
+              tabIndex={previewing ? -1 : undefined}
               placeholder={placeholder ?? PLACEHOLDER[mode]}
               value={text}
               rows={1}
@@ -394,7 +406,18 @@ export function Composer({
               aria-autocomplete="list"
               aria-describedby={`cg-composer-${mode}-meta`}
             />
-            {mentionPopover}
+            {/* The popover anchors to the (now transparent) textarea, so suppress it while previewing. */}
+            {!previewing && mentionPopover}
+            {previewing && (
+              <div className={styles.preview}>
+                  {/* The SERIALIZED body, which is what actually goes on chain: `@name` tokens have been
+                      expanded to `@<ss58>` and will render as the target's CURRENT display name, `#tags`
+                      canonicalize, an image link becomes a click-to-reveal cover, and sanitizeText has
+                      collapsed bidi/invisible/stacked marks. Seeing that before a PERMANENT write (there
+                      is no edit and no delete) is the whole point. */}
+                <PostBody text={serializedText} size="lg" />
+              </div>
+            )}
           </div>
           {contextBelow}
           {imageLinkCount > 0 && (
@@ -443,6 +466,22 @@ export function Composer({
             </button>
           )}
           {emoji && !sessionGated && <EmojiPicker onPick={insertEmoji} />}
+          {/* Offered only once there is something to preview — a toggle over an empty draft has one
+              reachable state. In poll mode this previews the QUESTION; the options render as plain text
+              and no PollCard is mounted (that needs a real host id and would read a post that
+              does not exist yet). */}
+          {!sessionGated && serializedText.trim().length > 0 && (
+            <button
+              type="button"
+              className={`${styles.toolBtn} ${previewing ? styles.toolBtnActive : ""}`}
+              onClick={() => setPreview((v) => !v)}
+              aria-pressed={previewing || undefined}
+              aria-label={previewing ? "Back to editing" : "Preview how this will look"}
+              title={previewing ? "Back to editing" : "Preview how this will look"}
+            >
+              <IconEye size="var(--cg-icon-lg)" />
+            </button>
+          )}
           {toolbarExtras}
         </div>
 
