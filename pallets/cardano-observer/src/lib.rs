@@ -303,8 +303,9 @@ pub trait RoleResolver<AccountId> {
 
 /// Overwrite `who`'s full observed-role set (each `(role_kind_index, display_id, chamber_weight)`), or
 /// CLEAR it when the slice is empty (the unlock clamp). `chamber_weight` (spec 207) is the role's
-/// delegated Cardano stake for governance-poll chambers (0 for a blank Calidus / CC badge). Implemented by
-/// a roles-pallet adapter in the runtime (`apply_roles`); a recorder in tests. The role analog of
+/// delegated Cardano stake for governance-poll chambers — a pool's delegated stake for BOTH SPO sources,
+/// a dRep's delegated voting stake, 0 for a CC badge or a pool with no delegators. Implemented by a
+/// roles-pallet adapter in the runtime (`apply_roles`); a recorder in tests. The role analog of
 /// [`VotingPowerSink`], but set-valued.
 pub trait RoleSink<AccountId> {
     fn set_roles(who: &AccountId, roles: &[(u8, RoleCredential, u128)]);

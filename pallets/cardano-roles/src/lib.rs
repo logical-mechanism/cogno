@@ -54,15 +54,24 @@ pub const LOG_TARGET: &str = "runtime::cardano-roles";
 
 /// A 28-byte Cardano credential (a blake2b-224 key hash): the claimed role-key hash on the claim side
 /// (Calidus-key hash / drep ID / committee hot credential), and the observer-resolved display id on the
-/// observed side (a poolID for an ownership SPO, the all-zero blank for a Calidus SPO; the same drep ID /
-/// hot credential for dRep / CC).
+/// observed side (a poolID for EITHER SPO source — ownership names its owned pool, Calidus names the live
+/// pool whose cold key authorized its key; the same drep ID / hot credential for dRep / CC).
 pub type RoleCredential = [u8; 28];
 
 /// The maximum number of observed role BADGES one account can display at once. An account holds at most
 /// one dRep and one CC badge, but can hold SEVERAL SPO badges — one per pool it operates via a Calidus
-/// key and/or owns — so this is deliberately well above the three [`RoleKind`]s. The observer truncates
-/// to this cap (the runtime `RoleApply` sink keeps the first N in the deterministic observed order); the
-/// set is display-only, so a cap is a UI bound, not an economic one.
+/// key and/or owns (an mSPO now consumes one slot PER declaring pool) — so this is deliberately well above
+/// the three [`RoleKind`]s. The observer truncates to this cap (the runtime `RoleApply` sink keeps the
+/// first N in the deterministic CANONICAL observed order); the set is display-only, so a cap is a UI bound,
+/// not an economic one.
+///
+/// ⚠ MAINNET PREREQUISITE (a deterministic under-count, NOT a fork): the canonical order sorts every SPO
+/// entry before dRep/CC (`RoleSource` declaration order), so a very large mSPO — one Calidus key declared
+/// by >~14 live pools — that is ALSO a dRep would have its dRep/CC badge (and its dRep-chamber weight)
+/// truncated away, not just its surplus SPO pools; and an mSPO past the cap under-counts its own
+/// SPO-chamber weight. Unreachable on preprod's small pool set. Before a network with large mSPOs, raise
+/// this cap and/or reserve one slot per non-SPO kind in `RoleApply` — a RUNTIME change (coordinated
+/// upgrade), deliberately out of scope for the node-side Calidus mSPO weighting that surfaced it.
 pub const MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 16;
 
 #[frame_support::pallet]
