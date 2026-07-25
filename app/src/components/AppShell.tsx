@@ -116,9 +116,16 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   // App-wide "?" → the shortcuts sheet. Local state, NOT a ModalKind: the modal router pushes a URL
   // per kind, and a help sheet has no business in the address bar.
+  //
+  // Gated on the branch that actually RENDERS the sheet. Hooks cannot be called conditionally, so this
+  // registers above the two early returns below — and on /welcome (and on the logged-out walled-route
+  // loader) "?" would otherwise set a flag with nothing mounted to read it, leaving it latched so the
+  // sheet sprang open by itself on the next navigation into the shell. Neither surface offers any of the
+  // listed shortcuts, so suppressing the key there is also the honest behaviour.
+  const shellRenders = !onWelcome && (loggedIn || publicRoute);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
-  useHelpHotkey(openShortcuts);
+  useHelpHotkey(openShortcuts, shellRenders);
 
   // The welcome flow owns the full viewport — no LeftNav/RightRail/BottomTabBar/ComposeFab chrome. It is
   // a <main> landmark (not a bare <div>): /welcome is the canonical cold-load landing, so without it the

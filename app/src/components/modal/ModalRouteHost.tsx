@@ -167,7 +167,43 @@ export function ModalRouteHost() {
   // EXCEPT across a compose↔poll flip, which is a mode swap within one open modal, not a new open. The
   // flip hands the user's in-flight words through `carryRef` (a post's text IS a poll's question), so
   // toggling does not silently blank the textarea they were typing in.
+  //
+  // AND EXCEPT an in-place ACCOUNT SWITCH under an already-open modal, which is the branch below. That
+  // is not a new open either, and running the full reset for it was destructive: `viewer.address` moves
+  // on a wallet account switch, on sign-out, and on a session restore landing a beat after a guest
+  // started typing — and each of those wiped the open composer's text, blanked the poll draft (which is
+  // NOT persisted anywhere, so those words were simply gone), disarmed the dirty flag that the
+  // discard-confirm depends on, and reported an in-flight submit as idle.
+  const prevKindRef = useRef(kind);
+  const prevDraftWhoRef = useRef(draftWho);
+  // `text` read through a ref so the flush below sees the CURRENT words without keying this effect on
+  // every keystroke.
+  const textRef = useRef(text);
+  textRef.current = text;
   useEffect(() => {
+    const prevKind = prevKindRef.current;
+    const prevWho = prevDraftWhoRef.current;
+    prevKindRef.current = kind;
+    prevDraftWhoRef.current = draftWho;
+
+    // Account switch with the modal state otherwise unchanged: re-bucket, do not reset. The words are
+    // FLUSHED to the account they were typed under before the new bucket is loaded, so switching back
+    // finds them — the bucketing invariant (never write A's text into B's bucket) is what forces the
+    // re-seed, and it is satisfied by moving the text, not by destroying it. Everything else (the poll
+    // draft, the dirty flag, the submit state) is per-open and stays put.
+    //
+    // SIGN-OUT (`draftWho` back to null) is the one switch that must NOT flush: useSigner has just run
+    // clearAllPostDrafts() across every bucket, on the grounds that unsent words are what a person
+    // leaving a shared browser would least want left behind. Writing them back here would quietly undo
+    // that, so sign-out re-seeds from the (now empty) signed-out bucket and the composer clears.
+    if (prevKind === kind && prevWho !== draftWho) {
+      if (kind === "compose") {
+        if (draftWho !== null) savePostDraft(prevWho, textRef.current);
+        setText(loadPostDraft(draftWho));
+      }
+      return;
+    }
+
     const carried = carryRef.current;
     carryRef.current = null;
     setSubmitState("idle");
@@ -177,8 +213,7 @@ export function ModalRouteHost() {
     composerDirtyRef.current = false;
     if (kind === "poll") setPollDraft({ question: carried ?? "", options: ["", ""] });
     // `setSubmitState` is useComposeWrite's raw useState setter — a stable identity, so listing it
-    // cannot re-run this effect. Keyed on `kind` AND `draftWho`: an in-place account switch must
-    // re-seed the draft from the new account's bucket rather than keep the previous one's text.
+    // cannot re-run this effect.
   }, [kind, draftWho, setSubmitState]);
 
   // Persist the plain-compose draft as it changes (savePostDraft removes the key when it's empty).

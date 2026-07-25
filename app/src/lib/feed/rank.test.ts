@@ -9,6 +9,7 @@ import {
   RANK_WINDOW,
   SORTS,
 } from "./rank";
+import { MAX_PAGE } from "@/lib/chain/node-reads";
 import type { CognoPost, Ss58 } from "@/lib/types";
 
 /** A post carrying only what the ranked modes read. Tally fields are DELIBERATELY omittable. */
@@ -204,8 +205,16 @@ describe("isUndifferentiated — the guard against Latest wearing a ranking's la
 });
 
 describe("window constants", () => {
-  it("matches the read-path clamp on both sides", () => {
-    expect(RANK_WINDOW).toBe(100);
+  // A ranked window is ONE read at ONE block — that is the whole claim the disclosure makes, and a
+  // ranking assembled from two reads would mix ages and engagement from two different clocks. So the
+  // window must survive `clampLimit`. Comparing the two CONSTANTS is the point: the old test asserted
+  // `RANK_WINDOW === 100`, a literal against a literal, which stayed green while someone lowered the
+  // read-path clamp underneath it and silently halved every window the copy kept quoting.
+  it("fits in one read — the ranked window never exceeds the read-path clamp", () => {
+    expect(RANK_WINDOW).toBeLessThanOrEqual(MAX_PAGE);
   });
 
+  it("asks for the whole page the read path will serve", () => {
+    expect(RANK_WINDOW).toBe(MAX_PAGE);
+  });
 });

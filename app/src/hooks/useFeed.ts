@@ -33,6 +33,15 @@ export interface UseFeedPage {
    * it to the search path, whose results are not ordered by id.
    */
   refresh: () => void;
+  /**
+   * Re-run the FIRST-PAGE load from scratch — the correct Retry for a surface whose first page THREW.
+   *
+   * `refresh` is the wrong tool there: it sets no loading flag and swallows its rejection, so on a
+   * read that keeps failing the screen is byte-identical before and after the click and the button
+   * reads as broken. This goes through the same path as the initial load, so a retry shows the
+   * skeleton, and a second failure re-states the error.
+   */
+  reload: () => void;
 }
 
 /**
@@ -51,6 +60,10 @@ export function useFeedPage(
   const [error, setError] = useState<string | null>(null);
   // Stable key for the query so the first-page effect only re-fires on a real change.
   const queryKey = JSON.stringify(query);
+  // Bumped by `reload()` to re-run the first-page effect on an UNCHANGED query. It is deliberately not
+  // part of `queryKey`: the in-flight staleness guards compare against the query the results belong to,
+  // and a retry must not make an in-flight page of the SAME query look stale.
+  const [reloadNonce, setReloadNonce] = useState(0);
   const cursorRef = useRef<string | null>(null);
   // A ref mirror of `page`, kept in lockstep by `applyPage`. It lets `refresh` ask "was a first page
   // ever established?" without taking `page` as a dep — `refresh` must keep a stable identity (the
@@ -105,7 +118,9 @@ export function useFeedPage(
     };
     // queryKey captures the query contents; source identity drives re-fetch on path change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, queryKey, enabled]);
+  }, [source, queryKey, enabled, reloadNonce]);
+
+  const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
   const loadMore = useCallback(() => {
     if (!source || loading) return;
@@ -175,5 +190,6 @@ export function useFeedPage(
     totalCount: page?.totalCount,
     loadMore,
     refresh,
+    reload,
   };
 }

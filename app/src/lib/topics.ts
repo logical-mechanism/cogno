@@ -105,5 +105,12 @@ export function topicOfQuery(query: string): string | null {
  * into an exact topic feed at zero chain cost.
  */
 export function bodyHasTopic(body: string, topic: string): boolean {
+  // Cheap reject FIRST. This is the `keep` predicate inside the reader's chase, so it runs on every
+  // candidate the node's substring scan returns — up to FILTERED_LENS_MAX_HOPS × a full page of bodies,
+  // synchronously on the main thread, to render at most a page of rows. `parseTopics` is not cheap: it
+  // walks the body grapheme-cluster by grapheme-cluster through `Intl.Segmenter` and then re-scans the
+  // result with two more regexes. A body with no '#' at all cannot carry a tag, and `sanitizeText` only
+  // ever REMOVES code points — it can never introduce one — so the raw body is a sound place to check.
+  if (!body.includes("#")) return false;
   return parseTopics(body).includes(topic);
 }

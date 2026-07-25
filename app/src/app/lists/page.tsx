@@ -30,8 +30,7 @@ import { usePostActions } from "@/hooks/usePostActions";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useFollow } from "@/hooks/useFollow";
-import { carriedViewerStates } from "@/lib/chain/node-reads";
-import { MAX_FEED_MEMBERS } from "@/lib/chain/node-reads";
+import { carriedViewerStates, MAX_FEED_MEMBERS } from "@/lib/chain/node-reads";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import {
   useLocalLists,
@@ -59,8 +58,10 @@ export default function ListsPage() {
   const [draftName, setDraftName] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Delete is a two-step: the first click arms, the second confirms. A list is device-local and
-  // unrecoverable, and the id is cleared on any other interaction so an armed button can't be hit by
-  // accident later.
+  // unrecoverable, so an armed button must not stay armed: every other action on this surface —
+  // selecting a list, renaming, creating, removing a member — disarms it through `disarm()` below.
+  // Leaving it latched was the accident the two-step exists to prevent: arm Delete, remove a member,
+  // scroll away, and the next stray tap on a button still reading "Tap again to delete" destroys the list.
   const [armedDeleteId, setArmedDeleteId] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [draftRename, setDraftRename] = useState("");
@@ -77,19 +78,34 @@ export default function ListsPage() {
     [lists, selectedId],
   );
 
-  const select = useCallback((id: string) => {
-    setSelectedId(id);
-    setArmedDeleteId(null);
-    setRenaming(false);
-  }, []);
+  /** Cancel a pending delete confirmation. Called from every other action on this surface. */
+  const disarm = useCallback(() => setArmedDeleteId(null), []);
+
+  const select = useCallback(
+    (id: string) => {
+      setSelectedId(id);
+      disarm();
+      setRenaming(false);
+    },
+    [disarm],
+  );
 
   const onCreate = useCallback(() => {
+    disarm();
     const id = actions.create(draftName);
     if (id !== null) {
       select(id);
       setDraftName("");
     }
-  }, [actions, draftName, select]);
+  }, [actions, draftName, select, disarm]);
+
+  const onRemoveMember = useCallback(
+    (listId: string, member: string) => {
+      disarm();
+      actions.removeMember(listId, member);
+    },
+    [actions, disarm],
+  );
 
   // ── the selected list's timeline ────────────────────────────────────────────────────────────────
   const members = useMemo(() => selected?.members ?? [], [selected]);
@@ -212,7 +228,7 @@ export default function ListsPage() {
                   onClick={() => {
                     setDraftRename(selected.name);
                     setRenaming(true);
-                    setArmedDeleteId(null);
+                    disarm();
                   }}
                 >
                   Rename
@@ -249,7 +265,7 @@ export default function ListsPage() {
                     <button
                       type="button"
                       className={styles.remove}
-                      onClick={() => actions.removeMember(selected.id, m)}
+                      onClick={() => onRemoveMember(selected.id, m)}
                       aria-label={`Remove ${truncateSs58(m)} from ${sanitizeInline(selected.name)}`}
                     >
                       Remove
@@ -279,8 +295,9 @@ export default function ListsPage() {
           error={feed.error}
           // A failed member read raises on the FIRST page rather than rendering a hole (see
           // nodeMembersFeedPage), so the error row needs a way back — without this the only recovery
-          // would be switching lists and back.
-          onRetry={feed.refresh}
+          // would be switching lists and back. `reload`, NOT `refresh`: refresh sets no loading flag and
+          // swallows its rejection, so on a read that keeps failing the button would look inert.
+          onRetry={feed.reload}
           hasMore={feed.hasNextPage}
           onLoadMore={feed.loadMore}
           loadingMore={feed.loading}

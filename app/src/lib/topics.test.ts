@@ -122,6 +122,16 @@ describe("bodyHasTopic", () => {
   it("matches regardless of the author's casing", () => {
     expect(bodyHasTopic("about #CARDANO", "cardano")).toBe(true);
   });
+
+  it("rejects a body with no '#' without changing the answer", () => {
+    // The cheap pre-check that keeps the Intl.Segmenter walk off the ~600 bodies a topic chase can
+    // examine. It must be a pure short-circuit: sanitizeText only removes code points, so a body with
+    // no '#' can never sanitize INTO one.
+    expect(bodyHasTopic("cardano without a tag", "cardano")).toBe(false);
+    expect(bodyHasTopic("", "cardano")).toBe(false);
+    // An invisible separator inside the tag still resolves — the sanitize path is untouched.
+    expect(bodyHasTopic("about #car​dano", "cardano")).toBe(true);
+  });
 });
 
 describe("tagSearchTerm", () => {

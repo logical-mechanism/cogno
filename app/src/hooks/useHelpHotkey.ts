@@ -12,8 +12,16 @@
 
 import { useEffect } from "react";
 
-export function useHelpHotkey(onOpen: () => void): void {
+/**
+ * @param enabled Whether the sheet can actually be shown right now. A hook cannot be called
+ * conditionally, so AppShell registers this ABOVE its two early returns (/welcome, and the logged-out
+ * walled-route loader) — surfaces that render neither the shell nor the dialog. Without the flag, "?"
+ * there set state nothing was listening to, and the sheet then popped open unprompted on the next
+ * navigation into the shell.
+ */
+export function useHelpHotkey(onOpen: () => void, enabled = true): void {
   useEffect(() => {
+    if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "?" || e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
@@ -28,5 +36,5 @@ export function useHelpHotkey(onOpen: () => void): void {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onOpen]);
+  }, [onOpen, enabled]);
 }

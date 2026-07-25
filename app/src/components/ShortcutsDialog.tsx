@@ -83,8 +83,18 @@ export function ShortcutsDialog({ onClose }: ShortcutsDialogProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
+  // Focus the Close button on mount, and put focus BACK where it came from on unmount. The restore is
+  // the load-bearing half for a keyboard user: without it, dismissing the sheet leaves focus on a removed
+  // node, the browser falls back to <body>, and the next Tab restarts from the top of the document
+  // instead of returning to the control that opened it. Same contract ConnectWalletButton's popover
+  // documents for itself. `?` opens the sheet with no opener element, in which case there is nothing to
+  // restore to and we leave focus alone.
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
     closeRef.current?.focus();
+    return () => {
+      if (opener && opener !== document.body && document.contains(opener)) opener.focus();
+    };
   }, []);
 
   // Esc closes; Tab is trapped inside the card. Same contract as ConfirmDialog — a Tab off the last

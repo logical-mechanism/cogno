@@ -50,7 +50,7 @@ import { FEED_PAGE_SIZE } from "@/lib/feed/constants";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useFollow } from "@/hooks/useFollow";
-import { useBlockedSet } from "@/lib/blockStore";
+import { useModeration } from "@/hooks/useModeration";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
@@ -67,7 +67,7 @@ import {
 import { topicOfQuery } from "@/lib/topics";
 import { topicActionsFor, useTopicFollowed, useFollowedTopics } from "@/lib/topicStore";
 import type { RoleKindType } from "@/lib/chain/roles";
-import type { CognoPost, FeedQuery, Suggestion } from "@/lib/types";
+import type { CognoPost, FeedPage, FeedQuery, Suggestion } from "@/lib/types";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const PEOPLE_LIMIT = 20;
@@ -211,10 +211,16 @@ function ExploreView() {
     [writeTerm, committedQ],
   );
 
+  // When the committed query is exactly one #hashtag, this is the TOPIC surface: the same search, narrowed
+  // to an exact tag. Null for every other query (a multi-term query stays a plain search). Derived ONCE,
+  // here, and threaded to every read site below — two independent `topicOfQuery(committedQ)` calls could
+  // drift, and the Follow control would then toggle a tag the surface is not showing.
+  const topic = useMemo(() => topicOfQuery(committedQ), [committedQ]);
+
   // Followed topics (device-local, per account) — the strip in DEFAULT mode + the Follow control on the
   // topic band. `useFollowedTopics` subscribes, so following a topic updates the strip immediately.
   const topicActions = useMemo(() => topicActionsFor(me), [me]);
-  const topicFollowed = useTopicFollowed(topicOfQuery(committedQ), me);
+  const topicFollowed = useTopicFollowed(topic, me);
   const followedTopics = useFollowedTopics(me);
 
   // Recent searches (device-local). Record a term once it has SETTLED (stable ≥1.2s) so live-typed
@@ -316,10 +322,6 @@ function ExploreView() {
   const firehoseEnabled = mode === "default" || mode === "disconnected";
   const firehose = useFeedPage(source, firehoseQuery, firehoseEnabled);
 
-  // When the committed query is exactly one #hashtag, this is the TOPIC surface: the same search, narrowed
-  // to an exact tag. Null for every other query (a multi-term query stays a plain search).
-  const topic = useMemo(() => topicOfQuery(committedQ), [committedQ]);
-
   const latestQuery = useMemo<FeedQuery>(
     // `viewer: me` lets the node stamp the `myVote` overlay node-side (same as the
     // firehose), so search results show my vote state and `carriedViewerStates` skips the
@@ -340,8 +342,22 @@ function ExploreView() {
   const latestEnabled = mode === "query" && searchEnabled;
   const latest = useFeedPage(source, latestQuery, latestEnabled);
 
+  // ── the list that is actually RENDERED ─────────────────────────────────────────────────────────
+  // Timeline removes blocked authors and hidden posts from the array it is handed, so every guard and
+  // every disclosure on this surface has to be computed from the SURVIVORS, not from the raw read.
+  // Reading `firehose.posts` for those was wrong twice over: a window whose posts are all suppressed
+  // renders empty while the "did the lens find anything" guard says it found plenty (the runaway below),
+  // and "Sorting the 20 most recent posts by …" printed above 12 rows is a false sentence in the copy
+  // FirehoseControls itself calls the feature's honesty guarantee.
+  //
+  // Timeline still filters what we pass (its contract is unchanged for every other caller); a second
+  // pass over an already-filtered array is a no-op.
+  const mod = useModeration(me);
+  const visibleFirehose = useMemo(() => mod.filterPosts(firehose.posts), [mod, firehose.posts]);
+  const visibleLatest = useMemo(() => mod.filterPosts(latest.posts), [mod, latest.posts]);
+
   // Which post list is on screen (firehose in DEFAULT + DISCONNECTED; Latest results in QUERY).
-  const activePosts: CognoPost[] = mode === "query" ? latest.posts : firehose.posts;
+  const activePosts: CognoPost[] = mode === "query" ? visibleLatest : visibleFirehose;
   // Empty while People is on screen: those cards are not rendered, so their viewer overlay is a read of
   // up to PAGE_SIZE posts nobody is looking at. The posts themselves stay loaded (see above).
   const showingPosts = mode !== "query" || activeResultTab === "latest";
@@ -360,12 +376,11 @@ function ExploreView() {
   const [peopleNonce, setPeopleNonce] = useState(0);
   const peopleActive = mode === "query" && activeResultTab === "people" && peopleEnabled;
 
-  // A blocked account never shows in People results (hard suppression, viewer-side). Post results go
-  // through <Timeline>, which filters block + hide itself.
-  const blockedSet = useBlockedSet(me);
+  // A blocked account never shows in People results (hard suppression, viewer-side) — the same
+  // moderation the post lists above are filtered through, so the two can't disagree.
   const visiblePeople = useMemo(
-    () => people.filter((p) => !blockedSet.has(p.author)),
-    [people, blockedSet],
+    () => people.filter((p) => !mod.isBlocked(p.author)),
+    [people, mod],
   );
 
   useEffect(() => {
@@ -453,12 +468,12 @@ function ExploreView() {
   // The newest post in the window is the best in-band proxy for "now" (the window came from one
   // best-block read, so its head IS that block, near enough for a decay term).
   const headBlock = useMemo(
-    () => firehose.posts.reduce((max, p) => (p.at > max ? p.at : max), 0),
-    [firehose.posts],
+    () => visibleFirehose.reduce((max, p) => (p.at > max ? p.at : max), 0),
+    [visibleFirehose],
   );
   const rankedPosts = useMemo(
-    () => (isRanked(sort) ? rankWindow(firehose.posts, sort, headBlock) : firehose.posts),
-    [firehose.posts, sort, headBlock],
+    () => (isRanked(sort) ? rankWindow(visibleFirehose, sort, headBlock) : visibleFirehose),
+    [visibleFirehose, sort, headBlock],
   );
   // When every post ties on the active key the ranking reproduces recency, and the disclosure says so.
   // This — NOT a window-size threshold — is how a corpus too small to order tells the truth. A threshold
@@ -466,7 +481,10 @@ function ExploreView() {
   // click out), it hid a ranking that was still being applied to a deep-linked `?s=`, and because the
   // un-ranked fallback paginates, the growing window would cross the threshold and switch the ranking on
   // mid-scroll over an array assembled from several reads at different blocks.
-  const undifferentiated = useMemo(() => isUndifferentiated(firehose.posts, sort), [firehose.posts, sort]);
+  const undifferentiated = useMemo(
+    () => isUndifferentiated(visibleFirehose, sort),
+    [visibleFirehose, sort],
+  );
 
   // Show the controls wherever they are HONOURED: a served source, in DEFAULT mode. Both axes are applied
   // in exactly that case, so the control and the effect can never disagree.
@@ -476,19 +494,33 @@ function ExploreView() {
   // nothing underneath a ranking claim.
   const showFirehoseControls = source != null && mode === "default";
 
-  // A LENS can legitimately find nothing in the stretch it scanned, and the reader still hands back a
-  // cursor. Left alone, Timeline would render its auto-loading tail (an IntersectionObserver) over an
-  // empty list and re-fire forever, chasing the whole chain in bounded batches to keep rendering nothing.
-  // Stop advertising more in that case: the empty state explains the scope and the reader can widen it by
-  // clearing the lens.
-  const lensFoundNothing = lens !== null && firehose.posts.length === 0;
+  // ── the filtered-surface runaway, and why the guard is on the PAGE rather than on the window ────
+  //
+  // A LENS and a TOPIC both run the reader on a bounded hop budget (FILTERED_LENS_MAX_HOPS), so each can
+  // legitimately hand back an EMPTY page plus a live cursor. Timeline's tail is an IntersectionObserver
+  // over a sentinel that a short list never pushes out of view, and it re-observes on every `loadMore`
+  // identity change (useFeedPage rebuilds `loadMore` on each `page`/`loading` change) — re-observing an
+  // already-intersecting sentinel fires the callback immediately. So one empty page starts a loop that
+  // walks the cursor down to post id 0, each firing costing up to six `feed_page` state_calls that each
+  // rebuild `staker_weights()` over up to MaxObserved accounts, to append nothing.
+  //
+  // The guard is therefore "the LAST PAGE added nothing VISIBLE", and both halves of that matter:
+  //   - per PAGE, not per window. A lens that found three posts and then nothing is the same runaway
+  //     with three rows sitting on top of it, and a window-shaped guard never fires for it.
+  //   - VISIBLE, not fetched. A page whose every post is by a blocked author renders as no rows at all,
+  //     so a fetched-count guard would advertise more over a list the reader sees as empty.
+  // `page` is null while a first page is in flight (useFeedPage clears it before fetching), so this
+  // cannot mistake "still loading" for "found nothing".
+  const stalled = useCallback(
+    (p: FeedPage | null) => p !== null && mod.filterPosts(p.posts).length === 0,
+    [mod],
+  );
+  const lensStalled = lens !== null && stalled(firehose.page);
 
-  // THE SAME HAZARD ON THE QUERY AXIS. A topic narrows `search_posts` with a `keep` predicate, which puts
-  // the reader on a bounded hop budget, so it can hand back an empty page plus a live cursor exactly like
-  // a sparse lens. Left alone the auto-loading tail re-fires until the cursor walks to id 0 — which also
-  // pins `latest.loading` true, so the topic band stays on "Looking for posts with this tag…" and the
-  // scope-accurate empty copy is never reachable. Freezing the tail is what lets that copy render.
-  const topicFoundNothing = topic !== null && !latest.loading && latest.posts.length === 0;
+  // Same rule on the query axis. Freezing the tail is also what lets the topic band's scope-accurate
+  // empty copy render at all: while the chase re-fires, `latest.loading` is pinned true and the band
+  // stays on "Looking for posts with this tag…" forever.
+  const topicStalled = topic !== null && stalled(latest.page);
 
   return (
     <>
@@ -514,7 +546,7 @@ function ExploreView() {
             onSortChange={setSort}
             lens={lens}
             onLensChange={setLens}
-            windowSize={firehose.posts.length}
+            windowSize={rankedPosts.length}
             undifferentiated={undifferentiated}
           />
         )}
@@ -524,7 +556,7 @@ function ExploreView() {
             followed={topicFollowed}
             onToggleFollow={() => topicActions.toggle(topic)}
             loading={latestLoading}
-            empty={!latest.loading && latest.posts.length === 0}
+            empty={!latest.loading && visibleLatest.length === 0}
           />
         )}
         {mode === "default" && <FollowedTopics topics={followedTopics} />}
@@ -572,16 +604,16 @@ function ExploreView() {
           />
         ) : (
           <Timeline
-            posts={latest.posts}
+            posts={visibleLatest}
             gate={viewer}
             viewerStates={viewerStates}
             handlers={handlers}
             loading={latestLoading}
             error={latest.error}
-            hasMore={topicFoundNothing ? false : latest.hasNextPage}
-            onLoadMore={topicFoundNothing ? undefined : latest.loadMore}
+            hasMore={topicStalled ? false : latest.hasNextPage}
+            onLoadMore={topicStalled ? undefined : latest.loadMore}
             loadingMore={latest.loading}
-            paginationCapable={topicFoundNothing ? false : paginationCapable}
+            paginationCapable={topicStalled ? false : paginationCapable}
             emptyVariant="feed"
             emptyTitle={
               topic !== null ? `No recent posts tagged #${topic}` : `No results for "${committedQ}"`
@@ -605,7 +637,7 @@ function ExploreView() {
     // refresh merge ends in a sort by id, which would silently dissolve the ranking back into recency —
     // reading to the user as a broken control rather than a design limit. One window, no pagination.
     const ranked = isRanked(sort);
-    const frozen = ranked || lensFoundNothing;
+    const frozen = ranked || lensStalled;
     // The lens copy must not claim a scan happened where none did: DISCONNECTED mounts this same tree
     // with no source and an always-empty array.
     const lensEmpty = lens !== null && source != null;

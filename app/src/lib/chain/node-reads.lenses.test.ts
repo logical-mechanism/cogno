@@ -296,12 +296,24 @@ describe("nodeMembersFeedPage — a failed member must not punch a silent hole",
     // The cursor is min(id) over the members that SUCCEEDED, so a failed member's posts above it can
     // never be requested again. Keeping the cursor alive is not recovery — page one must fail loud.
     const { api } = flakyApi(posts, C);
-    await expect(nodeMembersFeedPage(api, [A, C], { limit: 3 })).rejects.toThrow(/member read failed/);
+    await expect(nodeMembersFeedPage(api, [A, C], { limit: 3 })).rejects.toThrow(/rpc blip/);
   });
 
   it("throws when EVERY member read fails (a read failure, not an empty list)", async () => {
     const { api } = flakyApi([{ id: 1n, author: C, text: "c" }], C);
-    await expect(nodeMembersFeedPage(api, [C], { limit: 5 })).rejects.toThrow(/member read failed/);
+    await expect(nodeMembersFeedPage(api, [C], { limit: 5 })).rejects.toThrow(/rpc blip/);
+  });
+
+  it("rethrows the UNDERLYING member error, not a wrapper of its own", async () => {
+    // `readErrorCopy` classifies the thrown value: an unreachable endpoint has to reach it carrying
+    // "WebSocket closed" to become the actionable "Can't reach cogno…" line. A wrapper Error would be
+    // classified `raw` and its message rendered verbatim into the feed's error row instead.
+    const { api } = fakeApi([{ id: 1n, author: C, text: "c" }]);
+    const inner = (api as unknown as {
+      apis: { MicroblogApi: { author_feed_page: () => Promise<unknown> } };
+    }).apis.MicroblogApi;
+    inner.author_feed_page = () => Promise.reject(new Error("WebSocket closed"));
+    await expect(nodeMembersFeedPage(api, [C], { limit: 5 })).rejects.toThrow(/WebSocket closed/);
   });
 
   it("still degrades (does not throw) on a LATER page, and keeps a cursor", async () => {
@@ -311,6 +323,23 @@ describe("nodeMembersFeedPage — a failed member must not punch a silent hole",
     const page = await nodeMembersFeedPage(api, [A, C], { limit: 2, beforeId: 100n });
     expect(page.posts.map((p) => p.id)).toEqual([98n, 96n]);
     expect(page.nextCursor).not.toBeNull();
+  });
+
+  it("a later page with NO survivors and a failed member throws instead of declaring the end", async () => {
+    // The regression: `nextCursor` was gated on `slice.length > 0`, which short-circuited the
+    // `anyMemberFailed` term. A page where the surviving members are exhausted but another member
+    // FAILED then reported `nextCursor: null` — a terminal "no posts from this list" over posts that
+    // were never read. There is no id to page from, so the honest outcome is an error + Retry.
+    const { api } = flakyApi(
+      [
+        { id: 100n, author: A, text: "a100" },
+        { id: 99n, author: C, text: "c99" }, // C fails; A has nothing below the cursor
+      ],
+      C,
+    );
+    await expect(
+      nodeMembersFeedPage(api, [A, C], { limit: 5, beforeId: 50n }),
+    ).rejects.toThrow(/rpc blip/);
   });
 
   it("succeeds normally when no member fails", async () => {

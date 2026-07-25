@@ -127,6 +127,6 @@ Contribution workflow (branch-per-unit, PR-into-`main`, the commit-scope format,
 committed) lives in [CONTRIBUTING.md](CONTRIBUTING.md). Agent-specific notes:
 
 - **Commits:** `<scope>(<area>): <summary>` (e.g. `feat(pallets): …`, `fix(node): …`, `docs: …`); end
-  AI-assisted commits with `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+  AI-assisted commits with `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
 - **Pallet logging** uses the `log::` facade via each pallet's `LOG_TARGET` (no new Events) — keep it
   additive and encoding-neutral.

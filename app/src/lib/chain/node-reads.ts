@@ -32,7 +32,10 @@ import type {
 } from "@/lib/types";
 import { mapObservedRolePairs, type RoleKindType } from "@/lib/chain/roles";
 
-const MAX_PAGE = 100;
+/** The runtime's own per-call page ceiling, mirrored here so `clampLimit` and the runtime agree.
+ *  Exported so a window that must fit in ONE read (the ranked window — see lib/feed/rank) can pin
+ *  itself against it in a test rather than restating the literal. */
+export const MAX_PAGE = 100;
 
 /**
  * Read at the BEST block, not the runtime-API default (finalized). Writes confirm at `inBestBlock`,
@@ -261,6 +264,23 @@ export async function nodeRoleFeedPage(
 export const MAX_FEED_MEMBERS = 32;
 
 /**
+ * The error a list page throws when it cannot honestly return one.
+ *
+ * It RETHROWS the underlying member rejection rather than a wrapper of our own, because the thrown
+ * value is what `readErrorCopy` classifies: a dropped socket carries "WebSocket closed", which becomes
+ * the actionable "Can't reach cogno…" line, while a wrapper string like "list timeline: a member read
+ * failed" is classified `raw` and rendered VERBATIM into the feed's error row — an internal sentence in
+ * front of the reader, and the real cause discarded. The generic fallback covers the (theoretical) case
+ * where nothing rejected but the page still has no truthful cursor to hand back.
+ */
+function memberReadFailure(settled: PromiseSettledResult<IdPage>[]): Error {
+  for (const r of settled) {
+    if (r.status === "rejected" && r.reason instanceof Error) return r.reason;
+  }
+  return new Error("Couldn't load this list's posts.");
+}
+
+/**
  * A timeline of just these accounts' top-level posts — the list feed.
  *
  * A fan-out (one `author_feed_page` per member, merged newest-first), NOT a filtered firehose: a
@@ -301,10 +321,11 @@ export async function nodeMembersFeedPage(
   // enough to make a failed member recoverable: the cursor is the minimum id across the members that
   // SUCCEEDED, so the failed member's posts ABOVE that cursor are never requested again. Since at least
   // one member succeeded nothing would throw, so the timeline would render as if complete with a hole
-  // punched out of the middle and no signal anywhere. Later pages may degrade — the reader has already
-  // seen the newer posts and the cursor keeps descending — but page one must not lie.
+  // punched out of the middle and no signal anywhere. A later page degrades more gracefully — the reader
+  // has already seen the newer posts and the cursor keeps descending — but page one must not lie, and a
+  // later page still fails loud when it cannot produce a cursor at all (see below).
   if (pages.length === 0 || (anyMemberFailed && opts.beforeId === undefined)) {
-    throw new Error("list timeline: a member read failed");
+    throw memberReadFailure(settled);
   }
 
   const merged = pages
@@ -316,12 +337,15 @@ export async function nodeMembersFeedPage(
   // no member's read failed (a failed member may hold older posts we haven't seen).
   const anyMemberHasMore = pages.some((p) => p.nextCursor !== null);
   const truncated = merged.length > slice.length;
-  const nextCursor =
-    slice.length > 0 && (truncated || anyMemberHasMore || anyMemberFailed)
-      ? slice[slice.length - 1].id
-      : null;
+  const hasMore = truncated || anyMemberHasMore || anyMemberFailed;
 
-  return { posts: slice, nextCursor };
+  // The cursor IS the lowest id we returned, so an empty slice has no id to page from. Handing back
+  // `null` there would declare the end of the list — burying a failed member's older posts under a
+  // terminal "no posts" state, the same silent hole the first-page throw above exists to prevent. We
+  // cannot page and we cannot honestly stop, so fail loud and let Retry re-read.
+  if (hasMore && slice.length === 0) throw memberReadFailure(settled);
+
+  return { posts: slice, nextCursor: hasMore ? slice[slice.length - 1].id : null };
 }
 
 /** One author's top-level posts (the profile Posts tab), node-served + viewer-overlaid. */

@@ -13,6 +13,7 @@
 // chain-wide scan. Values are stored CANONICAL (ASCII-folded, no leading '#') — see lib/topics for why
 // the fold is ASCII-only.
 
+import { useMemo } from "react";
 import { createViewerScopedStringSetStore } from "./stringSetStore";
 import { canonicalTag, isCanonicalTag } from "./topics";
 import type { Ss58 } from "./types";
@@ -51,10 +52,17 @@ export function useTopicFollowed(raw: string | null | undefined, who: Ss58 | nul
   return t !== null && snap.has(t);
 }
 
-/** `who`'s followed topics, sorted for a stable render order. */
+/**
+ * `who`'s followed topics, sorted for a stable render order.
+ *
+ * Memoized on the snapshot so the ARRAY identity changes only when the set does. A fresh array per
+ * render re-renders every consumer on every parent render (the strip sits on /explore, which re-renders
+ * on each keystroke in the search box) and quietly poisons any `useMemo`/`useEffect` keyed on it — the
+ * same identity trap ListsPage had to work around with its `membersKey`.
+ */
 export function useFollowedTopics(who: Ss58 | null): string[] {
   const snap = store.useSet(who);
-  return [...snap].sort();
+  return useMemo(() => [...snap].sort(), [snap]);
 }
 
 /** Non-React read, for tests and for one-shot reads outside a component. */

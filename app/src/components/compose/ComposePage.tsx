@@ -115,12 +115,27 @@ export function ComposePage() {
   // `mode`, not effectiveMode), so a reply/quote deep-link never leaks the saved post text into its
   // capacity gate. Client-only render behind Suspense, so the lazy initializer is safe.
   const [text, setText] = useState(() => (mode === "post" ? loadPostDraft(draftWho) : ""));
-  // An in-place account switch swaps which bucket the draft lives in — re-seed from the new one.
+  // An in-place account switch swaps which bucket the draft lives in — re-seed from the new one, but
+  // FLUSH the in-flight words to the account they were typed under first. `viewer.address` also moves
+  // when a session restore lands a beat after a guest started typing, and re-seeding alone silently
+  // destroyed whatever was in the box. Moving the text satisfies the bucketing invariant (never write
+  // A's words into B's bucket) without losing it: switch back and it is there.
+  //
+  // SIGN-OUT (`draftWho` back to null) deliberately does NOT flush — useSigner has just run
+  // clearAllPostDrafts() across every bucket so a shared browser keeps none of the departing account's
+  // unsent words, and writing them back here would undo that.
+  //
+  // `text` is read through a ref so this effect does not re-run on every keystroke.
+  const textRef = useRef(text);
+  textRef.current = text;
   const seededForRef = useRef(draftWho);
   useEffect(() => {
-    if (seededForRef.current === draftWho) return;
+    const prevWho = seededForRef.current;
+    if (prevWho === draftWho) return;
     seededForRef.current = draftWho;
-    setText(mode === "post" ? loadPostDraft(draftWho) : "");
+    if (mode !== "post") return; // reply/quote never hold the post draft — nothing to move or re-seed
+    if (draftWho !== null) savePostDraft(prevWho, textRef.current);
+    setText(loadPostDraft(draftWho));
   }, [draftWho, mode]);
   // The SERIALIZED post body (mention `@name` tokens expanded to `@<ss58>`), reported up by the base
   // Composer, so the capacity gate counts the real posted length — a mention is ~48 bytes, not `@name`.
