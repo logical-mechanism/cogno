@@ -54,7 +54,7 @@ import { useBlockedSet } from "@/lib/blockStore";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
-import { useRecentSearches, recentSearchActions } from "@/lib/recentSearchStore";
+import { useRecentSearches, recentSearchActionsFor } from "@/lib/recentSearchStore";
 import { readErrorCopy } from "@/lib/chain/errors";
 import {
   parseSort,
@@ -219,13 +219,18 @@ function ExploreView() {
 
   // Recent searches (device-local). Record a term once it has SETTLED (stable ≥1.2s) so live-typed
   // prefixes ("ab" → "abc" → "abcd") aren't each saved — only the query the user actually landed on.
-  const recentSearches = useRecentSearches();
+  const recentSearches = useRecentSearches(me);
+  const recentSearchActions = useMemo(() => recentSearchActionsFor(me), [me]);
   useEffect(() => {
     // Gate on the SAME isQueryTooShort predicate as `mode` (not raw .length) so a committed single
     // non-ASCII/CJK term — which DID run a search — is also recorded, while below-min ASCII is skipped.
     if (committedQ.length === 0 || isQueryTooShort(committedQ)) return;
     const t = setTimeout(() => recentSearchActions.push(committedQ), 1200);
     return () => clearTimeout(t);
+    // `recentSearchActions` is memoized on `me`, so listing it would restart the settle timer on an
+    // account switch — recording the term under whichever account you landed on. Keyed on the TERM: the
+    // pending write targets the account that was connected when the term settled.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [committedQ]);
   const onSelectRecent = useCallback(
     (term: string) => {

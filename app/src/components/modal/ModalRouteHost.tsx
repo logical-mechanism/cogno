@@ -82,6 +82,15 @@ export function ModalRouteHost() {
   const router = useRouter();
   const { state, close } = useModalStore();
   const { api, signer, source, viewer } = useSession();
+  // The draft is bucketed per account (null = the signed-out bucket) — see lib/composerDraftStore.
+  const draftWho = viewer.address ?? null;
+  // `draftWho` is read through a REF in the SAVE effect below, deliberately. Keying that effect on it
+  // would fire a save on an account switch while `text` still holds the PREVIOUS account's words — 
+  // writing them straight into the new account's bucket, the exact leak the bucketing exists to stop.
+  // The RELOAD effect keys on it instead, so a switch pulls the new account's own draft into `text`, and
+  // the next save (triggered by that text change) lands in the right bucket.
+  const draftWhoRef = useRef(draftWho);
+  draftWhoRef.current = draftWho;
   const bestBlock = useBestBlock();
   // Only the PROFILE overlay is still owned here — the compose overlay moved into useComposeWrite.
   const { patchProfile, confirmProfile, rollbackProfile } = useOptimistic();
@@ -162,18 +171,19 @@ export function ModalRouteHost() {
     const carried = carryRef.current;
     carryRef.current = null;
     setSubmitState("idle");
-    setText(kind === "compose" ? (carried ?? loadPostDraft()) : "");
+    setText(kind === "compose" ? (carried ?? loadPostDraft(draftWho)) : "");
     setSerialized(""); // the base Composer re-reports on mount; reply/quote leave it "" (base-cost gate)
     setConfirmDiscard(false);
     composerDirtyRef.current = false;
     if (kind === "poll") setPollDraft({ question: carried ?? "", options: ["", ""] });
     // `setSubmitState` is useComposeWrite's raw useState setter — a stable identity, so listing it
-    // cannot re-run this effect. The effect is keyed on `kind` alone.
-  }, [kind, setSubmitState]);
+    // cannot re-run this effect. Keyed on `kind` AND `draftWho`: an in-place account switch must
+    // re-seed the draft from the new account's bucket rather than keep the previous one's text.
+  }, [kind, draftWho, setSubmitState]);
 
   // Persist the plain-compose draft as it changes (savePostDraft removes the key when it's empty).
   useEffect(() => {
-    if (kind === "compose") savePostDraft(text);
+    if (kind === "compose") savePostDraft(draftWhoRef.current, text);
   }, [kind, text]);
 
   // Pre-flight capacity gate (shared with every other composing surface — see useComposerGate).
@@ -231,13 +241,13 @@ export function ModalRouteHost() {
         return;
       }
       if (!api || !signer || draft.text.trim().length === 0) return;
-      clearPostDraft(); // submitted → don't restore it next time
+      clearPostDraft(draftWho); // submitted → don't restore it next time
       runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text), {
         pending: "Posting…",
         success: "Posted",
       });
     },
-    [viewer.status, api, signer, runWrite, optimisticPost, close, router],
+    [viewer.status, draftWho, api, signer, runWrite, optimisticPost, close, router],
   );
 
   const onReply = useCallback(
@@ -550,7 +560,7 @@ export function ModalRouteHost() {
           cancelLabel="Keep editing"
           danger
           onConfirm={() => {
-            clearPostDraft(); // explicit discard → forget the saved draft
+            clearPostDraft(draftWho); // explicit discard → forget the saved draft
             setConfirmDiscard(false);
             onClose();
           }}

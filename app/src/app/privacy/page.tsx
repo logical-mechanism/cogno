@@ -50,17 +50,21 @@ export default function PrivacyPage() {
             </li>
           </ul>
           <p className={styles.body}>
-            Bookmarks, muted accounts, blocked accounts and which notifications you have read are
-            stored in your own browser, on your own device. So is your address, so that refreshing the
-            page keeps you signed in. That address is already public on the chain: it is the author
-            of every post you write. Your posting key is not stored: it is re-derived from a wallet
-            signature the first time you post in a session. None of it is ever sent anywhere.
+            Your bookmarks, the accounts you have muted or blocked, the posts you have hidden, your
+            lists, the topics you follow, your recent searches, an unsent draft and which
+            notifications you have read are all stored in your own browser, on your own device. So is
+            your address, so that refreshing the page keeps you signed in. That address is already
+            public on the chain: it is the author of every post you write. Your posting key is not
+            stored: it is re-derived from a wallet signature the first time you post in a session.
+            None of it is ever sent anywhere.
           </p>
           <p className={styles.body}>
-            Signing out forgets your address, so the next person to open this browser starts as a
-            stranger. It deliberately leaves your bookmarks, mutes, blocks and read notifications
-            alone: those are yours, and signing back in should not hand you an empty app. Clearing
-            your browser data erases everything, including those.
+            All of it is kept per account, so two people sharing one browser do not see each other&apos;s
+            lists, mutes or searches. Signing out forgets your address, so the next person to open this
+            browser starts as a stranger. It deliberately leaves the rest alone: those are yours, and
+            signing back in should not hand you an empty app. An unsent draft is the one exception —
+            signing out discards it rather than leaving your words waiting. Clearing your browser data
+            erases everything.
           </p>
         </section>
 
@@ -68,18 +72,30 @@ export default function PrivacyPage() {
           <h2 className={styles.heading}>What the network can see</h2>
           <p className={styles.body}>
             Reading and posting means your browser talks to servers, and they see your IP address,
-            like any website. Two are worth naming:
+            like any website. Three are worth naming:
           </p>
           <ul className={styles.list}>
             <li>
               <strong>Our relay node</strong>, which serves the feed you are reading and forwards the
-              posts you write.
+              posts you write. While you are signed in it is also asked, every couple of minutes,
+              which posts mention your address — so your address is part of that read.
             </li>
             <li>
               <strong>Blockfrost</strong>, a third-party Cardano service your browser calls directly
-              when you lock or exit ADA in the vault. It runs under their terms, not ours.
+              to read Cardano itself: your vault when you lock or exit ADA, the pool or dRep name
+              behind a verified badge when you open someone&apos;s full profile, and the live
+              governance thresholds on a governance poll. It runs under their terms, not ours.
+            </li>
+            <li>
+              <strong>An IPFS gateway</strong> (ipfs.io), only when you explicitly open a governance
+              proposal&apos;s linked document. Nothing is fetched from it in the background.
             </li>
           </ul>
+          <p className={styles.body}>
+            Images in posts are the deliberate exception: a linked image is never loaded until you tap
+            to reveal it, so simply scrolling past a post does not tell anyone&apos;s server that you
+            were here.
+          </p>
           <p className={styles.body}>
             We keep logs only to run the node, and we do not build profiles from them.
           </p>
