@@ -2,8 +2,10 @@
 
 Guidance for working in this repo. See [README.md](README.md) for the user-facing overview and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design; per-mechanism depth lives in the
-focused docs it links (`IN-PROTOCOL-OBSERVATION`, `ECONOMICS`, `TRUSTLESS-IDENTITY`, `SCALE-NODE-READS`,
-`VERIFIABLE-ROLE-TAGS`) and the operator runbooks (`PREPROD-BRINGUP`, `RELAY-NODE`, `UPGRADES`, `D2-custody-runbook`).
+focused docs under `docs/` (`IN-PROTOCOL-OBSERVATION`, `ECONOMICS`, `TRUSTLESS-IDENTITY`, `SCALE-NODE-READS`,
+`VERIFIABLE-ROLE-TAGS`) and the operator runbooks (`PREPROD-BRINGUP`, `RELAY-NODE`, `UPGRADES`,
+`D2-custody-runbook`). `PROTOCOL-PARAMS` maps each tunable to the file + symbol that sets it, but it is a
+spec-204 snapshot that predates `cardano-roles` — trust it for the pointer, read the value off the code.
 
 ## What this is
 
@@ -28,16 +30,17 @@ scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 204 / tx_version 3**) |
-| `pallets/` | `microblog` (10, storage v5; repost retired — call_index 1 AND 6 permanently vacant), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; `MaxObserved` 1024, benchmarked `observe`, on-chain stall alarm), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand) |
-| `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`query weight` over RPC) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 210 / tx_version 6**) |
+| `pallets/` | `microblog` (10, storage v9; call_index 1 `delete_post` and 6 `repost` both permanently vacant), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; `MaxObserved` 1024, benchmarked `observe`, on-chain stall alarm), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated) |
+| `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`weight`/`authors` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
 | `contracts/` | the Aiken (Plutus V3) L1 `talk_vault` validator + `audits/` — **LIVE on preprod, see gotcha below** |
 | `app/` | Next.js 16 static-export frontend (PAPI + MeshJS). See [app/README.md](app/README.md) |
 | `ci/cip8-oracle/` | an independent Python CIP-8 verifier (a second implementation), kept as a CI adversarial oracle — do **not** port to Rust |
-| `deploy/` | one systemd unit + monitoring (Prometheus/Grafana/Alertmanager) |
-| `_sdk/` | **gitignored** vendored polkadot-sdk checkout |
+| `deploy/` | two systemd units (`cogno-node` validator, `cogno-relay` public archive node), the nginx vhost that serves the static export and proxies `/rpc` → `:9944`, a root-only install script + its sudoers drop-in, and monitoring (Prometheus/Grafana/Alertmanager) |
+| `chainspecs/`, `scripts/` | `preprod.raw.json` is the committed spec matching the LIVE genesis — a re-minted `gen-chainspec` yields a *different* genesis and will not peer. `scripts/run-tracking-node.sh` syncs the live chain locally so the frontend reads real data without touching the producer |
+| `_sdk/`, `_reference/` | **gitignored** vendored checkouts (polkadot-sdk; partner-chains + midnight-node study clones). Exclude BOTH from repo-wide greps — `_reference/` embeds a whole stale copy of this repo |
 
 ## Build / run / test
 
@@ -52,7 +55,8 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
 ```
 
 - **Regenerate contract artifacts** (only on an intentional redeploy — this MOVES the live hash, see
-  the gotcha below): `aiken build` (plutus.json) + `node scripts/regen-vault.mjs` (vault.json).
+  the gotcha below): `aiken build` (plutus.json) + `node contracts/scripts/regen-vault.mjs` (vault.json)
+  — note the path, the root `scripts/` is a different directory.
 - **After an encoding-affecting spec bump**, regenerate the frontend's PAPI descriptors:
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
 
@@ -81,11 +85,21 @@ an agent needs:
   largest-UTxO-wins per identity (never summed). Ogmios still SUBMITS L1 txs + serves cost models; the
   in-browser CIP-30 vault uses Blockfrost. MAINNET PREREQUISITE: db-sync must run FULL (non-pruned),
   **`tx_in`-enabled** (NOT `--consumed-tx-out`), and over TLS.
+- **The ROLE read rides the same consensus path** — same inherent, same fail-closed abstain, same
+  byte-identity bar. Two invariants the vault list above doesn't cover: db-sync hands back
+  `tx_metadata.bytes` WRAPPED as `{867: value}` and the Calidus reader must strip that label before
+  parsing (feeding it raw fails `BadVersion`, and *every* real registration silently drops); and
+  `read_pool_stake` is scoped to `owner pools ∪ reduction::claimed_calidus_pools` — that one shared fn
+  is why the node and the crate can't drift, and a narrower scope zeroes an mSPO's chamber weight. The
+  golden fixture pins the VAULT reduction only; the role reduction is unit-tested.
+- **`cogno-dbsync` is node-side, so a reduction change is consensus-affecting but INVISIBLE to
+  `spec_version`.** It changes what the inherent writes with no runtime bump, no PAPI regen, and no FE
+  lockstep — it ships as a new node binary plus a producer restart. Don't bump spec for it.
 - **Pallet indices are on-wire contracts — never renumber.** Indices **6** (Sudo, removed) and **12**
-  (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index;
-  gaps are fine.
+  (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index
+  (next free is **20**); gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **204**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
+  `spec_version` (currently **210**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
   (never the live chain):
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   Non-encoding changes (bounds, logging, tests) must **not** bump it. `transaction_version` moves ONLY on
@@ -94,10 +108,13 @@ an agent needs:
   match (`npm run lint` runs `scripts/check-spec.mjs` and fails on drift), and the deployed bundle
   **blocks posting** against a chain whose `spec_version` differs from the one it was built against.
 - **Event/Error variant indices are on-wire too — SCALE indexes enum variants by DECLARATION ORDER.**
-  Deleting a variant silently shifts every one below it. Every microblog + observer Event/Error variant
-  now carries an explicit `#[codec(index = N)]` pinning its current value; retired ones (microblog event
-  6 `Reposted`, error 5 `AlreadyReposted`) leave a permanent GAP. Never insert into a gap, never reorder,
-  always pin a new variant. Same rule as pallet/call indices.
+  Deleting a variant silently shifts every one below it. Only three pallets are pinned with explicit
+  `#[codec(index = N)]` today: microblog (Events **and** Errors) and the `cardano-observer` /
+  `cardano-roles` **Events**. Those two pallets' `Error` enums, and *both* enums of every other pallet
+  (`cogno-gate`, `profile`, `talk-stake`, `validator-set`, `governance-fuel`, `governed-upgrade`), are
+  still bare declaration order — pin them before you insert or reorder there. Retired microblog variants
+  (event 6 `Reposted`, error 5 `AlreadyReposted`) leave a permanent GAP. Never insert into a gap, never
+  reorder, always pin a new variant. Same rule as pallet/call indices.
 - **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
   never runs: the on-chain `StorageVersion` stays put while the code declares the new one, and
   `post_upgrade` never fires. Before enacting, run the `try-runtime` dry-run against live state that
@@ -118,8 +135,22 @@ an agent needs:
 - **Cardano cost models:** inject live Ogmios cost models via `setCostModels` when building L1 txs —
   MeshJS's stale defaults produce a bad script-integrity hash. (The in-browser CIP-30 path uses
   Blockfrost, which supplies live cost models, so it doesn't need this.)
+- **Every raw user-text render goes through `app/src/lib/sanitize.ts`.** The chain stores unvalidated
+  bytes (length-bounded only), so a display name, bio, poll option or post body can carry bidi-override,
+  invisible or Zalgo spoofs. `PostBody` and `DisplayName` sanitize internally; anything else rendering
+  chain text calls `sanitizeText` (multi-line) or `sanitizeInline` (single-line) itself. It is
+  DISPLAY-ONLY — never sanitize before a byte-length count or an on-chain write. Nothing lints this.
+- **Device-local state is bucketed PER ACCOUNT.** `createViewerScopedStore`
+  (`app/src/lib/viewerScopedStore.ts`, or its `stringSetStore` set-facade) keys `<prefix>:<ss58>`, and
+  `:anon` signed-out. A hand-rolled `localStorage` key hands the previous wallet's bookmarks, mutes,
+  blocks, lists and unsent drafts to the next account on a shared device, and clobbers writes across
+  tabs. A bare key is correct only when the state is genuinely device-global (theme, endpoints, recent
+  emoji, the `cg-session` sign-in record) or already keyed by ss58 *inside* its value
+  (`cg-pending-locks`) — so check the value shape before "fixing" one. `claimLegacy` is a one-shot
+  migration reserved for stores that already shipped unbucketed.
 - **Run the frontend dev server on a free port** if the live cardano-node monitoring is binding
-  `:3000`/`:3001`.
+  `:3000`/`:3001`. `npm run dev` pins `-p 3000`, and passing `-p` explicitly disables Next's port
+  auto-retry, so it hard-fails on `EADDRINUSE` rather than shifting — use `npx next dev -p <free port>`.
 
 ## Conventions
 
@@ -130,3 +161,7 @@ committed) lives in [CONTRIBUTING.md](CONTRIBUTING.md). Agent-specific notes:
   AI-assisted commits with `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
 - **Pallet logging** uses the `log::` facade via each pallet's `LOG_TARGET` (no new Events) — keep it
   additive and encoding-neutral.
+- **User-facing copy is plain language, and carries no em dashes.** Split the aside into its own
+  sentence instead. Scope is every string a user reads — labels, titles, empty states, error text,
+  aria-labels. Out of scope: code comments and JSDoc, console/log strings, the docs (all keep the house
+  em-dash style), and the bare `"—"` empty-value glyph in formatters. Nothing lints this.
