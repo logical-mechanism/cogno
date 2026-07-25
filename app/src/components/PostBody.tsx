@@ -12,8 +12,10 @@
 //     linkifies (near-zero false positives); a truncated handle stays plain text. A
 //     mention refers to a unique PERSON encoded in the body itself (no side-field) — the ss58 IS the
 //     addressable value even though the cosmetic truncated handle is not (`lib/mentions`).
-//   - #hashtag links — a `#tag` links to /explore/?q=%23tag (a case-insensitive substring search).
-//     There is still no Topics surface; the link just runs the search that `#tag` matches.
+//   - #hashtag links — a `#tag` links to /explore/?q=%23tag, which renders the TOPIC surface (an
+//     exact-tag feed built on the node's substring search — see lib/topics). The link carries the
+//     ASCII-folded canonical tag so `#Cardano` and `#cardano` are one topic; the label keeps the
+//     author's casing.
 //   - NO markdown.
 // Line breaks are preserved (white-space: pre-wrap) and long unbroken strings wrap
 // (overflow-wrap: break-word). The node tree is built from PARSED SEGMENTS — never
@@ -26,9 +28,10 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { isImageUrl, resolveImageSrc, URL_RE, TRAILING_PUNCT } from "@/lib/media";
-import { validSs58Prefix } from "@/lib/mentions";
+import { resolveImageSrc } from "@/lib/media";
 import { sanitizeText } from "@/lib/sanitize";
+import { segment } from "@/lib/postText";
+import { canonicalTag, tagSearchTerm } from "@/lib/topics";
 import { RevealImage } from "./RevealImage";
 import { MentionChip } from "./MentionChip";
 import { Highlight } from "./Highlight";
@@ -45,61 +48,9 @@ export interface PostBodyProps {
   highlight?: string;
 }
 
-// URL_RE + TRAILING_PUNCT (the http(s)/ipfs run matcher + trailing-punctuation strip) live in
-// @/lib/media so the composer's image-link chip classifies links identically to what we render here.
-// TOKEN_RE matches, inside a PLAIN-TEXT run (never inside a matched URL — so `https://x.org/#section`
-// and `https://x.org/@handle` are never re-tokenized), either:
-//   - a #hashtag: '#' + Unicode letters/numbers/underscore, or
-//   - a mention candidate: '@' + a ≥44-char base58 run (checksum-validated below via validSs58Prefix).
-const TOKEN_RE = /#[\p{L}\p{N}_]+|@[1-9A-HJ-NP-Za-km-z]{44,}/gu;
-
-interface Seg {
-  kind: "text" | "url" | "image" | "hashtag" | "mention";
-  /** the run text (text/url/image/hashtag); for a mention, the canonical prefix-42 ss58. */
-  value: string;
-}
-
-/** Push a plain-text run onto `segs`, further split into text + #hashtag + @mention segments. */
-function pushText(segs: Seg[], text: string): void {
-  let last = 0;
-  for (const m of text.matchAll(TOKEN_RE)) {
-    const start = m.index ?? 0;
-    const tok = m[0];
-    if (tok[0] === "@") {
-      // Only a checksum-valid ss58 PREFIX linkifies; a look-alike run stays plain text. A base58 char
-      // glued to the address (no separator) is not consumed — validSs58Prefix returns just the address.
-      const hit = validSs58Prefix(tok.slice(1));
-      if (!hit) continue; // leave as plain text — emitted by the next slice / final tail
-      if (start > last) segs.push({ kind: "text", value: text.slice(last, start) });
-      segs.push({ kind: "mention", value: hit.ss58 });
-      last = start + 1 + hit.length; // consumed '@' + the address only
-      continue;
-    }
-    if (start > last) segs.push({ kind: "text", value: text.slice(last, start) });
-    segs.push({ kind: "hashtag", value: tok });
-    last = start + tok.length;
-  }
-  if (last < text.length) segs.push({ kind: "text", value: text.slice(last) });
-}
-
-/** Split a body into plain-text + url + image + hashtag segments (pure; no DOM). */
-function segment(text: string): Seg[] {
-  const segs: Seg[] = [];
-  let last = 0;
-  for (const m of text.matchAll(URL_RE)) {
-    const start = m.index ?? 0;
-    let url = m[0];
-    // Re-attach trailing sentence punctuation that isn't part of the URL to the following text run.
-    const trail = url.match(TRAILING_PUNCT)?.[0] ?? "";
-    if (trail) url = url.slice(0, url.length - trail.length);
-    if (start > last) pushText(segs, text.slice(last, start));
-    segs.push({ kind: isImageUrl(url) ? "image" : "url", value: url });
-    if (trail) segs.push({ kind: "text", value: trail });
-    last = start + m[0].length;
-  }
-  if (last < text.length) pushText(segs, text.slice(last));
-  return segs;
-}
+// The tokenizer (URL / image / #hashtag / @mention segmentation) lives in @/lib/postText so the topic
+// parser (@/lib/topics) splits a body EXACTLY the way this renders it — a second regex would let a post
+// linkify `#cardano` here while being absent from the `#cardano` topic feed.
 
 /** The href a (non-image) link segment opens — ipfs:// links resolve to a gateway so they work. */
 function linkHref(raw: string): string {
@@ -179,11 +130,16 @@ export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps)
           );
         }
         if (s.kind === "hashtag") {
+          // Link to the CANONICAL (ASCII-folded) topic so `#Cardano` and `#cardano` reach one feed,
+          // while the label keeps the author's own casing. An unusable tag (over-length) canonicalizes
+          // to null and renders as plain text rather than a link to a topic that can't resolve.
+          const topic = canonicalTag(s.value);
+          if (topic === null) return <Highlight key={i} text={s.value} query={highlight} />;
           return (
             <Link
               key={i}
               className={styles.link}
-              href={`/explore/?q=${encodeURIComponent(s.value)}`}
+              href={`/explore/?q=${encodeURIComponent(tagSearchTerm(topic))}`}
               // Inside a clickable PostCard row — don't also trigger the row navigation.
               onClick={(e) => e.stopPropagation()}
             >
