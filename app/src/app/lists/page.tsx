@@ -277,6 +277,10 @@ export default function ListsPage() {
           handlers={handlers}
           loading={feed.loading && feed.posts.length === 0}
           error={feed.error}
+          // A failed member read raises on the FIRST page rather than rendering a hole (see
+          // nodeMembersFeedPage), so the error row needs a way back — without this the only recovery
+          // would be switching lists and back.
+          onRetry={feed.refresh}
           hasMore={feed.hasNextPage}
           onLoadMore={feed.loadMore}
           loadingMore={feed.loading}

@@ -268,3 +268,74 @@ describe("nodeSearchPosts({ keep }) — the topic feed", () => {
     expect(page.posts.map((p) => p.id)).toEqual([2n, 1n]);
   });
 });
+
+describe("nodeMembersFeedPage — a failed member must not punch a silent hole", () => {
+  /** A fake whose `author_feed_page` REJECTS for one nominated member. */
+  function flakyApi(posts: FakePost[], failFor: string) {
+    const { api, calls } = fakeApi(posts);
+    const inner = (api as unknown as {
+      apis: { MicroblogApi: { author_feed_page: (a: string, b?: bigint, c?: number) => Promise<unknown> } };
+    }).apis.MicroblogApi;
+    const real = inner.author_feed_page;
+    inner.author_feed_page = (author: string, beforeId?: bigint, limit?: number) =>
+      author === failFor
+        ? Promise.reject(new Error("rpc blip"))
+        : real(author, beforeId, limit);
+    return { api, calls };
+  }
+
+  const posts: FakePost[] = [
+    { id: 100n, author: A, text: "a100" },
+    { id: 99n, author: C, text: "c99" }, // C fails — these two are ABOVE the next cursor
+    { id: 97n, author: C, text: "c97" },
+    { id: 98n, author: A, text: "a98" },
+    { id: 96n, author: A, text: "a96" },
+  ];
+
+  it("THROWS on the first page rather than rendering a page missing that member", async () => {
+    // The cursor is min(id) over the members that SUCCEEDED, so a failed member's posts above it can
+    // never be requested again. Keeping the cursor alive is not recovery — page one must fail loud.
+    const { api } = flakyApi(posts, C);
+    await expect(nodeMembersFeedPage(api, [A, C], { limit: 3 })).rejects.toThrow(/member read failed/);
+  });
+
+  it("throws when EVERY member read fails (a read failure, not an empty list)", async () => {
+    const { api } = flakyApi([{ id: 1n, author: C, text: "c" }], C);
+    await expect(nodeMembersFeedPage(api, [C], { limit: 5 })).rejects.toThrow(/member read failed/);
+  });
+
+  it("still degrades (does not throw) on a LATER page, and keeps a cursor", async () => {
+    // Paging deeper, the reader has already seen the newer posts, so a partial page is survivable —
+    // but it must not claim to be the end.
+    const { api } = flakyApi(posts, C);
+    const page = await nodeMembersFeedPage(api, [A, C], { limit: 2, beforeId: 100n });
+    expect(page.posts.map((p) => p.id)).toEqual([98n, 96n]);
+    expect(page.nextCursor).not.toBeNull();
+  });
+
+  it("succeeds normally when no member fails", async () => {
+    const { api } = fakeApi(posts);
+    const page = await nodeMembersFeedPage(api, [A, C], { limit: 10 });
+    expect(page.posts.map((p) => p.id)).toEqual([100n, 99n, 98n, 97n, 96n]);
+  });
+});
+
+describe("nodeSearchPosts({keep}) — a topic with no matches terminates", () => {
+  it("returns an empty page with a BOUNDED number of reads, not a chain-wide walk", async () => {
+    // The bug this pins: an empty page + a live cursor drives Timeline's auto-loading tail, so an
+    // unbounded chase would spin forever while the honest empty copy stayed unreachable.
+    const posts = Array.from({ length: 400 }, (_, i) => ({
+      id: BigInt(400 - i),
+      author: A,
+      text: `#other post ${i}`,
+    }));
+    const { api, calls } = fakeApi(posts);
+    const { bodyHasTopic } = await import("@/lib/topics");
+    const page = await nodeSearchPosts(api, "#other", {
+      limit: 10,
+      keep: (p) => bodyHasTopic(p.text, "cardano"),
+    });
+    expect(page.posts).toEqual([]);
+    expect(calls.search.length).toBeLessThanOrEqual(6);
+  });
+});

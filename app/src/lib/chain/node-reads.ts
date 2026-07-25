@@ -294,10 +294,17 @@ export async function nodeMembersFeedPage(
   );
   const pages = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
   const anyMemberFailed = settled.length !== pages.length;
-  // Every member failed ⇒ this is a read failure, not an empty list. Surface it rather than rendering an
+  // Every member failed ⇒ a read failure, not an empty list. Surface it rather than rendering an
   // authoritative-looking "nobody posted" over a page we never actually read.
-  if (pages.length === 0) {
-    throw new Error("list timeline: every member read failed");
+  //
+  // A PARTIAL FIRST PAGE fails loud too, and that is the subtle one. Keeping the cursor alive is NOT
+  // enough to make a failed member recoverable: the cursor is the minimum id across the members that
+  // SUCCEEDED, so the failed member's posts ABOVE that cursor are never requested again. Since at least
+  // one member succeeded nothing would throw, so the timeline would render as if complete with a hole
+  // punched out of the middle and no signal anywhere. Later pages may degrade — the reader has already
+  // seen the newer posts and the cursor keeps descending — but page one must not lie.
+  if (pages.length === 0 || (anyMemberFailed && opts.beforeId === undefined)) {
+    throw new Error("list timeline: a member read failed");
   }
 
   const merged = pages

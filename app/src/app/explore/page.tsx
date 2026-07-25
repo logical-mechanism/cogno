@@ -478,6 +478,13 @@ function ExploreView() {
   // clearing the lens.
   const lensFoundNothing = lens !== null && firehose.posts.length === 0;
 
+  // THE SAME HAZARD ON THE QUERY AXIS. A topic narrows `search_posts` with a `keep` predicate, which puts
+  // the reader on a bounded hop budget, so it can hand back an empty page plus a live cursor exactly like
+  // a sparse lens. Left alone the auto-loading tail re-fires until the cursor walks to id 0 — which also
+  // pins `latest.loading` true, so the topic band stays on "Looking for posts with this tag…" and the
+  // scope-accurate empty copy is never reachable. Freezing the tail is what lets that copy render.
+  const topicFoundNothing = topic !== null && !latest.loading && latest.posts.length === 0;
+
   return (
     <>
       {/* sticky blurred header: the SearchBar + (DEFAULT) order toggle / (QUERY) result tabs */}
@@ -566,13 +573,19 @@ function ExploreView() {
             handlers={handlers}
             loading={latestLoading}
             error={latest.error}
-            hasMore={latest.hasNextPage}
-            onLoadMore={latest.loadMore}
+            hasMore={topicFoundNothing ? false : latest.hasNextPage}
+            onLoadMore={topicFoundNothing ? undefined : latest.loadMore}
             loadingMore={latest.loading}
-            paginationCapable={paginationCapable}
+            paginationCapable={topicFoundNothing ? false : paginationCapable}
             emptyVariant="feed"
-            emptyTitle={`No results for "${committedQ}"`}
-            emptyDescription="Try different keywords."
+            emptyTitle={
+              topic !== null ? `No posts tagged #${topic}` : `No results for "${committedQ}"`
+            }
+            emptyDescription={
+              topic !== null
+                ? "Nothing with this tag turned up in the recent posts we scanned."
+                : "Try different keywords."
+            }
             highlight={committedQ}
           />
         )}
