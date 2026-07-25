@@ -21,12 +21,19 @@
 // kind, so routing a help sheet through it would put a compose URL in the address bar. Local state,
 // mounted once in AppShell.
 
-import { useCallback, useEffect, useRef } from "react";
+import { Fragment, useCallback, useEffect, useRef } from "react";
 import styles from "./ShortcutsDialog.module.css";
 
 interface Shortcut {
   keys: string[];
   label: string;
+  /**
+   * True when the keys must be pressed TOGETHER; absent means they are alternatives.
+   *
+   * Without the distinction both render as adjacent keys, so "Enter o" (either one opens a post) would
+   * look like the same kind of thing as "⌘ Enter" (both at once to post). Only the composer key is a chord.
+   */
+  chord?: boolean;
 }
 
 interface Group {
@@ -47,14 +54,13 @@ const GROUPS: Group[] = [
     items: [
       { keys: ["j"], label: "Next post" },
       { keys: ["k"], label: "Previous post" },
-      { keys: ["Enter"], label: "Open the focused post" },
-      { keys: ["o"], label: "Open the focused post" },
-      { keys: ["l"], label: "Up-vote the focused post" },
-      { keys: ["r"], label: "Reply to the focused post" },
+      { keys: ["Enter", "o"], label: "Open the selected post" },
+      { keys: ["l"], label: "Up-vote the selected post" },
+      { keys: ["r"], label: "Reply to the selected post" },
     ],
   },
   {
-    heading: "On Home and your profile",
+    heading: "On Home and any profile",
     items: [{ keys: ["n"], label: "Start a new post" }],
   },
   {
@@ -63,7 +69,9 @@ const GROUPS: Group[] = [
   },
   {
     heading: "While writing",
-    items: [{ keys: ["⌘", "Enter"], label: "Post (Ctrl+Enter on Windows and Linux)" }],
+    items: [
+      { keys: ["⌘", "Enter"], label: "Post (Ctrl+Enter on Windows and Linux)", chord: true },
+    ],
   },
 ];
 
@@ -138,10 +146,11 @@ export function ShortcutsDialog({ onClose }: ShortcutsDialogProps) {
                 <li className={styles.row} key={`${g.heading}-${s.keys.join("+")}-${s.label}`}>
                   <span>{s.label}</span>
                   <span className={styles.keys}>
-                    {s.keys.map((k) => (
-                      <kbd className={styles.key} key={k}>
-                        {k}
-                      </kbd>
+                    {s.keys.map((k, i) => (
+                      <Fragment key={k}>
+                        {i > 0 && !s.chord && <span className={styles.or}>or</span>}
+                        <kbd className={styles.key}>{k}</kbd>
+                      </Fragment>
                     ))}
                   </span>
                 </li>

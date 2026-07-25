@@ -101,3 +101,11 @@ kbd.key {
 .close:hover {
   background: var(--cg-bg-hover);
 }
+
+/* Separator between ALTERNATIVE keys ("Enter or o"). A chord renders its keys adjacent with no word
+   between them, which is what distinguishes the two. */
+.or {
+  align-self: center;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}

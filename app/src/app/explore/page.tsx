@@ -584,11 +584,11 @@ function ExploreView() {
             paginationCapable={topicFoundNothing ? false : paginationCapable}
             emptyVariant="feed"
             emptyTitle={
-              topic !== null ? `No posts tagged #${topic}` : `No results for "${committedQ}"`
+              topic !== null ? `No recent posts tagged #${topic}` : `No results for "${committedQ}"`
             }
             emptyDescription={
               topic !== null
-                ? "Nothing with this tag turned up in the recent posts we scanned."
+                ? "No recent posts have this tag."
                 : "Try different keywords."
             }
             highlight={committedQ}
@@ -625,7 +625,7 @@ function ExploreView() {
         emptyTitle={lensEmpty ? "Nothing from these accounts yet" : "Nothing here yet"}
         emptyDescription={
           lensEmpty
-            ? `No posts by accounts with a live ${lens === "Spo" ? "SPO" : "dRep"} badge turned up in the recent posts we scanned. Choose Everyone to clear the filter.`
+            ? `Nobody with a verified ${lens === "Spo" ? "SPO" : "dRep"} badge has posted recently. Choose Everyone to see everyone's posts.`
             : "Be the first to post."
         }
         emptyAction={{ label: "Go home", onClick: () => router.push("/") }}

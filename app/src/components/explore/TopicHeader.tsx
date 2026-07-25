@@ -39,8 +39,8 @@ export function TopicHeader({ topic, followed, onToggleFollow, loading, empty }:
           {loading
             ? "Looking for posts with this tag…"
             : empty
-              ? "Nothing with this tag in the recent posts we scanned."
-              : "Posts tagged this, newest first, from the recent posts we scanned."}
+              ? "No recent posts have this tag."
+              : "Posts with this tag, newest first."}
         </p>
       </div>
       {/* "Save"/"Saved", not "Follow"/"Following": every other Follow control in this app spends a CHAIN
@@ -51,7 +51,7 @@ export function TopicHeader({ topic, followed, onToggleFollow, loading, empty }:
         className={`${styles.follow} ${followed ? styles.followActive : ""}`}
         onClick={onToggleFollow}
         aria-pressed={followed}
-        title="Saved on this device only — not written to the chain"
+        title="Saved on this device, not to the chain"
       >
         {followed ? "Saved" : "Save topic"}
       </button>

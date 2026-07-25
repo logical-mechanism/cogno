@@ -22,7 +22,7 @@ export function ListsSection() {
   return (
     <EmptyState
       title={count > 0 ? `${count} ${count === 1 ? "list" : "lists"}` : "No lists yet"}
-      description="Group accounts into a list and read a timeline of just those accounts. Lists are saved on this device, per account — nothing is written to the chain."
+      description="Group accounts into a list and read a timeline of just those people. Lists are saved on this device, for this account only. Nothing goes on the chain."
       action={{ label: "Open lists", onClick: () => router.push("/lists/") }}
     />
   );

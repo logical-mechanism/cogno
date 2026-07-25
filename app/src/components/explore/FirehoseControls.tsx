@@ -3,7 +3,7 @@
 // FirehoseControls — the DEFAULT-mode controls for /explore: the post ORDER and the verified-role LENS.
 //
 // Two independent axes, deliberately kept as separate rows rather than one multiplied strip:
-//   - ORDER (Latest / Hot / Most replies / Highest stake score) — how the window is sorted.
+//   - ORDER (Latest / Hot / Most replies / Top by stake) — how the window is sorted.
 //   - LENS  (Everyone / SPOs / dReps) — which authors are in it.
 //
 // `role="radiogroup"`, NOT the shared <Tabs> (`role="tablist"`): these pick an ORDERING and a FILTER of
@@ -35,7 +35,7 @@ const SORT_LABEL: Record<Sort, string> = {
   latest: "Latest",
   hot: "Hot",
   replies: "Most replies",
-  stake: "Highest stake score",
+  stake: "Top by stake",
 };
 
 const LENS_LABEL: Record<RoleKindType, string> = {
@@ -204,26 +204,33 @@ function describe(
   ranked: boolean,
   undifferentiated: boolean,
 ): string {
-  const who =
-    lens === null ? "" : ` by accounts whose ${lens === "Spo" ? "SPO" : "dRep"} badge is live right now`;
+  const badge = lens === "Spo" ? "SPO" : "dRep";
+  const from = lens === null ? "" : ` from accounts with a verified ${badge} badge`;
 
   if (!ranked) {
     return lens === null
       ? "Newest posts first."
-      : `Newest first, showing only posts${who} that turned up in the recent posts we scanned.`;
+      : `Newest first${from}. Only recent posts were checked.`;
   }
 
-  const scope = `the newest ${windowSize} post${windowSize === 1 ? "" : "s"}${who} we scanned`;
+  const count = `the ${windowSize} most recent post${windowSize === 1 ? "" : "s"}${from}`;
   const basis =
     sort === "hot"
-      ? "ranked by up and down votes, replies, and age"
+      ? "votes, replies and how recent they are"
       : sort === "replies"
-        ? "ranked by number of direct replies"
-        : "ranked by net stake-weighted score (up-votes minus down-votes)";
+        ? "how many replies they have"
+        : "stake-weighted votes, up-votes minus down-votes";
 
-  // When nothing distinguishes the window, say so — the alternative is a ranking label over recency.
+  // When nothing distinguishes the window, say so. The alternative is a ranking label over recency.
+  //
+  // The zero case is reachable and needs its own sentence: the controls have no size gate (removing one
+  // fixed three worse bugs), and `isUndifferentiated` is true below two posts, so a deep-linked `?s=hot`
+  // or a lens that found nobody would otherwise read "Sorting the 0 most recent posts. They are all
+  // tied...". The tied sentence states the OUTCOME rather than claiming they tie on `basis`, which would
+  // be false for `hot`: its key is engagement alone, so equal engagement still orders by age.
   if (undifferentiated) {
-    return `Showing ${scope}. Nothing separates them on this measure yet, so they stay newest-first.`;
+    if (windowSize === 0) return `No posts${from} in the stretch that was checked.`;
+    return `Sorting ${count} by ${basis}. For now that gives the same order as newest first.`;
   }
-  return `Showing ${scope}, ${basis}. Not a chain-wide ranking — there is no score index to page.`;
+  return `Sorting ${count} by ${basis}. Older posts are not included, so this is not a ranking of the whole chain.`;
 }

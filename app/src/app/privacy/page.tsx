@@ -5,7 +5,12 @@
 // There is no backend, no account, no analytics and no cookie to disclose, so the usual template would
 // be three pages of things we do not do. The two facts that actually matter to a user are the ones a
 // template would bury: posts are PERMANENT (there is no delete_post — nobody, including the operator,
-// can remove them), and the network hops (our relay, Blockfrost) can see an IP. Those lead.
+// can remove them), and the network hops (our relay, Blockfrost, and whoever hosts a governance
+// proposal's document) can see an IP. Those lead.
+//
+// KEEP THE HOST LIST HONEST. It has drifted before: it named Blockfrost as vault-only while a profile
+// view and a governance poll also call it, and it named no document host at all while a neutral-host
+// proposal doc is fetched as the poll scrolls into view. If you add a fetch, add it here.
 
 import Link from "next/link";
 import { StickyHeader } from "@/components/AppShell";
@@ -56,15 +61,17 @@ export default function PrivacyPage() {
             your address, so that refreshing the page keeps you signed in. That address is already
             public on the chain: it is the author of every post you write. Your posting key is not
             stored: it is re-derived from a wallet signature the first time you post in a session.
-            None of it is ever sent anywhere.
+            None of that is uploaded anywhere. Using it is separate: searching, or opening a topic,
+            tells our relay node the words you are looking for, and opening a list asks it for each
+            member&apos;s posts, so it can see who you put in the list.
           </p>
           <p className={styles.body}>
-            All of it is kept per account, so two people sharing one browser do not see each other&apos;s
-            lists, mutes or searches. Signing out forgets your address, so the next person to open this
-            browser starts as a stranger. It deliberately leaves the rest alone: those are yours, and
-            signing back in should not hand you an empty app. An unsent draft is the one exception —
-            signing out discards it rather than leaving your words waiting. Clearing your browser data
-            erases everything.
+            All of it is tied to the address you signed in with, so two people sharing one browser do
+            not see each other&apos;s lists, mutes or searches. Signing out forgets your address, so the
+            next person to open this browser starts as a stranger. It leaves the rest alone on purpose:
+            those are yours, and signing back in should not hand you an empty app. An unsent draft is the
+            one exception, since signing out discards it rather than leaving your words sitting in the
+            composer. Clearing your browser data erases everything.
           </p>
         </section>
 
@@ -78,23 +85,25 @@ export default function PrivacyPage() {
             <li>
               <strong>Our relay node</strong>, which serves the feed you are reading and forwards the
               posts you write. While you are signed in it is also asked, every couple of minutes,
-              which posts mention your address — so your address is part of that read.
+              which posts mention your address, so your address is part of that read.
             </li>
             <li>
               <strong>Blockfrost</strong>, a third-party Cardano service your browser calls directly
-              to read Cardano itself: your vault when you lock or exit ADA, the pool or dRep name
-              behind a verified badge when you open someone&apos;s full profile, and the live
-              governance thresholds on a governance poll. It runs under their terms, not ours.
+              to read Cardano itself: your vault when you lock or exit ADA, the pool name behind a
+              verified SPO badge when you open someone&apos;s full profile, and the current governance
+              thresholds on a governance poll. It runs under their terms, not ours.
             </li>
             <li>
-              <strong>An IPFS gateway</strong> (ipfs.io), only when you explicitly open a governance
-              proposal&apos;s linked document. Nothing is fetched from it in the background.
+              <strong>Whatever host a governance proposal&apos;s document sits on.</strong> For a
+              short list of well-known hosts, mostly public IPFS gateways and GitHub, that document is
+              read as the poll scrolls into view, so the poll can show its title without you opening it.
+              A document hosted anywhere else is read only when you press Preview proposal.
             </li>
           </ul>
           <p className={styles.body}>
-            Images in posts are the deliberate exception: a linked image is never loaded until you tap
-            to reveal it, so simply scrolling past a post does not tell anyone&apos;s server that you
-            were here.
+            Images from other people stay covered until you tap them, in posts and on profiles alike.
+            Until then nothing is requested from the server hosting them, so scrolling past leaves no
+            trace there. Your own avatar and banner load without a tap, since you chose them.
           </p>
           <p className={styles.body}>
             We keep logs only to run the node, and we do not build profiles from them.

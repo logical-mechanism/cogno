@@ -125,9 +125,9 @@ export default function ListsPage() {
 
       <div className={styles.manager}>
         <p className={styles.note}>
-          Lists stay on this device — nothing is written to the chain and nobody is labelled. Reading a
-          list&apos;s timeline does ask the node for each member&apos;s posts, so &ldquo;private&rdquo;
-          means not published, not invisible.
+          Lists stay on this device. Nothing goes on the chain, and nobody is told they are on one.
+          Opening a list asks the node for each account&apos;s posts, so the node can see who you put in
+          it. Private here means unpublished, not hidden.
         </p>
 
         <div className={styles.createRow}>
@@ -262,7 +262,7 @@ export default function ListsPage() {
             {truncatedMembers && (
               <p className={styles.note}>
                 This timeline reads the first {MAX_FEED_MEMBERS} accounts in the list. Posts from the
-                remaining {members.length - MAX_FEED_MEMBERS} are not shown.
+                other {members.length - MAX_FEED_MEMBERS} are not shown.
               </p>
             )}
           </div>
@@ -291,8 +291,8 @@ export default function ListsPage() {
           // the first MAX_FEED_MEMBERS of them. "Nobody has posted" would claim more than was read.
           emptyDescription={
             truncatedMembers
-              ? `No top-level posts from the first ${MAX_FEED_MEMBERS} accounts in this list.`
-              : "No top-level posts from these accounts. Replies aren't shown here."
+              ? `No posts from the first ${MAX_FEED_MEMBERS} accounts in this list. Replies are not shown here.`
+              : "No posts from these accounts. Replies are not shown here."
           }
           emptyAction={{ label: "Explore", onClick: () => router.push("/explore/") }}
         />

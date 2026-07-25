@@ -21,7 +21,7 @@ export interface FollowedTopicsProps {
 export function FollowedTopics({ topics }: FollowedTopicsProps) {
   if (topics.length === 0) return null;
   return (
-    <nav className={styles.bar} aria-label="Followed topics">
+    <nav className={styles.bar} aria-label="Your topics">
       <span className={styles.label}>Your topics</span>
       {topics.map((t) => (
         <Link
