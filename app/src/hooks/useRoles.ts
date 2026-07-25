@@ -37,9 +37,6 @@ export interface UseRoles {
   observed: ObservedRoleView[] | null;
   /** the live `RoleClaimOf` credential (0x-hex) per role — a claim that may not yet be observed; null = none. */
   claimCredHex: Record<RoleKindType, string | null>;
-  /** the FIRST live observed entry for `kind`, or null if none. Correct for the 1:1 dRep/CC roles; an SPO
-   *  can hold SEVERAL entries (one per pool for an mSPO), so read `observed` directly for the full SPO set. */
-  observedFor: (kind: RoleKindType) => ObservedRoleView | null;
   /**
    * Submit an already-pre-flighted role proof FEELESSLY (bare/unsigned) and confirm it landed. The role
    * comes from the proof itself (not an arg). Returns the result; the live watches surface the badge.
@@ -137,10 +134,5 @@ export function useRoles(
     [api, signer],
   );
 
-  const observedFor = useCallback(
-    (kind: RoleKindType): ObservedRoleView | null => observed?.find((r) => r.kind === kind) ?? null,
-    [observed],
-  );
-
-  return { observed, claimCredHex, observedFor, claim, unclaim };
+  return { observed, claimCredHex, claim, unclaim };
 }

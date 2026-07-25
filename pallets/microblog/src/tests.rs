@@ -1403,8 +1403,8 @@ fn governance_poll_skips_zero_weight_roles() {
         }
 
         let view = Microblog::poll(host).expect("poll exists");
-        // SPO chamber: only the delegated pool P (15M) counts; the blank Calidus and the undelegated pool
-        // are skipped — so "no" has NO pool despite voter 12 holding a (zero-weight) SPO role.
+        // SPO chamber: only the delegated pool P (15M) counts; both undelegated pools (weight 0) are
+        // skipped — so "no" has NO pool despite voter 12 holding a (zero-weight) SPO role.
         assert_eq!(
             (view.options[0].spo_weight, view.options[0].spo_count),
             (15_000_000, 1)

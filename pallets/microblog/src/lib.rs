@@ -170,7 +170,7 @@ impl<AccountId> StakerSet<AccountId> for () {
 pub trait ChamberRoles<AccountId> {
     /// `who`'s observed roles: `(kind_index, display_id, chamber_weight)`. `kind_index` is 0 = SPO,
     /// 1 = dRep, 2 = CC (mirrors `RoleKind::index`); `chamber_weight` is the role's delegated Cardano
-    /// stake (0 for a blank Calidus SPO / CC). Empty if the account holds no live role. Read for a
+    /// stake (0 for an undelegated pool/dRep, or a CC). Empty if the account holds no live role. Read for a
     /// `PollKind::Governance` poll's chamber tally — both live (a node-served read) and, since spec 208,
     /// on-chain when `close_poll` FREEZES the chambers.
     fn roles_of(who: &AccountId) -> Vec<(u8, [u8; 28], u128)>;
@@ -2690,9 +2690,12 @@ impl<T: Config> Pallet<T> {
     /// way. The SPO chamber is DEDUPED by pool id — a pool's delegated stake counts ONCE even if several
     /// declared owners of it voted; if those owners SPLIT across options the pool ABSTAINS (its weight is
     /// dropped) rather than being assigned arbitrarily. The dRep chamber needs no dedup (the claim ledger is
-    /// 1:1 drep↔account). Blank Calidus SPOs and undelegated pools/dReps carry weight 0 and are skipped, so
-    /// the SPO chamber reflects only impersonation-proof, delegated `SpoOwner` pools. The result is
-    /// independent of holder-iteration order.
+    /// 1:1 drep↔account). Undelegated pools/dReps carry weight 0 and are skipped, so the SPO chamber
+    /// reflects the real delegated stake of every live pool a voter operates — via ownership OR a
+    /// claim-backed Calidus key. That weight can never be fabricated (it is always on-chain delegation of a
+    /// cold-key-signed pool), so both SPO sources tally honestly; an mSPO's per-pool weights SUM here (each
+    /// pool a distinct dedup key), matching the aggregate the operator would vote with on Cardano. The
+    /// result is independent of holder-iteration order.
     ///
     /// `want_spo` / `want_drep` (spec 209) select which chamber(s) this poll's [`PollKind`] surfaces:
     /// `Governance` passes both, an `Spo`/`Drep`-only poll passes a single `true`, and a `Stake` poll never
@@ -2726,7 +2729,7 @@ impl<T: Config> Pallet<T> {
             }
             for (kind, id, weight) in T::ChamberRoles::roles_of(holder) {
                 if weight == 0 {
-                    continue; // a blank Calidus SPO / undelegated pool or dRep contributes nothing
+                    continue; // an undelegated pool or dRep (weight 0) contributes nothing
                 }
                 match kind {
                     0 if want_spo => {

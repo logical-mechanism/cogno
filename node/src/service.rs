@@ -239,24 +239,22 @@ async fn observe_for_parent(
         }
     };
     // 5c. the SPO chamber weight (`pool_stake`): the pools that OWN a bound stake credential PLUS the pools
-    //     whose cold key declared a CLAIMED Calidus key (the SAME `claimed_pools` set the reduction derives —
-    //     a cheap parse-only pass over the registrations, NO witness). This set is only knowable AFTER the
-    //     role read returns the registrations (Calidus→pool lives in the label-867 CBOR), so it can't be a
-    //     column of that query. Union them into a `BTreeSet` (sorted + deduped ⇒ byte-deterministic query
-    //     input), then read their delegated stake scoped to that set — otherwise a Calidus SPO's chamber
-    //     weight is always 0. Same fail-closed discipline: any error ⇒ abstain.
+    //     whose cold key declared a CLAIMED Calidus key. This set is only knowable AFTER the role read
+    //     returns the registrations (Calidus→pool lives in the label-867 CBOR), so it can't be a column of
+    //     that query. The Calidus half is derived by `cogno_dbsync::reduction::claimed_calidus_pools` — the
+    //     SAME definition the reduction restricts its witness verification to, shared so the scope here can
+    //     never drift below what the reduction emits (a narrower scope would silently zero a Calidus SPO's
+    //     chamber weight). Union into a `BTreeSet` (sorted + deduped ⇒ byte-deterministic query input), then
+    //     read their delegated stake scoped to that set. Same fail-closed discipline: any error ⇒ abstain.
     let mut pool_id_set: std::collections::BTreeSet<[u8; 28]> = role_read
         .owner_pools
         .iter()
         .map(|(_, pool)| *pool)
         .collect();
-    for reg in &role_read.registrations {
-        if let Ok(parsed) = cogno_dbsync::calidus::parse_registration(reg) {
-            if claimed_calidus.contains(&parsed.calidus_key_hash) {
-                pool_id_set.insert(parsed.pool_id);
-            }
-        }
-    }
+    pool_id_set.extend(cogno_dbsync::reduction::claimed_calidus_pools(
+        &role_read.registrations,
+        &claimed_calidus,
+    ));
     let pool_ids: Vec<[u8; 28]> = pool_id_set.into_iter().collect();
     let pool_stake = match dbsync::read_pool_stake(
         &dbsync_url,

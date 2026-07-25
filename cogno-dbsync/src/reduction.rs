@@ -285,12 +285,32 @@ pub fn canonical_role_entries(raw: Vec<RoleEntry>) -> Vec<RoleEntry> {
 /// `active_pools` is the set of currently-registered, non-retired pool IDs (as-of the reference), used to
 /// gate both SPO paths on liveness.
 ///
+/// The pools that have ANY label-867 registration declaring one of the CLAIMED Calidus keys — a cheap,
+/// parse-only pass (NO witness verification). This is exactly the set the node service must UNION into the
+/// owned pools when scoping the `pool_stake` read, AND the set [`reduce_role_observation`] restricts its
+/// (expensive) witness verification to. Both call this ONE definition so the two crates can never drift:
+/// if the service scoped `pool_stake` to a smaller set than the reduction emits, a Calidus SPO's chamber
+/// weight would silently read 0. The result is a `BTreeSet` (sorted + deduped ⇒ byte-deterministic query
+/// input). Order-independent of the registration order.
+pub fn claimed_calidus_pools(
+    registrations: &[Vec<u8>],
+    claimed_calidus: &[[u8; 28]],
+) -> BTreeSet<[u8; 28]> {
+    let claimed: BTreeSet<[u8; 28]> = claimed_calidus.iter().copied().collect();
+    registrations
+        .iter()
+        .filter_map(|b| calidus::parse_registration(b).ok())
+        .filter(|p| claimed.contains(&p.calidus_key_hash))
+        .map(|p| p.pool_id)
+        .collect()
+}
+
 /// `pool_stake` / `drep_stake` (spec 207) carry the delegated-stake CHAMBER WEIGHT for governance polls:
 /// a pool's total delegated block-production stake, and a dRep's total delegated voting stake, at the
 /// as-of epoch. Each becomes the corresponding `RoleEntry.weight` (looked up by id; absent ⇒ 0). BOTH SPO
 /// sources (`SpoOwner` and `SpoCalidus`) weight by their pool's stake, so `pool_stake` MUST cover the
-/// Calidus-authorized pools, not just owned ones — the node service scopes the read to
-/// `owner_pools ∪ claimed-Calidus pools` before calling this.
+/// Calidus-authorized pools, not just owned ones — the node service scopes the read to `owner_pools` ∪
+/// [`claimed_calidus_pools`] before calling this.
 pub fn reduce_role_observation(
     registrations: &[Vec<u8>],
     active_pools: &[[u8; 28]],
@@ -306,13 +326,9 @@ pub fn reduce_role_observation(
     let drep_weight: BTreeMap<[u8; 28], u128> = drep_stake.iter().copied().collect();
     let mut entries: Vec<RoleEntry> = Vec::new();
 
-    // Pools that have ANY registration for a CLAIMED Calidus key (cheap parse, no witness).
-    let claimed_pools: BTreeSet<[u8; 28]> = registrations
-        .iter()
-        .filter_map(|b| calidus::parse_registration(b).ok())
-        .filter(|p| claimed.contains(&p.calidus_key_hash))
-        .map(|p| p.pool_id)
-        .collect();
+    // Pools that have ANY registration for a CLAIMED Calidus key (cheap parse, no witness). The SAME
+    // derivation the node service unions into its `pool_stake` scope — shared so the two can never drift.
+    let claimed_pools = claimed_calidus_pools(registrations, claimed_calidus);
 
     // Highest-nonce VERIFIED registration per claimed pool.
     let mut winner: BTreeMap<[u8; 28], calidus::CalidusRegistration> = BTreeMap::new();
@@ -936,6 +952,51 @@ mod tests {
             );
             assert_eq!(out2.len(), 1);
             assert_eq!(out2[0].id, p1b);
+        }
+
+        #[test]
+        fn claimed_calidus_pools_is_the_pool_scope_both_paths_share() {
+            // The shared helper the node service unions into its `pool_stake` scope AND the reduction
+            // restricts witness verification to. It returns EVERY pool declaring a claimed key (active or
+            // not, highest-nonce or not — scope must be a superset of what the reduction emits), and NO pool
+            // that only declares an UNCLAIMED key. Order-independent, byte-deterministic (a BTreeSet).
+            let (rp, pool_p, cal) = reg(1, 7, 5); // pool P declares claimed key K
+            let (rq, pool_q, cal_q) = reg(2, 7, 9); // pool Q also declares K (mSPO), higher nonce
+            let (ro, pool_o, cal_o) = reg(3, 8, 1); // pool O declares a DIFFERENT, unclaimed key
+            assert_eq!(cal, cal_q);
+            assert_ne!(cal, cal_o);
+            let regs = [ro.clone(), rq.clone(), rp.clone()]; // deliberately out of order
+            let got = claimed_calidus_pools(&regs, &[cal]);
+            assert_eq!(
+                got,
+                [pool_p, pool_q].into_iter().collect(),
+                "both pools declaring the claimed key; the unclaimed-key pool O is excluded"
+            );
+            assert!(
+                !got.contains(&pool_o),
+                "a pool declaring only an unclaimed key is out of scope"
+            );
+            // Superset property: the scope covers every pool the reduction actually emits an entry for.
+            let emitted: std::collections::BTreeSet<[u8; 28]> = reduce_role_observation(
+                &regs,
+                &[pool_p, pool_q, pool_o],
+                &[],
+                &[cal],
+                &[],
+                &[],
+                &[],
+            )
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+            assert!(
+                emitted.is_subset(&got),
+                "the shared scope must cover every emitted pool, else its weight silently reads 0"
+            );
+            // Input order does not change the (sorted, deduped) result.
+            assert_eq!(got, claimed_calidus_pools(&[rp, rq, ro], &[cal]));
+            let _ = cal_q;
+            let _ = cal_o;
         }
 
         #[test]
