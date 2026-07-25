@@ -30,6 +30,8 @@ import { useMuted, muteActionsFor } from "@/lib/muteStore";
 import { useBlocked, blockActionsFor } from "@/lib/blockStore";
 import { useHidden, hiddenActionsFor } from "@/lib/hiddenStore";
 import { useBookmarked, bookmarkActionsFor } from "@/lib/bookmarkStore";
+import { useLocalLists, localListActionsFor, MAX_LIST_MEMBERS } from "@/lib/localListStore";
+import { sanitizeInline } from "@/lib/sanitize";
 import { useToaster } from "./toast/ToasterProvider";
 import type {
   CognoPost,
@@ -133,6 +135,8 @@ export function PostCard({
   const hidden = useHidden(post.id, me);
   // Client-local bookmark (device-only, no chain state): save any post to the /bookmarks shortlist.
   const bookmarked = useBookmarked(post.id, me);
+  // The viewer's device-local lists — drives the "Add to <list>" rows in the ··· menu.
+  const localLists = useLocalLists(me);
   // Bookmarking lives only in the ··· menu (which closes on select) → toast so the save is confirmed,
   // mirroring the "Link copied" feedback on the sibling copy-link action.
   const { toast } = useToaster();
@@ -166,6 +170,27 @@ export function PostCard({
           id: "follow",
           label: following ? `Unfollow ${handle}` : `Follow ${handle}`,
           onSelect: () => handlers.onToggleFollow!(post.author, !following),
+        });
+      }
+      // Add/remove the author on a device-local list (lib/localListStore). One row per list the viewer
+      // already has — a viewer with no lists sees nothing here and creates one on /lists first (reachable
+      // from the left rail), which is also where the empty state points. A full list shows its row
+      // DISABLED rather than silently no-op'ing the tap.
+      for (const list of localLists) {
+        const inList = list.members.includes(post.author);
+        const name = sanitizeInline(list.name);
+        items.push({
+          id: `list-${list.id}`,
+          label: inList ? `Remove from ${name}` : `Add to ${name}`,
+          disabled: !inList && list.members.length >= MAX_LIST_MEMBERS,
+          onSelect: () => {
+            localListActionsFor(me).toggleMember(list.id, post.author);
+            toast(
+              inList
+                ? { kind: "info", message: `Removed from ${name}` }
+                : { kind: "success", message: `Added to ${name}` },
+            );
+          },
         });
       }
       // Hide THIS post (device-local): a "not this one" dismissal, undoable here or in Settings.
@@ -202,7 +227,7 @@ export function PostCard({
       });
     }
     return items.length > 0 ? items : undefined;
-  }, [pending, isOwnPost, handlers, post, muted, blocked, hidden, bookmarked, toast, me]);
+  }, [pending, isOwnPost, handlers, post, muted, blocked, hidden, bookmarked, localLists, toast, me]);
 
   // A blocked author is a HARD suppression: lists strip the post before it reaches here (useModeration),
   // so this branch only fires where a card is rendered directly — the detail focal / a permalink. No

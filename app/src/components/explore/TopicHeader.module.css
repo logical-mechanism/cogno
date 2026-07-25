@@ -1,0 +1,55 @@
+/* The topic band: shown when /explore's committed query is exactly one #hashtag. Sits inside the sticky
+   header, so it carries the same blurred chrome as the results strip. */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+  background: var(--cg-header-bg);
+  backdrop-filter: blur(var(--cg-header-blur));
+  -webkit-backdrop-filter: blur(var(--cg-header-blur));
+}
+
+.text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.tag {
+  margin: 0;
+  font-size: var(--cg-fs-lg);
+  font-weight: 700;
+  color: var(--cg-text);
+  overflow-wrap: break-word;
+}
+
+.note {
+  margin: 0;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
+.follow {
+  flex: 0 0 auto;
+  padding: var(--cg-space-2) var(--cg-space-4);
+  border: 1px solid var(--cg-accent);
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  font-size: var(--cg-fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.followActive {
+  background: transparent;
+  color: var(--cg-text);
+  border-color: var(--cg-border);
+}
+
+.follow:focus-visible {
+  outline: 2px solid var(--cg-accent);
+  outline-offset: 2px;
+}

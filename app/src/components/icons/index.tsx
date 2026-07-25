@@ -130,6 +130,22 @@ export function IconBookmark(p: IconProps) {
   );
 }
 
+export function IconList(p: IconProps) {
+  // Material "list" / "playlist_add_check" — the device-local /lists rail entry.
+  if (p.filled) {
+    return (
+      <svg {...svgProps(p)}>
+        <path d="M3 5h12v2H3V5zm0 4h12v2H3V9zm0 4h8v2H3v-2zm12.5 1.5L14 13l-1.5 1.5L15.5 18 21 12.5 19.5 11l-4 4z" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...svgProps(p)}>
+      <path d="M3 5h12v2H3V5zm0 4h12v2H3V9zm0 4h8v2H3v-2z" />
+    </svg>
+  );
+}
+
 // ── Nav icons (outline default + filled active) ──────────────────────────────────────────────
 
 export function IconBell(p: IconProps) {

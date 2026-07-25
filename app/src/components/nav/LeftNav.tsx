@@ -5,8 +5,9 @@
 // collapses to icons only (CSS) and the Post pill becomes a round accent icon button.
 //
 // Items (top→bottom): cogno wordmark → / · Home · Explore · Governance · Notifications · Profile ·
-// Bookmarks · Settings · Post · Account. (Bookmarks is the desktop/tablet reach for the device-local
-// /bookmarks list; the mobile bottom bar carries its own tab set — see BottomTabBar.)
+// Bookmarks · Lists · Settings · Post · Account. (Bookmarks and Lists are the desktop/tablet reach for
+// the device-local /bookmarks and /lists surfaces; the mobile bottom bar carries its own tab set — see
+// BottomTabBar.)
 // Active state uses usePathname() with FILLED icons (X-style). Profile resolves to /u/<me>/ when
 // connected, else /welcome/. The "Post" pill opens the compose modal overlay
 // (modalStore.openCompose). Reads the gate from useSession(); never builds an extrinsic.
@@ -16,7 +17,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import styles from "./LeftNav.module.css";
 import { Account } from "../Account";
-import { IconHome, IconSearch, IconProfile, IconBookmark, IconSettings, IconCompose, IconBell, IconPoll } from "../icons";
+import { IconHome, IconSearch, IconProfile, IconBookmark, IconList, IconSettings, IconCompose, IconBell, IconPoll } from "../icons";
 import { useSession } from "../Providers";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useNavReTap } from "@/hooks/useNavReTap";
@@ -71,6 +72,7 @@ export function LeftNav() {
         viewer.address ? p.startsWith(`/u/${viewer.address}`) : p.startsWith("/welcome"),
     },
     { label: "Bookmarks", href: "/bookmarks/", Icon: IconBookmark, match: (p) => p.startsWith("/bookmarks") },
+    { label: "Lists", href: "/lists/", Icon: IconList, match: (p) => p.startsWith("/lists") },
     { label: "Settings", href: "/settings/", Icon: IconSettings, match: (p) => p.startsWith("/settings") },
   ];
 

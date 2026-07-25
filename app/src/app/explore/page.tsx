@@ -6,8 +6,14 @@
 //
 //   no source yet  → NO-SOURCE : the reader isn't connected — SearchBar disabled +
 //                                `search-unavailable` EmptyState; the firehose still renders.
-//   source, q ===  '' → DEFAULT : firehose Timeline + FirehoseOrderToggle (Top|Recent).
-//   source, q !== '' → QUERY   : ResultTabStrip (People | Latest) + result list.
+//   source, q ===  '' → DEFAULT : firehose Timeline + FirehoseControls (order ?s= + role lens ?r=).
+//   source, q !== '' → QUERY   : ResultTabStrip (People | Latest) + result list. When the term is
+//                                exactly one #hashtag this is also the TOPIC surface (TopicHeader).
+//
+// `?s=` (order) and `?r=` (role lens) are DERIVED values, deliberately NOT a fourth `mode` — `mode` has
+// many read sites and none of them need to know. A ranked order re-sorts ONE window (there is no score
+// index to page) and therefore does not paginate; see lib/feed/rank for why that is a hard constraint
+// rather than a shortcut.
 //
 // `q` is the committed term (mirrored to ?q=). The SearchBar's controlled value is a SEPARATE local
 // `draft` that debounces into `q` (300ms) while typing — router.replace (not push) so keystroke term
@@ -32,6 +38,9 @@ import { EmptyState } from "@/components/EmptyState";
 import { Loading } from "@/components/Loading";
 import { ResultTabStrip, RESULT_PANEL_ID, type ResultTab } from "@/components/explore/ResultTabStrip";
 import { ExploreList } from "@/components/explore/ExploreList";
+import { FirehoseControls, LENSES } from "@/components/explore/FirehoseControls";
+import { TopicHeader } from "@/components/explore/TopicHeader";
+import { FollowedTopics } from "@/components/explore/FollowedTopics";
 import { useSession } from "@/components/Providers";
 import { useFeedPage } from "@/hooks/useFeed";
 import { usePostActions } from "@/hooks/usePostActions";
@@ -47,12 +56,30 @@ import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery, isQueryTooShort, MIN_QUERY_LEN } from "@/lib/search";
 import { useRecentSearches, recentSearchActions } from "@/lib/recentSearchStore";
 import { readErrorCopy } from "@/lib/chain/errors";
+import {
+  parseSort,
+  isRanked,
+  rankWindow,
+  isUndifferentiated,
+  RANK_WINDOW,
+  MIN_RANKABLE,
+  type Sort,
+} from "@/lib/feed/rank";
+import { topicOfQuery } from "@/lib/topics";
+import { topicActionsFor, useTopicFollowed, useFollowedTopics } from "@/lib/topicStore";
+import type { RoleKindType } from "@/lib/chain/roles";
 import type { CognoPost, FeedQuery, Suggestion } from "@/lib/types";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const PEOPLE_LIMIT = 20;
 // The firehose + Latest-search page size (one node `state_call` per page since spec-120).
 const PAGE_SIZE = FEED_PAGE_SIZE;
+
+/** Narrow an untrusted `?r=` value to an offered lens. Anything else (incl. `Committee`, which the
+ *  observer can never populate) means "no lens". */
+function parseLens(raw: string | null): RoleKindType | null {
+  return LENSES.includes(raw as RoleKindType) ? (raw as RoleKindType) : null;
+}
 
 export default function ExploreRoute() {
   // useSearchParams() resolves client-side under the static export — wrap in Suspense (mirrors /compose).
@@ -72,9 +99,6 @@ function ExploreView() {
   const searchEnabled = source != null;
   const peopleEnabled = source != null;
   const paginationCapable = source != null;
-  // Node-first: the firehose is node-served (recency, by id) on every source makeFeedSource builds
-  // (papi + hybrid). The node has no score index, so the score-ranked "Top" order is unavailable —
-  // the toggle below honestly shows "Most recent" as selected (a node-side score index would flip this).
 
   // The committed term is the URL ?q= (normalized so "a  b"/"a b"/NFD accents share one URL + result
   // set); the SearchBar value is a separate local draft.
@@ -85,21 +109,40 @@ function ExploreView() {
   // are shareable/bookmarkable and Back restores the scope.
   const resultTab: ResultTab = searchParams.get("f") === "people" ? "people" : "latest";
 
-  // One builder for every /explore URL write so q + f stay in sync (default "latest" omitted). Keep the
+  // DEFAULT-mode firehose order (?s=) and verified-role lens (?r=). Both are DERIVED values, NOT a fourth
+  // `mode`: `mode` has many read sites below and every one of them stays untouched. Same discipline the
+  // topic surface uses — a topic is just a ?q= whose term happens to be one tag.
+  const sort = parseSort(searchParams.get("s"));
+  const lens = parseLens(searchParams.get("r"));
+
+  // One builder for every /explore URL write so q + f + s + r stay in sync (defaults omitted). Keep the
   // People scope even with an empty q so editing the query text down to nothing / below the min length
   // doesn't silently reset the tab — it's restored on retype.
-  const buildExploreUrl = useCallback((q: string, f: ResultTab) => {
-    const params = new URLSearchParams();
-    if (q.length > 0) params.set("q", q);
-    if (f === "people") params.set("f", f);
-    const qs = params.toString();
-    return qs ? `/explore/?${qs}` : "/explore/";
-  }, []);
+  //
+  // EVERY param must be threaded through here. This rebuilds the query string FROM SCRATCH, so a param
+  // that isn't passed is ERASED by the next write — and the next write is any keystroke (the debounce
+  // calls writeTerm) or any result-tab switch.
+  const buildExploreUrl = useCallback(
+    (q: string, f: ResultTab, s: Sort, r: RoleKindType | null) => {
+      const params = new URLSearchParams();
+      if (q.length > 0) params.set("q", q);
+      if (f === "people") params.set("f", f);
+      if (s !== "latest") params.set("s", s);
+      if (r !== null) params.set("r", r);
+      const qs = params.toString();
+      return qs ? `/explore/?${qs}` : "/explore/";
+    },
+    [],
+  );
 
-  // writeTerm reads the CURRENT tab from a ref (not a captured value) so a debounce timer that fires
-  // AFTER a tab switch preserves the tab the user is now on, instead of the tab at schedule time.
+  // writeTerm reads the CURRENT tab/order/lens from refs (not captured values) so a debounce timer that
+  // fires AFTER a switch preserves what the user is now on, instead of the value at schedule time.
   const resultTabRef = useRef(resultTab);
   resultTabRef.current = resultTab;
+  const sortRef = useRef(sort);
+  sortRef.current = sort;
+  const lensRef = useRef(lens);
+  lensRef.current = lens;
 
   // The last term THIS input wrote to the URL. The sync effect uses it to tell our own debounce commits
   // apart from genuinely external URL changes — the single write path so every self-write records itself.
@@ -107,7 +150,7 @@ function ExploreView() {
   const writeTerm = useCallback(
     (next: string) => {
       selfCommittedRef.current = next;
-      router.replace(buildExploreUrl(next, resultTabRef.current));
+      router.replace(buildExploreUrl(next, resultTabRef.current, sortRef.current, lensRef.current));
     },
     [router, buildExploreUrl],
   );
@@ -169,6 +212,12 @@ function ExploreView() {
     [writeTerm, committedQ],
   );
 
+  // Followed topics (device-local, per account) — the strip in DEFAULT mode + the Follow control on the
+  // topic band. `useFollowedTopics` subscribes, so following a topic updates the strip immediately.
+  const topicActions = useMemo(() => topicActionsFor(me), [me]);
+  const topicFollowed = useTopicFollowed(topicOfQuery(committedQ), me);
+  const followedTopics = useFollowedTopics(me);
+
   // Recent searches (device-local). Record a term once it has SETTLED (stable ≥1.2s) so live-typed
   // prefixes ("ab" → "abc" → "abcd") aren't each saved — only the query the user actually landed on.
   const recentSearches = useRecentSearches();
@@ -220,13 +269,23 @@ function ExploreView() {
     isQueryTooShort(draftNorm) &&
     !profileRouteForQuery(draftNorm);
 
-  // ── DEFAULT firehose order toggle ──────────────────────────────────────────────────────────────
-  // Default to "Most recent"; "Top" (score) is only reachable when a source advertises score order
-  // (none today — see scoreOrderEnabled). effectiveOrder is what's actually served + shown selected.
-
   // ── QUERY result-scope tab (default Latest, mirrored to ?f=) ───────────────────────────────────
   const setResultTab = useCallback(
-    (tab: ResultTab) => router.replace(buildExploreUrl(committedQ, tab)),
+    (tab: ResultTab) => router.replace(buildExploreUrl(committedQ, tab, sortRef.current, lensRef.current)),
+    [router, buildExploreUrl, committedQ],
+  );
+
+  // ── DEFAULT firehose order + role lens (mirrored to ?s= / ?r=, defaults omitted) ────────────────
+  // `replace`, not `push`: flipping an order is not a navigation step, and stacking history on every
+  // chip tap would make Back walk sort states instead of leaving the surface. Both leave `selfCommittedRef`
+  // ALONE — it tracks the search TERM, and touching it here would desync the search box.
+  const setSort = useCallback(
+    (next: Sort) => router.replace(buildExploreUrl(committedQ, resultTabRef.current, next, lensRef.current)),
+    [router, buildExploreUrl, committedQ],
+  );
+  const setLens = useCallback(
+    (next: RoleKindType | null) =>
+      router.replace(buildExploreUrl(committedQ, resultTabRef.current, sortRef.current, next)),
     [router, buildExploreUrl, committedQ],
   );
   // When People is unreachable, fall back to Latest.
@@ -235,20 +294,39 @@ function ExploreView() {
   // ── DEFAULT firehose / QUERY Latest feed (both via the page seam) ──────────────────────────────
   const firehoseQuery = useMemo<FeedQuery>(
     // `viewer: me` lets the node stamp the myVote overlay node-side, in the same state_call.
-    () => ({ first: PAGE_SIZE, viewer: me ?? undefined }),
-    [me],
+    //
+    // A RANKED order pulls the whole runtime page (RANK_WINDOW) instead of PAGE_SIZE, because for a
+    // ranking the window IS the claim: it must be one read at one block, or ages and engagement would
+    // come from two different clocks. Changing `first` changes useFeed's queryKey, which DISCARDS the
+    // previous order's list — correct, since two orders have different pagination semantics and must
+    // never share an array.
+    () => ({
+      first: isRanked(sort) ? RANK_WINDOW : PAGE_SIZE,
+      viewer: me ?? undefined,
+      ...(lens !== null ? { role: lens } : {}),
+    }),
+    [me, sort, lens],
   );
   // The firehose renders in DEFAULT mode AND in DISCONNECTED mode (it still shows the live
   // window) — only QUERY mode swaps it out for the result list.
   const firehoseEnabled = mode === "default" || mode === "disconnected";
   const firehose = useFeedPage(source, firehoseQuery, firehoseEnabled);
 
+  // When the committed query is exactly one #hashtag, this is the TOPIC surface: the same search, narrowed
+  // to an exact tag. Null for every other query (a multi-term query stays a plain search).
+  const topic = useMemo(() => topicOfQuery(committedQ), [committedQ]);
+
   const latestQuery = useMemo<FeedQuery>(
     // `viewer: me` lets the node stamp the `myVote` overlay node-side (same as the
     // firehose), so search results show my vote state and `carriedViewerStates` skips the
     // per-card viewerPostState read (no flash of unfilled action icons).
-    () => ({ first: PAGE_SIZE, search: committedQ, viewer: me ?? undefined }),
-    [committedQ, me],
+    () => ({
+      first: PAGE_SIZE,
+      search: committedQ,
+      viewer: me ?? undefined,
+      ...(topic !== null ? { topic } : {}),
+    }),
+    [committedQ, me, topic],
   );
   // Deliberately NOT gated on the active result tab. `useFeedPage` treats `enabled: false` as DISCARD,
   // not pause — it clears `posts` and the cursor — so tying this to the tab would throw away every loaded
@@ -365,6 +443,32 @@ function ExploreView() {
   const firehoseLoading = firehose.loading && firehose.posts.length === 0;
   const latestLoading = latest.loading && latest.posts.length === 0;
 
+  // ── the ranked window ──────────────────────────────────────────────────────────────────────────
+  // The reference block for `hot`'s age term, FROZEN per window read rather than read from a ticking
+  // clock: a moving reference would silently re-order rows under the user's cursor between renders.
+  // The newest post in the window is the best in-band proxy for "now" (the window came from one
+  // best-block read, so its head IS that block, near enough for a decay term).
+  const headBlock = useMemo(
+    () => firehose.posts.reduce((max, p) => (p.at > max ? p.at : max), 0),
+    [firehose.posts],
+  );
+  const rankedPosts = useMemo(
+    () => (isRanked(sort) ? rankWindow(firehose.posts, sort, headBlock) : firehose.posts),
+    [firehose.posts, sort, headBlock],
+  );
+  const undifferentiated = useMemo(
+    () => isUndifferentiated(firehose.posts, sort),
+    [firehose.posts, sort],
+  );
+  // Offer the controls only where they can be honoured: a served source, DEFAULT mode, and a window big
+  // enough that an order has more than one reachable outcome. HIDE, never disable.
+  //
+  // DISCONNECTED is excluded deliberately: `renderFirehose()` still mounts there over an always-empty
+  // array, so a shared /explore/?s=hot opened while the chain is unreachable would otherwise render
+  // nothing underneath a ranking claim.
+  const showFirehoseControls =
+    source != null && mode === "default" && firehose.posts.length >= MIN_RANKABLE;
+
   return (
     <>
       {/* sticky blurred header: the SearchBar + (DEFAULT) order toggle / (QUERY) result tabs */}
@@ -383,9 +487,26 @@ function ExploreView() {
             onClearRecent={recentSearchActions.clear}
           />
         </div>
-        {/* Score ("Top") order isn't served yet (scoreOrderEnabled=false → the only reachable state is
-            "Most recent"), so hide the toggle rather than show a permanently-disabled control. Flip
-            scoreOrderEnabled back to true to restore it — no other change needed. */}
+        {showFirehoseControls && (
+          <FirehoseControls
+            sort={sort}
+            onSortChange={setSort}
+            lens={lens}
+            onLensChange={setLens}
+            windowSize={firehose.posts.length}
+            undifferentiated={undifferentiated}
+          />
+        )}
+        {topic !== null && mode === "query" && activeResultTab === "latest" && (
+          <TopicHeader
+            topic={topic}
+            followed={topicFollowed}
+            onToggleFollow={() => topicActions.toggle(topic)}
+            count={latest.posts.length}
+            loading={latestLoading}
+          />
+        )}
+        {mode === "default" && <FollowedTopics topics={followedTopics} />}
         {mode === "query" && peopleEnabled && (
           <ResultTabStrip active={activeResultTab} onChange={setResultTab} />
         )}
@@ -452,21 +573,30 @@ function ExploreView() {
 
   // The firehose Timeline — shared by DEFAULT mode and the DISCONNECTED firehose (still renders).
   function renderFirehose() {
+    // A RANKED window MUST NOT paginate and MUST NEVER be handed loadMore/refresh. A cursor is monotone
+    // in id and a rank is not, so "load more" would interleave and duplicate rows; and the load-more /
+    // refresh merge ends in a sort by id, which would silently dissolve the ranking back into recency —
+    // reading to the user as a broken control rather than a design limit. One window, no pagination.
+    const ranked = isRanked(sort);
     return (
       <Timeline
-        posts={firehose.posts}
+        posts={rankedPosts}
         gate={viewer}
         viewerStates={viewerStates}
         handlers={handlers}
         loading={firehoseLoading}
         error={firehose.error}
-        hasMore={firehose.hasNextPage}
-        onLoadMore={firehose.loadMore}
+        hasMore={ranked ? false : firehose.hasNextPage}
+        onLoadMore={ranked ? undefined : firehose.loadMore}
         loadingMore={firehose.loading}
-        paginationCapable={paginationCapable}
+        paginationCapable={ranked ? false : paginationCapable}
         emptyVariant="feed"
-        emptyTitle="Nothing here yet"
-        emptyDescription="Be the first to post."
+        emptyTitle={lens !== null ? "No posts found from these accounts" : "Nothing here yet"}
+        emptyDescription={
+          lens !== null
+            ? "Nobody with a live badge has posted in the stretch we scanned."
+            : "Be the first to post."
+        }
         emptyAction={{ label: "Go home", onClick: () => router.push("/") }}
       />
     );
