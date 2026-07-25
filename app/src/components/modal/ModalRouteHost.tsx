@@ -82,6 +82,15 @@ export function ModalRouteHost() {
   const router = useRouter();
   const { state, close } = useModalStore();
   const { api, signer, source, viewer } = useSession();
+  // The draft is bucketed per account (null = the signed-out bucket) — see lib/composerDraftStore.
+  const draftWho = viewer.address ?? null;
+  // `draftWho` is read through a REF in the SAVE effect below, deliberately. Keying that effect on it
+  // would fire a save on an account switch while `text` still holds the PREVIOUS account's words — 
+  // writing them straight into the new account's bucket, the exact leak the bucketing exists to stop.
+  // The RELOAD effect keys on it instead, so a switch pulls the new account's own draft into `text`, and
+  // the next save (triggered by that text change) lands in the right bucket.
+  const draftWhoRef = useRef(draftWho);
+  draftWhoRef.current = draftWho;
   const bestBlock = useBestBlock();
   // Only the PROFILE overlay is still owned here — the compose overlay moved into useComposeWrite.
   const { patchProfile, confirmProfile, rollbackProfile } = useOptimistic();
@@ -158,22 +167,58 @@ export function ModalRouteHost() {
   // EXCEPT across a compose↔poll flip, which is a mode swap within one open modal, not a new open. The
   // flip hands the user's in-flight words through `carryRef` (a post's text IS a poll's question), so
   // toggling does not silently blank the textarea they were typing in.
+  //
+  // AND EXCEPT an in-place ACCOUNT SWITCH under an already-open modal, which is the branch below. That
+  // is not a new open either, and running the full reset for it was destructive: `viewer.address` moves
+  // on a wallet account switch, on sign-out, and on a session restore landing a beat after a guest
+  // started typing — and each of those wiped the open composer's text, blanked the poll draft (which is
+  // NOT persisted anywhere, so those words were simply gone), disarmed the dirty flag that the
+  // discard-confirm depends on, and reported an in-flight submit as idle.
+  const prevKindRef = useRef(kind);
+  const prevDraftWhoRef = useRef(draftWho);
+  // `text` read through a ref so the flush below sees the CURRENT words without keying this effect on
+  // every keystroke.
+  const textRef = useRef(text);
+  textRef.current = text;
   useEffect(() => {
+    const prevKind = prevKindRef.current;
+    const prevWho = prevDraftWhoRef.current;
+    prevKindRef.current = kind;
+    prevDraftWhoRef.current = draftWho;
+
+    // Account switch with the modal state otherwise unchanged: re-bucket, do not reset. The words are
+    // FLUSHED to the account they were typed under before the new bucket is loaded, so switching back
+    // finds them — the bucketing invariant (never write A's text into B's bucket) is what forces the
+    // re-seed, and it is satisfied by moving the text, not by destroying it. Everything else (the poll
+    // draft, the dirty flag, the submit state) is per-open and stays put.
+    //
+    // SIGN-OUT (`draftWho` back to null) is the one switch that must NOT flush: useSigner has just run
+    // clearAllPostDrafts() across every bucket, on the grounds that unsent words are what a person
+    // leaving a shared browser would least want left behind. Writing them back here would quietly undo
+    // that, so sign-out re-seeds from the (now empty) signed-out bucket and the composer clears.
+    if (prevKind === kind && prevWho !== draftWho) {
+      if (kind === "compose") {
+        if (draftWho !== null) savePostDraft(prevWho, textRef.current);
+        setText(loadPostDraft(draftWho));
+      }
+      return;
+    }
+
     const carried = carryRef.current;
     carryRef.current = null;
     setSubmitState("idle");
-    setText(kind === "compose" ? (carried ?? loadPostDraft()) : "");
+    setText(kind === "compose" ? (carried ?? loadPostDraft(draftWho)) : "");
     setSerialized(""); // the base Composer re-reports on mount; reply/quote leave it "" (base-cost gate)
     setConfirmDiscard(false);
     composerDirtyRef.current = false;
     if (kind === "poll") setPollDraft({ question: carried ?? "", options: ["", ""] });
     // `setSubmitState` is useComposeWrite's raw useState setter — a stable identity, so listing it
-    // cannot re-run this effect. The effect is keyed on `kind` alone.
-  }, [kind, setSubmitState]);
+    // cannot re-run this effect.
+  }, [kind, draftWho, setSubmitState]);
 
   // Persist the plain-compose draft as it changes (savePostDraft removes the key when it's empty).
   useEffect(() => {
-    if (kind === "compose") savePostDraft(text);
+    if (kind === "compose") savePostDraft(draftWhoRef.current, text);
   }, [kind, text]);
 
   // Pre-flight capacity gate (shared with every other composing surface — see useComposerGate).
@@ -231,13 +276,13 @@ export function ModalRouteHost() {
         return;
       }
       if (!api || !signer || draft.text.trim().length === 0) return;
-      clearPostDraft(); // submitted → don't restore it next time
+      clearPostDraft(draftWho); // submitted → don't restore it next time
       runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text), {
         pending: "Posting…",
         success: "Posted",
       });
     },
-    [viewer.status, api, signer, runWrite, optimisticPost, close, router],
+    [viewer.status, draftWho, api, signer, runWrite, optimisticPost, close, router],
   );
 
   const onReply = useCallback(
@@ -550,7 +595,7 @@ export function ModalRouteHost() {
           cancelLabel="Keep editing"
           danger
           onConfirm={() => {
-            clearPostDraft(); // explicit discard → forget the saved draft
+            clearPostDraft(draftWho); // explicit discard → forget the saved draft
             setConfirmDiscard(false);
             onClose();
           }}

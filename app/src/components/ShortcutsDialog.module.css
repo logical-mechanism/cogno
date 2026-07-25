@@ -1,0 +1,111 @@
+/* Layers with ConfirmDialog (above the ComposerModal). */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--cg-z-modal) + 10);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-4);
+  background: var(--cg-overlay);
+}
+
+.card {
+  width: 100%;
+  max-width: 420px;
+  max-height: 80vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-4);
+  padding: var(--cg-space-5);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-elevated);
+  box-shadow: var(--cg-shadow-modal);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cg-space-3);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--cg-fs-lg);
+  font-weight: var(--cg-fw-extrabold);
+  color: var(--cg-text);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+}
+
+.groupHead {
+  margin: 0;
+  font-size: var(--cg-fs-xs);
+  font-weight: 600;
+  color: var(--cg-text-secondary);
+}
+
+.rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cg-space-4);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text);
+}
+
+.keys {
+  flex: 0 0 auto;
+  display: flex;
+  gap: var(--cg-space-1);
+}
+
+kbd.key {
+  padding: 1px var(--cg-space-2);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-sm);
+  background: var(--cg-bg-subtle);
+  color: var(--cg-text);
+  font-family: inherit;
+  font-size: var(--cg-fs-xs);
+  white-space: nowrap;
+}
+
+.close {
+  align-self: flex-end;
+  padding: var(--cg-space-2) var(--cg-space-4);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--cg-bg-hover);
+}
+
+/* Separator between ALTERNATIVE keys ("Enter or o"). A chord renders its keys adjacent with no word
+   between them, which is what distinguishes the two. */
+.or {
+  align-self: center;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}

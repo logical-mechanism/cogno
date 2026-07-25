@@ -38,9 +38,13 @@ function boot(seed: Record<string, unknown> = {}) {
   });
 }
 
+// `claimLegacy: true` mirrors the real bookmarks/mutes stores — both shipped device-global before being
+// bucketed per account, so their bare key is claimable exactly once. It is NOT the default (see the
+// "legacy claim is opt-in" case below): a store bucketed from birth must never adopt a bare key.
 const bookmarks = () =>
-  createViewerScopedStringSetStore({ prefix: "cg-bookmarks", isValid: DIGITS });
-const mutes = () => createViewerScopedStringSetStore({ prefix: "cg-muted", isValid: NONEMPTY });
+  createViewerScopedStringSetStore({ prefix: "cg-bookmarks", isValid: DIGITS, claimLegacy: true });
+const mutes = () =>
+  createViewerScopedStringSetStore({ prefix: "cg-muted", isValid: NONEMPTY, claimLegacy: true });
 
 /** Another tab writes the key, then this tab receives the `storage` event the browser would deliver. */
 function foreignWrite(key: string, value: unknown) {
@@ -193,5 +197,28 @@ describe("add / remove / toggle", () => {
     store.actionsFor(ALICE).add("5");
     store.actionsFor(ALICE).add("5");
     expect(notified).toBe(1);
+  });
+});
+
+describe("the legacy claim is OPT-IN", () => {
+  // Regression guard for a store bucketed per-account from birth (topicStore). The claim used to be
+  // hard-coded on for every store built through this facade, so a brand-new store would silently adopt
+  // whatever sat at its bare key — the exact case viewerScopedStore documents as forbidden.
+  const fresh = () => createViewerScopedStringSetStore({ prefix: "cg-topics", isValid: NONEMPTY });
+
+  it("does NOT claim a bare key by default", () => {
+    boot({ "cg-topics": ["cardano"] });
+    const store = fresh();
+    expect([...store.readFor(ALICE)]).toEqual([]);
+    expect(storage.getItem("cg-topics")).not.toBe(null); // untouched, not migrated away
+  });
+
+  it("still buckets per account when the claim is off", () => {
+    boot();
+    const store = fresh();
+    store.actionsFor(ALICE).add("cardano");
+    expect([...store.readFor(ALICE)]).toEqual(["cardano"]);
+    expect([...store.readFor(BOB)]).toEqual([]);
+    expect([...store.readFor(null)]).toEqual([]);
   });
 });

@@ -13,7 +13,7 @@ import type { cogno } from "@polkadot-api/descriptors";
 import type { ChainError } from "@/lib/chain/errors";
 // `import type` is fully erased, so this type-only reference (roles.ts also imports types from here) is
 // not a runtime cycle — it just names the observer-written role-badge shape the node folds onto authors.
-import type { ObservedRoleView } from "@/lib/chain/roles";
+import type { ObservedRoleView, RoleKindType } from "@/lib/chain/roles";
 
 /** The typed API for the cogno-chain runtime (Microblog @ pallet index 10). */
 export type CognoApi = TypedApi<typeof cogno>;
@@ -224,6 +224,24 @@ export interface FeedQuery {
   // ── NEW ──
   tab?: "forYou" | "following" | "replies" | "likes";
   followeeOf?: Ss58; // "Following" timeline: posts by accounts this user follows
+  /**
+   * TOPIC feed: narrow a `search` page to posts that carry this canonical tag EXACTLY. The node's
+   * substring scan is a superset of a topic (`#cardano` also matches `#cardanoNFT` and a URL fragment),
+   * so the reader re-checks each match against the real tokenizer. Requires `search`.
+   */
+  topic?: string;
+  /**
+   * ROLE lens: keep only posts whose author currently holds this verified Cardano role. Filtered
+   * client-side against the `authorRoles` the runtime already stamps on every post — so it is scoped to
+   * the window actually scanned, not a corpus-wide claim.
+   */
+  role?: RoleKindType;
+  /**
+   * LIST timeline: posts by exactly these accounts (a device-local list's members). Served by a
+   * fan-out over each member's own author index, so it does not depend on their density in the
+   * firehose. Capped by `MAX_FEED_MEMBERS`.
+   */
+  members?: readonly Ss58[];
   /**
    * Cap the reader's cursor-chase at this many hops. Omit for a RENDERED feed — the user is looking at
    * the page and wants it filled, so the reader's own generous defaults are right.

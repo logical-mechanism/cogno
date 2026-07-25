@@ -59,8 +59,7 @@ export default function GlobalError({
             cogno couldn&apos;t start.
           </h1>
           <p style={{ margin: "0 0 1.25rem", color: "#71767b", lineHeight: 1.5 }}>
-            This is usually a dropped connection or a
-            dropped connection.
+            This is usually a dropped connection or a half-loaded update.
           </p>
           {error.digest && (
             <p style={{ margin: "0 0 1.25rem", fontSize: "0.8125rem", color: "#71767b" }}>

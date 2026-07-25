@@ -40,7 +40,10 @@ import {
   nodeWhoToFollow,
   nodeLikesPage,
   nodeFollowEdges,
+  nodeRoleFeedPage,
+  nodeMembersFeedPage,
 } from "@/lib/chain/node-reads";
+import { bodyHasTopic } from "@/lib/topics";
 import {
   readPoll,
   readViewerPostState,
@@ -124,9 +127,39 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     // Search: ASCII-case-insensitive substring scan over post bodies (MicroblogApi.search_posts, the
     // in-runtime linear scan). A whitespace-only term falls through to the global feed (matching the
     // old `if (q.search)` empty-string behaviour, no throw).
+    //
+    // `q.topic` narrows that scan to an EXACT tag: the node matches `#cardano` inside `#cardanoNFT` and
+    // inside a `.../#cardano` URL fragment, and only the shared tokenizer can tell those apart. Applied
+    // inside the reader's chase so the page still fills.
     if (q.search && q.search.trim().length > 0) {
+      const topic = q.topic;
       return toFeedPage(
         await nodeSearchPosts(api, q.search.trim(), {
+          beforeId,
+          limit: first,
+          viewer,
+          maxHops: q.maxHops,
+          keep: topic !== undefined ? (p) => bodyHasTopic(p.text, topic) : undefined,
+        }),
+      );
+    }
+
+    // List timeline: posts by exactly the given accounts. A fan-out over each member's own author index
+    // (BEFORE the `q.authorId` branch, so a list is never mistaken for a single-author page). A handful
+    // of accounts is arbitrarily sparse in the firehose, so filtering it would chase for hundreds of
+    // hops; each author's own index is dense.
+    if (q.members && q.members.length > 0) {
+      return toFeedPage(
+        await nodeMembersFeedPage(api, q.members, { beforeId, limit: first, viewer }),
+      );
+    }
+
+    // Role lens: the firehose narrowed to authors holding a verified Cardano role, filtered on the
+    // `authorRoles` the runtime already stamps on every post. Scoped to the scanned window by design —
+    // there is no score/role index to page, so the UI must not claim a corpus-wide ranking.
+    if (q.role) {
+      return toFeedPage(
+        await nodeRoleFeedPage(api, q.role, {
           beforeId,
           limit: first,
           viewer,

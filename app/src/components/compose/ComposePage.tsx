@@ -67,6 +67,16 @@ export function ComposePage() {
   const router = useRouter();
   const params = useSearchParams();
   const { api, signer, source, viewer } = useSession();
+  // The draft is bucketed per account (null = the signed-out bucket), so a shared browser never hands
+  // one account the previous one's unsent words.
+  const draftWho = viewer.address ?? null;
+  // `draftWho` is read through a REF in the SAVE effect below, deliberately. Keying that effect on it
+  // would fire a save on an account switch while `text` still holds the PREVIOUS account's words — 
+  // writing them straight into the new account's bucket, the exact leak the bucketing exists to stop.
+  // The RELOAD effect keys on it instead, so a switch pulls the new account's own draft into `text`, and
+  // the next save (triggered by that text change) lands in the right bucket.
+  const draftWhoRef = useRef(draftWho);
+  draftWhoRef.current = draftWho;
   const bestBlock = useBestBlock();
   const { toast } = useToaster();
 
@@ -104,7 +114,29 @@ export function ComposePage() {
   // Hydrate the persisted post draft on mount — but ONLY for a plain-post compose (gated on the stable
   // `mode`, not effectiveMode), so a reply/quote deep-link never leaks the saved post text into its
   // capacity gate. Client-only render behind Suspense, so the lazy initializer is safe.
-  const [text, setText] = useState(() => (mode === "post" ? loadPostDraft() : ""));
+  const [text, setText] = useState(() => (mode === "post" ? loadPostDraft(draftWho) : ""));
+  // An in-place account switch swaps which bucket the draft lives in — re-seed from the new one, but
+  // FLUSH the in-flight words to the account they were typed under first. `viewer.address` also moves
+  // when a session restore lands a beat after a guest started typing, and re-seeding alone silently
+  // destroyed whatever was in the box. Moving the text satisfies the bucketing invariant (never write
+  // A's words into B's bucket) without losing it: switch back and it is there.
+  //
+  // SIGN-OUT (`draftWho` back to null) deliberately does NOT flush — useSigner has just run
+  // clearAllPostDrafts() across every bucket so a shared browser keeps none of the departing account's
+  // unsent words, and writing them back here would undo that.
+  //
+  // `text` is read through a ref so this effect does not re-run on every keystroke.
+  const textRef = useRef(text);
+  textRef.current = text;
+  const seededForRef = useRef(draftWho);
+  useEffect(() => {
+    const prevWho = seededForRef.current;
+    if (prevWho === draftWho) return;
+    seededForRef.current = draftWho;
+    if (mode !== "post") return; // reply/quote never hold the post draft — nothing to move or re-seed
+    if (draftWho !== null) savePostDraft(prevWho, textRef.current);
+    setText(loadPostDraft(draftWho));
+  }, [draftWho, mode]);
   // The SERIALIZED post body (mention `@name` tokens expanded to `@<ss58>`), reported up by the base
   // Composer, so the capacity gate counts the real posted length — a mention is ~48 bytes, not `@name`.
   const [serialized, setSerialized] = useState("");
@@ -118,7 +150,7 @@ export function ComposePage() {
   // savePostDraft("") — whose empty branch removeItem()s the key — silently WIPING an unrelated saved
   // draft. mode==="post" never fires for a reply/quote deep link, so the saved draft is preserved.
   useEffect(() => {
-    if (mode === "post") savePostDraft(text);
+    if (mode === "post") savePostDraft(draftWhoRef.current, text);
   }, [mode, text]);
 
   // ── Capacity gate, shared with every other composing surface — see useComposerGate. Profile
@@ -172,13 +204,13 @@ export function ComposePage() {
       // Session-gated submit reroutes to /welcome (the Composer relabels the CTA).
       if (viewer.status !== "ready") return void router.push("/welcome/");
       if (!api || !signer || draft.text.trim().length === 0) return;
-      clearPostDraft(); // submitted → don't restore it next time
+      clearPostDraft(draftWho); // submitted → don't restore it next time
       runWrite(submitPost(api, signer, draft.text), optimisticPost(draft.text), {
         pending: "Posting…",
         success: "Posted",
       });
     },
-    [viewer.status, api, signer, runWrite, optimisticPost, router],
+    [viewer.status, draftWho, api, signer, runWrite, optimisticPost, router],
   );
 
   const onReply = useCallback(
@@ -386,7 +418,7 @@ export function ComposePage() {
           cancelLabel="Keep editing"
           danger
           onConfirm={() => {
-            clearPostDraft(); // explicit discard → forget the saved draft
+            clearPostDraft(draftWho); // explicit discard → forget the saved draft
             setConfirmDiscard(false);
             goBack();
           }}

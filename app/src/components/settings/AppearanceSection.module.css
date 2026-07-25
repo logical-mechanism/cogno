@@ -28,3 +28,21 @@
   font-size: var(--cg-fs-sm);
   color: var(--cg-text-secondary);
 }
+
+/* Secondary action on a settings row (the shortcuts "View"). Pill, matching the app's other
+   low-emphasis controls. */
+.action {
+  flex: 0 0 auto;
+  padding: var(--cg-space-2) var(--cg-space-4);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.action:hover {
+  background: var(--cg-bg-hover);
+}

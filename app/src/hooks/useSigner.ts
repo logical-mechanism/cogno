@@ -22,8 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEV_ACCOUNTS, getDevSigner, signerFromRestored } from "@/lib/signer";
 import { deriveSignerFromWallet } from "@/lib/signer/wallet-derive";
 import { isUserRejection, probeWalletIdentity } from "@/lib/cardano/cip8";
-import { clearPostDraft } from "@/lib/composerDraftStore";
-import { recentSearchActions } from "@/lib/recentSearchStore";
+import { clearAllPostDrafts } from "@/lib/composerDraftStore";
 import { clearFeedSnapshot } from "@/lib/feed/snapshot";
 import {
   clearRestoredSession,
@@ -339,13 +338,17 @@ export function useSigner(): UseSigner {
     // device was signed in as, so the next load is a clean guest session (and the ss58-keyed device
     // stores go back to their `anon` bucket instead of this account's).
     clearRestoredSession();
-    // Device-local, identity-agnostic state that must not resurface for the NEXT account on a shared
-    // device: the unsent post draft, the recent-search terms (the set stores are per-account, but
-    // recent searches are a single device-global key, so clear them explicitly here), and the held feed
-    // page — which is in memory only and viewer-keyed, but carries this account's `myVote` overlay, so
-    // there is no reason to keep it alive after they sign out.
-    clearPostDraft();
-    recentSearchActions.clear();
+    // Every device-local store is now keyed per account, so signing out is enough on its own to stop
+    // one account's data reaching the next — and recent searches, mutes, blocks, bookmarks, lists and
+    // topics are deliberately PRESERVED in their bucket, so signing back in doesn't hand you an empty
+    // app. (Recent searches used to need an explicit wipe here, because they were one device-global key;
+    // bucketing them removed that special case AND stopped sign-out destroying your own history.)
+    //
+    // Two exceptions are cleared outright. The unsent DRAFT: unpublished words are the one thing a person
+    // leaving a shared browser would not want left behind, and it is cleared across EVERY bucket rather
+    // than just this account's, since we cannot know who else has used this browser. And the held feed
+    // page — in memory only and viewer-keyed, but it carries this account's `myVote` overlay.
+    clearAllPostDrafts();
     clearFeedSnapshot();
   }, []);
 

@@ -30,9 +30,12 @@ import type {
   Suggestion,
   FollowEdges,
 } from "@/lib/types";
-import { mapObservedRolePairs } from "@/lib/chain/roles";
+import { mapObservedRolePairs, type RoleKindType } from "@/lib/chain/roles";
 
-const MAX_PAGE = 100;
+/** The runtime's own per-call page ceiling, mirrored here so `clampLimit` and the runtime agree.
+ *  Exported so a window that must fit in ONE read (the ranked window — see lib/feed/rank) can pin
+ *  itself against it in a test rather than restating the literal. */
+export const MAX_PAGE = 100;
 
 /**
  * Read at the BEST block, not the runtime-API default (finalized). Writes confirm at `inBestBlock`,
@@ -171,6 +174,16 @@ async function chasePage(
    * mentions and leaves anyone who HAS one chasing to the end of the chain under MAX_CHASE_HOPS.
    */
   maxHops?: number,
+  /**
+   * An optional CLIENT-SIDE lens: keep only the posts it accepts. Applied inside the chase (not to the
+   * finished page) so a filtered feed still fills to `limit` instead of handing back a page silently
+   * shrunk below the requested size.
+   *
+   * A filtering caller MUST pass `maxHops`. The hop budget is chosen from `posts.length`, so a lens that
+   * rejects everything never leaves the still-empty branch and would run to MAX_EMPTY_CHASE_HOPS (256)
+   * state_calls — each of which rebuilds `staker_weights()` node-side — to render nothing.
+   */
+  keep?: (post: CognoPost) => boolean,
 ): Promise<IdPage> {
   const target = clampLimit(limit);
   const posts: CognoPost[] = [];
@@ -178,7 +191,10 @@ async function chasePage(
   let nextCursor: bigint | null = null;
   for (let hop = 0; ; hop++) {
     const raw = await fetchPage(cursor, target - posts.length);
-    for (const e of raw.posts) posts.push(mapEnrichedPost(e, hasViewer));
+    for (const e of raw.posts) {
+      const post = mapEnrichedPost(e, hasViewer);
+      if (keep === undefined || keep(post)) posts.push(post);
+    }
     nextCursor = raw.next_cursor != null ? BigInt(raw.next_cursor) : null;
     if (nextCursor === null || posts.length >= target) break;
     // Keep chasing rather than surface an empty page + cursor; allow more hops while still empty.
@@ -201,6 +217,135 @@ export async function nodeGlobalFeedPage(
     opts.limit,
     opts.viewer != null,
   );
+}
+
+/**
+ * Hop budget for a CLIENT-FILTERED lens (the role scopes). Deliberately small: every hop is a
+ * `state_call` that rebuilds `staker_weights()` over up to `MaxObserved` (1024) accounts node-side, and
+ * a lens over a low-density role would otherwise chase for hundreds of hops. A sparse lens surfaces a
+ * SHORT page plus a cursor — honest, and "load more" advances it — rather than burning the node to fill.
+ */
+const FILTERED_LENS_MAX_HOPS = 6;
+
+/**
+ * Posts whose author currently holds `role` — the SPO / dRep lens.
+ *
+ * Implemented as the existing firehose plus a client-side filter on `authorRoles`, which the runtime
+ * ALREADY stamps on every enriched post (`enrich_author_profiles`), so this costs no extra read per
+ * post and reuses ONE cursor domain.
+ *
+ * It is deliberately NOT a k-way merge over `ObservedRoles`: that map is `Blake2_128Concat`-keyed, so
+ * capping the holder set would drop verified holders in storage-hash order with no user-visible signal,
+ * each holder's `author_feed_page` would independently rebuild `staker_weights()`, and falling back to
+ * the firehose past a holder cap would cross-wire the post-id and `TopLevelPosts`-seq cursor families.
+ *
+ * Degrades honestly: the lens shows what it found in the window it scanned, and the UI says so.
+ */
+export async function nodeRoleFeedPage(
+  api: CognoApi,
+  role: RoleKindType,
+  opts: { beforeId?: bigint; limit: number; viewer?: Ss58; maxHops?: number },
+): Promise<IdPage> {
+  return chasePage(
+    (beforeId, limit) => microblogApi(api).feed_page(beforeId, limit, opts.viewer, BEST),
+    opts.beforeId,
+    opts.limit,
+    opts.viewer != null,
+    opts.maxHops ?? FILTERED_LENS_MAX_HOPS,
+    (p) => (p.authorRoles ?? []).some((r) => r.kind === role),
+  );
+}
+
+/**
+ * Most members a list timeline will fan out over. A list can hold more (the store caps at 64); beyond
+ * this the timeline reads the first `MAX_FEED_MEMBERS` and the UI SURFACES the truncation rather than
+ * silently showing a partial list as if it were whole.
+ */
+export const MAX_FEED_MEMBERS = 32;
+
+/**
+ * The error a list page throws when it cannot honestly return one.
+ *
+ * It RETHROWS the underlying member rejection rather than a wrapper of our own, because the thrown
+ * value is what `readErrorCopy` classifies: a dropped socket carries "WebSocket closed", which becomes
+ * the actionable "Can't reach cogno…" line, while a wrapper string like "list timeline: a member read
+ * failed" is classified `raw` and rendered VERBATIM into the feed's error row — an internal sentence in
+ * front of the reader, and the real cause discarded. The generic fallback covers the (theoretical) case
+ * where nothing rejected but the page still has no truthful cursor to hand back.
+ */
+function memberReadFailure(settled: PromiseSettledResult<IdPage>[]): Error {
+  for (const r of settled) {
+    if (r.status === "rejected" && r.reason instanceof Error) return r.reason;
+  }
+  return new Error("Couldn't load this list's posts.");
+}
+
+/**
+ * A timeline of just these accounts' top-level posts — the list feed.
+ *
+ * A fan-out (one `author_feed_page` per member, merged newest-first), NOT a filtered firehose: a
+ * handful of members is arbitrarily sparse in the global timeline, so a filter would chase for hundreds
+ * of hops to find them. Each member's own `TopLevelByAuthor` index is dense by construction.
+ *
+ * Exactly ONE hop per member: `author_feed_page` returns a `next_cursor` only when it filled the limit,
+ * so a short page means the author's index was exhausted and `chasePage` stops.
+ *
+ * Cursor math: every member's returned posts are strictly below `beforeId`, so the minimum id in the
+ * merged slice is a safe next `beforeId` — a member truncated at the limit has its own lowest returned
+ * id at or below that minimum, so nothing can be skipped.
+ */
+export async function nodeMembersFeedPage(
+  api: CognoApi,
+  members: readonly Ss58[],
+  opts: { beforeId?: bigint; limit: number; viewer?: Ss58 },
+): Promise<IdPage> {
+  const scoped = members.slice(0, MAX_FEED_MEMBERS);
+  if (scoped.length === 0) return { posts: [], nextCursor: null };
+  const target = clampLimit(opts.limit);
+
+  // allSettled, NOT all: one member's failed state_call (a transient RPC blip on any of up to
+  // MAX_FEED_MEMBERS reads) would otherwise reject the whole page and blank a timeline that could still
+  // show every other member. A rejected member is treated as "unknown, possibly more" below so its posts
+  // are never silently declared absent.
+  const settled = await Promise.allSettled(
+    scoped.map((m) =>
+      nodeAuthorFeedPage(api, m, { beforeId: opts.beforeId, limit: target, viewer: opts.viewer }),
+    ),
+  );
+  const pages = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+  const anyMemberFailed = settled.length !== pages.length;
+  // Every member failed ⇒ a read failure, not an empty list. Surface it rather than rendering an
+  // authoritative-looking "nobody posted" over a page we never actually read.
+  //
+  // A PARTIAL FIRST PAGE fails loud too, and that is the subtle one. Keeping the cursor alive is NOT
+  // enough to make a failed member recoverable: the cursor is the minimum id across the members that
+  // SUCCEEDED, so the failed member's posts ABOVE that cursor are never requested again. Since at least
+  // one member succeeded nothing would throw, so the timeline would render as if complete with a hole
+  // punched out of the middle and no signal anywhere. A later page degrades more gracefully — the reader
+  // has already seen the newer posts and the cursor keeps descending — but page one must not lie, and a
+  // later page still fails loud when it cannot produce a cursor at all (see below).
+  if (pages.length === 0 || (anyMemberFailed && opts.beforeId === undefined)) {
+    throw memberReadFailure(settled);
+  }
+
+  const merged = pages
+    .flatMap((p) => p.posts)
+    .sort((a, b) => (a.id === b.id ? 0 : a.id > b.id ? -1 : 1));
+  const slice = merged.slice(0, target);
+
+  // Nothing more to read only when we returned EVERYTHING we fetched AND every member was exhausted AND
+  // no member's read failed (a failed member may hold older posts we haven't seen).
+  const anyMemberHasMore = pages.some((p) => p.nextCursor !== null);
+  const truncated = merged.length > slice.length;
+  const hasMore = truncated || anyMemberHasMore || anyMemberFailed;
+
+  // The cursor IS the lowest id we returned, so an empty slice has no id to page from. Handing back
+  // `null` there would declare the end of the list — burying a failed member's older posts under a
+  // terminal "no posts" state, the same silent hole the first-page throw above exists to prevent. We
+  // cannot page and we cannot honestly stop, so fail loud and let Retry re-read.
+  if (hasMore && slice.length === 0) throw memberReadFailure(settled);
+
+  return { posts: slice, nextCursor: hasMore ? slice[slice.length - 1].id : null };
 }
 
 /** One author's top-level posts (the profile Posts tab), node-served + viewer-overlaid. */
@@ -278,7 +423,18 @@ export async function nodeAuthorPostCount(api: CognoApi, author: Ss58): Promise<
 export async function nodeSearchPosts(
   api: CognoApi,
   term: string,
-  opts: { beforeId?: bigint; limit: number; viewer?: Ss58; maxHops?: number },
+  opts: {
+    beforeId?: bigint;
+    limit: number;
+    viewer?: Ss58;
+    maxHops?: number;
+    /**
+     * An optional client-side narrowing of the node's matches — used by the TOPIC feed, where the
+     * node's substring scan for `#cardano` is a superset of the topic (it also matches `#cardanoNFT`
+     * and a `.../#cardano` URL fragment). Applied inside the chase so the page still fills.
+     */
+    keep?: (post: CognoPost) => boolean;
+  },
 ): Promise<IdPage> {
   const termBin = Binary.fromText(term);
   return chasePage(
@@ -286,7 +442,10 @@ export async function nodeSearchPosts(
     opts.beforeId,
     opts.limit,
     opts.viewer != null,
-    opts.maxHops,
+    // A narrowed search is a filtered lens, so it needs a hop budget for the same reason the role lens
+    // does — a term whose matches are mostly non-topic would otherwise chase the empty branch.
+    opts.maxHops ?? (opts.keep !== undefined ? FILTERED_LENS_MAX_HOPS : undefined),
+    opts.keep,
   );
 }
 
