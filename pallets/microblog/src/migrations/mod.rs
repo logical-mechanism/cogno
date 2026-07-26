@@ -34,8 +34,15 @@
 //! `v9` (spec 209) appends `Poll.action` (the optional governance-action tag) to every poll, alongside the
 //! two new `Spo`/`Drep` `PollKind` variants (which need no data change — their discriminants are new).
 //! Existing polls migrate to `action = None`; `Poll` is the only storage item touched.
+//!
+//! `v10` (spec 212) REPAGES the two per-author indexes: `ByAuthor` and `TopLevelByAuthor` go from one
+//! `BoundedVec<u64, MaxPostsPerAuthor>` blob per author to a seq-keyed `StorageDoubleMap` beside an
+//! explicit counter, so a post costs O(1) to index instead of re-encoding the author's whole history
+//! (and no author can ever be bricked at a cap). It is the first migration whose old and new items share
+//! a storage PREFIX — read the ordering note in [`v10`] before touching it.
 
 pub mod v1;
+pub mod v10;
 pub mod v2;
 pub mod v3;
 pub mod v4;

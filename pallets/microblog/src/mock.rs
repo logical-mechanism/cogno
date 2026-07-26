@@ -116,8 +116,6 @@ impl pallet_talk_stake::Config for Test {
 impl pallet_microblog::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type MaxLength = ConstU32<512>;
-    // Deliberately small here so the `TooManyPosts` overflow path is cheap to test.
-    type MaxPostsPerAuthor = ConstU32<8>;
     type CapRatio = ConstU128<10>;
     type RegenPerBlock = ConstU128<1>;
     type Ceiling = ConstU128<5_000>;

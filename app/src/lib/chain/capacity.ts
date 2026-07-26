@@ -37,7 +37,7 @@ export interface CapacityView {
   cap: bigint;
   /** regenerated capacity available *as of* `at`. */
   have: bigint;
-  /** regeneration per block: weight·regenPerBlock. */
+  /** regeneration per block: `cap·regenPerBlock/capRatio` — flattened at the ceiling knee like `cap`. */
   ratePerBlock: bigint;
   /** the block this view reflects. */
   at: number;
@@ -73,6 +73,23 @@ export function capOf(weight: bigint, K: CapacityConsts): bigint {
   return linear < K.ceiling ? linear : K.ceiling;
 }
 
+/**
+ * The per-block refill rate (`Pallet::regen_per_block`, spec 212):
+ *   `capOf(weight) · regenPerBlock / capRatio`
+ *
+ * ⛔ NOT `weight · regenPerBlock`. That was the pre-212 formula, and it was unclamped: only the
+ * BUCKET was capped-linear, so past the ceiling knee the burst flattened while the sustained rate
+ * kept growing. Deriving the rate from the (already-clamped) ceiling gives both axes ONE knee, and
+ * makes the refill window `capRatio / regenPerBlock` blocks for every account at every weight.
+ * Below the knee it equals `weight · regenPerBlock` exactly, so nothing under the ceiling changed.
+ *
+ * Integer division mirrors the runtime's; guard a zero `capRatio` the way `checked_div` does there.
+ */
+export function ratePerBlockOf(weight: bigint, K: CapacityConsts): bigint {
+  if (K.capRatio === 0n) return 0n;
+  return (capOf(weight, K) * K.regenPerBlock) / K.capRatio;
+}
+
 /** The capacity cost of a post of `byteLen` bytes: `baseCost + perByteCost·len`. */
 export function postCost(byteLen: number, K: CapacityConsts): bigint {
   return K.baseCost + K.perByteCost * BigInt(byteLen);
@@ -81,15 +98,16 @@ export function postCost(byteLen: number, K: CapacityConsts): bigint {
 /**
  * `current_capacity()` replayed VERBATIM (pallet-microblog `current_capacity`):
  *   cap  = min(weight·capRatio, ceiling)
+ *   rate = cap·regenPerBlock/capRatio          (spec 212 — see `ratePerBlockOf`)
  *   None ⇒ 0 (first-touch is EMPTY, not full)
- *   else min(cap, cap_last + weight·regenPerBlock·elapsed)
+ *   else min(cap, cap_last + rate·elapsed)
  * All bigint + clamped, matching the runtime's saturating arithmetic.
  */
 export function currentCapacity(inputs: CapacityInputs, at: number, K: CapacityConsts): bigint {
   const cap = capOf(inputs.weight, K);
   if (!inputs.bucket) return 0n; // ⛔ None ⇒ 0, NOT cap
   const elapsed = BigInt(Math.max(0, at - inputs.bucket.lastBlock));
-  const filled = inputs.bucket.capLast + inputs.weight * K.regenPerBlock * elapsed;
+  const filled = inputs.bucket.capLast + ratePerBlockOf(inputs.weight, K) * elapsed;
   return filled < cap ? filled : cap;
 }
 
@@ -100,7 +118,7 @@ export function computeView(inputs: CapacityInputs, at: number, K: CapacityConst
     bucket: inputs.bucket,
     cap: capOf(inputs.weight, K),
     have: currentCapacity(inputs, at, K),
-    ratePerBlock: inputs.weight * K.regenPerBlock,
+    ratePerBlock: ratePerBlockOf(inputs.weight, K),
     at,
   };
 }

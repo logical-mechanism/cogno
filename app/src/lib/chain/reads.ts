@@ -182,9 +182,16 @@ export interface IdPage {
   nextCursor: bigint | null;
 }
 
-/** The total number of posts an author has authored (the `ByAuthor` index length — one keyed read). */
+/**
+ * The total number of posts an author has authored (replies included) — one keyed read.
+ *
+ * Reads the `ByAuthorCount` counter. Before spec 212 `ByAuthor` was one `BoundedVec` blob per author
+ * and this took its `.length`; it is now a seq-keyed double map, so `getValue(account)` no longer
+ * type-checks and the count lives in its own map. (This is the resilience fallback — the profile
+ * surface prefers the node-served `author_post_count`, which counts only TOP-LEVEL posts.)
+ */
 export async function authorPostCount(api: CognoApi, account: Ss58): Promise<number> {
-  return (await api.query.Microblog.ByAuthor.getValue(account)).length;
+  return Number(await api.query.Microblog.ByAuthorCount.getValue(account));
 }
 
 // ── thread reconstruction (keyed reverse lookup — no full-snapshot scan) ─────────────────────────

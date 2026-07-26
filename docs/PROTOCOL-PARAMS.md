@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 211**.
+it. This is a snapshot of **spec_version 212**.
 
 Two things to keep in mind:
 
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **211** | `VERSION` — `runtime/src/lib.rs` |
+| **spec_version** | **212** | `VERSION` — `runtime/src/lib.rs` |
 | transaction_version | 7 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 211 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 212 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -115,31 +115,39 @@ decimals are display-only chainspec properties.
 ## Talk-capacity economics (microblog)
 
 The posting rate limit: your locked-ADA weight buys a regenerating capacity budget, and each action
-spends from it. **These values are dev-tuned.** Units are "micro-capacity"; one post ≈ `BaseCost`.
-All in `runtime/src/configs/mod.rs`.
+spends from it. Retuned in spec 212 from the old dev-tuned showcase values to a real ~5 h refill window
+(see [ECONOMICS.md](ECONOMICS.md#the-token-bucket-mechanic) for the derivation). Units are
+"micro-capacity"; one post ≈ `BaseCost`. All in `runtime/src/configs/mod.rs`.
 
 | Parameter | Value | Symbol / file |
 |---|---|---|
-| `CapRatio` (ceiling per weight) | 50 micro-cap / lovelace | `CapRatio` |
-| `RegenPerBlock` | 2 micro-cap / lovelace / block | `RegenPerBlock` |
-| Empty→full regen window | 25 blocks (~2.5 min) = `CapRatio / RegenPerBlock`, weight-independent below the `Ceiling` knee. The ~5 h window is a mainnet target, not the current value | `CapRatio`, `RegenPerBlock` |
-| `Ceiling` (hard max) | 5e12 (~100k posts); the knee is 100,000 ADA locked | `Ceiling` |
-| `BaseCost` (per post) | 50,000,000 (= 1 post) | `BaseCost` |
-| `PerByteCost` | 50,000 / byte | `PerByteCost` |
-| `VoteCost` | 20,000,000 — the flat signal cost for `vote`/`clear_vote`, `vote_account`/`clear_account_vote`, `cast_poll_vote` and `close_poll` | `pallet_microblog::Config` |
-| `FollowCost` | 10,000,000 | `pallet_microblog::Config` |
-| `ProfileCost` (foreign) | 500,000,000 (= 10× `BaseCost`) | `ProfileCost` |
+| `CapRatio` (ceiling per weight) | 3,000 micro-cap / lovelace | `CapRatio` |
+| `RegenPerBlock` | 1 micro-cap / lovelace / block, below the knee | `RegenPerBlock` |
+| Refill rate | `capacity_ceiling(weight) · RegenPerBlock / CapRatio` — DERIVED from the (already-clamped) ceiling since spec 212, so the rate flattens at the same knee as the bucket. It equals `weight · RegenPerBlock` exactly below the knee | `Pallet::regen_per_block` — `pallets/microblog/src/lib.rs` |
+| Empty→full regen window | 3,000 blocks (5 h) = `CapRatio / RegenPerBlock`, weight-independent **at every weight** (that is what deriving the rate from the ceiling buys) | `CapRatio`, `RegenPerBlock` |
+| `Ceiling` (hard max) | 3e14 (100,000 posts); the knee is 100,000 ADA locked, and it now caps BOTH the burst and the sustained rate | `Ceiling` |
+| `BaseCost` (per post) | 3,000,000,000 (= 1 post) | `BaseCost` |
+| `PerByteCost` | 3,000,000 / byte | `PerByteCost` |
+| `VoteCost` | 1,200,000,000 — the flat signal cost for `vote`/`clear_vote`, `vote_account`/`clear_account_vote`, `cast_poll_vote` and `close_poll` | `pallet_microblog::Config` |
+| `FollowCost` | 600,000,000 | `pallet_microblog::Config` |
+| `ProfileCost` (foreign) | 30,000,000,000 (= 10× `BaseCost`) | `ProfileCost` |
 | `CheckCapacity` tx longevity | 8 blocks | `longevity` — `pallets/microblog/src/lib.rs` |
 
+At the 100-ADA `MinLock` floor that is a 100-post burst, 480 posts/day sustained, ~342 KB/day of
+permanent state. At the knee (100,000 ADA) it is a 100,000-post burst, ~480,000 posts/day, about 2% of
+one block.
+
 First-touch capacity starts at **0** (anti-farm), regenerates up to the ceiling, and never decays.
-There's no cooldown — capacity is the only rate limit.
+There's no cooldown — capacity is the only rate limit. Note there is no second line of defence for the
+social calls: they are feeless (no fee floor) and `RuntimeBlockWeights` sets proof size to `u64::MAX`
+(no state-growth backstop), so these constants are load-bearing on their own.
 
 ## Content bounds
 
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | Max post / poll-question length | 512 bytes | `MaxLength` — `pallet_microblog::Config` |
-| `MaxPostsPerAuthor` (on-chain index) | 10,000 | `pallet_microblog::Config` |
+| Posts per author | UNBOUNDED. `MaxPostsPerAuthor` (10,000) was removed in spec 212 with the bounded-vec index: at the cap an author was permanently bricked (post/quote/create_poll all reverted `TooManyPosts`, with no `delete_post` and no pruning). The seq-keyed double maps index a post in O(1) at any history length, so there is nothing left for a cap to bound. `Error::TooManyPosts` (index 2) is permanently vacant | `ByAuthor` / `ByAuthorCount` — `pallets/microblog/src/lib.rs` |
 | `MaxPollOptions` | 4 (min 2 enforced) | `pallet_microblog::Config` |
 | `MaxPollOptionLen` | 80 bytes | `pallet_microblog::Config` |
 | `MaxAnchorUrlLen` (poll governance-action anchor) | 256 bytes; must be non-empty, and only a chamber poll may carry one | `pallet_microblog::Config` |

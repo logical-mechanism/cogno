@@ -114,6 +114,11 @@ type SingleBlockMigrations = (
     // spec 209: append `Poll.action` (the optional governance-action tag) to every poll; existing polls
     // migrate to `action = None` (a no-op on the live chain, which has no polls). See `migrations::v9`.
     pallet_microblog::migrations::v9::MigrateV8ToV9<Runtime>,
+    // spec 212: REPAGE `ByAuthor` / `TopLevelByAuthor` from one bounded-vec blob per author to a
+    // seq-keyed double map beside an explicit counter. This one MOVES REAL ROWS on the live chain
+    // (every author's post-id list is rewritten), and the old and new items share a storage prefix —
+    // read the ordering note at the top of `migrations::v10` before touching it.
+    pallet_microblog::migrations::v10::MigrateV9ToV10<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -855,27 +860,58 @@ impl pallet_skip_feeless_payment::Config for Runtime {
 }
 
 parameter_types! {
-    // ── Talk-capacity constants — DEV-TUNED for a snappy, watchable showcase. All are runtime-tunable
-    //    (see docs/ECONOMICS.md); the real ~5h regen window is a constant change for mainnet. Units are
-    //    "micro-capacity"; one post ≈ BaseCost.
+    // ── Talk-capacity constants. RETUNED IN SPEC 212 for a real posting rate; they were previously
+    //    DEV-TUNED for a snappy, watchable showcase (a 25-block empty→full window) and the ~5 h window
+    //    was carried as a mainnet TODO. Units are "micro-capacity"; one post ≈ BaseCost.
     //
-    //    With these values, a grant of weight 10_000_000 (≈10 ADA in lovelace) yields:
-    //      cap  = min(weight·50, Ceiling) = 5·10^8  ≈ 10 posts (burst)
-    //      rate = weight·2                = 2·10^7 / block ≈ 1 post / 2.5 blocks (~15s)
-    //      empty→full = cap/rate ≈ 25 blocks (~2.5 min)
-    //    A 512-byte post costs BaseCost + 512·PerByteCost ≈ 1.5 posts of capacity.
-    pub const CapRatio: u128 = 50;
-    pub const RegenPerBlock: u128 = 2;
-    pub const Ceiling: u128 = 5_000_000_000_000; // ~100k posts — present but won't bite dev grants
-    pub const BaseCost: u128 = 50_000_000;        // 1 post
-    pub const PerByteCost: u128 = 50_000;
+    //    WHY NOW, and why it ships with the `ByAuthor` repage rather than after it: `MaxPostsPerAuthor`
+    //    was the de-facto brake on sustained posting. It capped an author at 10_000 posts EVER, so a
+    //    floor-lock account exhausted its lifetime quota in ~2_500 blocks and stopped. Removing it (the
+    //    other half of this upgrade) hands the whole job to talk-capacity, which is already the ONLY
+    //    anti-spam here — the social calls are feeless, so there is no fee floor under them, and
+    //    `RuntimeBlockWeights` sets proof size to `u64::MAX`, so there is no block-level backstop
+    //    either. Preprod never surfaced any of this because tADA is free.
+    //
+    //    THE TARGET: a ~5 h empty→full refill window at the 100-ADA `MinLock` floor, keeping the burst
+    //    size and the ceiling knee that docs/ECONOMICS.md and docs/PROTOCOL-PARAMS.md already commit to.
+    //    The window is `CapRatio / RegenPerBlock` blocks and is weight-independent, so:
+    //        5 h at 6 s/block = 3_000 blocks  ⇒  CapRatio / RegenPerBlock = 3_000
+    //    Everything else is a pure unit rescale of the bucket axis (60x) that holds every documented
+    //    ratio fixed, so the only behaviour that moves is the refill speed (120x slower) and the new
+    //    rate knee.
+    //
+    //    AT THE 100-ADA FLOOR LOCK (weight 10^8 lovelace):
+    //      cap  = min(10^8·3_000, Ceiling) = 3·10^11        = 100 posts of burst   (unchanged)
+    //      rate = 10^8·1                   = 10^8 / block   = 1 post / 30 blocks (~3 min)
+    //      empty→full = 3·10^11 / 10^8     = 3_000 blocks   = 5 h   (was 25 blocks / 2.5 min)
+    //      sustained  = 14_400 blocks-per-day / 30          = 480 posts/day (was 57_600)
+    //      permanent state ≈ 712 B/post (a 592 B `Posts` row + two index rows) ⇒ ~342 KB/day/account.
+    //    A 512-byte post costs BaseCost + 512·PerByteCost ≈ 1.5 posts of capacity, as before.
+    //
+    //    AT THE KNEE (Ceiling/CapRatio = 10^11 lovelace = 100_000 ADA locked, unchanged and already
+    //    documented): cap = 3·10^14 = 100_000 posts, rate = 3·10^14/3_000 = 10^11/block = 33.3
+    //    posts/block = 480_000 posts/day. Against a block ceiling of ~1_580 posts (post_message ≈ 945 µs
+    //    of ref_time against `NORMAL_DISPATCH_RATIO · 2 s`), that is ~2 % of one block. BEFORE the
+    //    retune the same account sustained 4_000 posts/block — MORE than an entire block — so one
+    //    maximally-staked account could monopolize the mempool outright. That is the concrete failure
+    //    this prevents, and it is what makes ECONOMICS.md's "flattened at the top so no single whale
+    //    can dominate the mempool" true rather than aspirational. See `Pallet::regen_per_block` for the
+    //    second half of that fix: the rate is now derived from the ceiling, so both axes share ONE knee
+    //    instead of the rate's sitting a full refill window further out (at 2.5M ADA under the old
+    //    constants, and documented nowhere).
+    pub const CapRatio: u128 = 3_000;
+    pub const RegenPerBlock: u128 = 1;
+    // 3·10^14 = 100_000 posts of bucket; the knee stays at 3·10^14/3_000 = 10^11 lovelace = 100k ADA.
+    pub const Ceiling: u128 = 300_000_000_000_000;
+    pub const BaseCost: u128 = 3_000_000_000;     // 1 post
+    pub const PerByteCost: u128 = 3_000_000;      // BaseCost/1000, as before
     // A profile CREATE/OVERWRITE (set_profile / pin_post) is feeless but capacity-metered at this
     // STEEP price — ≈10 posts (10 × BaseCost). Profiles are a low-frequency mutable overwrite, so a
     // high capacity cost is the anti-spam: only the identity-bound owner can edit, and they cannot
     // churn it. The whole app stays feeless (a freshly-derived posting key never needs funding).
     // The TIDY-UP calls (clear_profile / unpin_post) are priced per-account in
     // `ProfileCapacityCost` below (0 with a row to clear, unpayable without), NOT at this constant.
-    pub const ProfileCost: u128 = 500_000_000;    // 10 × BaseCost
+    pub const ProfileCost: u128 = 30_000_000_000; // 10 × BaseCost
 }
 
 /// Prices `pallet-profile`'s feeless writes against microblog's ONE per-account capacity battery — the
@@ -970,23 +1006,28 @@ mod profile_capacity_cost_tests {
 }
 
 /// Configure pallet-microblog: feeless, capacity-metered posting, with the talk-capacity meter folded
-/// into the pallet rather than split out. MaxLength = 512 / MaxPostsPerAuthor = 10_000 are the v1
-/// baselines; post ids are u64. The `ForceOrigin` (the 3-of-5 committee) lets the operator prime a
-/// battery by hand; `IdentityGate`'s first bind calls `on_first_bind`.
+/// into the pallet rather than split out. MaxLength = 512 is the v1 baseline; post ids are u64. The
+/// `ForceOrigin` (the 3-of-5 committee) lets the operator prime a battery by hand; `IdentityGate`'s
+/// first bind calls `on_first_bind`.
+///
+/// `MaxPostsPerAuthor = 10_000` used to sit here. Removed in spec 212 with the bounded-vec per-author
+/// index (storage v10): it bricked an author permanently at the cap, and there is no per-post cost left
+/// for it to bound. Sustained posting is now metered ONLY by talk-capacity, which is why the constants
+/// below were retuned in the same upgrade.
 impl pallet_microblog::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type MaxLength = ConstU32<512>;
-    type MaxPostsPerAuthor = ConstU32<10_000>;
     type CapRatio = CapRatio;
     type RegenPerBlock = RegenPerBlock;
     type Ceiling = Ceiling;
     type BaseCost = BaseCost;
     type PerByteCost = PerByteCost;
     // Per-action costs for the social engagement calls, all drawn from the SAME single talk-capacity
-    // battery as posting. DEV-tuned relative to BaseCost (= 50_000_000, one post): a vote ≈ 0.4 of a
-    // post, a follow ≈ 0.2. (quote_post reuses `post_cost`, so it has no constant here.)
-    type VoteCost = ConstU128<20_000_000>;
-    type FollowCost = ConstU128<10_000_000>;
+    // battery as posting. Relative to BaseCost (= 3_000_000_000, one post): a vote ≈ 0.4 of a post, a
+    // follow ≈ 0.2. Both were rescaled with BaseCost in spec 212, holding those ratios exactly.
+    // (quote_post reuses `post_cost`, so it has no constant here.)
+    type VoteCost = ConstU128<1_200_000_000>;
+    type FollowCost = ConstU128<600_000_000>;
     // Poll bounds: up to 4 options, each up to 80 bytes (the question reuses MaxLength = 512).
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<80>;

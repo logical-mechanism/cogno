@@ -30,8 +30,8 @@ scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 211 / tx_version 7**) |
-| `pallets/` | `microblog` (10, storage v9; call_index 1 `delete_post` and 6 `repost` both permanently vacant), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; `MaxObserved` 1024, benchmarked `observe`, on-chain stall alarm), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 212 / tx_version 7**) |
+| `pallets/` | `microblog` (10, storage v10; call_index 1 `delete_post` and 6 `repost` both permanently vacant), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; `MaxObserved` 1024, benchmarked `observe`, on-chain stall alarm), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
 | `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`weight`/`authors` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
@@ -99,7 +99,7 @@ an agent needs:
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index
   (next free is **21**; 20 is TxPause); gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **211**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
+  `spec_version` (currently **212**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
   (never the live chain):
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   Non-encoding changes (bounds, logging, tests) must **not** bump it. `transaction_version` moves ONLY on
@@ -112,12 +112,21 @@ an agent needs:
   enum is pinned with explicit `#[codec(index = N)]` (microblog `VoteDir` and the observer's
   `InherentError` included) — keep it that way. Retired variants leave a permanent GAP (microblog
   event 6 `Reposted`, error 5 `AlreadyReposted`; cogno-gate error 2 `BadThread`). Never insert into a
-  gap, never reorder, always pin a new variant. Same rule as pallet/call indices.
+  gap, never reorder, always pin a new variant. Same rule as pallet/call indices. Spec 212 retired
+  microblog error 2 (`TooManyPosts`) with `MaxPostsPerAuthor` — index 2 is now a permanent gap too.
 - **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
   never runs: the on-chain `StorageVersion` stays put while the code declares the new one, and
   `post_upgrade` never fires. Before enacting, run the `try-runtime` dry-run against live state that
   docs/UPGRADES.md prescribes — `--features try-runtime` compiles the `pre_upgrade`/`post_upgrade`/
   `try_state` hooks that are the whole safety net (CI does **not** gate on it).
+  **`#[storage_alias]` takes the on-chain item name from the ALIAS TYPE NAME.** An alias named
+  `ByAuthorV9` addresses `twox128(pallet) ++ twox128("ByAuthorV9")`, a prefix nothing ever wrote — the
+  migration then iterates zero rows and reports success while orphaning every real one. Unit tests
+  cannot catch it (they write and read through the same wrong prefix, so they agree with themselves);
+  spec 212's v10 shipped that bug and only the live-state `try-runtime` run found it. Either name the
+  alias exactly as the storage item, or spell out a `StorageInstance` with the real `STORAGE_PREFIX`
+  and pin it against the pallet's own item with a `hashed_key_for` prefix assertion — microblog
+  `migrations::v10` does the latter.
 - **Toolchain is pinned to rustc 1.93.0** — the toolchain Parity builds the polkadot-sdk `stable2606`
   train against. The old "stable ≥ ~1.91 breaks the `sp_io` wasm link" ceiling was specific to
   stable2603's sp-io 45.0.0; stable2606's sp-io 48.0.0 links cleanly under 1.93.0. Stay on the

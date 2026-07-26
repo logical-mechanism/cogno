@@ -222,7 +222,12 @@ pub mod pallet {
     // v6 -> v7 (spec 207): add `Poll.kind` (Stake | Governance) — see `migrations::v7`.
     // v7 -> v8 (spec 208): append the frozen SPO/dRep CHAMBER snapshot to `PollResult`, so `close_poll`
     // freezes a governance poll's chambers instead of leaving them to re-price live — see `migrations::v8`.
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(9);
+    // v8 -> v9 (spec 209): append `Poll.action`, the optional governance-action tag — see `migrations::v9`.
+    // v9 -> v10 (spec 212): REPAGE the two per-author indexes. `ByAuthor` / `TopLevelByAuthor` were
+    // `BoundedVec<u64, MaxPostsPerAuthor>` blobs; they become seq-keyed double maps beside explicit
+    // counters, so appending a post costs O(1) instead of decoding and re-encoding the author's whole
+    // history — see `migrations::v10`.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(10);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -255,10 +260,14 @@ pub mod pallet {
         /// Maximum length, in bytes, of a post's text. Bounds PoV / proof size. (512 in the runtime.)
         #[pallet::constant]
         type MaxLength: Get<u32>;
-        /// Maximum number of posts tracked per author in the on-chain `ByAuthor` index.
-        /// (10_000 in the runtime.)
-        #[pallet::constant]
-        type MaxPostsPerAuthor: Get<u32>;
+        // `MaxPostsPerAuthor` lived HERE. It was REMOVED in spec 212 together with the bounded-vec
+        // shape of `ByAuthor` / `TopLevelByAuthor`. It bounded a per-author BLOB, so it was doing two
+        // jobs badly: at the cap an author was BRICKED (`post_message`, `quote_post` and `create_poll`
+        // all reverted `TooManyPosts` forever, with no `delete_post` and no pruning to recover), and
+        // below the cap every append decoded and re-encoded the whole vector — a cost the benchmarked
+        // `post_message` weight, measured against an EMPTY index, never charged for. The seq-keyed
+        // double maps need no bound: the per-post cost is O(1) at any history length, so there is
+        // nothing left for a cap to protect.
 
         // ── talk-capacity constants (see docs/ECONOMICS.md; all runtime-tunable, read from metadata
         //    by the client capacity battery — never hardcode there) ─────────────────────────
@@ -266,12 +275,17 @@ pub mod pallet {
         /// (micro-capacity units per lovelace).
         #[pallet::constant]
         type CapRatio: Get<u128>;
-        /// Regeneration per unit weight per block: `rate = weight · RegenPerBlock`
-        /// (micro-capacity units per lovelace per block).
+        /// Regeneration per unit weight per block, BELOW the ceiling knee. Above it the rate flattens
+        /// with the bucket: the real rate is `capacity_ceiling(weight) · RegenPerBlock / CapRatio`
+        /// (see [`Pallet::regen_per_block`]), which equals `weight · RegenPerBlock` exactly while
+        /// `weight · CapRatio < Ceiling`. Together with `CapRatio` this sets the one thing every
+        /// account shares regardless of stake: the empty→full refill window, `CapRatio /
+        /// RegenPerBlock` blocks.
         #[pallet::constant]
         type RegenPerBlock: Get<u128>;
         /// Hard capacity ceiling (the capped-linear curve) — a single mega-whale cannot
-        /// dominate the mempool regardless of stake.
+        /// dominate the mempool regardless of stake. It caps BOTH axes since spec 212: the bucket
+        /// directly, and the refill rate through [`Pallet::regen_per_block`], which derives from it.
         #[pallet::constant]
         type Ceiling: Get<u128>;
         /// Flat per-post cost: `need = BaseCost + PerByteCost · len` (micro-capacity units).
@@ -701,15 +715,41 @@ pub mod pallet {
     #[pallet::storage]
     pub type Posts<T: Config> = StorageMap<_, Blake2_128Concat, u64, Post<T>>;
 
-    /// Per-author index of post ids, bounded to `MaxPostsPerAuthor`.
+    /// Per-author index of post ids (ALL of them — plain posts, replies, quotes and poll hosts):
+    /// `ByAuthor[author][seq] = post_id`, with `seq` dense over `0 .. ByAuthorCount[author]`.
+    ///
+    /// Repaged from a `BoundedVec<u64, MaxPostsPerAuthor>` in spec 212 (storage v10). The blob shape
+    /// made every append O(history): `try_push` decoded the author's entire vector, pushed, and
+    /// re-encoded it — up to ~80 KB, which is exactly what the `post_message` benchmark's
+    /// `max_size: Some(80050)` proof term describes and exactly what its measured `ref_time` did NOT,
+    /// because the benchmark ran against an empty index. Keyed by `(author, seq)` the append is one
+    /// counter read plus two writes at ANY history length, which is what makes the existing weight
+    /// true rather than optimistic.
+    ///
+    /// ⚑ Read it by SEQ, never by prefix iteration. `seq` is assigned in append order and post ids are
+    /// strictly ascending, so walking `seq` down from `ByAuthorCount - 1` yields ids newest-first with
+    /// no sort — whereas a double map's prefix iteration is HASH-ordered and would need the whole
+    /// author's history materialized and sorted (what `thread` has to do for `RepliesByParent`).
     #[pallet::storage]
-    pub type ByAuthor<T: Config> = StorageMap<
+    pub type ByAuthor<T: Config> = StorageDoubleMap<
         _,
         Blake2_128Concat,
         T::AccountId,
-        BoundedVec<u64, T::MaxPostsPerAuthor>,
-        ValueQuery,
+        Blake2_128Concat,
+        u64,
+        u64,
+        OptionQuery,
     >;
+
+    /// The number of ids in [`ByAuthor`] for an author — and, since the index is append-only, the next
+    /// free `seq`. `ValueQuery` ⇒ 0 for an author who has never posted, so a row exists if and only if
+    /// the author has at least one post (the membership predicate `who_to_follow` ranks over).
+    ///
+    /// REQUIRED, not a convenience: the bounded-vec shape gave `decode_len` an O(1) length for free,
+    /// and the double map has no equivalent.
+    #[pallet::storage]
+    pub type ByAuthorCount<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, u64, ValueQuery>;
 
     /// Per-identity talk-capacity bucket. `None` ⇒ never-bound (first touch = 0); the row is
     /// **never deleted** on unlock (the relock-farm guard).
@@ -885,16 +925,27 @@ pub mod pallet {
     #[pallet::storage]
     pub type TopLevelPosts<T: Config> = StorageMap<_, Blake2_128Concat, u64, u64, OptionQuery>;
 
-    /// Per-author top-level post ids (reply-free), bounded like [`ByAuthor`]. Drives exact-N profile
-    /// paging and a correct top-level post count (`decode_len`) without folding in the author's replies.
+    /// Per-author TOP-LEVEL post ids (reply-free): `TopLevelByAuthor[author][seq] = post_id`, seq dense
+    /// over `0 .. TopLevelByAuthorCount[author]`. Drives exact-N profile paging without folding in the
+    /// author's replies. Same shape, same reason and same seq-descending read rule as [`ByAuthor`]
+    /// (repaged in spec 212 / storage v10).
     #[pallet::storage]
-    pub type TopLevelByAuthor<T: Config> = StorageMap<
+    pub type TopLevelByAuthor<T: Config> = StorageDoubleMap<
         _,
         Blake2_128Concat,
         T::AccountId,
-        BoundedVec<u64, T::MaxPostsPerAuthor>,
-        ValueQuery,
+        Blake2_128Concat,
+        u64,
+        u64,
+        OptionQuery,
     >;
+
+    /// The author's TOP-LEVEL post count — the correct profile `postCount` (replies excluded), read
+    /// O(1) by [`Pallet::top_level_post_count`]. Replaces the `decode_len` the bounded vec gave for
+    /// free. `ValueQuery` ⇒ 0 for an author with no top-level posts.
+    #[pallet::storage]
+    pub type TopLevelByAuthorCount<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, u64, ValueQuery>;
 
     // Variant indices are PINNED with `#[codec(index)]`, never implied by declaration order. `Reposted`
     // (6) was retired in spec 204 and its index is permanently VACANT; without the pins, deleting it
@@ -979,9 +1030,9 @@ pub mod pallet {
         /// No post exists with the given id (a vote / quote target that does not exist).
         #[codec(index = 1)]
         NotFound,
-        /// The author has reached `MaxPostsPerAuthor` and cannot be indexed for another post.
-        #[codec(index = 2)]
-        TooManyPosts,
+        // index 2 is PERMANENTLY VACANT: `TooManyPosts` (retired in spec 212 with `MaxPostsPerAuthor`
+        // and the bounded-vec per-author index — the seq-keyed double maps have no cap, so nothing
+        // can raise it any more). Never reuse it.
         /// The caller has not bound a Cardano identity via the gate (`IdentityGate::is_allowed`
         /// returned `false`) — the anti-Sybil gate.
         #[codec(index = 3)]
@@ -1060,6 +1111,33 @@ pub mod pallet {
             core::cmp::min(weight.saturating_mul(T::CapRatio::get()), T::Ceiling::get())
         }
 
+        /// The per-block refill rate for a stake `weight`: the account's own bucket ceiling divided by
+        /// the fixed refill window `CapRatio / RegenPerBlock`. **The single source of truth for the
+        /// rate**, the way [`Pallet::capacity_ceiling`] is for the bucket.
+        ///
+        /// DERIVING IT FROM THE CEILING IS THE POINT (spec 212). Before this, the rate was a bare
+        /// `weight · RegenPerBlock` — clamped nowhere. Only the BUCKET was capped-linear, so above the
+        /// bucket knee (`Ceiling / CapRatio`) the burst flattened while the sustained rate kept growing
+        /// linearly forever, with its own knee `Ceiling / RegenPerBlock` sitting a whole refill window
+        /// further out. Sustained throughput is the thing that actually competes for block space, so
+        /// the "capped-linear, flattened at the top so no single whale can dominate the mempool"
+        /// property held only on the axis that mattered less. Now both axes share ONE knee.
+        ///
+        /// The invariant this buys, and the one to preserve: **stake sets how BIG your bucket is, never
+        /// how FAST it fills.** Every account, at every weight, refills empty→full in exactly
+        /// `CapRatio / RegenPerBlock` blocks.
+        ///
+        /// EXACT below the knee: `capacity_ceiling` is `weight · CapRatio` there, so the division by
+        /// `CapRatio` cancels and this is `weight · RegenPerBlock` to the unit — no rounding, and no
+        /// behaviour change for any account under the ceiling. `checked_div` guards a `CapRatio` of 0
+        /// (which also makes the ceiling 0, so 0 is the right answer).
+        pub fn regen_per_block(weight: u128) -> u128 {
+            Self::capacity_ceiling(weight)
+                .saturating_mul(T::RegenPerBlock::get())
+                .checked_div(T::CapRatio::get())
+                .unwrap_or(0)
+        }
+
         /// Lazy regenerate-on-read. **Pure** — no writes — so it is safe
         /// to call repeatedly inside `validate()`.
         ///
@@ -1072,9 +1150,7 @@ pub mod pallet {
                 None => 0, // first-touch = ZERO (charges up); closes the cheap-identity burst farm
                 Some(s) => {
                     let elapsed: u128 = now.saturating_sub(s.last_block).saturated_into();
-                    let regen = weight
-                        .saturating_mul(T::RegenPerBlock::get())
-                        .saturating_mul(elapsed);
+                    let regen = Self::regen_per_block(weight).saturating_mul(elapsed);
                     core::cmp::min(cap, s.cap_last.saturating_add(regen))
                 }
             }
@@ -1156,9 +1232,7 @@ pub mod pallet {
                 }
                 let cap = Self::capacity_ceiling(old_weight);
                 let elapsed: u128 = now.saturating_sub(s.last_block).saturated_into();
-                let regen = old_weight
-                    .saturating_mul(T::RegenPerBlock::get())
-                    .saturating_mul(elapsed);
+                let regen = Self::regen_per_block(old_weight).saturating_mul(elapsed);
                 let settled = core::cmp::min(cap, s.cap_last.saturating_add(regen));
                 Capacity::<T>::insert(
                     who,
@@ -1241,19 +1315,31 @@ pub mod pallet {
             }
         }
 
+        /// Append `id` to `author`'s full post index ([`ByAuthor`] + [`ByAuthorCount`]). Called from
+        /// every creation site (`post_message`/`quote_post`/`create_poll`), replies included.
+        ///
+        /// INFALLIBLE and O(1) since spec 212 — one counter read, one row write, one counter write, at
+        /// any history length. It used to be a `BoundedVec::try_push` that could return `TooManyPosts`
+        /// forever once an author hit `MaxPostsPerAuthor`, permanently bricking that account's ability
+        /// to post, quote or poll.
+        pub fn index_by_author(id: u64, author: &T::AccountId) {
+            let seq = ByAuthorCount::<T>::get(author);
+            ByAuthor::<T>::insert(author, seq, id);
+            ByAuthorCount::<T>::insert(author, seq.saturating_add(1));
+        }
+
         /// Index a newly-created TOP-LEVEL post (`parent == None`) into the Feature 3 spine — the global
-        /// `TopLevelPosts` sequence and the per-author `TopLevelByAuthor` list. Called from every
-        /// top-level creation site (`post_message`/`quote_post`/`create_poll`). Returns `TooManyPosts` if
-        /// the author's top-level index is full — which cannot actually happen once `ByAuthor` (a
-        /// superset, pushed first) has succeeded, but the bound is honoured so the whole dispatch rolls
-        /// back cleanly even on the impossible case.
-        pub fn index_top_level(id: u64, author: &T::AccountId) -> DispatchResult {
-            TopLevelByAuthor::<T>::try_mutate(author, |ids| ids.try_push(id))
-                .map_err(|_| Error::<T>::TooManyPosts)?;
+        /// `TopLevelPosts` sequence and the per-author `TopLevelByAuthor` index. Called from every
+        /// top-level creation site (`post_message`/`quote_post`/`create_poll`).
+        ///
+        /// Infallible and O(1) since spec 212, for the same reason as [`Pallet::index_by_author`].
+        pub fn index_top_level(id: u64, author: &T::AccountId) {
+            let author_seq = TopLevelByAuthorCount::<T>::get(author);
+            TopLevelByAuthor::<T>::insert(author, author_seq, id);
+            TopLevelByAuthorCount::<T>::insert(author, author_seq.saturating_add(1));
             let seq = NextTopLevelSeq::<T>::get();
             TopLevelPosts::<T>::insert(seq, id);
             NextTopLevelSeq::<T>::put(seq.saturating_add(1));
-            Ok(())
         }
     }
 
@@ -1311,15 +1397,23 @@ pub mod pallet {
         /// inclusion. Fails `TooLong` if `text` exceeds `MaxLength`, or `TooManyPosts` if the
         /// author's index is full.
         #[pallet::call_index(0)]
-        // The benchmarked `post_message` weight measures the top-level (`parent: None`) path. A reply
-        // (`parent: Some`) additionally reads+writes `ReplyCount` and writes `RepliesByParent` (the
-        // denormalized reply aggregates), so charge that worst case — 1 read + 2 writes — on top. A
-        // top-level post overpays slightly, which is the safe direction for the anti-spam weight
-        // backstop. spec 121 (Feature 3) additionally indexes a top-level post into the `TopLevelPosts`
-        // spine (`index_top_level`: 2 reads + 3 writes), which weights.rs has not yet re-benchmarked, so
-        // charge the per-post WORST case of the two paths — 2 reads + 3 writes — on top.
+        // WEIGHT (spec 212 recount). The benchmarked `post_message` covers PkhOf (r), NextPostId (r+w),
+        // ByAuthor (r+w) and Posts (w) = 3 reads + 3 writes. Two things are charged manually on top:
+        //
+        //  - The per-author append is now `ByAuthorCount` (r+w) plus a `ByAuthor` row (w) = 1 read +
+        //    2 writes, one write MORE than the benchmarked `ByAuthor` term covers.
+        //  - The branch below: a reply writes `ReplyCount` (r+w) + `RepliesByParent` (w) = 1 read +
+        //    2 writes; a top-level post runs `index_top_level` = `TopLevelByAuthorCount` (r+w) +
+        //    `TopLevelByAuthor` (w) + `NextTopLevelSeq` (r+w) + `TopLevelPosts` (w) = 2 reads +
+        //    4 writes. Charge the WORST of the two on every call, so a reply overpays.
+        //
+        // Total manual term: 2 reads + 5 writes. The benchmarked ref_time/proof_size are left as-is and
+        // are now GENEROUSLY conservative rather than optimistic: the benchmark measured an append to an
+        // EMPTY `ByAuthor`, which before v10 was the cheapest possible case of an O(history) re-encode
+        // (its own proof term admits `max_size: Some(80050)`) — and after v10 the empty case IS the only
+        // case. Fixing the structure is what makes the number already in hand true.
         #[pallet::weight(<T as Config>::WeightInfo::post_message(text.len() as u32)
-			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
+			.saturating_add(T::DbWeight::get().reads_writes(2, 5)))]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _parent: &Option<u64>| -> bool { true })]
         pub fn post_message(
             origin: OriginFor<T>,
@@ -1343,10 +1437,7 @@ pub mod pallet {
                 text.try_into().map_err(|_| Error::<T>::TooLong)?;
 
             let id = NextPostId::<T>::get();
-            // Index into `ByAuthor` first: on overflow this returns `Err`, the whole dispatch
-            // rolls back (so the id is NOT consumed), and the caller sees a real `TooManyPosts`.
-            ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
-                .map_err(|_| Error::<T>::TooManyPosts)?;
+            Self::index_by_author(id, &who);
 
             let at = frame_system::Pallet::<T>::block_number();
             // `quote: None` — a plain post or a reply. Quote-posts go through `quote_post`.
@@ -1369,7 +1460,7 @@ pub mod pallet {
                 RepliesByParent::<T>::insert(parent_id, id, ());
             } else {
                 // Top-level post — index it into the Feature 3 spine for exact-N feed/profile paging.
-                Self::index_top_level(id, &who)?;
+                Self::index_top_level(id, &who);
             }
             NextPostId::<T>::put(id.saturating_add(1));
 
@@ -1435,10 +1526,12 @@ pub mod pallet {
         /// Quote-post: create a post whose body is `text` and which references `quoted_id` via the
         /// `Post.quote` field (distinct from a reply's `parent`). Feeless + capacity-metered.
         #[pallet::call_index(3)]
-        // spec 121 (Feature 3): a quote is top-level, so it also runs `index_top_level` (2 reads +
-        // 3 writes), not yet re-benchmarked — charge it manually.
+        // A quote is always top-level, so it runs `index_top_level` (2 reads + 4 writes since spec 212)
+        // on top of the benchmark, plus the one extra `ByAuthor` row write the repaged append costs
+        // beyond the benchmarked `ByAuthor` term. Same recount as `post_message` above: 2 reads +
+        // 5 writes.
         #[pallet::weight(<T as Config>::WeightInfo::quote_post(text.len() as u32)
-			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
+			.saturating_add(T::DbWeight::get().reads_writes(2, 5)))]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _quoted_id: &u64| -> bool { true })]
         pub fn quote_post(origin: OriginFor<T>, text: Vec<u8>, quoted_id: u64) -> DispatchResult {
             let who = ensure_signed(origin)?;
@@ -1453,8 +1546,7 @@ pub mod pallet {
                 text.try_into().map_err(|_| Error::<T>::TooLong)?;
 
             let id = NextPostId::<T>::get();
-            ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
-                .map_err(|_| Error::<T>::TooManyPosts)?;
+            Self::index_by_author(id, &who);
 
             let at = frame_system::Pallet::<T>::block_number();
             Posts::<T>::insert(
@@ -1468,7 +1560,7 @@ pub mod pallet {
                 },
             );
             // A quote is a top-level post — index it for exact-N feed/profile paging (Feature 3).
-            Self::index_top_level(id, &who)?;
+            Self::index_top_level(id, &who);
             NextPostId::<T>::put(id.saturating_add(1));
 
             Self::deposit_event(Event::PostCreated { id, author: who });
@@ -1675,10 +1767,11 @@ pub mod pallet {
         /// spec 209, the optional governance-action tag) moves it 5 → 6. Each is a `create_poll` call-arg
         /// change — the only one in its respective upgrade.
         #[pallet::call_index(9)]
-        // spec 121 (Feature 3): a poll host is top-level, so it also runs `index_top_level` (2 reads +
-        // 3 writes), not yet re-benchmarked — charge it manually.
+        // A poll host is always top-level, so it runs `index_top_level` (2 reads + 4 writes since spec
+        // 212) on top of the benchmark, plus the one extra `ByAuthor` row write the repaged append costs
+        // beyond the benchmarked `ByAuthor` term. Same recount as `post_message`: 2 reads + 5 writes.
         #[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32)
-			.saturating_add(T::DbWeight::get().reads_writes(2, 3)))]
+			.saturating_add(T::DbWeight::get().reads_writes(2, 5)))]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>, _close_at: &Option<BlockNumberFor<T>>, _kind: &PollKind, _action: &Option<GovActionInput>| -> bool { true })]
         pub fn create_poll(
             origin: OriginFor<T>,
@@ -1744,8 +1837,7 @@ pub mod pallet {
             };
 
             let id = NextPostId::<T>::get();
-            ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
-                .map_err(|_| Error::<T>::TooManyPosts)?;
+            Self::index_by_author(id, &who);
             let at = now;
             // The poll's question is an ordinary post (parent/quote None), so it lives in the feed.
             Posts::<T>::insert(
@@ -1768,7 +1860,7 @@ pub mod pallet {
                 },
             );
             // A poll's host post is top-level — index it for exact-N feed/profile paging (Feature 3).
-            Self::index_top_level(id, &who)?;
+            Self::index_top_level(id, &who);
             NextPostId::<T>::put(id.saturating_add(1));
 
             // PostCreated keeps poll-unaware indexers/feeds folding it as a post; PollCreated flags
@@ -2620,6 +2712,64 @@ impl<T: Config> Pallet<T> {
             }
         }
 
+        // 7. the per-author indexes (spec 212). The counters are DERIVED aggregates now — the bounded
+        // vec carried its own length, the double maps do not — so they can drift, and drift is silent:
+        // an over-count makes the seq walk read a hole (a page silently short), an under-count hides
+        // the author's newest posts entirely. Anchor them the same way the reply aggregate is anchored:
+        // to the row counts, to seq DENSITY (the walk assumes `0..count` with no gap, which is also what
+        // makes seq order == id order), and to the TRUE forward edge, a `Posts` row's own `author`.
+        let mut by_author: BTreeMap<T::AccountId, u64> = BTreeMap::new();
+        for (author, seq, _id) in ByAuthor::<T>::iter() {
+            let e = by_author.entry(author.clone()).or_default();
+            *e = e.saturating_add(1);
+            if seq >= ByAuthorCount::<T>::get(&author) {
+                return Err("a ByAuthor seq is at or past its ByAuthorCount (index not dense)");
+            }
+        }
+        for (author, count) in ByAuthorCount::<T>::iter() {
+            if count != by_author.remove(&author).unwrap_or(0) {
+                return Err("ByAuthorCount disagrees with the ByAuthor rows");
+            }
+        }
+        if !by_author.is_empty() {
+            return Err("ByAuthor rows exist for an author with no ByAuthorCount row");
+        }
+        let mut top_level: BTreeMap<T::AccountId, u64> = BTreeMap::new();
+        for (author, seq, id) in TopLevelByAuthor::<T>::iter() {
+            let e = top_level.entry(author.clone()).or_default();
+            *e = e.saturating_add(1);
+            if seq >= TopLevelByAuthorCount::<T>::get(&author) {
+                return Err("a TopLevelByAuthor seq is at or past its count (index not dense)");
+            }
+            match Posts::<T>::get(id) {
+                Some(p) if p.parent.is_none() => {}
+                _ => return Err("a TopLevelByAuthor entry is missing or is not top-level"),
+            }
+        }
+        for (author, count) in TopLevelByAuthorCount::<T>::iter() {
+            if count != top_level.remove(&author).unwrap_or(0) {
+                return Err("TopLevelByAuthorCount disagrees with the TopLevelByAuthor rows");
+            }
+        }
+        if !top_level.is_empty() {
+            return Err("TopLevelByAuthor rows exist for an author with no count row");
+        }
+        // Every post is indexed under its OWN author — the check that catches a creation path that
+        // forgot to call `index_by_author` (the counters alone would stay mutually consistent).
+        let mut author_ids: BTreeMap<T::AccountId, alloc::collections::BTreeSet<u64>> =
+            BTreeMap::new();
+        for (author, _seq, id) in ByAuthor::<T>::iter() {
+            author_ids.entry(author).or_default().insert(id);
+        }
+        for (id, post) in Posts::<T>::iter() {
+            if !author_ids
+                .get(&post.author)
+                .is_some_and(|ids| ids.contains(&id))
+            {
+                return Err("a post is missing from its author's ByAuthor index");
+            }
+        }
+
         Ok(())
     }
 
@@ -2993,13 +3143,21 @@ impl<T: Config> Pallet<T> {
         viewer: Option<T::AccountId>,
     ) -> FeedPage<T::AccountId> {
         let limit = Self::clamp_limit(limit);
-        let ids = TopLevelByAuthor::<T>::get(&author);
         let viewer_ref = viewer.as_ref();
         let stakers = Self::staker_weights();
         let mut posts = Vec::new();
         let mut next_cursor = None;
-        // `TopLevelByAuthor` is append-ordered (ascending id) and reply-free; iterate it newest-first.
-        for &id in ids.iter().rev() {
+        // `TopLevelByAuthor` is seq-keyed in append order (ascending id) and reply-free, so walking
+        // `seq` DOWN from the counter yields ids newest-first — the same order the pre-v10 bounded vec
+        // gave via `.iter().rev()`, and the order this cursor arithmetic depends on. Deliberately a
+        // keyed `get` per step, NOT prefix iteration: a double map iterates in HASH order.
+        let mut seq = TopLevelByAuthorCount::<T>::get(&author);
+        while seq > 0 {
+            seq = seq.saturating_sub(1);
+            let id = match TopLevelByAuthor::<T>::get(&author, seq) {
+                Some(id) => id,
+                None => continue,
+            };
             if let Some(b) = before_id {
                 if id >= b {
                     continue;
@@ -3095,16 +3253,21 @@ impl<T: Config> Pallet<T> {
         }
     }
 
-    /// The author's TOP-LEVEL post count (`TopLevelByAuthor` length) — the correct profile `postCount`
-    /// that excludes replies (fixes the count-counts-replies tradeoff). O(1) via `decode_len`.
+    /// The author's TOP-LEVEL post count — the correct profile `postCount` that excludes replies
+    /// (fixes the count-counts-replies tradeoff). O(1) via the explicit counter; before spec 212 this
+    /// was `TopLevelByAuthor::decode_len`, which the double-map shape no longer offers. Saturates into
+    /// the on-wire `u32` (`ProfileView.post_count`); the counter itself is `u64` and uncapped.
     pub fn top_level_post_count(author: &T::AccountId) -> u32 {
-        TopLevelByAuthor::<T>::decode_len(author).unwrap_or(0) as u32
+        TopLevelByAuthorCount::<T>::get(author)
+            .try_into()
+            .unwrap_or(u32::MAX)
     }
 
     /// One author's REPLIES (the profile Replies tab): their posts with `parent != None`, newest-first,
-    /// paged below `before_id` (a post id). Scans the author's own `ByAuthor` index (append-ordered,
-    /// ascending) in reverse — bounded by the author's own post count, no global scan. Top-level posts in
-    /// the index are skipped; the cursor advances only past returned replies.
+    /// paged below `before_id` (a post id). Walks the author's own `ByAuthor` index by `seq`, newest
+    /// first — bounded by the author's own post count, no global scan. Top-level posts in the index are
+    /// skipped; the cursor advances only past returned replies. Same seq-descending rule as
+    /// [`Pallet::author_feed_page`].
     pub fn author_replies_page(
         author: T::AccountId,
         before_id: Option<u64>,
@@ -3112,12 +3275,17 @@ impl<T: Config> Pallet<T> {
         viewer: Option<T::AccountId>,
     ) -> FeedPage<T::AccountId> {
         let limit = Self::clamp_limit(limit);
-        let ids = ByAuthor::<T>::get(&author);
         let viewer_ref = viewer.as_ref();
         let stakers = Self::staker_weights();
         let mut posts = Vec::new();
         let mut next_cursor = None;
-        for &id in ids.iter().rev() {
+        let mut seq = ByAuthorCount::<T>::get(&author);
+        while seq > 0 {
+            seq = seq.saturating_sub(1);
+            let id = match ByAuthor::<T>::get(&author, seq) {
+                Some(id) => id,
+                None => continue,
+            };
             if let Some(b) = before_id {
                 if id >= b {
                     continue;

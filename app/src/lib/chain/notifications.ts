@@ -21,9 +21,7 @@ import type { FeedSource } from "@/lib/feed/source";
  *  single-producer chain never reorgs best, so best is both fresh and safe. */
 const BEST = { at: "best" } as const;
 
-/** Cap the reverse-index scan: the newest N of the viewer's posts are examined for replies/likes/poll
- *  votes. Bounded on purpose (the scalable reverse-index is out of scope); `truncated` reports a cap hit. */
-export /**
+/**
  * Hop budget for the mention probe. This is a BACKGROUND search for the viewer's own ss58 — and a viewer
  * with no mentions (the common case) never fills the page, so without a cap the reader chases its cursor
  * hop after hop down towards post id 0. Every connected client, scanning the whole chain, to render an
@@ -35,7 +33,10 @@ export /**
  */
 const MENTION_MAX_HOPS = 8;
 
-const MAX_MY_POSTS = 120;
+/** Cap the reverse-index scan: the newest N of the viewer's posts are examined for replies/likes/poll
+ *  votes. Bounded on purpose (the scalable reverse-index is out of scope); `truncated` reports a cap hit.
+ *  Exported so the test can pin the seq window this cap selects. */
+export const MAX_MY_POSTS = 120;
 /** How many recent mention hits to pull from the body-substring search. */
 export const MENTION_LIMIT = 40;
 
@@ -92,12 +93,27 @@ export async function loadNotifications(
   me: Ss58,
 ): Promise<NotifLoad> {
   // 1. The viewer's post ids (all posts incl. replies), newest-first, capped.
-  const rawIds = (await api.query.Microblog.ByAuthor.getValue(me).catch(() => undefined)) as
-    | bigint[]
-    | undefined;
-  const myPostIds = (rawIds ?? []).map((x) => BigInt(x)).sort(byIdDesc);
-  const scanned = myPostIds.slice(0, MAX_MY_POSTS);
-  const truncated = myPostIds.length > scanned.length;
+  //
+  // Since spec 212 `ByAuthor` is a seq-keyed double map (`ByAuthor[me][seq] = post_id`) beside a
+  // `ByAuthorCount` counter, not one blob. Read the counter, then fetch ONLY the newest MAX_MY_POSTS
+  // seqs. That is strictly better than the old whole-blob read AND better than `getEntries(me)`: seq
+  // is assigned in append order over strictly ascending post ids, so the top seqs ARE the newest
+  // posts, and the read is bounded by the cap instead of by the viewer's entire history — which now
+  // has no upper bound at all, since `MaxPostsPerAuthor` went away in the same upgrade.
+  const total = await api.query.Microblog.ByAuthorCount.getValue(me).catch(() => 0n);
+  const count = Number(total ?? 0n);
+  const truncated = count > MAX_MY_POSTS;
+  const from = Math.max(0, count - MAX_MY_POSTS);
+  const seqs = Array.from({ length: count - from }, (_, i) => BigInt(from + i));
+  const values = seqs.length
+    ? await api.query.Microblog.ByAuthor.getValues(seqs.map((s) => [me, s] as const)).catch(
+        () => [] as (bigint | undefined)[],
+      )
+    : [];
+  const scanned = (values as (bigint | undefined)[])
+    .filter((v): v is bigint => v != null)
+    .map((x) => BigInt(x))
+    .sort(byIdDesc);
 
   const q = api.query.Microblog;
 

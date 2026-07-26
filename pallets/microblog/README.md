@@ -30,7 +30,8 @@ silent drop). `Post` carries `{ author, text, parent, quote, at }`.
 The node serves **all reads** from the `MicroblogApi` runtime API (feed / author feed / following
 feed / thread / likes — viewer-aware and profile-enriched); there is no external indexer.
 
-Constants: `MaxLength = 512`, `MaxPostsPerAuthor = 10_000` (tunable). Weights are FRAME-benchmarked
+Constants: `MaxLength = 512` (tunable). Posts per author are UNBOUNDED since spec 212 — the
+per-author indexes are seq-keyed double maps, so `MaxPostsPerAuthor` is gone. Weights are FRAME-benchmarked
 (`WeightInfo`).
 
 License: Apache-2.0

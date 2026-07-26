@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Binary } from "polkadot-api";
-import { getThread, latestPostId } from "./reads";
+import { authorPostCount, getThread, latestPostId } from "./reads";
 import { nodeGlobalFeedPage, nodeAuthorFeedPage, nodeThread } from "./node-reads";
 import type { CognoApi, CognoPost } from "@/lib/types";
 
@@ -115,7 +115,17 @@ function makeFakeApi(spec: FakeSpec): CognoApi {
         VoteTally: { getValue: (id: bigint) => Promise.resolve(spec.voteTally?.get(id) ?? ZERO_TALLY) },
         ReplyCount: { getValue: (id: bigint) => Promise.resolve(spec.replyCount?.get(id) ?? 0) },
         Polls: { getValue: () => Promise.resolve(undefined) },
-        ByAuthor: { getValue: (a: string) => Promise.resolve(spec.byAuthor?.get(a) ?? []) },
+        // Spec 212: `ByAuthor` is a seq-keyed double map beside a `ByAuthorCount` counter, NOT one
+        // blob per author. The fake mirrors that shape exactly — a fake that kept the old
+        // `getValue(author) -> bigint[]` would type-check against nothing and quietly certify a
+        // reader that cannot work against the real chain.
+        ByAuthorCount: {
+          getValue: (a: string) => Promise.resolve(BigInt((spec.byAuthor?.get(a) ?? []).length)),
+        },
+        ByAuthor: {
+          getValues: (keys: readonly (readonly [string, bigint])[]) =>
+            Promise.resolve(keys.map(([a, seq]) => (spec.byAuthor?.get(a) ?? [])[Number(seq)])),
+        },
         RepliesByParent: {
           getEntries: (parent: bigint) =>
             Promise.resolve(
@@ -205,6 +215,17 @@ function sampleSpec(): FakeSpec {
     ]),
   };
 }
+
+describe("authorPostCount", () => {
+  it("reads the ByAuthorCount counter, replies included", async () => {
+    // Spec 212 moved this off `ByAuthor.getValue(author).length` (the bounded-vec blob) onto the
+    // explicit counter. alice authored ids 0 and 3; bob authored the reply id 1, which still counts.
+    const api = makeFakeApi(sampleSpec());
+    expect(await authorPostCount(api, "alice")).toBe(2);
+    expect(await authorPostCount(api, "bob")).toBe(1);
+    expect(await authorPostCount(api, "nobody")).toBe(0);
+  });
+});
 
 describe("latestPostId", () => {
   it("is NextPostId - 1, or null on an empty chain", async () => {

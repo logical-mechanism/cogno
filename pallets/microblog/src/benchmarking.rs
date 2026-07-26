@@ -54,8 +54,7 @@ mod benchmarks {
                 at,
             },
         );
-        ByAuthor::<T>::try_mutate(who, |ids| ids.try_push(0u64))
-            .expect("empty index has room; qed");
+        Pallet::<T>::index_by_author(0u64, who);
         NextPostId::<T>::put(1u64);
     }
 

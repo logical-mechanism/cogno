@@ -32,7 +32,7 @@ Given the account's stake `weight`, the runtime derives everything from a few tu
 
 ```
 cap     = min( weight * CapRatio, Ceiling )          # the bucket size (burst)
-rate    = weight * RegenPerBlock                      # refill per block (sustained)
+rate    = cap * RegenPerBlock / CapRatio              # refill per block (sustained)
 current = min( cap, capacity_last + rate * (now - last_block) )
 
 need    = BaseCost + PerByteCost * text_len           # cost of this post
@@ -45,19 +45,52 @@ scales with size: a one-word `gm` costs `BaseCost`; a 500-byte essay costs `Base
 Everything is done in fine-grained micro-capacity units with saturating arithmetic, so an account idle
 for years simply clamps at `cap` instead of overflowing.
 
+Note what the `rate` line does *not* say. It is not `weight · RegenPerBlock`; it is the account's own
+(already capped) bucket divided by a fixed refill window. Below the ceiling those are the same number
+to the unit — `cap` is `weight · CapRatio` there, so the `CapRatio` cancels — but above it they part
+company, and only the derived form keeps the curve capped. Two things fall out of writing it this way:
+
+- **One knee, on both axes.** `cap` and `rate` flatten at the same locked amount. Written the other way
+  the bucket flattened while sustained throughput kept climbing linearly, so the cap applied to the
+  quantity that mattered less.
+- **The refill window is the same for everyone.** `cap / rate` is `CapRatio / RegenPerBlock` blocks at
+  every weight. Stake sets how *big* your bucket is; it never sets how *fast* it fills.
+
 There is a hard entry price: **`MinLock` = 100 ADA** (100,000,000 lovelace). It is enforced twice — the
 `talk_vault` validator refuses a lock below it, and the observer maps any observed balance under it to
 weight 0. Below the floor you get nothing; there is no partial credit.
 
-The current dev-tuned constants (all runtime-configurable, none consensus-critical) are
-`CapRatio = 50`, `RegenPerBlock = 2`, `Ceiling = 5·10¹²` (~100k posts), `BaseCost = 50_000_000` (one
-post), `PerByteCost = 50_000`, and `MaxLength = 512` bytes. Under these, a floor lock of 100 ADA
-(weight 10⁸) gives `cap = min(10⁸·50, Ceiling) = 5·10⁹` ≈ 100 posts of burst, refilling at
-`10⁸·2 = 2·10⁸` per block (≈4 posts/block), so ~25 blocks empty→full. 1,000 ADA gives ten times that,
-up to the `Ceiling`. The curve is deliberately **linear with a hard ceiling** ("capped-linear"): weight
-is proportional to locked lovelace, then flattened at the top so no single whale can dominate the
-mempool. Linear is the one split-neutral choice — an anti-whale (concave) curve would actually *reward*
-splitting stake across identities, so it stays off the table until the identity gate is proven stronger.
+The current constants (all runtime-configurable, none consensus-critical) are `CapRatio = 3_000`,
+`RegenPerBlock = 1`, `Ceiling = 3·10¹⁴` (100,000 posts), `BaseCost = 3·10⁹` (one post),
+`PerByteCost = 3·10⁶`, and `MaxLength = 512` bytes.
+
+Under these, a floor lock of 100 ADA (weight 10⁸) gives:
+
+| | |
+|---|---|
+| bucket | `cap = min(10⁸·3_000, Ceiling) = 3·10¹¹` = **100 posts** of burst |
+| refill | `rate = 3·10¹¹·1/3_000 = 10⁸` per block = **1 post per 30 blocks** (~3 min) |
+| empty→full | `3·10¹¹ / 10⁸` = **3,000 blocks ≈ 5 hours** |
+| sustained | 14,400 blocks per day ÷ 30 = **480 posts/day** |
+| state growth | ≈712 bytes per post (a 592-byte `Posts` row plus its two index rows) ⇒ **~342 KB/day** |
+
+1,000 ADA gives ten times that, up to the `Ceiling`. The curve is deliberately **linear with a hard
+ceiling** ("capped-linear"): weight is proportional to locked lovelace, then flattened at the top so no
+single whale can dominate the mempool. Linear is the one split-neutral choice — an anti-whale (concave)
+curve would actually *reward* splitting stake across identities, so it stays off the table until the
+identity gate is proven stronger.
+
+The knee is at `Ceiling / CapRatio` = 10¹¹ lovelace, i.e. **100,000 ADA locked**. At and above it an
+account holds a 100,000-post bucket refilling over the same 5 hours: 33 posts per block, ~480,000 per
+day. That is roughly 2% of a block, which is what "cannot dominate the mempool" has to mean to be worth
+saying — the block itself only fits on the order of 1,600 posts.
+
+These numbers were retuned in spec 212, and the retune shipped with the removal of `MaxPostsPerAuthor`
+rather than after it. That constant capped an author at 10,000 posts *ever*, which is what had been
+quietly limiting sustained posting; the constants underneath it were still tuned for a watchable demo
+(a 25-block, 2.5-minute refill — 57,600 posts/day at the floor lock). Removing the cap without
+retuning would have unleashed the rate rather than fixed it. Capacity is the only anti-spam here: the
+social calls are feeless, so no fee floor sits under them.
 
 The bucket, its constants, and the check-and-consume logic all live folded into **`pallet-microblog`**.
 
@@ -126,12 +159,15 @@ does a couple of cheap reads and rejects an over-budget post from the pool with 
 
 Capacity is **consumed only on inclusion**, in `post_dispatch` — never in `validate()` (the pool may
 call it many times per transaction). The block author re-validates at build time, so only about `cap`
-posts from an account can actually land. FRAME's per-block weight limits are the backstop that caps
-per-block execution regardless.
+posts from an account can actually land. FRAME's per-block weight limits cap per-block execution
+regardless — but note that they are a backstop on *throughput*, not on *state growth*: `RuntimeBlockWeights`
+sets proof size to `u64::MAX`, so nothing but capacity bounds how much a well-funded account accumulates
+over time. That is why the constants above are sized against posts-per-day and bytes-per-day, not just
+against a block.
 
 One honest scoping note: capacity disciplines **users**, not the operator. On a single-operator PoA
 chain the operator builds the blocks and could include their own over-budget posts. This is a live,
-operator-run preprod testnet (spec_version 204 / transaction_version 3, genesis `0x73eaa4bf`), not a
+operator-run preprod testnet (spec_version 212 / transaction_version 7), not a
 trustless network — consensus trust, not capacity, is the real security boundary. Capacity's job is to
 rate-limit everyone else, exactly as fees once did.
 
