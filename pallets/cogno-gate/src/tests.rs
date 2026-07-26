@@ -81,10 +81,7 @@ fn double_bind_same_account_is_rejected() {
     new_test_ext().execute_with(|| {
         assert_ok!(bind(HASH_A, ALICE));
         // A second identity cannot be bound to an already-bound account.
-        assert_noop!(
-            bind(HASH_B, ALICE),
-            Error::<Test>::AccountAlreadyBound
-        );
+        assert_noop!(bind(HASH_B, ALICE), Error::<Test>::AccountAlreadyBound);
         assert_eq!(PkhOf::<Test>::get(ALICE), Some(HASH_A)); // unchanged
         assert_eq!(AccountOf::<Test>::get(HASH_B), None);
     });
@@ -514,11 +511,7 @@ fn link_identity_signed_binds_a_real_wallet_proof() {
         let (s, k) = proof();
         // FEELESS + unsigned: no fee payer, no signing account — the bound account is the one the PROOF
         // commits (the submitter cannot retarget it). Dispatched with `RuntimeOrigin::none()`.
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let acct = bound_account();
         let identity = PkhOf::<Test>::get(acct).expect("the committed account is now bound");
         assert_eq!(
@@ -575,11 +568,7 @@ fn link_identity_signed_requires_none_origin() {
         set_genesis(GENESIS);
         let (s, k) = proof();
         assert_noop!(
-            CognoGate::link_identity_signed(
-                RuntimeOrigin::signed(ALICE),
-                s.clone(),
-                k.clone()
-            ),
+            CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s.clone(), k.clone()),
             DispatchError::BadOrigin
         );
         assert_noop!(
@@ -629,11 +618,7 @@ fn link_stake_signed_binds_voting_power_for_a_payment_bound_account() {
         set_genesis(GENESIS);
         // First payment-bind the account (the participant) via the real payment fixture.
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let acct = bound_account();
         // Then stake-bind: the real stake-key proof anchors the SAME account's voting power.
         let (ss, sk) = stake_proof();
@@ -775,11 +760,7 @@ fn validate_unsigned_rejects_an_already_bound_identity_at_the_pool() {
         System::set_block_number(1);
         set_genesis(GENESIS);
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         // The SAME proof is now Stale at the pool — never re-gossiped or re-included.
         assert_eq!(validate(&id_call()), Err(InvalidTransaction::Stale.into()));
     });
@@ -791,11 +772,7 @@ fn validate_unsigned_rejects_a_tombstoned_identity_at_the_pool() {
         System::set_block_number(1);
         set_genesis(GENESIS);
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let acct = bound_account();
         assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), acct)); // permanent tombstone
                                                                     // "Ban means ban" enforced AT THE POOL: the eternally-valid proof cannot resurrect the binding.
@@ -815,11 +792,7 @@ fn validate_unsigned_stake_requires_payment_bind_then_admits() {
         );
         // Payment-bind that account, then the stake bind is admitted with a dedup tag.
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let valid = <CognoGate as ValidateUnsigned>::validate_unsigned(
             TransactionSource::External,
             &stake_call(),
@@ -835,11 +808,7 @@ fn validate_unsigned_rejects_an_already_stake_bound_at_the_pool() {
         System::set_block_number(1);
         set_genesis(GENESIS);
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let (ss, sk) = stake_proof();
         assert_ok!(CognoGate::link_stake_signed(RuntimeOrigin::none(), ss, sk));
         // Re-submitting the same (already-bound) stake proof is Stale at the pool.

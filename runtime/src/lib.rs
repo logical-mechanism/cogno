@@ -84,7 +84,15 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // CIP-95 wallet embeds as the COSE "address" when signing with a dRep key (Eternl/Lace in-wallet role
     // claims), in addition to a headered vkey-payment address. Verifier logic only — no call/storage/event
     // change, so `transaction_version` STAYS 6 and the SCALE metadata is byte-identical.
-    spec_version: 210,
+    // spec 211 (the pre-mainnet safe batch): `link_identity_signed` DROPS its unauthenticated
+    // `thread_pointer` argument + the `ThreadOf` storage (→ `transaction_version` 7 — the only mover);
+    // `create_poll` REQUIRES `close_at` inside a new `MinPollDuration`/`MaxPollDuration` window (3 new
+    // pinned microblog errors; the argument stays `Option`, so no tx-version move); `pallet-tx-pause`
+    // lands at index 20 (committee break-glass, `BaseCallFilter = InsideBoth`); the profile tidy-up
+    // calls are capacity-priced per account; the observed-role truncation reserves non-SPO badges; and
+    // the Cardano cutover collapses to the one `CARDANO_NET` selector. (The enum-variant pinning and
+    // the cardano-roles DbWeight fix ride along — both non-encoding.)
+    spec_version: 211,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
@@ -93,7 +101,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // CardanoRoles pallet (new calls/storage only, `TxExtension` byte-identical), so it STAYED 4.
     // 4 → 5: `create_poll` gained a `kind: PollKind` argument (spec 207).
     // 5 → 6: `create_poll` gained an `action: Option<GovActionInput>` argument (spec 209).
-    transaction_version: 6,
+    // 6 → 7: `link_identity_signed` LOST its `thread_pointer: Option<Vec<u8>>` argument (spec 211) —
+    // removing a call ARGUMENT changes the extrinsic encoding. (Nothing else in spec 211 moves it: the
+    // new tx-pause CALLS and the new poll-duration VALIDATION are metadata-only, and the `TxExtension`
+    // tuple is byte-identical.)
+    transaction_version: 7,
     system_version: 1,
 };
 

@@ -3,7 +3,10 @@
   "descriptorPath": ".papi/descriptors",
   "entries": {
     "cogno": {
-      "metadata": ".papi/metadata/cogno.scale"
+      "wsUrl": "ws://127.0.0.1:9944",
+      "metadata": ".papi/metadata/cogno.scale",
+      "genesis": "0x4545454545454545454545454545454545454545454545454545454545454545",
+      "codeHash": "0x49399d4c1657adaa75f171f8f709fea10571ce6d0d52e0c4a8110d48ff25b637"
     }
   }
 }

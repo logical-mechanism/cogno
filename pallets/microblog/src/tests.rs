@@ -1161,9 +1161,12 @@ fn close_poll_rejects_floating_and_missing_polls() {
         let options: frame_support::BoundedVec<
             frame_support::BoundedVec<u8, <Test as crate::pallet::Config>::MaxPollOptionLen>,
             <Test as crate::pallet::Config>::MaxPollOptions,
-        > = vec![b"a".to_vec().try_into().unwrap(), b"b".to_vec().try_into().unwrap()]
-            .try_into()
-            .unwrap();
+        > = vec![
+            b"a".to_vec().try_into().unwrap(),
+            b"b".to_vec().try_into().unwrap(),
+        ]
+        .try_into()
+        .unwrap();
         crate::Polls::<Test>::insert(
             99,
             crate::pallet::Poll::<Test> {

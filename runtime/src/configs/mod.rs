@@ -28,7 +28,9 @@ use frame_support::{
     derive_impl,
     dispatch::DispatchClass,
     parameter_types,
-    traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, InsideBoth, VariantCountOf},
+    traits::{
+        ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, InsideBoth, VariantCountOf,
+    },
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
@@ -955,7 +957,10 @@ mod profile_capacity_cost_tests {
             // The CREATE/OVERWRITE calls keep the steep flat price, and non-profile calls stay
             // unpriced by this source.
             let set = RuntimeCall::Profile(pallet_profile::Call::pin_post { id: 1 });
-            assert_eq!(ProfileCapacityCost::cost(&who, &set), Some(ProfileCost::get()));
+            assert_eq!(
+                ProfileCapacityCost::cost(&who, &set),
+                Some(ProfileCost::get())
+            );
             let remark = RuntimeCall::System(frame_system::Call::remark {
                 remark: Default::default(),
             });
@@ -1361,8 +1366,8 @@ const CARDANO_NET: CardanoNet = CardanoNet::Preprod;
 /// the CardanoObserverApi so every node queries the SAME Cardano policy. ⚠ moving the live contract
 /// hash orphans the deployed vault — if contracts change, update this to match the new applied hash.
 const TALK_VAULT_POLICY_ID: [u8; 28] = [
-    0x16, 0x8a, 0x97, 0x10, 0xe9, 0x91, 0xb7, 0x68, 0x42, 0x6b, 0x58, 0x01, 0x1f, 0xeb, 0xec,
-    0x0f, 0xa3, 0xc5, 0xff, 0x6b, 0xeb, 0x49, 0x06, 0x5c, 0xc5, 0x24, 0x89, 0xc7,
+    0x16, 0x8a, 0x97, 0x10, 0xe9, 0x91, 0xb7, 0x68, 0x42, 0x6b, 0x58, 0x01, 0x1f, 0xeb, 0xec, 0x0f,
+    0xa3, 0xc5, 0xff, 0x6b, 0xeb, 0x49, 0x06, 0x5c, 0xc5, 0x24, 0x89, 0xc7,
 ];
 
 /// The full per-network parameter set — one struct so nothing can be flipped alone.
@@ -1411,7 +1416,10 @@ const CARDANO_PARAMS: CardanoNetParams = match CARDANO_NET {
 const _: () = {
     match CARDANO_NET {
         CardanoNet::Preprod => {
-            assert!(CARDANO_PARAMS.network_id == 0, "preprod binds testnet addresses");
+            assert!(
+                CARDANO_PARAMS.network_id == 0,
+                "preprod binds testnet addresses"
+            );
             assert!(
                 CARDANO_PARAMS.shelley_start_slot == 86_400
                     && CARDANO_PARAMS.shelley_start_unix == 1_655_769_600,
@@ -1419,7 +1427,10 @@ const _: () = {
             );
         }
         CardanoNet::Mainnet => {
-            assert!(CARDANO_PARAMS.network_id == 1, "mainnet binds mainnet addresses");
+            assert!(
+                CARDANO_PARAMS.network_id == 1,
+                "mainnet binds mainnet addresses"
+            );
             assert!(
                 CARDANO_PARAMS.stability_slots >= 129_600,
                 "a mainnet build must run the full 3k/f stability window — the relaxed \

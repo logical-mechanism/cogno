@@ -118,11 +118,13 @@ If you changed the layout of *existing* storage, ship an `OnRuntimeUpgrade` migr
 
 ## Version rules
 
-- **`spec_version`** — bump on any logic/storage/metadata change (currently **204**). `apply` rejects
+- **`spec_version`** — bump on any logic/storage/metadata change (currently **211**). `apply` rejects
   a non-increasing value on-chain.
 - **`transaction_version`** — bump *only* when the extrinsic encoding changes (a new transaction
-  extension, or changed call arguments). Adding a new call does **not** change it. Keeping it stable
-  means in-flight signed transactions and signing tools don't break. (Currently **3**.)
+  extension, or changed call arguments — removing an argument counts, removing a whole call does
+  not). Adding a new call does **not** change it. Keeping it stable means in-flight signed
+  transactions and signing tools don't break. (Currently **7** — spec 211 removed
+  `link_identity_signed`'s `thread_pointer` argument.)
 - **Pallet indices are forever.** A new pallet gets a new index; never renumber. Indices 6 (Sudo) and
   12 (Anchor) are permanently vacant — gaps are fine.
 

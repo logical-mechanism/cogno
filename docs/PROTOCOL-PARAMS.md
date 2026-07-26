@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 210** — the runtime that's live on preprod.
+it. This is a snapshot of **spec_version 211**.
 
 Two things to keep in mind:
 
@@ -31,7 +31,7 @@ on every commit, which is how this table was wrong before.)
 - **Block time / slot duration cannot change after the chain has started** — doing so bricks block
   production. It's fixed for the life of this chain.
 - **Some values are contracts with the outside world, not free knobs:**
-  - `transaction_version` (6) — only bump when the extrinsic byte format changes.
+  - `transaction_version` (7) — only bump when the extrinsic byte format changes.
   - `SS58Prefix` (42) — changes every printed address.
   - `VaultPolicyId` — the live L1 script hash; changing it means you redeployed the vault (see the
     contracts gotcha in [CLAUDE.md](../CLAUDE.md)).
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **210** | `VERSION` — `runtime/src/lib.rs` |
-| transaction_version | 6 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 210 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| **spec_version** | **211** | `VERSION` — `runtime/src/lib.rs` |
+| transaction_version | 7 | `VERSION` — `runtime/src/lib.rs` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 211 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -169,7 +169,9 @@ A poll stores vote COUNTS only — the weight is derived at read time from each 
 |---|---|---|
 | `MaxObservedAccounts` (accounts a tally joins over) | 1024 (= the observer's `MaxObserved`) — declares `close_poll`'s worst case, which then refunds down to the rows actually scanned | `pallet_microblog::Config` |
 | Roles folded per voter in a chamber tally | 16 (the observed-badge cap — see [Cardano role tags](#cardano-role-tags)) | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs` |
-| Poll deadline (`close_at`) | unbounded — any block number, never checked against `now`. `None` ⇒ the poll floats forever and can never be frozen (`PollNotClosable`) | `create_poll` — `pallets/microblog/src/lib.rs` |
+| Poll deadline (`close_at`) | REQUIRED since spec 211, and validated into `[now + MinPollDuration, now + MaxPollDuration]`. (A pre-211 `None` poll already in storage keeps floating and can never be frozen.) | `create_poll` — `pallets/microblog/src/lib.rs` |
+| `MinPollDuration` | 100 blocks (10 min) | `pallet_microblog::Config` |
+| `MaxPollDuration` | 1,296,000 blocks (90 days) | `pallet_microblog::Config` |
 
 ## Cardano observer
 
@@ -207,6 +209,8 @@ All in `runtime/src/configs/mod.rs`.
 | `MaxProposalWeight` | 50% of `max_block` (1 s of ref_time) | `MaxProposalWeight` |
 | `DefaultVote` | `AbstainAsNay` | `pallet_collective::Config` |
 | Genesis members | dev: 1 seat (//Alice); local_testnet: 5 seats | `runtime/src/genesis_config_presets.rs` |
+| TxPause (break-glass, spec 211) | committee `pause`/`unpause` of any `(pallet, call)` name, enforced via `BaseCallFilter`. Never pausable: both inherents, the committee itself, the upgrade path | `pallet_tx_pause::Config` / `TxPauseWhitelist` |
+| TxPause `MaxNameLen` | 256 bytes (over-long names read as paused, fail-closed) | `pallet_tx_pause::Config` |
 
 Governance-fuel (the regenerating admin-fee budget that funds seated accounts):
 

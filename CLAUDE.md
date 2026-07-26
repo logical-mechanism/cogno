@@ -30,8 +30,8 @@ scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 210 / tx_version 6**) |
-| `pallets/` | `microblog` (10, storage v9; call_index 1 `delete_post` and 6 `repost` both permanently vacant), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; `MaxObserved` 1024, benchmarked `observe`, on-chain stall alarm), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 211 / tx_version 7**) |
+| `pallets/` | `microblog` (10, storage v9; call_index 1 `delete_post` and 6 `repost` both permanently vacant), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; `MaxObserved` 1024, benchmarked `observe`, on-chain stall alarm), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
 | `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`weight`/`authors` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
@@ -97,9 +97,9 @@ an agent needs:
   lockstep — it ships as a new node binary plus a producer restart. Don't bump spec for it.
 - **Pallet indices are on-wire contracts — never renumber.** Indices **6** (Sudo, removed) and **12**
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index
-  (next free is **20**); gaps are fine.
+  (next free is **21**; 20 is TxPause); gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **210**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
+  `spec_version` (currently **211**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
   (never the live chain):
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   Non-encoding changes (bounds, logging, tests) must **not** bump it. `transaction_version` moves ONLY on
@@ -108,13 +108,11 @@ an agent needs:
   match (`npm run lint` runs `scripts/check-spec.mjs` and fails on drift), and the deployed bundle
   **blocks posting** against a chain whose `spec_version` differs from the one it was built against.
 - **Event/Error variant indices are on-wire too — SCALE indexes enum variants by DECLARATION ORDER.**
-  Deleting a variant silently shifts every one below it. Only three pallets are pinned with explicit
-  `#[codec(index = N)]` today: microblog (Events **and** Errors) and the `cardano-observer` /
-  `cardano-roles` **Events**. Those two pallets' `Error` enums, and *both* enums of every other pallet
-  (`cogno-gate`, `profile`, `talk-stake`, `validator-set`, `governance-fuel`, `governed-upgrade`), are
-  still bare declaration order — pin them before you insert or reorder there. Retired microblog variants
-  (event 6 `Reposted`, error 5 `AlreadyReposted`) leave a permanent GAP. Never insert into a gap, never
-  reorder, always pin a new variant. Same rule as pallet/call indices.
+  Deleting a variant silently shifts every one below it. Since spec 211 EVERY pallet's Event and Error
+  enum is pinned with explicit `#[codec(index = N)]` (microblog `VoteDir` and the observer's
+  `InherentError` included) — keep it that way. Retired variants leave a permanent GAP (microblog
+  event 6 `Reposted`, error 5 `AlreadyReposted`; cogno-gate error 2 `BadThread`). Never insert into a
+  gap, never reorder, always pin a new variant. Same rule as pallet/call indices.
 - **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
   never runs: the on-chain `StorageVersion` stays put while the code declares the new one, and
   `post_upgrade` never fires. Before enacting, run the `try-runtime` dry-run against live state that
