@@ -14,9 +14,13 @@
 //! ## Fee posture (named honestly)
 //! All four writes are **feeless** (`#[pallet::feeless_if]`), metered against the SAME single
 //! per-account talk-capacity battery as posting — so the whole app is feeless and a freshly-derived
-//! posting key never needs funding. They are deliberately **expensive** in capacity terms (`ProfileCost`
-//! ≈ 10 posts, set in the runtime): a profile is a low-frequency mutable *overwrite*, so a steep
-//! capacity price is its anti-spam (only the identity-bound owner can edit, and they cannot churn it).
+//! posting key never needs funding. The CREATE/OVERWRITE calls (`set_profile`, `pin_post`) are
+//! deliberately **expensive** in capacity terms (`ProfileCost` ≈ 10 posts, set in the runtime): a
+//! profile is a low-frequency mutable *overwrite*, so a steep capacity price is its anti-spam (only
+//! the identity-bound owner can edit, and they cannot churn it). The TIDY-UP calls
+//! (`clear_profile`, `unpin_post`) are priced per-account since spec 211 — capacity 0 when there is
+//! a row to clear (so a revoked, zero-capacity account can still erase its own state), and
+//! pool-unincludable when there is not.
 //! Microblog meters these foreign calls at the pool via its `ForeignCapacityCost` seam (the runtime
 //! supplies the price), so there is NO second transaction-extension — the feeless+capacity machinery is
 //! shared, not duplicated. Metering at the pool (not in the call body) is what keeps a zero-capacity
@@ -242,9 +246,11 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Clear the caller's profile. Feeless, capacity-metered at `ProfileCost` (same anti-spam as
-        /// `set_profile`; metering a doomed call is what stops free-spamming it). Fails `NoProfile` if
-        /// there is nothing to clear.
+        /// Clear the caller's profile. Feeless; since spec 211 the runtime prices it at capacity 0
+        /// when the caller HAS a profile row (so a revoked, zero-capacity account can still tidy up
+        /// its own state) and as pool-unincludable when it does not (the pool-side mirror of
+        /// `NoProfile` — a doomed call is never included free). Deliberately NO identity gate.
+        /// Fails `NoProfile` if there is nothing to clear.
         #[pallet::call_index(1)]
         #[pallet::weight(T::WeightInfo::clear_profile())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>| -> bool { true })]
@@ -272,9 +278,11 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Remove the caller's pinned post. Feeless, capacity-metered at `ProfileCost`. Fails `NotPinned`
-        /// if nothing is pinned. No identity gate (a revoked account with capacity may still tidy up its
-        /// own state).
+        /// Remove the caller's pinned post. Feeless; since spec 211 the runtime prices it at
+        /// capacity 0 when the caller HAS a pin (so a revoked, zero-capacity account may still tidy
+        /// up its own state — the whole point of the missing identity gate) and as
+        /// pool-unincludable when it does not (the pool-side mirror of `NotPinned`). Fails
+        /// `NotPinned` if nothing is pinned. No identity gate.
         #[pallet::call_index(3)]
         #[pallet::weight(T::WeightInfo::unpin_post())]
         #[pallet::feeless_if(|_origin: &OriginFor<T>| -> bool { true })]

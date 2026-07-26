@@ -744,24 +744,100 @@ parameter_types! {
     pub const Ceiling: u128 = 5_000_000_000_000; // ~100k posts — present but won't bite dev grants
     pub const BaseCost: u128 = 50_000_000;        // 1 post
     pub const PerByteCost: u128 = 50_000;
-    // A profile write (set/clear/pin/unpin) is feeless but capacity-metered at this STEEP price —
-    // ≈10 posts (10 × BaseCost). Profiles are a low-frequency mutable overwrite, so a high capacity
-    // cost is the anti-spam: only the identity-bound owner can edit, and they cannot churn it. The
-    // whole app stays feeless (a freshly-derived posting key never needs funding).
+    // A profile CREATE/OVERWRITE (set_profile / pin_post) is feeless but capacity-metered at this
+    // STEEP price — ≈10 posts (10 × BaseCost). Profiles are a low-frequency mutable overwrite, so a
+    // high capacity cost is the anti-spam: only the identity-bound owner can edit, and they cannot
+    // churn it. The whole app stays feeless (a freshly-derived posting key never needs funding).
+    // The TIDY-UP calls (clear_profile / unpin_post) are priced per-account in
+    // `ProfileCapacityCost` below (0 with a row to clear, unpayable without), NOT at this constant.
     pub const ProfileCost: u128 = 500_000_000;    // 10 × BaseCost
 }
 
 /// Prices `pallet-profile`'s feeless writes against microblog's ONE per-account capacity battery — the
 /// [`pallet_microblog::ForeignCapacityCost`] seam that lets the profile pallet share the feeless+capacity
-/// machinery without microblog ever naming the profile crate (no Cargo cycle). Every profile call costs
-/// the flat `ProfileCost`; any other call is `None` (unpriced ⇒ untouched by the capacity gate).
+/// machinery without microblog ever naming the profile crate (no Cargo cycle).
+///
+/// The two CREATE/OVERWRITE calls (`set_profile`, `pin_post`) cost the flat, steep `ProfileCost` —
+/// that price is their anti-spam. The two TIDY-UP calls (`clear_profile`, `unpin_post`) are priced
+/// PER ACCOUNT (spec 211):
+///
+/// - `0` when the caller actually has the row to clear. `capacity_ceiling(0) == 0`, so a REVOKED
+///   account (weight clamped to 0, capacity permanently 0) could otherwise never erase its own
+///   profile or pin — defeating the stated design intent on `unpin_post` ("a revoked account with
+///   capacity may still tidy up its own state"), which is why neither call has an identity gate.
+///   Zero cost is not a churn farm: every clear/unpin requires a prior `set_profile`/`pin_post`
+///   paid at the full `ProfileCost`.
+/// - UNPAYABLE (`u128::MAX`, far above any reachable `Ceiling`) when there is nothing to clear:
+///   `CheckCapacity` then rejects the no-op at the POOL (`ExhaustsResources`), so pricing the
+///   tidy-up at 0 does not open a free-spam path for doomed calls. This mirrors the dispatch-side
+///   `NoProfile`/`NotPinned` rejections, at the pool.
+///
+/// NOTE: this is CAPACITY cost (the talk-capacity battery), not FRAME weight — the calls still
+/// carry their benchmarked dispatch weights.
 pub struct ProfileCapacityCost;
-impl pallet_microblog::ForeignCapacityCost<RuntimeCall> for ProfileCapacityCost {
-    fn cost(call: &RuntimeCall) -> Option<u128> {
+impl pallet_microblog::ForeignCapacityCost<AccountId, RuntimeCall> for ProfileCapacityCost {
+    fn cost(who: &AccountId, call: &RuntimeCall) -> Option<u128> {
         match call {
+            RuntimeCall::Profile(pallet_profile::Call::clear_profile { .. }) => {
+                if pallet_profile::Profiles::<Runtime>::contains_key(who) {
+                    Some(0)
+                } else {
+                    Some(u128::MAX)
+                }
+            }
+            RuntimeCall::Profile(pallet_profile::Call::unpin_post { .. }) => {
+                if pallet_profile::PinnedPost::<Runtime>::contains_key(who) {
+                    Some(0)
+                } else {
+                    Some(u128::MAX)
+                }
+            }
             RuntimeCall::Profile(_) => Some(ProfileCost::get()),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod profile_capacity_cost_tests {
+    use super::*;
+    use pallet_microblog::ForeignCapacityCost;
+
+    #[test]
+    fn tidy_up_calls_price_per_account_and_writes_stay_steep() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([9u8; 32]);
+            let clear = RuntimeCall::Profile(pallet_profile::Call::clear_profile {});
+            let unpin = RuntimeCall::Profile(pallet_profile::Call::unpin_post {});
+            // Nothing to clear: both tidy-up calls are priced unpayable, so the pool rejects the
+            // doomed no-op instead of including it free.
+            assert_eq!(ProfileCapacityCost::cost(&who, &clear), Some(u128::MAX));
+            assert_eq!(ProfileCapacityCost::cost(&who, &unpin), Some(u128::MAX));
+            // With a row to clear: free — this is what lets a REVOKED account (capacity clamped to
+            // 0 forever) still erase its own profile/pin.
+            pallet_profile::Profiles::<Runtime>::insert(
+                &who,
+                pallet_profile::Profile {
+                    display_name: Default::default(),
+                    bio: Default::default(),
+                    avatar: Default::default(),
+                    banner: Default::default(),
+                    location: Default::default(),
+                    website: Default::default(),
+                },
+            );
+            pallet_profile::PinnedPost::<Runtime>::insert(&who, 0u64);
+            assert_eq!(ProfileCapacityCost::cost(&who, &clear), Some(0));
+            assert_eq!(ProfileCapacityCost::cost(&who, &unpin), Some(0));
+            // The CREATE/OVERWRITE calls keep the steep flat price, and non-profile calls stay
+            // unpriced by this source.
+            let set = RuntimeCall::Profile(pallet_profile::Call::pin_post { id: 1 });
+            assert_eq!(ProfileCapacityCost::cost(&who, &set), Some(ProfileCost::get()));
+            let remark = RuntimeCall::System(frame_system::Call::remark {
+                remark: Default::default(),
+            });
+            assert_eq!(ProfileCapacityCost::cost(&who, &remark), None);
+        });
     }
 }
 

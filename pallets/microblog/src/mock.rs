@@ -41,8 +41,8 @@ pub fn deny_identity(who: u64) {
 /// seam — non-microblog calls sharing the one battery, gated at the pool — be unit-tested without
 /// wiring a second pallet into this mock.
 pub struct MockForeignCost;
-impl pallet_microblog::ForeignCapacityCost<RuntimeCall> for MockForeignCost {
-    fn cost(call: &RuntimeCall) -> Option<u128> {
+impl pallet_microblog::ForeignCapacityCost<u64, RuntimeCall> for MockForeignCost {
+    fn cost(_who: &u64, call: &RuntimeCall) -> Option<u128> {
         match call {
             RuntimeCall::System(frame_system::Call::remark { .. }) => Some(200),
             _ => None,

@@ -124,14 +124,20 @@ pub trait OnIdentityBind<AccountId> {
 /// does not (those pass through the extension unmetered, exactly like microblog's own `metered_cost`
 /// returns `None` for `force_set_capacity`). It is only ever consulted for calls that are NOT this
 /// pallet's, so an impl can match purely on the foreign variants.
-pub trait ForeignCapacityCost<RuntimeCall> {
-    /// The talk-capacity cost of `call`, or `None` if this source does not price it.
-    fn cost(call: &RuntimeCall) -> Option<u128>;
+///
+/// `who` is the SIGNER the extension resolved (spec 211), so an impl may price a call per-account —
+/// e.g. a tidy-up call (`clear_profile`) at 0 when the caller actually has state to clear, and at an
+/// unpayable sentinel when it does not (rejecting the no-op at the pool instead of admitting it
+/// free). An impl MAY read storage: `CheckCapacity::validate` already reads state, and it re-runs
+/// deterministically at inclusion.
+pub trait ForeignCapacityCost<AccountId, RuntimeCall> {
+    /// The talk-capacity cost of `call` for signer `who`, or `None` if this source does not price it.
+    fn cost(who: &AccountId, call: &RuntimeCall) -> Option<u128>;
 }
 
 /// Default: meter nothing foreign. A runtime with no extra feeless pallets wires `type ForeignCost = ()`.
-impl<RuntimeCall> ForeignCapacityCost<RuntimeCall> for () {
-    fn cost(_call: &RuntimeCall) -> Option<u128> {
+impl<AccountId, RuntimeCall> ForeignCapacityCost<AccountId, RuntimeCall> for () {
+    fn cost(_who: &AccountId, _call: &RuntimeCall) -> Option<u128> {
         None
     }
 }
@@ -307,7 +313,10 @@ pub mod pallet {
         /// per-account capacity battery, so the whole app can be feeless while every write is still
         /// pool-gated by [`CheckCapacity`]. The runtime supplies it (it can see every pallet's `Call`);
         /// `()` meters nothing foreign. See [`ForeignCapacityCost`].
-        type ForeignCost: ForeignCapacityCost<<Self as frame_system::Config>::RuntimeCall>;
+        type ForeignCost: ForeignCapacityCost<
+            Self::AccountId,
+            <Self as frame_system::Config>::RuntimeCall,
+        >;
 
         /// The bounded set of accounts with observed Cardano stake — the basis of the LIVE weighted-tally
         /// join (post votes, account reputation, polls). The runtime wires it to
@@ -2044,8 +2053,9 @@ where
         } else {
             // Not one of this pallet's calls: ask the runtime-supplied foreign cost source. This seam
             // lets `pallet-profile`'s feeless writes share the one battery without microblog depending
-            // on the profile crate (no Cargo cycle).
-            <T as Config>::ForeignCost::cost(call)
+            // on the profile crate (no Cargo cycle). The signer rides along (spec 211) so the runtime
+            // can price a tidy-up call per-account (0 with state to clear, unpayable without).
+            <T as Config>::ForeignCost::cost(&who, call)
         };
         let Some(need) = need else {
             return Ok((

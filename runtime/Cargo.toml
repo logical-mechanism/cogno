@@ -60,6 +60,10 @@ sp-storage = { workspace = true }
 sp-transaction-pool = { workspace = true }
 sp-version = { features = ["serde"], workspace = true }
 
+[dev-dependencies]
+# Test externalities for the runtime-level unit tests (ProfileCapacityCost reads storage).
+sp-io = { workspace = true, default-features = true }
+
 [build-dependencies]
 substrate-wasm-builder = { optional = true, workspace = true, default-features = true }
 
