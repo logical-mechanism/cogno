@@ -32,4 +32,12 @@ describe("formatRetry", () => {
     // A full empty-to-full refill is 3,000 blocks = 5 hours.
     expect(formatRetry(18_000)).toBe("5 hours");
   });
+
+  it("rounds UP at the hours tier too, so no tier ever promises sooner than the truth", () => {
+    // 1 h 1 min: rounding to nearest would say "1 hour", i.e. sooner than reality.
+    expect(formatRetry(3660)).toBe("1.1 hours");
+    expect(formatRetry(3601)).toBe("1.1 hours");
+    // And a value one second past a tenth-of-an-hour boundary still rounds up.
+    expect(formatRetry(5401)).toBe("1.6 hours");
+  });
 });

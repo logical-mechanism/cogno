@@ -30,7 +30,7 @@ export function formatRetry(seconds: number): string {
   if (s < 60) return `${s}s`;
   const minutes = Math.ceil(s / 60);
   if (minutes < 60) return `${minutes} min`;
-  const hours = Math.round((minutes / 60) * 10) / 10;
+  const hours = Math.ceil((minutes / 60) * 10) / 10;
   return `${hours} ${hours === 1 ? "hour" : "hours"}`;
 }
 

@@ -66,9 +66,17 @@ top-level creation site (`post_message` with `parent == None`, `quote_post`, `cr
 ## Bounds and safety
 
 - `limit` is clamped to `[1, MAX_PAGE]` (100) — the API clamps, it never errors on an over-large page.
-- The feed scans are bounded: `feed_page` / `search_posts` examine at most `limit · MAX_SCAN_FACTOR` (8)
-  ids per call and return `next_cursor` at the last id examined, so the client continues instead of the
-  node walking unboundedly over a reply-dense range.
+- The feed scans are bounded: `feed_page` / `search_posts` / `author_replies_page` examine at most
+  `limit · MAX_SCAN_FACTOR` (8) ids per call and return `next_cursor` at the last id examined, so the
+  client continues instead of the node walking unboundedly over a reply-dense range.
+- The two per-author readers are bounded WITHOUT that budget where they can be. Until spec 212 they
+  leaned on `MaxPostsPerAuthor` (10,000) for their iteration bound; that cap is gone, so they now
+  resolve a `before_id` cursor by BINARY SEARCH over the seq range (post ids ascend with seq, because
+  `NextPostId` is monotonic and the index is append-only) rather than by skipping entry by entry. That
+  makes `author_feed_page` cost `O(log n) + limit` reads at any page depth — its index is reply-free, so
+  every entry it examines is returned and it can never over-scan. `author_replies_page` filters to
+  replies, so it takes the scan budget above on top: an author with a long top-level run cannot make it
+  walk their whole index to return nothing.
 - `thread` caps the ancestor chain at a fixed depth (matching the client) and breaks on a cyclic parent.
 - Cursors are **opaque and endpoint-scoped**: a `next_cursor` from one method is only valid passed back to
   the *same* method. `feed_page` / `following_feed_page` page a `TopLevelPosts` seq; `author_feed_page`
