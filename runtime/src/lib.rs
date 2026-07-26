@@ -92,7 +92,16 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // calls are capacity-priced per account; the observed-role truncation reserves non-SPO badges; and
     // the Cardano cutover collapses to the one `CARDANO_NET` selector. (The enum-variant pinning and
     // the cardano-roles DbWeight fix ride along — both non-encoding.)
-    spec_version: 211,
+    // spec 212 (the cost model): the two per-author indexes are REPAGED — `ByAuthor` /
+    // `TopLevelByAuthor` go from a `BoundedVec<u64, MaxPostsPerAuthor>` blob to a seq-keyed
+    // `StorageDoubleMap` beside a `u64` counter (microblog storage v9 → v10), so indexing a post is
+    // O(1) at any history length and no author can be bricked at a cap. `MaxPostsPerAuthor` and
+    // `Error::TooManyPosts` (index 2, now VACANT) go with it. And because that cap was the de-facto
+    // brake on sustained posting, the talk-capacity constants are retuned in the same upgrade to the
+    // real ~5 h refill window, with the refill RATE now derived from the (already-clamped) ceiling so
+    // both axes share one knee. Storage/constant/read-shape change only — no call argument and no
+    // `TxExtension` change, so `transaction_version` STAYS 7.
+    spec_version: 212,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
