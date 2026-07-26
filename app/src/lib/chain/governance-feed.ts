@@ -9,6 +9,7 @@
 import { Binary } from "polkadot-api";
 import type { CognoApi, GovActionType } from "@/lib/types";
 import type { RoleKindType } from "@/lib/chain/roles";
+import { isDeniedPost } from "@/lib/config/denylist";
 import { sanitizeInline } from "@/lib/sanitize";
 import { actionBodies } from "@/lib/cardano/governance";
 
@@ -87,7 +88,11 @@ export async function readGovernancePolls(api: CognoApi): Promise<GovPollSummary
   return Promise.all(
     govs.map(async (e) => {
       const hostId = e.keyArgs[0] as bigint;
-      const post = await api.query.Microblog.Posts.getValue(hostId, BEST).catch(() => null);
+      // This reads Microblog.Posts DIRECTLY rather than through the FeedSource, so the serve denylist
+      // has to be applied here by hand. Skipping the read entirely (rather than blanking the text
+      // afterwards) also means this deployment does not fetch what it has decided not to serve.
+      const denied = isDeniedPost(hostId);
+      const post = denied ? null : await api.query.Microblog.Posts.getValue(hostId, BEST).catch(() => null);
       const question = post ? sanitizeInline(Binary.toText(post.text)).slice(0, 160) : "";
       return {
         hostId,

@@ -13,6 +13,7 @@
 // timestamp and are ordered device-locally by first-seen (see notificationReadState + compareNotifs).
 // The scan is BOUNDED (MAX_MY_POSTS) — `truncated` is surfaced so a capped scan never reads as complete.
 
+import { isDeniedAuthor, isDeniedPost } from "@/lib/config/denylist";
 import type { CognoApi, Ss58 } from "@/lib/types";
 import type { FeedSource } from "@/lib/feed/source";
 
@@ -203,13 +204,20 @@ export function compareNotifs(a: Notif, b: Notif, firstSeen: Record<string, numb
   return a.key < b.key ? 1 : a.key > b.key ? -1 : 0; // stable order for edges
 }
 
-/** Order + filter a folded set: drop muted actors, then sort newest-first. Pure. */
+/**
+ * Order + filter a folded set: drop muted actors and anything this deployment declines to serve, then
+ * sort newest-first. Pure.
+ *
+ * Notifications are folded from chain reads that do NOT go through the FeedSource, so the serve
+ * denylist has to be applied here explicitly. Missing it would leave the one path by which a denied
+ * account could still put text in front of a specific reader, by mentioning them.
+ */
 export function orderNotifs(
   notifs: Notif[],
   firstSeen: Record<string, number>,
   mutedSet: ReadonlySet<string>,
 ): Notif[] {
   return notifs
-    .filter((n) => !mutedSet.has(n.actor))
+    .filter((n) => !mutedSet.has(n.actor) && !isDeniedAuthor(n.actor) && !isDeniedPost(n.postId))
     .sort((a, b) => compareNotifs(a, b, firstSeen));
 }

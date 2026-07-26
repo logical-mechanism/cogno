@@ -17,6 +17,7 @@
 // 140-line copy of it.
 
 import { createChainCache } from "./createChainCache";
+import { isDeniedAuthor } from "@/lib/config/denylist";
 import { binTextOpt } from "@/lib/chain/reads";
 import type { CognoApi, Ss58 } from "@/lib/types";
 
@@ -35,6 +36,11 @@ async function readAccountProfile(api: CognoApi, account: Ss58): Promise<Account
   // value, pinning the old name (or resurrecting a name the user just CLEARED) for the rest of the
   // session. Single-producer chain: best never reorgs, so it is both fresh and safe.
   // The ROW is optional; the FIELDS are not — keep the `rec?.` chain rather than marking them optional.
+  // The operator's serve denylist reaches here too. This row does NOT go through the FeedSource, and
+  // it is what a MentionChip renders inside somebody else's post and what a hover card shows — so
+  // without this, a denied account's chosen display name and avatar would still be served by this
+  // deployment, in the one place a reader has not chosen to look at them.
+  if (isDeniedAuthor(account)) return {};
   const rec = await api.query.Profile.Profiles.getValue(account, { at: "best" });
   return { displayName: binTextOpt(rec?.display_name), avatar: binTextOpt(rec?.avatar) };
 }

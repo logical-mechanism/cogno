@@ -34,6 +34,7 @@ import { useLocalLists, localListActionsFor, MAX_LIST_MEMBERS } from "@/lib/loca
 import { sanitizeInline } from "@/lib/sanitize";
 import { postLink } from "@/lib/share";
 import { ABUSE_EMAIL, reportMailto } from "@/lib/config/operator";
+import { isDenied } from "@/lib/config/denylist";
 import { useToaster } from "./toast/ToasterProvider";
 import type {
   CognoPost,
@@ -251,6 +252,29 @@ export function PostCard({
     }
     return items.length > 0 ? items : undefined;
   }, [pending, isOwnPost, handlers, post, muted, blocked, hidden, bookmarked, localLists, toast, me]);
+
+  // On the operator's serve denylist. Lists and the reader itself already strip these, so this only
+  // fires where a card is rendered DIRECTLY: a permalink to a delisted post, or a thread whose focal
+  // post is one (the source deliberately does not drop a thread root, because there is no shape for
+  // "the post you asked for is gone" and returning somebody else's reply as the root would be worse).
+  //
+  // Checked FIRST, ahead of block and mute, because it is not the viewer's decision and there is no
+  // affordance to undo it. The copy says what is true — this site is not showing it — and does not
+  // claim the post does not exist, because it does, in every block, on every node.
+  if (isDenied(post) && !pending) {
+    return (
+      <article
+        className={[styles.card, styles[variant], styles.mutedRow, showThreadLine ? styles.threadLine : ""]
+          .filter(Boolean)
+          .join(" ")}
+        data-post-id={String(post.id)}
+      >
+        <div className={styles.mutedStub}>
+          <span className={styles.mutedText}>This post is not available on this site.</span>
+        </div>
+      </article>
+    );
+  }
 
   // A blocked author is a HARD suppression: lists strip the post before it reaches here (useModeration),
   // so this branch only fires where a card is rendered directly — the detail focal / a permalink. No
