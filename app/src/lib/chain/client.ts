@@ -131,8 +131,9 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
     // handle we just built, it never throws, and caching it here is what lets the wallet guards and
     // the two address builders stay synchronous. It deliberately does NOT feed `ok` — a Cardano
     // misconfiguration must not take down plain text posting, which touches no Cardano state. The
-    // Cardano-facing paths fail closed on their own (lib/cardano/network.ts).
-    const [version, cardano] = await Promise.all([
+    // Cardano-facing paths fail closed on their own (lib/cardano/network.ts), and carry that module's
+    // own reason for why no network is known rather than a copy plumbed through here.
+    const [version, cardanoNetwork] = await Promise.all([
       api.constants.System.Version(),
       resolveCardanoNetwork(api),
     ]);
@@ -158,8 +159,7 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
       nodeSpecVersion,
       descriptorSpecVersion: DESCRIPTOR_SPEC_VERSION,
       reason,
-      cardanoNetwork: cardano.id,
-      cardanoReason: cardano.reason,
+      cardanoNetwork,
     };
   } catch (err) {
     // `reason` is user-facing copy, so the raw throw goes to the console instead of the UI —

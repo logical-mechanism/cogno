@@ -23,11 +23,15 @@ import { PendingCapacityNotice } from "@/components/PendingCapacityNotice";
 import { pendingLockActions } from "@/lib/pendingLockStore";
 import { useActionToast } from "@/hooks/useActionToast";
 import { formatAda } from "@/lib/format";
+import { useStabilityWindow } from "@/hooks/useStabilityWindow";
 
 const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
 
 export function VaultSection() {
   const { api, signerCtl, boot } = useSession();
+  // The lock-to-credit wait is a chain parameter (~10 min on preprod, ~36 h at the mainnet window),
+  // so it is read rather than asserted. See useStabilityWindow.
+  const stabilityWindow = useStabilityWindow(api);
   const vault = useVault();
   const { fail, ok } = useActionToast();
   const actionRef = useRef<"lock" | "exit" | null>(null);
@@ -136,8 +140,8 @@ export function VaultSection() {
         )}
         {!showingPending && (
           <p className={styles.note}>
-            Posting power comes from locked ADA. It lands a few minutes after your lock confirms on
-            Cardano.
+            Posting power comes from locked ADA.
+            {stabilityWindow ? ` It lands ${stabilityWindow} after your lock confirms on Cardano.` : ""}
           </p>
         )}
       </div>
@@ -212,6 +216,15 @@ export function VaultSection() {
           {hasLock && !exitInFlight && (
             <p className={styles.note}>
               Exiting returns your 100 ADA and removes your posting power until you lock again.
+            </p>
+          )}
+          {/* A second vault UTxO is pure loss of use: the chain credits the largest one and never sums,
+              so the extra ADA earns nothing and no other screen mentions it. Exit spends the largest,
+              which is why getting it all back takes one exit per vault. */}
+          {hasLock && vault.extraVaults > 0 && (
+            <p className={styles.note}>
+              You have {vault.extraVaults + 1} vaults holding ADA. Only the largest one earns posting
+              power. Exit once for each vault to get all of it back.
             </p>
           )}
 

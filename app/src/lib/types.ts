@@ -352,8 +352,6 @@ export interface BootGuard {
    * misconfiguration blocks Cardano actions, not plain text posting. See lib/cardano/network.ts.
    */
   cardanoNetwork: 0 | 1 | null;
-  /** user-facing copy when `cardanoNetwork` is null, for the surfaces that offer Cardano actions. */
-  cardanoReason?: string;
 }
 
 /** A handle bundling the PAPI client + typed API + the endpoint it speaks to. */

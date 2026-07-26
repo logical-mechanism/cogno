@@ -6,7 +6,7 @@
 // context — the ratification bar (a governance-set protocol parameter) and the coverage denominator.
 
 import { getBlockfrostProjectId } from "@/lib/config/endpoints";
-import { blockfrostBase } from "@/lib/cardano/network";
+import { blockfrostBase, providerNetworkMismatch } from "@/lib/cardano/network";
 import { FALLBACK_THRESHOLDS, type VotingThresholds } from "./governance";
 
 export interface GovParams {
@@ -21,7 +21,9 @@ const FETCH_TIMEOUT_MS = 8000;
 const FALLBACK: GovParams = { thresholds: FALLBACK_THRESHOLDS, totalActiveStake: null, live: false };
 
 // The Blockfrost REST base comes from lib/cardano/network.ts — one implementation, driven by the
-// chain's own network constant. This file used to carry its own copy, as did roleMeta.ts.
+// chain's own network constant. This file used to carry its own copy, as did roleMeta.ts. The host
+// therefore follows the chain while the project id does not, so a project id for another network can
+// only 403 here; the read is skipped outright in that case (same fallback, no pointless round trip).
 
 /** Coerce a Blockfrost threshold value (decimal string or number) to a fraction, or the fallback if absent. */
 function num(v: unknown, fallback: number): number {
@@ -56,7 +58,7 @@ export async function resolveGovParams(): Promise<GovParams> {
 
   inflight = (async (): Promise<GovParams> => {
     const projectId = getBlockfrostProjectId();
-    if (!projectId) return FALLBACK;
+    if (!projectId || providerNetworkMismatch(projectId)) return FALLBACK;
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
     try {

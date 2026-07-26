@@ -67,6 +67,47 @@ async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; 
   return { wallet, info: { vaultAddress, beacon, unit: VAULT_HASH + beacon, owner: { address, paymentKeyHash, stakeKeyHash } } };
 }
 
+/**
+ * What a vault read found. The third case is the point: "we could not read" is NOT "there is no
+ * vault". Collapsing them is how a Blockfrost 402/429 used to render "No vault yet" with a live Lock
+ * button in front of someone who already had 100 ADA locked.
+ */
+export type VaultRead =
+  /** `utxo` is the winning one — the one the chain credits AND the one an exit must spend. */
+  | { kind: "locked"; lovelace: bigint; utxo: UTxO; utxos: number }
+  | { kind: "none" }
+  | { kind: "unknown" };
+
+/** The slice of the provider a vault read needs — keeps this file off the heavier MeshJS types. */
+type VaultFetcher = { fetchAddressUTxOs: (address: string, asset?: string) => Promise<UTxO[]> };
+
+/** The lovelace a vault UTxO holds. */
+function lovelaceOf(u: UTxO): bigint {
+  return BigInt(u.output.amount.find((a) => a.unit === "lovelace")?.quantity ?? "0");
+}
+
+/**
+ * Read the vault UTxOs holding this owner's beacon. Never throws: a provider failure is reported as
+ * `unknown` so every caller has to decide what to do about it rather than inheriting a wrong answer.
+ *
+ * Reports the LARGEST UTxO, matching what the chain actually credits — the observer's reduction is
+ * largest-wins per identity and never sums (cogno-dbsync/src/reduction.rs). `utxos` carries the count
+ * so a caller can tell that a second, uncredited vault exists.
+ *
+ * This is the ONE place that rule is implemented. `exitVault` used to carry its own copy of it, which
+ * meant the UI could report one UTxO while the exit tx spent another the moment the two drifted.
+ */
+async function readVault(provider: VaultFetcher, info: VaultInfo): Promise<VaultRead> {
+  try {
+    const utxos = await provider.fetchAddressUTxOs(info.vaultAddress, info.unit);
+    if (!utxos.length) return { kind: "none" };
+    const utxo = utxos.reduce((best, u) => (lovelaceOf(u) > lovelaceOf(best) ? u : best));
+    return { kind: "locked", lovelace: lovelaceOf(utxo), utxo, utxos: utxos.length };
+  } catch {
+    return { kind: "unknown" };
+  }
+}
+
 /** A pure-ADA collateral UTxO (≥5 ADA) — the wallet's own pick, else the first that qualifies. */
 function pickCollateral(collateral: UTxO[], utxos: UTxO[]): UTxO {
   const c =
@@ -93,6 +134,24 @@ export async function lockIntoVault(
 
   const { MeshTxBuilder } = await import("@meshsdk/core");
   const provider = await getProvider();
+
+  // Refuse to mint a second beacon for this owner, and refuse to guess. The guard lives HERE rather
+  // than in the UI because the UI is what got it wrong: /welcome gated its Lock button on posting
+  // power plus a device-local pending record, with no vault read behind it, so a second device or
+  // cleared storage re-armed it. Settings gated correctly, which is exactly why a caller-side guard
+  // is not enough.
+  //
+  // A second lock is pure loss of use: the observer credits largest-wins and never sums, so 200 ADA
+  // buys 100 ADA of weight, and every screen here reads a single vault UTxO so the extra one is
+  // invisible. `unknown` blocks too — locking on an unverified read is the exact mistake.
+  const existing = await readVault(provider, info);
+  if (existing.kind === "unknown") {
+    throw new Error("Can't check your vault right now. Try again in a moment.");
+  }
+  if (existing.kind === "locked") {
+    throw new Error("You already have ADA locked. Get it back first if you want to lock a different amount.");
+  }
+
   const utxos = await wallet.getUtxos();
   if (!utxos.length) throw new Error("Your wallet is empty. Add ADA first.");
   const collateral = pickCollateral(await wallet.getCollateral(), utxos);
@@ -132,9 +191,15 @@ export async function exitVault(
   const { MeshTxBuilder } = await import("@meshsdk/core");
   const provider = await getProvider();
 
-  const vaultUtxos = await provider.fetchAddressUTxOs(info.vaultAddress, info.unit);
-  const target = vaultUtxos[0];
-  if (!target) throw new Error("No locked ADA found for this wallet.");
+  // Spend the LARGEST vault UTxO, through the SAME read the UI reports from — so the one shown and the
+  // one spent can never be different UTxOs. A provider failure must not read as "nothing locked" here
+  // either: that message told a user their ADA was gone when the truth was a rate-limited read.
+  const read = await readVault(provider, info);
+  if (read.kind === "unknown") {
+    throw new Error("Can't check your vault right now. Try again in a moment.");
+  }
+  if (read.kind === "none") throw new Error("No locked ADA found for this wallet.");
+  const target = read.utxo;
 
   const utxos = await wallet.getUtxos();
   const collateral = pickCollateral(await wallet.getCollateral(), utxos);
@@ -162,16 +227,25 @@ export async function exitVault(
   return { txHash, info };
 }
 
-/** Read whether this wallet currently has a live vault + how much is locked (for UI state). */
-export async function fetchVaultState(walletId: string): Promise<{ info: VaultInfo; locked: bigint | null }> {
+/**
+ * Read whether this wallet currently has a live vault + how much is locked (for UI state).
+ *
+ * `known` is the load-bearing field. It used to be absent, and every provider failure came back as
+ * `locked: null` — indistinguishable from "no vault". A caller that renders a Lock button on
+ * `locked == null` therefore invited a duplicate 100-ADA lock every time Blockfrost rate-limited,
+ * which anyone can trigger for everyone, since the project id ships in the bundle by design.
+ */
+export async function fetchVaultState(
+  walletId: string,
+): Promise<{ info: VaultInfo; locked: bigint | null; known: boolean; extraVaults: number }> {
   const { info } = await resolveVault(walletId);
-  try {
-    const provider = await getProvider();
-    const utxos = await provider.fetchAddressUTxOs(info.vaultAddress, info.unit);
-    const u = utxos[0];
-    const locked = u ? BigInt(u.output.amount.find((a) => a.unit === "lovelace")?.quantity ?? "0") : null;
-    return { info, locked };
-  } catch {
-    return { info, locked: null };
-  }
+  const provider = await getProvider();
+  const read = await readVault(provider, info);
+  return {
+    info,
+    locked: read.kind === "locked" ? read.lovelace : null,
+    known: read.kind !== "unknown",
+    // >0 means a second, uncredited vault UTxO exists for this owner (see readVault).
+    extraVaults: read.kind === "locked" ? read.utxos - 1 : 0,
+  };
 }

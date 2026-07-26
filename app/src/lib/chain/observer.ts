@@ -23,20 +23,65 @@ export interface ObserverConfig {
   stakeEpochLookback: bigint;
 }
 
+/**
+ * One in-flight/settled read per chain handle. The config is fixed for the life of a runtime, but the
+ * callers are hooks: Settings alone mounts two `useStabilityWindow`s and a `usePendingCapacity`, and
+ * /welcome adds two more, so "read once per api" was four or five identical runtime-API round trips
+ * for a value that cannot change under them. Keyed by the api handle (weakly, so a destroyed client's
+ * entry goes with it), which is exactly the scope the value is constant over.
+ */
+const configCache = new WeakMap<CognoApi, Promise<ObserverConfig>>();
+
 /** Read the consensus-pinned observer policy (fixed per runtime — read once per api). */
-export async function readObserverConfig(api: CognoApi): Promise<ObserverConfig> {
-  const c = await api.apis.CardanoObserverApi.observer_config();
-  return {
-    shelleyStartUnix: c.shelley_start_unix,
-    shelleyStartSlot: c.shelley_start_slot,
-    stabilitySlots: c.stability_slots,
-    stakeEpochLookback: c.stake_epoch_lookback,
-  };
+export function readObserverConfig(api: CognoApi): Promise<ObserverConfig> {
+  const hit = configCache.get(api);
+  if (hit) return hit;
+
+  const p = api.apis.CardanoObserverApi.observer_config()
+    .then((c) => ({
+      shelleyStartUnix: c.shelley_start_unix,
+      shelleyStartSlot: c.shelley_start_slot,
+      stabilitySlots: c.stability_slots,
+      stakeEpochLookback: c.stake_epoch_lookback,
+    }))
+    .catch((err: unknown) => {
+      // A failure is NOT the answer — drop it so the next caller retries. Caching a rejection would
+      // wedge the stability-window copy and the pending-lock countdown for the whole connection.
+      configCache.delete(api);
+      throw err;
+    });
+
+  configCache.set(api, p);
+  return p;
 }
 
 // EnforceWeight (`false` ⇒ the observer is emergency-frozen and a pending lock will NOT credit) is read
 // LIVE by usePendingCapacity via a `watchValue` subscription so a freeze mid-wait is reflected, rather
 // than through a one-shot helper here — a one-shot read went stale and ticked a false countdown.
+
+/**
+ * The lock-to-credit wait as plain copy, e.g. "about 10 minutes" / "about 36 hours".
+ *
+ * This is the SAME number the countdown uses, and the pre-lock copy has to agree with it. It used to
+ * say "a few minutes" as a static string, which is right at the preprod window (600 slots) and a ~200x
+ * understatement at the mainnet one (129,600 slots = 36 hours). Telling someone their 100 ADA credits
+ * in minutes when it takes a day and a half is the sort of thing that gets read as the vault eating
+ * their funds. Cardano is 1 slot per second in the Shelley era, so slots are seconds.
+ */
+export function describeStabilityWindow(stabilitySlots: bigint): string {
+  const sec = Number(stabilitySlots);
+  if (!Number.isFinite(sec) || sec <= 0) return "a moment";
+  if (sec < 90) return `about ${Math.round(sec)} seconds`;
+  const min = Math.round(sec / 60);
+  // Switch to hours at exactly an hour, so this never says "about 60 minutes". Rounding to the nearest
+  // hour above that errs LONG for a 60-to-90 minute window, which is the safe direction here: better to
+  // overstate a wait someone is deciding whether to lock 100 ADA against than to understate it.
+  if (min < 60) return `about ${min} minute${min === 1 ? "" : "s"}`;
+  const hours = Math.round(sec / 3600);
+  if (hours < 48) return `about ${hours} hour${hours === 1 ? "" : "s"}`;
+  const days = Math.round(sec / 86_400);
+  return `about ${days} day${days === 1 ? "" : "s"}`;
+}
 
 /** The wall-clock unix time (seconds) of a Cardano slot, from the Shelley anchor (1 slot = 1 second). */
 export function slotToUnixSec(slot: bigint, cfg: ObserverConfig): number {

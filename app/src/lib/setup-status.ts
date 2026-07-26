@@ -71,6 +71,10 @@ export function setupStatus(
   /** a lock is in flight/crediting (usePendingCapacity) — so a bound, zero-power account is WAITING on
    *  its lock, not missing one: show "crediting", not "lock ADA". */
   pending = false,
+  /** the lock-to-credit wait as copy ("about 36 hours"), read from the chain via useStabilityWindow.
+   *  Omitted from the sentence when unknown rather than replaced with a guess — the old hardcoded
+   *  "a few minutes" is right on preprod and a ~200x understatement at the mainnet window. */
+  creditWindow: string | null = null,
 ): SetupStatus {
   switch (state) {
     case "disconnected":
@@ -108,7 +112,7 @@ export function setupStatus(
     case "bound":
     case "bound_no_stake":
     case "bound_staked":
-      return boundStatus(stakeBound, postingPower, pending);
+      return boundStatus(stakeBound, postingPower, pending, creditWindow);
   }
 }
 
@@ -121,6 +125,7 @@ function boundStatus(
   stakeBound: boolean | null,
   postingPower: bigint | null,
   pending: boolean,
+  creditWindow: string | null,
 ): SetupStatus {
   // Stake read still loading → neutral (never flash "add voting power" before the read resolves).
   if (stakeBound === null) {
@@ -170,7 +175,9 @@ function boundStatus(
       phase: "crediting",
       ready: false,
       headline: "Posting power crediting",
-      detail: "Lock confirmed on Cardano. Posting unlocks in a few minutes.",
+      detail: creditWindow
+        ? `Lock confirmed on Cardano. Posting unlocks ${creditWindow} after it confirmed.`
+        : "Lock confirmed on Cardano. Posting unlocks once the network credits it.",
       next: null,
     };
   }

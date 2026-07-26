@@ -15,12 +15,14 @@ import { useSession } from "@/components/Providers";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { truncateSs58 } from "@/lib/ss58";
+import { useStabilityWindow } from "@/hooks/useStabilityWindow";
 import { setupStatus } from "@/lib/setup-status";
 import { formatAda } from "@/lib/format";
 import { copyToClipboard } from "@/lib/share";
 
 export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
   const { api, signerCtl, identity, sessionState } = useSession();
+  const stabilityWindow = useStabilityWindow(api);
   const { toast } = useToaster();
 
   // Derived (a seed in memory) or restored (the account came back from a refresh, seed not yet
@@ -93,7 +95,13 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
 
   const loadingBound = identity.bound === null;
   const loadingVote = identity.votingPower === null;
-  const status = setupStatus(sessionState, postingPower, identity.stakeBound, pending.kind !== "none");
+  const status = setupStatus(
+    sessionState,
+    postingPower,
+    identity.stakeBound,
+    pending.kind !== "none",
+    stabilityWindow,
+  );
 
   return (
     <div className={styles.cards}>
