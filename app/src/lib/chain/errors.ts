@@ -62,7 +62,9 @@ const MODULE_COPY: Record<string, string> = {
   // ── Microblog ──
   "Microblog::TooLong": "That post is too long.",
   "Microblog::NotFound": "That post no longer exists.",
-  "Microblog::TooManyPosts": "You've reached your post limit.",
+  // `Microblog::TooManyPosts` lived here. The variant was retired in spec 212 with
+  // `MaxPostsPerAuthor` (error index 2 is now a permanent gap), so the chain can never emit it and
+  // this entry could only ever mis-word some future variant that reused the name.
   "Microblog::NotAllowed": "You need a linked Cardano identity to do that.",
   "Microblog::NotVoted": "You haven't voted on that.",
   "Microblog::SelfFollow": "You can't follow yourself.",

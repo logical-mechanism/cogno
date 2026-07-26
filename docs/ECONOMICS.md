@@ -72,7 +72,16 @@ Under these, a floor lock of 100 ADA (weight 10⁸) gives:
 | refill | `rate = 3·10¹¹·1/3_000 = 10⁸` per block = **1 post per 30 blocks** (~3 min) |
 | empty→full | `3·10¹¹ / 10⁸` = **3,000 blocks ≈ 5 hours** |
 | sustained | 14,400 blocks per day ÷ 30 = **480 posts/day** |
-| state growth | ≈712 bytes per post (a 592-byte `Posts` row plus its two index rows) ⇒ **~342 KB/day** |
+| state growth | worst case **~290 KB/day** — see below |
+
+The state-growth line needs its own arithmetic, because the two numbers above cannot both hold at
+once: 480 posts/day is the rate for a `BaseCost`-only post, while the biggest row comes from a
+512-byte one. Price the worst case end to end. A 512-byte post costs `3·10⁹ + 512·3·10⁶ = 4.536·10⁹`,
+so at `10⁸` per block it is 45.4 blocks per post, i.e. 317 posts/day. A top-level post writes FOUR
+rows, not two: the `Posts` row (≈648 B, its 592-byte `MaxEncodedLen` plus a 56-byte key) and three
+index rows — `ByAuthor` and `TopLevelByAuthor` at ≈112 B each (their keys carry both the account and
+the seq) and `TopLevelPosts` at ≈64 B. That is ≈936 B per post, so **≈290 KB/day** at the floor lock.
+A reply is cheaper (no `TopLevelByAuthor` or `TopLevelPosts` row, two reply-aggregate rows instead).
 
 1,000 ADA gives ten times that, up to the `Ceiling`. The curve is deliberately **linear with a hard
 ceiling** ("capped-linear"): weight is proportional to locked lovelace, then flattened at the top so no

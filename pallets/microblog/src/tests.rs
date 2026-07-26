@@ -3836,6 +3836,59 @@ mod migration_v10 {
     }
 
     #[test]
+    fn v9_to_v10_rescales_every_capacity_bucket_into_the_new_units() {
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(9).put::<Pallet<Test>>();
+            // Spec 212 rescales the micro-capacity UNIT 60x (BaseCost 5e7 -> 3e9). `cap_last` is
+            // stored in those units, so without this every live bucket would silently read as 1/60th
+            // of what its holder banked, and they would be throttled for a full 5-hour refill.
+            Capacity::<Test>::insert(
+                1u64,
+                crate::CapacityState {
+                    cap_last: 5_000,
+                    last_block: 7,
+                },
+            );
+            Capacity::<Test>::insert(
+                2u64,
+                crate::CapacityState {
+                    cap_last: 0,
+                    last_block: 3,
+                },
+            );
+
+            let _ = MigrateV9ToV10::<Test>::on_runtime_upgrade();
+
+            let a = Capacity::<Test>::get(1).expect("bucket 1");
+            assert_eq!(
+                a.cap_last,
+                5_000 * 60,
+                "banked capacity scales with the unit"
+            );
+            assert_eq!(
+                a.last_block, 7,
+                "the stamp is a block number, NOT a capacity unit"
+            );
+            let b = Capacity::<Test>::get(2).expect("bucket 2");
+            assert_eq!(b.cap_last, 0, "an empty bucket stays empty");
+            assert_eq!(b.last_block, 3);
+            assert_eq!(
+                Capacity::<Test>::iter().count(),
+                2,
+                "no bucket added or dropped"
+            );
+
+            // Idempotent with the rest of the migration: the version guard means a second run does
+            // NOT square the factor.
+            let _ = MigrateV9ToV10::<Test>::on_runtime_upgrade();
+            assert_eq!(
+                Capacity::<Test>::get(1).expect("bucket 1").cap_last,
+                5_000 * 60
+            );
+        });
+    }
+
+    #[test]
     fn v9_to_v10_on_empty_state_is_safe() {
         // The fresh-mainnet-genesis case: nothing to repage.
         new_test_ext().execute_with(|| {
@@ -4297,6 +4350,108 @@ mod node_reads {
             let p2 = Microblog::author_replies_page(1, Some(c), 1, None);
             assert_eq!(ids(&p2), vec![r1]);
             assert_eq!(p2.next_cursor, None);
+        });
+    }
+
+    // Spec 212 bounded the two per-author readers. Before the repage a `before_id` cursor was resolved
+    // by scanning a single in-memory blob, so skipping was free and the index was capped at 10_000
+    // anyway. Keyed by seq, a skip is one trie read per entry over an index that now has NO cap — so a
+    // deep page became O(index) and a full scroll quadratic, on a public unmetered runtime API. These
+    // pin the two mechanisms that fix it.
+    #[test]
+    fn a_deep_author_page_resolves_its_cursor_by_binary_search() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            // 60 top-level posts by author 1, ids 0..60.
+            let ids_all: Vec<u64> = (0..60u64)
+                .map(|i| post(1, &[b'a' + (i % 26) as u8]))
+                .collect();
+            assert_eq!(TopLevelByAuthorCount::<Test>::get(1), 60);
+
+            // A cursor deep in the index returns the right window, in the right order, regardless of
+            // how far down it sits — the property the skip-based walk gave and the binary search must
+            // preserve exactly.
+            for &cursor in &[ids_all[59], ids_all[40], ids_all[10], ids_all[1]] {
+                let page = Microblog::author_feed_page(1, Some(cursor), 5, None);
+                let expected: Vec<u64> = ids_all
+                    .iter()
+                    .rev()
+                    .filter(|&&id| id < cursor)
+                    .take(5)
+                    .copied()
+                    .collect();
+                assert_eq!(ids(&page), expected, "cursor {cursor}");
+            }
+            // The oldest post has nothing below it.
+            let page = Microblog::author_feed_page(1, Some(ids_all[0]), 5, None);
+            assert!(page.posts.is_empty());
+            assert_eq!(page.next_cursor, None);
+            // Walking the whole index page by page returns every post exactly once, in order.
+            let mut seen = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = Microblog::author_feed_page(1, cursor, 7, None);
+                seen.extend(ids(&page));
+                match page.next_cursor {
+                    Some(c) if !page.posts.is_empty() => cursor = Some(c),
+                    _ => break,
+                }
+            }
+            let mut expected = ids_all.clone();
+            expected.reverse();
+            assert_eq!(
+                seen, expected,
+                "a full scroll loses nothing and repeats nothing"
+            );
+        });
+    }
+
+    #[test]
+    fn author_replies_page_bounds_its_over_scan_and_hands_back_a_cursor() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let root = post(9, b"root");
+            // A long top-level run: author 1 posts 40 top-level posts and exactly one reply, the
+            // OLDEST of their entries. Asking for replies must not walk all 41 entries in one call.
+            let r = reply(1, b"the only reply", root);
+            let _top: Vec<u64> = (0..40u64).map(|_| post(1, b"t")).collect();
+            assert_eq!(ByAuthorCount::<Test>::get(1), 41);
+
+            // limit 1 => max_scan = MAX_SCAN_FACTOR = 8 examined entries. The reply is 40 entries
+            // down, so the first call cannot reach it: it returns nothing plus a cursor to continue.
+            let p1 = Microblog::author_replies_page(1, None, 1, None);
+            assert!(
+                p1.posts.is_empty(),
+                "the budget stopped the walk before the reply"
+            );
+            let c = p1
+                .next_cursor
+                .expect("a bounded stop must hand back a cursor");
+
+            // Chasing that cursor makes progress and eventually reaches the reply — the client's
+            // `chasePage` does exactly this loop.
+            let mut cursor = Some(c);
+            let mut found = Vec::new();
+            for _ in 0..20 {
+                let page = Microblog::author_replies_page(1, cursor, 1, None);
+                found.extend(ids(&page));
+                match page.next_cursor {
+                    Some(next) => {
+                        assert!(next < cursor.unwrap(), "the cursor must strictly decrease");
+                        cursor = Some(next);
+                    }
+                    None => break,
+                }
+            }
+            assert_eq!(found, vec![r], "the chase finds the reply and nothing else");
+
+            // A generous limit raises the budget with it, so an ordinary page is unaffected.
+            let big = Microblog::author_replies_page(1, None, 10, None);
+            assert_eq!(
+                ids(&big),
+                vec![r],
+                "limit 10 => 80 examined, enough to reach it"
+            );
         });
     }
 

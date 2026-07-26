@@ -133,9 +133,11 @@ spends from it. Retuned in spec 212 from the old dev-tuned showcase values to a 
 | `ProfileCost` (foreign) | 30,000,000,000 (= 10× `BaseCost`) | `ProfileCost` |
 | `CheckCapacity` tx longevity | 8 blocks | `longevity` — `pallets/microblog/src/lib.rs` |
 
-At the 100-ADA `MinLock` floor that is a 100-post burst, 480 posts/day sustained, ~342 KB/day of
-permanent state. At the knee (100,000 ADA) it is a 100,000-post burst, ~480,000 posts/day, about 2% of
-one block.
+At the 100-ADA `MinLock` floor that is a 100-post burst and 480 posts/day sustained (a `BaseCost`-only
+post). Worst-case permanent state growth is ~290 KB/day, which is a different calculation — see
+[ECONOMICS.md](ECONOMICS.md#the-token-bucket-mechanic): the largest row comes from a 512-byte post,
+which costs 1.5x `BaseCost`, so it sustains 317/day at ~936 B each. At the knee (100,000 ADA) it is a
+100,000-post burst and ~480,000 posts/day, about 2% of one block.
 
 First-touch capacity starts at **0** (anti-farm), regenerates up to the ceiling, and never decays.
 There's no cooldown — capacity is the only rate limit. Note there is no second line of defence for the

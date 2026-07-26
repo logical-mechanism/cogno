@@ -7,8 +7,12 @@ atomic at one block.
 
 This works because the on-chain data model is already complete: every list the app renders is either an
 O(1) aggregate (`VoteTally`, `ReplyCount`, `FollowerCount`, `FollowingCount`, `PollTally`) or a
-single-key, prefix-iterable reverse index (`ByAuthor`, `RepliesByParent`, `Followers`, `Following`,
-`VotesByAccount`, `PollVotes`). The follow graph and every count already live on chain, so the node can
+single-key, prefix-iterable reverse index (`RepliesByParent`, `Followers`, `Following`,
+`VotesByAccount`, `PollVotes`) or a SEQ-keyed per-author index (`ByAuthor`, `TopLevelByAuthor`, each
+beside an explicit counter). The seq-keyed pair is read by walking its counter DOWN with keyed lookups,
+never by prefix iteration: a double map iterates in HASH order, whereas seq is assigned in append order
+over strictly ascending post ids, so seq-descending is id-descending with no sort. (They were bounded-vec
+blobs until spec 212; see PROTOCOL-PARAMS for why the bound had to go.) The follow graph and every count already live on chain, so the node can
 assemble a "For-you" feed, a thread, a following timeline, or a profile page without asking any other
 system. The alternative — the client firing several JSON-RPC reads per card, roughly 150 round-trips for
 a 30-post page — is exactly what this API removes.
@@ -54,7 +58,7 @@ migration deleted.
 
 `Posts` interleaves replies and top-level posts in one id space, so paging top-level content by raw id
 over-scans past replies. A dense, reply-free spine fixes this: `TopLevelPosts` (seq → post id) with a
-`NextTopLevelSeq` counter, and `TopLevelByAuthor` (per-author list). Both are maintained O(1) at every
+`NextTopLevelSeq` counter, and `TopLevelByAuthor` (per-author seq-keyed index). Both are maintained O(1) at every
 top-level creation site (`post_message` with `parent == None`, `quote_post`, `create_poll`) via
 `index_top_level`. `feed_page` / `following_feed_page` page the seq spine and read exactly N posts;
 `author_feed_page` pages `TopLevelByAuthor`; `author_post_count` reads the per-author count directly.

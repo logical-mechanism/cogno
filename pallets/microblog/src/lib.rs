@@ -1394,8 +1394,8 @@ pub mod pallet {
         ///
         /// **Feeless** (`feeless_if` below + the runtime's `SkipCheckIfFeeless`); inclusion is
         /// gated by the [`CheckCapacity`] extension at the pool, which also consumes capacity on
-        /// inclusion. Fails `TooLong` if `text` exceeds `MaxLength`, or `TooManyPosts` if the
-        /// author's index is full.
+        /// inclusion. Fails `TooLong` if `text` exceeds `MaxLength`. (It could also fail
+        /// `TooManyPosts` until spec 212, when the per-author index stopped having a cap.)
         #[pallet::call_index(0)]
         // WEIGHT (spec 212 recount). The benchmarked `post_message` covers PkhOf (r), NextPostId (r+w),
         // ByAuthor (r+w) and Posts (w) = 3 reads + 3 writes. Two things are charged manually on top:
@@ -2754,20 +2754,20 @@ impl<T: Config> Pallet<T> {
         if !top_level.is_empty() {
             return Err("TopLevelByAuthor rows exist for an author with no count row");
         }
-        // Every post is indexed under its OWN author — the check that catches a creation path that
-        // forgot to call `index_by_author` (the counters alone would stay mutually consistent).
-        let mut author_ids: BTreeMap<T::AccountId, alloc::collections::BTreeSet<u64>> =
-            BTreeMap::new();
-        for (author, _seq, id) in ByAuthor::<T>::iter() {
-            author_ids.entry(author).or_default().insert(id);
-        }
-        for (id, post) in Posts::<T>::iter() {
-            if !author_ids
-                .get(&post.author)
-                .is_some_and(|ids| ids.contains(&id))
-            {
-                return Err("a post is missing from its author's ByAuthor index");
-            }
+        // Every post is indexed exactly once — the check that catches a creation path that forgot to
+        // call `index_by_author` (the counters above would stay mutually consistent through that).
+        //
+        // Deliberately a CARDINALITY check, not a set membership one. Materializing every post id per
+        // author would be O(total posts) on the wasm HEAP, and this runs inside `try_state` — i.e.
+        // inside the pre-enactment `try-runtime` dry-run that docs/UPGRADES.md makes the safety net for
+        // every future migration. Blowing that up at scale would disable the one gate that has already
+        // caught a real bug on this branch. The counts are equal iff nothing is missing, because
+        // `index_by_author` is the single writer, appends exactly once per created post, and `Posts` is
+        // append-only (`delete_post` was removed before launch). Per-author attribution is covered by
+        // construction: all three creation sites pass the SAME `who` to `Posts::insert` and to
+        // `index_by_author`.
+        if ByAuthor::<T>::iter().count() != Posts::<T>::iter().count() {
+            return Err("the ByAuthor index and Posts disagree on how many posts exist");
         }
 
         Ok(())
@@ -3148,16 +3148,30 @@ impl<T: Config> Pallet<T> {
         let mut posts = Vec::new();
         let mut next_cursor = None;
         // `TopLevelByAuthor` is seq-keyed in append order (ascending id) and reply-free, so walking
-        // `seq` DOWN from the counter yields ids newest-first — the same order the pre-v10 bounded vec
-        // gave via `.iter().rev()`, and the order this cursor arithmetic depends on. Deliberately a
-        // keyed `get` per step, NOT prefix iteration: a double map iterates in HASH order.
-        let mut seq = TopLevelByAuthorCount::<T>::get(&author);
+        // `seq` DOWN yields ids newest-first — the same order the pre-v10 bounded vec gave via
+        // `.iter().rev()`, and the order this cursor arithmetic depends on. Deliberately a keyed `get`
+        // per step, NOT prefix iteration: a double map iterates in HASH order.
+        //
+        // The `before_id` cursor is resolved by BINARY SEARCH rather than by skipping. Under the old
+        // blob shape a skip was free (one read of the whole vector, then an in-memory scan); keyed by
+        // seq it would be one trie read per skipped entry, so page N of a profile would cost N·limit
+        // reads and the total scroll would be quadratic — on a public, unmetered runtime API, over an
+        // index that no longer has a `MaxPostsPerAuthor` bound. Every entry here IS returned (the index
+        // is reply-free), so with the start point resolved the page then costs exactly `limit` reads
+        // and needs no scan budget. `author_replies_page` filters, so it needs one; see there.
+        let count = TopLevelByAuthorCount::<T>::get(&author);
+        let mut seq = Self::author_index_seq_below(count, before_id, |s| {
+            TopLevelByAuthor::<T>::get(&author, s)
+        });
         while seq > 0 {
             seq = seq.saturating_sub(1);
             let id = match TopLevelByAuthor::<T>::get(&author, seq) {
                 Some(id) => id,
                 None => continue,
             };
+            // Kept as a guard, not as the paging mechanism: the binary search above assumes ids ascend
+            // with seq, and this makes a violation of that assumption return FEWER posts rather than
+            // wrong ones.
             if let Some(b) = before_id {
                 if id >= b {
                     continue;
@@ -3172,6 +3186,37 @@ impl<T: Config> Pallet<T> {
             }
         }
         FeedPage { posts, next_cursor }
+    }
+
+    /// The exclusive upper `seq` bound for a `before_id` cursor over a per-author index: the number of
+    /// entries whose post id is strictly below `before_id` (or `count` when there is no cursor, i.e.
+    /// start at the newest). Walk `seq` DOWN from the returned value.
+    ///
+    /// A binary search, not a scan. Post ids are strictly ascending in `seq` by construction —
+    /// `NextPostId` is monotonic and the index is append-only — so the index is sorted and resolving a
+    /// cursor costs `O(log n)` reads instead of one read per skipped entry. That is what keeps a deep
+    /// profile page, and the whole scroll, bounded now that the per-author index has no cap.
+    ///
+    /// A missing entry (a hole, which the `try_state` density invariant says cannot exist) is treated
+    /// as "at or above the cursor", so the search moves left. That can only under-return, never
+    /// mis-order.
+    fn author_index_seq_below<G>(count: u64, before_id: Option<u64>, get: G) -> u64
+    where
+        G: Fn(u64) -> Option<u64>,
+    {
+        let before = match before_id {
+            None => return count,
+            Some(b) => b,
+        };
+        let (mut lo, mut hi) = (0u64, count);
+        while lo < hi {
+            let mid = lo.saturating_add((hi - lo) / 2);
+            match get(mid) {
+                Some(id) if id < before => lo = mid.saturating_add(1),
+                _ => hi = mid,
+            }
+        }
+        lo
     }
 
     /// The Following timeline: top-level posts authored by accounts the `viewer` follows, newest-first,
@@ -3265,9 +3310,17 @@ impl<T: Config> Pallet<T> {
 
     /// One author's REPLIES (the profile Replies tab): their posts with `parent != None`, newest-first,
     /// paged below `before_id` (a post id). Walks the author's own `ByAuthor` index by `seq`, newest
-    /// first — bounded by the author's own post count, no global scan. Top-level posts in the index are
-    /// skipped; the cursor advances only past returned replies. Same seq-descending rule as
-    /// [`Pallet::author_feed_page`].
+    /// first, resolving the cursor by binary search exactly as [`Pallet::author_feed_page`] does.
+    ///
+    /// Unlike the author feed, this one FILTERS: `ByAuthor` holds every post, and only replies are
+    /// returned, so an author with no replies (or a long top-level run) would examine their whole index
+    /// to fill nothing. That is the over-scan `MAX_SCAN_FACTOR` exists for elsewhere in this pallet, and
+    /// it matters more since spec 212 because the index has no `MaxPostsPerAuthor` bound any more. So
+    /// the walk is capped at `limit · MAX_SCAN_FACTOR` examined entries and hands back a cursor to
+    /// continue from — the same short-page-plus-cursor contract `feed_page` already has, which the
+    /// client's `chasePage` already chases. (`author_feed_page` deliberately does NOT do this: its index
+    /// is reply-free so it never over-scans, and the Lists fan-out merges its pages by post id and
+    /// relies on a short page meaning "exhausted".)
     pub fn author_replies_page(
         author: T::AccountId,
         before_id: Option<u64>,
@@ -3279,18 +3332,30 @@ impl<T: Config> Pallet<T> {
         let stakers = Self::staker_weights();
         let mut posts = Vec::new();
         let mut next_cursor = None;
-        let mut seq = ByAuthorCount::<T>::get(&author);
+        let max_scan = limit.saturating_mul(MAX_SCAN_FACTOR);
+        let mut examined: u32 = 0;
+        let count = ByAuthorCount::<T>::get(&author);
+        let mut seq =
+            Self::author_index_seq_below(count, before_id, |s| ByAuthor::<T>::get(&author, s));
         while seq > 0 {
             seq = seq.saturating_sub(1);
             let id = match ByAuthor::<T>::get(&author, seq) {
                 Some(id) => id,
                 None => continue,
             };
+            // Guard, not the paging mechanism — see `author_feed_page`.
             if let Some(b) = before_id {
                 if id >= b {
                     continue;
                 }
             }
+            // Scan budget spent: stop and resume from this id. Counted BEFORE the reply filter, since
+            // skipping top-level posts is exactly the work being bounded.
+            if examined >= max_scan {
+                next_cursor = Some(id.saturating_add(1));
+                break;
+            }
+            examined = examined.saturating_add(1);
             let post = match Posts::<T>::get(id) {
                 Some(p) => p,
                 None => continue,

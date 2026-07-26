@@ -885,7 +885,11 @@ parameter_types! {
     //      rate = 10^8·1                   = 10^8 / block   = 1 post / 30 blocks (~3 min)
     //      empty→full = 3·10^11 / 10^8     = 3_000 blocks   = 5 h   (was 25 blocks / 2.5 min)
     //      sustained  = 14_400 blocks-per-day / 30          = 480 posts/day (was 57_600)
-    //      permanent state ≈ 712 B/post (a 592 B `Posts` row + two index rows) ⇒ ~342 KB/day/account.
+    //    Worst-case permanent state growth is a SEPARATE calculation — 480 posts/day is the rate for a
+    //    `BaseCost`-only post, while the biggest row comes from a 512-byte one. A 512-byte post costs
+    //    4.536e9, so 45.4 blocks/post = 317 posts/day, and a top-level post writes FOUR rows: `Posts`
+    //    (~648 B) + `ByAuthor` (~112 B) + `TopLevelByAuthor` (~112 B) + `TopLevelPosts` (~64 B) = ~936 B.
+    //    That is ~290 KB/day/account.
     //    A 512-byte post costs BaseCost + 512·PerByteCost ≈ 1.5 posts of capacity, as before.
     //
     //    AT THE KNEE (Ceiling/CapRatio = 10^11 lovelace = 100_000 ADA locked, unchanged and already

@@ -26,8 +26,18 @@
 //! runtime's `SingleBlockMigrations` behind [`VersionedMigration`], so it runs exactly once (on-chain
 //! version 9 → 10) and self-skips on re-run.
 
-use crate::{ByAuthor, ByAuthorCount, Config, Pallet, TopLevelByAuthor, TopLevelByAuthorCount};
+use crate::{
+    ByAuthor, ByAuthorCount, Capacity, CapacityState, Config, Pallet, TopLevelByAuthor,
+    TopLevelByAuthorCount,
+};
 use alloc::vec::Vec;
+use frame_system::pallet_prelude::BlockNumberFor;
+
+/// How much bigger a spec-212 micro-capacity unit is than a spec-211 one: `BaseCost` moved
+/// 50_000_000 -> 3_000_000_000, and `CapRatio` / `Ceiling` / `PerByteCost` / `VoteCost` /
+/// `FollowCost` / `ProfileCost` all moved with it by the same factor. Stored `Capacity.cap_last`
+/// values are denominated in those units, so they are rescaled by it below.
+const CAPACITY_UNIT_RESCALE: u128 = 60;
 use frame_support::{
     migrations::VersionedMigration,
     pallet_prelude::*,
@@ -136,16 +146,44 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV9ToV10<T> {
             }
         }
 
+        // ── Capacity: rescale the stored buckets into the new units ─────────────────────────────
+        //
+        // Spec 212 also rescales the talk-capacity unit by exactly `CAPACITY_UNIT_RESCALE`
+        // (`BaseCost` 5e7 -> 3e9, and every other capacity constant with it). `Capacity.cap_last` is
+        // a stored quantity IN THOSE UNITS, so leaving it alone would silently devalue every live
+        // bucket 60-fold: an account holding a full 100-post battery would read as holding 1.6 posts
+        // and be throttled until it refilled, which now takes 5 hours.
+        //
+        // The bucket is the only stored capacity quantity — `last_block` is a block number and the
+        // ceiling/rate are derived from constants at read time — so this one field is the whole
+        // change. Multiplying is exact and cannot overflow the new ceiling: the old value was already
+        // clamped to `min(w·50, 5e12)` and the new ceiling is `min(w·3000, 3e14)`, i.e. the same bound
+        // scaled by the same 60.
+        let mut buckets: u64 = 0;
+        Capacity::<T>::translate::<CapacityState<BlockNumberFor<T>>, _>(|_who, old| {
+            buckets = buckets.saturating_add(1);
+            Some(CapacityState {
+                cap_last: old.cap_last.saturating_mul(CAPACITY_UNIT_RESCALE),
+                last_block: old.last_block,
+            })
+        });
+
         log::info!(
             target: crate::LOG_TARGET,
-            "migration v9->v10: repaged the per-author indexes ({authors} author(s), {ids} id(s) rewritten)",
+            "migration v9->v10: repaged the per-author indexes ({authors} author(s), {ids} id(s) rewritten); \
+             rescaled {buckets} capacity bucket(s) by {CAPACITY_UNIT_RESCALE}x",
         );
         // Per author: 1 read of the old blob + 1 remove + 1 counter write, twice (both maps). Per id:
         // 1 row write. Charge both maps at the same author count — an over-count of the reply-free map
-        // is the safe direction.
+        // is the safe direction. Plus 1 read + 1 write per rescaled capacity bucket.
         let author_ops = authors.saturating_mul(2);
-        T::DbWeight::get()
-            .reads_writes(author_ops, author_ops.saturating_mul(2).saturating_add(ids))
+        T::DbWeight::get().reads_writes(
+            author_ops.saturating_add(buckets),
+            author_ops
+                .saturating_mul(2)
+                .saturating_add(ids)
+                .saturating_add(buckets),
+        )
     }
 
     #[cfg(feature = "try-runtime")]
@@ -155,18 +193,24 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV9ToV10<T> {
         let top_level: u64 = TopLevelByAuthorV9::<T>::iter()
             .map(|(_, v)| v.len() as u64)
             .sum();
+        // The pre-rescale bucket total, so `post_upgrade` can prove the rescale was applied EXACTLY
+        // once (a doubled or skipped pass would leave the total off by a factor of the rescale).
+        let banked: u128 = Capacity::<T>::iter().map(|(_, s)| s.cap_last).sum();
+        let buckets: u64 = Capacity::<T>::iter().count() as u64;
         log::info!(
             target: crate::LOG_TARGET,
-            "migration v9->v10 pre: {by_author} ByAuthor id(s), {top_level} TopLevelByAuthor id(s)",
+            "migration v9->v10 pre: {by_author} ByAuthor id(s), {top_level} TopLevelByAuthor id(s), \
+             {buckets} capacity bucket(s) banking {banked} micro-capacity",
         );
-        Ok((by_author, top_level).encode())
+        Ok((by_author, top_level, banked, buckets).encode())
     }
 
     #[cfg(feature = "try-runtime")]
     fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-        let (by_author, top_level): (u64, u64) = Decode::decode(&mut &state[..]).map_err(|_| {
-            sp_runtime::TryRuntimeError::Other("microblog v10: bad pre_upgrade state")
-        })?;
+        let (by_author, top_level, banked, buckets): (u64, u64, u128, u64) =
+            Decode::decode(&mut &state[..]).map_err(|_| {
+                sp_runtime::TryRuntimeError::Other("microblog v10: bad pre_upgrade state")
+            })?;
         // ⚠ Asserts on the NEW items only — see the module note: the v9 alias would happily "decode"
         // the new rows and report nonsense.
         ensure!(
@@ -199,6 +243,18 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV9ToV10<T> {
             TopLevelByAuthor::<T>::iter()
                 .all(|(a, seq, _)| seq < TopLevelByAuthorCount::<T>::get(&a)),
             "microblog v10: a TopLevelByAuthor seq is at or past its counter"
+        );
+        // The capacity rescale ran EXACTLY once, over every bucket: no row gained or lost, and the
+        // banked total moved by exactly the unit factor. A skipped pass leaves it unchanged and a
+        // doubled one squares the factor, so equality here rules out both.
+        ensure!(
+            Capacity::<T>::iter().count() as u64 == buckets,
+            "microblog v10: the capacity rescale must not add or drop a bucket"
+        );
+        ensure!(
+            Capacity::<T>::iter().map(|(_, s)| s.cap_last).sum::<u128>()
+                == banked.saturating_mul(CAPACITY_UNIT_RESCALE),
+            "microblog v10: banked capacity must scale by exactly CAPACITY_UNIT_RESCALE"
         );
         Ok(())
     }
