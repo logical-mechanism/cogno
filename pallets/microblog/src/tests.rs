@@ -149,7 +149,7 @@ fn top_level_and_quote_posts_do_not_touch_reply_aggregates() {
             RuntimeOrigin::signed(3),
             b"poll?".to_vec(),
             vec![b"a".to_vec(), b"b".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -929,7 +929,7 @@ fn create_poll_makes_a_post_and_stores_options() {
             RuntimeOrigin::signed(1),
             b"best chain?".to_vec(),
             opts(3),
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -938,10 +938,10 @@ fn create_poll_makes_a_post_and_stores_options() {
         assert_eq!(p.text.to_vec(), b"best chain?".to_vec());
         assert_eq!(p.parent, None);
         assert_eq!(p.quote, None);
-        // And the options live in the Polls side-map; a poll with no deadline floats forever.
+        // And the options live in the Polls side-map with the required deadline (spec 211).
         let poll = Polls::<Test>::get(0).expect("poll exists");
         assert_eq!(poll.options.len(), 3);
-        assert_eq!(poll.close_at, None);
+        assert_eq!(poll.close_at, Some(50_000));
         assert_eq!(NextPostId::<Test>::get(), 1);
         System::assert_has_event(Event::PostCreated { id: 0, author: 1 }.into());
         System::assert_last_event(Event::PollCreated { id: 0, author: 1 }.into());
@@ -957,7 +957,7 @@ fn create_poll_needs_at_least_two_options() {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 opts(1),
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ),
@@ -977,7 +977,7 @@ fn create_poll_rejects_too_many_options() {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 opts(5),
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ),
@@ -996,7 +996,7 @@ fn create_poll_rejects_overlong_option() {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 vec![b"ok".to_vec(), long],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ),
@@ -1018,7 +1018,7 @@ fn cast_poll_vote_counts_and_reprices_live_on_recast() {
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(3),
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -1067,7 +1067,7 @@ fn cast_poll_vote_rejects_non_poll_and_bad_option() {
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(2),
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -1082,12 +1082,12 @@ fn cast_poll_vote_rejects_non_poll_and_bad_option() {
 fn poll_close_rejects_votes_and_freezes_result() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        // A poll that closes at block 10.
+        // A poll that closes at block 11.
         assert_ok!(Microblog::create_poll(
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(2),
-            Some(10),
+            Some(11),
             PollKind::Stake,
             None
         ));
@@ -1103,7 +1103,7 @@ fn poll_close_rejects_votes_and_freezes_result() {
         );
 
         // At/after the deadline: no more votes …
-        System::set_block_number(10);
+        System::set_block_number(11);
         assert_noop!(
             Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 1),
             Error::<Test>::PollClosed
@@ -1133,12 +1133,12 @@ fn poll_close_rejects_votes_and_freezes_result() {
 fn close_poll_rejects_floating_and_missing_polls() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        // A poll with no deadline can never be finalized.
+        // A poll whose deadline has not been reached cannot be finalized yet.
         assert_ok!(Microblog::create_poll(
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(2),
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -1156,6 +1156,58 @@ fn close_poll_rejects_floating_and_missing_polls() {
             Microblog::close_poll(RuntimeOrigin::signed(2), 1),
             Error::<Test>::PollNotFound
         );
+        // A LEGACY floating poll (close_at None, storable only pre-spec-211 — create_poll now
+        // rejects None) can never be finalized. Inserted directly, as pre-211 storage would hold it.
+        let options: frame_support::BoundedVec<
+            frame_support::BoundedVec<u8, <Test as crate::pallet::Config>::MaxPollOptionLen>,
+            <Test as crate::pallet::Config>::MaxPollOptions,
+        > = vec![b"a".to_vec().try_into().unwrap(), b"b".to_vec().try_into().unwrap()]
+            .try_into()
+            .unwrap();
+        crate::Polls::<Test>::insert(
+            99,
+            crate::pallet::Poll::<Test> {
+                options,
+                close_at: None,
+                kind: PollKind::Stake,
+                action: None,
+            },
+        );
+        assert_noop!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 99),
+            Error::<Test>::PollNotClosable
+        );
+    });
+}
+
+#[test]
+fn create_poll_requires_a_deadline_inside_the_duration_window() {
+    // spec 211: `close_at` is required and must land in [now + MinPollDuration, now + MaxPollDuration]
+    // (mock: min 10, max 100_000). A `None` poll could never be frozen, so its weighted result would
+    // re-price forever — and the shipped UI used to produce exactly that poll by default.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(100);
+        let create = |close_at| {
+            Microblog::create_poll(
+                RuntimeOrigin::signed(1),
+                b"q".to_vec(),
+                opts(2),
+                close_at,
+                PollKind::Stake,
+                None,
+            )
+        };
+        // No deadline at all.
+        assert_noop!(create(None), Error::<Test>::PollCloseRequired);
+        // Born closed / sooner than the minimum window (min is 10 blocks from now = 100).
+        assert_noop!(create(Some(0)), Error::<Test>::PollDurationTooShort);
+        assert_noop!(create(Some(100)), Error::<Test>::PollDurationTooShort);
+        assert_noop!(create(Some(109)), Error::<Test>::PollDurationTooShort);
+        // Further out than the maximum window (max is 100_000 blocks from now).
+        assert_noop!(create(Some(100_101)), Error::<Test>::PollDurationTooLong);
+        // Both inclusive boundaries are accepted.
+        assert_ok!(create(Some(110)));
+        assert_ok!(create(Some(100_100)));
     });
 }
 
@@ -1163,17 +1215,17 @@ fn close_poll_rejects_floating_and_missing_polls() {
 fn close_poll_with_no_votes_freezes_an_all_zero_result() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        // A poll that closes at block 5, on which NOBODY votes — this exercises the `total == 0`
+        // A poll that closes at block 11, on which NOBODY votes — this exercises the `total == 0`
         // short-circuit in `close_poll` (freeze without the staker-set join).
         assert_ok!(Microblog::create_poll(
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(3),
-            Some(5),
+            Some(11),
             PollKind::Stake,
             None
         ));
-        System::set_block_number(5);
+        System::set_block_number(11);
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
         System::assert_last_event(Event::PollClosed { host_id: 0 }.into());
 
@@ -1211,7 +1263,7 @@ fn governance_poll_reports_spo_and_drep_chambers_deduped_by_pool() {
             RuntimeOrigin::signed(1),
             b"ratify?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             None,
         ));
@@ -1284,7 +1336,7 @@ fn governance_poll_sums_an_mspos_declaring_pools_deduped_by_pool() {
             RuntimeOrigin::signed(1),
             b"ratify?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             None,
         ));
@@ -1333,7 +1385,7 @@ fn co_owners_split_makes_the_pool_abstain_and_stake_polls_have_no_chambers() {
             RuntimeOrigin::signed(1),
             b"gov?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             None,
         ));
@@ -1353,7 +1405,7 @@ fn co_owners_split_makes_the_pool_abstain_and_stake_polls_have_no_chambers() {
             RuntimeOrigin::signed(1),
             b"plain?".to_vec(),
             vec![b"a".to_vec(), b"b".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Stake,
             None,
         ));
@@ -1381,7 +1433,7 @@ fn governance_poll_skips_zero_weight_roles() {
             RuntimeOrigin::signed(1),
             b"gov?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             None,
         ));
@@ -1443,7 +1495,7 @@ fn finalized_governance_poll_freezes_both_holder_lens_and_chambers() {
             RuntimeOrigin::signed(1),
             b"ratify?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            Some(10),
+            Some(11),
             PollKind::Governance,
             None,
         ));
@@ -1453,7 +1505,7 @@ fn finalized_governance_poll_freezes_both_holder_lens_and_chambers() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 1));
 
         // Freeze the poll at its deadline.
-        System::set_block_number(10);
+        System::set_block_number(11);
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
         assert!(crate::PollResults::<Test>::contains_key(0));
 
@@ -1511,13 +1563,13 @@ fn close_poll_refunds_weight_and_freezes_chambers() {
             RuntimeOrigin::signed(1),
             b"gov?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            Some(5),
+            Some(11),
             PollKind::Governance,
             None,
         ));
         set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]);
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
-        System::set_block_number(5);
+        System::set_block_number(11);
 
         let post = Microblog::close_poll(RuntimeOrigin::signed(2), 0).expect("closes");
         assert!(
@@ -1546,7 +1598,7 @@ fn spo_only_poll_populates_spo_chamber_and_suppresses_drep() {
             RuntimeOrigin::signed(1),
             b"spo temp check?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Spo,
             None,
         ));
@@ -1599,7 +1651,7 @@ fn drep_only_poll_populates_drep_chamber_and_suppresses_spo() {
             RuntimeOrigin::signed(1),
             b"drep temp check?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Drep,
             None,
         ));
@@ -1653,7 +1705,7 @@ fn finalized_spo_only_poll_freezes_spo_chamber_and_leaves_drep_zero() {
             RuntimeOrigin::signed(1),
             b"spo temp check?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            Some(10),
+            Some(11),
             PollKind::Spo,
             None,
         ));
@@ -1663,7 +1715,7 @@ fn finalized_spo_only_poll_freezes_spo_chamber_and_leaves_drep_zero() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 0));
 
         // Freeze the poll at its deadline.
-        System::set_block_number(10);
+        System::set_block_number(11);
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
         assert!(crate::PollResults::<Test>::contains_key(0));
 
@@ -1699,7 +1751,7 @@ fn finalized_drep_only_poll_freezes_drep_chamber_and_leaves_spo_zero() {
             RuntimeOrigin::signed(1),
             b"drep temp check?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            Some(10),
+            Some(11),
             PollKind::Drep,
             None,
         ));
@@ -1709,7 +1761,7 @@ fn finalized_drep_only_poll_freezes_drep_chamber_and_leaves_spo_zero() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 0));
 
         // Freeze the poll at its deadline.
-        System::set_block_number(10);
+        System::set_block_number(11);
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
         assert!(crate::PollResults::<Test>::contains_key(0));
 
@@ -1741,7 +1793,7 @@ fn governance_action_tag_round_trips_through_storage_and_view() {
             RuntimeOrigin::signed(1),
             b"withdraw from treasury?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             Some(crate::GovActionInput {
                 action_type: crate::GovActionType::TreasuryWithdrawal,
@@ -1795,7 +1847,7 @@ fn governance_action_tag_allowed_on_single_chamber_kinds() {
                 RuntimeOrigin::signed(1),
                 b"gov?".to_vec(),
                 vec![b"yes".to_vec(), b"no".to_vec()],
-                None,
+                Some(50_000),
                 kind,
                 Some(crate::GovActionInput {
                     action_type,
@@ -1833,7 +1885,7 @@ fn governance_action_on_stake_poll_is_rejected() {
                 RuntimeOrigin::signed(1),
                 b"plain?".to_vec(),
                 vec![b"yes".to_vec(), b"no".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 Some(crate::GovActionInput {
                     action_type: crate::GovActionType::Info,
@@ -1856,7 +1908,7 @@ fn governance_action_with_empty_anchor_is_rejected() {
                 RuntimeOrigin::signed(1),
                 b"gov?".to_vec(),
                 vec![b"yes".to_vec(), b"no".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Governance,
                 Some(crate::GovActionInput {
                     action_type: crate::GovActionType::Info,
@@ -1879,7 +1931,7 @@ fn governance_action_with_over_long_anchor_is_rejected() {
                 RuntimeOrigin::signed(1),
                 b"gov?".to_vec(),
                 vec![b"yes".to_vec(), b"no".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Governance,
                 Some(crate::GovActionInput {
                     action_type: crate::GovActionType::Info,
@@ -3145,7 +3197,7 @@ mod migration_v4 {
                 RuntimeOrigin::signed(1),
                 b"p".to_vec(),
                 vec![b"x".to_vec(), b"y".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
@@ -3743,7 +3795,7 @@ mod node_reads {
                 RuntimeOrigin::signed(5),
                 b"poll?".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
@@ -3904,7 +3956,7 @@ mod node_reads {
                 RuntimeOrigin::signed(1),
                 b"poll?".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
@@ -4042,7 +4094,7 @@ mod node_reads {
                 RuntimeOrigin::signed(1),
                 b"fav?".to_vec(),
                 vec![b"red".to_vec(), b"blue".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
@@ -4080,7 +4132,7 @@ mod node_reads {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 vec![b"x".to_vec(), b"y".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
@@ -4223,7 +4275,7 @@ mod invariant_props {
             RuntimeOrigin::signed(1),
             b"poll?".to_vec(),
             vec![b"a".to_vec(), b"b".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -4315,7 +4367,7 @@ mod invariant_props {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
-                Some(10),
+                Some(11),
                 PollKind::Stake,
                 None
             ));
@@ -4323,7 +4375,7 @@ mod invariant_props {
             TalkStake::apply_voting_power(&3, 50);
             assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 0));
             assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(3), 0, 1));
-            System::set_block_number(10);
+            System::set_block_number(11);
             assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(1), 0));
             let frozen = PollResults::<Test>::get(0).expect("poll finalized");
             // The snapshot is index-aligned with the options, exact-counted, and weight-snapshotted.

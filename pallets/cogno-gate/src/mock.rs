@@ -9,7 +9,7 @@
 use crate as pallet_cogno_gate;
 use frame_support::{
     derive_impl,
-    traits::{ConstU128, ConstU32},
+    traits::{ConstU128, ConstU32, ConstU64},
 };
 use frame_system::EnsureRoot;
 use sp_runtime::BuildStorage;
@@ -51,6 +51,8 @@ impl pallet_microblog::Config for Test {
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<32>;
     type MaxAnchorUrlLen = ConstU32<256>;
+    type MinPollDuration = ConstU64<10>;
+    type MaxPollDuration = ConstU64<100_000>;
     type ForceOrigin = EnsureRoot<u64>;
     // The REAL gate — this is what makes the mock an integration test.
     type IdentityGate = CognoGate;

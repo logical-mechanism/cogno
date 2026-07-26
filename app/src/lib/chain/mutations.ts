@@ -147,24 +147,29 @@ export function submitClearAccountVote(
  * options, each ≤ 80 bytes (validate at the call site with the ByteCounter). Emits `PostCreated`
  * (the host post's id) + `PollCreated`.
  */
+/** The composer's default poll length, in days, when the deadline control is untouched (spec 211). */
+export const DEFAULT_POLL_CLOSE_DAYS = 1;
+
 /**
- * Resolve a composer's `closeInDays` deadline (spec 205) to an absolute block-number `close_at` for
- * `create_poll`. `undefined` closeInDays ⇒ `undefined` (a floating, no-deadline poll). Prefers the live
- * `bestBlock`; if that hasn't loaded yet it reads the chain head. THROWS when a deadline WAS requested but
- * the chain height can't be read — so the caller surfaces the failure instead of silently creating a
- * floating poll. (Shared by both compose surfaces so the derivation lives in exactly one place.)
+ * Resolve a composer's `closeInDays` deadline to an absolute block-number `close_at` for
+ * `create_poll`. Since spec 211 the chain REQUIRES a deadline (a `None` poll could never be
+ * finalized, so its result would re-price forever), so a missing/zero `closeInDays` falls back to
+ * {@link DEFAULT_POLL_CLOSE_DAYS} — matching what the composer's deadline control displays by
+ * default. Prefers the live `bestBlock`; if that hasn't loaded yet it reads the chain head. THROWS
+ * when the chain height can't be read, so the caller surfaces the failure. (Shared by both compose
+ * surfaces so the derivation lives in exactly one place.)
  */
 export async function resolveCloseAt(
   api: CognoApi,
   bestBlock: number | null | undefined,
   closeInDays?: number,
-): Promise<number | undefined> {
-  if (!closeInDays) return undefined;
+): Promise<number> {
+  const days = closeInDays || DEFAULT_POLL_CLOSE_DAYS;
   const now = bestBlock ?? Number(await api.query.System.Number.getValue());
   if (!now || now <= 0) {
     throw new Error("Couldn't read the chain height to set the poll deadline.");
   }
-  return now + closeInDays * BLOCKS_PER_DAY;
+  return now + days * BLOCKS_PER_DAY;
 }
 
 export function submitCreatePoll(

@@ -224,12 +224,15 @@ mod benchmarks {
         let opt = alloc::vec![0u8; T::MaxPollOptionLen::get() as usize];
         let options = alloc::vec![opt; T::MaxPollOptions::get() as usize];
 
+        // spec 211: a deadline is required — use the earliest valid one.
+        let close_at = frame_system::Pallet::<T>::block_number() + T::MinPollDuration::get();
+
         #[extrinsic_call]
         _(
             RawOrigin::Signed(caller.clone()),
             question,
             options,
-            None,
+            Some(close_at),
             crate::PollKind::Stake,
             None,
         );

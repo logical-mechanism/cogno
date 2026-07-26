@@ -11,7 +11,8 @@
 //     on which bodies vote it on Cardano) and paste a LINK to the off-chain proposal (GitHub/IPFS). Turning
 //     it on presets the options to Yes/No/Abstain (the on-chain vote tri-state). Cogno stores the type +
 //     link, never the proposal body.
-//   • a deadline <select> (spec 205): No deadline / 1 / 3 / 7 days → a block-number `close_at`.
+//   • a deadline <select>: 1 / 3 / 7 days (default 1 — every poll needs one since spec 211) → a
+//     block-number `close_at`.
 // Submit drops empty options, asserts 2 ≤ options ≤ 4, and (for a tagged poll) a non-empty in-bound link,
 // then hands back through `submitCreatePoll(question, options, closeInDays, kind, action)`. CONTROLLED via
 // `pollDraft` + `onChange`. PRESENTATIONAL — no mutation built here.
@@ -147,9 +148,10 @@ export interface PollComposerProps {
   autoFocus?: boolean;
   /**
    * Hand back the trimmed args; the surface calls mutations.submitCreatePoll(question, options, closeAt,
-   * kind, action). `closeInDays` is `undefined` for a floating (no-deadline) poll; `kind` selects the
-   * chamber lens ("Stake" default); `action` (only for a chamber kind) is the governance-action tag — its
-   * CIP-1694 type + a link to the off-chain proposal.
+   * kind, action). `closeInDays` left `undefined` resolves to the surface's 1-day default (every poll
+   * needs a deadline since spec 211); `kind` selects the chamber lens ("Stake" default); `action` (only
+   * for a chamber kind) is the governance-action tag — its CIP-1694 type + a link to the off-chain
+   * proposal.
    */
   submitCreatePoll: (
     question: string,
@@ -201,8 +203,9 @@ export function PollComposer({
   );
 
   const setCloseInDays = useCallback(
-    // 0 = "No deadline" ⇒ a floating poll (undefined so the surface passes None).
-    (days: number) => onChange({ ...pollDraft, options, closeInDays: days > 0 ? days : undefined }),
+    // Every poll needs a deadline since spec 211 (the chain rejects a poll without one), so the
+    // control only offers real durations.
+    (days: number) => onChange({ ...pollDraft, options, closeInDays: days }),
     [onChange, options, pollDraft],
   );
 
@@ -513,18 +516,15 @@ export function PollComposer({
         <select
           id="cg-poll-deadline"
           className={styles.deadline}
-          value={pollDraft.closeInDays ?? 0}
+          value={pollDraft.closeInDays ?? 1}
           onChange={(e) => setCloseInDays(Number(e.target.value))}
         >
-          <option value={0}>No deadline</option>
           <option value={1}>1 day</option>
           <option value={3}>3 days</option>
           <option value={7}>1 week</option>
         </select>
         <span className={styles.hint}>
-          {pollDraft.closeInDays
-            ? "Voting closes at the deadline, then anyone can finalize the result."
-            : "The poll stays open with live results."}
+          Voting closes at the deadline, then anyone can finalize the result.
         </span>
       </div>
     </fieldset>

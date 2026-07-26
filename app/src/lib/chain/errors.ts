@@ -73,6 +73,9 @@ const MODULE_COPY: Record<string, string> = {
   "Microblog::OptionTooLong": "One of those poll options is too long.",
   "Microblog::PollNotFound": "That poll no longer exists.",
   "Microblog::InvalidOption": "That isn't one of the poll's options.",
+  "Microblog::PollCloseRequired": "Polls need an end date.",
+  "Microblog::PollDurationTooShort": "That poll would end too soon. Give it more time.",
+  "Microblog::PollDurationTooLong": "That poll would run too long. Pick an earlier end date.",
   "Microblog::SelfAccountVote": "You can't vote on your own account.",
   "Microblog::TargetNotAllowed": "That account doesn't have a linked identity.",
   // ── Profile ──

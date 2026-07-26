@@ -4,7 +4,7 @@ use crate as pallet_microblog;
 use core::cell::RefCell;
 use frame_support::{
     derive_impl,
-    traits::{ConstU128, ConstU32},
+    traits::{ConstU128, ConstU32, ConstU64},
 };
 use frame_system::EnsureRoot;
 use sp_runtime::BuildStorage;
@@ -129,6 +129,10 @@ impl pallet_microblog::Config for Test {
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<32>;
     type MaxAnchorUrlLen = ConstU32<256>;
+    // Poll-duration window (spec 211): small values so tests can exercise the bounds without
+    // thousand-block runs. Min 10 blocks, max 100_000 blocks.
+    type MinPollDuration = ConstU64<10>;
+    type MaxPollDuration = ConstU64<100_000>;
     type ForceOrigin = EnsureRoot<u64>;
     type IdentityGate = MockIdentityGate;
     type ForeignCost = MockForeignCost;

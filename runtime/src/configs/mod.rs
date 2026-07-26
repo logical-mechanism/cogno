@@ -865,6 +865,13 @@ impl pallet_microblog::Config for Runtime {
     // Governance poll anchor URL: a link to the off-chain proposal doc (GitHub/IPFS). 256 bytes covers a
     // long URL + an IPFS CID; the proposal BODY is never stored on-chain.
     type MaxAnchorUrlLen = ConstU32<256>;
+    // Poll-duration window (spec 211): every new poll must carry a close deadline inside it.
+    // Min 10 minutes — long enough that a poll cannot close before anyone could plausibly vote,
+    // short enough that a quick preprod test poll stays convenient. Max 90 days — the outer bound
+    // on how long a poll's weighted result may keep re-pricing before it is freezable; a longer
+    // signal belongs in a new poll.
+    type MinPollDuration = ConstU32<{ 10 * MINUTES }>;
+    type MaxPollDuration = ConstU32<{ 90 * DAYS }>;
     // Gated by the 3-of-5 FollowerCommittee (sudo-free).
     type ForceOrigin = AuthorityOrigin;
     // Gate posting on a live Cardano-identity binding (the anti-Sybil anchor).

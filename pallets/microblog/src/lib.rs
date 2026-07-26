@@ -303,6 +303,16 @@ pub mod pallet {
         /// proposal document (spec 209). (`create_poll` rejects a longer or empty anchor.)
         #[pallet::constant]
         type MaxAnchorUrlLen: Get<u32>;
+        /// Minimum poll duration in blocks (spec 211): `create_poll` requires
+        /// `close_at >= now + MinPollDuration`, so a poll can neither be born closed nor close
+        /// before anyone can vote.
+        #[pallet::constant]
+        type MinPollDuration: Get<BlockNumberFor<Self>>;
+        /// Maximum poll duration in blocks (spec 211): `create_poll` requires
+        /// `close_at <= now + MaxPollDuration`. Together with the rejected-`None` rule this bounds
+        /// how long any poll's weighted result can keep re-pricing before it is freezable.
+        #[pallet::constant]
+        type MaxPollDuration: Get<BlockNumberFor<Self>>;
 
         /// Origin allowed to force a capacity row (operator/migration). Wired to the 3-of-5
         /// committee in the runtime; there is no sudo. `cogno-gate`'s bind calls
@@ -1028,6 +1038,17 @@ pub mod pallet {
         /// spec 209 (19).
         #[codec(index = 19)]
         InvalidAnchor,
+        /// `create_poll` was called without a close deadline. Every new poll needs one, or its
+        /// weighted result re-prices forever and can never be frozen. Added spec 211 (20).
+        #[codec(index = 20)]
+        PollCloseRequired,
+        /// `create_poll`'s `close_at` is sooner than `MinPollDuration` from now (or already in the
+        /// past). Added spec 211 (21).
+        #[codec(index = 21)]
+        PollDurationTooShort,
+        /// `create_poll`'s `close_at` is further than `MaxPollDuration` from now. Added spec 211 (22).
+        #[codec(index = 22)]
+        PollDurationTooLong,
     }
 
     impl<T: Config> Pallet<T> {
@@ -1641,10 +1662,13 @@ pub mod pallet {
 
         /// Create a stake-weighted poll. The `question` becomes a normal post (so the poll threads /
         /// quotes and shows in the feed); `options` (2..=`MaxPollOptions`, each ≤`MaxPollOptionLen`)
-        /// are stored alongside. `close_at` is an optional block-number deadline: `None` ⇒ the poll floats
-        /// forever (its weighted result re-prices with stake on every read); `Some(b)` ⇒ voting is
-        /// rejected once `now ≥ b` and the weighted result can be FROZEN by `close_poll`. Feeless +
-        /// capacity-metered like a post.
+        /// are stored alongside. `close_at` is a block-number deadline, REQUIRED since spec 211 and
+        /// validated into the `[now + MinPollDuration, now + MaxPollDuration]` window: voting is
+        /// rejected once `now ≥ close_at` and the weighted result can then be FROZEN by `close_poll`.
+        /// (The argument stays `Option` so this validation alone does not move `transaction_version`;
+        /// `None` — which used to mean "floats forever, re-prices on every read, can never be
+        /// finalized" — is now rejected with `PollCloseRequired`. A pre-211 `None` poll already in
+        /// storage keeps its legacy behaviour.) Feeless + capacity-metered like a post.
         ///
         /// ⚠ The `close_at` argument (added spec 205) moved `transaction_version` 3 → 4; the `kind`
         /// argument (added spec 207, for governance polls) moved it 4 → 5; the `action` argument (added
@@ -1669,6 +1693,20 @@ pub mod pallet {
                 log::debug!(target: LOG_TARGET, "create_poll rejected: identity not allowed for {who:?}");
                 return Err(Error::<T>::NotAllowed.into());
             }
+            // A deadline is REQUIRED and window-validated (spec 211). Without it the poll could
+            // never be finalized, so its displayed outcome would keep re-pricing forever as stake
+            // moves — and the shipped UI produced exactly that poll by default. The bounds also
+            // reject a poll born closed (`close_at <= now`).
+            let now = frame_system::Pallet::<T>::block_number();
+            let deadline = close_at.ok_or(Error::<T>::PollCloseRequired)?;
+            ensure!(
+                deadline >= now.saturating_add(T::MinPollDuration::get()),
+                Error::<T>::PollDurationTooShort
+            );
+            ensure!(
+                deadline <= now.saturating_add(T::MaxPollDuration::get()),
+                Error::<T>::PollDurationTooLong
+            );
             ensure!(options.len() >= 2, Error::<T>::NotEnoughOptions);
             let text: BoundedVec<u8, T::MaxLength> =
                 question.try_into().map_err(|_| Error::<T>::TooLong)?;
@@ -1708,7 +1746,7 @@ pub mod pallet {
             let id = NextPostId::<T>::get();
             ByAuthor::<T>::try_mutate(&who, |ids| ids.try_push(id))
                 .map_err(|_| Error::<T>::TooManyPosts)?;
-            let at = frame_system::Pallet::<T>::block_number();
+            let at = now;
             // The poll's question is an ordinary post (parent/quote None), so it lives in the feed.
             Posts::<T>::insert(
                 id,
