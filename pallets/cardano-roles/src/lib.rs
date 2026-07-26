@@ -279,22 +279,33 @@ pub mod pallet {
         },
     }
 
+    // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
+    // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
+    // renumber; a new variant takes the next free index (7). (The Event enum above is pinned the
+    // same way.)
     #[pallet::error]
     pub enum Error<T> {
         /// The submitted CIP-8 role self-proof failed verification (signature / address-key bind /
         /// format / bad role payload). The node log carries the specific `Cip8Error` variant.
+        #[codec(index = 0)]
         ProofInvalid,
         /// The proof commits a different chain's genesis hash (anti-cross-chain replay).
+        #[codec(index = 1)]
         WrongGenesis,
         /// The account must be payment-bound (an onboarded identity) before it can claim a role.
+        #[codec(index = 2)]
         NotPaymentBound,
         /// This account has already claimed this role (1:1, account side).
+        #[codec(index = 3)]
         AccountAlreadyClaimedRole,
         /// This role credential is already claimed by an account (1:1, credential side).
+        #[codec(index = 4)]
         RoleCredAlreadyClaimed,
         /// This role credential was permanently banned (revoked) and cannot be re-claimed (the tombstone).
+        #[codec(index = 5)]
         RoleCredTombstoned,
         /// No claim exists for this `(account, role)` (unclaim / revoke target not found).
+        #[codec(index = 6)]
         NotClaimed,
     }
 

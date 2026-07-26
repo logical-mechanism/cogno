@@ -122,31 +122,44 @@ pub mod pallet {
     pub type OfflineValidators<T: Config> =
         StorageValue<_, BoundedVec<T::ValidatorId, T::MaxValidators>, ValueQuery>;
 
+    // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
+    // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
+    // a new variant takes the next free index (2).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
         /// New validator addition initiated. Effective at the next-but-one session boundary
         /// (~2 sessions: queued, then applied). The per-action audit trail.
+        #[codec(index = 0)]
         ValidatorAdditionInitiated(T::ValidatorId),
 
         /// Validator removal initiated. Effective at the next-but-one session boundary.
+        #[codec(index = 1)]
         ValidatorRemovalInitiated(T::ValidatorId),
     }
 
+    // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
+    // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
+    // renumber; a new variant takes the next free index (5).
     #[pallet::error]
     pub enum Error<T> {
         /// The target (post-removal) validator count is below [`Config::MinAuthorities`].
+        #[codec(index = 0)]
         TooLowValidatorCount,
         /// The validator is already in the validator set.
+        #[codec(index = 1)]
         Duplicate,
         /// Adding the validator would push the set above [`Config::MaxValidators`] (the consensus
         /// `MaxAuthorities` bound), which would silently truncate the authority set (`validators-3`).
+        #[codec(index = 2)]
         TooManyValidators,
         /// The account has no standing governance-fuel allowance ([`Config::FuelGate`]) — fund it with
         /// `fuel set-allowance` before adding it, or it would be seated unable to pay for `set_keys`.
+        #[codec(index = 3)]
         NotFunded,
         /// The account has no registered session keys ([`Config::KeysGate`]) — it must run
         /// `validator set-keys` before being added, or it would be seated but author nothing.
+        #[codec(index = 4)]
         NoSessionKeys,
     }
 

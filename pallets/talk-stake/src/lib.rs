@@ -75,15 +75,20 @@ pub mod pallet {
     pub type VotingPower<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, StakeWeight, ValueQuery>;
 
+    // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
+    // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
+    // a new variant takes the next free index (2).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
         /// An account's stake weight was set (idempotent overwrite; reorg-safe re-derive).
+        #[codec(index = 0)]
         StakeSet {
             who: T::AccountId,
             weight: StakeWeight,
         },
         /// An account's voting power (total observed Cardano stake) was set (idempotent overwrite).
+        #[codec(index = 1)]
         VotingPowerSet {
             who: T::AccountId,
             weight: StakeWeight,

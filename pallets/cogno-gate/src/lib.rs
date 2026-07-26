@@ -169,11 +169,15 @@ pub mod pallet {
     pub type TombstonedStakeCred<T: Config> =
         StorageMap<_, Blake2_128Concat, StakeCredential, (), OptionQuery>;
 
+    // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
+    // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
+    // a new variant takes the next free index (3).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
         /// A Cardano identity was bound 1:1 to a posting account — the per-bind audit record.
         /// `identity` is `blake2b_256(serialized owner Address)`.
+        #[codec(index = 0)]
         IdentityLinked {
             who: T::AccountId,
             identity: IdentityHash,
@@ -181,6 +185,7 @@ pub mod pallet {
         /// A binding was revoked (the manual-operator-ban path). The provider ref is
         /// released and the banked capacity zeroed; the capacity row itself is kept (relock-farm
         /// guard) — see [`pallet_microblog::OnIdentityBind::on_revoke`].
+        #[codec(index = 1)]
         Revoked {
             who: T::AccountId,
             identity: IdentityHash,
@@ -188,38 +193,53 @@ pub mod pallet {
         /// A stake credential was bound 1:1 to a posting account as its voting-power anchor (the
         /// stake-key self-proof, [`Call::link_stake_signed`]). `stake_cred` is the 28-byte
         /// reward-address key hash; the account's vote weight is then the total Cardano stake of it.
+        #[codec(index = 2)]
         StakeLinked {
             who: T::AccountId,
             stake_cred: StakeCredential,
         },
     }
 
+    // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
+    // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
+    // renumber; a new variant takes the next free index (11).
     #[pallet::error]
     pub enum Error<T> {
         /// This posting account is already bound to an identity (1:1, account side).
+        #[codec(index = 0)]
         AccountAlreadyBound,
         /// This Cardano identity is already bound to an account (1:1, identity side). Named
         /// `PkhAlreadyBound` for cross-doc continuity; the key is the 32-byte Address hash.
+        #[codec(index = 1)]
         PkhAlreadyBound,
         /// The supplied thread pointer exceeded 10 bytes (5 raw bytes / 10 hex chars).
+        #[codec(index = 2)]
         BadThread,
         /// No binding exists for this account (revoke target not found).
+        #[codec(index = 3)]
         NotBound,
         /// The submitted CIP-8 self-proof failed verification (signature / address-key bind / format /
         /// unsupported address). The node log carries the specific [`cip8::Cip8Error`] variant.
+        #[codec(index = 4)]
         ProofInvalid,
         /// The proof commits a different chain's genesis hash (anti-cross-chain replay).
+        #[codec(index = 5)]
         WrongGenesis,
         /// This Cardano identity was permanently banned (revoked) and cannot be re-bound (the tombstone).
+        #[codec(index = 6)]
         IdentityTombstoned,
         /// The account must be payment-bound ([`Call::link_identity_signed`]) before it can stake-bind —
         /// voting power attaches only to an existing posting identity.
+        #[codec(index = 7)]
         NotPaymentBound,
         /// This account already has a bound stake credential (1:1, account side).
+        #[codec(index = 8)]
         AccountAlreadyStakeBound,
         /// This stake credential is already bound to an account (1:1, stake side).
+        #[codec(index = 9)]
         StakeCredAlreadyBound,
         /// This stake credential was permanently banned (revoked) and cannot be re-bound (ban-the-key).
+        #[codec(index = 10)]
         StakeCredTombstoned,
     }
 

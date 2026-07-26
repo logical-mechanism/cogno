@@ -137,38 +137,57 @@ pub mod pallet {
     pub type PinnedPost<T: Config> =
         StorageMap<_, Blake2_128Concat, T::AccountId, u64, OptionQuery>;
 
+    // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
+    // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
+    // a new variant takes the next free index (4).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
         /// `who` set or replaced their profile (the body is read from storage by an indexer).
+        #[codec(index = 0)]
         ProfileSet { who: T::AccountId },
         /// `who` cleared their profile.
+        #[codec(index = 1)]
         ProfileCleared { who: T::AccountId },
         /// `who` pinned post `id` to the top of their profile.
+        #[codec(index = 2)]
         PostPinned { who: T::AccountId, id: u64 },
         /// `who` removed their pinned post.
+        #[codec(index = 3)]
         PostUnpinned { who: T::AccountId },
     }
 
+    // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
+    // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
+    // renumber; a new variant takes the next free index (9).
     #[pallet::error]
     pub enum Error<T> {
         /// The caller has no live Cardano-identity binding (`IdentityGate::is_allowed` returned false).
+        #[codec(index = 0)]
         NotAllowed,
         /// The display name exceeded `MaxName`.
+        #[codec(index = 1)]
         NameTooLong,
         /// The bio exceeded `MaxBio`.
+        #[codec(index = 2)]
         BioTooLong,
         /// The avatar reference exceeded `MaxAvatar`.
+        #[codec(index = 3)]
         AvatarTooLong,
         /// The banner reference exceeded `MaxBanner`.
+        #[codec(index = 4)]
         BannerTooLong,
         /// The location exceeded `MaxLocation`.
+        #[codec(index = 5)]
         LocationTooLong,
         /// The website reference exceeded `MaxWebsite`.
+        #[codec(index = 6)]
         WebsiteTooLong,
         /// `clear_profile` was called but the caller has no profile.
+        #[codec(index = 7)]
         NoProfile,
         /// `unpin_post` was called but the caller has nothing pinned.
+        #[codec(index = 8)]
         NotPinned,
     }
 

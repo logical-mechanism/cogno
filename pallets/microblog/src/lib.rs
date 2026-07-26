@@ -365,7 +365,10 @@ pub mod pallet {
         pub quote: Option<u64>,
     }
 
-    /// The direction of a stake-weighted vote on a post.
+    /// The direction of a stake-weighted vote on a post. `#[codec(index)]` PINS the on-wire
+    /// discriminant (this enum rides in call args, two pinned events, the `VoteRecord` storage value
+    /// and the `my_vote` read DTOs) — pinned at its pre-pin ordinals, so the encoding is
+    /// byte-identical. Never renumber; append only.
     #[derive(
         Encode,
         Decode,
@@ -380,8 +383,10 @@ pub mod pallet {
     )]
     pub enum VoteDir {
         /// An up-vote (endorsement).
+        #[codec(index = 0)]
         Up,
         /// A down-vote.
+        #[codec(index = 1)]
         Down,
     }
 
@@ -875,7 +880,8 @@ pub mod pallet {
     // Variant indices are PINNED with `#[codec(index)]`, never implied by declaration order. `Reposted`
     // (6) was retired in spec 204 and its index is permanently VACANT; without the pins, deleting it
     // would have shifted `Followed`/`Unfollowed`/`PollCreated`/`PollVoted` down one and silently
-    // mis-decoded them in every client. Never renumber; a new variant takes the next free index (11).
+    // mis-decoded them in every client. Never renumber; a new variant takes the next free index (12 —
+    // `PollClosed` took 11 in spec 205).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {

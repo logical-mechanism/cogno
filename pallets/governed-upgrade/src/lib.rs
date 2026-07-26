@@ -58,6 +58,9 @@ pub mod pallet {
         type WeightInfo: WeightInfo;
     }
 
+    // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
+    // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
+    // a new variant takes the next free index (1).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -66,6 +69,7 @@ pub mod pallet {
         /// `frame_system::apply_authorized_upgrade`, which enforces the `spec_version` increase. This is
         /// the pallet-scoped audit marker for the sudo-free upgrade path (distinct from, and emitted
         /// alongside, `frame_system`'s own `UpgradeAuthorized`).
+        #[codec(index = 0)]
         UpgradeAuthorized { code_hash: T::Hash },
     }
 
