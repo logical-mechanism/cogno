@@ -890,10 +890,11 @@ parameter_types! {
     //
     //    AT THE KNEE (Ceiling/CapRatio = 10^11 lovelace = 100_000 ADA locked, unchanged and already
     //    documented): cap = 3·10^14 = 100_000 posts, rate = 3·10^14/3_000 = 10^11/block = 33.3
-    //    posts/block = 480_000 posts/day. Against a block ceiling of ~1_580 posts (post_message ≈ 945 µs
-    //    of ref_time against `NORMAL_DISPATCH_RATIO · 2 s`), that is ~2 % of one block. BEFORE the
-    //    retune the same account sustained 4_000 posts/block — MORE than an entire block — so one
-    //    maximally-staked account could monopolize the mempool outright. That is the concrete failure
+    //    posts/block = 480_000 posts/day. Against a block ceiling of ~1_586 posts (post_message ≈ 945 µs
+    //    of ref_time against `NORMAL_DISPATCH_RATIO · 2 s`), that is ~2.1 % of one block. BEFORE the
+    //    retune the same account sustained 4_000 posts/block against a then-ceiling of ~2_012 — MORE
+    //    than an entire block — so one maximally-staked account could monopolize the mempool
+    //    outright. That is the concrete failure
     //    this prevents, and it is what makes ECONOMICS.md's "flattened at the top so no single whale
     //    can dominate the mempool" true rather than aspirational. See `Pallet::regen_per_block` for the
     //    second half of that fix: the rate is now derived from the ceiling, so both axes share ONE knee

@@ -82,8 +82,11 @@ identity gate is proven stronger.
 
 The knee is at `Ceiling / CapRatio` = 10¹¹ lovelace, i.e. **100,000 ADA locked**. At and above it an
 account holds a 100,000-post bucket refilling over the same 5 hours: 33 posts per block, ~480,000 per
-day. That is roughly 2% of a block, which is what "cannot dominate the mempool" has to mean to be worth
-saying — the block itself only fits on the order of 1,600 posts.
+day. That is about 2% of a block, which is what "cannot dominate the mempool" has to mean to be worth
+saying: the block itself only fits ~1,586 posts (`post_message` declares ≈945 µs of `ref_time` against a
+1.5 s normal-class budget). Under the old constants the same account sustained 4,000 posts per block
+against a then-ceiling of ~2,012 — more than an entire block, so one maximally-staked account could
+monopolize the mempool outright.
 
 These numbers were retuned in spec 212, and the retune shipped with the removal of `MaxPostsPerAuthor`
 rather than after it. That constant capped an author at 10,000 posts *ever*, which is what had been
