@@ -9,6 +9,7 @@
 import { Binary } from "polkadot-api";
 import type { CognoApi, GovActionType } from "@/lib/types";
 import type { RoleKindType } from "@/lib/chain/roles";
+import { isDeniedAuthor, isDeniedPost } from "@/lib/config/denylist";
 import { sanitizeInline } from "@/lib/sanitize";
 import { actionBodies } from "@/lib/cardano/governance";
 
@@ -87,13 +88,30 @@ export async function readGovernancePolls(api: CognoApi): Promise<GovPollSummary
   return Promise.all(
     govs.map(async (e) => {
       const hostId = e.keyArgs[0] as bigint;
-      const post = await api.query.Microblog.Posts.getValue(hostId, BEST).catch(() => null);
-      const question = post ? sanitizeInline(Binary.toText(post.text)).slice(0, 160) : "";
+      // This reads Microblog.Posts DIRECTLY rather than through the FeedSource, so the serve denylist
+      // has to be applied here by hand — by post id AND by author. Checking only the post id was a
+      // hole: an operator who denied an ACCOUNT saw the delisting hold on Home, Explore, search, that
+      // account's profile and the post's own permalink, while /governance quietly kept rendering
+      // their poll question. The author is only knowable AFTER the read, so unlike the post-id case
+      // this cannot skip the fetch; it drops the text instead.
+      //
+      // BOTH author-supplied fields go, not just the question. `anchor_url` is a URL the poll's author
+      // put on chain, and the row renders it through ProposalTitle, which lazily fetches the CIP-108
+      // document and renders ITS title. Withholding the question while keeping the anchor left the
+      // delisted account with author-controlled text on the page and, worse, made every /governance
+      // visitor's browser issue a request to a host that account chose. Dropping it falls back to
+      // "Open the poll to see the proposal", which is the gated state ProposalTitle already draws.
+      const deniedById = isDeniedPost(hostId);
+      const post = deniedById
+        ? null
+        : await api.query.Microblog.Posts.getValue(hostId, BEST).catch(() => null);
+      const denied = deniedById || (post != null && isDeniedAuthor(post.author));
+      const question = post && !denied ? sanitizeInline(Binary.toText(post.text)).slice(0, 160) : "";
       return {
         hostId,
         actionType: actionTypeOf(e.value.action?.action_type),
         question,
-        anchorUrl: decodeAnchor(e.value.action?.anchor_url),
+        anchorUrl: denied ? undefined : decodeAnchor(e.value.action?.anchor_url),
         closeAt: e.value.close_at ?? undefined,
         finalized: finalized.has(hostId),
       };

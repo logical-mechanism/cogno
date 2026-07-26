@@ -15,9 +15,10 @@ import styles from "./VaultSection.module.css";
 import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
 import { CardanoTxLink } from "@/components/CardanoTxLink";
-import { useSession } from "@/components/Providers";
-import { useVault } from "@/hooks/useVault";
+import { useSession, useBestBlock } from "@/components/Providers";
+import { useVault, type VaultAction } from "@/hooks/useVault";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
+import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
 import { PendingCapacityNotice } from "@/components/PendingCapacityNotice";
 import { pendingLockActions } from "@/lib/pendingLockStore";
@@ -29,12 +30,17 @@ const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
 
 export function VaultSection() {
   const { api, signerCtl, boot } = useSession();
+  const bestBlock = useBestBlock();
   // The lock-to-credit wait is a chain parameter (~10 min on preprod, ~36 h at the mainnet window),
   // so it is read rather than asserted. See useStabilityWindow.
   const stabilityWindow = useStabilityWindow(api);
   const vault = useVault();
   const { fail, ok } = useActionToast();
-  const actionRef = useRef<"lock" | "exit" | null>(null);
+  // Every vault action sets this, INCLUDING the legacy exit. It used to be `"lock" | "exit"` and
+  // `onExitLegacy` did not exist, so the effect below early-returned on `!action` and a legacy exit was
+  // the one vault operation that produced neither a success nor a failure toast — a wallet or Ogmios
+  // failure surfaced only as the inline error line.
+  const actionRef = useRef<VaultAction | null>(null);
   const walletId = signerCtl.connectedWalletId;
   const ss58 = signerCtl.signer.ss58;
   // `walletSession`, not `walletConnected`: locking and exiting the vault are `wallet.signTx` +
@@ -63,6 +69,9 @@ export function VaultSection() {
   // covers relock). Mirrors the welcome flow so both places tell the same story.
   usePendingLockSync(vault, ss58);
   const pending = usePendingCapacity(api, ss58, postingPower);
+  // Observer liveness, so this panel does not narrate a countdown against a frontier that has stopped
+  // moving. `useBestBlock` is the shared, visibility-frozen head — never a private useHeads here.
+  const observer = useObserverHealth(api, bestBlock);
 
   // Inspect the vault once on mount / wallet change — but only once the chain has answered. The vault
   // ADDRESS is built from the Cardano network the chain names (lib/cardano/network.ts), so inspecting
@@ -81,7 +90,9 @@ export function VaultSection() {
       ok(
         action === "lock"
           ? "Lock submitted. Crediting your posting power"
-          : "Exit submitted",
+          : action === "exit-legacy"
+            ? "Submitted. Your ADA is on its way back"
+            : "Exit submitted",
       );
       actionRef.current = null;
     } else if (vault.phase === "error" && vault.error) {
@@ -105,6 +116,15 @@ export function VaultSection() {
       vault.exit(walletId);
     }
   }, [vault, walletId]);
+  const onExitLegacy = useCallback(
+    (scriptHash: string) => {
+      if (walletId) {
+        actionRef.current = "exit-legacy";
+        vault.exitLegacy(walletId, scriptHash);
+      }
+    },
+    [vault, walletId],
+  );
 
   const locked = vault.locked;
   const hasLock = locked != null && locked > 0n;
@@ -132,6 +152,7 @@ export function VaultSection() {
         ) : showingPending ? (
           <PendingCapacityNotice
             status={pending}
+            observer={observer}
             variant="inline"
             onDismiss={() => pendingLockActions.clear(ss58)}
           />
@@ -242,6 +263,47 @@ export function VaultSection() {
               </button>
             </p>
           )}
+
+          {/* Older vaults. This renders nothing today and is not speculative: talk_vault has been
+              deployed once, so the retired-script list is empty. The point is that the day it is not
+              empty — the day a vulnerability forces a redeploy while real ADA is locked — the recovery
+              path already exists, already ships and already has tests, instead of having to be written
+              under exactly the time pressure where that goes wrong.
+
+              Rendered ONLY on a confirmed balance (`known && lovelace > 0`). An unreadable legacy
+              script must never render as an empty one, which is the same rule the current-script read
+              follows, and a row that appears and disappears with Blockfrost's mood would be worse than
+              no row at all. */}
+          {vault.legacy
+            .filter((l) => l.known && l.lovelace != null && l.lovelace > 0n)
+            .map((l) => (
+              <div key={l.hash} className={styles.legacy}>
+                <p className={styles.note}>
+                  You have {formatAda(l.lovelace)} in an older vault. It does not earn posting power,
+                  because the network only counts the current one. Getting it back is its own
+                  transaction.
+                </p>
+                {/* Disabled for the CONFIRM window too, not just the in-flight tx. The hook holds one
+                    transaction's worth of state, so starting this while a lock or exit is still
+                    confirming would take `lastAction` off the action the interlock above is reading
+                    and re-enable "Lock 100 ADA" mid-confirm. The hook refuses it as well; this is the
+                    half that says so rather than doing nothing on the click. */}
+                <button
+                  type="button"
+                  className={styles.outlineBtn}
+                  onClick={() => onExitLegacy(l.hash)}
+                  disabled={vault.busy || vault.confirming || !walletId}
+                >
+                  {vault.busy || vault.confirming ? (
+                    <>
+                      <Spinner size="sm" label="Working" /> Working…
+                    </>
+                  ) : (
+                    "Get this ADA back"
+                  )}
+                </button>
+              </div>
+            ))}
         </div>
       )}
     </div>

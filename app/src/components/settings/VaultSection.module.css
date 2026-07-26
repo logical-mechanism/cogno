@@ -168,3 +168,19 @@
   outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
   outline-offset: var(--cg-focus-ring-offset);
 }
+
+/* An older vault's row: the stranded-balance note plus its own exit button. Separated from the
+   current vault's controls by a rule, because the whole risk in this UI is a reader treating a legacy
+   balance as posting power. It should read as a different thing, not as more of the same thing.
+
+   Renders only when a retired script holds a CONFIRMED balance, so on a single-deployment chain (which
+   is today) it never appears at all. */
+.legacy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--cg-space-3);
+  margin-top: var(--cg-space-4);
+  padding-top: var(--cg-space-4);
+  border-top: 1px solid var(--cg-border);
+}

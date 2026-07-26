@@ -16,6 +16,9 @@ export function usePendingLockSync(vault: UseVault, ss58: string | null): void {
     if (!ss58 || vault.phase !== "submitted" || !vault.txHash) return;
     if (handled.current === vault.txHash) return; // already handled this tx (re-render)
     handled.current = vault.txHash;
+    // Exhaustive BY OMISSION, deliberately: any other action (today `"exit-legacy"`, which empties a
+    // retired vault script) must move neither half of this record. Do not turn this into a switch with
+    // a default that records or clears.
     if (vault.lastAction === "lock") pendingLockActions.record(ss58, vault.txHash);
     else if (vault.lastAction === "exit") pendingLockActions.clear(ss58);
   }, [vault.phase, vault.txHash, vault.lastAction, ss58]);

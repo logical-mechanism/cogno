@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { Binary } from "polkadot-api";
 import { readGovernancePolls, eligibleToVote, govCloseState } from "./governance-feed";
 import type { CognoApi } from "@/lib/types";
@@ -93,5 +93,73 @@ describe("govCloseState", () => {
     expect(govCloseState({ finalized: false, closeAt: 10 }, 12)).toBe("provisional");
     expect(govCloseState({ finalized: false, closeAt: 10 }, 5)).toBe("open");
     expect(govCloseState({ finalized: false, closeAt: undefined }, 5)).toBe("open");
+  });
+});
+
+// The serve denylist on /governance. This path reads Microblog.Posts DIRECTLY rather than through the
+// FeedSource, so it gets no filtering for free — and it shipped checking only the POST id. An operator
+// who denied an ACCOUNT saw the delisting hold on Home, Explore, search, that account's profile and the
+// post's own permalink, while /governance quietly kept rendering their poll question, both in the row
+// and in the browser tab title. "It looks like it worked everywhere I checked" is the worst shape a
+// hole in this lever can take.
+describe("the operator serve denylist on /governance", () => {
+  const DENIED = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
+  const ANCHOR = "https://example.org/proposal.json";
+
+  /** The mock has to be installed per test (doMock is not hoisted), so it is torn down per test too. */
+  function denyOnlyThatAuthor() {
+    vi.resetModules();
+    vi.doMock("@/lib/config/denylist", () => ({
+      isDeniedAuthor: (a: string | null | undefined) => a === DENIED,
+      isDeniedPost: () => false,
+    }));
+  }
+
+  // In `afterEach`, NOT at the end of each test body. A failing `expect` throws, which is exactly what
+  // happens when the code under test regresses — and the teardown that followed it inline then never
+  // ran, leaving the mocked denylist registered for every later dynamic import in this file. A broken
+  // assertion would have taken unrelated tests with it.
+  afterEach(() => {
+    vi.doUnmock("@/lib/config/denylist");
+    vi.resetModules();
+  });
+
+  const govPoll: Entry[] = [
+    {
+      keyArgs: [1n],
+      value: {
+        action: { action_type: { type: "HardFork" }, anchor_url: Binary.fromText(ANCHOR) },
+        close_at: undefined,
+      },
+    },
+  ];
+
+  it("drops the question text of a poll authored by a denied account", async () => {
+    denyOnlyThatAuthor();
+    const { readGovernancePolls: read } = await import("./governance-feed");
+    const posts = { "1": { text: Binary.fromText("Vote for me"), author: DENIED } };
+    const out = await read(mockApi(govPoll, [], posts));
+    expect(out).toHaveLength(1); // the row itself still exists; only the served TEXT is withheld
+    expect(out[0].question).toBe("");
+  });
+
+  // The anchor is the OTHER author-supplied field on the row. ProposalTitle fetches it and renders the
+  // document's title, so keeping it would leave the delisted account with text on the page and would
+  // send every /governance visitor to a host that account chose.
+  it("drops the author-supplied anchor URL too, so nothing fetches it", async () => {
+    denyOnlyThatAuthor();
+    const { readGovernancePolls: read } = await import("./governance-feed");
+    const posts = { "1": { text: Binary.fromText("Vote for me"), author: DENIED } };
+    const out = await read(mockApi(govPoll, [], posts));
+    expect(out[0].anchorUrl).toBeUndefined();
+  });
+
+  it("leaves a poll by an undenied account alone", async () => {
+    denyOnlyThatAuthor();
+    const { readGovernancePolls: read } = await import("./governance-feed");
+    const posts = { "1": { text: Binary.fromText("Fork now?"), author: "5SomeoneElse" } };
+    const out = await read(mockApi(govPoll, [], posts));
+    expect(out[0].question).toBe("Fork now?");
+    expect(out[0].anchorUrl).toBe(ANCHOR);
   });
 });

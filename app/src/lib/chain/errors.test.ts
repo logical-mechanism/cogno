@@ -18,7 +18,13 @@
 // failure mode these fixtures now prevent.
 
 import { describe, it, expect } from "vitest";
-import { classifyDispatchError, classifyThrown, errorCopy, type ChainError } from "./errors";
+import {
+  classifyDispatchError,
+  classifyThrown,
+  errorCopy,
+  readErrorCopy,
+  type ChainError,
+} from "./errors";
 
 /** A pallet error in the shape PAPI actually decodes (three-level tagged enum). */
 const moduleErr = (pallet: string, variant: string) => ({
@@ -138,5 +144,29 @@ describe("the boot guard can no longer be masked as a rate limit", () => {
     const e: ChainError = { kind: "raw", detail: bootReason };
     expect(e.kind).not.toBe("rate-limit");
     expect(errorCopy(e)).toBe(bootReason);
+  });
+});
+
+describe("a Cardano-side message is never reclassified as an unreachable node", () => {
+  it("keeps the vault policy mismatch RAW even though its prose contains 'network'", () => {
+    // `readErrorCopy`'s UNREACHABLE regex matches /network/i, and this message says "the network"
+    // in its own diagnosis. Routing it through that path would replace a precise, actionable
+    // explanation ("this app and the network disagree about which vault to use") with "Can't reach
+    // cogno. Check your connection and try again." — a wrong diagnosis of a working connection, and
+    // the exact reclassification the boot-guard case above exists to prevent.
+    //
+    // The protection is structural, not textual: every vault failure reaches the UI through
+    // `useActionToast.fail({ kind: "raw" })`, and `errorCopy` renders a raw kind verbatim. This test
+    // pins the structure. If a vault error is ever fed to `readErrorCopy` instead, it fails.
+    const mismatch =
+      "This app and the network disagree about which vault to use, so locking is off. Getting ADA back still works.";
+    expect(errorCopy({ kind: "raw", detail: mismatch })).toBe(mismatch);
+    // And the token really is live in the read-path classifier, so this is not a hypothetical.
+    expect(readErrorCopy(new Error(mismatch), "fallback")).toMatch(/can't reach cogno/i);
+  });
+
+  it("keeps the unknown-vault message raw too", () => {
+    const unknown = "This app does not know that vault, so it cannot get the ADA back.";
+    expect(errorCopy({ kind: "raw", detail: unknown })).toBe(unknown);
   });
 });

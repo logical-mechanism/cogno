@@ -7,7 +7,14 @@
 // The dual-key discipline holds: the Cardano wallet signs the lock/exit txs (and CIP-8 bind); it
 // NEVER signs a post. Posting uses the separate sr25519 key. This module never sees a private key.
 import type { BrowserWallet, UTxO } from "@meshsdk/core";
-import { VAULT_HASH, APPLIED_CBOR, MIN_LOCK, assertBlueprintIntegrity } from "./blueprint";
+import { MIN_LOCK, assertBlueprintIntegrity } from "./blueprint";
+import {
+  currentVaultScript,
+  legacyVaultScripts,
+  vaultScriptByHash,
+  type VaultScript,
+} from "./vaults";
+import { assertVaultPolicyMatchesChain } from "./vaultPolicy";
 import {
   beaconNameHex,
   vaultDatumCborHex,
@@ -17,7 +24,7 @@ import {
 } from "./beacon";
 import { preflightLock } from "./preflight";
 import { getProvider } from "./provider";
-import { assertWalletNetwork } from "./network";
+import { assertWalletNetwork, type CardanoNetworkId } from "./network";
 
 export interface OwnerKeys {
   address: string;
@@ -33,10 +40,17 @@ export interface VaultInfo {
   /** policyId + beacon — the full asset unit. */
   unit: string;
   owner: OwnerKeys;
+  /** WHICH script this address belongs to. Only `currentVaultScript()` ever earns posting power. */
+  script: VaultScript;
 }
 
-/** Enable the wallet and derive the owner keys + the vault address / beacon for this owner. */
-async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; info: VaultInfo }> {
+/**
+ * Enable the wallet and derive the owner's keys. Script-INDEPENDENT, so a read that spans several
+ * scripts pays for the wallet enable and the address parse once rather than once per script.
+ */
+async function resolveOwner(
+  walletId: string,
+): Promise<{ wallet: BrowserWallet; owner: OwnerKeys; network: CardanoNetworkId }> {
   const [{ BrowserWallet }, cst] = await Promise.all([import("@meshsdk/core"), import("@meshsdk/core-cst")]);
   const wallet = await BrowserWallet.enable(walletId);
   // Name the cause: this used to say "connect a Cardano wallet", which misread as a connection problem
@@ -53,18 +67,43 @@ async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; 
   if (!stakeKeyHash) {
     throw new Error("This wallet address has no stake key. Use a base address.");
   }
+  return { wallet, owner: { address, paymentKeyHash, stakeKeyHash }, network };
+}
+
+/**
+ * One owner's vault address / beacon / unit under ONE script.
+ *
+ * The beacon NAME is derived from the owner Address alone, so it is identical across scripts. The
+ * ADDRESS and the asset UNIT are not: both carry the script's own hash. That is precisely why a
+ * retired script's UTxOs are invisible to a bundle that knows only the current hash — they sit at a
+ * different address under a different policy id, and nothing about the current script finds them.
+ */
+async function vaultInfoFor(
+  script: VaultScript,
+  owner: OwnerKeys,
+  network: CardanoNetworkId,
+): Promise<VaultInfo> {
   const { serializePlutusScript } = await import("@meshsdk/core");
   // The network id here decides whether the vault address is `addr_test1…` or `addr1…`. Getting it
   // wrong does not throw: it builds a well-formed address on the wrong network, and the lock tx pays
   // real ADA to a script address that does not exist on the network the chain is observing.
   const { address: vaultAddress } = serializePlutusScript(
-    { code: APPLIED_CBOR, version: "V3" },
-    stakeKeyHash,
+    { code: script.appliedCbor, version: "V3" },
+    owner.stakeKeyHash,
     network,
     false,
   );
-  const beacon = beaconNameHex(paymentKeyHash, stakeKeyHash);
-  return { wallet, info: { vaultAddress, beacon, unit: VAULT_HASH + beacon, owner: { address, paymentKeyHash, stakeKeyHash } } };
+  const beacon = beaconNameHex(owner.paymentKeyHash, owner.stakeKeyHash);
+  return { vaultAddress, beacon, unit: script.hash + beacon, owner, script };
+}
+
+/** Enable the wallet and resolve this owner's vault under one script (default: the current one). */
+async function resolveVault(
+  walletId: string,
+  script: VaultScript = currentVaultScript(),
+): Promise<{ wallet: BrowserWallet; info: VaultInfo }> {
+  const { wallet, owner, network } = await resolveOwner(walletId);
+  return { wallet, info: await vaultInfoFor(script, owner, network) };
 }
 
 /**
@@ -128,6 +167,12 @@ export async function lockIntoVault(
   onPhase?: (p: VaultTxPhase) => void,
 ): Promise<{ txHash: string; info: VaultInfo }> {
   await assertBlueprintIntegrity();
+  // Refuse to pay into a script the chain is not watching. The bundle and the runtime each name a
+  // vault policy id, a redeploy has to move both, and the two can never be made atomic — so a
+  // disagreement is reachable, and its failure mode is a valid tx that pays 100 ADA to an address the
+  // observer never reads. No error, no revert, no posting power, ever. Fails OPEN when the chain's
+  // answer is not known: see vaultPolicy.ts.
+  assertVaultPolicyMatchesChain();
   const { wallet, info } = await resolveVault(walletId);
   const { paymentKeyHash, stakeKeyHash } = info.owner;
   preflightLock({ paymentKeyHash, stakeKeyHash, lockLovelace, beacon: info.beacon });
@@ -161,8 +206,8 @@ export async function lockIntoVault(
 
   const tx = new MeshTxBuilder({ fetcher: provider, submitter: provider, evaluator: provider, verbose: false });
   tx.mintPlutusScriptV3()
-    .mint("1", VAULT_HASH, info.beacon)
-    .mintingScript(APPLIED_CBOR)
+    .mint("1", info.script.hash, info.beacon)
+    .mintingScript(info.script.appliedCbor)
     .mintRedeemerValue(redeemer, "CBOR")
     .txOut(info.vaultAddress, [
       { unit: "lovelace", quantity: lockLovelace.toString() },
@@ -181,13 +226,38 @@ export async function lockIntoVault(
   return { txHash, info };
 }
 
-/** Full exit: spend the vault UTxO + burn the beacon (-1), reclaiming the locked ADA to the owner. */
+/**
+ * Full exit: spend the vault UTxO + burn the beacon (-1), reclaiming the locked ADA to the owner.
+ *
+ * `scriptHash` selects WHICH vault to empty, defaulting to the current one. This is the whole point of
+ * the script list: if talk_vault is ever redeployed, the funds sitting at the retired address are only
+ * reachable through a transaction that attaches THAT script's applied CBOR as the spend witness and
+ * burns the beacon under THAT script's own policy id. A hash alone cannot spend it, which is why every
+ * entry in `VAULT_SCRIPTS` carries its CBOR.
+ *
+ * Everything else here is script-independent: the spend redeemer is a constant, the burn redeemer is
+ * derived from the beacon (which is a function of the owner Address, not of the script), and the
+ * required signer is the owner's payment key in every case.
+ *
+ * One transaction per script, deliberately. A combined two-script exit would validate on chain (the
+ * validator's single-own-input guard counts inputs at its own hash only), but it needs both CBORs
+ * attached plus two spend and two mint redeemers, which inflates size and execution units and fails
+ * atomically. Separate exits also match the copy already shipped for multiple vault UTxOs.
+ */
 export async function exitVault(
   walletId: string,
   onPhase?: (p: VaultTxPhase) => void,
+  scriptHash?: string,
 ): Promise<{ txHash: string; info: VaultInfo }> {
-  await assertBlueprintIntegrity();
-  const { wallet, info } = await resolveVault(walletId);
+  const script = scriptHash ? vaultScriptByHash(scriptHash) : currentVaultScript();
+  if (!script) {
+    // Only reachable if a caller invents a hash: every UI path passes one this bundle listed.
+    throw new Error("This app does not know that vault, so it cannot get the ADA back.");
+  }
+  // Per-script, not global: a mistyped legacy entry must fail here rather than build a transaction
+  // against a script whose CBOR and hash come from different releases.
+  await assertBlueprintIntegrity(script);
+  const { wallet, info } = await resolveVault(walletId, script);
   const { MeshTxBuilder } = await import("@meshsdk/core");
   const provider = await getProvider();
 
@@ -208,12 +278,12 @@ export async function exitVault(
   const tx = new MeshTxBuilder({ fetcher: provider, submitter: provider, evaluator: provider, verbose: false });
   tx.spendingPlutusScriptV3()
     .txIn(target.input.txHash, target.input.outputIndex, target.output.amount, target.output.address)
-    .txInScript(APPLIED_CBOR)
+    .txInScript(info.script.appliedCbor)
     .txInInlineDatumPresent()
     .txInRedeemerValue(SPEND_REDEEMER_CBOR, "CBOR")
     .mintPlutusScriptV3()
-    .mint("-1", VAULT_HASH, info.beacon)
-    .mintingScript(APPLIED_CBOR)
+    .mint("-1", info.script.hash, info.beacon)
+    .mintingScript(info.script.appliedCbor)
     .mintRedeemerValue(burnRedeemer, "CBOR")
     .txInCollateral(collateral.input.txHash, collateral.input.outputIndex, collateral.output.amount, collateral.output.address)
     .requiredSignerHash(info.owner.paymentKeyHash)
@@ -248,4 +318,62 @@ export async function fetchVaultState(
     // >0 means a second, uncredited vault UTxO exists for this owner (see readVault).
     extraVaults: read.kind === "locked" ? read.utxos - 1 : 0,
   };
+}
+
+/** A balance found at a RETIRED script: real ADA, zero posting power, its own exit transaction. */
+export interface LegacyVaultBalance {
+  /** The retired script's hash — what `exitVault`'s third argument takes. */
+  hash: string;
+  /** Its human label, for the copy. */
+  label: string;
+  /** The largest UTxO's lovelace, or null when there is none or the read failed. */
+  lovelace: bigint | null;
+  /** False ⇒ the provider could not be read for THIS script. Never rendered as "nothing there". */
+  known: boolean;
+}
+
+/**
+ * Read this owner's balance at every RETIRED script.
+ *
+ * Kept out of `fetchVaultState` on purpose, on both of the axes that matter:
+ *
+ * MEANING. `fetchVaultState().locked` drives "you have posting power" across three surfaces and the
+ * confirm poll's settled() predicate. A legacy balance earns nothing — the chain filters on a single
+ * `ObsVaultPolicyId` and cogno-dbsync's reduction takes one vault hash — so folding it in would report
+ * an uncreditable balance as credited. That is the same class of untruth the vault-honesty pass just
+ * removed, pointed the other way.
+ *
+ * COST. `fetchVaultState` runs on mount on two surfaces and again every 6 seconds through the whole
+ * post-submit confirm poll. Each extra script is another `fetchAddressUTxOs`, and the Blockfrost
+ * project id ships in the bundle by design, so anyone can exhaust the quota for everyone. This is a
+ * separate call the UI makes ONCE, never in the poll loop.
+ *
+ * Per-script `unknown` is preserved rather than collapsed: one script's rate-limited read must not
+ * report another's balance as unreadable, and an unreadable script must never render as an empty one.
+ *
+ * Returns [] with no provider work at all while there are no retired scripts, which is today.
+ */
+export async function fetchLegacyVaults(walletId: string): Promise<LegacyVaultBalance[]> {
+  const scripts = legacyVaultScripts();
+  if (scripts.length === 0) return [];
+  const { owner, network } = await resolveOwner(walletId);
+  const provider = await getProvider();
+  return Promise.all(
+    scripts.map(async (script) => {
+      // A THROW here (an address that will not serialize, say) is per-script too: it must degrade that
+      // one entry to `known: false`, not take the whole list down and hide the others.
+      try {
+        const info = await vaultInfoFor(script, owner, network);
+        const read = await readVault(provider, info);
+        return {
+          hash: script.hash,
+          label: script.label,
+          lovelace: read.kind === "locked" ? read.lovelace : null,
+          known: read.kind !== "unknown",
+        };
+      } catch {
+        return { hash: script.hash, label: script.label, lovelace: null, known: false };
+      }
+    }),
+  );
 }

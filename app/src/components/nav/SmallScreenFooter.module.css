@@ -1,0 +1,40 @@
+/* Only where RightRail is not. The rail is the desktop home of these links and is `display: none`
+   below 1020px (AppShell.module.css), so this picks them up at exactly the widths the rail drops them
+   — the same links at every width, and never two copies at once. */
+.footer {
+  display: none;
+}
+
+@media (max-width: 1019px) {
+  .footer {
+    display: block;
+    padding: var(--cg-space-5) var(--cg-space-4) var(--cg-space-8);
+    border-top: 1px solid var(--cg-border);
+  }
+}
+
+.links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--cg-space-1) var(--cg-space-2);
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-muted);
+}
+
+.link {
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+  text-decoration: none;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}

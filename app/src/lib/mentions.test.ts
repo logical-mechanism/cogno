@@ -3,12 +3,14 @@ import { ss58Address } from "@polkadot-labs/hdkd-helpers";
 import {
   mentionToken,
   mentionLabel,
+  mentionParts,
   serializeMentions,
   reconcileMentions,
   parseMentionBody,
   validSs58Prefix,
   type MentionRef,
 } from "./mentions";
+import { truncateSs58 } from "./ss58";
 
 // Two real, checksummed AccountId32 addresses (dev keys), encoded at the chain prefix (42).
 const ALICE = ss58Address("0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d", 42);
@@ -45,6 +47,61 @@ describe("mentionLabel", () => {
     expect(mentionLabel("Alice\t\tSmith", ALICE)).toBe("Alice Smith");
     expect(mentionLabel("Alice     Smith", ALICE)).toBe("Alice Smith");
     expect(mentionLabel("  Alice Smith  ", ALICE)).toBe("Alice Smith");
+  });
+});
+
+// The attack these pin, in full: a display name is resolved LIVE at render time (useAccountProfile
+// reads Profile.Profiles at best block) while the post that mentions the account is permanent. So being
+// mentioned once as "@alice" and renaming later to "@intersect_official" retroactively rewrites what a
+// stranger's undeletable post appears to say. The address beside the name is the only thing that makes
+// the mention refer to a person rather than to a mutable string.
+describe("mentionParts", () => {
+  it("shows the address ALONGSIDE a display name, so a later rename cannot silently repoint a mention", () => {
+    const p = mentionParts("alice", ALICE);
+    expect(p.label).toBe("alice");
+    expect(p.address).toBe(truncateSs58(ALICE));
+  });
+
+  it("gives two different accounts different addresses even under an identical display name", () => {
+    // The impersonation case as the reader actually meets it: two chips both reading "@alice".
+    const a = mentionParts("alice", ALICE);
+    const b = mentionParts("alice", BOB);
+    expect(a.label).toBe(b.label);
+    expect(a.address).not.toBe(b.address);
+  });
+
+  it("does not print the address twice for a nameless account", () => {
+    // Here the LABEL already is the truncated ss58, so a second copy beside it is noise, not an anchor.
+    const p = mentionParts(undefined, ALICE);
+    expect(p.label).toBe(truncateSs58(ALICE));
+    expect(p.address).toBeNull();
+  });
+
+  it("treats a whitespace-only name as nameless, matching mentionLabel", () => {
+    for (const name of ["", "   ", "\n\t"]) {
+      const p = mentionParts(name, ALICE);
+      expect(p.label).toBe(truncateSs58(ALICE));
+      expect(p.address).toBeNull();
+    }
+  });
+
+  it("keeps mentionLabel's hardening: the label half is still collapsed", () => {
+    // Otherwise the fix would have introduced a second, un-sanitized path to the same DOM.
+    const p = mentionParts("Alice\nSmith", ALICE);
+    expect(p.label).toBe("Alice Smith");
+    expect(p.address).toBe(truncateSs58(ALICE));
+  });
+
+  it("cannot be spoofed by a name that merely LOOKS like an address", () => {
+    // A name set to another account's truncated address must not suppress the real one.
+    const p = mentionParts(truncateSs58(BOB), ALICE);
+    expect(p.label).toBe(truncateSs58(BOB));
+    expect(p.address).toBe(truncateSs58(ALICE));
+  });
+
+  it("uses the same truncation shape as every other address surface", () => {
+    // If this diverged, a reader could not compare a mention against a Handle by eye.
+    expect(mentionParts("alice", ALICE).address).toBe(truncateSs58(ALICE));
   });
 });
 

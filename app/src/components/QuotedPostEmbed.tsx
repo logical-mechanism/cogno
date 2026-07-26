@@ -18,6 +18,7 @@ import { Handle } from "./Handle";
 import { RoleBadge } from "./RoleBadge";
 import { PostBody } from "./PostBody";
 import { useNestedQuote } from "@/hooks/useNestedQuote";
+import { isDenied } from "@/lib/config/denylist";
 import { useBlocked } from "@/lib/blockStore";
 import { useHidden } from "@/lib/hiddenStore";
 import { sanitizeInline } from "@/lib/sanitize";
@@ -51,7 +52,12 @@ export function QuotedPostEmbed({
   isPoll,
   viewerId,
 }: QuotedPostEmbedProps) {
-  const missing = unavailable || (!quoted.text.trim() && !quoted.author);
+  // A denied quote arrives as an EMBEDDED summary on a post that is itself perfectly servable, so the
+  // FeedSource filter never sees it as a list item. Folded into `missing` rather than given its own
+  // stub: "This post is unavailable" is already the honest thing to say, and inventing a second,
+  // distinguishable stub would advertise which posts the operator has delisted.
+  const missing =
+    unavailable || (!quoted.text.trim() && !quoted.author) || isDenied({ id: quoted.id, author: quoted.author });
   const blocked = useBlocked(quoted.author, viewerId ?? null);
   // A post the viewer HID must not resurface through a quote embed either (hide = "never show this one").
   const hidden = useHidden(quoted.id, viewerId ?? null);

@@ -35,12 +35,12 @@ describe("onboardingReturn", () => {
   });
 
   it("never records a hub surface itself", () => {
-    for (const p of ["/", "/explore/", "/legal/", "/privacy/"]) rememberContentRoute(p);
+    for (const p of ["/", "/explore/", "/legal/", "/privacy/", "/policy/"]) rememberContentRoute(p);
     expect(store.has(KEY)).toBe(false);
   });
 
   it("forgets a remembered content route on arriving at a hub surface", () => {
-    for (const hub of ["/", "/explore/", "/legal/", "/privacy/"]) {
+    for (const hub of ["/", "/explore/", "/legal/", "/privacy/", "/policy/"]) {
       store.set(KEY, "/post/7/");
       rememberContentRoute(hub);
       expect(store.has(KEY)).toBe(false); // wandered to the feed → the timeline is the right landing

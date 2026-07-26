@@ -38,6 +38,7 @@ import { NO_VIEWER } from "@/lib/optimistic";
 import { usePostActions } from "@/hooks/usePostActions";
 import { modalActions } from "@/lib/modalStore";
 import { useProfile } from "@/hooks/useProfile";
+import { isDeniedAuthor } from "@/lib/config/denylist";
 import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
@@ -45,7 +46,7 @@ import { useVote } from "@/hooks/useVote";
 import { useAccountVoteFor } from "@/hooks/useAccountVote";
 import { usePinPost } from "@/hooks/usePinPost";
 import { useToaster } from "@/components/toast/ToasterProvider";
-import { isPlausibleSs58, handleOf, fallbackDisplayName } from "@/lib/ss58";
+import { normalizeSs58, handleOf, fallbackDisplayName } from "@/lib/ss58";
 import { sanitizeInline } from "@/lib/sanitize";
 import { useRouteSegment } from "@/lib/routeSegment";
 import type { ProfileArgs } from "@/lib/feed/source";
@@ -82,13 +83,29 @@ export function ProfileView() {
     );
   }
 
+  // CANONICALIZE, don't just shape-check. This route param is the one address in the app that does not
+  // come from the chain, and an ss58 is an ENCODING rather than an identity: the same 32-byte key is a
+  // different string at every network prefix, and PAPI's AccountId codec decodes all of them alike. So
+  // /u/<the same key at prefix 0>/ used to open a second, subtly-wrong copy of somebody's profile —
+  // one whose device-local state, follow lookups and serve-denylist check all keyed on a string the
+  // chain never produces. `normalizeSs58` re-encodes to prefix 42 and is a real blake2b checksum
+  // decode, which the old `isPlausibleSs58` regex (base58 shape only) is not; an address that fails it
+  // could never have matched a post on this chain anyway.
+  const canonical = normalizeSs58(address);
   // Invalid ss58 → in-app not-found (NOT a hard 404); never attempt a chain read.
-  if (!isPlausibleSs58(address)) return <NotFoundInline kind="profile" />;
+  if (canonical === null) return <NotFoundInline kind="profile" />;
+  // The operator's serve denylist. Checked HERE, ahead of the read, rather than relying on the
+  // reader's blanked ProfileView: this route resolves its header from the URL address (identicon,
+  // `fallbackDisplayName`, the Follow and reputation-vote controls) and never consults
+  // `ProfileView.author`, so a blanked profile still rendered a plausible-looking, apparently-real
+  // account page with live write controls on it. Not-found is the closest honest thing this site can
+  // say about a page it has decided not to serve.
+  if (isDeniedAuthor(canonical)) return <NotFoundInline kind="profile" />;
 
   // key: every profile shares the one exported route segment ("_"), so React would otherwise keep
   // ProfileBody mounted across /u/A/ → /u/B/ (a mention chip, a hover card, an author click) and carry
   // A's tab + timeline state onto B. Keying on the address restores the per-profile remount.
-  return <ProfileBody key={address} address={address} />;
+  return <ProfileBody key={canonical} address={canonical} />;
 }
 
 function ProfileBody({ address }: { address: Ss58 }) {

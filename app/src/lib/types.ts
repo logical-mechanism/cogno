@@ -335,12 +335,30 @@ export interface ChainHeads {
 export type ConnStatus = "connecting" | "connected" | "reconnecting" | "error";
 
 /**
+ * WHY the boot guard is not ok. `ok` alone could not distinguish the three cases, and they need
+ * different things from the user: a stale tab needs RELOADING, a wrong endpoint needs CHANGING, and an
+ * unreachable node needs WAITING. Telling someone to reload when the node is simply down is the kind of
+ * advice that makes a user stop believing the next message.
+ *
+ *   ok          — the app and the network agree; writes are allowed.
+ *   stale-app   — same chain, different runtime spec_version. This tab was loaded before a runtime
+ *                 upgrade and its PAPI descriptors now mis-encode every write. Reloading genuinely
+ *                 fixes it: the deployed HTML is served `Cache-Control: no-cache`, so a reload
+ *                 revalidates and picks up the new bundle.
+ *   wrong-chain — the node's spec_name is not cogno-chain-runtime. A reload changes nothing.
+ *   unreachable — the runtime version could not be read at all.
+ */
+export type BootGuardKind = "ok" | "stale-app" | "wrong-chain" | "unreachable";
+
+/**
  * Read/write-aware boot guard: compares the runtime `spec_version` to the
  * descriptors the app was built against. A mismatch must BLOCK the write path (a silent
  * spec bump mis-encodes posts) while keeping READS in best-effort mode.
  */
 export interface BootGuard {
   ok: boolean;
+  /** Which of the four states this is. `ok === (kind === "ok")`, always. */
+  kind: BootGuardKind;
   nodeSpecName: string;
   nodeSpecVersion: number;
   /** descriptor spec_version the app was generated against, when discoverable. */

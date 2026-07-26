@@ -29,6 +29,8 @@ import { BottomTabBar } from "./nav/BottomTabBar";
 import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { BootGuardNotice } from "./BootGuardNotice";
+import { SmallScreenFooter } from "./nav/SmallScreenFooter";
 import { EmptyState } from "./EmptyState";
 import { Loading } from "./Loading";
 import { IconBack } from "./icons";
@@ -41,6 +43,11 @@ function isWelcomePath(pathname: string | null): boolean {
   return !!pathname && (pathname === "/welcome" || pathname.startsWith("/welcome/"));
 }
 
+/** /settings carries the policy links itself (AboutSection), so the small-screen footer stands down. */
+function isSettingsPath(pathname: string | null): boolean {
+  return !!pathname && (pathname === "/settings" || pathname.startsWith("/settings/"));
+}
+
 // The read-only surfaces a LOGGED-OUT visitor may browse without signing in: the timeline, discovery, a
 // post, a profile, and the static legal pages. Everything else (compose, settings, notifications,
 // bookmarks — the write/config/personal surfaces) stays behind the wall and bounces a guest to /welcome.
@@ -49,7 +56,19 @@ function isWelcomePath(pathname: string | null): boolean {
 // ("/" → "", "/post/1/" → "post", "/u/5Grw…/" → "u"). Fail-CLOSED: a route whose segment is not listed is
 // treated as private, so a newly-added route is walled until it is deliberately opened here. /welcome is
 // intentionally NOT listed — it is the onboarding canvas, handled by its own `onWelcome` branch below.
-const PUBLIC_SEGMENTS = new Set(["", "explore", "governance", "post", "u", "legal", "privacy"]);
+const PUBLIC_SEGMENTS = new Set([
+  "",
+  "explore",
+  "governance",
+  "post",
+  "u",
+  "legal",
+  "privacy",
+  // "policy" is the abuse/report surface. It MUST be public: the reader most likely to need it is an
+  // anonymous stranger who just scrolled past something, and walling it would bounce exactly that
+  // person to /welcome and ask them to connect a wallet before they can find out how to report it.
+  "policy",
+]);
 function isPublicPath(pathname: string | null): boolean {
   if (!pathname) return false;
   return PUBLIC_SEGMENTS.has(pathname.split("/")[1] ?? "");
@@ -158,7 +177,22 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
 
         <main id="cg-main" tabIndex={-1} className={styles.main}>
+          {/* Renders nothing while the boot probe is in flight or when it comes back ok, which is
+              every normal session. It exists for the one that isn't: a tab left open across a runtime
+              upgrade looks completely functional and fails at the moment of posting, and this shell
+              read no boot state at all, so nothing said otherwise until the click. */}
+          <BootGuardNotice />
           {children}
+          {/* The policy/legal/privacy links for the widths where RightRail (which carries them on
+              desktop) is display:none. Without it a signed-out phone visitor could reach NONE of
+              them, since the only other link lives in Settings and Settings is walled.
+
+              Not on /settings, which is the one surface that already owns them: AboutSection carries
+              its own `<nav aria-label="Policies">` with the same three destinations, and RightRail
+              returns null there at EVERY width, so the footer's "pick them up where the rail drops
+              them" rule does not apply. Rendering both put two policy nav landmarks in the a11y tree
+              on the same page and showed a phone visitor the same three links twice. */}
+          {!isSettingsPath(pathname) && <SmallScreenFooter />}
         </main>
 
         <div className={styles.rightCol}>

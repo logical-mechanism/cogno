@@ -10,9 +10,11 @@ import { useCallback, useEffect, useState } from "react";
 import styles from "./DiagnosticsSection.module.css";
 import { useSession } from "@/components/Providers";
 import { useHeads } from "@/hooks/useHeads";
+import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { copyToClipboard } from "@/lib/share";
 import { getGenesisHex } from "@/lib/chain/identity";
+import type { ObserverHealth } from "@/lib/chain/observer";
 
 function shortHex(hex: string | null, head = 10): string {
   if (!hex) return "—";
@@ -25,6 +27,9 @@ type Dot = "ok" | "pending" | "err";
 export function DiagnosticsSection() {
   const { api, client, status } = useSession();
   const heads = useHeads(client);
+  // This panel already subscribes to heads, so pass THAT height through rather than pulling in
+  // useBestBlock and opening a third source of truth for the same number on one screen.
+  const observer = useObserverHealth(api, heads.best?.number ?? null);
   const [genesis, setGenesis] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<{ specV: number; txV: number } | null>(null);
 
@@ -56,9 +61,34 @@ export function DiagnosticsSection() {
   const connLabel =
     status === "connected" ? "connected" : status === "connecting" ? "connecting…" : "disconnected";
 
+  // The one fact on this panel that a green "connected" actively hides. The observer inherent is the
+  // sole writer of posting power, voting power and role tags; when it freezes, blocks keep arriving and
+  // every other row here stays healthy while nothing about Cardano is being read at all.
+  const obsLabel: Record<ObserverHealth["kind"], string> = {
+    ok: "up to date",
+    stalled: "paused",
+    "never-started": "not started",
+    unknown: "checking…",
+  };
+  const obsDot: Record<ObserverHealth["kind"], Dot> = {
+    ok: "ok",
+    stalled: "err",
+    "never-started": "pending",
+    unknown: "pending",
+  };
+
   return (
     <div className={styles.card}>
       <Row label="Connection" value={connLabel} dot={connDot} />
+      <Row
+        label="Cardano reads"
+        value={
+          observer.kind === "stalled"
+            ? `${obsLabel.stalled} (${observer.blocks} blocks)`
+            : obsLabel[observer.kind]
+        }
+        dot={obsDot[observer.kind]}
+      />
       <Row label="Genesis" value={shortHex(genesis)} mono title={genesis ?? undefined} copy={genesis ?? undefined} />
       <Row label="Network version" value={runtime ? `spec ${runtime.specV} · tx ${runtime.txV}` : "—"} mono />
       {/* Best + finalized on their OWN lines — the combined "#n / #n" overflowed the value column. */}

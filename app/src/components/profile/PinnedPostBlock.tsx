@@ -14,6 +14,7 @@
 
 import styles from "./PinnedPostBlock.module.css";
 import { PostCard } from "@/components/PostCard";
+import { isDenied } from "@/lib/config/denylist";
 import { useBlocked } from "@/lib/blockStore";
 import { useHidden } from "@/lib/hiddenStore";
 import type { CognoPost, ViewerPostState, Viewer, PostActionCallbacks } from "@/components/kit";
@@ -47,6 +48,12 @@ export function PinnedPostBlock({ post, viewer, gate, handlers }: PinnedPostBloc
   const blocked = useBlocked(post.author, me);
   const hidden = useHidden(post.id, me);
   if (blocked || hidden) return null;
+  // A pinned post this deployment declines to serve is DROPPED here rather than left to PostCard's
+  // stub. It reaches this component through `source.thread(id).root`, and the reader deliberately does
+  // not drop a thread ROOT (there is no shape for "the post you asked for is gone"), so without this
+  // the profile would render a bordered "not available" card in the pinned slot. Nothing is being
+  // hidden that the Posts tab below would have shown: that list is filtered too.
+  if (isDenied(post)) return null;
 
   return (
     <PostCard

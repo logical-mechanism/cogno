@@ -24,6 +24,12 @@
 //     Indic shaping) but bounded by the caps below. The emoji TAG block (U+E0000–E007F) is deliberately NOT
 //     stripped — subdivision-flag emoji (England / Scotland / Wales) are legitimate tag sequences and the
 //     residual is invisible (no visual harm), defeated anyway by the ss58 shown beside every name.
+//     THAT LAST CLAUSE IS LOAD-BEARING AND IT IS A CLAIM ABOUT THE RENDER LAYER, not about this file. It
+//     was false for a while: MentionChip rendered a display name with the address only in `title`, which
+//     is invisible on touch, so inside a post body — the one place a name appears in somebody ELSE's
+//     permanent writing — there was no ss58 beside it. If you ever render a chain-sourced display name
+//     without an address next to it, this justification stops holding and the residual stops being
+//     harmless. Check `mentionParts` (lib/mentions) before you rely on this line.
 //   • ZALGO. Stacking dozens of combining marks (categories Mn / Me) on one base overflows the line box and
 //     paints over neighbouring UI. We cap the marks per GRAPHEME CLUSTER to MAX_MARKS. Counting per cluster
 //     (not per consecutive run) closes the "interleave a kept ZWJ to reset the counter" bypass — ZWJ/ZWNJ +

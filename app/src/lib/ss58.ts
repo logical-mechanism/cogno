@@ -38,14 +38,18 @@ export function fallbackDisplayName(address: string): string {
   return `cogno-${address.slice(1, 7)}`;
 }
 
-// ss58 alphabet (base58, Bitcoin/Polkadot variant). Used only for a cheap plausibility gate on the
-// dynamic /u/[address] route param — NOT a cryptographic checksum validation.
+// ss58 alphabet (base58, Bitcoin/Polkadot variant). A cheap shape gate, NOT a checksum validation.
 const SS58_RE = /^[1-9A-HJ-NP-Za-km-z]{40,60}$/;
 
 /**
- * Cheap plausibility check for an ss58 address arriving as a static-export route param. Returns true
- * for a base58 string of plausible length. This is intentionally loose (no checksum decode): the
- * route renders a not-found inline for obviously-bogus params; the chain read is the real validator.
+ * Cheap plausibility check: true for a base58 string of plausible ss58 length.
+ *
+ * Intentionally loose, and therefore NOT a gate anything security-shaped may stand on: it checks no
+ * checksum and no network prefix, so a one-character typo passes it and so does the same public key at
+ * any other chain's prefix. /u/[address] used to admit its route param on this alone, which let a
+ * delisted account be served at a non-canonical encoding of their own key; that route now canonicalizes
+ * with {@link normalizeSs58} instead. This survives as the cheap reject in front of that decode
+ * (ss58Decode throws on malformed input) and nothing else calls it directly.
  */
 export function isPlausibleSs58(value: string | null | undefined): boolean {
   return typeof value === "string" && SS58_RE.test(value);

@@ -32,6 +32,9 @@ import { useHidden, hiddenActionsFor } from "@/lib/hiddenStore";
 import { useBookmarked, bookmarkActionsFor } from "@/lib/bookmarkStore";
 import { useLocalLists, localListActionsFor, MAX_LIST_MEMBERS } from "@/lib/localListStore";
 import { sanitizeInline } from "@/lib/sanitize";
+import { postLink } from "@/lib/share";
+import { ABUSE_EMAIL, reportMailto } from "@/lib/config/operator";
+import { isDenied } from "@/lib/config/denylist";
 import { useToaster } from "./toast/ToasterProvider";
 import type {
   CognoPost,
@@ -211,7 +214,7 @@ export function PostCard({
         label: muted ? `Unmute ${handle}` : `Mute ${handle}`,
         onSelect: () => muteActionsFor(me).toggle(post.author),
       });
-      // Block (device-local hard suppression) — the danger action, last.
+      // Block (device-local hard suppression).
       items.push({
         id: "block",
         label: blocked ? `Unblock ${handle}` : `Block ${handle}`,
@@ -225,9 +228,53 @@ export function PostCard({
           );
         },
       });
+      // Report — the escalation to a HUMAN, and the only item in this menu that reaches anyone but the
+      // viewer. It goes last because it is the heaviest, not because it is the most dangerous.
+      //
+      // A mailto:, not a form and not a chain write. The deployed CSP sets `form-action 'none'`
+      // (deploy/nginx/security-headers.conf), so a POSTing form would work under `next dev` and fail
+      // silently in production; and there is no report extrinsic, because on-chain moderation is out of
+      // scope by design. The permalink is pre-filled from `postLink`, since the link is the one thing a
+      // report is useless without and the one thing that is annoying to fetch by hand.
+      //
+      // location.assign rather than an <a>: menu items are DATA (OverflowMenuItem), so there is no
+      // element here to hang an href on, and the menu's roving-focus/Esc handling keys off
+      // [role^="menuitem"] buttons. A blocked mail handler leaves the page untouched, so the toast is
+      // fired first and names the address rather than claiming a mail client opened.
+      items.push({
+        id: "report",
+        label: "Report post",
+        onSelect: () => {
+          toast({ kind: "info", message: `Opening a report to ${ABUSE_EMAIL}` });
+          window.location.assign(reportMailto(`Report: post ${post.id}`, postLink(post.id)));
+        },
+      });
     }
     return items.length > 0 ? items : undefined;
   }, [pending, isOwnPost, handlers, post, muted, blocked, hidden, bookmarked, localLists, toast, me]);
+
+  // On the operator's serve denylist. Lists and the reader itself already strip these, so this only
+  // fires where a card is rendered DIRECTLY: a permalink to a delisted post, or a thread whose focal
+  // post is one (the source deliberately does not drop a thread root, because there is no shape for
+  // "the post you asked for is gone" and returning somebody else's reply as the root would be worse).
+  //
+  // Checked FIRST, ahead of block and mute, because it is not the viewer's decision and there is no
+  // affordance to undo it. The copy says what is true — this site is not showing it — and does not
+  // claim the post does not exist, because it does, in every block, on every node.
+  if (isDenied(post) && !pending) {
+    return (
+      <article
+        className={[styles.card, styles[variant], styles.mutedRow, showThreadLine ? styles.threadLine : ""]
+          .filter(Boolean)
+          .join(" ")}
+        data-post-id={String(post.id)}
+      >
+        <div className={styles.mutedStub}>
+          <span className={styles.mutedText}>This post is not available on this site.</span>
+        </div>
+      </article>
+    );
+  }
 
   // A blocked author is a HARD suppression: lists strip the post before it reaches here (useModeration),
   // so this branch only fires where a card is rendered directly — the detail focal / a permalink. No

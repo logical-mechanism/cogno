@@ -1,0 +1,63 @@
+/* BootGuardNotice — the app-wide "posting is off, and here is why" banner. Shaped like
+   RateLimitNotice (slim, amber left edge, one action on the right) so a reader recognises it as the
+   same class of thing, but it sits at the TOP OF EVERY SURFACE rather than inline in one composer, so
+   it carries a title line and a little more room to breathe.
+
+   DELIBERATELY NOT STICKY. It sits inside <main> above {children}, and every surface's own
+   StickyHeader is `position: sticky; top: 0; z-index: var(--cg-z-sticky)` (AppShell.module.css). A
+   sticky notice would pin to the same offset with the same z-index and lose, because the header comes
+   later in DOM order and paints over it — so the banner would vanish behind the header the moment
+   anyone scrolled, on every surface. It scrolls away like any other block, which is right for a
+   persistent state: it is a standing condition, not an alert that needs chasing down the page. */
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+  border-left: 3px solid var(--cg-warning);
+  background: var(--cg-bg-elevated);
+}
+
+.text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  color: var(--cg-text);
+}
+
+.body {
+  margin: var(--cg-space-1) 0 0;
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-secondary);
+}
+
+.action {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid var(--cg-border);
+  padding: var(--cg-space-2) var(--cg-space-3);
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: var(--cg-radius-input);
+  white-space: nowrap;
+}
+
+.action:hover {
+  background: var(--cg-accent-wash);
+}
+
+.action:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}

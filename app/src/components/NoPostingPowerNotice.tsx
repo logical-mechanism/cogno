@@ -20,6 +20,7 @@ import styles from "./NoPostingPowerNotice.module.css";
 import { useSession, useBestBlock } from "./Providers";
 import { useCapacity } from "@/hooks/useCapacity";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
+import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { pendingLockActions } from "@/lib/pendingLockStore";
 import { PendingCapacityNotice } from "./PendingCapacityNotice";
 
@@ -32,6 +33,9 @@ export function NoPostingPowerNotice() {
   const ss58 = viewer.address ?? null;
   const { view } = useCapacity(api, ss58, bestBlock);
   const pending = usePendingCapacity(api, ss58, view?.weight ?? null);
+  // Whether the SOLE writer of posting power is still running. Everything below is a statement about
+  // why this account cannot post, and every one of them is wrong in a different way if it has stopped.
+  const observer = useObserverHealth(api, bestBlock);
 
   // Only for a ready (identity-bound) account.
   if (viewer.status !== "ready") return null;
@@ -53,11 +57,13 @@ export function NoPostingPowerNotice() {
     );
   }
 
-  // A lock is crediting → show the explained, timed pending state (not "lock ADA" again).
+  // A lock is crediting → show the explained, timed pending state (not "lock ADA" again). The observer
+  // is threaded through because a stall makes every timing statement in there untrue.
   if (pending.kind !== "none") {
     return (
       <PendingCapacityNotice
         status={pending}
+        observer={observer}
         variant="inline"
         onDismiss={ss58 ? () => pendingLockActions.clear(ss58) : undefined}
       />
@@ -66,6 +72,26 @@ export function NoPostingPowerNotice() {
 
   // No lock in flight: only nag to lock once the weight read resolves to a real 0 (avoid flashing).
   if (!view || view.weight > 0n) return null;
+
+  // Telling someone to go and lock ADA while the observer is frozen sends them to spend a Cardano
+  // transaction fee on something that provably cannot credit until it resumes. Say so instead, and
+  // keep the Lock action available: the lock itself still works and is still safe, it just waits.
+  if (observer.kind === "stalled") {
+    return (
+      <div className={styles.notice} role="status">
+        <span className={styles.glyph} aria-hidden>
+          ⏸️
+        </span>
+        <span className={styles.text}>
+          Posting power is paused. cogno has stopped reading Cardano, so a new lock will not be
+          credited until it resumes.
+        </span>
+        <Link href="/settings#vault" className={styles.action}>
+          Lock ADA
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.notice} role="status">

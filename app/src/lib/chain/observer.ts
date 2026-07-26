@@ -23,6 +23,13 @@ export interface ObserverConfig {
   stakeEpochLookback: bigint;
 }
 
+// NO vault policy id here. The runtime API returns one, and mapping it through was a field nothing ever
+// read: lib/cardano/vaultPolicy.ts answers "is this bundle's vault the one the chain is watching?" from
+// the pallet CONSTANT (`api.constants.CardanoObserver.VaultPolicyId()`) and never calls this function.
+// A config field with no consumer is a field that drifts unnoticed, and it carried a fourth private
+// byte-to-hex helper to keep it fed. If a caller ever needs it here, add it back WITH that caller, and
+// use `toHex` from @polkadot-api/utils (already a dependency, already used by lib/ss58).
+
 /**
  * One in-flight/settled read per chain handle. The config is fixed for the life of a runtime, but the
  * callers are hooks: Settings alone mounts two `useStabilityWindow`s and a `usePendingCapacity`, and
@@ -86,4 +93,87 @@ export function describeStabilityWindow(stabilitySlots: bigint): string {
 /** The wall-clock unix time (seconds) of a Cardano slot, from the Shelley anchor (1 slot = 1 second). */
 export function slotToUnixSec(slot: bigint, cfg: ObserverConfig): number {
   return Number(cfg.shelleyStartUnix + (slot - cfg.shelleyStartSlot));
+}
+
+// ── observer liveness ────────────────────────────────────────────────────────────────────────────
+//
+// The observer inherent is the SOLE writer of talk-capacity weight, voting power and role badges. When
+// it stops, none of those three ever changes again: a confirmed lock never credits, an unlock never
+// clamps, a claimed SPO tag never confirms. Nothing else in the stack notices. Substrate's own liveness
+// is untouched (blocks keep being produced, GRANDPA keeps finalizing), so every dashboard stays green
+// while every user watches their posting power quietly stop moving.
+//
+// The pallet does record it — `CardanoObserver.Stalled` latches in `on_initialize` once the gap exceeds
+// `StallAfter` — and until now literally nothing read that flag. The node-side Prometheus gauges
+// (`cogno_observer_*`) are a separate signal and are only written by the AUTHORING producer, and
+// deploy/monitoring/alertmanager.yml ships with every notifier commented out under a header saying, in
+// as many words, that it pages nobody. So the alarm reached no one at all. This is the read half.
+
+/** What the observer is doing, from the chain's own state. */
+export type ObserverHealth =
+  /** Observing normally. Weight, voting power and role tags are all live. */
+  | { kind: "ok" }
+  /** Not enough has been read yet to say. NEVER an assertion — an unresolved read is not a diagnosis. */
+  | { kind: "unknown" }
+  /**
+   * This chain has never applied a single observation, so nothing has stopped. `--dev` is exactly this
+   * (no db-sync, so the inherent abstains on every block), and so is a chain whose observer has never
+   * worked. Distinct from "stalled" because "the sole weight writer has STOPPED" is a false statement
+   * about a chain that never started, and because the on-chain latch deliberately cannot fire here.
+   */
+  | { kind: "never-started" }
+  /** Observation has stopped. `blocks` is how long the gap has run. */
+  | { kind: "stalled"; blocks: number };
+
+/** The four chain reads the classification needs. `null` means "not resolved yet", never "zero". */
+export interface ObserverLiveness {
+  /** `CardanoObserver.Stalled` — the latched on-chain alarm. */
+  latched: boolean | null;
+  /** `CardanoObserver.LastAppliedAt` — the block an observation last landed in. */
+  lastAppliedAt: number | null;
+  /** The chain's current best block. */
+  bestBlock: number | null;
+  /** The `StallAfter` pallet constant, in blocks. */
+  stallAfter: number | null;
+  /**
+   * Whether `CardanoObserver.LastReference` is `Some` — i.e. whether this chain has EVER accepted an
+   * observation. This is the discriminator, and it is not `lastAppliedAt === 0`: `on_initialize`
+   * re-anchors a zero clock to the current block on its first run, so a zero is unobservable on a live
+   * chain and would misread a fresh chain as freshly-observed.
+   */
+  everObserved: boolean | null;
+}
+
+/**
+ * Classify observer liveness. Pure, so the rule is testable and cannot drift from the pallet.
+ *
+ * The derived gap is computed as well as read, rather than trusting the latch alone, because the latch
+ * is a lagging signal by design: `on_initialize` runs before the block's inherents, so it fires on a
+ * gap that is ALREADY over the threshold. Deriving it too means the UI and the chain agree on the same
+ * block instead of the UI trailing by one. The comparison is a strict `>` to match the pallet exactly
+ * (`if blocks <= T::StallAfter::get() { return ... }`).
+ *
+ * Ordering matters. `never-started` is checked BEFORE the derived gap, because a chain that has never
+ * observed has an arbitrarily large gap and would otherwise be reported as stalled forever.
+ */
+export function classifyObserverHealth(live: ObserverLiveness): ObserverHealth {
+  const { latched, lastAppliedAt, bestBlock, stallAfter, everObserved } = live;
+
+  // Fail SILENT, not alarming. A momentary RPC failure must not tell every reader the chain is broken.
+  if (everObserved === null || bestBlock === null || stallAfter === null) return { kind: "unknown" };
+
+  if (everObserved === false) return { kind: "never-started" };
+
+  if (latched === true) {
+    // The latch is authoritative once armed; the gap is only for the copy, and it is bounded below by
+    // stallAfter so a lagging `lastAppliedAt` read cannot render "stalled for -3 blocks".
+    const blocks = lastAppliedAt === null ? stallAfter : Math.max(stallAfter, bestBlock - lastAppliedAt);
+    return { kind: "stalled", blocks };
+  }
+
+  if (lastAppliedAt === null) return { kind: "unknown" };
+  const gap = bestBlock - lastAppliedAt;
+  if (gap > stallAfter) return { kind: "stalled", blocks: gap };
+
+  return { kind: "ok" };
 }

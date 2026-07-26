@@ -86,10 +86,20 @@ a default you can replace. Settings persists to `localStorage` and always wins o
 |---|---|---|---|
 | WebSocket endpoint(s) | `NEXT_PUBLIC_WS_URL` | `wss://cogno.forum/rpc` | the app-chain node the SPA reads and writes through (PAPI) — the SOLE chain surface: feed / thread / profile / search all come from the node's `MicroblogApi` runtime read API |
 | Blockfrost project id | `NEXT_PUBLIC_BLOCKFROST_PROJECT_ID` | *(empty)* | the Blockfrost project id the in-browser vault lock/exit txs use; empty ⇒ the lock action is hidden |
+| Serve denylist (authors) | `NEXT_PUBLIC_DENY_AUTHORS` | *(empty)* | comma-separated ss58 addresses THIS deployment declines to render — posts, profile, search rows, mentions and all. Changes what the site serves, never the chain |
+| Serve denylist (posts) | `NEXT_PUBLIC_DENY_POSTS` | *(empty)* | comma-separated post ids, same rule |
 
-Both are build-time seeds with a `localStorage` override the app reads on every call. There is no UI
-that writes either one today — no node switcher, no provider field in Settings — so a deployment sets
-them through the env.
+The first two are build-time seeds with a `localStorage` override the app reads on every call. There is
+no UI that writes either one today — no node switcher, no provider field in Settings — so a deployment
+sets them through the env.
+
+The two denylists are **operator** config, not user config: they have no `localStorage` override, by
+design (a visitor must not be able to edit them in their own browser, in either direction), and they are
+inlined into the bundle and therefore public. They ship empty, and empty is a literal no-op — the read
+seam returns the unwrapped source. A malformed entry fails a production build rather than being silently
+dropped. This is the lever `POLICY.md` describes: it changes what **this site** shows, and nothing about
+the chain, which every node still serves in full. See `src/lib/config/denylist.ts` and
+`src/lib/feed/denylist-source.ts`.
 
 A production `npm run build` will refuse a plaintext `ws://` pointed at a public host — an https page
 mixed-content-blocks it, so the bundle would silently read nothing. `wss://`, or a `ws://127.0.0.1`

@@ -66,6 +66,12 @@ const CASES = [
   ["/bookmarks/", 200],
   ["/settings/", 200],
   ["/welcome/", 200],
+  // The three static documents. /policy is the abuse/report surface and is the ONLY in-product path to
+  // the operator, so an export that silently stopped emitting it would be a real outage of a real
+  // obligation, invisible to every other gate.
+  ["/legal/", 200],
+  ["/privacy/", 200],
+  ["/policy/", 200],
   ["/post/1/", 200], // the SSG shim + nginx rewrite — never exercised by `next dev`
   [`/u/${SS58}/`, 200], // ditto
   ["/this-route-does-not-exist/", 404], // proves the server is not blanket-200ing (a vacuous pass)
