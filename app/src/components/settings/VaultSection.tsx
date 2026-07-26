@@ -23,11 +23,15 @@ import { PendingCapacityNotice } from "@/components/PendingCapacityNotice";
 import { pendingLockActions } from "@/lib/pendingLockStore";
 import { useActionToast } from "@/hooks/useActionToast";
 import { formatAda } from "@/lib/format";
+import { useStabilityWindow } from "@/hooks/useStabilityWindow";
 
 const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
 
 export function VaultSection() {
   const { api, signerCtl, boot } = useSession();
+  // The lock-to-credit wait is a chain parameter (~10 min on preprod, ~36 h at the mainnet window),
+  // so it is read rather than asserted. See useStabilityWindow.
+  const stabilityWindow = useStabilityWindow(api);
   const vault = useVault();
   const { fail, ok } = useActionToast();
   const actionRef = useRef<"lock" | "exit" | null>(null);
@@ -136,8 +140,8 @@ export function VaultSection() {
         )}
         {!showingPending && (
           <p className={styles.note}>
-            Posting power comes from locked ADA. It lands a few minutes after your lock confirms on
-            Cardano.
+            Posting power comes from locked ADA.
+            {stabilityWindow ? ` It lands ${stabilityWindow} after your lock confirms on Cardano.` : ""}
           </p>
         )}
       </div>

@@ -41,6 +41,8 @@ export interface UseVault {
   /** lovelace currently locked (null = none), once inspected. */
   locked: bigint | null;
   lockedKnown: boolean;
+  /** count of EXTRA vault UTxOs beyond the credited one (0 normally); >0 means ADA earning nothing. */
+  extraVaults: number;
   /** True only during the post-submit confirm poll — drives the "Confirming…" UI without leaning on the
    *  sticky `submitted` phase (which never clears). */
   confirming: boolean;
@@ -64,6 +66,9 @@ export function useVault(): UseVault {
   const [info, setInfo] = useState<VaultInfo | null>(null);
   const [locked, setLocked] = useState<bigint | null>(null);
   const [lockedKnown, setLockedKnown] = useState(false);
+  // >0 ⇒ this owner has a second vault UTxO that earns nothing (the observer credits largest-wins and
+  // never sums). Surfaced so the UI can say so instead of silently showing one of them.
+  const [extraVaults, setExtraVaults] = useState(0);
   // True only while pollUntilSettled is actively re-reading after a submit (the confirm window), so the UI
   // can show "Confirming…" for exactly that span. Deliberately NOT derived from `phase === "submitted"`,
   // which never resets — that left the card frozen on "Confirming exit…" long after the exit had landed.
@@ -87,7 +92,16 @@ export function useVault(): UseVault {
         const res = await fetchVaultState(walletId);
         setInfo(res.info);
         setLocked(res.locked);
-        setLockedKnown(true);
+        setExtraVaults(res.extraVaults);
+        // `known: false` = the provider could not be read, which is NOT "no vault". Leaving
+        // lockedKnown true here is what put a live Lock button in front of an already-locked user
+        // whenever Blockfrost rate-limited. The card's Lock button gates on lockedKnown.
+        setLockedKnown(res.known);
+        if (!res.known) {
+          setError("Can't check your vault right now. Try again in a moment.");
+          setPhase("error");
+          return;
+        }
         setPhase((p) => (p === "error" ? "idle" : p)); // a successful re-read clears a stale failure
       } catch (e) {
         // Raise the phase too, not just the message. `lockedKnown` stays false on a failed read, and
@@ -128,9 +142,14 @@ export function useVault(): UseVault {
           try {
             const res = await fetchVaultState(walletId);
             setInfo(res.info);
-            setLocked(res.locked);
-            setLockedKnown(true);
-            if (settled(res.locked)) return clearPoll();
+            // An unreadable provider is a transient poll failure, not a settled state: keep the
+            // previous known-ness and keep polling within the budget rather than claiming an answer.
+            if (res.known) {
+              setLocked(res.locked);
+              setExtraVaults(res.extraVaults);
+              setLockedKnown(true);
+              if (settled(res.locked)) return clearPoll();
+            }
           } catch {
             /* transient read failure — keep polling within the budget */
           }
@@ -202,5 +221,5 @@ export function useVault(): UseVault {
     inFlight.current = false;
   }, [clearPoll]);
 
-  return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, confirming, inspect, lock, exit, reset };
+  return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, extraVaults, confirming, inspect, lock, exit, reset };
 }

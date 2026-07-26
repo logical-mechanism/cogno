@@ -21,12 +21,16 @@
 // NO honesty chrome: no battery, no block numbers, no anchor UI, no trust labels.
 //
 
+import { useEffect } from "react";
 import styles from "./PowerUps.module.css";
 import { Spinner } from "@/components/icons";
 import { StepFlow } from "./StepFlow";
 import { CardanoTxLink } from "@/components/CardanoTxLink";
 import { PendingCapacityNotice, pendingTitle } from "@/components/PendingCapacityNotice";
 import { pendingLockActions } from "@/lib/pendingLockStore";
+import { useSession } from "@/components/Providers";
+import { useStabilityWindow } from "@/hooks/useStabilityWindow";
+import { formatAda } from "@/lib/format";
 import type { PendingCapacityStatus } from "@/hooks/usePendingCapacity";
 import type { UseVault, VaultStep } from "@/hooks/useVault";
 import type { BindPhase } from "@/hooks/useIdentity";
@@ -247,20 +251,40 @@ function VaultCard({
   walletId: string | null;
   onOpenSettings: () => void;
 }) {
+  const { api } = useSession();
+  const stabilityWindow = useStabilityWindow(api);
+
+  // Read the vault before offering to lock. This card used to offer one with NO vault read behind it
+  // at all: it gated on posting power plus a device-local pending record, so a second device, cleared
+  // storage, or a dismissed overdue notice re-armed the Lock button for someone already locked.
+  // Settings has always inspected and gated on `lockedKnown`; /welcome is the page new users land on.
+  useEffect(() => {
+    if (walletId && vault.available) vault.inspect(walletId);
+    // `inspect` is a stable useCallback; re-running on every vault change would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletId, vault.available]);
+
+  const alreadyLocked = vault.lockedKnown && vault.locked != null && vault.locked > 0n;
+  // Never offer a lock we could not verify. `lockedKnown` is false when the provider read failed,
+  // which is not the same as "no vault" — see fetchVaultState.
+  const canLock = Boolean(walletId) && vault.lockedKnown && !alreadyLocked && !vault.busy;
+
   const lock = () => {
-    if (walletId) vault.lock(walletId);
+    if (walletId && canLock) vault.lock(walletId);
   };
   const retry = () => {
     vault.reset();
-    lock();
+    if (walletId) vault.inspect(walletId);
   };
 
   return (
     <div className={styles.card}>
       <h2 className={styles.cardTitle}>Lock ADA to post</h2>
       <p className={styles.cardBody}>
-        Lock 100 ADA to earn posting power. It arrives a few minutes after your lock confirms, and you
-        can get your ADA back anytime.
+        Lock 100 ADA to earn posting power. You can get your ADA back anytime.
+        {/* The wait is a chain parameter, not a fixed phrase: ~10 minutes on preprod, ~36 hours at the
+            mainnet stability window. Omitted entirely until the read resolves rather than guessed. */}
+        {stabilityWindow ? ` Posting power arrives ${stabilityWindow} after your lock confirms.` : ""}
       </p>
 
       {vault.phase === "submitted" ? (
@@ -292,18 +316,35 @@ function VaultCard({
             </button>
           </div>
         </div>
+      ) : alreadyLocked ? (
+        <div className={styles.cardActions}>
+          <button type="button" className={styles.cardCta} disabled aria-disabled>
+            Already locked
+          </button>
+          <p className={styles.cardNote}>
+            You have {formatAda(vault.locked)} locked. Manage it in{" "}
+            <button type="button" className={styles.inlineLink} onClick={onOpenSettings}>
+              Settings
+            </button>
+            .
+          </p>
+        </div>
       ) : (
         <div className={styles.cardRow}>
           <button
             type="button"
             className={styles.cardCta}
             onClick={lock}
-            disabled={vault.busy || !walletId}
+            disabled={!canLock}
             aria-busy={vault.busy || undefined}
           >
             {vault.busy ? (
               <>
                 <Spinner size="sm" /> Locking…
+              </>
+            ) : !vault.lockedKnown ? (
+              <>
+                <Spinner size="sm" /> Checking…
               </>
             ) : (
               "Lock 100 ADA"
