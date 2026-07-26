@@ -19,3 +19,20 @@
   outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
   outline-offset: var(--cg-focus-ring-offset);
 }
+
+/* The truncated ss58 rendered beside the name. It is deliberately QUIET (mono, one step down, muted)
+   rather than accent-coloured: it is an anchor, not a second link, and a mid-sentence mention should
+   still read as one word. But it is REAL TEXT, not a `title`, because a title is invisible on touch
+   and the hover card is hover-only — so on a phone the name was the only identity signal there was,
+   and the name is the one thing an attacker can change after the post is permanent. Matches Handle's
+   presentation (mono / --cg-fs-sm / secondary) so a reader recognises it as the same kind of thing.
+
+   `white-space: nowrap` keeps `5Grw…utQY` from breaking across lines mid-address, which would read as
+   two fragments of nothing. The name beside it still wraps normally. */
+.address {
+  margin-left: 0.25em;
+  font-family: var(--cg-font-mono);
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+  white-space: nowrap;
+}

@@ -102,6 +102,7 @@ export function useChain(): UseChain {
         console.warn(`cogno: boot guard probe threw (node unreachable?):`, err);
         setBoot({
           ok: false,
+          kind: "unreachable",
           nodeSpecName: "",
           nodeSpecVersion: 0,
           descriptorSpecVersion: null,

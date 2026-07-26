@@ -13,7 +13,7 @@ import { cogno } from "@polkadot-api/descriptors";
 import { Observable, type Subscription } from "rxjs";
 import { getCachedMetadata, setCachedMetadata } from "./metadataCache";
 import { resolveCardanoNetwork } from "@/lib/cardano/network";
-import type { ChainHandle, ConnStatus, BootGuard, CognoApi } from "@/lib/types";
+import type { ChainHandle, ConnStatus, BootGuard, BootGuardKind, CognoApi } from "@/lib/types";
 
 /**
  * The spec_name the descriptors were generated against (cogno-chain-runtime). The spec_version is
@@ -146,15 +146,30 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
       nodeSpecVersion === DESCRIPTOR_SPEC_VERSION;
     const ok = nameMatches && versionMatches;
 
+    // The version-mismatch copy NAMES THE FIX. It used to stop at "posting is off", which is a
+    // symptom report: the reader is told what stopped working and not what to do, and the actual
+    // remedy (reload this tab) is both trivial and non-obvious. On mainnet this stops being an edge
+    // case — every runtime upgrade puts every open tab into this state at once.
+    //
+    // Both version numbers stay in the string. They are the one thing worth quoting in a report, and
+    // errors.test pins that this reason is rendered RAW (kind: "raw") rather than run through the
+    // rate-limit classifier, so prose here cannot be reclassified into something else.
+    const kind: BootGuardKind = !nameMatches
+      ? "wrong-chain"
+      : !versionMatches
+        ? "stale-app"
+        : "ok";
+
     let reason: string | undefined;
-    if (!nameMatches) {
+    if (kind === "wrong-chain") {
       reason = "This isn't a cogno node. Check the address you connected to.";
-    } else if (!versionMatches) {
-      reason = `App and network versions don't match (app ${DESCRIPTOR_SPEC_VERSION}, network ${nodeSpecVersion}). Reading still works; posting is off.`;
+    } else if (kind === "stale-app") {
+      reason = `App and network versions don't match (app ${DESCRIPTOR_SPEC_VERSION}, network ${nodeSpecVersion}). Reload the page to update. Reading still works; posting is off.`;
     }
 
     return {
       ok,
+      kind,
       nodeSpecName,
       nodeSpecVersion,
       descriptorSpecVersion: DESCRIPTOR_SPEC_VERSION,
@@ -167,6 +182,7 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
     console.warn("[cogno] boot guard could not read the runtime version:", stringifyError(err));
     return {
       ok: false,
+      kind: "unreachable",
       nodeSpecName: "",
       nodeSpecVersion: 0,
       descriptorSpecVersion: DESCRIPTOR_SPEC_VERSION,

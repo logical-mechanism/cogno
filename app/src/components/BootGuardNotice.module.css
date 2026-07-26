@@ -1,0 +1,63 @@
+/* BootGuardNotice — the app-wide "posting is off, and here is why" banner. Shaped like
+   RateLimitNotice (slim, amber left edge, one action on the right) so a reader recognises it as the
+   same class of thing, but it sits at the TOP OF EVERY SURFACE rather than inline in one composer, so
+   it carries a title line and a little more room to breathe.
+
+   `position: sticky` with top: 0 keeps it in view while the feed scrolls under it. It sits inside
+   <main> above {children}, so each surface's own StickyHeader scrolls normally beneath it and the two
+   never fight over the same offset. */
+
+.notice {
+  position: sticky;
+  top: 0;
+  z-index: var(--cg-z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-bottom: 1px solid var(--cg-border);
+  border-left: 3px solid var(--cg-warning);
+  background: var(--cg-bg-elevated);
+}
+
+.text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  color: var(--cg-text);
+}
+
+.body {
+  margin: var(--cg-space-1) 0 0;
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-secondary);
+}
+
+.action {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid var(--cg-border);
+  padding: var(--cg-space-2) var(--cg-space-3);
+  color: var(--cg-accent);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: var(--cg-radius-input);
+  white-space: nowrap;
+}
+
+.action:hover {
+  background: var(--cg-accent-wash);
+}
+
+.action:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}

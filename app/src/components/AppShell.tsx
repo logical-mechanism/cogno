@@ -29,6 +29,7 @@ import { BottomTabBar } from "./nav/BottomTabBar";
 import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { BootGuardNotice } from "./BootGuardNotice";
 import { EmptyState } from "./EmptyState";
 import { Loading } from "./Loading";
 import { IconBack } from "./icons";
@@ -170,6 +171,11 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
 
         <main id="cg-main" tabIndex={-1} className={styles.main}>
+          {/* Renders nothing while the boot probe is in flight or when it comes back ok, which is
+              every normal session. It exists for the one that isn't: a tab left open across a runtime
+              upgrade looks completely functional and fails at the moment of posting, and this shell
+              read no boot state at all, so nothing said otherwise until the click. */}
+          <BootGuardNotice />
           {children}
         </main>
 

@@ -69,3 +69,54 @@ describe("checkBootGuard", () => {
     expect(g.nodeSpecVersion).toBe(0);
   });
 });
+
+// `ok` alone could not tell a STALE TAB from a WRONG ENDPOINT from a DOWN NODE, and the three need
+// different advice: reload / change the address / wait. BootGuardNotice keys off `kind` to pick which
+// one to give, so a wrong `kind` is a banner telling someone to reload when reloading cannot help.
+describe("checkBootGuard classifies WHY it is not ok", () => {
+  const okVersion = { spec_name: "cogno-chain-runtime", spec_version: DESCRIPTOR_SPEC };
+
+  it("kind is 'ok' exactly when ok is true", async () => {
+    const g = await checkBootGuard(apiWith(okVersion));
+    expect(g.kind).toBe("ok");
+    expect(g.ok).toBe(true);
+  });
+
+  it("a bumped runtime on the SAME chain is 'stale-app' — this tab, not this network", async () => {
+    const g = await checkBootGuard(apiWith({ spec_name: "cogno-chain-runtime", spec_version: 999 }));
+    expect(g.kind).toBe("stale-app");
+  });
+
+  it("tells a stale tab to RELOAD, which is the whole fix and was not in the copy", async () => {
+    // The failure: the reason said "posting is off" and stopped, so the reader learned what broke and
+    // never learned that a reload fixes it. On mainnet every runtime upgrade puts every open tab here.
+    const g = await checkBootGuard(apiWith({ spec_name: "cogno-chain-runtime", spec_version: 999 }));
+    expect(g.reason).toMatch(/reload/i);
+  });
+
+  it("a foreign spec_name is 'wrong-chain', where reloading would only reproduce it", async () => {
+    const g = await checkBootGuard(apiWith({ spec_name: "kusama", spec_version: DESCRIPTOR_SPEC }));
+    expect(g.kind).toBe("wrong-chain");
+    expect(g.reason).not.toMatch(/reload/i);
+  });
+
+  it("a failed read is 'unreachable', not a version verdict it never got to make", async () => {
+    const g = await checkBootGuard(
+      apiWith(() => {
+        throw new Error("socket closed");
+      }),
+    );
+    expect(g.kind).toBe("unreachable");
+  });
+
+  it("ok and kind can never disagree", async () => {
+    for (const v of [
+      okVersion,
+      { spec_name: "cogno-chain-runtime", spec_version: 999 },
+      { spec_name: "kusama", spec_version: DESCRIPTOR_SPEC },
+    ]) {
+      const g = await checkBootGuard(apiWith(v));
+      expect(g.ok).toBe(g.kind === "ok");
+    }
+  });
+});

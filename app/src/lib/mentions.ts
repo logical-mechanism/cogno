@@ -30,10 +30,51 @@ import type { Ss58 } from "./types";
  * grows to 63 lines in every feed, and its author cannot do a thing about it. `sanitizeInline` collapses
  * the whitespace AND strips the bidi-override / invisible / Zalgo abuse that would otherwise ride a
  * mention into a stranger's post.
+ *
+ * This is only HALF of what a mention must render. See {@link mentionParts}: a name alone is not an
+ * identity, because it is mutable and the post it appears in is not.
  */
 export function mentionLabel(displayName: string | undefined, ss58: Ss58): string {
   const collapsed = sanitizeInline(displayName ?? "");
   return collapsed ? collapsed : truncateSs58(ss58);
+}
+
+/** What a rendered `@mention` puts on screen: the label, plus the address that anchors it. */
+export interface MentionParts {
+  /** The primary text after the `@` — the display name, or the truncated ss58 when there is none. */
+  label: string;
+  /**
+   * The truncated ss58 to render ALONGSIDE `label`, or null when `label` already IS the address (a
+   * nameless account) and repeating it would just be noise.
+   */
+  address: string | null;
+}
+
+/**
+ * Split a mention into the two things it must show. The address half is the point.
+ *
+ * A mention's name is resolved LIVE from `Profile.Profiles` at render time (useAccountProfile), not
+ * snapshotted into the post body — the body stores only `@<ss58>`. That is the right storage decision
+ * (a rename should not leave every old mention showing a dead name) and it hands an attacker a
+ * retroactive edit on somebody else's writing: be mentioned once as `@alice`, rename to
+ * `@intersect_official`, and from that block on a stranger's permanent, undeletable post renders an
+ * endorsement they never wrote and cannot take back. The mentioned account does not even have to be
+ * involved after the fact; the rename is free and feeless and can happen a year later.
+ *
+ * The address is what defeats that, and it is why every other identity surface in this app pairs a
+ * DisplayName with a `<Handle>`: PostCardHeader, MentionSuggestions, PersonRow, FollowsPanel. The
+ * mention chip was the ONE render of a display name with no address beside it — which also made
+ * lib/sanitize's stated justification for tolerating a residual spoof class ("defeated anyway by the
+ * ss58 shown beside every name") false at exactly the site where the spoof lands inside someone
+ * else's post.
+ *
+ * Pure, so the rule is unit-testable and cannot drift between the chip and anything that later renders
+ * a mention (a notification row, a preview).
+ */
+export function mentionParts(displayName: string | undefined, ss58: Ss58): MentionParts {
+  const label = mentionLabel(displayName, ss58);
+  const short = truncateSs58(ss58);
+  return { label, address: label === short ? null : short };
 }
 
 /** A resolved mention picked in the composer: an account + the display text shown for it. */
