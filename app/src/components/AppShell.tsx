@@ -43,6 +43,11 @@ function isWelcomePath(pathname: string | null): boolean {
   return !!pathname && (pathname === "/welcome" || pathname.startsWith("/welcome/"));
 }
 
+/** /settings carries the policy links itself (AboutSection), so the small-screen footer stands down. */
+function isSettingsPath(pathname: string | null): boolean {
+  return !!pathname && (pathname === "/settings" || pathname.startsWith("/settings/"));
+}
+
 // The read-only surfaces a LOGGED-OUT visitor may browse without signing in: the timeline, discovery, a
 // post, a profile, and the static legal pages. Everything else (compose, settings, notifications,
 // bookmarks — the write/config/personal surfaces) stays behind the wall and bounces a guest to /welcome.
@@ -180,8 +185,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           {children}
           {/* The policy/legal/privacy links for the widths where RightRail (which carries them on
               desktop) is display:none. Without it a signed-out phone visitor could reach NONE of
-              them, since the only other link lives in Settings and Settings is walled. */}
-          <SmallScreenFooter />
+              them, since the only other link lives in Settings and Settings is walled.
+
+              Not on /settings, which is the one surface that already owns them: AboutSection carries
+              its own `<nav aria-label="Policies">` with the same three destinations, and RightRail
+              returns null there at EVERY width, so the footer's "pick them up where the rail drops
+              them" rule does not apply. Rendering both put two policy nav landmarks in the a11y tree
+              on the same page and showed a phone visitor the same three links twice. */}
+          {!isSettingsPath(pathname) && <SmallScreenFooter />}
         </main>
 
         <div className={styles.rightCol}>

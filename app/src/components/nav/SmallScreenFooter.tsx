@@ -16,6 +16,11 @@
 // Rendered inside <main> after {children} and CSS-gated to the widths where the rail is absent, so the
 // same links exist at every width and exactly once. Not a BottomTabBar entry: that bar is six fixed
 // icon-only tabs and a seventh would crowd the primary navigation for a page read once.
+//
+// EXCEPT on /settings, where AppShell does not render this at all. Settings > About carries its own
+// policy nav, and RightRail returns null there at every width, so this footer's whole rule ("pick the
+// links up where the rail drops them") does not apply — rendering both just puts the same three links,
+// and a second nav landmark, on the one page that already had them.
 
 import Link from "next/link";
 import styles from "./SmallScreenFooter.module.css";

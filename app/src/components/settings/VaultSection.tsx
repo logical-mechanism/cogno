@@ -16,7 +16,7 @@ import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
 import { CardanoTxLink } from "@/components/CardanoTxLink";
 import { useSession, useBestBlock } from "@/components/Providers";
-import { useVault } from "@/hooks/useVault";
+import { useVault, type VaultAction } from "@/hooks/useVault";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
@@ -36,7 +36,11 @@ export function VaultSection() {
   const stabilityWindow = useStabilityWindow(api);
   const vault = useVault();
   const { fail, ok } = useActionToast();
-  const actionRef = useRef<"lock" | "exit" | null>(null);
+  // Every vault action sets this, INCLUDING the legacy exit. It used to be `"lock" | "exit"` and
+  // `onExitLegacy` did not exist, so the effect below early-returned on `!action` and a legacy exit was
+  // the one vault operation that produced neither a success nor a failure toast — a wallet or Ogmios
+  // failure surfaced only as the inline error line.
+  const actionRef = useRef<VaultAction | null>(null);
   const walletId = signerCtl.connectedWalletId;
   const ss58 = signerCtl.signer.ss58;
   // `walletSession`, not `walletConnected`: locking and exiting the vault are `wallet.signTx` +
@@ -86,7 +90,9 @@ export function VaultSection() {
       ok(
         action === "lock"
           ? "Lock submitted. Crediting your posting power"
-          : "Exit submitted",
+          : action === "exit-legacy"
+            ? "Submitted. Your ADA is on its way back"
+            : "Exit submitted",
       );
       actionRef.current = null;
     } else if (vault.phase === "error" && vault.error) {
@@ -110,6 +116,15 @@ export function VaultSection() {
       vault.exit(walletId);
     }
   }, [vault, walletId]);
+  const onExitLegacy = useCallback(
+    (scriptHash: string) => {
+      if (walletId) {
+        actionRef.current = "exit-legacy";
+        vault.exitLegacy(walletId, scriptHash);
+      }
+    },
+    [vault, walletId],
+  );
 
   const locked = vault.locked;
   const hasLock = locked != null && locked > 0n;
@@ -268,13 +283,18 @@ export function VaultSection() {
                   because the network only counts the current one. Getting it back is its own
                   transaction.
                 </p>
+                {/* Disabled for the CONFIRM window too, not just the in-flight tx. The hook holds one
+                    transaction's worth of state, so starting this while a lock or exit is still
+                    confirming would take `lastAction` off the action the interlock above is reading
+                    and re-enable "Lock 100 ADA" mid-confirm. The hook refuses it as well; this is the
+                    half that says so rather than doing nothing on the click. */}
                 <button
                   type="button"
                   className={styles.outlineBtn}
-                  onClick={() => walletId && vault.exitLegacy(walletId, l.hash)}
-                  disabled={vault.busy || !walletId}
+                  onClick={() => onExitLegacy(l.hash)}
+                  disabled={vault.busy || vault.confirming || !walletId}
                 >
-                  {vault.busy ? (
+                  {vault.busy || vault.confirming ? (
                     <>
                       <Spinner size="sm" label="Working" /> Working…
                     </>

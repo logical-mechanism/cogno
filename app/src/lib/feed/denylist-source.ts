@@ -107,6 +107,13 @@ export function withServeDenylist(source: FeedSource): FeedSource {
       ...t,
       ancestors: filterDenied(t.ancestors),
       replies,
+      // `parent` is a SEPARATE field from `ancestors` — the richer QuotedRef that ThreadView draws as
+      // the "Replying to <name>" line above the focal card — so filtering the chain does not touch it,
+      // and it carries the parent author's chosen display name. Dropping it falls back to the bare
+      // tappable "#id" the reader already renders when the ref is absent, which names nobody. (The
+      // PAPI reader does not populate this today; a node-served or indexer-backed one would, and
+      // "currently unreachable" is not a property this lever should depend on.)
+      parent: t.parent && isDenied({ id: t.parent.id, author: t.parent.author }) ? undefined : t.parent,
       // The count is what the UI renders as "N replies"; leaving it whole would promise rows that are
       // not there. Subtract what was dropped rather than using `replies.length` outright: the count is
       // the WHOLE thread's reply total, which can exceed the page of replies actually returned.

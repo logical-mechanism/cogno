@@ -21,7 +21,7 @@
 
 import Link from "next/link";
 import { StickyHeader } from "@/components/AppShell";
-import { ABUSE_EMAIL, MIN_AGE, OPERATOR_LEGAL_NAME } from "@/lib/config/operator";
+import { ABUSE_EMAIL, MIN_AGE, OPERATOR_LEGAL_NAME, REPO_URL } from "@/lib/config/operator";
 import styles from "@/components/legal/Prose.module.css";
 
 export default function PolicyPage() {
@@ -132,7 +132,7 @@ export default function PolicyPage() {
             Found a security vulnerability instead? Do not post it. See{" "}
             <a
               className={styles.link}
-              href="https://github.com/logical-mechanism/cogno/blob/main/SECURITY.md"
+              href={`${REPO_URL}/blob/main/SECURITY.md`}
               target="_blank"
               rel="noreferrer noopener"
             >

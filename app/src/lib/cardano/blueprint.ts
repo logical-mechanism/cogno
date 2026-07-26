@@ -1,19 +1,20 @@
 // The pinned `talk_vault` artifact, as the CURRENT script plus an integrity check.
 //
-// The scalars below are aliases for `VAULT_SCRIPTS[0]` (lib/cardano/vaults.ts), not a second source of
-// truth. They stay because every existing call site reads them and because "the current script" is the
-// right default for almost everything; the array is what makes a retired script reachable at all. See
-// vaults.ts for why that list exists and how to add to it.
+// `MIN_LOCK` is an alias for `VAULT_SCRIPTS[0].minLock` (lib/cardano/vaults.ts), not a second source of
+// truth: it is a single number read by callers that have no reason to know a script list exists
+// (preflight's floor check, /legal's "100 ADA" figure), so the indirection earns its keep. The
+// per-script HASH and CBOR deliberately do not get the same treatment. They used to, and the aliases
+// went dead the moment vault.ts started resolving a script per transaction (`info.script.hash` /
+// `info.script.appliedCbor`) — which is the whole point of the multi-script work, since a scalar
+// "the current one" cannot address a retired script at all. `BLUEPRINT_HASH` was already dropped for
+// this reason; these two outlived it on a comment claiming call sites that no longer existed. Take the
+// script from `VAULT_SCRIPTS` / `currentVaultScript()` and read its fields.
 //
 // Nothing here recomputes applyParamsToScript at runtime — that is the footgun the generator already
 // navigated, and the artifact is proven against the live relaunch.
 
 import { currentVaultScript, type VaultScript } from "./vaults";
 
-/** The min_lock-applied policy id == vault script hash, for the CURRENT script. */
-export const VAULT_HASH: string = currentVaultScript().hash;
-/** The applied (parameterized) Plutus V3 script CBOR for the CURRENT script. */
-export const APPLIED_CBOR: string = currentVaultScript().appliedCbor;
 /** The lovelace floor the current script enforces (and the default lock amount). */
 export const MIN_LOCK: bigint = currentVaultScript().minLock;
 

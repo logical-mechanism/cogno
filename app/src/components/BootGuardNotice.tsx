@@ -24,7 +24,6 @@
 // the app down to a full-screen error over a write-path incompatibility would be a much worse trade.
 
 import { useCallback } from "react";
-import Link from "next/link";
 import styles from "./BootGuardNotice.module.css";
 import { useSession } from "./Providers";
 
@@ -42,9 +41,14 @@ const COPY: Record<
     body: "They are running different versions, so posting is off until they agree. You can still read. Reloading usually fixes it.",
     reload: true,
   },
+  // No "check Settings" here, and no action button. There is no UI anywhere in the app that writes the
+  // node address: `setEndpoints` in lib/config/endpoints.ts has zero callers, so Settings has no node
+  // switcher to open. And /settings is not in AppShell's PUBLIC_SEGMENTS, so a signed-out reader who
+  // followed that link was bounced to /welcome. Pointing at a page that cannot fix it, and that half
+  // the readers cannot even reach, is worse than saying plainly that this one is not theirs to fix.
   "wrong-chain": {
     title: "This is not a cogno network",
-    body: "The address this app is connected to is running something else. Posting is off. Check the connection in Settings.",
+    body: "The address this app is connected to is running something else. Posting is off, and this is something the site operator has to fix.",
     reload: false,
   },
   unreachable: {
@@ -75,14 +79,10 @@ export function BootGuardNotice() {
         <p className={styles.title}>{copy.title}</p>
         <p className={styles.body}>{copy.body}</p>
       </div>
-      {copy.reload ? (
+      {copy.reload && (
         <button type="button" className={styles.action} onClick={onReload}>
           Reload
         </button>
-      ) : (
-        <Link href="/settings/" className={styles.action}>
-          Settings
-        </Link>
       )}
     </div>
   );

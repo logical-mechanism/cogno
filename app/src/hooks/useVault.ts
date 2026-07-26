@@ -80,6 +80,21 @@ export interface UseVault {
   reset: () => void;
 }
 
+/**
+ * How a run differs from the plain lock/exit case. Everything else — the re-entrancy guard, the
+ * phase/step machine, the user-rejection branch, the toasts callers hang off `phase` — is shared, and
+ * has to be: this used to be a `run` plus a 30-line hand-copy of it for the legacy path, so a fix to
+ * one silently did not reach the other (the copy had already lost the `inspectedWallet` line).
+ */
+interface RunOpts {
+  /** Which balance the confirm poll should watch after a submit, or `null` to skip polling. */
+  poll: VaultAction | null;
+  /** Commit the action's resolved `VaultInfo` as the connected wallet's current vault. */
+  commitInfo: boolean;
+  /** Ran once the tx is submitted, before the poll starts. */
+  onSubmitted?: () => void;
+}
+
 export function useVault(): UseVault {
   // Computed after mount to avoid an SSR/first-paint hydration mismatch (it reads localStorage/env).
   const [available, setAvailable] = useState(false);
@@ -244,13 +259,29 @@ export function useVault(): UseVault {
   );
 
   const run = useCallback(
-    (action: () => Promise<{ txHash: string; info: VaultInfo }>, walletId: string, kind: VaultAction) => {
+    (
+      action: () => Promise<{ txHash: string; info: VaultInfo }>,
+      walletId: string,
+      kind: VaultAction,
+      opts: RunOpts,
+    ) => {
       if (inFlight.current) return; // already running (double-click / re-render); never start twice
+      // A SUBMITTED tx's confirm poll owns this state until it settles, and this state has room for
+      // exactly one transaction: one `phase`, one `txHash`, one `lastAction`. Starting a second tx
+      // during that window overwrote `lastAction`, which is what VaultSection derives its
+      // `lockInFlight` / `exitInFlight` interlock from — so a legacy exit clicked while a fresh lock
+      // was still confirming re-enabled "Lock 100 ADA", and lockIntoVault's own duplicate guard reads
+      // the not-yet-confirmed vault as empty and lets it through. That is a second 100 ADA locked into
+      // a UTxO that earns nothing (the observer credits largest-wins and never sums), which is the
+      // exact failure `confirming` was added to prevent. Serialize instead: one tx at a time, confirm
+      // window included. The UI disables the affected buttons for the same window.
+      if (pollTimer.current !== null) return;
       inFlight.current = true;
       // This run and its confirm poll speak for THIS wallet, so record it: an inspect for the same
       // wallet then defers to the poll, and one for a different wallet takes the state over instead of
       // silently inheriting it.
       inspectedWallet.current = walletId;
+      setLastAction(kind);
       setError(null);
       setTxHash(null);
       setStep("preparing");
@@ -258,11 +289,12 @@ export function useVault(): UseVault {
       void (async () => {
         try {
           const res = await action();
-          setInfo(res.info);
+          if (opts.commitInfo) setInfo(res.info);
           setTxHash(res.txHash);
           setPhase("submitted");
+          opts.onSubmitted?.();
           // Re-read until the vault reflects this action (bounded); keeps the card + buttons truthful.
-          pollUntilSettled(walletId, kind);
+          if (opts.poll) pollUntilSettled(walletId, opts.poll);
         } catch (e) {
           // A user-declined wallet prompt is an expected cancel, not a failure: return to idle so the
           // user can just try again — no red "error" wall (matches the connect + CIP-8 bind flows). A
@@ -284,57 +316,47 @@ export function useVault(): UseVault {
 
   const lock = useCallback(
     (walletId: string, lovelace?: bigint) => {
-      setLastAction("lock");
-      run(() => lockIntoVault(walletId, lovelace, (p) => setStep(p)), walletId, "lock");
+      run(() => lockIntoVault(walletId, lovelace, (p) => setStep(p)), walletId, "lock", {
+        poll: "lock",
+        commitInfo: true,
+      });
     },
     [run],
   );
   const exit = useCallback(
     (walletId: string) => {
-      setLastAction("exit");
-      run(() => exitVault(walletId, (p) => setStep(p)), walletId, "exit");
+      run(() => exitVault(walletId, (p) => setStep(p)), walletId, "exit", {
+        poll: "exit",
+        commitInfo: true,
+      });
     },
     [run],
   );
-  // A legacy exit reuses `run` (the re-entrancy guard, the phase/step state, the toasts the callers
-  // hang off `phase`) but NOT `pollUntilSettled`: that poll's settled() predicate watches the CURRENT
-  // script's balance, which a legacy exit does not move, so it would poll its full budget and time out
-  // on a transaction that succeeded. The legacy row is re-read by the next inspect instead.
+  // A legacy exit is the same run with two things switched off.
+  //
+  // NO POLL: pollUntilSettled's settled() predicate watches the CURRENT script's balance, which a
+  // legacy exit does not move, so it would burn its full budget and time out on a transaction that
+  // succeeded. The legacy row is re-read by the next inspect instead.
+  //
+  // NO INFO COMMIT: `info` is the connected wallet's CURRENT vault (address, beacon). exitVault against
+  // a retired script resolves the retired one, and writing that here would point the card's vault
+  // identity at a script the chain does not credit.
+  //
+  // And the kind is "exit-legacy", NOT "exit": this must not move the current vault's pending-lock
+  // record in either direction. See the VaultAction doc — "exit" would clear an in-flight lock's
+  // countdown, and "lock" would re-record that lock against this exit's tx hash. usePendingLockSync
+  // ignores any third value, which is what makes this correct.
   const exitLegacy = useCallback(
     (walletId: string, scriptHash: string) => {
-      if (inFlight.current) return;
-      inFlight.current = true;
-      // "exit-legacy", NOT "exit": this empties a RETIRED script and must not move the current vault's
-      // pending-lock record in either direction. See the VaultAction doc — "exit" would clear an
-      // in-flight lock's countdown, and leaving it on "lock" would re-record that lock against this
-      // exit's tx hash. usePendingLockSync ignores any third value, which is what makes this correct.
-      setLastAction("exit-legacy");
-      setError(null);
-      setTxHash(null);
-      setStep("preparing");
-      setPhase("working");
-      void (async () => {
-        try {
-          const res = await exitVault(walletId, (p) => setStep(p), scriptHash);
-          setTxHash(res.txHash);
-          setPhase("submitted");
-          // Optimistically drop the row we just emptied. The tx is submitted, not yet confirmed, so
-          // this is a claim about intent; the next inspect re-reads it from the provider either way.
-          setLegacy((cur) => cur.filter((l) => l.hash !== scriptHash));
-        } catch (e) {
-          if (isUserRejection(e)) {
-            setPhase("idle");
-          } else {
-            setError(e instanceof Error ? e.message : String(e));
-            setPhase("error");
-          }
-        } finally {
-          setStep("idle");
-          inFlight.current = false;
-        }
-      })();
+      run(() => exitVault(walletId, (p) => setStep(p), scriptHash), walletId, "exit-legacy", {
+        poll: null,
+        commitInfo: false,
+        // Optimistically drop the row we just emptied. The tx is submitted, not yet confirmed, so
+        // this is a claim about intent; the next inspect re-reads it from the provider either way.
+        onSubmitted: () => setLegacy((cur) => cur.filter((l) => l.hash !== scriptHash)),
+      });
     },
-    [],
+    [run],
   );
   const reset = useCallback(() => {
     clearPoll();

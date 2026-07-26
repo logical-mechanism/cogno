@@ -1,12 +1,14 @@
 // The shipped state of the operator serve lever, and the predicates every read path calls.
 //
-// The env-var PARSING is deliberately not tested here: `process.env.NEXT_PUBLIC_*` is inlined by Next
-// at build time and read at module evaluation, so it cannot be varied per test without re-importing
-// the module under a mutated env, which would test vitest's module graph rather than this code. What
-// IS worth pinning is the shipped state (empty, so the whole mechanism is inert) and the predicates,
-// which several read paths call directly and which must agree with each other.
+// Most of this file tests the module as imported: the shipped state (empty, so the whole mechanism is
+// inert) and the predicates, which several read paths call directly and which must agree with each
+// other. The last block does re-import under a stubbed env, which is worth the module-graph awkwardness
+// for one reason: everything this lever does, it does only when the list is POPULATED, and a mechanism
+// whose only exercise is "the empty case does nothing" is a mechanism nobody has run. Under Next the
+// env var is inlined at build time; under vitest it is an ordinary runtime read, so the populated case
+// is reachable here and nowhere else.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { ss58Address } from "@polkadot-labs/hdkd-helpers";
 import { normalizeSs58 } from "@/lib/ss58";
 import {
@@ -81,6 +83,53 @@ describe("author validation catches what a shape check cannot", () => {
     );
     expect(other).not.toBe(ALICE_42);
     expect(normalizeSs58(other)).toBe(ALICE_42); // same key, canonicalizes back to 42
+  });
+});
+
+// THE BYPASS. `isDeniedAuthor` matched by string equality, and the only address in this app that does
+// not come from the chain — the /u/[address] route param — was shape-checked by a loose base58 regex
+// with no checksum and no prefix check. PAPI's AccountId codec decodes any prefix to the same public
+// key, so /u/<the delisted key at prefix 0>/ resolved every chain read behind it and served the whole
+// profile: display name, bio, avatar, banner, location, website, role badges, follower counts. Only the
+// post list dropped, because those authors come back canonical from the chain. Re-encoding an address
+// in an explorer is not a sophisticated attack, and the operator had no way to notice.
+describe("a delisted account cannot be served under another encoding of the same key", () => {
+  const ALICE_42 = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
+  const ALICE_PUBKEY = "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d";
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  /** Re-import the module with the list populated. Reads the env at module scope, so order matters. */
+  async function withDenied(entries: string) {
+    vi.resetModules();
+    vi.stubEnv("NEXT_PUBLIC_DENY_AUTHORS", entries);
+    return import("./denylist");
+  }
+
+  it("matches the canonical prefix-42 form the chain hands back", async () => {
+    const m = await withDenied(ALICE_42);
+    expect(m.DENYLIST_EMPTY).toBe(false);
+    expect(m.isDeniedAuthor(ALICE_42)).toBe(true);
+  });
+
+  it("matches the SAME key encoded at a different network prefix", async () => {
+    const m = await withDenied(ALICE_42);
+    const other = ss58Address(ALICE_PUBKEY, 0);
+    expect(other).not.toBe(ALICE_42); // a completely different string
+    expect(m.isDeniedAuthor(other)).toBe(true); // and the same account
+  });
+
+  it("still lets everyone else through, including addresses that decode to nothing", async () => {
+    const m = await withDenied(ALICE_42);
+    const bob = ss58Address(
+      "0x8eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a48",
+      42,
+    );
+    expect(m.isDeniedAuthor(bob)).toBe(false);
+    expect(m.isDeniedAuthor("not-an-address")).toBe(false);
   });
 });
 

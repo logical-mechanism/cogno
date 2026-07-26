@@ -142,9 +142,46 @@ export const DENIED_POSTS: ReadonlySet<string> = new Set(
 /** True when this deployment denies nothing, which is the shipped state. Lets callers short-circuit. */
 export const DENYLIST_EMPTY: boolean = DENIED_AUTHORS.size === 0 && DENIED_POSTS.size === 0;
 
-/** Is this author on the operator's list? */
+/**
+ * Canonical form of an address, memoized.
+ *
+ * `normalizeSs58` decodes a blake2b checksum, and the only caller below sits on a per-post hot path,
+ * so the answers are cached. The key space is account addresses — a small set that repeats on every
+ * page — and the bound is there so a stream of distinct route params cannot grow it without limit.
+ */
+const canonicalCache = new Map<string, string | null>();
+function canonicalSs58(address: string): string | null {
+  const hit = canonicalCache.get(address);
+  if (hit !== undefined) return hit;
+  const canonical = normalizeSs58(address);
+  if (canonicalCache.size >= 1024) canonicalCache.clear();
+  canonicalCache.set(address, canonical);
+  return canonical;
+}
+
+/**
+ * Is this author on the operator's list?
+ *
+ * Compared CANONICALLY, not by string equality. An ss58 address is an encoding of a 32-byte public key
+ * plus a network prefix, so the same account is a DIFFERENT string at every prefix — and the one
+ * address in this app that does not come from the chain, the `/u/[address]` route param, arrives from
+ * whatever a visitor typed. A bare `Set.has` would therefore have served a delisted account's entire
+ * profile at a non-canonical encoding of their own key: `isPlausibleSs58` is a loose base58 regex with
+ * no checksum and no prefix check, and PAPI's AccountId codec decodes any prefix to the same key, so
+ * every chain read behind that page resolves normally. Re-encoding an address in an explorer is not a
+ * sophisticated bypass, and the operator would have no way to notice it.
+ *
+ * The route canonicalizes its own param as well (app/u/[address]/view.tsx), which is where the fix
+ * belongs; this is the backstop that makes the predicate itself hard to hold wrong.
+ *
+ * Costs nothing in the shipped build: the `size === 0` check short-circuits before any decoding, and an
+ * operator who populates the list pays one memoized decode per distinct address.
+ */
 export function isDeniedAuthor(address: string | null | undefined): boolean {
-  return address != null && DENIED_AUTHORS.has(address);
+  if (address == null || DENIED_AUTHORS.size === 0) return false;
+  if (DENIED_AUTHORS.has(address)) return true;
+  const canonical = canonicalSs58(address);
+  return canonical !== null && canonical !== address && DENIED_AUTHORS.has(canonical);
 }
 
 /** Is this post on the operator's list? */

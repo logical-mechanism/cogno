@@ -109,7 +109,6 @@ describe("slotToUnixSec — the anchor arithmetic the countdown shares", () => {
       shelleyStartSlot: 500n,
       stabilitySlots: 600n,
       stakeEpochLookback: 2n,
-      vaultPolicyId: "16".repeat(14),
     };
     expect(slotToUnixSec(500n, cfg)).toBe(1_000_000);
     expect(slotToUnixSec(1_100n, cfg)).toBe(1_000_600);

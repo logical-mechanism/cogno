@@ -28,6 +28,7 @@
 
 import Link from "next/link";
 import { StickyHeader } from "@/components/AppShell";
+import { OPERATOR_LEGAL_NAME } from "@/lib/config/operator";
 import styles from "@/components/legal/Prose.module.css";
 
 export default function PrivacyPage() {
@@ -178,7 +179,7 @@ export default function PrivacyPage() {
         </section>
 
         <p className={styles.footnote}>
-          © 2026 Logical Mechanism LLC ·{" "}
+          © 2026 {OPERATOR_LEGAL_NAME} ·{" "}
           <Link className={styles.link} href="/legal/">
             Legal
           </Link>{" "}

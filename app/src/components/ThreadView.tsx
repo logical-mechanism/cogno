@@ -106,10 +106,15 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     if (parentRef) {
       // When the full ancestor chain isn't available this is the only surface for the parent, so it must
       // honour block too (the chain path is filtered by mod.filterPosts) — else a blocked parent's name
-      // still shows in "Replying to …".
-      const label = mod.isBlocked(parentRef.author)
-        ? "a blocked account"
-        : sanitizeInline(parentRef.displayName ?? "") || handleOf(parentRef.author);
+      // still shows in "Replying to …". The operator's serve denylist comes FIRST for the same reason
+      // PostCard checks it first: it is not this viewer's decision and there is nothing to undo it
+      // with. The reader already drops a denied `parent`; this is the render-side half, and it is the
+      // call site `Moderation.isDenied` was added for.
+      const label = mod.isDenied(parentRef)
+        ? "a post this site does not show"
+        : mod.isBlocked(parentRef.author)
+          ? "a blocked account"
+          : sanitizeInline(parentRef.displayName ?? "") || handleOf(parentRef.author);
       return { id: parentRef.id, label };
     }
     return rootParentId !== undefined ? { id: rootParentId, label: `#${rootParentId}` } : null;

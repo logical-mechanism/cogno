@@ -113,9 +113,20 @@ describe("withServeDenylist — page()", () => {
 });
 
 describe("withServeDenylist — thread()", () => {
-  const threadSource = (replies: CognoPost[], ancestors: CognoPost[] = []) =>
+  const threadSource = (
+    replies: CognoPost[],
+    ancestors: CognoPost[] = [],
+    parent?: { id: bigint; author: string; displayName: string },
+  ) =>
     ({
-      thread: async () => ({ root: post(1n), ancestors, replies, replyCount: replies.length, lastActivity: 1 }),
+      thread: async () => ({
+        root: post(1n),
+        ancestors,
+        replies,
+        parent,
+        replyCount: replies.length,
+        lastActivity: 1,
+      }),
     }) as unknown as FeedSource;
 
   it("omits denied replies and ancestors", async () => {
@@ -136,6 +147,21 @@ describe("withServeDenylist — thread()", () => {
     // worse. The permalink stub is PostCard's job, which is why the predicate is in useModeration too.
     const t = await withServeDenylist(threadSource([])).thread(1n);
     expect(t.root.id).toBe(1n);
+  });
+
+  // `parent` is its own field, not a member of `ancestors`, so filtering the chain does not reach it —
+  // and it is the one that carries a DISPLAY NAME. ThreadView draws it as "Replying to <name>" above
+  // the focal card, so leaving it whole put a delisted account's chosen name on the page.
+  it("drops a denied `parent` ref, so the 'Replying to' line names nobody", async () => {
+    const denied = { id: 9n, author: DENIED_AUTHOR, displayName: "delisted" };
+    const t = await withServeDenylist(threadSource([], [], denied)).thread(1n);
+    expect(t.parent).toBeUndefined();
+  });
+
+  it("keeps an undenied `parent` ref", async () => {
+    const fine = { id: 9n, author: "5Ok", displayName: "somebody" };
+    const t = await withServeDenylist(threadSource([], [], fine)).thread(1n);
+    expect(t.parent?.id).toBe(9n);
   });
 });
 

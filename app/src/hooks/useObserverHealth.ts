@@ -13,17 +13,28 @@
 // written only by the authoring producer, and the shipped alertmanager config has every notifier
 // commented out beneath a header stating that it pages nobody.)
 //
-// Shape copied verbatim from usePendingCapacity: `watchValue({ at: "best" })` per storage item, one
-// effect each, `sub.unsubscribe()` on teardown, and — the important convention — a read ERROR falls back
-// to the NON-ALARMING value. An RPC hiccup must not shout "the chain is broken" at every reader.
+// Each storage read is `watchValue({ at: "best" })` with a read ERROR falling back to the NON-ALARMING
+// value — an RPC hiccup must not shout "the chain is broken" at every reader.
 //
-// `bestBlock` is passed in rather than subscribed here, so this opens no second head subscription; the
-// caller supplies the shared, visibility-frozen `useBestBlock()`. Same rule as NoPostingPowerNotice.
+// ONE SET OF SUBSCRIPTIONS PER CONNECTION, not per mount. This hook is called from four components
+// (Composer's and EditProfileModal's NoPostingPowerNotice, VaultSection, DiagnosticsSection), several of
+// which coexist: /settings alone mounts two, and NoPostingPowerNotice calls it ABOVE its
+// `viewer.status !== "ready"` early return — which the rules of hooks require — so a signed-out or
+// unbound viewer paid for reads nothing ever displayed. Per-mount `watchValue` made that six live
+// subscriptions for three storage items on one screen, each re-decoding on every block. The header used
+// to hold up `useBestBlock()` (a shared, visibility-frozen context) as the pattern it followed, and then
+// did not follow it. It does now, via a refcounted per-api cache rather than a provider: this is a
+// leaf-level diagnostic that several unrelated trees mount, so sharing it at the module keeps the
+// caller list open instead of requiring every future consumer to sit under one more context.
+//
+// `bestBlock` is still passed in rather than subscribed here, so this opens no head subscription at all;
+// the caller supplies the shared `useBestBlock()`. Same rule as NoPostingPowerNotice.
 
 import { useEffect, useState } from "react";
 import {
   classifyObserverHealth,
   type ObserverHealth,
+  type ObserverLiveness,
 } from "@/lib/chain/observer";
 import type { CognoApi } from "@/lib/types";
 
@@ -46,6 +57,82 @@ function readStallAfter(api: CognoApi): Promise<number> {
   return p;
 }
 
+/** The three WATCHED reads, as one immutable value. `null` is "not resolved yet", never "zero". */
+type Watched = Pick<ObserverLiveness, "latched" | "lastAppliedAt" | "everObserved">;
+
+const UNRESOLVED: Watched = { latched: null, lastAppliedAt: null, everObserved: null };
+
+interface SharedWatch {
+  snapshot: Watched;
+  listeners: Set<(w: Watched) => void>;
+  subs: { unsubscribe: () => void }[];
+}
+
+const watchCache = new WeakMap<CognoApi, SharedWatch>();
+
+/**
+ * Subscribe to this connection's observer-liveness reads, opening them on the first listener and
+ * tearing them down with the last. The listener is called immediately with the current snapshot, so a
+ * component mounting into an already-running watch renders the known state rather than a fresh
+ * "unknown" it would have to wait a block to leave.
+ *
+ * A patch that changes nothing notifies nobody: `Stalled` and `LastReference` emit on EVERY block and
+ * hold the same value for the life of a healthy chain, so forwarding those would re-render every
+ * consumer per block for no change. `lastAppliedAt` genuinely moves, and that one is the point.
+ */
+function subscribeWatched(api: CognoApi, listener: (w: Watched) => void): () => void {
+  let entry = watchCache.get(api);
+  if (!entry) {
+    const created: SharedWatch = { snapshot: UNRESOLVED, listeners: new Set(), subs: [] };
+    const patch = (next: Partial<Watched>) => {
+      const merged = { ...created.snapshot, ...next };
+      if (
+        merged.latched === created.snapshot.latched &&
+        merged.lastAppliedAt === created.snapshot.lastAppliedAt &&
+        merged.everObserved === created.snapshot.everObserved
+      ) {
+        return;
+      }
+      created.snapshot = merged;
+      created.listeners.forEach((l) => l(merged));
+    };
+    const q = api.query.CardanoObserver;
+    created.subs.push(
+      // The latched alarm. ValueQuery, so this decodes to a plain boolean.
+      q.Stalled.watchValue({ at: "best" }).subscribe(
+        ({ value }) => patch({ latched: value }),
+        () => patch({ latched: false }), // read error → assume NOT stalled (never alarm on a hiccup)
+      ),
+      // The block the last observation landed in. ValueQuery BlockNumber → a plain JS number.
+      q.LastAppliedAt.watchValue({ at: "best" }).subscribe(
+        ({ value }) => patch({ lastAppliedAt: value }),
+        () => patch({ lastAppliedAt: null }),
+      ),
+      // Has this chain EVER observed? LastReference is an OptionQuery, `Some` from the first accepted
+      // observation onward. Only the BOOLEAN is kept, never the record: a fresh object per block would
+      // re-render every consumer on every block for a value that changes once in the life of a chain.
+      q.LastReference.watchValue({ at: "best" }).subscribe(
+        ({ value: ref }) => patch({ everObserved: !!ref }),
+        () => patch({ everObserved: null }), // inconclusive, NOT "never" — that would misreport a stall
+      ),
+    );
+    watchCache.set(api, created);
+    entry = created;
+  }
+
+  const shared = entry;
+  shared.listeners.add(listener);
+  listener(shared.snapshot);
+  return () => {
+    shared.listeners.delete(listener);
+    if (shared.listeners.size > 0) return;
+    shared.subs.forEach((s) => s.unsubscribe());
+    // Dropped rather than kept warm: the next mount reopens it, and holding three live subscriptions
+    // on a connection nothing is reading is the cost this whole cache exists to avoid.
+    watchCache.delete(api);
+  };
+}
+
 /**
  * Observer liveness for the connected chain. `unknown` until the reads land, and on any read failure.
  *
@@ -53,50 +140,15 @@ function readStallAfter(api: CognoApi): Promise<number> {
  * @param bestBlock the shared best-block height (`useBestBlock()`), or null before the first head.
  */
 export function useObserverHealth(api: CognoApi | null, bestBlock: number | null): ObserverHealth {
-  const [latched, setLatched] = useState<boolean | null>(null);
-  const [lastAppliedAt, setLastAppliedAt] = useState<number | null>(null);
-  const [everObserved, setEverObserved] = useState<boolean | null>(null);
+  const [watched, setWatched] = useState<Watched>(UNRESOLVED);
   const [stallAfter, setStallAfter] = useState<number | null>(null);
 
-  // The latched alarm. ValueQuery, so this decodes to a plain boolean.
   useEffect(() => {
     if (!api) {
-      setLatched(null);
+      setWatched(UNRESOLVED);
       return;
     }
-    const sub = api.query.CardanoObserver.Stalled.watchValue({ at: "best" }).subscribe(
-      ({ value }) => setLatched(value),
-      () => setLatched(false), // read error → assume NOT stalled (never alarm on a hiccup)
-    );
-    return () => sub.unsubscribe();
-  }, [api]);
-
-  // The block the last observation landed in. ValueQuery BlockNumber → a plain JS number.
-  useEffect(() => {
-    if (!api) {
-      setLastAppliedAt(null);
-      return;
-    }
-    const sub = api.query.CardanoObserver.LastAppliedAt.watchValue({ at: "best" }).subscribe(
-      ({ value }) => setLastAppliedAt(value),
-      () => setLastAppliedAt(null),
-    );
-    return () => sub.unsubscribe();
-  }, [api]);
-
-  // Has this chain EVER observed? LastReference is an OptionQuery and is `Some` from the first accepted
-  // observation onward. Only the BOOLEAN is stored, never the record: a fresh object per block would
-  // re-render every consumer on every block for a value that changes once in the life of a chain.
-  useEffect(() => {
-    if (!api) {
-      setEverObserved(null);
-      return;
-    }
-    const sub = api.query.CardanoObserver.LastReference.watchValue({ at: "best" }).subscribe(
-      ({ value: ref }) => setEverObserved(!!ref),
-      () => setEverObserved(null), // inconclusive, NOT "never observed" — that would misreport a stall
-    );
-    return () => sub.unsubscribe();
+    return subscribeWatched(api, setWatched);
   }, [api]);
 
   useEffect(() => {
@@ -113,5 +165,5 @@ export function useObserverHealth(api: CognoApi | null, bestBlock: number | null
     };
   }, [api]);
 
-  return classifyObserverHealth({ latched, lastAppliedAt, bestBlock, stallAfter, everObserved });
+  return classifyObserverHealth({ ...watched, bestBlock, stallAfter });
 }
