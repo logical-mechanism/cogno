@@ -248,6 +248,42 @@ export function VaultSection() {
               </button>
             </p>
           )}
+
+          {/* Older vaults. This renders nothing today and is not speculative: talk_vault has been
+              deployed once, so the retired-script list is empty. The point is that the day it is not
+              empty — the day a vulnerability forces a redeploy while real ADA is locked — the recovery
+              path already exists, already ships and already has tests, instead of having to be written
+              under exactly the time pressure where that goes wrong.
+
+              Rendered ONLY on a confirmed balance (`known && lovelace > 0`). An unreadable legacy
+              script must never render as an empty one, which is the same rule the current-script read
+              follows, and a row that appears and disappears with Blockfrost's mood would be worse than
+              no row at all. */}
+          {vault.legacy
+            .filter((l) => l.known && l.lovelace != null && l.lovelace > 0n)
+            .map((l) => (
+              <div key={l.hash} className={styles.legacy}>
+                <p className={styles.note}>
+                  You have {formatAda(l.lovelace)} in an older vault. It does not earn posting power,
+                  because the network only counts the current one. Getting it back is its own
+                  transaction.
+                </p>
+                <button
+                  type="button"
+                  className={styles.outlineBtn}
+                  onClick={() => walletId && vault.exitLegacy(walletId, l.hash)}
+                  disabled={vault.busy || !walletId}
+                >
+                  {vault.busy ? (
+                    <>
+                      <Spinner size="sm" label="Working" /> Working…
+                    </>
+                  ) : (
+                    "Get this ADA back"
+                  )}
+                </button>
+              </div>
+            ))}
         </div>
       )}
     </div>

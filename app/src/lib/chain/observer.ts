@@ -21,6 +21,25 @@ export interface ObserverConfig {
   stabilitySlots: bigint;
   /** epochs of look-back for the SEPARATE voting-power (epoch_stake) read — not the lock deposit. */
   stakeEpochLookback: bigint;
+  /**
+   * The ONE vault script hash the observer credits, lower-case hex, no 0x. The runtime API has always
+   * returned it and this mapping used to drop it on the floor. It is what makes "is this bundle's
+   * current vault the one the chain is watching?" answerable — see lib/cardano/vaultPolicy.ts, which
+   * reads the same value from the pallet constant on the boot probe.
+   */
+  vaultPolicyId: string;
+}
+
+/**
+ * Uint8Array → lower-case hex, no 0x. The runtime API hands the policy id back as raw bytes.
+ *
+ * Tolerant of a missing value on purpose. This runs inside `readObserverConfig`, whose other three
+ * fields drive the stability-window copy and the pending-lock countdown; throwing here over an
+ * unexpected shape would take those down too, for a field only the vault cross-check reads. An empty
+ * string is the honest "not known", and `vaultPolicy.ts` is the authority for that check anyway.
+ */
+function toHex(bytes: Uint8Array | undefined): string {
+  return bytes ? Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("") : "";
 }
 
 /**
@@ -43,6 +62,7 @@ export function readObserverConfig(api: CognoApi): Promise<ObserverConfig> {
       shelleyStartSlot: c.shelley_start_slot,
       stabilitySlots: c.stability_slots,
       stakeEpochLookback: c.stake_epoch_lookback,
+      vaultPolicyId: toHex(c.vault_policy_id),
     }))
     .catch((err: unknown) => {
       // A failure is NOT the answer — drop it so the next caller retries. Caching a rejection would

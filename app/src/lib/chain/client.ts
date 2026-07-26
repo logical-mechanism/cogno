@@ -13,6 +13,7 @@ import { cogno } from "@polkadot-api/descriptors";
 import { Observable, type Subscription } from "rxjs";
 import { getCachedMetadata, setCachedMetadata } from "./metadataCache";
 import { resolveCardanoNetwork } from "@/lib/cardano/network";
+import { resolveVaultPolicy } from "@/lib/cardano/vaultPolicy";
 import type { ChainHandle, ConnStatus, BootGuard, BootGuardKind, CognoApi } from "@/lib/types";
 
 /**
@@ -133,9 +134,14 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
     // misconfiguration must not take down plain text posting, which touches no Cardano state. The
     // Cardano-facing paths fail closed on their own (lib/cardano/network.ts), and carry that module's
     // own reason for why no network is known rather than a copy plumbed through here.
+    //
+    // The VAULT POLICY resolve rides it for the same reasons: one constant read, never throws, and
+    // caching it here is what lets `lockIntoVault` consult it synchronously without useVault having to
+    // take a chain api at all (it is deliberately Cardano-only). Same rule about `ok` applies.
     const [version, cardanoNetwork] = await Promise.all([
       api.constants.System.Version(),
       resolveCardanoNetwork(api),
+      resolveVaultPolicy(api),
     ]);
     const nodeSpecName = version.spec_name;
     const nodeSpecVersion = version.spec_version;

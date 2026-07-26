@@ -10,7 +10,14 @@
 // `lastAction` lets a caller persist a pending-lock record on a lock (and clear it on an exit).
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { lockIntoVault, exitVault, fetchVaultState, type VaultInfo } from "@/lib/cardano/vault";
+import {
+  lockIntoVault,
+  exitVault,
+  fetchVaultState,
+  fetchLegacyVaults,
+  type VaultInfo,
+  type LegacyVaultBalance,
+} from "@/lib/cardano/vault";
 import { hasCardanoProvider } from "@/lib/cardano/provider";
 import { isUserRejection } from "@/lib/cardano/cip8";
 
@@ -43,6 +50,13 @@ export interface UseVault {
   lockedKnown: boolean;
   /** count of EXTRA vault UTxOs beyond the credited one (0 normally); >0 means ADA earning nothing. */
   extraVaults: number;
+  /**
+   * Balances found at RETIRED vault scripts. Empty while talk_vault has only ever been deployed once,
+   * which is today. Kept SEPARATE from `locked` on purpose: a legacy balance is real ADA and exactly
+   * zero posting power (the chain credits one policy id), so folding it into `locked` would tell three
+   * different surfaces that an uncreditable balance is posting power.
+   */
+  legacy: LegacyVaultBalance[];
   /** True only during the post-submit confirm poll — drives the "Confirming…" UI without leaning on the
    *  sticky `submitted` phase (which never clears). */
   confirming: boolean;
@@ -54,6 +68,8 @@ export interface UseVault {
   inspect: (walletId: string) => void;
   lock: (walletId: string, lovelace?: bigint) => void;
   exit: (walletId: string) => void;
+  /** Empty a RETIRED vault script by hash. Same machinery as `exit`, different script witness. */
+  exitLegacy: (walletId: string, scriptHash: string) => void;
   reset: () => void;
 }
 
@@ -73,6 +89,12 @@ export function useVault(): UseVault {
   // >0 ⇒ this owner has a second vault UTxO that earns nothing (the observer credits largest-wins and
   // never sums). Surfaced so the UI can say so instead of silently showing one of them.
   const [extraVaults, setExtraVaults] = useState(0);
+  // Retired-script balances. Read ONCE per inspected wallet rather than on every inspect tick: each
+  // entry is another Blockfrost call, `inspect` fires on mount on two surfaces, and the confirm poll
+  // re-reads every 6 seconds — so putting these on that path would multiply the quota pressure on a
+  // project id that ships in the bundle by design. Nothing about a retired script changes fast enough
+  // to need polling.
+  const [legacy, setLegacy] = useState<LegacyVaultBalance[]>([]);
   // True only while pollUntilSettled is actively re-reading after a submit (the confirm window), so the UI
   // can show "Confirming…" for exactly that span. Deliberately NOT derived from `phase === "submitted"`,
   // which never resets — that left the card frozen on "Confirming exit…" long after the exit had landed.
@@ -128,6 +150,7 @@ export function useVault(): UseVault {
         setLocked(null);
         setLockedKnown(false);
         setExtraVaults(0);
+        setLegacy([]);
       }
       setError(null);
       void (async () => {
@@ -150,6 +173,13 @@ export function useVault(): UseVault {
           setExtraVaults(res.extraVaults);
           setLockedKnown(true);
           setPhase((p) => (p === "error" ? "idle" : p)); // a successful re-read clears a stale failure
+          // Retired scripts, on the SAME sequence guard so a wallet switch cannot leave the previous
+          // wallet's stranded balance on screen. Its own failure is swallowed: a legacy read is a
+          // recovery affordance, and it must never be able to turn a good current-script read into an
+          // error. `fetchLegacyVaults` returns [] without touching the provider when the list is empty.
+          fetchLegacyVaults(walletId)
+            .then((l) => seq === inspectSeq.current && setLegacy(l))
+            .catch(() => seq === inspectSeq.current && setLegacy([]));
         } catch (e) {
           if (seq !== inspectSeq.current) return;
           // Raise the phase too, not just the message: the card only renders `error` in the `error`
@@ -256,6 +286,42 @@ export function useVault(): UseVault {
     },
     [run],
   );
+  // A legacy exit reuses `run` (the re-entrancy guard, the phase/step state, the toasts the callers
+  // hang off `phase`) but NOT `pollUntilSettled`: that poll's settled() predicate watches the CURRENT
+  // script's balance, which a legacy exit does not move, so it would poll its full budget and time out
+  // on a transaction that succeeded. The legacy row is re-read by the next inspect instead.
+  const exitLegacy = useCallback(
+    (walletId: string, scriptHash: string) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      setLastAction("exit");
+      setError(null);
+      setTxHash(null);
+      setStep("preparing");
+      setPhase("working");
+      void (async () => {
+        try {
+          const res = await exitVault(walletId, (p) => setStep(p), scriptHash);
+          setTxHash(res.txHash);
+          setPhase("submitted");
+          // Optimistically drop the row we just emptied. The tx is submitted, not yet confirmed, so
+          // this is a claim about intent; the next inspect re-reads it from the provider either way.
+          setLegacy((cur) => cur.filter((l) => l.hash !== scriptHash));
+        } catch (e) {
+          if (isUserRejection(e)) {
+            setPhase("idle");
+          } else {
+            setError(e instanceof Error ? e.message : String(e));
+            setPhase("error");
+          }
+        } finally {
+          setStep("idle");
+          inFlight.current = false;
+        }
+      })();
+    },
+    [],
+  );
   const reset = useCallback(() => {
     clearPoll();
     setPhase("idle");
@@ -266,5 +332,5 @@ export function useVault(): UseVault {
     inFlight.current = false;
   }, [clearPoll]);
 
-  return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, extraVaults, confirming, inspect, lock, exit, reset };
+  return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, extraVaults, legacy, confirming, inspect, lock, exit, exitLegacy, reset };
 }

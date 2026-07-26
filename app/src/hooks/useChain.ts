@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PolkadotClient } from "polkadot-api";
 import { createChain, watchConnStatus, checkBootGuard } from "@/lib/chain/client";
 import { resetCardanoNetwork } from "@/lib/cardano/network";
+import { resetVaultPolicy } from "@/lib/cardano/vaultPolicy";
 import { getActiveWsUrl } from "@/lib/config/endpoints";
 import type {
   ChainHandle,
@@ -123,6 +124,9 @@ export function useChain(): UseChain {
       // address gets built, for a chain that no longer exists. The next handle's checkBootGuard
       // re-populates it; the epoch guard in network.ts covers the resolve still in flight here.
       resetCardanoNetwork();
+      // Same rule, same window: a destroyed chain's vault policy must not stay readable while `boot`
+      // is already null, or a lock could be validated against a chain that no longer exists.
+      resetVaultPolicy();
     };
   }, [handle]);
 
