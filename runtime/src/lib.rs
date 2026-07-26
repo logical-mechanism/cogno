@@ -360,13 +360,32 @@ mod runtime {
     #[runtime::pallet_index(19)]
     pub type CardanoRoles = pallet_cardano_roles;
 
-    // 20 = TxPause (spec 211): the committee-gated BREAK-GLASS. `pause`/`unpause` a single call (or a
-    // whole pallet) BY NAME, gated by the same 3-of-5 `AuthorityOrigin` as every other privileged
-    // write; enforcement rides `BaseCallFilter` (`InsideBoth<CognoCallFilter, TxPause>`). Before this
-    // there was NO fast lever: `set_enforcement` freezes only the observer's weight writes (it stops
-    // nothing a user can dispatch), `CognoCallFilter` is compile-time, so the only response to e.g. a
-    // forgery bug in the unaudited CIP-8 verifier — which runs in full inside `validate_unsigned`,
-    // making the exploit surface pool-level — was build a wasm, propose, vote, close, apply.
+    // 20 = TxPause (spec 211): the committee-gated BREAK-GLASS. `pause`/`unpause` ONE
+    // `(pallet_name, call_name)` pair BY NAME, gated by the same 3-of-5 `AuthorityOrigin` as every
+    // other privileged write; enforcement rides `BaseCallFilter`
+    // (`InsideBoth<CognoCallFilter, TxPause>`). Before this there was NO fast lever:
+    // `set_enforcement` freezes only the observer's weight writes (it stops nothing a user can
+    // dispatch), `CognoCallFilter` is compile-time, so the only response to e.g. a forgery bug in
+    // the unaudited CIP-8 verifier was build a wasm, propose, vote, close, apply.
+    //
+    // TWO ASYMMETRIES worth knowing before you write a motion:
+    //
+    // 1. PAUSING IS PAIR-GRANULAR, WHITELISTING IS NOT. `pallet-tx-pause` 30.0.0 has no
+    //    whole-pallet pause: `pause` takes a `(PalletNameOf, PalletCallNameOf)` PAIR, and
+    //    `is_paused_unbound` only ever looks up the exact pair `GetCallMetadata` yields, so shutting
+    //    a pallet takes one motion per call. It also does not check the name against runtime
+    //    metadata, so a bogus or empty call name is ACCEPTED, stored, and `CallPaused` is emitted —
+    //    a motion that reports success while pausing nothing. `WhitelistedCalls`, by contrast, is
+    //    free to match on pallet name alone, and `TxPauseWhitelist` does exactly that for
+    //    `FollowerCommittee`. Do not "fix" that asymmetry; it is the pallet's shape.
+    // 2. A PAUSE STOPS THE DISPATCH, NOT THE POOL. `BaseCallFilter` is consulted at dispatch, so a
+    //    paused bare-unsigned call (the CIP-8 binds, the role claim) still runs its full
+    //    `validate_unsigned` verify at gossip and again at inclusion via `pre_dispatch`, then fails
+    //    `CallFiltered`. That is fine for the case the lever exists for — a forgery bug's harm is
+    //    forged binds TAKING EFFECT, and the pause stops that in minutes rather than a wasm cycle.
+    //    It is not a fix for the free pool-level verify cost, which is a separate, pre-existing and
+    //    accepted surface (see the note on cogno-gate's `validate_unsigned`).
+    //
     // `WhitelistedCalls` pins what may NEVER be paused: both inherents (`CardanoObserver::observe`,
     // `Timestamp::set` — a paused Mandatory dispatch is `BadMandatory`, discarding every block), the
     // whole `FollowerCommittee` (the unpause path), and the upgrade path

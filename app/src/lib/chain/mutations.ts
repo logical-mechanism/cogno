@@ -184,7 +184,10 @@ export function submitCreatePoll(
   const tx = api.tx.Microblog.create_poll({
     question: Binary.fromText(question),
     options: options.map((o) => Binary.fromText(o)),
-    // `close_at: Option<BlockNumber>` (spec 205). PAPI encodes `undefined` as None (a floating poll).
+    // `close_at: Option<BlockNumber>` (spec 205). The argument stayed `Option` so spec 211's
+    // validation alone would not move `transaction_version`, but the runtime now REQUIRES a deadline:
+    // PAPI still encodes `undefined` as None, and the chain rejects None with `PollCloseRequired`.
+    // Every caller goes through `resolveCloseAt`, which always returns a number.
     close_at: closeAt,
     // `kind: PollKind` (spec 207/209). `Stake` = regular; `Governance` = both chambers; `Spo`/`Drep` = one.
     kind: Enum(kind),

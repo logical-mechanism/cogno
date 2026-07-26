@@ -98,6 +98,11 @@ const MODULE_COPY: Record<string, string> = {
   "CognoGate::AccountAlreadyStakeBound": "Your stake key is already linked.",
   "CognoGate::StakeCredAlreadyBound": "That stake key is already linked to another account.",
   "CognoGate::StakeCredTombstoned": "That stake key has been revoked.",
+  // ── System (the committee break-glass, spec 211) ──
+  // `BaseCallFilter` composes CognoCallFilter with TxPause, and a filtered dispatch fails as
+  // `System::CallFiltered`. Since a 3-of-5 motion can now pause any non-whitelisted call, this is a
+  // state a normal user can actually hit, and the raw "System: CallFiltered" told them nothing.
+  "System::CallFiltered": "That action is paused right now. Try again later.",
 };
 
 /** Bigint-safe JSON (a u64-bearing error value must not throw on the way to a toast). */

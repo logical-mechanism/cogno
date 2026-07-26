@@ -200,7 +200,10 @@ the committee across custodians, and [RELAY-NODE.md](RELAY-NODE.md) for onboardi
   enforcement is **≥3 independent producers**, not a flag.
 - **Do not edit `contracts/`** — the live preprod vault hash (`168a9710…` applied, blueprint `49ffbfc6…`)
   must not move; any production edit recompiles and orphans the deployed vault.
-- **Keep `STABILITY_SLOTS_TESTNET` (600)** — the mainnet window (`129_600`) is a labeled MAINNET PREREQUISITE.
+- **Leave `CARDANO_NET` on `Preprod`** (`runtime/src/configs/mod.rs`). Since spec 211 that ONE selector
+  derives every network-dependent constant — the CIP-19 network id, both Shelley anchors, the 600-slot
+  observation stability window, the `min_lock` floor and the vault policy id — so a cutover cannot be
+  partial. Flipping it to `Mainnet` is a labeled MAINNET PREREQUISITE, not a knob to touch here.
 - **`MinAuthorities = 1` + `--force-authoring`** is the intended single-authority posture — not a bug.
 - **Never renumber pallet indices** (on-wire contract). Indices **6** (Sudo) and **12** (Anchor) are
   permanently vacant; **7** is GovernedUpgrade.

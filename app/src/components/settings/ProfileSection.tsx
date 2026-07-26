@@ -34,6 +34,17 @@ interface ProfilePreview {
   bio?: string;
   avatar?: string;
   pinnedPostId?: bigint;
+  /**
+   * Whether a `Profile::Profiles` row exists for the viewer — derived from ALL SIX presentation
+   * fields, not just the three previewed above.
+   *
+   * Load-bearing since spec 211: `ProfileCapacityCost` prices `clear_profile` per account —
+   * free with a row to clear, UNPAYABLE (`u128::MAX`) without one, so the pool refuses the doomed
+   * no-op instead of including it free. That rejection reaches the user as `ExhaustsResources`,
+   * which classifies as `rate-limit` — so offering Clear with no row to clear raises a "posting too
+   * fast" toast for something that is not a rate limit at all. Hide the control instead.
+   */
+  hasProfile?: boolean;
 }
 
 export function ProfileSection() {
@@ -86,6 +97,7 @@ export function ProfileSection() {
           bio: p.bio,
           avatar: p.avatar,
           pinnedPostId: p.pinnedPostId,
+          hasProfile: !!(p.displayName || p.bio || p.avatar || p.banner || p.location || p.website),
         });
         // Resolve the pinned post (thread().root IS the one-post resolver). Silent on 404.
         if (p.pinnedPostId != null) {
@@ -138,7 +150,13 @@ export function ProfileSection() {
     // write — an unfinished account is funneled to /welcome instead of firing a doomed extrinsic.
     if (!viewer.writeReady) return void router.push("/welcome/");
     submit("clear", submitClearProfile(api, signer), "Profile cleared", () => {
-      setPreview({ displayName: undefined, bio: undefined, avatar: undefined, pinnedPostId: undefined });
+      setPreview((p) => ({
+        displayName: undefined,
+        bio: undefined,
+        avatar: undefined,
+        pinnedPostId: p?.pinnedPostId,
+        hasProfile: false,
+      }));
       // This path clears the profile WITHOUT going through ModalRouteHost, so it must drop the shared
       // caches itself — otherwise every mention chip and hover card keeps rendering the name you just
       // cleared, and only a reload fixes it. (It previously updated local state and leaned entirely on
@@ -239,14 +257,19 @@ export function ProfileSection() {
           >
             Edit profile
           </button>
-          <button
-            type="button"
-            className={styles.dangerLink}
-            onClick={() => setConfirmClear(true)}
-            disabled={working === "clear"}
-          >
-            Clear profile
-          </button>
+          {/* Only offered when there is a row to clear. With none, the runtime prices the call
+              unpayable, so the pool rejects it as ExhaustsResources and the user would see a
+              "posting too fast" toast for a call that was never a rate limit. */}
+          {preview?.hasProfile && (
+            <button
+              type="button"
+              className={styles.dangerLink}
+              onClick={() => setConfirmClear(true)}
+              disabled={working === "clear"}
+            >
+              Clear profile
+            </button>
+          )}
         </div>
 
         {confirmClear && (

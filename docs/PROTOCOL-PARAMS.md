@@ -233,8 +233,11 @@ The on-chain identity proof (see [TRUSTLESS-IDENTITY.md](TRUSTLESS-IDENTITY.md))
 | `IdentityHash` | 32 bytes (blake2b_256 of owner Address) | `pallets/cogno-gate/src/lib.rs` |
 | `StakeCredential` | 28 bytes | `pallets/cogno-gate/src/lib.rs` |
 | Role credential | 28 bytes — a bare credential, or the payment credential of a headered address | `verify_bind_proof_role` — `pallets/cogno-gate/src/cip8.rs` |
-| Thread pointer | ≤10 bytes (5 raw / 10 hex) | `pallets/cogno-gate/src/lib.rs` |
 | Bind tx priority / longevity | 100 / 32 blocks | `validate_unsigned` — `pallets/cogno-gate/src/lib.rs` |
+
+The optional `thread_pointer` argument (and its `ThreadOf` storage) was REMOVED in spec 211 — it was an
+unauthenticated free-text field with no on-chain or frontend reader. `cogno-gate` error index 2
+(`BadThread`) is permanently vacant.
 
 ## Cardano role tags
 
@@ -245,9 +248,9 @@ badge itself is written only by the cardano-observer inherent, so the observed s
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | `RoleCredential` | 28 bytes (blake2b-224 key hash: Calidus key hash / drep ID / CC hot credential) | `RoleCredential` — `pallets/cardano-roles/src/lib.rs` |
-| Observed badges per account | 16 — over-cap sets are truncated, not cleared, keeping the first N in the observer's canonical order. That order puts every SPO entry first, so a >~14-pool mSPO would lose its dRep/CC badge (mainnet prereq) | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs` |
+| Observed badges per account | 16 — over-cap sets are truncated, not cleared. Since spec 211 the fill runs in TWO passes (dRep/CC first, then SPO pools), so a large mSPO keeps its dRep/CC badge and only surplus pools past the cap are dropped, deterministically. Residual limitation: an mSPO with more than ~14 pools still under-counts its OWN SPO-chamber weight (the dropped pools' delegated stake is not summed), and raising the cap needs a storage migration | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs`; the two-pass fill is `RoleApply` — `runtime/src/configs/mod.rs` |
 | Claim tx priority / longevity | 100 / 32 blocks | `CLAIM_TX_PRIORITY` / `CLAIM_TX_LONGEVITY` — `pallets/cardano-roles/src/lib.rs` |
 | `unclaim_role` fee | feeless only when the caller actually holds that claim; a no-op unclaim is fee-bearing | `unclaim_role` — `pallets/cardano-roles/src/lib.rs` |
 | Revoke tombstone | permanent — a revoked `(role, credential)` can never be re-claimed by anyone | `TombstonedRoleCred` — `pallets/cardano-roles/src/lib.rs` |
 | `RoleAuthorityOrigin` | 3-of-5 committee, and it gates `revoke_role` only — claiming is permissionless | `pallet_cardano_roles::Config` (`AuthorityOrigin`) |
-| `WeightInfo` | `()` — conservative hand-set placeholders (claim 80 M / unclaim 20 M / revoke 25 M ref_time), not benchmarked (mainnet prereq) | `impl WeightInfo for ()` — `pallets/cardano-roles/src/weights.rs` |
+| `WeightInfo` | `()` — conservative hand-set placeholders, not benchmarked (mainnet prereq). Each is a COMPUTE floor plus an explicit `RocksDbWeight` term for the storage its dispatch body touches, so the totals are claim ≈405 M / unclaim ≈245 M / revoke ≈350 M `ref_time` (claim 80 M + 5 reads + 2 writes; unclaim 20 M + 1 read + 2 writes; revoke 25 M + 1 read + 3 writes). Before spec 211 the `RocksDbWeight` term was missing entirely, so all three under-declared by roughly 5x. | `impl WeightInfo for ()` — `pallets/cardano-roles/src/weights.rs` |

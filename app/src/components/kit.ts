@@ -153,9 +153,12 @@ export interface PollDraft {
   question: string;
   options: string[];
   /**
-   * Optional close deadline in DAYS (spec 205). `undefined` / `0` ⇒ the poll floats forever (no
-   * deadline). The surface converts this to a block-number `close_at` at submit time (`bestBlock +
-   * days × blocks-per-day`).
+   * Close deadline in DAYS. `undefined` ⇒ `DEFAULT_POLL_CLOSE_DAYS` (1), which is also what the
+   * deadline `<select>` displays for an untouched draft, so what the user sees is what gets
+   * submitted. The surface converts this to a block-number `close_at` at submit time (`bestBlock +
+   * days × blocks-per-day`). Since spec 211 a deadline is REQUIRED on-chain and window-validated
+   * into `[now + MinPollDuration, now + MaxPollDuration]` — a floating no-deadline poll is no
+   * longer representable (`PollCloseRequired`).
    */
   closeInDays?: number;
   /**
