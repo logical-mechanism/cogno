@@ -34,13 +34,23 @@ moderation, and it does not vet what is on the other end.
 
 ## What you can do as a reader
 
-Mute and hide are **device-local**. They live in your browser, apply only to you, and are not on the
-chain — a public chain cannot keep a private mute list. They collapse content in your view; they do
-not remove it for anyone else.
+Every post's `···` menu carries **Hide post**, **Mute** and **Block**, and Settings lists what you have
+muted, blocked and hidden. All three are **device-local**: they live in your browser, apply only to you,
+and are not on the chain — a public chain cannot keep a private mute list. Mute collapses a post to a
+"Show" stub; hide and block REMOVE the item from your lists entirely. None of them removes it for anyone
+else. Bookmarks and lists are device-local for the same reason.
+
+## Who may use this
+
+You must be at least **13** years old. If you are under the age of majority where you live, get
+permission from a parent or guardian first. Locking ADA in the vault is a transaction with a real
+contract, so you must also be old enough to enter one where you live.
 
 ## Reporting abuse
 
-Email **support@logicalmechanism.io**. For a security vulnerability use [SECURITY.md](SECURITY.md)
+Email **support@logicalmechanism.io**. Every post's `···` menu has a **Report post** action that opens
+that email with the permalink already filled in, and the same address is on the in-app policy page
+(`/policy`) and under Settings → About. For a security vulnerability use [SECURITY.md](SECURITY.md)
 instead.
 
 What the operator can actually do about a report:

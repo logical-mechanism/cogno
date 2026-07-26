@@ -19,12 +19,12 @@ const KEY = "cg:returnAfterOnboarding";
 const RETURNABLE_SEGMENTS = new Set(["post", "u"]);
 /** The other PUBLIC segments (see AppShell's PUBLIC_SEGMENTS) — hubs where the timeline is the right
  *  landing, so arriving on one FORGETS any remembered content route. */
-const HUB_SEGMENTS = new Set(["", "explore", "legal", "privacy"]);
+const HUB_SEGMENTS = new Set(["", "explore", "legal", "privacy", "policy"]);
 
 /**
  * Track the place to return to after onboarding as the visitor browses:
  *   • a CONTENT deep-link (a post / a profile) → remember it (a shared /post link should reopen the post);
- *   • a HUB surface (home / explore / legal / privacy) → FORGET it (the timeline is the right landing, so
+ *   • a HUB surface (home / explore / legal / privacy / policy) → FORGET it (the timeline is the right landing, so
  *     reading a post then wandering to the feed and signing in there should NOT teleport back to the post);
  *   • anything else (/welcome, a walled route) → leave it intact — a guest funnelling through /welcome to
  *     onboard must keep the content route they came from.

@@ -6,9 +6,9 @@
 //      placeholder); submitting still lands on /explore.
 //   2. "Who to follow" — up to 3 suggestions (useWhoToFollow), each with a FollowButton (optimistic,
 //      useFollow). Node-served (FollowerCount ranking); hidden only when empty.
-//   3. Footer — one line: the About/Legal/Privacy links, then an icon-only ThemeToggle. (The labelled
+//   3. Footer — the Settings/Legal/Privacy/Policy links, then an icon-only ThemeToggle. (The labelled
 //      toggle lives in Settings → Appearance; a label here overflows the 350px rail.) No trends, no
-//      premium upsell.
+//      premium upsell. The link row WRAPS rather than clipping — see the note in the stylesheet.
 
 import { useCallback, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -130,6 +130,13 @@ export function RightRail() {
           <span aria-hidden="true">·</span>
           <Link href="/privacy/" className={styles.about}>
             Privacy
+          </Link>
+          <span aria-hidden="true">·</span>
+          {/* The report/abuse surface. It is the one link here a stranger may actually NEED, so it is
+              not hidden behind Settings; the mobile path to it is Settings > About, since this whole
+              rail is display:none below 1020px. */}
+          <Link href="/policy/" className={styles.about}>
+            Policy
           </Link>
         </nav>
         <ThemeToggle />

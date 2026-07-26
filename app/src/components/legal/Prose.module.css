@@ -1,4 +1,4 @@
-/* Prose — the shared reading column for the two static legal documents (/legal, /privacy).
+/* Prose — the shared reading column for the three static documents (/legal, /privacy, /policy).
    Deliberately plain: no card chrome, no accent colour, no illustration. These pages are read once,
    by someone who wants a fact, and the fastest way to give them one is body copy on a page. */
 
@@ -48,7 +48,8 @@
   color: var(--cg-text);
 }
 
-/* The one thing on either page a user must not miss: posts are permanent. */
+/* The one thing on any of these pages a reader must not miss: what you publish here is permanent.
+   All three use it for that same fact and nothing else. Do not spend it on a second idea. */
 .callout {
   margin: 0;
   border: 1px solid var(--cg-border);

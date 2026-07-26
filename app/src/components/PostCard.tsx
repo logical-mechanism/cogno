@@ -32,6 +32,8 @@ import { useHidden, hiddenActionsFor } from "@/lib/hiddenStore";
 import { useBookmarked, bookmarkActionsFor } from "@/lib/bookmarkStore";
 import { useLocalLists, localListActionsFor, MAX_LIST_MEMBERS } from "@/lib/localListStore";
 import { sanitizeInline } from "@/lib/sanitize";
+import { postLink } from "@/lib/share";
+import { ABUSE_EMAIL, reportMailto } from "@/lib/config/operator";
 import { useToaster } from "./toast/ToasterProvider";
 import type {
   CognoPost,
@@ -211,7 +213,7 @@ export function PostCard({
         label: muted ? `Unmute ${handle}` : `Mute ${handle}`,
         onSelect: () => muteActionsFor(me).toggle(post.author),
       });
-      // Block (device-local hard suppression) — the danger action, last.
+      // Block (device-local hard suppression).
       items.push({
         id: "block",
         label: blocked ? `Unblock ${handle}` : `Block ${handle}`,
@@ -223,6 +225,27 @@ export function PostCard({
               ? { kind: "info", message: `Unblocked ${handle}` }
               : { kind: "success", message: `Blocked ${handle}` },
           );
+        },
+      });
+      // Report — the escalation to a HUMAN, and the only item in this menu that reaches anyone but the
+      // viewer. It goes last because it is the heaviest, not because it is the most dangerous.
+      //
+      // A mailto:, not a form and not a chain write. The deployed CSP sets `form-action 'none'`
+      // (deploy/nginx/security-headers.conf), so a POSTing form would work under `next dev` and fail
+      // silently in production; and there is no report extrinsic, because on-chain moderation is out of
+      // scope by design. The permalink is pre-filled from `postLink`, since the link is the one thing a
+      // report is useless without and the one thing that is annoying to fetch by hand.
+      //
+      // location.assign rather than an <a>: menu items are DATA (OverflowMenuItem), so there is no
+      // element here to hang an href on, and the menu's roving-focus/Esc handling keys off
+      // [role^="menuitem"] buttons. A blocked mail handler leaves the page untouched, so the toast is
+      // fired first and names the address rather than claiming a mail client opened.
+      items.push({
+        id: "report",
+        label: "Report post",
+        onSelect: () => {
+          toast({ kind: "info", message: `Opening a report to ${ABUSE_EMAIL}` });
+          window.location.assign(reportMailto(`Report: post ${post.id}`, postLink(post.id)));
         },
       });
     }

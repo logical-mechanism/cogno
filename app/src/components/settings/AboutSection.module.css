@@ -40,6 +40,60 @@
   border-radius: var(--cg-radius-sm);
 }
 
+/* The policy links. A COLUMN, not a "·"-separated row: this card is the only path to these pages on a
+   phone, and three link targets stacked at full row height are far easier to hit than three inline ones
+   sharing a line. Separated from the Source link above by a rule so it reads as its own group. */
+.docs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  margin-top: var(--cg-space-3);
+  padding-top: var(--cg-space-3);
+  border-top: 1px solid var(--cg-border);
+}
+
+.docLink {
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+  text-decoration: none;
+  width: fit-content;
+}
+
+.docLink:hover {
+  text-decoration: underline;
+}
+
+.docLink:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}
+
+.contact {
+  margin: 0;
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-secondary);
+  /* An email address has no spaces to break at, so a narrow phone would otherwise push the card wide. */
+  overflow-wrap: anywhere;
+}
+
+.contactLink {
+  color: var(--cg-accent);
+  text-decoration: none;
+}
+
+.contactLink:hover {
+  text-decoration: underline;
+}
+
+.contactLink:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}
+
 .copyright {
   margin: var(--cg-space-2) 0 0;
   font-size: var(--cg-fs-sm);

@@ -49,7 +49,19 @@ function isWelcomePath(pathname: string | null): boolean {
 // ("/" → "", "/post/1/" → "post", "/u/5Grw…/" → "u"). Fail-CLOSED: a route whose segment is not listed is
 // treated as private, so a newly-added route is walled until it is deliberately opened here. /welcome is
 // intentionally NOT listed — it is the onboarding canvas, handled by its own `onWelcome` branch below.
-const PUBLIC_SEGMENTS = new Set(["", "explore", "governance", "post", "u", "legal", "privacy"]);
+const PUBLIC_SEGMENTS = new Set([
+  "",
+  "explore",
+  "governance",
+  "post",
+  "u",
+  "legal",
+  "privacy",
+  // "policy" is the abuse/report surface. It MUST be public: the reader most likely to need it is an
+  // anonymous stranger who just scrolled past something, and walling it would bounce exactly that
+  // person to /welcome and ask them to connect a wallet before they can find out how to report it.
+  "policy",
+]);
 function isPublicPath(pathname: string | null): boolean {
   if (!pathname) return false;
   return PUBLIC_SEGMENTS.has(pathname.split("/")[1] ?? "");

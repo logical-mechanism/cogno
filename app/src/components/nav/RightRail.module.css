@@ -83,16 +83,19 @@
   margin-top: auto;
 }
 
-/* About & settings · Legal · Privacy — the attribution + permanence surface the bundle is obliged
-   to carry. Kept on a single row; the rail is 350px and the copy only just fits. */
+/* Settings · Legal · Privacy · Policy — the attribution + permanence surface the bundle is obliged
+   to carry. This used to be `white-space: nowrap` on one row, with a comment noting the 350px rail
+   "only just fits" three links. A fourth (Policy, the abuse/report surface) does not fit, and nowrap
+   would have pushed it off the edge or squashed the ThemeToggle that shares the row. It WRAPS now:
+   two short lines beat one clipped one, and the toggle keeps its place because .footer aligns center. */
 .footerLinks {
   display: flex;
   align-items: center;
-  gap: var(--cg-space-2);
+  flex-wrap: wrap;
+  gap: var(--cg-space-1) var(--cg-space-2);
   min-width: 0;
   font-size: var(--cg-fs-xs);
   color: var(--cg-text-muted);
-  white-space: nowrap;
 }
 
 .about {
