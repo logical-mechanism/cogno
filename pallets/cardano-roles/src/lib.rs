@@ -61,17 +61,16 @@ pub type RoleCredential = [u8; 28];
 /// The maximum number of observed role BADGES one account can display at once. An account holds at most
 /// one dRep and one CC badge, but can hold SEVERAL SPO badges — one per pool it operates via a Calidus
 /// key and/or owns (an mSPO now consumes one slot PER declaring pool) — so this is deliberately well above
-/// the three [`RoleKind`]s. The observer truncates to this cap (the runtime `RoleApply` sink keeps the
-/// first N in the deterministic CANONICAL observed order); the set is display-only, so a cap is a UI bound,
-/// not an economic one.
+/// the three [`RoleKind`]s. The observer truncates to this cap; the set is display-only, so a cap is a UI
+/// bound, not an economic one.
 ///
-/// ⚠ MAINNET PREREQUISITE (a deterministic under-count, NOT a fork): the canonical order sorts every SPO
-/// entry before dRep/CC (`RoleSource` declaration order), so a very large mSPO — one Calidus key declared
-/// by >~14 live pools — that is ALSO a dRep would have its dRep/CC badge (and its dRep-chamber weight)
-/// truncated away, not just its surplus SPO pools; and an mSPO past the cap under-counts its own
-/// SPO-chamber weight. Unreachable on preprod's small pool set. Before a network with large mSPOs, raise
-/// this cap and/or reserve one slot per non-SPO kind in `RoleApply` — a RUNTIME change (coordinated
-/// upgrade), deliberately out of scope for the node-side Calidus mSPO weighting that surfaced it.
+/// Truncation order (spec 211): the runtime `RoleApply` sink fills NON-SPO roles (dRep, CC) FIRST,
+/// then the SPO entries, so a large mSPO past the cap loses only surplus SPO pools — never its dRep/CC
+/// badge or its dRep-chamber weight. (Before spec 211 it kept the first N in the canonical order,
+/// which sorts every SPO entry ahead of dRep/CC — so one Calidus key declared by ~14+ live pools
+/// silently truncated the operator's dRep badge away.) An mSPO past the cap still under-counts its own
+/// SPO-chamber weight — RAISING this cap needs a storage migration (the bound types `ObservedRoleSet`)
+/// and is deliberately deferred.
 pub const MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 16;
 
 #[frame_support::pallet]

@@ -1092,31 +1092,83 @@ pub struct RoleApply;
 impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
     fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28], u128)]) {
         use pallet_cardano_roles::{ObservedRole, ObservedRoleSet, RoleKind};
-        // Build the bounded set by pushing until full, TRUNCATING not clearing: an account with more
-        // observed badges than the cap keeps the first N (the observer passes them in a deterministic
-        // order). The old `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
-        // wiped the ENTIRE set to empty; `try_push`-until-`Err` keeps a determinstic prefix instead.
-        // `weight` (spec 207) is the governance-poll chamber weight, carried through verbatim.
+        // Build the bounded set in TWO PASSES (spec 211), TRUNCATING not clearing: NON-SPO roles
+        // (dRep, CC — at most one of each) first, then fill the remaining slots with SPO entries.
+        //
+        // The canonical `role_entries` order sorts on `RoleSource` first, which puts EVERY SPO entry
+        // ahead of every dRep/CC one — so a single pass truncating at the cap silently dropped a
+        // large mSPO's dRep badge AND its dRep-chamber weight once its pool count neared the cap
+        // (the old "⚠ MAINNET PREREQUISITE (a deterministic under-count)" this fixes). Two passes
+        // reserve the non-SPO badges by construction; only surplus SPO pools past the cap are
+        // dropped, deterministically (the slice order within each class is preserved). Both passes
+        // are deterministic, so every node stores the identical set. Side effect, priced in: the
+        // stored order of an EXISTING multi-role account changes once (non-SPO now first), costing a
+        // one-time `RolesUpdated` rewrite per such account on the first enforcing observation after
+        // the upgrade — a handful of rows on preprod, none at a fresh mainnet genesis.
+        //
+        // The old `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
+        // wiped the ENTIRE set to empty. `weight` (spec 207) is the governance-poll chamber weight,
+        // carried through verbatim.
         let mut bounded = ObservedRoleSet::default();
-        for (kind_ix, id, weight) in roles {
-            let kind = match kind_ix {
-                0 => RoleKind::Spo,
-                1 => RoleKind::DRep,
-                2 => RoleKind::Committee,
-                _ => continue,
-            };
-            if bounded
-                .try_push(ObservedRole {
-                    kind,
-                    id: *id,
-                    weight: *weight,
-                })
-                .is_err()
-            {
-                break; // at the cap — keep the first N (deterministic), drop the rest
+        for pass_spo in [false, true] {
+            for (kind_ix, id, weight) in roles {
+                let kind = match kind_ix {
+                    0 if pass_spo => RoleKind::Spo,
+                    1 if !pass_spo => RoleKind::DRep,
+                    2 if !pass_spo => RoleKind::Committee,
+                    _ => continue,
+                };
+                if bounded
+                    .try_push(ObservedRole {
+                        kind,
+                        id: *id,
+                        weight: *weight,
+                    })
+                    .is_err()
+                {
+                    break; // at the cap — keep what fits (deterministic), drop the rest
+                }
             }
         }
         pallet_cardano_roles::Pallet::<Runtime>::apply_roles(who, bounded);
+    }
+}
+
+#[cfg(test)]
+mod role_apply_tests {
+    use super::*;
+    use pallet_cardano_observer::RoleSink;
+    use pallet_cardano_roles::RoleKind;
+
+    #[test]
+    fn truncation_keeps_non_spo_badges_and_drops_surplus_pools() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([7u8; 32]);
+            // The canonical order puts every SPO entry first: 16 pools (already at the cap), then
+            // the operator's dRep and CC badges. A single-pass fill dropped both badges.
+            let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
+                (0..16u8).map(|i| (0u8, [i; 28], 1u128)).collect();
+            roles.push((1, [0xD0; 28], 5));
+            roles.push((2, [0xC0; 28], 0));
+            RoleApply::set_roles(&who, &roles);
+            let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
+            assert_eq!(stored.len(), 16, "filled to the cap");
+            // The non-SPO badges survive (filled first), in slice order, ahead of the pools …
+            assert_eq!(stored[0].kind, RoleKind::DRep);
+            assert_eq!(stored[1].kind, RoleKind::Committee);
+            // … and only the surplus SPO pools were dropped (14 of 16 fit).
+            assert_eq!(
+                stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
+                14
+            );
+            // An under-cap account keeps every role.
+            let small = AccountId::from([8u8; 32]);
+            RoleApply::set_roles(&small, &[(0, [1; 28], 1), (1, [2; 28], 2)]);
+            assert_eq!(
+                pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&small).len(),
+                2
+            );
+        });
     }
 }
 
