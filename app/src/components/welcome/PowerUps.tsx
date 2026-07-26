@@ -32,6 +32,7 @@ import { useSession } from "@/components/Providers";
 import { useStabilityWindow } from "@/hooks/useStabilityWindow";
 import { formatAda } from "@/lib/format";
 import type { PendingCapacityStatus } from "@/hooks/usePendingCapacity";
+import type { ObserverHealth } from "@/lib/chain/observer";
 import type { UseVault, VaultStep } from "@/hooks/useVault";
 import type { BindPhase } from "@/hooks/useIdentity";
 
@@ -82,6 +83,12 @@ export interface PowerUpsProps {
   postingPower: bigint | null;
   /** the timed lock→credit pending state (usePendingCapacity), driven by the persisted pending record. */
   pending: PendingCapacityStatus;
+  /**
+   * Observer liveness (useObserverHealth). Threaded through because a stalled observer makes every
+   * timing claim in the pending notice untrue: the frontier the countdown counts toward is not moving,
+   * and a brand-new user watching an ETA expire with nothing happening has no other way to find out.
+   */
+  observer?: ObserverHealth;
   /** the ss58 whose pending record can be dismissed (an overdue lock that never credits). */
   ss58?: string | null;
   onGoToTimeline: () => void;
@@ -97,6 +104,7 @@ export function PowerUps({
   stake,
   postingPower,
   pending,
+  observer,
   ss58,
   onGoToTimeline,
   onOpenSettings,
@@ -163,12 +171,13 @@ export function PowerUps({
       <section className={styles.step} aria-labelledby="welcome-heading">
         <div className={styles.banner}>
           <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
-            {pendingTitle(pending) ?? "Almost there"}
+            {pendingTitle(pending, observer) ?? "Almost there"}
           </h1>
         </div>
         <div className={styles.cards}>
           <PendingCapacityNotice
             status={pending}
+            observer={observer}
             variant="card"
             hideTitle
             onDismiss={ss58 ? () => pendingLockActions.clear(ss58) : undefined}

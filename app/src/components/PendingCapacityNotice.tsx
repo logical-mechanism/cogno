@@ -5,11 +5,19 @@
 // just-locked user reads as "it's broken / lock again". Presentational: the caller computes the status
 // (usePendingCapacity) and passes it. Two variants: a compact `inline` row for the Composer notice area
 // and a bigger `card` for the /welcome power-ups step.
+//
+// The optional `observer` is what stops the "overdue" branch making a claim it cannot support. That
+// branch says "It should still land", which is true of an ordinary slow credit and FALSE when the sole
+// weight writer has frozen: nothing lands, for anyone, until it resumes. The chain has always known the
+// difference (`CardanoObserver.Stalled`); it just was not read. When it says stalled, that fact
+// outranks every timing state here, because the countdown is measuring against a frontier that is not
+// moving.
 
 import { CardanoTxLink } from "./CardanoTxLink";
 import { Spinner } from "./icons";
 import styles from "./PendingCapacityNotice.module.css";
 import type { PendingCapacityStatus } from "@/hooks/usePendingCapacity";
+import type { ObserverHealth } from "@/lib/chain/observer";
 
 /** Friendly relative wait, e.g. "in about 9 minutes" / "in about 1h 20m" / "any moment now". */
 function formatEta(etaMs: number): string {
@@ -45,10 +53,26 @@ interface View {
   dismissible: boolean;
 }
 
-function toView(status: PendingCapacityStatus): View | null {
+function toView(status: PendingCapacityStatus, observer?: ObserverHealth): View | null {
+  if (status.kind === "none") return null;
+
+  // A frozen observer outranks every timing state below. Whatever the countdown says, the frontier it
+  // counts toward is not moving, so "confirming", "crediting" and above all "overdue" are all narrating
+  // a process that has stopped. Not dismissible: dismissing hides the one true explanation there is.
+  if (observer?.kind === "stalled") {
+    return {
+      title: "Crediting is paused",
+      detail:
+        "Your lock is safe on Cardano. cogno has stopped reading Cardano for now, so posting power is not being credited to anyone. It resumes on its own, and your lock is credited then.",
+      why: false,
+      bar: null,
+      spinner: false,
+      txHash: status.kind === "overdue" ? status.txHash : null,
+      dismissible: false,
+    };
+  }
+
   switch (status.kind) {
-    case "none":
-      return null;
     case "confirming":
       return {
         title: "Lock submitted",
@@ -114,23 +138,29 @@ const WHY_LINE =
   "We wait for Cardano to settle first, so a rollback can't take your posting power back.";
 
 /** The status title (e.g. for a surface that wants to render it as its own heading). Null when none. */
-export function pendingTitle(status: PendingCapacityStatus): string | null {
-  return toView(status)?.title ?? null;
+export function pendingTitle(
+  status: PendingCapacityStatus,
+  observer?: ObserverHealth,
+): string | null {
+  return toView(status, observer)?.title ?? null;
 }
 
 export function PendingCapacityNotice({
   status,
+  observer,
   variant = "inline",
   hideTitle = false,
   onDismiss,
 }: {
   status: PendingCapacityStatus;
+  /** Observer liveness (useObserverHealth). A stall overrides every timing state — see `toView`. */
+  observer?: ObserverHealth;
   variant?: "card" | "inline";
   /** skip the in-notice title — for a surface (welcome step) that renders the title as its own heading. */
   hideTitle?: boolean;
   onDismiss?: () => void;
 }) {
-  const view = toView(status);
+  const view = toView(status, observer);
   if (!view) return null;
 
   return (

@@ -23,9 +23,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
+import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { consumeReturnTarget } from "@/lib/onboardingReturn";
@@ -77,6 +78,7 @@ function classifyConnectError(raw: string): { inline: string | null; toast: stri
 export default function WelcomePage() {
   const router = useRouter();
   const { signerCtl, identity, sessionState, api, client, boot } = useSession();
+  const bestBlock = useBestBlock();
   const vault = useVault();
   const { toast } = useToaster();
 
@@ -107,6 +109,10 @@ export default function WelcomePage() {
   // clears it on exit); usePendingCapacity turns record + observer frontier + AllowedStake into a status.
   usePendingLockSync(vault, signerCtl.signer.ss58);
   const pending = usePendingCapacity(api, signerCtl.signer.ss58, postingPower);
+  // Whether the sole writer of posting power is still running. Without this, a first-time user who
+  // locks during a freeze watches the ETA run out and is told "It should still land", which is a claim
+  // the app has no basis for and the worst possible first impression of a 100-ADA commitment.
+  const observerHealth = useObserverHealth(api, bestBlock);
 
   // Derive the active step.
   const welcomeStep: WelcomeStep =
@@ -310,6 +316,7 @@ export default function WelcomePage() {
           }}
           postingPower={postingPower}
           pending={pending}
+          observer={observerHealth}
           ss58={signerCtl.signer.ss58}
           onGoToTimeline={goToTimeline}
           onOpenSettings={openSettings}

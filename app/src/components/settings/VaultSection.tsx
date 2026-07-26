@@ -15,9 +15,10 @@ import styles from "./VaultSection.module.css";
 import { Spinner } from "@/components/icons";
 import { Skeleton } from "@/components/Skeleton";
 import { CardanoTxLink } from "@/components/CardanoTxLink";
-import { useSession } from "@/components/Providers";
+import { useSession, useBestBlock } from "@/components/Providers";
 import { useVault } from "@/hooks/useVault";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
+import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
 import { PendingCapacityNotice } from "@/components/PendingCapacityNotice";
 import { pendingLockActions } from "@/lib/pendingLockStore";
@@ -29,6 +30,7 @@ const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
 
 export function VaultSection() {
   const { api, signerCtl, boot } = useSession();
+  const bestBlock = useBestBlock();
   // The lock-to-credit wait is a chain parameter (~10 min on preprod, ~36 h at the mainnet window),
   // so it is read rather than asserted. See useStabilityWindow.
   const stabilityWindow = useStabilityWindow(api);
@@ -63,6 +65,9 @@ export function VaultSection() {
   // covers relock). Mirrors the welcome flow so both places tell the same story.
   usePendingLockSync(vault, ss58);
   const pending = usePendingCapacity(api, ss58, postingPower);
+  // Observer liveness, so this panel does not narrate a countdown against a frontier that has stopped
+  // moving. `useBestBlock` is the shared, visibility-frozen head — never a private useHeads here.
+  const observer = useObserverHealth(api, bestBlock);
 
   // Inspect the vault once on mount / wallet change — but only once the chain has answered. The vault
   // ADDRESS is built from the Cardano network the chain names (lib/cardano/network.ts), so inspecting
@@ -132,6 +137,7 @@ export function VaultSection() {
         ) : showingPending ? (
           <PendingCapacityNotice
             status={pending}
+            observer={observer}
             variant="inline"
             onDismiss={() => pendingLockActions.clear(ss58)}
           />
