@@ -43,12 +43,12 @@ export interface StakeLinkResult {
 }
 
 /** Build the `cognoGate.link_identity_signed` tx (the call data; submitted bare/unsigned). */
-function buildLinkIdentityTx(api: CognoApi, coseSign1Hex: string, coseKeyHex: string, threadHex?: string) {
+function buildLinkIdentityTx(api: CognoApi, coseSign1Hex: string, coseKeyHex: string) {
   // PAPI v2: `Vec<u8>` fields take a raw Uint8Array (`Binary.fromBytes` is gone). hexToBytes → Uint8Array.
+  // (spec 211 removed the old `thread_pointer` third argument.)
   return api.tx.CognoGate.link_identity_signed({
     cose_sign1: hexToBytes(coseSign1Hex),
     cose_key: hexToBytes(coseKeyHex),
-    thread_pointer: threadHex ? hexToBytes(threadHex) : undefined,
   });
 }
 
@@ -73,10 +73,9 @@ export async function submitLinkIdentityFeeless(
   api: CognoApi,
   coseSign1Hex: string,
   coseKeyHex: string,
-  threadHex?: string,
 ): Promise<BindResult> {
   try {
-    const bareTx = await buildLinkIdentityTx(api, coseSign1Hex, coseKeyHex, threadHex).getBareTx();
+    const bareTx = await buildLinkIdentityTx(api, coseSign1Hex, coseKeyHex).getBareTx();
     const res = await client.submit(bareTx);
     if (!res.ok) {
       return { ok: false, error: errorCopy(classifyDispatchError(res.dispatchError)) };

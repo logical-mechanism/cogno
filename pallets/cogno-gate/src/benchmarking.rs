@@ -55,10 +55,9 @@ mod benchmarks {
         // FEELESS + unsigned: no fee payer / no signing account — the CIP-8 proof is the authorization
         // and the bound account is the one the PROOF commits (`ensure_none`). The benchmark dispatches
         // with `RawOrigin::None`, exactly as the block author applies the bare extrinsic.
-        let thread = alloc::vec![0u8; 10]; // worst case: also writes ThreadOf
 
         #[extrinsic_call]
-        _(RawOrigin::None, cose_sign1, cose_key, Some(thread));
+        _(RawOrigin::None, cose_sign1, cose_key);
 
         // The proof's committed account is now bound (verify → genesis → do_bind all ran).
         assert_eq!(AccountOf::<T>::iter().count(), 1);
@@ -69,8 +68,8 @@ mod benchmarks {
     fn revoke() -> Result<(), BenchmarkError> {
         let account: T::AccountId = whitelisted_caller();
         let identity: IdentityHash = [2u8; 32];
-        // Seed a binding (with a thread pointer) to revoke, via the shared bind body (no origin check).
-        CognoGate::<T>::do_bind(&account, identity, Some(alloc::vec![0u8; 10]))
+        // Seed a binding to revoke, via the shared bind body (no origin check).
+        CognoGate::<T>::do_bind(&account, identity)
             .map_err(|_| BenchmarkError::Stop("do_bind setup failed"))?;
         let origin =
             T::FollowerOrigin::try_successful_origin().map_err(|_| BenchmarkError::Weightless)?;

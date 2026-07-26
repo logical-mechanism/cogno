@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn bare_xt_decodes_and_is_unsigned() {
         use codec::Decode;
-        let call = crate::calls::link_identity_signed(vec![1, 2, 3], vec![4, 5], None).unwrap();
+        let call = crate::calls::link_identity_signed(vec![1, 2, 3], vec![4, 5]).unwrap();
         let bytes = build_bare(call.clone());
         let decoded = UncheckedExtrinsic::decode(&mut &bytes[..])
             .expect("runtime codec must decode our bare extrinsic");

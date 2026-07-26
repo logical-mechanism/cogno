@@ -134,22 +134,12 @@ pub fn set_keys(aura: sr25519::Public, grandpa: ed25519::Public, proof: Vec<u8>)
 
 // ── BARE (unsigned) CIP-8 identity binds — the proof is the authorization ───────────────────────────
 
-/// `CognoGate::link_identity_signed(cose_sign1, cose_key, thread_pointer)` — the feeless, **unsigned**
+/// `CognoGate::link_identity_signed(cose_sign1, cose_key)` — the feeless, **unsigned**
 /// (`ensure_none`) CIP-8 payment-key identity bind. The COSE proof (produced OFF-chain in the wallet)
 /// commits the bound account, so the submitter cannot retarget it. Built into a BARE extrinsic (no signer,
-/// no nonce, no `TxExtension`) by [`crate::tx::build_bare`].
-pub fn link_identity_signed(
-    cose_sign1: Vec<u8>,
-    cose_key: Vec<u8>,
-    thread_pointer: Option<Vec<u8>>,
-) -> anyhow::Result<RuntimeCall> {
-    if let Some(t) = &thread_pointer {
-        anyhow::ensure!(
-            t.len() <= 10,
-            "thread pointer exceeds the 10-byte on-chain bound (BoundedVec<u8, 10>), got {} bytes",
-            t.len()
-        );
-    }
+/// no nonce, no `TxExtension`) by [`crate::tx::build_bare`]. (The old `thread_pointer` third argument was
+/// removed in spec 211 — it was never committed by the signed proof.)
+pub fn link_identity_signed(cose_sign1: Vec<u8>, cose_key: Vec<u8>) -> anyhow::Result<RuntimeCall> {
     Ok(RuntimeCall::CognoGate(
         pallet_cogno_gate::Call::<Runtime>::link_identity_signed {
             cose_sign1: cose_sign1
@@ -158,7 +148,6 @@ pub fn link_identity_signed(
             cose_key: cose_key
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("cose_key exceeds the 128-byte bound"))?,
-            thread_pointer,
         },
     ))
 }
@@ -253,7 +242,7 @@ mod tests {
 
     #[test]
     fn identity_binds_encode_at_cognogate_pallet_8_calls_2_and_3() {
-        let id = link_identity_signed(vec![1, 2, 3], vec![4, 5], None)
+        let id = link_identity_signed(vec![1, 2, 3], vec![4, 5])
             .unwrap()
             .encode();
         assert_eq!(id[0], 8, "CognoGate pallet index");
@@ -268,8 +257,8 @@ mod tests {
     #[test]
     fn identity_bind_rejects_oversized_cose() {
         // The COSE_Sign1 arg is bounded at 512 bytes; an oversized blob is rejected at construction.
-        assert!(link_identity_signed(vec![0u8; 513], vec![4, 5], None).is_err());
-        assert!(link_identity_signed(vec![1, 2], vec![0u8; 129], None).is_err());
+        assert!(link_identity_signed(vec![0u8; 513], vec![4, 5]).is_err());
+        assert!(link_identity_signed(vec![1, 2], vec![0u8; 129]).is_err());
     }
 
     #[test]
