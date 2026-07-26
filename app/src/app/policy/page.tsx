@@ -123,10 +123,10 @@ export default function PolicyPage() {
             <a className={styles.link} href={`mailto:${ABUSE_EMAIL}`}>
               {ABUSE_EMAIL}
             </a>
-            . Include the link to the post or the profile, which is the fastest thing for us to act
-            on, and say what the problem is. Every post and every profile in this app has a Copy link
-            action, and a post&apos;s ··· menu has a Report option that opens an email with the link
-            already filled in.
+            . Tell us what the problem is, and point us at it. The fastest way to do that for a post
+            is its ··· menu, which has a Report option that opens an email with the link already
+            filled in, and a Copy link action if you would rather write your own. For an account, tap
+            their address on their profile to copy it.
           </p>
           <p className={styles.body}>
             Found a security vulnerability instead? Do not post it. See{" "}

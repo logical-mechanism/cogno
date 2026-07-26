@@ -33,9 +33,13 @@ const COPY: Record<
   "stale-app" | "wrong-chain" | "unreachable",
   { title: string; body: string; reload: boolean }
 > = {
+  // "different versions", not "cogno was updated": a spec mismatch is USUALLY a runtime upgrade under
+  // an open tab, and is also what you get pointing this app at a node on an older runtime. Naming the
+  // likelier cause as the certain one would be wrong for the reader it is wrong for, and reloading
+  // does not help them. "Usually fixes it" is the honest strength of that advice.
   "stale-app": {
-    title: "This page is out of date",
-    body: "cogno was updated while this tab was open. You can still read, but posting is off until you reload.",
+    title: "This page and the network do not match",
+    body: "They are running different versions, so posting is off until they agree. You can still read. Reloading usually fixes it.",
     reload: true,
   },
   "wrong-chain": {

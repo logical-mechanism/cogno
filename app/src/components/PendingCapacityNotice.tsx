@@ -59,11 +59,16 @@ function toView(status: PendingCapacityStatus, observer?: ObserverHealth): View 
   // A frozen observer outranks every timing state below. Whatever the countdown says, the frontier it
   // counts toward is not moving, so "confirming", "crediting" and above all "overdue" are all narrating
   // a process that has stopped. Not dismissible: dismissing hides the one true explanation there is.
+  //
+  // The copy deliberately does not promise that it resumes ON ITS OWN. The latch clears automatically
+  // on the next applied observation, but the CAUSE (db-sync unavailable, or an observation that
+  // overran MaxObserved) is an operator problem, so "it will fix itself" is a claim about somebody
+  // else's actions. "There is nothing for you to do" is the part that is true from here.
   if (observer?.kind === "stalled") {
     return {
       title: "Crediting is paused",
       detail:
-        "Your lock is safe on Cardano. cogno has stopped reading Cardano for now, so posting power is not being credited to anyone. It resumes on its own, and your lock is credited then.",
+        "Your lock is safe on Cardano. cogno has stopped reading Cardano for now, so posting power is not being credited to anyone. There is nothing for you to do. Your lock is credited once reading resumes.",
       why: false,
       bar: null,
       spinner: false,

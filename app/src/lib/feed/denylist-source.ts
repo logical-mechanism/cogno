@@ -98,6 +98,7 @@ export function withServeDenylist(source: FeedSource): FeedSource {
 
   async function thread(rootId: bigint, viewer?: Ss58): Promise<ThreadView> {
     const t = await source.thread(rootId, viewer);
+    const replies = filterDenied(t.replies);
     // The ROOT is not dropped: `thread()` has no shape for "the focal post is gone", and returning a
     // thread whose root is somebody else's reply would be worse than rendering the stub the card layer
     // already knows how to draw. The permalink is handled at the render seam (useModeration), which
@@ -105,10 +106,11 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     return {
       ...t,
       ancestors: filterDenied(t.ancestors),
-      replies: filterDenied(t.replies),
+      replies,
       // The count is what the UI renders as "N replies"; leaving it whole would promise rows that are
-      // not there. It cannot go negative: `filterDenied` only ever shrinks the list.
-      replyCount: Math.max(0, t.replyCount - (t.replies.length - filterDenied(t.replies).length)),
+      // not there. Subtract what was dropped rather than using `replies.length` outright: the count is
+      // the WHOLE thread's reply total, which can exceed the page of replies actually returned.
+      replyCount: Math.max(0, t.replyCount - (t.replies.length - replies.length)),
     };
   }
 
