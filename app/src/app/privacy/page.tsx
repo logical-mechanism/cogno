@@ -65,8 +65,9 @@ export default function PrivacyPage() {
             <li>No analytics, no tracking pixels, no advertising, no third-party scripts.</li>
             <li>No cookies.</li>
             <li>
-              No sign-up form and no profile we build about you. This app is a static page. It has no
-              backend of its own, and it never sends us anything you have not published.
+              No sign-up form and no profile we build about you. This app is a static page with no
+              backend of its own. It talks to our relay node to read and to post, and what that
+              involves is set out below.
             </li>
           </ul>
           <p className={styles.body}>

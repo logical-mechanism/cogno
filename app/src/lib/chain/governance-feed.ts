@@ -9,7 +9,7 @@
 import { Binary } from "polkadot-api";
 import type { CognoApi, GovActionType } from "@/lib/types";
 import type { RoleKindType } from "@/lib/chain/roles";
-import { isDeniedPost } from "@/lib/config/denylist";
+import { isDeniedAuthor, isDeniedPost } from "@/lib/config/denylist";
 import { sanitizeInline } from "@/lib/sanitize";
 import { actionBodies } from "@/lib/cardano/governance";
 
@@ -89,11 +89,16 @@ export async function readGovernancePolls(api: CognoApi): Promise<GovPollSummary
     govs.map(async (e) => {
       const hostId = e.keyArgs[0] as bigint;
       // This reads Microblog.Posts DIRECTLY rather than through the FeedSource, so the serve denylist
-      // has to be applied here by hand. Skipping the read entirely (rather than blanking the text
-      // afterwards) also means this deployment does not fetch what it has decided not to serve.
-      const denied = isDeniedPost(hostId);
-      const post = denied ? null : await api.query.Microblog.Posts.getValue(hostId, BEST).catch(() => null);
-      const question = post ? sanitizeInline(Binary.toText(post.text)).slice(0, 160) : "";
+      // has to be applied here by hand — and BOTH halves of it. Checking only the post id was a hole:
+      // an operator who denied an ACCOUNT saw the delisting hold on Home, Explore, search, that
+      // account's profile and the post's own permalink, while /governance quietly kept rendering
+      // their poll question. The author is only knowable AFTER the read, so unlike the post-id case
+      // this cannot skip the fetch; it drops the text instead.
+      const post = isDeniedPost(hostId)
+        ? null
+        : await api.query.Microblog.Posts.getValue(hostId, BEST).catch(() => null);
+      const denied = post != null && isDeniedAuthor(post.author);
+      const question = post && !denied ? sanitizeInline(Binary.toText(post.text)).slice(0, 160) : "";
       return {
         hostId,
         actionType: actionTypeOf(e.value.action?.action_type),

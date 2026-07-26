@@ -15,6 +15,11 @@
 // you change any of them, change the code reference too:
 //   • owner-only custody, no operator/admin/pause role .... contracts/validators/talk_vault.ak
 //   • no timelock, no cooldown, exit is unilateral ........ same, plus docs/ECONOMICS.md
+//   • locked ADA KEEPS EARNING STAKING REWARDS ............ the vault address is
+//     `serializePlutusScript(script, owner.stakeKeyHash, …)` (script payment cred + the OWNER's stake
+//     cred) and validate.ak ENFORCES `out_stake == owner.stake_credential`. This page said the exact
+//     opposite for a while ("earns no interest, rewards or yield of any kind"), which was the single
+//     worst kind of error a terms page can carry: a checkable falsehood, in writing, about money.
 //   • the lock amount is a FLOOR the script enforces ...... MIN_LOCK, imported below (not a literal)
 //   • a bind cannot be undone by the user ................. pallets/cogno-gate has three calls and no
 //     unbind; revoke is committee-only and writes two permanent tombstones
@@ -97,10 +102,16 @@ export default function LegalPage() {
           </p>
           <p className={styles.body}>
             There is no lock-up period and no cooldown. You can exit whenever you like, straight back
-            to your own wallet, and you do not need our permission or our servers to do it. Two
-            practical notes: the exit is a Cardano transaction, so it costs a network fee and your
-            wallet needs a collateral input of at least 5 ADA; and locked ADA earns no interest,
-            rewards or yield of any kind. It sits there and it buys you the right to post.
+            to your own wallet, and you do not need our permission or our servers to do it. The exit
+            is a Cardano transaction, so it costs a network fee and your wallet needs a collateral
+            input of at least 5 ADA.
+          </p>
+          <p className={styles.body}>
+            Locked ADA stays delegated to whatever stake pool you had already chosen, and keeps
+            earning your normal Cardano staking rewards while it sits in the contract. That is a
+            property of how the vault address is built, not a service we provide: the address carries
+            your own stake key, and the contract refuses any other. We pay you nothing, we take
+            nothing, and we have no say in it.
           </p>
           <p className={styles.body}>
             The contract is open source and has been audited, and the report is in the repository. It

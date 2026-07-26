@@ -30,6 +30,7 @@ import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { BootGuardNotice } from "./BootGuardNotice";
+import { SmallScreenFooter } from "./nav/SmallScreenFooter";
 import { EmptyState } from "./EmptyState";
 import { Loading } from "./Loading";
 import { IconBack } from "./icons";
@@ -177,6 +178,10 @@ export function AppShell({ children }: { children: ReactNode }) {
               read no boot state at all, so nothing said otherwise until the click. */}
           <BootGuardNotice />
           {children}
+          {/* The policy/legal/privacy links for the widths where RightRail (which carries them on
+              desktop) is display:none. Without it a signed-out phone visitor could reach NONE of
+              them, since the only other link lives in Settings and Settings is walled. */}
+          <SmallScreenFooter />
         </main>
 
         <div className={styles.rightCol}>

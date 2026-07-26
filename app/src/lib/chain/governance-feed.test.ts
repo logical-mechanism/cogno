@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Binary } from "polkadot-api";
 import { readGovernancePolls, eligibleToVote, govCloseState } from "./governance-feed";
 import type { CognoApi } from "@/lib/types";
@@ -93,5 +93,50 @@ describe("govCloseState", () => {
     expect(govCloseState({ finalized: false, closeAt: 10 }, 12)).toBe("provisional");
     expect(govCloseState({ finalized: false, closeAt: 10 }, 5)).toBe("open");
     expect(govCloseState({ finalized: false, closeAt: undefined }, 5)).toBe("open");
+  });
+});
+
+// The serve denylist on /governance. This path reads Microblog.Posts DIRECTLY rather than through the
+// FeedSource, so it gets no filtering for free — and it shipped checking only the POST id. An operator
+// who denied an ACCOUNT saw the delisting hold on Home, Explore, search, that account's profile and the
+// post's own permalink, while /governance quietly kept rendering their poll question, both in the row
+// and in the browser tab title. "It looks like it worked everywhere I checked" is the worst shape a
+// hole in this lever can take.
+describe("the operator serve denylist on /governance", () => {
+  const DENIED = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
+
+  it("drops the question text of a poll authored by a denied account", async () => {
+    vi.resetModules();
+    vi.doMock("@/lib/config/denylist", () => ({
+      isDeniedAuthor: (a: string | null | undefined) => a === DENIED,
+      isDeniedPost: () => false,
+    }));
+    const { readGovernancePolls: read } = await import("./governance-feed");
+    const polls: Entry[] = [
+      { keyArgs: [1n], value: { action: { action_type: { type: "HardFork" } }, close_at: undefined } },
+    ];
+    const posts = { "1": { text: Binary.fromText("Vote for me"), author: DENIED } };
+    const out = await read(mockApi(polls, [], posts));
+    expect(out).toHaveLength(1); // the row itself still exists; only the served TEXT is withheld
+    expect(out[0].question).toBe("");
+    vi.doUnmock("@/lib/config/denylist");
+    vi.resetModules();
+  });
+
+  it("leaves a poll by an undenied account alone", async () => {
+    vi.resetModules();
+    vi.doMock("@/lib/config/denylist", () => ({
+      isDeniedAuthor: (a: string | null | undefined) => a === DENIED,
+      isDeniedPost: () => false,
+    }));
+    const { readGovernancePolls: read } = await import("./governance-feed");
+    const polls: Entry[] = [
+      { keyArgs: [1n], value: { action: { action_type: { type: "HardFork" } }, close_at: undefined } },
+    ];
+    const posts = { "1": { text: Binary.fromText("Fork now?"), author: "5SomeoneElse" } };
+    const out = await read(mockApi(polls, [], posts));
+    expect(out[0].question).toBe("Fork now?");
+    vi.doUnmock("@/lib/config/denylist");
+    vi.resetModules();
   });
 });

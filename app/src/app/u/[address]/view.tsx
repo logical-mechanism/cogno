@@ -38,6 +38,7 @@ import { NO_VIEWER } from "@/lib/optimistic";
 import { usePostActions } from "@/hooks/usePostActions";
 import { modalActions } from "@/lib/modalStore";
 import { useProfile } from "@/hooks/useProfile";
+import { isDeniedAuthor } from "@/lib/config/denylist";
 import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
@@ -84,6 +85,13 @@ export function ProfileView() {
 
   // Invalid ss58 → in-app not-found (NOT a hard 404); never attempt a chain read.
   if (!isPlausibleSs58(address)) return <NotFoundInline kind="profile" />;
+  // The operator's serve denylist. Checked HERE, ahead of the read, rather than relying on the
+  // reader's blanked ProfileView: this route resolves its header from the URL address (identicon,
+  // `fallbackDisplayName`, the Follow and reputation-vote controls) and never consults
+  // `ProfileView.author`, so a blanked profile still rendered a plausible-looking, apparently-real
+  // account page with live write controls on it. Not-found is the closest honest thing this site can
+  // say about a page it has decided not to serve.
+  if (isDeniedAuthor(address)) return <NotFoundInline kind="profile" />;
 
   // key: every profile shares the one exported route segment ("_"), so React would otherwise keep
   // ProfileBody mounted across /u/A/ → /u/B/ (a mention chip, a hover card, an author click) and carry

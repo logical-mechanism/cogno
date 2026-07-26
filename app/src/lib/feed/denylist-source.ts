@@ -119,8 +119,11 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     if (isDeniedAuthor(p.author)) {
       // A denied AUTHOR loses the whole profile surface, not just their posts: the header renders the
       // display name, bio, banner and website, all of which are chain text this deployment has chosen
-      // not to serve. `author: null` is the shape the view already renders as "this account doesn't
-      // exist", which is the closest honest thing the app can say about a page it will not show.
+      // not to serve. Blanking it here is the DATA half; the /u/[address] route renders its
+      // not-found body from its own `isDeniedAuthor` check, because it resolves the header from the
+      // URL rather than from this object and would otherwise draw a plausible empty account page with
+      // live Follow and vote controls on it. Both halves are needed, and neither is redundant: this
+      // one also covers every OTHER consumer of `profile()` (the hover card, Settings' own preview).
       return {
         author: null,
         identityHash: null,

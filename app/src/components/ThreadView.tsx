@@ -50,6 +50,7 @@ import { useComposerGate } from "@/hooks/useComposerGate";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { submitReply } from "@/lib/chain/mutations";
 import { formatCount, formatSignedWeight, formatWeight } from "@/lib/format";
+import { isDenied } from "@/lib/config/denylist";
 import { handleOf } from "@/lib/ss58";
 import { sanitizeInline } from "@/lib/sanitize";
 import type { CognoPost } from "@/lib/types";
@@ -307,6 +308,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // ── browser tab title: author + snippet, so multiple open post tabs are distinguishable ──
   useEffect(() => {
     if (typeof document === "undefined" || !focal) return;
+    // A delisted focal post must not put its author's name or its text HERE either. The reader
+    // deliberately does not drop a thread ROOT (there is no shape for "the post you asked for is
+    // gone"), so `focal` is the full unfiltered post and PostCard renders the stub below — which
+    // makes the delisting look complete while the title still carried the name and the first 60
+    // characters of the body into the tab strip, the browser history and any bookmark taken from it.
+    // Those outlive the page.
+    if (isDenied(focal)) {
+      document.title = "cogno";
+      return;
+    }
     // Harden both halves — the browser tab title is user text, and a bidi override / newline there
     // would corrupt the tab label (sanitizeInline also does the whitespace collapse).
     const who = sanitizeInline(focal.authorDisplayName ?? "") || handleOf(focal.author);

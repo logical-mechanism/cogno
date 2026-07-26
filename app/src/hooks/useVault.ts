@@ -24,8 +24,15 @@ import { isUserRejection } from "@/lib/cardano/cip8";
 export type VaultPhase = "idle" | "working" | "submitted" | "error";
 
 /** Which action produced the current tx state — so a caller can tell a lock (start crediting) from an
- *  exit (stop crediting) when reacting to `phase === "submitted"`. */
-export type VaultAction = "lock" | "exit";
+ *  exit (stop crediting) when reacting to `phase === "submitted"`.
+ *
+ *  `"exit-legacy"` is a THIRD value rather than a reuse of `"exit"`, and the distinction is
+ *  load-bearing: `usePendingLockSync` bridges this field to the persistent pending-lock record, and a
+ *  legacy exit touches a RETIRED script, so it must move neither half of that record. Reusing "exit"
+ *  would CLEAR an in-flight lock's countdown; leaving it on "lock" would RE-RECORD the pending lock
+ *  against the legacy exit's tx hash, so the countdown would then poll the wrong transaction for its
+ *  Cardano slot. Both are wrong, so the honest answer is a value that bridge ignores. */
+export type VaultAction = "lock" | "exit" | "exit-legacy";
 
 /** The fine-grained sub-phase of the in-flight `working` tx, for a live step indicator. `preparing`
  *  = building the tx (wallet enable + UTxO fetch + script eval), then the wallet sign, then the
@@ -153,6 +160,16 @@ export function useVault(): UseVault {
         setLegacy([]);
       }
       setError(null);
+      // Retired-script balances, read INDEPENDENTLY of the current-script read and never gated on it.
+      // This used to sit after the `!res.known` early return below, which meant a rate-limited read of
+      // the CURRENT vault address also hid a stranded legacy balance — at the exact moment somebody is
+      // trying to recover funds and one provider read has already failed. The two are separate
+      // addresses and separate requests; one failing says nothing about the other. Its own failure is
+      // swallowed: a legacy read must never be able to turn a good current-script read into an error.
+      // Returns [] without touching the provider while the retired list is empty.
+      void fetchLegacyVaults(walletId)
+        .then((l) => seq === inspectSeq.current && setLegacy(l))
+        .catch(() => seq === inspectSeq.current && setLegacy([]));
       void (async () => {
         try {
           const res = await fetchVaultState(walletId);
@@ -173,13 +190,6 @@ export function useVault(): UseVault {
           setExtraVaults(res.extraVaults);
           setLockedKnown(true);
           setPhase((p) => (p === "error" ? "idle" : p)); // a successful re-read clears a stale failure
-          // Retired scripts, on the SAME sequence guard so a wallet switch cannot leave the previous
-          // wallet's stranded balance on screen. Its own failure is swallowed: a legacy read is a
-          // recovery affordance, and it must never be able to turn a good current-script read into an
-          // error. `fetchLegacyVaults` returns [] without touching the provider when the list is empty.
-          fetchLegacyVaults(walletId)
-            .then((l) => seq === inspectSeq.current && setLegacy(l))
-            .catch(() => seq === inspectSeq.current && setLegacy([]));
         } catch (e) {
           if (seq !== inspectSeq.current) return;
           // Raise the phase too, not just the message: the card only renders `error` in the `error`
@@ -294,7 +304,11 @@ export function useVault(): UseVault {
     (walletId: string, scriptHash: string) => {
       if (inFlight.current) return;
       inFlight.current = true;
-      setLastAction("exit");
+      // "exit-legacy", NOT "exit": this empties a RETIRED script and must not move the current vault's
+      // pending-lock record in either direction. See the VaultAction doc — "exit" would clear an
+      // in-flight lock's countdown, and leaving it on "lock" would re-record that lock against this
+      // exit's tx hash. usePendingLockSync ignores any third value, which is what makes this correct.
+      setLastAction("exit-legacy");
       setError(null);
       setTxHash(null);
       setStep("preparing");

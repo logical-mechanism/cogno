@@ -95,9 +95,9 @@ export default function PolicyPage() {
           <ul className={styles.list}>
             <li>
               <strong>Stop the account posting again.</strong> A 3-of-5 committee vote can revoke an
-              identity. That account can never post again, and neither that Cardano wallet nor its
-              stake key can ever bind a new account. It is permanent. It is also forward-only: it
-              stops the next post and does not touch the ones already published.
+              identity. The account loses the binding it needs in order to post, and neither that
+              Cardano wallet nor its stake key can ever bind again. Both bans are permanent. It is
+              also forward-only: it stops the next post and does not touch the ones already published.
             </li>
             <li>
               <strong>Take it off this site.</strong> We can stop this frontend from serving a
@@ -124,9 +124,9 @@ export default function PolicyPage() {
               {ABUSE_EMAIL}
             </a>
             . Tell us what the problem is, and point us at it. The fastest way to do that for a post
-            is its ··· menu, which has a Report option that opens an email with the link already
-            filled in, and a Copy link action if you would rather write your own. For an account, tap
-            their address on their profile to copy it.
+            is Report post in its ··· menu, which opens an email with the link already filled in. If
+            you would rather write your own, the share button under a post copies its link. For an
+            account, tap their address on their profile to copy it.
           </p>
           <p className={styles.body}>
             Found a security vulnerability instead? Do not post it. See{" "}

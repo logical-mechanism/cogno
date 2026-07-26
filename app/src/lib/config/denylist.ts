@@ -50,10 +50,17 @@
 // SSG-safe: `process.env.NEXT_PUBLIC_*` is referenced LITERALLY so Next can substitute it at build
 // time, and nothing here touches `window`.
 
+import { normalizeSs58 } from "@/lib/ss58";
+
 /** An ss58 at prefix 42 is 47-49 base58 chars. Only a shape check — a typo must fail the build. */
 const SS58_SHAPE = /^[1-9A-HJ-NP-Za-km-z]{44,49}$/;
-/** A post id is a decimal counter (`NextPostId`), so anything else is a mistake, not an address. */
-const POST_ID_SHAPE = /^\d+$/;
+/**
+ * A post id is a decimal counter (`NextPostId`). No leading zeros: lookups are `DENIED_POSTS.has(String(id))`
+ * and `String(1234n)` is "1234", so a pasted "01234" would sit in the set matching nothing at all —
+ * a silently ineffective entry, which is the exact failure the validation exists to prevent. "0" itself
+ * is a legitimate id and is allowed.
+ */
+const POST_ID_SHAPE = /^(0|[1-9]\d*)$/;
 
 /** Split a comma-separated env var, trimming and dropping blanks. */
 function parseList(raw: string): string[] {
@@ -72,10 +79,18 @@ function parseList(raw: string): string[] {
  * mixed-content `ws://`. In development a bad entry warns and is dropped, so an experiment does not
  * brick `npm run dev`.
  */
-function validated(entries: string[], shape: RegExp, what: string): string[] {
-  const bad = entries.filter((e) => !shape.test(e));
+function validated(
+  entries: string[],
+  shape: RegExp,
+  what: string,
+  extra?: (e: string) => string | null,
+): string[] {
+  const bad = entries.filter((e) => !shape.test(e) || extra?.(e) != null);
   if (bad.length > 0) {
-    const message = `Denylist: ${bad.length} malformed ${what} entr${bad.length === 1 ? "y" : "ies"} (${bad.join(", ")}).`;
+    const why = bad
+      .map((e) => (shape.test(e) ? `${e} (${extra?.(e) ?? "invalid"})` : e))
+      .join(", ");
+    const message = `Denylist: ${bad.length} malformed ${what} entr${bad.length === 1 ? "y" : "ies"} (${why}).`;
     if (process.env.NODE_ENV === "production") {
       throw new Error(
         `${message} A malformed entry would be silently ignored, so the deploy would look successful while still serving the content. Fix or remove it.`,
@@ -83,7 +98,27 @@ function validated(entries: string[], shape: RegExp, what: string): string[] {
     }
     console.warn(`[cogno] ${message} Ignored in development.`);
   }
-  return entries.filter((e) => shape.test(e));
+  return entries.filter((e) => shape.test(e) && extra?.(e) == null);
+}
+
+/**
+ * The checks a regex cannot make on an ss58: it must be checksum-valid AND at prefix 42.
+ *
+ * A shape check alone passes the two likeliest operator mistakes, both of which build GREEN and then
+ * deny nothing. One mistyped base58 character is still base58 and still the right length. And an
+ * address copied from a Polkadot/Substrate explorer carries a different network prefix, which encodes
+ * the SAME public key as a completely different string — so it never equals the prefix-42 form every
+ * post in this app is authored under. Either way the operator believes an account is delisted while
+ * every surface still serves it, which is worse than having no lever, because they stop looking.
+ *
+ * `normalizeSs58` (lib/ss58) is the same checksum validator the mention parser uses, so a denylist
+ * entry is held to exactly the standard an address in a post body is.
+ */
+function ss58Problem(entry: string): string | null {
+  const canonical = normalizeSs58(entry);
+  if (canonical === null) return "not a valid ss58 address";
+  if (canonical !== entry) return `wrong network prefix, use ${canonical}`;
+  return null;
 }
 
 const ENV_DENY_AUTHORS = process.env.NEXT_PUBLIC_DENY_AUTHORS || "";
@@ -91,7 +126,7 @@ const ENV_DENY_POSTS = process.env.NEXT_PUBLIC_DENY_POSTS || "";
 
 /** ss58 addresses this deployment declines to serve. EMPTY as shipped. */
 export const DENIED_AUTHORS: ReadonlySet<string> = new Set(
-  validated(parseList(ENV_DENY_AUTHORS), SS58_SHAPE, "author"),
+  validated(parseList(ENV_DENY_AUTHORS), SS58_SHAPE, "author", ss58Problem),
 );
 
 /**
