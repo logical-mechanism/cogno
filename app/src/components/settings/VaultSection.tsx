@@ -27,7 +27,7 @@ import { formatAda } from "@/lib/format";
 const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
 
 export function VaultSection() {
-  const { api, signerCtl } = useSession();
+  const { api, signerCtl, boot } = useSession();
   const vault = useVault();
   const { fail, ok } = useActionToast();
   const actionRef = useRef<"lock" | "exit" | null>(null);
@@ -60,11 +60,14 @@ export function VaultSection() {
   usePendingLockSync(vault, ss58);
   const pending = usePendingCapacity(api, ss58, postingPower);
 
-  // Inspect the vault once on mount / wallet change.
+  // Inspect the vault once on mount / wallet change — but only once the chain has answered. The vault
+  // ADDRESS is built from the Cardano network the chain names (lib/cardano/network.ts), so inspecting
+  // while the boot probe is still in flight throws "still connecting" and never retries. `boot` is the
+  // signal that the probe has settled (its Cardano resolve rides the same promise), and it flips once.
   useEffect(() => {
-    if (connected && walletId) vault.inspect(walletId);
+    if (boot && connected && walletId) vault.inspect(walletId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, walletId]);
+  }, [boot, connected, walletId]);
 
   // Toast the slow Cardano lock/exit settle (the in-flight spinner already shows inline on the button).
   useEffect(() => {

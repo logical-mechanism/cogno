@@ -222,12 +222,16 @@ export async function buildRoleProofRequest(opts: {
 
   const { credentialHex, fromKeyHash } = deriveRoleCredential(opts.keyInput, opts.role);
 
-  const cst = await import("@meshsdk/core-cst");
-  // The synthetic enterprise address (key-hash payment credential) on the network THIS CHAIN binds
-  // for. cardano-signer embeds it verbatim in the COSE_Sign1 protected header and the runtime binds
-  // blake2b_224(pubkey) to it, checking the network nibble — so a wrong network here is only caught
-  // on submit, after the operator has already produced the signature.
+  // Ahead of the ~6 MB core-cst import, because it can throw: pulling the whole Cardano bundle only
+  // to reject is a slow way to say "still connecting".
+  //
+  // The synthetic enterprise address below (key-hash payment credential) is on the network THIS CHAIN
+  // binds for. cardano-signer embeds it verbatim in the COSE_Sign1 protected header and the runtime
+  // binds blake2b_224(pubkey) to it, checking the network nibble — so a wrong network here is only
+  // caught on submit, after the operator has already produced the signature.
   const network = requireCardanoNetworkId();
+
+  const cst = await import("@meshsdk/core-cst");
   const syntheticAddress = String(
     cst.buildEnterpriseAddress(network, cst.Hash28ByteBase16(credentialHex)).toAddress().toBech32(),
   );

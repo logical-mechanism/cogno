@@ -36,6 +36,15 @@ export type CardanoFlavor = "mainnet" | "preprod" | "preview";
 /** The chain's answer, or null before the boot probe has resolved it. Module-scoped, one per app. */
 let resolved: CardanoNetworkId | null = null;
 
+/**
+ * Bumped by every {@link resetCardanoNetwork}. A resolve reads it on entry and refuses to commit if it
+ * moved while the constant reads were in flight — without that, switching endpoints lets the OLD
+ * chain's answer (or its post-`destroy()` rejection, which commits `null`) land after the new one has
+ * already resolved, and the app is then either on the wrong network or wedged as "still connecting"
+ * with nothing left to re-resolve it. The exact stale-cache bug the reset exists to prevent.
+ */
+let epoch = 0;
+
 /** The resolved network id, or null when the boot probe has not landed (or reported a broken chain). */
 export function getCardanoNetworkId(): CardanoNetworkId | null {
   return resolved;
@@ -53,8 +62,12 @@ export function requireCardanoNetworkId(): CardanoNetworkId {
   return resolved;
 }
 
-/** Drop the cached value. Called when the chain handle changes so a new endpoint re-resolves. */
+/**
+ * Drop the cached value. Called when the chain handle changes so a new endpoint re-resolves — and it
+ * also invalidates any resolve still in flight for the previous handle (see {@link epoch}).
+ */
 export function resetCardanoNetwork(): void {
+  epoch += 1;
   resolved = null;
 }
 
@@ -74,15 +87,23 @@ export interface NetworkResolution {
  *
  * Never throws: a read failure resolves to `{ id: null, reason }` so the boot path stays alive and
  * consumers fail closed on their own.
+ *
+ * A resolve that was superseded by a {@link resetCardanoNetwork} mid-flight still RETURNS its answer
+ * (the caller's own cancellation guard decides what to do with it) but never writes the cache.
  */
 export async function resolveCardanoNetwork(api: CognoApi): Promise<NetworkResolution> {
+  const gen = epoch;
+  // Only the resolve that still owns the current epoch may write the cache.
+  const commit = (value: CardanoNetworkId | null): void => {
+    if (gen === epoch) resolved = value;
+  };
   try {
     const [gate, roles] = await Promise.all([
       api.constants.CognoGate.CardanoNetwork(),
       api.constants.CardanoRoles.CardanoNetwork(),
     ]);
     if (gate !== roles) {
-      resolved = null;
+      commit(null);
       // Not user-actionable, but it must not read as a wallet problem: the chain is misconfigured.
       console.error(
         `cogno: chain reports disagreeing Cardano networks (CognoGate=${gate}, CardanoRoles=${roles}); refusing to pick one`,
@@ -90,14 +111,14 @@ export async function resolveCardanoNetwork(api: CognoApi): Promise<NetworkResol
       return { id: null, reason: "This network is misconfigured. Cardano actions are off." };
     }
     if (gate !== 0 && gate !== 1) {
-      resolved = null;
+      commit(null);
       console.error(`cogno: chain reports an unknown Cardano network id ${gate}`);
       return { id: null, reason: "This network is misconfigured. Cardano actions are off." };
     }
-    resolved = gate;
+    commit(gate);
     return { id: gate };
   } catch (err) {
-    resolved = null;
+    commit(null);
     console.warn("[cogno] could not read the Cardano network constant:", err);
     return { id: null, reason: "Can't reach cogno. Check your connection and try again." };
   }
@@ -206,23 +227,31 @@ export function assertWalletNetwork(walletNetworkId: number): CardanoNetworkId {
 // carried their own Blockfrost base, explorer.ts pinned preprod outright), which is how the mainnet
 // hosts were reachable from one place and not the others.
 
+/**
+ * The flavor these hosts should be built from right now: the chain's network when it has answered,
+ * else the configured project id's own flavor (and preprod when there is nothing to go on).
+ *
+ * Read at CALL time, not at module load — the network arrives asynchronously, so anything that caches
+ * a host string across the boot probe can pin the pre-resolution fallback.
+ */
+function currentFlavor(): CardanoFlavor {
+  const network = getCardanoNetworkId();
+  return network === null ? (cardanoFlavor() ?? "preprod") : effectiveFlavor(network);
+}
+
 /** The Blockfrost REST base for the effective network. */
 export function blockfrostBase(): string {
-  const network = getCardanoNetworkId();
-  const flavor = network === null ? (cardanoFlavor() ?? "preprod") : effectiveFlavor(network);
-  return `https://cardano-${flavor}.blockfrost.io/api/v0`;
+  return `https://cardano-${currentFlavor()}.blockfrost.io/api/v0`;
 }
 
 /** The Cardanoscan origin for the effective network. */
 export function cardanoscanBase(): string {
-  const network = getCardanoNetworkId();
-  const flavor = network === null ? (cardanoFlavor() ?? "preprod") : effectiveFlavor(network);
+  const flavor = currentFlavor();
   return flavor === "mainnet" ? "https://cardanoscan.io" : `https://${flavor}.cardanoscan.io`;
 }
 
 /** The cexplorer subdomain for the effective network (`""` = mainnet). */
 export function cexplorerSub(): string {
-  const network = getCardanoNetworkId();
-  const flavor = network === null ? (cardanoFlavor() ?? "preprod") : effectiveFlavor(network);
+  const flavor = currentFlavor();
   return flavor === "mainnet" ? "" : `${flavor}.`;
 }

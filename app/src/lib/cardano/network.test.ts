@@ -94,6 +94,64 @@ describe("resolveCardanoNetwork — the chain is the authority", () => {
     resetCardanoNetwork();
     expect(getCardanoNetworkId()).toBeNull();
   });
+
+  it("a resolve that a reset superseded mid-flight never writes the cache", async () => {
+    // Switching endpoints: useChain resets and re-resolves while the PREVIOUS handle's constant reads
+    // are still out. Without an epoch guard the old answer lands last and wins — the app is then on
+    // the wrong network with nothing left to correct it, which is precisely what the reset is for.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const stale = resolveCardanoNetwork({
+      constants: {
+        CognoGate: {
+          CardanoNetwork: async () => {
+            await gate;
+            return 1;
+          },
+        },
+        CardanoRoles: { CardanoNetwork: async () => 1 },
+      },
+    } as never);
+
+    resetCardanoNetwork(); // the endpoint changed
+    await seedCardanoNetwork(0); // the NEW handle answers first
+    expect(getCardanoNetworkId()).toBe(0);
+
+    release();
+    expect(await stale).toEqual({ id: 1 }); // it still reports what it saw…
+    expect(getCardanoNetworkId()).toBe(0); // …but it does not get to install it
+  });
+
+  it("and a superseded resolve's FAILURE cannot wedge the new one at null either", async () => {
+    // The same race in its likelier form: the old client is destroyed, so its in-flight reads reject.
+    // That rejection commits `null`, and nothing re-resolves — every Cardano action then fails closed
+    // with "still connecting" until the next reconnect.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const stale = resolveCardanoNetwork({
+      constants: {
+        CognoGate: {
+          CardanoNetwork: async () => {
+            await gate;
+            throw new Error("client destroyed");
+          },
+        },
+        CardanoRoles: { CardanoNetwork: async () => 0 },
+      },
+    } as never);
+
+    resetCardanoNetwork();
+    await seedCardanoNetwork(0);
+    release();
+    expect((await stale).id).toBeNull();
+    expect(getCardanoNetworkId()).toBe(0);
+    warn.mockRestore();
+  });
 });
 
 describe("wallet guards — fail closed, and never confuse unresolved with mismatch", () => {

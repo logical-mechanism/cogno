@@ -140,21 +140,23 @@ export async function probeWalletIdentity(walletId: string): Promise<WalletProbe
     if (typeof api?.getNetworkId !== "function" || typeof api.getChangeAddress !== "function") {
       return { ok: false, kind: "unavailable", reason: `wallet "${walletId}" returned an incomplete API` };
     }
-    // Same rule as the vault's and the derive's, against the chain's own constant. A wallet on the
-    // wrong network is a genuine mismatch (it would derive a different posting key). But a network we
-    // have not resolved yet is INCONCLUSIVE, and this probe drops the session on a mismatch — so an
-    // unresolved read reports `unavailable`, never `mismatch`.
-    const net = checkWalletNetwork(await api.getNetworkId());
-    if (!net.ok) {
-      return {
-        ok: false,
-        kind: net.kind === "unresolved" ? "unavailable" : "mismatch",
-        reason: net.message,
-      };
-    }
+    // THE ACCOUNT ANSWER FIRST. This probe races the chain's boot probe (lib/chain/client.ts) — it
+    // reads a local injected extension while that one waits on a WS handshake — so on a normal cold
+    // load the Cardano network is not resolved yet. Asking the network question first meant returning
+    // `unavailable` before the address was ever read, which silently disabled the account-switch
+    // detection this whole probe exists for on essentially every reload.
     const addressHex = await api.getChangeAddress();
     if (typeof addressHex !== "string" || addressHex.length === 0) {
       return { ok: false, kind: "unavailable", reason: "the wallet returned no change address" };
+    }
+    // Then the network, against the chain's own constant — same rule as the vault's and the derive's.
+    // A wallet on the wrong network is a genuine mismatch (it would derive a different posting key).
+    // A network we have not resolved YET is inconclusive about the network only: the address above
+    // still stands, so report it and let the caller make the conclusive account comparison. Every
+    // path that spends a signature re-checks the network for real once it has resolved.
+    const net = checkWalletNetwork(await api.getNetworkId());
+    if (!net.ok && net.kind === "mismatch") {
+      return { ok: false, kind: "mismatch", reason: net.message };
     }
     return { ok: true, addressHex: addressHex.toLowerCase() };
   } catch (e) {
