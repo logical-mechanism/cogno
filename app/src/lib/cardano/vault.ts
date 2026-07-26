@@ -73,12 +73,18 @@ async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; 
  * button in front of someone who already had 100 ADA locked.
  */
 export type VaultRead =
-  | { kind: "locked"; lovelace: bigint; utxos: number }
+  /** `utxo` is the winning one — the one the chain credits AND the one an exit must spend. */
+  | { kind: "locked"; lovelace: bigint; utxo: UTxO; utxos: number }
   | { kind: "none" }
   | { kind: "unknown" };
 
 /** The slice of the provider a vault read needs — keeps this file off the heavier MeshJS types. */
 type VaultFetcher = { fetchAddressUTxOs: (address: string, asset?: string) => Promise<UTxO[]> };
+
+/** The lovelace a vault UTxO holds. */
+function lovelaceOf(u: UTxO): bigint {
+  return BigInt(u.output.amount.find((a) => a.unit === "lovelace")?.quantity ?? "0");
+}
 
 /**
  * Read the vault UTxOs holding this owner's beacon. Never throws: a provider failure is reported as
@@ -87,16 +93,16 @@ type VaultFetcher = { fetchAddressUTxOs: (address: string, asset?: string) => Pr
  * Reports the LARGEST UTxO, matching what the chain actually credits — the observer's reduction is
  * largest-wins per identity and never sums (cogno-dbsync/src/reduction.rs). `utxos` carries the count
  * so a caller can tell that a second, uncredited vault exists.
+ *
+ * This is the ONE place that rule is implemented. `exitVault` used to carry its own copy of it, which
+ * meant the UI could report one UTxO while the exit tx spent another the moment the two drifted.
  */
 async function readVault(provider: VaultFetcher, info: VaultInfo): Promise<VaultRead> {
   try {
     const utxos = await provider.fetchAddressUTxOs(info.vaultAddress, info.unit);
     if (!utxos.length) return { kind: "none" };
-    const lovelace = utxos.reduce((max, u) => {
-      const v = BigInt(u.output.amount.find((a) => a.unit === "lovelace")?.quantity ?? "0");
-      return v > max ? v : max;
-    }, 0n);
-    return { kind: "locked", lovelace, utxos: utxos.length };
+    const utxo = utxos.reduce((best, u) => (lovelaceOf(u) > lovelaceOf(best) ? u : best));
+    return { kind: "locked", lovelace: lovelaceOf(utxo), utxo, utxos: utxos.length };
   } catch {
     return { kind: "unknown" };
   }
@@ -185,18 +191,15 @@ export async function exitVault(
   const { MeshTxBuilder } = await import("@meshsdk/core");
   const provider = await getProvider();
 
-  // Spend the LARGEST vault UTxO, matching the one the observer credits and the one the UI reports.
-  // A provider failure must not read as "nothing locked" here either: that message told a user their
-  // ADA was gone when the truth was a rate-limited read.
-  const vaultUtxos = await provider.fetchAddressUTxOs(info.vaultAddress, info.unit).catch(() => {
+  // Spend the LARGEST vault UTxO, through the SAME read the UI reports from — so the one shown and the
+  // one spent can never be different UTxOs. A provider failure must not read as "nothing locked" here
+  // either: that message told a user their ADA was gone when the truth was a rate-limited read.
+  const read = await readVault(provider, info);
+  if (read.kind === "unknown") {
     throw new Error("Can't check your vault right now. Try again in a moment.");
-  });
-  const target = vaultUtxos.reduce<UTxO | null>((best, u) => {
-    if (!best) return u;
-    const v = (x: UTxO) => BigInt(x.output.amount.find((a) => a.unit === "lovelace")?.quantity ?? "0");
-    return v(u) > v(best) ? u : best;
-  }, null);
-  if (!target) throw new Error("No locked ADA found for this wallet.");
+  }
+  if (read.kind === "none") throw new Error("No locked ADA found for this wallet.");
+  const target = read.utxo;
 
   const utxos = await wallet.getUtxos();
   const collateral = pickCollateral(await wallet.getCollateral(), utxos);

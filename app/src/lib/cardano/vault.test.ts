@@ -16,11 +16,16 @@ const fake = {
   networkId: 0 as number,
   paymentType: 0 as number,
   /** what the provider returns for the vault address; a throw simulates a rate-limited read. */
-  vaultUtxos: [] as Array<{ output: { amount: Array<{ unit: string; quantity: string }> } }>,
+  vaultUtxos: [] as Array<{
+    input: { txHash: string; outputIndex: number };
+    output: { amount: Array<{ unit: string; quantity: string }> };
+  }>,
   vaultReadThrows: false,
   walletUtxos: [{ output: { amount: [{ unit: "lovelace", quantity: "500000000" }] } }],
   signed: 0,
   submitted: 0,
+  /** the vault input an exit actually spent (from the builder's txIn), so the pick can be asserted. */
+  spentIndex: null as number | null,
 };
 
 vi.mock("@meshsdk/core", () => ({
@@ -59,7 +64,10 @@ vi.mock("@meshsdk/core", () => ({
     changeAddress() { return this; }
     selectUtxosFrom() { return this; }
     spendingPlutusScriptV3() { return this; }
-    txIn() { return this; }
+    txIn(_txHash: string, outputIndex: number) {
+      fake.spentIndex = outputIndex;
+      return this;
+    }
     txInScript() { return this; }
     txInInlineDatumPresent() { return this; }
     txInRedeemerValue() { return this; }
@@ -97,8 +105,8 @@ vi.mock("./blueprint", () => ({
 import { lockIntoVault, exitVault, fetchVaultState } from "./vault";
 import { seedCardanoNetwork } from "./network.fixture";
 
-const utxo = (lovelace: string) => ({
-  input: { txHash: "ee".repeat(32), outputIndex: 0 },
+const utxo = (lovelace: string, outputIndex = 0) => ({
+  input: { txHash: "ee".repeat(32), outputIndex },
   output: { amount: [{ unit: "lovelace", quantity: lovelace }], address: "addr_test_vault" },
 });
 
@@ -109,6 +117,7 @@ beforeEach(async () => {
   fake.vaultReadThrows = false;
   fake.signed = 0;
   fake.submitted = 0;
+  fake.spentIndex = null;
   await seedCardanoNetwork(0);
 });
 
@@ -176,10 +185,15 @@ describe("exitVault — an unreadable provider is not an empty vault either", ()
   });
 
   it("spends the largest UTxO, the one the observer credits and the UI reports", async () => {
-    fake.vaultUtxos = [utxo("100000000"), utxo("300000000")];
+    // The SAME read fetchVaultState reports from picks this input, so the balance on screen and the
+    // UTxO the exit spends cannot be different vaults. exitVault used to re-implement largest-wins on
+    // its own, which is one hand-maintained copy of a consensus rule too many.
+    fake.vaultUtxos = [utxo("100000000", 0), utxo("300000000", 1), utxo("200000000", 2)];
     const res = await exitVault("eternl");
     expect(res.txHash).toMatch(/^[0-9a-f]{64}$/);
     expect(fake.signed).toBe(1);
+    expect(fake.spentIndex).toBe(1); // the 300 ADA one
+    expect((await fetchVaultState("eternl")).locked).toBe(300_000_000n); // and the one reported
   });
 
   it("still reports a genuinely empty vault as nothing locked", async () => {

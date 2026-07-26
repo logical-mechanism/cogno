@@ -3,7 +3,7 @@
 //   • the two-pallet cross-check (a runtime that flips CognoGate but not CardanoRoles names no network)
 //   • unresolved is INCONCLUSIVE, never a mismatch — the session-restore probe drops sessions on
 //     `mismatch`, so getting this backwards would sign people out during boot
-//   • the shared message keeps the token the connect-step classifier matches on
+//   • a PERMANENT failure says so, instead of "still connecting" forever
 //
 // The Blockfrost project id is mocked because flavor (preprod vs preview) is the one thing the chain
 // constant cannot express — network id 0 covers both.
@@ -19,6 +19,7 @@ import {
   resolveCardanoNetwork,
   resetCardanoNetwork,
   getCardanoNetworkId,
+  cardanoNetworkReason,
   requireCardanoNetworkId,
   checkWalletNetwork,
   assertWalletNetwork,
@@ -31,11 +32,6 @@ import {
   cexplorerSub,
 } from "./network";
 import { seedCardanoNetwork } from "./network.fixture";
-
-// The exact regex app/welcome/page.tsx uses to route a thrown wallet error to its inline treatment,
-// applied the same way it is there: against the LOWERCASED message.
-const CLASSIFIER = /wrong network|mainnet|preprod|network id|network mismatch/;
-const classifies = (message: string): boolean => CLASSIFIER.test(message.toLowerCase());
 
 beforeEach(() => {
   projectId = "";
@@ -51,7 +47,7 @@ describe("resolveCardanoNetwork — the chain is the authority", () => {
         CardanoRoles: { CardanoNetwork: async () => 1 },
       },
     } as never);
-    expect(r).toEqual({ id: 1 });
+    expect(r).toBe(1);
     expect(getCardanoNetworkId()).toBe(1);
   });
 
@@ -59,9 +55,7 @@ describe("resolveCardanoNetwork — the chain is the authority", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     // CognoGate flipped to mainnet, CardanoRoles left on testnet: binds would work while every role
     // proof was rejected. Neither value is safe to act on, so it must resolve to null.
-    const r = await seedNetworkPair(1, 0);
-    expect(r.id).toBeNull();
-    expect(r.reason).toBeTruthy();
+    expect(await seedNetworkPair(1, 0)).toBeNull();
     expect(getCardanoNetworkId()).toBeNull();
     expect(spy.mock.calls[0].join(" ")).toMatch(/CognoGate=1.*CardanoRoles=0/);
     spy.mockRestore();
@@ -69,7 +63,7 @@ describe("resolveCardanoNetwork — the chain is the authority", () => {
 
   it("names no network on an unknown id, and never throws on a read failure", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect((await seedNetworkPair(7 as 0 | 1, 7 as 0 | 1)).id).toBeNull();
+    expect(await seedNetworkPair(7 as 0 | 1, 7 as 0 | 1)).toBeNull();
     spy.mockRestore();
 
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -83,8 +77,7 @@ describe("resolveCardanoNetwork — the chain is the authority", () => {
         CardanoRoles: { CardanoNetwork: async () => 0 },
       },
     } as never);
-    expect(r.id).toBeNull();
-    expect(r.reason).toBeTruthy();
+    expect(r).toBeNull();
     warn.mockRestore();
   });
 
@@ -120,7 +113,7 @@ describe("resolveCardanoNetwork — the chain is the authority", () => {
     expect(getCardanoNetworkId()).toBe(0);
 
     release();
-    expect(await stale).toEqual({ id: 1 }); // it still reports what it saw…
+    expect(await stale).toBe(1); // it still reports what it saw…
     expect(getCardanoNetworkId()).toBe(0); // …but it does not get to install it
   });
 
@@ -148,9 +141,89 @@ describe("resolveCardanoNetwork — the chain is the authority", () => {
     resetCardanoNetwork();
     await seedCardanoNetwork(0);
     release();
-    expect((await stale).id).toBeNull();
+    expect(await stale).toBeNull();
     expect(getCardanoNetworkId()).toBe(0);
     warn.mockRestore();
+  });
+
+  it("a superseded resolve cannot install its REASON either", async () => {
+    // The reason is what the fail-closed paths now say out loud, so a stale one is a stale diagnosis:
+    // the old chain's "misconfigured" would sit on a new chain that resolved perfectly well.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const stale = resolveCardanoNetwork({
+      constants: {
+        CognoGate: {
+          CardanoNetwork: async () => {
+            await gate;
+            return 1;
+          },
+        },
+        CardanoRoles: { CardanoNetwork: async () => 0 }, // disagreeing pair → a reason
+      },
+    } as never);
+
+    resetCardanoNetwork();
+    await seedCardanoNetwork(0);
+    release();
+    await stale;
+    expect(getCardanoNetworkId()).toBe(0);
+    expect(cardanoNetworkReason()).toMatch(/still connecting/i); // not "misconfigured"
+    spy.mockRestore();
+  });
+});
+
+describe("the reason a network is unknown — a wait and a permanent break are different", () => {
+  it("says 'still connecting' only while nothing has been resolved", () => {
+    expect(cardanoNetworkReason()).toMatch(/still connecting/i);
+    expect(() => requireCardanoNetworkId()).toThrow(/still connecting/i);
+    expect(checkWalletNetwork(0)).toMatchObject({ message: expect.stringMatching(/still connecting/i) });
+  });
+
+  it("names the MISCONFIGURATION on a half-finished cutover, rather than telling the user to wait", async () => {
+    // The failure this replaces: the two pallets disagree, so nothing resolves, and every Cardano
+    // surface said "still connecting" forever — a wait for a state that never arrives.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await seedCardanoNetwork(1, 0);
+    expect(cardanoNetworkReason()).toMatch(/misconfigured/i);
+    expect(() => requireCardanoNetworkId()).toThrow(/misconfigured/i);
+    expect(checkWalletNetwork(0)).toMatchObject({
+      ok: false,
+      kind: "unresolved", // still inconclusive: it must NOT read as a wrong-network wallet
+      message: expect.stringMatching(/misconfigured/i),
+    });
+    spy.mockRestore();
+  });
+
+  it("names an unreachable node, and a later success clears the reason", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await resolveCardanoNetwork({
+      constants: {
+        CognoGate: {
+          CardanoNetwork: async () => {
+            throw new Error("socket closed");
+          },
+        },
+        CardanoRoles: { CardanoNetwork: async () => 0 },
+      },
+    } as never);
+    expect(cardanoNetworkReason()).toMatch(/can't reach cogno/i);
+    warn.mockRestore();
+
+    await seedCardanoNetwork(0);
+    expect(cardanoNetworkReason()).toMatch(/still connecting/i); // a resolved network has no reason
+  });
+
+  it("is cleared by a reset, so a new endpoint never inherits the old chain's diagnosis", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await seedCardanoNetwork(1, 0);
+    expect(cardanoNetworkReason()).toMatch(/misconfigured/i);
+    spy.mockRestore();
+    resetCardanoNetwork();
+    expect(cardanoNetworkReason()).toMatch(/still connecting/i);
   });
 });
 
@@ -182,21 +255,7 @@ describe("wallet guards — fail closed, and never confuse unresolved with misma
   });
 });
 
-describe("wrongNetworkMessage — stays classifiable at every flavor", () => {
-  it("keeps the token app/welcome/page.tsx matches on, whatever the network", () => {
-    // This is the regression guard for a real coupling: the classifier routes on these tokens, and a
-    // flavor-only message ("switch to preview") would fall through to the raw-string default.
-    for (const [id, pid] of [
-      [0, ""],
-      [0, "preprodABC"],
-      [0, "previewABC"],
-      [1, "mainnetABC"],
-    ] as Array<[0 | 1, string]>) {
-      projectId = pid;
-      expect(classifies(wrongNetworkMessage(id))).toBe(true);
-    }
-  });
-
+describe("wrongNetworkMessage — names the network the user has to switch to", () => {
   it("names the specific testnet when the provider identifies one", () => {
     projectId = "preprodABC";
     expect(wrongNetworkMessage(0)).toContain("preprod (testnet)");

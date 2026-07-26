@@ -46,7 +46,11 @@ export interface UseVault {
   /** True only during the post-submit confirm poll — drives the "Confirming…" UI without leaning on the
    *  sticky `submitted` phase (which never clears). */
   confirming: boolean;
-  /** resolve the vault state for a wallet without sending a tx. */
+  /**
+   * Resolve the vault state for a wallet without sending a tx. A no-op while a lock/exit (or its
+   * confirm poll) is running — that path owns this state and is already re-reading. Safe to call
+   * repeatedly and across a wallet switch: only the newest read commits.
+   */
   inspect: (walletId: string) => void;
   lock: (walletId: string, lovelace?: bigint) => void;
   exit: (walletId: string) => void;
@@ -82,37 +86,13 @@ export function useVault(): UseVault {
   // Bounded re-read poll after a submit (see pollUntilSettled). Cleared on unmount / reset / a new run.
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollTries = useRef(0);
+  // Monotonic id of the newest inspect, and the wallet it was issued for. Two vault reads can be out
+  // at once (a wallet switch, an endpoint change re-firing the effect) and they do NOT come back in
+  // order, so only the newest may commit.
+  const inspectSeq = useRef(0);
+  const inspectedWallet = useRef<string | null>(null);
 
   const busy = phase === "working";
-
-  const inspect = useCallback((walletId: string) => {
-    setError(null);
-    void (async () => {
-      try {
-        const res = await fetchVaultState(walletId);
-        setInfo(res.info);
-        setLocked(res.locked);
-        setExtraVaults(res.extraVaults);
-        // `known: false` = the provider could not be read, which is NOT "no vault". Leaving
-        // lockedKnown true here is what put a live Lock button in front of an already-locked user
-        // whenever Blockfrost rate-limited. The card's Lock button gates on lockedKnown.
-        setLockedKnown(res.known);
-        if (!res.known) {
-          setError("Can't check your vault right now. Try again in a moment.");
-          setPhase("error");
-          return;
-        }
-        setPhase((p) => (p === "error" ? "idle" : p)); // a successful re-read clears a stale failure
-      } catch (e) {
-        // Raise the phase too, not just the message. `lockedKnown` stays false on a failed read, and
-        // the card only renders `error` in the `error` phase — so a message with no phase left the
-        // status on its loading skeleton with a permanently disabled Lock button and nothing to
-        // explain why. This is the state the Retry button is attached to.
-        setError(e instanceof Error ? e.message : String(e));
-        setPhase("error");
-      }
-    })();
-  }, []);
 
   const clearPoll = useCallback(() => {
     if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -122,6 +102,67 @@ export function useVault(): UseVault {
   }, []);
   // Clear any in-flight poll on unmount so it can't set state on a gone component.
   useEffect(() => clearPoll, [clearPoll]);
+
+  const inspect = useCallback(
+    (walletId: string) => {
+      // A lock/exit run OWNS this state: it drives the phase the caller is toasting off. A background
+      // inspect firing mid-tx (an endpoint change re-runs the caller's effect) would set phase="error"
+      // on a read failure and toast a FAILURE for a transaction that is still running and about to
+      // succeed — while cancelling the real "Lock submitted" toast on the way past.
+      if (inFlight.current) return;
+      if (pollTimer.current !== null) {
+        // The confirm poll is re-reading this wallet on its own schedule; leave it to it. But if the
+        // wallet has CHANGED, it is confirming a tx for an account no longer on screen, and letting it
+        // keep writing would paint the previous wallet's balance onto this one.
+        if (inspectedWallet.current === walletId) return;
+        clearPoll();
+      }
+
+      const seq = ++inspectSeq.current;
+      if (inspectedWallet.current !== walletId) {
+        // A different wallet's answer must never sit on screen as this one's: "100 ADA locked" from the
+        // previous wallet reads as this wallet's balance for the whole round trip, and if this read
+        // then fails it stays there permanently. Clear first, re-assert only what THIS wallet confirms.
+        inspectedWallet.current = walletId;
+        setInfo(null);
+        setLocked(null);
+        setLockedKnown(false);
+        setExtraVaults(0);
+      }
+      setError(null);
+      void (async () => {
+        try {
+          const res = await fetchVaultState(walletId);
+          if (seq !== inspectSeq.current) return; // superseded by a newer inspect
+          setInfo(res.info);
+          // `known: false` = the provider could not be read, which is NOT "no vault" — so NOTHING about
+          // the balance may be written from it. Installing `locked = null` here destroyed the last
+          // CONFIRMED balance on any rate-limited read, which disabled "Exit vault" for someone whose
+          // 100 ADA was sitting right there. A failed refresh does not un-confirm an earlier successful
+          // one, so the last confirmed answer stays on screen (it was true when it was read) and the
+          // error plus Retry says the refresh is what failed. Same rule pollUntilSettled follows.
+          if (!res.known) {
+            setError("Can't check your vault right now. Try again in a moment.");
+            setPhase("error");
+            return;
+          }
+          setLocked(res.locked);
+          setExtraVaults(res.extraVaults);
+          setLockedKnown(true);
+          setPhase((p) => (p === "error" ? "idle" : p)); // a successful re-read clears a stale failure
+        } catch (e) {
+          if (seq !== inspectSeq.current) return;
+          // Raise the phase too, not just the message: the card only renders `error` in the `error`
+          // phase, so a message with no phase left the status on its loading skeleton with a
+          // permanently disabled Lock button and nothing to explain why. This is the state the Retry
+          // button is attached to. Confirmed state is left alone here for the same reason as above.
+          setError(e instanceof Error ? e.message : String(e));
+          setPhase("error");
+        }
+      })();
+    },
+    [clearPoll],
+  );
 
   // Re-read the vault until it reflects the submitted action, then stop. A lock/exit confirms on Cardano
   // over several blocks (~20–60s on preprod); the old single 5s re-read almost always fired too early and
@@ -166,6 +207,10 @@ export function useVault(): UseVault {
     (action: () => Promise<{ txHash: string; info: VaultInfo }>, walletId: string, kind: VaultAction) => {
       if (inFlight.current) return; // already running (double-click / re-render); never start twice
       inFlight.current = true;
+      // This run and its confirm poll speak for THIS wallet, so record it: an inspect for the same
+      // wallet then defers to the poll, and one for a different wallet takes the state over instead of
+      // silently inheriting it.
+      inspectedWallet.current = walletId;
       setError(null);
       setTxHash(null);
       setStep("preparing");

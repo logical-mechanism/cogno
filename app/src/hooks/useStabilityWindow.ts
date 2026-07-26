@@ -14,23 +14,26 @@ import { readObserverConfig, describeStabilityWindow } from "@/lib/chain/observe
 import type { CognoApi } from "@/lib/types";
 
 export function useStabilityWindow(api: CognoApi | null): string | null {
-  const [window, setWindow] = useState<string | null>(null);
+  // NOT named `window`: this module is executed during the static export, and a state variable by that
+  // name shadows the DOM global for the whole hook body — so the house `typeof window === "undefined"`
+  // SSG guard, if anyone ever added one here, would silently test a string that is always defined.
+  const [wait, setWait] = useState<string | null>(null);
 
   useEffect(() => {
     if (!api) return;
     let cancelled = false;
     readObserverConfig(api)
       .then((cfg) => {
-        if (!cancelled) setWindow(describeStabilityWindow(cfg.stabilitySlots));
+        if (!cancelled) setWait(describeStabilityWindow(cfg.stabilitySlots));
       })
       .catch(() => {
         // Best-effort: a failed read leaves the neutral copy rather than asserting a duration.
-        if (!cancelled) setWindow(null);
+        if (!cancelled) setWait(null);
       });
     return () => {
       cancelled = true;
     };
   }, [api]);
 
-  return window;
+  return wait;
 }

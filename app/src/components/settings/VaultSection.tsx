@@ -218,6 +218,15 @@ export function VaultSection() {
               Exiting returns your 100 ADA and removes your posting power until you lock again.
             </p>
           )}
+          {/* A second vault UTxO is pure loss of use: the chain credits the largest one and never sums,
+              so the extra ADA earns nothing and no other screen mentions it. Exit spends the largest,
+              which is why getting it all back takes one exit per vault. */}
+          {hasLock && vault.extraVaults > 0 && (
+            <p className={styles.note}>
+              You have {vault.extraVaults + 1} vaults holding ADA. Only the largest one earns posting
+              power. Exit once for each vault to get all of it back.
+            </p>
+          )}
 
           {vault.phase === "submitted" && (
             <div className={styles.submittedRow}>

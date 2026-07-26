@@ -102,14 +102,18 @@ export function getActiveWsUrl(): string {
 
 // ── Blockfrost provider ──────────────────────────────────────────────────────────────────────────
 // The Cardano provider the in-browser vault lock/exit txs use (fetcher/submitter/evaluator +
-// live cost models). A preprod project id — exposed client-side by design so any visitor can
+// live cost models). A read/submit project id — exposed client-side by design so any visitor can
 // lock from their own wallet without a backend. Empty ⇒ the lock action is hidden. Config like
 // the WS endpoint: NEXT_PUBLIC_BLOCKFROST_PROJECT_ID seeds the default, a user override
 // in localStorage wins.
+//
+// WHICH NETWORK it must be for is not decided here: the chain names that (lib/cardano/network.ts),
+// and a project id for a different one is refused at getProvider() rather than quietly used. So this
+// is deliberately not "the preprod id" — a mainnet deployment supplies a mainnet one and edits nothing.
 
 const BLOCKFROST_STORAGE_KEY = "cogno.blockfrost";
 
-/** The configured Blockfrost preprod project id, or "" when unset. SSG-safe. */
+/** The configured Blockfrost project id, or "" when unset. SSG-safe. */
 export function getBlockfrostProjectId(): string {
   if (typeof window === "undefined") return ENV_BLOCKFROST;
   try {

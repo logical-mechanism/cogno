@@ -87,10 +87,6 @@ export function useChain(): UseChain {
   useEffect(() => {
     if (!handle) return;
     let cancelled = false;
-    // Drop the previous chain's Cardano network before re-resolving it. Switching endpoints can
-    // switch networks, and a stale cached value is exactly what would let a wallet guard pass or an
-    // address get built for the wrong one. checkBootGuard re-populates it.
-    resetCardanoNetwork();
     checkBootGuard(handle.api)
       .then((g) => {
         if (cancelled) return;
@@ -118,6 +114,14 @@ export function useChain(): UseChain {
       });
     return () => {
       cancelled = true;
+      // Drop this chain's Cardano network as the handle goes away, not when the next one arrives.
+      // Switching endpoints can switch networks, and `handle` is null for the renders between the old
+      // client's destroy() and the new one's creation — resetting in the effect BODY skipped those
+      // (the early return above fires first), leaving the destroyed chain's network id readable while
+      // `boot` was already null. That is the window in which a wallet guard passes, or a vault
+      // address gets built, for a chain that no longer exists. The next handle's checkBootGuard
+      // re-populates it; the epoch guard in network.ts covers the resolve still in flight here.
+      resetCardanoNetwork();
     };
   }, [handle]);
 

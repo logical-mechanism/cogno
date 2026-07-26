@@ -29,7 +29,6 @@ import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { consumeReturnTarget } from "@/lib/onboardingReturn";
-import { getCardanoNetworkId, wrongNetworkMessage } from "@/lib/cardano/network";
 import { WelcomeShell } from "@/components/welcome/WelcomeShell";
 import { WalletPicker } from "@/components/welcome/WalletPicker";
 import { AccountConfirm } from "@/components/welcome/AccountConfirm";
@@ -56,16 +55,12 @@ function classifyConnectError(raw: string): { inline: string | null; toast: stri
       toast: null,
     };
   }
-  // The thrown copy comes from lib/cardano/network.ts and always carries the literal "wrong network",
-  // so this matches whichever network the chain names. The inline copy is that same shared string:
-  // re-deriving it here is what left a hardcoded "preprod" behind the last time.
-  if (/wrong network|mainnet|preprod|network id|network mismatch/.test(m)) {
-    const network = getCardanoNetworkId();
-    return {
-      inline: network === null ? raw : wrongNetworkMessage(network),
-      toast: null,
-    };
-  }
+  // Network failures (wrong wallet network, an unresolved chain network, a provider that serves a
+  // different one) fall through to the raw default below, which is already inline. There used to be an
+  // arm here that matched a network token and then REBUILT the message from the chain's network id —
+  // so a provider-mismatch error, which names two networks in its own prose, came back out as "Wrong
+  // network. Switch your wallet…", a diagnosis it had nothing to do with. The thrown string is the
+  // one lib/cardano/network.ts wrote for the reader; show it.
   if (/no signature|empty.*signature|did ?n.?t return a signature|return.*no.*signature/.test(m)) {
     return { inline: null, toast: "Your wallet didn't return a signature. Try again." };
   }

@@ -18,6 +18,10 @@
 // assume a network. There is deliberately NO build-time fallback: a second source of truth is a
 // second thing that can disagree, and the disagreement is silent.
 //
+// When it lands on "no network", the REASON lives here too (`cardanoNetworkReason`), because the
+// difference matters to whoever is reading the screen: "still connecting" is a wait, a half-finished
+// cutover is permanent, and telling someone to wait for the second one is a lie the UI can tell forever.
+//
 // SSG-safe: no `window` at module-evaluation time (the Blockfrost read below is guarded internally).
 
 import { getBlockfrostProjectId } from "@/lib/config/endpoints";
@@ -37,6 +41,17 @@ export type CardanoFlavor = "mainnet" | "preprod" | "preview";
 let resolved: CardanoNetworkId | null = null;
 
 /**
+ * Why the chain named no network, when it could not. Committed alongside {@link resolved} so the
+ * fail-closed paths can say what is actually wrong. Without it, a PERMANENT misconfiguration (the two
+ * pallets disagreeing) rendered as {@link STILL_CONNECTING} on every Cardano surface, telling the user
+ * to wait for a state that will never arrive.
+ */
+let unresolvedReason: string | null = null;
+
+/** What we can honestly say before the boot probe has landed: it is a wait, not a diagnosis. */
+const STILL_CONNECTING = "Still connecting to cogno. Wait a moment, then try again.";
+
+/**
  * Bumped by every {@link resetCardanoNetwork}. A resolve reads it on entry and refuses to commit if it
  * moved while the constant reads were in flight — without that, switching endpoints lets the OLD
  * chain's answer (or its post-`destroy()` rejection, which commits `null`) land after the new one has
@@ -51,13 +66,21 @@ export function getCardanoNetworkId(): CardanoNetworkId | null {
 }
 
 /**
+ * User-facing copy for why no network is known: the resolver's own diagnosis when it has one, else
+ * the neutral "still connecting". Always a sentence, so a caller can surface it directly.
+ */
+export function cardanoNetworkReason(): string {
+  return unresolvedReason ?? STILL_CONNECTING;
+}
+
+/**
  * The resolved network id, throwing user-facing copy when it is not known yet. For the paths that
  * must never guess — the two address builders and the CIP-8 bind flows. All of them run well after
  * boot in practice, so this throw is a fail-closed backstop rather than an expected state.
  */
 export function requireCardanoNetworkId(): CardanoNetworkId {
   if (resolved === null) {
-    throw new Error("Still connecting to cogno. Wait a moment, then try again.");
+    throw new Error(cardanoNetworkReason());
   }
   return resolved;
 }
@@ -69,13 +92,7 @@ export function requireCardanoNetworkId(): CardanoNetworkId {
 export function resetCardanoNetwork(): void {
   epoch += 1;
   resolved = null;
-}
-
-/** The outcome of {@link resolveCardanoNetwork}: the id, or the reason the chain could not name one. */
-export interface NetworkResolution {
-  id: CardanoNetworkId | null;
-  /** user-facing copy, present only when `id` is null. */
-  reason?: string;
+  unresolvedReason = null;
 }
 
 /**
@@ -85,42 +102,46 @@ export interface NetworkResolution {
  * real cutover failure mode — the two constants are set in separate `impl` blocks in
  * runtime/src/configs/mod.rs — and it is invisible from any single call site.
  *
- * Never throws: a read failure resolves to `{ id: null, reason }` so the boot path stays alive and
- * consumers fail closed on their own.
+ * Never throws: a read failure resolves to `null` (with the reason left in
+ * {@link cardanoNetworkReason}) so the boot path stays alive and consumers fail closed on their own.
  *
  * A resolve that was superseded by a {@link resetCardanoNetwork} mid-flight still RETURNS its answer
  * (the caller's own cancellation guard decides what to do with it) but never writes the cache.
  */
-export async function resolveCardanoNetwork(api: CognoApi): Promise<NetworkResolution> {
+export async function resolveCardanoNetwork(api: CognoApi): Promise<CardanoNetworkId | null> {
   const gen = epoch;
-  // Only the resolve that still owns the current epoch may write the cache.
-  const commit = (value: CardanoNetworkId | null): void => {
-    if (gen === epoch) resolved = value;
+  // Only the resolve that still owns the current epoch may write the cache. The reason rides the same
+  // guard, so a superseded resolve can neither install a network nor an explanation for one.
+  const commit = (value: CardanoNetworkId | null, why?: string): void => {
+    if (gen !== epoch) return;
+    resolved = value;
+    unresolvedReason = value === null ? (why ?? null) : null;
   };
+  const misconfigured = "This network is misconfigured. Cardano actions are off.";
   try {
     const [gate, roles] = await Promise.all([
       api.constants.CognoGate.CardanoNetwork(),
       api.constants.CardanoRoles.CardanoNetwork(),
     ]);
     if (gate !== roles) {
-      commit(null);
+      commit(null, misconfigured);
       // Not user-actionable, but it must not read as a wallet problem: the chain is misconfigured.
       console.error(
         `cogno: chain reports disagreeing Cardano networks (CognoGate=${gate}, CardanoRoles=${roles}); refusing to pick one`,
       );
-      return { id: null, reason: "This network is misconfigured. Cardano actions are off." };
+      return null;
     }
     if (gate !== 0 && gate !== 1) {
-      commit(null);
+      commit(null, misconfigured);
       console.error(`cogno: chain reports an unknown Cardano network id ${gate}`);
-      return { id: null, reason: "This network is misconfigured. Cardano actions are off." };
+      return null;
     }
     commit(gate);
-    return { id: gate };
+    return gate;
   } catch (err) {
-    commit(null);
+    commit(null, "Can't reach cogno. Check your connection and try again.");
     console.warn("[cogno] could not read the Cardano network constant:", err);
-    return { id: null, reason: "Can't reach cogno. Check your connection and try again." };
+    return null;
   }
 }
 
@@ -165,7 +186,10 @@ export function providerNetworkMismatch(projectId?: string): string | null {
   // accepts an override, and checking a different value than it uses would be worse than not checking.
   const f = projectId === undefined ? cardanoFlavor() : flavorOf(projectId);
   if (!f || flavorServes(f, network)) return null;
-  return `Your Blockfrost project is for ${f}, but this network runs on ${networkLabel(network)}. Update it in Settings.`;
+  // Names no control to go fix it in: the project id is a deployment seed
+  // (NEXT_PUBLIC_BLOCKFROST_PROJECT_ID) with no Settings editor behind it, and pointing at one that
+  // does not exist is worse than pointing at nothing.
+  return `Your Blockfrost project is for ${f}, but this network runs on ${networkLabel(network)}. Cardano actions are off until they match.`;
 }
 
 /** How to name a network to a reader: the specific testnet when known, else the coarse name. */
@@ -178,9 +202,10 @@ export function networkLabel(network: CardanoNetworkId): string {
 }
 
 /**
- * The shared wrong-network message. Keeps the literal "wrong network" token because the connect-step
- * classifier in app/welcome/page.tsx matches on it — a flavor-only message like "switch to preview"
- * would fall through to the raw-string default and lose its inline treatment.
+ * The shared wrong-network message. It is the copy the user actually sees: the connect step renders
+ * whatever was thrown, verbatim. (It used to re-derive this string from the network id after matching
+ * a token in it, which meant any OTHER message mentioning a network — the provider mismatch above —
+ * got rewritten into a wrong-network diagnosis it had nothing to do with.)
  */
 export function wrongNetworkMessage(network: CardanoNetworkId): string {
   return `Wrong network. Switch your wallet to ${networkLabel(network)}, then reconnect.`;
@@ -200,11 +225,7 @@ export type NetworkCheck =
 export function checkWalletNetwork(walletNetworkId: number): NetworkCheck {
   const network = getCardanoNetworkId();
   if (network === null) {
-    return {
-      ok: false,
-      kind: "unresolved",
-      message: "Still connecting to cogno. Wait a moment, then try again.",
-    };
+    return { ok: false, kind: "unresolved", message: cardanoNetworkReason() };
   }
   if (walletNetworkId !== network) {
     return { ok: false, kind: "mismatch", message: wrongNetworkMessage(network) };

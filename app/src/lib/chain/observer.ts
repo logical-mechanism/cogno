@@ -23,15 +23,36 @@ export interface ObserverConfig {
   stakeEpochLookback: bigint;
 }
 
+/**
+ * One in-flight/settled read per chain handle. The config is fixed for the life of a runtime, but the
+ * callers are hooks: Settings alone mounts two `useStabilityWindow`s and a `usePendingCapacity`, and
+ * /welcome adds two more, so "read once per api" was four or five identical runtime-API round trips
+ * for a value that cannot change under them. Keyed by the api handle (weakly, so a destroyed client's
+ * entry goes with it), which is exactly the scope the value is constant over.
+ */
+const configCache = new WeakMap<CognoApi, Promise<ObserverConfig>>();
+
 /** Read the consensus-pinned observer policy (fixed per runtime — read once per api). */
-export async function readObserverConfig(api: CognoApi): Promise<ObserverConfig> {
-  const c = await api.apis.CardanoObserverApi.observer_config();
-  return {
-    shelleyStartUnix: c.shelley_start_unix,
-    shelleyStartSlot: c.shelley_start_slot,
-    stabilitySlots: c.stability_slots,
-    stakeEpochLookback: c.stake_epoch_lookback,
-  };
+export function readObserverConfig(api: CognoApi): Promise<ObserverConfig> {
+  const hit = configCache.get(api);
+  if (hit) return hit;
+
+  const p = api.apis.CardanoObserverApi.observer_config()
+    .then((c) => ({
+      shelleyStartUnix: c.shelley_start_unix,
+      shelleyStartSlot: c.shelley_start_slot,
+      stabilitySlots: c.stability_slots,
+      stakeEpochLookback: c.stake_epoch_lookback,
+    }))
+    .catch((err: unknown) => {
+      // A failure is NOT the answer — drop it so the next caller retries. Caching a rejection would
+      // wedge the stability-window copy and the pending-lock countdown for the whole connection.
+      configCache.delete(api);
+      throw err;
+    });
+
+  configCache.set(api, p);
+  return p;
 }
 
 // EnforceWeight (`false` ⇒ the observer is emergency-frozen and a pending lock will NOT credit) is read

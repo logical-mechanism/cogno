@@ -12,7 +12,7 @@
 // real drep id) rather than pulling in the ~6 MB Cardano bundle.
 
 import { getBlockfrostProjectId } from "@/lib/config/endpoints";
-import { blockfrostBase, cexplorerSub } from "@/lib/cardano/network";
+import { blockfrostBase, cexplorerSub, providerNetworkMismatch } from "@/lib/cardano/network";
 import { sanitizeInline } from "@/lib/sanitize";
 import { hexToBytes } from "@/lib/util/hex";
 import { isBlankRoleId, type RoleKindType } from "@/lib/chain/roles";
@@ -33,6 +33,12 @@ const drepInflight = new Map<string, Promise<string | null>>();
 // The Blockfrost REST base and the explorer subdomain both come from lib/cardano/network.ts now — one
 // implementation, driven by the chain's own network constant rather than by the project-id prefix
 // alone. This file used to carry its own copy of each, as did govParams.ts.
+//
+// Which means the HOST follows the chain while the project id does not, so a project id for another
+// network is a guaranteed 403 on every lookup. Both resolvers skip the call outright in that case:
+// the outcome is the same graceful degradation either way, but it is deliberate rather than a
+// per-badge round trip to a host that will never answer. getProvider() is where a mismatch is
+// actually reported to the user, since that is the path where it costs money.
 
 /**
  * Resolve a poolID (0x-prefixed or bare 28-byte hex) to a sanitized ticker / name, or `null` when it
@@ -47,7 +53,7 @@ export async function resolvePoolMeta(poolIdHex: string): Promise<PoolMeta | nul
 
   const p = (async (): Promise<PoolMeta | null> => {
     const projectId = getBlockfrostProjectId();
-    if (!projectId) return null;
+    if (!projectId || providerNetworkMismatch(projectId)) return null;
     try {
       const res = await fetch(`${blockfrostBase()}/pools/${id}/metadata`, {
         headers: { project_id: projectId },
@@ -151,7 +157,7 @@ export async function resolveDRepName(credHex: string): Promise<string | null> {
 
   const p = (async (): Promise<string | null> => {
     const projectId = getBlockfrostProjectId();
-    if (!projectId) return null;
+    if (!projectId || providerNetworkMismatch(projectId)) return null;
     try {
       const drepId = drepBech32(cred) as string; // cred is validated 28-byte hex above
       const res = await fetch(`${blockfrostBase()}/governance/dreps/${drepId}/metadata`, {

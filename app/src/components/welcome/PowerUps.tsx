@@ -251,18 +251,23 @@ function VaultCard({
   walletId: string | null;
   onOpenSettings: () => void;
 }) {
-  const { api } = useSession();
+  const { api, boot } = useSession();
   const stabilityWindow = useStabilityWindow(api);
 
   // Read the vault before offering to lock. This card used to offer one with NO vault read behind it
   // at all: it gated on posting power plus a device-local pending record, so a second device, cleared
   // storage, or a dismissed overdue notice re-armed the Lock button for someone already locked.
   // Settings has always inspected and gated on `lockedKnown`; /welcome is the page new users land on.
+  //
+  // Gated on `boot` for the same reason Settings is: the vault ADDRESS is built from the Cardano
+  // network the chain names, so inspecting before the boot probe settles throws "still connecting",
+  // lands in phase="error" — which this card renders ahead of "Already locked" — and, because neither
+  // dep moves when the network arrives, never retries. `boot` flips once, when the probe has settled.
   useEffect(() => {
-    if (walletId && vault.available) vault.inspect(walletId);
+    if (boot && walletId && vault.available) vault.inspect(walletId);
     // `inspect` is a stable useCallback; re-running on every vault change would loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [walletId, vault.available]);
+  }, [boot, walletId, vault.available]);
 
   const alreadyLocked = vault.lockedKnown && vault.locked != null && vault.locked > 0n;
   // Never offer a lock we could not verify. `lockedKnown` is false when the provider read failed,

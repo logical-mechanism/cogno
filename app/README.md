@@ -82,17 +82,25 @@ Every endpoint is **user-configurable** — neutrality is a requirement, so noth
 a default you can replace. Settings persists to `localStorage` and always wins over the build-time
 `NEXT_PUBLIC_*` seed, which wins over the built-in default.
 
-| Settings field | Build-time env | Default | What it is |
+| Setting | Build-time env | Default | What it is |
 |---|---|---|---|
 | WebSocket endpoint(s) | `NEXT_PUBLIC_WS_URL` | `wss://cogno.forum/rpc` | the app-chain node the SPA reads and writes through (PAPI) — the SOLE chain surface: feed / thread / profile / search all come from the node's `MicroblogApi` runtime read API |
-| Blockfrost project id | `NEXT_PUBLIC_BLOCKFROST_PROJECT_ID` | *(empty)* | the **preprod** Blockfrost project id the in-browser vault lock/exit txs use; empty ⇒ the lock action is hidden |
+| Blockfrost project id | `NEXT_PUBLIC_BLOCKFROST_PROJECT_ID` | *(empty)* | the Blockfrost project id the in-browser vault lock/exit txs use; empty ⇒ the lock action is hidden |
+
+Both are build-time seeds with a `localStorage` override the app reads on every call. There is no UI
+that writes either one today — no node switcher, no provider field in Settings — so a deployment sets
+them through the env.
 
 A production `npm run build` will refuse a plaintext `ws://` pointed at a public host — an https page
 mixed-content-blocks it, so the bundle would silently read nothing. `wss://`, or a `ws://127.0.0.1`
 loopback for a local export, or leave it unset.
 
-The Blockfrost project id is exposed client-side **by design** — so any visitor can lock from their own
-wallet without a backend — and must be a **preprod** key. Config lives in `src/lib/config/endpoints.ts`.
+The Blockfrost project id is exposed client-side **by design**, so any visitor can lock from their own
+wallet without a backend. It must be a key for the network *the chain names* — the app reads that from
+`CognoGate.CardanoNetwork` / `CardanoRoles.CardanoNetwork` at boot and refuses a project id for a
+different one rather than quietly building txs against the wrong ledger, so a preprod deployment takes
+a preprod key and a mainnet one takes a mainnet key, with no frontend edit either way. Config lives in
+`src/lib/config/endpoints.ts`; the network resolution lives in `src/lib/cardano/network.ts`.
 
 ## The dual-key model
 
