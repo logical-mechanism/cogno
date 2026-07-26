@@ -19,6 +19,7 @@
 // MeshJS is browser-only, so it is imported dynamically (this module is import-safe during SSG).
 import { blake2b } from "blakejs";
 import { signerFromSeed } from "@/lib/signer";
+import { assertWalletNetwork } from "@/lib/cardano/network";
 import type { PostingSigner } from "@/lib/types";
 
 // PINNED FOREVER. Changing these exact bytes changes everyone's derived posting key. No nonce, no
@@ -57,13 +58,12 @@ export async function deriveSignerFromWallet(walletId: string): Promise<DerivedA
   const [{ BrowserWallet }, cst] = await Promise.all([import("@meshsdk/core"), import("@meshsdk/core-cst")]);
   const wallet = await BrowserWallet.enable(walletId);
   // Catch a wrong-network wallet HERE, before we derive a posting key. The key is a function of the
-  // wallet's signature, so a mainnet-flavoured connection would mint a DIFFERENT account than the preprod
-  // one — and the only network guard used to live at the vault LOCK, so the mismatch surfaced (with a
-  // misleading "connect a Cardano wallet" message) only after the PERMANENT identity + stake binds were
-  // already burned. `!== 0` matches the vault's preprod check (see lib/cardano/vault.ts).
-  if ((await wallet.getNetworkId()) !== 0) {
-    throw new Error("Switch your wallet to preprod (testnet), then reconnect.");
-  }
+  // wallet's signature, so a wallet on the wrong network would mint a DIFFERENT account than the one
+  // this chain expects — and the only network guard used to live at the vault LOCK, so the mismatch
+  // surfaced (with a misleading "connect a Cardano wallet" message) only after the PERMANENT identity
+  // + stake binds were already burned. The expected network is the chain's own constant, shared with
+  // the vault and both binds (see lib/cardano/network.ts).
+  assertWalletNetwork(await wallet.getNetworkId());
   const signingAddress = await wallet.getChangeAddress();
   const address = cst.Address.fromBech32(signingAddress);
   const props = address.getProps();

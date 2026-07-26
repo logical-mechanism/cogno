@@ -12,6 +12,7 @@ import { getWsProvider } from "polkadot-api/ws";
 import { cogno } from "@polkadot-api/descriptors";
 import { Observable, type Subscription } from "rxjs";
 import { getCachedMetadata, setCachedMetadata } from "./metadataCache";
+import { resolveCardanoNetwork } from "@/lib/cardano/network";
 import type { ChainHandle, ConnStatus, BootGuard, CognoApi } from "@/lib/types";
 
 /**
@@ -126,7 +127,15 @@ export function watchConnStatus(handle: ChainHandle): Observable<ConnStatus> {
  */
 export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
   try {
-    const version = await api.constants.System.Version();
+    // The Cardano network resolve rides this same probe: it is a pair of constant reads against the
+    // handle we just built, it never throws, and caching it here is what lets the wallet guards and
+    // the two address builders stay synchronous. It deliberately does NOT feed `ok` — a Cardano
+    // misconfiguration must not take down plain text posting, which touches no Cardano state. The
+    // Cardano-facing paths fail closed on their own (lib/cardano/network.ts).
+    const [version, cardano] = await Promise.all([
+      api.constants.System.Version(),
+      resolveCardanoNetwork(api),
+    ]);
     const nodeSpecName = version.spec_name;
     const nodeSpecVersion = version.spec_version;
 
@@ -149,6 +158,8 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
       nodeSpecVersion,
       descriptorSpecVersion: DESCRIPTOR_SPEC_VERSION,
       reason,
+      cardanoNetwork: cardano.id,
+      cardanoReason: cardano.reason,
     };
   } catch (err) {
     // `reason` is user-facing copy, so the raw throw goes to the console instead of the UI —
@@ -160,6 +171,7 @@ export async function checkBootGuard(api: CognoApi): Promise<BootGuard> {
       nodeSpecVersion: 0,
       descriptorSpecVersion: DESCRIPTOR_SPEC_VERSION,
       reason: "Can't reach cogno. Check your connection and try again.",
+      cardanoNetwork: null,
     };
   }
 }

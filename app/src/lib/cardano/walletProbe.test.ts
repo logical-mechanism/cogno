@@ -10,8 +10,9 @@
 //
 // It must also never throw: it runs on the boot path, and the auth wall waits on it.
 
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { probeWalletIdentity } from "./cip8";
+import { seedCardanoNetwork } from "./network.fixture";
 
 type Injected = Record<string, unknown>;
 
@@ -26,6 +27,12 @@ const wallet = (over: Injected = {}): Injected => ({
     getChangeAddress: async () => "00ABCDEF",
   }),
   ...over,
+});
+
+// The expected network comes from the chain (lib/cardano/network.ts). Seed it, else every probe
+// reports `unavailable` — which is the correct fail-closed answer, but not what these cases assert.
+beforeEach(async () => {
+  await seedCardanoNetwork(0);
 });
 
 afterEach(() => {

@@ -29,6 +29,7 @@ import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { consumeReturnTarget } from "@/lib/onboardingReturn";
+import { getCardanoNetworkId, wrongNetworkMessage } from "@/lib/cardano/network";
 import { WelcomeShell } from "@/components/welcome/WelcomeShell";
 import { WalletPicker } from "@/components/welcome/WalletPicker";
 import { AccountConfirm } from "@/components/welcome/AccountConfirm";
@@ -55,9 +56,13 @@ function classifyConnectError(raw: string): { inline: string | null; toast: stri
       toast: null,
     };
   }
+  // The thrown copy comes from lib/cardano/network.ts and always carries the literal "wrong network",
+  // so this matches whichever network the chain names. The inline copy is that same shared string:
+  // re-deriving it here is what left a hardcoded "preprod" behind the last time.
   if (/wrong network|mainnet|preprod|network id|network mismatch/.test(m)) {
+    const network = getCardanoNetworkId();
     return {
-      inline: "Wrong network. Switch your wallet to preprod, then reconnect.",
+      inline: network === null ? raw : wrongNetworkMessage(network),
       toast: null,
     };
   }

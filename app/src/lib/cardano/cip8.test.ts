@@ -53,12 +53,13 @@ vi.mock("@meshsdk/core-cst", () => ({
 }));
 
 import { produceBindProof, produceBindProofStake } from "./cip8";
+import { seedCardanoNetwork } from "./network.fixture";
 
 const DOMAIN = "cogno-chain/bind/v1";
 const ACCOUNT = "ab".repeat(32); // 64-hex sr25519 pubkey
 const GENESIS = "cd".repeat(32); // 64-hex block-0 hash
 
-beforeEach(() => {
+beforeEach(async () => {
   fake.changeAddress = "addr_test_vkey";
   fake.paymentType = 0;
   fake.networkId = 0;
@@ -71,6 +72,7 @@ beforeEach(() => {
   fake.rewardAddresses = ["stake_test_reward"];
   fake.rewardRaw = VKEY_REWARD_RAW;
   vi.restoreAllMocks();
+  await seedCardanoNetwork(0);
 });
 
 describe("produceBindProof — happy path", () => {

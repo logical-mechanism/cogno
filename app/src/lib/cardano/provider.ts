@@ -10,6 +10,7 @@
 // design — the cost of letting any visitor lock from their own wallet without a backend.
 import type { BlockfrostProvider as BlockfrostProviderType } from "@meshsdk/core";
 import { getBlockfrostProjectId } from "@/lib/config/endpoints";
+import { providerNetworkMismatch } from "./network";
 
 /** Whether a Cardano provider is configured (⇒ the wallet lock/exit actions are available). */
 export function hasCardanoProvider(): boolean {
@@ -24,6 +25,12 @@ export async function getProvider(projectId?: string): Promise<BlockfrostProvide
       "Add a Blockfrost project id to lock ADA.",
     );
   }
+  // Fail closed on a provider that serves a different network than the chain. This provider is the
+  // fetcher, submitter AND evaluator for the vault txs, so a mismatch here does not throw on its own:
+  // it selects UTxOs, prices fees and evaluates scripts against the wrong network's ledger. Checked
+  // only for a CONFIGURED mismatch — an unresolved network leaves the caller's own guard to fail.
+  const mismatch = providerNetworkMismatch(id);
+  if (mismatch) throw new Error(mismatch);
   const { BlockfrostProvider } = await import("@meshsdk/core");
   return new BlockfrostProvider(id);
 }

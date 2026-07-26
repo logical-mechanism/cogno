@@ -1,9 +1,10 @@
-// Cardanoscan explorer links. The whole app is a preprod testnet showcase (vault.ts pins the wallet
-// to networkId 0), so the explorer host is fixed to preprod — no mainnet variant to select.
+// Cardanoscan explorer links. The host follows the network the CHAIN names (see network.ts), so a
+// mainnet deployment links to mainnet without a frontend edit. This used to be pinned to preprod with
+// a comment claiming there was "no mainnet variant to select".
 
-const CARDANOSCAN_PREPROD = "https://preprod.cardanoscan.io";
+import { cardanoscanBase } from "./network";
 
-/** Link to a submitted transaction on preprod Cardanoscan. */
+/** Link to a submitted transaction on the explorer for this deployment's network. */
 export function cardanoscanTxUrl(txHash: string): string {
-  return `${CARDANOSCAN_PREPROD}/transaction/${txHash}`;
+  return `${cardanoscanBase()}/transaction/${txHash}`;
 }

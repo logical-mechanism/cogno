@@ -5,6 +5,7 @@
 // in => same blake2b-256 seed => same sr25519 keypair out.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { seedCardanoNetwork } from "@/lib/cardano/network.fixture";
 
 // ── mock the browser-only MeshJS deps the module dynamically imports ─────────────────────────────
 // A controllable fake wallet: tests set the change address + the signature it returns.
@@ -46,13 +47,14 @@ vi.mock("@meshsdk/core-cst", () => ({
 
 import { deriveSignerFromWallet, DERIVE_MESSAGE } from "./wallet-derive";
 
-beforeEach(() => {
+beforeEach(async () => {
   fake.changeAddress = "addr_test_vkey";
   fake.changeAddressHex = "00DEADBEEF";
   fake.paymentType = 0;
   fake.networkId = 0;
   fake.signature = "aa".repeat(32);
   fake.signDataCalls = [];
+  await seedCardanoNetwork(0);
 });
 
 describe("deriveSignerFromWallet — determinism (no storage)", () => {

@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PolkadotClient } from "polkadot-api";
 import { createChain, watchConnStatus, checkBootGuard } from "@/lib/chain/client";
+import { resetCardanoNetwork } from "@/lib/cardano/network";
 import { getActiveWsUrl } from "@/lib/config/endpoints";
 import type {
   ChainHandle,
@@ -86,6 +87,10 @@ export function useChain(): UseChain {
   useEffect(() => {
     if (!handle) return;
     let cancelled = false;
+    // Drop the previous chain's Cardano network before re-resolving it. Switching endpoints can
+    // switch networks, and a stale cached value is exactly what would let a wallet guard pass or an
+    // address get built for the wrong one. checkBootGuard re-populates it.
+    resetCardanoNetwork();
     checkBootGuard(handle.api)
       .then((g) => {
         if (cancelled) return;
@@ -108,6 +113,7 @@ export function useChain(): UseChain {
             err instanceof Error
               ? err.message
               : "Can't reach cogno. Check your connection and try again.",
+          cardanoNetwork: null,
         });
       });
     return () => {

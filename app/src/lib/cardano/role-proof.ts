@@ -19,6 +19,7 @@ import { blake2b } from "blakejs";
 import { bech32 } from "bech32";
 import { hexToBytes } from "@/lib/util/hex";
 import { isUserRejection } from "@/lib/cardano/cip8";
+import { checkWalletNetwork, requireCardanoNetworkId } from "@/lib/cardano/network";
 
 /** The domain separator + payload grammar the runtime verifier pins (cip8.rs::parse_role_payload):
  *  `cogno-chain/role/v1;genesis=<64hex>;account=<64hex>;nonce=<32hex>;role=<spo|drep|cc>`. Distinct from
@@ -101,7 +102,7 @@ export interface RoleProofRequest {
   role: RoleToken;
   /** the bare 28-byte role credential (56 hex) = `blake2b_224(role key)` = the synthetic address's payment cred. */
   credentialHex: string;
-  /** the synthetic enterprise address the proof signs over (bech32, `addr_test…` on preprod). */
+  /** the synthetic enterprise address the proof signs over (bech32; `addr_test…` on a testnet chain). */
   syntheticAddress: string;
   /** the same address as raw bytes (29 = header + 28-byte cred), lowercase hex — the pre-flight compares this. */
   syntheticAddressHex: string;
@@ -199,7 +200,7 @@ export function deriveRoleCredential(
 
 /**
  * Build a role-proof request: derive the credential, mint the synthetic ENTERPRISE address whose payment
- * credential is `blake2b_224(role key)` (header 0x60 = enterprise-key on network 0 / preprod), pin the
+ * credential is `blake2b_224(role key)` (header 0x6N = enterprise-key on the chain's network), pin the
  * `role/v1` payload committing MY posting account + THIS chain's genesis + a fresh nonce + the role, and
  * bake the offline `cardano-signer` command. Returns everything the wizard needs to render + later verify.
  * Never signs anything — the operator runs the command offline.
@@ -222,10 +223,13 @@ export async function buildRoleProofRequest(opts: {
   const { credentialHex, fromKeyHash } = deriveRoleCredential(opts.keyInput, opts.role);
 
   const cst = await import("@meshsdk/core-cst");
-  // The synthetic enterprise address (network 0 / preprod, key-hash payment credential). cardano-signer
-  // embeds this verbatim in the COSE_Sign1 protected header; the runtime binds blake2b_224(pubkey) to it.
+  // The synthetic enterprise address (key-hash payment credential) on the network THIS CHAIN binds
+  // for. cardano-signer embeds it verbatim in the COSE_Sign1 protected header and the runtime binds
+  // blake2b_224(pubkey) to it, checking the network nibble — so a wrong network here is only caught
+  // on submit, after the operator has already produced the signature.
+  const network = requireCardanoNetworkId();
   const syntheticAddress = String(
-    cst.buildEnterpriseAddress(0, cst.Hash28ByteBase16(credentialHex)).toAddress().toBech32(),
+    cst.buildEnterpriseAddress(network, cst.Hash28ByteBase16(credentialHex)).toAddress().toBech32(),
   );
   // The raw address bytes (29 = header + 28-byte cred), lowercase hex — what the pre-flight compares the
   // signed COSE_Sign1's embedded address against. Derived FROM the same bech32 so the two can't drift.
@@ -509,9 +513,8 @@ export async function produceRoleProofWallet(opts: {
       const { BrowserWallet } = await import("@meshsdk/core");
       // Request the CIP-95 governance extension — without it the wallet exposes no dRep key / signData.
       const wallet = await BrowserWallet.enable(opts.walletId, [{ cip: 95 }]);
-      if ((await wallet.getNetworkId()) !== 0) {
-        return { ok: false, error: "Switch your wallet to preprod (testnet), then reconnect." };
-      }
+      const net = checkWalletNetwork(await wallet.getNetworkId());
+      if (!net.ok) return { ok: false, error: net.message };
       // Capability gate: a wallet without CIP-95 returns no dRep key → point at the offline command.
       const pubDRep = await wallet.getPubDRepKey().catch(() => undefined);
       if (!pubDRep) {
@@ -532,9 +535,8 @@ export async function produceRoleProofWallet(opts: {
       ).cardano?.[opts.walletId];
       if (!injected) return { ok: false, error: "Wallet not found. Reconnect and try again." };
       const api = await injected.enable();
-      if ((await api.getNetworkId()) !== 0) {
-        return { ok: false, error: "Switch your wallet to preprod (testnet), then reconnect." };
-      }
+      const net = checkWalletNetwork(await api.getNetworkId());
+      if (!net.ok) return { ok: false, error: net.message };
       const raw = opts.keyInput.trim();
       const calidusId = raw.toLowerCase().startsWith("calidus1")
         ? raw

@@ -346,6 +346,14 @@ export interface BootGuard {
   /** descriptor spec_version the app was generated against, when discoverable. */
   descriptorSpecVersion: number | null;
   reason?: string;
+  /**
+   * The Cardano network the chain binds identities and role proofs for (0 = testnet, 1 = mainnet),
+   * or null when it could not be resolved. Deliberately does NOT feed `ok`: a Cardano
+   * misconfiguration blocks Cardano actions, not plain text posting. See lib/cardano/network.ts.
+   */
+  cardanoNetwork: 0 | 1 | null;
+  /** user-facing copy when `cardanoNetwork` is null, for the surfaces that offer Cardano actions. */
+  cardanoReason?: string;
 }
 
 /** A handle bundling the PAPI client + typed API + the endpoint it speaks to. */
