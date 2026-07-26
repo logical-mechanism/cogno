@@ -41,6 +41,7 @@ pallet-skip-feeless-payment = { workspace = true }
 pallet-talk-stake = { workspace = true }
 pallet-validator-set = { workspace = true }
 pallet-timestamp = { workspace = true }
+pallet-tx-pause = { workspace = true }
 pallet-transaction-payment = { workspace = true }
 pallet-transaction-payment-rpc-runtime-api = { workspace = true }
 scale-info = { features = ["derive", "serde"], workspace = true }
@@ -94,6 +95,7 @@ std = [
 	"pallet-skip-feeless-payment/std",
 	"pallet-talk-stake/std",
 	"pallet-timestamp/std",
+	"pallet-tx-pause/std",
 	"pallet-validator-set/std",
 	"pallet-transaction-payment-rpc-runtime-api/std",
 	"pallet-transaction-payment/std",
@@ -133,6 +135,7 @@ runtime-benchmarks = [
 	"pallet-skip-feeless-payment/runtime-benchmarks",
 	"pallet-talk-stake/runtime-benchmarks",
 	"pallet-timestamp/runtime-benchmarks",
+	"pallet-tx-pause/runtime-benchmarks",
 	"pallet-validator-set/runtime-benchmarks",
 	"pallet-transaction-payment/runtime-benchmarks",
 	"sp-runtime/runtime-benchmarks",
@@ -157,6 +160,7 @@ try-runtime = [
 	"pallet-skip-feeless-payment/try-runtime",
 	"pallet-talk-stake/try-runtime",
 	"pallet-timestamp/try-runtime",
+	"pallet-tx-pause/try-runtime",
 	"pallet-validator-set/try-runtime",
 	"pallet-transaction-payment/try-runtime",
 	"sp-runtime/try-runtime",

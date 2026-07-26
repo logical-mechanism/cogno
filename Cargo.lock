@@ -1569,6 +1569,7 @@ dependencies = [
  "pallet-timestamp",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc-runtime-api",
+ "pallet-tx-pause",
  "pallet-validator-set",
  "parity-scale-codec",
  "scale-info",
@@ -7074,6 +7075,18 @@ dependencies = [
  "sp-api",
  "sp-runtime",
  "sp-weights",
+]
+
+[[package]]
+name = "pallet-tx-pause"
+version = "30.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3372c0c172f1004b296aa9968e80ab000b45f761870b40a5e206544465bbd37"
+dependencies = [
+ "docify",
+ "parity-scale-codec",
+ "polkadot-sdk-frame",
+ "scale-info",
 ]
 
 [[package]]

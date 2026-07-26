@@ -345,7 +345,21 @@ mod runtime {
     // CognoGate (@8, whose `PkhOf` gates a claim to a payment-bound account) and the CardanoObserver
     // (@16, the sole writer of `ObservedRoles`). Additive (new calls/storage/events/metadata):
     // spec_version bumps, transaction_version STAYS the same (the `TxExtension` tuple is byte-identical).
-    // Next free index 20.
     #[runtime::pallet_index(19)]
     pub type CardanoRoles = pallet_cardano_roles;
+
+    // 20 = TxPause (spec 211): the committee-gated BREAK-GLASS. `pause`/`unpause` a single call (or a
+    // whole pallet) BY NAME, gated by the same 3-of-5 `AuthorityOrigin` as every other privileged
+    // write; enforcement rides `BaseCallFilter` (`InsideBoth<CognoCallFilter, TxPause>`). Before this
+    // there was NO fast lever: `set_enforcement` freezes only the observer's weight writes (it stops
+    // nothing a user can dispatch), `CognoCallFilter` is compile-time, so the only response to e.g. a
+    // forgery bug in the unaudited CIP-8 verifier — which runs in full inside `validate_unsigned`,
+    // making the exploit surface pool-level — was build a wasm, propose, vote, close, apply.
+    // `WhitelistedCalls` pins what may NEVER be paused: both inherents (`CardanoObserver::observe`,
+    // `Timestamp::set` — a paused Mandatory dispatch is `BadMandatory`, discarding every block), the
+    // whole `FollowerCommittee` (the unpause path), and the upgrade path
+    // (`GovernedUpgrade::authorize_upgrade` + `System::apply_authorized_upgrade`); the pallet refuses
+    // to pause itself. Upstream FRAME reference weights. Next free index 21.
+    #[runtime::pallet_index(20)]
+    pub type TxPause = pallet_tx_pause;
 }

@@ -28,7 +28,7 @@ use frame_support::{
     derive_impl,
     dispatch::DispatchClass,
     parameter_types,
-    traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, VariantCountOf},
+    traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, InsideBoth, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
@@ -51,7 +51,7 @@ use sp_version::RuntimeVersion;
 use super::{
     AccountId, Aura, Balance, Balances, Block, BlockNumber, CognoGate, Hash, Microblog, Nonce,
     PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
-    RuntimeOrigin, RuntimeTask, SessionKeys, System, Timestamp, ValidatorSet, DAYS,
+    RuntimeOrigin, RuntimeTask, SessionKeys, System, Timestamp, TxPause, ValidatorSet, DAYS,
     EXISTENTIAL_DEPOSIT, MINUTES, SLOT_DURATION, UNIT, VERSION,
 };
 
@@ -320,9 +320,11 @@ mod call_filter_tests {
 impl frame_system::Config for Runtime {
     /// The block type for the runtime.
     type Block = Block;
-    /// The sudo-free committee-brick guard: rejects an empty `FollowerCommittee::set_members` on-chain
-    /// (overrides the `SolochainDefaultConfig` `Everything` filter). See [`CognoCallFilter`].
-    type BaseCallFilter = CognoCallFilter;
+    /// The sudo-free committee-brick guard AND the committee's break-glass, composed: a call
+    /// dispatches only if the compile-time [`CognoCallFilter`] allows it AND it is not currently
+    /// paused by the `TxPause` pallet (spec 211; overrides the `SolochainDefaultConfig`
+    /// `Everything` filter).
+    type BaseCallFilter = InsideBoth<CognoCallFilter, TxPause>;
     /// Block & extrinsics weights: base values and limits.
     type BlockWeights = RuntimeBlockWeights;
     /// The maximum length of a block (in bytes).
@@ -607,6 +609,127 @@ impl pallet_collective::Config<Instance1> for Runtime {
 /// `governed-upgrade::AuthorityOrigin` — so identity, validators, upgrades, and force-capacity all sit
 /// behind ONE trust boundary.
 pub type AuthorityOrigin = EnsureProportionAtLeast<AccountId, Instance1, 3, 5>;
+
+// ── TxPause (index 20) — the committee break-glass (spec 211) ──────────────────────────────────────
+//
+// `pause((pallet_name, call_name))` / `unpause(..)` are gated by the SAME 3-of-5 [`AuthorityOrigin`]
+// as every other privileged write; enforcement is `BaseCallFilter = InsideBoth<CognoCallFilter,
+// TxPause>` (frame_system config above). Pausing `(pallet, "")`-style whole-pallet names is not a
+// thing in this pallet — a motion pauses one `(pallet_name, call_name)` pair per call.
+
+/// Calls that can NEVER be paused. Everything here is load-bearing for liveness or for recovery:
+///
+/// - Both INHERENTS (`CardanoObserver::observe`, `Timestamp::set`). Inherents dispatch with the
+///   `None` origin, which carries `BaseCallFilter` like any other non-root origin — and a filtered
+///   Mandatory dispatch is `BadMandatory`, so a paused inherent would discard EVERY block (a
+///   chain-halt lever no pause should ever be able to reach).
+/// - The whole `FollowerCommittee` pallet: propose/vote/close is the path that UN-pauses, so pausing
+///   it would weld the break-glass shut (a 3-of-5 motion locking out the 3-of-5).
+/// - The upgrade path (`GovernedUpgrade::authorize_upgrade` + the permissionless
+///   `System::apply_authorized_upgrade`): the fix for whatever prompted a pause ships through it.
+///
+/// (`TxPause` itself needs no entry — the pallet refuses to pause its own calls.)
+pub struct TxPauseWhitelist;
+impl Contains<pallet_tx_pause::RuntimeCallNameOf<Runtime>> for TxPauseWhitelist {
+    fn contains(full_name: &pallet_tx_pause::RuntimeCallNameOf<Runtime>) -> bool {
+        let (pallet, call) = full_name;
+        let p = pallet.as_slice();
+        let c = call.as_slice();
+        (p == b"CardanoObserver".as_slice() && c == b"observe".as_slice())
+            || (p == b"Timestamp".as_slice() && c == b"set".as_slice())
+            || p == b"FollowerCommittee".as_slice()
+            || (p == b"GovernedUpgrade".as_slice() && c == b"authorize_upgrade".as_slice())
+            || (p == b"System".as_slice() && c == b"apply_authorized_upgrade".as_slice())
+    }
+}
+
+impl pallet_tx_pause::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    // Pause AND unpause both sit behind the one crown-jewel committee origin (sudo-free) — a pause
+    // is an emergency governance action, and an unpause is the same committee undoing it.
+    type PauseOrigin = AuthorityOrigin;
+    type UnpauseOrigin = AuthorityOrigin;
+    type WhitelistedCalls = TxPauseWhitelist;
+    // Bounds the stored (pallet_name, call_name) strings. Far above every real name in this
+    // runtime; an over-long name is treated as paused (fail-closed), per the pallet's contract.
+    type MaxNameLen = ConstU32<256>;
+    // UPSTREAM reference weights, not generated here — the same deliberate choice as
+    // pallet-collective's (see the note there): two single-map committee-gated writes, measured by
+    // Parity on reference hardware.
+    type WeightInfo = pallet_tx_pause::weights::SubstrateWeight<Runtime>;
+}
+
+#[cfg(test)]
+mod tx_pause_tests {
+    use super::*;
+
+    fn name(p: &[u8], c: &[u8]) -> pallet_tx_pause::RuntimeCallNameOf<Runtime> {
+        (
+            p.to_vec().try_into().expect("pallet name fits"),
+            c.to_vec().try_into().expect("call name fits"),
+        )
+    }
+
+    #[test]
+    fn whitelist_covers_inherents_committee_and_the_upgrade_path() {
+        // Never pausable: the two inherents (a paused Mandatory dispatch = BadMandatory = every
+        // block discarded), the committee (the unpause path), and the upgrade path (the fix path).
+        assert!(TxPauseWhitelist::contains(&name(
+            b"CardanoObserver",
+            b"observe"
+        )));
+        assert!(TxPauseWhitelist::contains(&name(b"Timestamp", b"set")));
+        assert!(TxPauseWhitelist::contains(&name(
+            b"FollowerCommittee",
+            b"propose"
+        )));
+        assert!(TxPauseWhitelist::contains(&name(
+            b"FollowerCommittee",
+            b"vote"
+        )));
+        assert!(TxPauseWhitelist::contains(&name(
+            b"GovernedUpgrade",
+            b"authorize_upgrade"
+        )));
+        assert!(TxPauseWhitelist::contains(&name(
+            b"System",
+            b"apply_authorized_upgrade"
+        )));
+        // Pausable: the exploit surfaces a pause exists FOR — e.g. the unaudited CIP-8 binds.
+        assert!(!TxPauseWhitelist::contains(&name(
+            b"CognoGate",
+            b"link_identity_signed"
+        )));
+        assert!(!TxPauseWhitelist::contains(&name(
+            b"Microblog",
+            b"post_message"
+        )));
+        assert!(!TxPauseWhitelist::contains(&name(
+            b"CardanoObserver",
+            b"set_enforcement"
+        )));
+    }
+
+    #[test]
+    fn a_paused_call_is_rejected_by_the_base_filter() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let call = RuntimeCall::CognoGate(pallet_cogno_gate::Call::link_identity_signed {
+                cose_sign1: Default::default(),
+                cose_key: Default::default(),
+            });
+            type Filter = InsideBoth<CognoCallFilter, TxPause>;
+            // Unpaused: the composed BaseCallFilter admits it.
+            assert!(<Filter as Contains<RuntimeCall>>::contains(&call));
+            // Paused (as a 3-of-5 pause motion would store it): the SAME filter now rejects it.
+            pallet_tx_pause::PausedCalls::<Runtime>::insert(
+                name(b"CognoGate", b"link_identity_signed"),
+                (),
+            );
+            assert!(!<Filter as Contains<RuntimeCall>>::contains(&call));
+        });
+    }
+}
 
 // ── MUTABLE Aura+GRANDPA authorities via pallet-session + pallet-validator-set ──
 //
