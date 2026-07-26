@@ -17,11 +17,16 @@
 //! Wired into the runtime's `SingleBlockMigrations` and guarded by [`VersionedMigration`], so it runs
 //! exactly once (when the on-chain storage version is 3) and self-skips on any re-run.
 
-// ⚑ The per-author index this migration backfills is written in its ORIGINAL (v4-era, blob) shape —
-// `migrations::v10::TopLevelByAuthorV9` — not in the current double-map shape. This migration only ever
-// runs at on-chain version 3, so anything it writes is v3-era state that `MigrateV9ToV10` repages later
-// in the same tuple. Writing today's shape here would produce rows v10 then fails to find.
-use crate::migrations::v10::TopLevelByAuthorV9 as TopLevelByAuthor;
+// ⚑ The per-author index this migration backfills is written in its ORIGINAL (v4-era, BLOB) shape,
+// not in the current double-map shape. This migration only ever runs at on-chain version 3, so
+// anything it writes is v3-era state that `MigrateV9ToV10` repages later in the same tuple. Writing
+// today's shape here would produce rows v10 then fails to find.
+//
+// The shape comes from `migrations::legacy::blob`, which owns the whole v4..=v9 era, NOT from `v10`
+// (the migration that retires it): an older migration must not depend on the alias declared by the one
+// that ends that shape's life, or a later `v11` repaging these items again silently redefines what
+// this one writes.
+use crate::migrations::legacy::blob::TopLevelByAuthor;
 use crate::{Config, NextTopLevelSeq, Pallet, Posts, TopLevelPosts};
 use alloc::vec::Vec;
 use frame_support::{

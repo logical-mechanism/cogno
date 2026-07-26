@@ -47,6 +47,10 @@ pub use pallet::*;
 /// The on-chain CIP-8 (COSE_Sign1) identity self-proof verifier.
 pub mod cip8;
 
+/// Storage migrations. Register the versioned wrappers in the runtime's `SingleBlockMigrations` —
+/// a migration that is not in that tuple never runs.
+pub mod migrations;
+
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
@@ -86,7 +90,13 @@ pub mod pallet {
     // `OnIdentityBind`.
     use pallet_microblog::{IsAllowed, OnIdentityBind};
 
+    /// Storage version 1 (spec 212). The pallet declared NO version through spec 211, so every live
+    /// chain sits at the implicit 0 — which is exactly what `migrations::v1::MigrateV0ToV1` gates on
+    /// when it sweeps the retired `ThreadOf` rows. A fresh genesis writes 1 directly and self-skips it.
+    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     #[pallet::config]
@@ -135,7 +145,8 @@ pub mod pallet {
     // dropped in spec 211 together with `link_identity_signed`'s `thread_pointer` argument: the
     // pointer was never committed by the CIP-8 signed payload, so any submitter of a valid proof
     // could attach an arbitrary pointer — an authorization break on the crown-jewel path. It had
-    // no readers. Do not re-declare the prefix — that would resurrect rows the upgrade orphaned.
+    // no readers. `migrations::v1` (spec 212) SWEEPS the rows the live chain already held, so the
+    // prefix is genuinely empty rather than merely undeclared. Do not re-declare it.
 
     /// Permanently-banned identities — the manual-operator-ban tombstone. [`Call::revoke`]
     /// inserts here; the permissionless [`Call::link_identity_signed`] refuses to (re)bind a tombstoned
@@ -271,6 +282,11 @@ pub mod pallet {
         // arbitrary pointer. Removing a call ARGUMENT changes the on-wire extrinsic encoding, so this
         // moved `transaction_version` 6 → 7. The call keeps `call_index(2)`.)
         #[pallet::call_index(2)]
+        // WEIGHT: the benchmark predates spec 211 and its declared storage list is now STALE — it still
+        // names `CognoGate::ThreadOf (r:0 w:1)`, an item this pallet no longer has. It therefore
+        // OVER-declares by one write, which is the safe direction, and the figure is left as measured.
+        // Do NOT re-derive a delta by reading the storage list out of `weights.rs`: it describes the
+        // spec-210 call. Re-run the benchmark instead.
         #[pallet::weight(T::WeightInfo::link_identity_signed())]
         pub fn link_identity_signed(
             origin: OriginFor<T>,

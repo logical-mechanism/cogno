@@ -35,13 +35,14 @@ blake2 = { version = "0.10.6", default-features = false }
 # sp-core: the `ed25519::{Public, Signature}` types `sp_io::crypto::ed25519_verify` takes. NOW a
 # runtime dep (was dev-only) for the D1 verifier.
 sp-core = { workspace = true, default-features = false }
+# `TryRuntimeError`, the return type of the migration try-runtime hooks (migrations::v1).
+sp-runtime = { workspace = true }
 
 [dev-dependencies]
 # The integration mock builds a full runtime (System + TalkStake + Microblog + CognoGate) to
 # exercise the real link_identity → is_allowed → post flow. talk-stake is microblog's weight
 # source; cogno-gate is the top crate, so naming it here is no cycle.
 pallet-talk-stake = { default-features = true, workspace = true }
-sp-runtime = { default-features = true, workspace = true }
 
 [features]
 default = ["std"]
@@ -56,6 +57,7 @@ std = [
 	"sp-io/std",
 	"blake2/std",
 	"sp-core/std",
+	"sp-runtime/std",
 ]
 runtime-benchmarks = [
 	"frame-benchmarking/runtime-benchmarks",
@@ -67,4 +69,5 @@ try-runtime = [
 	"frame-support/try-runtime",
 	"frame-system/try-runtime",
 	"pallet-microblog/try-runtime",
+	"sp-runtime/try-runtime",
 ]

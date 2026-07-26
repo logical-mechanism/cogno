@@ -169,6 +169,15 @@ check. An on-chain-only check fires too late: a valid-but-over-budget transactio
 entered the mempool and been gossiped for free, which on a feeless chain *is* the spam. `validate()`
 does a couple of cheap reads and rejects an over-budget post from the pool with `ExhaustsResources`.
 
+Two rejections at that boundary are deliberately a *different* code. `ExhaustsResources` means "come
+back when your battery has refilled" — it is retriable, and the client words it as a rate limit. A call
+that can never succeed for this signer no matter how long they wait gets `InvalidTransaction::Call`
+(malformed, not retried) instead: a post whose body is already over `MaxLength`, and a tidy-up call
+priced at the `UNPAYABLE` sentinel (`clear_profile` with no profile row, `unpin_post` with no pin).
+Both are still rejected at the pool for the same reason — a feeless chain must not gossip a doomed
+transaction — but telling a user they are "posting too fast" for a call that is not rate-limited would
+just invite a retry that can never work.
+
 Capacity is **consumed only on inclusion**, in `post_dispatch` — never in `validate()` (the pool may
 call it many times per transaction). The block author re-validates at build time, so only about `cap`
 posts from an account can actually land. FRAME's per-block weight limits cap per-block execution

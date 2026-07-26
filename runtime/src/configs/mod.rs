@@ -51,10 +51,11 @@ use sp_version::RuntimeVersion;
 
 // Local module imports
 use super::{
-    AccountId, Aura, Balance, Balances, Block, BlockNumber, CognoGate, Hash, Microblog, Nonce,
-    PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
-    RuntimeOrigin, RuntimeTask, SessionKeys, System, Timestamp, TxPause, ValidatorSet, DAYS,
-    EXISTENTIAL_DEPOSIT, MINUTES, SLOT_DURATION, UNIT, VERSION,
+    AccountId, Aura, Balance, Balances, Block, BlockNumber, CardanoObserver, CognoGate,
+    FollowerCommittee, GovernedUpgrade, Hash, Microblog, Nonce, PalletInfo, Runtime, RuntimeCall,
+    RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask, SessionKeys,
+    System, Timestamp, TxPause, ValidatorSet, DAYS, EXISTENTIAL_DEPOSIT, MINUTES, SLOT_DURATION,
+    UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -119,6 +120,11 @@ type SingleBlockMigrations = (
     // (every author's post-id list is rewritten), and the old and new items share a storage prefix —
     // read the ordering note at the top of `migrations::v10` before touching it.
     pallet_microblog::migrations::v10::MigrateV9ToV10<Runtime>,
+    // spec 212: REMOVE the rows of cogno-gate's retired `ThreadOf` map (dropped in spec 211 with
+    // `link_identity_signed`'s unauthenticated `thread_pointer`). Deleting the declaration stopped the
+    // writes; this deletes what was already written, so the rows do not sit in the state root forever
+    // under a prefix nothing declares. See `pallet_cogno_gate::migrations::v1`.
+    pallet_cogno_gate::migrations::v1::MigrateV0ToV1<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -636,17 +642,45 @@ pub type AuthorityOrigin = EnsureProportionAtLeast<AccountId, Instance1, 3, 5>;
 ///   `System::apply_authorized_upgrade`): the fix for whatever prompted a pause ships through it.
 ///
 /// (`TxPause` itself needs no entry — the pallet refuses to pause its own calls.)
+///
+/// ⚠ The PALLET halves are never spelled as literals. `pallet_tx_pause` matches on the same
+/// `(pallet_name, call_name)` strings `GetCallMetadata` derives from the `#[frame_support::runtime]`
+/// declaration, so a literal here is anchored to nothing: rename a pallet in the runtime and a
+/// whitelist entry silently stops matching, re-opening the very lever it exists to weld shut. Taking
+/// each name from `<Pallet as PalletInfoAccess>::name()` makes the rename a COMPILE error (the type
+/// alias must exist) and keeps the string the runtime's own. The CALL halves cannot be typed the same
+/// way — there is no per-call type — so `whitelisted_names_exist_in_this_runtime` below re-derives
+/// them from `RuntimeCall::get_call_names()`, i.e. from the runtime's metadata rather than from these
+/// same literals, and fails on a typo or a renamed call.
 pub struct TxPauseWhitelist;
+
+/// The `(pallet, call)` pairs [`TxPauseWhitelist`] admits. An empty call name means WHOLE PALLET.
+/// Split out so the unit test can walk exactly what `contains` matches on, instead of restating it.
+fn tx_pause_whitelist_names() -> [(&'static str, &'static str); 5] {
+    use frame_support::traits::PalletInfoAccess;
+    [
+        (<CardanoObserver as PalletInfoAccess>::name(), "observe"),
+        (<Timestamp as PalletInfoAccess>::name(), "set"),
+        (<FollowerCommittee as PalletInfoAccess>::name(), ""),
+        (
+            <GovernedUpgrade as PalletInfoAccess>::name(),
+            "authorize_upgrade",
+        ),
+        (
+            <System as PalletInfoAccess>::name(),
+            "apply_authorized_upgrade",
+        ),
+    ]
+}
+
 impl Contains<pallet_tx_pause::RuntimeCallNameOf<Runtime>> for TxPauseWhitelist {
     fn contains(full_name: &pallet_tx_pause::RuntimeCallNameOf<Runtime>) -> bool {
         let (pallet, call) = full_name;
         let p = pallet.as_slice();
         let c = call.as_slice();
-        (p == b"CardanoObserver".as_slice() && c == b"observe".as_slice())
-            || (p == b"Timestamp".as_slice() && c == b"set".as_slice())
-            || p == b"FollowerCommittee".as_slice()
-            || (p == b"GovernedUpgrade".as_slice() && c == b"authorize_upgrade".as_slice())
-            || (p == b"System".as_slice() && c == b"apply_authorized_upgrade".as_slice())
+        tx_pause_whitelist_names()
+            .iter()
+            .any(|(wp, wc)| p == wp.as_bytes() && (wc.is_empty() || c == wc.as_bytes()))
     }
 }
 
@@ -716,6 +750,60 @@ mod tx_pause_tests {
             b"CardanoObserver",
             b"set_enforcement"
         )));
+    }
+
+    /// The whitelist's call names re-derived from the RUNTIME's own metadata, not from the literals
+    /// in `tx_pause_whitelist_names`. Without this the test above only proves the whitelist agrees
+    /// with itself: rename `observe`, and `contains` stops matching the inherent while every
+    /// assertion still passes — and a 3-of-5 `pause(("CardanoObserver","observe"))` motion is then
+    /// accepted, filtering a Mandatory dispatch into `BadMandatory` and discarding EVERY block.
+    /// (`get_call_names` is generated from the `#[frame_support::runtime]` declaration, so it moves
+    /// with a rename and these literals do not.)
+    #[test]
+    fn whitelisted_names_exist_in_this_runtime() {
+        use frame_support::traits::GetCallMetadata;
+        let modules = <RuntimeCall as GetCallMetadata>::get_module_names();
+        for (pallet, call) in tx_pause_whitelist_names() {
+            assert!(
+                modules.contains(&pallet),
+                "whitelisted pallet `{pallet}` is not in this runtime"
+            );
+            if call.is_empty() {
+                continue; // a whole-pallet entry names no call
+            }
+            let calls = <RuntimeCall as GetCallMetadata>::get_call_names(pallet);
+            assert!(
+                calls.contains(&call),
+                "whitelisted call `{pallet}::{call}` is not in this runtime (renamed or typo'd)"
+            );
+        }
+    }
+
+    /// … and the other direction: a REAL call's own `get_call_metadata()` — the exact value
+    /// `pallet_tx_pause` compares a stored pause against — lands inside the whitelist.
+    #[test]
+    fn a_real_inherent_calls_metadata_is_whitelisted() {
+        use frame_support::traits::GetCallMetadata;
+        let ts = RuntimeCall::Timestamp(pallet_timestamp::Call::set { now: 0 });
+        let observe = RuntimeCall::CardanoObserver(pallet_cardano_observer::Call::observe {
+            reference: Default::default(),
+            inputs_commitment: [0u8; 32],
+            entries: Default::default(),
+            stake_entries: Default::default(),
+            role_entries: Default::default(),
+        });
+        for call in [ts, observe] {
+            let m = call.get_call_metadata();
+            assert!(
+                TxPauseWhitelist::contains(&name(
+                    m.pallet_name.as_bytes(),
+                    m.function_name.as_bytes()
+                )),
+                "the {}::{} inherent must never be pausable",
+                m.pallet_name,
+                m.function_name
+            );
+        }
     }
 
     #[test]
@@ -919,6 +1007,40 @@ parameter_types! {
     pub const ProfileCost: u128 = 30_000_000_000; // 10 × BaseCost
 }
 
+// The v9→v10 migration RESCALES every stored `Capacity.cap_last` by `CAPACITY_UNIT_RESCALE`, because
+// the constants above moved the micro-capacity unit itself. That factor is a number in ANOTHER crate
+// (`pallet_microblog::migrations::v10`) that has to mirror these values, and its own `post_upgrade`
+// asserts against the same constant — so it agrees with itself and cannot catch a drift. Retune
+// `BaseCost` (or the two constants the rescale's no-overflow argument rests on) again before spec 212
+// is enacted, and every live bucket would be scaled by the wrong factor, silently.
+//
+// So pin it HERE, where both halves are knowable, at COMPILE time. A further retune fails the build.
+const _: () = {
+    use pallet_microblog::migrations::v10::{v9_constants, CAPACITY_UNIT_RESCALE};
+    assert!(
+        BaseCost::get() == v9_constants::BASE_COST * CAPACITY_UNIT_RESCALE,
+        "BaseCost moved without updating pallet_microblog::migrations::v10::CAPACITY_UNIT_RESCALE — \
+         the v9->v10 migration would rescale every live capacity bucket by the wrong factor"
+    );
+    // The migration's "multiplying cannot overflow the new ceiling" argument is only true while the
+    // BOUND moved by the same factor: an old value clamped to `min(w·CAP_RATIO, CEILING)` times the
+    // factor is still inside `min(w·CapRatio, Ceiling)`.
+    assert!(
+        CapRatio::get() == v9_constants::CAP_RATIO * CAPACITY_UNIT_RESCALE,
+        "CapRatio moved by a different factor than BaseCost — the v9->v10 rescale could exceed the ceiling"
+    );
+    assert!(
+        Ceiling::get() == v9_constants::CEILING * CAPACITY_UNIT_RESCALE,
+        "Ceiling moved by a different factor than BaseCost — the v9->v10 rescale could exceed the ceiling"
+    );
+    // Not load-bearing for the rescale, but it is denominated in the same unit: a per-byte cost left
+    // behind would silently re-price long posts relative to short ones.
+    assert!(
+        PerByteCost::get() == v9_constants::PER_BYTE_COST * CAPACITY_UNIT_RESCALE,
+        "PerByteCost moved by a different factor than BaseCost — post pricing is no longer proportional"
+    );
+};
+
 /// Prices `pallet-profile`'s feeless writes against microblog's ONE per-account capacity battery — the
 /// [`pallet_microblog::ForeignCapacityCost`] seam that lets the profile pallet share the feeless+capacity
 /// machinery without microblog ever naming the profile crate (no Cargo cycle).
@@ -933,10 +1055,11 @@ parameter_types! {
 ///   capacity may still tidy up its own state"), which is why neither call has an identity gate.
 ///   Zero cost is not a churn farm: every clear/unpin requires a prior `set_profile`/`pin_post`
 ///   paid at the full `ProfileCost`.
-/// - UNPAYABLE (`u128::MAX`, far above any reachable `Ceiling`) when there is nothing to clear:
-///   `CheckCapacity` then rejects the no-op at the POOL (`ExhaustsResources`), so pricing the
-///   tidy-up at 0 does not open a free-spam path for doomed calls. This mirrors the dispatch-side
-///   `NoProfile`/`NotPinned` rejections, at the pool.
+/// - [`pallet_microblog::UNPAYABLE`] when there is nothing to clear: `CheckCapacity` then rejects the
+///   no-op at the POOL as `InvalidTransaction::Call` (malformed, NOT retried — the same code as an
+///   over-length post body, and deliberately not the retriable `ExhaustsResources` the client reads as
+///   a rate limit), so pricing the tidy-up at 0 does not open a free-spam path for doomed calls. This
+///   mirrors the dispatch-side `NoProfile`/`NotPinned` rejections, at the pool.
 ///
 /// NOTE: this is CAPACITY cost (the talk-capacity battery), not FRAME weight — the calls still
 /// carry their benchmarked dispatch weights.
@@ -948,14 +1071,14 @@ impl pallet_microblog::ForeignCapacityCost<AccountId, RuntimeCall> for ProfileCa
                 if pallet_profile::Profiles::<Runtime>::contains_key(who) {
                     Some(0)
                 } else {
-                    Some(u128::MAX)
+                    Some(pallet_microblog::UNPAYABLE)
                 }
             }
             RuntimeCall::Profile(pallet_profile::Call::unpin_post { .. }) => {
                 if pallet_profile::PinnedPost::<Runtime>::contains_key(who) {
                     Some(0)
                 } else {
-                    Some(u128::MAX)
+                    Some(pallet_microblog::UNPAYABLE)
                 }
             }
             RuntimeCall::Profile(_) => Some(ProfileCost::get()),
@@ -977,8 +1100,14 @@ mod profile_capacity_cost_tests {
             let unpin = RuntimeCall::Profile(pallet_profile::Call::unpin_post {});
             // Nothing to clear: both tidy-up calls are priced unpayable, so the pool rejects the
             // doomed no-op instead of including it free.
-            assert_eq!(ProfileCapacityCost::cost(&who, &clear), Some(u128::MAX));
-            assert_eq!(ProfileCapacityCost::cost(&who, &unpin), Some(u128::MAX));
+            assert_eq!(
+                ProfileCapacityCost::cost(&who, &clear),
+                Some(pallet_microblog::UNPAYABLE)
+            );
+            assert_eq!(
+                ProfileCapacityCost::cost(&who, &unpin),
+                Some(pallet_microblog::UNPAYABLE)
+            );
             // With a row to clear: free — this is what lets a REVOKED account (capacity clamped to
             // 0 forever) still erase its own profile/pin.
             pallet_profile::Profiles::<Runtime>::insert(
@@ -1285,8 +1414,17 @@ impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
         // The old `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
         // wiped the ENTIRE set to empty. `weight` (spec 207) is the governance-poll chamber weight,
         // carried through verbatim.
+        //
+        // The non-SPO pass is itself CAPPED, at `NON_SPO_RESERVE`. "At most one of each" is what the
+        // reduction emits today, but nothing in this signature enforces it — and if a future reduction
+        // ever emitted a handful of dRep/CC credentials for one account, an uncapped first pass would
+        // fill all 16 slots and drop EVERY SPO badge: the exact inverse of the bug the two passes fix,
+        // and just as silent. Reserving a small, fixed prefix bounds the trade in both directions —
+        // non-SPO badges can never be starved by pools, and pools can never be starved by badges.
+        const NON_SPO_RESERVE: usize = 4;
+
         let mut bounded = ObservedRoleSet::default();
-        for pass_spo in [false, true] {
+        'fill: for pass_spo in [false, true] {
             for (kind_ix, id, weight) in roles {
                 let kind = match kind_ix {
                     0 if pass_spo => RoleKind::Spo,
@@ -1294,6 +1432,9 @@ impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
                     2 if !pass_spo => RoleKind::Committee,
                     _ => continue,
                 };
+                if !pass_spo && bounded.len() >= NON_SPO_RESERVE {
+                    continue; // the non-SPO prefix is full — leave the rest of the set for pools
+                }
                 if bounded
                     .try_push(ObservedRole {
                         kind,
@@ -1302,7 +1443,10 @@ impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
                     })
                     .is_err()
                 {
-                    break; // at the cap — keep what fits (deterministic), drop the rest
+                    // At the cap — keep what fits (deterministically), drop the rest. Break out of
+                    // BOTH loops: a plain `break` would only end this pass and then re-walk the whole
+                    // slice in the next one, every `try_push` failing, inside a Mandatory inherent.
+                    break 'fill;
                 }
             }
         }
@@ -1343,6 +1487,35 @@ mod role_apply_tests {
             assert_eq!(
                 pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&small).len(),
                 2
+            );
+        });
+    }
+
+    /// The reserve is bounded in BOTH directions. Reserving the non-SPO badges must not become a way
+    /// to starve the pools: an account handed more dRep/CC entries than the reserve keeps only the
+    /// reserve's worth, and every remaining slot still goes to SPO badges.
+    #[test]
+    fn the_non_spo_reserve_cannot_starve_the_spo_badges() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([9u8; 32]);
+            // 16 pools (the cap on its own) plus EIGHT dRep entries — twice the reserve. Nothing in
+            // `RoleSink`'s signature forbids this; an uncapped first pass would keep all eight and
+            // drop every pool.
+            let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
+                (0..16u8).map(|i| (0u8, [i; 28], 1u128)).collect();
+            roles.extend((0..8u8).map(|i| (1u8, [0xD0 + i; 28], 5u128)));
+            RoleApply::set_roles(&who, &roles);
+            let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
+            assert_eq!(stored.len(), 16, "filled to the cap");
+            assert_eq!(
+                stored.iter().filter(|r| r.kind == RoleKind::DRep).count(),
+                4,
+                "the non-SPO prefix is capped at the reserve"
+            );
+            assert_eq!(
+                stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
+                12,
+                "every remaining slot still goes to the pools"
             );
         });
     }

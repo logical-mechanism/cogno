@@ -135,6 +135,18 @@ pub trait ForeignCapacityCost<AccountId, RuntimeCall> {
     fn cost(who: &AccountId, call: &RuntimeCall) -> Option<u128>;
 }
 
+/// The price of a call that can NEVER succeed for this signer, no matter how long they wait — a
+/// tidy-up call with nothing to tidy (`clear_profile` with no profile row, `unpin_post` with no pin).
+///
+/// It is a distinct SENTINEL rather than "some number above the ceiling" because
+/// [`CheckCapacity::validate`] branches on it: an unpayable call is rejected at the pool as
+/// [`InvalidTransaction::Call`] — malformed, do not retry — exactly like the over-length post body,
+/// and NOT as `ExhaustsResources`, which is the retriable "your battery is low" code. Getting that
+/// wrong is user-visible: `ExhaustsResources` is what the client classifies as a rate limit, so a
+/// permanently-doomed no-op would tell the user they are "posting too fast" and invite a retry that
+/// can never work.
+pub const UNPAYABLE: u128 = u128::MAX;
+
 /// Default: meter nothing foreign. A runtime with no extra feeless pallets wires `type ForeignCost = ()`.
 impl<AccountId, RuntimeCall> ForeignCapacityCost<AccountId, RuntimeCall> for () {
     fn cost(_who: &AccountId, _call: &RuntimeCall) -> Option<u128> {
@@ -2194,6 +2206,19 @@ where
                 origin,
             ));
         };
+        // The UNPAYABLE sentinel: a call that can never succeed for this signer (a tidy-up with
+        // nothing to tidy). Same rule as the over-length body above — `Call` (malformed, not
+        // retried), NOT `ExhaustsResources`, which the client reads as a rate limit and invites a
+        // retry for. Checked BEFORE `have < need` so the "battery too low" arm only ever sees costs
+        // that waiting could actually cover.
+        if need == UNPAYABLE {
+            log::debug!(
+                target: crate::LOG_TARGET,
+                "CheckCapacity: call from {:?} rejected at pool: priced UNPAYABLE (no-op, not retried)",
+                who,
+            );
+            return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
+        }
         let now = frame_system::Pallet::<T>::block_number();
         let have = crate::pallet::Pallet::<T>::current_capacity(&who, now);
         if have < need {
@@ -2718,37 +2743,54 @@ impl<T: Config> Pallet<T> {
         // the author's newest posts entirely. Anchor them the same way the reply aggregate is anchored:
         // to the row counts, to seq DENSITY (the walk assumes `0..count` with no gap, which is also what
         // makes seq order == id order), and to the TRUE forward edge, a `Posts` row's own `author`.
-        let mut by_author: BTreeMap<T::AccountId, u64> = BTreeMap::new();
+        //
+        // ONE pass per index, accumulating `(row count, max seq)` per author, then ONE pass over the
+        // counters. Deliberately NOT a `Count::get(&author)` per ROW: that is a storage read per POST,
+        // and this runs inside the pre-enactment `try-runtime` dry-run — the safety net that has
+        // already caught a real bug on this branch, and the one thing that must not become too slow to
+        // run. The per-author accumulator is the same information: rows are map KEYS, so each seq
+        // appears at most once; `count == rows` plus `max_seq < count` then forces the seq set to be
+        // exactly `0..count`, which is the density the readers walk.
+        let mut by_author: BTreeMap<T::AccountId, (u64, u64)> = BTreeMap::new();
         for (author, seq, _id) in ByAuthor::<T>::iter() {
-            let e = by_author.entry(author.clone()).or_default();
-            *e = e.saturating_add(1);
-            if seq >= ByAuthorCount::<T>::get(&author) {
-                return Err("a ByAuthor seq is at or past its ByAuthorCount (index not dense)");
-            }
+            let e = by_author.entry(author).or_insert((0, 0));
+            e.0 = e.0.saturating_add(1);
+            e.1 = e.1.max(seq);
         }
+        // The total ByAuthor row count, carried out of the pass above so the cardinality check at the
+        // end does not walk the whole index a second time.
+        let by_author_rows: u64 = by_author.values().map(|(rows, _)| rows).sum();
         for (author, count) in ByAuthorCount::<T>::iter() {
-            if count != by_author.remove(&author).unwrap_or(0) {
+            // `unwrap_or` keeps a (degenerate but harmless) zero counter with no rows passing, as
+            // before; the density check is skipped there because there is no seq to check.
+            let (rows, max_seq) = by_author.remove(&author).unwrap_or((0, 0));
+            if count != rows {
                 return Err("ByAuthorCount disagrees with the ByAuthor rows");
+            }
+            if rows > 0 && max_seq >= count {
+                return Err("a ByAuthor seq is at or past its ByAuthorCount (index not dense)");
             }
         }
         if !by_author.is_empty() {
             return Err("ByAuthor rows exist for an author with no ByAuthorCount row");
         }
-        let mut top_level: BTreeMap<T::AccountId, u64> = BTreeMap::new();
+        let mut top_level: BTreeMap<T::AccountId, (u64, u64)> = BTreeMap::new();
         for (author, seq, id) in TopLevelByAuthor::<T>::iter() {
-            let e = top_level.entry(author.clone()).or_default();
-            *e = e.saturating_add(1);
-            if seq >= TopLevelByAuthorCount::<T>::get(&author) {
-                return Err("a TopLevelByAuthor seq is at or past its count (index not dense)");
-            }
+            let e = top_level.entry(author).or_insert((0, 0));
+            e.0 = e.0.saturating_add(1);
+            e.1 = e.1.max(seq);
             match Posts::<T>::get(id) {
                 Some(p) if p.parent.is_none() => {}
                 _ => return Err("a TopLevelByAuthor entry is missing or is not top-level"),
             }
         }
         for (author, count) in TopLevelByAuthorCount::<T>::iter() {
-            if count != top_level.remove(&author).unwrap_or(0) {
+            let (rows, max_seq) = top_level.remove(&author).unwrap_or((0, 0));
+            if count != rows {
                 return Err("TopLevelByAuthorCount disagrees with the TopLevelByAuthor rows");
+            }
+            if rows > 0 && max_seq >= count {
+                return Err("a TopLevelByAuthor seq is at or past its count (index not dense)");
             }
         }
         if !top_level.is_empty() {
@@ -2766,7 +2808,10 @@ impl<T: Config> Pallet<T> {
         // append-only (`delete_post` was removed before launch). Per-author attribution is covered by
         // construction: all three creation sites pass the SAME `who` to `Posts::insert` and to
         // `index_by_author`.
-        if ByAuthor::<T>::iter().count() != Posts::<T>::iter().count() {
+        //
+        // `by_author_rows` is carried out of the pass above rather than re-walking `ByAuthor` here, for
+        // the same reason: one trie walk per index, not two.
+        if by_author_rows != Posts::<T>::iter().count() as u64 {
             return Err("the ByAuthor index and Posts disagree on how many posts exist");
         }
 

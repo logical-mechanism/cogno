@@ -64,9 +64,10 @@ pub type RoleCredential = [u8; 28];
 /// the three [`RoleKind`]s. The observer truncates to this cap; the set is display-only, so a cap is a UI
 /// bound, not an economic one.
 ///
-/// Truncation order (spec 211): the runtime `RoleApply` sink fills NON-SPO roles (dRep, CC) FIRST,
-/// then the SPO entries, so a large mSPO past the cap loses only surplus SPO pools — never its dRep/CC
-/// badge or its dRep-chamber weight. (Before spec 211 it kept the first N in the canonical order,
+/// Truncation order (spec 211): the runtime `RoleApply` sink fills NON-SPO roles (dRep, CC) FIRST —
+/// bounded to a small fixed reserve, so badges can never starve the pools either — then the SPO
+/// entries, so a large mSPO past the cap loses only surplus SPO pools, never its dRep/CC badge or its
+/// dRep-chamber weight. (Before spec 211 it kept the first N in the canonical order,
 /// which sorts every SPO entry ahead of dRep/CC — so one Calidus key declared by ~14+ live pools
 /// silently truncated the operator's dRep badge away.) An mSPO past the cap still under-counts its own
 /// SPO-chamber weight — RAISING this cap needs a storage migration (the bound types `ObservedRoleSet`)

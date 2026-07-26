@@ -115,6 +115,11 @@ If you changed the layout of *existing* storage, ship an `OnRuntimeUpgrade` migr
 - **`try-runtime` is wired.** Build with `--features try-runtime` and dry-run the migration against a
   snapshot of live state before you enact. A migration that passes on a fresh `--dev` chain can still
   panic on real accumulated state.
+- **Deleting a storage item is a layout change too.** Dropping the `#[pallet::storage]` declaration
+  stops the writes; it does not remove what is already there. Those rows stay in state and in every
+  state root, under a prefix nothing declares any more — invisible to `try_state` and to `post_upgrade`,
+  and one accidental re-declaration away from coming back. Ship a sweep, versioned like any other
+  migration: `pallet_cogno_gate::migrations::v1` (spec 212) is the worked example.
 
 ## Version rules
 

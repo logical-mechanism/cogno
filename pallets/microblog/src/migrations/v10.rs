@@ -5,9 +5,10 @@
 //! `u64` counter, so appending a post costs one counter read plus two writes at ANY history length
 //! instead of decoding and re-encoding the author's entire vector.
 //!
-//! ⚠ THE OLD AND NEW ITEMS SHARE A STORAGE PREFIX. The v9 shape is re-declared below against the SAME
-//! `(pallet, item)` name, so the old single-map rows and the new double-map rows live under one prefix
-//! and are distinguished only by key length. Two consequences the code below depends on:
+//! ⚠ THE OLD AND NEW ITEMS SHARE A STORAGE PREFIX. The v9 shape ([`crate::migrations::legacy::blob`],
+//! which owns it because `v4` writes it too) addresses the SAME `(pallet, item)` name, so the old
+//! single-map rows and the new double-map rows live under one prefix and are distinguished only by key
+//! length. Two consequences the code below depends on:
 //!
 //!   1. Order is load-bearing: read every old row, REMOVE it by its exact old key, and only then write
 //!      the new rows. `clear_prefix` would be wrong (it would also delete anything already written),
@@ -18,85 +19,58 @@
 //!      "successfully" as an old key; and a new `u64` value decodes as a (garbage, usually empty)
 //!      `Vec<u64>`. `post_upgrade` therefore asserts on the NEW items only.
 //!
-//! The alias values are `Vec<u64>`, not `BoundedVec<u64, _>`: the two are SCALE-identical, and the
-//! plain `Vec` sidesteps the `MaxPostsPerAuthor` bound that this upgrade removes from `Config`.
-//!
 //! Cost: one pass over every author, holding one author's id list in memory at a time. Preprod carries
 //! a handful of authors with short vectors; a fresh mainnet genesis has none at all. Wired into the
 //! runtime's `SingleBlockMigrations` behind [`VersionedMigration`], so it runs exactly once (on-chain
 //! version 9 → 10) and self-skips on re-run.
 
+use crate::migrations::legacy::blob::{
+    ByAuthor as ByAuthorV9, TopLevelByAuthor as TopLevelByAuthorV9,
+};
 use crate::{
     ByAuthor, ByAuthorCount, Capacity, CapacityState, Config, Pallet, TopLevelByAuthor,
     TopLevelByAuthorCount,
 };
 use alloc::vec::Vec;
-use frame_system::pallet_prelude::BlockNumberFor;
-
-/// How much bigger a spec-212 micro-capacity unit is than a spec-211 one: `BaseCost` moved
-/// 50_000_000 -> 3_000_000_000, and `CapRatio` / `Ceiling` / `PerByteCost` / `VoteCost` /
-/// `FollowCost` / `ProfileCost` all moved with it by the same factor. Stored `Capacity.cap_last`
-/// values are denominated in those units, so they are rescaled by it below.
-const CAPACITY_UNIT_RESCALE: u128 = 60;
 use frame_support::{
     migrations::VersionedMigration,
-    pallet_prelude::*,
-    storage::types::StorageMap as RawStorageMap,
-    traits::{Get, PalletInfoAccess, StorageInstance, UncheckedOnRuntimeUpgrade},
+    traits::{Get, UncheckedOnRuntimeUpgrade},
     weights::Weight,
-    Blake2_128Concat,
 };
+use frame_system::pallet_prelude::BlockNumberFor;
 
+// `Encode`/`Decode` (for the pre/post-upgrade state blob) and `ensure!` are only used by the
+// try-runtime hooks below.
 #[cfg(feature = "try-runtime")]
-use frame_support::ensure;
+use frame_support::{ensure, pallet_prelude::*};
 
-// ⚠ NOT `#[storage_alias]`. That macro takes the on-chain STORAGE ITEM NAME from the ALIAS TYPE NAME,
-// so a `ByAuthorV9` alias silently addresses `twox128("Microblog") ++ twox128("ByAuthorV9")` — a prefix
-// nothing has ever written. The migration then iterates zero rows, reports success, and leaves every
-// real v9 row orphaned under the shared `ByAuthor` prefix where the new double map cannot decode it.
-// (That is not hypothetical: it is what the first cut of this file did, it passed its own unit tests —
-// which wrote and read through the same wrong prefix, so they were self-fulfilling — and only the
-// `try-runtime` dry-run against real preprod state caught it.)
-//
-// So the prefix is spelled out. `STORAGE_PREFIX` is the REAL item name; the Rust type keeps the `V9`
-// suffix so it is obvious at every call site which shape is meant. `alias_prefixes_match_the_live_items`
-// in the tests pins the two together against the pallet's own items.
-
-/// Addresses the `Microblog::ByAuthor` prefix with the v9 (blob) value shape.
-pub struct ByAuthorV9Prefix<T>(core::marker::PhantomData<T>);
-impl<T: Config> StorageInstance for ByAuthorV9Prefix<T> {
-    fn pallet_prefix() -> &'static str {
-        <Pallet<T> as PalletInfoAccess>::name()
-    }
-    const STORAGE_PREFIX: &'static str = "ByAuthor";
+/// The **spec-211** capacity constants — the unit every LIVE `Capacity.cap_last` is denominated in.
+/// Historical values: no code can read them any more (the runtime carries only today's), so they are
+/// written down here, next to the factor derived from them.
+pub mod v9_constants {
+    /// `BaseCost` (one post) before spec 212.
+    pub const BASE_COST: u128 = 50_000_000;
+    /// Capacity ceiling per unit weight, before spec 212.
+    pub const CAP_RATIO: u128 = 50;
+    /// The absolute bucket ceiling, before spec 212.
+    pub const CEILING: u128 = 5_000_000_000_000;
+    /// Per-byte post cost, before spec 212.
+    pub const PER_BYTE_COST: u128 = 50_000;
 }
 
-/// Addresses the `Microblog::TopLevelByAuthor` prefix with the v9 (blob) value shape.
-pub struct TopLevelByAuthorV9Prefix<T>(core::marker::PhantomData<T>);
-impl<T: Config> StorageInstance for TopLevelByAuthorV9Prefix<T> {
-    fn pallet_prefix() -> &'static str {
-        <Pallet<T> as PalletInfoAccess>::name()
-    }
-    const STORAGE_PREFIX: &'static str = "TopLevelByAuthor";
-}
-
-/// The **v9** on-chain shape of `ByAuthor` — one blob of post ids per author.
-pub type ByAuthorV9<T> = RawStorageMap<
-    ByAuthorV9Prefix<T>,
-    Blake2_128Concat,
-    <T as frame_system::Config>::AccountId,
-    Vec<u64>,
-    ValueQuery,
->;
-
-/// The **v9** on-chain shape of `TopLevelByAuthor` — same blob, reply-free.
-pub type TopLevelByAuthorV9<T> = RawStorageMap<
-    TopLevelByAuthorV9Prefix<T>,
-    Blake2_128Concat,
-    <T as frame_system::Config>::AccountId,
-    Vec<u64>,
-    ValueQuery,
->;
+/// How much bigger a spec-212 micro-capacity unit is than a spec-211 one. `BaseCost` moved
+/// 50_000_000 -> 3_000_000_000, and `CapRatio` / `Ceiling` / `PerByteCost` / `VoteCost` /
+/// `FollowCost` / `ProfileCost` all moved with it by the SAME factor. Stored `Capacity.cap_last`
+/// values are denominated in those units, so they are rescaled by this below.
+///
+/// ⚠ This is a number in THIS crate that must mirror constants set in another one
+/// (`runtime/src/configs/mod.rs`). A bare literal would be tied to nothing: retune `BaseCost` again
+/// before this migration is enacted and every live bucket is silently scaled by the wrong factor —
+/// and `post_upgrade` cannot catch it, because it asserts `banked * CAPACITY_UNIT_RESCALE` against
+/// this same constant and so agrees with itself. So the runtime PINS it at COMPILE time, against
+/// [`v9_constants`] and its own live values, in the `const _: () = assert!(…)` block beside the
+/// capacity `parameter_types!`. A further retune fails the build instead.
+pub const CAPACITY_UNIT_RESCALE: u128 = 60;
 
 /// The unchecked inner migration wrapped by [`MigrateV9ToV10`]. Register `MigrateV9ToV10` (the
 /// version-guarded wrapper), never this directly, so it stays idempotent.
@@ -104,7 +78,12 @@ pub struct InnerMigrateV9ToV10<T: Config>(core::marker::PhantomData<T>);
 
 impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV9ToV10<T> {
     fn on_runtime_upgrade() -> Weight {
+        // Old author ROWS read + removed, across both maps — including the empty-vec ones that get no
+        // counter. This is the weight basis.
+        let mut rows: u64 = 0;
+        // Counter rows WRITTEN, across both maps — only the authors that actually had ids.
         let mut authors: u64 = 0;
+        // Post ids rewritten as new double-map rows, across both maps.
         let mut ids: u64 = 0;
 
         // ── ByAuthor ────────────────────────────────────────────────────────────────────────────
@@ -113,6 +92,12 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV9ToV10<T> {
         for (author, _) in old.iter() {
             ByAuthorV9::<T>::remove(author);
         }
+        // Every OLD row is read and removed, whether or not it carries ids — so `rows` (not `authors`)
+        // is what the weight below is charged on. An empty-vec row still costs one read plus one
+        // remove; charging only the authors that got a counter under-counts a state carrying many
+        // post-less author rows, and a single-block migration's weight is reported POST HOC, so the
+        // block-weight limiter cannot catch the shortfall.
+        rows = rows.saturating_add(old.len() as u64);
         for (author, list) in old {
             let mut seq: u64 = 0;
             for id in list {
@@ -134,6 +119,7 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV9ToV10<T> {
         for (author, _) in old_top.iter() {
             TopLevelByAuthorV9::<T>::remove(author);
         }
+        rows = rows.saturating_add(old_top.len() as u64);
         for (author, list) in old_top {
             let mut seq: u64 = 0;
             for id in list {
@@ -142,45 +128,45 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV9ToV10<T> {
             }
             if seq > 0 {
                 TopLevelByAuthorCount::<T>::insert(&author, seq);
+                authors = authors.saturating_add(1);
                 ids = ids.saturating_add(seq);
             }
         }
 
         // ── Capacity: rescale the stored buckets into the new units ─────────────────────────────
         //
-        // Spec 212 also rescales the talk-capacity unit by exactly `CAPACITY_UNIT_RESCALE`
-        // (`BaseCost` 5e7 -> 3e9, and every other capacity constant with it). `Capacity.cap_last` is
-        // a stored quantity IN THOSE UNITS, so leaving it alone would silently devalue every live
-        // bucket 60-fold: an account holding a full 100-post battery would read as holding 1.6 posts
-        // and be throttled until it refilled, which now takes 5 hours.
+        // Spec 212 also rescales the talk-capacity unit by exactly one factor (`BaseCost` 5e7 -> 3e9,
+        // and every other capacity constant with it). `Capacity.cap_last` is a stored quantity IN
+        // THOSE UNITS, so leaving it alone would silently devalue every live bucket 60-fold: an
+        // account holding a full 100-post battery would read as holding 1.6 posts and be throttled
+        // until it refilled, which now takes 5 hours.
         //
         // The bucket is the only stored capacity quantity — `last_block` is a block number and the
         // ceiling/rate are derived from constants at read time — so this one field is the whole
         // change. Multiplying is exact and cannot overflow the new ceiling: the old value was already
         // clamped to `min(w·50, 5e12)` and the new ceiling is `min(w·3000, 3e14)`, i.e. the same bound
-        // scaled by the same 60.
+        // scaled by the same factor.
+        let rescale = CAPACITY_UNIT_RESCALE;
         let mut buckets: u64 = 0;
         Capacity::<T>::translate::<CapacityState<BlockNumberFor<T>>, _>(|_who, old| {
             buckets = buckets.saturating_add(1);
             Some(CapacityState {
-                cap_last: old.cap_last.saturating_mul(CAPACITY_UNIT_RESCALE),
+                cap_last: old.cap_last.saturating_mul(rescale),
                 last_block: old.last_block,
             })
         });
 
         log::info!(
             target: crate::LOG_TARGET,
-            "migration v9->v10: repaged the per-author indexes ({authors} author(s), {ids} id(s) rewritten); \
-             rescaled {buckets} capacity bucket(s) by {CAPACITY_UNIT_RESCALE}x",
+            "migration v9->v10: repaged the per-author indexes ({rows} author row(s), {authors} counter(s), \
+             {ids} id(s) rewritten); rescaled {buckets} capacity bucket(s) by {rescale}x",
         );
-        // Per author: 1 read of the old blob + 1 remove + 1 counter write, twice (both maps). Per id:
-        // 1 row write. Charge both maps at the same author count — an over-count of the reply-free map
-        // is the safe direction. Plus 1 read + 1 write per rescaled capacity bucket.
-        let author_ops = authors.saturating_mul(2);
+        // Per OLD author row: 1 read of the blob + 1 remove — `rows` already spans both maps and
+        // includes the empty ones. Per author that had ids: 1 counter write. Per id: 1 row write.
+        // Plus 1 read + 1 write per rescaled capacity bucket.
         T::DbWeight::get().reads_writes(
-            author_ops.saturating_add(buckets),
-            author_ops
-                .saturating_mul(2)
+            rows.saturating_add(buckets),
+            rows.saturating_add(authors)
                 .saturating_add(ids)
                 .saturating_add(buckets),
         )
@@ -251,6 +237,9 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV9ToV10<T> {
             Capacity::<T>::iter().count() as u64 == buckets,
             "microblog v10: the capacity rescale must not add or drop a bucket"
         );
+        // The factor itself is pinned to the runtime's live constants at COMPILE time (see the
+        // `const _: () = assert!(…)` beside the capacity `parameter_types!`), so this only has to
+        // prove the pass ran once over every bucket.
         ensure!(
             Capacity::<T>::iter().map(|(_, s)| s.cap_last).sum::<u128>()
                 == banked.saturating_mul(CAPACITY_UNIT_RESCALE),

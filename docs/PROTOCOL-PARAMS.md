@@ -247,7 +247,10 @@ The on-chain identity proof (see [TRUSTLESS-IDENTITY.md](TRUSTLESS-IDENTITY.md))
 
 The optional `thread_pointer` argument (and its `ThreadOf` storage) was REMOVED in spec 211 — it was an
 unauthenticated free-text field with no on-chain or frontend reader. `cogno-gate` error index 2
-(`BadThread`) is permanently vacant.
+(`BadThread`) is permanently vacant. Spec 212 adds the migration that sweeps the rows the live chain
+still held (`pallet_cogno_gate::migrations::v1`, storage version 0 → 1) — dropping the declaration
+stopped the writes, but the rows themselves would otherwise stay in every state root forever, under a
+prefix nothing declares.
 
 ## Cardano role tags
 

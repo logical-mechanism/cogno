@@ -2901,6 +2901,36 @@ mod capacity_extension {
     }
 
     #[test]
+    fn unpayable_foreign_call_is_rejected_as_malformed_not_as_a_rate_limit() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(10);
+            // A brim-full battery: nothing about this rejection is a budget shortfall.
+            prime(1, 100, 1_000);
+            let doomed = RuntimeCall::System(frame_system::Call::kill_prefix {
+                prefix: vec![],
+                subkeys: 0,
+            });
+            let err = validate(1, &doomed).map(|_| ()).unwrap_err();
+            // `Call` (malformed), NOT `ExhaustsResources`. The call can never succeed for this signer,
+            // so retrying it is pointless — and `ExhaustsResources` is exactly what the client reads as
+            // "you are posting too fast", which would be the wrong thing to tell them here.
+            assert_eq!(
+                err,
+                TransactionValidityError::Invalid(InvalidTransaction::Call)
+            );
+            // …and nothing was consumed: the reject happens before the battery is touched.
+            assert_eq!(Microblog::current_capacity(&1, 10), 1_000);
+            // A genuinely over-budget call still gets the RETRIABLE code, so the two arms stay distinct.
+            prime(2, 100, 150);
+            let foreign = RuntimeCall::System(frame_system::Call::remark { remark: vec![] });
+            assert_eq!(
+                validate(2, &foreign).map(|_| ()).unwrap_err(),
+                TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources)
+            );
+        });
+    }
+
+    #[test]
     fn unpriced_foreign_call_passes_through_unmetered() {
         new_test_ext().execute_with(|| {
             System::set_block_number(10);
@@ -3189,7 +3219,7 @@ mod migration_v4 {
     // ⚑ v4 runs at on-chain version 3, so it writes the per-author index in its ORIGINAL blob shape.
     // Assert against that alias, NOT against the current `TopLevelByAuthor` double map — the repage is
     // `MigrateV9ToV10`'s job, later in the same tuple.
-    use crate::migrations::v10::TopLevelByAuthorV9;
+    use crate::migrations::legacy::blob::TopLevelByAuthor as TopLevelByAuthorV9;
     use crate::{NextTopLevelSeq, Pallet, Post, TopLevelPosts};
     use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
 
@@ -3684,7 +3714,10 @@ mod migration_v9 {
 
 mod migration_v10 {
     use super::*;
-    use crate::migrations::v10::{ByAuthorV9, MigrateV9ToV10, TopLevelByAuthorV9};
+    use crate::migrations::legacy::blob::{
+        ByAuthor as ByAuthorV9, TopLevelByAuthor as TopLevelByAuthorV9,
+    };
+    use crate::migrations::v10::MigrateV9ToV10;
     use crate::Pallet;
     use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
 

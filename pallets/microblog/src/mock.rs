@@ -40,11 +40,18 @@ pub fn deny_identity(who: u64) {
 /// real foreign feeless call, e.g. `pallet-profile`'s writes in the runtime). Lets the `ForeignCost`
 /// seam — non-microblog calls sharing the one battery, gated at the pool — be unit-tested without
 /// wiring a second pallet into this mock.
+///
+/// `System::kill_prefix` stands in for a TIDY-UP call with nothing to tidy: priced
+/// [`pallet_microblog::UNPAYABLE`], the way the runtime prices `clear_profile` for an account with no
+/// profile row. It exercises the extension's "never retriable" arm without a second pallet.
 pub struct MockForeignCost;
 impl pallet_microblog::ForeignCapacityCost<u64, RuntimeCall> for MockForeignCost {
     fn cost(_who: &u64, call: &RuntimeCall) -> Option<u128> {
         match call {
             RuntimeCall::System(frame_system::Call::remark { .. }) => Some(200),
+            RuntimeCall::System(frame_system::Call::kill_prefix { .. }) => {
+                Some(pallet_microblog::UNPAYABLE)
+            }
             _ => None,
         }
     }
