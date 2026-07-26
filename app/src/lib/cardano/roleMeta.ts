@@ -12,6 +12,7 @@
 // real drep id) rather than pulling in the ~6 MB Cardano bundle.
 
 import { getBlockfrostProjectId } from "@/lib/config/endpoints";
+import { blockfrostBase, cexplorerSub } from "@/lib/cardano/network";
 import { sanitizeInline } from "@/lib/sanitize";
 import { hexToBytes } from "@/lib/util/hex";
 import { isBlankRoleId, type RoleKindType } from "@/lib/chain/roles";
@@ -29,13 +30,9 @@ const poolInflight = new Map<string, Promise<PoolMeta | null>>();
 const drepResolved = new Map<string, string | null>();
 const drepInflight = new Map<string, Promise<string | null>>();
 
-/** The Blockfrost REST base for the network the configured project id belongs to (its network prefix). */
-function baseFor(projectId: string): string {
-  if (projectId.startsWith("mainnet")) return "https://cardano-mainnet.blockfrost.io/api/v0";
-  if (projectId.startsWith("preview")) return "https://cardano-preview.blockfrost.io/api/v0";
-  // preprod (the app's default network) — and the safe fallback for any unrecognized prefix.
-  return "https://cardano-preprod.blockfrost.io/api/v0";
-}
+// The Blockfrost REST base and the explorer subdomain both come from lib/cardano/network.ts now — one
+// implementation, driven by the chain's own network constant rather than by the project-id prefix
+// alone. This file used to carry its own copy of each, as did govParams.ts.
 
 /**
  * Resolve a poolID (0x-prefixed or bare 28-byte hex) to a sanitized ticker / name, or `null` when it
@@ -52,7 +49,7 @@ export async function resolvePoolMeta(poolIdHex: string): Promise<PoolMeta | nul
     const projectId = getBlockfrostProjectId();
     if (!projectId) return null;
     try {
-      const res = await fetch(`${baseFor(projectId)}/pools/${id}/metadata`, {
+      const res = await fetch(`${blockfrostBase()}/pools/${id}/metadata`, {
         headers: { project_id: projectId },
       });
       if (!res.ok) return null; // 404 (no registered metadata) / 400 / 429 → degrade gracefully
@@ -157,7 +154,7 @@ export async function resolveDRepName(credHex: string): Promise<string | null> {
     if (!projectId) return null;
     try {
       const drepId = drepBech32(cred) as string; // cred is validated 28-byte hex above
-      const res = await fetch(`${baseFor(projectId)}/governance/dreps/${drepId}/metadata`, {
+      const res = await fetch(`${blockfrostBase()}/governance/dreps/${drepId}/metadata`, {
         headers: { project_id: projectId },
       });
       if (!res.ok) return null; // 404 (no metadata) / 400 / 429 → degrade to a truncated id
@@ -187,16 +184,9 @@ export async function resolveDRepName(credHex: string): Promise<string | null> {
 
 // ── "verify on-chain" explorer deep-links ────────────────────────────────────────────────────────
 // The chain gives the trustless 28-byte id; this turns it into a cexplorer URL so a viewer can confirm
-// the pool / dRep independently. Network follows the same Blockfrost-projectId prefix as the name lookups
-// (bech32 pool/drep ids are themselves network-agnostic — only the explorer subdomain differs).
-
-/** The cexplorer subdomain for the configured network (`""` = mainnet). */
-function explorerSub(): string {
-  const projectId = getBlockfrostProjectId();
-  if (projectId.startsWith("mainnet")) return "";
-  if (projectId.startsWith("preview")) return "preview.";
-  return "preprod.";
-}
+// the pool / dRep independently. The network follows the chain's own constant (see network.ts), same as
+// the name lookups above (bech32 pool/drep ids are themselves network-agnostic — only the subdomain
+// differs).
 
 /**
  * The CIP-5 bech32 pool id (`pool1…`) for a 28-byte pool hash (0x-prefixed or bare hex). Plain bech32,
@@ -219,7 +209,7 @@ export function roleExplorerUrl(kind: RoleKindType, idHex: string): string | nul
   // ownership or Calidus — now carries a real poolID, so this guard only avoids building a bogus `pool1…`
   // link from a degenerate id.
   if (isBlankRoleId(idHex)) return null;
-  const sub = explorerSub();
+  const sub = cexplorerSub();
   if (kind === "Spo") {
     const id = poolBech32(idHex);
     return id ? `https://${sub}cexplorer.io/pool/${id}` : null;

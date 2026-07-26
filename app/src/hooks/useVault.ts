@@ -88,8 +88,14 @@ export function useVault(): UseVault {
         setInfo(res.info);
         setLocked(res.locked);
         setLockedKnown(true);
+        setPhase((p) => (p === "error" ? "idle" : p)); // a successful re-read clears a stale failure
       } catch (e) {
+        // Raise the phase too, not just the message. `lockedKnown` stays false on a failed read, and
+        // the card only renders `error` in the `error` phase — so a message with no phase left the
+        // status on its loading skeleton with a permanently disabled Lock button and nothing to
+        // explain why. This is the state the Retry button is attached to.
         setError(e instanceof Error ? e.message : String(e));
+        setPhase("error");
       }
     })();
   }, []);

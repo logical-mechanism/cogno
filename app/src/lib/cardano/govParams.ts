@@ -6,6 +6,7 @@
 // context — the ratification bar (a governance-set protocol parameter) and the coverage denominator.
 
 import { getBlockfrostProjectId } from "@/lib/config/endpoints";
+import { blockfrostBase } from "@/lib/cardano/network";
 import { FALLBACK_THRESHOLDS, type VotingThresholds } from "./governance";
 
 export interface GovParams {
@@ -19,12 +20,8 @@ export interface GovParams {
 const FETCH_TIMEOUT_MS = 8000;
 const FALLBACK: GovParams = { thresholds: FALLBACK_THRESHOLDS, totalActiveStake: null, live: false };
 
-/** Blockfrost REST base for the network the configured project id belongs to (its network prefix). */
-function blockfrostBase(projectId: string): string {
-  if (projectId.startsWith("mainnet")) return "https://cardano-mainnet.blockfrost.io/api/v0";
-  if (projectId.startsWith("preview")) return "https://cardano-preview.blockfrost.io/api/v0";
-  return "https://cardano-preprod.blockfrost.io/api/v0"; // preprod default + safe fallback
-}
+// The Blockfrost REST base comes from lib/cardano/network.ts — one implementation, driven by the
+// chain's own network constant. This file used to carry its own copy, as did roleMeta.ts.
 
 /** Coerce a Blockfrost threshold value (decimal string or number) to a fraction, or the fallback if absent. */
 function num(v: unknown, fallback: number): number {
@@ -63,7 +60,7 @@ export async function resolveGovParams(): Promise<GovParams> {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
     try {
-      const base = blockfrostBase(projectId);
+      const base = blockfrostBase();
       const [p, net] = await Promise.all([
         fetchJson(`${base}/epochs/latest/parameters`, projectId, ctl.signal),
         fetchJson(`${base}/network`, projectId, ctl.signal).catch(() => null),

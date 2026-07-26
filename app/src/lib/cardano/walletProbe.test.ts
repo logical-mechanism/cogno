@@ -10,8 +10,10 @@
 //
 // It must also never throw: it runs on the boot path, and the auth wall waits on it.
 
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { probeWalletIdentity } from "./cip8";
+import { seedCardanoNetwork } from "./network.fixture";
+import { resetCardanoNetwork } from "./network";
 
 type Injected = Record<string, unknown>;
 
@@ -26,6 +28,12 @@ const wallet = (over: Injected = {}): Injected => ({
     getChangeAddress: async () => "00ABCDEF",
   }),
   ...over,
+});
+
+// The expected network comes from the chain (lib/cardano/network.ts). Seed it, else every probe
+// reports `unavailable` — which is the correct fail-closed answer, but not what these cases assert.
+beforeEach(async () => {
+  await seedCardanoNetwork(0);
 });
 
 afterEach(() => {
@@ -102,6 +110,35 @@ describe("probeWalletIdentity — conclusive (`mismatch`: drop the session)", ()
     const p = await probeWalletIdentity("eternl");
     expect(p).toMatchObject({ ok: false, kind: "mismatch" });
     expect(p.ok === false && p.reason).toMatch(/preprod|testnet/i);
+  });
+});
+
+describe("probeWalletIdentity — an unresolved network must not disable the ACCOUNT check", () => {
+  // The regression this pins: the probe reads a local injected extension, the chain's network arrives
+  // over a WS handshake, so on a normal cold load the network is still unresolved when the probe runs.
+  // Answering `unavailable` at that point returned before the change address was ever read, which made
+  // the account-switch detection a no-op on essentially every reload — the exact hole the probe exists
+  // to close. The network is inconclusive; the ADDRESS is not.
+  it("still returns the change address when the chain has not named a network yet", async () => {
+    resetCardanoNetwork();
+    withCardano({
+      eternl: wallet({
+        enable: async () => ({ getNetworkId: async () => 0, getChangeAddress: async () => "00ABCDEF" }),
+      }),
+    });
+    expect(await probeWalletIdentity("eternl")).toEqual({ ok: true, addressHex: "00abcdef" });
+  });
+
+  it("and still returns it for a wallet whose network we cannot judge", async () => {
+    resetCardanoNetwork();
+    withCardano({
+      eternl: wallet({
+        enable: async () => ({ getNetworkId: async () => 1, getChangeAddress: async () => "00FEEDFACE" }),
+      }),
+    });
+    // Not `mismatch`: nothing to compare against. The caller compares this against the remembered
+    // address, which is what conclusively catches a wallet that moved.
+    expect(await probeWalletIdentity("eternl")).toEqual({ ok: true, addressHex: "00feedface" });
   });
 });
 

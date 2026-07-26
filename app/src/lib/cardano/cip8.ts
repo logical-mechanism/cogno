@@ -7,6 +7,11 @@
 //
 // The dual-key discipline: the Cardano wallet signs CIP-8 exactly ONCE, here, at bind. It NEVER signs a
 // post — posting uses the separate sr25519 key. This module never sees a private key.
+//
+// The one static import is deliberate and safe: lib/cardano/network.ts pulls only lib/config/endpoints
+// (already in the main bundle) plus a type-only import, so it adds nothing to the cold load that
+// `probeWalletIdentity` exists to keep light. Do not let it grow a MeshJS dependency.
+import { assertWalletNetwork, checkWalletNetwork } from "./network";
 
 /** The domain separator the runtime verifier pins; the payload grammar is shared with cip8.rs/payload.py. */
 const DOMAIN = "cogno-chain/bind/v1";
@@ -104,9 +109,9 @@ export type WalletProbe =
  * switches account. A remembered `{walletId, ss58}` pair has no way to notice on its own: the app would
  * confidently render account #1's handle, avatar and (because the device stores are ss58-keyed) its
  * bookmarks, mutes and block list, until a write silently swapped the identity underneath. The same
- * blind spot covers the network — `deriveSignerFromWallet` refuses `getNetworkId() !== 0` precisely
- * because a mainnet-flavoured connection mints a different account, and a remembered ss58 would sail
- * straight past that check.
+ * blind spot covers the network — `deriveSignerFromWallet` refuses a wallet on a network other than the
+ * one the chain names, precisely because a wrong-network connection mints a different account, and a
+ * remembered ss58 would sail straight past that check.
  *
  * NO POPUP: CIP-30 `isEnabled()` resolves without prompting, and `enable()` is silent for an origin the
  * user has already authorized — the app already depends on that (useVault's post-lock poll calls
@@ -135,14 +140,23 @@ export async function probeWalletIdentity(walletId: string): Promise<WalletProbe
     if (typeof api?.getNetworkId !== "function" || typeof api.getChangeAddress !== "function") {
       return { ok: false, kind: "unavailable", reason: `wallet "${walletId}" returned an incomplete API` };
     }
-    // Same rule as the vault's and the derive's: 0 = preprod. A mainnet-flavoured wallet is a genuine
-    // mismatch (it would derive a different posting key), not an inconclusive read.
-    if ((await api.getNetworkId()) !== 0) {
-      return { ok: false, kind: "mismatch", reason: "the wallet is not on preprod (testnet)" };
-    }
+    // THE ACCOUNT ANSWER FIRST. This probe races the chain's boot probe (lib/chain/client.ts) — it
+    // reads a local injected extension while that one waits on a WS handshake — so on a normal cold
+    // load the Cardano network is not resolved yet. Asking the network question first meant returning
+    // `unavailable` before the address was ever read, which silently disabled the account-switch
+    // detection this whole probe exists for on essentially every reload.
     const addressHex = await api.getChangeAddress();
     if (typeof addressHex !== "string" || addressHex.length === 0) {
       return { ok: false, kind: "unavailable", reason: "the wallet returned no change address" };
+    }
+    // Then the network, against the chain's own constant — same rule as the vault's and the derive's.
+    // A wallet on the wrong network is a genuine mismatch (it would derive a different posting key).
+    // A network we have not resolved YET is inconclusive about the network only: the address above
+    // still stands, so report it and let the caller make the conclusive account comparison. Every
+    // path that spends a signature re-checks the network for real once it has resolved.
+    const net = checkWalletNetwork(await api.getNetworkId());
+    if (!net.ok && net.kind === "mismatch") {
+      return { ok: false, kind: "mismatch", reason: net.message };
     }
     return { ok: true, addressHex: addressHex.toLowerCase() };
   } catch (e) {
@@ -208,11 +222,9 @@ export async function produceBindProof(opts: {
     ]);
 
     const wallet = await BrowserWallet.enable(opts.walletId);
-    // Belt-and-suspenders wrong-network guard (connect already blocks it): a mainnet-flavoured bind would
-    // commit a PERMANENT identity under an account that preprod can't reproduce. `!== 0` = preprod.
-    if ((await wallet.getNetworkId()) !== 0) {
-      throw new Error("Switch your wallet to preprod (testnet), then reconnect.");
-    }
+    // Belt-and-suspenders wrong-network guard (connect already blocks it): a wrong-network bind would
+    // commit a PERMANENT identity under an account this chain can't reproduce.
+    assertWalletNetwork(await wallet.getNetworkId());
 
     // Pick a signing address the user controls whose PAYMENT credential is a verification key (type 0) —
     // never a script-payment (vault) address. The change address is always a base
@@ -295,11 +307,9 @@ export async function produceBindProofStake(opts: {
     ]);
 
     const wallet = await BrowserWallet.enable(opts.walletId);
-    // Belt-and-suspenders wrong-network guard (connect already blocks it): a mainnet-flavoured stake bind
-    // would anchor voting power to a credential preprod can't reproduce. `!== 0` = preprod.
-    if ((await wallet.getNetworkId()) !== 0) {
-      throw new Error("Switch your wallet to preprod (testnet), then reconnect.");
-    }
+    // Belt-and-suspenders wrong-network guard (connect already blocks it): a wrong-network stake bind
+    // would anchor voting power to a credential this chain can't reproduce.
+    assertWalletNetwork(await wallet.getNetworkId());
 
     // The wallet's REWARD (stake) address — signing over it makes the wallet sign with the STAKE key.
     const rewardAddresses: string[] = await wallet.getRewardAddresses();

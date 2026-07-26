@@ -17,6 +17,7 @@ import {
 } from "./beacon";
 import { preflightLock } from "./preflight";
 import { getProvider } from "./provider";
+import { assertWalletNetwork } from "./network";
 
 export interface OwnerKeys {
   address: string;
@@ -38,11 +39,10 @@ export interface VaultInfo {
 async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; info: VaultInfo }> {
   const [{ BrowserWallet }, cst] = await Promise.all([import("@meshsdk/core"), import("@meshsdk/core-cst")]);
   const wallet = await BrowserWallet.enable(walletId);
-  if ((await wallet.getNetworkId()) !== 0) {
-    // Name the cause: this used to say "connect a Cardano wallet", which misread as a connection problem
-    // rather than a network mismatch (connect + both binds now catch this earlier — see wallet-derive.ts).
-    throw new Error("Switch your wallet to preprod (testnet), then reconnect.");
-  }
+  // Name the cause: this used to say "connect a Cardano wallet", which misread as a connection problem
+  // rather than a network mismatch (connect + both binds now catch this earlier — see wallet-derive.ts).
+  // The expected network comes from the chain, not a literal — see lib/cardano/network.ts.
+  const network = assertWalletNetwork(await wallet.getNetworkId());
   const address = await wallet.getChangeAddress();
   const props = cst.Address.fromBech32(address).getProps();
   if (props.paymentPart?.type !== 0) {
@@ -54,7 +54,15 @@ async function resolveVault(walletId: string): Promise<{ wallet: BrowserWallet; 
     throw new Error("This wallet address has no stake key. Use a base address.");
   }
   const { serializePlutusScript } = await import("@meshsdk/core");
-  const { address: vaultAddress } = serializePlutusScript({ code: APPLIED_CBOR, version: "V3" }, stakeKeyHash, 0, false);
+  // The network id here decides whether the vault address is `addr_test1…` or `addr1…`. Getting it
+  // wrong does not throw: it builds a well-formed address on the wrong network, and the lock tx pays
+  // real ADA to a script address that does not exist on the network the chain is observing.
+  const { address: vaultAddress } = serializePlutusScript(
+    { code: APPLIED_CBOR, version: "V3" },
+    stakeKeyHash,
+    network,
+    false,
+  );
   const beacon = beaconNameHex(paymentKeyHash, stakeKeyHash);
   return { wallet, info: { vaultAddress, beacon, unit: VAULT_HASH + beacon, owner: { address, paymentKeyHash, stakeKeyHash } } };
 }
