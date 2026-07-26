@@ -17,10 +17,26 @@ export interface RateLimitNoticeProps {
   onRetry?: () => void;
 }
 
+/**
+ * Round a wait to a unit a person reads at a glance.
+ *
+ * This used to be a bare `~${n}s`, which was fine while the capacity constants were dev-tuned: a
+ * floor-lock account regained a post in one block, so the number was always a handful of seconds.
+ * Spec 212 retuned the refill to a real ~5 hour window, and the same wait is now up to ~276 seconds
+ * for a full-length post. "Try again in ~276s" makes the reader do the division.
+ */
+export function formatRetry(seconds: number): string {
+  const s = Math.ceil(seconds);
+  if (s < 60) return `${s}s`;
+  const minutes = Math.ceil(s / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round((minutes / 60) * 10) / 10;
+  return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+}
+
 function copy(retryInSeconds?: number | null): string {
   if (retryInSeconds != null && retryInSeconds > 0) {
-    const n = Math.ceil(retryInSeconds);
-    return `You're over the rate limit. Try again in ~${n}s.`;
+    return `You're over the rate limit. Try again in about ${formatRetry(retryInSeconds)}.`;
   }
   return RATE_LIMIT_COPY;
 }
