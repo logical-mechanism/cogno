@@ -972,8 +972,9 @@ impl pallet_cogno_gate::Config for Runtime {
     // Gated by the 3-of-5 FollowerCommittee (sudo-free) — gates `revoke` only.
     type FollowerOrigin = AuthorityOrigin;
     type OnBind = Microblog;
-    // The Cardano network the on-chain self-proof binds for: 0 = testnet (live preprod), 1 = mainnet.
-    type CardanoNetwork = ConstU8<0>;
+    // The Cardano network the on-chain self-proof binds for — derived from the ONE `CARDANO_NET`
+    // cutover selector (spec 211), shared with cardano-roles so the two can never flip apart.
+    type CardanoNetwork = CardanoNetworkId;
     type WeightInfo = pallet_cogno_gate::weights::SubstrateWeight<Runtime>;
 }
 
@@ -992,7 +993,8 @@ impl pallet_cardano_roles::Config for Runtime {
     type RoleAuthorityOrigin = AuthorityOrigin;
     // A role claim requires an onboarded (payment-bound) account.
     type IdentityGate = CognoGate;
-    type CardanoNetwork = ConstU8<0>;
+    // Derived from the ONE `CARDANO_NET` cutover selector (spec 211), shared with cogno-gate.
+    type CardanoNetwork = CardanoNetworkId;
     type WeightInfo = ();
 }
 
@@ -1194,38 +1196,135 @@ impl pallet_cardano_observer::BoundRoleCredentials for BoundRoleCreds {
     }
 }
 
-/// The Cardano stability window (3k/f = the no-rollback horizon), as a deliberate **TESTNET vs MAINNET
-/// split** — exactly like `MinAuthorities = 1` / the single-validator testnet set: run the relaxed value
-/// while testing here, flip to the production value before mainnet. The flip is a one-line, ENCODING-NEUTRAL
-/// change (it only widens the as-of reference lag — no Call/storage/event change, no spec bump), gated as a
-/// ⚠ MAINNET PREREQUISITE, NOT a bug. Co-sequence it with the ≥3-producer cutover; at the mainnet depth
-/// db-sync must retain history back to the reference (docs/IN-PROTOCOL-OBSERVATION.md).
-const STABILITY_SLOTS_TESTNET: u64 = 600; // ≈ 10 min — prompt PoC observability on this testnet
-/// The production value: 3k/f = 129_600 slots ≈ 36 h (mainnet/preprod k=2160, f=0.05). Ready + named; the
-/// mainnet cutover flips `ObsStabilitySlots` below from `_TESTNET` to `_MAINNET`. (Held unused until then.)
-#[allow(dead_code)]
-const STABILITY_SLOTS_MAINNET: u64 = 129_600;
+// ── The Cardano-network cutover selector (spec 211) ────────────────────────────────────────────────
+//
+// Every network-dependent constant the observation + identity paths run on derives from the ONE
+// `CARDANO_NET` selector below, so a mainnet cutover flips ONE line and cannot be partial. Before
+// this, six symbols had to move together (the two Shelley anchors, the stability window, the min
+// lock, the vault policy id, and `CardanoNetwork` declared TWICE), and a partial flip failed
+// SILENTLY: preprod anchors on a mainnet chain derive a reference slot years behind the real tip,
+// the node and runtime share the anchor so `ReferenceTooFresh` never fires, `config_check` prints
+// "synced", every real lock is dropped by `created > reference_slot`, `ObservationApplied` fires
+// every block crediting nobody, and `Stalled` never arms — everything reports healthy while every
+// user's locked ADA earns zero weight.
+//
+// VERSIONING of a flip: it changes only `#[pallet::constant]` VALUES — no call/storage/event/
+// extension shape moves, so no PAPI descriptor regen and no `transaction_version` change. But
+// SHIPPING it to a LIVE chain is still a runtime upgrade, and every live upgrade bumps
+// `spec_version`: `System::apply_authorized_upgrade` refuses a non-increasing spec, and the
+// deployed frontend blocks posting against a chain whose spec differs from its build (the lockstep
+// FE deploy). On the FRESH-GENESIS mainnet path there is no in-place upgrade, so the flip rides the
+// genesis runtime with no bump of its own. (docs/PROTOCOL-PARAMS.md states the same rule.)
+//
+// Deliberate mirrors OUTSIDE the runtime that a cutover still owns separately: the node's
+// `gen-chainspec` base shape, the frontend's Cardano network id, and the cogno-dbsync test
+// fixtures. Co-sequence the flip with the ≥3-producer cutover; at the mainnet stability depth
+// db-sync must retain history back to the reference (docs/IN-PROTOCOL-OBSERVATION.md).
+
+/// Which Cardano network this runtime observes and binds identities for.
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum CardanoNet {
+    Preprod,
+    Mainnet,
+}
+
+/// ⚠ THE one line a mainnet cutover flips.
+const CARDANO_NET: CardanoNet = CardanoNet::Preprod;
+
+/// The live `talk_vault` policy id (== vault script hash, contracts/vault.json:
+/// 168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7). NETWORK-INDEPENDENT: a Plutus script
+/// hash does not embed a network id, and the mainnet decision is to redeploy the SAME applied script
+/// (keeping the 100-ADA floor), so both arms below share it. Consensus-pinned; the node reads it via
+/// the CardanoObserverApi so every node queries the SAME Cardano policy. ⚠ moving the live contract
+/// hash orphans the deployed vault — if contracts change, update this to match the new applied hash.
+const TALK_VAULT_POLICY_ID: [u8; 28] = [
+    0x16, 0x8a, 0x97, 0x10, 0xe9, 0x91, 0xb7, 0x68, 0x42, 0x6b, 0x58, 0x01, 0x1f, 0xeb, 0xec,
+    0x0f, 0xa3, 0xc5, 0xff, 0x6b, 0xeb, 0x49, 0x06, 0x5c, 0xc5, 0x24, 0x89, 0xc7,
+];
+
+/// The full per-network parameter set — one struct so nothing can be flipped alone.
+struct CardanoNetParams {
+    /// The CIP-19 address-header network id the CIP-8 binds verify against (0 testnet, 1 mainnet).
+    network_id: u8,
+    /// The network's Shelley-era anchor — NOT Byron `systemStart`. Slot arithmetic counts from here.
+    shelley_start_unix: u64,
+    shelley_start_slot: u64,
+    /// The observation stability window in slots (the no-rollback horizon the reference must trail).
+    stability_slots: u64,
+    /// The L1 `min_lock` floor (lovelace); below it, observed lovelace maps to weight 0.
+    min_lock: u128,
+    /// The `talk_vault` policy id to observe.
+    vault_policy_id: [u8; 28],
+}
+
+const CARDANO_PARAMS: CardanoNetParams = match CARDANO_NET {
+    // PREPROD (live today). Shelley begins at slot 86_400 / unix 1_655_769_600 after a 20-day Byron
+    // prefix. The 600-slot (~10 min) stability window is a deliberate TESTNET-OBSERVABILITY choice —
+    // preprod's real 3k/f is the same 129_600 as mainnet's — exactly like `MinAuthorities = 1`: run
+    // relaxed while testing here, and the Mainnet arm below carries the production value.
+    CardanoNet::Preprod => CardanoNetParams {
+        network_id: 0,
+        shelley_start_unix: 1_655_769_600,
+        shelley_start_slot: 86_400,
+        stability_slots: 600,
+        min_lock: 100_000_000,
+        vault_policy_id: TALK_VAULT_POLICY_ID,
+    },
+    // MAINNET (the cutover target). Shelley begins at slot 4_492_800 / unix 1_596_059_091
+    // (2020-07-29T21:44:51Z, epoch 208). ⚠ Verify both against the mainnet shelley-genesis file at
+    // cutover. Stability = 3k/f = 129_600 slots ≈ 36 h (k=2160, f=0.05).
+    CardanoNet::Mainnet => CardanoNetParams {
+        network_id: 1,
+        shelley_start_unix: 1_596_059_091,
+        shelley_start_slot: 4_492_800,
+        stability_slots: 129_600,
+        min_lock: 100_000_000,
+        vault_policy_id: TALK_VAULT_POLICY_ID,
+    },
+};
+
+// Compile-time cutover guards: deriving everything from one selector already makes a PARTIAL flip
+// unrepresentable; these asserts additionally stop a TYPO edit inside one arm from building.
+const _: () = {
+    match CARDANO_NET {
+        CardanoNet::Preprod => {
+            assert!(CARDANO_PARAMS.network_id == 0, "preprod binds testnet addresses");
+            assert!(
+                CARDANO_PARAMS.shelley_start_slot == 86_400
+                    && CARDANO_PARAMS.shelley_start_unix == 1_655_769_600,
+                "preprod Shelley anchor drifted from the published genesis"
+            );
+        }
+        CardanoNet::Mainnet => {
+            assert!(CARDANO_PARAMS.network_id == 1, "mainnet binds mainnet addresses");
+            assert!(
+                CARDANO_PARAMS.stability_slots >= 129_600,
+                "a mainnet build must run the full 3k/f stability window — the relaxed \
+                 observability window is a labeled-testnet-only choice"
+            );
+            assert!(
+                CARDANO_PARAMS.shelley_start_slot == 4_492_800
+                    && CARDANO_PARAMS.shelley_start_unix == 1_596_059_091,
+                "mainnet Shelley anchor drifted from the published genesis"
+            );
+        }
+    }
+    assert!(
+        CARDANO_PARAMS.min_lock == 100_000_000,
+        "the 100-ADA floor is a cross-network commitment (the vault is reused only if it holds)"
+    );
+};
 
 parameter_types! {
-    // ⚠ MAINNET PREREQUISITE: flip STABILITY_SLOTS_TESTNET -> STABILITY_SLOTS_MAINNET before any
-    // mainnet/real-value deployment (a smaller window is permitted ONLY on a labeled dev/testnet; see the
-    // split doc above + docs/IN-PROTOCOL-OBSERVATION.md). Selected = TESTNET while we test here.
-    pub const ObsStabilitySlots: u64 = STABILITY_SLOTS_TESTNET;
-    // ⚠ PREPROD Shelley anchor (we are live there) — NOT Byron `systemStart` (1654041600). The Shelley
-    // era begins at slot 86400 / unix 1655769600 after a 20-day Byron prefix. Verify the MAINNET anchor
-    // against its genesis before any mainnet cutover.
-    pub const ObsShelleyStartUnix: u64 = 1_655_769_600;
-    pub const ObsShelleyStartSlot: u64 = 86_400;
-    // The L1 `min_lock` floor (lovelace); below it, observed lovelace maps to weight 0.
-    pub const ObsMinLock: u128 = 100_000_000;
-    // The live `talk_vault` policy id (== vault script hash, contracts/vault.json:
-    // 168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7). Consensus-pinned; the node reads it via
-    // the CardanoObserverApi so every node queries the SAME Cardano policy. ⚠ moving the live contract
-    // hash orphans the deployed vault — if contracts change, update this to match the new applied hash.
-    pub const ObsVaultPolicyId: [u8; 28] = [
-        0x16, 0x8a, 0x97, 0x10, 0xe9, 0x91, 0xb7, 0x68, 0x42, 0x6b, 0x58, 0x01, 0x1f, 0xeb,
-        0xec, 0x0f, 0xa3, 0xc5, 0xff, 0x6b, 0xeb, 0x49, 0x06, 0x5c, 0xc5, 0x24, 0x89, 0xc7,
-    ];
+    pub const ObsStabilitySlots: u64 = CARDANO_PARAMS.stability_slots;
+    pub const ObsShelleyStartUnix: u64 = CARDANO_PARAMS.shelley_start_unix;
+    pub const ObsShelleyStartSlot: u64 = CARDANO_PARAMS.shelley_start_slot;
+    pub const ObsMinLock: u128 = CARDANO_PARAMS.min_lock;
+    pub const ObsVaultPolicyId: [u8; 28] = CARDANO_PARAMS.vault_policy_id;
+    /// The one network id BOTH CIP-8-verifying pallets (cogno-gate, cardano-roles) read — they used
+    /// to declare `ConstU8<0>` independently, which is exactly the partial-flip surface this
+    /// selector removes.
+    pub const CardanoNetworkId: u8 = CARDANO_PARAMS.network_id;
 }
 
 /// Benchmark-only setup for pallet-cardano-observer. The pallet reaches cogno-gate / talk-stake /

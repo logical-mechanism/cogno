@@ -20,8 +20,14 @@ on every commit, which is how this table was wrong before.)
 - **Encoding-affecting changes bump `spec_version`.** New/changed calls, storage, events, or
   transaction extensions change the metadata → bump `spec_version` (`runtime/src/lib.rs` — `VERSION`)
   and regenerate the frontend's PAPI descriptors (`rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`).
-  Pure bound/value tweaks (a different `MaxLength`, a new cost) are metadata-visible too, so they also
-  bump. Non-encoding changes (logging, comments, tests) must **not** bump it.
+- **Pure bound/value tweaks (a different `MaxLength`, a new cost, a `CARDANO_NET` flip) don't change
+  the descriptors — but shipping one to the LIVE chain still bumps `spec_version`**, for two
+  operational reasons, not an encoding one: `System::apply_authorized_upgrade` refuses a
+  non-increasing spec, and the deployed frontend blocks posting against a chain whose spec differs
+  from its build (so the bump rides a lockstep `DESCRIPTOR_SPEC_VERSION` redeploy, with no descriptor
+  regen needed). A value tweak that ships inside a **fresh genesis** (the mainnet-cutover path)
+  carries no bump of its own. Non-encoding, non-behavioral changes (logging, comments, tests) never
+  bump anything on their own — they ride whatever release ships them.
 - **Block time / slot duration cannot change after the chain has started** — doing so bricks block
   production. It's fixed for the life of this chain.
 - **Some values are contracts with the outside world, not free knobs:**
@@ -177,12 +183,13 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 | `MinLock` | 100 ADA (100,000,000 lovelace) | `ObsMinLock` |
 | `MaxStakeWeight` | 45e15 lovelace (~total ADA supply; over-cap entry skipped) | `pallet_cardano_observer::Config` |
 | `MaxVotingPower` | 45e15 lovelace (over-cap entry skipped) | `pallet_cardano_observer::Config` |
-| `StabilitySlots` | 600 slots (~10 min, testnet) | `STABILITY_SLOTS_TESTNET` (mainnet `STABILITY_SLOTS_MAINNET` = 129,600, held unused) |
-| Shelley anchor (preprod) | unix 1,655,769,600 / slot 86,400 | `ObsShelleyStartUnix` / `ObsShelleyStartSlot` |
+| `CARDANO_NET` | `Preprod` — THE one-line cutover selector; every row below derives from it (a partial flip cannot build) | `CARDANO_NET` / `CARDANO_PARAMS` |
+| `StabilitySlots` | 600 slots (~10 min, a testnet-observability choice; the `Mainnet` arm carries 3k/f = 129,600) | `CARDANO_PARAMS.stability_slots` |
+| Shelley anchor | preprod: unix 1,655,769,600 / slot 86,400 (mainnet arm: 1,596,059,091 / 4,492,800) | `CARDANO_PARAMS.shelley_start_unix` / `.shelley_start_slot` |
 | `StakeEpochLookback` | 1 epoch | `pallet_cardano_observer::Config` |
-| `VaultPolicyId` | `168a9710…` (live L1 script hash — do not change lightly) | `ObsVaultPolicyId` |
+| `VaultPolicyId` | `168a9710…` (live L1 script hash, network-independent — do not change lightly) | `TALK_VAULT_POLICY_ID` |
 | `EnforceWeight` default | `true` (observer is sole weight writer from genesis) | `pallets/cardano-observer/src/lib.rs` |
-| `CardanoNetwork` | 0 (testnet/preprod; 1 = mainnet) — declared separately in both pallets, so a cutover must flip both | `pallet_cogno_gate::Config` / `pallet_cardano_roles::Config` |
+| `CardanoNetwork` | 0 (testnet/preprod; 1 = mainnet) — ONE derived constant both CIP-8 pallets share | `CardanoNetworkId` |
 
 ## Governance (sudo-free)
 
