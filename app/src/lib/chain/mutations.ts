@@ -158,6 +158,13 @@ export const DEFAULT_POLL_CLOSE_DAYS = 1;
  * default. Prefers the live `bestBlock`; if that hasn't loaded yet it reads the chain head. THROWS
  * when the chain height can't be read, so the caller surfaces the failure. (Shared by both compose
  * surfaces so the derivation lives in exactly one place.)
+ *
+ * The offset is CLAMPED into the runtime's `[MinPollDuration, MaxPollDuration]` window, read from
+ * metadata like every other chain constant this app replays — never hardcoded. The composer offers a
+ * fixed 1/3/7 days, which sits comfortably inside today's window (10 minutes … 90 days); a committee
+ * retune that narrowed it would otherwise make every poll the composer can build fail on-chain with
+ * `PollDurationTooShort` / `PollDurationTooLong`, with no client-side signal at all. Clamping submits
+ * the nearest deadline the chain will accept instead.
  */
 export async function resolveCloseAt(
   api: CognoApi,
@@ -165,11 +172,18 @@ export async function resolveCloseAt(
   closeInDays?: number,
 ): Promise<number> {
   const days = closeInDays || DEFAULT_POLL_CLOSE_DAYS;
+  const [minDuration, maxDuration] = await Promise.all([
+    api.constants.Microblog.MinPollDuration(),
+    api.constants.Microblog.MaxPollDuration(),
+  ]);
   const now = bestBlock ?? Number(await api.query.System.Number.getValue());
   if (!now || now <= 0) {
     throw new Error("Couldn't read the chain height to set the poll deadline.");
   }
-  return now + days * BLOCKS_PER_DAY;
+  // The runtime compares `close_at` against `now + Min/Max` at DISPATCH, a block or two after this —
+  // so the floor gets one block of slack, which is free (the window's low end is minutes wide).
+  const offset = Math.min(Math.max(days * BLOCKS_PER_DAY, minDuration + 1), maxDuration);
+  return now + offset;
 }
 
 export function submitCreatePoll(

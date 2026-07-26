@@ -15,6 +15,33 @@ import { fileURLToPath } from "node:url";
 
 const runtimeSrc = fileURLToPath(new URL("../../runtime/src/lib.rs", import.meta.url));
 const clientSrc = fileURLToPath(new URL("../src/lib/chain/client.ts", import.meta.url));
+const papiConfigSrc = fileURLToPath(new URL("../.papi/polkadot-api.json", import.meta.url));
+
+// The committed PAPI entry must resolve descriptors from the committed `.papi/metadata/cogno.scale`
+// and NOTHING else. `papi add -w ws://…` writes the node it was pointed at back into this config
+// (`wsUrl`, plus that chain's `genesis` and `codeHash`), and once those are committed a later
+// `papi generate` / `papi update` on a fresh clone or in CI resolves against a local dev node instead
+// of the committed metadata — failing when nothing is listening, and silently regenerating from the
+// WRONG chain's metadata when something is. A descriptor regen is supposed to be a deliberate,
+// reviewed change to `cogno.scale`; strip the keys back out afterwards.
+const DEV_ONLY_PAPI_KEYS = ["wsUrl", "genesis", "codeHash"];
+const papiConfig = JSON.parse(readFileSync(papiConfigSrc, "utf8"));
+for (const [name, entry] of Object.entries(papiConfig.entries ?? {})) {
+  const leaked = DEV_ONLY_PAPI_KEYS.filter((k) => k in entry);
+  if (leaked.length > 0) {
+    console.error(
+      `app/.papi/polkadot-api.json entry "${name}" carries ${leaked.join(", ")}.\n` +
+        `That is what \`papi add -w …\` leaves behind after a descriptor regen. Remove those keys so\n` +
+        `the entry resolves from "metadata" alone:\n` +
+        `  { "${name}": { "metadata": ".papi/metadata/cogno.scale" } }`,
+    );
+    process.exit(1);
+  }
+  if (!entry.metadata) {
+    console.error(`app/.papi/polkadot-api.json entry "${name}" has no "metadata" path.`);
+    process.exit(1);
+  }
+}
 
 const runtimeMatch = readFileSync(runtimeSrc, "utf8").match(/^\s*spec_version:\s*(\d+)\s*,/m);
 const clientMatch = readFileSync(clientSrc, "utf8").match(

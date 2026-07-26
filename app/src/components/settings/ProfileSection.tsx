@@ -35,14 +35,18 @@ interface ProfilePreview {
   avatar?: string;
   pinnedPostId?: bigint;
   /**
-   * Whether a `Profile::Profiles` row exists for the viewer — derived from ALL SIX presentation
-   * fields, not just the three previewed above.
+   * Whether a `Profile::Profiles` row exists for the viewer. Read from THAT MAP, not derived from
+   * whether the presentation fields look non-empty: the runtime accepts a `set_profile` whose six
+   * fields are all blank (a blank Edit-profile save, or the CLI, reaches it), and `contains_key` is
+   * the exact predicate `ProfileCapacityCost` prices the call on. A field-emptiness proxy would say
+   * "no profile" for a real row and leave its owner no way to remove it.
    *
-   * Load-bearing since spec 211: `ProfileCapacityCost` prices `clear_profile` per account —
-   * free with a row to clear, UNPAYABLE (`u128::MAX`) without one, so the pool refuses the doomed
-   * no-op instead of including it free. That rejection reaches the user as `ExhaustsResources`,
-   * which classifies as `rate-limit` — so offering Clear with no row to clear raises a "posting too
-   * fast" toast for something that is not a rate limit at all. Hide the control instead.
+   * `undefined` while unknown (loading, or the read failed) — the Clear control is only offered on a
+   * definite `true`, so a transient read failure hides it rather than offering a doomed call.
+   *
+   * Why any of this matters: `clear_profile` is priced per account since spec 211 — free with a row
+   * to clear, `UNPAYABLE` without one, so the pool refuses the doomed no-op instead of including it
+   * free. Offering Clear when there is nothing to clear just bounces the user off the pool.
    */
   hasProfile?: boolean;
 }
@@ -89,7 +93,19 @@ export function ProfileSection() {
     }
     void (async () => {
       try {
-        const p = await source.profile({ author: ss58 });
+        // The row check goes straight to `Profile::Profiles` — the map the runtime prices
+        // `clear_profile` on. `source.profile()` returns presentation fields, which cannot tell an
+        // all-blank row apart from no row at all. `undefined` if the storage read fails, so Clear is
+        // hidden rather than offered on a guess.
+        const [p, row] = await Promise.all([
+          source.profile({ author: ss58 }),
+          api
+            ? api.query.Profile.Profiles.getValue(ss58).then(
+                (r) => r != null,
+                () => undefined,
+              )
+            : Promise.resolve(undefined),
+        ]);
         if (cancelled) return;
         loadedKey.current = readKey;
         setPreview({
@@ -97,7 +113,7 @@ export function ProfileSection() {
           bio: p.bio,
           avatar: p.avatar,
           pinnedPostId: p.pinnedPostId,
-          hasProfile: !!(p.displayName || p.bio || p.avatar || p.banner || p.location || p.website),
+          hasProfile: row,
         });
         // Resolve the pinned post (thread().root IS the one-post resolver). Silent on 404.
         if (p.pinnedPostId != null) {
@@ -120,7 +136,7 @@ export function ProfileSection() {
     return () => {
       cancelled = true;
     };
-  }, [source, ss58, bound, bestBlock]);
+  }, [api, source, ss58, bound, bestBlock]);
 
   const submit = useCallback(
     (kind: "clear" | "unpin", stream: ReturnType<typeof submitClearProfile>, success: string, onOk?: () => void) => {
@@ -257,10 +273,10 @@ export function ProfileSection() {
           >
             Edit profile
           </button>
-          {/* Only offered when there is a row to clear. With none, the runtime prices the call
-              unpayable, so the pool rejects it as ExhaustsResources and the user would see a
-              "posting too fast" toast for a call that was never a rate limit. */}
-          {preview?.hasProfile && (
+          {/* Only offered on a CONFIRMED `Profile::Profiles` row. With none, the runtime prices the
+              call unpayable and the pool rejects it, so the button would only ever bounce. `undefined`
+              (unknown — the storage read failed) hides it too. */}
+          {preview?.hasProfile === true && (
             <button
               type="button"
               className={styles.dangerLink}
