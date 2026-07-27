@@ -86,15 +86,30 @@ trap cleanup EXIT
 NODE_PID=$!
 
 # Wait for RPC. The runtime is embedded in the binary, so this needs no synced chain — only a live RPC.
-for _ in $(seq 1 60); do
+# A DEBUG node building `--dev` genesis on a cold CI runner is the slow case here (it instantiates the
+# wasm runtime before the RPC server is up), so the budget is generous.
+RPC_WAIT_SECS=180
+READY=0
+for _ in $(seq 1 "$RPC_WAIT_SECS"); do
   if curl -sf --max-time 2 -H 'Content-Type: application/json' \
       -d '{"jsonrpc":"2.0","id":1,"method":"system_name","params":[]}' \
       "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
+    READY=1
     break
   fi
-  kill -0 "$NODE_PID" 2>/dev/null || { echo "node exited early:"; tail -20 "$TMP/node.log"; exit 1; }
+  kill -0 "$NODE_PID" 2>/dev/null || { echo "node exited early:"; tail -30 "$TMP/node.log"; exit 1; }
   sleep 1
 done
+# Falling out of that loop without a live RPC used to be SILENT: the node was still running, so the
+# early-exit branch never fired, and the metadata `curl` below then died on `set -e` with a bare
+# "exit code 7" and no node log — undiagnosable from CI. Say what happened and show the log.
+if [ "$READY" != "1" ]; then
+  echo "node is running (pid $NODE_PID) but its RPC never came up on 127.0.0.1:$PORT within ${RPC_WAIT_SECS}s."
+  echo "  Nothing was compared, so this is a HARNESS failure, not metadata drift."
+  echo "  Last 30 lines of the node log:"
+  tail -30 "$TMP/node.log"
+  exit 1
+fi
 
 # PAPI pins metadata v16. `state_getMetadata` would hand back v14 (the legacy default) and silently
 # compare two different formats, so ask for the version the snapshot is actually in.
