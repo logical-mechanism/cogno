@@ -101,7 +101,26 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // real ~5 h refill window, with the refill RATE now derived from the (already-clamped) ceiling so
     // both axes share one knee. Storage/constant/read-shape change only — no call argument and no
     // `TxExtension` change, so `transaction_version` STAYS 7.
-    spec_version: 212,
+    // 212 → 213 closes two permanent-brick paths found by the whole-surface audit, both reachable by
+    // ordinary operator action rather than attack, and neither with any on-chain recovery (sudo-free):
+    //   1. `CognoCallFilter` now rejects a `set_members` that REPEATS an account or exceeds
+    //      `MaxMembers`. `pallet_collective` writes duplicates through verbatim, and the origin then
+    //      measures `ayes * 5 >= 3 * Members::len()` against a denominator that counts them while
+    //      `DuplicateVote` caps the reachable ayes at the DISTINCT seats — so `set_members([A, A, A])`
+    //      passed the old `len() != 2` guard while seating ONE key behind a denominator of 3, making
+    //      `AuthorityOrigin` unsatisfiable forever (including the `set_members` that would undo it).
+    //   2. `cardano-observer::observe`'s two reference bounds are now SKIP-not-reject, leaving that
+    //      Mandatory dispatch INFALLIBLE. An `Err` there is `BadMandatory` (whole block discarded), and
+    //      since the reference is a pure function of the PARENT's slot, the discarded block leaves the
+    //      next reference unchanged — so any upgrade RAISING `StabilitySlots` wedged authoring forever.
+    // Call-ACCEPTANCE and dispatch-logic changes only: no call args, no storage, no events, no
+    // `TxExtension` change, so `transaction_version` STAYS 7 and no TYPE, call, storage or event SHAPE
+    // moves. Verified against a rebuilt dev node: metadata v16 differs from the spec-212 snapshot in
+    // exactly ONE byte — `0xd4 → 0xd5` inside the `System::Version` constant, which embeds this very
+    // `RuntimeVersion`. So the PAPI descriptors need no regen (nothing they encode changed); the
+    // committed `app/.papi/metadata/cogno.scale` is simply re-snapshotted, and the
+    // `DESCRIPTOR_SPEC_VERSION` lockstep constant moves with it.
+    spec_version: 213,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

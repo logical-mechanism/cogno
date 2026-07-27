@@ -77,9 +77,40 @@ pub async fn proposal_hashes(rpc: &Rpc) -> anyhow::Result<Vec<H256>> {
 }
 
 /// `FollowerCommittee::ProposalOf[hash]` — the inner call of an open motion (`None` if closed/absent).
+///
+/// The decoded call is VERIFIED against the hash it was fetched under before it is returned. This is the
+/// only thing standing between a co-signer and voting for a motion they were never shown: the custody
+/// runbook has each seat co-sign from its own host against whatever `--ws` endpoint it can reach —
+/// typically the operator's public relay, which is not that seat's trust domain. A malicious or
+/// compromised endpoint can answer the `ProposalOf` storage read with ANY call it likes, so
+/// `committee list` would print a harmless `CognoGate.revoke(spammer)` while the real motion behind that
+/// hash is `set_members([attacker])`. The threshold is no defence: the ayes are cast on the true hash, so
+/// the true motion is genuinely approved by the required 3-of-5.
+///
+/// `ProposalOf` is `Identity`-hashed BY the proposal hash and the proposal hash is
+/// `blake2_256(SCALE(call))`, so the stored value IS the preimage of its own key — re-hashing the decode
+/// and comparing is exact, free, and cannot false-positive.
 pub async fn proposal_of(rpc: &Rpc, hash: &H256) -> anyhow::Result<Option<RuntimeCall>> {
-    rpc.storage_decode::<RuntimeCall>(&committee_map_key("ProposalOf", hash), None)
-        .await
+    let call = rpc
+        .storage_decode::<RuntimeCall>(&committee_map_key("ProposalOf", hash), None)
+        .await?;
+    if let Some(inner) = &call {
+        ensure_is_preimage_of(inner, hash)?;
+    }
+    Ok(call)
+}
+
+/// Fail unless `inner` really is the motion stored under `hash`. Split out from [`proposal_of`] so the
+/// guard itself is unit-testable without an RPC endpoint.
+pub fn ensure_is_preimage_of(inner: &RuntimeCall, hash: &H256) -> anyhow::Result<()> {
+    let got = crate::tx::proposal_hash(inner);
+    anyhow::ensure!(
+        got == *hash,
+        "the RPC endpoint returned a proposal whose hash is {got:#x}, not the {hash:#x} it was asked \
+         for — it is misreporting this motion. Do NOT vote on it. Re-check against an endpoint you \
+         control.",
+    );
+    Ok(())
 }
 
 /// A read-only view of `FollowerCommittee::Voting[hash]`. `pallet_collective::Votes`' fields are private,
@@ -623,6 +654,27 @@ mod tests {
         assert!(describe_call(&av).starts_with("ValidatorSet.add_validator("));
         let rv = crate::calls::revoke(AccountId32::new([2u8; 32]));
         assert!(describe_call(&rv).starts_with("CognoGate.revoke("));
+    }
+
+    #[test]
+    fn a_substituted_preimage_is_rejected() {
+        // The custody threat: a seat co-signs against an endpoint it does not control, and that
+        // endpoint answers the ProposalOf read with a DIFFERENT, harmless-looking call than the motion
+        // the hash actually stands for. The ayes would then be cast on the true hash, so the true
+        // motion passes with the required 3-of-5 while every seat believed it approved something else.
+        let real = crate::calls::set_members(vec![AccountId32::new([0xAA; 32])], None, 1);
+        let decoy = crate::calls::revoke(AccountId32::new([0xBB; 32]));
+        let real_hash = crate::tx::proposal_hash(&real);
+
+        // The true preimage verifies against its own hash...
+        assert!(ensure_is_preimage_of(&real, &real_hash).is_ok());
+        // ...and the substitution is caught, because the hash is taken over the call's own encoding.
+        let err = ensure_is_preimage_of(&decoy, &real_hash)
+            .expect_err("a substituted preimage must not verify");
+        assert!(
+            err.to_string().contains("misreporting this motion"),
+            "{err}"
+        );
     }
 
     #[test]

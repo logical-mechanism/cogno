@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 212**.
+it. This is a snapshot of **spec_version 213**.
 
 Two things to keep in mind:
 
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **212** | `VERSION` — `runtime/src/lib.rs` |
+| **spec_version** | **213** | `VERSION` — `runtime/src/lib.rs` |
 | transaction_version | 7 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 212 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 213 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -196,7 +196,7 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 | `MaxStakeWeight` | 45e15 lovelace (~total ADA supply; over-cap entry skipped) | `pallet_cardano_observer::Config` |
 | `MaxVotingPower` | 45e15 lovelace (over-cap entry skipped) | `pallet_cardano_observer::Config` |
 | `CARDANO_NET` | `Preprod` — THE one-line cutover selector; every row below derives from it (a partial flip cannot build) | `CARDANO_NET` / `CARDANO_PARAMS` |
-| `StabilitySlots` | 600 slots (~10 min, a testnet-observability choice; the `Mainnet` arm carries 3k/f = 129,600) | `CARDANO_PARAMS.stability_slots` |
+| `StabilitySlots` | 600 slots (~10 min, a testnet-observability choice; the `Mainnet` arm carries 3k/f = 129,600). ⚠ RAISING this on a LIVE chain lowers every future reference at a stroke (the reference is `shelley_start_slot + elapsed − StabilitySlots`), so the next block's reference lands BELOW the one already applied. Before spec 213 that returned `ReferenceRegressed` from a `Mandatory` dispatch — `BadMandatory`, the whole block discarded — and since the reference derives from the PARENT's slot, the discarded block left the next reference unchanged and authoring wedged permanently. Since 213 the bound SKIPS instead: authoring continues, weight holds at its last value, and `ObservationStalled` latches until the reference climbs back past the last applied one (~1 s of wall clock per slot raised) | `CARDANO_PARAMS.stability_slots` |
 | Shelley anchor | preprod: unix 1,655,769,600 / slot 86,400 (mainnet arm: 1,596,059,091 / 4,492,800) | `CARDANO_PARAMS.shelley_start_unix` / `.shelley_start_slot` |
 | `StakeEpochLookback` | 1 epoch | `pallet_cardano_observer::Config` |
 | `VaultPolicyId` | `168a9710…` (live L1 script hash, network-independent — do not change lightly) | `TALK_VAULT_POLICY_ID` |
@@ -212,7 +212,7 @@ All in `runtime/src/configs/mod.rs`.
 |---|---|---|
 | Committee threshold | 3-of-5 supermajority, `needed = ceil(n·3/5)` (1→1, 3→2, 5→3, 7→5) | `AuthorityOrigin` (`EnsureProportionAtLeast<3, 5>`) |
 | Committee max members | 7 | `FollowerMaxMembers` |
-| Allowed committee sizes | 1 or ≥3 (empty and 2-seat rejected; mirrored at genesis) | `CognoCallFilter` (wired as `BaseCallFilter`) / `testnet_genesis` — `runtime/src/genesis_config_presets.rs` |
+| Allowed committee sizes | 1 or ≥3, all seats DISTINCT, at most `FollowerMaxMembers`. Empty, 2-seat, duplicate-bearing and over-max sets are all rejected (mirrored at genesis). Since spec 213 distinctness is checked FIRST: `pallet_collective::set_members` writes a repeated account through verbatim, and the origin then measures `ayes · 5 ≥ 3 · Members::len()` against a denominator that counts duplicates while `DuplicateVote` caps the reachable ayes at the DISTINCT seats — so `set_members([A,A,A])` used to clear the size rules while seating ONE key, bricking `AuthorityOrigin` permanently. `MaxMembers` is checked here too because the pallet only `log::error!`s an overflow rather than rejecting it | `CognoCallFilter` (wired as `BaseCallFilter`) / `testnet_genesis` — `runtime/src/genesis_config_presets.rs` |
 | New committee seat | must already hold a governance-fuel allowance — a `set_members` adding an unfunded account fails `CallFiltered`; sitting members are exempt | `CognoCallFilter` |
 | Motion duration | 7 days (100,800 blocks) | `FollowerMotionDuration` |
 | Max active proposals | 100 | `FollowerMaxProposals` |

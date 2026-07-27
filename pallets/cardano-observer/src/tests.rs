@@ -4,11 +4,11 @@
 
 use crate::mock::*;
 use crate::{
-    BeaconName, CardanoObservation, CardanoRef, Error, Event, InherentError, RoleEntry, RoleSource,
+    BeaconName, CardanoObservation, CardanoRef, Event, InherentError, RoleEntry, RoleSource,
     INHERENT_IDENTIFIER,
 };
 use frame_support::{
-    assert_noop, assert_ok,
+    assert_ok,
     inherent::{InherentData, IsFatalError, ProvideInherent},
     traits::OnInitialize,
     BoundedVec,
@@ -689,8 +689,9 @@ fn set_enforcement_is_not_an_inherent() {
 }
 
 #[test]
-fn observe_rejects_a_regressing_reference() {
+fn observe_skips_a_regressing_reference_without_discarding_the_block() {
     new_test_ext().execute_with(|| {
+        System::set_block_number(1);
         bind(A, ALICE);
         assert_ok!(CardanoObserver::observe(
             RuntimeOrigin::none(),
@@ -700,37 +701,93 @@ fn observe_rejects_a_regressing_reference() {
             no_stake(),
             no_roles(),
         ));
-        // A later block proposing an OLDER reference than the chain already holds is rejected.
-        assert_noop!(
-            CardanoObserver::observe(
-                RuntimeOrigin::none(),
-                cref(MAX_REFERENCE - 6),
-                COMMIT,
-                entries(&[(A, 200_000_000)]),
-                no_stake(),
-                no_roles(),
-            ),
-            Error::<Test>::ReferenceRegressed
+        assert_eq!(weight_of(ALICE), 200_000_000);
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), 1);
+
+        // A later block proposing an OLDER reference is SKIPPED, never REJECTED. `observe` is
+        // Mandatory: an Err here is `BadMandatory`, which discards the whole BLOCK — and because the
+        // reference is a pure function of the PARENT's slot, the discarded block leaves the parent (and
+        // so the next reference) unchanged, wedging authoring permanently. Raising `StabilitySlots` in
+        // a runtime upgrade is exactly that trigger.
+        roll_to(2);
+        // (an Err here would be `BadMandatory` — the whole block discarded)
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE - 6),
+            COMMIT,
+            entries(&[(A, 999_000_000)]),
+            no_stake(),
+            no_roles(),
+        ));
+        // ...and it applied NOTHING: the stale entry never reached the ledger,
+        assert_eq!(
+            weight_of(ALICE),
+            200_000_000,
+            "a skipped observation must not apply its entries",
         );
+        // `LastReference` was not moved backwards (the anti-regression guarantee is preserved by
+        // declining to apply, not by killing the block),
+        assert_eq!(
+            crate::LastReference::<Test>::get(),
+            Some(cref(MAX_REFERENCE - 5)),
+        );
+        // and `LastAppliedAt` was NOT stamped, so a persistent skip still latches the stall alarm.
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), 1);
     });
 }
 
 #[test]
-fn observe_rejects_a_too_fresh_reference() {
+fn a_persistent_regressed_reference_latches_the_stall_alarm_instead_of_wedging() {
+    // The recovery story for a raised `StabilitySlots`: authoring CONTINUES, weight freezes at its
+    // last value, and the freeze becomes loud on-chain rather than silently bricking the chain.
     new_test_ext().execute_with(|| {
+        System::set_block_number(1);
         bind(A, ALICE);
-        // A reference fresher than the stability window allows (closer to `now` than STABILITY_SLOTS).
-        assert_noop!(
-            CardanoObserver::observe(
+        observe_once(MAX_REFERENCE);
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), 1);
+
+        // Every subsequent block carries a reference below the one already applied.
+        for b in 2..=(1 + STALL_AFTER + 1) {
+            roll_to(b);
+            assert_ok!(CardanoObserver::observe(
                 RuntimeOrigin::none(),
-                cref(MAX_REFERENCE + 1),
+                cref(MAX_REFERENCE - 100),
                 COMMIT,
                 entries(&[(A, 200_000_000)]),
                 no_stake(),
                 no_roles(),
-            ),
-            Error::<Test>::ReferenceTooFresh
+            ));
+        }
+        assert!(
+            crate::Stalled::<Test>::get(),
+            "a persistent skip must surface as ObservationStalled, not as a silent freeze",
         );
+        assert_eq!(stalled_events(), 1);
+    });
+}
+
+#[test]
+fn observe_skips_a_too_fresh_reference() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        bind(A, ALICE);
+        // A reference fresher than the stability window allows (closer to `now` than STABILITY_SLOTS)
+        // is skipped, not rejected — same Mandatory discipline as the regression bound above.
+        assert_ok!(CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            cref(MAX_REFERENCE + 1),
+            COMMIT,
+            entries(&[(A, 200_000_000)]),
+            no_stake(),
+            no_roles(),
+        ));
+        assert_eq!(
+            weight_of(ALICE),
+            0,
+            "a too-fresh observation must not apply its entries",
+        );
+        assert!(crate::LastReference::<Test>::get().is_none());
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), 0);
         // Exactly at the boundary is allowed.
         assert_ok!(CardanoObserver::observe(
             RuntimeOrigin::none(),
@@ -740,6 +797,7 @@ fn observe_rejects_a_too_fresh_reference() {
             no_stake(),
             no_roles(),
         ));
+        assert_eq!(weight_of(ALICE), 200_000_000);
     });
 }
 

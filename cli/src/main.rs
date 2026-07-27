@@ -891,6 +891,25 @@ async fn cmd_members(gov: &GovOpts, action: MemberAction<'_>) -> anyhow::Result<
             new
         }
     };
+    // Reject a repeated seat BEFORE the size rules, which a duplicate would otherwise satisfy while
+    // seating fewer real keys than it appears to. `pallet_collective::set_members` writes duplicates
+    // through verbatim; the origin then measures `ayes * 5 >= 3 * Members::len()` against a denominator
+    // that counts them, while `DuplicateVote` caps the reachable ayes at the DISTINCT seats — so
+    // `--members A,A,A` looks like a legal 3-seat federation and permanently bricks governance. The
+    // runtime's `CognoCallFilter` rejects it too (as `CallFiltered`); fail here with the actual account,
+    // matching the same guard `gen-chainspec` applies at genesis.
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        for a in &new_members {
+            anyhow::ensure!(
+                seen.insert(a),
+                "duplicate committee account {} — committee members must be distinct. A repeated seat \
+                 counts toward the 3-of-5 threshold's denominator without adding a vote, which bricks \
+                 governance permanently (there is no sudo recovery).",
+                query::ss58(a)
+            );
+        }
+    }
     // Reject a 2-seat committee: `ceil(2*3/5)=2` = unanimity with ZERO fault tolerance, and recovery from a
     // lost seat needs that very seat's vote — an irreversible brick. The runtime enforces this too
     // (CognoCallFilter), but fail early with guidance. Federate 1 -> 3+ in one `committee members set`.
@@ -948,6 +967,21 @@ async fn cmd_committee_vote(
         return Ok(());
     }
     let (rpc, ctx) = connect_and_ctx(&seat.ws, seat.genesis.as_deref()).await?;
+    // Fetch and PRINT the motion this hash actually stands for before casting. `proposal_of` re-hashes
+    // the decode and fails if the endpoint answered with anything but the true preimage, so a seat can
+    // no longer be walked into approving a motion it was shown a different call for. Without this the
+    // vote was built from the hash alone and the co-signer's only view of the motion — `committee list`
+    // against someone else's relay — was never checked against it.
+    match committee::proposal_of(&rpc, &phash).await? {
+        Some(inner) => eprintln!(
+            "voting {} on motion #{index}: {}",
+            if approve { "AYE" } else { "NAY" },
+            committee::describe_call(&inner),
+        ),
+        None => anyhow::bail!(
+            "no open motion stored under {phash:#x} — it was already closed, or the hash is wrong."
+        ),
+    }
     committee::vote_motion(&rpc, &ctx, phash, index, approve, &signer).await?;
     println!(
         "✓ vote ({}) recorded on motion #{index}",

@@ -151,7 +151,7 @@ Enact only after this passes — then build the enactment WASM **clean**, with n
 
 ## Version rules
 
-- **`spec_version`** — bump on any logic/storage/metadata change (currently **212**). `apply` rejects
+- **`spec_version`** — bump on any logic/storage/metadata change (currently **213**). `apply` rejects
   a non-increasing value on-chain.
 - **`transaction_version`** — bump *only* when the extrinsic encoding changes (a new transaction
   extension, or changed call arguments — removing an argument counts, removing a whole call does
