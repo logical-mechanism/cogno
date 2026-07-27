@@ -112,14 +112,42 @@ If you changed the layout of *existing* storage, ship an `OnRuntimeUpgrade` migr
 - Wire the migration through `frame_system::Config::SingleBlockMigrations` in
   [`../runtime/src/configs/mod.rs`](../runtime/src/configs/mod.rs) — it runs once, at the enactment
   block.
-- **`try-runtime` is wired.** Build with `--features try-runtime` and dry-run the migration against a
-  snapshot of live state before you enact. A migration that passes on a fresh `--dev` chain can still
-  panic on real accumulated state.
 - **Deleting a storage item is a layout change too.** Dropping the `#[pallet::storage]` declaration
   stops the writes; it does not remove what is already there. Those rows stay in state and in every
   state root, under a prefix nothing declares any more — invisible to `try_state` and to `post_upgrade`,
   and one accidental re-declaration away from coming back. Ship a sweep, versioned like any other
   migration: `pallet_cogno_gate::migrations::v1` (spec 212) is the worked example.
+
+### The dry-run against live state
+
+**Do this before every enactment that carries a migration.** CI does *not* gate on it, and a migration
+that passes its own unit tests on a fresh `--dev` chain can still be wrong against real accumulated
+state — spec 212's first cut of `microblog::migrations::v10` addressed the wrong storage prefix, passed
+every unit test (they wrote and read through that same wrong prefix, so they agreed with themselves),
+and only this run caught it.
+
+It needs a **separate build**: `--features try-runtime` is what compiles the `pre_upgrade` /
+`post_upgrade` / `try_state` hooks that are the entire safety net. That WASM is for the dry-run only —
+never enact it.
+
+```bash
+cargo install --git https://github.com/paritytech/try-runtime-cli --locked   # once
+cargo build --release --features try-runtime                                 # NOT the enactment blob
+
+try-runtime --runtime target/release/wbuild/cogno-chain-runtime/cogno_chain_runtime.wasm \
+  on-runtime-upgrade --checks all --blocktime 6000 \
+  live --uri wss://cogno.forum/rpc
+```
+
+`--checks all` is the point — it runs the pre/post hooks *and* `try_state` over the whole migrated
+state. `live` pulls a state snapshot over RPC (read-only; it never submits anything). Add
+`--snapshot-path state.snap` on a first run to reuse the snapshot for later iterations instead of
+re-downloading. Read the output for `post_upgrade` failures **and** for the weight warnings: a
+single-block migration reports its weight after the fact, so an under-count is not something the block
+limiter can catch for you.
+
+Enact only after this passes — then build the enactment WASM **clean**, with no `try-runtime` and no
+`runtime-benchmarks` feature.
 
 ## Version rules
 
