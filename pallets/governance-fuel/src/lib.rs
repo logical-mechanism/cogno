@@ -198,19 +198,25 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        /// Catch a LOWERED `MaxFundedAccounts` before it is enacted.
+        /// Name the consequence of a LOWERED `MaxFundedAccounts`, for the operator reading a failed
+        /// dry-run.
         ///
-        /// `Allowances` is a `BoundedVec<_, MaxFundedAccounts>` behind `ValueQuery`, so an upgrade that
-        /// lowers the bound below the funded set makes every read decode-fail and answer with the EMPTY
-        /// default. Nothing errors; four things break at once and all of them quietly. Regeneration
-        /// iterates an empty list, so every funded account decays monotonically under admin fees with no
-        /// top-up — the self-refund deadlock this pallet exists to prevent. Both seating gates start
-        /// refusing everyone, because an unfunded account cannot be seated. And the next `set_allowance`
-        /// rebuilds the list from that empty default, making the loss permanent.
+        /// `Allowances` is a `BoundedVec<_, MaxFundedAccounts>` behind `ValueQuery`, so a bound below the
+        /// stored length makes every read decode-fail and answer with the EMPTY default. Nothing errors;
+        /// four things break at once and quietly. Regeneration iterates an empty list, so every funded
+        /// account decays under admin fees with no top-up — the self-refund deadlock this pallet exists
+        /// to prevent. Both seating gates start refusing everyone. And the next `set_allowance` rebuilds
+        /// the list over that empty default, making the loss permanent.
         ///
-        /// `get()` cannot see it (it IS what swallows the failure); `decode_len` reads the raw length
-        /// prefix and is bound-independent. Runs under `try-runtime` against real state, per
-        /// docs/UPGRADES.md's pre-enactment dry-run.
+        /// DIAGNOSTIC, not the guard: it adds no enforcement. `set_allowance`'s `try_push` is
+        /// bound-checked and `revoke`'s `retain` only shrinks, and there is no genesis config, so nothing
+        /// on-chain can grow the vec past its bound; the only trigger is a deliberate source edit
+        /// lowering the constant below the live set (today `ConstU32<64>` against a single-digit funded
+        /// set). The mandated dry-run already catches that generically via `try_decode_entire_state`.
+        /// This only turns a decode trace into a sentence about what breaks.
+        ///
+        /// `get()` could not do this check (it IS what swallows the failure); `decode_len` reads the raw
+        /// length prefix and is bound-independent.
         #[cfg(feature = "try-runtime")]
         fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
             frame_support::ensure!(

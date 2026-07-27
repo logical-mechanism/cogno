@@ -4,11 +4,13 @@
 //! `CardanoObsInherentDigest`: seals the stable Cardano block anchor (`CardanoRef { slot, block_hash }`)
 //! into the block header as a `cobs` PreRuntime digest, and decodes it back on import.
 //!
-//! The sealed value is the SAME `CardanoRef` carried (and consensus-re-validated) by the `observe`
-//! inherent. In Architecture A the header digest is the EXTERNAL-AUDITABILITY mirror — a third party
-//! reading only PC block headers sees which stable Cardano block each block anchored to, without trusting
-//! the operator — while the load-bearing importer re-validation rides the existing `check_inherent`
-//! (which now compares `block_hash`). [`value_from_digest`] is implemented + tested here (the
+//! The sealed value is the same `CardanoRef` the `observe` inherent carries, but only the INHERENT's copy
+//! is consensus-re-validated (`check_inherent`, which now compares `block_hash`). In Architecture A this
+//! digest is a cheap read-only MIRROR, not something a third party can trust on its own: nothing on the
+//! import path extracts or compares it, so it is only as honest as the node that sealed it. It is also
+//! emitted from inherent DATA rather than from the inherent the block ends up carrying, so a block that
+//! abstained on a `MaxObserved` overrun — or hit either runtime SKIP bound — still seals a healthy-looking
+//! anchor for an observation it never applied. [`value_from_digest`] is implemented + tested here (the
 //! missing→`None` / duplicate→`Err` / malformed→`Err` trichotomy) so the deferred Architecture-B upgrade
 //! (making the header digest itself consensus-binding on import) is ready, even though Architecture A does
 //! not extract it on the import path.

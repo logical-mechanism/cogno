@@ -118,6 +118,20 @@ else:
 open(sys.argv[2], 'wb').write(b[off:off+n])
 PY
 
+# A `--features try-runtime` build carries the extra TryRuntime runtime API and the try_state hooks, so
+# its metadata is ~1 KB LARGER than the runtime that actually ships. docs/UPGRADES.md builds exactly that
+# binary for the pre-enactment dry-run and says never to enact it — but it lands at
+# target/release/cogno-chain-node, where the recency probe above will happily pick it. Gating against it
+# is a guaranteed false drift, and `--write` against it would commit a snapshot of a runtime that does
+# not exist, breaking CI and hiding whatever really moved. Refuse rather than compare.
+if grep -q "TryRuntime" "$TMP/live.scale"; then
+  echo "refusing to use $NODE: its runtime was built with --features try-runtime (the metadata carries"
+  echo "  the TryRuntime API), so it is ~1 KB larger than the runtime that ships. That is the dry-run"
+  echo "  binary from docs/UPGRADES.md, not an enactment build."
+  echo "  Fix: rebuild without the feature ('cargo build --release'), or point NODE at a clean binary."
+  exit 1
+fi
+
 if [ "$WRITE" = "1" ]; then
   cp "$TMP/live.scale" "$SNAPSHOT"
   echo "re-snapshotted $SNAPSHOT ($(wc -c <"$SNAPSHOT") bytes)"

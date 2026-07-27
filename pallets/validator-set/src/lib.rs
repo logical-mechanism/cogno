@@ -165,21 +165,26 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        /// Catch a LOWERED `MaxValidators` before it is enacted.
+        /// Name the consequence of a LOWERED `MaxValidators`, for the operator reading a failed dry-run.
         ///
         /// `Validators` and `OfflineValidators` are `BoundedVec<_, MaxValidators>` behind `ValueQuery`.
         /// `BoundedVec::decode` fails when the stored length exceeds the COMPILED bound, and `ValueQuery`
-        /// answers a decode failure with the DEFAULT — an EMPTY vec. So an upgrade that lowers the bound
-        /// below the live set does not error: the authority list silently reads as empty, and since this
-        /// pallet is what feeds `pallet_session` (and through it Aura and GRANDPA), authoring stops with
-        /// no origin left that could put it back. That is the same brick class the observer's
-        /// `MaxObserved` comment already warns about, with a worse blast radius — there is no sudo, so
-        /// the committee cannot legislate its way out of a chain that no longer produces blocks.
+        /// answers a decode failure with the DEFAULT — an EMPTY vec. An upgrade lowering the bound below
+        /// the live set would therefore not error: the authority list silently reads empty, and since
+        /// this pallet feeds `pallet_session` (and through it Aura and GRANDPA), authoring stops with no
+        /// origin left to put it back.
         ///
-        /// `get()` cannot see this (it IS what swallows the failure); `decode_len` reads the raw length
-        /// prefix and is bound-independent, so it can. This runs under `try-runtime` against a snapshot
-        /// of REAL state (docs/UPGRADES.md's pre-enactment dry-run), which is the only place a bound drop
-        /// can be caught BEFORE it is on-chain.
+        /// This is DIAGNOSTIC, not the guard, and deliberately so — it adds no enforcement. Every write
+        /// here is already bound-checked (`try_push`, and `retain`, which only shrinks), so nothing
+        /// on-chain can push the stored vec past its bound; the only trigger is a deliberate source edit.
+        /// And the dry-run docs/UPGRADES.md mandates already catches that generically: `--checks all`
+        /// runs `try_decode_entire_state`, which `DecodeAll`s the raw bytes of EVERY storage item in
+        /// every pallet, so an over-bound `BoundedVec` hard-fails for these two and for
+        /// `Aura::Authorities` / `Grandpa::Authorities` alike. What that generic failure does not say is
+        /// what it COSTS, which is the only thing this adds: a named error instead of a decode trace.
+        ///
+        /// `get()` could not do this check (it IS what swallows the failure); `decode_len` reads the raw
+        /// length prefix and is bound-independent.
         #[cfg(feature = "try-runtime")]
         fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
             let bound = T::MaxValidators::get() as usize;

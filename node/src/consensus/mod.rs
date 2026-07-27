@@ -5,9 +5,16 @@
 //! PreRuntime digest — the partner-chains "McHash" header-seal pattern, adapted to cogno's single pinned
 //! vault. See docs/IN-PROTOCOL-OBSERVATION.md.
 //!
-//! **Architecture A.** The header digest is an EXTERNAL-AUDITABILITY artifact: a
-//! third party reading only PC block headers can see which stable Cardano block each block anchored to,
-//! without trusting the operator. The LOAD-BEARING importer re-validation rides cogno's existing
+//! **Architecture A.** The header digest is a CONVENIENCE MIRROR, not a trust anchor: a third party
+//! reading only PC block headers can see which stable Cardano block each block claims to have anchored
+//! to, cheaply and without a state query. It does NOT let them skip trusting the operator — nothing on
+//! the import path extracts or compares it (that is Architecture B, below), so the header value is only
+//! as honest as the node that sealed it. The value that IS consensus-checked is the one inside the
+//! `observe` extrinsic. Two known ways the seal can differ from what the block applied: it is emitted
+//! from inherent DATA, so a block whose observation overran `MaxObserved` (or hit either of the runtime's
+//! SKIP bounds) still carries a healthy-looking `cobs` anchor while applying nothing. Read the extrinsic,
+//! not the header, when the answer has to be load-bearing. The LOAD-BEARING importer re-validation rides
+//! cogno's existing
 //! `pallet_cardano_observer::check_inherent` chokepoint (which now compares `CardanoRef.block_hash`), so
 //! the import path is UNCHANGED — NO forked `import_queue` / `start_aura` / verifier, and NO GPL-licensed
 //! crate. Making the header digest ITSELF consensus-binding (extracting + re-validating it on import) is
