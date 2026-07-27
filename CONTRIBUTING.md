@@ -47,6 +47,54 @@ cd app && npm ci && npm run lint && npx tsc --noEmit --incremental false \
 cd ci/cip8-oracle && python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
 ```
 
+### Re-running FRAME benchmarks
+
+Any change to what a call READS OR WRITES invalidates its weights — the generated `weights.rs` carries
+a `/// Storage:` list describing the storage as it was when measured, and a stale one is worse than no
+list, because the next person recounts a `#[pallet::weight]` against it and derives the wrong delta.
+
+The obvious command does not work here:
+
+```bash
+cargo build --release --features runtime-benchmarks   # ✗ panics in a dependency's build script
+```
+
+`frame-benchmarking-cli` pulls in `frame-storage-access-test-runtime`, whose build script asks
+`substrate-wasm-builder` to compile its wasm. wasm-builder locates the workspace by walking UP from
+`OUT_DIR` — which lands in *our* `target/` — then runs `cargo metadata` on our workspace **without**
+`--features runtime-benchmarks`. That crate only exists under that feature, so it fails to find itself
+and panics with `Failed to find entry for package frame-storage-access-test-runtime`.
+
+We never need that crate's wasm (it backs `benchmark storage`, not `benchmark pallet`). So build the
+benchmarks RUNTIME on its own — `frame-benchmarking-cli` is not in the runtime crate's dependency
+graph — then build the node with the wasm step skipped, and point the CLI at the runtime blob:
+
+```bash
+# 1. the benchmarks runtime (no frame-benchmarking-cli in the graph, so no panic)
+cargo build --release -p cogno-chain-runtime --features runtime-benchmarks
+cp target/release/wbuild/cogno-chain-runtime/cogno_chain_runtime.compact.compressed.wasm /tmp/bench.wasm
+
+# 2. the node, for its `benchmark` subcommand only — SKIP_WASM_BUILD dodges the broken build script
+SKIP_WASM_BUILD=1 cargo build --release --features runtime-benchmarks
+
+# 3. measure, against the blob from step 1 rather than an embedded runtime
+./target/release/cogno-chain-node benchmark pallet \
+  --runtime /tmp/bench.wasm --genesis-builder=runtime \
+  --pallet pallet_microblog --extrinsic '*' \
+  --steps 20 --repeat 5 --wasm-execution compiled \
+  --template _sdk/substrate/.maintain/frame-weight-template.hbs \
+  --output pallets/microblog/src/weights.rs
+```
+
+Step 2 leaves a stub where the runtime wasm goes, so run a plain `cargo build --release` afterwards
+before you use `target/release/wbuild/…` for anything else.
+
+Two things to watch. The harness dispatches the extrinsic in the block AFTER your `#[benchmark]`
+setup runs, so setup that computes a block-number bound must not sit exactly on it — `create_poll`
+anchors its deadline on `MaxPollDuration` for precisely this reason. And once weights are re-measured,
+re-check any hand-written `.saturating_add(T::DbWeight::get().reads_writes(..))` on the call: an addend
+that covered storage the old benchmark missed becomes a double count the moment the benchmark covers it.
+
 `next build` type-checks only the module graph it bundles, so a type error in a test file or an
 unimported module passes both `next build` and vitest. `tsc` is the only gate that reads every file
 the tsconfig covers — run it. `NEXT_PUBLIC_WS_URL` needs no value: unset, the app falls back to the

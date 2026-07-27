@@ -223,8 +223,20 @@ mod benchmarks {
         let opt = alloc::vec![0u8; T::MaxPollOptionLen::get() as usize];
         let options = alloc::vec![opt; T::MaxPollOptions::get() as usize];
 
-        // spec 211: a deadline is required — use the earliest valid one.
-        let close_at = frame_system::Pallet::<T>::block_number() + T::MinPollDuration::get();
+        // spec 211: a deadline is REQUIRED and window-validated into
+        // `[now + MinPollDuration, now + MaxPollDuration]`.
+        //
+        // ⚠ Do NOT compute it as `now + MinPollDuration` here. The harness dispatches the extrinsic in
+        // the block AFTER this setup runs, so a deadline sitting exactly on the floor at setup time is
+        // one block UNDER it at dispatch — `PollDurationTooShort`, which fails the whole benchmark and
+        // took `--extrinsic '*'` down with it. (That is not hypothetical: it is what spec 211 shipped,
+        // and it went unnoticed because nothing re-ran the benchmarks afterwards.)
+        //
+        // Anchor on the FAR end instead. `now + MaxPollDuration` satisfies both bounds no matter how
+        // many blocks the harness advances (the ceiling moves with `now`, so it can never be exceeded,
+        // and the floor is `Max - Min` blocks away). The deadline is stored verbatim and read by
+        // nothing on this path, so its value does not move the measured weight.
+        let close_at = frame_system::Pallet::<T>::block_number() + T::MaxPollDuration::get();
 
         #[extrinsic_call]
         _(

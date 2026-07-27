@@ -1409,23 +1409,20 @@ pub mod pallet {
         /// inclusion. Fails `TooLong` if `text` exceeds `MaxLength`. (It could also fail
         /// `TooManyPosts` until spec 212, when the per-author index stopped having a cap.)
         #[pallet::call_index(0)]
-        // WEIGHT (spec 212 recount). The benchmarked `post_message` covers PkhOf (r), NextPostId (r+w),
-        // ByAuthor (r+w) and Posts (w) = 3 reads + 3 writes. Two things are charged manually on top:
+        // WEIGHT: the benchmark measures this call whole — no manual addend.
         //
-        //  - The per-author append is now `ByAuthorCount` (r+w) plus a `ByAuthor` row (w) = 1 read +
-        //    2 writes, one write MORE than the benchmarked `ByAuthor` term covers.
-        //  - The branch below: a reply writes `ReplyCount` (r+w) + `RepliesByParent` (w) = 1 read +
-        //    2 writes; a top-level post runs `index_top_level` = `TopLevelByAuthorCount` (r+w) +
-        //    `TopLevelByAuthor` (w) + `NextTopLevelSeq` (r+w) + `TopLevelPosts` (w) = 2 reads +
-        //    4 writes. Charge the WORST of the two on every call, so a reply overpays.
+        // It used to carry `+reads_writes(2, 5)`, because the weights were last measured before the
+        // spec-212 repage and their storage list still described the old `ByAuthor` blob. Re-running
+        // the benchmark against the repaged storage made that term a DOUBLE COUNT: the measured list
+        // is now PkhOf (r), NextPostId (r+w), ByAuthorCount (r+w), TopLevelByAuthorCount (r+w),
+        // NextTopLevelSeq (r+w), TopLevelByAuthor (w), TopLevelPosts (w), Posts (w), ByAuthor (w) =
+        // 5 reads + 8 writes, i.e. `index_by_author` AND `index_top_level` are both already in it.
         //
-        // Total manual term: 2 reads + 5 writes. The benchmarked ref_time/proof_size are left as-is and
-        // are now GENEROUSLY conservative rather than optimistic: the benchmark measured an append to an
-        // EMPTY `ByAuthor`, which before v10 was the cheapest possible case of an O(history) re-encode
-        // (its own proof term admits `max_size: Some(80050)`) — and after v10 the empty case IS the only
-        // case. Fixing the structure is what makes the number already in hand true.
-        #[pallet::weight(<T as Config>::WeightInfo::post_message(text.len() as u32)
-			.saturating_add(T::DbWeight::get().reads_writes(2, 5)))]
+        // The benchmark exercises the TOP-LEVEL branch, which is the worst case: a top-level post runs
+        // `index_top_level` (2 reads + 4 writes) where a reply runs `ReplyCount` (r+w) +
+        // `RepliesByParent` (w) (1 read + 2 writes). So a reply overpays slightly and nothing
+        // under-declares — the safe direction, and now by measurement rather than by hand.
+        #[pallet::weight(<T as Config>::WeightInfo::post_message(text.len() as u32))]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _parent: &Option<u64>| -> bool { true })]
         pub fn post_message(
             origin: OriginFor<T>,
@@ -1538,12 +1535,12 @@ pub mod pallet {
         /// Quote-post: create a post whose body is `text` and which references `quoted_id` via the
         /// `Post.quote` field (distinct from a reply's `parent`). Feeless + capacity-metered.
         #[pallet::call_index(3)]
-        // A quote is always top-level, so it runs `index_top_level` (2 reads + 4 writes since spec 212)
-        // on top of the benchmark, plus the one extra `ByAuthor` row write the repaged append costs
-        // beyond the benchmarked `ByAuthor` term. Same recount as `post_message` above: 2 reads +
-        // 5 writes.
-        #[pallet::weight(<T as Config>::WeightInfo::quote_post(text.len() as u32)
-			.saturating_add(T::DbWeight::get().reads_writes(2, 5)))]
+        // WEIGHT: measured whole, no manual addend — same story as `post_message` above. A quote is
+        // always top-level, and the re-run benchmark's storage list already includes both
+        // `index_by_author` and `index_top_level`: PkhOf (r), Posts (r+w, the quoted post read plus the
+        // new one), NextPostId (r+w), ByAuthorCount (r+w), TopLevelByAuthorCount (r+w), NextTopLevelSeq
+        // (r+w), TopLevelByAuthor (w), TopLevelPosts (w), ByAuthor (w) = 6 reads + 8 writes.
+        #[pallet::weight(<T as Config>::WeightInfo::quote_post(text.len() as u32))]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _text: &Vec<u8>, _quoted_id: &u64| -> bool { true })]
         pub fn quote_post(origin: OriginFor<T>, text: Vec<u8>, quoted_id: u64) -> DispatchResult {
             let who = ensure_signed(origin)?;
@@ -1779,11 +1776,12 @@ pub mod pallet {
         /// spec 209, the optional governance-action tag) moves it 5 → 6. Each is a `create_poll` call-arg
         /// change — the only one in its respective upgrade.
         #[pallet::call_index(9)]
-        // A poll host is always top-level, so it runs `index_top_level` (2 reads + 4 writes since spec
-        // 212) on top of the benchmark, plus the one extra `ByAuthor` row write the repaged append costs
-        // beyond the benchmarked `ByAuthor` term. Same recount as `post_message`: 2 reads + 5 writes.
-        #[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32)
-			.saturating_add(T::DbWeight::get().reads_writes(2, 5)))]
+        // WEIGHT: measured whole, no manual addend — same story as `post_message` above. A poll host is
+        // always top-level, and the re-run benchmark's storage list already includes both
+        // `index_by_author` and `index_top_level`, plus the `Polls` row: PkhOf (r), NextPostId (r+w),
+        // ByAuthorCount (r+w), TopLevelByAuthorCount (r+w), NextTopLevelSeq (r+w), TopLevelByAuthor (w),
+        // TopLevelPosts (w), Posts (w), Polls (w), ByAuthor (w) = 5 reads + 9 writes.
+        #[pallet::weight(<T as Config>::WeightInfo::create_poll(question.len() as u32))]
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _question: &Vec<u8>, _options: &Vec<Vec<u8>>, _close_at: &Option<BlockNumberFor<T>>, _kind: &PollKind, _action: &Option<GovActionInput>| -> bool { true })]
         pub fn create_poll(
             origin: OriginFor<T>,
