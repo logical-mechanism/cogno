@@ -58,6 +58,12 @@ export function NoPostingPowerNotice() {
     );
   }
 
+  // Already funded → this notice has nothing to say. It sits ABOVE the pending branch on purpose:
+  // `usePendingCapacity` now keeps a record alive while a stale-positive weight from a PRIOR lock is
+  // still on chain (that is the whole point of the exit-then-relock fix), and a reader who can post
+  // does not need to be told about a top-up that is still crediting.
+  if (view && view.weight > 0n) return null;
+
   // A lock is crediting → show the explained, timed pending state (not "lock ADA" again). The observer
   // is threaded through because a stall makes every timing statement in there untrue.
   if (pending.kind !== "none") {
@@ -71,8 +77,9 @@ export function NoPostingPowerNotice() {
     );
   }
 
-  // No lock in flight: only nag to lock once the weight read resolves to a real 0 (avoid flashing).
-  if (!view || view.weight > 0n) return null;
+  // No lock in flight: only nag to lock once the weight read resolves to a real 0. `view` stays null
+  // until BOTH capacity reads answer (useCapacity), so this can no longer fire on a synthetic zero.
+  if (!view) return null;
 
   // Telling someone to go and lock ADA while the observer is frozen sends them to spend a Cardano
   // transaction fee on something that provably cannot credit until it resumes. Say so instead, and

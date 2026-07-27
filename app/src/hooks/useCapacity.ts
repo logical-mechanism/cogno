@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  capacityInputs,
   computeView,
   readCapacityConsts,
   type CapacityConsts,
@@ -52,28 +53,44 @@ export function useCapacity(
   }, [api]);
 
   // Watch weight + bucket for the active account at `best`.
+  //
+  // NOTHING IS PUBLISHED UNTIL BOTH READS ANSWER. This used to seed `weight = 0n` and push it
+  // synchronously right after subscribing — before either watch could have emitted — so every mount
+  // rendered a funded account as weight 0, which `NoPostingPowerNotice` states as "You don't have
+  // posting power yet." That notice already tries to avoid it ("only nag once the weight read resolves
+  // to a real 0"); the synthetic seed made a real 0 indistinguishable from an unread one. The rule is
+  // `capacityInputs` in lib/chain/capacity, so it is testable rather than an ordering argument.
   useEffect(() => {
-    if (!api || !ss58) {
-      setInputs(null);
-      return;
-    }
-    let weight = 0n;
-    let bucket: CapacityInputs["bucket"] = null;
-    let started = false;
+    setInputs(null); // a new account's capacity is unknown until its own reads land
+    if (!api || !ss58) return;
+    let weight: bigint | null = null;
+    // `undefined` = unanswered. `null` is a real answer (an account that never posted has no row).
+    let bucket: CapacityInputs["bucket"] | undefined = undefined;
     const push = () => {
-      if (started) setInputs({ weight, bucket });
+      const next = capacityInputs(weight, bucket);
+      if (next) setInputs(next);
     };
     // PAPI v2: watchValue takes an options object and emits { block, value } (destructure .value).
-    const s1 = api.query.TalkStake.AllowedStake.watchValue(ss58, { at: "best" }).subscribe(({ value: w }) => {
-      weight = (w as bigint) ?? 0n;
-      push();
-    });
-    const s2 = api.query.Microblog.Capacity.watchValue(ss58, { at: "best" }).subscribe(({ value: row }) => {
-      bucket = row ? { capLast: row.cap_last, lastBlock: row.last_block } : null;
-      push();
-    });
-    started = true;
-    push();
+    const s1 = api.query.TalkStake.AllowedStake.watchValue(ss58, { at: "best" }).subscribe(
+      ({ value: w }) => {
+        weight = (w as bigint) ?? 0n;
+        push();
+      },
+      // A failed read leaves the weight UNANSWERED rather than asserting zero. Silence is the honest
+      // rendering of "we could not find out"; a zero here is a claim about the user's own locked ADA.
+      (err: unknown) => {
+        console.warn("cogno: AllowedStake watch failed — capacity left unresolved:", err);
+      },
+    );
+    const s2 = api.query.Microblog.Capacity.watchValue(ss58, { at: "best" }).subscribe(
+      ({ value: row }) => {
+        bucket = row ? { capLast: row.cap_last, lastBlock: row.last_block } : null;
+        push();
+      },
+      (err: unknown) => {
+        console.warn("cogno: Capacity watch failed — capacity left unresolved:", err);
+      },
+    );
     return () => {
       s1.unsubscribe();
       s2.unsubscribe();

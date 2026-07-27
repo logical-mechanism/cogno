@@ -76,7 +76,10 @@ export function useRoles(
           lastObserved = key;
           setObserved(next);
         },
-        () => setObserved([]),
+        // A failed read is NOT "you hold no roles". `[]` here was a confirmed negative written from an
+        // unknown, and it stuck for the session — showing a verified SPO the claim wizard. Mirror
+        // Providers.tsx, which does `setViewerRoles(null)` on the very same watch.
+        () => setObserved(null),
       ),
     );
     for (const role of CLAIMABLE_ROLES) {

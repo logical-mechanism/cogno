@@ -25,7 +25,7 @@ import {
   type RoleProofRequest,
   type RoleToken,
 } from "@/lib/cardano/role-proof";
-import { isBlankRoleId, type RoleKindType } from "@/lib/chain/roles";
+import { isBlankRoleId, roleStatusOf, type RoleKindType } from "@/lib/chain/roles";
 import { getGenesisHex } from "@/lib/chain/identity";
 import { copyToClipboard } from "@/lib/share";
 import type { CognoApi, PostingSigner } from "@/lib/types";
@@ -115,11 +115,14 @@ function RoleClaimCard({
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
 
-  // An SPO can hold SEVERAL live entries (one per pool for an mSPO), so read the full set for this kind —
-  // `observed` (the first) still drives the presence gate + the pending/wizard branches, which are the same
-  // for one or many. dRep/CC are 1:1, so their list has at most one.
+  // An SPO can hold SEVERAL live entries (one per pool for an mSPO), so read the full set for this kind.
+  // dRep/CC are 1:1, so their list has at most one.
+  //
+  // `status` carries the THIRD state the old `(roles.observed ?? [])` flattened away: "not resolved
+  // yet". Without it a verified SPO or dRep saw the full "Enter your verification key" wizard on every
+  // Settings open while the watch was in flight, and permanently if it errored.
+  const status = roleStatusOf(roles.observed, spec.kind);
   const observedList = (roles.observed ?? []).filter((r) => r.kind === spec.kind);
-  const observed = observedList[0] ?? null;
   const claimCred = roles.claimCredHex[spec.kind];
 
   const onKeyInputChange = useCallback((v: string) => {
@@ -254,7 +257,7 @@ function RoleClaimCard({
       <h3 className={styles.cardTitle}>{spec.title}</h3>
       <p className={styles.cardHint}>{spec.cardHint}</p>
 
-      {observed ? (
+      {status === "verified" ? (
         // ── verified: the observer confirmed a live role ──
         <div className={styles.statusRow}>
           <span className={styles.verifiedMark}>✓ Verified {spec.label}</span>
@@ -280,6 +283,14 @@ function RoleClaimCard({
             <Spinner size="sm" label="Awaiting confirmation" /> Claimed. Waiting for confirmation.
           </span>
           {removeBtn}
+        </div>
+      ) : status === "loading" ? (
+        // ── not resolved yet. Say so, rather than opening a wizard that would be wrong for anyone who
+        //    already holds this role. A read that never lands stays here, which is the honest answer.
+        <div className={styles.statusRow}>
+          <span className={styles.pendingMark}>
+            <Spinner size="sm" label="Checking verified roles" /> Checking your verified roles.
+          </span>
         </div>
       ) : (
         // ── the claim wizard ──
