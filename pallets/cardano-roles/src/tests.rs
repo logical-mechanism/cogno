@@ -83,6 +83,22 @@ fn build_proof(
     BoundedVec<u8, ConstU32<128>>,
     RoleCredential,
 ) {
+    build_proof_with_nonce(seed, account, genesis, role, &"ab".repeat(16))
+}
+
+/// As [`build_proof`], but with an explicit 32-hex-char nonce. The nonce is what makes a role proof
+/// single-use on chain (`SpentRoleNonce`), so replay coverage needs to be able to vary it.
+fn build_proof_with_nonce(
+    seed: [u8; 32],
+    account: u64,
+    genesis: [u8; 32],
+    role: &str,
+    nonce_hex: &str,
+) -> (
+    BoundedVec<u8, ConstU32<512>>,
+    BoundedVec<u8, ConstU32<128>>,
+    RoleCredential,
+) {
     let pair = ed25519::Pair::from_seed(&seed);
     let public = pair.public();
     let pk: Vec<u8> = AsRef::<[u8]>::as_ref(&public).to_vec();
@@ -101,7 +117,7 @@ fn build_proof(
         "cogno-chain/role/v1;genesis={};account={};nonce={};role={}",
         hexs(&genesis),
         hexs(&account32(account)),
-        "ab".repeat(16),
+        nonce_hex,
         role,
     )
     .into_bytes();
@@ -540,6 +556,114 @@ fn validate_unsigned_refuses_origin_gated_calls() {
                 role: RoleKind::Spo
             }),
             Err(InvalidTransaction::Call.into())
+        );
+    });
+}
+
+#[test]
+fn purge_account_roles_clears_every_claim_and_the_observed_badge() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        // ALICE claims an SPO role and the observer credits her a badge.
+        let (cose_sign1, cose_key, cred) = spo_proof(7, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose_sign1,
+            cose_key
+        ));
+        let badge: ObservedRoleSet = BoundedVec::truncate_from(vec![ObservedRole {
+            kind: RoleKind::Spo,
+            id: cred,
+            weight: 12_000_000_000_000,
+        }]);
+        ObservedRoles::<Test>::insert(ALICE, badge);
+        assert!(RoleClaimOf::<Test>::contains_key(ALICE, RoleKind::Spo));
+        assert!(RoleCredIndex::<Test>::contains_key(RoleKind::Spo, cred));
+        assert!(!ObservedRoles::<Test>::get(ALICE).is_empty());
+
+        assert_eq!(CardanoRoles::purge_account_roles(&ALICE), 1);
+
+        // Both claim directions AND the badge the profile actually renders are gone.
+        assert!(!RoleClaimOf::<Test>::contains_key(ALICE, RoleKind::Spo));
+        assert!(!RoleCredIndex::<Test>::contains_key(RoleKind::Spo, cred));
+        assert!(
+            ObservedRoles::<Test>::get(ALICE).is_empty(),
+            "the observed badge is what profiles render — clearing only the claims would leave a \
+             banned account displaying a verified role until an observation happened to move",
+        );
+        // NOT tombstoned: the credential is freed for its real holder to claim on a clean account.
+        assert!(!TombstonedRoleCred::<Test>::contains_key(
+            RoleKind::Spo,
+            cred
+        ));
+    });
+}
+
+#[test]
+fn purge_account_roles_is_a_no_op_for_an_account_holding_none() {
+    new_test_ext().execute_with(|| {
+        assert_eq!(CardanoRoles::purge_account_roles(&BOB), 0);
+        assert!(ObservedRoles::<Test>::get(BOB).is_empty());
+    });
+}
+
+#[test]
+fn a_role_proof_cannot_be_replayed_after_unclaim() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        let (cose, key, cred) = spo_proof(7, ALICE);
+
+        // ALICE claims, then releases the role herself.
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose.clone(),
+            key.clone()
+        ));
+        assert_ok!(CardanoRoles::unclaim_role(
+            RuntimeOrigin::signed(ALICE),
+            RoleKind::Spo
+        ));
+        assert!(!RoleClaimOf::<Test>::contains_key(ALICE, RoleKind::Spo));
+
+        // A THIRD PARTY re-submits the exact same bytes. The call is bare-unsigned, so no signature of
+        // theirs is needed, and unclaim restored every other condition do_claim checks. Before the
+        // spent-nonce ledger this silently re-attached the badge ALICE had just removed.
+        assert_noop!(
+            CardanoRoles::claim_role_signed(RuntimeOrigin::none(), cose.clone(), key.clone()),
+            Error::<Test>::RoleProofReplayed
+        );
+        assert!(
+            !RoleClaimOf::<Test>::contains_key(ALICE, RoleKind::Spo),
+            "the replay must not re-attach the claim",
+        );
+        assert!(!RoleCredIndex::<Test>::contains_key(RoleKind::Spo, cred));
+
+        // The pool drops it too, so the gossip never carries a doomed full-verify.
+        assert_eq!(
+            validate(&Call::claim_role_signed {
+                cose_sign1: cose,
+                cose_key: key
+            }),
+            Err(InvalidTransaction::Stale.into())
+        );
+
+        // A FRESH proof over a NEW nonce still works — same key, same role, same account — so the
+        // guard costs a legitimate re-claim nothing. Only the role key can sign one, which is why
+        // spending the nonce stops a replayer without stopping the holder.
+        let (cose2, key2, cred2) =
+            build_proof_with_nonce([7u8; 32], ALICE, GENESIS, "spo", &"cd".repeat(16));
+        assert_eq!(cred2, cred, "same role key ⇒ same credential");
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose2,
+            key2
+        ));
+        assert_eq!(
+            RoleClaimOf::<Test>::get(ALICE, RoleKind::Spo),
+            Some(cred),
+            "a fresh nonce re-claims normally",
         );
     });
 }

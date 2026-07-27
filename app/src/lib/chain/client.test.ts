@@ -4,7 +4,7 @@
 // read must yield a not-ok guard WITH a reason rather than throwing (boot must never crash).
 
 import { describe, it, expect } from "vitest";
-import { checkBootGuard } from "./client";
+import { checkBootGuard, DESCRIPTOR_SPEC_VERSION } from "./client";
 import type { CognoApi } from "@/lib/types";
 
 // A fake api whose System.Version() resolves to a controllable version (or throws).
@@ -18,9 +18,20 @@ function apiWith(version: { spec_name: string; spec_version: number } | (() => n
   } as unknown as CognoApi;
 }
 
-// The spec the descriptors are built against. `npm run check:spec` asserts this equals the runtime's
-// spec_version in runtime/src/lib.rs, so it cannot drift out from under these tests.
-const DESCRIPTOR_SPEC = 212;
+// The spec the descriptors are built against, IMPORTED from the guard rather than re-declared here.
+//
+// This used to be a hardcoded copy, above a comment claiming `npm run check:spec` kept it honest. It
+// did not: that script compares client.ts's `DESCRIPTOR_SPEC_VERSION` against runtime/src/lib.rs and
+// never reads this file, so the copy sat at 212 through the 212 → 213 bump and took three tests down
+// with it — while lint, typecheck and check:spec all passed. Importing is what actually makes the
+// claim true, and it means the next spec bump cannot break these tests at all.
+if (DESCRIPTOR_SPEC_VERSION === null) {
+  throw new Error(
+    "DESCRIPTOR_SPEC_VERSION is null — the boot guard cannot gate on spec_version, so these tests " +
+      "would assert nothing. check:spec fails on this too.",
+  );
+}
+const DESCRIPTOR_SPEC: number = DESCRIPTOR_SPEC_VERSION;
 
 describe("checkBootGuard", () => {
   it("ok=true when the spec_name AND spec_version match the descriptors", async () => {

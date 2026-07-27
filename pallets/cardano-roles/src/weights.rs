@@ -22,11 +22,13 @@ impl WeightInfo for () {
         // COMPUTE floor: the audited CIP-8 path (ed25519_verify + blake2b + COSE parse) — the same
         // class of work cogno-gate's MEASURED link_identity_signed prices at 67_850_000 ref_time
         // (pallets/cogno-gate/src/weights.rs), so 80M sits above the measured sibling.
-        // DB: 5 reads (System::BlockHash(0), CognoGate::PkhOf via the IdentityGate,
-        // TombstonedRoleCred, RoleClaimOf, RoleCredIndex) + 2 writes (RoleClaimOf, RoleCredIndex).
+        // DB: 6 reads (System::BlockHash(0), CognoGate::PkhOf via the IdentityGate,
+        // TombstonedRoleCred, RoleClaimOf, RoleCredIndex, SpentRoleNonce) + 3 writes (SpentRoleNonce,
+        // RoleClaimOf, RoleCredIndex). SpentRoleNonce is the single-use guard that stops a third party
+        // replaying an accepted proof after the holder unclaims.
         Weight::from_parts(80_000_000, 8_000)
-            .saturating_add(RocksDbWeight::get().reads(5))
-            .saturating_add(RocksDbWeight::get().writes(2))
+            .saturating_add(RocksDbWeight::get().reads(6))
+            .saturating_add(RocksDbWeight::get().writes(3))
     }
     fn unclaim_role() -> Weight {
         // COMPUTE floor: ensure_signed + event. DB: 1 read + 2 writes (RoleClaimOf::take,

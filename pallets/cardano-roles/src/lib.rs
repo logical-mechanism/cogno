@@ -199,6 +199,16 @@ pub mod pallet {
         /// verifier — the synthetic enterprise address must be on this network.
         #[pallet::constant]
         type CardanoNetwork: Get<u8>;
+        /// The ceiling on how many claimed credentials the per-block observer scan may return — the
+        /// SAME `MaxObserved` the cardano-observer bounds its observation by. Not a `#[pallet::constant]`:
+        /// it bounds a runtime-API read, not anything on the wire.
+        ///
+        /// `claimed_credentials` runs on the inherent-data path of every node on every block and feeds a
+        /// db-sync query under a timeout, while the map it scans is grown by the bare-unsigned, feeless
+        /// `claim_role_signed`. Unbounded, that is a free way to stop the sole weight writer for
+        /// everyone. Matching the observer's cap loses nothing: the observation's role axis is itself a
+        /// `BoundedVec<_, MaxObserved>`.
+        type MaxObserved: Get<u32>;
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
     }
@@ -242,6 +252,45 @@ pub mod pallet {
         Blake2_128Concat,
         RoleCredential,
         (),
+        OptionQuery,
+    >;
+
+    /// Nonce SPENT by the most recent accepted claim for `(account, role)`. Deliberately survives
+    /// `unclaim_role` — that is the whole point of it.
+    ///
+    /// A role proof carries no expiry and commits no chain state that moves, so its bytes stay valid
+    /// forever. `unclaim_role` frees both claim maps, which restores exactly the pre-claim conditions
+    /// `do_claim` checks — so ANY third party who saw the original `claim_role_signed` extrinsic on
+    /// chain could re-submit those same bytes and silently re-attach the badge the holder had just
+    /// removed (the calls are bare-unsigned, so no signature of theirs is needed). Worse than the
+    /// nuisance: a holder rotating a credential to a new account is blocked by the 1:1 rule for as
+    /// long as the replayer keeps re-binding the old one.
+    ///
+    /// Spending the nonce closes that: the replayed bytes carry the same nonce, so the re-claim is
+    /// rejected. A genuine re-claim needs a fresh proof with a new nonce, which only the role key can
+    /// sign — no usability cost.
+    ///
+    /// ⚠ RESIDUAL, stated honestly: this remembers the LAST nonce, not every nonce. The client mints
+    /// a fresh random nonce per proof, so a second claim displaces the first — an account past two or
+    /// more claim/unclaim cycles can still be hit by a replay of a proof OLDER than its most recent
+    /// one. Two closes exist, and NEITHER needs the `cogno-chain/role/v1` GRAMMAR to move: key this
+    /// map by the nonce as well (correct, but it turns one row per `(account, role)` into an
+    /// append-only map with no prune verb, written by a feeless bare-unsigned call), or require the
+    /// nonce to be strictly INCREASING (O(1) storage and every older proof dies for good, but the
+    /// client can no longer mint a uniformly random nonce — a lockstep frontend rule, plus a re-sign
+    /// whenever a signer raced a stale read). That lockstep is why the second is deferred, not the
+    /// grammar. Griefing-only meanwhile: the replay re-binds the holder's OWN credential to the
+    /// account the holder committed, `unclaim_role` stays free for the holder, and the observer still
+    /// gates the badge on live Cardano state.
+    /// Bounded as written: one 16-byte entry per `(account, role)`, the same growth as the claim.
+    #[pallet::storage]
+    pub type SpentRoleNonce<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        Twox64Concat,
+        RoleKind,
+        [u8; 16],
         OptionQuery,
     >;
 
@@ -307,6 +356,10 @@ pub mod pallet {
         /// No claim exists for this `(account, role)` (unclaim / revoke target not found).
         #[codec(index = 6)]
         NotClaimed,
+        /// This exact proof was already spent for this `(account, role)` — a replay of bytes that were
+        /// accepted once before. See [`SpentRoleNonce`].
+        #[codec(index = 7)]
+        RoleProofReplayed,
     }
 
     /// Genesis seed for the OBSERVED ledger on chains with no Cardano to observe (`--dev` / `local`),
@@ -364,9 +417,10 @@ pub mod pallet {
             cose_key: BoundedVec<u8, ConstU32<128>>,
         ) -> DispatchResult {
             ensure_none(origin)?;
-            let (account, role, credential) = Self::verify_role_proof(&cose_sign1, &cose_key)?;
+            let (account, role, credential, nonce) =
+                Self::verify_role_proof(&cose_sign1, &cose_key)?;
             log::debug!(target: LOG_TARGET, "claim_role_signed: verified {role:?} proof for {account:?}");
-            Self::do_claim(&account, role, credential)
+            Self::do_claim(&account, role, credential, nonce)
         }
 
         /// Self-service release of a role claim. Signed by the claiming account. Removes both claim
@@ -418,7 +472,59 @@ pub mod pallet {
         }
     }
 
+    /// What [`Pallet::verify_role_proof`] extracts from an accepted proof: the account the payload
+    /// COMMITS (never the submitter), the role, the 28-byte credential, and the 16-byte nonce the
+    /// caller spends to make the proof single-use.
+    pub(crate) type VerifiedRoleClaim<T> = (
+        <T as frame_system::Config>::AccountId,
+        RoleKind,
+        RoleCredential,
+        [u8; 16],
+    );
+
     impl<T: Config> Pallet<T> {
+        /// Tear down EVERY role `who` holds — both claim maps and the observer-written badge set.
+        ///
+        /// Called from the identity lifecycle when a binding is revoked (the runtime wires this behind
+        /// `pallet_cogno_gate`'s `OnBind` seam, which is why it lives here rather than being reached
+        /// across a Cargo edge). Without it a committee ban left the account's `RoleClaimOf` /
+        /// `RoleCredIndex` / `ObservedRoles` rows completely untouched: `MicroblogApi::profile` returned
+        /// `is_allowed: false` alongside a live verified SPO/dRep badge, every post the banned account
+        /// ever wrote kept rendering that badge, and its credential stayed locked 1:1 so the real holder
+        /// could not claim it either.
+        ///
+        /// NOT a tombstone, deliberately. `revoke_role` is the committee's ban-the-key verb and stays
+        /// the way to make a credential permanently unclaimable; an identity ban is about the ACCOUNT,
+        /// and permanently burning a legitimate pool's Calidus key as a side effect would be a
+        /// punishment the committee never voted for. Freeing the credential is safe because `do_claim`
+        /// requires `IdentityGate::is_allowed` — a revoked account cannot re-claim what it just lost,
+        /// and only a properly bound account can pick the credential up.
+        ///
+        /// Bounded by construction: `RoleClaimOf` is keyed `(account, RoleKind)` and `RoleKind` has
+        /// three variants, so this is at most 3 claim rows + 3 index rows + 1 badge row regardless of
+        /// state. Returns the number of claims cleared so the caller can price it.
+        pub fn purge_account_roles(who: &T::AccountId) -> u32 {
+            let mut cleared = 0u32;
+            for role in [RoleKind::Spo, RoleKind::DRep, RoleKind::Committee] {
+                if let Some(credential) = RoleClaimOf::<T>::take(who, role) {
+                    RoleCredIndex::<T>::remove(role, credential);
+                    cleared = cleared.saturating_add(1);
+                }
+            }
+            // The observer-written badge set is what the profile/chamber reads actually render, and it
+            // is NOT derived from the claim maps at read time — the observer only rewrites it when its
+            // next observation differs. Clearing the claims alone would leave the badge on screen until
+            // (and unless) an observation happened to move.
+            ObservedRoles::<T>::remove(who);
+            if cleared > 0 {
+                log::debug!(
+                    target: LOG_TARGET,
+                    "purge_account_roles: cleared {cleared} role claim(s) + the observed badge set for {who:?}",
+                );
+            }
+            cleared
+        }
+
         /// The 28-byte credential `who` has claimed for `role`, if any (read-only helper).
         pub fn claim_of(who: &T::AccountId, role: RoleKind) -> Option<RoleCredential> {
             RoleClaimOf::<T>::get(who, role)
@@ -434,7 +540,39 @@ pub mod pallet {
         /// its db-sync read to (the `bound_role_credentials` runtime API). Bounded by the number of
         /// claims, not by all Cardano pools / dReps.
         pub fn claimed_credentials(role: RoleKind) -> Vec<RoleCredential> {
-            RoleCredIndex::<T>::iter_key_prefix(role).collect()
+            // BOUNDED, for the same reason `bound_stake_credentials` is: this runs on the inherent-data
+            // path of every node on every block and feeds a `= ANY(…)` array into a db-sync query under a
+            // 2 s timeout, while the map it scans is grown by `claim_role_signed` — bare-unsigned,
+            // feeless and capacity-unmetered. An unbounded scan here stops the sole weight writer for
+            // everyone once the query outgrows the timeout.
+            //
+            // `MaxObserved` is the right ceiling because the observation's role axis is itself a
+            // `BoundedVec<_, MaxObserved>`: a credential past the cap could not have been represented in
+            // the result anyway. Iteration is by hashed key, so the prefix is deterministic and every
+            // node takes the same one — `check_inherent` still agrees.
+            let cap = T::MaxObserved::get() as usize;
+            // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that
+            // exactly fills it (nothing dropped yet — the last quiet block), `len > cap` is a real
+            // truncation. Truncating back leaves the returned prefix byte-identical to `take(cap)`, so
+            // the author and the importer still derive the same scoping set.
+            let mut out: Vec<RoleCredential> = RoleCredIndex::<T>::iter_key_prefix(role)
+                .take(cap.saturating_add(1))
+                .collect();
+            if out.len() > cap {
+                out.truncate(cap);
+                log::warn!(
+                    target: LOG_TARGET,
+                    "claimed {role:?} credentials EXCEED the MaxObserved cap ({cap}) — claims past it \
+                     are not observed. Raise MaxObserved or prune the ledger.",
+                );
+            } else if out.len() == cap {
+                log::warn!(
+                    target: LOG_TARGET,
+                    "claimed {role:?} credentials are exactly AT the MaxObserved cap ({cap}) — the next \
+                     claim is not observed. Raise MaxObserved or prune the ledger.",
+                );
+            }
+            out
         }
 
         /// Verify a CIP-8 role-key proof and resolve `(bound account, role, credential)`. The shared
@@ -446,7 +584,7 @@ pub mod pallet {
         pub(crate) fn verify_role_proof(
             cose_sign1: &[u8],
             cose_key: &[u8],
-        ) -> Result<(T::AccountId, RoleKind, RoleCredential), Error<T>> {
+        ) -> Result<VerifiedRoleClaim<T>, Error<T>> {
             let proof = pallet_cogno_gate::cip8::verify_bind_proof_role(
                 cose_sign1,
                 cose_key,
@@ -465,7 +603,12 @@ pub mod pallet {
             // The bound account is the 32-byte sr25519 key the PROOF commits — never any submitter.
             let account = T::AccountId::decode(&mut &proof.account[..])
                 .map_err(|_| Error::<T>::ProofInvalid)?;
-            Ok((account, RoleKind::from_class(proof.role), proof.credential))
+            Ok((
+                account,
+                RoleKind::from_class(proof.role),
+                proof.credential,
+                proof.nonce,
+            ))
         }
 
         /// The shared 1:1 claim body: the payment-bound precondition, the ban tombstone, both directional
@@ -475,6 +618,7 @@ pub mod pallet {
             account: &T::AccountId,
             role: RoleKind,
             credential: RoleCredential,
+            nonce: [u8; 16],
         ) -> DispatchResult {
             // A role attaches only to an onboarded identity: the account must already be payment-bound.
             ensure!(
@@ -495,6 +639,14 @@ pub mod pallet {
                 log::warn!(target: LOG_TARGET, "do_claim rejected: {role:?} credential already claimed");
                 return Err(Error::<T>::RoleCredAlreadyClaimed.into());
             }
+            // Single-use: a role proof never expires, and `unclaim_role` restores every other condition
+            // checked above — so without this the same bytes could be re-submitted by anyone to undo an
+            // unclaim. See [`SpentRoleNonce`] for the residual this does and does not cover.
+            if SpentRoleNonce::<T>::get(account, role) == Some(nonce) {
+                log::warn!(target: LOG_TARGET, "do_claim rejected: {role:?} proof replayed (nonce already spent)");
+                return Err(Error::<T>::RoleProofReplayed.into());
+            }
+            SpentRoleNonce::<T>::insert(account, role, nonce);
             RoleClaimOf::<T>::insert(account, role, credential);
             RoleCredIndex::<T>::insert(role, credential, account);
             log::debug!(target: LOG_TARGET, "do_claim ok: {role:?} credential claimed 1:1");
@@ -555,8 +707,9 @@ pub mod pallet {
                     cose_key,
                 } => {
                     // Verify the proof (audited crown jewel) + genesis + decode the committed account.
-                    let (account, role, credential) = Self::verify_role_proof(cose_sign1, cose_key)
-                        .map_err(|_| InvalidTransaction::BadProof)?;
+                    let (account, role, credential, nonce) =
+                        Self::verify_role_proof(cose_sign1, cose_key)
+                            .map_err(|_| InvalidTransaction::BadProof)?;
                     // A role attaches only to an onboarded identity — reject a non-participant at the pool
                     // (Custom 1; the FE submits a role claim only after onboarding, so this holds).
                     if !T::IdentityGate::is_allowed(&account) {
@@ -567,6 +720,9 @@ pub mod pallet {
                     if TombstonedRoleCred::<T>::contains_key(role, credential)
                         || RoleClaimOf::<T>::contains_key(&account, role)
                         || RoleCredIndex::<T>::contains_key(role, credential)
+                        // A replayed proof is settled, not retryable — drop it at the pool so the
+                        // gossip never carries it and no block wastes a full verify on it.
+                        || SpentRoleNonce::<T>::get(&account, role) == Some(nonce)
                     {
                         log::debug!(target: LOG_TARGET, "validate_unsigned: role claim rejected at pool (tombstoned/already-claimed) role={role:?}");
                         return Err(InvalidTransaction::Stale.into());

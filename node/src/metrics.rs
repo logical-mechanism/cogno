@@ -33,8 +33,16 @@ pub struct ObserverMetrics {
     observed_vaults: Gauge<U64>,
     /// Voting-power (epoch_stake) entry count in the most recent non-empty observation.
     observed_voters: Gauge<U64>,
+    /// Role (SPO / dRep / CC badge) entry count in the most recent non-empty observation.
+    ///
+    /// Tracked separately because this is the axis that reaches `MaxObserved` FIRST. The other two are
+    /// one entry per identity, but the role axis is one-to-MANY: an mSPO emits one entry per declaring
+    /// pool, and the owner path one per owned pool, all against the same single ceiling. A handful of
+    /// multi-pool operators can therefore cross it while both other gauges sit near zero — so an alert
+    /// written only on vaults/voters is blind to the freeze that actually happens.
+    observed_roles: Gauge<U64>,
     /// The runtime's `MaxObserved` ceiling (from `ObserverConfig`). Exposed so an alert rule can compare
-    /// `observed_vaults`/`observed_voters` against it without hard-coding the limit.
+    /// `observed_vaults`/`observed_voters`/`observed_roles` against it without hard-coding the limit.
     max_observed: Gauge<U64>,
     /// Observations whose vault OR stake set EXCEEDED `MaxObserved` — the SILENT-FREEZE condition
     /// (`create_inherent` abstains, so weight stops updating). A non-zero rate here is a page.
@@ -94,6 +102,13 @@ impl ObserverMetrics {
 				)?,
 				registry,
 			)?,
+			observed_roles: register(
+				Gauge::new(
+					"cogno_observer_observed_roles",
+					"Role entry count in the most recent non-empty observation (the axis that reaches MaxObserved first)",
+				)?,
+				registry,
+			)?,
 			max_observed: register(
 				Gauge::new(
 					"cogno_observer_max_observed",
@@ -116,7 +131,7 @@ impl ObserverMetrics {
         self.abstains_total.inc();
     }
 
-    /// Record a non-empty observation produced at Cardano `ref_slot` with `vaults`/`voters` entries.
+    /// Record a non-empty observation produced at Cardano `ref_slot` with `vaults`/`voters`/`roles` entries.
     /// `dbsync_tip_slot` is this node's db-sync tip and `lag_slots` is how far that tip trails the
     /// current Cardano slot (see the field docs) — both captured from the same consistent db-sync read.
     pub fn record_observation(
@@ -126,6 +141,7 @@ impl ObserverMetrics {
         lag_slots: u64,
         vaults: usize,
         voters: usize,
+        roles: usize,
     ) {
         self.observations_total.inc();
         self.last_reference_slot.set(ref_slot);
@@ -133,6 +149,7 @@ impl ObserverMetrics {
         self.lag_slots.set(lag_slots);
         self.observed_vaults.set(vaults as u64);
         self.observed_voters.set(voters as u64);
+        self.observed_roles.set(roles as u64);
     }
 
     /// Publish the runtime's `MaxObserved` ceiling so alert rules can key off it without a duplicate const.

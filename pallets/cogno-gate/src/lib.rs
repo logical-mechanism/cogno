@@ -340,7 +340,20 @@ pub mod pallet {
         /// zeroed, while the `Capacity` row itself is KEPT (microblog's never-delete relock-farm
         /// invariant — a relock must not read a fresh first-touch bucket).
         #[pallet::call_index(1)]
-        #[pallet::weight(T::WeightInfo::revoke())]
+        // The benchmark seeds only a PAYMENT bind, so `WeightInfo::revoke()` measures neither of the two
+        // branches below it. Both are covered here as an explicit `DbWeight` term, which is the correct
+        // use of a hand-written addend (it covers storage the benchmark does NOT reach — it is not a
+        // double count of storage the benchmark already measures):
+        //   - the stake teardown: `StakeCredOf::take` + `AccountOfStakeCred::remove` +
+        //     `TombstonedStakeCred::insert` — 1 read, 3 writes — taken whenever the account had a
+        //     voting-power bind, which every real participant does.
+        //   - the `OnBind::on_revoke` fan-out, whose cost belongs to the runtime's impl and cannot be
+        //     named from this crate (no Cargo edge). Today that clears microblog's banked capacity and
+        //     purges pallet-cardano-roles: at most 3 claim reads and 3 claim + 3 index + 1 badge writes,
+        //     bounded by `RoleKind` having three variants. Budgeted at 3 reads / 7 writes.
+        // ⚠ If the runtime's `OnIdentityBind` impl ever grows a fan-out beyond that, raise this term.
+        #[pallet::weight(T::WeightInfo::revoke()
+            .saturating_add(<T as frame_system::Config>::DbWeight::get().reads_writes(4, 10)))]
         pub fn revoke(origin: OriginFor<T>, substrate_account: T::AccountId) -> DispatchResult {
             T::FollowerOrigin::ensure_origin(origin)?;
             // A revoke of a never-bound account is REJECTED with NotBound (no state change, no event) —
@@ -450,6 +463,45 @@ pub mod pallet {
             let account = T::AccountId::decode(&mut &proof.account[..])
                 .map_err(|_| Error::<T>::ProofInvalid)?;
             Ok((account, proof.stake_credential))
+        }
+
+        /// Every bound stake credential, CAPPED at `cap`, for the observer's per-block db-sync scope.
+        ///
+        /// Bounded on purpose. This runs on the inherent-data path of EVERY node on EVERY block
+        /// (authoring and import) and feeds a single `= ANY($3::bytea[])` array into a db-sync query
+        /// under a 2 s timeout, while the map it scans is grown by `link_stake_signed` — bare-unsigned,
+        /// feeless, capacity-unmetered, and with no check that the credential holds any ADA. Unbounded,
+        /// that is a free way for anyone to grow the per-block cost until the query blows its timeout,
+        /// at which point `observe_for_parent` abstains and the SOLE weight writer stops for everyone.
+        ///
+        /// `cap` is the observer's `MaxObserved`, so nothing observable is lost: the observation's stake
+        /// axis is itself a `BoundedVec<_, MaxObserved>` and a credential past the cap could not have
+        /// been represented in the result. Iteration is by hashed key — deterministic, so every node
+        /// takes the same prefix and `check_inherent` still agrees.
+        pub fn bound_stake_credentials_capped(cap: u32) -> alloc::vec::Vec<StakeCredential> {
+            let cap = cap as usize;
+            // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that
+            // exactly fills it (nothing dropped yet — the last quiet block), `len > cap` is a real
+            // truncation. Truncating back leaves the kept prefix byte-identical to `take(cap)`, so every
+            // node still derives the same scoping set and `check_inherent` agrees.
+            let mut out: alloc::vec::Vec<StakeCredential> = AccountOfStakeCred::<T>::iter_keys()
+                .take(cap.saturating_add(1))
+                .collect();
+            if out.len() > cap {
+                out.truncate(cap);
+                log::warn!(
+                    target: LOG_TARGET,
+                    "bound stake credentials EXCEED the observer cap ({cap}) — voting power past it is \
+                     not observed. Raise MaxObserved or prune the ledger.",
+                );
+            } else if out.len() == cap {
+                log::warn!(
+                    target: LOG_TARGET,
+                    "bound stake credentials are exactly AT the observer cap ({cap}) — the next bind's \
+                     voting power is not observed. Raise MaxObserved or prune the ledger.",
+                );
+            }
+            out
         }
 
         /// The shared 1:1 bind body for the trustless [`Call::link_identity_signed`]: the tombstone +

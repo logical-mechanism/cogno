@@ -45,7 +45,10 @@ for (const [name, entry] of Object.entries(papiConfig.entries ?? {})) {
 
 const runtimeMatch = readFileSync(runtimeSrc, "utf8").match(/^\s*spec_version:\s*(\d+)\s*,/m);
 const clientMatch = readFileSync(clientSrc, "utf8").match(
-  /^const DESCRIPTOR_SPEC_VERSION:\s*number\s*\|\s*null\s*=\s*(\d+|null)\s*;/m,
+  // `export` is optional here on purpose: the constant is exported so client.test.ts can IMPORT it
+  // instead of re-declaring its own copy. Anchoring on a bare `const` would make this script report
+  // "could not find DESCRIPTOR_SPEC_VERSION" the moment that export was added.
+  /^(?:export\s+)?const DESCRIPTOR_SPEC_VERSION:\s*number\s*\|\s*null\s*=\s*(\d+|null)\s*;/m,
 );
 
 if (!runtimeMatch) {

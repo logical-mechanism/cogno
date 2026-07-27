@@ -6,7 +6,10 @@
 //! self-constructed ed25519 fixtures (see `tests.rs`).
 
 use crate as pallet_cardano_roles;
-use frame_support::{derive_impl, traits::ConstU8};
+use frame_support::{
+    derive_impl,
+    traits::{ConstU32, ConstU8},
+};
 use frame_system::EnsureRoot;
 use sp_runtime::BuildStorage;
 
@@ -43,6 +46,9 @@ impl pallet_cardano_roles::Config for Test {
     type IdentityGate = MockGate;
     // Testnet (network 0) — the fixtures build network-0 synthetic enterprise addresses.
     type CardanoNetwork = ConstU8<0>;
+    // Small on purpose: the runtime uses 1024, and a mock that matched it could never reach the cap in
+    // a test. The cap BEHAVIOUR is what needs covering, not its value.
+    type MaxObserved = ConstU32<4>;
     type WeightInfo = ();
 }
 

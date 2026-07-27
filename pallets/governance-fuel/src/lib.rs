@@ -198,6 +198,35 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// Name the consequence of a LOWERED `MaxFundedAccounts`, for the operator reading a failed
+        /// dry-run.
+        ///
+        /// `Allowances` is a `BoundedVec<_, MaxFundedAccounts>` behind `ValueQuery`, so a bound below the
+        /// stored length makes every read decode-fail and answer with the EMPTY default. Nothing errors;
+        /// four things break at once and quietly. Regeneration iterates an empty list, so every funded
+        /// account decays under admin fees with no top-up — the self-refund deadlock this pallet exists
+        /// to prevent. Both seating gates start refusing everyone. And the next `set_allowance` rebuilds
+        /// the list over that empty default, making the loss permanent.
+        ///
+        /// DIAGNOSTIC, not the guard: it adds no enforcement. `set_allowance`'s `try_push` is
+        /// bound-checked and `revoke`'s `retain` only shrinks, and there is no genesis config, so nothing
+        /// on-chain can grow the vec past its bound; the only trigger is a deliberate source edit
+        /// lowering the constant below the live set (today `ConstU32<64>` against a single-digit funded
+        /// set). The mandated dry-run already catches that generically via `try_decode_entire_state`.
+        /// This only turns a decode trace into a sentence about what breaks.
+        ///
+        /// `get()` could not do this check (it IS what swallows the failure); `decode_len` reads the raw
+        /// length prefix and is bound-independent.
+        #[cfg(feature = "try-runtime")]
+        fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
+            frame_support::ensure!(
+                Allowances::<T>::decode_len().unwrap_or(0) <= T::MaxFundedAccounts::get() as usize,
+                "Allowances is longer than MaxFundedAccounts — it would decode as EMPTY, stopping fuel \
+                 regeneration chain-wide and permanently discarding every grant on the next write"
+            );
+            Ok(())
+        }
+
         /// Regenerate fuel on the [`Config::RegenPeriod`] cadence: mint each funded account back up toward
         /// its standing allowance. This is what makes fuel a *regenerating* budget — a member drained to
         /// zero by admin fees recovers next tick, so there is no self-refund deadlock. Off-cadence blocks

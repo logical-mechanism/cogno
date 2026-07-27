@@ -10,7 +10,7 @@ use crate::{
     mock::*, AccountVoteTally, AccountVotes, ByAuthor, ByAuthorCount, Capacity, Error, Event,
     FollowerCount, Following, FollowingCount, NextPostId, NextTopLevelSeq, PollKind, PollTally,
     PollVotes, Polls, Posts, RepliesByParent, ReplyCount, TopLevelByAuthor, TopLevelByAuthorCount,
-    TopLevelPosts, VoteDir, VoteTally, Votes,
+    TopLevelPosts, VoteDir, VoteTally, Votes, WeightInfo,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -1099,9 +1099,12 @@ fn poll_close_rejects_votes_and_freezes_result() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(3), 0, 1));
         // Before the deadline the result is LIVE (re-prices with stake) and cannot be finalized yet.
         assert_eq!(poll_opt_weight(0, 0), 100);
-        assert_noop!(
-            Microblog::close_poll(RuntimeOrigin::signed(2), 0),
-            Error::<Test>::PollNotClosable
+        // Compare the error, not the whole `Err`: a rejected close now carries a weight refund.
+        assert_eq!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 0)
+                .unwrap_err()
+                .error,
+            Error::<Test>::PollNotClosable.into()
         );
 
         // At/after the deadline: no more votes …
@@ -1144,9 +1147,14 @@ fn close_poll_rejects_floating_and_missing_polls() {
             PollKind::Stake,
             None
         ));
-        assert_noop!(
-            Microblog::close_poll(RuntimeOrigin::signed(2), 0),
-            Error::<Test>::PollNotClosable
+        // These paths now carry a weight REFUND in their `PostDispatchInfo` (see
+        // `close_poll_refunds_every_rejected_path_to_the_base_weight`), so compare the error itself
+        // rather than the whole `Err` — `assert_noop!` would also compare `actual_weight`.
+        assert_eq!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 0)
+                .unwrap_err()
+                .error,
+            Error::<Test>::PollNotClosable.into()
         );
         // A non-poll post cannot be closed.
         assert_ok!(Microblog::post_message(
@@ -1154,9 +1162,11 @@ fn close_poll_rejects_floating_and_missing_polls() {
             b"hi".to_vec(),
             None
         ));
-        assert_noop!(
-            Microblog::close_poll(RuntimeOrigin::signed(2), 1),
-            Error::<Test>::PollNotFound
+        assert_eq!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 1)
+                .unwrap_err()
+                .error,
+            Error::<Test>::PollNotFound.into()
         );
         // A LEGACY floating poll (close_at None, storable only pre-spec-211 — create_poll now
         // rejects None) can never be finalized. Inserted directly, as pre-211 storage would hold it.
@@ -1178,9 +1188,11 @@ fn close_poll_rejects_floating_and_missing_polls() {
                 action: None,
             },
         );
-        assert_noop!(
-            Microblog::close_poll(RuntimeOrigin::signed(2), 99),
-            Error::<Test>::PollNotClosable
+        assert_eq!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 99)
+                .unwrap_err()
+                .error,
+            Error::<Test>::PollNotClosable.into()
         );
     });
 }
@@ -2722,6 +2734,63 @@ mod capacity_extension {
             assert_eq!(
                 err,
                 TransactionValidityError::Invalid(InvalidTransaction::Call)
+            );
+        });
+    }
+
+    /// `validate` with the REAL encoded length of the call, which is what the pool passes in.
+    fn validate_len(
+        who: u64,
+        call: &RuntimeCall,
+    ) -> Result<(u64, crate::Pre<Test>), TransactionValidityError> {
+        let info = call.get_dispatch_info();
+        Ext::new()
+            .validate(
+                RuntimeOrigin::signed(who),
+                call,
+                &info,
+                codec::Encode::encoded_size(call),
+                (),
+                &TxBaseImplication(()),
+                TransactionSource::External,
+            )
+            .map(|(vt, pre, _origin)| (vt.priority, pre))
+    }
+
+    #[test]
+    fn an_oversized_metered_call_is_rejected_whatever_field_carries_the_bytes() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            prime(1, 1_000, 5_000); // plenty of capacity, so only the length gate can reject
+            // The hole this closes: `create_poll` is priced on `question.len()` ALONE, so an empty
+            // question carrying a multi-megabyte OPTION was admitted, gossiped and included for the
+            // price of one empty post, then failed `OptionTooLong` in dispatch with the bytes already
+            // in the block body forever. The per-field `over_len` check never looked at `options`.
+            let attack = RuntimeCall::Microblog(crate::Call::create_poll {
+                question: vec![],
+                options: vec![vec![0u8; 3_600_000], vec![1u8]],
+                close_at: None,
+                kind: PollKind::Stake,
+                action: None,
+            });
+            assert_eq!(
+                validate_len(1, &attack).map(|_| ()).unwrap_err(),
+                TransactionValidityError::Invalid(InvalidTransaction::Call),
+                "an oversized metered call must be rejected at the pool as MALFORMED, never retried",
+            );
+
+            // And the gate must not touch a well-formed call: every field at its documented maximum
+            // still validates, so the ceiling can only ever catch calls the dispatch would reject.
+            let legit = RuntimeCall::Microblog(crate::Call::create_poll {
+                question: vec![b'q'; 512],
+                options: vec![vec![b'o'; 80], vec![b'o'; 80], vec![b'o'; 80], vec![b'o'; 80]],
+                close_at: None,
+                kind: PollKind::Stake,
+                action: None,
+            });
+            assert!(
+                validate_len(1, &legit).is_ok(),
+                "a maximal but WELL-FORMED metered call must still pass the pool",
             );
         });
     }
@@ -4845,4 +4914,57 @@ mod invariant_props {
             assert!(Microblog::check_tally_consistency().is_ok());
         });
     }
+}
+
+#[test]
+fn close_poll_refunds_every_rejected_path_to_the_base_weight() {
+    // `close_poll`'s DECLARED weight reserves `6 × MaxObservedAccounts` reads for two observed-set
+    // joins. FRAME charges the FULL declared weight for an `Err` unless the error carries a
+    // `PostDispatchInfo` — so before this, every rejection billed the block a full worst-case slot for
+    // work it never did. Not free (`metered_cost` prices `close_poll` at `VoteCost` and `CheckCapacity`
+    // debits it whatever the dispatch returned), but mispriced: one vote's worth of battery bought
+    // ~10% of a block's Normal weight, and `PollNotClosable` on a not-yet-due poll is repeatable by
+    // anyone who can pay it, so the cheapest griefing vector on the chain was a loop over one open poll.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // What FRAME keys on is whether `actual_weight` is Some or None: `None` means "charge the full
+        // declared weight", which is what every path below used to do. The mock's `WeightInfo = ()`
+        // resolves to the GENERATED `impl WeightInfo for ()` in weights.rs, so `base` is the real
+        // measured close_poll weight, not zero — what the mock does not model is the DECLARED total,
+        // since its `MaxObservedAccounts` is 64 rather than the runtime's 1024.
+        let base = <Test as crate::pallet::Config>::WeightInfo::close_poll();
+        assert!(
+            base.ref_time() > 0,
+            "base must be the real measured weight, or Some(base) proves little",
+        );
+
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"q".to_vec(),
+            opts(2),
+            Some(50_000),
+            PollKind::Stake,
+            None
+        ));
+
+        // Not yet due — the repeatable one.
+        let err = Microblog::close_poll(RuntimeOrigin::signed(2), 0).unwrap_err();
+        assert_eq!(err.error, Error::<Test>::PollNotClosable.into());
+        assert_eq!(
+            err.post_info.actual_weight,
+            Some(base),
+            "a rejected close must not be charged for joins it never ran",
+        );
+
+        // Missing poll.
+        let err = Microblog::close_poll(RuntimeOrigin::signed(2), 99).unwrap_err();
+        assert_eq!(err.error, Error::<Test>::PollNotFound.into());
+        assert_eq!(err.post_info.actual_weight, Some(base));
+
+        // Unbound caller.
+        deny_identity(404);
+        let err = Microblog::close_poll(RuntimeOrigin::signed(404), 0).unwrap_err();
+        assert_eq!(err.error, Error::<Test>::NotAllowed.into());
+        assert_eq!(err.post_info.actual_weight, Some(base));
+    });
 }

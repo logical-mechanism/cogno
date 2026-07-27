@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 212**.
+it. This is a snapshot of **spec_version 213**.
 
 Two things to keep in mind:
 
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **212** | `VERSION` — `runtime/src/lib.rs` |
+| **spec_version** | **213** | `VERSION` — `runtime/src/lib.rs` |
 | transaction_version | 7 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 212 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 213 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -132,6 +132,15 @@ spends from it. Retuned in spec 212 from the old dev-tuned showcase values to a 
 | `FollowCost` | 600,000,000 | `pallet_microblog::Config` |
 | `ProfileCost` (foreign) | 30,000,000,000 (= 10× `BaseCost`) | `ProfileCost` |
 | `CheckCapacity` tx longevity | 8 blocks | `longevity` — `pallets/microblog/src/lib.rs` |
+| Max encoded length of a metered call | 8 KiB | `MAX_METERED_CALL_LEN` — `pallets/microblog/src/lib.rs` |
+
+`MAX_METERED_CALL_LEN` is a backstop, not a knob to tune: the per-field bounds in each dispatch body
+are the real limits. It exists because the capacity price is derived from one text field (or is flat,
+for foreign calls) while several metered calls carry other unbounded `Vec<u8>` arguments — `create_poll`'s
+`options` and `action.anchor_url`, and all six `set_profile` fields. Those are checked only in the
+dispatch body, so without a whole-extrinsic ceiling the pool admitted, gossiped and included a
+multi-megabyte call for the price of one empty post, then failed it after the bytes were already in the
+block body. Raising it widens that gap; lowering it below ~1.5 KiB starts rejecting well-formed calls.
 
 At the 100-ADA `MinLock` floor that is a 100-post burst and 480 posts/day sustained (a `BaseCost`-only
 post). Worst-case permanent state growth is ~290 KB/day, which is a different calculation — see
@@ -190,18 +199,29 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 
 | Parameter | Value | Symbol / file |
 |---|---|---|
-| `MaxObserved` | 1024 (hard cap, full snapshot/block; node WARNs at 75%) | `pallet_cardano_observer::Config` |
+| `MaxObserved` | 1024 (hard cap, full snapshot/block; node WARNs at 75%). Since spec 213 it ALSO caps the two per-block credential scans that feed the db-sync query scope (`bound_stake_credentials_capped` in cogno-gate, `claimed_credentials` in cardano-roles). Those maps are grown by the bare-unsigned, feeless `link_stake_signed` / `claim_role_signed`, so an unbounded scan was a free way to grow every node's per-block work until the db-sync query blew its 2 s timeout and the sole weight writer stopped for everyone. Capping there loses nothing observable: both observation axes are already `BoundedVec<_, MaxObserved>` | `pallet_cardano_observer::Config` |
 | `StallAfter` | 50 blocks (5 min) before `ObservationStalled` latches | `pallet_cardano_observer::Config` |
 | `MinLock` | 100 ADA (100,000,000 lovelace) | `ObsMinLock` |
 | `MaxStakeWeight` | 45e15 lovelace (~total ADA supply; over-cap entry skipped) | `pallet_cardano_observer::Config` |
 | `MaxVotingPower` | 45e15 lovelace (over-cap entry skipped) | `pallet_cardano_observer::Config` |
 | `CARDANO_NET` | `Preprod` — THE one-line cutover selector; every row below derives from it (a partial flip cannot build) | `CARDANO_NET` / `CARDANO_PARAMS` |
-| `StabilitySlots` | 600 slots (~10 min, a testnet-observability choice; the `Mainnet` arm carries 3k/f = 129,600) | `CARDANO_PARAMS.stability_slots` |
+| `StabilitySlots` | 600 slots (~10 min, a testnet-observability choice; the `Mainnet` arm carries 3k/f = 129,600). ⚠ RAISING this on a LIVE chain lowers every future reference at a stroke (the reference is `shelley_start_slot + elapsed − StabilitySlots`), so the next block's reference lands BELOW the one already applied. Before spec 213 that returned `ReferenceRegressed` from a `Mandatory` dispatch — `BadMandatory`, the whole block discarded — and since the reference derives from the PARENT's slot, the discarded block left the next reference unchanged and authoring wedged permanently. Since 213 the bound SKIPS instead: authoring continues, weight holds at its last value, and `ObservationStalled` latches until the reference climbs back past the last applied one (~1 s of wall clock per slot raised) | `CARDANO_PARAMS.stability_slots` |
 | Shelley anchor | preprod: unix 1,655,769,600 / slot 86,400 (mainnet arm: 1,596,059,091 / 4,492,800) | `CARDANO_PARAMS.shelley_start_unix` / `.shelley_start_slot` |
 | `StakeEpochLookback` | 1 epoch | `pallet_cardano_observer::Config` |
 | `VaultPolicyId` | `168a9710…` (live L1 script hash, network-independent — do not change lightly) | `TALK_VAULT_POLICY_ID` |
 | `EnforceWeight` default | `true` (observer is sole weight writer from genesis) | `pallets/cardano-observer/src/lib.rs` |
 | `CardanoNetwork` | 0 (testnet/preprod; 1 = mainnet) — ONE derived constant both CIP-8 pallets share | `CardanoNetworkId` |
+
+`MaxObserved` bounds ENTRIES, not identities, and on the role axis those are not the same number. The
+vault and voting-power axes emit one entry per identity, but an mSPO emits one `SpoCalidus` entry per
+declaring pool and the owner path one `SpoOwner` entry per owned pool — so a few dozen multi-pool
+operators can reach 1024 role entries while the other two axes sit near zero. Against the live preprod
+db-sync the owner path alone resolves 739 (credential, pool) rows across 635 credentials, with one
+credential owning 17 pools. Capping the SCOPING sets does not bound this; the output bound is enforced
+fail-closed by `create_inherent`, which abstains rather than truncate. That is deliberate — absence from
+`role_entries` is a REVOKE (the unlock clamp clears every role of an account that drops out), so
+truncating to fit would silently strip badges instead of freezing. Watch `cogno_observer_observed_roles`,
+which is the axis `ObserverApproachingMaxObserved` fires on first.
 
 ## Governance (sudo-free)
 
@@ -212,7 +232,7 @@ All in `runtime/src/configs/mod.rs`.
 |---|---|---|
 | Committee threshold | 3-of-5 supermajority, `needed = ceil(n·3/5)` (1→1, 3→2, 5→3, 7→5) | `AuthorityOrigin` (`EnsureProportionAtLeast<3, 5>`) |
 | Committee max members | 7 | `FollowerMaxMembers` |
-| Allowed committee sizes | 1 or ≥3 (empty and 2-seat rejected; mirrored at genesis) | `CognoCallFilter` (wired as `BaseCallFilter`) / `testnet_genesis` — `runtime/src/genesis_config_presets.rs` |
+| Allowed committee sizes | 1 or ≥3, all seats DISTINCT, at most `FollowerMaxMembers`. Empty, 2-seat, duplicate-bearing and over-max sets are all rejected (mirrored at genesis). Since spec 213 distinctness is checked FIRST: `pallet_collective::set_members` writes a repeated account through verbatim, and the origin then measures `ayes · 5 ≥ 3 · Members::len()` against a denominator that counts duplicates while `DuplicateVote` caps the reachable ayes at the DISTINCT seats — so `set_members([A,A,A])` used to clear the size rules while seating ONE key, bricking `AuthorityOrigin` permanently. `MaxMembers` is checked here too because the pallet only `log::error!`s an overflow rather than rejecting it | `CognoCallFilter` (wired as `BaseCallFilter`) / `testnet_genesis` — `runtime/src/genesis_config_presets.rs` |
 | New committee seat | must already hold a governance-fuel allowance — a `set_members` adding an unfunded account fails `CallFiltered`; sitting members are exempt | `CognoCallFilter` |
 | Motion duration | 7 days (100,800 blocks) | `FollowerMotionDuration` |
 | Max active proposals | 100 | `FollowerMaxProposals` |
@@ -264,6 +284,7 @@ badge itself is written only by the cardano-observer inherent, so the observed s
 | Observed badges per account | 16 — over-cap sets are truncated, not cleared. Since spec 211 the fill runs in TWO passes (dRep/CC first, then SPO pools), so a large mSPO keeps its dRep/CC badge and only surplus pools past the cap are dropped, deterministically. Residual limitation: an mSPO with more than ~14 pools still under-counts its OWN SPO-chamber weight (the dropped pools' delegated stake is not summed), and raising the cap needs a storage migration | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs`; the two-pass fill is `RoleApply` — `runtime/src/configs/mod.rs` |
 | Claim tx priority / longevity | 100 / 32 blocks | `CLAIM_TX_PRIORITY` / `CLAIM_TX_LONGEVITY` — `pallets/cardano-roles/src/lib.rs` |
 | `unclaim_role` fee | feeless only when the caller actually holds that claim; a no-op unclaim is fee-bearing | `unclaim_role` — `pallets/cardano-roles/src/lib.rs` |
+| Role-proof single use | `SpentRoleNonce[(account, role)]` records the 16-byte nonce of the last accepted claim and SURVIVES `unclaim_role`, so the exact bytes of an accepted proof cannot be replayed to re-attach a badge the holder removed (the calls are bare-unsigned, so any third party could re-submit them). A fresh proof with a new nonce always works. Residual: only the LAST nonce is remembered, so an account past two claim/unclaim cycles can still be hit by a replay of an older proof. Closing it does not need a `role/v1` grammar change — either remember every nonce (key the map by it too, which makes an append-only map with no prune verb behind a feeless bare-unsigned call), or require the nonce to be strictly increasing (O(1), but the client can no longer mint a random one, so it is a lockstep frontend change). Neither is taken here; the residual only re-attaches the holder's own credential, and `unclaim_role` undoes it for free | `SpentRoleNonce` — `pallets/cardano-roles/src/lib.rs` |
 | Revoke tombstone | permanent — a revoked `(role, credential)` can never be re-claimed by anyone | `TombstonedRoleCred` — `pallets/cardano-roles/src/lib.rs` |
 | `RoleAuthorityOrigin` | 3-of-5 committee, and it gates `revoke_role` only — claiming is permissionless | `pallet_cardano_roles::Config` (`AuthorityOrigin`) |
-| `WeightInfo` | `()` — conservative hand-set placeholders, not benchmarked (mainnet prereq). Each is a COMPUTE floor plus an explicit `RocksDbWeight` term for the storage its dispatch body touches, so the totals are claim ≈405 M / unclaim ≈245 M / revoke ≈350 M `ref_time` (claim 80 M + 5 reads + 2 writes; unclaim 20 M + 1 read + 2 writes; revoke 25 M + 1 read + 3 writes). Before spec 211 the `RocksDbWeight` term was missing entirely, so all three under-declared by roughly 5x. | `impl WeightInfo for ()` — `pallets/cardano-roles/src/weights.rs` |
+| `WeightInfo` | `()` — conservative hand-set placeholders, not benchmarked (mainnet prereq). Each is a COMPUTE floor plus an explicit `RocksDbWeight` term for the storage its dispatch body touches, so the totals are claim ≈530 M / unclaim ≈245 M / revoke ≈350 M `ref_time` (claim 80 M + 6 reads + 3 writes; unclaim 20 M + 1 read + 2 writes; revoke 25 M + 1 read + 3 writes). Before spec 211 the `RocksDbWeight` term was missing entirely, so all three under-declared by roughly 5x. | `impl WeightInfo for ()` — `pallets/cardano-roles/src/weights.rs` |

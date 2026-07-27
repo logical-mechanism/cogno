@@ -101,7 +101,37 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // real ~5 h refill window, with the refill RATE now derived from the (already-clamped) ceiling so
     // both axes share one knee. Storage/constant/read-shape change only — no call argument and no
     // `TxExtension` change, so `transaction_version` STAYS 7.
-    spec_version: 212,
+    // 212 → 213 closes two permanent-brick paths found by the whole-surface audit, both reachable by
+    // ordinary operator action rather than attack, and neither with any on-chain recovery (sudo-free):
+    //   1. `CognoCallFilter` now rejects a `set_members` that REPEATS an account or exceeds
+    //      `MaxMembers`. `pallet_collective` writes duplicates through verbatim, and the origin then
+    //      measures `ayes * 5 >= 3 * Members::len()` against a denominator that counts them while
+    //      `DuplicateVote` caps the reachable ayes at the DISTINCT seats — so `set_members([A, A, A])`
+    //      passed the old `len() != 2` guard while seating ONE key behind a denominator of 3, making
+    //      `AuthorityOrigin` unsatisfiable forever (including the `set_members` that would undo it).
+    //   2. `cardano-observer::observe`'s two reference bounds are now SKIP-not-reject, leaving that
+    //      Mandatory dispatch INFALLIBLE. An `Err` there is `BadMandatory` (whole block discarded), and
+    //      since the reference is a pure function of the PARENT's slot, the discarded block leaves the
+    //      next reference unchanged — so any upgrade RAISING `StabilitySlots` wedged authoring forever.
+    // Those two are call-ACCEPTANCE and dispatch-logic only. The rest of the same audit sweep rides
+    // along in 213: role badges are torn down on an identity revoke, `close_poll` refunds its four
+    // rejection paths, and `claim_role_signed`'s CIP-8 proof becomes SINGLE-USE — that last one is
+    // the only item in the spec that moves a metadata shape. It adds `CardanoRoles::SpentRoleNonce`
+    // (a `StorageDoubleMap` holding the last accepted nonce per account+role) and
+    // `Error::RoleProofReplayed`, pinned at `#[codec(index = 7)]` so no existing variant shifts. No
+    // call ARGUMENT and no `TxExtension` change, so `transaction_version` STAYS 7. Metadata v16
+    // therefore GROWS against the spec-212 snapshot, 138754 → 141110 bytes: that storage entry, that
+    // error variant, and the doc strings on both (pallet item docs are IN the blob, which is why a
+    // comment rewrite alone moves it); the `System::Version` byte that embeds this very
+    // `RuntimeVersion` flips in place (0xd4 → 0xd5) and adds nothing. So `check-metadata.sh` takes its
+    // "MORE THAN spec_version MOVED" branch here — verified benign by diffing the old and new blobs:
+    // one contiguous region changed and every byte of it is `SpentRoleNonce` doc text.
+    // Re-snapshotted `app/.papi/metadata/cogno.scale` via
+    // `./scripts/check-metadata.sh --write`; PAPI is pointed at it by
+    // `app/.papi/polkadot-api.json`, so `postinstall: papi` regenerates the descriptors from it and
+    // the new storage query and error variant DO reach the typed client. The
+    // `DESCRIPTOR_SPEC_VERSION` lockstep constant moves with it.
+    spec_version: 213,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

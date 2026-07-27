@@ -102,9 +102,15 @@ groups:
 
       - alert: ObserverApproachingMaxObserved
         # Early warning BEFORE the freeze: the observed set is within 10% of MaxObserved (1024). Written as
-        # a ratio (division ignores __name__, so vaults/max and voters/max match on {job,instance}); before
-        # the first observation both counts and max are 0, so 0/0 = NaN < 0.9 → no false pre-observe fire.
-        expr: cogno_observer_observed_vaults{job="cogno-node"} / cogno_observer_max_observed{job="cogno-node"} >= 0.9 or cogno_observer_observed_voters{job="cogno-node"} / cogno_observer_max_observed{job="cogno-node"} >= 0.9
+        # a ratio (division ignores __name__, so each count/max matches on {job,instance}); before the
+        # first observation every count and max are 0, so 0/0 = NaN < 0.9 → no false pre-observe fire.
+        #
+        # The ROLE axis is included and is the one most likely to fire first. Vaults and voters are one
+        # entry per identity, but roles are one-to-MANY — an mSPO emits one entry per declaring pool and
+        # the owner path one per owned pool, all against the same single ceiling — so the role count can
+        # cross 90% while both other counts sit near zero. Omitting it left this alert blind on exactly
+        # the axis that overruns first.
+        expr: cogno_observer_observed_vaults{job="cogno-node"} / cogno_observer_max_observed{job="cogno-node"} >= 0.9 or cogno_observer_observed_voters{job="cogno-node"} / cogno_observer_max_observed{job="cogno-node"} >= 0.9 or cogno_observer_observed_roles{job="cogno-node"} / cogno_observer_max_observed{job="cogno-node"} >= 0.9
         for: 10m
         labels: { severity: warning }
         annotations:

@@ -73,6 +73,10 @@ $CLI upgrade apply --wasm "$WASM" --account-signing-key-file acct.skey --ws $WS
 Without it, the CLI bundles every seat key on one host and runs `propose → vote → close` itself — which
 is the single-operator default, and exactly what you do *not* want once the seats are real custodians.
 An air-gapped seat can `committee vote --offline` and hand the signed extrinsic to `committee submit`.
+An offline **aye** also needs `--call <hex>`: that seat has no endpoint to fetch the motion's preimage
+from, so it carries the call hex in (`committee list` prints it as `call-hex`) and the CLI re-hashes it
+against `--proposal` before signing. The check is local, so it holds even if the host that printed the
+hex lied. A `--reject` does not require it, because a nay can only ever block a motion.
 
 > **Fuel:** whoever signs `authorize`/`apply` pays the fee in governance fuel. Genesis committee
 > accounts are pre-funded; any account added later needs a committee-granted allowance first
@@ -151,7 +155,7 @@ Enact only after this passes — then build the enactment WASM **clean**, with n
 
 ## Version rules
 
-- **`spec_version`** — bump on any logic/storage/metadata change (currently **212**). `apply` rejects
+- **`spec_version`** — bump on any logic/storage/metadata change (currently **213**). `apply` rejects
   a non-increasing value on-chain.
 - **`transaction_version`** — bump *only* when the extrinsic encoding changes (a new transaction
   extension, or changed call arguments — removing an argument counts, removing a whole call does
@@ -169,3 +173,31 @@ the compiled runtime, not live metadata):
 ```bash
 rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)
 ```
+
+## After ANY spec bump: re-snapshot the metadata
+
+CI diffs the committed `app/.papi/metadata/cogno.scale` against a freshly built runtime. That snapshot
+is the strongest pin the repo has on every on-wire index — pallet, call, and (because SCALE indexes
+enum variants by declaration order) every event and error variant. A reorder that no test would catch
+fails this gate.
+
+It also means **every** spec bump moves the snapshot by one byte, because `System::Version` embeds the
+`RuntimeVersion` and therefore the `spec_version` itself. So after a bump:
+
+```bash
+cargo build --release            # the gate needs a node binary
+./scripts/check-metadata.sh      # verify — tells you WHAT moved
+./scripts/check-metadata.sh --write   # re-snapshot, once you've read what moved
+```
+
+Read the output before you re-snapshot. A **single** differing byte is the signature of a plain
+`spec_version` bump — no type, call, storage item or event changed shape, so the PAPI descriptors need
+no regeneration. **More** than that means something moved that a client can observe: re-check
+`transaction_version` (a call *argument* change moves it; adding or removing a whole call does not)
+and regenerate the descriptors per the section above. If you did not intend a shape change, do not
+re-snapshot — the gate has just caught a silent on-wire break.
+
+Re-snapshot with this script rather than `papi add -w ws://…`: that command writes the node it was
+pointed at back into `app/.papi/polkadot-api.json` (`wsUrl`, plus that chain's `genesis` and
+`codeHash`), and once those are committed a later `papi generate` resolves against a local dev node
+instead of the committed metadata.

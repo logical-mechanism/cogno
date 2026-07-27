@@ -223,6 +223,15 @@ jobs:
         env:
           SKIP_WASM_BUILD: "1"
         run: cargo check --locked -p cogno-chain-node --features runtime-benchmarks
+      # Pallet indices, call indices and enum variant indices are ON-WIRE contracts, and SCALE indexes
+      # enum variants by DECLARATION ORDER — so deleting or reordering one silently shifts every variant
+      # below it, with no compile error and no test failure. Nothing above would notice: `#[codec(index)]`
+      # pins the encoding but says nothing about someone CHANGING it, and the hand-written index
+      # assertions cover 6 of 19 pallets. Diffing the committed metadata snapshot against a freshly built
+      # runtime turns the whole type/call/storage/event surface into one gate that cannot be satisfied by
+      # restating a literal. Needs the node binary `build (workspace)` just produced.
+      - name: metadata (committed SCALE snapshot vs the built runtime)
+        run: ./scripts/check-metadata.sh
 
   # Supply chain. `cargo deny check advisories bans sources` against deny.toml, which records the
   # advisories that are knowingly accepted (all of them transitive polkadot-sdk deps today) with a

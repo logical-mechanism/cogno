@@ -585,9 +585,13 @@ fn role_proof_rejects_wrong_network_tamper_and_swapped_key() {
 fn parse_role_payload_enforces_the_pinned_grammar() {
     let g = [0x27u8; 32];
     let a = [0x30u8; 32];
-    let (gg, aa, role) = parse_role_payload(&role_payload(&g, &a, "drep")).unwrap();
+    let parsed = parse_role_payload(&role_payload(&g, &a, "drep")).unwrap();
+    let (gg, aa, nn, role) = (parsed.genesis, parsed.account, parsed.nonce, parsed.role);
     assert_eq!(gg, g);
     assert_eq!(aa, a);
+    // The nonce is SURFACED, not just format-checked: pallet-cardano-roles spends it to make a role
+    // proof single-use (`rep("ab", 16)` is the 16-byte 0xab.. the helper signs).
+    assert_eq!(nn, [0xabu8; 16]);
     assert_eq!(role, RoleClass::DRep);
     // wrong domain (a bind payload) ⇒ BadRolePayload
     assert_eq!(

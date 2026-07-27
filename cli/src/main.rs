@@ -296,9 +296,13 @@ enum CommitteeCmd {
         #[command(flatten)]
         seat: SeatOpts,
         /// Air-gapped: build + sign the vote WITHOUT connecting, and print the signed extrinsic hex.
-        /// Requires --genesis, --spec-version, --tx-version, --nonce (none can be fetched offline).
+        /// Requires --genesis, --spec-version, --tx-version, --nonce, --call (none can be fetched offline).
         #[arg(long)]
         offline: bool,
+        /// (offline) the motion's inner call as 0x-hex, from `committee list`. Re-hashed locally and
+        /// checked against --proposal, so an air-gapped seat sees the motion it is signing for.
+        #[arg(long)]
+        call: Option<String>,
         /// (offline) the chain's spec_version.
         #[arg(long)]
         spec_version: Option<u32>,
@@ -571,6 +575,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 spec_version,
                 tx_version,
                 nonce,
+                call,
             } => {
                 cmd_committee_vote(
                     &seat,
@@ -581,6 +586,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     spec_version,
                     tx_version,
                     nonce,
+                    call.as_deref(),
                 )
                 .await
             }
@@ -891,6 +897,25 @@ async fn cmd_members(gov: &GovOpts, action: MemberAction<'_>) -> anyhow::Result<
             new
         }
     };
+    // Reject a repeated seat BEFORE the size rules, which a duplicate would otherwise satisfy while
+    // seating fewer real keys than it appears to. `pallet_collective::set_members` writes duplicates
+    // through verbatim; the origin then measures `ayes * 5 >= 3 * Members::len()` against a denominator
+    // that counts them, while `DuplicateVote` caps the reachable ayes at the DISTINCT seats — so
+    // `--members A,A,A` looks like a legal 3-seat federation and permanently bricks governance. The
+    // runtime's `CognoCallFilter` rejects it too (as `CallFiltered`); fail here with the actual account,
+    // matching the same guard `gen-chainspec` applies at genesis.
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        for a in &new_members {
+            anyhow::ensure!(
+                seen.insert(a),
+                "duplicate committee account {} — committee members must be distinct. A repeated seat \
+                 counts toward the 3-of-5 threshold's denominator without adding a vote, which bricks \
+                 governance permanently (there is no sudo recovery).",
+                query::ss58(a)
+            );
+        }
+    }
     // Reject a 2-seat committee: `ceil(2*3/5)=2` = unanimity with ZERO fault tolerance, and recovery from a
     // lost seat needs that very seat's vote — an irreversible brick. The runtime enforces this too
     // (CognoCallFilter), but fail early with guidance. Federate 1 -> 3+ in one `committee members set`.
@@ -922,12 +947,43 @@ async fn cmd_committee_vote(
     spec_version: Option<u32>,
     tx_version: Option<u32>,
     nonce: Option<u32>,
+    call: Option<&str>,
 ) -> anyhow::Result<()> {
     let signer = load_seat_signer(seat)?;
     let phash = calls::parse_hash32(proposal)?;
     let approve = !reject;
     if offline {
-        // Air-gapped: no RPC. genesis/spec/tx/nonce must be supplied; we sign and print the extrinsic.
+        // Air-gapped: no RPC, so the preimage cannot be FETCHED — it has to be carried in and re-hashed
+        // here. `preimage_from_hex` runs the same check the online path runs on what it fetched, which is
+        // what keeps the coldest key from being the one seat that signs a motion it cannot read.
+        //
+        // Required for an AYE only. A blind aye executes whatever the hash stands for, which is the whole
+        // threat; a blind NAY can only ever block, and refusing to build one would leave a seat that
+        // CANNOT verify a motion — the seat most likely to want to oppose it — with no way to vote it
+        // down, and the motion stoppable only by lapsing.
+        match call {
+            Some(hex) => {
+                let inner = committee::preimage_from_hex(hex, &phash)?;
+                eprintln!(
+                    "voting {} on motion #{index}: {}",
+                    if approve { "AYE" } else { "NAY" },
+                    committee::describe_call(&inner),
+                );
+            }
+            None => {
+                anyhow::ensure!(
+                    !approve,
+                    "--offline requires --call to vote AYE (the motion's inner call hex, printed by \
+                     `committee list` as `call-hex`). Without it this seat would approve a hash it \
+                     cannot read. A NAY needs no --call.",
+                );
+                eprintln!(
+                    "voting NAY on motion #{index}, UNVERIFIED — no --call supplied, so this seat has \
+                     not read the motion. A nay can only block it, never approve it.",
+                );
+            }
+        }
+        // genesis/spec/tx/nonce must be supplied; we sign and print the extrinsic.
         let genesis = seat
             .genesis
             .as_deref()
@@ -948,6 +1004,30 @@ async fn cmd_committee_vote(
         return Ok(());
     }
     let (rpc, ctx) = connect_and_ctx(&seat.ws, seat.genesis.as_deref()).await?;
+    // Fetch and PRINT the motion this hash actually stands for before casting. `proposal_of` re-hashes
+    // the decode and fails if the endpoint answered with anything but the true preimage, so a seat can
+    // no longer be walked into approving a motion it was shown a different call for. Without this the
+    // vote was built from the hash alone and the co-signer's only view of the motion — `committee list`
+    // against someone else's relay — was never checked against it.
+    match committee::proposal_of(&rpc, &phash)
+        .await
+        .with_context(|| {
+            format!(
+                "could not establish what motion {phash:#x} stands for, so no vote was cast. The \
+                 usual cause is a CLI built against a different runtime revision than the chain, \
+                 which cannot decode the stored call: rebuild it at the chain's spec_version. \
+                 (`--offline --call` is not a way around this — it runs the same decode.)"
+            )
+        })? {
+        Some(inner) => eprintln!(
+            "voting {} on motion #{index}: {}",
+            if approve { "AYE" } else { "NAY" },
+            committee::describe_call(&inner),
+        ),
+        None => anyhow::bail!(
+            "no open motion stored under {phash:#x} — it was already closed, or the hash is wrong."
+        ),
+    }
     committee::vote_motion(&rpc, &ctx, phash, index, approve, &signer).await?;
     println!(
         "✓ vote ({}) recorded on motion #{index}",
@@ -1000,6 +1080,9 @@ async fn cmd_committee_list(ws: &str) -> anyhow::Result<()> {
                     v.end
                 );
                 println!("    call: {}", committee::describe_call(&c));
+                // The preimage hex an air-gapped seat carries to `vote --offline --call`, which
+                // re-hashes it against the motion hash rather than trusting this endpoint.
+                println!("    call-hex: {}", committee::call_hex(&c));
             }
             _ => println!("  {h:#x}  (no Voting/ProposalOf entry — closing or just executed)"),
         }

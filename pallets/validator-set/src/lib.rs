@@ -163,6 +163,44 @@ pub mod pallet {
         NoSessionKeys,
     }
 
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// Name the consequence of a LOWERED `MaxValidators`, for the operator reading a failed dry-run.
+        ///
+        /// `Validators` and `OfflineValidators` are `BoundedVec<_, MaxValidators>` behind `ValueQuery`.
+        /// `BoundedVec::decode` fails when the stored length exceeds the COMPILED bound, and `ValueQuery`
+        /// answers a decode failure with the DEFAULT — an EMPTY vec. An upgrade lowering the bound below
+        /// the live set would therefore not error: the authority list silently reads empty, and since
+        /// this pallet feeds `pallet_session` (and through it Aura and GRANDPA), authoring stops with no
+        /// origin left to put it back.
+        ///
+        /// This is DIAGNOSTIC, not the guard, and deliberately so — it adds no enforcement. Every write
+        /// here is already bound-checked (`try_push`, and `retain`, which only shrinks), so nothing
+        /// on-chain can push the stored vec past its bound; the only trigger is a deliberate source edit.
+        /// And the dry-run docs/UPGRADES.md mandates already catches that generically: `--checks all`
+        /// runs `try_decode_entire_state`, which `DecodeAll`s the raw bytes of EVERY storage item in
+        /// every pallet, so an over-bound `BoundedVec` hard-fails for these two and for
+        /// `Aura::Authorities` / `Grandpa::Authorities` alike. What that generic failure does not say is
+        /// what it COSTS, which is the only thing this adds: a named error instead of a decode trace.
+        ///
+        /// `get()` could not do this check (it IS what swallows the failure); `decode_len` reads the raw
+        /// length prefix and is bound-independent.
+        #[cfg(feature = "try-runtime")]
+        fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
+            let bound = T::MaxValidators::get() as usize;
+            frame_support::ensure!(
+                Validators::<T>::decode_len().unwrap_or(0) <= bound,
+                "Validators is longer than MaxValidators — the authority set would decode as EMPTY and \
+                 authoring would stop permanently"
+            );
+            frame_support::ensure!(
+                OfflineValidators::<T>::decode_len().unwrap_or(0) <= bound,
+                "OfflineValidators is longer than MaxValidators — it would decode as EMPTY"
+            );
+            Ok(())
+        }
+    }
+
     #[pallet::genesis_config]
     #[derive(DefaultNoBound)]
     pub struct GenesisConfig<T: Config> {

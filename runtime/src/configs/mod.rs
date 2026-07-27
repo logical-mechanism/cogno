@@ -52,7 +52,7 @@ use sp_version::RuntimeVersion;
 // Local module imports
 use super::{
     AccountId, Aura, Balance, Balances, Block, BlockNumber, CardanoObserver, CognoGate,
-    FollowerCommittee, GovernedUpgrade, Hash, Microblog, Nonce, PalletInfo, Runtime, RuntimeCall,
+    FollowerCommittee, GovernedUpgrade, Hash, Nonce, PalletInfo, Runtime, RuntimeCall,
     RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask, SessionKeys,
     System, Timestamp, TxPause, ValidatorSet, DAYS, EXISTENTIAL_DEPOSIT, MINUTES, SLOT_DURATION,
     UNIT, VERSION,
@@ -130,7 +130,8 @@ type SingleBlockMigrations = (
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
 /// cogno-chain permits EVERY call except:
 ///
-/// 1. a `FollowerCommittee::set_members` that would EMPTY the committee, or land it at exactly TWO seats.
+/// 1. a `FollowerCommittee::set_members` that repeats an account, exceeds `MaxMembers`, would EMPTY the
+///    committee, or land it at exactly TWO seats.
 ///    The committee is the SOLE governance authority (no sudo / `EnsureRoot` fallback), so an empty member
 ///    set makes [`AuthorityOrigin`] (`EnsureProportionAtLeast<3,5>`) permanently unsatisfiable — bricking
 ///    ALL governance (validator rotation, runtime upgrades, identity revoke, force-capacity) with no
@@ -143,6 +144,14 @@ type SingleBlockMigrations = (
 ///    on-chain (`CallFiltered`) instead of bricking the chain: the filter is enforced even on the
 ///    collective's OWN proposal dispatch, because `RawOrigin::Members(..).into()` resets the origin filter
 ///    to this `BaseCallFilter`. (The `1 || >= 3` floor is always satisfiable from any legal state.)
+///
+///    DISTINCTNESS is checked before any of the size rules, because a repeated account defeats all of
+///    them: `pallet_collective` writes duplicates through verbatim, and the origin then measures
+///    `ayes * 5 >= 3 * Members::len()` against a denominator that counts them while `DuplicateVote`
+///    caps the reachable ayes at the DISTINCT seats. `set_members([A, A, A])` passes a `len() == 3`
+///    check while seating one real key — an irreversible brick, and exactly the shape the size rules
+///    exist to stop. `MaxMembers` is checked here for the same reason: the pallet only `log::error!`s
+///    an overflow rather than rejecting it, so genesis was previously the only place it was enforced.
 ///
 /// 2. `Session::purge_keys`. It is permissionless + self-signed, so a SEATED validator could purge its own
 ///    session keys and become a keyless "phantom" — dropped from the live Aura/GRANDPA authorities
@@ -178,8 +187,34 @@ impl Contains<RuntimeCall> for CognoCallFilter {
             ..
         }) = call
         {
+            // Brick-guard: DISTINCTNESS. `pallet_collective::set_members` only `sort()`s — it neither
+            // dedupes nor rejects a repeated account (and its `MaxMembers` overflow is a bare
+            // `log::error!`, not a rejection). A duplicate is therefore written straight into `Members`,
+            // where it counts toward the ORIGIN's denominator while contributing no extra vote:
+            // `vote` rejects a second ballot from the same account (`DuplicateVote`), so the reachable
+            // ayes are the DISTINCT seats while `EnsureProportionAtLeast<3,5>` measures
+            // `ayes * 5 >= 3 * Members::len()`. `set_members([A, A, A])` therefore seats one real key
+            // behind a denominator of 3 — `1 * 5 >= 3 * 3` is false forever, so EVERY AuthorityOrigin
+            // call (including the `set_members` that would undo it, and `TxPause::unpause`) is
+            // permanently unsatisfiable with no sudo recovery. The size rules below are meaningless
+            // until the set is known distinct, so this runs FIRST. `gen_chainspec.rs` already enforces
+            // the same rule at genesis; this is the dispatch path finally getting it.
+            let mut distinct = new_members.clone();
+            distinct.sort();
+            distinct.dedup();
+            if distinct.len() != new_members.len() {
+                return false;
+            }
             // Brick-guard: never allow a motion that would empty the committee (see doc above).
             if new_members.is_empty() {
+                return false;
+            }
+            // Brick-guard: `pallet_collective` only LOGS an over-`MaxMembers` set (it does not reject),
+            // so the bound is enforced at genesis and nowhere else. Take it from the pallet's own
+            // `Config` rather than re-spelling `FollowerMaxMembers`, so the two can never drift.
+            if new_members.len()
+                > <Runtime as pallet_collective::Config<Instance1>>::MaxMembers::get() as usize
+            {
                 return false;
             }
             // Brick-guard: reject a 2-seat committee. `ceil(2*3/5)=2` = unanimity — ZERO fault tolerance,
@@ -294,6 +329,55 @@ mod call_filter_tests {
         assert!(!CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
             pallet_collective::Call::set_members {
                 new_members: two,
+                prime: None,
+                old_count: 1
+            }
+        )));
+    }
+
+    #[test]
+    fn blocks_a_duplicated_committee_seat() {
+        // `[A, A, A]` clears BOTH size rules (non-empty, `len() != 2`) while seating ONE real key.
+        // `pallet_collective::set_members` only `sort()`s, so the duplicate reaches `Members` verbatim.
+        // Checked before any storage read, so it holds without externalities.
+        let a = AccountId::from([1u8; 32]);
+        let dup = [a.clone(), a.clone(), a].to_vec();
+        assert!(!CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
+            pallet_collective::Call::set_members {
+                new_members: dup,
+                prime: None,
+                old_count: 1
+            }
+        )));
+    }
+
+    #[test]
+    fn a_duplicated_seat_leaves_the_authority_origin_unsatisfiable() {
+        // WHY the distinctness guard exists — pinned to the REAL `AuthorityOrigin` rather than to a
+        // restated `3/5`, so this fails for the right reason if the proportion ever changes.
+        use frame_support::traits::EnsureOrigin;
+        // `set_members([A, A, A])` seats one distinct key behind a denominator of 3. `DuplicateVote`
+        // caps the reachable ayes at 1, so this is the BEST origin that member set can ever produce:
+        let best_from_dup = pallet_collective::RawOrigin::<AccountId, Instance1>::Members(1, 3);
+        assert!(
+            AuthorityOrigin::try_origin(RuntimeOrigin::from(best_from_dup)).is_err(),
+            "a duplicated 3-seat set can never satisfy AuthorityOrigin — the brick this guard prevents",
+        );
+        // ...whereas the honest 3-DISTINCT-seat set it imitates reaches the threshold at two ayes.
+        let honest = pallet_collective::RawOrigin::<AccountId, Instance1>::Members(2, 3);
+        assert!(AuthorityOrigin::try_origin(RuntimeOrigin::from(honest)).is_ok());
+    }
+
+    #[test]
+    fn blocks_a_committee_over_max_members() {
+        // `pallet_collective` only `log::error!`s an over-`MaxMembers` set; it does not reject one.
+        let over = (0u8..=<Runtime as pallet_collective::Config<Instance1>>::MaxMembers::get()
+            as u8)
+            .map(|i| AccountId::from([i; 32]))
+            .collect::<alloc::vec::Vec<_>>();
+        assert!(!CognoCallFilter::contains(&RuntimeCall::FollowerCommittee(
+            pallet_collective::Call::set_members {
+                new_members: over,
                 prime: None,
                 old_count: 1
             }
@@ -1274,7 +1358,9 @@ impl pallet_cogno_gate::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     // Gated by the 3-of-5 FollowerCommittee (sudo-free) — gates `revoke` only.
     type FollowerOrigin = AuthorityOrigin;
-    type OnBind = Microblog;
+    // Fans out to microblog AND cardano-roles; see `IdentityLifecycle`. Was `Microblog`, which
+    // silently left a revoked account holding its verified role badge.
+    type OnBind = IdentityLifecycle;
     // The Cardano network the on-chain self-proof binds for — derived from the ONE `CARDANO_NET`
     // cutover selector (spec 211), shared with cardano-roles so the two can never flip apart.
     type CardanoNetwork = CardanoNetworkId;
@@ -1298,6 +1384,10 @@ impl pallet_cardano_roles::Config for Runtime {
     type IdentityGate = CognoGate;
     // Derived from the ONE `CARDANO_NET` cutover selector (spec 211), shared with cogno-gate.
     type CardanoNetwork = CardanoNetworkId;
+    // The SAME cap the observer bounds its observation by, so the per-block claimed-credential scan
+    // can never outrun what an observation could carry. Taken from the observer's own Config so the
+    // two cannot drift.
+    type MaxObserved = <Runtime as pallet_cardano_observer::Config>::MaxObserved;
     type WeightInfo = ();
 }
 
@@ -1307,6 +1397,34 @@ pub struct BeaconLookup;
 impl pallet_cardano_observer::BeaconResolver<AccountId> for BeaconLookup {
     fn resolve(beacon: &[u8; 32]) -> Option<AccountId> {
         pallet_cogno_gate::AccountOf::<Runtime>::get(beacon)
+    }
+}
+
+/// The identity bind/revoke lifecycle, fanned out to every pallet that holds per-identity state.
+///
+/// `pallet-cogno-gate` calls this through its `OnBind` seam. It is a RUNTIME-side adapter for the same
+/// no-Cargo-cycle reason as [`RoleApply`] / [`RoleLookup`]: only the runtime may name every pallet, so
+/// the gate depends on a trait rather than on its downstream crates.
+///
+/// It exists because `revoke` used to tear down only what cogno-gate itself owns (the identity maps, the
+/// stake anchor) plus microblog's capacity/provider state — and stopped there. `pallet-cardano-roles`
+/// was added later and was never wired in, so a committee ban left the account holding a live,
+/// observer-verified Cardano role badge forever: `MicroblogApi::profile` reported `is_allowed: false`
+/// and a verified SPO/dRep chip in the same response, and the credential stayed locked 1:1 against its
+/// real holder. Anything that grows per-identity state from here on belongs in `on_revoke` below.
+pub struct IdentityLifecycle;
+impl pallet_microblog::OnIdentityBind<AccountId> for IdentityLifecycle {
+    fn on_bind(who: &AccountId) {
+        // Capacity row + the single provider reference. Roles are claimed separately (and only by an
+        // already-bound account), so there is nothing to seed for them here.
+        pallet_microblog::Pallet::<Runtime>::on_bind(who);
+    }
+
+    fn on_revoke(who: &AccountId) {
+        pallet_microblog::Pallet::<Runtime>::on_revoke(who);
+        // At most 3 claim rows + 3 index rows + 1 badge row — `RoleClaimOf` is keyed by `RoleKind`,
+        // which has three variants — so this cannot blow the `revoke` weight.
+        let _ = pallet_cardano_roles::Pallet::<Runtime>::purge_account_roles(who);
     }
 }
 
@@ -1342,7 +1460,12 @@ impl pallet_cardano_observer::StakeResolver<AccountId> for StakeLookup {
 pub struct BoundStakeCreds;
 impl pallet_cardano_observer::BoundStakeCredentials for BoundStakeCreds {
     fn bound_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
-        pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys().collect()
+        // CAPPED at the observer's own `MaxObserved`, so a bare-unsigned, feeless `link_stake_signed`
+        // cannot grow the per-block db-sync scope without bound and stall the sole weight writer. The
+        // scan + the operator warning live in cogno-gate, next to the map and the log target.
+        pallet_cogno_gate::Pallet::<Runtime>::bound_stake_credentials_capped(
+            <<Runtime as pallet_cardano_observer::Config>::MaxObserved as sp_core::Get<u32>>::get(),
+        )
     }
 }
 
@@ -1451,6 +1574,56 @@ impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
             }
         }
         pallet_cardano_roles::Pallet::<Runtime>::apply_roles(who, bounded);
+    }
+}
+
+#[cfg(test)]
+mod identity_lifecycle_tests {
+    use super::*;
+    use pallet_cardano_roles::{ObservedRole, ObservedRoleSet, RoleKind};
+    use pallet_microblog::OnIdentityBind;
+
+    /// Revoking a binding must tear down the account's CARDANO ROLES, not just cogno-gate's own maps
+    /// and microblog's capacity.
+    ///
+    /// This drives the hook through `<Runtime as pallet_cogno_gate::Config>::OnBind` — the associated
+    /// type the pallet actually calls — rather than through `IdentityLifecycle` by name. That is the
+    /// whole point: the bug was never a broken function, it was that cogno-gate's `OnBind` pointed at
+    /// `Microblog`, which knows nothing about roles. Re-point it there and this test fails; assert
+    /// against `IdentityLifecycle` directly and it would keep passing while the runtime stayed broken.
+    #[test]
+    fn revoking_a_binding_purges_the_accounts_role_badges() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([9u8; 32]);
+            let cred = [0xA1u8; 28];
+
+            pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::Spo, cred);
+            pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::Spo, cred, &who);
+            let badge: ObservedRoleSet = alloc::vec![ObservedRole {
+                kind: RoleKind::Spo,
+                id: cred,
+                weight: 1_000,
+            }]
+            .try_into()
+            .expect("one badge fits");
+            pallet_cardano_roles::ObservedRoles::<Runtime>::insert(&who, badge);
+
+            type Hook = <Runtime as pallet_cogno_gate::Config>::OnBind;
+            <Hook as OnIdentityBind<AccountId>>::on_revoke(&who);
+
+            assert!(
+                !pallet_cardano_roles::RoleClaimOf::<Runtime>::contains_key(&who, RoleKind::Spo),
+                "a banned account must not keep its role claim",
+            );
+            assert!(
+                !pallet_cardano_roles::RoleCredIndex::<Runtime>::contains_key(RoleKind::Spo, cred),
+                "the credential must be freed for its real holder",
+            );
+            assert!(
+                pallet_cardano_roles::ObservedRoles::<Runtime>::get(&who).is_empty(),
+                "the observed badge is what profiles and chamber tallies read — it must go too",
+            );
+        });
     }
 }
 

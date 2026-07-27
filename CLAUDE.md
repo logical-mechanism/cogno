@@ -30,7 +30,7 @@ scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 212 / tx_version 7**) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 213 / tx_version 7**) |
 | `pallets/` | `microblog` (10, storage v10; call_index 1 `delete_post` and 6 `repost` both permanently vacant), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; `MaxObserved` 1024, benchmarked `observe`, on-chain stall alarm), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
 | `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`weight`/`authors` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
@@ -81,7 +81,9 @@ an agent needs:
   **chain fork**); the CLI's `query weight` reads the resulting on-chain `TalkStake` ledger over RPC, not
   db-sync. **Preserve verbatim** the byte-identity invariants: spentness from **`tx_in`**
   (never `consumed_by_tx_id`); coins/qty as **`::text`** (lovelace > 2⁵³); the vault set from
-  **`tx_out.payment_cred = <script hash>`**; a fail-closed **abstain** when `tx_in` is absent;
+  **`tx_out.payment_cred = <script hash>`**; a fail-closed **abstain** when `tx_in` is absent (and, since spec 213, when `ma_tx_out` or `tx_metadata`
+  is — an under-indexed db-sync must never be read as authoritative emptiness; `dbsync.rs`'s test module
+  now fails the build if a query gains a table with neither a probe nor an explicit exemption);
   largest-UTxO-wins per identity (never summed). Ogmios still SUBMITS L1 txs + serves cost models; the
   in-browser CIP-30 vault uses Blockfrost. MAINNET PREREQUISITE: db-sync must run FULL (non-pruned),
   **`tx_in`-enabled** (NOT `--consumed-tx-out`), and over TLS.
@@ -99,7 +101,7 @@ an agent needs:
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index
   (next free is **21**; 20 is TxPause); gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **212**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
+  `spec_version` (currently **213**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
   (never the live chain):
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   Non-encoding changes (bounds, logging, tests) must **not** bump it. `transaction_version` moves ONLY on
@@ -112,7 +114,12 @@ an agent needs:
   enum is pinned with explicit `#[codec(index = N)]` (microblog `VoteDir` and the observer's
   `InherentError` included) — keep it that way. Retired variants leave a permanent GAP (microblog
   event 6 `Reposted`, error 5 `AlreadyReposted`; cogno-gate error 2 `BadThread`). Never insert into a
-  gap, never reorder, always pin a new variant. Same rule as pallet/call indices. Spec 212 retired
+  gap, never reorder, always pin a new variant. Same rule as pallet/call indices. **CI now enforces all
+  of this**: `scripts/check-metadata.sh` diffs the committed `app/.papi/metadata/cogno.scale` against a
+  freshly built runtime, so a reorder no test would catch fails the `rust` job. It also means EVERY spec
+  bump needs `./scripts/check-metadata.sh --write` (the snapshot embeds `spec_version` via
+  `System::Version`) — read what the script says moved before re-snapshotting: one byte is a plain spec
+  bump, more than one means a shape a client can see actually changed. Spec 212 retired
   microblog error 2 (`TooManyPosts`) with `MaxPostsPerAuthor` — index 2 is now a permanent gap too.
 - **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
   never runs: the on-chain `StorageVersion` stays put while the code declares the new one, and

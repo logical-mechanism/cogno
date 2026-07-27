@@ -75,7 +75,8 @@ vault AS ( \
     AND cb.slot_no <= p.ref \
     AND EXISTS (SELECT 1 FROM ma_tx_out m JOIN multi_asset a ON a.id = m.ident \
                 WHERE m.tx_out_id = o.id AND a.policy = decode(p.pol,'hex'))) \
-SELECT f.tip_slot, a.anchor_slot, a.anchor_hash, v.matches, (SELECT EXISTS (SELECT 1 FROM tx_in)) AS tx_in_ok \
+SELECT f.tip_slot, a.anchor_slot, a.anchor_hash, v.matches, (SELECT EXISTS (SELECT 1 FROM tx_in)) AS tx_in_ok, \
+       (SELECT EXISTS (SELECT 1 FROM ma_tx_out)) AS ma_ok \
 FROM freshness f, vault v LEFT JOIN anchor a ON true";
 
 /// Cached, lazily-connected client (`None` until first use / after a dropped connection). Reads are
@@ -143,25 +144,42 @@ pub async fn read_observation(
         // Use `try_get` (not the panicking `Row::get`) throughout: a column type-mismatch must honour the
         // fail-closed contract (Err → abstain), NOT panic inside the authoring/import future.
         if !row
-            .try_get::<_, bool>(4)
+            .try_get::<_, bool>("tx_in_ok")
             .map_err(|e| format!("db-sync tx_in_ok column decode failed: {e}"))?
         {
             return Err("db-sync tx_in table is empty (--consumed-tx-out mode?); the observation requires a \
 			            tx_in-enabled db-sync — abstaining (fail closed)"
 				.to_string());
         }
+        // Fail-closed on ma_tx_out, the sibling dependency of the same query. EVERY vault row must pass
+        // the `EXISTS (ma_tx_out JOIN multi_asset …)` beacon gate in the WHERE above, so a db-sync run
+        // with multi-asset insertion disabled matches ZERO rows and this read returns a SUCCESSFUL empty
+        // observation. The runtime then treats it as "everyone unlocked": the clamp walks all of
+        // `LastObserved` and zeroes every credited account's weight and capacity bucket. Same class as
+        // the `tx_in` hole above, on the table the beacon gate depends on. `ma_tx_out` is network-wide,
+        // so it is non-empty on any real Cardano chain no matter how few vault locks exist.
+        if !row
+            .try_get::<_, bool>("ma_ok")
+            .map_err(|e| format!("db-sync ma_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync ma_tx_out table is empty (multi-asset indexing disabled?); the vault read's \
+                 beacon gate requires it — abstaining (fail closed)"
+                    .to_string(),
+            );
+        }
 
         let tip_slot = row
-            .try_get::<_, Option<i64>>(0)
+            .try_get::<_, Option<i64>>("tip_slot")
             .map_err(|e| format!("db-sync tip_slot column decode failed: {e}"))?
             .and_then(|s| u64::try_from(s).ok())
             .ok_or_else(|| "db-sync returned no tip slot".to_string())?;
         // anchor: both columns present + the hash is 32-byte hex ⇒ Some; otherwise None (fail closed).
         let anchor_slot = row
-            .try_get::<_, Option<i64>>(1)
+            .try_get::<_, Option<i64>>("anchor_slot")
             .map_err(|e| format!("db-sync anchor_slot column decode failed: {e}"))?;
         let anchor_hash = row
-            .try_get::<_, Option<String>>(2)
+            .try_get::<_, Option<String>>("anchor_hash")
             .map_err(|e| format!("db-sync anchor_hash column decode failed: {e}"))?;
         let anchor = match (anchor_slot, anchor_hash) {
             (Some(slot_no), Some(hash)) => match (u64::try_from(slot_no).ok(), hex32(&hash)) {
@@ -171,7 +189,7 @@ pub async fn read_observation(
             _ => None,
         };
         let matches = row
-            .try_get::<_, serde_json::Value>(3)
+            .try_get::<_, serde_json::Value>("matches")
             .map_err(|e| format!("db-sync matches column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -259,7 +277,7 @@ pub async fn read_stake_observation(
         // not-yet-indexed node would read 0 for a real staker → a false unlock-clamp / cross-node fork).
         // `try_get` (not the panicking `Row::get`): a decode failure must abstain (Err), not panic.
         if !row
-            .try_get::<_, bool>(0)
+            .try_get::<_, bool>("epoch_stake_ok")
             .map_err(|e| format!("db-sync epoch_stake_ok column decode failed: {e}"))?
         {
             return Err(
@@ -269,7 +287,7 @@ pub async fn read_stake_observation(
             );
         }
         if !row
-            .try_get::<_, bool>(1)
+            .try_get::<_, bool>("target_ok")
             .map_err(|e| format!("db-sync target_ok column decode failed: {e}"))?
         {
             return Err(
@@ -279,7 +297,7 @@ pub async fn read_stake_observation(
             );
         }
         let rows = row
-            .try_get::<_, serde_json::Value>(2)
+            .try_get::<_, serde_json::Value>("rows")
             .map_err(|e| format!("db-sync epoch_stake rows column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -354,15 +372,23 @@ regs AS ( \
   SELECT tm.id AS id, tm.bytes AS bytes FROM tx_metadata tm \
   JOIN tx t ON t.id = tm.tx_id JOIN block b ON b.id = t.block_id, params p \
   WHERE tm.key = 867 AND tm.bytes IS NOT NULL AND b.slot_no <= p.ref), \
+reg AS ( \
+  SELECT pu.hash_id AS hash_id, max(pu.registered_tx_id) AS tx_id FROM pool_update pu \
+  JOIN tx t ON t.id = pu.registered_tx_id JOIN block b ON b.id = t.block_id \
+  WHERE b.slot_no <= (SELECT ref FROM params) GROUP BY pu.hash_id), \
+ret AS ( \
+  SELECT DISTINCT ON (pr.hash_id) pr.hash_id AS hash_id, pr.announced_tx_id AS tx_id, \
+         pr.retiring_epoch AS r_ep FROM pool_retire pr \
+  JOIN tx t ON t.id = pr.announced_tx_id JOIN block b ON b.id = t.block_id \
+  WHERE b.slot_no <= (SELECT ref FROM params) \
+  ORDER BY pr.hash_id, b.slot_no DESC, t.block_index DESC, pr.cert_index DESC), \
 active AS ( \
   SELECT ph.hash_raw AS hash_raw FROM pool_hash ph \
-  WHERE COALESCE((SELECT max(pu.registered_tx_id) FROM pool_update pu \
-      JOIN tx t ON t.id = pu.registered_tx_id JOIN block b ON b.id = t.block_id \
-      WHERE pu.hash_id = ph.id AND b.slot_no <= (SELECT ref FROM params)), 0) \
-    > COALESCE((SELECT max(pr.announced_tx_id) FROM pool_retire pr \
-      JOIN tx t ON t.id = pr.announced_tx_id JOIN block b ON b.id = t.block_id \
-      WHERE pr.hash_id = ph.id AND b.slot_no <= (SELECT ref FROM params) \
-        AND pr.retiring_epoch <= (SELECT e FROM ep)), 0)), \
+  JOIN reg ON reg.hash_id = ph.id \
+  LEFT JOIN ret ON ret.hash_id = ph.id \
+  WHERE ret.hash_id IS NULL \
+     OR ret.tx_id < reg.tx_id \
+     OR ret.r_ep > (SELECT e FROM ep)), \
 owners AS ( \
   SELECT DISTINCT encode(substring(sa.hash_raw from 2 for 28),'hex') AS cred, encode(ph.hash_raw,'hex') AS pool \
   FROM pool_owner po \
@@ -387,6 +413,9 @@ drep_stake AS ( \
     AND dh.raw = ANY($3::bytea[]) \
   GROUP BY dh.raw) \
 SELECT (SELECT EXISTS (SELECT 1 FROM pool_hash)) AS pool_ok, \
+       (SELECT EXISTS (SELECT 1 FROM drep_hash)) AS drep_ok, \
+       (SELECT EXISTS (SELECT 1 FROM drep_registration)) AS drep_reg_ok, \
+       (SELECT EXISTS (SELECT 1 FROM tx_metadata)) AS meta_ok, \
        COALESCE((SELECT json_agg(encode(bytes,'hex') ORDER BY id) FROM regs), '[]'::json) AS registrations, \
        COALESCE((SELECT json_agg(encode(hash_raw,'hex')) FROM active), '[]'::json) AS active_pools, \
        COALESCE((SELECT json_agg(json_build_object('cred', cred, 'pool', pool)) FROM owners), '[]'::json) AS owner_pools, \
@@ -455,7 +484,7 @@ pub async fn read_role_observation(
         // Fail-closed: pool_hash must be populated (else a behind db-sync would read no active pools →
         // a false clamp of every SPO badge). `try_get`, never the panicking `Row::get`.
         if !row
-            .try_get::<_, bool>(0)
+            .try_get::<_, bool>("pool_ok")
             .map_err(|e| format!("db-sync pool_ok column decode failed: {e}"))?
         {
             return Err(
@@ -464,8 +493,59 @@ pub async fn read_role_observation(
                     .to_string(),
             );
         }
+        // Fail-closed on tx_metadata, the SAME contract as `pool_hash` above and `tx_in` on the vault
+        // read. cardano-db-sync's `insert_options.metadata` can be disabled outright, and the
+        // `only_utxo` / `disable_all` presets drop it — on such an instance the `regs` CTE returns zero
+        // rows and this read would report "no Calidus registrations exist" as a SUCCESS, stripping every
+        // SPO badge and zeroing every SPO chamber weight chain-wide. An empty table is indistinguishable
+        // from "no registrations", so the only safe reading is to abstain.
+        // ⚠ This does NOT catch a metadata KEY WHITELIST (`"keys": [721]` leaves tx_metadata non-empty
+        // while filtering label 867 out) — no in-query probe can, since the table IS populated. The boot
+        // probe in node/src/config_check.rs covers that case instead, by flagging the signature it leaves:
+        // active pools present, zero label-867 registrations.
+        if !row
+            .try_get::<_, bool>("meta_ok")
+            .map_err(|e| format!("db-sync meta_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync tx_metadata table is empty (metadata indexing disabled?); the role read \
+                 requires it — abstaining (fail closed)"
+                    .to_string(),
+            );
+        }
+        // Fail-closed on the Conway GOVERNANCE tables, the same contract again. db-sync's
+        // `insert_options.governance = disable` (and the `only_utxo` / `disable_all` presets) skip
+        // `drep_hash` + `drep_registration` while leaving tx_in/ma_tx_out/tx_metadata/pool_hash fully
+        // populated — so nothing above notices, the `dreps` CTE returns zero rows, and this read reports
+        // "no live dReps exist" as a SUCCESS: every dRep badge stripped and every dRep chamber weight
+        // zeroed chain-wide.
+        //
+        // `drep_target_ok` does NOT cover this. It is consumed CONDITIONALLY (`!live_dreps.is_empty() &&
+        // !drep_target_ok`), so it is disarmed by exactly the emptiness it would have to catch — the
+        // guard and the failure cancel out. Both tables are network-wide on any post-Conway Cardano, so
+        // empty means the indexer is misconfigured, never that the chain has no dReps.
+        if !row
+            .try_get::<_, bool>("drep_ok")
+            .map_err(|e| format!("db-sync drep_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync drep_hash table is empty (governance indexing disabled?); the role read \
+                 requires it — abstaining (fail closed)"
+                    .to_string(),
+            );
+        }
+        if !row
+            .try_get::<_, bool>("drep_reg_ok")
+            .map_err(|e| format!("db-sync drep_reg_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync drep_registration table is empty (governance indexing disabled?); the dRep \
+                 liveness join requires it — abstaining (fail closed)"
+                    .to_string(),
+            );
+        }
         let reg_rows = row
-            .try_get::<_, serde_json::Value>(1)
+            .try_get::<_, serde_json::Value>("registrations")
             .map_err(|e| format!("db-sync registrations column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -476,7 +556,7 @@ pub async fn read_role_observation(
             registrations.push(hex_to_vec(hex).ok_or("bad registration hex")?);
         }
         let pool_rows = row
-            .try_get::<_, serde_json::Value>(2)
+            .try_get::<_, serde_json::Value>("active_pools")
             .map_err(|e| format!("db-sync active_pools column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -487,7 +567,7 @@ pub async fn read_role_observation(
             active_pools.push(hex_bytes::<28>(hex).ok_or("bad pool id hex")?);
         }
         let owner_rows = row
-            .try_get::<_, serde_json::Value>(3)
+            .try_get::<_, serde_json::Value>("owner_pools")
             .map_err(|e| format!("db-sync owner_pools column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -508,7 +588,7 @@ pub async fn read_role_observation(
             ));
         }
         let drep_rows = row
-            .try_get::<_, serde_json::Value>(4)
+            .try_get::<_, serde_json::Value>("live_dreps")
             .map_err(|e| format!("db-sync live_dreps column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -525,7 +605,7 @@ pub async fn read_role_observation(
         // abstain instead. (An empty live-dRep set has nothing to weight, so the missing snapshot is
         // irrelevant and we do NOT abstain.) The SPO counterpart is guarded identically in `read_pool_stake`.
         let drep_target_ok = row
-            .try_get::<_, bool>(5)
+            .try_get::<_, bool>("drep_target_ok")
             .map_err(|e| format!("db-sync drep_target_ok column decode failed: {e}"))?;
         if !live_dreps.is_empty() && !drep_target_ok {
             return Err(
@@ -534,7 +614,7 @@ pub async fn read_role_observation(
                     .to_string(),
             );
         }
-        let drep_stake = parse_id_stake(&row, 6, "drep_stake")?;
+        let drep_stake = parse_id_stake(&row, "drep_stake")?;
 
         Ok(DbsyncRoleRead {
             registrations,
@@ -621,7 +701,7 @@ pub async fn read_pool_stake(
         // non-empty `pool_ids` short-circuit above), else a behind db-sync would read 0 for a real pool → a
         // false chamber weight and a cross-node fork. `try_get`, never the panicking `Row::get`.
         if !row
-            .try_get::<_, bool>(0)
+            .try_get::<_, bool>("target_ok")
             .map_err(|e| format!("db-sync pool_stake target_ok column decode failed: {e}"))?
         {
             return Err(
@@ -630,7 +710,7 @@ pub async fn read_pool_stake(
                     .to_string(),
             );
         }
-        parse_id_stake(&row, 1, "pool_stake")
+        parse_id_stake(&row, "pool_stake")
     };
 
     tokio::time::timeout(DBSYNC_TIMEOUT, read)
@@ -646,13 +726,14 @@ pub async fn read_pool_stake(
 /// Parse a chamber-weight column (a JSON array of `{"id": <28-byte hex>, "stake": <lovelace string>}`)
 /// into `(id, total)` pairs. The stake is emitted `::text` in SQL (lovelace > 2^53), so it MUST parse as
 /// a pure-digit u128 — a malformed value fails the whole read closed (Err → abstain), never silently 0.
-fn parse_id_stake(
-    row: &tokio_postgres::Row,
-    idx: usize,
-    label: &str,
-) -> Result<Vec<([u8; 28], u128)>, String> {
+/// `label` is the column's SQL ALIAS and doubles as the row index: every read in this module addresses
+/// its column BY NAME, never by position. A positional index silently re-points at the neighbouring
+/// column the moment a probe is inserted into a SELECT list, and because these reads are the consensus
+/// weight writer's only input, that mis-read is a hard `Err` on every block — the whole observation
+/// abstains forever, and no test that only exercises the SQL strings can see it.
+fn parse_id_stake(row: &tokio_postgres::Row, label: &str) -> Result<Vec<([u8; 28], u128)>, String> {
     let rows = row
-        .try_get::<_, serde_json::Value>(idx)
+        .try_get::<_, serde_json::Value>(label)
         .map_err(|e| format!("db-sync {label} column decode failed: {e}"))?
         .as_array()
         .cloned()
@@ -687,4 +768,312 @@ fn hex_to_vec(s: &str) -> Option<Vec<u8>> {
         out.push((hi << 4) | lo);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Every SQL constant on the consensus read path, with its human name.
+    fn all_sql() -> [(&'static str, &'static str); 4] {
+        [
+            ("OBSERVATION_SQL", OBSERVATION_SQL),
+            ("STAKE_OBSERVATION_SQL", STAKE_OBSERVATION_SQL),
+            ("ROLE_OBSERVATION_SQL", ROLE_OBSERVATION_SQL),
+            ("POOL_STAKE_SQL", POOL_STAKE_SQL),
+        ]
+    }
+
+    /// The identifiers a query introduces itself (`name AS (`) — CTEs, not db-sync tables.
+    fn cte_names(sql: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let toks: Vec<&str> = sql.split_whitespace().collect();
+        for w in toks.windows(2) {
+            if w[1] == "AS" || w[1].starts_with("AS(") {
+                out.insert(w[0].trim_start_matches(',').to_string());
+            }
+        }
+        out
+    }
+
+    /// Real db-sync tables a query reads: every `FROM x` / `JOIN x`, minus its own CTEs and minus
+    /// sub-select aliases.
+    ///
+    /// A FROM list is comma-separated, and these queries use that form (`FROM freshness f, vault v`),
+    /// including one item that trails a JOIN's ON clause (`… LEFT JOIN block sb ON sb.id = stx.block_id,
+    /// params p`). So the scan is stateful rather than a plain `windows(2)` over FROM/JOIN: while a list
+    /// is open, every comma introduces another item. `ON` must NOT close the list, or that trailing item
+    /// goes unseen — and an unseen table is an unprobed, unexempted db-sync dependency that the test
+    /// below would then report as safe.
+    ///
+    /// Openness is tracked PER PAREN DEPTH, which is what keeps the three confusable shapes apart: a
+    /// comma inside a function call (`coalesce(a, b)`) is not a list separator, a sub-select in a FROM
+    /// list must not close the list that contains it, and a parenthesized join (`FROM (a x JOIN b y …)`)
+    /// still names real tables. Parens and commas are split into their own tokens first so the depth
+    /// count cannot be thrown off by punctuation glued to an identifier.
+    fn tables(sql: &str) -> BTreeSet<String> {
+        let ctes = cte_names(sql);
+        let mut out = BTreeSet::new();
+        let spaced = sql
+            .replace('(', " ( ")
+            .replace(')', " ) ")
+            .replace(',', " , ");
+        // `open[d]` = a FROM list is open at paren depth `d`. `expect` = the next identifier names a
+        // table (carried THROUGH an opening paren, so a parenthesized join is still read).
+        let mut open: Vec<bool> = vec![false];
+        let mut depth: usize = 0;
+        let mut expect = false;
+        for tok in spaced.split_whitespace() {
+            match tok {
+                "(" => {
+                    depth += 1;
+                    if open.len() <= depth {
+                        open.resize(depth + 1, false);
+                    }
+                    open[depth] = false;
+                    // `expect` deliberately survives: `FROM ( tx_in ti JOIN …` names a table, while
+                    // `FROM ( SELECT …` does not — the keyword fails the identifier test below.
+                }
+                ")" => {
+                    open[depth] = false;
+                    depth = depth.saturating_sub(1);
+                    expect = false;
+                }
+                "," => {
+                    // Only a comma at the list's OWN depth separates items; one nested inside a
+                    // function call or sub-select belongs to that, not to the FROM list.
+                    if open[depth] {
+                        expect = true;
+                    }
+                }
+                "FROM" | "JOIN" => {
+                    open[depth] = true;
+                    expect = true;
+                }
+                "WHERE" | "GROUP" | "ORDER" | "HAVING" | "LIMIT" | "UNION" | "SELECT" => {
+                    open[depth] = false;
+                    expect = false;
+                }
+                _ => {
+                    if expect {
+                        expect = false;
+                        // A db-sync table is a bare lowercase identifier; digits are legal after the
+                        // first character, so `all(is_ascii_lowercase)` alone would silently drop one.
+                        // This also rejects aliases-with-dots, quoted literals and stray keywords.
+                        let is_table = tok
+                            .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                            && tok
+                                .chars()
+                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+                        if is_table && !ctes.contains(tok) {
+                            out.insert(tok.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Tables that deliberately carry NO `EXISTS` probe, per QUERY, each with the reason it is safe.
+    ///
+    /// Scoped per query on purpose: a table that is safely unprobed in one read is not automatically
+    /// safe in another. `pool_hash` is a case in point — `ROLE_OBSERVATION_SQL` probes it directly,
+    /// while `POOL_STAKE_SQL` reaches it only through a foreign key from the epoch it already gates on.
+    ///
+    /// Adding an entry here is a DECISION, which is the whole point of the test below: an unprobed
+    /// dependency is how an under-indexed db-sync gets read as authoritative emptiness — a SUCCESSFUL
+    /// query returning "nothing is locked" / "no registrations exist", which the runtime then applies
+    /// as a mass unlock or a mass badge-strip. `tx_in` had a probe; `ma_tx_out` and `tx_metadata` did
+    /// not, and both were exactly that hole.
+    fn exempt(sql_name: &str, table: &str) -> Option<&'static str> {
+        // Structural, in every query.
+        let global = match table {
+            // Emptiness is already fatal upstream: `read_observation` requires a tip slot, and every
+            // query resolves its epoch/anchor from `block`.
+            "block" => Some("no tip slot ⇒ the read already errors"),
+            // A join spine, never a source of truth: it only narrows rows another table produced.
+            "tx" => Some("join spine behind block/tx_out/tx_metadata, all covered"),
+            // Empty ⇒ the chain has no outputs at all, which the tip check already rules out.
+            "tx_out" => Some("empty only on an empty chain, covered by the tip check"),
+            // The beacon gate joins them, so one empty ⇒ both empty, and ma_tx_out IS probed.
+            "multi_asset" => Some("joined 1:1 with the probed ma_tx_out"),
+            _ => None,
+        };
+        if global.is_some() {
+            return global;
+        }
+        match (sql_name, table) {
+            // Reached only through the probed epoch_stake (voting power) / pool_owner (role).
+            ("STAKE_OBSERVATION_SQL", "stake_address") => Some("gated by the probed epoch_stake"),
+            ("ROLE_OBSERVATION_SQL", "stake_address") => Some("gated by the probed pool_hash"),
+            // Pool sub-tables: pool_hash IS probed in this query, and these are meaningless without it.
+            ("ROLE_OBSERVATION_SQL", "pool_update" | "pool_retire" | "pool_owner") => {
+                Some("gated by the probed pool_hash in the same query")
+            }
+            // `drep_hash` / `drep_registration` were exempted here as "gated by the probed drep_distr;
+            // absence can only shrink the live set". Both halves were wrong: `drep_target_ok` is only
+            // consumed when the live set is NON-empty, so it is disarmed by the very emptiness it would
+            // have to catch, and "shrink the live set" is not benign — it strips every dRep badge and
+            // zeroes every dRep chamber weight. They are probed directly now (`drep_ok`/`drep_reg_ok`).
+            // Reached only by a foreign key from epoch_stake, whose target epoch this query probes.
+            ("POOL_STAKE_SQL", "pool_hash") => Some(
+                "FK-reached from the probed epoch_stake; probed directly in ROLE_OBSERVATION_SQL",
+            ),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn every_table_the_consensus_reads_depend_on_is_probed_or_explicitly_exempt() {
+        // The fail-closed contract is maintained BY HAND — one `EXISTS (SELECT 1 FROM …)` per table
+        // whose emptiness would be misread as authoritative absence. Nothing enforced that the list
+        // kept up with the queries, and it had already fallen behind on two tables. This makes adding
+        // an unprobed dependency a test failure instead of a silent consensus hazard.
+        for (name, sql) in all_sql() {
+            for table in tables(sql) {
+                // Prefix match, not an exact one: a probe may legitimately narrow (`drep_distr` is
+                // gated as `EXISTS (SELECT 1 FROM drep_distr WHERE epoch_no = …)`, which is a
+                // STRONGER check than bare non-emptiness).
+                let probed = sql.contains(&format!("EXISTS (SELECT 1 FROM {table}"));
+                assert!(
+                    probed || exempt(name, &table).is_some(),
+                    "{name} reads `{table}` with no `EXISTS (SELECT 1 FROM {table})` probe and no \
+                     entry in `exempt()`. An empty `{table}` would be read as authoritative absence \
+                     — decide which it is: add the probe (and abstain on it), or exempt it with the \
+                     reason it cannot be misread.",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_two_holes_the_audit_found_are_probed() {
+        // Pinned individually, because these are the ones that were actually missing: a db-sync with
+        // multi-asset insertion off read as "every vault unlocked", and one with metadata indexing off
+        // read as "no Calidus registration exists".
+        assert!(OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM ma_tx_out)"));
+        assert!(OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM tx_in)"));
+        assert!(ROLE_OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM tx_metadata)"));
+        assert!(ROLE_OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM pool_hash)"));
+    }
+
+    #[test]
+    fn every_column_the_readers_address_by_name_exists_in_its_query() {
+        // The readers index columns by SQL ALIAS, not by position, because a positional index silently
+        // re-points at its neighbour the moment a probe column is inserted above it — exactly what
+        // happened when the `meta_ok` probe was added to the role read and shifted `drep_stake` from 6
+        // to 7. That mis-read is a hard `Err` on EVERY block, so the sole writer of Cardano weight stops
+        // dead, and nothing in this file's SQL-string assertions could see it.
+        //
+        // Names are only safe while the alias and the reader agree, so pin the two together here: rename
+        // an alias without re-pointing its reader and this fails at build time instead of on the producer.
+        for (query, name, col) in [
+            (OBSERVATION_SQL, "OBSERVATION_SQL", "tx_in_ok"),
+            (OBSERVATION_SQL, "OBSERVATION_SQL", "ma_ok"),
+            (
+                STAKE_OBSERVATION_SQL,
+                "STAKE_OBSERVATION_SQL",
+                "epoch_stake_ok",
+            ),
+            (STAKE_OBSERVATION_SQL, "STAKE_OBSERVATION_SQL", "target_ok"),
+            (STAKE_OBSERVATION_SQL, "STAKE_OBSERVATION_SQL", "rows"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "pool_ok"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "meta_ok"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "drep_ok"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "drep_reg_ok"),
+            (
+                ROLE_OBSERVATION_SQL,
+                "ROLE_OBSERVATION_SQL",
+                "registrations",
+            ),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "active_pools"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "owner_pools"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "live_dreps"),
+            (
+                ROLE_OBSERVATION_SQL,
+                "ROLE_OBSERVATION_SQL",
+                "drep_target_ok",
+            ),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "drep_stake"),
+            (POOL_STAKE_SQL, "POOL_STAKE_SQL", "target_ok"),
+            (POOL_STAKE_SQL, "POOL_STAKE_SQL", "pool_stake"),
+        ] {
+            assert!(
+                query.contains(&format!("AS {col}")),
+                "{name} has no `AS {col}` alias, but its reader addresses that column by name — the \
+                 read would fail closed on every block. Re-point the reader, or restore the alias.",
+            );
+        }
+        // The vault read's first four columns are projected unaliased, so their names come from the
+        // qualified expressions themselves. Pin that projection verbatim for the same reason.
+        assert!(
+            OBSERVATION_SQL
+                .contains("SELECT f.tip_slot, a.anchor_slot, a.anchor_hash, v.matches,"),
+            "`read_observation` addresses tip_slot/anchor_slot/anchor_hash/matches by name; those names \
+             come from this unaliased projection, so changing it silently breaks the read",
+        );
+    }
+
+    #[test]
+    fn the_table_scan_sees_past_a_comma_and_a_digit() {
+        // The scan feeds the probe test below, so anything it cannot see is an unprobed db-sync
+        // dependency reported as safe — the exact silent-consensus hazard that test exists to prevent.
+        // The shapes it has to get right — the real queries already use the first two:
+        //   * a comma-separated FROM list, including an item trailing a JOIN's ON clause;
+        //   * a table name containing a digit (`all(is_ascii_lowercase)` dropped it);
+        //   * a parenthesized join, a sub-select sitting IN a FROM list, and a comma inside a
+        //     function call — the three the paren-depth tracking exists to tell apart.
+        let set = |ts: &[&str]| ts.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            tables(
+                "SELECT 1 FROM epoch_stake es, reward r \
+                 JOIN pool_hash ph ON ph.id = es.pool_id, ma_tx_out2 m WHERE r.id = 1"
+            ),
+            set(&["epoch_stake", "ma_tx_out2", "pool_hash", "reward"]),
+        );
+        // A PARENTHESIZED join still names real tables — bailing on the leading `(` lost `tx_in`.
+        assert_eq!(
+            tables("SELECT 1 FROM (tx_in ti JOIN tx t ON t.id = ti.tx_in_id) WHERE 1 = 1"),
+            set(&["tx_in", "tx"]),
+        );
+        // A sub-select in a FROM list must not close the list CONTAINING it: `ma_tx_out` is a real
+        // dependency sitting after one, and losing it loses its probe requirement too.
+        assert_eq!(
+            tables("SELECT 1 FROM (SELECT a FROM block b) q, ma_tx_out m WHERE 1 = 1"),
+            set(&["block", "ma_tx_out"]),
+        );
+        // A comma INSIDE a function call is not a list separator. Treating it as one invents a table
+        // (`dflt`) that no probe can satisfy, failing the guard below for a query that is fine.
+        assert_eq!(
+            tables(
+                "SELECT 1 FROM epoch_stake es JOIN pool_hash ph \
+                 ON ph.id = coalesce(es.pool_id, dflt) WHERE es.id = 1"
+            ),
+            set(&["epoch_stake", "pool_hash"]),
+        );
+        // Aliases, CTEs and sub-select aliases still stay out.
+        assert_eq!(
+            tables(
+                "WITH params AS (SELECT 1 AS x), t AS (SELECT 1 FROM block b, params p) \
+                 SELECT * FROM (SELECT a, b FROM t) q, params p"
+            ),
+            set(&["block"]),
+        );
+    }
+
+    #[test]
+    fn every_ordered_aggregate_has_a_total_order() {
+        // `json_agg` without an ORDER BY leaves row order to the planner, so two nodes can build
+        // different Vecs from identical data. The reduction re-canonicalises the vault/stake/role sets
+        // (BTreeMap/BTreeSet), which is what makes that safe — EXCEPT for `registrations`, whose
+        // chain order decides the same-nonce Calidus winner. That one must stay explicitly ordered.
+        assert!(
+            ROLE_OBSERVATION_SQL.contains("json_agg(encode(bytes,'hex') ORDER BY id)"),
+            "the registration aggregate decides the equal-nonce Calidus tie-break, so its order is \
+             consensus-critical and must not be left to the planner",
+        );
+    }
 }

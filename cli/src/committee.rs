@@ -13,7 +13,7 @@
 //! inspects `RuntimeEvent::FollowerCommittee(Executed { result, .. })` directly, no metadata lookup needed.
 
 use anyhow::Context;
-use codec::{Decode, Encode};
+use codec::{Decode, DecodeAll, Encode};
 use cogno_chain_runtime::{RuntimeCall, RuntimeEvent};
 use frame_support::weights::Weight;
 use frame_system::EventRecord;
@@ -77,9 +77,75 @@ pub async fn proposal_hashes(rpc: &Rpc) -> anyhow::Result<Vec<H256>> {
 }
 
 /// `FollowerCommittee::ProposalOf[hash]` — the inner call of an open motion (`None` if closed/absent).
+///
+/// The decoded call is VERIFIED against the hash it was fetched under before it is returned. This is the
+/// only thing standing between a co-signer and voting for a motion they were never shown: the custody
+/// runbook has each seat co-sign from its own host against whatever `--ws` endpoint it can reach —
+/// typically the operator's public relay, which is not that seat's trust domain. A malicious or
+/// compromised endpoint can answer the `ProposalOf` storage read with ANY call it likes, so
+/// `committee list` would print a harmless `CognoGate.revoke(spammer)` while the real motion behind that
+/// hash is `set_members([attacker])`. The threshold is no defence: the ayes are cast on the true hash, so
+/// the true motion is genuinely approved by the required 3-of-5.
+///
+/// `ProposalOf` is `Identity`-hashed BY the proposal hash and the proposal hash is
+/// `blake2_256(SCALE(call))`, so the stored value IS the preimage of its own key — re-hashing the decode
+/// and comparing is exact, free, and cannot false-positive.
 pub async fn proposal_of(rpc: &Rpc, hash: &H256) -> anyhow::Result<Option<RuntimeCall>> {
-    rpc.storage_decode::<RuntimeCall>(&committee_map_key("ProposalOf", hash), None)
-        .await
+    let call = rpc
+        .storage_decode::<RuntimeCall>(&committee_map_key("ProposalOf", hash), None)
+        .await?;
+    if let Some(inner) = &call {
+        ensure_is_preimage_of(inner, hash)?;
+    }
+    Ok(call)
+}
+
+/// Fail unless `inner` really is the motion stored under `hash`. Split out from [`proposal_of`] so the
+/// guard itself is unit-testable without an RPC endpoint.
+pub fn ensure_is_preimage_of(inner: &RuntimeCall, hash: &H256) -> anyhow::Result<()> {
+    let got = crate::tx::proposal_hash(inner);
+    anyhow::ensure!(
+        got == *hash,
+        "the RPC endpoint returned a proposal whose hash is {got:#x}, not the {hash:#x} it was asked \
+         for. Either it is misreporting this motion, or this CLI was built against a different runtime \
+         revision than the chain and re-encodes the call differently. Do NOT vote on it until you have \
+         checked it against an endpoint you control, from a CLI built at the chain's spec_version.",
+    );
+    Ok(())
+}
+
+/// Decode a 0x-hex inner call and prove it is the preimage of `hash` — the RPC-FREE twin of
+/// [`proposal_of`], for the air-gapped seat that has no endpoint to fetch a preimage from.
+///
+/// Identical cryptography to the online guard: the motion hash is taken over the call's own encoding, so
+/// a substituted call cannot verify against the hash the vote is cast on. The online path can fetch the
+/// preimage and check it; an offline seat has nothing to fetch, so it must be HANDED the call and re-hash
+/// it here. Without this the air-gapped path — the one holding the coldest key — was the only one still
+/// casting a vote on a hash it could not read.
+pub fn preimage_from_hex(call_hex: &str, hash: &H256) -> anyhow::Result<RuntimeCall> {
+    let trimmed = call_hex.trim();
+    let bytes = hex::decode(trimmed.strip_prefix("0x").unwrap_or(trimmed))
+        .with_context(|| format!("--call must be 0x-hex, got {call_hex:?}"))?;
+    // `decode_all`, not `decode`: plain `Decode` stops at the end of the call and IGNORES whatever
+    // follows, so two `call-hex` lines accidentally joined while being carried across the air gap would
+    // verify on the first and silently drop the second. Not a security hole (the hash is taken over the
+    // decoded call, so a pass still proves it is the true preimage), but a mangled transport should fail
+    // loudly rather than look like a clean vote.
+    let inner = RuntimeCall::decode_all(&mut &bytes[..]).map_err(|e| {
+        anyhow::anyhow!(
+            "--call does not decode as a RuntimeCall for this runtime: {e}. Re-copy the `call-hex` \
+             line from `committee list` (exactly one call, nothing appended), or rebuild the CLI at \
+             the chain's spec_version."
+        )
+    })?;
+    ensure_is_preimage_of(&inner, hash)?;
+    Ok(inner)
+}
+
+/// The 0x-hex SCALE encoding of a motion's inner call — what `committee list` prints so an air-gapped
+/// seat can pass it back to `committee vote --offline --call`.
+pub fn call_hex(call: &RuntimeCall) -> String {
+    format!("0x{}", hex::encode(call.encode()))
 }
 
 /// A read-only view of `FollowerCommittee::Voting[hash]`. `pallet_collective::Votes`' fields are private,
@@ -623,6 +689,69 @@ mod tests {
         assert!(describe_call(&av).starts_with("ValidatorSet.add_validator("));
         let rv = crate::calls::revoke(AccountId32::new([2u8; 32]));
         assert!(describe_call(&rv).starts_with("CognoGate.revoke("));
+    }
+
+    #[test]
+    fn a_substituted_preimage_is_rejected() {
+        // The custody threat: a seat co-signs against an endpoint it does not control, and that
+        // endpoint answers the ProposalOf read with a DIFFERENT, harmless-looking call than the motion
+        // the hash actually stands for. The ayes would then be cast on the true hash, so the true
+        // motion passes with the required 3-of-5 while every seat believed it approved something else.
+        let real = crate::calls::set_members(vec![AccountId32::new([0xAA; 32])], None, 1);
+        let decoy = crate::calls::revoke(AccountId32::new([0xBB; 32]));
+        let real_hash = crate::tx::proposal_hash(&real);
+
+        // The true preimage verifies against its own hash...
+        assert!(ensure_is_preimage_of(&real, &real_hash).is_ok());
+        // ...and the substitution is caught, because the hash is taken over the call's own encoding.
+        let err = ensure_is_preimage_of(&decoy, &real_hash)
+            .expect_err("a substituted preimage must not verify");
+        assert!(
+            err.to_string().contains("misreporting this motion"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_offline_seat_cannot_be_handed_the_wrong_call() {
+        // Same threat as above, on the path holding the COLDEST key. An air-gapped seat has no endpoint
+        // to fetch a preimage from, so it is handed the call hex — by the same operator who handed it
+        // the hash. Re-hashing locally is what makes that hand-off safe to distrust.
+        let real = crate::calls::set_members(vec![AccountId32::new([0xAA; 32])], None, 1);
+        let decoy = crate::calls::revoke(AccountId32::new([0xBB; 32]));
+        let real_hash = crate::tx::proposal_hash(&real);
+
+        // The true preimage round-trips through the hex an operator would carry across the air gap.
+        let back = preimage_from_hex(&call_hex(&real), &real_hash)
+            .expect("the real call must verify against its own hash");
+        assert_eq!(back.encode(), real.encode());
+        // A 0x-less hex is the same bytes, so it is accepted too.
+        assert!(preimage_from_hex(call_hex(&real).trim_start_matches("0x"), &real_hash).is_ok());
+
+        // A substituted call is caught before anything is signed.
+        let err = preimage_from_hex(&call_hex(&decoy), &real_hash)
+            .expect_err("a substituted call must not verify");
+        assert!(
+            err.to_string().contains("misreporting this motion"),
+            "{err}"
+        );
+
+        // Garbage in the hex fails closed rather than signing something half-decoded.
+        assert!(preimage_from_hex("0xzz", &real_hash).is_err());
+        assert!(preimage_from_hex("0xff00ff00", &real_hash).is_err());
+
+        // Trailing bytes are REJECTED, not ignored. Plain `Decode` stops at the end of the call, so
+        // two call-hex lines joined in transit would verify on the first and silently drop the second.
+        let joined = format!(
+            "{}{}",
+            call_hex(&real),
+            call_hex(&decoy).trim_start_matches("0x")
+        );
+        assert!(
+            preimage_from_hex(&joined, &real_hash).is_err(),
+            "a --call with a second call appended must not verify as the first",
+        );
+        assert!(preimage_from_hex(&format!("{}deadbeef", call_hex(&real)), &real_hash).is_err());
     }
 
     #[test]

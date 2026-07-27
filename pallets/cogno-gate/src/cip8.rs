@@ -118,6 +118,11 @@ pub struct VerifiedRoleProof {
     pub account: [u8; 32],
     /// The genesis hash the signed payload commits (caller checks == this chain's genesis).
     pub genesis: [u8; 32],
+    /// The 16-byte client nonce the signed payload commits. The verifier does not interpret it — it
+    /// is surfaced so the CALLER can SPEND it, which is what makes a role proof single-use. Without
+    /// that a proof stays valid forever, and anyone who saw the original `claim_role_signed`
+    /// extrinsic can re-submit those exact bytes after the holder unclaims, re-attaching the badge.
+    pub nonce: [u8; 16],
 }
 
 /// Every failure mode is a typed, fail-closed reject — never a panic.
@@ -692,14 +697,24 @@ fn parse_payload(p: &[u8]) -> Result<([u8; 32], [u8; 32]), Cip8Error> {
 /// a payment/stake bind proof can never satisfy this grammar, and a proof minted for one role can
 /// never be matched to another. The `role=` token must consume the input to the end (no trailing
 /// bytes). The nonce is validated for FORMAT only, exactly as in [`parse_payload`].
-fn parse_role_payload(p: &[u8]) -> Result<([u8; 32], [u8; 32], RoleClass), Cip8Error> {
+/// The four fields a `cogno-chain/role/v1;…` payload commits, as parsed. A named type rather than a
+/// tuple so each field is unmistakable at the call site (a swapped `genesis`/`account` would be a
+/// silent anti-cross-chain hole, and both are `[u8; 32]`).
+struct RolePayload {
+    genesis: [u8; 32],
+    account: [u8; 32],
+    nonce: [u8; 16],
+    role: RoleClass,
+}
+
+fn parse_role_payload(p: &[u8]) -> Result<RolePayload, Cip8Error> {
     let off =
         expect(p, 0, b"cogno-chain/role/v1;genesis=").map_err(|_| Cip8Error::BadRolePayload)?;
     let (genesis, off) = take_hex(p, off, 32).map_err(|_| Cip8Error::BadRolePayload)?;
     let off = expect(p, off, b";account=").map_err(|_| Cip8Error::BadRolePayload)?;
     let (account, off) = take_hex(p, off, 32).map_err(|_| Cip8Error::BadRolePayload)?;
     let off = expect(p, off, b";nonce=").map_err(|_| Cip8Error::BadRolePayload)?;
-    let (_nonce, off) = take_hex(p, off, 16).map_err(|_| Cip8Error::BadRolePayload)?; // format-checked
+    let (nonce, off) = take_hex(p, off, 16).map_err(|_| Cip8Error::BadRolePayload)?;
     let off = expect(p, off, b";role=").map_err(|_| Cip8Error::BadRolePayload)?;
     // The role token runs to end-of-input; matching the exact remainder also rejects trailing bytes.
     let rest = p.get(off..).ok_or(Cip8Error::BadRolePayload)?;
@@ -714,9 +729,16 @@ fn parse_role_payload(p: &[u8]) -> Result<([u8; 32], [u8; 32], RoleClass), Cip8E
     };
     let mut g = [0u8; 32];
     let mut a = [0u8; 32];
+    let mut n = [0u8; 16];
     g.copy_from_slice(genesis.get(..32).ok_or(Cip8Error::BadRolePayload)?);
     a.copy_from_slice(account.get(..32).ok_or(Cip8Error::BadRolePayload)?);
-    Ok((g, a, role))
+    n.copy_from_slice(nonce.get(..16).ok_or(Cip8Error::BadRolePayload)?);
+    Ok(RolePayload {
+        genesis: g,
+        account: a,
+        nonce: n,
+        role,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -910,13 +932,14 @@ pub fn verify_bind_proof_role(
     credential.copy_from_slice(payment_vkh.get(..28).ok_or(Cip8Error::BadAddress)?);
 
     // 5. The signed payload commits the genesis + account + role (the `role/v1` grammar).
-    let (genesis, account, role) = parse_role_payload(cose.payload_content)?;
+    let parsed = parse_role_payload(cose.payload_content)?;
 
     Ok(VerifiedRoleProof {
-        role,
+        role: parsed.role,
         credential,
-        account,
-        genesis,
+        account: parsed.account,
+        genesis: parsed.genesis,
+        nonce: parsed.nonce,
     })
 }
 

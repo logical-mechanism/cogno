@@ -42,7 +42,7 @@ const EXPECTED_SPEC_NAME = "cogno-chain-runtime";
  * calls/storage/events/extensions are byte-identical, so the descriptors did not need regenerating; only
  * this guard constant moves in lockstep with the runtime.
  */
-const DESCRIPTOR_SPEC_VERSION: number | null = 212;
+export const DESCRIPTOR_SPEC_VERSION: number | null = 213;
 
 /** Heartbeat window: if no new best block arrives within this, we surface "reconnecting". */
 const BLOCK_HEARTBEAT_MS = 30_000;

@@ -614,6 +614,15 @@ pub mod pallet {
     // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
     // renumber; a new variant takes the next free index (2). (The Event enum above is pinned the
     // same way.)
+    //
+    // ⚠ NEITHER VARIANT IS RETURNED ANY MORE, and neither may be. `observe` is the pallet's only
+    // dispatchable and it is `DispatchClass::Mandatory`: an `Err` from a Mandatory dispatch is
+    // `BadMandatory`, which discards the whole BLOCK, and because the reference is a pure function of
+    // the PARENT's slot the same failure then repeats every slot forever. Both bounds are therefore
+    // enforced as SKIP-not-reject inside `observe`, leaving that dispatch INFALLIBLE by construction
+    // (`grep 'Error::<T>::' ` in this file returns nothing — keep it that way). The variants stay
+    // declared because a retired variant would leave a permanent gap in an on-wire enum and buys
+    // nothing; treat them as reserved.
     #[pallet::error]
     pub enum Error<T> {
         /// The proposed reference is older than the last accepted one (anti-regression). A
@@ -773,15 +782,57 @@ pub mod pallet {
             // extrinsic — recomputable by anyone against an archived db-sync at `reference.slot`.
             let _ = inputs_commitment;
 
-            // Anti-regression: never accept an older reference than the chain already holds.
+            // ── Both reference bounds are SKIP-not-reject ──────────────────────────────────────────
+            //
+            // This dispatch is `DispatchClass::Mandatory`: a returned `Err` is `BadMandatory`, which
+            // discards the WHOLE BLOCK rather than just the extrinsic. So NO validation in this body may
+            // return Err — the same discipline the `MaxStakeWeight` bound below already follows.
+            //
+            // For the anti-regression bound that is not merely tidiness, it is a HALT. `reference` is a
+            // pure function of the PARENT block's slot, so a discarded block leaves the parent — and
+            // therefore the next block's reference — unchanged: the next slot recomputes the IDENTICAL
+            // reference and fails identically, forever. There is no on-chain recovery, because a runtime
+            // upgrade needs a block to land in. Any committee-governed upgrade that RAISES
+            // `StabilitySlots` lowers every future reference at a stroke (the mainnet arm is 216x the
+            // preprod one) and is exactly that trigger.
+            //
+            // Skipping is safe in both the honest and the malicious case: nothing is applied, so the
+            // weight ledger simply holds at its last value, and `LastReference` is NOT moved backwards —
+            // the anti-regression guarantee ("never apply older Cardano data") is preserved by declining
+            // to apply, not by killing the block. Because the early return also skips the `LastAppliedAt`
+            // stamp below, a persistent skip latches `Stalled` / `ObservationStalled` — the designed,
+            // loud, on-chain signal for "the sole weight writer is not writing".
+            //
+            // `Error::ReferenceRegressed` / `ReferenceTooFresh` are retained as on-wire contract (SCALE
+            // indexes by declaration order; a retired variant leaves a permanent gap) but are no longer
+            // returned from this dispatch.
             if let Some(last) = LastReference::<T>::get() {
-                ensure!(reference.slot >= last.slot, Error::<T>::ReferenceRegressed);
+                if reference.slot < last.slot {
+                    log::warn!(
+                        target: LOG_TARGET,
+                        "observation SKIPPED: reference slot {} is behind the chain's last applied {} \
+                         (a raised StabilitySlots, a rewound db-sync, or a misbehaving author). Weight \
+                         holds at its last value; ObservationStalled latches if this persists.",
+                        reference.slot,
+                        last.slot,
+                    );
+                    return Ok(());
+                }
             }
             // Stability sanity bound: the reference must be at least StabilitySlots behind THIS block's
-            // own consensus time. Skipped (not failed) when the block time predates the Shelley anchor —
-            // the node IDP already fails closed there, and a young/pre-Shelley chain has no valid bound.
+            // own consensus time. Not evaluated when the block time predates the Shelley anchor — the
+            // node IDP already fails closed there, and a young/pre-Shelley chain has no valid bound.
             if let Some(max_ref) = Self::max_reference_for_now() {
-                ensure!(reference.slot <= max_ref, Error::<T>::ReferenceTooFresh);
+                if reference.slot > max_ref {
+                    log::warn!(
+                        target: LOG_TARGET,
+                        "observation SKIPPED: reference slot {} is fresher than the stability bound {} \
+                         — inside the Cardano rollback window. Weight holds at its last value.",
+                        reference.slot,
+                        max_ref,
+                    );
+                    return Ok(());
+                }
             }
 
             // Mode read ONCE (deterministic — every node reads the identical pre-state in execute_block).
