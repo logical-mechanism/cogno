@@ -11,10 +11,21 @@
 // per-row display names would need a node profiles-by-address batch read — out of scope / no backend).
 
 import styles from "./FollowsList.module.css";
+import exploreStyles from "@/components/explore/ExploreList.module.css";
 import { PersonRow } from "@/components/explore/PersonRow";
 import { Skeleton } from "@/components/Skeleton";
 import { EmptyState } from "@/components/EmptyState";
 import type { Suggestion, Viewer, Ss58 } from "@/components/kit";
+
+/**
+ * Rows rendered at once. The follow graph comes back whole (the runtime bounds it, at up to 1000 edges
+ * a side) and this mapped ALL of it, one `PersonRow` each — and every row mounts `useStakeRing` /
+ * `useReputation`, i.e. a `MicroblogApi.profile` state_call per row, uncached, whose tally
+ * `FollowsList` then discards (it builds `{author, followerCount: 0}` with no `accountScore`, so the
+ * read fires purely for the avatar ring). A thousand of those on one tap is waste, not cost, and the
+ * cap is the actionable half. `ExploreList` already renders exactly this note on exactly this row type.
+ */
+const MAX_ROWS = 100;
 
 export interface FollowsListProps {
   /** The accounts to list (followers OR following, resolved by FollowsPanel from followEdges). */
@@ -71,9 +82,11 @@ export function FollowsList({
     );
   }
 
+  const shown = people.slice(0, MAX_ROWS);
+
   return (
     <div className={styles.list}>
-      {people.map((addr) => {
+      {shown.map((addr) => {
         // A minimal Suggestion — followEdges carries no profile fields; PersonRow renders the handle +
         // identicon + FollowButton, and hides the follower-count/reputation meta when they're absent.
         const person: Suggestion = { author: addr, followerCount: 0 };
@@ -87,6 +100,11 @@ export function FollowsList({
           />
         );
       })}
+      {people.length > MAX_ROWS && (
+        <p className={exploreStyles.truncated}>
+          Showing {MAX_ROWS} of {people.length} accounts.
+        </p>
+      )}
     </div>
   );
 }

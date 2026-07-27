@@ -16,10 +16,28 @@ import { safeReturnTo, readReturnTo, DEFAULT_RETURN } from "./returnTo";
 const KEY = "cg:returnAfterOnboarding";
 
 /** The route segments worth returning to — specific CONTENT a visitor was reading, not a hub surface. */
-const RETURNABLE_SEGMENTS = new Set(["post", "u"]);
-/** The other PUBLIC segments (see AppShell's PUBLIC_SEGMENTS) — hubs where the timeline is the right
- *  landing, so arriving on one FORGETS any remembered content route. */
-const HUB_SEGMENTS = new Set(["", "explore", "legal", "privacy", "policy"]);
+export const RETURNABLE_SEGMENTS: ReadonlySet<string> = new Set(["post", "u"]);
+/**
+ * The other PUBLIC segments (see AppShell's PUBLIC_SEGMENTS) — hubs where the timeline is the right
+ *  landing, so arriving on one FORGETS any remembered content route.
+ *
+ * Every public segment must be in exactly one of these two sets, and `routeClassification.test.ts`
+ * asserts it against the filesystem. A public segment in NEITHER silently takes the third branch
+ * below ("leave it intact", meant for /welcome and the walled routes), so browsing there does not
+ * clear a stale remembered post and onboarding teleports the visitor to it. "governance" was in
+ * neither: it is a LIST of polls, so it is a hub. "bookmarks" and "lists" are hubs for the same
+ * reason, and joined PUBLIC_SEGMENTS at the same time.
+ */
+export const HUB_SEGMENTS: ReadonlySet<string> = new Set([
+  "",
+  "explore",
+  "governance",
+  "legal",
+  "privacy",
+  "policy",
+  "bookmarks",
+  "lists",
+]);
 
 /**
  * Track the place to return to after onboarding as the visitor browses:

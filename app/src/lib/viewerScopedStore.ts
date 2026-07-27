@@ -13,6 +13,16 @@
 //    device inherits the first account's data. Each account gets its own bucket; signed-out browsing
 //    gets `:anon`, never an account's.
 //
+// WHY `:anon` IS NEVER ADOPTED INTO `:<ss58>` AT SIGN-IN. Deliberate, and worth writing down because it
+// looks like an omission. The reverse of `claimLegacy` — folding the signed-out bucket into the first
+// account to sign in — is the SAME cross-account leak this file exists to close, just pointed the other
+// way: on a shared browser, one visitor's mutes, blocks, bookmarks and lists would become whoever signs
+// in next. The window it would have closed is smaller than it looks, too: `viewerBucket` returns the
+// address from the moment the posting key is derived, so the whole connect-then-bind stretch of
+// onboarding already writes to the account's own bucket. What remains is a true guest who bookmarks
+// something and then signs in, and for them /bookmarks and /lists are public surfaces they can still
+// reach signed out. A silent merge is not worth a stranger's mute list.
+//
 // Client-only. NO chain state — nothing here is written to Cardano or to the chain.
 
 import { useSyncExternalStore } from "react";
@@ -44,8 +54,13 @@ export interface ViewerScopedStoreOpts<T> {
 export interface ViewerScopedStore<T> {
   /** Non-React read for one account (null = the signed-out device bucket). */
   readFor: (who: string | null) => T;
-  /** Read-modify-write against the FRESH value, so a cross-tab refresh isn't clobbered. */
-  update: (who: string | null, mutate: (current: T) => T) => void;
+  /**
+   * Read-modify-write against the FRESH value, so a cross-tab refresh isn't clobbered.
+   *
+   * Returns FALSE when the write did not reach storage (see `persistentStore.commit`), so a caller can
+   * report a failure instead of confirming a save that will not survive a reload.
+   */
+  update: (who: string | null, mutate: (current: T) => T) => boolean;
   /** Subscribing snapshot for one account. Re-subscribes when `who` changes (the store identity does). */
   use: (who: string | null) => T;
   /** Non-React subscribe, for tests. */
@@ -96,7 +111,7 @@ export function createViewerScopedStore<T>(opts: ViewerScopedStoreOpts<T>): View
     readFor: (who) => storeFor(who).read(),
     update: (who, mutate) => {
       const s = storeFor(who);
-      s.commit(mutate(s.read()));
+      return s.commit(mutate(s.read()));
     },
     use: (who) => {
       const s = storeFor(who);

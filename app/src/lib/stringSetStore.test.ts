@@ -222,3 +222,77 @@ describe("the legacy claim is OPT-IN", () => {
     expect([...store.readFor(null)]).toEqual([]);
   });
 });
+
+// The fifteen cases above make NO size assertion at all, so nothing stopped a set growing without
+// bound — and /bookmarks and Settings → Hidden each resolve their whole set on mount in one unbounded
+// `Promise.all`, so "unbounded" is a burst of that many concurrent node reads on every visit.
+describe("max — the size bound, on both the read and the write path", () => {
+  const capped = () =>
+    createViewerScopedStringSetStore({ prefix: "cg-capped", isValid: DIGITS, max: 3 });
+
+  it("refuses an add past the cap, and SAYS SO", () => {
+    boot();
+    const store = capped();
+    const a = store.actionsFor(ALICE);
+    expect(a.add("1")).toBe(true);
+    expect(a.add("2")).toBe(true);
+    expect(a.add("3")).toBe(true);
+    expect(a.add("4")).toBe(false); // the caller can now show an error instead of a success toast
+    expect([...store.readFor(ALICE)].sort()).toEqual(["1", "2", "3"]);
+  });
+
+  it("does not refuse a value already in the set", () => {
+    boot();
+    const store = capped();
+    const a = store.actionsFor(ALICE);
+    a.add("1");
+    a.add("2");
+    a.add("3");
+    expect(a.add("2")).toBe(true); // the requested state already holds
+  });
+
+  it("makes room again after a remove", () => {
+    boot();
+    const store = capped();
+    const a = store.actionsFor(ALICE);
+    a.add("1");
+    a.add("2");
+    a.add("3");
+    expect(a.remove("2")).toBe(true);
+    expect(a.add("4")).toBe(true);
+    expect([...store.readFor(ALICE)].sort()).toEqual(["1", "3", "4"]);
+  });
+
+  it("truncates an over-cap value already on disk", () => {
+    // A bucket written before the cap existed (or hand-edited) must not come back over it.
+    boot({ "cg-capped:5Alice": ["1", "2", "3", "4", "5"] });
+    const store = capped();
+    expect(store.readFor(ALICE).size).toBe(3);
+  });
+
+  it("leaves an uncapped store uncapped", () => {
+    boot();
+    const store = createViewerScopedStringSetStore({ prefix: "cg-uncapped", isValid: DIGITS });
+    const a = store.actionsFor(ALICE);
+    for (let i = 0; i < 50; i++) expect(a.add(String(i))).toBe(true);
+    expect(store.readFor(ALICE).size).toBe(50);
+  });
+});
+
+// F17 — every device-local write swallowed its own throw while the caller painted an unconditional
+// success toast. The store layer now reports it.
+describe("a write that cannot reach storage reports false", () => {
+  it("returns false from add/remove when localStorage throws", () => {
+    boot();
+    const store = createViewerScopedStringSetStore({ prefix: "cg-throwy", isValid: DIGITS });
+    // Seat the bucket first (the store reads its key on the first touch), then break writes.
+    expect(store.actionsFor(ALICE).add("1")).toBe(true);
+    storage.setItem = () => {
+      throw new Error("blocked");
+    };
+    expect(store.actionsFor(ALICE).add("2")).toBe(false);
+    expect(store.actionsFor(ALICE).remove("1")).toBe(false);
+    // The in-memory value still moved — the session keeps working, it just will not survive a reload.
+    expect([...store.readFor(ALICE)].sort()).toEqual(["2"]);
+  });
+});

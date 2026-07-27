@@ -13,8 +13,19 @@
 export interface PersistentStore<T> {
   /** The current in-memory snapshot (stable ref between changes — safe as a useSyncExternalStore value). */
   read: () => T;
-  /** Replace the value, persist it, and notify subscribers. */
-  commit: (next: T) => void;
+  /**
+   * Replace the value, persist it, and notify subscribers.
+   *
+   * Returns FALSE when the write to storage threw, i.e. the value is in memory only and will not
+   * survive a reload. It used to return void while swallowing the throw, and every caller above painted
+   * an unconditional success toast on top of that: "Saved to bookmarks", "Added to <list>", "Post
+   * hidden", `Blocked @…` — each one a confirmation of something that did not happen. The trigger is
+   * narrow (an opt-in "block all site data" setting, or a full origin quota) but the failure is silent
+   * by construction, which is exactly why it needed a channel rather than a bigger try/catch.
+   *
+   * True outside a browser: there is nothing to persist and nobody to lie to.
+   */
+  commit: (next: T) => boolean;
   subscribe: (cb: () => void) => () => void;
   getSnapshot: () => T;
   getServerSnapshot: () => T;
@@ -49,14 +60,18 @@ export function createPersistentStore<T>(opts: PersistentStoreOpts<T>): Persiste
   const listeners = new Set<() => void>();
   const notify = () => listeners.forEach((l) => l());
 
-  function commit(next: T): void {
+  function commit(next: T): boolean {
     cache = next;
+    let persisted = true;
     try {
       if (typeof window !== "undefined") window.localStorage.setItem(key, serialize(next));
     } catch {
-      /* quota exceeded / storage disabled → keep the in-memory value only */
+      // Quota exceeded / storage disabled → keep the in-memory value, and TELL the caller. The value
+      // still applies for this session; it just will not be there on the next load.
+      persisted = false;
     }
     notify();
+    return persisted;
   }
 
   // Another tab wrote our key → reload and notify so this tab stays in sync and its NEXT commit builds on

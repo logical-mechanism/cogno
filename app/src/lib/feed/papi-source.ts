@@ -64,6 +64,7 @@ import type {
 } from "@/lib/types";
 import type { FeedSource, ProfileArgs } from "./source";
 import { FEED_PAGE_SIZE } from "./constants";
+import { createRevocationCache } from "./revocationCache";
 import { normalizeQuery } from "@/lib/search";
 
 // The seam's first-page / default window (profile Posts first page + global `page()` default).
@@ -87,12 +88,17 @@ async function readWeight(api: CognoApi, account: Ss58): Promise<bigint | undefi
 const profileText = binTextOpt;
 
 export function createPapiFeedSource(api: CognoApi): FeedSource {
+  // One `PkhOf` read per author, shared across every page, thread re-read and profile read this source
+  // serves. Reading it per page sounded bounded, and is — but /post re-reads its thread on EVERY block,
+  // so an open thread sustained one read per participant every ~6s forever, for a committee-gated
+  // tombstone. See lib/feed/revocationCache.ts.
+  const revocations = createRevocationCache((account) => isRevoked(api, account as Ss58));
 
   /** Stamp the revocation flag onto a set of posts, reading PkhOf once per distinct author. */
   async function flagRevocations(posts: CognoPost[]): Promise<CognoPost[]> {
     const authors = Array.from(new Set(posts.map((p) => p.author)));
     const revokedEntries = await Promise.all(
-      authors.map(async (a) => [a, await isRevoked(api, a)] as const),
+      authors.map(async (a) => [a, await revocations.get(a)] as const),
     );
     const revoked = new Map(revokedEntries);
     return posts.map((p) => ({ ...p, authorRevoked: revoked.get(p.author) === true }));

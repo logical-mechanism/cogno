@@ -91,19 +91,29 @@ export default function ListsPage() {
     [disarm],
   );
 
+  // `create` already had a return channel and it was read only for validation. It now also reports a
+  // write that did not reach storage, which is what the surface has to say out loud: selecting and
+  // naming a list that will not be there on the next load is worse than refusing it.
+  const [writeError, setWriteError] = useState<string | null>(null);
+  const STORAGE_BLOCKED = "Your browser is blocking storage for this site, so lists can't be saved.";
+
   const onCreate = useCallback(() => {
     disarm();
     const id = actions.create(draftName);
     if (id !== null) {
+      setWriteError(null);
       select(id);
       setDraftName("");
+    } else if (isValidListName(draftName)) {
+      // The name is fine and the cap is shown separately, so the only remaining reason is storage.
+      setWriteError(STORAGE_BLOCKED);
     }
   }, [actions, draftName, select, disarm]);
 
   const onRemoveMember = useCallback(
     (listId: string, member: string) => {
       disarm();
-      actions.removeMember(listId, member);
+      setWriteError(actions.removeMember(listId, member) ? null : STORAGE_BLOCKED);
     },
     [actions, disarm],
   );
@@ -173,6 +183,11 @@ export default function ListsPage() {
             Names are limited to {MAX_LIST_NAME_BYTES} bytes.
           </p>
         )}
+        {writeError && (
+          <p className={styles.error} role="alert">
+            {writeError}
+          </p>
+        )}
         {atListCap && (
           <p className={styles.note}>
             You have the maximum of {MAX_LOCAL_LISTS} lists. Delete one to add another.
@@ -209,13 +224,17 @@ export default function ListsPage() {
                   onChange={(e) => setDraftRename(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
-                      actions.rename(selected.id, draftRename);
+                      setWriteError(
+                        actions.rename(selected.id, draftRename) ? null : STORAGE_BLOCKED,
+                      );
                       setRenaming(false);
                     }
                     if (e.key === "Escape") setRenaming(false);
                   }}
                   onBlur={() => {
-                    actions.rename(selected.id, draftRename);
+                    setWriteError(
+                      actions.rename(selected.id, draftRename) ? null : STORAGE_BLOCKED,
+                    );
                     setRenaming(false);
                   }}
                 />
@@ -241,7 +260,7 @@ export default function ListsPage() {
                 className={styles.danger}
                 onClick={() => {
                   if (armedDeleteId === selected.id) {
-                    actions.remove(selected.id);
+                    setWriteError(actions.remove(selected.id) ? null : STORAGE_BLOCKED);
                     setSelectedId(null);
                     setArmedDeleteId(null);
                   } else {

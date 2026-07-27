@@ -17,10 +17,18 @@ import { createViewerScopedStore } from "./viewerScopedStore";
 
 const EMPTY: ReadonlySet<string> = new Set();
 
+/**
+ * Every action returns whether the store now HOLDS the state the caller asked for AND that state
+ * survived to storage. False means one of two things, both of which the caller was previously told
+ * nothing about: the write threw (blocked site data / quota), or `max` is full.
+ *
+ * A no-op is a success — `add` on a value already present, `remove` on one that is not — because the
+ * requested state already holds and nothing needed to be written.
+ */
 export interface ViewerScopedSetActions {
-  add: (value: string) => void;
-  remove: (value: string) => void;
-  toggle: (value: string) => void;
+  add: (value: string) => boolean;
+  remove: (value: string) => boolean;
+  toggle: (value: string) => boolean;
 }
 
 export interface ViewerScopedStringSetStore {
@@ -42,6 +50,17 @@ export interface ViewerScopedStringSetOpts {
   prefix: string;
   isValid: (value: string) => boolean;
   /**
+   * Largest set kept, on BOTH the read and the write path. `add` past it fails (returns false) rather
+   * than evicting: the serialized form is SORTED (so the cross-tab change-detector doesn't read
+   * insertion order as a change), which means insertion order does not survive a reload and there is no
+   * honest "oldest" to drop. Refusing and saying so beats silently discarding something the user saved.
+   *
+   * Omit for an uncapped set. Worth setting wherever a surface resolves the WHOLE set on mount
+   * (/bookmarks and Settings → Hidden each do one unbounded `Promise.all` over theirs), and wherever
+   * the values come from somewhere a user could point a lot of them at.
+   */
+  max?: number;
+  /**
    * One-shot claim of the pre-namespacing BARE `prefix` key. ONLY for the stores that shipped
    * device-global before being bucketed (bookmarks, mutes). Defaults to false: a store that was
    * per-account from birth has nothing to claim, and reading a bare key it never wrote would adopt
@@ -53,18 +72,17 @@ export interface ViewerScopedStringSetOpts {
 export function createViewerScopedStringSetStore(
   opts: ViewerScopedStringSetOpts,
 ): ViewerScopedStringSetStore {
-  const { prefix, isValid, claimLegacy = false } = opts;
+  const { prefix, isValid, claimLegacy = false, max } = opts;
 
   const store = createViewerScopedStore<ReadonlySet<string>>({
     prefix,
     empty: EMPTY,
     parse: (raw) => {
       const parsed: unknown = raw ? JSON.parse(raw) : [];
-      return new Set(
-        Array.isArray(parsed)
-          ? parsed.filter((x): x is string => typeof x === "string" && isValid(x))
-          : [],
-      );
+      const kept = Array.isArray(parsed)
+        ? parsed.filter((x): x is string => typeof x === "string" && isValid(x))
+        : [];
+      return new Set(max === undefined ? kept : kept.slice(0, max));
     },
     // Sorted, so the cross-tab change-detector (which compares serialized forms) doesn't read insertion
     // order as a change and churn a re-render.
@@ -73,19 +91,22 @@ export function createViewerScopedStringSetStore(
   });
 
   function actionsFor(who: string | null): ViewerScopedSetActions {
-    const commitFrom = (mutate: (draft: Set<string>) => void) =>
+    const commitFrom = (mutate: (draft: Set<string>) => void): boolean =>
       store.update(who, (current) => {
         const next = new Set(current);
         mutate(next);
         return next;
       });
-    const add = (value: string) => {
-      if (!isValid(value) || store.readFor(who).has(value)) return;
-      commitFrom((d) => d.add(value));
+    const add = (value: string): boolean => {
+      if (!isValid(value)) return false;
+      const current = store.readFor(who);
+      if (current.has(value)) return true; // already in the state the caller asked for
+      if (max !== undefined && current.size >= max) return false;
+      return commitFrom((d) => d.add(value));
     };
-    const remove = (value: string) => {
-      if (!store.readFor(who).has(value)) return;
-      commitFrom((d) => d.delete(value));
+    const remove = (value: string): boolean => {
+      if (!store.readFor(who).has(value)) return true; // already absent
+      return commitFrom((d) => d.delete(value));
     };
     return { add, remove, toggle: (v) => (store.readFor(who).has(v) ? remove(v) : add(v)) };
   }

@@ -37,6 +37,9 @@ import { IconBack } from "./icons";
 import { useSession } from "./Providers";
 import { welcomeUrlFor } from "@/lib/returnTo";
 import { rememberContentRoute } from "@/lib/onboardingReturn";
+// The route table lives in lib/ so a node test can assert it against the filesystem — see
+// lib/routeAccess.ts and routeClassification.test.ts.
+import { isPublicPath } from "@/lib/routeAccess";
 
 /** /welcome is the standalone onboarding surface — it owns the whole canvas (no rails). */
 function isWelcomePath(pathname: string | null): boolean {
@@ -46,32 +49,6 @@ function isWelcomePath(pathname: string | null): boolean {
 /** /settings carries the policy links itself (AboutSection), so the small-screen footer stands down. */
 function isSettingsPath(pathname: string | null): boolean {
   return !!pathname && (pathname === "/settings" || pathname.startsWith("/settings/"));
-}
-
-// The read-only surfaces a LOGGED-OUT visitor may browse without signing in: the timeline, discovery, a
-// post, a profile, and the static legal pages. Everything else (compose, settings, notifications,
-// bookmarks — the write/config/personal surfaces) stays behind the wall and bounces a guest to /welcome.
-//
-// Matched by first path segment so it is trailing-slash- and dynamic-segment-proof under `output: export`
-// ("/" → "", "/post/1/" → "post", "/u/5Grw…/" → "u"). Fail-CLOSED: a route whose segment is not listed is
-// treated as private, so a newly-added route is walled until it is deliberately opened here. /welcome is
-// intentionally NOT listed — it is the onboarding canvas, handled by its own `onWelcome` branch below.
-const PUBLIC_SEGMENTS = new Set([
-  "",
-  "explore",
-  "governance",
-  "post",
-  "u",
-  "legal",
-  "privacy",
-  // "policy" is the abuse/report surface. It MUST be public: the reader most likely to need it is an
-  // anonymous stranger who just scrolled past something, and walling it would bounce exactly that
-  // person to /welcome and ask them to connect a wallet before they can find out how to report it.
-  "policy",
-]);
-function isPublicPath(pathname: string | null): boolean {
-  if (!pathname) return false;
-  return PUBLIC_SEGMENTS.has(pathname.split("/")[1] ?? "");
 }
 
 export function AppShell({ children }: { children: ReactNode }) {

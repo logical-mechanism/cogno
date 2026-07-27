@@ -139,19 +139,25 @@ function newListId(): string {
   return `l-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
 }
 
+/**
+ * Every mutation returns whether the store now holds what the caller asked for AND it survived to
+ * storage. False means the write threw (blocked site data / quota) or the input was refused — the same
+ * channel `ViewerScopedSetActions` uses, and for the same reason: the callers paint success toasts.
+ */
 export interface LocalListActions {
-  /** Create a named list. Returns its id, or null when the name is invalid or the cap is reached. */
+  /** Create a named list. Returns its id, or null when the name is invalid, the cap is reached, or the
+   *  write did not reach storage. */
   create: (name: string) => string | null;
   /** Rename. No-ops on an invalid name (so a bad keystroke can't wipe a name). */
-  rename: (id: string, name: string) => void;
+  rename: (id: string, name: string) => boolean;
   /** Delete a list outright. */
-  remove: (id: string) => void;
-  /** Add a member. No-ops when the address is invalid, already present, or the list is full. */
-  addMember: (id: string, address: string) => void;
+  remove: (id: string) => boolean;
+  /** Add a member. Refuses an invalid address; a no-op when already present or the list is full. */
+  addMember: (id: string, address: string) => boolean;
   /** Remove a member. */
-  removeMember: (id: string, address: string) => void;
+  removeMember: (id: string, address: string) => boolean;
   /** Add if absent, remove if present — for a single "in this list" control. */
-  toggleMember: (id: string, address: string) => void;
+  toggleMember: (id: string, address: string) => boolean;
 }
 
 /** Members are held SORTED everywhere — in memory, on disk, and after a reload — so the order that
@@ -171,28 +177,31 @@ export function localListActionsFor(who: Ss58 | null): LocalListActions {
       if (!isValidListName(name)) return null;
       if (store.readFor(who).length >= MAX_LOCAL_LISTS) return null;
       const id = newListId();
-      store.update(who, (lists) => [...lists, { id, name: name.trim(), members: [] }]);
-      return id;
+      // A create that did not reach storage is reported as a failure, not as a list id: the caller
+      // would otherwise select and name a list that is gone on the next load.
+      return store.update(who, (lists) => [...lists, { id, name: name.trim(), members: [] }])
+        ? id
+        : null;
     },
     rename: (id, name) => {
-      if (!isValidListName(name)) return;
-      mapList(id, (l) => ({ ...l, name: name.trim() }));
+      if (!isValidListName(name)) return false;
+      return mapList(id, (l) => ({ ...l, name: name.trim() }));
     },
     remove: (id) => store.update(who, (lists) => lists.filter((l) => l.id !== id)),
     addMember: (id, address) => {
       const norm = normalizeSs58(address);
-      if (norm === null) return;
-      mapList(id, (l) => withMember(l, norm as Ss58));
+      if (norm === null) return false;
+      return mapList(id, (l) => withMember(l, norm as Ss58));
     },
     removeMember: (id, address) => {
       const norm = normalizeSs58(address);
-      if (norm === null) return;
-      mapList(id, (l) => ({ ...l, members: l.members.filter((m) => m !== norm) }));
+      if (norm === null) return false;
+      return mapList(id, (l) => ({ ...l, members: l.members.filter((m) => m !== norm) }));
     },
     toggleMember: (id, address) => {
       const norm = normalizeSs58(address);
-      if (norm === null) return;
-      mapList(id, (l) =>
+      if (norm === null) return false;
+      return mapList(id, (l) =>
         l.members.includes(norm as Ss58)
           ? { ...l, members: l.members.filter((m) => m !== norm) }
           : withMember(l, norm as Ss58),

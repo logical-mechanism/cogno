@@ -14,9 +14,17 @@
 import { createViewerScopedStringSetStore } from "./stringSetStore";
 import type { Ss58 } from "./types";
 
+/**
+ * Capped because /bookmarks resolves the WHOLE set on mount, in one unbounded `Promise.all` of
+ * `source.thread(id)` reads. Uncapped, a set built up over a long session is a burst of that many
+ * concurrent node reads on every visit to the page. Well above any realistic saved list.
+ */
+export const MAX_BOOKMARKS = 500;
+
 const store = createViewerScopedStringSetStore({
   prefix: "cg-bookmarks",
   isValid: (v) => /^\d+$/.test(v),
+  max: MAX_BOOKMARKS,
   // Shipped device-global before per-account bucketing, so its bare key is claimable once.
   claimLegacy: true,
 });

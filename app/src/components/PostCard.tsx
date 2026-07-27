@@ -28,8 +28,8 @@ import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
 import { useMuted, muteActionsFor } from "@/lib/muteStore";
 import { useBlocked, blockActionsFor } from "@/lib/blockStore";
-import { useHidden, hiddenActionsFor } from "@/lib/hiddenStore";
-import { useBookmarked, bookmarkActionsFor } from "@/lib/bookmarkStore";
+import { useHidden, hiddenActionsFor, MAX_HIDDEN } from "@/lib/hiddenStore";
+import { useBookmarked, bookmarkActionsFor, MAX_BOOKMARKS } from "@/lib/bookmarkStore";
 import { useLocalLists, localListActionsFor, MAX_LIST_MEMBERS } from "@/lib/localListStore";
 import { sanitizeInline } from "@/lib/sanitize";
 import { viewerBucket } from "@/lib/viewerBucket";
@@ -147,6 +147,16 @@ export function PostCard({
   // mirroring the "Link copied" feedback on the sibling copy-link action.
   const { toast } = useToaster();
   const [revealed, setRevealed] = useState(false);
+  // Every ··· action here is a device-local WRITE, and every one of them used to paint its success toast
+  // unconditionally on top of a store that swallowed its own storage throw. "Saved to bookmarks" over a
+  // save that did not happen is worse than no feedback at all: the reader stops looking for the post.
+  // The store layer now returns whether the write landed; this turns a false into an error toast.
+  const confirm = useCallback(
+    (ok: boolean, success: { kind: "success" | "info"; message: string }, failure: string) => {
+      toast(ok ? success : { kind: "error", message: failure });
+    },
+    [toast],
+  );
   const menuItems = useMemo<OverflowMenuItem[] | undefined>(() => {
     if (pending) return undefined;
     const items: OverflowMenuItem[] = [];
@@ -158,11 +168,15 @@ export function PostCard({
       id: "bookmark",
       label: bookmarked ? "Remove bookmark" : "Bookmark",
       onSelect: () => {
-        bookmarkActionsFor(me).toggle(post.id);
-        toast(
+        const ok = bookmarkActionsFor(me).toggle(post.id);
+        confirm(
+          ok,
           bookmarked
             ? { kind: "info", message: "Removed from bookmarks" }
             : { kind: "success", message: "Saved to bookmarks" },
+          bookmarked
+            ? "Couldn't remove that bookmark. Your browser is blocking storage for this site."
+            : `Couldn't save that bookmark. You may be at the ${MAX_BOOKMARKS} bookmark limit, or your browser is blocking storage for this site.`,
         );
       },
     });
@@ -190,11 +204,13 @@ export function PostCard({
           label: inList ? `Remove from ${name}` : `Add to ${name}`,
           disabled: !inList && list.members.length >= MAX_LIST_MEMBERS,
           onSelect: () => {
-            localListActionsFor(me).toggleMember(list.id, post.author);
-            toast(
+            const ok = localListActionsFor(me).toggleMember(list.id, post.author);
+            confirm(
+              ok,
               inList
                 ? { kind: "info", message: `Removed from ${name}` }
                 : { kind: "success", message: `Added to ${name}` },
+              `Couldn't update ${name}. Your browser is blocking storage for this site.`,
             );
           },
         });
@@ -204,11 +220,15 @@ export function PostCard({
         id: "hide",
         label: hidden ? "Unhide post" : "Hide post",
         onSelect: () => {
-          hiddenActionsFor(me).toggle(post.id);
-          toast(
+          const ok = hiddenActionsFor(me).toggle(post.id);
+          confirm(
+            ok,
             hidden
               ? { kind: "info", message: "Post unhidden" }
               : { kind: "success", message: "Post hidden" },
+            hidden
+              ? "Couldn't unhide that post. Your browser is blocking storage for this site."
+              : `Couldn't hide that post. You may be at the ${MAX_HIDDEN} hidden-post limit, or your browser is blocking storage for this site.`,
           );
         },
       });
@@ -223,11 +243,15 @@ export function PostCard({
         label: blocked ? `Unblock ${handle}` : `Block ${handle}`,
         danger: !blocked,
         onSelect: () => {
-          blockActionsFor(me).toggle(post.author);
-          toast(
+          const ok = blockActionsFor(me).toggle(post.author);
+          confirm(
+            ok,
             blocked
               ? { kind: "info", message: `Unblocked ${handle}` }
               : { kind: "success", message: `Blocked ${handle}` },
+            // The sharpest one in the menu: a block that silently did not save keeps showing the
+            // account the reader just decided never to see again.
+            `Couldn't ${blocked ? "unblock" : "block"} ${handle}. Your browser is blocking storage for this site.`,
           );
         },
       });
@@ -254,7 +278,7 @@ export function PostCard({
       });
     }
     return items.length > 0 ? items : undefined;
-  }, [pending, isOwnPost, handlers, post, muted, blocked, hidden, bookmarked, localLists, toast, me]);
+  }, [pending, isOwnPost, handlers, post, muted, blocked, hidden, bookmarked, localLists, toast, confirm, me]);
 
   // On the operator's serve denylist. Lists and the reader itself already strip these, so this only
   // fires where a card is rendered DIRECTLY: a permalink to a delisted post, or a thread whose focal
