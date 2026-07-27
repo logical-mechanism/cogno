@@ -199,6 +199,16 @@ pub mod pallet {
         /// verifier — the synthetic enterprise address must be on this network.
         #[pallet::constant]
         type CardanoNetwork: Get<u8>;
+        /// The ceiling on how many claimed credentials the per-block observer scan may return — the
+        /// SAME `MaxObserved` the cardano-observer bounds its observation by. Not a `#[pallet::constant]`:
+        /// it bounds a runtime-API read, not anything on the wire.
+        ///
+        /// `claimed_credentials` runs on the inherent-data path of every node on every block and feeds a
+        /// db-sync query under a timeout, while the map it scans is grown by the bare-unsigned, feeless
+        /// `claim_role_signed`. Unbounded, that is a free way to stop the sole weight writer for
+        /// everyone. Matching the observer's cap loses nothing: the observation's role axis is itself a
+        /// `BoundedVec<_, MaxObserved>`.
+        type MaxObserved: Get<u32>;
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
     }
@@ -523,7 +533,28 @@ pub mod pallet {
         /// its db-sync read to (the `bound_role_credentials` runtime API). Bounded by the number of
         /// claims, not by all Cardano pools / dReps.
         pub fn claimed_credentials(role: RoleKind) -> Vec<RoleCredential> {
-            RoleCredIndex::<T>::iter_key_prefix(role).collect()
+            // BOUNDED, for the same reason `bound_stake_credentials` is: this runs on the inherent-data
+            // path of every node on every block and feeds a `= ANY(…)` array into a db-sync query under a
+            // 2 s timeout, while the map it scans is grown by `claim_role_signed` — bare-unsigned,
+            // feeless and capacity-unmetered. An unbounded scan here stops the sole weight writer for
+            // everyone once the query outgrows the timeout.
+            //
+            // `MaxObserved` is the right ceiling because the observation's role axis is itself a
+            // `BoundedVec<_, MaxObserved>`: a credential past the cap could not have been represented in
+            // the result anyway. Iteration is by hashed key, so the prefix is deterministic and every
+            // node takes the same one — `check_inherent` still agrees.
+            let cap = T::MaxObserved::get() as usize;
+            let out: Vec<RoleCredential> = RoleCredIndex::<T>::iter_key_prefix(role)
+                .take(cap)
+                .collect();
+            if out.len() == cap {
+                log::warn!(
+                    target: LOG_TARGET,
+                    "claimed {role:?} credentials hit the MaxObserved cap ({cap}) — claims past it are \
+                     not observed. Raise MaxObserved or prune the ledger.",
+                );
+            }
+            out
         }
 
         /// Verify a CIP-8 role-key proof and resolve `(bound account, role, credential)`. The shared

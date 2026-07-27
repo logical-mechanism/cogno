@@ -190,7 +190,7 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 
 | Parameter | Value | Symbol / file |
 |---|---|---|
-| `MaxObserved` | 1024 (hard cap, full snapshot/block; node WARNs at 75%) | `pallet_cardano_observer::Config` |
+| `MaxObserved` | 1024 (hard cap, full snapshot/block; node WARNs at 75%). Since spec 213 it ALSO caps the two per-block credential scans that feed the db-sync query scope (`bound_stake_credentials_capped` in cogno-gate, `claimed_credentials` in cardano-roles). Those maps are grown by the bare-unsigned, feeless `link_stake_signed` / `claim_role_signed`, so an unbounded scan was a free way to grow every node's per-block work until the db-sync query blew its 2 s timeout and the sole weight writer stopped for everyone. Capping there loses nothing observable: both observation axes are already `BoundedVec<_, MaxObserved>` | `pallet_cardano_observer::Config` |
 | `StallAfter` | 50 blocks (5 min) before `ObservationStalled` latches | `pallet_cardano_observer::Config` |
 | `MinLock` | 100 ADA (100,000,000 lovelace) | `ObsMinLock` |
 | `MaxStakeWeight` | 45e15 lovelace (~total ADA supply; over-cap entry skipped) | `pallet_cardano_observer::Config` |

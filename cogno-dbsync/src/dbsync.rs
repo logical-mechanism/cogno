@@ -75,7 +75,8 @@ vault AS ( \
     AND cb.slot_no <= p.ref \
     AND EXISTS (SELECT 1 FROM ma_tx_out m JOIN multi_asset a ON a.id = m.ident \
                 WHERE m.tx_out_id = o.id AND a.policy = decode(p.pol,'hex'))) \
-SELECT f.tip_slot, a.anchor_slot, a.anchor_hash, v.matches, (SELECT EXISTS (SELECT 1 FROM tx_in)) AS tx_in_ok \
+SELECT f.tip_slot, a.anchor_slot, a.anchor_hash, v.matches, (SELECT EXISTS (SELECT 1 FROM tx_in)) AS tx_in_ok, \
+       (SELECT EXISTS (SELECT 1 FROM ma_tx_out)) AS ma_ok \
 FROM freshness f, vault v LEFT JOIN anchor a ON true";
 
 /// Cached, lazily-connected client (`None` until first use / after a dropped connection). Reads are
@@ -149,6 +150,23 @@ pub async fn read_observation(
             return Err("db-sync tx_in table is empty (--consumed-tx-out mode?); the observation requires a \
 			            tx_in-enabled db-sync — abstaining (fail closed)"
 				.to_string());
+        }
+        // Fail-closed on ma_tx_out, the sibling dependency of the same query. EVERY vault row must pass
+        // the `EXISTS (ma_tx_out JOIN multi_asset …)` beacon gate in the WHERE above, so a db-sync run
+        // with multi-asset insertion disabled matches ZERO rows and this read returns a SUCCESSFUL empty
+        // observation. The runtime then treats it as "everyone unlocked": the clamp walks all of
+        // `LastObserved` and zeroes every credited account's weight and capacity bucket. Same class as
+        // the `tx_in` hole above, on the table the beacon gate depends on. `ma_tx_out` is network-wide,
+        // so it is non-empty on any real Cardano chain no matter how few vault locks exist.
+        if !row
+            .try_get::<_, bool>(5)
+            .map_err(|e| format!("db-sync ma_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync ma_tx_out table is empty (multi-asset indexing disabled?); the vault read's \
+                 beacon gate requires it — abstaining (fail closed)"
+                    .to_string(),
+            );
         }
 
         let tip_slot = row
@@ -354,15 +372,23 @@ regs AS ( \
   SELECT tm.id AS id, tm.bytes AS bytes FROM tx_metadata tm \
   JOIN tx t ON t.id = tm.tx_id JOIN block b ON b.id = t.block_id, params p \
   WHERE tm.key = 867 AND tm.bytes IS NOT NULL AND b.slot_no <= p.ref), \
+reg AS ( \
+  SELECT pu.hash_id AS hash_id, max(pu.registered_tx_id) AS tx_id FROM pool_update pu \
+  JOIN tx t ON t.id = pu.registered_tx_id JOIN block b ON b.id = t.block_id \
+  WHERE b.slot_no <= (SELECT ref FROM params) GROUP BY pu.hash_id), \
+ret AS ( \
+  SELECT DISTINCT ON (pr.hash_id) pr.hash_id AS hash_id, pr.announced_tx_id AS tx_id, \
+         pr.retiring_epoch AS r_ep FROM pool_retire pr \
+  JOIN tx t ON t.id = pr.announced_tx_id JOIN block b ON b.id = t.block_id \
+  WHERE b.slot_no <= (SELECT ref FROM params) \
+  ORDER BY pr.hash_id, b.slot_no DESC, t.block_index DESC, pr.cert_index DESC), \
 active AS ( \
   SELECT ph.hash_raw AS hash_raw FROM pool_hash ph \
-  WHERE COALESCE((SELECT max(pu.registered_tx_id) FROM pool_update pu \
-      JOIN tx t ON t.id = pu.registered_tx_id JOIN block b ON b.id = t.block_id \
-      WHERE pu.hash_id = ph.id AND b.slot_no <= (SELECT ref FROM params)), 0) \
-    > COALESCE((SELECT max(pr.announced_tx_id) FROM pool_retire pr \
-      JOIN tx t ON t.id = pr.announced_tx_id JOIN block b ON b.id = t.block_id \
-      WHERE pr.hash_id = ph.id AND b.slot_no <= (SELECT ref FROM params) \
-        AND pr.retiring_epoch <= (SELECT e FROM ep)), 0)), \
+  JOIN reg ON reg.hash_id = ph.id \
+  LEFT JOIN ret ON ret.hash_id = ph.id \
+  WHERE ret.hash_id IS NULL \
+     OR ret.tx_id < reg.tx_id \
+     OR ret.r_ep > (SELECT e FROM ep)), \
 owners AS ( \
   SELECT DISTINCT encode(substring(sa.hash_raw from 2 for 28),'hex') AS cred, encode(ph.hash_raw,'hex') AS pool \
   FROM pool_owner po \
@@ -387,6 +413,7 @@ drep_stake AS ( \
     AND dh.raw = ANY($3::bytea[]) \
   GROUP BY dh.raw) \
 SELECT (SELECT EXISTS (SELECT 1 FROM pool_hash)) AS pool_ok, \
+       (SELECT EXISTS (SELECT 1 FROM tx_metadata)) AS meta_ok, \
        COALESCE((SELECT json_agg(encode(bytes,'hex') ORDER BY id) FROM regs), '[]'::json) AS registrations, \
        COALESCE((SELECT json_agg(encode(hash_raw,'hex')) FROM active), '[]'::json) AS active_pools, \
        COALESCE((SELECT json_agg(json_build_object('cred', cred, 'pool', pool)) FROM owners), '[]'::json) AS owner_pools, \
@@ -464,8 +491,26 @@ pub async fn read_role_observation(
                     .to_string(),
             );
         }
+        // Fail-closed on tx_metadata, the SAME contract as `pool_hash` above and `tx_in` on the vault
+        // read. cardano-db-sync's `insert_options.metadata` can be disabled outright, and the
+        // `only_utxo` / `disable_all` presets drop it — on such an instance the `regs` CTE returns zero
+        // rows and this read would report "no Calidus registrations exist" as a SUCCESS, stripping every
+        // SPO badge and zeroing every SPO chamber weight chain-wide. An empty table is indistinguishable
+        // from "no registrations", so the only safe reading is to abstain.
+        // ⚠ This does NOT catch a metadata KEY WHITELIST (`"keys": [721]` leaves tx_metadata non-empty
+        // while filtering label 867 out). That needs the boot probe in node/src/config_check.rs.
+        if !row
+            .try_get::<_, bool>(1)
+            .map_err(|e| format!("db-sync meta_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync tx_metadata table is empty (metadata indexing disabled?); the role read \
+                 requires it — abstaining (fail closed)"
+                    .to_string(),
+            );
+        }
         let reg_rows = row
-            .try_get::<_, serde_json::Value>(1)
+            .try_get::<_, serde_json::Value>(2)
             .map_err(|e| format!("db-sync registrations column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -476,7 +521,7 @@ pub async fn read_role_observation(
             registrations.push(hex_to_vec(hex).ok_or("bad registration hex")?);
         }
         let pool_rows = row
-            .try_get::<_, serde_json::Value>(2)
+            .try_get::<_, serde_json::Value>(3)
             .map_err(|e| format!("db-sync active_pools column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -487,7 +532,7 @@ pub async fn read_role_observation(
             active_pools.push(hex_bytes::<28>(hex).ok_or("bad pool id hex")?);
         }
         let owner_rows = row
-            .try_get::<_, serde_json::Value>(3)
+            .try_get::<_, serde_json::Value>(4)
             .map_err(|e| format!("db-sync owner_pools column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -508,7 +553,7 @@ pub async fn read_role_observation(
             ));
         }
         let drep_rows = row
-            .try_get::<_, serde_json::Value>(4)
+            .try_get::<_, serde_json::Value>(5)
             .map_err(|e| format!("db-sync live_dreps column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -525,7 +570,7 @@ pub async fn read_role_observation(
         // abstain instead. (An empty live-dRep set has nothing to weight, so the missing snapshot is
         // irrelevant and we do NOT abstain.) The SPO counterpart is guarded identically in `read_pool_stake`.
         let drep_target_ok = row
-            .try_get::<_, bool>(5)
+            .try_get::<_, bool>(6)
             .map_err(|e| format!("db-sync drep_target_ok column decode failed: {e}"))?;
         if !live_dreps.is_empty() && !drep_target_ok {
             return Err(
@@ -687,4 +732,153 @@ fn hex_to_vec(s: &str) -> Option<Vec<u8>> {
         out.push((hi << 4) | lo);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Every SQL constant on the consensus read path, with its human name.
+    fn all_sql() -> [(&'static str, &'static str); 4] {
+        [
+            ("OBSERVATION_SQL", OBSERVATION_SQL),
+            ("STAKE_OBSERVATION_SQL", STAKE_OBSERVATION_SQL),
+            ("ROLE_OBSERVATION_SQL", ROLE_OBSERVATION_SQL),
+            ("POOL_STAKE_SQL", POOL_STAKE_SQL),
+        ]
+    }
+
+    /// The identifiers a query introduces itself (`name AS (`) — CTEs, not db-sync tables.
+    fn cte_names(sql: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let toks: Vec<&str> = sql.split_whitespace().collect();
+        for w in toks.windows(2) {
+            if w[1] == "AS" || w[1].starts_with("AS(") {
+                out.insert(w[0].trim_start_matches(',').to_string());
+            }
+        }
+        out
+    }
+
+    /// Real db-sync tables a query reads: every `FROM x` / `JOIN x`, minus its own CTEs and minus
+    /// sub-select aliases.
+    fn tables(sql: &str) -> BTreeSet<String> {
+        let ctes = cte_names(sql);
+        let mut out = BTreeSet::new();
+        let toks: Vec<&str> = sql.split_whitespace().collect();
+        for w in toks.windows(2) {
+            if w[0] == "FROM" || w[0] == "JOIN" {
+                let name = w[1]
+                    .trim_start_matches('(')
+                    .trim_end_matches(&[',', ')'][..])
+                    .to_string();
+                // `FROM (SELECT …` and the like leave a keyword behind, not a table.
+                if name.is_empty() || name.starts_with("(") || name.chars().any(|c| c == '\'') {
+                    continue;
+                }
+                if !ctes.contains(&name) && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                {
+                    out.insert(name);
+                }
+            }
+        }
+        out
+    }
+
+    /// Tables that deliberately carry NO `EXISTS` probe, per QUERY, each with the reason it is safe.
+    ///
+    /// Scoped per query on purpose: a table that is safely unprobed in one read is not automatically
+    /// safe in another. `pool_hash` is a case in point — `ROLE_OBSERVATION_SQL` probes it directly,
+    /// while `POOL_STAKE_SQL` reaches it only through a foreign key from the epoch it already gates on.
+    ///
+    /// Adding an entry here is a DECISION, which is the whole point of the test below: an unprobed
+    /// dependency is how an under-indexed db-sync gets read as authoritative emptiness — a SUCCESSFUL
+    /// query returning "nothing is locked" / "no registrations exist", which the runtime then applies
+    /// as a mass unlock or a mass badge-strip. `tx_in` had a probe; `ma_tx_out` and `tx_metadata` did
+    /// not, and both were exactly that hole.
+    fn exempt(sql_name: &str, table: &str) -> Option<&'static str> {
+        // Structural, in every query.
+        let global = match table {
+            // Emptiness is already fatal upstream: `read_observation` requires a tip slot, and every
+            // query resolves its epoch/anchor from `block`.
+            "block" => Some("no tip slot ⇒ the read already errors"),
+            // A join spine, never a source of truth: it only narrows rows another table produced.
+            "tx" => Some("join spine behind block/tx_out/tx_metadata, all covered"),
+            // Empty ⇒ the chain has no outputs at all, which the tip check already rules out.
+            "tx_out" => Some("empty only on an empty chain, covered by the tip check"),
+            // The beacon gate joins them, so one empty ⇒ both empty, and ma_tx_out IS probed.
+            "multi_asset" => Some("joined 1:1 with the probed ma_tx_out"),
+            _ => None,
+        };
+        if global.is_some() {
+            return global;
+        }
+        match (sql_name, table) {
+            // Reached only through the probed epoch_stake (voting power) / pool_owner (role).
+            ("STAKE_OBSERVATION_SQL", "stake_address") => Some("gated by the probed epoch_stake"),
+            ("ROLE_OBSERVATION_SQL", "stake_address") => Some("gated by the probed pool_hash"),
+            // Pool sub-tables: pool_hash IS probed in this query, and these are meaningless without it.
+            ("ROLE_OBSERVATION_SQL", "pool_update" | "pool_retire" | "pool_owner") => {
+                Some("gated by the probed pool_hash in the same query")
+            }
+            // dRep sub-tables: drep_distr is probed (drep_target_ok) and gates the chamber weight; a
+            // missing registration only ever REMOVES a dRep from the live set, never adds one.
+            ("ROLE_OBSERVATION_SQL", "drep_hash" | "drep_registration") => {
+                Some("gated by the probed drep_distr; absence can only shrink the live set")
+            }
+            // Reached only by a foreign key from epoch_stake, whose target epoch this query probes.
+            ("POOL_STAKE_SQL", "pool_hash") => Some(
+                "FK-reached from the probed epoch_stake; probed directly in ROLE_OBSERVATION_SQL",
+            ),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn every_table_the_consensus_reads_depend_on_is_probed_or_explicitly_exempt() {
+        // The fail-closed contract is maintained BY HAND — one `EXISTS (SELECT 1 FROM …)` per table
+        // whose emptiness would be misread as authoritative absence. Nothing enforced that the list
+        // kept up with the queries, and it had already fallen behind on two tables. This makes adding
+        // an unprobed dependency a test failure instead of a silent consensus hazard.
+        for (name, sql) in all_sql() {
+            for table in tables(sql) {
+                // Prefix match, not an exact one: a probe may legitimately narrow (`drep_distr` is
+                // gated as `EXISTS (SELECT 1 FROM drep_distr WHERE epoch_no = …)`, which is a
+                // STRONGER check than bare non-emptiness).
+                let probed = sql.contains(&format!("EXISTS (SELECT 1 FROM {table}"));
+                assert!(
+                    probed || exempt(name, &table).is_some(),
+                    "{name} reads `{table}` with no `EXISTS (SELECT 1 FROM {table})` probe and no \
+                     entry in `exempt()`. An empty `{table}` would be read as authoritative absence \
+                     — decide which it is: add the probe (and abstain on it), or exempt it with the \
+                     reason it cannot be misread.",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_two_holes_the_audit_found_are_probed() {
+        // Pinned individually, because these are the ones that were actually missing: a db-sync with
+        // multi-asset insertion off read as "every vault unlocked", and one with metadata indexing off
+        // read as "no Calidus registration exists".
+        assert!(OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM ma_tx_out)"));
+        assert!(OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM tx_in)"));
+        assert!(ROLE_OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM tx_metadata)"));
+        assert!(ROLE_OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM pool_hash)"));
+    }
+
+    #[test]
+    fn every_ordered_aggregate_has_a_total_order() {
+        // `json_agg` without an ORDER BY leaves row order to the planner, so two nodes can build
+        // different Vecs from identical data. The reduction re-canonicalises the vault/stake/role sets
+        // (BTreeMap/BTreeSet), which is what makes that safe — EXCEPT for `registrations`, whose
+        // chain order decides the same-nonce Calidus winner. That one must stay explicitly ordered.
+        assert!(
+            ROLE_OBSERVATION_SQL.contains("json_agg(encode(bytes,'hex') ORDER BY id)"),
+            "the registration aggregate decides the equal-nonce Calidus tie-break, so its order is \
+             consensus-critical and must not be left to the planner",
+        );
+    }
 }

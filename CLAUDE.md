@@ -81,7 +81,9 @@ an agent needs:
   **chain fork**); the CLI's `query weight` reads the resulting on-chain `TalkStake` ledger over RPC, not
   db-sync. **Preserve verbatim** the byte-identity invariants: spentness from **`tx_in`**
   (never `consumed_by_tx_id`); coins/qty as **`::text`** (lovelace > 2⁵³); the vault set from
-  **`tx_out.payment_cred = <script hash>`**; a fail-closed **abstain** when `tx_in` is absent;
+  **`tx_out.payment_cred = <script hash>`**; a fail-closed **abstain** when `tx_in` is absent (and, since spec 213, when `ma_tx_out` or `tx_metadata`
+  is — an under-indexed db-sync must never be read as authoritative emptiness; `dbsync.rs`'s test module
+  now fails the build if a query gains a table with neither a probe nor an explicit exemption);
   largest-UTxO-wins per identity (never summed). Ogmios still SUBMITS L1 txs + serves cost models; the
   in-browser CIP-30 vault uses Blockfrost. MAINNET PREREQUISITE: db-sync must run FULL (non-pruned),
   **`tx_in`-enabled** (NOT `--consumed-tx-out`), and over TLS.

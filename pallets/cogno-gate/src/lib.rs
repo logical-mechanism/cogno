@@ -469,6 +469,33 @@ pub mod pallet {
         /// double-bind checks, the two directional maps, the microblog `on_bind` (provider ref +
         /// capacity row), and the `IdentityLinked` event. NOT a dispatchable — it performs no origin
         /// check; the caller authorizes via the cryptographically-verified proof.
+        /// Every bound stake credential, CAPPED at `cap`, for the observer's per-block db-sync scope.
+        ///
+        /// Bounded on purpose. This runs on the inherent-data path of EVERY node on EVERY block
+        /// (authoring and import) and feeds a single `= ANY($3::bytea[])` array into a db-sync query
+        /// under a 2 s timeout, while the map it scans is grown by `link_stake_signed` — bare-unsigned,
+        /// feeless, capacity-unmetered, and with no check that the credential holds any ADA. Unbounded,
+        /// that is a free way for anyone to grow the per-block cost until the query blows its timeout,
+        /// at which point `observe_for_parent` abstains and the SOLE weight writer stops for everyone.
+        ///
+        /// `cap` is the observer's `MaxObserved`, so nothing observable is lost: the observation's stake
+        /// axis is itself a `BoundedVec<_, MaxObserved>` and a credential past the cap could not have
+        /// been represented in the result. Iteration is by hashed key — deterministic, so every node
+        /// takes the same prefix and `check_inherent` still agrees.
+        pub fn bound_stake_credentials_capped(cap: u32) -> alloc::vec::Vec<StakeCredential> {
+            let cap = cap as usize;
+            let out: alloc::vec::Vec<StakeCredential> =
+                AccountOfStakeCred::<T>::iter_keys().take(cap).collect();
+            if out.len() == cap {
+                log::warn!(
+                    target: LOG_TARGET,
+                    "bound stake credentials hit the observer cap ({cap}) — voting power past it is \
+                     not observed. Raise MaxObserved or prune the ledger.",
+                );
+            }
+            out
+        }
+
         pub(crate) fn do_bind(account: &T::AccountId, identity: IdentityHash) -> DispatchResult {
             // A permanently-banned (revoked) identity can never be re-bound (the tombstone).
             ensure!(

@@ -1384,6 +1384,10 @@ impl pallet_cardano_roles::Config for Runtime {
     type IdentityGate = CognoGate;
     // Derived from the ONE `CARDANO_NET` cutover selector (spec 211), shared with cogno-gate.
     type CardanoNetwork = CardanoNetworkId;
+    // The SAME cap the observer bounds its observation by, so the per-block claimed-credential scan
+    // can never outrun what an observation could carry. Taken from the observer's own Config so the
+    // two cannot drift.
+    type MaxObserved = <Runtime as pallet_cardano_observer::Config>::MaxObserved;
     type WeightInfo = ();
 }
 
@@ -1456,7 +1460,12 @@ impl pallet_cardano_observer::StakeResolver<AccountId> for StakeLookup {
 pub struct BoundStakeCreds;
 impl pallet_cardano_observer::BoundStakeCredentials for BoundStakeCreds {
     fn bound_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
-        pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys().collect()
+        // CAPPED at the observer's own `MaxObserved`, so a bare-unsigned, feeless `link_stake_signed`
+        // cannot grow the per-block db-sync scope without bound and stall the sole weight writer. The
+        // scan + the operator warning live in cogno-gate, next to the map and the log target.
+        pallet_cogno_gate::Pallet::<Runtime>::bound_stake_credentials_capped(
+            <<Runtime as pallet_cardano_observer::Config>::MaxObserved as sp_core::Get<u32>>::get(),
+        )
     }
 }
 
