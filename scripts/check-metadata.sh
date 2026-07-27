@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Fail if the committed SCALE metadata snapshot has drifted from what the runtime actually produces.
+#
+# WHY THIS EXISTS. Pallet indices, call indices and enum variant indices are on-wire contracts, and SCALE
+# indexes enum variants by DECLARATION ORDER. Deleting or reordering a variant silently shifts every one
+# below it: the wire format changes with no compile error and no test failure. Before this gate the only
+# thing pinning any of it was `#[codec(index = N)]` attributes — which pin the encoding but do not notice
+# when someone CHANGES them — plus a handful of hand-written index assertions covering 6 of 19 pallets.
+# A renumber passed every CI job.
+#
+# The committed `app/.papi/metadata/cogno.scale` is the strongest available pin: it is the runtime's whole
+# type/call/storage/event surface in one blob. Diffing it against a freshly built runtime turns every one
+# of those on-wire contracts into a single gate that cannot be satisfied by restating a literal.
+#
+# A DIFFERENCE IS NOT AUTOMATICALLY A BUG. A deliberate spec bump changes exactly one byte (the
+# `spec_version` inside the `System::Version` constant, which embeds `RuntimeVersion`); the fix there is to
+# re-snapshot. A difference anywhere else means a type, call, storage item or event MOVED — which is
+# either intended (then re-snapshot, and check `transaction_version` / the PAPI descriptors) or is the
+# silent-corruption bug this gate exists to catch. The script says which case it is.
+#
+# Usage:  ./scripts/check-metadata.sh              # verify
+#         ./scripts/check-metadata.sh --write      # re-snapshot after an intended change
+#
+# Re-snapshot via THIS script, never via `papi add -w ws://…`: that command writes the node it was pointed
+# at back into `app/.papi/polkadot-api.json` (`wsUrl`, plus that chain's `genesis` and `codeHash`), and
+# once those are committed a later `papi generate` resolves against a local dev node instead of the
+# committed metadata. This script touches only the .scale blob.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Either profile carries the same embedded runtime, so take whichever exists — CI's `build (workspace)`
+# step produces the debug binary, a local `cargo build --release` the release one.
+if [ -z "${NODE:-}" ]; then
+  for candidate in "$ROOT/target/release/cogno-chain-node" "$ROOT/target/debug/cogno-chain-node"; do
+    [ -x "$candidate" ] && NODE="$candidate" && break
+  done
+  NODE="${NODE:-$ROOT/target/release/cogno-chain-node}"
+fi
+SNAPSHOT="${SNAPSHOT:-$ROOT/app/.papi/metadata/cogno.scale}"
+PORT="${PORT:-19977}"
+WRITE=0
+[ "${1:-}" = "--write" ] && WRITE=1
+
+[ -x "$NODE" ] || { echo "no node binary at $NODE — run 'cargo build --release' first"; exit 1; }
+[ -f "$SNAPSHOT" ] || { echo "no committed snapshot at $SNAPSHOT"; exit 1; }
+
+TMP="$(mktemp -d)"
+cleanup() {
+  [ -n "${NODE_PID:-}" ] && kill "$NODE_PID" 2>/dev/null || true
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
+
+"$NODE" run --dev --tmp --rpc-port "$PORT" --no-prometheus --no-telemetry >"$TMP/node.log" 2>&1 &
+NODE_PID=$!
+
+# Wait for RPC. The runtime is embedded in the binary, so this needs no synced chain — only a live RPC.
+for _ in $(seq 1 60); do
+  if curl -sf --max-time 2 -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"system_name","params":[]}' \
+      "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
+    break
+  fi
+  kill -0 "$NODE_PID" 2>/dev/null || { echo "node exited early:"; tail -20 "$TMP/node.log"; exit 1; }
+  sleep 1
+done
+
+# PAPI pins metadata v16. `state_getMetadata` would hand back v14 (the legacy default) and silently
+# compare two different formats, so ask for the version the snapshot is actually in.
+curl -sf --max-time 20 -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"state_call","params":["Metadata_metadata_at_version","0x10000000"]}' \
+  "http://127.0.0.1:$PORT" >"$TMP/resp.json"
+
+python3 - "$TMP/resp.json" "$TMP/live.scale" <<'PY'
+import json, sys
+raw = bytes.fromhex(json.load(open(sys.argv[1]))["result"][2:])
+if not raw or raw[0] != 1:
+    sys.exit("runtime did not return metadata v16 (Option::None) — is Metadata_metadata_versions missing 16?")
+b = raw[1:]
+f = b[0] & 0b11                                    # SCALE compact length prefix
+if f == 0:   n, off = b[0] >> 2, 1
+elif f == 1: n, off = int.from_bytes(b[:2], 'little') >> 2, 2
+elif f == 2: n, off = int.from_bytes(b[:4], 'little') >> 2, 4
+else:
+    k = (b[0] >> 2) + 4
+    n, off = int.from_bytes(b[1:1+k], 'little'), 1 + k
+open(sys.argv[2], 'wb').write(b[off:off+n])
+PY
+
+if [ "$WRITE" = "1" ]; then
+  cp "$TMP/live.scale" "$SNAPSHOT"
+  echo "re-snapshotted $SNAPSHOT ($(wc -c <"$SNAPSHOT") bytes)"
+  exit 0
+fi
+
+if cmp -s "$TMP/live.scale" "$SNAPSHOT"; then
+  echo "metadata ok — the committed snapshot matches the runtime exactly."
+  exit 0
+fi
+
+python3 - "$TMP/live.scale" "$SNAPSHOT" <<'PY'
+import sys
+live = open(sys.argv[1], 'rb').read()
+snap = open(sys.argv[2], 'rb').read()
+diffs = [i for i in range(min(len(live), len(snap))) if live[i] != snap[i]]
+print(f"METADATA DRIFT: {len(diffs)} differing byte(s); live={len(live)}B snapshot={len(snap)}B")
+if len(live) == len(snap) and len(diffs) == 1:
+    # `System::Version` embeds the RuntimeVersion, so a lone byte delta is almost certainly spec_version.
+    i = diffs[0]
+    print(f"  byte {i}: snapshot=0x{snap[i]:02x} ({snap[i]}) -> live=0x{live[i]:02x} ({live[i]})")
+    print("  A SINGLE byte delta is the signature of a deliberate spec_version bump (System::Version")
+    print("  embeds RuntimeVersion). No type, call, storage or event shape moved.")
+    print("  Fix: ./scripts/check-metadata.sh --write")
+else:
+    lo, hi = max(0, diffs[0] - 32), min(len(live), diffs[-1] + 32)
+    print(f"  first differing byte {diffs[0]}, last {diffs[-1]}")
+    print(f"  live[{lo}:{hi}] = {live[lo:hi]!r}")
+    print(f"  snap[{lo}:{hi}] = {snap[lo:hi]!r}")
+    print("  MORE THAN spec_version MOVED — a type, call, storage item or event changed shape.")
+    print("  If that was intended: re-snapshot with --write, and re-check transaction_version")
+    print("  (a call ARGUMENT change moves it) and whether the PAPI descriptors need regenerating.")
+    print("  If it was NOT intended, you have found a silent on-wire break. Do not re-snapshot.")
+sys.exit(1)
+PY

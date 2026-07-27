@@ -112,7 +112,12 @@ an agent needs:
   enum is pinned with explicit `#[codec(index = N)]` (microblog `VoteDir` and the observer's
   `InherentError` included) — keep it that way. Retired variants leave a permanent GAP (microblog
   event 6 `Reposted`, error 5 `AlreadyReposted`; cogno-gate error 2 `BadThread`). Never insert into a
-  gap, never reorder, always pin a new variant. Same rule as pallet/call indices. Spec 212 retired
+  gap, never reorder, always pin a new variant. Same rule as pallet/call indices. **CI now enforces all
+  of this**: `scripts/check-metadata.sh` diffs the committed `app/.papi/metadata/cogno.scale` against a
+  freshly built runtime, so a reorder no test would catch fails the `rust` job. It also means EVERY spec
+  bump needs `./scripts/check-metadata.sh --write` (the snapshot embeds `spec_version` via
+  `System::Version`) — read what the script says moved before re-snapshotting: one byte is a plain spec
+  bump, more than one means a shape a client can see actually changed. Spec 212 retired
   microblog error 2 (`TooManyPosts`) with `MaxPostsPerAuthor` — index 2 is now a permanent gap too.
 - **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
   never runs: the on-chain `StorageVersion` stays put while the code declares the new one, and

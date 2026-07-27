@@ -169,3 +169,31 @@ the compiled runtime, not live metadata):
 ```bash
 rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)
 ```
+
+## After ANY spec bump: re-snapshot the metadata
+
+CI diffs the committed `app/.papi/metadata/cogno.scale` against a freshly built runtime. That snapshot
+is the strongest pin the repo has on every on-wire index — pallet, call, and (because SCALE indexes
+enum variants by declaration order) every event and error variant. A reorder that no test would catch
+fails this gate.
+
+It also means **every** spec bump moves the snapshot by one byte, because `System::Version` embeds the
+`RuntimeVersion` and therefore the `spec_version` itself. So after a bump:
+
+```bash
+cargo build --release            # the gate needs a node binary
+./scripts/check-metadata.sh      # verify — tells you WHAT moved
+./scripts/check-metadata.sh --write   # re-snapshot, once you've read what moved
+```
+
+Read the output before you re-snapshot. A **single** differing byte is the signature of a plain
+`spec_version` bump — no type, call, storage item or event changed shape, so the PAPI descriptors need
+no regeneration. **More** than that means something moved that a client can observe: re-check
+`transaction_version` (a call *argument* change moves it; adding or removing a whole call does not)
+and regenerate the descriptors per the section above. If you did not intend a shape change, do not
+re-snapshot — the gate has just caught a silent on-wire break.
+
+Re-snapshot with this script rather than `papi add -w ws://…`: that command writes the node it was
+pointed at back into `app/.papi/polkadot-api.json` (`wsUrl`, plus that chain's `genesis` and
+`codeHash`), and once those are committed a later `papi generate` resolves against a local dev node
+instead of the committed metadata.
