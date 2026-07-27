@@ -25,6 +25,7 @@ import {
 } from "@/lib/mentions";
 import { fallbackDisplayName, truncateSs58 } from "@/lib/ss58";
 import { useBlockedSet } from "@/lib/blockStore";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { Suggestion } from "@/lib/types";
 
 const MENTION_LIMIT = 6;
@@ -81,7 +82,7 @@ export function useMentions(opts: {
 }): UseMentions {
   const { text, setText, taRef, listId } = opts;
   const { api, signer, source, viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   // Never suggest a blocked account in @mention autocomplete (block = no interactions with them).
   const blocked = useBlockedSet(me);
   const { following } = useFollow(api, signer, source, me);

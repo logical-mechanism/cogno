@@ -29,6 +29,7 @@ import {
   useNotificationReadState,
   isUnread as isUnreadOf,
 } from "@/lib/notificationReadState";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 /** Stable empty fold — keeps the `items` memo from re-running on every render when nothing is folded. */
 const EMPTY_NOTIFS: Notif[] = [];
@@ -71,7 +72,7 @@ const NotificationsContext = createContext<NotificationsFeed | null>(null);
 
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const { api, source, viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const mutedList = useMutedList(me);
   const blockedList = useBlockedList(me);
   const readState = useNotificationReadState(me);

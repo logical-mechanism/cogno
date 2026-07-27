@@ -23,6 +23,7 @@ import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { pendingLockActions } from "@/lib/pendingLockStore";
 import { PendingCapacityNotice } from "./PendingCapacityNotice";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export function NoPostingPowerNotice() {
   const { api, viewer, identity } = useSession();
@@ -30,7 +31,7 @@ export function NoPostingPowerNotice() {
   // second subscription re-renders on every block even while the tab is hidden, which is exactly
   // what freezing the shared one is for.
   const bestBlock = useBestBlock();
-  const ss58 = viewer.address ?? null;
+  const ss58 = viewerBucket(viewer);
   const { view } = useCapacity(api, ss58, bestBlock);
   const pending = usePendingCapacity(api, ss58, view?.weight ?? null);
   // Whether the SOLE writer of posting power is still running. Everything below is a statement about

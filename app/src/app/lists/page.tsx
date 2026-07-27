@@ -46,11 +46,12 @@ import { truncateSs58 } from "@/lib/ss58";
 import { utf8Bytes } from "@/lib/bytes";
 import type { FeedQuery } from "@/lib/types";
 import styles from "./page.module.css";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export default function ListsPage() {
   const router = useRouter();
   const { api, signer, source, viewer, votingPower } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
 
   const lists = useLocalLists(me);
   const actions = useMemo(() => localListActionsFor(me), [me]);
@@ -301,6 +302,7 @@ export default function ListsPage() {
           hasMore={feed.hasNextPage}
           onLoadMore={feed.loadMore}
           loadingMore={feed.loading}
+          lastPage={feed.page?.posts ?? null}
           paginationCapable={source != null}
           emptyVariant="feed"
           emptyTitle="No posts from this list yet"

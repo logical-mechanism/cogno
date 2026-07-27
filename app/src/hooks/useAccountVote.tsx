@@ -40,6 +40,7 @@ import { useAccountTally, useInvalidateReputation } from "./useReputation";
 import { useAccountVoteState, useInvalidateAccountVoteState } from "./useAccountVoteState";
 import { rebaseAccountVote, ZERO_BASE, type AccountVoteBase, type AccountVoteIntent, type AccountVoteMerged } from "@/lib/accountVote";
 import { submitVoteAccount, submitClearAccountVote } from "@/lib/chain/mutations";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { Ss58 } from "@/lib/types";
 
 /**
@@ -60,7 +61,7 @@ const Context = createContext<AccountVoteCtx | null>(null);
 export function AccountVoteProvider({ children }: { children: ReactNode }) {
   const { api, signer, viewer, votingPower } = useSession();
   const bestBlock = useBestBlock();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const { run } = useMutation();
   const { fail } = useActionToast();
   const invalidateTally = useInvalidateReputation();
@@ -213,7 +214,7 @@ export function useAccountVoteFor(
   const ctx = useContext(Context);
   const { viewer } = useSession();
   const router = useRouter();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const liveKey = opts?.liveKey ?? null;
 
   const invalidateTally = useInvalidateReputation();

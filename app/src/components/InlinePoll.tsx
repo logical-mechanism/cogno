@@ -14,6 +14,7 @@ import { useSession, useBestBlock } from "./Providers";
 import { usePoll } from "@/hooks/usePoll";
 import { chamberBlocksViewer, chamberRequiredRole, roleLabel } from "@/lib/poll";
 import styles from "./InlinePoll.module.css";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { Viewer } from "./kit";
 
 export interface InlinePollProps {
@@ -34,7 +35,7 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
     postId,
     api,
     signer,
-    gate.address ?? null,
+    viewerBucket(gate),
     bestBlock,
   );
   // Casting a poll vote is a mutating write — funnel an unfinished-setup viewer to /welcome instead of

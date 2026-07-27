@@ -24,11 +24,12 @@ import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useHiddenList, hiddenActionsFor } from "@/lib/hiddenStore";
 import { sanitizeInline } from "@/lib/sanitize";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { CognoPost } from "@/lib/types";
 
 export function HiddenSection() {
   const { source, viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const hiddenIds = useHiddenList(me);
   const idsKey = useMemo(() => hiddenIds.map(String).sort().join(","), [hiddenIds]);
 

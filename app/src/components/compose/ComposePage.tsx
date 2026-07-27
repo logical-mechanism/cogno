@@ -43,6 +43,7 @@ import {
   resolveCloseAt,
 } from "@/lib/chain/mutations";
 import { useToaster } from "@/components/toast/ToasterProvider";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
 import type { CognoPost, PollKindName, GovActionType } from "@/lib/types";
 
@@ -69,7 +70,7 @@ export function ComposePage() {
   const { api, signer, source, viewer } = useSession();
   // The draft is bucketed per account (null = the signed-out bucket), so a shared browser never hands
   // one account the previous one's unsent words.
-  const draftWho = viewer.address ?? null;
+  const draftWho = viewerBucket(viewer);
   // `draftWho` is read through a REF in the SAVE effect below, deliberately. Keying that effect on it
   // would fire a save on an account switch while `text` still holds the PREVIOUS account's words — 
   // writing them straight into the new account's bucket, the exact leak the bucketing exists to stop.

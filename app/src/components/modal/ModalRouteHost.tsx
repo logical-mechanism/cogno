@@ -45,6 +45,7 @@ import {
   submitSetProfile,
   submitClearProfile,
 } from "@/lib/chain/mutations";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { ComposerDraft, PollDraft, ModalKind } from "../kit";
 import type { CognoPost, PollKindName, GovActionType } from "@/lib/types";
 import type { ProfileFields } from "../EditProfileModal";
@@ -83,7 +84,7 @@ export function ModalRouteHost() {
   const { state, close } = useModalStore();
   const { api, signer, source, viewer } = useSession();
   // The draft is bucketed per account (null = the signed-out bucket) — see lib/composerDraftStore.
-  const draftWho = viewer.address ?? null;
+  const draftWho = viewerBucket(viewer);
   // `draftWho` is read through a REF in the SAVE effect below, deliberately. Keying that effect on it
   // would fire a save on an account switch while `text` still holds the PREVIOUS account's words — 
   // writing them straight into the new account's bucket, the exact leak the bucketing exists to stop.

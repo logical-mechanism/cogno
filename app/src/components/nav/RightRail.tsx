@@ -25,12 +25,13 @@ import { useWhoToFollow } from "@/hooks/useWhoToFollow";
 import { useFollow } from "@/hooks/useFollow";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery } from "@/lib/search";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export function RightRail() {
   const router = useRouter();
   const pathname = usePathname() ?? "/";
   const { api, signer, source, viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
 
   const [term, setTerm] = useState("");
   const searchEnabled = source != null;

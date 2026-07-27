@@ -53,6 +53,7 @@ import { formatCount, formatSignedWeight, formatWeight } from "@/lib/format";
 import { isDenied } from "@/lib/config/denylist";
 import { handleOf } from "@/lib/ss58";
 import { sanitizeInline } from "@/lib/sanitize";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { CognoPost } from "@/lib/types";
 import type { ActionState, ComposerDraft } from "@/components/kit";
 
@@ -69,7 +70,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const router = useRouter();
   const { api, signer, source, viewer, votingPower } = useSession();
   const bestBlock = useBestBlock();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   // Block + hide are hard removals, applied to the reply list below (the focal itself is handled by
   // PostCard: a blocked focal shows the stub, a hidden focal shows normally — you navigated to it).
   const mod = useModeration(me);

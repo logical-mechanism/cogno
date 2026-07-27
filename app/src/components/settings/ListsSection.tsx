@@ -12,11 +12,12 @@ import { useRouter } from "next/navigation";
 import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useLocalLists } from "@/lib/localListStore";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export function ListsSection() {
   const router = useRouter();
   const { viewer } = useSession();
-  const lists = useLocalLists(viewer.address ?? null);
+  const lists = useLocalLists(viewerBucket(viewer));
   const count = lists.length;
 
   return (

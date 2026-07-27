@@ -32,6 +32,7 @@ import { useHidden, hiddenActionsFor } from "@/lib/hiddenStore";
 import { useBookmarked, bookmarkActionsFor } from "@/lib/bookmarkStore";
 import { useLocalLists, localListActionsFor, MAX_LIST_MEMBERS } from "@/lib/localListStore";
 import { sanitizeInline } from "@/lib/sanitize";
+import { viewerBucket } from "@/lib/viewerBucket";
 import { postLink } from "@/lib/share";
 import { ABUSE_EMAIL, reportMailto } from "@/lib/config/operator";
 import { isDenied } from "@/lib/config/denylist";
@@ -128,8 +129,10 @@ export function PostCard({
   const isOwnPost =
     gate.status === "ready" && gate.address != null && gate.address === post.author;
   // Bookmarks + mutes are device-local but scoped PER ACCOUNT (null = the signed-out bucket), so a
-  // shared device never shows one wallet's saved posts or mute list to the next.
-  const me = gate.status === "ready" ? (gate.address ?? null) : null;
+  // shared device never shows one wallet's saved posts or mute list to the next. `viewerBucket`, NOT a
+  // `status === "ready"` ternary: the two disagree for the whole window before the CIP-8 bind resolves,
+  // and this card would then write `cg-blocked:anon` while every other surface reads `cg-blocked:<ss58>`.
+  const me = viewerBucket(gate);
   // Client-local mute (device-only, no chain state): collapse another account's posts everywhere.
   const muted = useMuted(post.author, me);
   // Client-local block (device-only): HARD-suppress the author — a stub here, removed from every list.
