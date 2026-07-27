@@ -229,6 +229,7 @@ where
             pool_id_set.extend(cogno_dbsync::reduction::claimed_calidus_pools(
                 &role_read.registrations,
                 &claimed_calidus,
+                &role_read.active_pools,
             ));
             let pool_ids: Vec<[u8; 28]> = pool_id_set.into_iter().collect();
             if pool_ids.is_empty() {

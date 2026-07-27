@@ -212,6 +212,17 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 | `EnforceWeight` default | `true` (observer is sole weight writer from genesis) | `pallets/cardano-observer/src/lib.rs` |
 | `CardanoNetwork` | 0 (testnet/preprod; 1 = mainnet) — ONE derived constant both CIP-8 pallets share | `CardanoNetworkId` |
 
+`MaxObserved` bounds ENTRIES, not identities, and on the role axis those are not the same number. The
+vault and voting-power axes emit one entry per identity, but an mSPO emits one `SpoCalidus` entry per
+declaring pool and the owner path one `SpoOwner` entry per owned pool — so a few dozen multi-pool
+operators can reach 1024 role entries while the other two axes sit near zero. Against the live preprod
+db-sync the owner path alone resolves 739 (credential, pool) rows across 635 credentials, with one
+credential owning 17 pools. Capping the SCOPING sets does not bound this; the output bound is enforced
+fail-closed by `create_inherent`, which abstains rather than truncate. That is deliberate — absence from
+`role_entries` is a REVOKE (the unlock clamp clears every role of an account that drops out), so
+truncating to fit would silently strip badges instead of freezing. Watch `cogno_observer_observed_roles`,
+which is the axis `ObserverApproachingMaxObserved` fires on first.
+
 ## Governance (sudo-free)
 
 Every privileged call goes through a 3-of-5 committee — there is no sudo (see [ARCHITECTURE.md](ARCHITECTURE.md)).

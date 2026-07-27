@@ -72,6 +72,7 @@ async fn build_cardano_idp(
                     lag_slots,
                     obs.entries.len(),
                     obs.stake_entries.len(),
+                    obs.role_entries.len(),
                 );
                 m.set_max_observed(max_observed);
                 if frozen {
@@ -254,6 +255,7 @@ async fn observe_for_parent(
     pool_id_set.extend(cogno_dbsync::reduction::claimed_calidus_pools(
         &role_read.registrations,
         &claimed_calidus,
+        &role_read.active_pools,
     ));
     let pool_ids: Vec<[u8; 28]> = pool_id_set.into_iter().collect();
     let pool_stake = match dbsync::read_pool_stake(
