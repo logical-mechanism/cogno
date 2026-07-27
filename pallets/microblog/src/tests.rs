@@ -4863,9 +4863,11 @@ mod invariant_props {
 fn close_poll_refunds_every_rejected_path_to_the_base_weight() {
     // `close_poll`'s DECLARED weight reserves `6 × MaxObservedAccounts` reads for two observed-set
     // joins. FRAME charges the FULL declared weight for an `Err` unless the error carries a
-    // `PostDispatchInfo` — so before this, every rejection bought a full worst-case block-weight slot
-    // at zero cost. The call is feeless, and `PollNotClosable` on a not-yet-due poll is repeatable at
-    // will by anyone, so the cheapest griefing vector on the chain was a loop over one open poll.
+    // `PostDispatchInfo` — so before this, every rejection billed the block a full worst-case slot for
+    // work it never did. Not free (`metered_cost` prices `close_poll` at `VoteCost` and `CheckCapacity`
+    // debits it whatever the dispatch returned), but mispriced: one vote's worth of battery bought
+    // ~10% of a block's Normal weight, and `PollNotClosable` on a not-yet-due poll is repeatable by
+    // anyone who can pay it, so the cheapest griefing vector on the chain was a loop over one open poll.
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         // What FRAME keys on is whether `actual_weight` is Some or None: `None` means "charge the full

@@ -270,12 +270,19 @@ pub mod pallet {
     /// rejected. A genuine re-claim needs a fresh proof with a new nonce, which only the role key can
     /// sign — no usability cost.
     ///
-    /// ⚠ RESIDUAL, stated honestly: this remembers the LAST nonce, not every nonce. An account that
-    /// has completed two or more claim/unclaim cycles can still be hit by a replay of a proof OLDER
-    /// than its most recent one. Closing that completely needs a chain-tracked counter committed
-    /// inside the signed payload, i.e. a `cogno-chain/role/v1` GRAMMAR change — which moves the
-    /// frontend signing flow and the CI oracle with it, so it belongs in its own spec, not here.
-    /// Bounded either way: one 16-byte entry per `(account, role)`, the same growth as the claim.
+    /// ⚠ RESIDUAL, stated honestly: this remembers the LAST nonce, not every nonce. The client mints
+    /// a fresh random nonce per proof, so a second claim displaces the first — an account past two or
+    /// more claim/unclaim cycles can still be hit by a replay of a proof OLDER than its most recent
+    /// one. Two closes exist, and NEITHER needs the `cogno-chain/role/v1` GRAMMAR to move: key this
+    /// map by the nonce as well (correct, but it turns one row per `(account, role)` into an
+    /// append-only map with no prune verb, written by a feeless bare-unsigned call), or require the
+    /// nonce to be strictly INCREASING (O(1) storage and every older proof dies for good, but the
+    /// client can no longer mint a uniformly random nonce — a lockstep frontend rule, plus a re-sign
+    /// whenever a signer raced a stale read). That lockstep is why the second is deferred, not the
+    /// grammar. Griefing-only meanwhile: the replay re-binds the holder's OWN credential to the
+    /// account the holder committed, `unclaim_role` stays free for the holder, and the observer still
+    /// gates the badge on live Cardano state.
+    /// Bounded as written: one 16-byte entry per `(account, role)`, the same growth as the claim.
     #[pallet::storage]
     pub type SpentRoleNonce<T: Config> = StorageDoubleMap<
         _,
@@ -544,14 +551,25 @@ pub mod pallet {
             // the result anyway. Iteration is by hashed key, so the prefix is deterministic and every
             // node takes the same one — `check_inherent` still agrees.
             let cap = T::MaxObserved::get() as usize;
-            let out: Vec<RoleCredential> = RoleCredIndex::<T>::iter_key_prefix(role)
-                .take(cap)
+            // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that
+            // exactly fills it (nothing dropped yet — the last quiet block), `len > cap` is a real
+            // truncation. Truncating back leaves the returned prefix byte-identical to `take(cap)`, so
+            // the author and the importer still derive the same scoping set.
+            let mut out: Vec<RoleCredential> = RoleCredIndex::<T>::iter_key_prefix(role)
+                .take(cap.saturating_add(1))
                 .collect();
-            if out.len() == cap {
+            if out.len() > cap {
+                out.truncate(cap);
                 log::warn!(
                     target: LOG_TARGET,
-                    "claimed {role:?} credentials hit the MaxObserved cap ({cap}) — claims past it are \
-                     not observed. Raise MaxObserved or prune the ledger.",
+                    "claimed {role:?} credentials EXCEED the MaxObserved cap ({cap}) — claims past it \
+                     are not observed. Raise MaxObserved or prune the ledger.",
+                );
+            } else if out.len() == cap {
+                log::warn!(
+                    target: LOG_TARGET,
+                    "claimed {role:?} credentials are exactly AT the MaxObserved cap ({cap}) — the next \
+                     claim is not observed. Raise MaxObserved or prune the ledger.",
                 );
             }
             out

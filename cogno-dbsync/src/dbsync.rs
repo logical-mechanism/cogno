@@ -144,7 +144,7 @@ pub async fn read_observation(
         // Use `try_get` (not the panicking `Row::get`) throughout: a column type-mismatch must honour the
         // fail-closed contract (Err → abstain), NOT panic inside the authoring/import future.
         if !row
-            .try_get::<_, bool>(4)
+            .try_get::<_, bool>("tx_in_ok")
             .map_err(|e| format!("db-sync tx_in_ok column decode failed: {e}"))?
         {
             return Err("db-sync tx_in table is empty (--consumed-tx-out mode?); the observation requires a \
@@ -159,7 +159,7 @@ pub async fn read_observation(
         // the `tx_in` hole above, on the table the beacon gate depends on. `ma_tx_out` is network-wide,
         // so it is non-empty on any real Cardano chain no matter how few vault locks exist.
         if !row
-            .try_get::<_, bool>(5)
+            .try_get::<_, bool>("ma_ok")
             .map_err(|e| format!("db-sync ma_ok column decode failed: {e}"))?
         {
             return Err(
@@ -170,16 +170,16 @@ pub async fn read_observation(
         }
 
         let tip_slot = row
-            .try_get::<_, Option<i64>>(0)
+            .try_get::<_, Option<i64>>("tip_slot")
             .map_err(|e| format!("db-sync tip_slot column decode failed: {e}"))?
             .and_then(|s| u64::try_from(s).ok())
             .ok_or_else(|| "db-sync returned no tip slot".to_string())?;
         // anchor: both columns present + the hash is 32-byte hex ⇒ Some; otherwise None (fail closed).
         let anchor_slot = row
-            .try_get::<_, Option<i64>>(1)
+            .try_get::<_, Option<i64>>("anchor_slot")
             .map_err(|e| format!("db-sync anchor_slot column decode failed: {e}"))?;
         let anchor_hash = row
-            .try_get::<_, Option<String>>(2)
+            .try_get::<_, Option<String>>("anchor_hash")
             .map_err(|e| format!("db-sync anchor_hash column decode failed: {e}"))?;
         let anchor = match (anchor_slot, anchor_hash) {
             (Some(slot_no), Some(hash)) => match (u64::try_from(slot_no).ok(), hex32(&hash)) {
@@ -189,7 +189,7 @@ pub async fn read_observation(
             _ => None,
         };
         let matches = row
-            .try_get::<_, serde_json::Value>(3)
+            .try_get::<_, serde_json::Value>("matches")
             .map_err(|e| format!("db-sync matches column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -277,7 +277,7 @@ pub async fn read_stake_observation(
         // not-yet-indexed node would read 0 for a real staker → a false unlock-clamp / cross-node fork).
         // `try_get` (not the panicking `Row::get`): a decode failure must abstain (Err), not panic.
         if !row
-            .try_get::<_, bool>(0)
+            .try_get::<_, bool>("epoch_stake_ok")
             .map_err(|e| format!("db-sync epoch_stake_ok column decode failed: {e}"))?
         {
             return Err(
@@ -287,7 +287,7 @@ pub async fn read_stake_observation(
             );
         }
         if !row
-            .try_get::<_, bool>(1)
+            .try_get::<_, bool>("target_ok")
             .map_err(|e| format!("db-sync target_ok column decode failed: {e}"))?
         {
             return Err(
@@ -297,7 +297,7 @@ pub async fn read_stake_observation(
             );
         }
         let rows = row
-            .try_get::<_, serde_json::Value>(2)
+            .try_get::<_, serde_json::Value>("rows")
             .map_err(|e| format!("db-sync epoch_stake rows column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -482,7 +482,7 @@ pub async fn read_role_observation(
         // Fail-closed: pool_hash must be populated (else a behind db-sync would read no active pools →
         // a false clamp of every SPO badge). `try_get`, never the panicking `Row::get`.
         if !row
-            .try_get::<_, bool>(0)
+            .try_get::<_, bool>("pool_ok")
             .map_err(|e| format!("db-sync pool_ok column decode failed: {e}"))?
         {
             return Err(
@@ -500,7 +500,7 @@ pub async fn read_role_observation(
         // ⚠ This does NOT catch a metadata KEY WHITELIST (`"keys": [721]` leaves tx_metadata non-empty
         // while filtering label 867 out). That needs the boot probe in node/src/config_check.rs.
         if !row
-            .try_get::<_, bool>(1)
+            .try_get::<_, bool>("meta_ok")
             .map_err(|e| format!("db-sync meta_ok column decode failed: {e}"))?
         {
             return Err(
@@ -510,7 +510,7 @@ pub async fn read_role_observation(
             );
         }
         let reg_rows = row
-            .try_get::<_, serde_json::Value>(2)
+            .try_get::<_, serde_json::Value>("registrations")
             .map_err(|e| format!("db-sync registrations column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -521,7 +521,7 @@ pub async fn read_role_observation(
             registrations.push(hex_to_vec(hex).ok_or("bad registration hex")?);
         }
         let pool_rows = row
-            .try_get::<_, serde_json::Value>(3)
+            .try_get::<_, serde_json::Value>("active_pools")
             .map_err(|e| format!("db-sync active_pools column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -532,7 +532,7 @@ pub async fn read_role_observation(
             active_pools.push(hex_bytes::<28>(hex).ok_or("bad pool id hex")?);
         }
         let owner_rows = row
-            .try_get::<_, serde_json::Value>(4)
+            .try_get::<_, serde_json::Value>("owner_pools")
             .map_err(|e| format!("db-sync owner_pools column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -553,7 +553,7 @@ pub async fn read_role_observation(
             ));
         }
         let drep_rows = row
-            .try_get::<_, serde_json::Value>(5)
+            .try_get::<_, serde_json::Value>("live_dreps")
             .map_err(|e| format!("db-sync live_dreps column decode failed: {e}"))?
             .as_array()
             .cloned()
@@ -570,7 +570,7 @@ pub async fn read_role_observation(
         // abstain instead. (An empty live-dRep set has nothing to weight, so the missing snapshot is
         // irrelevant and we do NOT abstain.) The SPO counterpart is guarded identically in `read_pool_stake`.
         let drep_target_ok = row
-            .try_get::<_, bool>(6)
+            .try_get::<_, bool>("drep_target_ok")
             .map_err(|e| format!("db-sync drep_target_ok column decode failed: {e}"))?;
         if !live_dreps.is_empty() && !drep_target_ok {
             return Err(
@@ -579,7 +579,7 @@ pub async fn read_role_observation(
                     .to_string(),
             );
         }
-        let drep_stake = parse_id_stake(&row, 6, "drep_stake")?;
+        let drep_stake = parse_id_stake(&row, "drep_stake")?;
 
         Ok(DbsyncRoleRead {
             registrations,
@@ -666,7 +666,7 @@ pub async fn read_pool_stake(
         // non-empty `pool_ids` short-circuit above), else a behind db-sync would read 0 for a real pool → a
         // false chamber weight and a cross-node fork. `try_get`, never the panicking `Row::get`.
         if !row
-            .try_get::<_, bool>(0)
+            .try_get::<_, bool>("target_ok")
             .map_err(|e| format!("db-sync pool_stake target_ok column decode failed: {e}"))?
         {
             return Err(
@@ -675,7 +675,7 @@ pub async fn read_pool_stake(
                     .to_string(),
             );
         }
-        parse_id_stake(&row, 1, "pool_stake")
+        parse_id_stake(&row, "pool_stake")
     };
 
     tokio::time::timeout(DBSYNC_TIMEOUT, read)
@@ -691,13 +691,14 @@ pub async fn read_pool_stake(
 /// Parse a chamber-weight column (a JSON array of `{"id": <28-byte hex>, "stake": <lovelace string>}`)
 /// into `(id, total)` pairs. The stake is emitted `::text` in SQL (lovelace > 2^53), so it MUST parse as
 /// a pure-digit u128 — a malformed value fails the whole read closed (Err → abstain), never silently 0.
-fn parse_id_stake(
-    row: &tokio_postgres::Row,
-    idx: usize,
-    label: &str,
-) -> Result<Vec<([u8; 28], u128)>, String> {
+/// `label` is the column's SQL ALIAS and doubles as the row index: every read in this module addresses
+/// its column BY NAME, never by position. A positional index silently re-points at the neighbouring
+/// column the moment a probe is inserted into a SELECT list, and because these reads are the consensus
+/// weight writer's only input, that mis-read is a hard `Err` on every block — the whole observation
+/// abstains forever, and no test that only exercises the SQL strings can see it.
+fn parse_id_stake(row: &tokio_postgres::Row, label: &str) -> Result<Vec<([u8; 28], u128)>, String> {
     let rows = row
-        .try_get::<_, serde_json::Value>(idx)
+        .try_get::<_, serde_json::Value>(label)
         .map_err(|e| format!("db-sync {label} column decode failed: {e}"))?
         .as_array()
         .cloned()
@@ -763,23 +764,77 @@ mod tests {
 
     /// Real db-sync tables a query reads: every `FROM x` / `JOIN x`, minus its own CTEs and minus
     /// sub-select aliases.
+    ///
+    /// A FROM list is comma-separated, and these queries use that form (`FROM freshness f, vault v`),
+    /// including one item that trails a JOIN's ON clause (`… LEFT JOIN block sb ON sb.id = stx.block_id,
+    /// params p`). So the scan is stateful rather than a plain `windows(2)` over FROM/JOIN: while a list
+    /// is open, every comma introduces another item. `ON` must NOT close the list, or that trailing item
+    /// goes unseen — and an unseen table is an unprobed, unexempted db-sync dependency that the test
+    /// below would then report as safe.
+    ///
+    /// Openness is tracked PER PAREN DEPTH, which is what keeps the three confusable shapes apart: a
+    /// comma inside a function call (`coalesce(a, b)`) is not a list separator, a sub-select in a FROM
+    /// list must not close the list that contains it, and a parenthesized join (`FROM (a x JOIN b y …)`)
+    /// still names real tables. Parens and commas are split into their own tokens first so the depth
+    /// count cannot be thrown off by punctuation glued to an identifier.
     fn tables(sql: &str) -> BTreeSet<String> {
         let ctes = cte_names(sql);
         let mut out = BTreeSet::new();
-        let toks: Vec<&str> = sql.split_whitespace().collect();
-        for w in toks.windows(2) {
-            if w[0] == "FROM" || w[0] == "JOIN" {
-                let name = w[1]
-                    .trim_start_matches('(')
-                    .trim_end_matches(&[',', ')'][..])
-                    .to_string();
-                // `FROM (SELECT …` and the like leave a keyword behind, not a table.
-                if name.is_empty() || name.starts_with("(") || name.chars().any(|c| c == '\'') {
-                    continue;
+        let spaced = sql
+            .replace('(', " ( ")
+            .replace(')', " ) ")
+            .replace(',', " , ");
+        // `open[d]` = a FROM list is open at paren depth `d`. `expect` = the next identifier names a
+        // table (carried THROUGH an opening paren, so a parenthesized join is still read).
+        let mut open: Vec<bool> = vec![false];
+        let mut depth: usize = 0;
+        let mut expect = false;
+        for tok in spaced.split_whitespace() {
+            match tok {
+                "(" => {
+                    depth += 1;
+                    if open.len() <= depth {
+                        open.resize(depth + 1, false);
+                    }
+                    open[depth] = false;
+                    // `expect` deliberately survives: `FROM ( tx_in ti JOIN …` names a table, while
+                    // `FROM ( SELECT …` does not — the keyword fails the identifier test below.
                 }
-                if !ctes.contains(&name) && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
-                {
-                    out.insert(name);
+                ")" => {
+                    open[depth] = false;
+                    depth = depth.saturating_sub(1);
+                    expect = false;
+                }
+                "," => {
+                    // Only a comma at the list's OWN depth separates items; one nested inside a
+                    // function call or sub-select belongs to that, not to the FROM list.
+                    if open[depth] {
+                        expect = true;
+                    }
+                }
+                "FROM" | "JOIN" => {
+                    open[depth] = true;
+                    expect = true;
+                }
+                "WHERE" | "GROUP" | "ORDER" | "HAVING" | "LIMIT" | "UNION" | "SELECT" => {
+                    open[depth] = false;
+                    expect = false;
+                }
+                _ => {
+                    if expect {
+                        expect = false;
+                        // A db-sync table is a bare lowercase identifier; digits are legal after the
+                        // first character, so `all(is_ascii_lowercase)` alone would silently drop one.
+                        // This also rejects aliases-with-dots, quoted literals and stray keywords.
+                        let is_table = tok
+                            .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                            && tok
+                                .chars()
+                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+                        if is_table && !ctes.contains(tok) {
+                            out.insert(tok.to_string());
+                        }
+                    }
                 }
             }
         }
@@ -867,6 +922,109 @@ mod tests {
         assert!(OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM tx_in)"));
         assert!(ROLE_OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM tx_metadata)"));
         assert!(ROLE_OBSERVATION_SQL.contains("EXISTS (SELECT 1 FROM pool_hash)"));
+    }
+
+    #[test]
+    fn every_column_the_readers_address_by_name_exists_in_its_query() {
+        // The readers index columns by SQL ALIAS, not by position, because a positional index silently
+        // re-points at its neighbour the moment a probe column is inserted above it — exactly what
+        // happened when the `meta_ok` probe was added to the role read and shifted `drep_stake` from 6
+        // to 7. That mis-read is a hard `Err` on EVERY block, so the sole writer of Cardano weight stops
+        // dead, and nothing in this file's SQL-string assertions could see it.
+        //
+        // Names are only safe while the alias and the reader agree, so pin the two together here: rename
+        // an alias without re-pointing its reader and this fails at build time instead of on the producer.
+        for (query, name, col) in [
+            (OBSERVATION_SQL, "OBSERVATION_SQL", "tx_in_ok"),
+            (OBSERVATION_SQL, "OBSERVATION_SQL", "ma_ok"),
+            (
+                STAKE_OBSERVATION_SQL,
+                "STAKE_OBSERVATION_SQL",
+                "epoch_stake_ok",
+            ),
+            (STAKE_OBSERVATION_SQL, "STAKE_OBSERVATION_SQL", "target_ok"),
+            (STAKE_OBSERVATION_SQL, "STAKE_OBSERVATION_SQL", "rows"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "pool_ok"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "meta_ok"),
+            (
+                ROLE_OBSERVATION_SQL,
+                "ROLE_OBSERVATION_SQL",
+                "registrations",
+            ),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "active_pools"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "owner_pools"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "live_dreps"),
+            (
+                ROLE_OBSERVATION_SQL,
+                "ROLE_OBSERVATION_SQL",
+                "drep_target_ok",
+            ),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "drep_stake"),
+            (POOL_STAKE_SQL, "POOL_STAKE_SQL", "target_ok"),
+            (POOL_STAKE_SQL, "POOL_STAKE_SQL", "pool_stake"),
+        ] {
+            assert!(
+                query.contains(&format!("AS {col}")),
+                "{name} has no `AS {col}` alias, but its reader addresses that column by name — the \
+                 read would fail closed on every block. Re-point the reader, or restore the alias.",
+            );
+        }
+        // The vault read's first four columns are projected unaliased, so their names come from the
+        // qualified expressions themselves. Pin that projection verbatim for the same reason.
+        assert!(
+            OBSERVATION_SQL
+                .contains("SELECT f.tip_slot, a.anchor_slot, a.anchor_hash, v.matches,"),
+            "`read_observation` addresses tip_slot/anchor_slot/anchor_hash/matches by name; those names \
+             come from this unaliased projection, so changing it silently breaks the read",
+        );
+    }
+
+    #[test]
+    fn the_table_scan_sees_past_a_comma_and_a_digit() {
+        // The scan feeds the probe test below, so anything it cannot see is an unprobed db-sync
+        // dependency reported as safe — the exact silent-consensus hazard that test exists to prevent.
+        // The shapes it has to get right — the real queries already use the first two:
+        //   * a comma-separated FROM list, including an item trailing a JOIN's ON clause;
+        //   * a table name containing a digit (`all(is_ascii_lowercase)` dropped it);
+        //   * a parenthesized join, a sub-select sitting IN a FROM list, and a comma inside a
+        //     function call — the three the paren-depth tracking exists to tell apart.
+        let set = |ts: &[&str]| ts.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            tables(
+                "SELECT 1 FROM epoch_stake es, reward r \
+                 JOIN pool_hash ph ON ph.id = es.pool_id, ma_tx_out2 m WHERE r.id = 1"
+            ),
+            set(&["epoch_stake", "ma_tx_out2", "pool_hash", "reward"]),
+        );
+        // A PARENTHESIZED join still names real tables — bailing on the leading `(` lost `tx_in`.
+        assert_eq!(
+            tables("SELECT 1 FROM (tx_in ti JOIN tx t ON t.id = ti.tx_in_id) WHERE 1 = 1"),
+            set(&["tx_in", "tx"]),
+        );
+        // A sub-select in a FROM list must not close the list CONTAINING it: `ma_tx_out` is a real
+        // dependency sitting after one, and losing it loses its probe requirement too.
+        assert_eq!(
+            tables("SELECT 1 FROM (SELECT a FROM block b) q, ma_tx_out m WHERE 1 = 1"),
+            set(&["block", "ma_tx_out"]),
+        );
+        // A comma INSIDE a function call is not a list separator. Treating it as one invents a table
+        // (`dflt`) that no probe can satisfy, failing the guard below for a query that is fine.
+        assert_eq!(
+            tables(
+                "SELECT 1 FROM epoch_stake es JOIN pool_hash ph \
+                 ON ph.id = coalesce(es.pool_id, dflt) WHERE es.id = 1"
+            ),
+            set(&["epoch_stake", "pool_hash"]),
+        );
+        // Aliases, CTEs and sub-select aliases still stay out.
+        assert_eq!(
+            tables(
+                "WITH params AS (SELECT 1 AS x), t AS (SELECT 1 FROM block b, params p) \
+                 SELECT * FROM (SELECT a, b FROM t) q, params p"
+            ),
+            set(&["block"]),
+        );
     }
 
     #[test]

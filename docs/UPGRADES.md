@@ -73,6 +73,10 @@ $CLI upgrade apply --wasm "$WASM" --account-signing-key-file acct.skey --ws $WS
 Without it, the CLI bundles every seat key on one host and runs `propose → vote → close` itself — which
 is the single-operator default, and exactly what you do *not* want once the seats are real custodians.
 An air-gapped seat can `committee vote --offline` and hand the signed extrinsic to `committee submit`.
+An offline **aye** also needs `--call <hex>`: that seat has no endpoint to fetch the motion's preimage
+from, so it carries the call hex in (`committee list` prints it as `call-hex`) and the CLI re-hashes it
+against `--proposal` before signing. The check is local, so it holds even if the host that printed the
+hex lied. A `--reject` does not require it, because a nay can only ever block a motion.
 
 > **Fuel:** whoever signs `authorize`/`apply` pays the fee in governance fuel. Genesis committee
 > accounts are pre-funded; any account added later needs a committee-granted allowance first

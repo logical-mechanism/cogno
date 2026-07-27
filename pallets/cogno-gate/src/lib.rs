@@ -465,10 +465,6 @@ pub mod pallet {
             Ok((account, proof.stake_credential))
         }
 
-        /// The shared 1:1 bind body for the trustless [`Call::link_identity_signed`]: the tombstone +
-        /// double-bind checks, the two directional maps, the microblog `on_bind` (provider ref +
-        /// capacity row), and the `IdentityLinked` event. NOT a dispatchable — it performs no origin
-        /// check; the caller authorizes via the cryptographically-verified proof.
         /// Every bound stake credential, CAPPED at `cap`, for the observer's per-block db-sync scope.
         ///
         /// Bounded on purpose. This runs on the inherent-data path of EVERY node on EVERY block
@@ -484,18 +480,34 @@ pub mod pallet {
         /// takes the same prefix and `check_inherent` still agrees.
         pub fn bound_stake_credentials_capped(cap: u32) -> alloc::vec::Vec<StakeCredential> {
             let cap = cap as usize;
-            let out: alloc::vec::Vec<StakeCredential> =
-                AccountOfStakeCred::<T>::iter_keys().take(cap).collect();
-            if out.len() == cap {
+            // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that
+            // exactly fills it (nothing dropped yet — the last quiet block), `len > cap` is a real
+            // truncation. Truncating back leaves the kept prefix byte-identical to `take(cap)`, so every
+            // node still derives the same scoping set and `check_inherent` agrees.
+            let mut out: alloc::vec::Vec<StakeCredential> = AccountOfStakeCred::<T>::iter_keys()
+                .take(cap.saturating_add(1))
+                .collect();
+            if out.len() > cap {
+                out.truncate(cap);
                 log::warn!(
                     target: LOG_TARGET,
-                    "bound stake credentials hit the observer cap ({cap}) — voting power past it is \
+                    "bound stake credentials EXCEED the observer cap ({cap}) — voting power past it is \
                      not observed. Raise MaxObserved or prune the ledger.",
+                );
+            } else if out.len() == cap {
+                log::warn!(
+                    target: LOG_TARGET,
+                    "bound stake credentials are exactly AT the observer cap ({cap}) — the next bind's \
+                     voting power is not observed. Raise MaxObserved or prune the ledger.",
                 );
             }
             out
         }
 
+        /// The shared 1:1 bind body for the trustless [`Call::link_identity_signed`]: the tombstone +
+        /// double-bind checks, the two directional maps, the microblog `on_bind` (provider ref +
+        /// capacity row), and the `IdentityLinked` event. NOT a dispatchable — it performs no origin
+        /// check; the caller authorizes via the cryptographically-verified proof.
         pub(crate) fn do_bind(account: &T::AccountId, identity: IdentityHash) -> DispatchResult {
             // A permanently-banned (revoked) identity can never be re-bound (the tombstone).
             ensure!(

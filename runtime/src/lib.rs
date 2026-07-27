@@ -113,12 +113,23 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     //      Mandatory dispatch INFALLIBLE. An `Err` there is `BadMandatory` (whole block discarded), and
     //      since the reference is a pure function of the PARENT's slot, the discarded block leaves the
     //      next reference unchanged — so any upgrade RAISING `StabilitySlots` wedged authoring forever.
-    // Call-ACCEPTANCE and dispatch-logic changes only: no call args, no storage, no events, no
-    // `TxExtension` change, so `transaction_version` STAYS 7 and no TYPE, call, storage or event SHAPE
-    // moves. Verified against a rebuilt dev node: metadata v16 differs from the spec-212 snapshot in
-    // exactly ONE byte — `0xd4 → 0xd5` inside the `System::Version` constant, which embeds this very
-    // `RuntimeVersion`. So the PAPI descriptors need no regen (nothing they encode changed); the
-    // committed `app/.papi/metadata/cogno.scale` is simply re-snapshotted, and the
+    // Those two are call-ACCEPTANCE and dispatch-logic only. The rest of the same audit sweep rides
+    // along in 213: role badges are torn down on an identity revoke, `close_poll` refunds its four
+    // rejection paths, and `claim_role_signed`'s CIP-8 proof becomes SINGLE-USE — that last one is
+    // the only item in the spec that moves a metadata shape. It adds `CardanoRoles::SpentRoleNonce`
+    // (a `StorageDoubleMap` holding the last accepted nonce per account+role) and
+    // `Error::RoleProofReplayed`, pinned at `#[codec(index = 7)]` so no existing variant shifts. No
+    // call ARGUMENT and no `TxExtension` change, so `transaction_version` STAYS 7. Metadata v16
+    // therefore GROWS against the spec-212 snapshot, 138754 → 141110 bytes: that storage entry, that
+    // error variant, and the doc strings on both (pallet item docs are IN the blob, which is why a
+    // comment rewrite alone moves it); the `System::Version` byte that embeds this very
+    // `RuntimeVersion` flips in place (0xd4 → 0xd5) and adds nothing. So `check-metadata.sh` takes its
+    // "MORE THAN spec_version MOVED" branch here — verified benign by diffing the old and new blobs:
+    // one contiguous region changed and every byte of it is `SpentRoleNonce` doc text.
+    // Re-snapshotted `app/.papi/metadata/cogno.scale` via
+    // `./scripts/check-metadata.sh --write`; PAPI is pointed at it by
+    // `app/.papi/polkadot-api.json`, so `postinstall: papi` regenerates the descriptors from it and
+    // the new storage query and error variant DO reach the typed client. The
     // `DESCRIPTOR_SPEC_VERSION` lockstep constant moves with it.
     spec_version: 213,
     impl_version: 1,
