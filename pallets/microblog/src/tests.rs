@@ -2738,6 +2738,63 @@ mod capacity_extension {
         });
     }
 
+    /// `validate` with the REAL encoded length of the call, which is what the pool passes in.
+    fn validate_len(
+        who: u64,
+        call: &RuntimeCall,
+    ) -> Result<(u64, crate::Pre<Test>), TransactionValidityError> {
+        let info = call.get_dispatch_info();
+        Ext::new()
+            .validate(
+                RuntimeOrigin::signed(who),
+                call,
+                &info,
+                codec::Encode::encoded_size(call),
+                (),
+                &TxBaseImplication(()),
+                TransactionSource::External,
+            )
+            .map(|(vt, pre, _origin)| (vt.priority, pre))
+    }
+
+    #[test]
+    fn an_oversized_metered_call_is_rejected_whatever_field_carries_the_bytes() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            prime(1, 1_000, 5_000); // plenty of capacity, so only the length gate can reject
+            // The hole this closes: `create_poll` is priced on `question.len()` ALONE, so an empty
+            // question carrying a multi-megabyte OPTION was admitted, gossiped and included for the
+            // price of one empty post, then failed `OptionTooLong` in dispatch with the bytes already
+            // in the block body forever. The per-field `over_len` check never looked at `options`.
+            let attack = RuntimeCall::Microblog(crate::Call::create_poll {
+                question: vec![],
+                options: vec![vec![0u8; 3_600_000], vec![1u8]],
+                close_at: None,
+                kind: PollKind::Stake,
+                action: None,
+            });
+            assert_eq!(
+                validate_len(1, &attack).map(|_| ()).unwrap_err(),
+                TransactionValidityError::Invalid(InvalidTransaction::Call),
+                "an oversized metered call must be rejected at the pool as MALFORMED, never retried",
+            );
+
+            // And the gate must not touch a well-formed call: every field at its documented maximum
+            // still validates, so the ceiling can only ever catch calls the dispatch would reject.
+            let legit = RuntimeCall::Microblog(crate::Call::create_poll {
+                question: vec![b'q'; 512],
+                options: vec![vec![b'o'; 80], vec![b'o'; 80], vec![b'o'; 80], vec![b'o'; 80]],
+                close_at: None,
+                kind: PollKind::Stake,
+                action: None,
+            });
+            assert!(
+                validate_len(1, &legit).is_ok(),
+                "a maximal but WELL-FORMED metered call must still pass the pool",
+            );
+        });
+    }
+
     #[test]
     fn non_metered_calls_pass_through_without_consuming() {
         new_test_ext().execute_with(|| {

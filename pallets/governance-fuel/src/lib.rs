@@ -198,6 +198,29 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// Catch a LOWERED `MaxFundedAccounts` before it is enacted.
+        ///
+        /// `Allowances` is a `BoundedVec<_, MaxFundedAccounts>` behind `ValueQuery`, so an upgrade that
+        /// lowers the bound below the funded set makes every read decode-fail and answer with the EMPTY
+        /// default. Nothing errors; four things break at once and all of them quietly. Regeneration
+        /// iterates an empty list, so every funded account decays monotonically under admin fees with no
+        /// top-up — the self-refund deadlock this pallet exists to prevent. Both seating gates start
+        /// refusing everyone, because an unfunded account cannot be seated. And the next `set_allowance`
+        /// rebuilds the list from that empty default, making the loss permanent.
+        ///
+        /// `get()` cannot see it (it IS what swallows the failure); `decode_len` reads the raw length
+        /// prefix and is bound-independent. Runs under `try-runtime` against real state, per
+        /// docs/UPGRADES.md's pre-enactment dry-run.
+        #[cfg(feature = "try-runtime")]
+        fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
+            frame_support::ensure!(
+                Allowances::<T>::decode_len().unwrap_or(0) <= T::MaxFundedAccounts::get() as usize,
+                "Allowances is longer than MaxFundedAccounts — it would decode as EMPTY, stopping fuel \
+                 regeneration chain-wide and permanently discarding every grant on the next write"
+            );
+            Ok(())
+        }
+
         /// Regenerate fuel on the [`Config::RegenPeriod`] cadence: mint each funded account back up toward
         /// its standing allowance. This is what makes fuel a *regenerating* budget — a member drained to
         /// zero by admin fees recovers next tick, so there is no self-refund deadlock. Off-cadence blocks

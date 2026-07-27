@@ -163,6 +163,39 @@ pub mod pallet {
         NoSessionKeys,
     }
 
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// Catch a LOWERED `MaxValidators` before it is enacted.
+        ///
+        /// `Validators` and `OfflineValidators` are `BoundedVec<_, MaxValidators>` behind `ValueQuery`.
+        /// `BoundedVec::decode` fails when the stored length exceeds the COMPILED bound, and `ValueQuery`
+        /// answers a decode failure with the DEFAULT — an EMPTY vec. So an upgrade that lowers the bound
+        /// below the live set does not error: the authority list silently reads as empty, and since this
+        /// pallet is what feeds `pallet_session` (and through it Aura and GRANDPA), authoring stops with
+        /// no origin left that could put it back. That is the same brick class the observer's
+        /// `MaxObserved` comment already warns about, with a worse blast radius — there is no sudo, so
+        /// the committee cannot legislate its way out of a chain that no longer produces blocks.
+        ///
+        /// `get()` cannot see this (it IS what swallows the failure); `decode_len` reads the raw length
+        /// prefix and is bound-independent, so it can. This runs under `try-runtime` against a snapshot
+        /// of REAL state (docs/UPGRADES.md's pre-enactment dry-run), which is the only place a bound drop
+        /// can be caught BEFORE it is on-chain.
+        #[cfg(feature = "try-runtime")]
+        fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
+            let bound = T::MaxValidators::get() as usize;
+            frame_support::ensure!(
+                Validators::<T>::decode_len().unwrap_or(0) <= bound,
+                "Validators is longer than MaxValidators — the authority set would decode as EMPTY and \
+                 authoring would stop permanently"
+            );
+            frame_support::ensure!(
+                OfflineValidators::<T>::decode_len().unwrap_or(0) <= bound,
+                "OfflineValidators is longer than MaxValidators — it would decode as EMPTY"
+            );
+            Ok(())
+        }
+    }
+
     #[pallet::genesis_config]
     #[derive(DefaultNoBound)]
     pub struct GenesisConfig<T: Config> {

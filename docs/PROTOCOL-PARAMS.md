@@ -132,6 +132,15 @@ spends from it. Retuned in spec 212 from the old dev-tuned showcase values to a 
 | `FollowCost` | 600,000,000 | `pallet_microblog::Config` |
 | `ProfileCost` (foreign) | 30,000,000,000 (= 10× `BaseCost`) | `ProfileCost` |
 | `CheckCapacity` tx longevity | 8 blocks | `longevity` — `pallets/microblog/src/lib.rs` |
+| Max encoded length of a metered call | 8 KiB | `MAX_METERED_CALL_LEN` — `pallets/microblog/src/lib.rs` |
+
+`MAX_METERED_CALL_LEN` is a backstop, not a knob to tune: the per-field bounds in each dispatch body
+are the real limits. It exists because the capacity price is derived from one text field (or is flat,
+for foreign calls) while several metered calls carry other unbounded `Vec<u8>` arguments — `create_poll`'s
+`options` and `action.anchor_url`, and all six `set_profile` fields. Those are checked only in the
+dispatch body, so without a whole-extrinsic ceiling the pool admitted, gossiped and included a
+multi-megabyte call for the price of one empty post, then failed it after the bytes were already in the
+block body. Raising it widens that gap; lowering it below ~1.5 KiB starts rejecting well-formed calls.
 
 At the 100-ADA `MinLock` floor that is a 100-post burst and 480 posts/day sustained (a `BaseCost`-only
 post). Worst-case permanent state growth is ~290 KB/day, which is a different calculation — see

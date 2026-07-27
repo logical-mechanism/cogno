@@ -147,6 +147,22 @@ pub trait ForeignCapacityCost<AccountId, RuntimeCall> {
 /// can never work.
 pub const UNPAYABLE: u128 = u128::MAX;
 
+/// Whole-extrinsic length ceiling, in bytes, for any call the talk-capacity battery prices.
+///
+/// A blunt backstop, not a protocol tunable: the per-field bounds in each dispatch body remain the
+/// real limits, and this only stops a call whose declared price cannot possibly reflect its size from
+/// reaching a block at all. It exists because the capacity price is derived from ONE text field (or is
+/// flat, for foreign calls) while several metered calls carry other unbounded `Vec<u8>` arguments —
+/// so without it the meter sold megabytes of permanent block body for the price of an empty post.
+///
+/// Sized with deliberate slack over the largest LEGITIMATE metered call, so it can never reject a
+/// well-formed one. The worst cases are `create_poll` (a 512-byte question, four 80-byte options and a
+/// 256-byte anchor URL) and `set_profile` (its six fields at 64, 256, 128, 256, 64 and 256) — both a
+/// little over 1 KiB before SCALE prefixes, plus roughly 200 bytes of signature, address, nonce, era
+/// and extension data. 8 KiB leaves about 6x headroom on that while still cutting a multi-megabyte
+/// extrinsic dead.
+pub const MAX_METERED_CALL_LEN: u32 = 8 * 1024;
+
 /// Default: meter nothing foreign. A runtime with no extra feeless pallets wires `type ForeignCost = ()`.
 impl<AccountId, RuntimeCall> ForeignCapacityCost<AccountId, RuntimeCall> for () {
     fn cost(_who: &AccountId, _call: &RuntimeCall) -> Option<u128> {
@@ -2168,7 +2184,7 @@ where
         origin: <T::RuntimeCall as Dispatchable>::RuntimeOrigin,
         call: &T::RuntimeCall,
         _info: &DispatchInfoOf<T::RuntimeCall>,
-        _len: usize,
+        len: usize,
         _self_implicit: Self::Implicit,
         _inherited_implication: &impl Encode,
         _source: TransactionSource,
@@ -2224,6 +2240,33 @@ where
                 origin,
             ));
         };
+        // WHOLE-EXTRINSIC length ceiling for anything this battery prices. The per-field `over_len`
+        // check above only knows about the three TEXT fields, but a metered call carries plenty of other
+        // unbounded `Vec<u8>`: `create_poll`'s `options` and `action.anchor_url`, and every
+        // `pallet_profile::set_profile` field. Those are bounded in the DISPATCH BODY only, and the
+        // capacity price ignores their bytes entirely — `create_poll` is priced on `question.len()`, a
+        // profile write at a flat cost. So a 0-byte question with a multi-megabyte `options` entry was
+        // admitted, gossiped and INCLUDED for the price of one empty post, then failed `OptionTooLong`
+        // in dispatch while the bytes stayed in the block body forever. On a feeless chain this battery
+        // is the only anti-spam meter there is, so severing the price-to-bytes link is the whole attack.
+        //
+        // Gate on `len` — the encoded extrinsic length the pool already hands us and this extension
+        // previously ignored — rather than mirroring each field bound here. Field-agnostic on purpose:
+        // it covers the calls above, and every future feeless call, without this list going stale the
+        // way `over_len` did. `Call` (malformed, never retried), NOT `ExhaustsResources`.
+        //
+        // NOTE: `TxPause` is NOT a fallback for this. `BaseCallFilter` is checked inside `dispatch`, so
+        // a paused call is still admitted, still gossiped and still occupies its block length; pausing
+        // only changes which error it fails with. The pool is the only place this can be stopped.
+        if len > MAX_METERED_CALL_LEN as usize {
+            log::debug!(
+                target: crate::LOG_TARGET,
+                "CheckCapacity: call from {:?} rejected at pool: encoded len {len} > \
+                 MAX_METERED_CALL_LEN={} (malformed, not retried)",
+                who, MAX_METERED_CALL_LEN,
+            );
+            return Err(TransactionValidityError::Invalid(InvalidTransaction::Call));
+        }
         // The UNPAYABLE sentinel: a call that can never succeed for this signer (a tidy-up with
         // nothing to tidy). Same rule as the over-length body above — `Call` (malformed, not
         // retried), NOT `ExhaustsResources`, which the client reads as a rate limit and invites a
