@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 import {
   capOf,
+  ratePerBlockOf,
   postCost,
   currentCapacity,
   computeView,
@@ -46,6 +47,37 @@ describe("capOf — capped-linear ceiling", () => {
   });
 });
 
+describe("ratePerBlockOf — the refill rate shares the bucket's knee (spec 212)", () => {
+  // K: capRatio 10, regenPerBlock 2, ceiling 1_000 ⇒ knee at weight 100, window 5 blocks.
+  const KNEE = 100n;
+  const WINDOW = 5n;
+
+  it("is exactly weight*regenPerBlock below the knee (no drift from the pre-212 formula)", () => {
+    for (const w of [1n, 7n, 50n, KNEE]) {
+      expect(ratePerBlockOf(w, K)).toBe(w * K.regenPerBlock);
+    }
+  });
+
+  it("FLATTENS past the knee instead of growing linearly forever", () => {
+    // ⛔ The bug this replaced: only the BUCKET was capped-linear, so sustained throughput — the
+    // thing that competes for block space — kept scaling with stake with no knee of its own.
+    for (const w of [KNEE + 1n, 500n, 10n ** 18n]) {
+      expect(ratePerBlockOf(w, K)).toBe(KNEE * K.regenPerBlock);
+    }
+  });
+
+  it("gives every account the SAME empty→full window, whatever its stake", () => {
+    for (const w of [1n, KNEE, KNEE * 1000n, 10n ** 18n]) {
+      expect(capOf(w, K) / ratePerBlockOf(w, K)).toBe(WINDOW);
+    }
+  });
+
+  it("is 0 at weight 0, and guards a zero capRatio rather than dividing by it", () => {
+    expect(ratePerBlockOf(0n, K)).toBe(0n);
+    expect(ratePerBlockOf(50n, { ...K, capRatio: 0n })).toBe(0n);
+  });
+});
+
 describe("postCost — base + per-byte", () => {
   it("is baseCost for a zero-length draft", () => {
     expect(postCost(0, K)).toBe(100n);
@@ -68,7 +100,7 @@ describe("currentCapacity — replay of current_capacity()", () => {
     expect(currentCapacity(inputs, 10, K)).toBe(200n);
   });
 
-  it("regenerates weight*regenPerBlock per elapsed block", () => {
+  it("regenerates at ratePerBlockOf per elapsed block (== weight*regenPerBlock below the knee)", () => {
     const inputs: CapacityInputs = { weight: 50n, bucket: { capLast: 0n, lastBlock: 0 } };
     // 5 blocks * 50 weight * 2 rate = 500.
     expect(currentCapacity(inputs, 5, K)).toBe(500n);

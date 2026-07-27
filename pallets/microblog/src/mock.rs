@@ -4,7 +4,7 @@ use crate as pallet_microblog;
 use core::cell::RefCell;
 use frame_support::{
     derive_impl,
-    traits::{ConstU128, ConstU32},
+    traits::{ConstU128, ConstU32, ConstU64},
 };
 use frame_system::EnsureRoot;
 use sp_runtime::BuildStorage;
@@ -40,11 +40,18 @@ pub fn deny_identity(who: u64) {
 /// real foreign feeless call, e.g. `pallet-profile`'s writes in the runtime). Lets the `ForeignCost`
 /// seam — non-microblog calls sharing the one battery, gated at the pool — be unit-tested without
 /// wiring a second pallet into this mock.
+///
+/// `System::kill_prefix` stands in for a TIDY-UP call with nothing to tidy: priced
+/// [`pallet_microblog::UNPAYABLE`], the way the runtime prices `clear_profile` for an account with no
+/// profile row. It exercises the extension's "never retriable" arm without a second pallet.
 pub struct MockForeignCost;
-impl pallet_microblog::ForeignCapacityCost<RuntimeCall> for MockForeignCost {
-    fn cost(call: &RuntimeCall) -> Option<u128> {
+impl pallet_microblog::ForeignCapacityCost<u64, RuntimeCall> for MockForeignCost {
+    fn cost(_who: &u64, call: &RuntimeCall) -> Option<u128> {
         match call {
             RuntimeCall::System(frame_system::Call::remark { .. }) => Some(200),
+            RuntimeCall::System(frame_system::Call::kill_prefix { .. }) => {
+                Some(pallet_microblog::UNPAYABLE)
+            }
             _ => None,
         }
     }
@@ -116,8 +123,6 @@ impl pallet_talk_stake::Config for Test {
 impl pallet_microblog::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type MaxLength = ConstU32<512>;
-    // Deliberately small here so the `TooManyPosts` overflow path is cheap to test.
-    type MaxPostsPerAuthor = ConstU32<8>;
     type CapRatio = ConstU128<10>;
     type RegenPerBlock = ConstU128<1>;
     type Ceiling = ConstU128<5_000>;
@@ -129,6 +134,10 @@ impl pallet_microblog::Config for Test {
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<32>;
     type MaxAnchorUrlLen = ConstU32<256>;
+    // Poll-duration window (spec 211): small values so tests can exercise the bounds without
+    // thousand-block runs. Min 10 blocks, max 100_000 blocks.
+    type MinPollDuration = ConstU64<10>;
+    type MaxPollDuration = ConstU64<100_000>;
     type ForceOrigin = EnsureRoot<u64>;
     type IdentityGate = MockIdentityGate;
     type ForeignCost = MockForeignCost;

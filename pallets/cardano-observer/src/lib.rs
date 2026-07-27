@@ -151,18 +151,24 @@ pub struct CardanoObservation {
 /// `ComputeDiverged` are propagated (`Some(Err(_))` → block rejected); `CannotVerify` is swallowed
 /// (`Some(Ok(()))` → accept without verifying). A blanket-swallow would defeat the entire
 /// fork-protection.
+// Variant indices are ON-WIRE between the AUTHORING and IMPORTING node binaries (the encoded error
+// crosses the inherent-data boundary), so they are pinned explicitly at their pre-pin ordinals —
+// the encoding is byte-identical. Never renumber; append only.
 #[derive(Encode, Decode, Debug)]
 pub enum InherentError {
     /// The author's observation reflects DIFFERENT Cardano data than the importer's own read at the same
     /// reference (the reduced `entries` differ AND the input commitments differ). FATAL.
+    #[codec(index = 0)]
     Mismatch,
     /// The importer's own Cardano data source is behind the reference / unavailable. NON-FATAL.
+    #[codec(index = 1)]
     CannotVerify,
     /// The author and importer agree on the raw Cardano inputs (identical `inputs_commitment`) but the
     /// author's REDUCED `entries` differ from the importer's — i.e. the same data reduced to a different
     /// observed set. This is a determinism divergence in the shared reduction (a bug / a version skew
     /// between binaries), not a data disagreement. FATAL (a divergent reduction must not be consensus-
     /// pinned), but reported distinctly so operators can tell it apart from a genuine data fork.
+    #[codec(index = 2)]
     ComputeDiverged,
 }
 
@@ -604,13 +610,19 @@ pub mod pallet {
         },
     }
 
+    // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
+    // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
+    // renumber; a new variant takes the next free index (2). (The Event enum above is pinned the
+    // same way.)
     #[pallet::error]
     pub enum Error<T> {
         /// The proposed reference is older than the last accepted one (anti-regression). A
         /// malicious author cannot rewind observed Cardano state.
+        #[codec(index = 0)]
         ReferenceRegressed,
         /// The proposed reference is fresher than the stability window allows (closer to the block's own
         /// time than `StabilitySlots`) — i.e. it reads history that could still roll back.
+        #[codec(index = 1)]
         ReferenceTooFresh,
     }
 

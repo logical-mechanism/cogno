@@ -505,9 +505,13 @@ impl_runtime_apis! {
             // scan does not pay a Profiles::get + AllowedStake::get for every candidate it will discard.
             // ByAuthor membership IS `postCount > 0` (an author with ANY post — incl. replies/quotes/polls
             // — matching the indexer's `postCount greaterThan 0`; a reply-only author is a valid suggestion).
+            // ⚑ Iterate the COUNTER map, not `ByAuthor` itself. Since spec 212 `ByAuthor` is a seq-keyed
+            // double map, so `ByAuthor::iter()` yields one row per POST; `ByAuthorCount` is the one that
+            // still yields one row per AUTHOR, which is the membership semantics this scan wants (and
+            // what keeps `MAX_PEOPLE_SCAN` a bound on candidates rather than on posts).
             let mut ranked: Vec<(AccountId, u32)> = Vec::new();
             let mut examined: u32 = 0;
-            for (account, _ids) in pallet_microblog::ByAuthor::<Runtime>::iter() {
+            for (account, _count) in pallet_microblog::ByAuthorCount::<Runtime>::iter() {
                 if examined >= MAX_PEOPLE_SCAN {
                     break;
                 }

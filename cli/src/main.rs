@@ -434,9 +434,6 @@ enum IdentityCmd {
         /// The COSE_Key bytes (hex, 0x-optional) your wallet's signData returned (its `key`).
         #[arg(long)]
         cose_key: String,
-        /// Optional cogno_v3 thread pointer (hex, 0x-optional; at most 10 bytes on-chain).
-        #[arg(long)]
-        thread: Option<String>,
         /// Node RPC ws endpoint.
         #[arg(long, default_value = DEFAULT_WS)]
         ws: String,
@@ -630,19 +627,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             IdentityCmd::Bind {
                 cose_sign1,
                 cose_key,
-                thread,
                 ws,
                 genesis,
-            } => {
-                identity::run_bind(
-                    &cose_sign1,
-                    &cose_key,
-                    thread.as_deref(),
-                    &ws,
-                    genesis.as_deref(),
-                )
-                .await
-            }
+            } => identity::run_bind(&cose_sign1, &cose_key, &ws, genesis.as_deref()).await,
             IdentityCmd::BindStake {
                 cose_sign1,
                 cose_key,

@@ -17,7 +17,17 @@
 //! Wired into the runtime's `SingleBlockMigrations` and guarded by [`VersionedMigration`], so it runs
 //! exactly once (when the on-chain storage version is 3) and self-skips on any re-run.
 
-use crate::{Config, NextTopLevelSeq, Pallet, Posts, TopLevelByAuthor, TopLevelPosts};
+// ⚑ The per-author index this migration backfills is written in its ORIGINAL (v4-era, BLOB) shape,
+// not in the current double-map shape. This migration only ever runs at on-chain version 3, so
+// anything it writes is v3-era state that `MigrateV9ToV10` repages later in the same tuple. Writing
+// today's shape here would produce rows v10 then fails to find.
+//
+// The shape comes from `migrations::legacy::blob`, which owns the whole v4..=v9 era, NOT from `v10`
+// (the migration that retires it): an older migration must not depend on the alias declared by the one
+// that ends that shape's life, or a later `v11` repaging these items again silently redefines what
+// this one writes.
+use crate::migrations::legacy::blob::TopLevelByAuthor;
+use crate::{Config, NextTopLevelSeq, Pallet, Posts, TopLevelPosts};
 use alloc::vec::Vec;
 use frame_support::{
     migrations::VersionedMigration,
@@ -53,10 +63,10 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV3ToV4<T> {
         let mut seq: u64 = 0;
         for (id, author) in &top {
             TopLevelPosts::<T>::insert(seq, *id);
-            // `try_push` cannot exceed the bound here: `TopLevelByAuthor` is a subset of the author's
-            // posts, and `ByAuthor` (the superset) already fit `MaxPostsPerAuthor`. Best-effort on the
-            // impossible failure (it would only drop an over-cap tail, never corrupt other state).
-            let _ = TopLevelByAuthor::<T>::try_mutate(author, |ids| ids.try_push(*id));
+            // Unbounded push: the v4-era item was a `BoundedVec<u64, MaxPostsPerAuthor>` and this was a
+            // best-effort `try_push`, but the bound was removed in spec 212 and the alias is a plain
+            // `Vec<u64>` (SCALE-identical), so the append can no longer silently drop an over-cap tail.
+            TopLevelByAuthor::<T>::mutate(author, |ids| ids.push(*id));
             seq = seq.saturating_add(1);
             // 1 read (the `try_mutate` reads the author's current vec) + 2 writes (the `TopLevelPosts`
             // insert and the `TopLevelByAuthor` write). Counting the read keeps the migration weight from

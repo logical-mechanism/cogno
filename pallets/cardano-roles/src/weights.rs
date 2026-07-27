@@ -1,12 +1,13 @@
 //! Weights for `pallet-cardano-roles`.
 //!
-//! These are CONSERVATIVE hand-set placeholders, not FRAME-benchmarked values (a testnet-first
-//! choice — see the repo posture). `claim_role_signed` dominates: it runs the audited CIP-8
-//! `ed25519_verify` + `blake2b` (the same cost as the cogno-gate binds) plus a handful of storage
-//! reads/writes; `unclaim_role` / `revoke_role` are a few reads/writes each. A MAINNET PREREQUISITE
-//! is to replace these with `frame-benchmarking` results (mirroring `pallet-cogno-gate`'s bench).
+//! These are CONSERVATIVE hand-set values, not FRAME-benchmarked ones (a testnet-first choice —
+//! see the repo posture). Each function is priced as a COMPUTE floor plus an explicit
+//! `RocksDbWeight` term for the storage ops its dispatch body actually performs (counted from
+//! lib.rs) — the same `DbWeight` the runtime configures, so the declared weight can never
+//! under-count the database no matter what the compute guess misses. A MAINNET PREREQUISITE is to
+//! replace these with `frame-benchmarking` results (mirroring `pallet-cogno-gate`'s bench).
 
-use frame_support::weights::Weight;
+use frame_support::weights::{constants::RocksDbWeight, Weight};
 
 /// Weight functions needed for `pallet-cardano-roles`.
 pub trait WeightInfo {
@@ -18,15 +19,27 @@ pub trait WeightInfo {
 /// The conservative default used by the runtime until benchmarks land, and by the test mock.
 impl WeightInfo for () {
     fn claim_role_signed() -> Weight {
-        // ed25519_verify (~50M ref_time) + COSE parse + ~3 reads + 2 writes; generous proof_size.
+        // COMPUTE floor: the audited CIP-8 path (ed25519_verify + blake2b + COSE parse) — the same
+        // class of work cogno-gate's MEASURED link_identity_signed prices at 67_850_000 ref_time
+        // (pallets/cogno-gate/src/weights.rs), so 80M sits above the measured sibling.
+        // DB: 5 reads (System::BlockHash(0), CognoGate::PkhOf via the IdentityGate,
+        // TombstonedRoleCred, RoleClaimOf, RoleCredIndex) + 2 writes (RoleClaimOf, RoleCredIndex).
         Weight::from_parts(80_000_000, 8_000)
+            .saturating_add(RocksDbWeight::get().reads(5))
+            .saturating_add(RocksDbWeight::get().writes(2))
     }
     fn unclaim_role() -> Weight {
-        // ensure_signed + 1 read + 2 removes.
+        // COMPUTE floor: ensure_signed + event. DB: 1 read + 2 writes (RoleClaimOf::take,
+        // RoleCredIndex::remove).
         Weight::from_parts(20_000_000, 4_000)
+            .saturating_add(RocksDbWeight::get().reads(1))
+            .saturating_add(RocksDbWeight::get().writes(2))
     }
     fn revoke_role() -> Weight {
-        // origin check + 1 read + 2 removes + 1 tombstone write.
+        // COMPUTE floor: origin check + event. DB: 1 read + 3 writes (RoleClaimOf::take,
+        // RoleCredIndex::remove, TombstonedRoleCred::insert).
         Weight::from_parts(25_000_000, 4_000)
+            .saturating_add(RocksDbWeight::get().reads(1))
+            .saturating_add(RocksDbWeight::get().writes(3))
     }
 }

@@ -84,7 +84,24 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // CIP-95 wallet embeds as the COSE "address" when signing with a dRep key (Eternl/Lace in-wallet role
     // claims), in addition to a headered vkey-payment address. Verifier logic only — no call/storage/event
     // change, so `transaction_version` STAYS 6 and the SCALE metadata is byte-identical.
-    spec_version: 210,
+    // spec 211 (the pre-mainnet safe batch): `link_identity_signed` DROPS its unauthenticated
+    // `thread_pointer` argument + the `ThreadOf` storage (→ `transaction_version` 7 — the only mover);
+    // `create_poll` REQUIRES `close_at` inside a new `MinPollDuration`/`MaxPollDuration` window (3 new
+    // pinned microblog errors; the argument stays `Option`, so no tx-version move); `pallet-tx-pause`
+    // lands at index 20 (committee break-glass, `BaseCallFilter = InsideBoth`); the profile tidy-up
+    // calls are capacity-priced per account; the observed-role truncation reserves non-SPO badges; and
+    // the Cardano cutover collapses to the one `CARDANO_NET` selector. (The enum-variant pinning and
+    // the cardano-roles DbWeight fix ride along — both non-encoding.)
+    // spec 212 (the cost model): the two per-author indexes are REPAGED — `ByAuthor` /
+    // `TopLevelByAuthor` go from a `BoundedVec<u64, MaxPostsPerAuthor>` blob to a seq-keyed
+    // `StorageDoubleMap` beside a `u64` counter (microblog storage v9 → v10), so indexing a post is
+    // O(1) at any history length and no author can be bricked at a cap. `MaxPostsPerAuthor` and
+    // `Error::TooManyPosts` (index 2, now VACANT) go with it. And because that cap was the de-facto
+    // brake on sustained posting, the talk-capacity constants are retuned in the same upgrade to the
+    // real ~5 h refill window, with the refill RATE now derived from the (already-clamped) ceiling so
+    // both axes share one knee. Storage/constant/read-shape change only — no call argument and no
+    // `TxExtension` change, so `transaction_version` STAYS 7.
+    spec_version: 212,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
@@ -93,7 +110,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // CardanoRoles pallet (new calls/storage only, `TxExtension` byte-identical), so it STAYED 4.
     // 4 → 5: `create_poll` gained a `kind: PollKind` argument (spec 207).
     // 5 → 6: `create_poll` gained an `action: Option<GovActionInput>` argument (spec 209).
-    transaction_version: 6,
+    // 6 → 7: `link_identity_signed` LOST its `thread_pointer: Option<Vec<u8>>` argument (spec 211) —
+    // removing a call ARGUMENT changes the extrinsic encoding. (Nothing else in spec 211 moves it: the
+    // new tx-pause CALLS and the new poll-duration VALIDATION are metadata-only, and the `TxExtension`
+    // tuple is byte-identical.)
+    transaction_version: 7,
     system_version: 1,
 };
 
@@ -345,7 +366,40 @@ mod runtime {
     // CognoGate (@8, whose `PkhOf` gates a claim to a payment-bound account) and the CardanoObserver
     // (@16, the sole writer of `ObservedRoles`). Additive (new calls/storage/events/metadata):
     // spec_version bumps, transaction_version STAYS the same (the `TxExtension` tuple is byte-identical).
-    // Next free index 20.
     #[runtime::pallet_index(19)]
     pub type CardanoRoles = pallet_cardano_roles;
+
+    // 20 = TxPause (spec 211): the committee-gated BREAK-GLASS. `pause`/`unpause` ONE
+    // `(pallet_name, call_name)` pair BY NAME, gated by the same 3-of-5 `AuthorityOrigin` as every
+    // other privileged write; enforcement rides `BaseCallFilter`
+    // (`InsideBoth<CognoCallFilter, TxPause>`). Before this there was NO fast lever:
+    // `set_enforcement` freezes only the observer's weight writes (it stops nothing a user can
+    // dispatch), `CognoCallFilter` is compile-time, so the only response to e.g. a forgery bug in
+    // the unaudited CIP-8 verifier was build a wasm, propose, vote, close, apply.
+    //
+    // TWO ASYMMETRIES worth knowing before you write a motion:
+    //
+    // 1. PAUSING IS PAIR-GRANULAR, WHITELISTING IS NOT. `pallet-tx-pause` 30.0.0 has no
+    //    whole-pallet pause: `pause` takes a `(PalletNameOf, PalletCallNameOf)` PAIR, and
+    //    `is_paused_unbound` only ever looks up the exact pair `GetCallMetadata` yields, so shutting
+    //    a pallet takes one motion per call. It also does not check the name against runtime
+    //    metadata, so a bogus or empty call name is ACCEPTED, stored, and `CallPaused` is emitted —
+    //    a motion that reports success while pausing nothing. `WhitelistedCalls`, by contrast, is
+    //    free to match on pallet name alone, and `TxPauseWhitelist` does exactly that for
+    //    `FollowerCommittee`. Do not "fix" that asymmetry; it is the pallet's shape.
+    // 2. A PAUSE STOPS THE DISPATCH, NOT THE POOL. `BaseCallFilter` is consulted at dispatch, so a
+    //    paused bare-unsigned call (the CIP-8 binds, the role claim) still runs its full
+    //    `validate_unsigned` verify at gossip and again at inclusion via `pre_dispatch`, then fails
+    //    `CallFiltered`. That is fine for the case the lever exists for — a forgery bug's harm is
+    //    forged binds TAKING EFFECT, and the pause stops that in minutes rather than a wasm cycle.
+    //    It is not a fix for the free pool-level verify cost, which is a separate, pre-existing and
+    //    accepted surface (see the note on cogno-gate's `validate_unsigned`).
+    //
+    // `WhitelistedCalls` pins what may NEVER be paused: both inherents (`CardanoObserver::observe`,
+    // `Timestamp::set` — a paused Mandatory dispatch is `BadMandatory`, discarding every block), the
+    // whole `FollowerCommittee` (the unpause path), and the upgrade path
+    // (`GovernedUpgrade::authorize_upgrade` + `System::apply_authorized_upgrade`); the pallet refuses
+    // to pause itself. Upstream FRAME reference weights. Next free index 21.
+    #[runtime::pallet_index(20)]
+    pub type TxPause = pallet_tx_pause;
 }

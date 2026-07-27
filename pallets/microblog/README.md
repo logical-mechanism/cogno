@@ -21,16 +21,21 @@ carry `#[pallet::feeless_if]` and are priced against the single per-account capa
 
 ## Storage & reads
 
-Storage version **5** (migrated v1→v5; v5 retired the repost storage and settled every capacity
-bucket). Posts, per-author indexes, post votes (with a reverse liked-posts index), account-reputation
-votes (`AccountVotes` / `AccountVoteTally`, keyed by target account), polls, follows, and a
-top-level-post index — every collection is `BoundedVec`-bounded (a full index returns an error, never a
-silent drop). `Post` carries `{ author, text, parent, quote, at }`.
+Storage version **10** (migrated v1→v10; v5 retired the repost storage and settled every capacity
+bucket, v10 repaged the per-author indexes). Posts, per-author indexes, post votes (with a reverse
+liked-posts index), account-reputation votes (`AccountVotes` / `AccountVoteTally`, keyed by target
+account), polls, follows, and a top-level-post index. Where a collection IS `BoundedVec`-bounded it
+fails loudly at the bound (an error, never a silent drop); the two per-author indexes deliberately are
+not, since spec 212 — see below. `Post` carries `{ author, text, parent, quote, at }`.
 
 The node serves **all reads** from the `MicroblogApi` runtime API (feed / author feed / following
 feed / thread / likes — viewer-aware and profile-enriched); there is no external indexer.
 
-Constants: `MaxLength = 512`, `MaxPostsPerAuthor = 10_000` (tunable). Weights are FRAME-benchmarked
+Constants: `MaxLength = 512` (tunable). Posts per author are UNBOUNDED since spec 212: `ByAuthor` and
+`TopLevelByAuthor` are seq-keyed double maps beside explicit counters, so indexing a post is O(1) at any
+history length and `MaxPostsPerAuthor` is gone (it bricked an author at the cap, permanently, since
+content is append-only). The read side is bounded instead of the write side — see
+[SCALE-NODE-READS.md](../../docs/SCALE-NODE-READS.md#bounds-and-safety). Weights are FRAME-benchmarked
 (`WeightInfo`).
 
 License: Apache-2.0

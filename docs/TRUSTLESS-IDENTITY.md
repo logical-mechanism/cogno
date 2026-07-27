@@ -31,11 +31,15 @@ The bind extrinsic `link_identity_signed` (`call_index(2)`) is submitted as a **
 extrinsic:
 
 ```
-link_identity_signed(origin:         None,
-                     cose_sign1:     BoundedVec<u8, 512>,
-                     cose_key:       BoundedVec<u8, 128>,
-                     thread_pointer: Option<Vec<u8>>)
+link_identity_signed(origin:     None,
+                     cose_sign1: BoundedVec<u8, 512>,
+                     cose_key:   BoundedVec<u8, 128>)
 ```
+
+(Until spec 211 the call carried a third `thread_pointer: Option<Vec<u8>>` argument — a cogno_v3
+forum pointer that was never committed by the signed payload, so any submitter of a valid proof
+could attach an arbitrary value. It had no readers and was removed together with its `ThreadOf`
+storage; the removal moved `transaction_version` 6 → 7.)
 
 The **CIP-8 proof is the authorization** — there is no fee payer, no nonce, and no signing account. That
 is what lets a brand-new, zero-balance account complete its first on-chain action with no funded sponsor:

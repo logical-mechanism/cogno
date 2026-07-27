@@ -262,8 +262,9 @@ export function ComposePage() {
       // Composer enables submit with blank text (allowEmptyText). Don't re-impose a non-empty gate here or the
       // enabled CTA would silently no-op; the runtime accepts an empty question and PollComposer gates options.
       if (!api || !signer) return;
-      // Convert the chosen deadline (days) to an absolute block-number `close_at`. If a deadline was
-      // requested but the chain height can't be read, surface it — never silently create a floating poll.
+      // Convert the chosen deadline (days) to an absolute block-number `close_at` (defaulting to the
+      // 1-day the control displays when untouched). If the chain height can't be read, surface it —
+      // the chain rejects a poll without a deadline since spec 211.
       let closeAt: number | undefined;
       try {
         closeAt = await resolveCloseAt(api, bestBlock, closeInDays);

@@ -141,12 +141,16 @@ pub mod pallet {
     #[pallet::storage]
     pub type TotalRevoked<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
+    // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
+    // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
+    // a new variant takes the next free index (3).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
         /// A standing allowance was set (new fund, top-up, or ceiling change) by a
         /// [`Config::GrantOrigin`] (≥3/5 committee) motion. `minted` is the immediate top-up minted so
         /// the account is usable now (may be 0 if it was already at/above the new ceiling).
+        #[codec(index = 0)]
         AllowanceSet {
             who: T::AccountId,
             max: BalanceOf<T>,
@@ -156,6 +160,7 @@ pub mod pallet {
         /// tokens were clawed back — all *reducible* balance, which reaps the account unless it holds a
         /// provider/consumer reference (e.g. a validator with registered session keys keeps the
         /// existential deposit). Idempotent — `burned` is 0 for an already-drained / never-funded target.
+        #[codec(index = 1)]
         AllowanceRevoked {
             who: T::AccountId,
             burned: BalanceOf<T>,
@@ -163,23 +168,31 @@ pub mod pallet {
         /// The regeneration hook minted `minted` fuel this tick, topping up `accounts` funded accounts that
         /// were below their ceiling (accounts already at/above their ceiling are NOT counted). Only emitted
         /// when `minted > 0` (a quiet no-op tick emits nothing).
+        #[codec(index = 2)]
         FuelRegenerated { accounts: u32, minted: BalanceOf<T> },
     }
 
+    // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
+    // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
+    // renumber; a new variant takes the next free index (4).
     #[pallet::error]
     pub enum Error<T> {
         /// The requested allowance exceeds [`Config::MaxAllowance`].
+        #[codec(index = 0)]
         AllowanceExceedsMax,
         /// The requested allowance is below [`Config::MinAllowance`] — the payability floor (existential
         /// deposit plus fee headroom). A grant at/below the ED would seat an account that can never pay a
         /// fee. Set an allowance of at least `MinAllowance`.
+        #[codec(index = 1)]
         AllowanceBelowMinimum,
         /// Adding a new funded account would exceed [`Config::MaxFundedAccounts`]. Revoke an existing
         /// allowance first, or raise the bound.
+        #[codec(index = 2)]
         TooManyFundedAccounts,
         /// The revoke target is still a seated committee member ([`Config::Seated`]). De-funding a seated
         /// member leaves an unpayable seat that dilutes the governance quorum — unseat it first
         /// (`FollowerCommittee::set_members`), then revoke.
+        #[codec(index = 3)]
         StillSeated,
     }
 

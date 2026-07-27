@@ -34,6 +34,21 @@ interface ProfilePreview {
   bio?: string;
   avatar?: string;
   pinnedPostId?: bigint;
+  /**
+   * Whether a `Profile::Profiles` row exists for the viewer. Read from THAT MAP, not derived from
+   * whether the presentation fields look non-empty: the runtime accepts a `set_profile` whose six
+   * fields are all blank (a blank Edit-profile save, or the CLI, reaches it), and `contains_key` is
+   * the exact predicate `ProfileCapacityCost` prices the call on. A field-emptiness proxy would say
+   * "no profile" for a real row and leave its owner no way to remove it.
+   *
+   * `undefined` while unknown (loading, or the read failed) — the Clear control is only offered on a
+   * definite `true`, so a transient read failure hides it rather than offering a doomed call.
+   *
+   * Why any of this matters: `clear_profile` is priced per account since spec 211 — free with a row
+   * to clear, `UNPAYABLE` without one, so the pool refuses the doomed no-op instead of including it
+   * free. Offering Clear when there is nothing to clear just bounces the user off the pool.
+   */
+  hasProfile?: boolean;
 }
 
 export function ProfileSection() {
@@ -78,7 +93,19 @@ export function ProfileSection() {
     }
     void (async () => {
       try {
-        const p = await source.profile({ author: ss58 });
+        // The row check goes straight to `Profile::Profiles` — the map the runtime prices
+        // `clear_profile` on. `source.profile()` returns presentation fields, which cannot tell an
+        // all-blank row apart from no row at all. `undefined` if the storage read fails, so Clear is
+        // hidden rather than offered on a guess.
+        const [p, row] = await Promise.all([
+          source.profile({ author: ss58 }),
+          api
+            ? api.query.Profile.Profiles.getValue(ss58).then(
+                (r) => r != null,
+                () => undefined,
+              )
+            : Promise.resolve(undefined),
+        ]);
         if (cancelled) return;
         loadedKey.current = readKey;
         setPreview({
@@ -86,6 +113,7 @@ export function ProfileSection() {
           bio: p.bio,
           avatar: p.avatar,
           pinnedPostId: p.pinnedPostId,
+          hasProfile: row,
         });
         // Resolve the pinned post (thread().root IS the one-post resolver). Silent on 404.
         if (p.pinnedPostId != null) {
@@ -108,7 +136,7 @@ export function ProfileSection() {
     return () => {
       cancelled = true;
     };
-  }, [source, ss58, bound, bestBlock]);
+  }, [api, source, ss58, bound, bestBlock]);
 
   const submit = useCallback(
     (kind: "clear" | "unpin", stream: ReturnType<typeof submitClearProfile>, success: string, onOk?: () => void) => {
@@ -138,7 +166,13 @@ export function ProfileSection() {
     // write — an unfinished account is funneled to /welcome instead of firing a doomed extrinsic.
     if (!viewer.writeReady) return void router.push("/welcome/");
     submit("clear", submitClearProfile(api, signer), "Profile cleared", () => {
-      setPreview({ displayName: undefined, bio: undefined, avatar: undefined, pinnedPostId: undefined });
+      setPreview((p) => ({
+        displayName: undefined,
+        bio: undefined,
+        avatar: undefined,
+        pinnedPostId: p?.pinnedPostId,
+        hasProfile: false,
+      }));
       // This path clears the profile WITHOUT going through ModalRouteHost, so it must drop the shared
       // caches itself — otherwise every mention chip and hover card keeps rendering the name you just
       // cleared, and only a reload fixes it. (It previously updated local state and leaned entirely on
@@ -239,14 +273,19 @@ export function ProfileSection() {
           >
             Edit profile
           </button>
-          <button
-            type="button"
-            className={styles.dangerLink}
-            onClick={() => setConfirmClear(true)}
-            disabled={working === "clear"}
-          >
-            Clear profile
-          </button>
+          {/* Only offered on a CONFIRMED `Profile::Profiles` row. With none, the runtime prices the
+              call unpayable and the pool rejects it, so the button would only ever bounce. `undefined`
+              (unknown — the storage read failed) hides it too. */}
+          {preview?.hasProfile === true && (
+            <button
+              type="button"
+              className={styles.dangerLink}
+              onClick={() => setConfirmClear(true)}
+              disabled={working === "clear"}
+            >
+              Clear profile
+            </button>
+          )}
         </div>
 
         {confirmClear && (

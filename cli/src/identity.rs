@@ -96,14 +96,12 @@ pub async fn run_prove(account: &str, nonce: Option<&str>, ws: &str) -> anyhow::
 pub async fn run_bind(
     cose_sign1_hex: &str,
     cose_key_hex: &str,
-    thread_hex: Option<&str>,
     ws: &str,
     genesis: Option<&str>,
 ) -> anyhow::Result<()> {
     let cose_sign1 = parse_hex(cose_sign1_hex)?;
     let cose_key = parse_hex(cose_key_hex)?;
-    let thread = thread_hex.map(parse_hex).transpose()?;
-    let call = calls::link_identity_signed(cose_sign1, cose_key, thread)?;
+    let call = calls::link_identity_signed(cose_sign1, cose_key)?;
     let (rpc, _genesis) = connect_checked(ws, genesis).await?;
     let xt = build_bare(call);
     eprintln!("identity bind (BARE/unsigned — the COSE proof is the authorization)");

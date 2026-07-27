@@ -62,7 +62,9 @@ const MODULE_COPY: Record<string, string> = {
   // ── Microblog ──
   "Microblog::TooLong": "That post is too long.",
   "Microblog::NotFound": "That post no longer exists.",
-  "Microblog::TooManyPosts": "You've reached your post limit.",
+  // `Microblog::TooManyPosts` lived here. The variant was retired in spec 212 with
+  // `MaxPostsPerAuthor` (error index 2 is now a permanent gap), so the chain can never emit it and
+  // this entry could only ever mis-word some future variant that reused the name.
   "Microblog::NotAllowed": "You need a linked Cardano identity to do that.",
   "Microblog::NotVoted": "You haven't voted on that.",
   "Microblog::SelfFollow": "You can't follow yourself.",
@@ -73,6 +75,9 @@ const MODULE_COPY: Record<string, string> = {
   "Microblog::OptionTooLong": "One of those poll options is too long.",
   "Microblog::PollNotFound": "That poll no longer exists.",
   "Microblog::InvalidOption": "That isn't one of the poll's options.",
+  "Microblog::PollCloseRequired": "Polls need an end date.",
+  "Microblog::PollDurationTooShort": "That poll would end too soon. Give it more time.",
+  "Microblog::PollDurationTooLong": "That poll would run too long. Pick an earlier end date.",
   "Microblog::SelfAccountVote": "You can't vote on your own account.",
   "Microblog::TargetNotAllowed": "That account doesn't have a linked identity.",
   // ── Profile ──
@@ -95,6 +100,11 @@ const MODULE_COPY: Record<string, string> = {
   "CognoGate::AccountAlreadyStakeBound": "Your stake key is already linked.",
   "CognoGate::StakeCredAlreadyBound": "That stake key is already linked to another account.",
   "CognoGate::StakeCredTombstoned": "That stake key has been revoked.",
+  // ── System (the committee break-glass, spec 211) ──
+  // `BaseCallFilter` composes CognoCallFilter with TxPause, and a filtered dispatch fails as
+  // `System::CallFiltered`. Since a 3-of-5 motion can now pause any non-whitelisted call, this is a
+  // state a normal user can actually hit, and the raw "System: CallFiltered" told them nothing.
+  "System::CallFiltered": "That action is paused right now. Try again later.",
 };
 
 /** Bigint-safe JSON (a u64-bearing error value must not throw on the way to a toast). */

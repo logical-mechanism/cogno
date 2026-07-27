@@ -9,7 +9,7 @@
 use crate as pallet_cogno_gate;
 use frame_support::{
     derive_impl,
-    traits::{ConstU128, ConstU32},
+    traits::{ConstU128, ConstU32, ConstU64},
 };
 use frame_system::EnsureRoot;
 use sp_runtime::BuildStorage;
@@ -40,7 +40,6 @@ impl pallet_talk_stake::Config for Test {
 impl pallet_microblog::Config for Test {
     type RuntimeEvent = RuntimeEvent;
     type MaxLength = ConstU32<512>;
-    type MaxPostsPerAuthor = ConstU32<8>;
     type CapRatio = ConstU128<10>;
     type RegenPerBlock = ConstU128<1>;
     type Ceiling = ConstU128<5_000>;
@@ -51,6 +50,8 @@ impl pallet_microblog::Config for Test {
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<32>;
     type MaxAnchorUrlLen = ConstU32<256>;
+    type MinPollDuration = ConstU64<10>;
+    type MaxPollDuration = ConstU64<100_000>;
     type ForceOrigin = EnsureRoot<u64>;
     // The REAL gate — this is what makes the mock an integration test.
     type IdentityGate = CognoGate;
@@ -98,13 +99,9 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 /// REMOVED in D1 — the only on-chain bind path is now the permissionless `link_identity_signed` (covered
 /// by the `link_identity_signed_*` tests against the real wallet fixture). Tests that just need a
 /// *pre-existing* binding (to exercise double-bind / revoke / posting) call this instead of constructing
-/// a CIP-8 proof. Arg order mirrors the old `link_identity`: `(identity, account, thread)`.
-pub fn bind(
-    identity: crate::IdentityHash,
-    account: u64,
-    thread: Option<Vec<u8>>,
-) -> sp_runtime::DispatchResult {
-    CognoGate::do_bind(&account, identity, thread)
+/// a CIP-8 proof. Arg order mirrors the old `link_identity`: `(identity, account)`.
+pub fn bind(identity: crate::IdentityHash, account: u64) -> sp_runtime::DispatchResult {
+    CognoGate::do_bind(&account, identity)
 }
 
 /// Test helper: drive the stake-credential bind body directly (the voting-power anchor). Mirrors

@@ -28,7 +28,9 @@ use frame_support::{
     derive_impl,
     dispatch::DispatchClass,
     parameter_types,
-    traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, VariantCountOf},
+    traits::{
+        ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Contains, InsideBoth, VariantCountOf,
+    },
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
@@ -49,10 +51,11 @@ use sp_version::RuntimeVersion;
 
 // Local module imports
 use super::{
-    AccountId, Aura, Balance, Balances, Block, BlockNumber, CognoGate, Hash, Microblog, Nonce,
-    PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
-    RuntimeOrigin, RuntimeTask, SessionKeys, System, Timestamp, ValidatorSet, DAYS,
-    EXISTENTIAL_DEPOSIT, MINUTES, SLOT_DURATION, UNIT, VERSION,
+    AccountId, Aura, Balance, Balances, Block, BlockNumber, CardanoObserver, CognoGate,
+    FollowerCommittee, GovernedUpgrade, Hash, Microblog, Nonce, PalletInfo, Runtime, RuntimeCall,
+    RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask, SessionKeys,
+    System, Timestamp, TxPause, ValidatorSet, DAYS, EXISTENTIAL_DEPOSIT, MINUTES, SLOT_DURATION,
+    UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -112,6 +115,16 @@ type SingleBlockMigrations = (
     // spec 209: append `Poll.action` (the optional governance-action tag) to every poll; existing polls
     // migrate to `action = None` (a no-op on the live chain, which has no polls). See `migrations::v9`.
     pallet_microblog::migrations::v9::MigrateV8ToV9<Runtime>,
+    // spec 212: REPAGE `ByAuthor` / `TopLevelByAuthor` from one bounded-vec blob per author to a
+    // seq-keyed double map beside an explicit counter. This one MOVES REAL ROWS on the live chain
+    // (every author's post-id list is rewritten), and the old and new items share a storage prefix —
+    // read the ordering note at the top of `migrations::v10` before touching it.
+    pallet_microblog::migrations::v10::MigrateV9ToV10<Runtime>,
+    // spec 212: REMOVE the rows of cogno-gate's retired `ThreadOf` map (dropped in spec 211 with
+    // `link_identity_signed`'s unauthenticated `thread_pointer`). Deleting the declaration stopped the
+    // writes; this deletes what was already written, so the rows do not sit in the state root forever
+    // under a prefix nothing declares. See `pallet_cogno_gate::migrations::v1`.
+    pallet_cogno_gate::migrations::v1::MigrateV0ToV1<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -320,9 +333,11 @@ mod call_filter_tests {
 impl frame_system::Config for Runtime {
     /// The block type for the runtime.
     type Block = Block;
-    /// The sudo-free committee-brick guard: rejects an empty `FollowerCommittee::set_members` on-chain
-    /// (overrides the `SolochainDefaultConfig` `Everything` filter). See [`CognoCallFilter`].
-    type BaseCallFilter = CognoCallFilter;
+    /// The sudo-free committee-brick guard AND the committee's break-glass, composed: a call
+    /// dispatches only if the compile-time [`CognoCallFilter`] allows it AND it is not currently
+    /// paused by the `TxPause` pallet (spec 211; overrides the `SolochainDefaultConfig`
+    /// `Everything` filter).
+    type BaseCallFilter = InsideBoth<CognoCallFilter, TxPause>;
     /// Block & extrinsics weights: base values and limits.
     type BlockWeights = RuntimeBlockWeights;
     /// The maximum length of a block (in bytes).
@@ -608,6 +623,209 @@ impl pallet_collective::Config<Instance1> for Runtime {
 /// behind ONE trust boundary.
 pub type AuthorityOrigin = EnsureProportionAtLeast<AccountId, Instance1, 3, 5>;
 
+// ── TxPause (index 20) — the committee break-glass (spec 211) ──────────────────────────────────────
+//
+// `pause((pallet_name, call_name))` / `unpause(..)` are gated by the SAME 3-of-5 [`AuthorityOrigin`]
+// as every other privileged write; enforcement is `BaseCallFilter = InsideBoth<CognoCallFilter,
+// TxPause>` (frame_system config above). Pausing `(pallet, "")`-style whole-pallet names is not a
+// thing in this pallet — a motion pauses one `(pallet_name, call_name)` pair per call.
+
+/// Calls that can NEVER be paused. Everything here is load-bearing for liveness or for recovery:
+///
+/// - Both INHERENTS (`CardanoObserver::observe`, `Timestamp::set`). Inherents dispatch with the
+///   `None` origin, which carries `BaseCallFilter` like any other non-root origin — and a filtered
+///   Mandatory dispatch is `BadMandatory`, so a paused inherent would discard EVERY block (a
+///   chain-halt lever no pause should ever be able to reach).
+/// - The whole `FollowerCommittee` pallet: propose/vote/close is the path that UN-pauses, so pausing
+///   it would weld the break-glass shut (a 3-of-5 motion locking out the 3-of-5).
+/// - The upgrade path (`GovernedUpgrade::authorize_upgrade` + the permissionless
+///   `System::apply_authorized_upgrade`): the fix for whatever prompted a pause ships through it.
+///
+/// (`TxPause` itself needs no entry — the pallet refuses to pause its own calls.)
+///
+/// ⚠ The PALLET halves are never spelled as literals. `pallet_tx_pause` matches on the same
+/// `(pallet_name, call_name)` strings `GetCallMetadata` derives from the `#[frame_support::runtime]`
+/// declaration, so a literal here is anchored to nothing: rename a pallet in the runtime and a
+/// whitelist entry silently stops matching, re-opening the very lever it exists to weld shut. Taking
+/// each name from `<Pallet as PalletInfoAccess>::name()` makes the rename a COMPILE error (the type
+/// alias must exist) and keeps the string the runtime's own. The CALL halves cannot be typed the same
+/// way — there is no per-call type — so `whitelisted_names_exist_in_this_runtime` below re-derives
+/// them from `RuntimeCall::get_call_names()`, i.e. from the runtime's metadata rather than from these
+/// same literals, and fails on a typo or a renamed call.
+pub struct TxPauseWhitelist;
+
+/// The `(pallet, call)` pairs [`TxPauseWhitelist`] admits. An empty call name means WHOLE PALLET.
+/// Split out so the unit test can walk exactly what `contains` matches on, instead of restating it.
+fn tx_pause_whitelist_names() -> [(&'static str, &'static str); 5] {
+    use frame_support::traits::PalletInfoAccess;
+    [
+        (<CardanoObserver as PalletInfoAccess>::name(), "observe"),
+        (<Timestamp as PalletInfoAccess>::name(), "set"),
+        (<FollowerCommittee as PalletInfoAccess>::name(), ""),
+        (
+            <GovernedUpgrade as PalletInfoAccess>::name(),
+            "authorize_upgrade",
+        ),
+        (
+            <System as PalletInfoAccess>::name(),
+            "apply_authorized_upgrade",
+        ),
+    ]
+}
+
+impl Contains<pallet_tx_pause::RuntimeCallNameOf<Runtime>> for TxPauseWhitelist {
+    fn contains(full_name: &pallet_tx_pause::RuntimeCallNameOf<Runtime>) -> bool {
+        let (pallet, call) = full_name;
+        let p = pallet.as_slice();
+        let c = call.as_slice();
+        tx_pause_whitelist_names()
+            .iter()
+            .any(|(wp, wc)| p == wp.as_bytes() && (wc.is_empty() || c == wc.as_bytes()))
+    }
+}
+
+impl pallet_tx_pause::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    // Pause AND unpause both sit behind the one crown-jewel committee origin (sudo-free) — a pause
+    // is an emergency governance action, and an unpause is the same committee undoing it.
+    type PauseOrigin = AuthorityOrigin;
+    type UnpauseOrigin = AuthorityOrigin;
+    type WhitelistedCalls = TxPauseWhitelist;
+    // Bounds the stored (pallet_name, call_name) strings. Far above every real name in this
+    // runtime; an over-long name is treated as paused (fail-closed), per the pallet's contract.
+    type MaxNameLen = ConstU32<256>;
+    // UPSTREAM reference weights, not generated here — the same deliberate choice as
+    // pallet-collective's (see the note there): two single-map committee-gated writes, measured by
+    // Parity on reference hardware.
+    type WeightInfo = pallet_tx_pause::weights::SubstrateWeight<Runtime>;
+}
+
+#[cfg(test)]
+mod tx_pause_tests {
+    use super::*;
+
+    fn name(p: &[u8], c: &[u8]) -> pallet_tx_pause::RuntimeCallNameOf<Runtime> {
+        (
+            p.to_vec().try_into().expect("pallet name fits"),
+            c.to_vec().try_into().expect("call name fits"),
+        )
+    }
+
+    #[test]
+    fn whitelist_covers_inherents_committee_and_the_upgrade_path() {
+        // Never pausable: the two inherents (a paused Mandatory dispatch = BadMandatory = every
+        // block discarded), the committee (the unpause path), and the upgrade path (the fix path).
+        assert!(TxPauseWhitelist::contains(&name(
+            b"CardanoObserver",
+            b"observe"
+        )));
+        assert!(TxPauseWhitelist::contains(&name(b"Timestamp", b"set")));
+        assert!(TxPauseWhitelist::contains(&name(
+            b"FollowerCommittee",
+            b"propose"
+        )));
+        assert!(TxPauseWhitelist::contains(&name(
+            b"FollowerCommittee",
+            b"vote"
+        )));
+        assert!(TxPauseWhitelist::contains(&name(
+            b"GovernedUpgrade",
+            b"authorize_upgrade"
+        )));
+        assert!(TxPauseWhitelist::contains(&name(
+            b"System",
+            b"apply_authorized_upgrade"
+        )));
+        // Pausable: the exploit surfaces a pause exists FOR — e.g. the unaudited CIP-8 binds.
+        assert!(!TxPauseWhitelist::contains(&name(
+            b"CognoGate",
+            b"link_identity_signed"
+        )));
+        assert!(!TxPauseWhitelist::contains(&name(
+            b"Microblog",
+            b"post_message"
+        )));
+        assert!(!TxPauseWhitelist::contains(&name(
+            b"CardanoObserver",
+            b"set_enforcement"
+        )));
+    }
+
+    /// The whitelist's call names re-derived from the RUNTIME's own metadata, not from the literals
+    /// in `tx_pause_whitelist_names`. Without this the test above only proves the whitelist agrees
+    /// with itself: rename `observe`, and `contains` stops matching the inherent while every
+    /// assertion still passes — and a 3-of-5 `pause(("CardanoObserver","observe"))` motion is then
+    /// accepted, filtering a Mandatory dispatch into `BadMandatory` and discarding EVERY block.
+    /// (`get_call_names` is generated from the `#[frame_support::runtime]` declaration, so it moves
+    /// with a rename and these literals do not.)
+    #[test]
+    fn whitelisted_names_exist_in_this_runtime() {
+        use frame_support::traits::GetCallMetadata;
+        let modules = <RuntimeCall as GetCallMetadata>::get_module_names();
+        for (pallet, call) in tx_pause_whitelist_names() {
+            assert!(
+                modules.contains(&pallet),
+                "whitelisted pallet `{pallet}` is not in this runtime"
+            );
+            if call.is_empty() {
+                continue; // a whole-pallet entry names no call
+            }
+            let calls = <RuntimeCall as GetCallMetadata>::get_call_names(pallet);
+            assert!(
+                calls.contains(&call),
+                "whitelisted call `{pallet}::{call}` is not in this runtime (renamed or typo'd)"
+            );
+        }
+    }
+
+    /// … and the other direction: a REAL call's own `get_call_metadata()` — the exact value
+    /// `pallet_tx_pause` compares a stored pause against — lands inside the whitelist.
+    #[test]
+    fn a_real_inherent_calls_metadata_is_whitelisted() {
+        use frame_support::traits::GetCallMetadata;
+        let ts = RuntimeCall::Timestamp(pallet_timestamp::Call::set { now: 0 });
+        let observe = RuntimeCall::CardanoObserver(pallet_cardano_observer::Call::observe {
+            reference: Default::default(),
+            inputs_commitment: [0u8; 32],
+            entries: Default::default(),
+            stake_entries: Default::default(),
+            role_entries: Default::default(),
+        });
+        for call in [ts, observe] {
+            let m = call.get_call_metadata();
+            assert!(
+                TxPauseWhitelist::contains(&name(
+                    m.pallet_name.as_bytes(),
+                    m.function_name.as_bytes()
+                )),
+                "the {}::{} inherent must never be pausable",
+                m.pallet_name,
+                m.function_name
+            );
+        }
+    }
+
+    #[test]
+    fn a_paused_call_is_rejected_by_the_base_filter() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let call = RuntimeCall::CognoGate(pallet_cogno_gate::Call::link_identity_signed {
+                cose_sign1: Default::default(),
+                cose_key: Default::default(),
+            });
+            type Filter = InsideBoth<CognoCallFilter, TxPause>;
+            // Unpaused: the composed BaseCallFilter admits it.
+            assert!(<Filter as Contains<RuntimeCall>>::contains(&call));
+            // Paused (as a 3-of-5 pause motion would store it): the SAME filter now rejects it.
+            pallet_tx_pause::PausedCalls::<Runtime>::insert(
+                name(b"CognoGate", b"link_identity_signed"),
+                (),
+            );
+            assert!(!<Filter as Contains<RuntimeCall>>::contains(&call));
+        });
+    }
+}
+
 // ── MUTABLE Aura+GRANDPA authorities via pallet-session + pallet-validator-set ──
 //
 // `pallet-session` rotates the block-producing authority set; `pallet-validator-set` is its
@@ -730,65 +948,233 @@ impl pallet_skip_feeless_payment::Config for Runtime {
 }
 
 parameter_types! {
-    // ── Talk-capacity constants — DEV-TUNED for a snappy, watchable showcase. All are runtime-tunable
-    //    (see docs/ECONOMICS.md); the real ~5h regen window is a constant change for mainnet. Units are
-    //    "micro-capacity"; one post ≈ BaseCost.
+    // ── Talk-capacity constants. RETUNED IN SPEC 212 for a real posting rate; they were previously
+    //    DEV-TUNED for a snappy, watchable showcase (a 25-block empty→full window) and the ~5 h window
+    //    was carried as a mainnet TODO. Units are "micro-capacity"; one post ≈ BaseCost.
     //
-    //    With these values, a grant of weight 10_000_000 (≈10 ADA in lovelace) yields:
-    //      cap  = min(weight·50, Ceiling) = 5·10^8  ≈ 10 posts (burst)
-    //      rate = weight·2                = 2·10^7 / block ≈ 1 post / 2.5 blocks (~15s)
-    //      empty→full = cap/rate ≈ 25 blocks (~2.5 min)
-    //    A 512-byte post costs BaseCost + 512·PerByteCost ≈ 1.5 posts of capacity.
-    pub const CapRatio: u128 = 50;
-    pub const RegenPerBlock: u128 = 2;
-    pub const Ceiling: u128 = 5_000_000_000_000; // ~100k posts — present but won't bite dev grants
-    pub const BaseCost: u128 = 50_000_000;        // 1 post
-    pub const PerByteCost: u128 = 50_000;
-    // A profile write (set/clear/pin/unpin) is feeless but capacity-metered at this STEEP price —
-    // ≈10 posts (10 × BaseCost). Profiles are a low-frequency mutable overwrite, so a high capacity
-    // cost is the anti-spam: only the identity-bound owner can edit, and they cannot churn it. The
-    // whole app stays feeless (a freshly-derived posting key never needs funding).
-    pub const ProfileCost: u128 = 500_000_000;    // 10 × BaseCost
+    //    WHY NOW, and why it ships with the `ByAuthor` repage rather than after it: `MaxPostsPerAuthor`
+    //    was the de-facto brake on sustained posting. It capped an author at 10_000 posts EVER, so a
+    //    floor-lock account exhausted its lifetime quota in ~2_500 blocks and stopped. Removing it (the
+    //    other half of this upgrade) hands the whole job to talk-capacity, which is already the ONLY
+    //    anti-spam here — the social calls are feeless, so there is no fee floor under them, and
+    //    `RuntimeBlockWeights` sets proof size to `u64::MAX`, so there is no block-level backstop
+    //    either. Preprod never surfaced any of this because tADA is free.
+    //
+    //    THE TARGET: a ~5 h empty→full refill window at the 100-ADA `MinLock` floor, keeping the burst
+    //    size and the ceiling knee that docs/ECONOMICS.md and docs/PROTOCOL-PARAMS.md already commit to.
+    //    The window is `CapRatio / RegenPerBlock` blocks and is weight-independent, so:
+    //        5 h at 6 s/block = 3_000 blocks  ⇒  CapRatio / RegenPerBlock = 3_000
+    //    Everything else is a pure unit rescale of the bucket axis (60x) that holds every documented
+    //    ratio fixed, so the only behaviour that moves is the refill speed (120x slower) and the new
+    //    rate knee.
+    //
+    //    AT THE 100-ADA FLOOR LOCK (weight 10^8 lovelace):
+    //      cap  = min(10^8·3_000, Ceiling) = 3·10^11        = 100 posts of burst   (unchanged)
+    //      rate = 10^8·1                   = 10^8 / block   = 1 post / 30 blocks (~3 min)
+    //      empty→full = 3·10^11 / 10^8     = 3_000 blocks   = 5 h   (was 25 blocks / 2.5 min)
+    //      sustained  = 14_400 blocks-per-day / 30          = 480 posts/day (was 57_600)
+    //    Worst-case permanent state growth is a SEPARATE calculation — 480 posts/day is the rate for a
+    //    `BaseCost`-only post, while the biggest row comes from a 512-byte one. A 512-byte post costs
+    //    4.536e9, so 45.4 blocks/post = 317 posts/day, and a top-level post writes FOUR rows: `Posts`
+    //    (~648 B) + `ByAuthor` (~112 B) + `TopLevelByAuthor` (~112 B) + `TopLevelPosts` (~64 B) = ~936 B.
+    //    That is ~290 KB/day/account.
+    //    A 512-byte post costs BaseCost + 512·PerByteCost ≈ 1.5 posts of capacity, as before.
+    //
+    //    AT THE KNEE (Ceiling/CapRatio = 10^11 lovelace = 100_000 ADA locked, unchanged and already
+    //    documented): cap = 3·10^14 = 100_000 posts, rate = 3·10^14/3_000 = 10^11/block = 33.3
+    //    posts/block = 480_000 posts/day. Against a block ceiling of ~1_586 posts (post_message ≈ 945 µs
+    //    of ref_time against `NORMAL_DISPATCH_RATIO · 2 s`), that is ~2.1 % of one block. BEFORE the
+    //    retune the same account sustained 4_000 posts/block against a then-ceiling of ~2_012 — MORE
+    //    than an entire block — so one maximally-staked account could monopolize the mempool
+    //    outright. That is the concrete failure
+    //    this prevents, and it is what makes ECONOMICS.md's "flattened at the top so no single whale
+    //    can dominate the mempool" true rather than aspirational. See `Pallet::regen_per_block` for the
+    //    second half of that fix: the rate is now derived from the ceiling, so both axes share ONE knee
+    //    instead of the rate's sitting a full refill window further out (at 2.5M ADA under the old
+    //    constants, and documented nowhere).
+    pub const CapRatio: u128 = 3_000;
+    pub const RegenPerBlock: u128 = 1;
+    // 3·10^14 = 100_000 posts of bucket; the knee stays at 3·10^14/3_000 = 10^11 lovelace = 100k ADA.
+    pub const Ceiling: u128 = 300_000_000_000_000;
+    pub const BaseCost: u128 = 3_000_000_000;     // 1 post
+    pub const PerByteCost: u128 = 3_000_000;      // BaseCost/1000, as before
+    // A profile CREATE/OVERWRITE (set_profile / pin_post) is feeless but capacity-metered at this
+    // STEEP price — ≈10 posts (10 × BaseCost). Profiles are a low-frequency mutable overwrite, so a
+    // high capacity cost is the anti-spam: only the identity-bound owner can edit, and they cannot
+    // churn it. The whole app stays feeless (a freshly-derived posting key never needs funding).
+    // The TIDY-UP calls (clear_profile / unpin_post) are priced per-account in
+    // `ProfileCapacityCost` below (0 with a row to clear, unpayable without), NOT at this constant.
+    pub const ProfileCost: u128 = 30_000_000_000; // 10 × BaseCost
 }
+
+// The v9→v10 migration RESCALES every stored `Capacity.cap_last` by `CAPACITY_UNIT_RESCALE`, because
+// the constants above moved the micro-capacity unit itself. That factor is a number in ANOTHER crate
+// (`pallet_microblog::migrations::v10`) that has to mirror these values, and its own `post_upgrade`
+// asserts against the same constant — so it agrees with itself and cannot catch a drift. Retune
+// `BaseCost` (or the two constants the rescale's no-overflow argument rests on) again before spec 212
+// is enacted, and every live bucket would be scaled by the wrong factor, silently.
+//
+// So pin it HERE, where both halves are knowable, at COMPILE time. A further retune fails the build.
+const _: () = {
+    use pallet_microblog::migrations::v10::{v9_constants, CAPACITY_UNIT_RESCALE};
+    assert!(
+        BaseCost::get() == v9_constants::BASE_COST * CAPACITY_UNIT_RESCALE,
+        "BaseCost moved without updating pallet_microblog::migrations::v10::CAPACITY_UNIT_RESCALE — \
+         the v9->v10 migration would rescale every live capacity bucket by the wrong factor"
+    );
+    // The migration's "multiplying cannot overflow the new ceiling" argument is only true while the
+    // BOUND moved by the same factor: an old value clamped to `min(w·CAP_RATIO, CEILING)` times the
+    // factor is still inside `min(w·CapRatio, Ceiling)`.
+    assert!(
+        CapRatio::get() == v9_constants::CAP_RATIO * CAPACITY_UNIT_RESCALE,
+        "CapRatio moved by a different factor than BaseCost — the v9->v10 rescale could exceed the ceiling"
+    );
+    assert!(
+        Ceiling::get() == v9_constants::CEILING * CAPACITY_UNIT_RESCALE,
+        "Ceiling moved by a different factor than BaseCost — the v9->v10 rescale could exceed the ceiling"
+    );
+    // Not load-bearing for the rescale, but it is denominated in the same unit: a per-byte cost left
+    // behind would silently re-price long posts relative to short ones.
+    assert!(
+        PerByteCost::get() == v9_constants::PER_BYTE_COST * CAPACITY_UNIT_RESCALE,
+        "PerByteCost moved by a different factor than BaseCost — post pricing is no longer proportional"
+    );
+};
 
 /// Prices `pallet-profile`'s feeless writes against microblog's ONE per-account capacity battery — the
 /// [`pallet_microblog::ForeignCapacityCost`] seam that lets the profile pallet share the feeless+capacity
-/// machinery without microblog ever naming the profile crate (no Cargo cycle). Every profile call costs
-/// the flat `ProfileCost`; any other call is `None` (unpriced ⇒ untouched by the capacity gate).
+/// machinery without microblog ever naming the profile crate (no Cargo cycle).
+///
+/// The two CREATE/OVERWRITE calls (`set_profile`, `pin_post`) cost the flat, steep `ProfileCost` —
+/// that price is their anti-spam. The two TIDY-UP calls (`clear_profile`, `unpin_post`) are priced
+/// PER ACCOUNT (spec 211):
+///
+/// - `0` when the caller actually has the row to clear. `capacity_ceiling(0) == 0`, so a REVOKED
+///   account (weight clamped to 0, capacity permanently 0) could otherwise never erase its own
+///   profile or pin — defeating the stated design intent on `unpin_post` ("a revoked account with
+///   capacity may still tidy up its own state"), which is why neither call has an identity gate.
+///   Zero cost is not a churn farm: every clear/unpin requires a prior `set_profile`/`pin_post`
+///   paid at the full `ProfileCost`.
+/// - [`pallet_microblog::UNPAYABLE`] when there is nothing to clear: `CheckCapacity` then rejects the
+///   no-op at the POOL as `InvalidTransaction::Call` (malformed, NOT retried — the same code as an
+///   over-length post body, and deliberately not the retriable `ExhaustsResources` the client reads as
+///   a rate limit), so pricing the tidy-up at 0 does not open a free-spam path for doomed calls. This
+///   mirrors the dispatch-side `NoProfile`/`NotPinned` rejections, at the pool.
+///
+/// NOTE: this is CAPACITY cost (the talk-capacity battery), not FRAME weight — the calls still
+/// carry their benchmarked dispatch weights.
 pub struct ProfileCapacityCost;
-impl pallet_microblog::ForeignCapacityCost<RuntimeCall> for ProfileCapacityCost {
-    fn cost(call: &RuntimeCall) -> Option<u128> {
+impl pallet_microblog::ForeignCapacityCost<AccountId, RuntimeCall> for ProfileCapacityCost {
+    fn cost(who: &AccountId, call: &RuntimeCall) -> Option<u128> {
         match call {
+            RuntimeCall::Profile(pallet_profile::Call::clear_profile { .. }) => {
+                if pallet_profile::Profiles::<Runtime>::contains_key(who) {
+                    Some(0)
+                } else {
+                    Some(pallet_microblog::UNPAYABLE)
+                }
+            }
+            RuntimeCall::Profile(pallet_profile::Call::unpin_post { .. }) => {
+                if pallet_profile::PinnedPost::<Runtime>::contains_key(who) {
+                    Some(0)
+                } else {
+                    Some(pallet_microblog::UNPAYABLE)
+                }
+            }
             RuntimeCall::Profile(_) => Some(ProfileCost::get()),
             _ => None,
         }
     }
 }
 
+#[cfg(test)]
+mod profile_capacity_cost_tests {
+    use super::*;
+    use pallet_microblog::ForeignCapacityCost;
+
+    #[test]
+    fn tidy_up_calls_price_per_account_and_writes_stay_steep() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([9u8; 32]);
+            let clear = RuntimeCall::Profile(pallet_profile::Call::clear_profile {});
+            let unpin = RuntimeCall::Profile(pallet_profile::Call::unpin_post {});
+            // Nothing to clear: both tidy-up calls are priced unpayable, so the pool rejects the
+            // doomed no-op instead of including it free.
+            assert_eq!(
+                ProfileCapacityCost::cost(&who, &clear),
+                Some(pallet_microblog::UNPAYABLE)
+            );
+            assert_eq!(
+                ProfileCapacityCost::cost(&who, &unpin),
+                Some(pallet_microblog::UNPAYABLE)
+            );
+            // With a row to clear: free — this is what lets a REVOKED account (capacity clamped to
+            // 0 forever) still erase its own profile/pin.
+            pallet_profile::Profiles::<Runtime>::insert(
+                &who,
+                pallet_profile::Profile {
+                    display_name: Default::default(),
+                    bio: Default::default(),
+                    avatar: Default::default(),
+                    banner: Default::default(),
+                    location: Default::default(),
+                    website: Default::default(),
+                },
+            );
+            pallet_profile::PinnedPost::<Runtime>::insert(&who, 0u64);
+            assert_eq!(ProfileCapacityCost::cost(&who, &clear), Some(0));
+            assert_eq!(ProfileCapacityCost::cost(&who, &unpin), Some(0));
+            // The CREATE/OVERWRITE calls keep the steep flat price, and non-profile calls stay
+            // unpriced by this source.
+            let set = RuntimeCall::Profile(pallet_profile::Call::pin_post { id: 1 });
+            assert_eq!(
+                ProfileCapacityCost::cost(&who, &set),
+                Some(ProfileCost::get())
+            );
+            let remark = RuntimeCall::System(frame_system::Call::remark {
+                remark: Default::default(),
+            });
+            assert_eq!(ProfileCapacityCost::cost(&who, &remark), None);
+        });
+    }
+}
+
 /// Configure pallet-microblog: feeless, capacity-metered posting, with the talk-capacity meter folded
-/// into the pallet rather than split out. MaxLength = 512 / MaxPostsPerAuthor = 10_000 are the v1
-/// baselines; post ids are u64. The `ForceOrigin` (the 3-of-5 committee) lets the operator prime a
-/// battery by hand; `IdentityGate`'s first bind calls `on_first_bind`.
+/// into the pallet rather than split out. MaxLength = 512 is the v1 baseline; post ids are u64. The
+/// `ForceOrigin` (the 3-of-5 committee) lets the operator prime a battery by hand; `IdentityGate`'s
+/// first bind calls `on_first_bind`.
+///
+/// `MaxPostsPerAuthor = 10_000` used to sit here. Removed in spec 212 with the bounded-vec per-author
+/// index (storage v10): it bricked an author permanently at the cap, and there is no per-post cost left
+/// for it to bound. Sustained posting is now metered ONLY by talk-capacity, which is why the constants
+/// below were retuned in the same upgrade.
 impl pallet_microblog::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type MaxLength = ConstU32<512>;
-    type MaxPostsPerAuthor = ConstU32<10_000>;
     type CapRatio = CapRatio;
     type RegenPerBlock = RegenPerBlock;
     type Ceiling = Ceiling;
     type BaseCost = BaseCost;
     type PerByteCost = PerByteCost;
     // Per-action costs for the social engagement calls, all drawn from the SAME single talk-capacity
-    // battery as posting. DEV-tuned relative to BaseCost (= 50_000_000, one post): a vote ≈ 0.4 of a
-    // post, a follow ≈ 0.2. (quote_post reuses `post_cost`, so it has no constant here.)
-    type VoteCost = ConstU128<20_000_000>;
-    type FollowCost = ConstU128<10_000_000>;
+    // battery as posting. Relative to BaseCost (= 3_000_000_000, one post): a vote ≈ 0.4 of a post, a
+    // follow ≈ 0.2. Both were rescaled with BaseCost in spec 212, holding those ratios exactly.
+    // (quote_post reuses `post_cost`, so it has no constant here.)
+    type VoteCost = ConstU128<1_200_000_000>;
+    type FollowCost = ConstU128<600_000_000>;
     // Poll bounds: up to 4 options, each up to 80 bytes (the question reuses MaxLength = 512).
     type MaxPollOptions = ConstU32<4>;
     type MaxPollOptionLen = ConstU32<80>;
     // Governance poll anchor URL: a link to the off-chain proposal doc (GitHub/IPFS). 256 bytes covers a
     // long URL + an IPFS CID; the proposal BODY is never stored on-chain.
     type MaxAnchorUrlLen = ConstU32<256>;
+    // Poll-duration window (spec 211): every new poll must carry a close deadline inside it.
+    // Min 10 minutes — long enough that a poll cannot close before anyone could plausibly vote,
+    // short enough that a quick preprod test poll stays convenient. Max 90 days — the outer bound
+    // on how long a poll's weighted result may keep re-pricing before it is freezable; a longer
+    // signal belongs in a new poll.
+    type MinPollDuration = ConstU32<{ 10 * MINUTES }>;
+    type MaxPollDuration = ConstU32<{ 90 * DAYS }>;
     // Gated by the 3-of-5 FollowerCommittee (sudo-free).
     type ForceOrigin = AuthorityOrigin;
     // Gate posting on a live Cardano-identity binding (the anti-Sybil anchor).
@@ -889,8 +1275,9 @@ impl pallet_cogno_gate::Config for Runtime {
     // Gated by the 3-of-5 FollowerCommittee (sudo-free) — gates `revoke` only.
     type FollowerOrigin = AuthorityOrigin;
     type OnBind = Microblog;
-    // The Cardano network the on-chain self-proof binds for: 0 = testnet (live preprod), 1 = mainnet.
-    type CardanoNetwork = ConstU8<0>;
+    // The Cardano network the on-chain self-proof binds for — derived from the ONE `CARDANO_NET`
+    // cutover selector (spec 211), shared with cardano-roles so the two can never flip apart.
+    type CardanoNetwork = CardanoNetworkId;
     type WeightInfo = pallet_cogno_gate::weights::SubstrateWeight<Runtime>;
 }
 
@@ -909,7 +1296,8 @@ impl pallet_cardano_roles::Config for Runtime {
     type RoleAuthorityOrigin = AuthorityOrigin;
     // A role claim requires an onboarded (payment-bound) account.
     type IdentityGate = CognoGate;
-    type CardanoNetwork = ConstU8<0>;
+    // Derived from the ONE `CARDANO_NET` cutover selector (spec 211), shared with cogno-gate.
+    type CardanoNetwork = CardanoNetworkId;
     type WeightInfo = ();
 }
 
@@ -1009,31 +1397,127 @@ pub struct RoleApply;
 impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
     fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28], u128)]) {
         use pallet_cardano_roles::{ObservedRole, ObservedRoleSet, RoleKind};
-        // Build the bounded set by pushing until full, TRUNCATING not clearing: an account with more
-        // observed badges than the cap keeps the first N (the observer passes them in a deterministic
-        // order). The old `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
-        // wiped the ENTIRE set to empty; `try_push`-until-`Err` keeps a determinstic prefix instead.
-        // `weight` (spec 207) is the governance-poll chamber weight, carried through verbatim.
+        // Build the bounded set in TWO PASSES (spec 211), TRUNCATING not clearing: NON-SPO roles
+        // (dRep, CC — at most one of each) first, then fill the remaining slots with SPO entries.
+        //
+        // The canonical `role_entries` order sorts on `RoleSource` first, which puts EVERY SPO entry
+        // ahead of every dRep/CC one — so a single pass truncating at the cap silently dropped a
+        // large mSPO's dRep badge AND its dRep-chamber weight once its pool count neared the cap
+        // (the old "⚠ MAINNET PREREQUISITE (a deterministic under-count)" this fixes). Two passes
+        // reserve the non-SPO badges by construction; only surplus SPO pools past the cap are
+        // dropped, deterministically (the slice order within each class is preserved). Both passes
+        // are deterministic, so every node stores the identical set. Side effect, priced in: the
+        // stored order of an EXISTING multi-role account changes once (non-SPO now first), costing a
+        // one-time `RolesUpdated` rewrite per such account on the first enforcing observation after
+        // the upgrade — a handful of rows on preprod, none at a fresh mainnet genesis.
+        //
+        // The old `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
+        // wiped the ENTIRE set to empty. `weight` (spec 207) is the governance-poll chamber weight,
+        // carried through verbatim.
+        //
+        // The non-SPO pass is itself CAPPED, at `NON_SPO_RESERVE`. "At most one of each" is what the
+        // reduction emits today, but nothing in this signature enforces it — and if a future reduction
+        // ever emitted a handful of dRep/CC credentials for one account, an uncapped first pass would
+        // fill all 16 slots and drop EVERY SPO badge: the exact inverse of the bug the two passes fix,
+        // and just as silent. Reserving a small, fixed prefix bounds the trade in both directions —
+        // non-SPO badges can never be starved by pools, and pools can never be starved by badges.
+        const NON_SPO_RESERVE: usize = 4;
+
         let mut bounded = ObservedRoleSet::default();
-        for (kind_ix, id, weight) in roles {
-            let kind = match kind_ix {
-                0 => RoleKind::Spo,
-                1 => RoleKind::DRep,
-                2 => RoleKind::Committee,
-                _ => continue,
-            };
-            if bounded
-                .try_push(ObservedRole {
-                    kind,
-                    id: *id,
-                    weight: *weight,
-                })
-                .is_err()
-            {
-                break; // at the cap — keep the first N (deterministic), drop the rest
+        'fill: for pass_spo in [false, true] {
+            for (kind_ix, id, weight) in roles {
+                let kind = match kind_ix {
+                    0 if pass_spo => RoleKind::Spo,
+                    1 if !pass_spo => RoleKind::DRep,
+                    2 if !pass_spo => RoleKind::Committee,
+                    _ => continue,
+                };
+                if !pass_spo && bounded.len() >= NON_SPO_RESERVE {
+                    continue; // the non-SPO prefix is full — leave the rest of the set for pools
+                }
+                if bounded
+                    .try_push(ObservedRole {
+                        kind,
+                        id: *id,
+                        weight: *weight,
+                    })
+                    .is_err()
+                {
+                    // At the cap — keep what fits (deterministically), drop the rest. Break out of
+                    // BOTH loops: a plain `break` would only end this pass and then re-walk the whole
+                    // slice in the next one, every `try_push` failing, inside a Mandatory inherent.
+                    break 'fill;
+                }
             }
         }
         pallet_cardano_roles::Pallet::<Runtime>::apply_roles(who, bounded);
+    }
+}
+
+#[cfg(test)]
+mod role_apply_tests {
+    use super::*;
+    use pallet_cardano_observer::RoleSink;
+    use pallet_cardano_roles::RoleKind;
+
+    #[test]
+    fn truncation_keeps_non_spo_badges_and_drops_surplus_pools() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([7u8; 32]);
+            // The canonical order puts every SPO entry first: 16 pools (already at the cap), then
+            // the operator's dRep and CC badges. A single-pass fill dropped both badges.
+            let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
+                (0..16u8).map(|i| (0u8, [i; 28], 1u128)).collect();
+            roles.push((1, [0xD0; 28], 5));
+            roles.push((2, [0xC0; 28], 0));
+            RoleApply::set_roles(&who, &roles);
+            let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
+            assert_eq!(stored.len(), 16, "filled to the cap");
+            // The non-SPO badges survive (filled first), in slice order, ahead of the pools …
+            assert_eq!(stored[0].kind, RoleKind::DRep);
+            assert_eq!(stored[1].kind, RoleKind::Committee);
+            // … and only the surplus SPO pools were dropped (14 of 16 fit).
+            assert_eq!(
+                stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
+                14
+            );
+            // An under-cap account keeps every role.
+            let small = AccountId::from([8u8; 32]);
+            RoleApply::set_roles(&small, &[(0, [1; 28], 1), (1, [2; 28], 2)]);
+            assert_eq!(
+                pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&small).len(),
+                2
+            );
+        });
+    }
+
+    /// The reserve is bounded in BOTH directions. Reserving the non-SPO badges must not become a way
+    /// to starve the pools: an account handed more dRep/CC entries than the reserve keeps only the
+    /// reserve's worth, and every remaining slot still goes to SPO badges.
+    #[test]
+    fn the_non_spo_reserve_cannot_starve_the_spo_badges() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([9u8; 32]);
+            // 16 pools (the cap on its own) plus EIGHT dRep entries — twice the reserve. Nothing in
+            // `RoleSink`'s signature forbids this; an uncapped first pass would keep all eight and
+            // drop every pool.
+            let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
+                (0..16u8).map(|i| (0u8, [i; 28], 1u128)).collect();
+            roles.extend((0..8u8).map(|i| (1u8, [0xD0 + i; 28], 5u128)));
+            RoleApply::set_roles(&who, &roles);
+            let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
+            assert_eq!(stored.len(), 16, "filled to the cap");
+            assert_eq!(
+                stored.iter().filter(|r| r.kind == RoleKind::DRep).count(),
+                4,
+                "the non-SPO prefix is capped at the reserve"
+            );
+            assert_eq!(
+                stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
+                12,
+                "every remaining slot still goes to the pools"
+            );
+        });
     }
 }
 
@@ -1059,38 +1543,141 @@ impl pallet_cardano_observer::BoundRoleCredentials for BoundRoleCreds {
     }
 }
 
-/// The Cardano stability window (3k/f = the no-rollback horizon), as a deliberate **TESTNET vs MAINNET
-/// split** — exactly like `MinAuthorities = 1` / the single-validator testnet set: run the relaxed value
-/// while testing here, flip to the production value before mainnet. The flip is a one-line, ENCODING-NEUTRAL
-/// change (it only widens the as-of reference lag — no Call/storage/event change, no spec bump), gated as a
-/// ⚠ MAINNET PREREQUISITE, NOT a bug. Co-sequence it with the ≥3-producer cutover; at the mainnet depth
-/// db-sync must retain history back to the reference (docs/IN-PROTOCOL-OBSERVATION.md).
-const STABILITY_SLOTS_TESTNET: u64 = 600; // ≈ 10 min — prompt PoC observability on this testnet
-/// The production value: 3k/f = 129_600 slots ≈ 36 h (mainnet/preprod k=2160, f=0.05). Ready + named; the
-/// mainnet cutover flips `ObsStabilitySlots` below from `_TESTNET` to `_MAINNET`. (Held unused until then.)
-#[allow(dead_code)]
-const STABILITY_SLOTS_MAINNET: u64 = 129_600;
+// ── The Cardano-network cutover selector (spec 211) ────────────────────────────────────────────────
+//
+// Every network-dependent constant the observation + identity paths run on derives from the ONE
+// `CARDANO_NET` selector below, so a mainnet cutover flips ONE line and cannot be partial. Before
+// this, six symbols had to move together (the two Shelley anchors, the stability window, the min
+// lock, the vault policy id, and `CardanoNetwork` declared TWICE), and a partial flip failed
+// SILENTLY: preprod anchors on a mainnet chain derive a reference slot years behind the real tip,
+// the node and runtime share the anchor so `ReferenceTooFresh` never fires, `config_check` prints
+// "synced", every real lock is dropped by `created > reference_slot`, `ObservationApplied` fires
+// every block crediting nobody, and `Stalled` never arms — everything reports healthy while every
+// user's locked ADA earns zero weight.
+//
+// VERSIONING of a flip: it changes only `#[pallet::constant]` VALUES — no call/storage/event/
+// extension shape moves, so no PAPI descriptor regen and no `transaction_version` change. But
+// SHIPPING it to a LIVE chain is still a runtime upgrade, and every live upgrade bumps
+// `spec_version`: `System::apply_authorized_upgrade` refuses a non-increasing spec, and the
+// deployed frontend blocks posting against a chain whose spec differs from its build (the lockstep
+// FE deploy). On the FRESH-GENESIS mainnet path there is no in-place upgrade, so the flip rides the
+// genesis runtime with no bump of its own. (docs/PROTOCOL-PARAMS.md states the same rule.)
+//
+// Deliberate mirrors OUTSIDE the runtime that a cutover still owns separately: the node's
+// `gen-chainspec` base shape, the frontend's Cardano network id, and the cogno-dbsync test
+// fixtures. Co-sequence the flip with the ≥3-producer cutover; at the mainnet stability depth
+// db-sync must retain history back to the reference (docs/IN-PROTOCOL-OBSERVATION.md).
+
+/// Which Cardano network this runtime observes and binds identities for.
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum CardanoNet {
+    Preprod,
+    Mainnet,
+}
+
+/// ⚠ THE one line a mainnet cutover flips.
+const CARDANO_NET: CardanoNet = CardanoNet::Preprod;
+
+/// The live `talk_vault` policy id (== vault script hash, contracts/vault.json:
+/// 168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7). NETWORK-INDEPENDENT: a Plutus script
+/// hash does not embed a network id, and the mainnet decision is to redeploy the SAME applied script
+/// (keeping the 100-ADA floor), so both arms below share it. Consensus-pinned; the node reads it via
+/// the CardanoObserverApi so every node queries the SAME Cardano policy. ⚠ moving the live contract
+/// hash orphans the deployed vault — if contracts change, update this to match the new applied hash.
+const TALK_VAULT_POLICY_ID: [u8; 28] = [
+    0x16, 0x8a, 0x97, 0x10, 0xe9, 0x91, 0xb7, 0x68, 0x42, 0x6b, 0x58, 0x01, 0x1f, 0xeb, 0xec, 0x0f,
+    0xa3, 0xc5, 0xff, 0x6b, 0xeb, 0x49, 0x06, 0x5c, 0xc5, 0x24, 0x89, 0xc7,
+];
+
+/// The full per-network parameter set — one struct so nothing can be flipped alone.
+struct CardanoNetParams {
+    /// The CIP-19 address-header network id the CIP-8 binds verify against (0 testnet, 1 mainnet).
+    network_id: u8,
+    /// The network's Shelley-era anchor — NOT Byron `systemStart`. Slot arithmetic counts from here.
+    shelley_start_unix: u64,
+    shelley_start_slot: u64,
+    /// The observation stability window in slots (the no-rollback horizon the reference must trail).
+    stability_slots: u64,
+    /// The L1 `min_lock` floor (lovelace); below it, observed lovelace maps to weight 0.
+    min_lock: u128,
+    /// The `talk_vault` policy id to observe.
+    vault_policy_id: [u8; 28],
+}
+
+const CARDANO_PARAMS: CardanoNetParams = match CARDANO_NET {
+    // PREPROD (live today). Shelley begins at slot 86_400 / unix 1_655_769_600 after a 20-day Byron
+    // prefix. The 600-slot (~10 min) stability window is a deliberate TESTNET-OBSERVABILITY choice —
+    // preprod's real 3k/f is the same 129_600 as mainnet's — exactly like `MinAuthorities = 1`: run
+    // relaxed while testing here, and the Mainnet arm below carries the production value.
+    CardanoNet::Preprod => CardanoNetParams {
+        network_id: 0,
+        shelley_start_unix: 1_655_769_600,
+        shelley_start_slot: 86_400,
+        stability_slots: 600,
+        min_lock: 100_000_000,
+        vault_policy_id: TALK_VAULT_POLICY_ID,
+    },
+    // MAINNET (the cutover target). Shelley begins at slot 4_492_800 / unix 1_596_059_091
+    // (2020-07-29T21:44:51Z, epoch 208). ⚠ Verify both against the mainnet shelley-genesis file at
+    // cutover. Stability = 3k/f = 129_600 slots ≈ 36 h (k=2160, f=0.05).
+    CardanoNet::Mainnet => CardanoNetParams {
+        network_id: 1,
+        shelley_start_unix: 1_596_059_091,
+        shelley_start_slot: 4_492_800,
+        stability_slots: 129_600,
+        min_lock: 100_000_000,
+        vault_policy_id: TALK_VAULT_POLICY_ID,
+    },
+};
+
+// Compile-time cutover guards: deriving everything from one selector already makes a PARTIAL flip
+// unrepresentable; these asserts additionally stop a TYPO edit inside one arm from building.
+const _: () = {
+    match CARDANO_NET {
+        CardanoNet::Preprod => {
+            assert!(
+                CARDANO_PARAMS.network_id == 0,
+                "preprod binds testnet addresses"
+            );
+            assert!(
+                CARDANO_PARAMS.shelley_start_slot == 86_400
+                    && CARDANO_PARAMS.shelley_start_unix == 1_655_769_600,
+                "preprod Shelley anchor drifted from the published genesis"
+            );
+        }
+        CardanoNet::Mainnet => {
+            assert!(
+                CARDANO_PARAMS.network_id == 1,
+                "mainnet binds mainnet addresses"
+            );
+            assert!(
+                CARDANO_PARAMS.stability_slots >= 129_600,
+                "a mainnet build must run the full 3k/f stability window — the relaxed \
+                 observability window is a labeled-testnet-only choice"
+            );
+            assert!(
+                CARDANO_PARAMS.shelley_start_slot == 4_492_800
+                    && CARDANO_PARAMS.shelley_start_unix == 1_596_059_091,
+                "mainnet Shelley anchor drifted from the published genesis"
+            );
+        }
+    }
+    assert!(
+        CARDANO_PARAMS.min_lock == 100_000_000,
+        "the 100-ADA floor is a cross-network commitment (the vault is reused only if it holds)"
+    );
+};
 
 parameter_types! {
-    // ⚠ MAINNET PREREQUISITE: flip STABILITY_SLOTS_TESTNET -> STABILITY_SLOTS_MAINNET before any
-    // mainnet/real-value deployment (a smaller window is permitted ONLY on a labeled dev/testnet; see the
-    // split doc above + docs/IN-PROTOCOL-OBSERVATION.md). Selected = TESTNET while we test here.
-    pub const ObsStabilitySlots: u64 = STABILITY_SLOTS_TESTNET;
-    // ⚠ PREPROD Shelley anchor (we are live there) — NOT Byron `systemStart` (1654041600). The Shelley
-    // era begins at slot 86400 / unix 1655769600 after a 20-day Byron prefix. Verify the MAINNET anchor
-    // against its genesis before any mainnet cutover.
-    pub const ObsShelleyStartUnix: u64 = 1_655_769_600;
-    pub const ObsShelleyStartSlot: u64 = 86_400;
-    // The L1 `min_lock` floor (lovelace); below it, observed lovelace maps to weight 0.
-    pub const ObsMinLock: u128 = 100_000_000;
-    // The live `talk_vault` policy id (== vault script hash, contracts/vault.json:
-    // 168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7). Consensus-pinned; the node reads it via
-    // the CardanoObserverApi so every node queries the SAME Cardano policy. ⚠ moving the live contract
-    // hash orphans the deployed vault — if contracts change, update this to match the new applied hash.
-    pub const ObsVaultPolicyId: [u8; 28] = [
-        0x16, 0x8a, 0x97, 0x10, 0xe9, 0x91, 0xb7, 0x68, 0x42, 0x6b, 0x58, 0x01, 0x1f, 0xeb,
-        0xec, 0x0f, 0xa3, 0xc5, 0xff, 0x6b, 0xeb, 0x49, 0x06, 0x5c, 0xc5, 0x24, 0x89, 0xc7,
-    ];
+    pub const ObsStabilitySlots: u64 = CARDANO_PARAMS.stability_slots;
+    pub const ObsShelleyStartUnix: u64 = CARDANO_PARAMS.shelley_start_unix;
+    pub const ObsShelleyStartSlot: u64 = CARDANO_PARAMS.shelley_start_slot;
+    pub const ObsMinLock: u128 = CARDANO_PARAMS.min_lock;
+    pub const ObsVaultPolicyId: [u8; 28] = CARDANO_PARAMS.vault_policy_id;
+    /// The one network id BOTH CIP-8-verifying pallets (cogno-gate, cardano-roles) read — they used
+    /// to declare `ConstU8<0>` independently, which is exactly the partial-flip surface this
+    /// selector removes.
+    pub const CardanoNetworkId: u8 = CARDANO_PARAMS.network_id;
 }
 
 /// Benchmark-only setup for pallet-cardano-observer. The pallet reaches cogno-gate / talk-stake /

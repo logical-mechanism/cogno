@@ -17,7 +17,7 @@
 
 use crate::{
     mock::*, AccountOf, AccountOfStakeCred, Call, Error, Event, IdentityHash, PkhOf, StakeCredOf,
-    StakeCredential, ThreadOf, Tombstoned, TombstonedStakeCred,
+    StakeCredential, Tombstoned, TombstonedStakeCred,
 };
 use frame_support::{assert_noop, assert_ok, traits::ConstU32, BoundedVec};
 use sp_runtime::{
@@ -54,7 +54,7 @@ fn link_identity_binds_both_ways_and_unlocks_posting() {
         assert_noop!(post_as(ALICE), pallet_microblog::Error::<Test>::NotAllowed);
 
         // The follower (root in dev) binds the Cardano identity to ALICE's posting account.
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
 
         // Both directional maps resolve the 1:1 binding.
         assert_eq!(PkhOf::<Test>::get(ALICE), Some(HASH_A));
@@ -79,12 +79,9 @@ fn link_identity_binds_both_ways_and_unlocks_posting() {
 #[test]
 fn double_bind_same_account_is_rejected() {
     new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         // A second identity cannot be bound to an already-bound account.
-        assert_noop!(
-            bind(HASH_B, ALICE, None),
-            Error::<Test>::AccountAlreadyBound
-        );
+        assert_noop!(bind(HASH_B, ALICE), Error::<Test>::AccountAlreadyBound);
         assert_eq!(PkhOf::<Test>::get(ALICE), Some(HASH_A)); // unchanged
         assert_eq!(AccountOf::<Test>::get(HASH_B), None);
     });
@@ -93,9 +90,9 @@ fn double_bind_same_account_is_rejected() {
 #[test]
 fn double_bind_same_identity_to_another_account_is_rejected() {
     new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         // The same Cardano identity cannot be bound to a second account (the Sybil anchor).
-        assert_noop!(bind(HASH_A, BOB, None), Error::<Test>::PkhAlreadyBound);
+        assert_noop!(bind(HASH_A, BOB), Error::<Test>::PkhAlreadyBound);
         assert_eq!(AccountOf::<Test>::get(HASH_A), Some(ALICE)); // unchanged
         assert!(!PkhOf::<Test>::contains_key(BOB));
         // BOB still cannot post.
@@ -107,100 +104,16 @@ fn double_bind_same_identity_to_another_account_is_rejected() {
 // `link_identity` dispatchable no longer exists — the bind path is the permissionless cryptographic
 // `link_identity_signed`, whose origin/authorization is covered by the `link_identity_signed_*` tests.)
 
-#[test]
-fn thread_pointer_is_stored_and_length_bounded() {
-    new_test_ext().execute_with(|| {
-        // A valid 5-byte / 10-hex cogno_v3 pointer is stored.
-        let ptr = vec![0x00, 0xe5, 0x99, 0x3f, 0xa3]; // 5 bytes (cf. cogno_v3 #"00e5993fa3")
-        assert_ok!(bind(HASH_A, ALICE, Some(ptr.clone())));
-        assert_eq!(ThreadOf::<Test>::get(ALICE).map(|b| b.to_vec()), Some(ptr));
-
-        // An over-long pointer (>10 bytes) is rejected without binding.
-        let too_long = vec![0u8; 11];
-        assert_noop!(bind(HASH_B, BOB, Some(too_long)), Error::<Test>::BadThread);
-        assert!(!PkhOf::<Test>::contains_key(BOB));
-    });
-}
-
-#[test]
-fn thread_pointer_at_exactly_ten_bytes_is_accepted() {
-    // gap-1: the BoundedVec<u8, ConstU32<10>> boundary. 10 bytes is the inclusive limit — it
-    // must succeed and be stored verbatim; 11 (tested above) fails. This pins the off-by-one.
-    new_test_ext().execute_with(|| {
-        let ptr = vec![0xABu8; 10]; // exactly at the limit
-        assert_ok!(bind(HASH_A, ALICE, Some(ptr.clone())));
-        assert_eq!(ThreadOf::<Test>::get(ALICE).map(|b| b.to_vec()), Some(ptr));
-        assert_eq!(PkhOf::<Test>::get(ALICE), Some(HASH_A));
-    });
-}
-
-#[test]
-fn thread_pointer_empty_is_accepted_and_stored_empty() {
-    // gap-3: Some(vec![]) is at the LOWER boundary (0 ≤ len ≤ 10) — it must succeed and bind.
-    // An empty pointer is stored as an empty BoundedVec (Some), distinct from the None path.
-    new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, Some(vec![])));
-        assert_eq!(PkhOf::<Test>::get(ALICE), Some(HASH_A));
-        // Some(empty) — the field was supplied (just zero-length), not omitted.
-        assert_eq!(
-            ThreadOf::<Test>::get(ALICE).map(|b| b.to_vec()),
-            Some(vec![])
-        );
-    });
-}
-
-#[test]
-fn link_with_none_thread_pointer_stores_no_thread() {
-    // Companion to the empty-vec case: None must leave ThreadOf entirely unset (is_none), proving
-    // the None branch never writes a row (distinct from Some(vec![]) above).
-    new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, None));
-        assert!(ThreadOf::<Test>::get(ALICE).is_none());
-    });
-}
-
-#[test]
-fn bad_thread_pointer_emits_no_event_and_writes_nothing() {
-    // Event-absence on a rejected bind (gap-style): an over-long pointer fails the up-front
-    // validation BEFORE any write, so NO directional map is touched and NO IdentityLinked fires.
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        assert_noop!(
-            bind(HASH_A, ALICE, Some(vec![0u8; 11])),
-            Error::<Test>::BadThread
-        );
-        // All-or-nothing: neither directional map nor the thread row was written.
-        assert!(!PkhOf::<Test>::contains_key(ALICE));
-        assert_eq!(AccountOf::<Test>::get(HASH_A), None);
-        assert!(ThreadOf::<Test>::get(ALICE).is_none());
-        // No spurious IdentityLinked event on the rejected call.
-        assert!(!System::events().iter().any(|r| matches!(
-            r.event,
-            RuntimeEvent::CognoGate(Event::IdentityLinked { .. })
-        )));
-    });
-}
-
-#[test]
-fn revoke_clears_thread_pointer() {
-    // gap-2: revoke must remove ThreadOf (lib.rs ThreadOf::remove) or stale pointers accumulate.
-    new_test_ext().execute_with(|| {
-        let ptr = vec![0x01, 0x02, 0x03];
-        assert_ok!(bind(HASH_A, ALICE, Some(ptr.clone())));
-        assert_eq!(ThreadOf::<Test>::get(ALICE).map(|b| b.to_vec()), Some(ptr));
-
-        assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
-        // The thread pointer is gone — no stale row survives the revoke.
-        assert!(ThreadOf::<Test>::get(ALICE).is_none());
-    });
-}
+// (The `thread_pointer` tests that lived here were removed in spec 211 with the argument and the
+// `ThreadOf` storage — see lib.rs. The all-or-nothing rejection property they also covered is still
+// pinned by the tombstone / double-bind tests below.)
 
 #[test]
 fn revoke_clears_account_of_immediately() {
     // gap-5: AccountOf must be None the instant after revoke (before any rebind). Existing tests
     // only check AccountOf after a subsequent rebind, masking a stale reverse-map row.
     new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_eq!(AccountOf::<Test>::get(HASH_A), Some(ALICE));
 
         assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
@@ -216,7 +129,7 @@ fn revoked_event_carries_the_correct_identity() {
     // (and who == ALICE). Catches a revoke that emits the event with a wrong/zeroed identity.
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
 
         let revoked = System::events()
@@ -251,44 +164,14 @@ fn revoke_unknown_account_emits_no_revoked_event() {
 }
 
 #[test]
-fn thread_pointer_state_transitions_across_rebind() {
-    // gap-7: bind WITH a pointer, revoke (clears it), rebind the same identity to a NEW account
-    // WITHOUT a pointer → the new account's ThreadOf is None, and the old account stays cleared.
-    new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, Some(vec![0xDE, 0xAD])));
-        assert!(ThreadOf::<Test>::get(ALICE).is_some());
-
-        assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
-        assert!(ThreadOf::<Test>::get(ALICE).is_none());
-
-        // HASH_A is now tombstoned; bind a FRESH identity (HASH_B) to BOB without a thread pointer.
-        assert_ok!(bind(HASH_B, BOB, None));
-        assert!(
-            ThreadOf::<Test>::get(BOB).is_none(),
-            "None rebind writes no thread row"
-        );
-        assert!(
-            ThreadOf::<Test>::get(ALICE).is_none(),
-            "old account stays cleared"
-        );
-        assert_eq!(AccountOf::<Test>::get(HASH_B), Some(BOB));
-    });
-}
-
-#[test]
 fn tombstone_blocks_reusing_a_revoked_identity() {
     // "Ban means ban": after revoke tombstones the identity, it can NEVER be re-bound — not even to
-    // the same account with the same thread pointer (was: rebind-reuse; now a permanent ban).
+    // the same account (was: rebind-reuse; now a permanent ban).
     new_test_ext().execute_with(|| {
-        let ptr = vec![0x00, 0xe5, 0x99, 0x3f, 0xa3];
-        assert_ok!(bind(HASH_A, ALICE, Some(ptr.clone())));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
-        // Tombstone: the SAME identity cannot be reused after a ban (permanent), even with its old thread.
-        assert_noop!(
-            bind(HASH_A, ALICE, Some(ptr.clone())),
-            Error::<Test>::IdentityTombstoned
-        );
-        let _ = ptr;
+        // Tombstone: the SAME identity cannot be reused after a ban (permanent).
+        assert_noop!(bind(HASH_A, ALICE), Error::<Test>::IdentityTombstoned);
     });
 }
 
@@ -299,10 +182,10 @@ fn full_event_audit_trail_for_bind_revoke_rebind() {
     // against an accidental event deletion on any one of the three state changes.
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
         // HASH_A is tombstoned; the rebind uses a FRESH identity (HASH_B).
-        assert_ok!(bind(HASH_B, ALICE, None));
+        assert_ok!(bind(HASH_B, ALICE));
 
         let gate_events: Vec<_> = System::events()
             .into_iter()
@@ -338,7 +221,7 @@ fn post_revoke_rebind_post_id_continuity() {
     // CONTINUOUS (a revoke must never reset NextPostId, or post ids would collide after a rebind).
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
 
         assert_ok!(post_as(ALICE)); // id 0
         assert_eq!(pallet_microblog::NextPostId::<Test>::get(), 1);
@@ -350,7 +233,7 @@ fn post_revoke_rebind_post_id_continuity() {
         assert_eq!(pallet_microblog::NextPostId::<Test>::get(), 1);
 
         // Rebind ALICE to a DIFFERENT identity → posting unlocks again.
-        assert_ok!(bind(HASH_B, ALICE, None));
+        assert_ok!(bind(HASH_B, ALICE));
         assert_ok!(post_as(ALICE)); // id 1, NOT a reused 0
 
         // The newly created post got id 1 (continuous), and id 0 still exists (no collision).
@@ -364,7 +247,7 @@ fn post_revoke_rebind_post_id_continuity() {
 fn revoke_relocks_posting() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_ok!(post_as(ALICE)); // bound → can post
 
         // The operator-ban origin revokes the binding.
@@ -388,7 +271,7 @@ fn revoke_relocks_posting() {
 
         // Tombstone ("ban means ban"): the revoked identity is PERMANENTLY banned — it cannot be
         // re-bound to anyone, even via the trusted path.
-        assert_noop!(bind(HASH_A, BOB, None), Error::<Test>::IdentityTombstoned);
+        assert_noop!(bind(HASH_A, BOB), Error::<Test>::IdentityTombstoned);
         assert_eq!(AccountOf::<Test>::get(HASH_A), None);
     });
 }
@@ -403,7 +286,7 @@ fn bind_revoke_rebind_keeps_provider_accounting_balanced() {
         let providers = |who: u64| frame_system::Account::<Test>::get(who).providers;
         let base = providers(ALICE);
 
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_eq!(providers(ALICE), base + 1, "bind takes a provider ref");
 
         // Give ALICE real banked capacity, then revoke.
@@ -431,7 +314,7 @@ fn bind_revoke_rebind_keeps_provider_accounting_balanced() {
         assert_eq!(row.cap_last, 0, "banked capacity zeroed on revoke");
 
         // ALICE rebinds to a FRESH identity (HASH_A is tombstoned) — the provider ref is re-taken.
-        assert_ok!(bind(HASH_B, ALICE, None));
+        assert_ok!(bind(HASH_B, ALICE));
         assert_eq!(
             providers(ALICE),
             base + 1,
@@ -454,7 +337,7 @@ fn revoke_unknown_account_fails() {
 #[test]
 fn revoke_requires_follower_origin() {
     new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_noop!(
             CognoGate::revoke(RuntimeOrigin::signed(ALICE), ALICE),
             DispatchError::BadOrigin
@@ -485,7 +368,7 @@ fn stake_bind_requires_payment_bind_first() {
 fn stake_bind_binds_both_ways_and_emits_event() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
         assert_eq!(StakeCredOf::<Test>::get(ALICE), Some(STAKE_CRED_1));
         assert_eq!(AccountOfStakeCred::<Test>::get(STAKE_CRED_1), Some(ALICE));
@@ -503,7 +386,7 @@ fn stake_bind_binds_both_ways_and_emits_event() {
 #[test]
 fn stake_bind_rejects_a_second_stake_cred_on_one_account() {
     new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
         // One account anchors exactly one stake credential (account side of the 1:1).
         assert_noop!(
@@ -522,8 +405,8 @@ fn franken_many_payment_keys_cannot_share_one_stake_credential() {
     // of them. So "many payment credentials, one stake credential" CANNOT split/share that stake's vote
     // weight: the second binder is rejected, and only the proven owner's single account votes with it.
     new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, None));
-        assert_ok!(bind(HASH_B, BOB, None));
+        assert_ok!(bind(HASH_A, ALICE));
+        assert_ok!(bind(HASH_B, BOB));
         assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
         // BOB (a different payment key) cannot ride ALICE's stake credential.
         assert_noop!(
@@ -541,7 +424,7 @@ fn revoke_bans_the_stake_key_permanently() {
     // operator cannot grind a fresh payment identity and re-bind the SAME on-chain stake to keep voting.
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_ok!(bind_stake(STAKE_CRED_1, ALICE));
 
         assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
@@ -551,7 +434,7 @@ fn revoke_bans_the_stake_key_permanently() {
         assert!(TombstonedStakeCred::<Test>::contains_key(STAKE_CRED_1));
 
         // A fresh participant (BOB) cannot re-bind the banned stake credential.
-        assert_ok!(bind(HASH_B, BOB, None));
+        assert_ok!(bind(HASH_B, BOB));
         assert_noop!(
             bind_stake(STAKE_CRED_1, BOB),
             Error::<Test>::StakeCredTombstoned
@@ -563,7 +446,7 @@ fn revoke_bans_the_stake_key_permanently() {
 fn revoke_without_a_stake_bind_leaves_stake_maps_untouched() {
     // A payment-only account (no stake bind) revokes cleanly — no stake tombstone is written.
     new_test_ext().execute_with(|| {
-        assert_ok!(bind(HASH_A, ALICE, None));
+        assert_ok!(bind(HASH_A, ALICE));
         assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), ALICE));
         assert_eq!(TombstonedStakeCred::<Test>::iter().count(), 0);
     });
@@ -628,12 +511,7 @@ fn link_identity_signed_binds_a_real_wallet_proof() {
         let (s, k) = proof();
         // FEELESS + unsigned: no fee payer, no signing account — the bound account is the one the PROOF
         // commits (the submitter cannot retarget it). Dispatched with `RuntimeOrigin::none()`.
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k,
-            None
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let acct = bound_account();
         let identity = PkhOf::<Test>::get(acct).expect("the committed account is now bound");
         assert_eq!(
@@ -658,7 +536,7 @@ fn link_identity_signed_rejects_a_wrong_genesis() {
         // BlockHash[0] is left at the default (NOT the fixture's chain) ⇒ anti-cross-chain reject.
         let (s, k) = proof();
         assert_noop!(
-            CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None),
+            CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k),
             Error::<Test>::WrongGenesis
         );
         assert!(
@@ -675,7 +553,7 @@ fn link_identity_signed_rejects_a_garbage_proof() {
         let bad: BoundedVec<u8, ConstU32<512>> = vec![0xde, 0xad, 0xbe, 0xef].try_into().unwrap();
         let key: BoundedVec<u8, ConstU32<128>> = vec![0x00].try_into().unwrap();
         assert_noop!(
-            CognoGate::link_identity_signed(RuntimeOrigin::none(), bad, key, None),
+            CognoGate::link_identity_signed(RuntimeOrigin::none(), bad, key),
             Error::<Test>::ProofInvalid
         );
     });
@@ -690,16 +568,11 @@ fn link_identity_signed_requires_none_origin() {
         set_genesis(GENESIS);
         let (s, k) = proof();
         assert_noop!(
-            CognoGate::link_identity_signed(
-                RuntimeOrigin::signed(ALICE),
-                s.clone(),
-                k.clone(),
-                None
-            ),
+            CognoGate::link_identity_signed(RuntimeOrigin::signed(ALICE), s.clone(), k.clone()),
             DispatchError::BadOrigin
         );
         assert_noop!(
-            CognoGate::link_identity_signed(RuntimeOrigin::root(), s, k, None),
+            CognoGate::link_identity_signed(RuntimeOrigin::root(), s, k),
             DispatchError::BadOrigin
         );
         assert!(
@@ -718,8 +591,7 @@ fn revoke_tombstones_and_blocks_a_signed_rebind() {
         assert_ok!(CognoGate::link_identity_signed(
             RuntimeOrigin::none(),
             s.clone(),
-            k.clone(),
-            None
+            k.clone()
         ));
         let acct = bound_account();
         let identity = PkhOf::<Test>::get(acct).unwrap();
@@ -733,7 +605,7 @@ fn revoke_tombstones_and_blocks_a_signed_rebind() {
 
         // Replaying the SAME (eternally-valid) wallet proof cannot resurrect the binding.
         assert_noop!(
-            CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k, None),
+            CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k),
             Error::<Test>::IdentityTombstoned
         );
     });
@@ -746,12 +618,7 @@ fn link_stake_signed_binds_voting_power_for_a_payment_bound_account() {
         set_genesis(GENESIS);
         // First payment-bind the account (the participant) via the real payment fixture.
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k,
-            None
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let acct = bound_account();
         // Then stake-bind: the real stake-key proof anchors the SAME account's voting power.
         let (ss, sk) = stake_proof();
@@ -828,7 +695,6 @@ fn id_call() -> Call<Test> {
     Call::link_identity_signed {
         cose_sign1,
         cose_key,
-        thread_pointer: None,
     }
 }
 /// The unsigned stake-bind `Call` over the real stake-key fixture.
@@ -871,7 +737,6 @@ fn validate_unsigned_rejects_a_garbage_proof_before_inclusion() {
         let call = Call::link_identity_signed {
             cose_sign1: bad,
             cose_key: key,
-            thread_pointer: None,
         };
         assert_eq!(validate(&call), Err(InvalidTransaction::BadProof.into()));
     });
@@ -895,12 +760,7 @@ fn validate_unsigned_rejects_an_already_bound_identity_at_the_pool() {
         System::set_block_number(1);
         set_genesis(GENESIS);
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k,
-            None
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         // The SAME proof is now Stale at the pool — never re-gossiped or re-included.
         assert_eq!(validate(&id_call()), Err(InvalidTransaction::Stale.into()));
     });
@@ -912,12 +772,7 @@ fn validate_unsigned_rejects_a_tombstoned_identity_at_the_pool() {
         System::set_block_number(1);
         set_genesis(GENESIS);
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k,
-            None
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let acct = bound_account();
         assert_ok!(CognoGate::revoke(RuntimeOrigin::root(), acct)); // permanent tombstone
                                                                     // "Ban means ban" enforced AT THE POOL: the eternally-valid proof cannot resurrect the binding.
@@ -937,12 +792,7 @@ fn validate_unsigned_stake_requires_payment_bind_then_admits() {
         );
         // Payment-bind that account, then the stake bind is admitted with a dedup tag.
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k,
-            None
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let valid = <CognoGate as ValidateUnsigned>::validate_unsigned(
             TransactionSource::External,
             &stake_call(),
@@ -958,12 +808,7 @@ fn validate_unsigned_rejects_an_already_stake_bound_at_the_pool() {
         System::set_block_number(1);
         set_genesis(GENESIS);
         let (s, k) = proof();
-        assert_ok!(CognoGate::link_identity_signed(
-            RuntimeOrigin::none(),
-            s,
-            k,
-            None
-        ));
+        assert_ok!(CognoGate::link_identity_signed(RuntimeOrigin::none(), s, k));
         let (ss, sk) = stake_proof();
         assert_ok!(CognoGate::link_stake_signed(RuntimeOrigin::none(), ss, sk));
         // Re-submitting the same (already-bound) stake proof is Stale at the pool.

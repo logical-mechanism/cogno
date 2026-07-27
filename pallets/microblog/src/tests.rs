@@ -7,9 +7,10 @@
 //! test the pure bucket math + `force_set_capacity` + the anti-farm invariants.
 
 use crate::{
-    mock::*, AccountVoteTally, AccountVotes, ByAuthor, Capacity, Error, Event, FollowerCount,
-    Following, FollowingCount, NextPostId, NextTopLevelSeq, PollKind, PollTally, PollVotes, Polls,
-    Posts, RepliesByParent, ReplyCount, TopLevelByAuthor, TopLevelPosts, VoteDir, VoteTally, Votes,
+    mock::*, AccountVoteTally, AccountVotes, ByAuthor, ByAuthorCount, Capacity, Error, Event,
+    FollowerCount, Following, FollowingCount, NextPostId, NextTopLevelSeq, PollKind, PollTally,
+    PollVotes, Polls, Posts, RepliesByParent, ReplyCount, TopLevelByAuthor, TopLevelByAuthorCount,
+    TopLevelPosts, VoteDir, VoteTally, Votes,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -45,7 +46,8 @@ fn post_and_read_works() {
         assert_eq!(post.author, 1);
         assert_eq!(post.text.to_vec(), b"gm cogno".to_vec());
         assert_eq!(post.parent, None);
-        assert_eq!(ByAuthor::<Test>::get(1).to_vec(), vec![0]);
+        assert_eq!(ByAuthor::<Test>::get(1, 0), Some(0));
+        assert_eq!(ByAuthorCount::<Test>::get(1), 1);
         System::assert_last_event(Event::PostCreated { id: 0, author: 1 }.into());
     });
 }
@@ -149,7 +151,7 @@ fn top_level_and_quote_posts_do_not_touch_reply_aggregates() {
             RuntimeOrigin::signed(3),
             b"poll?".to_vec(),
             vec![b"a".to_vec(), b"b".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -262,7 +264,7 @@ fn event_and_error_variant_indices_are_pinned_on_the_wire() {
     let er = |e: Error<Test>| e.encode()[0];
     assert_eq!(er(Error::TooLong), 0);
     assert_eq!(er(Error::NotFound), 1);
-    assert_eq!(er(Error::TooManyPosts), 2);
+    // 2 = TooManyPosts: VACANT (retired in spec 212 with `MaxPostsPerAuthor`).
     assert_eq!(er(Error::NotAllowed), 3);
     assert_eq!(er(Error::NotVoted), 4);
     // 5 = AlreadyReposted: VACANT.
@@ -929,7 +931,7 @@ fn create_poll_makes_a_post_and_stores_options() {
             RuntimeOrigin::signed(1),
             b"best chain?".to_vec(),
             opts(3),
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -938,10 +940,10 @@ fn create_poll_makes_a_post_and_stores_options() {
         assert_eq!(p.text.to_vec(), b"best chain?".to_vec());
         assert_eq!(p.parent, None);
         assert_eq!(p.quote, None);
-        // And the options live in the Polls side-map; a poll with no deadline floats forever.
+        // And the options live in the Polls side-map with the required deadline (spec 211).
         let poll = Polls::<Test>::get(0).expect("poll exists");
         assert_eq!(poll.options.len(), 3);
-        assert_eq!(poll.close_at, None);
+        assert_eq!(poll.close_at, Some(50_000));
         assert_eq!(NextPostId::<Test>::get(), 1);
         System::assert_has_event(Event::PostCreated { id: 0, author: 1 }.into());
         System::assert_last_event(Event::PollCreated { id: 0, author: 1 }.into());
@@ -957,7 +959,7 @@ fn create_poll_needs_at_least_two_options() {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 opts(1),
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ),
@@ -977,7 +979,7 @@ fn create_poll_rejects_too_many_options() {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 opts(5),
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ),
@@ -996,7 +998,7 @@ fn create_poll_rejects_overlong_option() {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 vec![b"ok".to_vec(), long],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ),
@@ -1018,7 +1020,7 @@ fn cast_poll_vote_counts_and_reprices_live_on_recast() {
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(3),
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -1067,7 +1069,7 @@ fn cast_poll_vote_rejects_non_poll_and_bad_option() {
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(2),
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -1082,12 +1084,12 @@ fn cast_poll_vote_rejects_non_poll_and_bad_option() {
 fn poll_close_rejects_votes_and_freezes_result() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        // A poll that closes at block 10.
+        // A poll that closes at block 11.
         assert_ok!(Microblog::create_poll(
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(2),
-            Some(10),
+            Some(11),
             PollKind::Stake,
             None
         ));
@@ -1103,7 +1105,7 @@ fn poll_close_rejects_votes_and_freezes_result() {
         );
 
         // At/after the deadline: no more votes …
-        System::set_block_number(10);
+        System::set_block_number(11);
         assert_noop!(
             Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 1),
             Error::<Test>::PollClosed
@@ -1133,12 +1135,12 @@ fn poll_close_rejects_votes_and_freezes_result() {
 fn close_poll_rejects_floating_and_missing_polls() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        // A poll with no deadline can never be finalized.
+        // A poll whose deadline has not been reached cannot be finalized yet.
         assert_ok!(Microblog::create_poll(
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(2),
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -1156,6 +1158,61 @@ fn close_poll_rejects_floating_and_missing_polls() {
             Microblog::close_poll(RuntimeOrigin::signed(2), 1),
             Error::<Test>::PollNotFound
         );
+        // A LEGACY floating poll (close_at None, storable only pre-spec-211 — create_poll now
+        // rejects None) can never be finalized. Inserted directly, as pre-211 storage would hold it.
+        let options: frame_support::BoundedVec<
+            frame_support::BoundedVec<u8, <Test as crate::pallet::Config>::MaxPollOptionLen>,
+            <Test as crate::pallet::Config>::MaxPollOptions,
+        > = vec![
+            b"a".to_vec().try_into().unwrap(),
+            b"b".to_vec().try_into().unwrap(),
+        ]
+        .try_into()
+        .unwrap();
+        crate::Polls::<Test>::insert(
+            99,
+            crate::pallet::Poll::<Test> {
+                options,
+                close_at: None,
+                kind: PollKind::Stake,
+                action: None,
+            },
+        );
+        assert_noop!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 99),
+            Error::<Test>::PollNotClosable
+        );
+    });
+}
+
+#[test]
+fn create_poll_requires_a_deadline_inside_the_duration_window() {
+    // spec 211: `close_at` is required and must land in [now + MinPollDuration, now + MaxPollDuration]
+    // (mock: min 10, max 100_000). A `None` poll could never be frozen, so its weighted result would
+    // re-price forever — and the shipped UI used to produce exactly that poll by default.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(100);
+        let create = |close_at| {
+            Microblog::create_poll(
+                RuntimeOrigin::signed(1),
+                b"q".to_vec(),
+                opts(2),
+                close_at,
+                PollKind::Stake,
+                None,
+            )
+        };
+        // No deadline at all.
+        assert_noop!(create(None), Error::<Test>::PollCloseRequired);
+        // Born closed / sooner than the minimum window (min is 10 blocks from now = 100).
+        assert_noop!(create(Some(0)), Error::<Test>::PollDurationTooShort);
+        assert_noop!(create(Some(100)), Error::<Test>::PollDurationTooShort);
+        assert_noop!(create(Some(109)), Error::<Test>::PollDurationTooShort);
+        // Further out than the maximum window (max is 100_000 blocks from now).
+        assert_noop!(create(Some(100_101)), Error::<Test>::PollDurationTooLong);
+        // Both inclusive boundaries are accepted.
+        assert_ok!(create(Some(110)));
+        assert_ok!(create(Some(100_100)));
     });
 }
 
@@ -1163,17 +1220,17 @@ fn close_poll_rejects_floating_and_missing_polls() {
 fn close_poll_with_no_votes_freezes_an_all_zero_result() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        // A poll that closes at block 5, on which NOBODY votes — this exercises the `total == 0`
+        // A poll that closes at block 11, on which NOBODY votes — this exercises the `total == 0`
         // short-circuit in `close_poll` (freeze without the staker-set join).
         assert_ok!(Microblog::create_poll(
             RuntimeOrigin::signed(1),
             b"q".to_vec(),
             opts(3),
-            Some(5),
+            Some(11),
             PollKind::Stake,
             None
         ));
-        System::set_block_number(5);
+        System::set_block_number(11);
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
         System::assert_last_event(Event::PollClosed { host_id: 0 }.into());
 
@@ -1211,7 +1268,7 @@ fn governance_poll_reports_spo_and_drep_chambers_deduped_by_pool() {
             RuntimeOrigin::signed(1),
             b"ratify?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             None,
         ));
@@ -1284,7 +1341,7 @@ fn governance_poll_sums_an_mspos_declaring_pools_deduped_by_pool() {
             RuntimeOrigin::signed(1),
             b"ratify?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             None,
         ));
@@ -1333,7 +1390,7 @@ fn co_owners_split_makes_the_pool_abstain_and_stake_polls_have_no_chambers() {
             RuntimeOrigin::signed(1),
             b"gov?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             None,
         ));
@@ -1353,7 +1410,7 @@ fn co_owners_split_makes_the_pool_abstain_and_stake_polls_have_no_chambers() {
             RuntimeOrigin::signed(1),
             b"plain?".to_vec(),
             vec![b"a".to_vec(), b"b".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Stake,
             None,
         ));
@@ -1381,7 +1438,7 @@ fn governance_poll_skips_zero_weight_roles() {
             RuntimeOrigin::signed(1),
             b"gov?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             None,
         ));
@@ -1443,7 +1500,7 @@ fn finalized_governance_poll_freezes_both_holder_lens_and_chambers() {
             RuntimeOrigin::signed(1),
             b"ratify?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            Some(10),
+            Some(11),
             PollKind::Governance,
             None,
         ));
@@ -1453,7 +1510,7 @@ fn finalized_governance_poll_freezes_both_holder_lens_and_chambers() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 1));
 
         // Freeze the poll at its deadline.
-        System::set_block_number(10);
+        System::set_block_number(11);
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
         assert!(crate::PollResults::<Test>::contains_key(0));
 
@@ -1511,13 +1568,13 @@ fn close_poll_refunds_weight_and_freezes_chambers() {
             RuntimeOrigin::signed(1),
             b"gov?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            Some(5),
+            Some(11),
             PollKind::Governance,
             None,
         ));
         set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]);
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(10), 0, 0));
-        System::set_block_number(5);
+        System::set_block_number(11);
 
         let post = Microblog::close_poll(RuntimeOrigin::signed(2), 0).expect("closes");
         assert!(
@@ -1546,7 +1603,7 @@ fn spo_only_poll_populates_spo_chamber_and_suppresses_drep() {
             RuntimeOrigin::signed(1),
             b"spo temp check?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Spo,
             None,
         ));
@@ -1599,7 +1656,7 @@ fn drep_only_poll_populates_drep_chamber_and_suppresses_spo() {
             RuntimeOrigin::signed(1),
             b"drep temp check?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Drep,
             None,
         ));
@@ -1653,7 +1710,7 @@ fn finalized_spo_only_poll_freezes_spo_chamber_and_leaves_drep_zero() {
             RuntimeOrigin::signed(1),
             b"spo temp check?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            Some(10),
+            Some(11),
             PollKind::Spo,
             None,
         ));
@@ -1663,7 +1720,7 @@ fn finalized_spo_only_poll_freezes_spo_chamber_and_leaves_drep_zero() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 0));
 
         // Freeze the poll at its deadline.
-        System::set_block_number(10);
+        System::set_block_number(11);
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
         assert!(crate::PollResults::<Test>::contains_key(0));
 
@@ -1699,7 +1756,7 @@ fn finalized_drep_only_poll_freezes_drep_chamber_and_leaves_spo_zero() {
             RuntimeOrigin::signed(1),
             b"drep temp check?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            Some(10),
+            Some(11),
             PollKind::Drep,
             None,
         ));
@@ -1709,7 +1766,7 @@ fn finalized_drep_only_poll_freezes_drep_chamber_and_leaves_spo_zero() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(11), 0, 0));
 
         // Freeze the poll at its deadline.
-        System::set_block_number(10);
+        System::set_block_number(11);
         assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(2), 0));
         assert!(crate::PollResults::<Test>::contains_key(0));
 
@@ -1741,7 +1798,7 @@ fn governance_action_tag_round_trips_through_storage_and_view() {
             RuntimeOrigin::signed(1),
             b"withdraw from treasury?".to_vec(),
             vec![b"yes".to_vec(), b"no".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Governance,
             Some(crate::GovActionInput {
                 action_type: crate::GovActionType::TreasuryWithdrawal,
@@ -1795,7 +1852,7 @@ fn governance_action_tag_allowed_on_single_chamber_kinds() {
                 RuntimeOrigin::signed(1),
                 b"gov?".to_vec(),
                 vec![b"yes".to_vec(), b"no".to_vec()],
-                None,
+                Some(50_000),
                 kind,
                 Some(crate::GovActionInput {
                     action_type,
@@ -1833,7 +1890,7 @@ fn governance_action_on_stake_poll_is_rejected() {
                 RuntimeOrigin::signed(1),
                 b"plain?".to_vec(),
                 vec![b"yes".to_vec(), b"no".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 Some(crate::GovActionInput {
                     action_type: crate::GovActionType::Info,
@@ -1856,7 +1913,7 @@ fn governance_action_with_empty_anchor_is_rejected() {
                 RuntimeOrigin::signed(1),
                 b"gov?".to_vec(),
                 vec![b"yes".to_vec(), b"no".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Governance,
                 Some(crate::GovActionInput {
                     action_type: crate::GovActionType::Info,
@@ -1879,7 +1936,7 @@ fn governance_action_with_over_long_anchor_is_rejected() {
                 RuntimeOrigin::signed(1),
                 b"gov?".to_vec(),
                 vec![b"yes".to_vec(), b"no".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Governance,
                 Some(crate::GovActionInput {
                     action_type: crate::GovActionType::Info,
@@ -1892,36 +1949,54 @@ fn governance_action_with_over_long_anchor_is_rejected() {
     });
 }
 
+// Spec 212 replaces `too_many_posts_is_rejected_without_consuming_id`. The old mock capped an author
+// at `MaxPostsPerAuthor = 8`, and that test pinned the BRICK: the 9th post reverted `TooManyPosts`, and
+// with no `delete_post` and no pruning it reverted forever. The cap is gone with the bounded-vec shape,
+// so the property to pin now is the opposite one.
 #[test]
-fn too_many_posts_is_rejected_without_consuming_id() {
+fn an_author_posts_past_the_old_cap_and_the_index_stays_dense() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        // MaxPostsPerAuthor = 8 in the mock.
-        for _ in 0..8u64 {
+        // Well past the retired `MaxPostsPerAuthor = 8` mock bound, mixing top-level and replies so
+        // both indexes are exercised (a reply lands in `ByAuthor` only).
+        for i in 0..25u64 {
+            let parent = if i % 5 == 4 { Some(0) } else { None };
             assert_ok!(Microblog::post_message(
                 RuntimeOrigin::signed(1),
                 vec![b'x'],
-                None
+                parent
             ));
         }
-        assert_eq!(ByAuthor::<Test>::get(1).len(), 8);
-        assert_eq!(NextPostId::<Test>::get(), 8);
+        assert_eq!(NextPostId::<Test>::get(), 25);
 
-        // The 9th overflows the author index — rejected, and (assert_noop! proves) no
-        // storage changed, so the id counter was not consumed.
-        assert_noop!(
-            Microblog::post_message(RuntimeOrigin::signed(1), vec![b'y'], None),
-            Error::<Test>::TooManyPosts
-        );
-        assert_eq!(NextPostId::<Test>::get(), 8);
+        // Every post is indexed, the counter agrees, and the seq keys are dense 0..count with the ids
+        // ascending — the invariant the seq-descending readers walk.
+        assert_eq!(ByAuthorCount::<Test>::get(1), 25);
+        let ids: Vec<u64> = (0..25)
+            .map(|s| ByAuthor::<Test>::get(1, s).unwrap())
+            .collect();
+        assert_eq!(ids, (0..25).collect::<Vec<u64>>());
+        assert!(ByAuthor::<Test>::get(1, 25).is_none(), "dense 0..count");
 
-        // A different author is unaffected.
+        // 5 of the 25 were replies, so the reply-free index (and the profile post count) holds 20.
+        assert_eq!(TopLevelByAuthorCount::<Test>::get(1), 20);
+        assert_eq!(Microblog::top_level_post_count(&1), 20);
+        let top: Vec<u64> = (0..20)
+            .map(|s| TopLevelByAuthor::<Test>::get(1, s).unwrap())
+            .collect();
+        assert!(top.windows(2).all(|w| w[0] < w[1]), "ascending id order");
+        assert!(top.iter().all(|id| id % 5 != 4), "reply-free");
+
+        // A different author starts its own sequence at 0 (the maps are per-author).
         assert_ok!(Microblog::post_message(
             RuntimeOrigin::signed(2),
             vec![b'z'],
             None
         ));
-        assert_eq!(NextPostId::<Test>::get(), 9);
+        assert_eq!(ByAuthorCount::<Test>::get(2), 1);
+        assert_eq!(ByAuthor::<Test>::get(2, 0), Some(25));
+
+        assert_ok!(Microblog::check_tally_consistency());
     });
 }
 
@@ -2233,9 +2308,63 @@ fn raising_weight_does_not_retro_credit_at_the_new_weight() {
             100,
             "the raise carries over exactly the 100 settled at the OLD weight"
         );
-        // From here it regenerates at the NEW rate toward the NEW ceiling.
-        assert_eq!(Microblog::current_capacity(&1, 1_011), 1_100);
+        // From here it regenerates at the NEW rate toward the NEW ceiling. Weight 1000 is PAST the
+        // mock's knee (Ceiling/CapRatio = 500), so since spec 212 that rate is the FLATTENED
+        // ceiling/window = 5_000/10 = 500 per block, not the unclamped weight·RegenPerBlock = 1_000.
+        assert_eq!(Microblog::current_capacity(&1, 1_011), 600);
         assert_eq!(Microblog::current_capacity(&1, 1_020), 5_000);
+    });
+}
+
+#[test]
+fn the_refill_rate_flattens_at_the_same_knee_as_the_bucket() {
+    // Spec 212. Before this, `capacity_ceiling` clamped only the BUCKET and the refill rate was a bare
+    // `weight · RegenPerBlock` that grew without limit — so above the bucket knee the burst flattened
+    // while SUSTAINED throughput, the thing that actually competes for block space, stayed linear. The
+    // rate's own knee sat a whole refill window further out (Ceiling/RegenPerBlock), undocumented.
+    // Mock: CapRatio 10, RegenPerBlock 1, Ceiling 5_000 ⇒ knee at weight 500, window 10 blocks.
+    new_test_ext().execute_with(|| {
+        const KNEE: u128 = 500; // Ceiling / CapRatio
+        const WINDOW: u128 = 10; // CapRatio / RegenPerBlock
+
+        // BELOW the knee the derived rate is EXACTLY the old `weight · RegenPerBlock` — the division
+        // by CapRatio cancels, so no under-ceiling account sees any change at all.
+        for w in [1u128, 7, 100, KNEE] {
+            assert_eq!(
+                Microblog::regen_per_block(w),
+                w,
+                "below the knee the rate is unchanged"
+            );
+        }
+        // ABOVE it, the rate stops growing with the bucket.
+        for w in [KNEE + 1, 1_000, 10_000, u128::MAX] {
+            assert_eq!(
+                Microblog::regen_per_block(w),
+                KNEE,
+                "past the knee the rate flattens; a whale cannot out-post the ceiling"
+            );
+        }
+        // The property this buys: EVERY account refills empty→full in the SAME window, whatever its
+        // stake. Stake sets how big the bucket is, never how fast it fills.
+        for w in [1u128, KNEE, KNEE * 100, u128::MAX] {
+            let cap = Microblog::capacity_ceiling(w);
+            let rate = Microblog::regen_per_block(w);
+            assert_eq!(cap / rate, WINDOW, "weight-independent refill window");
+        }
+        // And it is live, not just arithmetic: a 20x-over-knee account still needs the full window.
+        System::set_block_number(1);
+        observe_weight(&1, KNEE * 20);
+        assert_eq!(
+            Microblog::current_capacity(&1, 1),
+            0,
+            "first touch is empty"
+        );
+        System::set_block_number(1 + WINDOW as u64);
+        assert_eq!(
+            Microblog::current_capacity(&1, 1 + WINDOW as u64),
+            5_000,
+            "full after exactly the window, not sooner"
+        );
     });
 }
 
@@ -2772,6 +2901,36 @@ mod capacity_extension {
     }
 
     #[test]
+    fn unpayable_foreign_call_is_rejected_as_malformed_not_as_a_rate_limit() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(10);
+            // A brim-full battery: nothing about this rejection is a budget shortfall.
+            prime(1, 100, 1_000);
+            let doomed = RuntimeCall::System(frame_system::Call::kill_prefix {
+                prefix: vec![],
+                subkeys: 0,
+            });
+            let err = validate(1, &doomed).map(|_| ()).unwrap_err();
+            // `Call` (malformed), NOT `ExhaustsResources`. The call can never succeed for this signer,
+            // so retrying it is pointless — and `ExhaustsResources` is exactly what the client reads as
+            // "you are posting too fast", which would be the wrong thing to tell them here.
+            assert_eq!(
+                err,
+                TransactionValidityError::Invalid(InvalidTransaction::Call)
+            );
+            // …and nothing was consumed: the reject happens before the battery is touched.
+            assert_eq!(Microblog::current_capacity(&1, 10), 1_000);
+            // A genuinely over-budget call still gets the RETRIABLE code, so the two arms stay distinct.
+            prime(2, 100, 150);
+            let foreign = RuntimeCall::System(frame_system::Call::remark { remark: vec![] });
+            assert_eq!(
+                validate(2, &foreign).map(|_| ()).unwrap_err(),
+                TransactionValidityError::Invalid(InvalidTransaction::ExhaustsResources)
+            );
+        });
+    }
+
+    #[test]
     fn unpriced_foreign_call_passes_through_unmetered() {
         new_test_ext().execute_with(|| {
             System::set_block_number(10);
@@ -2796,9 +2955,9 @@ mod capacity_extension {
             System::set_block_number(10);
             prime(1, 100, 1_000);
             let (_p, pre) = validate(1, &post_call(b"hello".to_vec())).expect("valid");
-            // A failed dispatch (e.g. TooManyPosts) must STILL burn capacity — else a doomed post is
-            // free spam. post_dispatch ignores the dispatch result by design.
-            let failed: sp_runtime::DispatchResult = Err(crate::Error::<Test>::TooManyPosts.into());
+            // A failed dispatch (e.g. a reply to a post that fails a body check) must STILL burn
+            // capacity — else a doomed post is free spam. post_dispatch ignores the result by design.
+            let failed: sp_runtime::DispatchResult = Err(crate::Error::<Test>::NotFound.into());
             post_dispatch(pre, failed);
             assert_eq!(Microblog::current_capacity(&1, 10), 895);
         });
@@ -3057,7 +3216,11 @@ mod migration_v3 {
 mod migration_v4 {
     use super::*;
     use crate::migrations::v4::MigrateV3ToV4;
-    use crate::{NextTopLevelSeq, Pallet, Post, TopLevelByAuthor, TopLevelPosts};
+    // ⚑ v4 runs at on-chain version 3, so it writes the per-author index in its ORIGINAL blob shape.
+    // Assert against that alias, NOT against the current `TopLevelByAuthor` double map — the repage is
+    // `MigrateV9ToV10`'s job, later in the same tuple.
+    use crate::migrations::legacy::blob::TopLevelByAuthor as TopLevelByAuthorV9;
+    use crate::{NextTopLevelSeq, Pallet, Post, TopLevelPosts};
     use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
 
     /// Insert a Post row directly (bypassing the dispatch path, so the top-level index stays EMPTY —
@@ -3102,15 +3265,15 @@ mod migration_v4 {
             assert_eq!(TopLevelPosts::<Test>::get(3), None);
 
             // Per-author lists exclude replies: author 1 [10, 20], author 3 [21], author 2 none.
-            assert_eq!(TopLevelByAuthor::<Test>::get(1).to_vec(), vec![10, 20]);
-            assert_eq!(TopLevelByAuthor::<Test>::get(3).to_vec(), vec![21]);
-            assert!(TopLevelByAuthor::<Test>::get(2).is_empty());
+            assert_eq!(TopLevelByAuthorV9::<Test>::get(1), vec![10, 20]);
+            assert_eq!(TopLevelByAuthorV9::<Test>::get(3), vec![21]);
+            assert!(TopLevelByAuthorV9::<Test>::get(2).is_empty());
 
             // Idempotency: a second run is the version-guarded no-op — NOT doubled.
             let _ = MigrateV3ToV4::<Test>::on_runtime_upgrade();
             assert_eq!(NextTopLevelSeq::<Test>::get(), 3);
             assert_eq!(TopLevelPosts::<Test>::iter().count(), 3);
-            assert_eq!(TopLevelByAuthor::<Test>::get(1).to_vec(), vec![10, 20]);
+            assert_eq!(TopLevelByAuthorV9::<Test>::get(1), vec![10, 20]);
             assert_eq!(
                 Pallet::<Test>::on_chain_storage_version(),
                 StorageVersion::new(4)
@@ -3145,14 +3308,21 @@ mod migration_v4 {
                 RuntimeOrigin::signed(1),
                 b"p".to_vec(),
                 vec![b"x".to_vec(), b"y".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
             let mut spine: Vec<(u64, u64)> = TopLevelPosts::<Test>::iter().collect();
             spine.sort();
-            let mut by_author: Vec<(u64, Vec<u64>)> = TopLevelByAuthor::<Test>::iter()
-                .map(|(a, ids)| (a, ids.to_vec()))
+            // The LIVE path writes the current double map; flatten it to per-author id lists in seq
+            // order so it can be compared against the migration's blob output.
+            let mut by_author: Vec<(u64, Vec<u64>)> = crate::TopLevelByAuthorCount::<Test>::iter()
+                .map(|(a, n)| {
+                    let ids = (0..n)
+                        .map(|s| TopLevelByAuthor::<Test>::get(a, s).expect("dense 0..count"))
+                        .collect::<Vec<u64>>();
+                    (a, ids)
+                })
                 .collect();
             by_author.sort();
             (NextTopLevelSeq::<Test>::get(), spine, by_author)
@@ -3169,9 +3339,7 @@ mod migration_v4 {
 
             let mut spine: Vec<(u64, u64)> = TopLevelPosts::<Test>::iter().collect();
             spine.sort();
-            let mut by_author: Vec<(u64, Vec<u64>)> = TopLevelByAuthor::<Test>::iter()
-                .map(|(a, ids)| (a, ids.to_vec()))
-                .collect();
+            let mut by_author: Vec<(u64, Vec<u64>)> = TopLevelByAuthorV9::<Test>::iter().collect();
             by_author.sort();
 
             assert_eq!(NextTopLevelSeq::<Test>::get(), live.0);
@@ -3544,6 +3712,232 @@ mod migration_v9 {
     }
 }
 
+mod migration_v10 {
+    use super::*;
+    use crate::migrations::legacy::blob::{
+        ByAuthor as ByAuthorV9, TopLevelByAuthor as TopLevelByAuthorV9,
+    };
+    use crate::migrations::v10::MigrateV9ToV10;
+    use crate::Pallet;
+    use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+
+    /// The test that the FIRST cut of this migration needed and did not have.
+    ///
+    /// v10 reads the old rows through a hand-rolled alias, and every other test in this module both
+    /// WRITES and READS through that same alias — so if the alias addresses the wrong prefix they all
+    /// still pass, in perfect agreement, against a prefix no real chain has ever written. That is
+    /// exactly what happened: the alias was a `#[storage_alias]` named `ByAuthorV9`, the macro takes
+    /// the storage item name from the TYPE name, and it silently addressed `ByAuthorV9`. The migration
+    /// found zero rows on live preprod state, reported success, and orphaned all six authors' indexes.
+    ///
+    /// So anchor the alias to something it cannot be self-consistent with: the PALLET's own items,
+    /// which are what the chain actually holds. Compare full storage prefixes (pallet ++ item hash),
+    /// which is precisely the part the alias gets to choose.
+    #[test]
+    fn alias_prefixes_match_the_live_items() {
+        new_test_ext().execute_with(|| {
+            // 32 bytes: twox128(pallet) ++ twox128(item). Everything after is key hashing, which is
+            // Blake2_128Concat on the first key for both shapes.
+            let alias = ByAuthorV9::<Test>::hashed_key_for(1u64);
+            let live = ByAuthor::<Test>::hashed_key_for(1u64, 0u64);
+            assert_eq!(
+                alias[..32],
+                live[..32],
+                "the v9 ByAuthor alias must address the SAME prefix the pallet's ByAuthor does"
+            );
+            // And the account key hashing agrees too, so the alias reads the real per-author rows —
+            // the old key is exactly the new key minus the trailing seq.
+            assert_eq!(alias[..], live[..alias.len()]);
+
+            let alias = TopLevelByAuthorV9::<Test>::hashed_key_for(1u64);
+            let live = TopLevelByAuthor::<Test>::hashed_key_for(1u64, 0u64);
+            assert_eq!(
+                alias[..32],
+                live[..32],
+                "the v9 TopLevelByAuthor alias must address the pallet's TopLevelByAuthor prefix"
+            );
+            assert_eq!(alias[..], live[..alias.len()]);
+        });
+    }
+
+    #[test]
+    fn v9_to_v10_repages_both_indexes_and_is_idempotent() {
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(9).put::<Pallet<Test>>();
+            // Pre-v10 state: the blob shape. Author 1 has three posts of which two are top-level;
+            // author 2 has one reply only (so no top-level row at all); author 3 has an EMPTY blob,
+            // which `ValueQuery` could leave behind and which must NOT become a counter row.
+            ByAuthorV9::<Test>::insert(1, vec![10u64, 11, 12]);
+            ByAuthorV9::<Test>::insert(2, vec![13u64]);
+            ByAuthorV9::<Test>::insert(3, Vec::<u64>::new());
+            TopLevelByAuthorV9::<Test>::insert(1, vec![10u64, 12]);
+
+            let _w = MigrateV9ToV10::<Test>::on_runtime_upgrade();
+
+            assert_eq!(
+                Pallet::<Test>::on_chain_storage_version(),
+                StorageVersion::new(10)
+            );
+            // Ids preserved in order, seq dense from 0, counters exact.
+            assert_eq!(ByAuthorCount::<Test>::get(1), 3);
+            assert_eq!(
+                (0..3)
+                    .map(|s| ByAuthor::<Test>::get(1, s).unwrap())
+                    .collect::<Vec<u64>>(),
+                vec![10, 11, 12]
+            );
+            assert!(ByAuthor::<Test>::get(1, 3).is_none(), "dense 0..count");
+            assert_eq!(ByAuthorCount::<Test>::get(2), 1);
+            assert_eq!(ByAuthor::<Test>::get(2, 0), Some(13));
+            assert_eq!(TopLevelByAuthorCount::<Test>::get(1), 2);
+            assert_eq!(TopLevelByAuthor::<Test>::get(1, 0), Some(10));
+            assert_eq!(TopLevelByAuthor::<Test>::get(1, 1), Some(12));
+            // The empty blob leaves NO counter row: `who_to_follow` ranks over exactly the accounts
+            // that have one, so a post-less author must not become a suggestion.
+            assert_eq!(ByAuthorCount::<Test>::get(3), 0);
+            assert!(!ByAuthorCount::<Test>::contains_key(3));
+            // Author 2 posted only a reply, so it has no top-level row.
+            assert!(!TopLevelByAuthorCount::<Test>::contains_key(2));
+
+            // Total rows == total ids: nothing dropped, nothing duplicated, and — the reason the
+            // remove-before-write order matters — no orphaned v9 row left under the shared prefix.
+            assert_eq!(ByAuthor::<Test>::iter().count(), 4);
+            assert_eq!(TopLevelByAuthor::<Test>::iter().count(), 2);
+
+            // Idempotency: the version guard makes a second run a no-op, NOT a doubling.
+            let _ = MigrateV9ToV10::<Test>::on_runtime_upgrade();
+            assert_eq!(ByAuthorCount::<Test>::get(1), 3);
+            assert_eq!(ByAuthor::<Test>::iter().count(), 4);
+        });
+    }
+
+    #[test]
+    fn v9_to_v10_output_matches_what_the_live_path_would_have_built() {
+        // The repage must land on EXACTLY the state the live `index_by_author` / `index_top_level`
+        // path builds — otherwise a migrated chain and a fresh one page differently.
+        let live = new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            assert_ok!(Microblog::post_message(
+                RuntimeOrigin::signed(1),
+                b"a".to_vec(),
+                None
+            ));
+            assert_ok!(Microblog::post_message(
+                RuntimeOrigin::signed(1),
+                b"r".to_vec(),
+                Some(0)
+            ));
+            assert_ok!(Microblog::quote_post(
+                RuntimeOrigin::signed(1),
+                b"q".to_vec(),
+                0
+            ));
+            let by: Vec<(u64, u64, u64)> = {
+                let mut v: Vec<_> = ByAuthor::<Test>::iter().collect();
+                v.sort();
+                v
+            };
+            let top: Vec<(u64, u64, u64)> = {
+                let mut v: Vec<_> = TopLevelByAuthor::<Test>::iter().collect();
+                v.sort();
+                v
+            };
+            (by, top, ByAuthorCount::<Test>::get(1))
+        });
+
+        new_test_ext().execute_with(|| {
+            // The same three posts as pre-v10 blobs (ids 0,1,2; 1 is the reply).
+            StorageVersion::new(9).put::<Pallet<Test>>();
+            ByAuthorV9::<Test>::insert(1, vec![0u64, 1, 2]);
+            TopLevelByAuthorV9::<Test>::insert(1, vec![0u64, 2]);
+            let _ = MigrateV9ToV10::<Test>::on_runtime_upgrade();
+
+            let mut by: Vec<(u64, u64, u64)> = ByAuthor::<Test>::iter().collect();
+            by.sort();
+            let mut top: Vec<(u64, u64, u64)> = TopLevelByAuthor::<Test>::iter().collect();
+            top.sort();
+            assert_eq!(
+                by, live.0,
+                "repaged ByAuthor must equal the live-path index"
+            );
+            assert_eq!(
+                top, live.1,
+                "repaged TopLevelByAuthor must equal the live path"
+            );
+            assert_eq!(ByAuthorCount::<Test>::get(1), live.2);
+        });
+    }
+
+    #[test]
+    fn v9_to_v10_rescales_every_capacity_bucket_into_the_new_units() {
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(9).put::<Pallet<Test>>();
+            // Spec 212 rescales the micro-capacity UNIT 60x (BaseCost 5e7 -> 3e9). `cap_last` is
+            // stored in those units, so without this every live bucket would silently read as 1/60th
+            // of what its holder banked, and they would be throttled for a full 5-hour refill.
+            Capacity::<Test>::insert(
+                1u64,
+                crate::CapacityState {
+                    cap_last: 5_000,
+                    last_block: 7,
+                },
+            );
+            Capacity::<Test>::insert(
+                2u64,
+                crate::CapacityState {
+                    cap_last: 0,
+                    last_block: 3,
+                },
+            );
+
+            let _ = MigrateV9ToV10::<Test>::on_runtime_upgrade();
+
+            let a = Capacity::<Test>::get(1).expect("bucket 1");
+            assert_eq!(
+                a.cap_last,
+                5_000 * 60,
+                "banked capacity scales with the unit"
+            );
+            assert_eq!(
+                a.last_block, 7,
+                "the stamp is a block number, NOT a capacity unit"
+            );
+            let b = Capacity::<Test>::get(2).expect("bucket 2");
+            assert_eq!(b.cap_last, 0, "an empty bucket stays empty");
+            assert_eq!(b.last_block, 3);
+            assert_eq!(
+                Capacity::<Test>::iter().count(),
+                2,
+                "no bucket added or dropped"
+            );
+
+            // Idempotent with the rest of the migration: the version guard means a second run does
+            // NOT square the factor.
+            let _ = MigrateV9ToV10::<Test>::on_runtime_upgrade();
+            assert_eq!(
+                Capacity::<Test>::get(1).expect("bucket 1").cap_last,
+                5_000 * 60
+            );
+        });
+    }
+
+    #[test]
+    fn v9_to_v10_on_empty_state_is_safe() {
+        // The fresh-mainnet-genesis case: nothing to repage.
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(9).put::<Pallet<Test>>();
+            let _ = MigrateV9ToV10::<Test>::on_runtime_upgrade();
+            assert_eq!(
+                Pallet::<Test>::on_chain_storage_version(),
+                StorageVersion::new(10)
+            );
+            assert_eq!(ByAuthor::<Test>::iter().count(), 0);
+            assert_eq!(ByAuthorCount::<Test>::iter().count(), 0);
+            assert_eq!(TopLevelByAuthor::<Test>::iter().count(), 0);
+        });
+    }
+}
+
 // ── Asymmetric-safety property test ─────────────────────────────────────────────────────────
 
 /// **Clamp-latency ≤ grant-latency.** The weight writer's
@@ -3743,7 +4137,7 @@ mod node_reads {
                 RuntimeOrigin::signed(5),
                 b"poll?".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
@@ -3904,7 +4298,7 @@ mod node_reads {
                 RuntimeOrigin::signed(1),
                 b"poll?".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
@@ -3916,9 +4310,15 @@ mod node_reads {
             assert_eq!(TopLevelPosts::<Test>::get(2), Some(p3));
             assert_eq!(TopLevelPosts::<Test>::get(3), None);
 
-            // Per-author top-level list: author 1 has 3, author 2 has 0 (its only post was a reply).
-            assert_eq!(TopLevelByAuthor::<Test>::get(1).to_vec(), vec![p0, p2, p3]);
-            assert!(TopLevelByAuthor::<Test>::get(2).is_empty());
+            // Per-author top-level index: author 1 has 3 (dense seq 0..3), author 2 has 0 (its only
+            // post was a reply, so it never got a counter row at all).
+            assert_eq!(TopLevelByAuthorCount::<Test>::get(1), 3);
+            let ids: Vec<u64> = (0..3)
+                .map(|s| TopLevelByAuthor::<Test>::get(1, s).expect("dense 0..count"))
+                .collect();
+            assert_eq!(ids, vec![p0, p2, p3]);
+            assert_eq!(TopLevelByAuthorCount::<Test>::get(2), 0);
+            assert!(TopLevelByAuthor::<Test>::get(2, 0).is_none());
         });
     }
 
@@ -3986,6 +4386,108 @@ mod node_reads {
         });
     }
 
+    // Spec 212 bounded the two per-author readers. Before the repage a `before_id` cursor was resolved
+    // by scanning a single in-memory blob, so skipping was free and the index was capped at 10_000
+    // anyway. Keyed by seq, a skip is one trie read per entry over an index that now has NO cap — so a
+    // deep page became O(index) and a full scroll quadratic, on a public unmetered runtime API. These
+    // pin the two mechanisms that fix it.
+    #[test]
+    fn a_deep_author_page_resolves_its_cursor_by_binary_search() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            // 60 top-level posts by author 1, ids 0..60.
+            let ids_all: Vec<u64> = (0..60u64)
+                .map(|i| post(1, &[b'a' + (i % 26) as u8]))
+                .collect();
+            assert_eq!(TopLevelByAuthorCount::<Test>::get(1), 60);
+
+            // A cursor deep in the index returns the right window, in the right order, regardless of
+            // how far down it sits — the property the skip-based walk gave and the binary search must
+            // preserve exactly.
+            for &cursor in &[ids_all[59], ids_all[40], ids_all[10], ids_all[1]] {
+                let page = Microblog::author_feed_page(1, Some(cursor), 5, None);
+                let expected: Vec<u64> = ids_all
+                    .iter()
+                    .rev()
+                    .filter(|&&id| id < cursor)
+                    .take(5)
+                    .copied()
+                    .collect();
+                assert_eq!(ids(&page), expected, "cursor {cursor}");
+            }
+            // The oldest post has nothing below it.
+            let page = Microblog::author_feed_page(1, Some(ids_all[0]), 5, None);
+            assert!(page.posts.is_empty());
+            assert_eq!(page.next_cursor, None);
+            // Walking the whole index page by page returns every post exactly once, in order.
+            let mut seen = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = Microblog::author_feed_page(1, cursor, 7, None);
+                seen.extend(ids(&page));
+                match page.next_cursor {
+                    Some(c) if !page.posts.is_empty() => cursor = Some(c),
+                    _ => break,
+                }
+            }
+            let mut expected = ids_all.clone();
+            expected.reverse();
+            assert_eq!(
+                seen, expected,
+                "a full scroll loses nothing and repeats nothing"
+            );
+        });
+    }
+
+    #[test]
+    fn author_replies_page_bounds_its_over_scan_and_hands_back_a_cursor() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let root = post(9, b"root");
+            // A long top-level run: author 1 posts 40 top-level posts and exactly one reply, the
+            // OLDEST of their entries. Asking for replies must not walk all 41 entries in one call.
+            let r = reply(1, b"the only reply", root);
+            let _top: Vec<u64> = (0..40u64).map(|_| post(1, b"t")).collect();
+            assert_eq!(ByAuthorCount::<Test>::get(1), 41);
+
+            // limit 1 => max_scan = MAX_SCAN_FACTOR = 8 examined entries. The reply is 40 entries
+            // down, so the first call cannot reach it: it returns nothing plus a cursor to continue.
+            let p1 = Microblog::author_replies_page(1, None, 1, None);
+            assert!(
+                p1.posts.is_empty(),
+                "the budget stopped the walk before the reply"
+            );
+            let c = p1
+                .next_cursor
+                .expect("a bounded stop must hand back a cursor");
+
+            // Chasing that cursor makes progress and eventually reaches the reply — the client's
+            // `chasePage` does exactly this loop.
+            let mut cursor = Some(c);
+            let mut found = Vec::new();
+            for _ in 0..20 {
+                let page = Microblog::author_replies_page(1, cursor, 1, None);
+                found.extend(ids(&page));
+                match page.next_cursor {
+                    Some(next) => {
+                        assert!(next < cursor.unwrap(), "the cursor must strictly decrease");
+                        cursor = Some(next);
+                    }
+                    None => break,
+                }
+            }
+            assert_eq!(found, vec![r], "the chase finds the reply and nothing else");
+
+            // A generous limit raises the budget with it, so an ordinary page is unaffected.
+            let big = Microblog::author_replies_page(1, None, 10, None);
+            assert_eq!(
+                ids(&big),
+                vec![r],
+                "limit 10 => 80 examined, enough to reach it"
+            );
+        });
+    }
+
     #[test]
     fn likes_page_returns_upvoted_posts_and_reflects_clear() {
         new_test_ext().execute_with(|| {
@@ -4042,7 +4544,7 @@ mod node_reads {
                 RuntimeOrigin::signed(1),
                 b"fav?".to_vec(),
                 vec![b"red".to_vec(), b"blue".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
@@ -4080,7 +4582,7 @@ mod node_reads {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 vec![b"x".to_vec(), b"y".to_vec()],
-                None,
+                Some(50_000),
                 PollKind::Stake,
                 None
             ));
@@ -4223,7 +4725,7 @@ mod invariant_props {
             RuntimeOrigin::signed(1),
             b"poll?".to_vec(),
             vec![b"a".to_vec(), b"b".to_vec()],
-            None,
+            Some(50_000),
             PollKind::Stake,
             None
         ));
@@ -4315,7 +4817,7 @@ mod invariant_props {
                 RuntimeOrigin::signed(1),
                 b"q".to_vec(),
                 vec![b"a".to_vec(), b"b".to_vec()],
-                Some(10),
+                Some(11),
                 PollKind::Stake,
                 None
             ));
@@ -4323,7 +4825,7 @@ mod invariant_props {
             TalkStake::apply_voting_power(&3, 50);
             assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(2), 0, 0));
             assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(3), 0, 1));
-            System::set_block_number(10);
+            System::set_block_number(11);
             assert_ok!(Microblog::close_poll(RuntimeOrigin::signed(1), 0));
             let frozen = PollResults::<Test>::get(0).expect("poll finalized");
             // The snapshot is index-aligned with the options, exact-counted, and weight-snapshotted.

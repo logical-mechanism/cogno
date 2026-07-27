@@ -147,24 +147,43 @@ export function submitClearAccountVote(
  * options, each ≤ 80 bytes (validate at the call site with the ByteCounter). Emits `PostCreated`
  * (the host post's id) + `PollCreated`.
  */
+/** The composer's default poll length, in days, when the deadline control is untouched (spec 211). */
+export const DEFAULT_POLL_CLOSE_DAYS = 1;
+
 /**
- * Resolve a composer's `closeInDays` deadline (spec 205) to an absolute block-number `close_at` for
- * `create_poll`. `undefined` closeInDays ⇒ `undefined` (a floating, no-deadline poll). Prefers the live
- * `bestBlock`; if that hasn't loaded yet it reads the chain head. THROWS when a deadline WAS requested but
- * the chain height can't be read — so the caller surfaces the failure instead of silently creating a
- * floating poll. (Shared by both compose surfaces so the derivation lives in exactly one place.)
+ * Resolve a composer's `closeInDays` deadline to an absolute block-number `close_at` for
+ * `create_poll`. Since spec 211 the chain REQUIRES a deadline (a `None` poll could never be
+ * finalized, so its result would re-price forever), so a missing/zero `closeInDays` falls back to
+ * {@link DEFAULT_POLL_CLOSE_DAYS} — matching what the composer's deadline control displays by
+ * default. Prefers the live `bestBlock`; if that hasn't loaded yet it reads the chain head. THROWS
+ * when the chain height can't be read, so the caller surfaces the failure. (Shared by both compose
+ * surfaces so the derivation lives in exactly one place.)
+ *
+ * The offset is CLAMPED into the runtime's `[MinPollDuration, MaxPollDuration]` window, read from
+ * metadata like every other chain constant this app replays — never hardcoded. The composer offers a
+ * fixed 1/3/7 days, which sits comfortably inside today's window (10 minutes … 90 days); a committee
+ * retune that narrowed it would otherwise make every poll the composer can build fail on-chain with
+ * `PollDurationTooShort` / `PollDurationTooLong`, with no client-side signal at all. Clamping submits
+ * the nearest deadline the chain will accept instead.
  */
 export async function resolveCloseAt(
   api: CognoApi,
   bestBlock: number | null | undefined,
   closeInDays?: number,
-): Promise<number | undefined> {
-  if (!closeInDays) return undefined;
+): Promise<number> {
+  const days = closeInDays || DEFAULT_POLL_CLOSE_DAYS;
+  const [minDuration, maxDuration] = await Promise.all([
+    api.constants.Microblog.MinPollDuration(),
+    api.constants.Microblog.MaxPollDuration(),
+  ]);
   const now = bestBlock ?? Number(await api.query.System.Number.getValue());
   if (!now || now <= 0) {
     throw new Error("Couldn't read the chain height to set the poll deadline.");
   }
-  return now + closeInDays * BLOCKS_PER_DAY;
+  // The runtime compares `close_at` against `now + Min/Max` at DISPATCH, a block or two after this —
+  // so the floor gets one block of slack, which is free (the window's low end is minutes wide).
+  const offset = Math.min(Math.max(days * BLOCKS_PER_DAY, minDuration + 1), maxDuration);
+  return now + offset;
 }
 
 export function submitCreatePoll(
@@ -179,7 +198,10 @@ export function submitCreatePoll(
   const tx = api.tx.Microblog.create_poll({
     question: Binary.fromText(question),
     options: options.map((o) => Binary.fromText(o)),
-    // `close_at: Option<BlockNumber>` (spec 205). PAPI encodes `undefined` as None (a floating poll).
+    // `close_at: Option<BlockNumber>` (spec 205). The argument stayed `Option` so spec 211's
+    // validation alone would not move `transaction_version`, but the runtime now REQUIRES a deadline:
+    // PAPI still encodes `undefined` as None, and the chain rejects None with `PollCloseRequired`.
+    // Every caller goes through `resolveCloseAt`, which always returns a number.
     close_at: closeAt,
     // `kind: PollKind` (spec 207/209). `Stake` = regular; `Governance` = both chambers; `Spo`/`Drep` = one.
     kind: Enum(kind),

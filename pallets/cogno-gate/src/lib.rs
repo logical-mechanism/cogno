@@ -47,6 +47,10 @@ pub use pallet::*;
 /// The on-chain CIP-8 (COSE_Sign1) identity self-proof verifier.
 pub mod cip8;
 
+/// Storage migrations. Register the versioned wrappers in the runtime's `SingleBlockMigrations` —
+/// a migration that is not in that tuple never runs.
+pub mod migrations;
+
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
@@ -79,7 +83,6 @@ pub type StakeCredential = [u8; 28];
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
-    use alloc::vec::Vec;
     use frame_support::{pallet_prelude::*, sp_runtime::traits::Zero};
     use frame_system::{ensure_none, pallet_prelude::*};
     // The two cross-pallet traits live in microblog (the depended-upon crate) to avoid a
@@ -87,7 +90,13 @@ pub mod pallet {
     // `OnIdentityBind`.
     use pallet_microblog::{IsAllowed, OnIdentityBind};
 
+    /// Storage version 1 (spec 212). The pallet declared NO version through spec 211, so every live
+    /// chain sits at the implicit 0 — which is exactly what `migrations::v1::MigrateV0ToV1` gates on
+    /// when it sweeps the retired `ThreadOf` rows. A fresh genesis writes 1 directly and self-skips it.
+    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     #[pallet::config]
@@ -132,13 +141,12 @@ pub mod pallet {
     pub type AccountOf<T: Config> =
         StorageMap<_, Blake2_128Concat, IdentityHash, T::AccountId, OptionQuery>;
 
-    /// Optional cogno_v3 thread pointer (5 raw bytes / 10 hex chars — `ConstU32<10>`, **never**
-    /// `<4>`) bound to a posting account, for joining the live cogno_v3 forum. Kept in the
-    /// on-wire interface even though the v1 UX may defer the thread join — a settled field is not
-    /// silently dropped.
-    #[pallet::storage]
-    pub type ThreadOf<T: Config> =
-        StorageMap<_, Blake2_128Concat, T::AccountId, BoundedVec<u8, ConstU32<10>>, OptionQuery>;
+    // The retired `ThreadOf` storage (the optional cogno_v3 thread pointer) lived HERE. It was
+    // dropped in spec 211 together with `link_identity_signed`'s `thread_pointer` argument: the
+    // pointer was never committed by the CIP-8 signed payload, so any submitter of a valid proof
+    // could attach an arbitrary pointer — an authorization break on the crown-jewel path. It had
+    // no readers. `migrations::v1` (spec 212) SWEEPS the rows the live chain already held, so the
+    // prefix is genuinely empty rather than merely undeclared. Do not re-declare it.
 
     /// Permanently-banned identities — the manual-operator-ban tombstone. [`Call::revoke`]
     /// inserts here; the permissionless [`Call::link_identity_signed`] refuses to (re)bind a tombstoned
@@ -169,11 +177,15 @@ pub mod pallet {
     pub type TombstonedStakeCred<T: Config> =
         StorageMap<_, Blake2_128Concat, StakeCredential, (), OptionQuery>;
 
+    // Variant indices are ON-WIRE (SCALE indexes enum variants by declaration order), so they are
+    // pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never renumber;
+    // a new variant takes the next free index (3).
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
         /// A Cardano identity was bound 1:1 to a posting account — the per-bind audit record.
         /// `identity` is `blake2b_256(serialized owner Address)`.
+        #[codec(index = 0)]
         IdentityLinked {
             who: T::AccountId,
             identity: IdentityHash,
@@ -181,6 +193,7 @@ pub mod pallet {
         /// A binding was revoked (the manual-operator-ban path). The provider ref is
         /// released and the banked capacity zeroed; the capacity row itself is kept (relock-farm
         /// guard) — see [`pallet_microblog::OnIdentityBind::on_revoke`].
+        #[codec(index = 1)]
         Revoked {
             who: T::AccountId,
             identity: IdentityHash,
@@ -188,38 +201,52 @@ pub mod pallet {
         /// A stake credential was bound 1:1 to a posting account as its voting-power anchor (the
         /// stake-key self-proof, [`Call::link_stake_signed`]). `stake_cred` is the 28-byte
         /// reward-address key hash; the account's vote weight is then the total Cardano stake of it.
+        #[codec(index = 2)]
         StakeLinked {
             who: T::AccountId,
             stake_cred: StakeCredential,
         },
     }
 
+    // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
+    // they are pinned explicitly at their pre-pin ordinals — the encoding is byte-identical. Never
+    // renumber; a new variant takes the next free index (11).
     #[pallet::error]
     pub enum Error<T> {
         /// This posting account is already bound to an identity (1:1, account side).
+        #[codec(index = 0)]
         AccountAlreadyBound,
         /// This Cardano identity is already bound to an account (1:1, identity side). Named
         /// `PkhAlreadyBound` for cross-doc continuity; the key is the 32-byte Address hash.
+        #[codec(index = 1)]
         PkhAlreadyBound,
-        /// The supplied thread pointer exceeded 10 bytes (5 raw bytes / 10 hex chars).
-        BadThread,
+        // index 2 is PERMANENTLY VACANT: `BadThread` (retired in spec 211 with the unauthenticated
+        // `thread_pointer` argument and the `ThreadOf` storage). Never reuse it.
         /// No binding exists for this account (revoke target not found).
+        #[codec(index = 3)]
         NotBound,
         /// The submitted CIP-8 self-proof failed verification (signature / address-key bind / format /
         /// unsupported address). The node log carries the specific [`cip8::Cip8Error`] variant.
+        #[codec(index = 4)]
         ProofInvalid,
         /// The proof commits a different chain's genesis hash (anti-cross-chain replay).
+        #[codec(index = 5)]
         WrongGenesis,
         /// This Cardano identity was permanently banned (revoked) and cannot be re-bound (the tombstone).
+        #[codec(index = 6)]
         IdentityTombstoned,
         /// The account must be payment-bound ([`Call::link_identity_signed`]) before it can stake-bind —
         /// voting power attaches only to an existing posting identity.
+        #[codec(index = 7)]
         NotPaymentBound,
         /// This account already has a bound stake credential (1:1, account side).
+        #[codec(index = 8)]
         AccountAlreadyStakeBound,
         /// This stake credential is already bound to an account (1:1, stake side).
+        #[codec(index = 9)]
         StakeCredAlreadyBound,
         /// This stake credential was permanently banned (revoked) and cannot be re-bound (ban-the-key).
+        #[codec(index = 10)]
         StakeCredTombstoned,
     }
 
@@ -250,13 +277,21 @@ pub mod pallet {
         /// ⚠ The verifier is the anti-Sybil crown jewel — a bug forges any identity. Its invariants are
         /// pinned by the negative tests in [`cip8`], but it has NOT had a formal external audit:
         /// **MAINNET PREREQUISITE — independent verifier audit** before real value.
+        // (spec 211: the third `thread_pointer: Option<Vec<u8>>` argument was REMOVED — it was never
+        // committed by the CIP-8 signed payload, so any submitter of a valid proof could attach an
+        // arbitrary pointer. Removing a call ARGUMENT changes the on-wire extrinsic encoding, so this
+        // moved `transaction_version` 6 → 7. The call keeps `call_index(2)`.)
         #[pallet::call_index(2)]
+        // WEIGHT: the benchmark predates spec 211 and its declared storage list is now STALE — it still
+        // names `CognoGate::ThreadOf (r:0 w:1)`, an item this pallet no longer has. It therefore
+        // OVER-declares by one write, which is the safe direction, and the figure is left as measured.
+        // Do NOT re-derive a delta by reading the storage list out of `weights.rs`: it describes the
+        // spec-210 call. Re-run the benchmark instead.
         #[pallet::weight(T::WeightInfo::link_identity_signed())]
         pub fn link_identity_signed(
             origin: OriginFor<T>,
             cose_sign1: BoundedVec<u8, ConstU32<512>>,
             cose_key: BoundedVec<u8, ConstU32<128>>,
-            thread_pointer: Option<Vec<u8>>,
         ) -> DispatchResult {
             // Unsigned: the CIP-8 proof is the authorization (no fee, no nonce). Pool admission
             // (`validate_unsigned`) already verified the proof + cheap-rejected junk before this runs;
@@ -264,7 +299,7 @@ pub mod pallet {
             ensure_none(origin)?;
             let (account, identity) = Self::verify_identity_proof(&cose_sign1, &cose_key)?;
             log::debug!(target: LOG_TARGET, "link_identity_signed: verified proof for identity={identity:?}");
-            Self::do_bind(&account, identity, thread_pointer)
+            Self::do_bind(&account, identity)
         }
 
         /// **Trustless stake bind (voting power) — FEELESS, unsigned.** Anyone submits the CIP-8
@@ -297,7 +332,7 @@ pub mod pallet {
         }
 
         /// Revoke an account's binding (the manual-operator-ban path). Gated by
-        /// `FollowerOrigin`. Removes both directional maps + the thread pointer, so `is_allowed`
+        /// `FollowerOrigin`. Removes both directional maps, so `is_allowed`
         /// flips to `false` and the account can no longer post.
         ///
         /// Calls [`OnIdentityBind::on_revoke`] so the bind/revoke lifecycle is symmetric (`gate-1`):
@@ -322,7 +357,6 @@ pub mod pallet {
                 }
             };
             AccountOf::<T>::remove(identity);
-            ThreadOf::<T>::remove(&substrate_account);
             // Tombstone the identity PERMANENTLY: the permissionless `link_identity_signed` path consults
             // `Tombstoned` and refuses to re-bind it, so a ban cannot be undone by replaying an
             // (eternally-valid) CIP-8 proof. A tombstone is never removed (your "ban means ban" decision).
@@ -418,16 +452,11 @@ pub mod pallet {
             Ok((account, proof.stake_credential))
         }
 
-        /// The shared 1:1 bind body, called by BOTH the trusted [`Call::link_identity`] and the trustless
-        /// [`Call::link_identity_signed`]: the tombstone + double-bind checks, the thread-pointer
-        /// validation, the two directional maps, the microblog `on_bind` (provider ref + capacity row),
-        /// and the `IdentityLinked` event. NOT a dispatchable — it performs no origin check; each caller
-        /// authorizes per its own rule (FollowerOrigin vs a verified cryptographic proof).
-        pub(crate) fn do_bind(
-            account: &T::AccountId,
-            identity: IdentityHash,
-            thread_pointer: Option<Vec<u8>>,
-        ) -> DispatchResult {
+        /// The shared 1:1 bind body for the trustless [`Call::link_identity_signed`]: the tombstone +
+        /// double-bind checks, the two directional maps, the microblog `on_bind` (provider ref +
+        /// capacity row), and the `IdentityLinked` event. NOT a dispatchable — it performs no origin
+        /// check; the caller authorizes via the cryptographically-verified proof.
+        pub(crate) fn do_bind(account: &T::AccountId, identity: IdentityHash) -> DispatchResult {
             // A permanently-banned (revoked) identity can never be re-bound (the tombstone).
             ensure!(
                 !Tombstoned::<T>::contains_key(identity),
@@ -443,22 +472,8 @@ pub mod pallet {
                 log::warn!(target: LOG_TARGET, "do_bind rejected: identity already bound; identity={identity:?}");
                 return Err(Error::<T>::PkhAlreadyBound.into());
             }
-            // Validate the optional thread pointer up front (fallible) before any write.
-            let thread = match thread_pointer {
-                Some(ptr) => {
-                    let len = ptr.len();
-                    Some(BoundedVec::<u8, ConstU32<10>>::try_from(ptr).map_err(|_| {
-						log::warn!(target: LOG_TARGET, "do_bind rejected: thread pointer too long ({len} bytes > 10)");
-						Error::<T>::BadThread
-					})?)
-                }
-                None => None,
-            };
             PkhOf::<T>::insert(account, identity);
             AccountOf::<T>::insert(identity, account);
-            if let Some(t) = thread {
-                ThreadOf::<T>::insert(account, t);
-            }
             // on_bind owns the single inc_providers (balanced by on_revoke's dec) — the gate-1 invariant.
             T::OnBind::on_bind(account);
             log::debug!(target: LOG_TARGET, "do_bind ok: identity={identity:?} bound 1:1, provider ref taken");
@@ -566,7 +581,6 @@ pub mod pallet {
                 Call::link_identity_signed {
                     cose_sign1,
                     cose_key,
-                    ..
                 } => {
                     // Verify the proof (audited crown jewel) + genesis + decode the committed account.
                     // A bad / cross-chain proof is a hard, non-retried reject.

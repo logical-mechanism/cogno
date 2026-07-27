@@ -7,8 +7,12 @@ atomic at one block.
 
 This works because the on-chain data model is already complete: every list the app renders is either an
 O(1) aggregate (`VoteTally`, `ReplyCount`, `FollowerCount`, `FollowingCount`, `PollTally`) or a
-single-key, prefix-iterable reverse index (`ByAuthor`, `RepliesByParent`, `Followers`, `Following`,
-`VotesByAccount`, `PollVotes`). The follow graph and every count already live on chain, so the node can
+single-key, prefix-iterable reverse index (`RepliesByParent`, `Followers`, `Following`,
+`VotesByAccount`, `PollVotes`) or a SEQ-keyed per-author index (`ByAuthor`, `TopLevelByAuthor`, each
+beside an explicit counter). The seq-keyed pair is read by walking its counter DOWN with keyed lookups,
+never by prefix iteration: a double map iterates in HASH order, whereas seq is assigned in append order
+over strictly ascending post ids, so seq-descending is id-descending with no sort. (They were bounded-vec
+blobs until spec 212; see PROTOCOL-PARAMS for why the bound had to go.) The follow graph and every count already live on chain, so the node can
 assemble a "For-you" feed, a thread, a following timeline, or a profile page without asking any other
 system. The alternative — the client firing several JSON-RPC reads per card, roughly 150 round-trips for
 a 30-post page — is exactly what this API removes.
@@ -54,7 +58,7 @@ migration deleted.
 
 `Posts` interleaves replies and top-level posts in one id space, so paging top-level content by raw id
 over-scans past replies. A dense, reply-free spine fixes this: `TopLevelPosts` (seq → post id) with a
-`NextTopLevelSeq` counter, and `TopLevelByAuthor` (per-author list). Both are maintained O(1) at every
+`NextTopLevelSeq` counter, and `TopLevelByAuthor` (per-author seq-keyed index). Both are maintained O(1) at every
 top-level creation site (`post_message` with `parent == None`, `quote_post`, `create_poll`) via
 `index_top_level`. `feed_page` / `following_feed_page` page the seq spine and read exactly N posts;
 `author_feed_page` pages `TopLevelByAuthor`; `author_post_count` reads the per-author count directly.
@@ -62,9 +66,17 @@ top-level creation site (`post_message` with `parent == None`, `quote_post`, `cr
 ## Bounds and safety
 
 - `limit` is clamped to `[1, MAX_PAGE]` (100) — the API clamps, it never errors on an over-large page.
-- The feed scans are bounded: `feed_page` / `search_posts` examine at most `limit · MAX_SCAN_FACTOR` (8)
-  ids per call and return `next_cursor` at the last id examined, so the client continues instead of the
-  node walking unboundedly over a reply-dense range.
+- The feed scans are bounded: `feed_page` / `search_posts` / `author_replies_page` examine at most
+  `limit · MAX_SCAN_FACTOR` (8) ids per call and return `next_cursor` at the last id examined, so the
+  client continues instead of the node walking unboundedly over a reply-dense range.
+- The two per-author readers are bounded WITHOUT that budget where they can be. Until spec 212 they
+  leaned on `MaxPostsPerAuthor` (10,000) for their iteration bound; that cap is gone, so they now
+  resolve a `before_id` cursor by BINARY SEARCH over the seq range (post ids ascend with seq, because
+  `NextPostId` is monotonic and the index is append-only) rather than by skipping entry by entry. That
+  makes `author_feed_page` cost `O(log n) + limit` reads at any page depth — its index is reply-free, so
+  every entry it examines is returned and it can never over-scan. `author_replies_page` filters to
+  replies, so it takes the scan budget above on top: an author with a long top-level run cannot make it
+  walk their whole index to return nothing.
 - `thread` caps the ancestor chain at a fixed depth (matching the client) and breaks on a cyclic parent.
 - Cursors are **opaque and endpoint-scoped**: a `next_cursor` from one method is only valid passed back to
   the *same* method. `feed_page` / `following_feed_page` page a `TopLevelPosts` seq; `author_feed_page`
