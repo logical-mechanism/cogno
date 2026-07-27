@@ -419,6 +419,48 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
+        /// Tear down EVERY role `who` holds — both claim maps and the observer-written badge set.
+        ///
+        /// Called from the identity lifecycle when a binding is revoked (the runtime wires this behind
+        /// `pallet_cogno_gate`'s `OnBind` seam, which is why it lives here rather than being reached
+        /// across a Cargo edge). Without it a committee ban left the account's `RoleClaimOf` /
+        /// `RoleCredIndex` / `ObservedRoles` rows completely untouched: `MicroblogApi::profile` returned
+        /// `is_allowed: false` alongside a live verified SPO/dRep badge, every post the banned account
+        /// ever wrote kept rendering that badge, and its credential stayed locked 1:1 so the real holder
+        /// could not claim it either.
+        ///
+        /// NOT a tombstone, deliberately. `revoke_role` is the committee's ban-the-key verb and stays
+        /// the way to make a credential permanently unclaimable; an identity ban is about the ACCOUNT,
+        /// and permanently burning a legitimate pool's Calidus key as a side effect would be a
+        /// punishment the committee never voted for. Freeing the credential is safe because `do_claim`
+        /// requires `IdentityGate::is_allowed` — a revoked account cannot re-claim what it just lost,
+        /// and only a properly bound account can pick the credential up.
+        ///
+        /// Bounded by construction: `RoleClaimOf` is keyed `(account, RoleKind)` and `RoleKind` has
+        /// three variants, so this is at most 3 claim rows + 3 index rows + 1 badge row regardless of
+        /// state. Returns the number of claims cleared so the caller can price it.
+        pub fn purge_account_roles(who: &T::AccountId) -> u32 {
+            let mut cleared = 0u32;
+            for role in [RoleKind::Spo, RoleKind::DRep, RoleKind::Committee] {
+                if let Some(credential) = RoleClaimOf::<T>::take(who, role) {
+                    RoleCredIndex::<T>::remove(role, credential);
+                    cleared = cleared.saturating_add(1);
+                }
+            }
+            // The observer-written badge set is what the profile/chamber reads actually render, and it
+            // is NOT derived from the claim maps at read time — the observer only rewrites it when its
+            // next observation differs. Clearing the claims alone would leave the badge on screen until
+            // (and unless) an observation happened to move.
+            ObservedRoles::<T>::remove(who);
+            if cleared > 0 {
+                log::debug!(
+                    target: LOG_TARGET,
+                    "purge_account_roles: cleared {cleared} role claim(s) + the observed badge set for {who:?}",
+                );
+            }
+            cleared
+        }
+
         /// The 28-byte credential `who` has claimed for `role`, if any (read-only helper).
         pub fn claim_of(who: &T::AccountId, role: RoleKind) -> Option<RoleCredential> {
             RoleClaimOf::<T>::get(who, role)

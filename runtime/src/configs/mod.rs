@@ -52,7 +52,7 @@ use sp_version::RuntimeVersion;
 // Local module imports
 use super::{
     AccountId, Aura, Balance, Balances, Block, BlockNumber, CardanoObserver, CognoGate,
-    FollowerCommittee, GovernedUpgrade, Hash, Microblog, Nonce, PalletInfo, Runtime, RuntimeCall,
+    FollowerCommittee, GovernedUpgrade, Hash, Nonce, PalletInfo, Runtime, RuntimeCall,
     RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask, SessionKeys,
     System, Timestamp, TxPause, ValidatorSet, DAYS, EXISTENTIAL_DEPOSIT, MINUTES, SLOT_DURATION,
     UNIT, VERSION,
@@ -1358,7 +1358,9 @@ impl pallet_cogno_gate::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     // Gated by the 3-of-5 FollowerCommittee (sudo-free) — gates `revoke` only.
     type FollowerOrigin = AuthorityOrigin;
-    type OnBind = Microblog;
+    // Fans out to microblog AND cardano-roles; see `IdentityLifecycle`. Was `Microblog`, which
+    // silently left a revoked account holding its verified role badge.
+    type OnBind = IdentityLifecycle;
     // The Cardano network the on-chain self-proof binds for — derived from the ONE `CARDANO_NET`
     // cutover selector (spec 211), shared with cardano-roles so the two can never flip apart.
     type CardanoNetwork = CardanoNetworkId;
@@ -1391,6 +1393,34 @@ pub struct BeaconLookup;
 impl pallet_cardano_observer::BeaconResolver<AccountId> for BeaconLookup {
     fn resolve(beacon: &[u8; 32]) -> Option<AccountId> {
         pallet_cogno_gate::AccountOf::<Runtime>::get(beacon)
+    }
+}
+
+/// The identity bind/revoke lifecycle, fanned out to every pallet that holds per-identity state.
+///
+/// `pallet-cogno-gate` calls this through its `OnBind` seam. It is a RUNTIME-side adapter for the same
+/// no-Cargo-cycle reason as [`RoleApply`] / [`RoleLookup`]: only the runtime may name every pallet, so
+/// the gate depends on a trait rather than on its downstream crates.
+///
+/// It exists because `revoke` used to tear down only what cogno-gate itself owns (the identity maps, the
+/// stake anchor) plus microblog's capacity/provider state — and stopped there. `pallet-cardano-roles`
+/// was added later and was never wired in, so a committee ban left the account holding a live,
+/// observer-verified Cardano role badge forever: `MicroblogApi::profile` reported `is_allowed: false`
+/// and a verified SPO/dRep chip in the same response, and the credential stayed locked 1:1 against its
+/// real holder. Anything that grows per-identity state from here on belongs in `on_revoke` below.
+pub struct IdentityLifecycle;
+impl pallet_microblog::OnIdentityBind<AccountId> for IdentityLifecycle {
+    fn on_bind(who: &AccountId) {
+        // Capacity row + the single provider reference. Roles are claimed separately (and only by an
+        // already-bound account), so there is nothing to seed for them here.
+        pallet_microblog::Pallet::<Runtime>::on_bind(who);
+    }
+
+    fn on_revoke(who: &AccountId) {
+        pallet_microblog::Pallet::<Runtime>::on_revoke(who);
+        // At most 3 claim rows + 3 index rows + 1 badge row — `RoleClaimOf` is keyed by `RoleKind`,
+        // which has three variants — so this cannot blow the `revoke` weight.
+        let _ = pallet_cardano_roles::Pallet::<Runtime>::purge_account_roles(who);
     }
 }
 
@@ -1535,6 +1565,56 @@ impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
             }
         }
         pallet_cardano_roles::Pallet::<Runtime>::apply_roles(who, bounded);
+    }
+}
+
+#[cfg(test)]
+mod identity_lifecycle_tests {
+    use super::*;
+    use pallet_cardano_roles::{ObservedRole, ObservedRoleSet, RoleKind};
+    use pallet_microblog::OnIdentityBind;
+
+    /// Revoking a binding must tear down the account's CARDANO ROLES, not just cogno-gate's own maps
+    /// and microblog's capacity.
+    ///
+    /// This drives the hook through `<Runtime as pallet_cogno_gate::Config>::OnBind` — the associated
+    /// type the pallet actually calls — rather than through `IdentityLifecycle` by name. That is the
+    /// whole point: the bug was never a broken function, it was that cogno-gate's `OnBind` pointed at
+    /// `Microblog`, which knows nothing about roles. Re-point it there and this test fails; assert
+    /// against `IdentityLifecycle` directly and it would keep passing while the runtime stayed broken.
+    #[test]
+    fn revoking_a_binding_purges_the_accounts_role_badges() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([9u8; 32]);
+            let cred = [0xA1u8; 28];
+
+            pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::Spo, cred);
+            pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::Spo, cred, &who);
+            let badge: ObservedRoleSet = alloc::vec![ObservedRole {
+                kind: RoleKind::Spo,
+                id: cred,
+                weight: 1_000,
+            }]
+            .try_into()
+            .expect("one badge fits");
+            pallet_cardano_roles::ObservedRoles::<Runtime>::insert(&who, badge);
+
+            type Hook = <Runtime as pallet_cogno_gate::Config>::OnBind;
+            <Hook as OnIdentityBind<AccountId>>::on_revoke(&who);
+
+            assert!(
+                !pallet_cardano_roles::RoleClaimOf::<Runtime>::contains_key(&who, RoleKind::Spo),
+                "a banned account must not keep its role claim",
+            );
+            assert!(
+                !pallet_cardano_roles::RoleCredIndex::<Runtime>::contains_key(RoleKind::Spo, cred),
+                "the credential must be freed for its real holder",
+            );
+            assert!(
+                pallet_cardano_roles::ObservedRoles::<Runtime>::get(&who).is_empty(),
+                "the observed badge is what profiles and chamber tallies read — it must go too",
+            );
+        });
     }
 }
 

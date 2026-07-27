@@ -340,7 +340,20 @@ pub mod pallet {
         /// zeroed, while the `Capacity` row itself is KEPT (microblog's never-delete relock-farm
         /// invariant — a relock must not read a fresh first-touch bucket).
         #[pallet::call_index(1)]
-        #[pallet::weight(T::WeightInfo::revoke())]
+        // The benchmark seeds only a PAYMENT bind, so `WeightInfo::revoke()` measures neither of the two
+        // branches below it. Both are covered here as an explicit `DbWeight` term, which is the correct
+        // use of a hand-written addend (it covers storage the benchmark does NOT reach — it is not a
+        // double count of storage the benchmark already measures):
+        //   - the stake teardown: `StakeCredOf::take` + `AccountOfStakeCred::remove` +
+        //     `TombstonedStakeCred::insert` — 1 read, 3 writes — taken whenever the account had a
+        //     voting-power bind, which every real participant does.
+        //   - the `OnBind::on_revoke` fan-out, whose cost belongs to the runtime's impl and cannot be
+        //     named from this crate (no Cargo edge). Today that clears microblog's banked capacity and
+        //     purges pallet-cardano-roles: at most 3 claim reads and 3 claim + 3 index + 1 badge writes,
+        //     bounded by `RoleKind` having three variants. Budgeted at 3 reads / 7 writes.
+        // ⚠ If the runtime's `OnIdentityBind` impl ever grows a fan-out beyond that, raise this term.
+        #[pallet::weight(T::WeightInfo::revoke()
+            .saturating_add(<T as frame_system::Config>::DbWeight::get().reads_writes(4, 10)))]
         pub fn revoke(origin: OriginFor<T>, substrate_account: T::AccountId) -> DispatchResult {
             T::FollowerOrigin::ensure_origin(origin)?;
             // A revoke of a never-bound account is REJECTED with NotBound (no state change, no event) —

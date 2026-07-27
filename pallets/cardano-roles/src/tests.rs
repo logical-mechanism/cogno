@@ -543,3 +543,51 @@ fn validate_unsigned_refuses_origin_gated_calls() {
         );
     });
 }
+
+#[test]
+fn purge_account_roles_clears_every_claim_and_the_observed_badge() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        set_genesis();
+        // ALICE claims an SPO role and the observer credits her a badge.
+        let (cose_sign1, cose_key, cred) = spo_proof(7, ALICE);
+        assert_ok!(CardanoRoles::claim_role_signed(
+            RuntimeOrigin::none(),
+            cose_sign1,
+            cose_key
+        ));
+        let badge: ObservedRoleSet = BoundedVec::truncate_from(vec![ObservedRole {
+            kind: RoleKind::Spo,
+            id: cred,
+            weight: 12_000_000_000_000,
+        }]);
+        ObservedRoles::<Test>::insert(ALICE, badge);
+        assert!(RoleClaimOf::<Test>::contains_key(ALICE, RoleKind::Spo));
+        assert!(RoleCredIndex::<Test>::contains_key(RoleKind::Spo, cred));
+        assert!(!ObservedRoles::<Test>::get(ALICE).is_empty());
+
+        assert_eq!(CardanoRoles::purge_account_roles(&ALICE), 1);
+
+        // Both claim directions AND the badge the profile actually renders are gone.
+        assert!(!RoleClaimOf::<Test>::contains_key(ALICE, RoleKind::Spo));
+        assert!(!RoleCredIndex::<Test>::contains_key(RoleKind::Spo, cred));
+        assert!(
+            ObservedRoles::<Test>::get(ALICE).is_empty(),
+            "the observed badge is what profiles render — clearing only the claims would leave a \
+             banned account displaying a verified role until an observation happened to move",
+        );
+        // NOT tombstoned: the credential is freed for its real holder to claim on a clean account.
+        assert!(!TombstonedRoleCred::<Test>::contains_key(
+            RoleKind::Spo,
+            cred
+        ));
+    });
+}
+
+#[test]
+fn purge_account_roles_is_a_no_op_for_an_account_holding_none() {
+    new_test_ext().execute_with(|| {
+        assert_eq!(CardanoRoles::purge_account_roles(&BOB), 0);
+        assert!(ObservedRoles::<Test>::get(BOB).is_empty());
+    });
+}
