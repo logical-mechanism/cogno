@@ -215,6 +215,10 @@ pub mod pallet {
     use super::*;
     use alloc::vec::Vec;
     use frame_support::pallet_prelude::*;
+    // `with_weight` attaches a `PostDispatchInfo` to an error, so a rejected dispatch is charged what
+    // it actually did rather than the full declared worst case. Load-bearing for `close_poll`, whose
+    // declared weight reserves `6 × MaxObservedAccounts` reads that no early exit performs.
+    use frame_support::dispatch::WithPostDispatchInfo;
     use frame_system::pallet_prelude::*;
     use sp_runtime::{traits::Saturating, SaturatedConversion};
 
@@ -1953,21 +1957,34 @@ pub mod pallet {
         #[pallet::feeless_if(|_origin: &OriginFor<T>, _host_id: &u64| -> bool { true })]
         pub fn close_poll(origin: OriginFor<T>, host_id: u64) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
+            // EVERY early exit refunds to `base` — the declared weight above reserves
+            // `6 × MaxObservedAccounts` READS (6144 at the live bound, ~154 ms) for two joins that a
+            // rejected call never performs. FRAME charges the FULL declared weight for an `Err` unless
+            // the error carries a `PostDispatchInfo`, so without `with_weight` each of these paths bought
+            // an attacker a full block-weight slot at zero capacity cost: `close_poll` is feeless, and
+            // `PollNotClosable` on a not-yet-due poll is repeatable at will by anyone. The idempotent
+            // `Ok` path below already refunded; these are the four that did not.
+            let base = <T as Config>::WeightInfo::close_poll();
             if !T::IdentityGate::is_allowed(&who) {
                 log::debug!(target: LOG_TARGET, "close_poll rejected: identity not allowed for {who:?}");
-                return Err(Error::<T>::NotAllowed.into());
+                return Err(Error::<T>::NotAllowed.with_weight(base));
             }
-            let poll = Polls::<T>::get(host_id).ok_or(Error::<T>::PollNotFound)?;
+            let poll = Polls::<T>::get(host_id)
+                .ok_or_else(|| Error::<T>::PollNotFound.with_weight(base))?;
             // Already finalized — idempotent no-op (a keeper may race here). Refund to the base weight: this
             // path did no observed-set scan, only a couple of reads.
             if PollResults::<T>::contains_key(host_id) {
                 log::debug!(target: LOG_TARGET, "close_poll: poll {host_id} already finalized (no-op)");
-                return Ok(Some(<T as Config>::WeightInfo::close_poll()).into());
+                return Ok(Some(base).into());
             }
             // Only closable at/after a set deadline (`None` ⇒ floats forever, never closable).
-            let close_at = poll.close_at.ok_or(Error::<T>::PollNotClosable)?;
+            let close_at = poll
+                .close_at
+                .ok_or_else(|| Error::<T>::PollNotClosable.with_weight(base))?;
             let now = frame_system::Pallet::<T>::block_number();
-            ensure!(now >= close_at, Error::<T>::PollNotClosable);
+            if now < close_at {
+                return Err(Error::<T>::PollNotClosable.with_weight(base));
+            }
 
             // The frozen weighted result: per-option weight summed from the staker set's CURRENT
             // VotingPower (exact, single-valued, MaxObserved-bounded), plus the stored per-option count.

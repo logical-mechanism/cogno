@@ -10,7 +10,7 @@ use crate::{
     mock::*, AccountVoteTally, AccountVotes, ByAuthor, ByAuthorCount, Capacity, Error, Event,
     FollowerCount, Following, FollowingCount, NextPostId, NextTopLevelSeq, PollKind, PollTally,
     PollVotes, Polls, Posts, RepliesByParent, ReplyCount, TopLevelByAuthor, TopLevelByAuthorCount,
-    TopLevelPosts, VoteDir, VoteTally, Votes,
+    TopLevelPosts, VoteDir, VoteTally, Votes, WeightInfo,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -1099,9 +1099,12 @@ fn poll_close_rejects_votes_and_freezes_result() {
         assert_ok!(Microblog::cast_poll_vote(RuntimeOrigin::signed(3), 0, 1));
         // Before the deadline the result is LIVE (re-prices with stake) and cannot be finalized yet.
         assert_eq!(poll_opt_weight(0, 0), 100);
-        assert_noop!(
-            Microblog::close_poll(RuntimeOrigin::signed(2), 0),
-            Error::<Test>::PollNotClosable
+        // Compare the error, not the whole `Err`: a rejected close now carries a weight refund.
+        assert_eq!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 0)
+                .unwrap_err()
+                .error,
+            Error::<Test>::PollNotClosable.into()
         );
 
         // At/after the deadline: no more votes …
@@ -1144,9 +1147,14 @@ fn close_poll_rejects_floating_and_missing_polls() {
             PollKind::Stake,
             None
         ));
-        assert_noop!(
-            Microblog::close_poll(RuntimeOrigin::signed(2), 0),
-            Error::<Test>::PollNotClosable
+        // These paths now carry a weight REFUND in their `PostDispatchInfo` (see
+        // `close_poll_refunds_every_rejected_path_to_the_base_weight`), so compare the error itself
+        // rather than the whole `Err` — `assert_noop!` would also compare `actual_weight`.
+        assert_eq!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 0)
+                .unwrap_err()
+                .error,
+            Error::<Test>::PollNotClosable.into()
         );
         // A non-poll post cannot be closed.
         assert_ok!(Microblog::post_message(
@@ -1154,9 +1162,11 @@ fn close_poll_rejects_floating_and_missing_polls() {
             b"hi".to_vec(),
             None
         ));
-        assert_noop!(
-            Microblog::close_poll(RuntimeOrigin::signed(2), 1),
-            Error::<Test>::PollNotFound
+        assert_eq!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 1)
+                .unwrap_err()
+                .error,
+            Error::<Test>::PollNotFound.into()
         );
         // A LEGACY floating poll (close_at None, storable only pre-spec-211 — create_poll now
         // rejects None) can never be finalized. Inserted directly, as pre-211 storage would hold it.
@@ -1178,9 +1188,11 @@ fn close_poll_rejects_floating_and_missing_polls() {
                 action: None,
             },
         );
-        assert_noop!(
-            Microblog::close_poll(RuntimeOrigin::signed(2), 99),
-            Error::<Test>::PollNotClosable
+        assert_eq!(
+            Microblog::close_poll(RuntimeOrigin::signed(2), 99)
+                .unwrap_err()
+                .error,
+            Error::<Test>::PollNotClosable.into()
         );
     });
 }
@@ -4845,4 +4857,55 @@ mod invariant_props {
             assert!(Microblog::check_tally_consistency().is_ok());
         });
     }
+}
+
+#[test]
+fn close_poll_refunds_every_rejected_path_to_the_base_weight() {
+    // `close_poll`'s DECLARED weight reserves `6 × MaxObservedAccounts` reads for two observed-set
+    // joins. FRAME charges the FULL declared weight for an `Err` unless the error carries a
+    // `PostDispatchInfo` — so before this, every rejection bought a full worst-case block-weight slot
+    // at zero cost. The call is feeless, and `PollNotClosable` on a not-yet-due poll is repeatable at
+    // will by anyone, so the cheapest griefing vector on the chain was a loop over one open poll.
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        // What FRAME keys on is whether `actual_weight` is Some or None: `None` means "charge the full
+        // declared weight", which is what every path below used to do. The mock's `WeightInfo = ()`
+        // resolves to the GENERATED `impl WeightInfo for ()` in weights.rs, so `base` is the real
+        // measured close_poll weight, not zero — what the mock does not model is the DECLARED total,
+        // since its `MaxObservedAccounts` is 64 rather than the runtime's 1024.
+        let base = <Test as crate::pallet::Config>::WeightInfo::close_poll();
+        assert!(
+            base.ref_time() > 0,
+            "base must be the real measured weight, or Some(base) proves little",
+        );
+
+        assert_ok!(Microblog::create_poll(
+            RuntimeOrigin::signed(1),
+            b"q".to_vec(),
+            opts(2),
+            Some(50_000),
+            PollKind::Stake,
+            None
+        ));
+
+        // Not yet due — the repeatable one.
+        let err = Microblog::close_poll(RuntimeOrigin::signed(2), 0).unwrap_err();
+        assert_eq!(err.error, Error::<Test>::PollNotClosable.into());
+        assert_eq!(
+            err.post_info.actual_weight,
+            Some(base),
+            "a rejected close must not be charged for joins it never ran",
+        );
+
+        // Missing poll.
+        let err = Microblog::close_poll(RuntimeOrigin::signed(2), 99).unwrap_err();
+        assert_eq!(err.error, Error::<Test>::PollNotFound.into());
+        assert_eq!(err.post_info.actual_weight, Some(base));
+
+        // Unbound caller.
+        deny_identity(404);
+        let err = Microblog::close_poll(RuntimeOrigin::signed(404), 0).unwrap_err();
+        assert_eq!(err.error, Error::<Test>::NotAllowed.into());
+        assert_eq!(err.post_info.actual_weight, Some(base));
+    });
 }

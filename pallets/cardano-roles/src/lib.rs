@@ -245,6 +245,38 @@ pub mod pallet {
         OptionQuery,
     >;
 
+    /// Nonce SPENT by the most recent accepted claim for `(account, role)`. Deliberately survives
+    /// `unclaim_role` — that is the whole point of it.
+    ///
+    /// A role proof carries no expiry and commits no chain state that moves, so its bytes stay valid
+    /// forever. `unclaim_role` frees both claim maps, which restores exactly the pre-claim conditions
+    /// `do_claim` checks — so ANY third party who saw the original `claim_role_signed` extrinsic on
+    /// chain could re-submit those same bytes and silently re-attach the badge the holder had just
+    /// removed (the calls are bare-unsigned, so no signature of theirs is needed). Worse than the
+    /// nuisance: a holder rotating a credential to a new account is blocked by the 1:1 rule for as
+    /// long as the replayer keeps re-binding the old one.
+    ///
+    /// Spending the nonce closes that: the replayed bytes carry the same nonce, so the re-claim is
+    /// rejected. A genuine re-claim needs a fresh proof with a new nonce, which only the role key can
+    /// sign — no usability cost.
+    ///
+    /// ⚠ RESIDUAL, stated honestly: this remembers the LAST nonce, not every nonce. An account that
+    /// has completed two or more claim/unclaim cycles can still be hit by a replay of a proof OLDER
+    /// than its most recent one. Closing that completely needs a chain-tracked counter committed
+    /// inside the signed payload, i.e. a `cogno-chain/role/v1` GRAMMAR change — which moves the
+    /// frontend signing flow and the CI oracle with it, so it belongs in its own spec, not here.
+    /// Bounded either way: one 16-byte entry per `(account, role)`, the same growth as the claim.
+    #[pallet::storage]
+    pub type SpentRoleNonce<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        Twox64Concat,
+        RoleKind,
+        [u8; 16],
+        OptionQuery,
+    >;
+
     /// The call-less OBSERVED-role ledger: `account → its currently-live role set`. Written ONLY by
     /// the cardano-observer inherent (via the runtime `RoleSink` → [`Pallet::apply_roles`]).
     /// `ValueQuery` ⇒ an account with no live role reads the empty set for free. THE map the profile
@@ -307,6 +339,10 @@ pub mod pallet {
         /// No claim exists for this `(account, role)` (unclaim / revoke target not found).
         #[codec(index = 6)]
         NotClaimed,
+        /// This exact proof was already spent for this `(account, role)` — a replay of bytes that were
+        /// accepted once before. See [`SpentRoleNonce`].
+        #[codec(index = 7)]
+        RoleProofReplayed,
     }
 
     /// Genesis seed for the OBSERVED ledger on chains with no Cardano to observe (`--dev` / `local`),
@@ -364,9 +400,10 @@ pub mod pallet {
             cose_key: BoundedVec<u8, ConstU32<128>>,
         ) -> DispatchResult {
             ensure_none(origin)?;
-            let (account, role, credential) = Self::verify_role_proof(&cose_sign1, &cose_key)?;
+            let (account, role, credential, nonce) =
+                Self::verify_role_proof(&cose_sign1, &cose_key)?;
             log::debug!(target: LOG_TARGET, "claim_role_signed: verified {role:?} proof for {account:?}");
-            Self::do_claim(&account, role, credential)
+            Self::do_claim(&account, role, credential, nonce)
         }
 
         /// Self-service release of a role claim. Signed by the claiming account. Removes both claim
@@ -417,6 +454,16 @@ pub mod pallet {
             Ok(())
         }
     }
+
+    /// What [`Pallet::verify_role_proof`] extracts from an accepted proof: the account the payload
+    /// COMMITS (never the submitter), the role, the 28-byte credential, and the 16-byte nonce the
+    /// caller spends to make the proof single-use.
+    pub(crate) type VerifiedRoleClaim<T> = (
+        <T as frame_system::Config>::AccountId,
+        RoleKind,
+        RoleCredential,
+        [u8; 16],
+    );
 
     impl<T: Config> Pallet<T> {
         /// Tear down EVERY role `who` holds — both claim maps and the observer-written badge set.
@@ -488,7 +535,7 @@ pub mod pallet {
         pub(crate) fn verify_role_proof(
             cose_sign1: &[u8],
             cose_key: &[u8],
-        ) -> Result<(T::AccountId, RoleKind, RoleCredential), Error<T>> {
+        ) -> Result<VerifiedRoleClaim<T>, Error<T>> {
             let proof = pallet_cogno_gate::cip8::verify_bind_proof_role(
                 cose_sign1,
                 cose_key,
@@ -507,7 +554,12 @@ pub mod pallet {
             // The bound account is the 32-byte sr25519 key the PROOF commits — never any submitter.
             let account = T::AccountId::decode(&mut &proof.account[..])
                 .map_err(|_| Error::<T>::ProofInvalid)?;
-            Ok((account, RoleKind::from_class(proof.role), proof.credential))
+            Ok((
+                account,
+                RoleKind::from_class(proof.role),
+                proof.credential,
+                proof.nonce,
+            ))
         }
 
         /// The shared 1:1 claim body: the payment-bound precondition, the ban tombstone, both directional
@@ -517,6 +569,7 @@ pub mod pallet {
             account: &T::AccountId,
             role: RoleKind,
             credential: RoleCredential,
+            nonce: [u8; 16],
         ) -> DispatchResult {
             // A role attaches only to an onboarded identity: the account must already be payment-bound.
             ensure!(
@@ -537,6 +590,14 @@ pub mod pallet {
                 log::warn!(target: LOG_TARGET, "do_claim rejected: {role:?} credential already claimed");
                 return Err(Error::<T>::RoleCredAlreadyClaimed.into());
             }
+            // Single-use: a role proof never expires, and `unclaim_role` restores every other condition
+            // checked above — so without this the same bytes could be re-submitted by anyone to undo an
+            // unclaim. See [`SpentRoleNonce`] for the residual this does and does not cover.
+            if SpentRoleNonce::<T>::get(account, role) == Some(nonce) {
+                log::warn!(target: LOG_TARGET, "do_claim rejected: {role:?} proof replayed (nonce already spent)");
+                return Err(Error::<T>::RoleProofReplayed.into());
+            }
+            SpentRoleNonce::<T>::insert(account, role, nonce);
             RoleClaimOf::<T>::insert(account, role, credential);
             RoleCredIndex::<T>::insert(role, credential, account);
             log::debug!(target: LOG_TARGET, "do_claim ok: {role:?} credential claimed 1:1");
@@ -597,8 +658,9 @@ pub mod pallet {
                     cose_key,
                 } => {
                     // Verify the proof (audited crown jewel) + genesis + decode the committed account.
-                    let (account, role, credential) = Self::verify_role_proof(cose_sign1, cose_key)
-                        .map_err(|_| InvalidTransaction::BadProof)?;
+                    let (account, role, credential, nonce) =
+                        Self::verify_role_proof(cose_sign1, cose_key)
+                            .map_err(|_| InvalidTransaction::BadProof)?;
                     // A role attaches only to an onboarded identity — reject a non-participant at the pool
                     // (Custom 1; the FE submits a role claim only after onboarding, so this holds).
                     if !T::IdentityGate::is_allowed(&account) {
@@ -609,6 +671,9 @@ pub mod pallet {
                     if TombstonedRoleCred::<T>::contains_key(role, credential)
                         || RoleClaimOf::<T>::contains_key(&account, role)
                         || RoleCredIndex::<T>::contains_key(role, credential)
+                        // A replayed proof is settled, not retryable — drop it at the pool so the
+                        // gossip never carries it and no block wastes a full verify on it.
+                        || SpentRoleNonce::<T>::get(&account, role) == Some(nonce)
                     {
                         log::debug!(target: LOG_TARGET, "validate_unsigned: role claim rejected at pool (tombstoned/already-claimed) role={role:?}");
                         return Err(InvalidTransaction::Stale.into());
