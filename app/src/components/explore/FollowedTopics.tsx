@@ -28,6 +28,9 @@ export function FollowedTopics({ topics }: FollowedTopicsProps) {
           key={t}
           className={styles.topic}
           href={`/explore/?q=${encodeURIComponent(tagSearchTerm(t))}`}
+          // prefetch off: the strip renders on every /explore load and names the reader's own followed
+          // topics, so the default logs the whole set on arrival with no interaction.
+          prefetch={false}
         >
           {tagLabel(t)}
         </Link>

@@ -140,6 +140,11 @@ export function PostBody({ text, size = "base", dim, highlight }: PostBodyProps)
               key={i}
               className={styles.link}
               href={`/explore/?q=${encodeURIComponent(tagSearchTerm(topic))}`}
+              // prefetch off: a topic chip sits inside somebody else's post body, so the default would
+              // put every tag anyone had used into the relay's access log for every reader who scrolled
+              // past. /privacy says opening a topic tells the node what you are looking for; scrolling
+              // past one should not.
+              prefetch={false}
               // Inside a clickable PostCard row — don't also trigger the row navigation.
               onClick={(e) => e.stopPropagation()}
             >
