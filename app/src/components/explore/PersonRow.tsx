@@ -41,10 +41,9 @@ export function PersonRow({ person, viewer, isFollowing, onToggleFollow, highlig
 
   return (
     <div className={styles.row}>
-      <Link
-        href={`/u/${person.author}/`}
-        className={styles.who}
-      >
+      {/* prefetch off: a people list is up to 20 rows rendered from a search the reader has not acted
+          on yet, so the default would log 20 ss58s per query against their IP. */}
+      <Link href={`/u/${person.author}/`} className={styles.who} prefetch={false}>
         <Avatar address={person.author} src={person.avatar} size="md" name={person.displayName} />
         <span className={styles.text}>
           <DisplayName

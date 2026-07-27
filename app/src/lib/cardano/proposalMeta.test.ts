@@ -195,3 +195,34 @@ describe("resolveProposal caching (terminal vs transient)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+// The safety flag was opt-IN (`noRedirect`), and the eager IntersectionObserver path in ProposalPreview
+// did not pass it — so scrolling past a poll followed the author's redirect and handed them the
+// reader's IP. The class is "opt-in safety flag with an unsafe default", and the assertion that catches
+// it is about the DEFAULT, not about any one caller.
+describe("resolveProposal redirect policy", () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("refuses to follow redirects when called with no opts", async () => {
+    const url = "https://gov.example/default-redirect-policy.json";
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(JSON.stringify({ body: { title: "x" } })));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await resolveProposal(url);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "error" });
+  });
+
+  it("follows redirects only when the caller opts in", async () => {
+    const url = "https://gov.example/consented-redirect-policy.json";
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(JSON.stringify({ body: { title: "x" } })));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await resolveProposal(url, { followRedirects: true });
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "follow" });
+  });
+});

@@ -24,6 +24,7 @@ import { deriveSignerFromWallet } from "@/lib/signer/wallet-derive";
 import { isUserRejection, probeWalletIdentity } from "@/lib/cardano/cip8";
 import { clearAllPostDrafts } from "@/lib/composerDraftStore";
 import { clearFeedSnapshot } from "@/lib/feed/snapshot";
+import { shouldAdoptSignOut } from "@/lib/sessionReconcile";
 import {
   clearRestoredSession,
   saveRestoredSession,
@@ -351,6 +352,47 @@ export function useSigner(): UseSigner {
     clearAllPostDrafts();
     clearFeedSnapshot();
   }, []);
+
+  // ── adopt a sign-out (or an account switch) performed in ANOTHER tab ───────────────────────────
+  // `signer` is `chosen ?? restoredSigner ?? fallback`, so an in-memory `chosen` outranks the crossTab
+  // record — and the tab that has unlocked is precisely the one that ignored the sign-out. See
+  // lib/sessionReconcile.ts for the full write-up. This runs the LOCAL half of `disconnect` only: it
+  // never re-broadcasts, never clears the record, and never touches drafts, because by the time a stale
+  // tab notices, both may already belong to the next person.
+  const recordSeen = useRef(false);
+  useEffect(() => {
+    const chosenSs58 = chosen?.ss58 ?? null;
+    // Arm: this tab's own key and the shared record agree, so a later divergence is real news rather
+    // than a record that never landed (storage blocked → `commit` swallows the throw).
+    if (chosenSs58 !== null && record !== null && record.ss58 === chosenSs58) {
+      recordSeen.current = true;
+      return;
+    }
+    if (
+      !shouldAdoptSignOut({
+        hydrated,
+        chosenSs58,
+        devChosen,
+        recordSs58: record?.ss58 ?? null,
+        recordSeen: recordSeen.current,
+      })
+    ) {
+      return;
+    }
+    recordSeen.current = false;
+    deriveGen.current++; // a late wallet approval must not revive the key we are dropping
+    inFlightUnlock.current = null;
+    setDeriving(false);
+    setUnlocking(false);
+    setConnectedWalletId(null);
+    setWalletAddress(null);
+    setError(null);
+    setChosen(null);
+    setProbeState("pending");
+    // In-memory only, and it carries THIS account's `myVote` overlay — so dropping it is local
+    // teardown, not a write into whatever the next person's session will be.
+    clearFeedSnapshot();
+  }, [hydrated, chosen, record, devChosen]);
 
   const setDevAccount = useCallback((uri: string) => {
     setError(null);

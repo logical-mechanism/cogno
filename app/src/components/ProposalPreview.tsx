@@ -63,34 +63,66 @@ export function ProposalPreview({
   const [meta, setMeta] = useState<ProposalMeta | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // The one fetch, shared by the eager (viewport) prefetch and the explicit Preview click: it resolves once
-  // (guarded on `idle`) and the panel + glance-title both read the same `meta`. Cached module-side too, so a
-  // second poll linking the same doc — or re-opening this one — never refetches.
-  const load = useCallback(() => {
-    if (status !== "idle" || !href) return;
-    setStatus("loading");
-    resolveProposal(action.anchorUrl)
-      .then((m) => {
-        setMeta(m);
-        setStatus(m ? "loaded" : "empty");
-      })
-      .catch(() => setStatus("empty"));
-  }, [status, href, action.anchorUrl]);
-
-  const toggle = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation(); // this lives inside a clickable post card — don't open the post
-      setOpen((o) => !o);
-      load(); // no-op once resolved (e.g. an eager prefetch already ran) → opening is then instant
+  // TWO paths, and the difference between them is a privacy boundary, not an optimization.
+  //
+  //   EAGER (viewport)  — nobody asked for this request, so it must not follow a redirect. The browser
+  //                       cannot read a cross-origin `Location`, so `isNeutralProposalHost` vouches for
+  //                       the first hop only; a poll author who pins an IPFS dir whose `_redirects`
+  //                       bounces to a host they control would otherwise harvest the IP of every reader
+  //                       who merely scrolled past the card, guests included. This path used to call
+  //                       `resolveProposal` with NO opts, and the option was opt-in.
+  //   ON DEMAND (click) — the reader opened the panel, so following is consented.
+  //
+  // Both share `meta` and `resolveProposal`'s module-side cache, so an eager title makes the open instant.
+  const fetchDoc = useCallback(
+    (followRedirects: boolean) => {
+      setStatus("loading");
+      resolveProposal(action.anchorUrl, followRedirects ? { followRedirects: true } : undefined)
+        .then((m) => {
+          setMeta(m);
+          setStatus(m ? "loaded" : "empty");
+        })
+        .catch(() => setStatus("empty"));
     },
-    [load],
+    [action.anchorUrl],
   );
+
+  const loadEager = useCallback(() => {
+    if (!href || status !== "idle") return;
+    fetchDoc(false);
+  }, [href, status, fetchDoc]);
+
+  // One consented attempt per mount. Not guarded on `status` alone: the eager pass settles to "empty"
+  // when it refuses a 3xx (a transient, deliberately UNCACHED outcome), and that is precisely the case
+  // the click is allowed to retry with redirects on.
+  const demanded = useRef(false);
+  const loadOnDemand = useCallback(() => {
+    if (!href || demanded.current) return;
+    // Never race the eager fetch: `resolveProposal` dedupes by URL, so a second call while one is in
+    // flight would silently return the NO-redirect promise and burn the one attempt. Wait — the effect
+    // below re-runs when `status` settles.
+    if (status === "loading" || status === "loaded") return;
+    demanded.current = true;
+    fetchDoc(true);
+  }, [href, status, fetchDoc]);
+
+  // Fire the consented fetch from an EFFECT rather than from `toggle`. `toggle` calls setOpen and would
+  // read the pre-update `open` in the same tick, so a `{ noRedirect: !open }`-shaped guard inside a
+  // shared loader silently leaves the click path closed. The effect sees the committed value.
+  useEffect(() => {
+    if (open) loadOnDemand();
+  }, [open, loadOnDemand]);
+
+  const toggle = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation(); // this lives inside a clickable post card — don't open the post
+    setOpen((o) => !o);
+  }, []);
 
   // Eager, LAZY title fetch for neutral-host anchors: resolve when the poll nears the viewport (not on mount,
   // so a feed of many polls doesn't fan out fetches for cards nobody scrolls to). `load` self-guards on
   // status, so this runs at most once; a stable ref keeps the effect from re-subscribing as status changes.
-  const loadRef = useRef(load);
-  loadRef.current = load;
+  const loadRef = useRef(loadEager);
+  loadRef.current = loadEager;
   useEffect(() => {
     if (!eager) return;
     const el = rootRef.current;
