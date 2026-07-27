@@ -413,6 +413,8 @@ drep_stake AS ( \
     AND dh.raw = ANY($3::bytea[]) \
   GROUP BY dh.raw) \
 SELECT (SELECT EXISTS (SELECT 1 FROM pool_hash)) AS pool_ok, \
+       (SELECT EXISTS (SELECT 1 FROM drep_hash)) AS drep_ok, \
+       (SELECT EXISTS (SELECT 1 FROM drep_registration)) AS drep_reg_ok, \
        (SELECT EXISTS (SELECT 1 FROM tx_metadata)) AS meta_ok, \
        COALESCE((SELECT json_agg(encode(bytes,'hex') ORDER BY id) FROM regs), '[]'::json) AS registrations, \
        COALESCE((SELECT json_agg(encode(hash_raw,'hex')) FROM active), '[]'::json) AS active_pools, \
@@ -498,7 +500,9 @@ pub async fn read_role_observation(
         // SPO badge and zeroing every SPO chamber weight chain-wide. An empty table is indistinguishable
         // from "no registrations", so the only safe reading is to abstain.
         // ⚠ This does NOT catch a metadata KEY WHITELIST (`"keys": [721]` leaves tx_metadata non-empty
-        // while filtering label 867 out). That needs the boot probe in node/src/config_check.rs.
+        // while filtering label 867 out) — no in-query probe can, since the table IS populated. The boot
+        // probe in node/src/config_check.rs covers that case instead, by flagging the signature it leaves:
+        // active pools present, zero label-867 registrations.
         if !row
             .try_get::<_, bool>("meta_ok")
             .map_err(|e| format!("db-sync meta_ok column decode failed: {e}"))?
@@ -506,6 +510,37 @@ pub async fn read_role_observation(
             return Err(
                 "db-sync tx_metadata table is empty (metadata indexing disabled?); the role read \
                  requires it — abstaining (fail closed)"
+                    .to_string(),
+            );
+        }
+        // Fail-closed on the Conway GOVERNANCE tables, the same contract again. db-sync's
+        // `insert_options.governance = disable` (and the `only_utxo` / `disable_all` presets) skip
+        // `drep_hash` + `drep_registration` while leaving tx_in/ma_tx_out/tx_metadata/pool_hash fully
+        // populated — so nothing above notices, the `dreps` CTE returns zero rows, and this read reports
+        // "no live dReps exist" as a SUCCESS: every dRep badge stripped and every dRep chamber weight
+        // zeroed chain-wide.
+        //
+        // `drep_target_ok` does NOT cover this. It is consumed CONDITIONALLY (`!live_dreps.is_empty() &&
+        // !drep_target_ok`), so it is disarmed by exactly the emptiness it would have to catch — the
+        // guard and the failure cancel out. Both tables are network-wide on any post-Conway Cardano, so
+        // empty means the indexer is misconfigured, never that the chain has no dReps.
+        if !row
+            .try_get::<_, bool>("drep_ok")
+            .map_err(|e| format!("db-sync drep_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync drep_hash table is empty (governance indexing disabled?); the role read \
+                 requires it — abstaining (fail closed)"
+                    .to_string(),
+            );
+        }
+        if !row
+            .try_get::<_, bool>("drep_reg_ok")
+            .map_err(|e| format!("db-sync drep_reg_ok column decode failed: {e}"))?
+        {
+            return Err(
+                "db-sync drep_registration table is empty (governance indexing disabled?); the dRep \
+                 liveness join requires it — abstaining (fail closed)"
                     .to_string(),
             );
         }
@@ -877,11 +912,11 @@ mod tests {
             ("ROLE_OBSERVATION_SQL", "pool_update" | "pool_retire" | "pool_owner") => {
                 Some("gated by the probed pool_hash in the same query")
             }
-            // dRep sub-tables: drep_distr is probed (drep_target_ok) and gates the chamber weight; a
-            // missing registration only ever REMOVES a dRep from the live set, never adds one.
-            ("ROLE_OBSERVATION_SQL", "drep_hash" | "drep_registration") => {
-                Some("gated by the probed drep_distr; absence can only shrink the live set")
-            }
+            // `drep_hash` / `drep_registration` were exempted here as "gated by the probed drep_distr;
+            // absence can only shrink the live set". Both halves were wrong: `drep_target_ok` is only
+            // consumed when the live set is NON-empty, so it is disarmed by the very emptiness it would
+            // have to catch, and "shrink the live set" is not benign — it strips every dRep badge and
+            // zeroes every dRep chamber weight. They are probed directly now (`drep_ok`/`drep_reg_ok`).
             // Reached only by a foreign key from epoch_stake, whose target epoch this query probes.
             ("POOL_STAKE_SQL", "pool_hash") => Some(
                 "FK-reached from the probed epoch_stake; probed directly in ROLE_OBSERVATION_SQL",
@@ -946,6 +981,8 @@ mod tests {
             (STAKE_OBSERVATION_SQL, "STAKE_OBSERVATION_SQL", "rows"),
             (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "pool_ok"),
             (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "meta_ok"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "drep_ok"),
+            (ROLE_OBSERVATION_SQL, "ROLE_OBSERVATION_SQL", "drep_reg_ok"),
             (
                 ROLE_OBSERVATION_SQL,
                 "ROLE_OBSERVATION_SQL",
