@@ -4,7 +4,7 @@
 // ~6s, forever, for a committee-gated tombstone.
 
 import { describe, it, expect } from "vitest";
-import { createRevocationCache } from "./revocationCache";
+import { createRevocationCache, SWEEP_AT } from "./revocationCache";
 
 const A = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const B = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty";
@@ -57,6 +57,34 @@ describe("createRevocationCache", () => {
     clock += 2;
     await cache.get(A);
     expect(calls).toHaveLength(2);
+  });
+
+  it("sweeps expired entries, so the map tracks the working set and not the session", async () => {
+    // The TTL bounds staleness, not SIZE: an expired entry is only replaced when that same author is
+    // asked for again. A reader scrolling the firehose past thousands of distinct authors held one
+    // entry per author for the life of the WebSocket session, none of them ever read again.
+    const { read } = counting();
+    let clock = 1_000;
+    const cache = createRevocationCache(read, 1_000, () => clock);
+    for (let i = 0; i < SWEEP_AT; i++) await cache.get(`author-${i}`);
+    expect(cache.size()).toBe(SWEEP_AT);
+    clock += 2_000; // every entry now expired
+    await cache.get("author-fresh");
+    expect(cache.size()).toBe(1);
+  });
+
+  it("keeps still-live entries when it sweeps", async () => {
+    const { calls, read } = counting();
+    let clock = 1_000;
+    const cache = createRevocationCache(read, 1_000, () => clock);
+    for (let i = 0; i < SWEEP_AT - 1; i++) await cache.get(`author-${i}`);
+    clock += 999; // the batch above is still inside the TTL
+    await cache.get(A); // the miss that trips the sweep (size === SWEEP_AT - 1 → not yet)
+    await cache.get(B); // now size === SWEEP_AT, so this one sweeps — and must drop nothing
+    expect(cache.size()).toBe(SWEEP_AT + 1);
+    const before = calls.length;
+    await cache.get("author-0");
+    expect(calls).toHaveLength(before); // survived the sweep → still served from cache
   });
 
   it("does not cache a failed read, and still surfaces the failure", async () => {

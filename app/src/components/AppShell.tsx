@@ -78,10 +78,15 @@ export function AppShell({ children }: { children: ReactNode }) {
   // rather than installed by an effect, and why this flag is read rather than assumed.
   const deciding = signerCtl.restoring || identity.checkingBound;
 
-  // Soft auth wall (X-style logged-out browsing): a guest may READ the public surfaces (the timeline, a
-  // post, a profile, explore, the legal pages) but the WRITE/CONFIG surfaces (compose, settings,
-  // notifications, bookmarks) still bounce a logged-out visitor to the welcome/join page. Reading never
-  // requires a bind (every write affordance itself already funnels to /welcome via `viewer.writeReady`).
+  // Soft auth wall (X-style logged-out browsing): a guest may READ the public surfaces while the
+  // WRITE/CONFIG surfaces (compose, settings, notifications) bounce a logged-out visitor to the
+  // welcome/join page. Reading never requires a bind (every write affordance itself already funnels to
+  // /welcome via `viewer.writeReady`).
+  //
+  // WHICH ROUTES ARE WHICH IS NOT RESTATED HERE. `lib/routeAccess.ts` owns the one table, a node test
+  // asserts it covers every segment under `src/app`, and this comment naming its own copy of the set is
+  // exactly how it drifted before (it listed /bookmarks as walled after /bookmarks and /lists moved to
+  // the public side). Read the table.
   //
   // `deciding` is the guard that makes a page refresh stop logging people out: the session is rebuilt
   // from lib/sessionRestore one render AFTER hydration, and this effect fires on the commit before it.

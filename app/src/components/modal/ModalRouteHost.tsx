@@ -36,7 +36,7 @@ import { useComposerGate } from "@/hooks/useComposerGate";
 import { useComposeWrite } from "@/hooks/useComposeWrite";
 import { useToaster } from "../toast/ToasterProvider";
 import { errorCopy } from "@/lib/chain/errors";
-import type { MentionRef } from "@/lib/mentions";
+import { reconcileMentions, type MentionRef } from "@/lib/mentions";
 import {
   submitPost,
   submitReply,
@@ -118,9 +118,15 @@ export function ModalRouteHost() {
   // the flip is driven by the modal store, so the reset effect below runs on the NEXT render with the
   // new `kind` and would otherwise clobber anything the toggle handler had set.
   const carryRef = useRef<string | null>(null);
-  // The bindings that ride along with `carryRef` across a compose↔poll flip. A poll question is post
-  // text, so a mention survives the flip — without this it survived as a bare literal.
+  // The bindings that ride along with `carryRef` on ONE leg of a compose↔poll flip. Consumed and cleared
+  // by the reset effect, exactly like `carryRef`.
   const carryMentionsRef = useRef<MentionRef[]>([]);
+  // The bindings the CURRENT poll question inherited from the compose draft it was flipped from. This is
+  // what makes the round trip lossless, and it has to be a second ref: the reset effect consumes
+  // `carryMentionsRef` on the way INTO the poll, so without parking them here the flip back had nothing
+  // to hand over and `hey @Bob` returned to the composer as an UNBOUND literal — which `serializeMentions`
+  // then leaves alone, posting the bare `@Bob` permanently on a chain with no `delete_post`.
+  const pollMentionsRef = useRef<MentionRef[]>([]);
 
   const kind = state.kind;
   const targetId = state.targetId ? BigInt(state.targetId) : null;
@@ -221,6 +227,9 @@ export function ModalRouteHost() {
     const carriedMentions = carryMentionsRef.current;
     carryRef.current = null;
     carryMentionsRef.current = [];
+    // Park the incoming bindings for the poll leg so `toCompose` can hand them back; every other open
+    // (a fresh compose, reply, quote, close) starts the poll registry empty.
+    pollMentionsRef.current = kind === "poll" ? carriedMentions : [];
     setSubmitState("idle");
     if (kind === "compose") {
       if (carried !== null) {
@@ -289,10 +298,12 @@ export function ModalRouteHost() {
 
   const toCompose = useCallback(() => {
     carryRef.current = pollDraft.question;
-    // The poll composer does not run the mention autocomplete, so the flip back carries no bindings —
-    // and dropping them is the SAFE direction: an unbound token stays plain text rather than binding to
-    // an account the user did not pick in this draft.
-    carryMentionsRef.current = [];
+    // Hand back the bindings the question inherited, MINUS any whose `@name` token the user edited out
+    // while it was a poll. The poll composer runs no mention autocomplete, so it can only ever lose
+    // tokens, never add one — and `reconcileMentions` is the same prune the composer applies on every
+    // keystroke. A token that survived the round trip comes back bound to the account that was actually
+    // picked; one that did not degrades to plain text rather than binding an account the user never chose.
+    carryMentionsRef.current = reconcileMentions(pollMentionsRef.current, pollDraft.question, null);
     modalActions.openCompose();
   }, [pollDraft.question]);
 

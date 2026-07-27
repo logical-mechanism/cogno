@@ -284,9 +284,21 @@ function RoleClaimCard({
           </span>
           {removeBtn}
         </div>
+      ) : status === "loading" && roles.observedError ? (
+        // ── the read FAILED. Still not "you hold no roles" (so no wizard), but not "still checking"
+        //    either: the watch is dead and nothing re-subscribes on its own, so offer the retry rather
+        //    than spin for the rest of the session with the wizard out of reach.
+        <div className={styles.statusRow}>
+          <p className={styles.error} role="alert">
+            Couldn&apos;t check your verified roles.
+          </p>
+          <button type="button" className={styles.outlineBtn} onClick={roles.reload}>
+            Try again
+          </button>
+        </div>
       ) : status === "loading" ? (
         // ── not resolved yet. Say so, rather than opening a wizard that would be wrong for anyone who
-        //    already holds this role. A read that never lands stays here, which is the honest answer.
+        //    already holds this role.
         <div className={styles.statusRow}>
           <span className={styles.pendingMark}>
             <Spinner size="sm" label="Checking verified roles" /> Checking your verified roles.

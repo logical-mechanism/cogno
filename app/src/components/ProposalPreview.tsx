@@ -98,9 +98,10 @@ export function ProposalPreview({
   const demanded = useRef(false);
   const loadOnDemand = useCallback(() => {
     if (!href || demanded.current) return;
-    // Never race the eager fetch: `resolveProposal` dedupes by URL, so a second call while one is in
-    // flight would silently return the NO-redirect promise and burn the one attempt. Wait — the effect
-    // below re-runs when `status` settles.
+    // Never race THIS card's eager fetch. `resolveProposal` now dedupes by (redirect policy, url), so a
+    // click can no longer be handed the no-redirect promise — but two in-flight fetches for one card
+    // would still settle `meta`/`status` in arbitrary order. Wait: the effect below re-runs when
+    // `status` settles, and "empty" (the eager pass refusing a 3xx) is exactly the case a click retries.
     if (status === "loading" || status === "loaded") return;
     demanded.current = true;
     fetchDoc(true);

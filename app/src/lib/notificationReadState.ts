@@ -27,9 +27,9 @@ export const EMPTY_READ_STATE: ReadState = { readThrough: 0, firstSeen: {} };
 
 // Safety cap so firstSeen can't grow without bound across months of activity. Set well above any single
 // fold's size (per-post votes/replies + followers are unbounded on a viral account) so eviction is
-// unreachable at realistic scale; when it does fire it drops READ entries FIRST (see withSeen), since
-// dropping a still-unread key would make it reappear as unread on the next fold. (The scalable fix is
-// the deferred on-chain reverse-index; this store is a device-local badge only.)
+// unreachable at realistic scale; when it does fire it drops UNREAD entries first — see `withSeen`,
+// which is where the reasoning lives, because the intuitive rule is the wrong way round. (The scalable
+// fix is the deferred on-chain reverse-index; this store is a device-local badge only.)
 const MAX_TRACKED = 10000;
 
 // ── pure helpers (unit-tested; no localStorage / no clock) ───────────────────────────────────────

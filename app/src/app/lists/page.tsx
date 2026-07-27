@@ -48,6 +48,10 @@ import type { FeedQuery } from "@/lib/types";
 import styles from "./page.module.css";
 import { viewerBucket } from "@/lib/viewerBucket";
 
+/** A write that did not reach storage. NOT the message for a refused INPUT — see `onRename`. */
+const STORAGE_BLOCKED = "Your browser is blocking storage for this site, so lists can't be saved.";
+const NAME_TOO_LONG = `Names are limited to ${MAX_LIST_NAME_BYTES} bytes.`;
+
 export default function ListsPage() {
   const router = useRouter();
   const { api, signer, source, viewer, votingPower } = useSession();
@@ -95,7 +99,6 @@ export default function ListsPage() {
   // write that did not reach storage, which is what the surface has to say out loud: selecting and
   // naming a list that will not be there on the next load is worse than refusing it.
   const [writeError, setWriteError] = useState<string | null>(null);
-  const STORAGE_BLOCKED = "Your browser is blocking storage for this site, so lists can't be saved.";
 
   const onCreate = useCallback(() => {
     disarm();
@@ -116,6 +119,24 @@ export default function ListsPage() {
       setWriteError(actions.removeMember(listId, member) ? null : STORAGE_BLOCKED);
     },
     [actions, disarm],
+  );
+
+  // `rename` returns false for TWO different reasons — an invalid name (the store's deliberate "a bad
+  // keystroke can't wipe a name" guard) and a write that never reached storage — and this surface has to
+  // tell them apart before it says anything. Mapping both to STORAGE_BLOCKED told a user who merely
+  // cleared the field that their browser was blocking storage, which is a false statement about their
+  // device on a one-keystroke path. An empty name is a silent no-op (the old name stands); an over-long
+  // one says which limit it hit; only a refused WRITE claims storage.
+  const onRename = useCallback(
+    (listId: string, name: string) => {
+      setRenaming(false);
+      if (!isValidListName(name)) {
+        setWriteError(utf8Bytes(name.trim()) > MAX_LIST_NAME_BYTES ? NAME_TOO_LONG : null);
+        return;
+      }
+      setWriteError(actions.rename(listId, name) ? null : STORAGE_BLOCKED);
+    },
+    [actions],
   );
 
   // ── the selected list's timeline ────────────────────────────────────────────────────────────────
@@ -223,20 +244,10 @@ export default function ListsPage() {
                   aria-label="Rename list"
                   onChange={(e) => setDraftRename(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      setWriteError(
-                        actions.rename(selected.id, draftRename) ? null : STORAGE_BLOCKED,
-                      );
-                      setRenaming(false);
-                    }
+                    if (e.key === "Enter") onRename(selected.id, draftRename);
                     if (e.key === "Escape") setRenaming(false);
                   }}
-                  onBlur={() => {
-                    setWriteError(
-                      actions.rename(selected.id, draftRename) ? null : STORAGE_BLOCKED,
-                    );
-                    setRenaming(false);
-                  }}
+                  onBlur={() => onRename(selected.id, draftRename)}
                 />
               ) : (
                 <h2 className={styles.detailTitle}>{sanitizeInline(selected.name)}</h2>

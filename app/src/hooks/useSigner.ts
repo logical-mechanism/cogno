@@ -324,6 +324,10 @@ export function useSigner(): UseSigner {
   // (not in an effect) so a write dispatched on the very first post-hydration commit can already sign.
   unlockRef.current = unlock;
 
+  // Declared ABOVE `disconnect` because `disconnect` disarms it — see the adoption effect below for what
+  // arming means and why it is load-bearing.
+  const recordSeen = useRef(false);
+
   const disconnect = useCallback(() => {
     deriveGen.current++; // abandon any in-flight derive/unlock so a late approval can't revive this session
     inFlightUnlock.current = null;
@@ -351,6 +355,13 @@ export function useSigner(): UseSigner {
     // page — in memory only and viewer-keyed, but it carries this account's `myVote` overlay.
     clearAllPostDrafts();
     clearFeedSnapshot();
+    // DISARM the adoption latch. It is a per-TAB latch, not a per-session one, so a sign-out that leaves
+    // it armed carries the previous session's "a record for me was seen once" over to the NEXT sign-in in
+    // this tab. On a browser that then can't write (quota reached, site data blocked mid-session)
+    // `saveRestoredSession` throws, `commit` swallows it, the record stays null — and the still-armed
+    // latch reads that as "signed out elsewhere" and tears down the session the user just signed the
+    // derive message for. Arming has to be re-earned by actually seeing a record for the new account.
+    recordSeen.current = false;
   }, []);
 
   // ── adopt a sign-out (or an account switch) performed in ANOTHER tab ───────────────────────────
@@ -359,7 +370,6 @@ export function useSigner(): UseSigner {
   // lib/sessionReconcile.ts for the full write-up. This runs the LOCAL half of `disconnect` only: it
   // never re-broadcasts, never clears the record, and never touches drafts, because by the time a stale
   // tab notices, both may already belong to the next person.
-  const recordSeen = useRef(false);
   useEffect(() => {
     const chosenSs58 = chosen?.ss58 ?? null;
     // Arm: this tab's own key and the shared record agree, so a later divergence is real news rather

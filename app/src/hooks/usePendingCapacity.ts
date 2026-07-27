@@ -19,6 +19,7 @@ import {
   usePendingLock,
   pendingLockActions,
   shouldClearPendingLock,
+  pendingLockCreditIndeterminate,
   CONFIRM_TIMEOUT_MS,
 } from "@/lib/pendingLockStore";
 import { readObserverConfig, slotToUnixSec, type ObserverConfig } from "@/lib/chain/observer";
@@ -160,9 +161,16 @@ export function usePendingCapacity(
   // the status and the record can never disagree. A stale-positive weight from a prior lock keeps the
   // pending narration running instead of collapsing it to "all set" and then to "lock ADA".
   if (shouldClearPendingLock({ record, allowedStake, frontier, nowMs: now })) return { kind: "none" };
+  // "Overdue" is the one status that asserts a NEGATIVE ("this lock still hasn't credited"), and the
+  // frontier is what establishes it. With a positive weight and no frontier the app cannot tell whose
+  // credit that is, so it must not make the claim — it keeps narrating the wait instead, and the next
+  // frontier emission resolves it for real. See `pendingLockCreditIndeterminate`.
+  const cantTell = pendingLockCreditIndeterminate({ record, allowedStake, frontier, nowMs: now });
   if (record.lockSlot == null || !cfg) {
     // Stuck confirming too long → an honest exit (can't compute an ETA without the lock slot).
-    if (now - record.submittedAtMs > CONFIRM_TIMEOUT_MS) return { kind: "overdue", txHash: record.txHash };
+    if (now - record.submittedAtMs > CONFIRM_TIMEOUT_MS && !cantTell) {
+      return { kind: "overdue", txHash: record.txHash };
+    }
     return { kind: "confirming" };
   }
 
@@ -177,8 +185,9 @@ export function usePendingCapacity(
       ? Math.min(1, Math.max(0, (Number(frontier) - record.lockSlot + stability) / stability))
       : Math.min(1, Math.max(0, 1 - etaMs / (stability * 1000)));
 
-  // Well past the expected unlock and still uncredited (and not merely frozen) → an honest exit.
-  if (etaMs < -OVERDUE_GRACE_MS && enforcing) {
+  // Well past the expected unlock and still uncredited (not merely frozen, and actually established) →
+  // an honest exit.
+  if (etaMs < -OVERDUE_GRACE_MS && enforcing && !cantTell) {
     return { kind: "overdue", txHash: record.txHash };
   }
 

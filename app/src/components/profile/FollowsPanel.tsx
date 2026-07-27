@@ -139,6 +139,10 @@ export function FollowsPanel({
 
       <div id="cg-follows-panel" role="tabpanel" aria-labelledby={`cg-follows-tab-${side}`}>
         <FollowsList
+          // Re-key per side: FollowsList grows its own render window on demand, and switching
+          // Followers ↔ Following only re-slices `people` here — without this, an expanded window
+          // would carry over and mount hundreds of rows for the other side unasked.
+          key={side}
           people={people}
           viewer={viewer}
           loading={loading && !edges}

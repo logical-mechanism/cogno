@@ -121,12 +121,19 @@ export function ComposePage() {
   // Controlled text so the capacity gate measures the live draft (and a rollback can restore it).
   // Hydrate the persisted post draft on mount — but ONLY for a plain-post compose (gated on the stable
   // `mode`, not effectiveMode), so a reply/quote deep-link never leaks the saved post text into its
-  // capacity gate. Client-only render behind Suspense, so the lazy initializer is safe.
-  const initialDraft = useRef<PostDraft>(mode === "post" ? loadPostDraft(draftWho) : EMPTY_DRAFT);
-  const [text, setText] = useState(() => initialDraft.current.text);
+  // capacity gate. Client-only render behind Suspense, so reading storage during render is safe.
+  //
+  // The null sentinel is what makes it a ONE-TIME read. `useRef(expr)` evaluates `expr` on EVERY render
+  // and throws all but the first result away, so passing the load call directly ran a synchronous
+  // `localStorage.getItem` + `JSON.parse` of the draft envelope on every keystroke in the composer.
+  const initialDraft = useRef<PostDraft | null>(null);
+  if (initialDraft.current === null) {
+    initialDraft.current = mode === "post" ? loadPostDraft(draftWho) : EMPTY_DRAFT;
+  }
+  const [text, setText] = useState(() => initialDraft.current!.text);
   // The mention registry for `text`, persisted with it. Restoring text WITHOUT its bindings meant a
   // restored `@Bob` serialized to the literal `@Bob` and posted unbound, permanently.
-  const [mentions, setMentions] = useState<MentionRef[]>(() => initialDraft.current.mentions);
+  const [mentions, setMentions] = useState<MentionRef[]>(() => initialDraft.current!.mentions);
   // An in-place account switch swaps which bucket the draft lives in — re-seed from the new one, but
   // FLUSH the in-flight words to the account they were typed under first. `viewer.address` also moves
   // when a session restore lands a beat after a guest started typing, and re-seeding alone silently

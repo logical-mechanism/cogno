@@ -63,7 +63,10 @@ const CASES = [
   ["/explore/", 200],
   ["/compose/", 200],
   ["/notifications/", 200],
+  // The two device-local surfaces. Both are in PUBLIC_SEGMENTS (a guest reaches them without signing
+  // in), so an export that stopped emitting either is a 404 for a logged-out visitor, not a bounce.
   ["/bookmarks/", 200],
+  ["/lists/", 200],
   ["/settings/", 200],
   ["/welcome/", 200],
   // The three static documents. /policy is the abuse/report surface and is the ONLY in-product path to

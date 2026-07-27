@@ -9,7 +9,11 @@
 // The predicate is what is testable; the five call sites are not (vitest is `environment: "node"`).
 
 import { describe, it, expect } from "vitest";
-import { shouldClearPendingLock, CONFIRM_TIMEOUT_MS } from "./pendingLockStore";
+import {
+  shouldClearPendingLock,
+  pendingLockCreditIndeterminate,
+  CONFIRM_TIMEOUT_MS,
+} from "./pendingLockStore";
 
 const NOW = 1_700_000_000_000;
 const fresh = { lockSlot: 5_000, submittedAtMs: NOW - 30_000 };
@@ -79,6 +83,70 @@ describe("shouldClearPendingLock", () => {
   it("has nothing to do without a record", () => {
     expect(
       shouldClearPendingLock({ record: null, allowedStake: 100n, frontier: 9_000n, nowMs: NOW }),
+    ).toBe(false);
+  });
+});
+
+// The other half of the same distinction. "Not cleared" is two different facts, and only one of them
+// licenses the "overdue" nudge — which asserts a NEGATIVE ("your lock still hasn't credited") and offers
+// to dismiss it. usePendingCapacity nulls the frontier on ANY LastReference read error and the errored
+// subscription is terminated, so a single transient error on an account whose lock HAS credited pinned
+// it on a false "it never landed" for the rest of the session.
+describe("pendingLockCreditIndeterminate", () => {
+  it("is true when a positive weight cannot be attributed for want of a frontier", () => {
+    expect(
+      pendingLockCreditIndeterminate({
+        record: fresh,
+        allowedStake: 100_000_000n,
+        frontier: null,
+        nowMs: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it("is false once the frontier resolves, whichever side of the lock slot it lands", () => {
+    for (const frontier of [4_900n, 9_000n]) {
+      expect(
+        pendingLockCreditIndeterminate({
+          record: fresh,
+          allowedStake: 100_000_000n,
+          frontier,
+          nowMs: NOW,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("is false on a zero or unread weight — there is no credit to attribute", () => {
+    for (const allowedStake of [0n, null]) {
+      expect(
+        pendingLockCreditIndeterminate({ record: fresh, allowedStake, frontier: null, nowMs: NOW }),
+      ).toBe(false);
+    }
+  });
+
+  it("is false without a resolved lock slot — that record is timed out, not attributed", () => {
+    // With no slot the clear rule is the confirm timeout, which needs no frontier, so nothing is
+    // indeterminate and the overdue exit stays reachable.
+    const confirming = { lockSlot: null, submittedAtMs: NOW - 10_000 };
+    expect(
+      pendingLockCreditIndeterminate({
+        record: confirming,
+        allowedStake: 100n,
+        frontier: null,
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  it("has nothing to say without a record", () => {
+    expect(
+      pendingLockCreditIndeterminate({
+        record: null,
+        allowedStake: 100n,
+        frontier: null,
+        nowMs: NOW,
+      }),
     ).toBe(false);
   });
 });

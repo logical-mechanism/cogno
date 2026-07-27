@@ -225,4 +225,24 @@ describe("resolveProposal redirect policy", () => {
     await resolveProposal(url, { followRedirects: true });
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "follow" });
   });
+
+  it("does not hand a consented call the in-flight NO-redirect promise", async () => {
+    // Two poll cards linking one doc. Card A's eager (viewport) fetch is in flight when the reader
+    // clicks Preview on card B. Deduping on the url ALONE returned A's `redirect: "error"` promise —
+    // which throws on the 3xx — so the reader saw "Couldn't load the proposal." for a reachable
+    // document, with their one consented attempt already spent. The two policies are different requests.
+    const url = "https://gov.example/redirected-behind-a-3xx.json";
+    const fetchMock = vi.fn().mockImplementation((_u: string, init: RequestInit) => {
+      if (init.redirect === "error") return Promise.reject(new TypeError("Failed to fetch"));
+      return Promise.resolve(fakeResponse(JSON.stringify({ body: { title: "Behind a redirect" } })));
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const eager = resolveProposal(url); // no opts → redirect: "error"
+    const demanded = resolveProposal(url, { followRedirects: true }); // consented → redirect: "follow"
+
+    expect(await eager).toBeNull(); // transient: refused the 3xx, deliberately uncached
+    expect((await demanded)?.title).toBe("Behind a redirect");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

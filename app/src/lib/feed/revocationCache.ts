@@ -23,9 +23,23 @@
 /** How long an answer is reused. Long against a 6s block, short against a session. */
 export const REVOCATION_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Entry count at which a miss also SWEEPS the expired entries.
+ *
+ * The TTL alone bounds staleness, not size: an expired entry is only ever replaced when that same author
+ * is asked for again, so a reader scrolling the firehose past thousands of distinct authors retained one
+ * `{at, Promise}` per author for the life of the WebSocket session (`createRevocationCache` is called
+ * once per `createPapiFeedSource`, which `useFeedSource` memoizes on `api`) — none of which would be read
+ * again. Sweeping on a miss keeps the map at roughly the authors actually seen within one TTL, which is
+ * the working set the "one read per author" argument is about.
+ */
+export const SWEEP_AT = 512;
+
 export interface RevocationCache {
   /** The cached answer for `account`, reading through on a miss or an expired entry. */
   get: (account: string) => Promise<boolean>;
+  /** Entries currently held. Exported so the size bound is assertable, like the injected clock. */
+  size: () => number;
 }
 
 /**
@@ -43,6 +57,13 @@ export function createRevocationCache(
   function get(account: string): Promise<boolean> {
     const hit = entries.get(account);
     if (hit && now() - hit.at < ttlMs) return hit.value;
+    // A miss is about to add an entry, so it is the right moment to drop the ones that can no longer be
+    // served. Deleting during a Map iteration is well-defined; entries added after this point are not
+    // visited. Only past SWEEP_AT, so the common small-feed case stays a plain get/set.
+    if (entries.size >= SWEEP_AT) {
+      const cutoff = now() - ttlMs;
+      for (const [k, v] of entries) if (v.at <= cutoff) entries.delete(k);
+    }
     // The PROMISE is cached, not the resolved value, so several posts by the same author inside one
     // page — or two surfaces asking in the same tick — share one in-flight read rather than racing.
     const value = read(account).catch((e: unknown) => {
@@ -56,5 +77,5 @@ export function createRevocationCache(
     return value;
   }
 
-  return { get };
+  return { get, size: () => entries.size };
 }

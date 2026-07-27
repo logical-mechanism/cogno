@@ -33,8 +33,18 @@ function emptyClaims(): Record<RoleKindType, string | null> {
 }
 
 export interface UseRoles {
-  /** the account's live observer-written role set (the badge source); null while loading. */
+  /** the account's live observer-written role set (the badge source); null while loading OR on error. */
   observed: ObservedRoleView[] | null;
+  /**
+   * The `ObservedRoles` watch FAILED, as opposed to being in flight. Both leave `observed` null (a failed
+   * read is not "you hold no roles"), but they are different things to show: a read still landing is a
+   * spinner, a read that erred is a dead end. An errored rxjs subscription is terminated and nothing
+   * re-subscribes until `api`/the account changes, so without this the Settings card sat on "Checking
+   * your verified roles." for the whole session with the claim wizard unreachable and no way back.
+   */
+  observedError: boolean;
+  /** Re-subscribe the role watches. The retry behind `observedError`. */
+  reload: () => void;
   /** the live `RoleClaimOf` credential (0x-hex) per role — a claim that may not yet be observed; null = none. */
   claimCredHex: Record<RoleKindType, string | null>;
   /**
@@ -52,7 +62,12 @@ export function useRoles(
   signer: PostingSigner,
 ): UseRoles {
   const [observed, setObserved] = useState<ObservedRoleView[] | null>(null);
+  const [observedError, setObservedError] = useState(false);
   const [claimCredHex, setClaimCredHex] = useState<Record<RoleKindType, string | null>>(emptyClaims);
+  // Bumped by `reload` to re-run the subscribe effect. A watch that errors is TERMINATED by rxjs, so
+  // re-subscribing is the only way back — there is nothing to retry on the dead observable itself.
+  const [reloadKey, setReloadKey] = useState(0);
+  const reload = useCallback(() => setReloadKey((n) => n + 1), []);
 
   // Watch the observed set + each claimable role's `RoleClaimOf` LIVE for the active key. Cleared on any
   // api/account change BEFORE resubscribing (so a wallet switch never shows account A's role under B), and
@@ -60,6 +75,7 @@ export function useRoles(
   // CLEARS it when the pool/dRep lapses — the Settings status must track it live.
   useEffect(() => {
     setObserved(null);
+    setObservedError(false);
     setClaimCredHex(emptyClaims());
     if (!api) return;
     const subs: { unsubscribe: () => void }[] = [];
@@ -74,12 +90,18 @@ export function useRoles(
           const key = JSON.stringify(next);
           if (key === lastObserved) return;
           lastObserved = key;
+          setObservedError(false);
           setObserved(next);
         },
         // A failed read is NOT "you hold no roles". `[]` here was a confirmed negative written from an
         // unknown, and it stuck for the session — showing a verified SPO the claim wizard. Mirror
-        // Providers.tsx, which does `setViewerRoles(null)` on the very same watch.
-        () => setObserved(null),
+        // Providers.tsx, which does `setViewerRoles(null)` on the very same watch. The error flag is what
+        // keeps the card from claiming the OTHER unknown ("still checking") forever: the subscription is
+        // dead at this point, so the surface has to offer `reload`.
+        () => {
+          setObserved(null);
+          setObservedError(true);
+        },
       ),
     );
     for (const role of CLAIMABLE_ROLES) {
@@ -97,7 +119,7 @@ export function useRoles(
       );
     }
     return () => subs.forEach((s) => s.unsubscribe());
-  }, [api, signer.ss58]);
+  }, [api, signer.ss58, reloadKey]);
 
   const claim = useCallback(
     async (
@@ -137,5 +159,5 @@ export function useRoles(
     [api, signer],
   );
 
-  return { observed, claimCredHex, claim, unclaim };
+  return { observed, observedError, reload, claimCredHex, claim, unclaim };
 }

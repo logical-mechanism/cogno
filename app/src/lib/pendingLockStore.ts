@@ -80,6 +80,27 @@ export function shouldClearPendingLock(input: ClearPendingLockInput): boolean {
   return nowMs - record.submittedAtMs > CONFIRM_TIMEOUT_MS;
 }
 
+/**
+ * Is the credit question currently UNANSWERABLE, rather than answered "no"?
+ *
+ * `shouldClearPendingLock` returning false covers two situations that are not the same claim. One is
+ * "this lock has not credited yet" — the ordinary wait. The other is "a positive weight exists but the
+ * observer frontier has not resolved", so we cannot attribute that weight to this lock or to a prior
+ * one. Refusing to clear is the safe direction for the RECORD either way.
+ *
+ * It is not safe for the "overdue" nudge, which asserts the opposite of what it knows: it tells a user
+ * their lock looks stuck and offers to dismiss it. `usePendingCapacity` sets `frontier = null` on ANY
+ * `LastReference` read error, and an errored rxjs subscription is terminated — nothing re-subscribes
+ * until `api` or the account changes. So one transient frontier error on an account whose lock HAS
+ * credited pinned it, silently and for the rest of the session, on a false "it never landed". Gate the
+ * nudge on this being false and the wait simply keeps narrating until the frontier comes back.
+ */
+export function pendingLockCreditIndeterminate(input: ClearPendingLockInput): boolean {
+  const { record, allowedStake, frontier } = input;
+  if (!record || record.lockSlot == null) return false;
+  return allowedStake !== null && allowedStake > 0n && frontier === null;
+}
+
 function parse(raw: string | null): PendingLockMap {
   const parsed: unknown = raw ? JSON.parse(raw) : {};
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};

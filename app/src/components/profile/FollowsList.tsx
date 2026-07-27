@@ -10,6 +10,7 @@
 // back to the address-derived label exactly as everywhere else that lacks a fetched profile (real
 // per-row display names would need a node profiles-by-address batch read — out of scope / no backend).
 
+import { useState } from "react";
 import styles from "./FollowsList.module.css";
 import exploreStyles from "@/components/explore/ExploreList.module.css";
 import { PersonRow } from "@/components/explore/PersonRow";
@@ -18,14 +19,18 @@ import { EmptyState } from "@/components/EmptyState";
 import type { Suggestion, Viewer, Ss58 } from "@/components/kit";
 
 /**
- * Rows rendered at once. The follow graph comes back whole (the runtime bounds it, at up to 1000 edges
+ * Rows rendered per step. The follow graph comes back whole (the runtime bounds it, at up to 1000 edges
  * a side) and this mapped ALL of it, one `PersonRow` each — and every row mounts `useStakeRing` /
  * `useReputation`, i.e. a `MicroblogApi.profile` state_call per row, uncached, whose tally
  * `FollowsList` then discards (it builds `{author, followerCount: 0}` with no `accountScore`, so the
- * read fires purely for the avatar ring). A thousand of those on one tap is waste, not cost, and the
- * cap is the actionable half. `ExploreList` already renders exactly this note on exactly this row type.
+ * read fires purely for the avatar ring). A thousand of those on one tap is waste, not cost.
+ *
+ * So it is a STEP, not a ceiling. A hard cut solved the fan-out by making rows 101+ of a 1000-follower
+ * account unreachable from the UI altogether — trading a waste problem for a functional hole in the
+ * one surface whose entire job is listing those accounts. Growing the window on demand costs the same
+ * per row and reaches all of them.
  */
-const MAX_ROWS = 100;
+const ROW_STEP = 100;
 
 export interface FollowsListProps {
   /** The accounts to list (followers OR following, resolved by FollowsPanel from followEdges). */
@@ -53,6 +58,10 @@ export function FollowsList({
   isFollowing,
   onToggleFollow,
 }: FollowsListProps) {
+  // How many rows are mounted. FollowsPanel re-keys this component per side, so switching Followers ↔
+  // Following starts a fresh window rather than carrying one side's expansion into the other.
+  const [shown, setShown] = useState(ROW_STEP);
+
   if (loading && people.length === 0) {
     return (
       <div className={styles.list} aria-busy="true">
@@ -82,11 +91,12 @@ export function FollowsList({
     );
   }
 
-  const shown = people.slice(0, MAX_ROWS);
+  const visible = people.slice(0, shown);
+  const remaining = people.length - visible.length;
 
   return (
     <div className={styles.list}>
-      {shown.map((addr) => {
+      {visible.map((addr) => {
         // A minimal Suggestion — followEdges carries no profile fields; PersonRow renders the handle +
         // identicon + FollowButton, and hides the follower-count/reputation meta when they're absent.
         const person: Suggestion = { author: addr, followerCount: 0 };
@@ -100,10 +110,21 @@ export function FollowsList({
           />
         );
       })}
-      {people.length > MAX_ROWS && (
-        <p className={exploreStyles.truncated}>
-          Showing {MAX_ROWS} of {people.length} accounts.
-        </p>
+      {remaining > 0 && (
+        <>
+          <p className={exploreStyles.truncated}>
+            Showing {visible.length} of {people.length} accounts.
+          </p>
+          <div className={styles.tail}>
+            <button
+              type="button"
+              className={styles.showMore}
+              onClick={() => setShown((n) => n + ROW_STEP)}
+            >
+              Show {Math.min(remaining, ROW_STEP)} more
+            </button>
+          </div>
+        </>
       )}
     </div>
   );
