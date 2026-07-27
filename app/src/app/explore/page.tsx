@@ -67,6 +67,7 @@ import {
 import { topicOfQuery } from "@/lib/topics";
 import { topicActionsFor, useTopicFollowed, useFollowedTopics } from "@/lib/topicStore";
 import { viewerBucket } from "@/lib/viewerBucket";
+import { sanitizeInline } from "@/lib/sanitize";
 import type { RoleKindType } from "@/lib/chain/roles";
 import type { CognoPost, FeedQuery, Suggestion } from "@/lib/types";
 
@@ -454,10 +455,10 @@ function ExploreView() {
             ? // Announce the failure, not a false "0 people" — else a screen reader hears no-results and
               // never discovers the visible "Couldn't run that search." + Retry.
               "Couldn't run that search."
-            : `${peopleShown} ${peopleShown === 1 ? "person" : "people"} for ${committedQ}`
+            : `${peopleShown} ${peopleShown === 1 ? "person" : "people"} for ${sanitizeInline(committedQ)}`
         : latest.loading
           ? ""
-          : `${activePosts.length} ${activePosts.length === 1 ? "result" : "results"} for ${committedQ}`
+          : `${activePosts.length} ${activePosts.length === 1 ? "result" : "results"} for ${sanitizeInline(committedQ)}`
       : "";
 
   const firehoseLoading = firehose.loading && firehose.posts.length === 0;
@@ -599,7 +600,9 @@ function ExploreView() {
             lastPage={latest.page?.posts ?? null}
             emptyVariant="feed"
             emptyTitle={
-              topic !== null ? `No recent posts tagged #${topic}` : `No results for "${committedQ}"`
+              topic !== null
+                ? `No recent posts tagged #${topic}`
+                : `No results for "${sanitizeInline(committedQ)}"`
             }
             emptyDescription={
               topic !== null

@@ -34,7 +34,14 @@ import { useSession, useBestBlock } from "@/components/Providers";
 import { useThread } from "@/hooks/useThread";
 import { useComposerGate } from "@/hooks/useComposerGate";
 import { useComposeWrite } from "@/hooks/useComposeWrite";
-import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
+import {
+  loadPostDraft,
+  savePostDraft,
+  clearPostDraft,
+  EMPTY_DRAFT,
+  type PostDraft,
+} from "@/lib/composerDraftStore";
+import type { MentionRef } from "@/lib/mentions";
 import {
   submitPost,
   submitReply,
@@ -115,7 +122,11 @@ export function ComposePage() {
   // Hydrate the persisted post draft on mount — but ONLY for a plain-post compose (gated on the stable
   // `mode`, not effectiveMode), so a reply/quote deep-link never leaks the saved post text into its
   // capacity gate. Client-only render behind Suspense, so the lazy initializer is safe.
-  const [text, setText] = useState(() => (mode === "post" ? loadPostDraft(draftWho) : ""));
+  const initialDraft = useRef<PostDraft>(mode === "post" ? loadPostDraft(draftWho) : EMPTY_DRAFT);
+  const [text, setText] = useState(() => initialDraft.current.text);
+  // The mention registry for `text`, persisted with it. Restoring text WITHOUT its bindings meant a
+  // restored `@Bob` serialized to the literal `@Bob` and posted unbound, permanently.
+  const [mentions, setMentions] = useState<MentionRef[]>(() => initialDraft.current.mentions);
   // An in-place account switch swaps which bucket the draft lives in — re-seed from the new one, but
   // FLUSH the in-flight words to the account they were typed under first. `viewer.address` also moves
   // when a session restore lands a beat after a guest started typing, and re-seeding alone silently
@@ -129,14 +140,18 @@ export function ComposePage() {
   // `text` is read through a ref so this effect does not re-run on every keystroke.
   const textRef = useRef(text);
   textRef.current = text;
+  const mentionsRef = useRef(mentions);
+  mentionsRef.current = mentions;
   const seededForRef = useRef(draftWho);
   useEffect(() => {
     const prevWho = seededForRef.current;
     if (prevWho === draftWho) return;
     seededForRef.current = draftWho;
     if (mode !== "post") return; // reply/quote never hold the post draft — nothing to move or re-seed
-    if (draftWho !== null) savePostDraft(prevWho, textRef.current);
-    setText(loadPostDraft(draftWho));
+    if (draftWho !== null) savePostDraft(prevWho, textRef.current, mentionsRef.current);
+    const d = loadPostDraft(draftWho);
+    setText(d.text);
+    setMentions(d.mentions);
   }, [draftWho, mode]);
   // The SERIALIZED post body (mention `@name` tokens expanded to `@<ss58>`), reported up by the base
   // Composer, so the capacity gate counts the real posted length — a mention is ~48 bytes, not `@name`.
@@ -151,8 +166,8 @@ export function ComposePage() {
   // savePostDraft("") — whose empty branch removeItem()s the key — silently WIPING an unrelated saved
   // draft. mode==="post" never fires for a reply/quote deep link, so the saved draft is preserved.
   useEffect(() => {
-    if (mode === "post") savePostDraft(draftWhoRef.current, text);
-  }, [mode, text]);
+    if (mode === "post") savePostDraft(draftWhoRef.current, text, mentions);
+  }, [mode, text, mentions]);
 
   // ── Capacity gate, shared with every other composing surface — see useComposerGate. Profile
   //    is irrelevant; every write here is feeless + capacity-metered, so capacity is the only gate.
@@ -315,6 +330,8 @@ export function ComposePage() {
             submitState={submitState}
             text={text}
             onTextChange={setText}
+            mentions={mentions}
+            onMentionsChange={setMentions}
             onSerializedChange={setSerialized}
             rateLimited={rateLimited}
             retryInSeconds={retryInSeconds}
@@ -351,6 +368,8 @@ export function ComposePage() {
                 submitState={submitState}
                 text={text}
                 onTextChange={setText}
+                mentions={mentions}
+                onMentionsChange={setMentions}
                 onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
                 retryInSeconds={retryInSeconds}
@@ -384,6 +403,8 @@ export function ComposePage() {
                 submitState={submitState}
                 text={text}
                 onTextChange={setText}
+                mentions={mentions}
+                onMentionsChange={setMentions}
                 onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
                 retryInSeconds={retryInSeconds}

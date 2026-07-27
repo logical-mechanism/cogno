@@ -4,6 +4,7 @@ import {
   mentionToken,
   mentionLabel,
   mentionParts,
+  pickMentionDisplay,
   serializeMentions,
   reconcileMentions,
   parseMentionBody,
@@ -185,6 +186,39 @@ describe("validSs58Prefix", () => {
   });
 });
 
+// The token the @-autocomplete INSERTS. It used to be `s.displayName?.trim() || fallback`, which put
+// the raw chain bytes into a stranger's composer: the popover row rendered the sanitized name, pressing
+// Enter inserted the unsanitized one, and the byte meter then charged the 512-byte budget against the
+// raw name instead of the 49-byte ss58.
+describe("pickMentionDisplay", () => {
+  it("inserts the SANITIZED name, not the raw chain bytes", () => {
+    // U+202E (RLO) survives `set_profile`, which validates length only.
+    expect(pickMentionDisplay("Alice\u202EevilX", ALICE, [])).toBe("AliceevilX");
+  });
+
+  it("collapses an interior newline instead of breaking the token across two lines", () => {
+    // A post body renders `white-space: pre-wrap`, so a raw newline here becomes a hard break inside
+    // somebody else's permanent post.
+    expect(pickMentionDisplay("Alice\nSmith", ALICE, [])).toBe("Alice Smith");
+  });
+
+  it("falls back to the truncated ss58 for a name that sanitizes to nothing", () => {
+    // A ZWSP-only display name used to insert a bare `@ `, which serializes to nothing and posts as `@`.
+    expect(pickMentionDisplay("\u200B\u200B", ALICE, [])).toBe(truncateSs58(ALICE));
+    expect(pickMentionDisplay(undefined, ALICE, [])).toBe(truncateSs58(ALICE));
+  });
+
+  it("disambiguates two different accounts sharing one display name", () => {
+    // `serializeMentions` maps display → ss58, so an ambiguous token would bind both to one account.
+    const existing = [ref("alice", ALICE)];
+    expect(pickMentionDisplay("alice", BOB, existing)).toBe(`alice (${truncateSs58(BOB)})`);
+  });
+
+  it("does not disambiguate the SAME account picked twice", () => {
+    expect(pickMentionDisplay("alice", ALICE, [ref("alice", ALICE)])).toBe("alice");
+  });
+});
+
 describe("serialize → parse round-trip (the cross-client interop contract)", () => {
   it("a composed draft round-trips to the same accounts, in order", () => {
     const mentions = [ref("Elon Musk", ALICE), ref("bob", BOB)];
@@ -211,6 +245,17 @@ describe("reconcileMentions", () => {
 
   it("returns the SAME array when nothing changed (so the effect does not churn a re-render)", () => {
     expect(reconcileMentions(picked, DRAFT, { text: "x", refs: [] })).toBe(picked);
+  });
+
+  it("a RESTORED draft posts the bound ss58, not a bare literal", () => {
+    // F6, end to end at the seam that decides it. The composer persisted `text` only, so a draft
+    // restored after browser Back re-entered `useMentions` with an EMPTY registry — `serializeMentions`
+    // is the identity function on an empty registry, so the body written to `Microblog::post` was the
+    // literal `@alice`. Restoring the registry with the text is what makes this line pass.
+    const restored = reconcileMentions([], DRAFT, null);
+    expect(serializeMentions(DRAFT, restored)).toContain("@alice"); // unbound: the failure being pinned
+    const withRegistry = reconcileMentions([], DRAFT, { text: DRAFT, refs: picked });
+    expect(serializeMentions(DRAFT, withRegistry)).toBe(`hey @${ALICE} welcome`);
   });
 
   // THE BUG THIS RULE EXISTS FOR. Submit clears the box, which prunes the registry to []. If the tx

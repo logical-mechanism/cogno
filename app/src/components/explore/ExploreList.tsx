@@ -10,6 +10,7 @@ import styles from "./ExploreList.module.css";
 import { PersonRow } from "./PersonRow";
 import { Skeleton } from "@/components/Skeleton";
 import { EmptyState } from "@/components/EmptyState";
+import { sanitizeInline } from "@/lib/sanitize";
 import type { Suggestion, Viewer } from "@/components/kit";
 
 export interface ExploreListProps {
@@ -64,7 +65,8 @@ export function ExploreList({
         <EmptyState
           variant="search"
           query={query}
-          title={`No people found for "${query}"`}
+          // Display only. `query` stays the raw needle for the search itself.
+          title={`No people found for "${sanitizeInline(query)}"`}
           description="Search matches display names only."
         />
       </div>

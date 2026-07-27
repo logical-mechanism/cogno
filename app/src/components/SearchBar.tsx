@@ -9,6 +9,7 @@
 import { useCallback, useState } from "react";
 import styles from "./SearchBar.module.css";
 import { IconSearch, IconClose, Spinner } from "./icons";
+import { sanitizeInline } from "@/lib/sanitize";
 
 export interface SearchBarProps {
   value: string;
@@ -150,13 +151,17 @@ export function SearchBar({
                 <span className={styles.recentIcon} aria-hidden>
                   <IconSearch />
                 </span>
-                <span className={styles.recentLabel}>{term}</span>
+                {/* The term came from `?q=`, and `normalizeQuery` collapses whitespace and nothing
+                    else — so a shared `/explore/?q=<RLO + reversed text>` link renders here, inert,
+                    in every later session. Sanitize at the BOUNDARY only: `term` is still the raw
+                    needle everywhere else (the store key, the URL, the node's byte scan). */}
+                <span className={styles.recentLabel}>{sanitizeInline(term)}</span>
               </button>
               {onRemoveRecent && (
                 <button
                   type="button"
                   className={styles.recentRemove}
-                  aria-label={`Remove "${term}" from recent searches`}
+                  aria-label={`Remove "${sanitizeInline(term)}" from recent searches`}
                   onClick={() => onRemoveRecent(term)}
                 >
                   <IconClose />
