@@ -14,6 +14,11 @@ import { AppShell } from "@/components/AppShell";
 void FONTS_LOADED;
 
 export const metadata: Metadata = {
+  // Resolves every relative metadata URL — the opengraph-image below included — to an absolute one.
+  // Scrapers ignore relative og:image URLs, so without this the link-card image never renders
+  // anywhere. Pinned to the production origin: a static export has no per-host env, and a preview
+  // deploy pointing its cards at production is the right trade.
+  metadataBase: new URL("https://cogno.forum"),
   title: "cogno",
   description:
     "Post text, read text. A feeless social app where ADA locked on Cardano is your posting power.",
@@ -34,11 +39,25 @@ export const metadata: Metadata = {
   // openGraph is what a link to a post looks like when it is pasted into a chat or another social app.
   // Without it, the unfurl falls back to a bare URL. `robots` above governs SEARCH indexing; link
   // unfurls are independent of it, so this is worth setting regardless.
+  //
+  // The card image is `opengraph-image.png` sitting next to this layout — the same metadata-file
+  // convention as the icons above, so Next emits the og:image tags (absolute via metadataBase) itself
+  // and there is nothing to declare here; `opengraph-image.alt.txt` supplies its alt text. The image
+  // is the wordmark card: Inter Tight 800 on --cg-bg black with the 😭 icon art, 1200×630 (the 2:1-ish
+  // size X, Discord and Slack all want). Note X caches one scrape per URL for about a week, so a card
+  // change shows up on not-yet-scraped URLs first.
   openGraph: {
     type: "website",
     siteName: "cogno",
     title: "cogno",
-    description: "Post text, read text.",
+    description:
+      "Post text, read text. A feeless social app where ADA locked on Cardano is your posting power.",
+  },
+  // Without an explicit card type X falls back to `summary` (a tiny side thumbnail);
+  // `summary_large_image` is the full-width card. Title, description and image inherit from
+  // openGraph — this only needs to pick the card style.
+  twitter: {
+    card: "summary_large_image",
   },
   // Emit <meta name="referrer" content="no-referrer"> as an app-wide default: no request the app makes
   // ever sends a Referer header disclosing which post/profile the viewer is on. The remote <img>s (post
