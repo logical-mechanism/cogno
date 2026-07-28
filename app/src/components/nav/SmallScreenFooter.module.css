@@ -8,6 +8,13 @@
 @media (max-width: 1019px) {
   .footer {
     display: block;
+    /* Bottom of the 100vh column, not directly under whatever is above. AppShell's .main is a flex
+       column for this one line: as the LAST child, flowing normally, this element moved every time the
+       routed content above it changed height, and PageSpeed attributed 100% of the site's measured CLS
+       to exactly that (0.236 on /explore mobile, 0.257 on /u/<addr>, three shifts each). Anchored to
+       the viewport instead, short content cannot drag it. Resolves to 0 once the page outgrows the
+       viewport, where the footer is below the fold and its position stops mattering. */
+    margin-top: auto;
     padding: var(--cg-space-5) var(--cg-space-4) var(--cg-space-8);
     border-top: 1px solid var(--cg-border);
   }
