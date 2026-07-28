@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { bech32 } from "bech32";
-import { deriveRoleCredential, encodeDrepId, encodeCalidusId, paymentCredFromAddress } from "./role-proof";
+import {
+  deriveRoleCredential,
+  encodeDrepId,
+  encodeCalidusId,
+  paymentCredFromAddress,
+  cip129GovernanceCred,
+} from "./role-proof";
 
 // deriveRoleCredential is the pure, MeshJS-free half of the role-proof flow (blakejs only): it turns an
 // operator's entered Calidus key into the 28-byte credential the synthetic address commits. A bug here
@@ -11,6 +17,18 @@ import { deriveRoleCredential, encodeDrepId, encodeCalidusId, paymentCredFromAdd
 const PUBKEY = "1122334455667788990011223344556677889900112233445566778899001122";
 const CBORHEX = `5820${PUBKEY}`; // CBOR bstr(32) header + the key
 const VKEY_JSON = JSON.stringify({ type: "CalidusVKey", description: "", cborHex: CBORHEX });
+// The same envelope shape with a SIGNING key in it. A `.skey` and a `.vkey` are indistinguishable by
+// anything except `type`: both are `{type, description, cborHex}` and both carry a 32-byte `5820…`.
+const SKEY_JSON = JSON.stringify({
+  type: "PaymentSigningKeyShelley_ed25519",
+  description: "",
+  cborHex: CBORHEX,
+});
+const DREP_SKEY_JSON = JSON.stringify({
+  type: "DRepSigningKey_ed25519",
+  description: "",
+  cborHex: CBORHEX,
+});
 // A bare 28-byte (56-hex) key hash / credential.
 const KEYHASH = "0123456789abcdef0123456789abcdef0123456789abcdef01234567";
 
@@ -34,6 +52,18 @@ describe("deriveRoleCredential", () => {
     expect(fromKeyHash).toBe(true);
     // a 0x prefix and mixed case normalize to the same bare lowercase hash
     expect(deriveRoleCredential(`0x${KEYHASH.toUpperCase()}`, "spo").credentialHex).toBe(KEYHASH);
+  });
+
+  it("REFUSES a pasted signing key where it asks for a verification key", () => {
+    // F21. Without the `type` check the secret is blake2b_224'd as though it were the public key: the
+    // credential never matches, the wizard blames the key, and the operator's signing key is now in
+    // React state, in the on-screen command, and one paste away from a clipboard.
+    expect(() => deriveRoleCredential(SKEY_JSON, "spo")).toThrow(/signing key/i);
+    expect(() => deriveRoleCredential(DREP_SKEY_JSON, "drep")).toThrow(/signing key/i);
+  });
+
+  it("still accepts a verification-key envelope", () => {
+    expect(deriveRoleCredential(VKEY_JSON, "spo").credentialHex).toMatch(/^[0-9a-f]{56}$/);
   });
 
   it("is deterministic", () => {
@@ -149,5 +179,44 @@ describe("paymentCredFromAddress — the wallet pre-flight's runtime-mirror addr
     expect(paymentCredFromAddress(bytes(`60${CRED}00`), 0)).toBeNull(); // enterprise must be 29 bytes
     expect(paymentCredFromAddress(bytes(`00${CRED}`), 0)).toBeNull(); // base must be 57 bytes
     expect(paymentCredFromAddress(bytes("60"), 0)).toBeNull(); // too short
+  });
+
+  it("REJECTS a CIP-129 governance id, because the on-chain verifier does", () => {
+    // F14. `encodeDrepId` emits `0x22 ‖ cred` (CIP-129: high nibble 2 = dRep, low nibble 2 = key hash)
+    // and hands it to the wallet, so a wallet that echoes it back as the COSE address produces bytes
+    // this reads as network nibble 2 — never 0 or 1. That looks like a frontend bug and is not one:
+    // `cip8.rs::parse_address` rejects the identical bytes with `WrongNetwork`, so accepting them here
+    // would only move the failure from a pre-flight message to a rejected on-chain submission. Making
+    // this path work needs a RUNTIME change. Pinned so nobody "fixes" it into a chain rejection.
+    expect(paymentCredFromAddress(bytes(`22${CRED}`), 0)).toBeNull();
+    expect(paymentCredFromAddress(bytes(`22${CRED}`), 1)).toBeNull();
+  });
+});
+
+// Recognising the shape is what lets the pre-flight say what actually happened instead of
+// "unsupported address", which reads as a wallet bug. It must never be used to ACCEPT anything.
+describe("cip129GovernanceCred", () => {
+  const CRED = "fb7f7a6cdf4ebb81f1f12732c009a1461849219815d78d7f5a66464b";
+  const bytes = (hex: string) => Uint8Array.from(hex.match(/../g)!.map((b) => parseInt(b, 16)));
+
+  it("names a dRep key-hash id (0x22)", () => {
+    expect(cip129GovernanceCred(bytes(`22${CRED}`))).toBe(CRED);
+  });
+
+  it("names the CC hot / cold key forms too (0x02 / 0x12)", () => {
+    expect(cip129GovernanceCred(bytes(`02${CRED}`))).toBe(CRED);
+    expect(cip129GovernanceCred(bytes(`12${CRED}`))).toBe(CRED);
+  });
+
+  it("does not claim a real 29-byte enterprise address", () => {
+    // Every 29-byte Shelley address is an enterprise address, whose type nibble is 6 or 7 — outside the
+    // CIP-129 credential-type range. That is what makes the two unambiguous at this length.
+    expect(cip129GovernanceCred(bytes(`60${CRED}`))).toBeNull();
+    expect(cip129GovernanceCred(bytes(`70${CRED}`))).toBeNull();
+  });
+
+  it("does not claim the bare credential or the CIP-0151 Calidus form", () => {
+    expect(cip129GovernanceCred(bytes(CRED))).toBeNull();
+    expect(cip129GovernanceCred(bytes(`a1${CRED}`))).toBeNull();
   });
 });

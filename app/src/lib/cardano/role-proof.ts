@@ -167,12 +167,23 @@ export function deriveRoleCredential(
   if (!raw) throw new Error(`enter your ${label} verification key`);
   // A pasted `.vkey` file → pull out its cborHex.
   if (raw.startsWith("{")) {
+    let env: { type?: unknown; cborHex?: unknown } | null = null;
     try {
-      const j = JSON.parse(raw) as { cborHex?: unknown };
-      if (typeof j.cborHex === "string") raw = j.cborHex;
+      env = JSON.parse(raw) as { type?: unknown; cborHex?: unknown };
     } catch {
-      // not JSON after all — fall through and treat the whole thing as hex
+      env = null; // not JSON after all — fall through and treat the whole thing as hex
     }
+    // A cardano-cli envelope NAMES its own kind, and this field is the only thing that distinguishes a
+    // `.skey` from a `.vkey`: both are `{type, description, cborHex}` and both carry a 32-byte
+    // `5820…` payload. Without this check a pasted SIGNING key is blake2b_224'd as though it were the
+    // public one — the credential never matches, the wizard blames the key, and the operator's secret
+    // is now sitting in React state, in the on-screen command, and one paste away from a clipboard.
+    if (env && typeof env.type === "string" && /signingkey/i.test(env.type)) {
+      throw new Error(
+        `that is a signing key, not a verification key. Paste your ${label}.vkey file instead, and keep the signing key private`,
+      );
+    }
+    if (env && typeof env.cborHex === "string") raw = env.cborHex;
   }
   // A bech32 id/key (`drep1…`, `calidus_vk1…`) — the form a wallet shows. Non-bech32 input returns null and
   // falls through to the hex paths; a bech32 string that's wrong for this role throws a named error.
@@ -294,6 +305,21 @@ function candidateHexes(input: string): string[] {
  * enterprise address the offline command pins — so we check the credential, not the whole-address bytes.
  */
 export function paymentCredFromAddress(addr: Uint8Array, expectedNetwork: number): string | null {
+  // NOT accepted here, deliberately: a CIP-129 GOVERNANCE credential (`header ‖ 28-byte cred`, where the
+  // header's high nibble is the credential type and its low nibble the key/script kind — `0x22` for a
+  // dRep key-hash, which is exactly what `encodeDrepId` emits and hands the wallet). A wallet that
+  // echoes it back as the COSE "address" produces bytes this function reads as network nibble 2, which
+  // never equals `expectedNetwork` (0 testnet / 1 mainnet), so it falls through to null.
+  //
+  // That is CORRECT, and the reason is the runtime. This function is a byte-exact mirror of
+  // `pallets/cogno-gate/src/cip8.rs::parse_address`, which the role verifier calls for any address that
+  // is not the bare 28-byte credential — and it rejects `0x22‖cred` with `WrongNetwork` for the same
+  // arithmetic. Accepting it HERE would only move the failure from a pre-flight message to an on-chain
+  // rejection of a submitted bare extrinsic, which is strictly worse. Making the wallet path work for a
+  // CIP-129-echoing wallet needs a RUNTIME change, not a frontend one. The identical situation on the
+  // SPO side (Eternl's CIP-0151 `0xa1‖cred`) was handled by turning that wallet path off; see
+  // `walletSignable` in RolesSection. What this file CAN do is name the shape in the error — see
+  // `cip129GovernanceCred`, used for the message only.
   // A CIP-95 wallet (Eternl) embeds the BARE 28-byte role credential as the "address" — no header byte,
   // no network nibble. Accept it directly (the runtime does too, spec 210); length disambiguates it from a
   // headered address (29 / 57 bytes, never 28).
@@ -311,6 +337,26 @@ export function paymentCredFromAddress(addr: Uint8Array, expectedNetwork: number
   if (addrType === 0b0000 || addrType === 0b0010) return addr.length === 57 ? toHex(addr.slice(1, 29)) : null;
   if (addrType === 0b0110) return addr.length === 29 ? toHex(addr.slice(1, 29)) : null;
   return null;
+}
+
+/**
+ * The 28-byte credential of a CIP-129 governance identifier (`header ‖ cred`), or null.
+ *
+ * FOR ERROR COPY ONLY — never for acceptance. `paymentCredFromAddress` deliberately refuses this shape
+ * because the on-chain verifier does (see the note there). Recognising it lets the pre-flight say what
+ * actually happened instead of "unsupported address", which reads as a wallet bug rather than as a
+ * known gap between the wallet's encoding and this chain's verifier.
+ *
+ * CIP-129 headers: high nibble = credential type (0 CC hot, 1 CC cold, 2 dRep), low nibble = credential
+ * kind (2 key hash, 3 script hash). A 29-byte value with one of these headers is unambiguously NOT a
+ * Shelley address: every 29-byte Shelley address is an ENTERPRISE address, whose type nibble is 6 or 7.
+ */
+export function cip129GovernanceCred(addr: Uint8Array): string | null {
+  if (addr.length !== 29) return null;
+  const type = addr[0] >> 4;
+  const kind = addr[0] & 0x0f;
+  if (type > 2 || (kind !== 0x2 && kind !== 0x3)) return null;
+  return toHex(addr.slice(1));
 }
 
 /**
@@ -405,9 +451,16 @@ export async function preflightRolePasteback(
       const expectedNetwork = parseInt(req.syntheticAddressHex.slice(0, 2), 16) & 0x0f;
       const pc = paymentCredFromAddress(addrBytes, expectedNetwork);
       if (pc === null) {
+        // Name the CIP-129 case specifically. It is the one this app provokes itself: `encodeDrepId`
+        // hands the wallet a `drep1…` (a 29-byte `0x22 ‖ cred`), and a wallet that echoes it back as
+        // the COSE address produces bytes the chain's verifier rejects. Saying "unsupported address"
+        // there sounds like the wallet misbehaved; it did not, and the offline command works.
+        const gov = cip129GovernanceCred(addrBytes);
         return {
           ok: false,
-          error: "the wallet signed with an unsupported address. Use the offline command instead",
+          error: gov
+            ? `this chain can't verify a wallet signature that identifies the key by its ${ROLE_LABEL[req.role]} id. Use the offline command instead`
+            : "the wallet signed with an unsupported address. Use the offline command instead",
         };
       }
       if (pc !== req.credentialHex) {
@@ -552,10 +605,12 @@ export async function produceRoleProofWallet(opts: {
     // (not the synthetic one), so we bind on the credential, exactly as the runtime does.
     const pf = await preflightRolePasteback(JSON.stringify(sig), opts.request, { addressMatch: "credential" });
     if (!pf.ok) {
-      // Surface what the wallet actually produced — the embedded-address shape varies by wallet.
-      console.error(
-        `cogno: ${role} wallet sign failed pre-flight (${pf.error}). raw signData=${JSON.stringify(sig)}`,
-      );
+      // The REASON only. This used to append `raw signData=${JSON.stringify(sig)}`, i.e. the whole
+      // COSE_Sign1 + COSE_Key, to the browser console — a signature over the pinned payload plus the
+      // role public key, written somewhere any extension with console access can read it, on a failure
+      // path the user is being asked to retry. The pre-flight error already names what went wrong, and
+      // the embedded-address shape it is diagnosing is inferable from that message.
+      console.error(`cogno: ${role} wallet sign failed pre-flight: ${pf.error}`);
     }
     return pf;
   } catch (e) {

@@ -55,6 +55,28 @@ export async function readCapacityConsts(api: CognoApi): Promise<CapacityConsts>
   return { capRatio, regenPerBlock, ceiling, baseCost, perByteCost };
 }
 
+/**
+ * Publishable capacity inputs, or `null` while EITHER live read is still outstanding.
+ *
+ * The rule is here, pure, because the hook got it backwards and the consequence is a factual claim
+ * about somebody's own money. `useCapacity` seeded `weight = 0n` and published it synchronously, right
+ * after subscribing and before either watch could have answered — so a funded account was rendered as
+ * `view.weight === 0n`, and `NoPostingPowerNotice` told them "You don't have posting power yet."
+ * Its own comment says it only nags "once the weight read resolves to a real 0"; the synthetic seed is
+ * what made a real 0 indistinguishable from an unread one. With no error callback on those
+ * subscriptions, a failed read made it permanent for the session rather than a flash.
+ *
+ * `bucket: null` is a REAL answer — an account that has never posted has no `Microblog.Capacity` row —
+ * which is exactly why it cannot double as the unanswered marker. `undefined` is unanswered.
+ */
+export function capacityInputs(
+  weight: bigint | null,
+  bucket: CapacityBucket | null | undefined,
+): CapacityInputs | null {
+  if (weight === null || bucket === undefined) return null;
+  return { weight, bucket };
+}
+
 /** Read the live capacity inputs for one account. */
 export async function readCapacityInputs(api: CognoApi, who: Ss58): Promise<CapacityInputs> {
   const [weight, row] = await Promise.all([

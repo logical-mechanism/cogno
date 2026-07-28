@@ -31,6 +31,27 @@
   padding: var(--cg-space-5) 0;
 }
 
+/* the MANUAL tail: shown instead of the auto-loading sentinel once a page landed nothing visible */
+.showMore {
+  padding: var(--cg-space-2) var(--cg-space-5);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+}
+
+.showMore:hover:not(:disabled) {
+  background: var(--cg-bg-hover);
+}
+
+.showMore:disabled {
+  cursor: default;
+  color: var(--cg-text-muted);
+}
+
 /* quiet PAPI-direct footer (no honesty framing) */
 .footer {
   padding: var(--cg-space-5) var(--cg-space-4);

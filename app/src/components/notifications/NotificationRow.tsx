@@ -75,6 +75,9 @@ export function NotificationRow({ notif, unread }: { notif: Notif; unread: boole
     <Link
       href={targetHref(notif)}
       className={`${styles.row} ${unread ? styles.unread : ""}`}
+      // prefetch off: same rule as the rest — a rendered row is not an opened one, and every target here
+      // is a URL carrying either an account's ss58 or a post id.
+      prefetch={false}
       aria-label={`${sanitizeInline(profile?.displayName ?? "") || notif.actor} ${verb(notif)}`}
     >
       <span className={`${styles.kind} ${toneClass(notif)}`} aria-hidden>

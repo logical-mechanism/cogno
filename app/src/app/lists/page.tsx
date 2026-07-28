@@ -46,11 +46,16 @@ import { truncateSs58 } from "@/lib/ss58";
 import { utf8Bytes } from "@/lib/bytes";
 import type { FeedQuery } from "@/lib/types";
 import styles from "./page.module.css";
+import { viewerBucket } from "@/lib/viewerBucket";
+
+/** A write that did not reach storage. NOT the message for a refused INPUT — see `onRename`. */
+const STORAGE_BLOCKED = "Your browser is blocking storage for this site, so lists can't be saved.";
+const NAME_TOO_LONG = `Names are limited to ${MAX_LIST_NAME_BYTES} bytes.`;
 
 export default function ListsPage() {
   const router = useRouter();
   const { api, signer, source, viewer, votingPower } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
 
   const lists = useLocalLists(me);
   const actions = useMemo(() => localListActionsFor(me), [me]);
@@ -90,21 +95,48 @@ export default function ListsPage() {
     [disarm],
   );
 
+  // `create` already had a return channel and it was read only for validation. It now also reports a
+  // write that did not reach storage, which is what the surface has to say out loud: selecting and
+  // naming a list that will not be there on the next load is worse than refusing it.
+  const [writeError, setWriteError] = useState<string | null>(null);
+
   const onCreate = useCallback(() => {
     disarm();
     const id = actions.create(draftName);
     if (id !== null) {
+      setWriteError(null);
       select(id);
       setDraftName("");
+    } else if (isValidListName(draftName)) {
+      // The name is fine and the cap is shown separately, so the only remaining reason is storage.
+      setWriteError(STORAGE_BLOCKED);
     }
   }, [actions, draftName, select, disarm]);
 
   const onRemoveMember = useCallback(
     (listId: string, member: string) => {
       disarm();
-      actions.removeMember(listId, member);
+      setWriteError(actions.removeMember(listId, member) ? null : STORAGE_BLOCKED);
     },
     [actions, disarm],
+  );
+
+  // `rename` returns false for TWO different reasons — an invalid name (the store's deliberate "a bad
+  // keystroke can't wipe a name" guard) and a write that never reached storage — and this surface has to
+  // tell them apart before it says anything. Mapping both to STORAGE_BLOCKED told a user who merely
+  // cleared the field that their browser was blocking storage, which is a false statement about their
+  // device on a one-keystroke path. An empty name is a silent no-op (the old name stands); an over-long
+  // one says which limit it hit; only a refused WRITE claims storage.
+  const onRename = useCallback(
+    (listId: string, name: string) => {
+      setRenaming(false);
+      if (!isValidListName(name)) {
+        setWriteError(utf8Bytes(name.trim()) > MAX_LIST_NAME_BYTES ? NAME_TOO_LONG : null);
+        return;
+      }
+      setWriteError(actions.rename(listId, name) ? null : STORAGE_BLOCKED);
+    },
+    [actions],
   );
 
   // ── the selected list's timeline ────────────────────────────────────────────────────────────────
@@ -172,6 +204,11 @@ export default function ListsPage() {
             Names are limited to {MAX_LIST_NAME_BYTES} bytes.
           </p>
         )}
+        {writeError && (
+          <p className={styles.error} role="alert">
+            {writeError}
+          </p>
+        )}
         {atListCap && (
           <p className={styles.note}>
             You have the maximum of {MAX_LOCAL_LISTS} lists. Delete one to add another.
@@ -207,16 +244,10 @@ export default function ListsPage() {
                   aria-label="Rename list"
                   onChange={(e) => setDraftRename(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      actions.rename(selected.id, draftRename);
-                      setRenaming(false);
-                    }
+                    if (e.key === "Enter") onRename(selected.id, draftRename);
                     if (e.key === "Escape") setRenaming(false);
                   }}
-                  onBlur={() => {
-                    actions.rename(selected.id, draftRename);
-                    setRenaming(false);
-                  }}
+                  onBlur={() => onRename(selected.id, draftRename)}
                 />
               ) : (
                 <h2 className={styles.detailTitle}>{sanitizeInline(selected.name)}</h2>
@@ -240,7 +271,7 @@ export default function ListsPage() {
                 className={styles.danger}
                 onClick={() => {
                   if (armedDeleteId === selected.id) {
-                    actions.remove(selected.id);
+                    setWriteError(actions.remove(selected.id) ? null : STORAGE_BLOCKED);
                     setSelectedId(null);
                     setArmedDeleteId(null);
                   } else {
@@ -301,6 +332,7 @@ export default function ListsPage() {
           hasMore={feed.hasNextPage}
           onLoadMore={feed.loadMore}
           loadingMore={feed.loading}
+          lastPage={feed.page?.posts ?? null}
           paginationCapable={source != null}
           emptyVariant="feed"
           emptyTitle="No posts from this list yet"

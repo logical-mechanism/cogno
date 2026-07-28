@@ -50,9 +50,10 @@ import { useComposerGate } from "@/hooks/useComposerGate";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { submitReply } from "@/lib/chain/mutations";
 import { formatCount, formatSignedWeight, formatWeight } from "@/lib/format";
-import { isDenied } from "@/lib/config/denylist";
 import { handleOf } from "@/lib/ss58";
 import { sanitizeInline } from "@/lib/sanitize";
+import { viewerBucket } from "@/lib/viewerBucket";
+import { threadDocumentTitle } from "@/lib/threadTitle";
 import type { CognoPost } from "@/lib/types";
 import type { ActionState, ComposerDraft } from "@/components/kit";
 
@@ -69,7 +70,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const router = useRouter();
   const { api, signer, source, viewer, votingPower } = useSession();
   const bestBlock = useBestBlock();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   // Block + hide are hard removals, applied to the reply list below (the focal itself is handled by
   // PostCard: a blocked focal shows the stub, a hidden focal shows normally — you navigated to it).
   const mod = useModeration(me);
@@ -310,27 +311,23 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     if (last) requestAnimationFrame(() => last.scrollIntoView({ block: "center" }));
   }, [shownReplies]);
 
+  // Is the focal post suppressed for this viewer? The reader deliberately does NOT drop a thread ROOT
+  // (there is no shape for "the post you asked for is gone"), so `focal` is the full unfiltered post
+  // and PostCard renders the stub — which means every OTHER render on this page has to check for
+  // itself. Three did; the tab title, the stats row and the composer's "Replying to" line did not.
+  const focalDenied = focal != null && mod.isDenied(focal);
+  const focalBlocked = focal != null && mod.isBlocked(focal.author);
+  const focalSuppressed = focalDenied || focalBlocked;
+
   // ── browser tab title: author + snippet, so multiple open post tabs are distinguishable ──
+  // The rule is `threadDocumentTitle` (lib/threadTitle) — pure, so the suppression cases are testable
+  // and cannot drift from the card again. A tab title outlives the page: it reaches the tab strip, the
+  // window switcher, the browser history and any bookmark taken here.
   useEffect(() => {
-    if (typeof document === "undefined" || !focal) return;
-    // A delisted focal post must not put its author's name or its text HERE either. The reader
-    // deliberately does not drop a thread ROOT (there is no shape for "the post you asked for is
-    // gone"), so `focal` is the full unfiltered post and PostCard renders the stub below — which
-    // makes the delisting look complete while the title still carried the name and the first 60
-    // characters of the body into the tab strip, the browser history and any bookmark taken from it.
-    // Those outlive the page.
-    if (isDenied(focal)) {
-      document.title = "cogno";
-      return;
-    }
-    // Harden both halves — the browser tab title is user text, and a bidi override / newline there
-    // would corrupt the tab label (sanitizeInline also does the whitespace collapse).
-    const who = sanitizeInline(focal.authorDisplayName ?? "") || handleOf(focal.author);
-    const snippet = sanitizeInline(focal.text);
-    const clipped = snippet.length > 60 ? `${snippet.slice(0, 60)}…` : snippet;
-    document.title = clipped ? `${who} on cogno: “${clipped}”` : `${who} on cogno`;
+    if (typeof document === "undefined") return;
+    document.title = threadDocumentTitle(focal, { denied: focalDenied, blocked: focalBlocked });
     // No cleanup — the next route sets its own title.
-  }, [focal]);
+  }, [focal, focalDenied, focalBlocked]);
 
   // ── states — the route already guarded an invalid id; here we cover load/error/missing ──
   if (loading && !thread) {
@@ -407,7 +404,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         />
 
         {/* The ONE weighted-nature surface (D2/D12): score (signed, may be negative) + up/down weight,
-            with the Like count. Detail-only — never rendered on timeline/reply cards. */}
+            with the Like count. Detail-only — never rendered on timeline/reply cards. Omitted entirely
+            for a suppressed focal: a card that says "You've blocked this account" with a live tally
+            underneath it is not a suppression, it is a footnote. */}
+        {!focalSuppressed && (
         <div className={styles.stats} role="group" aria-label="Post statistics">
           {(focal.upCount ?? 0) > 0 && (
             <span className={styles.stat}>
@@ -443,6 +443,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
             </span>
           )}
         </div>
+        )}
       </div>
 
       {/* Inline ReplyComposer — pinned under the focal, "Post your reply". On submit it clears + stays
@@ -461,7 +462,16 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           draftExtras={{ parentId: rootId }}
           contextAbove={
             <p className={styles.replyingToComposer}>
-              Replying to <span className={styles.replyTarget}>{handleOf(focal.author)}</span>
+              {/* Never name a suppressed focal's author here either — the same labels the ancestor
+                  line uses, for the same reason. Replying is still allowed; identifying them is not. */}
+              Replying to{" "}
+              <span className={styles.replyTarget}>
+                {focalDenied
+                  ? "a post this site does not show"
+                  : focalBlocked
+                    ? "a blocked account"
+                    : handleOf(focal.author)}
+              </span>
             </p>
           }
         />

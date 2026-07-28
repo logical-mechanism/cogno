@@ -7,13 +7,14 @@
 //   Reputation on me    AccountVotes.getEntries(me)                     → each voter (edge)
 //   New followers       Followers.getEntries(me)                        → each follower (edge)
 //   Poll votes on mine  PollVotes.getEntries(myPollId)                  → each voter (edge)
-//   Mentions of me      source.page({ search: <my ss58> })             → posts embedding my ss58 (@mention)
+//   Mentions of me      source.page({ search: `@<my ss58>` })          → posts embedding my ss58 (@mention)
 //
 // Post-based signals (reply/mention) carry the actor's Post.at (real chain-time); edge signals carry no
 // timestamp and are ordered device-locally by first-seen (see notificationReadState + compareNotifs).
 // The scan is BOUNDED (MAX_MY_POSTS) — `truncated` is surfaced so a capped scan never reads as complete.
 
 import { isDeniedAuthor, isDeniedPost } from "@/lib/config/denylist";
+import { parseMentionBody } from "@/lib/mentions";
 import type { CognoApi, Ss58 } from "@/lib/types";
 import type { FeedSource } from "@/lib/feed/source";
 
@@ -39,6 +40,11 @@ const MENTION_MAX_HOPS = 8;
 export const MAX_MY_POSTS = 120;
 /** How many recent mention hits to pull from the body-substring search. */
 export const MENTION_LIMIT = 40;
+
+/** The needle a mention of `who` is actually written as. Exported so the test cannot drift from it. */
+export function mentionNeedle(who: Ss58): string {
+  return `@${who}`;
+}
 
 export type NotifKind = "reply" | "mention" | "like" | "reputation" | "follow" | "pollvote";
 
@@ -132,7 +138,16 @@ export async function loadNotifications(
       (q.Followers.getEntries(me, BEST) as Promise<StorageEntry[]>).catch(() => [] as StorageEntry[]),
       source
         ? source
-            .page({ search: me, viewer: me, first: MENTION_LIMIT, maxHops: MENTION_MAX_HOPS })
+            // `@` + the address, NOT the bare address. A mention is `@<ss58>` — that is the whole
+            // interop contract with `serializeMentions` / `parseMentionBody`. Searching the bare
+            // address made any post that merely CONTAINED it a mention: a permalink pasted into a
+            // reply, an ss58 quoted in prose, a block explorer URL. See the hit filter below.
+            .page({
+              search: mentionNeedle(me),
+              viewer: me,
+              first: MENTION_LIMIT,
+              maxHops: MENTION_MAX_HOPS,
+            })
             .catch(() => null)
         : Promise.resolve(null),
     ]);
@@ -192,10 +207,16 @@ export async function loadNotifications(
     notifs.push({ key: `follow:${follower}`, kind: "follow", actor: follower });
   }
 
-  // Mentions of me (post-based): posts whose body embeds my ss58 (`@<me>`), self-filtered.
+  // Mentions of me (post-based): posts whose body embeds `@<me>`, self-filtered.
+  //
+  // The node's scan is a raw-byte, ASCII-CASE-INSENSITIVE substring match, so a search hit is not an
+  // identity claim: `@5grwvaef…` (case-mangled, and therefore not a valid ss58 at all) matches, and
+  // this app would never render it as a mention. Confirm each hit with the SAME parser the renderer
+  // uses — checksum-validated, case-exact — so "you were mentioned" means what the reader will see.
   if (mentionPage) {
     for (const p of mentionPage.posts) {
       if (p.author === me) continue;
+      if (!parseMentionBody(p.text).some((m) => m.ss58 === me)) continue;
       notifs.push({ key: `mention:${p.id}`, kind: "mention", actor: p.author, postId: p.id, at: p.at });
     }
   }

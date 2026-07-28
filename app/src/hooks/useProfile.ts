@@ -29,6 +29,15 @@ export interface UseProfile {
   loading: boolean;
   error: string | null;
   hasMore: boolean;
+  /**
+   * The RAW posts of the page that landed most recently (the first page, then each `loadMore` page).
+   * `null` until one lands; a SILENT refresh does not replace it, since that is a re-read of page 1
+   * rather than a step down the cursor.
+   *
+   * Timeline filters it with its own moderation predicate to decide whether the tail may keep
+   * auto-loading — see lib/feed/tail.ts. This is the profile half of the >50-blocked-posts runaway.
+   */
+  lastPage: CognoPost[] | null;
   loadingMore: boolean;
   loadMore: () => void;
   /**
@@ -55,6 +64,8 @@ export function useProfile(
   // The first page (merged across silent refreshes) + the load-more pages (page 2+); shown together.
   const [base, setBase] = useState<CognoPost[]>([]);
   const [appended, setAppended] = useState<CognoPost[]>([]);
+  // The raw posts of the page that landed most recently — the tail's per-page guard (lib/feed/tail.ts).
+  const [lastPage, setLastPage] = useState<CognoPost[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -83,6 +94,7 @@ export function useProfile(
       setProfile(null);
       setBase([]);
       setAppended([]);
+      setLastPage(null);
       setCursor(null);
       setHasMore(false);
       loadedKey.current = null;
@@ -97,6 +109,7 @@ export function useProfile(
       // Replies). The profile record itself is kept to avoid blanking the header on a tab switch.
       setBase([]);
       setAppended([]);
+      setLastPage(null);
       setCursor(null);
       setHasMore(false);
       setLoading(true);
@@ -111,6 +124,7 @@ export function useProfile(
         if (firstForKey) {
           setBase(p.page.posts);
           setAppended([]);
+          setLastPage(p.page.posts);
           setCursor(canPage ? p.page.endCursor : null);
           setHasMore(canPage ? p.page.hasNextPage : false);
         } else {
@@ -149,6 +163,7 @@ export function useProfile(
       .then((pg) => {
         if (epochRef.current !== epoch) return; // tab/author switched mid-flight — drop the stale page
         setAppended((prev) => mergeById(prev, pg.posts));
+        setLastPage(pg.posts);
         setCursor(pg.endCursor);
         setHasMore(pg.hasNextPage);
       })
@@ -176,5 +191,15 @@ export function useProfile(
     [profile, profilePatch],
   );
 
-  return { profile: mergedProfile, posts, loading, error, hasMore, loadingMore, loadMore, reload };
+  return {
+    profile: mergedProfile,
+    posts,
+    loading,
+    error,
+    hasMore,
+    lastPage,
+    loadingMore,
+    loadMore,
+    reload,
+  };
 }

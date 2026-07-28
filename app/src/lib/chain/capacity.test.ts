@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  capacityInputs,
   capOf,
   ratePerBlockOf,
   postCost,
@@ -248,5 +249,37 @@ describe("draftStatus — which kinds carry a `blocks` countdown", () => {
     const st = draftStatus(mkView({ weight: 0n, cap: 0n, ratePerBlock: 0n, bucket: null }), 100, K);
     expect(st.kind).toBe("no_weight");
     expect("blocks" in st).toBe(false);
+  });
+});
+
+// F10 — unknown rendered as a confirmed negative, on the surface where it is a claim about money.
+//
+// `useCapacity` seeded `weight = 0n` and pushed it synchronously, right after subscribing and before
+// either watch could have answered. `NoPostingPowerNotice` then read `view.weight === 0n` and told a
+// funded account "You don't have posting power yet." Its own comment says it only nags "once the weight
+// read resolves to a real 0"; the synthetic seed made a real 0 indistinguishable from an unread one, and
+// with no error callback on those subscriptions a failed read made it permanent for the session.
+describe("capacityInputs", () => {
+  it("publishes nothing until the weight read answers", () => {
+    expect(capacityInputs(null, null)).toBeNull();
+  });
+
+  it("publishes nothing until the bucket read answers", () => {
+    expect(capacityInputs(100n, undefined)).toBeNull();
+  });
+
+  it("treats a null bucket as a REAL answer, not an outstanding read", () => {
+    // An account that has never posted has no `Microblog.Capacity` row. That is why `null` cannot double
+    // as the unanswered marker and `undefined` has to carry it.
+    expect(capacityInputs(100n, null)).toEqual({ weight: 100n, bucket: null });
+  });
+
+  it("publishes a genuine zero weight once it is actually read", () => {
+    expect(capacityInputs(0n, null)).toEqual({ weight: 0n, bucket: null });
+  });
+
+  it("publishes both once both answer", () => {
+    const bucket = { capLast: 5n, lastBlock: 42 };
+    expect(capacityInputs(7n, bucket)).toEqual({ weight: 7n, bucket });
   });
 });

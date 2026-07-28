@@ -64,6 +64,9 @@ export function MentionChip({ ss58 }: { ss58: Ss58 }) {
         href={`/u/${ss58}/`}
         className={styles.mention}
         title={ss58}
+        // prefetch off: a mention is inside somebody else's post body, so scrolling a timeline would
+        // otherwise log the ss58 of every account anyone had mentioned, for every reader who scrolled past.
+        prefetch={false}
         // The visible text is "@name 5Grw…utQY", which a screen reader would otherwise read as two
         // unrelated runs (and spell the address out character by character). Name the relationship
         // instead. Same treatment, and same reason, as PersonRow's reputation figure.

@@ -16,11 +16,13 @@
 // double-mounted usePoll, because the surface read starts null and PostCard fell through to InlinePoll
 // on the first render anyway.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./Timeline.module.css";
 import { PostCard } from "./PostCard";
 import { useModeration } from "@/hooks/useModeration";
 import { NO_VIEWER } from "@/lib/optimistic";
+import { viewerBucket } from "@/lib/viewerBucket";
+import { tailDecision } from "@/lib/feed/tail";
 import { Skeleton } from "./Skeleton";
 import { EmptyState } from "./EmptyState";
 import { Spinner } from "./icons";
@@ -51,6 +53,15 @@ export interface TimelineProps {
   /** Source cursor-paginates → show the infinite-scroll tail. */
   paginationCapable: boolean;
   /**
+   * The RAW posts of the page that landed most recently (`useFeedPage`'s `page.posts`,
+   * `useProfile`/`useLiveFeed`'s `lastPage`), or `null` while the first page is still in flight.
+   *
+   * Timeline filters it with the SAME moderation predicate it filters the list with, so the tail can
+   * tell "this page found nothing you can see" from "this page found rows". Omit it and the tail falls
+   * back to the coarser whole-window rule (see lib/feed/tail.ts) — correct, just later to fire.
+   */
+  lastPage?: CognoPost[] | null;
+  /**
    * EmptyState variant for THIS tab. The full EmptyStateVariant — it was narrowed to `feed | follows`,
    * which meant the profile view (whose tabs are `profile | replies`) could not pass its own variant at
    * all and silently fell through to the `feed` default, rendering "Find some people to follow" on
@@ -80,6 +91,7 @@ export function Timeline({
   onLoadMore,
   loadingMore,
   paginationCapable,
+  lastPage,
   emptyVariant = "feed",
   emptyTitle,
   emptyDescription,
@@ -91,9 +103,24 @@ export function Timeline({
   // Block + hide are hard removals (mute stays PostCard's soft collapse). Filtering the array here —
   // rather than rendering null per card — keeps the roving focus, the pill and the load-more tail
   // operating on exactly the cards on screen, and covers Home / Explore / Profile / Bookmarks at once.
-  const me = gate.status === "ready" ? (gate.address ?? null) : null;
+  const me = viewerBucket(gate);
   const mod = useModeration(me);
   const posts = mod.filterPosts(inputPosts);
+
+  // The tail decision, computed on THIS side of the filter. `lastPage` is measured with the same
+  // predicate as the rows on screen, so a page whose every post is blocked reads as "found nothing"
+  // rather than as "found 50" — which is what made the sentinel walk the whole index. See lib/feed/tail.ts.
+  const lastPageVisibleCount = useMemo(
+    () => (lastPage == null ? null : mod.filterPosts(lastPage).length),
+    [lastPage, mod],
+  );
+  const tail = tailDecision({
+    rawCount: inputPosts.length,
+    visibleCount: posts.length,
+    hasMore,
+    paginationCapable,
+    lastPageVisibleCount,
+  });
 
   // Index of the keyboard-focused card (roving tabIndex). -1 = none focused yet.
   const [focusIdx, setFocusIdx] = useState(-1);
@@ -182,10 +209,10 @@ export function Timeline({
 
   // ── empty ──
   // Distinguish "nothing more to show" from "this page's posts were all suppressed but more pages
-  // exist". In the latter, showing the terminal EmptyState would omit the load-more tail and strand
-  // the feed (no way to reach page 2); render the tail instead so pagination keeps flowing.
+  // exist". In the latter, a terminal EmptyState alone would strand the feed (no way to reach page 2),
+  // and an auto-loading sentinel would walk the whole index appending nothing — so the empty state
+  // gets an explicit "Show more" instead. The reader is told the truth and holds the trigger.
   if (posts.length === 0) {
-    const moreToLoad = paginationCapable && hasMore;
     return (
       // Keep the feed shortcuts (n compose, . flush) reachable even with no cards — a keyboard-first user
       // on an empty feed otherwise loses the documented compose/flush keys and must reach for the mouse.
@@ -197,15 +224,20 @@ export function Timeline({
         onKeyDown={onKeyDownList}
       >
         {error && <ErrorRow message={error} onRetry={onRetry} />}
-        {moreToLoad ? (
+        {tail === "auto" ? (
           <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />
         ) : (
-          <EmptyState
-            variant={emptyVariant}
-            title={emptyTitle}
-            description={emptyDescription}
-            action={emptyAction}
-          />
+          <>
+            <EmptyState
+              variant={emptyVariant}
+              title={emptyTitle}
+              description={emptyDescription}
+              action={emptyAction}
+            />
+            {tail === "manual" && (
+              <ShowMoreButton loading={loadingMore} onLoadMore={onLoadMore} />
+            )}
+          </>
         )}
       </div>
     );
@@ -249,11 +281,10 @@ export function Timeline({
         );
       })}
 
-      {/* tail — the infinite-scroll "load more" sentinel, shown when the source paginates and
-          another page exists. */}
-      {paginationCapable && hasMore && (
-        <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />
-      )}
+      {/* tail — the infinite-scroll sentinel while pages keep landing rows; a "Show more" button once
+          one comes back with nothing the reader can see. */}
+      {tail === "auto" && <LoadMoreTail loading={loadingMore} onLoadMore={onLoadMore} />}
+      {tail === "manual" && <ShowMoreButton loading={loadingMore} onLoadMore={onLoadMore} />}
     </div>
   );
 }
@@ -268,6 +299,28 @@ function ErrorRow({ message, onRetry }: { message: string; onRetry?: () => void 
           Retry
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * The manual tail: the reader asks for the next page.
+ *
+ * Rendered instead of the sentinel once a landed page contributed no visible rows. There is no
+ * observer here on purpose — that is the whole point. One click, one page.
+ */
+function ShowMoreButton({ loading, onLoadMore }: { loading?: boolean; onLoadMore?: () => void }) {
+  if (!onLoadMore) return null;
+  return (
+    <div className={styles.tail}>
+      <button
+        type="button"
+        className={styles.showMore}
+        onClick={onLoadMore}
+        disabled={loading}
+      >
+        {loading ? <Spinner size="sm" label="Loading more posts" /> : "Show more"}
+      </button>
     </div>
   );
 }

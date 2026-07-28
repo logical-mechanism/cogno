@@ -3,3 +3,27 @@
   display: flex;
   flex-direction: column;
 }
+
+/* Manual tail. Rows mount a per-row state_call each, so the window grows only when the reader asks —
+   but it does reach the whole list (see ROW_STEP). Mirrors Timeline's ShowMoreButton. */
+.tail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-5) 0;
+}
+
+.showMore {
+  padding: var(--cg-space-2) var(--cg-space-5);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+}
+
+.showMore:hover {
+  background: var(--cg-bg-hover);
+}

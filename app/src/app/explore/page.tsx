@@ -66,8 +66,10 @@ import {
 } from "@/lib/feed/rank";
 import { topicOfQuery } from "@/lib/topics";
 import { topicActionsFor, useTopicFollowed, useFollowedTopics } from "@/lib/topicStore";
+import { viewerBucket } from "@/lib/viewerBucket";
+import { sanitizeInline } from "@/lib/sanitize";
 import type { RoleKindType } from "@/lib/chain/roles";
-import type { CognoPost, FeedPage, FeedQuery, Suggestion } from "@/lib/types";
+import type { CognoPost, FeedQuery, Suggestion } from "@/lib/types";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const PEOPLE_LIMIT = 20;
@@ -94,7 +96,7 @@ function ExploreView() {
   const searchParams = useSearchParams();
   const { api, signer, source, viewer, votingPower } = useSession();
 
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const searchEnabled = source != null;
   const peopleEnabled = source != null;
   const paginationCapable = source != null;
@@ -453,10 +455,10 @@ function ExploreView() {
             ? // Announce the failure, not a false "0 people" — else a screen reader hears no-results and
               // never discovers the visible "Couldn't run that search." + Retry.
               "Couldn't run that search."
-            : `${peopleShown} ${peopleShown === 1 ? "person" : "people"} for ${committedQ}`
+            : `${peopleShown} ${peopleShown === 1 ? "person" : "people"} for ${sanitizeInline(committedQ)}`
         : latest.loading
           ? ""
-          : `${activePosts.length} ${activePosts.length === 1 ? "result" : "results"} for ${committedQ}`
+          : `${activePosts.length} ${activePosts.length === 1 ? "result" : "results"} for ${sanitizeInline(committedQ)}`
       : "";
 
   const firehoseLoading = firehose.loading && firehose.posts.length === 0;
@@ -494,33 +496,14 @@ function ExploreView() {
   // nothing underneath a ranking claim.
   const showFirehoseControls = source != null && mode === "default";
 
-  // ── the filtered-surface runaway, and why the guard is on the PAGE rather than on the window ────
+  // ── the filtered-surface runaway ────────────────────────────────────────────────────────────────
   //
   // A LENS and a TOPIC both run the reader on a bounded hop budget (FILTERED_LENS_MAX_HOPS), so each can
-  // legitimately hand back an EMPTY page plus a live cursor. Timeline's tail is an IntersectionObserver
-  // over a sentinel that a short list never pushes out of view, and it re-observes on every `loadMore`
-  // identity change (useFeedPage rebuilds `loadMore` on each `page`/`loading` change) — re-observing an
-  // already-intersecting sentinel fires the callback immediately. So one empty page starts a loop that
-  // walks the cursor down to post id 0, each firing costing up to six `feed_page` state_calls that each
-  // rebuild `staker_weights()` over up to MaxObserved accounts, to append nothing.
-  //
-  // The guard is therefore "the LAST PAGE added nothing VISIBLE", and both halves of that matter:
-  //   - per PAGE, not per window. A lens that found three posts and then nothing is the same runaway
-  //     with three rows sitting on top of it, and a window-shaped guard never fires for it.
-  //   - VISIBLE, not fetched. A page whose every post is by a blocked author renders as no rows at all,
-  //     so a fetched-count guard would advertise more over a list the reader sees as empty.
-  // `page` is null while a first page is in flight (useFeedPage clears it before fetching), so this
-  // cannot mistake "still loading" for "found nothing".
-  const stalled = useCallback(
-    (p: FeedPage | null) => p !== null && mod.filterPosts(p.posts).length === 0,
-    [mod],
-  );
-  const lensStalled = lens !== null && stalled(firehose.page);
-
-  // Same rule on the query axis. Freezing the tail is also what lets the topic band's scope-accurate
-  // empty copy render at all: while the chase re-fires, `latest.loading` is pinned true and the band
-  // stays on "Looking for posts with this tag…" forever.
-  const topicStalled = topic !== null && stalled(latest.page);
+  // legitimately hand back an EMPTY page plus a live cursor, which is what starts the auto-loading tail
+  // walking the cursor down to post id 0 to append nothing. /explore used to carry its own guard for
+  // exactly this, on exactly these two axes. It now lives in Timeline (`lastPage` → lib/feed/tail.ts),
+  // where the moderation filter is — so it covers Home, profile and /lists too, and covers the block/hide
+  // axis this surface's copy never could. Passing `page.posts` down is the whole wiring.
 
   return (
     <>
@@ -610,13 +593,16 @@ function ExploreView() {
             handlers={handlers}
             loading={latestLoading}
             error={latest.error}
-            hasMore={topicStalled ? false : latest.hasNextPage}
-            onLoadMore={topicStalled ? undefined : latest.loadMore}
+            hasMore={latest.hasNextPage}
+            onLoadMore={latest.loadMore}
             loadingMore={latest.loading}
-            paginationCapable={topicStalled ? false : paginationCapable}
+            paginationCapable={paginationCapable}
+            lastPage={latest.page?.posts ?? null}
             emptyVariant="feed"
             emptyTitle={
-              topic !== null ? `No recent posts tagged #${topic}` : `No results for "${committedQ}"`
+              topic !== null
+                ? `No recent posts tagged #${topic}`
+                : `No results for "${sanitizeInline(committedQ)}"`
             }
             emptyDescription={
               topic !== null
@@ -636,8 +622,9 @@ function ExploreView() {
     // in id and a rank is not, so "load more" would interleave and duplicate rows; and the load-more /
     // refresh merge ends in a sort by id, which would silently dissolve the ranking back into recency —
     // reading to the user as a broken control rather than a design limit. One window, no pagination.
-    const ranked = isRanked(sort);
-    const frozen = ranked || lensStalled;
+    // A ranked window still must not paginate — that is about ORDER, not about suppression, so it stays
+    // here rather than moving into the tail decision.
+    const frozen = isRanked(sort);
     // The lens copy must not claim a scan happened where none did: DISCONNECTED mounts this same tree
     // with no source and an always-empty array.
     const lensEmpty = lens !== null && source != null;
@@ -653,6 +640,7 @@ function ExploreView() {
         onLoadMore={frozen ? undefined : firehose.loadMore}
         loadingMore={firehose.loading}
         paginationCapable={frozen ? false : paginationCapable}
+        lastPage={firehose.page?.posts ?? null}
         emptyVariant="feed"
         emptyTitle={lensEmpty ? "Nothing from these accounts yet" : "Nothing here yet"}
         emptyDescription={

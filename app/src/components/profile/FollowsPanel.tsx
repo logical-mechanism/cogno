@@ -17,6 +17,7 @@ import { useBlockedSet } from "@/lib/blockStore";
 import { handleOf } from "@/lib/ss58";
 import type { FeedSource } from "@/lib/feed/source";
 import { readErrorCopy } from "@/lib/chain/errors";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { Ss58, Viewer } from "@/components/kit";
 
 export type FollowsSide = "followers" | "following";
@@ -79,7 +80,7 @@ export function FollowsPanel({
 
   // A blocked account is hard-suppressed everywhere it would appear — including as a Followers / Following
   // row on any profile (block = never display their content or interactions).
-  const blocked = useBlockedSet(viewer.address ?? null);
+  const blocked = useBlockedSet(viewerBucket(viewer));
   const all = side === "followers" ? (edges?.followers ?? []) : (edges?.following ?? []);
   const people = all.filter((a) => !blocked.has(a));
   const handle = handleOf(address);
@@ -138,6 +139,10 @@ export function FollowsPanel({
 
       <div id="cg-follows-panel" role="tabpanel" aria-labelledby={`cg-follows-tab-${side}`}>
         <FollowsList
+          // Re-key per side: FollowsList grows its own render window on demand, and switching
+          // Followers ↔ Following only re-slices `people` here — without this, an expanded window
+          // would carry over and mount hundreds of rows for the other side unasked.
+          key={side}
           people={people}
           viewer={viewer}
           loading={loading && !edges}

@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { compareNotifs, loadNotifications, MAX_MY_POSTS, orderNotifs, type Notif } from "./notifications";
-import type { Ss58 } from "@/lib/types";
+import type { FeedQuery, Ss58 } from "@/lib/types";
+import type { FeedSource } from "@/lib/feed/source";
+
+/** A real, checksum-valid address: the mention filter re-parses every hit. */
+const ME = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY" as Ss58;
 
 const like = (actor: string, key = `like:1:${actor}`): Notif => ({ key, kind: "like", actor });
 const reply = (actor: string, at: number, id: string): Notif => ({
@@ -95,6 +99,36 @@ describe("loadNotifications — the viewer's post-id window", () => {
     // ids, so the highest seqs are the newest posts.
     expect(seqs[0]).toBe(200 - MAX_MY_POSTS);
     expect(seqs[seqs.length - 1]).toBe(199);
+  });
+
+  it("does not turn a bare ss58 in a post body into a 'mentioned you'", async () => {
+    // F12. Every case above passes `source: null`, so the mention branch was dead code under test.
+    // The node's scan is a raw-byte, ASCII-CASE-INSENSITIVE substring match, so a body that merely
+    // CONTAINS the address — a pasted permalink, an explorer URL, a case-mangled copy — came back as a
+    // hit and was pushed as a mention this app would never render as one.
+    const { api } = apiWithPostIds([]);
+    const seen: FeedQuery[] = [];
+    const source = {
+      page: (q: FeedQuery) => {
+        seen.push(q);
+        return Promise.resolve({
+          posts: [
+            // bare address, no `@` — prose, not a mention
+            { id: 1n, author: "them", text: `see ${ME} for details`, at: 10 },
+            // case-mangled: matches the node's ASCII-insensitive scan, fails the checksum
+            { id: 2n, author: "them", text: `@${ME.toLowerCase()}`, at: 11 },
+            // the real thing
+            { id: 3n, author: "them", text: `hey @${ME}`, at: 12 },
+          ],
+          endCursor: null,
+          hasNextPage: false,
+        });
+      },
+    } as unknown as FeedSource;
+
+    const out = await loadNotifications(api, source, ME);
+    expect(seen[0]?.search).toBe(`@${ME}`); // the needle is the rendered form, not the bare address
+    expect(out.notifs.filter((n) => n.kind === "mention").map((n) => n.postId)).toEqual([3n]);
   });
 
   it("degrades to an empty scan rather than throwing when the counter read fails", async () => {

@@ -24,11 +24,12 @@ import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useHiddenList, hiddenActionsFor } from "@/lib/hiddenStore";
 import { sanitizeInline } from "@/lib/sanitize";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { CognoPost } from "@/lib/types";
 
 export function HiddenSection() {
   const { source, viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const hiddenIds = useHiddenList(me);
   const idsKey = useMemo(() => hiddenIds.map(String).sort().join(","), [hiddenIds]);
 
@@ -159,7 +160,15 @@ export function HiddenSection() {
         if (post) {
           return (
             <div key={String(id)} className={styles.row}>
-              <Link href={`/post/${post.id}/`} className={styles.link} aria-label="Open hidden post">
+              {/* prefetch off: this row exists BECAUSE the viewer hid the post. A viewport prefetch would
+                  put `/post/<id>` in the relay's access log against their IP without them opening it —
+                  the one page on the site where that is most obviously wrong. */}
+              <Link
+                href={`/post/${post.id}/`}
+                className={styles.link}
+                aria-label="Open hidden post"
+                prefetch={false}
+              >
                 <Avatar address={post.author} src={post.authorAvatar} size="md" name={post.authorDisplayName} />
                 <span className={styles.who}>
                   <Handle address={post.author} />
@@ -177,7 +186,12 @@ export function HiddenSection() {
         if (loading) return null; // still resolving this id — don't flash a fallback row prematurely
         return (
           <div key={String(id)} className={styles.row}>
-            <Link href={`/post/${id}/`} className={styles.link} aria-label="Open hidden post">
+            <Link
+              href={`/post/${id}/`}
+              className={styles.link}
+              aria-label="Open hidden post"
+              prefetch={false}
+            >
               <span className={styles.who}>
                 <span className={styles.fallback}>Couldn&apos;t load post #{String(id)}</span>
               </span>

@@ -34,7 +34,14 @@ import { useSession, useBestBlock } from "@/components/Providers";
 import { useThread } from "@/hooks/useThread";
 import { useComposerGate } from "@/hooks/useComposerGate";
 import { useComposeWrite } from "@/hooks/useComposeWrite";
-import { loadPostDraft, savePostDraft, clearPostDraft } from "@/lib/composerDraftStore";
+import {
+  loadPostDraft,
+  savePostDraft,
+  clearPostDraft,
+  EMPTY_DRAFT,
+  type PostDraft,
+} from "@/lib/composerDraftStore";
+import type { MentionRef } from "@/lib/mentions";
 import {
   submitPost,
   submitReply,
@@ -43,6 +50,7 @@ import {
   resolveCloseAt,
 } from "@/lib/chain/mutations";
 import { useToaster } from "@/components/toast/ToasterProvider";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
 import type { CognoPost, PollKindName, GovActionType } from "@/lib/types";
 
@@ -69,7 +77,7 @@ export function ComposePage() {
   const { api, signer, source, viewer } = useSession();
   // The draft is bucketed per account (null = the signed-out bucket), so a shared browser never hands
   // one account the previous one's unsent words.
-  const draftWho = viewer.address ?? null;
+  const draftWho = viewerBucket(viewer);
   // `draftWho` is read through a REF in the SAVE effect below, deliberately. Keying that effect on it
   // would fire a save on an account switch while `text` still holds the PREVIOUS account's words — 
   // writing them straight into the new account's bucket, the exact leak the bucketing exists to stop.
@@ -113,8 +121,19 @@ export function ComposePage() {
   // Controlled text so the capacity gate measures the live draft (and a rollback can restore it).
   // Hydrate the persisted post draft on mount — but ONLY for a plain-post compose (gated on the stable
   // `mode`, not effectiveMode), so a reply/quote deep-link never leaks the saved post text into its
-  // capacity gate. Client-only render behind Suspense, so the lazy initializer is safe.
-  const [text, setText] = useState(() => (mode === "post" ? loadPostDraft(draftWho) : ""));
+  // capacity gate. Client-only render behind Suspense, so reading storage during render is safe.
+  //
+  // The null sentinel is what makes it a ONE-TIME read. `useRef(expr)` evaluates `expr` on EVERY render
+  // and throws all but the first result away, so passing the load call directly ran a synchronous
+  // `localStorage.getItem` + `JSON.parse` of the draft envelope on every keystroke in the composer.
+  const initialDraft = useRef<PostDraft | null>(null);
+  if (initialDraft.current === null) {
+    initialDraft.current = mode === "post" ? loadPostDraft(draftWho) : EMPTY_DRAFT;
+  }
+  const [text, setText] = useState(() => initialDraft.current!.text);
+  // The mention registry for `text`, persisted with it. Restoring text WITHOUT its bindings meant a
+  // restored `@Bob` serialized to the literal `@Bob` and posted unbound, permanently.
+  const [mentions, setMentions] = useState<MentionRef[]>(() => initialDraft.current!.mentions);
   // An in-place account switch swaps which bucket the draft lives in — re-seed from the new one, but
   // FLUSH the in-flight words to the account they were typed under first. `viewer.address` also moves
   // when a session restore lands a beat after a guest started typing, and re-seeding alone silently
@@ -128,14 +147,18 @@ export function ComposePage() {
   // `text` is read through a ref so this effect does not re-run on every keystroke.
   const textRef = useRef(text);
   textRef.current = text;
+  const mentionsRef = useRef(mentions);
+  mentionsRef.current = mentions;
   const seededForRef = useRef(draftWho);
   useEffect(() => {
     const prevWho = seededForRef.current;
     if (prevWho === draftWho) return;
     seededForRef.current = draftWho;
     if (mode !== "post") return; // reply/quote never hold the post draft — nothing to move or re-seed
-    if (draftWho !== null) savePostDraft(prevWho, textRef.current);
-    setText(loadPostDraft(draftWho));
+    if (draftWho !== null) savePostDraft(prevWho, textRef.current, mentionsRef.current);
+    const d = loadPostDraft(draftWho);
+    setText(d.text);
+    setMentions(d.mentions);
   }, [draftWho, mode]);
   // The SERIALIZED post body (mention `@name` tokens expanded to `@<ss58>`), reported up by the base
   // Composer, so the capacity gate counts the real posted length — a mention is ~48 bytes, not `@name`.
@@ -150,8 +173,8 @@ export function ComposePage() {
   // savePostDraft("") — whose empty branch removeItem()s the key — silently WIPING an unrelated saved
   // draft. mode==="post" never fires for a reply/quote deep link, so the saved draft is preserved.
   useEffect(() => {
-    if (mode === "post") savePostDraft(draftWhoRef.current, text);
-  }, [mode, text]);
+    if (mode === "post") savePostDraft(draftWhoRef.current, text, mentions);
+  }, [mode, text, mentions]);
 
   // ── Capacity gate, shared with every other composing surface — see useComposerGate. Profile
   //    is irrelevant; every write here is feeless + capacity-metered, so capacity is the only gate.
@@ -314,6 +337,8 @@ export function ComposePage() {
             submitState={submitState}
             text={text}
             onTextChange={setText}
+            mentions={mentions}
+            onMentionsChange={setMentions}
             onSerializedChange={setSerialized}
             rateLimited={rateLimited}
             retryInSeconds={retryInSeconds}
@@ -350,6 +375,8 @@ export function ComposePage() {
                 submitState={submitState}
                 text={text}
                 onTextChange={setText}
+                mentions={mentions}
+                onMentionsChange={setMentions}
                 onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
                 retryInSeconds={retryInSeconds}
@@ -383,6 +410,8 @@ export function ComposePage() {
                 submitState={submitState}
                 text={text}
                 onTextChange={setText}
+                mentions={mentions}
+                onMentionsChange={setMentions}
                 onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
                 retryInSeconds={retryInSeconds}

@@ -15,6 +15,7 @@ import { NotificationRow } from "@/components/notifications/NotificationRow";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useSession } from "@/components/Providers";
 import styles from "./page.module.css";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 type NotifTab = "all" | "mentions";
 
@@ -31,7 +32,7 @@ const PANEL_ID = "cg-notifications-panel";
 export default function NotificationsPage() {
   const feed = useNotificationsFeed();
   const { viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const [tab, setTab] = useState<NotifTab>("all");
 
   // `highlighted` = the keys drawn with the unread wash. Gate the arming on `loaded` — NOT `!loading` —

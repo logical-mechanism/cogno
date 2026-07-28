@@ -15,10 +15,11 @@ import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useBlockedList, blockActionsFor } from "@/lib/blockStore";
 import { handleOf } from "@/lib/ss58";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export function BlockedSection() {
   const { viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const blocked = useBlockedList(me);
 
   if (blocked.length === 0) {

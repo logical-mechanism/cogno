@@ -27,9 +27,9 @@ export const EMPTY_READ_STATE: ReadState = { readThrough: 0, firstSeen: {} };
 
 // Safety cap so firstSeen can't grow without bound across months of activity. Set well above any single
 // fold's size (per-post votes/replies + followers are unbounded on a viral account) so eviction is
-// unreachable at realistic scale; when it does fire it drops READ entries FIRST (see withSeen), since
-// dropping a still-unread key would make it reappear as unread on the next fold. (The scalable fix is
-// the deferred on-chain reverse-index; this store is a device-local badge only.)
+// unreachable at realistic scale; when it does fire it drops UNREAD entries first — see `withSeen`,
+// which is where the reasoning lives, because the intuitive rule is the wrong way round. (The scalable
+// fix is the deferred on-chain reverse-index; this store is a device-local badge only.)
 const MAX_TRACKED = 10000;
 
 // ── pure helpers (unit-tested; no localStorage / no clock) ───────────────────────────────────────
@@ -56,8 +56,11 @@ export function parseReadState(raw: string | null): ReadState {
 
 export const serializeReadState = (s: ReadState): string => JSON.stringify(s);
 
-/** Record `now` as the first-seen for any `ids` not already tracked. Returns the SAME ref when nothing
- *  is new (so useSyncExternalStore never churns a re-render). Evicts the oldest past MAX_TRACKED. */
+/**
+ * Record `now` as the first-seen for any `ids` not already tracked. Returns the SAME ref when nothing is
+ * new (so useSyncExternalStore never churns a re-render). Evicts past MAX_TRACKED, UNREAD-first — see
+ * the note inside, which is the whole subtlety of this function.
+ */
 export function withSeen(state: ReadState, ids: string[], now: number): ReadState {
   let changed = false;
   const firstSeen = { ...state.firstSeen };
@@ -71,15 +74,23 @@ export function withSeen(state: ReadState, ids: string[], now: number): ReadStat
   const keys = Object.keys(firstSeen);
   const over = keys.length - MAX_TRACKED;
   if (over > 0) {
-    // Evict READ entries first (first-seen at/before the read cursor), oldest-first: dropping an UNREAD
-    // key would re-stamp it as unread on the next fold. Only if there aren't enough read entries to
-    // reclaim (a pathological all-unread flood) do we drop the oldest unread ones too.
+    // Evict UNREAD entries first, oldest-first. This is the opposite of what it used to do, and the
+    // reason is that eviction is not forgetting: the fold re-derives the SAME permanent chain keys
+    // every couple of minutes, so anything dropped here comes straight back and `withSeen` re-stamps
+    // it at `now`, which is by definition after the read cursor.
+    //
+    //   an evicted UNREAD key returns as unread — it already was, so nothing is lost but its position;
+    //   an evicted READ key returns as UNREAD — a notification the reader has already dismissed comes
+    //   back, and no amount of dismissing makes it stay gone.
+    //
+    // So the read entries are the ones worth keeping, and only a pathological flood of unread ones
+    // (more than MAX_TRACKED at once) should reach them at all.
     const oldestFirst = (a: string, b: string) => firstSeen[a] - firstSeen[b];
-    const read = keys.filter((k) => firstSeen[k] <= state.readThrough).sort(oldestFirst);
-    const drop = read.slice(0, over);
+    const unread = keys.filter((k) => firstSeen[k] > state.readThrough).sort(oldestFirst);
+    const drop = unread.slice(0, over);
     if (drop.length < over) {
-      const unread = keys.filter((k) => firstSeen[k] > state.readThrough).sort(oldestFirst);
-      drop.push(...unread.slice(0, over - drop.length));
+      const read = keys.filter((k) => firstSeen[k] <= state.readThrough).sort(oldestFirst);
+      drop.push(...read.slice(0, over - drop.length));
     }
     for (const k of drop) delete firstSeen[k];
   }

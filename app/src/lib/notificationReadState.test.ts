@@ -39,8 +39,13 @@ describe("withSeen", () => {
   });
 });
 
-describe("withSeen eviction prefers READ entries (never re-flips unread items)", () => {
-  it("drops read entries first when over the cap, preserving all unread keys", () => {
+// F18. Eviction here is not forgetting: the fold re-derives the SAME permanent chain keys every couple
+// of minutes, so whatever is dropped comes straight back and `withSeen` re-stamps it at `now`, which is
+// after the read cursor by definition. That makes an evicted READ key return as UNREAD — a dismissed
+// notification the reader can never make stay gone. An evicted UNREAD key returns as unread, which it
+// already was. So unread entries are the ones to drop, and the code (and its comment) said the reverse.
+describe("withSeen eviction prefers UNREAD entries (a dismissed item stays dismissed)", () => {
+  it("drops unread entries first when over the cap, preserving every read key", () => {
     // 9600 READ entries (first-seen 100, cursor 200) + enough NEW unread to cross MAX_TRACKED (10000).
     const firstSeen: Record<string, number> = {};
     for (let i = 0; i < 9600; i++) firstSeen[`r${i}`] = 100;
@@ -48,12 +53,38 @@ describe("withSeen eviction prefers READ entries (never re-flips unread items)",
     const newUnread = Array.from({ length: 800 }, (_, i) => `u${i}`); // 9600 + 800 = 10400 → evict 400
 
     const next = withSeen(base, newUnread, 300);
-    const keys = Object.keys(next.firstSeen);
-    expect(keys.length).toBe(10000); // capped
-    // Every newly-seen (unread) key survives — none were evicted.
-    for (const u of newUnread) expect(next.firstSeen[u]).toBe(300);
-    // The 400 evicted keys are all READ ones; unread count is exactly the 800 new items.
-    expect(countUnread(next)).toBe(800);
+    expect(Object.keys(next.firstSeen).length).toBe(10000); // capped
+    // Every READ key survives — none were evicted.
+    for (let i = 0; i < 9600; i++) expect(next.firstSeen[`r${i}`]).toBe(100);
+    // The 400 evicted keys are the oldest unread ones; 400 of the 800 new items remain.
+    expect(countUnread(next)).toBe(400);
+  });
+
+  it("an evicted key that comes back on the NEXT fold is not unread if it had been read", () => {
+    // THE assertion. One `withSeen` call cannot see this — the defect only appears on the SECOND
+    // fold, when the same permanent chain keys are re-supplied. This failed before the inversion.
+    const firstSeen: Record<string, number> = {};
+    for (let i = 0; i < 9600; i++) firstSeen[`r${i}`] = 100;
+    const base: ReadState = { readThrough: 200, firstSeen };
+    const allKeys = Object.keys(firstSeen);
+    const newUnread = Array.from({ length: 800 }, (_, i) => `u${i}`);
+
+    const afterEviction = withSeen(base, newUnread, 300);
+    // The fold runs again ~2 minutes later and hands back EVERY key it derives from the chain.
+    const refolded = withSeen(afterEviction, [...allKeys, ...newUnread], 400);
+
+    for (const k of allKeys) expect(isUnread(refolded, k)).toBe(false);
+  });
+
+  it("falls back to read entries only when the unread flood alone cannot cover the overflow", () => {
+    // A pathological all-unread flood: there is nothing else to reclaim, so read entries do go.
+    const firstSeen: Record<string, number> = {};
+    for (let i = 0; i < 500; i++) firstSeen[`r${i}`] = 100;
+    const base: ReadState = { readThrough: 200, firstSeen };
+    const flood = Array.from({ length: 10_000 }, (_, i) => `u${i}`); // 500 + 10000 → evict 500
+
+    const next = withSeen(base, flood, 300);
+    expect(Object.keys(next.firstSeen).length).toBe(10_000);
   });
 });
 

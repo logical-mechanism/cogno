@@ -36,6 +36,16 @@ export interface UseLiveFeed {
   error: string | null;
   /** A further (older) page exists — drives the load-more tail. */
   hasMore: boolean;
+  /**
+   * The RAW posts of the page that landed most recently (the cold seed, then each `loadMore` page).
+   * `null` until one lands, and untouched by the liveness bridge / the silent refresh, which are not
+   * steps down the cursor.
+   *
+   * Timeline filters it with its own moderation predicate to decide whether the tail may keep
+   * auto-loading — see lib/feed/tail.ts. Handing down the raw page rather than a count is what keeps
+   * that decision on the same side of the filter as the rows on screen.
+   */
+  lastPage: CognoPost[] | null;
   loadingMore: boolean;
   loadMore: () => void;
   /** New posts (from others) waiting behind the "N new posts" pill. */
@@ -77,6 +87,8 @@ export function useLiveFeed(
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // The raw posts of the page that landed most recently — the tail's per-page guard (lib/feed/tail.ts).
+  const [lastPage, setLastPage] = useState<CognoPost[] | null>(null);
   // `ready` reachable inside `refresh`'s async `.then` without adding it to the callback's deps (which
   // would re-key the Home-reset subscription each time it flips). Only used to detect a failed cold seed.
   const readyRef = useRef(ready);
@@ -153,6 +165,7 @@ export function useLiveFeed(
     bufferedIds.current = new Set();
     setBuffered([]);
     setError(null);
+    setLastPage(null);
     // The epoch bump above orphans any in-flight load-more, and its `.finally` is epoch-gated — so
     // without this, a source change mid-load-more leaves `loadingMore` true forever and `loadMore`
     // dead-returns on its own guard for the rest of the session.
@@ -225,6 +238,7 @@ export function useLiveFeed(
           setHead(h);
           pg.posts.forEach((p) => loadedIds.current.add(String(p.id)));
           setLoaded(pg.posts);
+          setLastPage(pg.posts);
           setCursor(pg.endCursor);
           setReady(true);
         })
@@ -293,6 +307,7 @@ export function useLiveFeed(
         if (epochRef.current !== epoch) return; // the source changed mid-flight — drop the stale page
         pg.posts.forEach((p) => loadedIds.current.add(String(p.id)));
         setLoaded((prev) => mergeById(prev, pg.posts));
+        setLastPage(pg.posts);
         setCursor(pg.endCursor);
       })
       .catch((e: unknown) => {
@@ -425,6 +440,7 @@ export function useLiveFeed(
     ready,
     error,
     hasMore: cursor != null,
+    lastPage,
     loadingMore,
     loadMore,
     newCount,

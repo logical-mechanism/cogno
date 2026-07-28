@@ -39,4 +39,34 @@ export default defineConfig([
       "react-hooks/refs": "off",
     },
   },
+  {
+    // Bucket-key derivation divergence — the class, not the instance.
+    //
+    // Every device-local store is keyed `<prefix>:<who>`, with `<prefix>:anon` when `who` is null. The
+    // store is therefore only as correct as the `who` each caller derives, and thirty-one call sites
+    // derived it by hand. Three of them wrote `gate.status === "ready" ? (gate.address ?? null) : null`
+    // where the other twenty-eight wrote the bare `viewer.address ?? null`, and the two disagree for
+    // the whole window before the CIP-8 bind resolves — so those three read `cg-blocked:anon` while
+    // every other surface wrote `cg-blocked:<ss58>`. A block landed, a toast confirmed it, and the row
+    // came back.
+    //
+    // `lib/viewerBucket.ts` fixes the three; THIS is what stops the thirty-second. It is deliberately a
+    // syntax ban rather than a type-level one: both expressions typecheck, and both are individually
+    // reasonable — `status === "ready"` is the correct guard for a write AFFORDANCE. What is never
+    // correct is gating an ADDRESS on it, because that turns "we haven't resolved the bind yet" into
+    // "this is a different person's device state".
+    name: "cogno/viewer-bucket-derivation",
+    ignores: ["src/lib/viewerBucket.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "ConditionalExpression[test.type='BinaryExpression'][test.left.property.name='status'][test.right.value='ready']:has(MemberExpression[property.name='address'])",
+          message:
+            "Do not gate a viewer address on `status === \"ready\"` — that derives a DIFFERENT device-local bucket key while the CIP-8 bind is still resolving. Use `viewerBucket(viewer)` from @/lib/viewerBucket. (`status === \"ready\"` is still the right guard for a write affordance; just not for an address.)",
+        },
+      ],
+    },
+  },
 ]);

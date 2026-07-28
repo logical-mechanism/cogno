@@ -56,9 +56,9 @@ export function ProposalTitle({
     if (!eager || !anchorUrl) return;
     let cancelled = false;
     const run = () => {
-      // Eager path: refuse redirects so a neutral gateway can't be bounced to an author-controlled host and
-      // leak this reader's IP on scroll (see resolveProposal / proposalMeta).
-      resolveProposal(anchorUrl, { noRedirect: true })
+      // Eager path: no opts, because refusing redirects is now the DEFAULT. A neutral gateway must not be
+      // followable to an author-controlled host that would then hold this reader's IP (see proposalMeta).
+      resolveProposal(anchorUrl)
         .then((m) => {
           if (cancelled) return;
           setState(!m ? { kind: "failed" } : m.title ? { kind: "title", text: m.title } : { kind: "no-title" });

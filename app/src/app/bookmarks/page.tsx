@@ -25,12 +25,13 @@ import { useFollow } from "@/hooks/useFollow";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { useBookmarkList } from "@/lib/bookmarkStore";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { CognoPost } from "@/lib/types";
 
 export default function BookmarksPage() {
   const router = useRouter();
   const { api, signer, source, viewer, votingPower } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
 
   // The saved id set (bigint[]) from localStorage; an order-independent string key drives the resolve
   // effect so a referentially-new-but-equal list doesn't refetch.

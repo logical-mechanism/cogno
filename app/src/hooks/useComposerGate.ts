@@ -18,6 +18,7 @@ import { useMemo } from "react";
 import { useSession, useBestBlock } from "@/components/Providers";
 import { useCapacity } from "./useCapacity";
 import { draftStatus, SECS_PER_BLOCK } from "@/lib/chain/capacity";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export interface ComposerGate {
   /** The draft cannot be posted right now (bucket exhausted / charging) → disable the CTA + notice. */
@@ -54,7 +55,7 @@ export interface ComposerGate {
 export function useComposerGate(gateText: string): ComposerGate {
   const { api, viewer, identity } = useSession();
   const bestBlock = useBestBlock();
-  const { view, consts } = useCapacity(api, viewer.address ?? null, bestBlock);
+  const { view, consts } = useCapacity(api, viewerBucket(viewer), bestBlock);
 
   const rateLimited = useMemo(() => {
     if (viewer.status !== "ready" || !view || !consts) return false;

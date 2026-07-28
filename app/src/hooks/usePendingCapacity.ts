@@ -15,7 +15,13 @@
 
 import { useEffect, useState } from "react";
 import type { CognoApi } from "@/lib/types";
-import { usePendingLock, pendingLockActions } from "@/lib/pendingLockStore";
+import {
+  usePendingLock,
+  pendingLockActions,
+  shouldClearPendingLock,
+  pendingLockCreditIndeterminate,
+  CONFIRM_TIMEOUT_MS,
+} from "@/lib/pendingLockStore";
 import { readObserverConfig, slotToUnixSec, type ObserverConfig } from "@/lib/chain/observer";
 import { fetchTxSlot } from "@/lib/cardano/provider";
 
@@ -24,9 +30,9 @@ import { fetchTxSlot } from "@/lib/cardano/provider";
 // avoids a false "stuck" while it is genuinely finishing.
 const OVERDUE_GRACE_MS = 3 * 60 * 1000;
 const CONFIRM_POLL_MS = 15_000;
-// If the lock tx's Cardano slot never resolves (Blockfrost can't return it on this tier, or the tx
-// never confirmed), don't sit in "confirming" forever — fall to the "overdue" nudge with a dismiss.
-const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
+// CONFIRM_TIMEOUT_MS lives in pendingLockStore beside `shouldClearPendingLock`, which is its other
+// consumer: if the lock tx's Cardano slot never resolves (Blockfrost can't return it on this tier, or
+// the tx never confirmed), don't sit in "confirming" forever — fall to the "overdue" nudge + dismiss.
 
 export type PendingCapacityStatus =
   | { kind: "none" }
@@ -61,6 +67,9 @@ export function usePendingCapacity(
 ): PendingCapacityStatus {
   const record = usePendingLock(ss58);
   const pending = !!record;
+  // Ticks once a second while a lock is pending (the countdown, the confirm/overdue timeouts, AND the
+  // clear decision below — sharing one clock is what stops the record and the rendered status drifting).
+  const now = useNowTick(record ? 1000 : null);
 
   const [cfg, setCfg] = useState<ObserverConfig | null>(null);
   const [frontier, setFrontier] = useState<bigint | null>(null);
@@ -113,12 +122,18 @@ export function usePendingCapacity(
     return () => sub.unsubscribe();
   }, [api, pending]);
 
-  // Credited → drop the pending record (AllowedStake > 0 is the authoritative "you can post" signal).
+  // Credited → drop the pending record. The rule is `shouldClearPendingLock` (lib/pendingLockStore):
+  // a positive AllowedStake is only ABOUT this lock once the observer has read past the lock's slot.
+  // Clearing on a bare `> 0` destroyed a just-written record whenever the weight was still the PRIOR
+  // lock's — the exit-then-relock window — and left the app telling someone who had just locked
+  // 100 ADA that they had none. It is fixed here rather than at the call sites because there are five,
+  // and the fifth (NoPostingPowerNotice, via useCapacity) is the one that renders the false claim.
   useEffect(() => {
-    if (ss58 && record && allowedStake != null && allowedStake > 0n) {
+    if (!ss58 || !record) return;
+    if (shouldClearPendingLock({ record, allowedStake, frontier, nowMs: now })) {
       pendingLockActions.clear(ss58);
     }
-  }, [ss58, record, allowedStake]);
+  }, [ss58, record, allowedStake, frontier, now]);
 
   // Resolve the lock tx's Cardano slot once it confirms in a block (poll Blockfrost until it lands).
   const recordTx = record?.txHash;
@@ -141,14 +156,21 @@ export function usePendingCapacity(
     };
   }, [ss58, recordTx, haveSlot]);
 
-  // Tick once a second while a lock is pending (drives the countdown + the confirm/overdue timeouts).
-  const now = useNowTick(record ? 1000 : null);
-
   if (!record) return { kind: "none" };
-  if (allowedStake != null && allowedStake > 0n) return { kind: "none" }; // credited; the effect clears the record
+  // Credited AND the credit demonstrably belongs to THIS lock — same rule as the clear effect above, so
+  // the status and the record can never disagree. A stale-positive weight from a prior lock keeps the
+  // pending narration running instead of collapsing it to "all set" and then to "lock ADA".
+  if (shouldClearPendingLock({ record, allowedStake, frontier, nowMs: now })) return { kind: "none" };
+  // "Overdue" is the one status that asserts a NEGATIVE ("this lock still hasn't credited"), and the
+  // frontier is what establishes it. With a positive weight and no frontier the app cannot tell whose
+  // credit that is, so it must not make the claim — it keeps narrating the wait instead, and the next
+  // frontier emission resolves it for real. See `pendingLockCreditIndeterminate`.
+  const cantTell = pendingLockCreditIndeterminate({ record, allowedStake, frontier, nowMs: now });
   if (record.lockSlot == null || !cfg) {
     // Stuck confirming too long → an honest exit (can't compute an ETA without the lock slot).
-    if (now - record.submittedAtMs > CONFIRM_TIMEOUT_MS) return { kind: "overdue", txHash: record.txHash };
+    if (now - record.submittedAtMs > CONFIRM_TIMEOUT_MS && !cantTell) {
+      return { kind: "overdue", txHash: record.txHash };
+    }
     return { kind: "confirming" };
   }
 
@@ -163,8 +185,9 @@ export function usePendingCapacity(
       ? Math.min(1, Math.max(0, (Number(frontier) - record.lockSlot + stability) / stability))
       : Math.min(1, Math.max(0, 1 - etaMs / (stability * 1000)));
 
-  // Well past the expected unlock and still uncredited (and not merely frozen) → an honest exit.
-  if (etaMs < -OVERDUE_GRACE_MS && enforcing) {
+  // Well past the expected unlock and still uncredited (not merely frozen, and actually established) →
+  // an honest exit.
+  if (etaMs < -OVERDUE_GRACE_MS && enforcing && !cantTell) {
     return { kind: "overdue", txHash: record.txHash };
   }
 

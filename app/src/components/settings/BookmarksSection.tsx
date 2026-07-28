@@ -9,11 +9,12 @@ import { useRouter } from "next/navigation";
 import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useBookmarkList } from "@/lib/bookmarkStore";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export function BookmarksSection() {
   const router = useRouter();
   const { viewer } = useSession();
-  const count = useBookmarkList(viewer.address ?? null).length;
+  const count = useBookmarkList(viewerBucket(viewer)).length;
 
   return (
     <EmptyState

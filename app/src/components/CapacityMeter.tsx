@@ -11,6 +11,7 @@ import styles from "./CapacityMeter.module.css";
 import { useSession, useBestBlock } from "./Providers";
 import { useCapacity } from "@/hooks/useCapacity";
 import { postsOf } from "@/lib/chain/capacity";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export function CapacityMeter() {
   const { api, viewer } = useSession();
@@ -18,7 +19,7 @@ export function CapacityMeter() {
   // second subscription re-renders on every block even while the tab is hidden, which is exactly
   // what freezing the shared one is for.
   const bestBlock = useBestBlock();
-  const { view, consts } = useCapacity(api, viewer.address ?? null, bestBlock);
+  const { view, consts } = useCapacity(api, viewerBucket(viewer), bestBlock);
 
   // Only meaningful once bound with a non-zero capacity ceiling (weight > 0). Setup/welcome covers
   // the "add posting power" case, so we don't render an empty meter there.

@@ -63,7 +63,9 @@ export default function GovernancePage() {
             const eligible = eligibleToVote(p.actionType, viewerRoles);
             return (
               <li key={p.hostId.toString()}>
-                <Link href={`/post/${p.hostId}/`} className={styles.row}>
+                {/* prefetch off: the list renders every open poll on arrival, so the default put each
+                    host post id in the relay's access log for a reader who opened none of them. */}
+                <Link href={`/post/${p.hostId}/`} className={styles.row} prefetch={false}>
                   <div className={styles.head}>
                     <span className={styles.action}>{GOV_ACTION_LABEL[p.actionType]}</span>
                     <span className={styles.state} data-state={state}>

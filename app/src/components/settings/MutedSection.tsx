@@ -11,10 +11,11 @@ import { EmptyState } from "@/components/EmptyState";
 import { useSession } from "@/components/Providers";
 import { useMutedList, muteActionsFor } from "@/lib/muteStore";
 import { handleOf } from "@/lib/ss58";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export function MutedSection() {
   const { viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const muted = useMutedList(me);
 
   if (muted.length === 0) {

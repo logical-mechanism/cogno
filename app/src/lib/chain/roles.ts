@@ -34,6 +34,29 @@ export interface ObservedRoleView {
 }
 
 /**
+ * Where the viewer stands on ONE role kind, with "not resolved yet" kept apart from "confirmed none".
+ *
+ * `useRoles` publishes `observed` as `ObservedRoleView[] | null`, where `null` means the live
+ * `ObservedRoles` watch has not answered. RolesSection flattened that with `(roles.observed ?? [])` and
+ * then branched on the first entry, so a VERIFIED SPO or dRep was shown the full "Enter your SPO
+ * verification key" wizard on the ordinary loading path of every Settings open — and permanently
+ * whenever the subscription errored, because the error callback wrote `[]` (a confirmed negative) where
+ * `Providers.tsx` writes `null` for the same read.
+ *
+ * Taking `null` as an input and returning a THREE-state answer is what makes the collapse
+ * unrepresentable: there is no `?? []` to write, because the caller cannot index this.
+ */
+export type RoleStatus = "loading" | "none" | "verified";
+
+export function roleStatusOf(
+  observed: readonly ObservedRoleView[] | null,
+  kind: RoleKindType,
+): RoleStatus {
+  if (observed === null) return "loading";
+  return observed.some((r) => r.kind === kind) ? "verified" : "none";
+}
+
+/**
  * True when a role's display id is the all-zero id — a DEFENSIVE guard, no longer produced on any live
  * path. Every observed SPO now names a real poolID (`blake2b_224(cold pubkey)`, never all-zero): the
  * ownership path always did, and a confirmed Calidus SPO now names the specific live pool whose cold key

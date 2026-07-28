@@ -36,6 +36,7 @@ import { useComposerGate } from "@/hooks/useComposerGate";
 import { useComposeWrite } from "@/hooks/useComposeWrite";
 import { useToaster } from "../toast/ToasterProvider";
 import { errorCopy } from "@/lib/chain/errors";
+import { reconcileMentions, type MentionRef } from "@/lib/mentions";
 import {
   submitPost,
   submitReply,
@@ -45,6 +46,7 @@ import {
   submitSetProfile,
   submitClearProfile,
 } from "@/lib/chain/mutations";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { ComposerDraft, PollDraft, ModalKind } from "../kit";
 import type { CognoPost, PollKindName, GovActionType } from "@/lib/types";
 import type { ProfileFields } from "../EditProfileModal";
@@ -83,7 +85,7 @@ export function ModalRouteHost() {
   const { state, close } = useModalStore();
   const { api, signer, source, viewer } = useSession();
   // The draft is bucketed per account (null = the signed-out bucket) — see lib/composerDraftStore.
-  const draftWho = viewer.address ?? null;
+  const draftWho = viewerBucket(viewer);
   // `draftWho` is read through a REF in the SAVE effect below, deliberately. Keying that effect on it
   // would fire a save on an account switch while `text` still holds the PREVIOUS account's words — 
   // writing them straight into the new account's bucket, the exact leak the bucketing exists to stop.
@@ -102,6 +104,10 @@ export function ModalRouteHost() {
   // Controlled text for the base compose mode so the capacity gate measures the live draft (reply /
   // quote stay uncontrolled — their gate uses the empty-draft base-cost probe, exactly like ComposePage).
   const [text, setText] = useState("");
+  // The mention registry for `text`, persisted with it. Held HERE, not inside the composer, because a
+  // draft restored with its text but without its bindings serializes `@Bob` to the literal `@Bob` and
+  // posts it — permanently, on a chain with no `delete_post`.
+  const [mentions, setMentions] = useState<MentionRef[]>([]);
   // The SERIALIZED compose body (mention `@name` tokens expanded to `@<ss58>`), reported by the base
   // Composer, so the capacity gate counts the real posted length rather than the short display text.
   const [serialized, setSerialized] = useState("");
@@ -112,6 +118,15 @@ export function ModalRouteHost() {
   // the flip is driven by the modal store, so the reset effect below runs on the NEXT render with the
   // new `kind` and would otherwise clobber anything the toggle handler had set.
   const carryRef = useRef<string | null>(null);
+  // The bindings that ride along with `carryRef` on ONE leg of a compose↔poll flip. Consumed and cleared
+  // by the reset effect, exactly like `carryRef`.
+  const carryMentionsRef = useRef<MentionRef[]>([]);
+  // The bindings the CURRENT poll question inherited from the compose draft it was flipped from. This is
+  // what makes the round trip lossless, and it has to be a second ref: the reset effect consumes
+  // `carryMentionsRef` on the way INTO the poll, so without parking them here the flip back had nothing
+  // to hand over and `hey @Bob` returned to the composer as an UNBOUND literal — which `serializeMentions`
+  // then leaves alone, posting the bare `@Bob` permanently on a chain with no `delete_post`.
+  const pollMentionsRef = useRef<MentionRef[]>([]);
 
   const kind = state.kind;
   const targetId = state.targetId ? BigInt(state.targetId) : null;
@@ -180,6 +195,8 @@ export function ModalRouteHost() {
   // every keystroke.
   const textRef = useRef(text);
   textRef.current = text;
+  const mentionsRef = useRef(mentions);
+  mentionsRef.current = mentions;
   useEffect(() => {
     const prevKind = prevKindRef.current;
     const prevWho = prevDraftWhoRef.current;
@@ -198,16 +215,35 @@ export function ModalRouteHost() {
     // that, so sign-out re-seeds from the (now empty) signed-out bucket and the composer clears.
     if (prevKind === kind && prevWho !== draftWho) {
       if (kind === "compose") {
-        if (draftWho !== null) savePostDraft(prevWho, textRef.current);
-        setText(loadPostDraft(draftWho));
+        if (draftWho !== null) savePostDraft(prevWho, textRef.current, mentionsRef.current);
+        const d = loadPostDraft(draftWho);
+        setText(d.text);
+        setMentions(d.mentions);
       }
       return;
     }
 
     const carried = carryRef.current;
+    const carriedMentions = carryMentionsRef.current;
     carryRef.current = null;
+    carryMentionsRef.current = [];
+    // Park the incoming bindings for the poll leg so `toCompose` can hand them back; every other open
+    // (a fresh compose, reply, quote, close) starts the poll registry empty.
+    pollMentionsRef.current = kind === "poll" ? carriedMentions : [];
     setSubmitState("idle");
-    setText(kind === "compose" ? (carried ?? loadPostDraft(draftWho)) : "");
+    if (kind === "compose") {
+      if (carried !== null) {
+        setText(carried);
+        setMentions(carriedMentions);
+      } else {
+        const d = loadPostDraft(draftWho);
+        setText(d.text);
+        setMentions(d.mentions);
+      }
+    } else {
+      setText("");
+      setMentions([]);
+    }
     setSerialized(""); // the base Composer re-reports on mount; reply/quote leave it "" (base-cost gate)
     setConfirmDiscard(false);
     composerDirtyRef.current = false;
@@ -216,10 +252,11 @@ export function ModalRouteHost() {
     // cannot re-run this effect.
   }, [kind, draftWho, setSubmitState]);
 
-  // Persist the plain-compose draft as it changes (savePostDraft removes the key when it's empty).
+  // Persist the plain-compose draft as it changes (savePostDraft removes the key when it's empty). The
+  // registry rides along: text without bindings is a draft that posts `@Bob` as a literal.
   useEffect(() => {
-    if (kind === "compose") savePostDraft(draftWhoRef.current, text);
-  }, [kind, text]);
+    if (kind === "compose") savePostDraft(draftWhoRef.current, text, mentions);
+  }, [kind, text, mentions]);
 
   // Pre-flight capacity gate (shared with every other composing surface — see useComposerGate).
   // Non-poll compose measures the SERIALIZED body (mention tokens count as their ss58 length); reply /
@@ -255,11 +292,18 @@ export function ModalRouteHost() {
   // able to ask for it. Each direction hands its in-flight words to the other (see `carryRef`).
   const toPoll = useCallback(() => {
     carryRef.current = text;
+    carryMentionsRef.current = mentions;
     modalActions.openPoll();
-  }, [text]);
+  }, [text, mentions]);
 
   const toCompose = useCallback(() => {
     carryRef.current = pollDraft.question;
+    // Hand back the bindings the question inherited, MINUS any whose `@name` token the user edited out
+    // while it was a poll. The poll composer runs no mention autocomplete, so it can only ever lose
+    // tokens, never add one — and `reconcileMentions` is the same prune the composer applies on every
+    // keystroke. A token that survived the round trip comes back bound to the account that was actually
+    // picked; one that did not degrades to plain text rather than binding an account the user never chose.
+    carryMentionsRef.current = reconcileMentions(pollMentionsRef.current, pollDraft.question, null);
     modalActions.openCompose();
   }, [pollDraft.question]);
 
@@ -504,6 +548,8 @@ export function ModalRouteHost() {
           retryInSeconds={retryInSeconds}
           text={text}
           onTextChange={setText}
+          mentions={mentions}
+          onMentionsChange={setMentions}
           onSerializedChange={setSerialized}
           autoFocus
           onSubmit={onPost}
@@ -539,6 +585,8 @@ export function ModalRouteHost() {
             retryInSeconds={retryInSeconds}
             text={text}
             onTextChange={setText}
+            mentions={mentions}
+            onMentionsChange={setMentions}
             onSerializedChange={setSerialized}
             autoFocus
             onSubmit={onPost}

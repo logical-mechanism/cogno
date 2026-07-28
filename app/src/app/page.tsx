@@ -48,6 +48,7 @@ import { useToaster } from "@/components/toast/ToasterProvider";
 import { submitPost } from "@/lib/chain/mutations";
 import { scrollToTop } from "@/lib/scroll";
 import { subscribeHomeReset } from "@/lib/homeSignal";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { CognoPost, FeedQuery } from "@/lib/types";
 import type { ActionState, ComposerDraft } from "@/components/kit";
 
@@ -56,7 +57,7 @@ export default function HomePage() {
   const { api, signer, source, viewer, votingPower } = useSession();
   const bestBlock = useBestBlock();
 
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const canFollow = source != null;
   const paginationCapable = source != null;
 
@@ -235,12 +236,25 @@ export default function HomePage() {
     else modalActions.openCompose();
   }, [viewer.writeReady, router]);
 
+  // Both loading gates are measured POST-moderation, on the same side of the filter as the rows the
+  // reader will actually see. Counting the RAW list lied in the direction that matters: a first page
+  // whose every post is by a blocked author is `length === 50` raw and `0` visible, so the gate said
+  // "not loading" while the read was still in flight and Timeline rendered "Nothing here yet" over a
+  // feed that had not finished arriving.
+  const visibleForYouCount = useMemo(
+    () => homeMod.filterPosts(displayedForYou).length,
+    [homeMod, displayedForYou],
+  );
+  const visibleFollowingCount = useMemo(
+    () => homeMod.filterPosts(followingPage.posts).length,
+    [homeMod, followingPage.posts],
+  );
   // Following-tab loading/error mirror For-you.
-  const followingLoading = followingEnabled && followingPage.loading && followingPage.posts.length === 0;
+  const followingLoading = followingEnabled && followingPage.loading && visibleFollowingCount === 0;
   // Exclude the error case: a failed cold read sets `feedError` but leaves `ready` false with an empty
   // list, which would otherwise pin the primary Home surface on an infinite skeleton with no way to
   // retry. Dropping it out of the loading gate lets Timeline fall through to the ErrorRow + Retry.
-  const forYouLoading = !ready && displayedForYou.length === 0 && !feedError;
+  const forYouLoading = !ready && visibleForYouCount === 0 && !feedError;
 
   return (
     <>
@@ -291,6 +305,7 @@ export default function HomePage() {
           onLoadMore={followingPage.loadMore}
           loadingMore={followingPage.loading}
           paginationCapable={paginationCapable}
+          lastPage={followingPage.page?.posts ?? null}
           emptyVariant="follows"
           emptyTitle={
             me == null
@@ -320,6 +335,7 @@ export default function HomePage() {
           onLoadMore={forYou.loadMore}
           loadingMore={forYou.loadingMore}
           paginationCapable={paginationCapable}
+          lastPage={forYou.lastPage}
           emptyVariant="feed"
           emptyAction={{ label: "Explore", onClick: () => router.push("/explore/") }}
           onCompose={onCompose}

@@ -25,12 +25,13 @@ import { useWhoToFollow } from "@/hooks/useWhoToFollow";
 import { useFollow } from "@/hooks/useFollow";
 import { profileRouteForQuery } from "@/lib/ss58";
 import { normalizeQuery } from "@/lib/search";
+import { viewerBucket } from "@/lib/viewerBucket";
 
 export function RightRail() {
   const router = useRouter();
   const pathname = usePathname() ?? "/";
   const { api, signer, source, viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
 
   const [term, setTerm] = useState("");
   const searchEnabled = source != null;
@@ -93,7 +94,10 @@ export function RightRail() {
           <h2 className={styles.cardTitle}>Who to follow</h2>
           {suggestions.map((s) => (
             <div className={styles.person} key={s.author}>
-              <Link href={`/u/${s.author}/`} className={styles.personLink}>
+              {/* prefetch off: the rail renders on EVERY home load, guests included, so the default
+                  viewport prefetch put three suggested accounts' ss58s in the access log against every
+                  visitor's IP with zero interaction. /privacy says those logs show what an IP OPENED. */}
+              <Link href={`/u/${s.author}/`} className={styles.personLink} prefetch={false}>
                 <Avatar address={s.author} src={s.avatar} size="md" name={s.displayName} />
                 <span className={styles.personWho}>
                   <DisplayName address={s.author} displayName={s.displayName} truncate />

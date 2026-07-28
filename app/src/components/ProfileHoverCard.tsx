@@ -24,6 +24,7 @@ import { useSession } from "./Providers";
 import { useFollow } from "@/hooks/useFollow";
 import { useAccountVoteFor } from "@/hooks/useAccountVote";
 import { sanitizeText, sanitizeInline } from "@/lib/sanitize";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { AuthorRef } from "./kit";
 import type { ProfileView } from "@/lib/types";
 
@@ -158,7 +159,7 @@ function HoverPopover({
 }) {
   const router = useRouter();
   const { api, signer, source, viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const follow = useFollow(api, signer, source, me);
   // The reputation vote, from the same hook the profile header uses — so you can endorse or dispute an
   // account without opening it, and a vote cast here is already showing when you do. No `liveKey`: the

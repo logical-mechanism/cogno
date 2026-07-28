@@ -41,6 +41,7 @@ import { useProfile } from "@/hooks/useProfile";
 import { isDeniedAuthor } from "@/lib/config/denylist";
 import { useFollow } from "@/hooks/useFollow";
 import { useViewerStates } from "@/hooks/useViewerStates";
+import { useModeration } from "@/hooks/useModeration";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { useAccountVoteFor } from "@/hooks/useAccountVote";
@@ -49,6 +50,7 @@ import { useToaster } from "@/components/toast/ToasterProvider";
 import { normalizeSs58, handleOf, fallbackDisplayName } from "@/lib/ss58";
 import { sanitizeInline } from "@/lib/sanitize";
 import { useRouteSegment } from "@/lib/routeSegment";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { ProfileArgs } from "@/lib/feed/source";
 import type { CognoPost, Ss58 } from "@/components/kit";
 
@@ -117,7 +119,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
   // what freezing the shared one is for.
   const bestBlock = useBestBlock();
 
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   const isSelf = me != null && me === address;
   // The node serves every one of these, so they collapse to "is the reader connected yet".
   const canFollow = source != null;
@@ -153,11 +155,8 @@ function ProfileBody({ address }: { address: Ss58 }) {
     () => ({ author: address, tab: tabArg(activeTab), viewer: me ?? undefined }),
     [address, activeTab, me],
   );
-  const { profile, posts, loading, error, hasMore, loadingMore, loadMore, reload } = useProfile(
-    source,
-    profileArgs,
-    bestBlock,
-  );
+  const { profile, posts, loading, error, hasMore, lastPage, loadingMore, loadMore, reload } =
+    useProfile(source, profileArgs, bestBlock);
 
   // ── follow graph + optimistic toggle (header). ──
   const follow = useFollow(api, signer, source, me);
@@ -291,6 +290,17 @@ function ProfileBody({ address }: { address: Ss58 }) {
     if (!pinned) return posts;
     return posts.filter((p) => p.id !== pinned.id);
   }, [posts, pinned]);
+
+  // How many of those will actually RENDER. The body-branch below used to pick between Timeline, the
+  // pinned card standing alone, and a profile-specific EmptyState from the RAW count — so a profile
+  // whose whole first page is by an author this viewer has blocked took the Timeline branch, claiming
+  // 50 posts over a list that draws none. Timeline filters again on its own (idempotent); this exists
+  // so the surface's own branch is decided on the same side of the filter.
+  const profileMod = useModeration(me);
+  const visibleListCount = useMemo(
+    () => profileMod.filterPosts(listPosts).length,
+    [profileMod, listPosts],
+  );
 
   // ── viewer-relative state across the visible cards (the filled heart) ──
   const postIds = useMemo(() => {
@@ -458,19 +468,20 @@ function ProfileBody({ address }: { address: Ss58 }) {
                 hard error); (b) no posts + a pinned card → the pinned block stands alone (nothing more);
                 (c) no posts + nothing pinned → a PROFILE-specific EmptyState (Timeline only knows
                 feed|follows, so we render our own per-tab copy). */}
-            {loading || listPosts.length > 0 || error ? (
+            {loading || visibleListCount > 0 || error || hasMore ? (
               <Timeline
                 posts={listPosts}
                 gate={viewer}
                 viewerStates={viewerStates}
                 handlers={handlers}
-                loading={loading && listPosts.length === 0}
+                loading={loading && visibleListCount === 0}
                 error={error}
                 onRetry={reload}
                 hasMore={hasMore}
                 onLoadMore={loadMore}
                 loadingMore={loadingMore}
                 paginationCapable={paginationCapable}
+                lastPage={lastPage}
                 // Match the standalone EmptyState below. Passing only the title let `emptyVariant` fall
                 // through to Timeline's `feed` default, so a profile whose read FAILED rendered the feed
                 // preset — "Find some people to follow." under an error row — and silently dropped the

@@ -90,6 +90,35 @@ export function mentionToken(display: string): string {
   return `@${display}`;
 }
 
+/**
+ * The display text to insert into the composer when a person is picked from the @-autocomplete.
+ *
+ * Two rules, and both were wrong at the one call site that used to hold this inline.
+ *
+ * 1. IT GOES THROUGH `mentionLabel`, so the inserted token is the SANITIZED name — the same string the
+ *    popover row rendered. The old `s.displayName?.trim() || fallback` inserted the RAW chain bytes: an
+ *    account whose `display_name` is `Alice‮evilX`, `Alice\nSmith`, or ZWSP-only put those bytes
+ *    into a stranger's composer, where the byte meter then charged the 512-byte budget against the raw
+ *    name instead of the 49-byte ss58, and the user read something different from the row they clicked.
+ *    `set_profile` validates no characters, only length, so every one of those is representable.
+ *
+ *    This is NOT a sanitize-before-write violation. The token is a DISPLAY artefact that never reaches
+ *    the chain: `serializeMentions` replaces it wholesale with the raw `@<ss58>`.
+ *
+ * 2. IT DISAMBIGUATES A CLASH. A display name is not unique across accounts, and `serializeMentions`
+ *    maps display → ss58, so two different accounts under one name in a single draft would bind both
+ *    tokens to whichever won the map. Appending the truncated ss58 keeps the mapping total.
+ */
+export function pickMentionDisplay(
+  displayName: string | undefined,
+  ss58: Ss58,
+  existing: readonly MentionRef[],
+): string {
+  const label = mentionLabel(displayName, ss58);
+  const clash = existing.some((m) => m.display === label && m.ss58 !== ss58);
+  return clash ? `${label} (${truncateSs58(ss58)})` : label;
+}
+
 /** The draft last handed to `onSubmit`: its DISPLAY text and the refs it was serialized with. */
 export interface SubmittedDraft {
   text: string;

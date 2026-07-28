@@ -20,6 +20,7 @@
 import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { countImageUrls } from "@/lib/media";
 import { useMentions } from "@/hooks/useMentions";
+import type { MentionRef } from "@/lib/mentions";
 import { ByteCounter } from "./ByteCounter";
 import { utf8Bytes, clampToBytes } from "@/lib/bytes";
 import { RateLimitNotice } from "./RateLimitNotice";
@@ -135,6 +136,16 @@ export interface ComposerProps {
    * over-limit CTA gate always count the serialized length internally regardless.
    */
   onSerializedChange?: (serialized: string) => void;
+  /**
+   * CONTROLLED mention registry — the bindings from each `@display` token in `text` to an account.
+   * Supply it (with {@link ComposerProps.onMentionsChange}) on a surface that PERSISTS its draft;
+   * uncontrolled when omitted, exactly like `text`.
+   *
+   * Persisting the text alone meant a restored draft came back unbound, so pressing Post wrote the
+   * literal `@Bob` to a chain with no `delete_post`.
+   */
+  mentions?: MentionRef[];
+  onMentionsChange?: (mentions: MentionRef[]) => void;
   /** Focus the textarea on mount (modal/sheet = true). */
   autoFocus?: boolean;
   /** Build a ComposerDraft and submit. The surface maps it to the right mutation. */
@@ -173,6 +184,8 @@ export function Composer({
   text: controlledText,
   onTextChange,
   onSerializedChange,
+  mentions,
+  onMentionsChange,
   autoFocus,
   onSubmit,
   onDirtyChange,
@@ -207,7 +220,7 @@ export function Composer({
     onTextInput: syncMentionQuery,
     onKeyDown: mentionKeyDown,
     dismiss: dismissMentions,
-  } = useMentions({ text, setText, taRef, listId });
+  } = useMentions({ text, setText, taRef, listId, mentions, onMentionsChange });
 
   // The SERIALIZED body — what actually gets posted, and what the byte counter / capacity gate must
   // measure (each `@name` token expands to a ~48-byte ss58, so a short-looking draft can exceed 512).

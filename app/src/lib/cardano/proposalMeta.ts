@@ -176,7 +176,15 @@ async function readCapped(res: Response, capBytes: number): Promise<string | nul
 // back but yielded nothing usable (bad status, oversized, malformed JSON, empty doc) — so a re-open / a
 // second poll linking the same doc never re-fetches a settled result. A TRANSIENT failure (offline / CORS /
 // abort / timeout, where NO response arrived) is deliberately NOT cached, so a later open can retry once the
-// network recovers. `inflight` shares one call between concurrent expanders.
+// network recovers.
+//
+// `inflight` shares one call between concurrent expanders, and it is keyed by (redirect policy, url) —
+// NOT by url alone. The two policies are different requests with different outcomes: a no-redirect fetch
+// THROWS on a 3xx and settles to nothing, while the consented follow-redirects fetch resolves it. Keyed on
+// the url only, a card's eager (no-redirect) fetch already in flight was handed to a reader who clicked
+// Preview on a second card linking the same doc, and that reader saw "Couldn't load the proposal." for a
+// document that is perfectly reachable — with their one consented attempt already spent. `resolved` stays
+// keyed by url alone, correctly: a TERMINAL outcome is about the document, not about how it was reached.
 const resolved = new Map<string, ProposalMeta | null>();
 const inflight = new Map<string, Promise<ProposalMeta | null>>();
 
@@ -187,12 +195,14 @@ const inflight = new Map<string, Promise<ProposalMeta | null>>();
  */
 export async function resolveProposal(
   anchorUrl: string,
-  opts?: { noRedirect?: boolean },
+  opts?: { followRedirects?: boolean },
 ): Promise<ProposalMeta | null> {
   const url = proposalHttpUrl(anchorUrl);
   if (!url) return null;
   if (resolved.has(url)) return resolved.get(url) ?? null;
-  const existing = inflight.get(url);
+  const follow = opts?.followRedirects === true;
+  const flightKey = `${follow ? "follow" : "nofollow"}|${url}`;
+  const existing = inflight.get(flightKey);
   if (existing) return existing;
 
   // Cache + return a SETTLED (terminal) outcome — re-fetching it would change nothing.
@@ -205,15 +215,17 @@ export async function resolveProposal(
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
     try {
-      // `noRedirect` (the EAGER feed-render path) refuses to follow redirects: the browser can't read a
-      // cross-origin `Location`, so `isNeutralProposalHost` only vouches for the FIRST hop — following would
-      // let an author bounce a neutral gateway (e.g. `<cid>.ipfs.dweb.link` via a `_redirects` file) to a
-      // host they control and harvest a passive reader's IP. `redirect: "error"` throws on a 3xx, which the
-      // catch below treats as a transient (uncached) failure — the on-demand Preview may still follow it.
-      const res = await fetch(url, {
-        signal: ctl.signal,
-        redirect: opts?.noRedirect ? "error" : "follow",
-      });
+      // NOT FOLLOWING REDIRECTS IS THE DEFAULT, and that is the whole point of this option. The browser
+      // can't read a cross-origin `Location`, so `isNeutralProposalHost` only ever vouches for the FIRST
+      // hop — following one lets an author bounce a neutral gateway (e.g. `<cid>.ipfs.dweb.link` via a
+      // `_redirects` file) to a host they control and harvest the IP of every reader who merely scrolls
+      // past their poll. The flag used to be opt-IN (`noRedirect`), and the eager IntersectionObserver
+      // path in ProposalPreview did not pass it, which is exactly the leak this comment describes.
+      //
+      // `followRedirects` is therefore only ever set on an ON-DEMAND path, where the reader clicked and
+      // the request is consented. `redirect: "error"` throws on a 3xx, which the catch below treats as a
+      // transient (uncached) failure — so the Preview click can still follow it afterwards.
+      const res = await fetch(url, { signal: ctl.signal, redirect: follow ? "follow" : "error" });
       // A response arrived: every conclusion from here is TERMINAL (a retry won't change it) → cache it.
       if (!res.ok) return settle(null); // 404 / 403 / 429 → degrade gracefully
       const declared = Number(res.headers.get("content-length") ?? "0");
@@ -234,10 +246,10 @@ export async function resolveProposal(
       clearTimeout(timer);
     }
   })().then((meta) => {
-    inflight.delete(url);
+    inflight.delete(flightKey);
     return meta;
   });
 
-  inflight.set(url, p);
+  inflight.set(flightKey, p);
   return p;
 }

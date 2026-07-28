@@ -13,12 +13,21 @@
 // the special case.
 //
 // Search terms are ordinary text, so unlike the set stores there is no element-validity predicate worth
-// enforcing beyond non-empty — a junk term is a useless dropdown row, never a crash.
+// enforcing beyond non-empty and BOUNDED. The bound is not hygiene: the term comes from `?q=`, and
+// `normalizeQuery` collapses whitespace and nothing else, so `/explore/?q=<300 KB>` is a term. Eight
+// shared links of that shape put ~4.8 MB of UTF-16 into one localStorage key, at which point every
+// OTHER device-local store starts throwing QuotaExceededError on write — silently, because
+// `persistentStore.commit` swallows it. A term longer than this is not a search anybody typed.
+//
+// Terms are stored RAW. They are the search needle and must stay byte-comparable with the node's scan
+// (see lib/search.ts); sanitizing happens at each JSX boundary that renders one.
 
 import { createViewerScopedStore } from "./viewerScopedStore";
 import type { Ss58 } from "./types";
 
 const MAX = 8;
+/** Longest term kept. Far above any real query, far below anything that could fill the origin's quota. */
+const MAX_TERM_LEN = 256;
 const EMPTY: readonly string[] = [];
 
 const store = createViewerScopedStore<readonly string[]>({
@@ -27,7 +36,12 @@ const store = createViewerScopedStore<readonly string[]>({
   parse: (raw) => {
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed)
-      ? parsed.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, MAX)
+      ? parsed
+          .filter(
+            (x): x is string =>
+              typeof x === "string" && x.length > 0 && x.length <= MAX_TERM_LEN,
+          )
+          .slice(0, MAX)
       : [];
   },
   // NOT sorted: order IS the value here (most-recent-first). The set stores sort only to stop the
@@ -44,7 +58,7 @@ export function recentSearchActionsFor(who: Ss58 | null) {
     /** Record a term, moving it to the front (dedup case-insensitively) and capping the list. */
     push(term: string): void {
       const t = term.trim();
-      if (t.length === 0) return;
+      if (t.length === 0 || t.length > MAX_TERM_LEN) return;
       const lower = t.toLowerCase();
       const cache = store.readFor(who);
       const next = [t, ...cache.filter((x) => x.toLowerCase() !== lower)].slice(0, MAX);

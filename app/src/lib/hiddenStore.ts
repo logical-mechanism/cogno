@@ -13,9 +13,17 @@
 import { createViewerScopedStringSetStore } from "./stringSetStore";
 import type { Ss58 } from "./types";
 
+/**
+ * Capped for the same reason as bookmarks: Settings → Hidden posts resolves the whole set on mount in
+ * one unbounded `Promise.all`. Higher than the bookmark cap because hiding is a per-post dismissal and
+ * accumulates faster than saving does.
+ */
+export const MAX_HIDDEN = 1000;
+
 const store = createViewerScopedStringSetStore({
   prefix: "cg-hidden",
   isValid: (v) => /^\d+$/.test(v),
+  max: MAX_HIDDEN,
   // Shipped device-global before per-account bucketing, so its bare key is claimable once.
   claimLegacy: true,
 });

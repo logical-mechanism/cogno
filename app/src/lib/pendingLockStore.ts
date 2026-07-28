@@ -32,6 +32,75 @@ export interface PendingLock {
 
 type PendingLockMap = Record<string, PendingLock>;
 
+/**
+ * How long a record may sit without its Cardano slot resolving before the app stops treating it as a
+ * live lock. Mirrors `usePendingCapacity`'s confirm timeout, and is the only wall-clock input to
+ * {@link shouldClearPendingLock}.
+ */
+export const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
+
+export interface ClearPendingLockInput {
+  /** The persisted record for this account, or null when there is none. */
+  record: Pick<PendingLock, "lockSlot" | "submittedAtMs"> | null;
+  /** `TalkStake.AllowedStake` for this account. `null` = not resolved yet. */
+  allowedStake: bigint | null;
+  /** `CardanoObserver.LastReference.slot` — how far the observer has read. `null` = not resolved. */
+  frontier: bigint | null;
+  nowMs: number;
+}
+
+/**
+ * Has this lock been credited, so the pending record can go?
+ *
+ * THE BUG THIS FIXES. The rule used to be "AllowedStake > 0", full stop — which treats a weight written
+ * for a PRIOR lock as authoritative about a NEWER one. Exit the vault and relock inside the observer's
+ * stability window and `AllowedStake` is still positive from the lock you just exited, so the fresh
+ * record was destroyed the instant it was written. The observer then catches up, the weight drops to
+ * zero, and with no record left the app tells someone who has just locked 100 ADA that they have no
+ * posting power and should lock some. A factual negative about the user's own money.
+ *
+ * The weight only says anything about THIS lock once the observer has read past the lock's own slot,
+ * which is what `frontier >= lockSlot` means. Before that the two are simply about different deposits.
+ *
+ * The confirm-timeout arm is still needed: with no slot resolved there is nothing to compare, so a
+ * record that has aged out of the confirm window while the account demonstrably has weight is stale
+ * (the tx never landed, or Blockfrost could not answer) and must not pin the UI forever.
+ */
+export function shouldClearPendingLock(input: ClearPendingLockInput): boolean {
+  const { record, allowedStake, frontier, nowMs } = input;
+  if (!record) return false;
+  // Unresolved, or no credit at all → nothing has been demonstrated.
+  if (allowedStake === null || allowedStake <= 0n) return false;
+  if (record.lockSlot != null) {
+    // `frontier === null` is "we cannot tell yet", never "it has not passed". Not clearing is the safe
+    // direction: the status already reads as credited off AllowedStake, and the next frontier emission
+    // resolves it for real.
+    return frontier !== null && frontier >= BigInt(record.lockSlot);
+  }
+  return nowMs - record.submittedAtMs > CONFIRM_TIMEOUT_MS;
+}
+
+/**
+ * Is the credit question currently UNANSWERABLE, rather than answered "no"?
+ *
+ * `shouldClearPendingLock` returning false covers two situations that are not the same claim. One is
+ * "this lock has not credited yet" — the ordinary wait. The other is "a positive weight exists but the
+ * observer frontier has not resolved", so we cannot attribute that weight to this lock or to a prior
+ * one. Refusing to clear is the safe direction for the RECORD either way.
+ *
+ * It is not safe for the "overdue" nudge, which asserts the opposite of what it knows: it tells a user
+ * their lock looks stuck and offers to dismiss it. `usePendingCapacity` sets `frontier = null` on ANY
+ * `LastReference` read error, and an errored rxjs subscription is terminated — nothing re-subscribes
+ * until `api` or the account changes. So one transient frontier error on an account whose lock HAS
+ * credited pinned it, silently and for the rest of the session, on a false "it never landed". Gate the
+ * nudge on this being false and the wait simply keeps narrating until the frontier comes back.
+ */
+export function pendingLockCreditIndeterminate(input: ClearPendingLockInput): boolean {
+  const { record, allowedStake, frontier } = input;
+  if (!record || record.lockSlot == null) return false;
+  return allowedStake !== null && allowedStake > 0n && frontier === null;
+}
+
 function parse(raw: string | null): PendingLockMap {
   const parsed: unknown = raw ? JSON.parse(raw) : {};
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};

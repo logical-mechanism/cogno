@@ -20,11 +20,12 @@ import {
   serializeMentions,
   reconcileMentions,
   mentionToken,
+  pickMentionDisplay,
   type MentionRef,
   type SubmittedDraft,
 } from "@/lib/mentions";
-import { fallbackDisplayName, truncateSs58 } from "@/lib/ss58";
 import { useBlockedSet } from "@/lib/blockStore";
+import { viewerBucket } from "@/lib/viewerBucket";
 import type { Suggestion } from "@/lib/types";
 
 const MENTION_LIMIT = 6;
@@ -43,11 +44,6 @@ function activeQueryAt(value: string, caret: number): { start: number; query: st
   const query = value.slice(i + 1, caret);
   if (query.length < MIN_QUERY || query.length > MAX_QUERY) return null;
   return { start: i, query };
-}
-
-/** The display text shown for a picked person: their name, else the stable cogno-… fallback. */
-function displayFor(s: Suggestion): string {
-  return s.displayName?.trim() || fallbackDisplayName(s.author);
 }
 
 export interface UseMentions {
@@ -73,15 +69,30 @@ export interface UseMentions {
   dismiss: () => void;
 }
 
-export function useMentions(opts: {
+export interface UseMentionsOpts {
   text: string;
   setText: (next: string) => void;
   taRef: React.RefObject<HTMLTextAreaElement | null>;
   listId: string;
-}): UseMentions {
-  const { text, setText, taRef, listId } = opts;
+  /**
+   * CONTROLLED mention registry, owned by the surface. Supply it (with {@link onMentionsChange}) on any
+   * surface that PERSISTS its draft; omit both and the registry is internal, exactly as before.
+   *
+   * The reason it can be controlled at all: persisting the draft TEXT without the registry meant a
+   * restored draft came back with an empty registry, so `serialize` was the identity function and
+   * pressing Post wrote the literal `@Bob` to a chain with no `delete_post`. The registry has to live
+   * wherever the text is persisted from, and mirroring `text`'s own controlled/uncontrolled split keeps
+   * the two in one place per surface.
+   */
+  mentions?: MentionRef[];
+  /** Registry updates, when controlled. */
+  onMentionsChange?: (next: MentionRef[]) => void;
+}
+
+export function useMentions(opts: UseMentionsOpts): UseMentions {
+  const { text, setText, taRef, listId, mentions: controlledMentions, onMentionsChange } = opts;
   const { api, signer, source, viewer } = useSession();
-  const me = viewer.address ?? null;
+  const me = viewerBucket(viewer);
   // Never suggest a blocked account in @mention autocomplete (block = no interactions with them).
   const blocked = useBlockedSet(me);
   const { following } = useFollow(api, signer, source, me);
@@ -91,7 +102,28 @@ export function useMentions(opts: {
   const followingSetRef = useRef<Set<string>>(new Set());
   followingSetRef.current = useMemo(() => new Set(following), [following]);
 
-  const [mentions, setMentions] = useState<MentionRef[]>([]);
+  // The registry: controlled by the surface when it persists the draft, internal otherwise.
+  const [innerMentions, setInnerMentions] = useState<MentionRef[]>([]);
+  const mentions = controlledMentions ?? innerMentions;
+  // A STABLE setter that always reads the CURRENT controlled value through refs. Closing over
+  // `controlledMentions` directly would put it in the deps of the reconcile effect below, which must
+  // stay keyed on `text` alone: re-running it on every registry change is how a prune could fight a
+  // pick. The updater shape is preserved so both branches read the same way.
+  const controlledRef = useRef(controlledMentions);
+  controlledRef.current = controlledMentions;
+  const onChangeRef = useRef(onMentionsChange);
+  onChangeRef.current = onMentionsChange;
+  const setMentions = useCallback((update: (ms: MentionRef[]) => MentionRef[]) => {
+    const current = controlledRef.current;
+    if (current === undefined) {
+      setInnerMentions(update);
+      return;
+    }
+    const next = update(current);
+    // `reconcileMentions` returns its input by IDENTITY when nothing changed, so this is also what keeps
+    // the effect below from writing a fresh array into the surface on every keystroke.
+    if (next !== current) onChangeRef.current?.(next);
+  }, []);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [anchor, setAnchor] = useState(0); // index of the active '@'
@@ -115,7 +147,9 @@ export function useMentions(opts: {
   // ways it can go wrong corrupt a post permanently.
   useEffect(() => {
     setMentions((ms) => reconcileMentions(ms, text, submitted.current));
-  }, [text]);
+    // `setMentions` is a stable useCallback([]), so listing it cannot re-run this on a registry change —
+    // which matters: this effect must key on TEXT alone or a prune would fight a pick.
+  }, [text, setMentions]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -185,11 +219,9 @@ export function useMentions(opts: {
 
   const pick = useCallback(
     (s: Suggestion) => {
-      // Keep display tokens UNIQUE within a draft: if this display already maps to a DIFFERENT account,
-      // disambiguate with the truncated ss58 so serialization stays unambiguous.
-      let display = displayFor(s);
-      const clash = mentions.some((m) => m.display === display && m.ss58 !== s.author);
-      if (clash) display = `${display} (${truncateSs58(s.author)})`;
+      // Sanitized label + clash disambiguation, both in lib/mentions so the rule is testable and cannot
+      // drift from what the popover row actually rendered.
+      const display = pickMentionDisplay(s.displayName, s.author, mentions);
 
       const token = `${mentionToken(display)} `;
       const before = text.slice(0, anchor);
@@ -213,7 +245,7 @@ export function useMentions(opts: {
         }
       });
     },
-    [text, anchor, query, mentions, setText, taRef, close],
+    [text, anchor, query, mentions, setMentions, setText, taRef, close],
   );
 
   const onKeyDown = useCallback(
