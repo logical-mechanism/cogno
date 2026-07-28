@@ -16,11 +16,27 @@
   box-shadow: var(--cg-shadow-menu);
   cursor: pointer;
   z-index: var(--cg-z-fab);
-  transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+  transition: background var(--cg-motion-fast) var(--cg-ease-standard),
+    transform var(--cg-motion-base) var(--cg-ease-standard),
+    opacity var(--cg-motion-base) var(--cg-ease-standard);
 }
 
 .fab:hover {
   background: var(--cg-accent-hover);
+}
+
+/* Tucked off the right edge while scrolling down. `pointer-events: none` is the load-bearing part:
+   it is what stops the circle hit-testing over a post card's "..." and Share while it is away. */
+.tucked {
+  transform: translateX(calc(var(--cg-avatar-lg) + var(--cg-space-4)));
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fab {
+    transition: background var(--cg-motion-fast) var(--cg-ease-standard);
+  }
 }
 
 /* Mobile-only — the desktop/tablet "Post" pill lives in the LeftNav. */
