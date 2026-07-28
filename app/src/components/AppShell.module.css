@@ -46,7 +46,28 @@
 /* main FLOWS with the document (no own scroll container) so a wheel/touch scroll ANYWHERE — over the
    sidebars or the margins — scrolls the page = the feed; the rails are sticky (LeftNav/RightRail) so
    they stay in view. 600px cap; min-height keeps the column borders full-height on a short feed. */
+/* The column is a FLEX COLUMN so SmallScreenFooter can claim `margin-top: auto` and sit at the bottom
+   of the 100vh box instead of directly under whatever happens to be above it.
+
+   This is a layout-shift fix, and it is the whole of the CLS PageSpeed measures on this site. The
+   footer is the LAST child of <main> and it flowed immediately after {children}, so every time the
+   routed content changed height the footer moved with it. On /explore mobile that was three separate
+   shifts totalling 0.236, on /u/<addr> 0.257, and the audit attributed 100% of both to this one
+   element. It counts at all only because the timeline is short in the lab (Lighthouse cannot open a
+   WebSocket, so no posts ever arrive) which leaves the footer ON SCREEN, where a move is a visible
+   shift rather than an off-screen reflow.
+
+   Pinning it to the bottom makes the footer's position depend on the viewport instead of on the
+   content, so nothing above it can move it while the page is shorter than the viewport. Once real
+   content exceeds 100vh `margin-top: auto` resolves to 0 and the footer flows normally, below the
+   fold, exactly as before.
+
+   Flex is safe for the children here specifically because globals.css resets `* { margin: 0 }`, so
+   there is no margin-collapsing behaviour to lose, and every child is a full-width block that
+   `align-items: stretch` reproduces. */
 .main {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 var(--cg-col-feed);
   max-width: var(--cg-col-feed);
   min-width: 0;

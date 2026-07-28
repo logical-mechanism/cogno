@@ -62,13 +62,20 @@
   color: var(--cg-text);
 }
 
+/* Underlined ALWAYS, not only on hover. The app-wide default (globals.css) strips underlines and puts
+   them back on :hover, which is right for chrome — a nav row of underlined links is noise, and every
+   one of them is obviously a control by position. It is wrong INSIDE BODY COPY: a link sitting in a
+   sentence is then distinguishable from the prose around it by colour alone, which fails WCAG 1.4.1,
+   and hover is not a state a touch device or a keyboard-only reader can offer. PageSpeed flags it as
+   `link-in-text-block` and it was the last accessibility failure on /legal after the contrast fix
+   (96, not 100), naming "content policy", "support@logicalmechanism.io" and "SECURITY.md".
+
+   Scoped to Prose on purpose: this is the legal/privacy/policy body-copy component, so every link it
+   renders is mid-sentence by definition. PostBody owns the same decision separately for user text. */
 .link {
   color: var(--cg-accent);
-  text-decoration: none;
-}
-
-.link:hover {
   text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
 .link:focus-visible {
