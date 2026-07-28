@@ -214,11 +214,19 @@ export function Composer({
 
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Size for text that did NOT arrive by typing: a restored draft, or a controlled surface setting
-  // the value. Without this those open as a one-line box. useEffect rather than useLayoutEffect
-  // because the static export prerenders and useLayoutEffect warns on the server; typing still
-  // resizes synchronously in onChange, so there is no flash.
+  // Size for text that did NOT arrive by typing: a restored draft, a cleared box after submit, or a
+  // controlled surface setting the value. Without this those open as a one-line box. useEffect
+  // rather than useLayoutEffect because the static export prerenders and useLayoutEffect warns on
+  // the server; typing resizes synchronously in onChange instead, so there is no flash.
+  //
+  // Typing skips this pass. autosize forces two layout flushes, so running it here as well would
+  // cost four per keystroke on the surface this is meant to keep cheap on a throttled phone.
+  const sizedWhileTyping = useRef(false);
   useEffect(() => {
+    if (sizedWhileTyping.current) {
+      sizedWhileTyping.current = false;
+      return;
+    }
     const el = taRef.current;
     if (el) autosize(el);
   }, [text]);
@@ -336,6 +344,7 @@ export function Composer({
       setText(next);
       syncMentionQuery(next, el.selectionStart ?? next.length);
       autosize(el);
+      sizedWhileTyping.current = true;
     },
     [maxBytes, setText, clampable, syncMentionQuery],
   );
@@ -369,14 +378,10 @@ export function Composer({
     onSubmit(buildDraft());
     dismissMentions(); // close the popover; the refs are retired by the prune, not here
     // OPTIMISTIC: clear the textarea instantly. Controlled drafts are cleared by the surface.
-    if (!isControlled) {
-      setInnerText("");
-      // Clear the scroller too, or an emptied box keeps the one a long draft left behind.
-      if (taRef.current) {
-        taRef.current.style.height = "auto";
-        taRef.current.style.overflowY = "hidden";
-      }
-    }
+    // The emptied box is resized by the [text] effect above, which also clears the scroller a long
+    // draft left behind. Resetting the inline styles here too would be a second source of truth for
+    // them, and would leave height:auto behind.
+    if (!isControlled) setInnerText("");
   }, [sessionGated, disabled, onSubmit, buildDraft, isControlled, dismissMentions, markSubmitted, text]);
 
   const onKeyDown = useCallback(

@@ -56,7 +56,7 @@
 @media (max-width: 687px) {
   .toaster {
     bottom: calc(
-      var(--cg-header-h) + var(--cg-avatar-lg) + var(--cg-space-6) + env(safe-area-inset-bottom, 0px)
+      var(--cg-tabbar-h) + var(--cg-fab-size) + var(--cg-space-6) + env(safe-area-inset-bottom, 0px)
     );
   }
 }

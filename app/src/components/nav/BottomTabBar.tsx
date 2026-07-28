@@ -70,10 +70,6 @@ export function BottomTabBar() {
             key={label}
             href={href}
             onClick={reTap(href)}
-            // prefetch off for /u/<me>/: the dynamic profile route ships only as the /u/_/ SSG
-            // shim, so prefetching a concrete address requests an RSC tree that was never emitted
-            // and 404s on every signed-in page load. Same reason as the RightRail person links.
-            prefetch={href.startsWith("/u/") ? false : undefined}
             className={`${styles.tab} ${active ? styles.active : ""}`}
             aria-current={active ? "page" : undefined}
             aria-label={count > 0 ? `${label} (${count} unread)` : label}

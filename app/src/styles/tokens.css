@@ -71,6 +71,12 @@
   --cg-avatar-lg: 48px;
   --cg-avatar-xl: 133px;
 
+  /* The mobile bottom chrome, named for what it IS so anything clearing it says so. These happen to
+     equal --cg-header-h and --cg-avatar-lg today; do not collapse them back, or retuning a header
+     height or an avatar size would silently move the toast stack onto the nav it exists to clear. */
+  --cg-tabbar-h: 53px;
+  --cg-fab-size: 48px;
+
   /* ===== THEME-AGNOSTIC: ICONS ===== */
   --cg-icon-sm: 1.125rem;
   --cg-icon-md: 1.25rem;
@@ -114,6 +120,9 @@
   --cg-bg-subtle: #202327;
   --cg-bg-hover: rgba(231, 233, 234, 0.03);
   --cg-bg-hover-solid: #080808;
+  /* Pressed. Deliberately stronger than --cg-bg-hover (3%), which is invisible on a phone in
+     daylight and would make a touch press look like nothing happened. */
+  --cg-bg-active: rgba(231, 233, 234, 0.10);
   --cg-border: #2f3336;
 
   --cg-text: #e7e9ea;
@@ -171,6 +180,9 @@
   --cg-bg-subtle: #202327;
   --cg-bg-hover: rgba(231, 233, 234, 0.03);
   --cg-bg-hover-solid: #080808;
+  /* Pressed. Deliberately stronger than --cg-bg-hover (3%), which is invisible on a phone in
+     daylight and would make a touch press look like nothing happened. */
+  --cg-bg-active: rgba(231, 233, 234, 0.10);
   --cg-border: #2f3336;
   --cg-text: #e7e9ea;
   --cg-text-secondary: #71767b;
@@ -211,6 +223,9 @@
   --cg-bg-subtle: #f7f9f9;
   --cg-bg-hover: rgba(15, 20, 25, 0.03);
   --cg-bg-hover-solid: #f7f9f9;
+  /* Pressed. Deliberately stronger than --cg-bg-hover (3%), which is invisible on a phone in
+     daylight and would make a touch press look like nothing happened. */
+  --cg-bg-active: rgba(15, 20, 25, 0.10);
   --cg-border: #eff3f4;
   --cg-text: #0f1419;
   --cg-text-secondary: #536471;

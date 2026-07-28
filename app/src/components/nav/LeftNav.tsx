@@ -102,9 +102,6 @@ export function LeftNav() {
                 <Link
                   href={href}
                   onClick={reTap(href)}
-                  // See BottomTabBar: /u/<me>/ has no emitted RSC tree under the static export, so
-                  // the default viewport prefetch is a guaranteed 404 on every page load.
-                  prefetch={href.startsWith("/u/") ? false : undefined}
                   className={`${styles.item} ${active ? styles.active : ""}`}
                   aria-current={active ? "page" : undefined}
                   // Always set the accessible name: at tablet width the visible .itemLabel is

@@ -417,6 +417,12 @@ function RoleClaimCard({
                   onChange={(e) => setPasted(e.target.value)}
                   placeholder="cardano-signer --json-extended output"
                   spellCheck={false}
+                  // Same reason as the key field above: this blob's signature and publicKey are
+                  // case-exact hex, and a phone keyboard capitalises and autocorrects by default,
+                  // which corrupts it silently and fails CIP-8 verification with no visible cause.
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  autoComplete="off"
                   rows={4}
                   aria-label="cardano-signer output"
                 />

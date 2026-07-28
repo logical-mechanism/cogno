@@ -48,11 +48,14 @@ export function FollowButton({
         : "Following"
       : "Follow";
 
-  // Name the ACTION, not the state: `aria-pressed` already carries the state, and the visible label
-  // only morphs to "Unfollow" on hover, which touch and voice control never get. Without this a
-  // phone screen-reader user hears "Following", taps it, and unfollows.
+  // Mirrors the VISIBLE resting label on purpose. Naming the action instead ("Unfollow …") looks
+  // like the kinder choice on touch, where the label never morphs to "Unfollow" — but it breaks
+  // WCAG 2.5.3 Label in Name: the accessible name would no longer contain the only word on screen,
+  // so a voice-control user saying "tap Following" would stop matching this button. It would also
+  // contradict aria-pressed, which already carries the state and wants a name that does not change
+  // with it. The touch gap is real and belongs in the visible label, not in the accessible name.
   const ariaLabel = isFollowing
-    ? `Unfollow ${handleOf(target)}`
+    ? `Following ${handleOf(target)}`
     : `Follow ${handleOf(target)}`;
 
   const cls = [

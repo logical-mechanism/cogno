@@ -29,9 +29,6 @@ html {
   text-size-adjust: 100%;
   -moz-tab-size: 2;
   tab-size: 2;
-  /* The whole post row is clickable, so the platform default painted a translucent blue rectangle
-     across an entire card on every tap. The app draws its own press and focus states. */
-  -webkit-tap-highlight-color: transparent;
 }
 
 body {

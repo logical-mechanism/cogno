@@ -59,9 +59,10 @@
 }
 
 /* Touch has no hover, so without a pressed state a tap looks like nothing happened until the
-   extrinsic lands (measured LCP on a throttled phone is seconds away). */
+   extrinsic lands (measured LCP on a throttled phone is seconds away). Uses --cg-bg-active, not
+   --cg-bg-hover: the hover wash is 3% alpha, which is invisible on a phone in daylight. */
 .action:active:not(:disabled) .iconWrap {
-  background: var(--cg-bg-hover);
+  background: var(--cg-bg-active);
 }
 
 .count {

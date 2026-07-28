@@ -32,8 +32,12 @@
   text-decoration: none;
 }
 
+/* Not a colour change: re-tapping the tab you are already on is a real wired gesture (it scrolls to
+   top and refreshes Home), and the active tab is already --cg-text, so a colour press state would be
+   a no-op exactly where the feedback is needed. */
 .tab:active {
   color: var(--cg-text);
+  background: var(--cg-bg-active);
 }
 
 /* icon wrapper — anchors the unread badge over the glyph */

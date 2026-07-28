@@ -186,9 +186,9 @@ export default function ListsPage() {
             onKeyDown={(e) => {
               if (e.key === "Enter") onCreate();
             }}
-            // Enter already creates the list; without the hint the phone keyboard shows a plain
-            // return key and nothing tells the user that.
-            enterKeyHint="done"
+            // Enter creates the list. "go" rather than "done": the glyph means "commit this
+            // action", where "done" means "finished editing, dismiss the keyboard".
+            enterKeyHint="go"
             placeholder={atListCap ? "List limit reached" : "New list name"}
             aria-label="New list name"
             disabled={atListCap}
@@ -245,6 +245,9 @@ export default function ListsPage() {
                   value={draftRename}
                   autoFocus
                   aria-label="Rename list"
+                  // Enter commits the rename; without the hint the phone keyboard shows a plain
+                  // return key and nothing says so.
+                  enterKeyHint="done"
                   onChange={(e) => setDraftRename(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") onRename(selected.id, draftRename);
