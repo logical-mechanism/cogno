@@ -125,9 +125,22 @@
   --cg-bg-active: rgba(231, 233, 234, 0.10);
   --cg-border: #2f3336;
 
+  /* TEXT RAMP — every tier clears WCAG AA (4.5:1) on the LIGHTEST background it can land on.
+     For light-on-dark the lightest background is the worst case, and that is --cg-bg-subtle
+     (#202327), NOT --cg-bg (#000000) — a token tuned against pure black fails everywhere else.
+     The inherited X values failed exactly that way: --cg-text-secondary #71767b was 4.58:1 on
+     black but 3.44:1 on subtle, and --cg-text-muted #565a5e failed on every background it had,
+     including 3.02:1 on pure black.
+
+     The naive repair (lift each token just past 4.5:1) puts secondary on #858a8f and muted on
+     #868a8e — one step apart, which erases the secondary/muted distinction entirely. So the
+     tiers target SEPARATED ratios instead (~6.5:1 and ~4.7:1 on subtle), keeping them 1.38:1
+     apart, close to the 1.52:1 they had before. Clearing AA does compress the ramp overall
+     (text-to-secondary goes 3.76:1 -> 1.99:1); that is the unavoidable cost of the floor, since
+     the lower tiers have nowhere to go but up. Ratios are asserted in styles/contrast.test.ts. */
   --cg-text: #e7e9ea;
-  --cg-text-secondary: #71767b;
-  --cg-text-muted: #565a5e;
+  --cg-text-secondary: #a2a7ac;
+  --cg-text-muted: #898d91;
 
   /* Neutral X-primary accent: used ONLY on the Post CTA + focus ring; every other accent use
    * (links, nav, wordmark, spinner, tab indicator, hover washes) collapses to monochrome. The
@@ -184,9 +197,10 @@
      daylight and would make a touch press look like nothing happened. */
   --cg-bg-active: rgba(231, 233, 234, 0.10);
   --cg-border: #2f3336;
+  /* Text ramp: see the note in :root. Every tier clears AA on --cg-bg-subtle, the worst case. */
   --cg-text: #e7e9ea;
-  --cg-text-secondary: #71767b;
-  --cg-text-muted: #565a5e;
+  --cg-text-secondary: #a2a7ac;
+  --cg-text-muted: #898d91;
   /* Neutral X-primary accent: used ONLY on the Post CTA + focus ring; every other accent use
    * (links, nav, wordmark, spinner, tab indicator, hover washes) collapses to monochrome. The
    * old mint/verdigris teal is dropped (user, 2026-06-21). like-pink / repost-green stay. */
@@ -227,9 +241,14 @@
      daylight and would make a touch press look like nothing happened. */
   --cg-bg-active: rgba(15, 20, 25, 0.10);
   --cg-border: #eff3f4;
+  /* Text ramp (light). Mirror of the :root note, with the worst case INVERTED: for dark-on-light
+     the DARKEST background is the one that fails, and that is --cg-accent-wash over --cg-bg
+     (rgba(15,20,25,.1) on #ffffff => #e7e8e8), not #ffffff. --cg-text-muted #8b98a5 was 2.94:1 on
+     white and 2.40:1 on the wash. Secondary is darkened too: at its old #536471 (4.99:1) an
+     AA-clearing muted would have landed almost on top of it. */
   --cg-text: #0f1419;
-  --cg-text-secondary: #536471;
-  --cg-text-muted: #8b98a5;
+  --cg-text-secondary: #425360;
+  --cg-text-muted: #5a6774;
   /* Neutral X-primary accent (light): near-black fill on the Post CTA + focus ring. */
   --cg-accent: #0f1419;
   --cg-accent-hover: #272c30;

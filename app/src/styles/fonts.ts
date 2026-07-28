@@ -18,8 +18,19 @@ import "@fontsource-variable/inter-tight";
 
 // Mono — IBM Plex Mono for ss58 handles / addresses. Only the weights the UI
 // uses (400 body, 500 emphasis).
-import "@fontsource/ibm-plex-mono/400.css";
-import "@fontsource/ibm-plex-mono/500.css";
+//
+// LATIN SUBSET ONLY, deliberately. The unsuffixed `400.css` declares five @font-face blocks (cyrillic,
+// cyrillic-ext, greek, latin-ext, latin); `latin-400.css` declares one. Every glyph this face ever
+// renders is ASCII — truncated ss58 handles, Cardano tx hashes, RPC endpoints in Diagnostics, an error
+// code — so the other four subsets are pure render-blocking CSS weight that can never match anything.
+//
+// The UI face below is NOT subsetted the same way, and must not be: it renders user-generated post
+// bodies and display names, which are routinely Cyrillic / Greek / Vietnamese. `unicode-range` already
+// means those subsets are only DOWNLOADED when a page actually contains such text, so keeping them
+// costs a little CSS and nothing else. Dropping them would silently render real users' posts in a
+// fallback face.
+import "@fontsource/ibm-plex-mono/latin-400.css";
+import "@fontsource/ibm-plex-mono/latin-500.css";
 
 /**
  * Truthy marker so the root layout can `import { FONTS_LOADED } from ".../fonts"`
