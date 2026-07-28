@@ -3,7 +3,9 @@
 .toaster {
   position: fixed;
   left: 50%;
-  bottom: var(--cg-space-6);
+  /* Typed 0px fallback: a unitless 0 inside calc() invalidates the whole expression where env()
+     is unsupported. Same idiom as ComposeFab/BottomTabBar. */
+  bottom: calc(var(--cg-space-6) + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   z-index: var(--cg-z-toast);
   display: flex;
@@ -47,6 +49,18 @@
   }
 }
 
+/* Mobile: clear the fixed BottomTabBar and the ComposeFab stacked above it. The toaster is
+   z-index 500 with pointer-events on each toast, so without this it paints over the primary nav
+   and swallows its taps — and a pending toast has no timeout, so it sits there until the write
+   settles. 53 + 48 + 24 puts the stack just above the FAB. */
+@media (max-width: 687px) {
+  .toaster {
+    bottom: calc(
+      var(--cg-header-h) + var(--cg-avatar-lg) + var(--cg-space-6) + env(safe-area-inset-bottom, 0px)
+    );
+  }
+}
+
 .iconWrap {
   display: inline-flex;
   align-items: center;
@@ -79,6 +93,9 @@
 
 .action {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--cg-touch-min);
   background: none;
   border: 0;
   padding: var(--cg-space-1) var(--cg-space-2);
@@ -94,6 +111,11 @@
 
 .close {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--cg-touch-min);
+  min-height: var(--cg-touch-min);
   background: none;
   border: 0;
   padding: var(--cg-space-1);

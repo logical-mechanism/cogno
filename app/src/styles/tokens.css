@@ -76,6 +76,15 @@
   --cg-icon-md: 1.25rem;
   --cg-icon-lg: 1.625rem;
 
+  /* Smallest comfortable touch target. Icon-only controls paint smaller than this on purpose (a
+     34px circle reads better in a dense row); the rule is that the TAPPABLE box reaches this. */
+  --cg-touch-min: 44px;
+
+  /* Floor for any TEXT-ENTRY control. iOS Safari zooms the page when you focus an input under 16px
+     and never zooms back out, which shoves the fixed bottom bar and the FAB off screen. Visually a
+     1px bump from --cg-fs-sm; do not lower it. */
+  --cg-fs-input: 1rem;
+
   /* ===== THEME-AGNOSTIC: Z-LAYERS ===== */
   --cg-z-base: 0;
   --cg-z-sticky: 100;

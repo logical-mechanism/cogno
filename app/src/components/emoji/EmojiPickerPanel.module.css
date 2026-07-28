@@ -20,7 +20,7 @@
   width: 100%;
   box-sizing: border-box;
   padding: var(--cg-space-2) var(--cg-space-3);
-  font-size: var(--cg-fs-sm);
+  font-size: var(--cg-fs-input);
   color: var(--cg-text);
   background: var(--cg-bg-subtle);
   border: 1px solid var(--cg-border);

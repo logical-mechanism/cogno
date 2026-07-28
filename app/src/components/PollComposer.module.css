@@ -24,7 +24,7 @@
   background: var(--cg-bg);
   color: var(--cg-text);
   font-family: var(--cg-font-ui);
-  font-size: var(--cg-fs-sm);
+  font-size: var(--cg-fs-input);
   line-height: var(--cg-lh-sm);
 }
 
@@ -136,7 +136,7 @@
   background: var(--cg-bg);
   color: var(--cg-text);
   font: inherit;
-  font-size: var(--cg-fs-sm);
+  font-size: var(--cg-fs-input);
   cursor: pointer;
 }
 .deadline:focus-visible {
@@ -192,7 +192,7 @@
   background: var(--cg-bg);
   color: var(--cg-text);
   font-family: var(--cg-font-ui);
-  font-size: var(--cg-fs-sm);
+  font-size: var(--cg-fs-input);
   line-height: var(--cg-lh-sm);
 }
 .govUrlInput::placeholder {
