@@ -186,6 +186,9 @@ export default function ListsPage() {
             onKeyDown={(e) => {
               if (e.key === "Enter") onCreate();
             }}
+            // Enter already creates the list; without the hint the phone keyboard shows a plain
+            // return key and nothing tells the user that.
+            enterKeyHint="done"
             placeholder={atListCap ? "List limit reached" : "New list name"}
             aria-label="New list name"
             disabled={atListCap}

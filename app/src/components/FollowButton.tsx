@@ -48,8 +48,11 @@ export function FollowButton({
         : "Following"
       : "Follow";
 
+  // Name the ACTION, not the state: `aria-pressed` already carries the state, and the visible label
+  // only morphs to "Unfollow" on hover, which touch and voice control never get. Without this a
+  // phone screen-reader user hears "Following", taps it, and unfollows.
   const ariaLabel = isFollowing
-    ? `Following ${handleOf(target)}`
+    ? `Unfollow ${handleOf(target)}`
     : `Follow ${handleOf(target)}`;
 
   const cls = [

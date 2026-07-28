@@ -322,6 +322,10 @@ function RoleClaimCard({
               placeholder={spec.keyPlaceholder}
               spellCheck={false}
               autoComplete="off"
+              // A bech32 id is case- and character-exact. Phone keyboards capitalise the first
+              // letter and autocorrect the rest by default, which silently corrupts a typed key.
+              autoCapitalize="none"
+              autoCorrect="off"
               rows={2}
               aria-label={`${spec.label} verification key`}
             />
