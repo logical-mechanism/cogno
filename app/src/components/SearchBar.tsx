@@ -82,7 +82,11 @@ export function SearchBar({
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
       }}
     >
-      <div className={styles.root}>
+      {/* A label, not a div: the pill paints 48px tall but only the input inside it accepted a tap,
+          so aiming at the magnifier or the padding did nothing. This forwards the whole pill to the
+          input with no handler. The clear ✕ below is interactive content, so a tap on it is not
+          re-routed here. */}
+      <label className={styles.root}>
         <span className={styles.icon} aria-hidden>
           <IconSearch />
         </span>
@@ -120,7 +124,7 @@ export function SearchBar({
             <IconClose />
           </button>
         )}
-      </div>
+      </label>
 
       {showRecent && (
         // preventDefault on mousedown keeps the input focused (blur would close the panel before the

@@ -38,6 +38,9 @@
 
 .input {
   flex: 1 1 auto;
+  /* Fill the pill's height so the direct hit target clears --cg-touch-min on its own, not only via
+     the label forwarding. The text stays vertically centred either way. */
+  align-self: stretch;
   min-width: 0;
   background: none;
   border: 0;
