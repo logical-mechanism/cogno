@@ -71,10 +71,25 @@
   --cg-avatar-lg: 48px;
   --cg-avatar-xl: 133px;
 
+  /* The mobile bottom chrome, named for what it IS so anything clearing it says so. These happen to
+     equal --cg-header-h and --cg-avatar-lg today; do not collapse them back, or retuning a header
+     height or an avatar size would silently move the toast stack onto the nav it exists to clear. */
+  --cg-tabbar-h: 53px;
+  --cg-fab-size: 48px;
+
   /* ===== THEME-AGNOSTIC: ICONS ===== */
   --cg-icon-sm: 1.125rem;
   --cg-icon-md: 1.25rem;
   --cg-icon-lg: 1.625rem;
+
+  /* Smallest comfortable touch target. Icon-only controls paint smaller than this on purpose (a
+     34px circle reads better in a dense row); the rule is that the TAPPABLE box reaches this. */
+  --cg-touch-min: 44px;
+
+  /* Floor for any TEXT-ENTRY control. iOS Safari zooms the page when you focus an input under 16px
+     and never zooms back out, which shoves the fixed bottom bar and the FAB off screen. Visually a
+     1px bump from --cg-fs-sm; do not lower it. */
+  --cg-fs-input: 1rem;
 
   /* ===== THEME-AGNOSTIC: Z-LAYERS ===== */
   --cg-z-base: 0;
@@ -105,6 +120,9 @@
   --cg-bg-subtle: #202327;
   --cg-bg-hover: rgba(231, 233, 234, 0.03);
   --cg-bg-hover-solid: #080808;
+  /* Pressed. Deliberately stronger than --cg-bg-hover (3%), which is invisible on a phone in
+     daylight and would make a touch press look like nothing happened. */
+  --cg-bg-active: rgba(231, 233, 234, 0.10);
   --cg-border: #2f3336;
 
   --cg-text: #e7e9ea;
@@ -162,6 +180,9 @@
   --cg-bg-subtle: #202327;
   --cg-bg-hover: rgba(231, 233, 234, 0.03);
   --cg-bg-hover-solid: #080808;
+  /* Pressed. Deliberately stronger than --cg-bg-hover (3%), which is invisible on a phone in
+     daylight and would make a touch press look like nothing happened. */
+  --cg-bg-active: rgba(231, 233, 234, 0.10);
   --cg-border: #2f3336;
   --cg-text: #e7e9ea;
   --cg-text-secondary: #71767b;
@@ -202,6 +223,9 @@
   --cg-bg-subtle: #f7f9f9;
   --cg-bg-hover: rgba(15, 20, 25, 0.03);
   --cg-bg-hover-solid: #f7f9f9;
+  /* Pressed. Deliberately stronger than --cg-bg-hover (3%), which is invisible on a phone in
+     daylight and would make a touch press look like nothing happened. */
+  --cg-bg-active: rgba(15, 20, 25, 0.10);
   --cg-border: #eff3f4;
   --cg-text: #0f1419;
   --cg-text-secondary: #536471;

@@ -20,12 +20,24 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--cg-text);
+  /* Inactive tabs are muted so the active one reads by CONTRAST, not by colour: --cg-accent and
+     --cg-text are near-identical in dark and exactly equal in light, so the old accent-vs-text pair
+     carried no signal on its own. Home/Notifications/Profile/Settings also swap to a filled glyph,
+     but Explore and Governance have no filled variant, so those two had no active state at all. */
+  color: var(--cg-text-secondary);
   transition: color var(--cg-motion-fast) var(--cg-ease-standard);
 }
 
 .tab:hover {
   text-decoration: none;
+}
+
+/* Not a colour change: re-tapping the tab you are already on is a real wired gesture (it scrolls to
+   top and refreshes Home), and the active tab is already --cg-text, so a colour press state would be
+   a no-op exactly where the feedback is needed. */
+.tab:active {
+  color: var(--cg-text);
+  background: var(--cg-bg-active);
 }
 
 /* icon wrapper — anchors the unread badge over the glyph */
@@ -54,7 +66,7 @@
 }
 
 .active {
-  color: var(--cg-accent);
+  color: var(--cg-text);
 }
 
 /* Mobile-only chrome — hidden at/above the tablet breakpoint. */

@@ -82,27 +82,34 @@ export function SearchBar({
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
       }}
     >
+      {/* The magnifier and the input share a <label> so the whole left side of the pill forwards to
+          the input with no handler: it paints 48px tall but only the 22px input used to accept a tap.
+          The clear ✕ stays OUTSIDE the label — a label may not contain another labelable element,
+          and where browsers do run label activation for a nested button, tapping ✕ would clear the
+          query and then re-raise the keyboard the user was dismissing. */}
       <div className={styles.root}>
-        <span className={styles.icon} aria-hidden>
-          <IconSearch />
-        </span>
-        <input
-          className={styles.input}
-          type="search"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={searchEnabled ? placeholder : disabledPlaceholder}
-          aria-label={placeholder}
-          disabled={!searchEnabled}
-          aria-disabled={!searchEnabled || undefined}
-          title={searchEnabled ? undefined : "Available once connected."}
-          autoFocus={autoFocus}
-          spellCheck={false}
-          autoComplete="off"
-          enterKeyHint="search"
-          inputMode="search"
-        />
+        <label className={styles.field}>
+          <span className={styles.icon} aria-hidden>
+            <IconSearch />
+          </span>
+          <input
+            className={styles.input}
+            type="search"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={searchEnabled ? placeholder : disabledPlaceholder}
+            aria-label={placeholder}
+            disabled={!searchEnabled}
+            aria-disabled={!searchEnabled || undefined}
+            title={searchEnabled ? undefined : "Available once connected."}
+            autoFocus={autoFocus}
+            spellCheck={false}
+            autoComplete="off"
+            enterKeyHint="search"
+            inputMode="search"
+          />
+        </label>
         {/* The in-flight spinner is ADDITIVE to the clear ✕ (it used to replace it, leaving no way to
             bail a slow scan but select-all-delete). */}
         {searchEnabled && loading && (

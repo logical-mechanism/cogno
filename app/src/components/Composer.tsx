@@ -43,6 +43,20 @@ import type { ReactNode, CSSProperties } from "react";
 /** Runtime Microblog::MaxLength (Vec<u8>), measured as UTF-8 BYTES (D1). */
 export const MAX_POST_BYTES = 512;
 
+/**
+ * Grow the textarea to fit its content, then hand scrollability back once the CSS max-height clamps
+ * it. Without that last step a draft taller than the cap is CLIPPED with no way to reach the top of
+ * it: the box does not scroll, and a phone has no arrow keys to drag the caret back up with.
+ * Measured with overflow hidden so a desktop scrollbar cannot re-wrap the text and inflate the
+ * scrollHeight we are measuring.
+ */
+function autosize(el: HTMLTextAreaElement) {
+  el.style.overflowY = "hidden";
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
+  el.style.overflowY = el.scrollHeight > el.clientHeight ? "auto" : "hidden";
+}
+
 // The searchable emoji board. Lazy so its emoji dataset (~570KB) downloads as its own
 // chunk only when a user first opens the picker — it never touches the main composer bundle. Emoji are
 // still inserted as plain UTF-8 that counts toward the byte budget; this is NOT a media affordance.
@@ -200,6 +214,23 @@ export function Composer({
 
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
+  // Size for text that did NOT arrive by typing: a restored draft, a cleared box after submit, or a
+  // controlled surface setting the value. Without this those open as a one-line box. useEffect
+  // rather than useLayoutEffect because the static export prerenders and useLayoutEffect warns on
+  // the server; typing resizes synchronously in onChange instead, so there is no flash.
+  //
+  // Typing skips this pass. autosize forces two layout flushes, so running it here as well would
+  // cost four per keystroke on the surface this is meant to keep cheap on a throttled phone.
+  const sizedWhileTyping = useRef(false);
+  useEffect(() => {
+    if (sizedWhileTyping.current) {
+      sizedWhileTyping.current = false;
+      return;
+    }
+    const el = taRef.current;
+    if (el) autosize(el);
+  }, [text]);
+
   const setText = useCallback(
     (next: string) => {
       if (!isControlled) setInnerText(next);
@@ -312,8 +343,8 @@ export function Composer({
       }
       setText(next);
       syncMentionQuery(next, el.selectionStart ?? next.length);
-      el.style.height = "auto";
-      el.style.height = `${el.scrollHeight}px`;
+      autosize(el);
+      sizedWhileTyping.current = true;
     },
     [maxBytes, setText, clampable, syncMentionQuery],
   );
@@ -347,10 +378,10 @@ export function Composer({
     onSubmit(buildDraft());
     dismissMentions(); // close the popover; the refs are retired by the prune, not here
     // OPTIMISTIC: clear the textarea instantly. Controlled drafts are cleared by the surface.
-    if (!isControlled) {
-      setInnerText("");
-      if (taRef.current) taRef.current.style.height = "auto";
-    }
+    // The emptied box is resized by the [text] effect above, which also clears the scroller a long
+    // draft left behind. Resetting the inline styles here too would be a second source of truth for
+    // them, and would leave height:auto behind.
+    if (!isControlled) setInnerText("");
   }, [sessionGated, disabled, onSubmit, buildDraft, isControlled, dismissMentions, markSubmitted, text]);
 
   const onKeyDown = useCallback(

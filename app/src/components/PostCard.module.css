@@ -14,16 +14,29 @@
   background: var(--cg-bg-hover);
 }
 
+/* Scoped to the card, NOT global: the whole row is one tap target, so the platform highlight painted
+   a translucent rectangle across the entire post. Everywhere else the platform highlight is the only
+   press feedback there is, so it stays. The row draws its own instead. */
+.card {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.card:active {
+  background: var(--cg-bg-active);
+}
+
 .card:focus-visible {
   outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
   outline-offset: calc(-1 * var(--cg-focus-ring-width));
   border-radius: var(--cg-radius-input);
 }
 
-/* inner content sits above the overlay link so its controls are clickable. */
+/* Stays positioned so the thread line (an absolutely positioned ::before on .card) sits behind the
+   content — tree order already does that, no lift needed. Deliberately NO z-index: the overlay link
+   this once guarded is gone (the whole row handles the click now), and a z-index here opens a
+   stacking context that traps the header's overflow menu below the fixed mobile chrome. */
 .inner {
   position: relative;
-  z-index: 1;
 }
 
 /* Muted-author collapse stub: a non-clickable row with a "Show" reveal. */

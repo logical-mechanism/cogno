@@ -322,6 +322,10 @@ function RoleClaimCard({
               placeholder={spec.keyPlaceholder}
               spellCheck={false}
               autoComplete="off"
+              // A bech32 id is case- and character-exact. Phone keyboards capitalise the first
+              // letter and autocorrect the rest by default, which silently corrupts a typed key.
+              autoCapitalize="none"
+              autoCorrect="off"
               rows={2}
               aria-label={`${spec.label} verification key`}
             />
@@ -413,6 +417,12 @@ function RoleClaimCard({
                   onChange={(e) => setPasted(e.target.value)}
                   placeholder="cardano-signer --json-extended output"
                   spellCheck={false}
+                  // Same reason as the key field above: this blob's signature and publicKey are
+                  // case-exact hex, and a phone keyboard capitalises and autocorrects by default,
+                  // which corrupts it silently and fails CIP-8 verification with no visible cause.
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  autoComplete="off"
                   rows={4}
                   aria-label="cardano-signer output"
                 />

@@ -28,10 +28,14 @@
   opacity: 0.6;
 }
 
+/* Wraps like the main card header (PostCardHeader .nameLine): without it the name and handle are the
+   only shrinkable items on the row, so unshrinkable role chips squeezed the name to a single letter
+   and cut the ss58's disambiguating tail. */
 .header {
   display: flex;
   align-items: center;
-  gap: var(--cg-space-2);
+  flex-wrap: wrap;
+  gap: 0 var(--cg-space-2);
   font-size: var(--cg-fs-sm);
   line-height: var(--cg-lh-sm);
   min-width: 0;

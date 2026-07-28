@@ -6,6 +6,14 @@
   gap: var(--cg-space-2);
 }
 
+/* The avatar slot must never shrink. ProfileHoverCard's wrap carries min-width: 0 so its TEXT
+   triggers can truncate, but that also lets flex squeeze this one below the avatar's fixed size:
+   at 320px the wrapper collapsed to 27px while the avatar kept painting 40px, so it overlapped the
+   handle by 5px. Pinning the slot keeps the identity column clear of the avatar at every width. */
+.header > :first-child {
+  flex: 0 0 auto;
+}
+
 /* detail variant: avatar + identity sit inline at the top of the focused post */
 .detail {
   align-items: center;

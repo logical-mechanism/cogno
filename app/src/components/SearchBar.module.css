@@ -23,6 +23,18 @@
   border-color: var(--cg-accent);
 }
 
+/* The tappable region: magnifier + input, stretched to the pill's full height so the whole left side
+   forwards focus. The clear ✕ is a sibling, not a child (see SearchBar.tsx). */
+.field {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  gap: var(--cg-space-2);
+  min-width: 0;
+  cursor: text;
+}
+
 .icon {
   flex: 0 0 auto;
   display: inline-flex;
@@ -38,12 +50,15 @@
 
 .input {
   flex: 1 1 auto;
+  /* Fill the pill's height so the direct hit target clears --cg-touch-min on its own, not only via
+     the label forwarding. The text stays vertically centred either way. */
+  align-self: stretch;
   min-width: 0;
   background: none;
   border: 0;
   outline: none;
   color: var(--cg-text);
-  font-size: var(--cg-fs-sm);
+  font-size: var(--cg-fs-input);
 }
 
 .input::placeholder {

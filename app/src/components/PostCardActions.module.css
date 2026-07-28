@@ -51,8 +51,18 @@
   height: 34px;
   margin: -7px;
   border-radius: var(--cg-radius-pill);
+  /* Positioned so the bubble paints above the sibling score span. Without this the upvote arrow lost
+     its right-hand 7px to the score's box and that strip was a dead tap. */
+  position: relative;
   transition: background var(--cg-motion-fast) var(--cg-ease-standard),
     color var(--cg-motion-fast) var(--cg-ease-standard);
+}
+
+/* Touch has no hover, so without a pressed state a tap looks like nothing happened until the
+   extrinsic lands (measured LCP on a throttled phone is seconds away). Uses --cg-bg-active, not
+   --cg-bg-hover: the hover wash is 3% alpha, which is invisible on a phone in daylight. */
+.action:active:not(:disabled) .iconWrap {
+  background: var(--cg-bg-active);
 }
 
 .count {

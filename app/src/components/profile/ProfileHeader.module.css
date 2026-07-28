@@ -30,6 +30,9 @@
   font-size: var(--cg-fs-sm);
   line-height: var(--cg-lh-sm);
   color: var(--cg-text-secondary);
+  /* Inherited, so this reaches the location text and the website label. A long unbroken URL is
+     user-supplied chain text, and without it the whole page scrolled sideways on a phone. */
+  overflow-wrap: anywhere;
 }
 
 .metaItem {
@@ -151,6 +154,9 @@
   font-size: var(--cg-fs-xl);
   font-weight: var(--cg-fw-extrabold);
   line-height: var(--cg-lh-xl);
+  /* This is the un-truncated display name (the profile header opts out of the feed's truncation),
+     so an unbroken one pushed the page wide on its own. */
+  overflow-wrap: anywhere;
 }
 
 /* @handle + "Follows you" pill on one line (X-style). */

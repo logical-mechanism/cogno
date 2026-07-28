@@ -145,6 +145,12 @@
     padding: 0;
   }
 
+  /* "cogno" at --cg-fs-2xl is wider than the 88px rail, so it was being sliced off at the viewport
+     edge on every tablet AND on any phone held in landscape (740px lands in this band). */
+  .wordmarkText {
+    font-size: var(--cg-fs-lg);
+  }
+
   .item {
     justify-content: center;
     gap: 0;
