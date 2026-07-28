@@ -64,6 +64,28 @@ npm test                    # vitest
 npm run smoke               # sanity-check a built app/out/
 ```
 
+`npm run psi` audits the **deployed** site with Google PageSpeed Insights (7 guest-visible routes ×
+mobile/desktop). It is not a CI gate and needs a `PAGESPEED_API_KEY` in `.env.local` or the repo-root
+`.env` — the API answers `429` to anonymous callers. Two things about reading its output:
+
+```bash
+npm run psi                      # medians of 3 runs
+npm run psi -- --label after --runs 5
+npm run psi -- --origin http://localhost:3000
+```
+
+**The performance score is very noisy** — the home page has scored 93, 83 and 64 on three consecutive
+runs of identical deployed bytes — which is why every route is sampled N times and the report prints
+the min-max range beside the median. Read the range before believing a delta. `CLS` and the category
+scores other than performance come back stable, so those are the ones to trust for a before/after.
+
+**PageSpeed's sandbox does not proxy WebSockets**, so the chain connection always fails and no post
+ever renders. That means `errors-in-console` can never pass (every error it collects is the browser's
+own failed-WebSocket message, none originate in app code, and the audit fails on any error at all), and
+anything measured on a chain-backed route is measuring the app's empty state. Real-user CLS is *higher*
+than reported, because the skeleton-to-content swap PSI never triggers is a larger shift than the ones
+it does see.
+
 After a runtime `spec_version` bump the bundled PAPI descriptors go stale — regenerate them against a
 node running the new runtime (`npm run lint` fails until you do):
 

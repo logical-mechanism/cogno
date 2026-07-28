@@ -18,6 +18,7 @@
     "check:tokens": "node scripts/check-tokens.mjs",
     "check:spec": "node scripts/check-spec.mjs",
     "smoke": "node scripts/smoke-export.mjs",
+    "psi": "node scripts/psi.mjs",
     "papi:add": "papi add cogno -w ws://127.0.0.1:9944",
     "papi": "papi",
     "test": "vitest run"
