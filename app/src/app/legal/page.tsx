@@ -86,7 +86,9 @@ export default function LegalPage() {
           </p>
         </section>
 
-        <section className={styles.section}>
+        {/* id="cost" is a link target: the welcome flow's "More about the lock" points here rather
+            than restating the custody explanation a fourth time. Renaming it breaks that link. */}
+        <section className={styles.section} id="cost">
           <h2 className={styles.heading}>Your ADA, and who holds it</h2>
           <p className={styles.body}>
             Posting power comes from locking {LOCK_ADA_WHOLE} ADA in a Cardano smart contract. We never
