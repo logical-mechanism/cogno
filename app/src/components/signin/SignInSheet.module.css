@@ -1,0 +1,84 @@
+/* SignInSheet — a centred sheet over the current surface. Geometry mirrors ConfirmDialog so the two
+   modal-ish surfaces in the app read as the same thing; the z-index sits at the same layer for the
+   same reason (it may open over a composer modal). */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--cg-z-modal) + 10);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-4);
+  background: var(--cg-overlay);
+}
+
+.card {
+  width: 100%;
+  max-width: 400px;
+  padding: var(--cg-space-5);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-card);
+  background: var(--cg-bg-elevated);
+  box-shadow: var(--cg-shadow-modal);
+}
+
+.title {
+  margin: 0 0 var(--cg-space-2);
+  font-size: var(--cg-fs-xl);
+  line-height: var(--cg-lh-xl);
+  font-weight: var(--cg-fw-extrabold);
+  letter-spacing: var(--cg-tracking-tight);
+  color: var(--cg-text);
+}
+
+.body {
+  margin: 0 0 var(--cg-space-5);
+  font-size: var(--cg-fs-sm);
+  line-height: var(--cg-lh-sm);
+  color: var(--cg-text-secondary);
+}
+
+.actions {
+  display: flex;
+  gap: var(--cg-space-2);
+  justify-content: flex-end;
+}
+
+.cta,
+.ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-2) var(--cg-space-5);
+  border-radius: var(--cg-radius-pill);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+}
+
+.cta {
+  border: 0;
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+}
+
+.cta:hover {
+  background: var(--cg-accent-hover);
+}
+
+.ghost {
+  border: 1px solid var(--cg-border);
+  background: transparent;
+  color: var(--cg-text);
+}
+
+.ghost:hover {
+  background: var(--cg-bg-hover);
+}
+
+.cta:focus-visible,
+.ghost:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}

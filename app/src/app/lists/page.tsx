@@ -177,6 +177,16 @@ export default function ListsPage() {
           Opening a list asks the node for each account&apos;s posts, so the node can see who you put in
           it. Private here means unpublished, not hidden.
         </p>
+        {/* Same point as /bookmarks: a signed-out visitor's lists live in the shared-device "Signed
+            out" bucket and do not follow them into an account. Nothing migrates on sign-in (adopting
+            a stranger's lists would break what /privacy promises about a shared browser), so the
+            honest thing is to say so before they build one. */}
+        {viewer.status === "not-connected" && (
+          <p className={styles.note}>
+            You are signed out, so these are saved under Signed out. Signing in gives you a separate
+            set of lists.
+          </p>
+        )}
 
         <div className={styles.createRow}>
           <input

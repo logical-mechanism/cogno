@@ -46,15 +46,31 @@ describe("setupStatus — the single setup funnel", () => {
   );
 
   it.each(BOUND_STATES)(
-    "%s WITHOUT a stake bind → not ready, next is add voting power (mandatory, before the lock)",
+    "%s WITHOUT a stake bind but WITH posting power → READY. The stake bind is not a posting gate",
     (state) => {
-      // Even WITH posting power, an account that never bound its stake key is setup-incomplete.
+      // The regression this pins: the stake bind writes TalkStake::VotingPower and nothing else, so a
+      // bound + locked account posts normally without it. Treating it as required blocked every wallet
+      // that cannot sign over a reward address from posting at all.
       const s = setupStatus(state, 100_000_000n, false);
-      expect(s.phase).toBe("needs_voting_power");
-      expect(s.ready).toBe(false);
-      expect(s.next).toEqual({ kind: "stake", label: "Add voting power" });
+      expect(s.phase).toBe("ready");
+      expect(s.ready).toBe(true);
+      expect(s.next).toBeNull();
+      // Reported, but only as advice.
+      expect(s.votingPowerLinked).toBe(false);
     },
   );
+
+  it("never proposes the stake bind as the one required next action, in any reachable state", () => {
+    const states = [
+      "disconnected", "connecting", "connected_unbound", "binding",
+      "bound", "bound_no_stake", "bound_staked",
+    ] as const;
+    for (const state of states)
+      for (const power of [null, 0n, 100_000_000n])
+        for (const stake of [null, false, true])
+          for (const pending of [false, true])
+            expect(setupStatus(state, power, stake, pending).next?.kind).not.toBe("stake");
+  });
 
   it.each(BOUND_STATES)(
     "%s stake-bound with ZERO posting power → not ready, next is to lock ADA",
@@ -77,12 +93,13 @@ describe("setupStatus — the single setup funnel", () => {
   );
 
   it.each(BOUND_STATES)(
-    "%s while the STAKE read is still loading → neutral checking (never flash 'add voting power')",
+    "%s with zero power while the STAKE read loads → still 'lock ADA'. Stake never holds up the lock",
     (state) => {
+      // An in-flight stake read used to mask the real next step behind a neutral "checking" state.
       const s = setupStatus(state, 0n, null);
-      expect(s.phase).toBe("checking_power");
-      expect(s.ready).toBe(false);
-      expect(s.next).toBeNull();
+      expect(s.phase).toBe("needs_power");
+      expect(s.next).toEqual({ kind: "lock", label: "Lock ADA" });
+      expect(s.votingPowerLinked).toBeNull();
     },
   );
 
@@ -99,10 +116,10 @@ describe("setupStatus — the single setup funnel", () => {
       expect(s.headline.length).toBeGreaterThan(0);
       expect(s.detail.length).toBeGreaterThan(0);
     }
-    // needs-voting-power and bound-but-unlocked likewise render a full headline + detail.
-    const needsStake = setupStatus("bound", 100_000_000n, false);
-    expect(needsStake.headline.length).toBeGreaterThan(0);
-    expect(needsStake.detail.length).toBeGreaterThan(0);
+    // bound-but-unlocked likewise renders a full headline + detail.
+    const needsLock = setupStatus("bound", 0n, false);
+    expect(needsLock.headline.length).toBeGreaterThan(0);
+    expect(needsLock.detail.length).toBeGreaterThan(0);
     const unlocked = setupStatus("bound", 0n, true);
     expect(unlocked.headline.length).toBeGreaterThan(0);
     expect(unlocked.detail.length).toBeGreaterThan(0);

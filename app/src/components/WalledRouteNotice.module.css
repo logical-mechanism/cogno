@@ -1,0 +1,75 @@
+/* WalledRouteNotice — a centred explanation where the walled page would have been. Sits inside the
+   shell, so the rails and tabs frame it and the visitor is never stranded. */
+
+.notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cg-space-3);
+  padding: var(--cg-space-8) var(--cg-space-5);
+  text-align: center;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--cg-fs-xl);
+  line-height: var(--cg-lh-xl);
+  font-weight: var(--cg-fw-extrabold);
+  letter-spacing: var(--cg-tracking-tight);
+  color: var(--cg-text);
+}
+
+.body {
+  margin: 0;
+  max-width: 34ch;
+  font-size: var(--cg-fs-md);
+  line-height: var(--cg-lh-md);
+  color: var(--cg-text-secondary);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--cg-space-2);
+  margin-top: var(--cg-space-2);
+}
+
+.cta,
+.ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-2) var(--cg-space-5);
+  border-radius: var(--cg-radius-pill);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-bold);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.cta {
+  border: 0;
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+}
+
+.cta:hover {
+  background: var(--cg-accent-hover);
+}
+
+.ghost {
+  border: 1px solid var(--cg-border);
+  background: transparent;
+  color: var(--cg-text);
+}
+
+.ghost:hover {
+  background: var(--cg-bg-hover);
+}
+
+.cta:focus-visible,
+.ghost:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+}

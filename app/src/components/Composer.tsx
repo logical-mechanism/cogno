@@ -25,6 +25,7 @@ import { ByteCounter } from "./ByteCounter";
 import { utf8Bytes, clampToBytes } from "@/lib/bytes";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 import { CapacityMeter } from "./CapacityMeter";
 import { Avatar } from "./Avatar";
 import { Spinner, IconPoll, IconEye } from "./icons";
@@ -105,12 +106,6 @@ export interface ComposerProps {
    * self-contained on every surface; this prop only hard-disables the CTA where the surface knows it.
    */
   noPostingPower?: boolean;
-  /**
-   * Ready account whose MANDATORY stake bind is unfinished → CTA disabled + the "add voting power /
-   * finish setup" notice (rendered self-contained by NoPostingPowerNotice; this prop hard-disables the
-   * CTA). Takes precedence over noPostingPower — stake is the earlier required step.
-   */
-  needsVotingPower?: boolean;
   /** Context block above/below the textarea (reply preview / QuotedPostEmbed / poll options). */
   contextAbove?: ReactNode;
   contextBelow?: ReactNode;
@@ -186,7 +181,6 @@ export function Composer({
   rateLimited,
   retryInSeconds,
   noPostingPower,
-  needsVotingPower,
   contextAbove,
   contextBelow,
   toolbarExtras,
@@ -322,15 +316,12 @@ export function Composer({
     onDirtyChange?.(nonEmpty);
   }, [nonEmpty, onDirtyChange]);
 
-  // CTA disabled rules — order: session(reroute) > validity > capacity > pending. No posting
-  // power (zero locked ADA) and the unfinished mandatory stake step are hard blocks, same as rate-limited.
+  // CTA disabled rules — order: session(reroute) > validity > capacity > pending. No posting power
+  // (zero locked ADA) is a hard block, same as rate-limited. A missing stake bind is NOT: it costs
+  // vote weight, not the ability to post, so it never disables this CTA.
   const disabled = sessionGated
     ? false // session-gated CTA is ACTIVE (it reroutes), never greyed
-    : !textValid ||
-      rateLimited === true ||
-      noPostingPower === true ||
-      needsVotingPower === true ||
-      pending;
+    : !textValid || rateLimited === true || noPostingPower === true || pending;
 
   // Auto-grow: let the textarea size to content (capped by CSS max-height → scroll).
   const onTextareaInput = useCallback(
@@ -475,10 +466,13 @@ export function Composer({
         </div>
       </div>
 
+      {/* The signed-out prompt. On /post this is the ONLY sign-in affordance a shared link lands on
+          (ThreadView renders a reply composer at every breakpoint, and GuestSignInPrompt deliberately
+          does not mount there), so it names the price rather than just asking for a wallet. */}
       {sessionGated && (
         <p className={styles.sessionPrompt} role="status">
           {viewer.status === "not-connected"
-            ? "Connect a wallet to post."
+            ? `Reading is free. Posting needs a wallet and a ${LOCK_ADA_WHOLE} ADA lock you can take back whenever you want.`
             : "Finish setup to post."}
         </p>
       )}
@@ -487,7 +481,7 @@ export function Composer({
           it renders on every surface; it takes precedence over the transient rate-limit notice. */}
       {!sessionGated && <NoPostingPowerNotice />}
 
-      {!sessionGated && !noPostingPower && !needsVotingPower && rateLimited && (
+      {!sessionGated && !noPostingPower && rateLimited && (
         <div className={styles.notice}>
           <RateLimitNotice variant="inline" retryInSeconds={retryInSeconds} />
         </div>
@@ -545,17 +539,15 @@ export function Composer({
             title={
               sessionGated
                 ? undefined
-                : needsVotingPower
-                  ? "Add voting power to post"
-                  : noPostingPower
-                    ? "Lock ADA to post"
-                    : overLimit
-                      ? `Too long. Trim to ${maxBytes} bytes`
-                      : !allowEmptyText && !nonEmpty
-                        ? "Write something first"
-                        : rateLimited
-                          ? "You're over the rate limit"
-                          : `${label} (${IS_MAC ? "⌘↵" : "Ctrl+Enter"})`
+                : noPostingPower
+                  ? "Lock ADA to post"
+                  : overLimit
+                    ? `Too long. Trim to ${maxBytes} bytes`
+                    : !allowEmptyText && !nonEmpty
+                      ? "Write something first"
+                      : rateLimited
+                        ? "Your posting power is still charging"
+                        : `${label} (${IS_MAC ? "⌘↵" : "Ctrl+Enter"})`
             }
           >
             {pending ? <Spinner size="sm" label="Posting" /> : label}

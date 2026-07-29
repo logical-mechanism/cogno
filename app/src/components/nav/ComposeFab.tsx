@@ -6,22 +6,22 @@
 // i.e. viewer.writeReady) — an explicit "Post" tap is clearer sent to finish setup than to a dead CTA.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import styles from "./ComposeFab.module.css";
 import { IconCompose } from "../icons";
 import { useSession } from "../Providers";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useModalStore } from "@/lib/modalStore";
 
 export function ComposeFab() {
-  const router = useRouter();
   const pathname = usePathname() ?? "/";
   const { viewer } = useSession();
   const { openCompose } = useModalStore();
 
   const onClick = useCallback(() => {
     if (viewer.writeReady) openCompose();
-    else router.push("/welcome/");
-  }, [viewer.writeReady, openCompose, router]);
+    else signInPromptActions.open("post");
+  }, [viewer.writeReady, openCompose]);
 
   // Slide out of the way while the feed scrolls DOWN, and come back on any upward scroll or near the
   // top. The FAB is fixed at z 200 over a scrolling feed, so at rest it hit-tests on top of whichever

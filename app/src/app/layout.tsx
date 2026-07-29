@@ -9,6 +9,7 @@ import "../styles/globals.css";
 import { FONTS_LOADED } from "../styles/fonts"; // value import → the @font-face side-effect can't be tree-shaken
 import { Providers } from "@/components/Providers";
 import { AppShell } from "@/components/AppShell";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 
 // Reference FONTS_LOADED so the import is retained (the fonts module is a pure side-effect otherwise).
 void FONTS_LOADED;
@@ -20,8 +21,18 @@ export const metadata: Metadata = {
   // deploy pointing its cards at production is the right trade.
   metadataBase: new URL("https://cogno.forum"),
   title: "cogno",
-  description:
-    "Post text, read text. A feeless social app where ADA locked on Cardano is your posting power.",
+  // Names the PRICE, not just the mechanism. This is the first and often only sentence a cold visitor
+  // reads before deciding to click, and the previous version ("...where ADA locked on Cardano is your
+  // posting power") described how the chain works without saying that reading costs nothing or that
+  // posting costs a refundable 100 ADA. Someone who is not going to lock should be able to find that
+  // out here rather than four screens into onboarding, after a permanent identity bind.
+  //
+  // The amount comes from lib/cardano/lockAmount, which exists for exactly the hazard this comment
+  // used to describe and then hand-work around: importing blueprint.ts (→ vaults.ts → 6 KB of applied
+  // CBOR) to render one number pulls that artifact into the bundle. lockAmount has no dependencies,
+  // and lockAmount.test.ts pins its value against the script's own `minLock`, so this string can quote
+  // the price without the payload and without anyone having to remember to update it by hand.
+  description: `Post text, read text. Reading is free. To post, lock ${LOCK_ADA_WHOLE} ADA on Cardano and take it back whenever you want.`,
   applicationName: "cogno",
   // The site is indexable. It is a live, honestly-labeled service; being a preprod testnet is not a
   // reason to hide it from search. (The app shell + static pages like /legal and /privacy are
@@ -50,8 +61,7 @@ export const metadata: Metadata = {
     type: "website",
     siteName: "cogno",
     title: "cogno",
-    description:
-      "Post text, read text. A feeless social app where ADA locked on Cardano is your posting power.",
+    description: `Post text, read text. Reading is free. To post, lock ${LOCK_ADA_WHOLE} ADA on Cardano and take it back whenever you want.`,
   },
   // Without an explicit card type X falls back to `summary` (a tiny side thumbnail);
   // `summary_large_image` is the full-width card. Title, description and image inherit from

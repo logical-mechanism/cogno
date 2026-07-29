@@ -20,13 +20,19 @@ import { useVault, type VaultAction } from "@/hooks/useVault";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
+import { usePendingLockRecover } from "@/hooks/usePendingLockRecover";
 import { PendingCapacityNotice } from "@/components/PendingCapacityNotice";
 import { pendingLockActions } from "@/lib/pendingLockStore";
 import { useActionToast } from "@/hooks/useActionToast";
 import { formatAda } from "@/lib/format";
 import { useStabilityWindow } from "@/hooks/useStabilityWindow";
+import { MIN_LOCK } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 
-const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
+// The script's own enforced floor, never a literal. This was a hardcoded `100_000_000n`, which is a
+// worse hazard than the copy alongside it: a redeploy that moves `minLock` would leave this building
+// transactions for the wrong amount, silently under- or over-paying the vault.
+const LOCK_AMOUNT = MIN_LOCK;
 
 export function VaultSection() {
   const { api, signerCtl, boot } = useSession();
@@ -67,7 +73,10 @@ export function VaultSection() {
 
   // Persist the in-flight lock + surface the explained, timed "crediting" state (survives reload,
   // covers relock). Mirrors the welcome flow so both places tell the same story.
-  usePendingLockSync(vault, ss58);
+  usePendingLockSync(vault, ss58, api);
+  // Same recovery as the welcome flow: this section already has vault state loaded, so it is one of
+  // the two places that can rebuild a record for a lock placed on another device.
+  usePendingLockRecover(vault, ss58, postingPower);
   const pending = usePendingCapacity(api, ss58, postingPower);
   // Observer liveness, so this panel does not narrate a countdown against a frontier that has stopped
   // moving. `useBestBlock` is the shared, visibility-frozen head — never a private useHeads here.
@@ -212,7 +221,7 @@ export function VaultSection() {
               ) : hasLock ? (
                 "Already locked"
               ) : (
-                "Lock 100 ADA"
+                `Lock ${LOCK_ADA_WHOLE} ADA`
               )}
             </button>
             <button
@@ -236,7 +245,8 @@ export function VaultSection() {
           </div>
           {hasLock && !exitInFlight && (
             <p className={styles.note}>
-              Exiting returns your 100 ADA and removes your posting power until you lock again.
+              Exiting returns your {LOCK_ADA_WHOLE} ADA and removes your posting power until you lock
+              again.
             </p>
           )}
           {/* A second vault UTxO is pure loss of use: the chain credits the largest one and never sums,

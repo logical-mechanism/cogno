@@ -31,12 +31,25 @@ function formatEta(etaMs: number): string {
   return rem ? `in about ${hours}h ${rem}m` : `in about ${hours} hour${hours === 1 ? "" : "s"}`;
 }
 
-/** An absolute clock/date, added for long (mainnet-scale) waits where a relative countdown is unhelpful. */
+/**
+ * An absolute clock/date, added for long (mainnet-scale) waits where a relative countdown is unhelpful.
+ *
+ * Past roughly a day out, the weekday alone is ambiguous: at the mainnet stability window (~36 h) a
+ * lock placed on Thursday evening credits on Saturday morning, and "Sat, 3:00 PM" does not say WHICH
+ * Saturday to someone who reopens the tab a week later with the record still pending. Add the calendar
+ * date once the wait is long enough for that to matter.
+ */
 function formatAbsolute(unlockAtMs: number): string {
   const d = new Date(unlockAtMs);
-  const sameDay = new Date().toDateString() === d.toDateString();
+  const now = new Date();
+  const sameDay = now.toDateString() === d.toDateString();
+  // 20 h, not 24: the threshold is "far enough out that a bare weekday reads as ambiguous", and a
+  // 36 h window crosses it comfortably while an ordinary preprod wait (~10 min) never does.
+  const farOut = unlockAtMs - now.getTime() > 20 * 60 * 60 * 1000;
   return d.toLocaleString(undefined, {
     weekday: sameDay ? undefined : "short",
+    month: farOut ? "short" : undefined,
+    day: farOut ? "numeric" : undefined,
     hour: "numeric",
     minute: "2-digit",
   });
@@ -79,6 +92,27 @@ function toView(status: PendingCapacityStatus, observer?: ObserverHealth): View 
 
   switch (status.kind) {
     case "confirming":
+      // A RECOVERED record gets different words, because it is a different claim. It was rebuilt from a
+      // vault UTxO on a device that saw nothing submit, so "Lock submitted" is false here and the
+      // spinner is worse: a recovered record has no slot, is exempt from the confirm timeout, and can
+      // never reach "overdue", so this is the terminal state for it. That spinner spins for as long as
+      // the wait lasts (up to 36 h at the mainnet window) and forever if the lock never credits.
+      //
+      // What is actually known is the useful part anyway: the ADA IS locked, and the credit has not
+      // arrived. Say that, drop the spinner (nothing is happening on this device), and do not offer a
+      // countdown there is no honest basis for.
+      if (status.recovered) {
+        return {
+          title: "Your ADA is locked",
+          detail:
+            "cogno can see your lock on Cardano and has not credited your posting power yet. There is nothing to do but wait. Do not lock again.",
+          why: false,
+          bar: null,
+          spinner: false,
+          txHash: null,
+          dismissible: false,
+        };
+      }
       return {
         title: "Lock submitted",
         detail: "Confirming your lock on Cardano…",

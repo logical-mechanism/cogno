@@ -19,6 +19,7 @@ import { WalletRow } from "./WalletRow";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/icons";
 import { Loading } from "@/components/Loading";
+import { SetupCostNote } from "./SetupCostNote";
 import { listCardanoWallets, type CardanoWalletInfo } from "@/lib/cardano/cip8";
 
 export interface WalletPickerProps {
@@ -158,6 +159,10 @@ export function WalletPicker({
           {errorCopy}
         </p>
       )}
+
+      {/* The cost, stated BEFORE the first signature. See SetupCostNote for why it is here and not
+          only on the screen that asks for the lock. */}
+      <SetupCostNote variant="full" />
     </section>
   );
 }

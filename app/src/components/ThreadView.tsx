@@ -34,6 +34,7 @@ import { Skeleton } from "./Skeleton";
 import { NotFoundInline } from "./AppShell";
 import { Spinner } from "./icons";
 import { useSession, useBestBlock } from "./Providers";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useThread } from "@/hooks/useThread";
 import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -82,7 +83,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   //
   // "" because this composer is UNCONTROLLED: the gate then probes the BASE post cost, which is exactly
   // what we want (an exhausted bucket disables the CTA before a single character is typed).
-  const { rateLimited, noPostingPower, needsVotingPower } = useComposerGate("");
+  const { rateLimited, noPostingPower } = useComposerGate("");
 
   // `me` threaded into the thread read so the node stamps the `myVote` overlay node-side;
   // `bestBlock` drives the live re-read (tallies refresh in place; new replies buffer behind the pill).
@@ -211,7 +212,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const onSubmitReply = useCallback(
     (draft: ComposerDraft) => {
       if (viewer.status !== "ready") {
-        router.push("/welcome/");
+        signInPromptActions.open("reply");
         return;
       }
       if (!api || !signer || draft.text.trim().length === 0) return;
@@ -456,7 +457,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           mode="reply"
           submitState={composeState}
           noPostingPower={noPostingPower}
-          needsVotingPower={needsVotingPower}
           rateLimited={rateLimited}
           onSubmit={onSubmitReply}
           draftExtras={{ parentId: rootId }}

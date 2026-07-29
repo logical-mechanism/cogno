@@ -21,6 +21,7 @@ import { FollowButton } from "./FollowButton";
 import { AccountVoteControl } from "./profile/AccountVoteControl";
 import { Spinner } from "./icons";
 import { useSession } from "./Providers";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useFollow } from "@/hooks/useFollow";
 import { useAccountVoteFor } from "@/hooks/useAccountVote";
 import { sanitizeText, sanitizeInline } from "@/lib/sanitize";
@@ -209,13 +210,13 @@ function HoverPopover({
   const onToggle = useCallback(
     (target: string, next: boolean) => {
       if (!viewer.writeReady) {
-        router.push("/welcome/");
+        signInPromptActions.open("follow");
         return;
       }
       if (next) follow.follow(target);
       else follow.unfollow(target);
     },
-    [viewer.writeReady, follow, router],
+    [viewer.writeReady, follow],
   );
 
   if (typeof document === "undefined") return null;

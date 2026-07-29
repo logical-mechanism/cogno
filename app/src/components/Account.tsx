@@ -16,7 +16,8 @@ import styles from "./Account.module.css";
 import { Avatar } from "./Avatar";
 import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
-import { ConnectWalletButton } from "./ConnectWalletButton";
+import { ConnectWalletButton, connectLabelFor } from "./ConnectWalletButton";
+import { IconSignIn } from "./icons";
 import { useSession } from "./Providers";
 import { useToaster } from "./toast/ToasterProvider";
 import { isUserRejection } from "@/lib/cardano/cip8";
@@ -83,22 +84,40 @@ export function Account() {
     });
   }, [signerCtl, toast]);
 
-  // Not fully set up (not connected, or connected but not identity-bound) → the connect/finish-setup
-  // entry. ConnectWalletButton picks "Connect wallet" vs "Finish setup" from viewer.status; the
-  // latter routes to /welcome to complete the bind.
+  // Not fully set up (not connected, or connected but not identity-bound) → the onboarding entry.
+  // ConnectWalletButton picks "Sign in" vs "Finish setup" from viewer.status; both open /welcome,
+  // which resolves its own step from session state. There is deliberately no inline wallet picker
+  // here any more — see that component's header for why a second door onto step 1 was a dead end.
   if (!ready) {
-    // The "Connect wallet" / "Finish setup" pill is a fixed-width nowrap accent button — it does not fit
-    // the 88px icon-only tablet rail (≤1019px), so it is hidden there via `connectRoot`. A tablet guest
-    // still reaches sign-in through the prominent accent "Post" circle (and Profile), which funnel to
-    // /welcome. Desktop keeps the labeled button; mobile has no LeftNav (Home's sign-in card + the
-    // ComposeFab cover it).
+    // TWO controls, one shown at a time by CSS. The labelled pill is nowrap and does not fit the 88px
+    // icon-only tablet rail (<=1019px), so that breakpoint gets a round icon button instead of nothing
+    // at all, which is what it used to get: a tablet guest had no sign-in control anywhere on the rail
+    // and had to discover it through the Post circle or the Profile tab. Desktop keeps the pill;
+    // mobile has no LeftNav (Home's sign-in card + the ComposeFab cover it).
+    //
+    // The icon is IconSignIn, not IconProfile: the rail is icon-only, so the glyph carries the whole
+    // meaning, and a person glyph reads as "your profile" which is precisely what a signed-out visitor
+    // does not have. Both controls go to /welcome rather than opening the sign-in sheet, because
+    // unlike a blocked Like this is the user explicitly asking to sign in.
+    //
+    // The label comes from ConnectWalletButton's own helper, not a second copy of the ternary: these
+    // two ARE one affordance at two breakpoints, and a third viewer.status case added to one of them
+    // has to reach both.
+    const label = connectLabelFor(viewer);
     return (
-      <div className={`${styles.root} ${styles.connectRoot}`}>
-        <ConnectWalletButton
-          viewer={viewer}
-          onContinueSetup={() => router.push("/welcome/")}
-          size="md"
-        />
+      <div className={styles.root}>
+        <div className={styles.connectRoot}>
+          <ConnectWalletButton viewer={viewer} onStart={() => router.push("/welcome/")} size="md" />
+        </div>
+        <button
+          type="button"
+          className={styles.connectIcon}
+          onClick={() => router.push("/welcome/")}
+          aria-label={label}
+          title={label}
+        >
+          <IconSignIn size="var(--cg-icon-lg)" />
+        </button>
       </div>
     );
   }

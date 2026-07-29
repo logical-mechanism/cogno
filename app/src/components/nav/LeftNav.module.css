@@ -92,6 +92,15 @@
   font-weight: var(--cg-fw-regular);
 }
 
+/* The walled-route marker for a signed-out visitor. Decorative and aria-hidden: the real signal is in
+   the link's accessible name, which is the only name at tablet width where .itemLabel is display:none.
+   Sized down so it reads as an annotation on the label rather than a second icon. */
+.lock {
+  margin-left: var(--cg-space-1);
+  font-size: var(--cg-fs-xs);
+  opacity: 0.7;
+}
+
 .active .itemLabel {
   font-weight: var(--cg-fw-bold);
 }

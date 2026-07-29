@@ -32,8 +32,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useRouter } from "next/navigation";
 import { useSession, useBestBlock } from "@/components/Providers";
+import { useZeroWeightVoteNotice } from "./useZeroWeightVoteNotice";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useMutation } from "./useMutation";
 import { useActionToast } from "./useActionToast";
 import { useAccountTally, useInvalidateReputation } from "./useReputation";
@@ -60,6 +61,7 @@ const Context = createContext<AccountVoteCtx | null>(null);
 
 export function AccountVoteProvider({ children }: { children: ReactNode }) {
   const { api, signer, viewer, votingPower } = useSession();
+  const discloseZeroWeight = useZeroWeightVoteNotice();
   const bestBlock = useBestBlock();
   const me = viewerBucket(viewer);
   const { run } = useMutation();
@@ -132,6 +134,8 @@ export function AccountVoteProvider({ children }: { children: ReactNode }) {
     (target: Ss58, current: "Up" | "Down" | null, next: "Up" | "Down" | null) => {
       if (!api || !signer || !me) return;
       if (current === next) return; // no-op
+      // Zero observed VotingPower → the vote registers and weighs nothing. Disclose it once.
+      if (next !== null) discloseZeroWeight();
 
       // Declare the intent. `weight` is the viewer's voting power at click time — the magnitude the chain
       // will record. A zero-stake voter still registers a vote and a count, adding no weight.
@@ -178,7 +182,7 @@ export function AccountVoteProvider({ children }: { children: ReactNode }) {
         },
       );
     },
-    [api, signer, me, votingPower, run, fail, reset, clearTimer, invalidateTally, invalidateVoteState],
+    [api, signer, me, votingPower, run, fail, reset, clearTimer, invalidateTally, invalidateVoteState, discloseZeroWeight],
   );
 
   const value = useMemo<AccountVoteCtx>(() => ({ intents, cast, reset }), [intents, cast, reset]);
@@ -213,7 +217,6 @@ export function useAccountVoteFor(
 ): UseAccountVoteFor {
   const ctx = useContext(Context);
   const { viewer } = useSession();
-  const router = useRouter();
   const me = viewerBucket(viewer);
   const liveKey = opts?.liveKey ?? null;
 
@@ -281,12 +284,12 @@ export function useAccountVoteFor(
       if (!target || !ctx) return;
       // Not set up to write → finish setup. (The buttons stay enabled: the click is the teaching moment.)
       if (!viewer.writeReady) {
-        router.push("/welcome/");
+        signInPromptActions.open("vote");
         return;
       }
       ctx.cast(target, vote.myVote, vote.myVote === dir ? null : dir); // toggle
     },
-    [target, ctx, viewer.writeReady, router, vote.myVote],
+    [target, ctx, viewer.writeReady, vote.myVote],
   );
 
   const onUp = useCallback(() => act("Up"), [act]);

@@ -23,20 +23,35 @@ import {
   CONFIRM_TIMEOUT_MS,
 } from "@/lib/pendingLockStore";
 import { readObserverConfig, slotToUnixSec, type ObserverConfig } from "@/lib/chain/observer";
-import { fetchTxSlot } from "@/lib/cardano/provider";
 
 // Grace past the theoretical unlock before we call a lock "overdue": the credit lands a little AFTER the
 // frontier passes the lock slot (one app-chain block + this node's db-sync index lag), so a small margin
 // avoids a false "stuck" while it is genuinely finishing.
 const OVERDUE_GRACE_MS = 3 * 60 * 1000;
-const CONFIRM_POLL_MS = 15_000;
 // CONFIRM_TIMEOUT_MS lives in pendingLockStore beside `shouldClearPendingLock`, which is its other
 // consumer: if the lock tx's Cardano slot never resolves (Blockfrost can't return it on this tier, or
 // the tx never confirmed), don't sit in "confirming" forever — fall to the "overdue" nudge + dismiss.
 
 export type PendingCapacityStatus =
   | { kind: "none" }
-  | { kind: "confirming" }
+  | {
+      kind: "confirming";
+      /**
+       * This record was REBUILT from an on-chain vault UTxO (pendingLockStore's `recovered`), on a
+       * device that watched nothing submit. It is carried out to the view because the two are not the
+       * same claim and must not read the same. A submit-time record can honestly say "Lock submitted /
+       * confirming on Cardano…" with a spinner: we saw it go, seconds ago. A recovered one cannot. It
+       * knows only that locked ADA exists and has not been credited — not that anything was just sent,
+       * and not how long the wait has left, since its clock starts when this device NOTICED.
+       *
+       * It also never leaves this state: nothing fills a recovered record's `lockSlot` (only
+       * `usePendingLockSync` writes one, at submit, on the other device), and it is exempt from the
+       * confirm-timeout for the reason above. So whatever this renders is what that user sees until
+       * the credit lands — for up to a full stability window, and forever if the lock never credits.
+       * A permanent spinner over a sentence that is false on its face is the wrong thing to leave there.
+       */
+      recovered: boolean;
+    }
   | {
       kind: "crediting";
       /** wall-clock time posting is expected to unlock (ms). */
@@ -135,26 +150,14 @@ export function usePendingCapacity(
     }
   }, [ss58, record, allowedStake, frontier, now]);
 
-  // Resolve the lock tx's Cardano slot once it confirms in a block (poll Blockfrost until it lands).
-  const recordTx = record?.txHash;
-  const haveSlot = record?.lockSlot != null;
-  useEffect(() => {
-    if (!ss58 || !recordTx || haveSlot) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = () => {
-      void fetchTxSlot(recordTx).then((slot) => {
-        if (cancelled) return;
-        if (slot != null) pendingLockActions.setLockSlot(ss58, recordTx, slot);
-        else timer = setTimeout(poll, CONFIRM_POLL_MS);
-      });
-    };
-    poll();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [ss58, recordTx, haveSlot]);
+  // NO PROVIDER POLL HERE. This used to poll Blockfrost every 15 s, per client, for the whole
+  // confirmation window, to learn the lock tx's Cardano slot. The project id is a build-time
+  // NEXT_PUBLIC_ value baked into the static bundle, so every visitor shares one quota — which makes a
+  // signup spike a self-inflicted denial of service: the burst limit trips, `fetchTxSlot` starts
+  // returning null for everyone at once, and every pending lock in the world falls through to the
+  // no-ETA path together. The slot is now derived once, at submit, from the observation frontier the
+  // chain already publishes (`estimateLockSlot`, written by `usePendingLockSync`). Do not reintroduce a
+  // provider call on this path: nothing here needs an answer only Blockfrost can give.
 
   if (!record) return { kind: "none" };
   // Credited AND the credit demonstrably belongs to THIS lock — same rule as the clear effect above, so
@@ -168,10 +171,17 @@ export function usePendingCapacity(
   const cantTell = pendingLockCreditIndeterminate({ record, allowedStake, frontier, nowMs: now });
   if (record.lockSlot == null || !cfg) {
     // Stuck confirming too long → an honest exit (can't compute an ETA without the lock slot).
-    if (now - record.submittedAtMs > CONFIRM_TIMEOUT_MS && !cantTell) {
+    //
+    // A RECOVERED record is exempt. It was rebuilt from an on-chain vault UTxO on a device that never
+    // saw the lock submitted, so its `submittedAtMs` is when we NOTICED the lock, not when it was
+    // placed. Ageing that out would announce "taking longer than expected" five minutes after the
+    // user opened the app, about a lock that may have landed seconds ago. "Overdue" is the one status
+    // that asserts a negative, and here there is nothing to assert it from.
+    const ageable = !record.recovered;
+    if (ageable && now - record.submittedAtMs > CONFIRM_TIMEOUT_MS && !cantTell) {
       return { kind: "overdue", txHash: record.txHash };
     }
-    return { kind: "confirming" };
+    return { kind: "confirming", recovered: record.recovered === true };
   }
 
   const stability = Number(cfg.stabilitySlots);

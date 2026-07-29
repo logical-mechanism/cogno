@@ -15,6 +15,7 @@
 // optimistically overrides; this row NEVER builds an extrinsic.
 
 import { useCallback } from "react";
+import { affordanceFor, affordanceTitle } from "@/lib/writeAffordance";
 import styles from "./PostCardActions.module.css";
 import { IconReply, IconQuote, IconShare, IconDownvote } from "./icons";
 import { formatCount, formatSignedWeight } from "@/lib/format";
@@ -51,7 +52,11 @@ export function PostCardActions({
 }: PostCardActionsProps) {
   const up = viewer.myVote === "Up";
   const down = viewer.myVote === "Down";
-  const notBound = gate.status === "not-identity-bound";
+  // How this viewer's write controls should present themselves. Keyed on `writeReady` first, so a
+  // signed-out guest and a bound-but-unlocked account are both handled (see lib/writeAffordance).
+  const mode = affordanceFor({ status: gate.status, writeReady: gate.writeReady });
+  // A guest's controls stay ENABLED and read as sign-in; only a mid-setup viewer is greyed out.
+  const gateDisabled = mode === "blocked";
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -107,8 +112,8 @@ export function PostCardActions({
         type="button"
         className={`${styles.action} ${styles.reply}`}
         aria-label={`Reply${post.replyCount ? `, ${post.replyCount}` : ""}`}
-        disabled={notBound}
-        title={notBound ? "Finish setup to reply" : "Reply"}
+        disabled={gateDisabled}
+        title={affordanceTitle(mode, "reply") ?? "Reply"}
         onClick={doReply}
       >
         <span className={styles.iconWrap}>
@@ -122,8 +127,8 @@ export function PostCardActions({
         type="button"
         className={`${styles.action} ${styles.quote}`}
         aria-label="Quote"
-        disabled={notBound}
-        title={notBound ? "Finish setup to quote" : "Quote"}
+        disabled={gateDisabled}
+        title={affordanceTitle(mode, "quote") ?? "Quote"}
         onClick={doQuote}
       >
         <span className={styles.iconWrap}>
@@ -138,8 +143,8 @@ export function PostCardActions({
           className={`${styles.action} ${styles.up} ${up ? styles.upOn : ""}`}
           aria-label={`Upvote${post.upCount ? `, ${post.upCount} upvote${post.upCount === 1 ? "" : "s"}` : ""}`}
           aria-pressed={up}
-          disabled={notBound}
-          title={notBound ? "Finish setup to vote" : "Upvote"}
+          disabled={gateDisabled}
+          title={affordanceTitle(mode, "vote") ?? "Upvote"}
           onClick={doUp}
         >
           <span className={`${styles.iconWrap} ${up ? styles.pop : ""}`}>
@@ -160,8 +165,8 @@ export function PostCardActions({
           className={`${styles.action} ${styles.down} ${down ? styles.downOn : ""}`}
           aria-label={`Downvote${post.downCount ? `, ${post.downCount} downvote${post.downCount === 1 ? "" : "s"}` : ""}`}
           aria-pressed={down}
-          disabled={notBound}
-          title={notBound ? "Finish setup to vote" : "Downvote"}
+          disabled={gateDisabled}
+          title={affordanceTitle(mode, "vote") ?? "Downvote"}
           onClick={doDown}
         >
           <span className={styles.iconWrap}>

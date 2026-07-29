@@ -24,7 +24,6 @@ export interface ReplyComposerProps {
   rateLimited?: boolean;
   retryInSeconds?: number | null;
   noPostingPower?: boolean;
-  needsVotingPower?: boolean;
   autoFocus?: boolean;
   /** Hand back the reply text; the surface calls mutations.submitReply(text, replyTo.id). */
   submitReply: (text: string) => void;
@@ -38,7 +37,6 @@ export function ReplyComposer({
   rateLimited,
   retryInSeconds,
   noPostingPower,
-  needsVotingPower,
   autoFocus,
   submitReply,
   onDirtyChange,
@@ -87,7 +85,6 @@ export function ReplyComposer({
       rateLimited={rateLimited}
       retryInSeconds={retryInSeconds}
       noPostingPower={noPostingPower}
-      needsVotingPower={needsVotingPower}
       autoFocus={autoFocus}
       contextAbove={parentPreview}
       draftExtras={{ parentId: replyTo.id }}

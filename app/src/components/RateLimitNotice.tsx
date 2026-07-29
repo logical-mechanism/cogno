@@ -36,7 +36,9 @@ export function formatRetry(seconds: number): string {
 
 function copy(retryInSeconds?: number | null): string {
   if (retryInSeconds != null && retryInSeconds > 0) {
-    return `You're over the rate limit. Try again in about ${formatRetry(retryInSeconds)}.`;
+    // "in about", not "again in about": a first-touch account has never posted, and this line is the
+    // one it sees while its bucket charges from zero. See errorCopy's rate-limit arm.
+    return `Your posting power is still charging. You can post in about ${formatRetry(retryInSeconds)}.`;
   }
   return RATE_LIMIT_COPY;
 }

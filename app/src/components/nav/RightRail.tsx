@@ -21,6 +21,7 @@ import { Handle } from "../Handle";
 import { FollowButton } from "../FollowButton";
 import { ThemeToggle } from "../ThemeToggle";
 import { useSession } from "../Providers";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useWhoToFollow } from "@/hooks/useWhoToFollow";
 import { useFollow } from "@/hooks/useFollow";
 import { profileRouteForQuery } from "@/lib/ss58";
@@ -59,13 +60,13 @@ export function RightRail() {
   const onToggleFollow = useCallback(
     (target: string, next: boolean) => {
       if (!viewer.writeReady) {
-        router.push("/welcome/");
+        signInPromptActions.open("follow");
         return;
       }
       if (next) follow.follow(target);
       else follow.unfollow(target);
     },
-    [viewer.writeReady, router, follow],
+    [viewer.writeReady, follow],
   );
 
   // Suppress the whole rail where the surface owns the full content width: the

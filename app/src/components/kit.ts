@@ -71,12 +71,16 @@ export interface Viewer {
   /** The viewer's own Profile.avatar URL/CID. */
   avatar?: string;
   /**
-   * The single authoritative WRITE gate: all required onboarding is complete → may post/vote/follow/
-   * poll/edit-profile. True only when identity-bound AND stake-bound AND posting power (locked-ADA
-   * weight) > 0. `status === "ready"` gates browsing/entry; `writeReady` gates every write. False while
-   * any of bind / stake / lock is missing OR still loading — a `!writeReady` write intent routes to
-   * /welcome to finish setup (reading stays open). Note stake is a MANDATORY onboarding step, so a
-   * bound, locked, but never-stake-bound account is intentionally not writeReady.
+   * The single authoritative WRITE gate: all REQUIRED onboarding is complete → may post/vote/follow/
+   * poll/edit-profile. True only when identity-bound AND posting power (locked-ADA weight) > 0 —
+   * exactly the two gates the runtime enforces on `post_message` (`IdentityGate::is_allowed`, then
+   * `CheckCapacity`). `status === "ready"` gates browsing/entry; `writeReady` gates every write.
+   * False while either is missing OR still loading — a `!writeReady` write intent routes to /welcome
+   * to finish setup (reading stays open).
+   *
+   * The stake bind is NOT part of this. It writes `TalkStake::VotingPower` only, so a bound + locked
+   * account with no stake credential posts normally; its votes simply carry zero weight, which is
+   * disclosed at the vote call sites. See the gate in Providers.tsx for the full rationale.
    */
   writeReady: boolean;
 }

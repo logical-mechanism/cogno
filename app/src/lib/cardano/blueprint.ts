@@ -18,6 +18,16 @@ import { currentVaultScript, type VaultScript } from "./vaults";
 /** The lovelace floor the current script enforces (and the default lock amount). */
 export const MIN_LOCK: bigint = currentVaultScript().minLock;
 
+// THE SAME FLOOR AS WHOLE-ADA COPY ("lock 100 ADA") LIVES IN lib/cardano/lockAmount.ts, NOT HERE, and
+// is deliberately not re-exported from this module. It was here, as `LOCK_ADA_WHOLE`, and the string
+// is named on surfaces that sit in the app-shell chunk (the sign-in sheet, the walled-route notice,
+// the composer's guest prompt, the root layout's metadata) — so importing it from this file pulled
+// `vaults.ts` and its 6 KB of applied Plutus CBOR into the bundle every cold visitor downloads, to
+// render three characters. `lockAmount.test.ts` pins that literal against `MIN_LOCK` below, so the
+// derivation still runs; it just runs in CI instead of in everyone's browser.
+//
+// Re-exporting it from here would quietly undo that: the import path is the whole mechanism.
+
 /**
  * Hashes proven to match their own CBOR, so the check runs once per script rather than once per app.
  *

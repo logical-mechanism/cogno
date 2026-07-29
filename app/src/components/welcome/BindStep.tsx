@@ -12,6 +12,7 @@
 
 import { useMemo } from "react";
 import styles from "./BindStep.module.css";
+import { SetupCostNote } from "./SetupCostNote";
 import { Spinner } from "@/components/icons";
 import { StepFlow } from "./StepFlow";
 import type { BindPhase } from "@/hooks/useIdentity";
@@ -122,6 +123,10 @@ export function BindStep({
           </li>
         </ul>
       </div>
+
+      {/* Separate from the consent block above on purpose: that block is what cannot be undone, this
+          is the part that can. Merging them would misrepresent both. */}
+      <SetupCostNote variant="brief" />
 
       <button
         type="button"

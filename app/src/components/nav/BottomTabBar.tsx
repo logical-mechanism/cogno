@@ -10,6 +10,7 @@ import { usePathname } from "next/navigation";
 import styles from "./BottomTabBar.module.css";
 import { IconHome, IconSearch, IconProfile, IconSettings, IconBell, IconPoll } from "../icons";
 import { useSession } from "../Providers";
+import { isWalledForGuest } from "@/lib/routeAccess";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useNavReTap } from "@/hooks/useNavReTap";
 import type { IconProps } from "../icons";
@@ -29,6 +30,13 @@ export function BottomTabBar() {
   // Tapping the tab you're already on scrolls that surface to the top (and, on Home, refreshes it).
   const reTap = useNavReTap();
   const profileHref = viewer.address ? `/u/${viewer.address}/` : "/welcome/";
+
+  // Walled routes for a signed-out visitor, derived from the SAME allowlist AppShell walls on (never a
+  // restated list), so a future walled route is marked here automatically. This bar is icon-only, so
+  // the aria-label is the ENTIRE accessible name and carrying the marker there is the load-bearing
+  // half. Tabs stay tappable: they lead somewhere real, and disabling them hides what signing in is for.
+  const loggedIn = viewer.status === "ready";
+  const walled = (href: string) => !loggedIn && isWalledForGuest(href);
 
   const tabs: Tab[] = [
     { label: "Home", href: "/", Icon: IconHome, match: (p) => p === "/" },
@@ -72,13 +80,24 @@ export function BottomTabBar() {
             onClick={reTap(href)}
             className={`${styles.tab} ${active ? styles.active : ""}`}
             aria-current={active ? "page" : undefined}
-            aria-label={count > 0 ? `${label} (${count} unread)` : label}
+            aria-label={
+              walled(href)
+                ? `${label} (sign in required)`
+                : count > 0
+                  ? `${label} (${count} unread)`
+                  : label
+            }
           >
             <span className={styles.tabIcon}>
               <Icon filled={active} size="var(--cg-icon-lg)" />
               {count > 0 && (
                 <span className={styles.badge} aria-hidden>
                   {count > 99 ? "99+" : count}
+                </span>
+              )}
+              {walled(href) && (
+                <span className={styles.lock} aria-hidden>
+                  🔒
                 </span>
               )}
             </span>

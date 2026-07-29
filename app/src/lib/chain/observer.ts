@@ -95,6 +95,47 @@ export function slotToUnixSec(slot: bigint, cfg: ObserverConfig): number {
   return Number(cfg.shelleyStartUnix + (slot - cfg.shelleyStartSlot));
 }
 
+/**
+ * Estimate the Cardano slot a lock tx submitted RIGHT NOW will land in, from the observation frontier.
+ *
+ * This exists to keep a third-party provider off the lock→credit path entirely. The slot used to come
+ * from Blockfrost (`fetchTxSlot`, polled every 15 s per client until the tx confirmed), and the project
+ * id is a build-time `NEXT_PUBLIC_` value baked into the static bundle — so every visitor shares ONE
+ * quota. A signup spike was therefore indistinguishable from a self-inflicted DoS: the burst limit is
+ * reached, `fetchTxSlot` returns null for everyone, and every pending lock falls through to the "we
+ * cannot compute an ETA" path at once. The frontier answers the same question for free, over the
+ * subscription every client already holds to our own node.
+ *
+ * THE DERIVATION. The observer reads Cardano history older than its stability window, so
+ * `frontier = tip − stability` (see `max_reference_for_now` in pallet-cardano-observer). A tx submitted
+ * now lands at approximately the current tip, hence `lockSlot ≈ frontier + stability`. Credit follows
+ * when the frontier climbs past that, which is what `shouldClearPendingLock` already compares against.
+ *
+ * ERROR AND ITS DIRECTION. The tx actually lands a Cardano block or two after submission (~20-60 s), so
+ * this UNDER-estimates the true slot by that much and therefore predicts credit slightly EARLY. That is
+ * the harmless direction, and `usePendingCapacity`'s existing `OVERDUE_GRACE_MS` (3 min) already absorbs
+ * it — it was sized for the same class of lag. Against the mainnet window (36 h) the error is ~0.05%;
+ * against preprod's 10 min it is under a minute. No artificial bias is added: over-estimating instead
+ * would keep the "crediting" narration on screen after the user could already post, which is worse than
+ * an ETA that expires a minute early.
+ *
+ * Returns null when the frontier has never been written (a chain that has not yet observed) or on any
+ * read error, in which case the caller keeps the existing "confirming, no ETA yet" behaviour.
+ */
+export async function estimateLockSlot(api: CognoApi): Promise<number | null> {
+  try {
+    const [cfg, ref] = await Promise.all([
+      readObserverConfig(api),
+      api.query.CardanoObserver.LastReference.getValue({ at: "best" }),
+    ]);
+    if (!ref) return null;
+    const slot = Number(ref.slot) + Number(cfg.stabilitySlots);
+    return Number.isFinite(slot) && slot > 0 ? slot : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── observer liveness ────────────────────────────────────────────────────────────────────────────
 //
 // The observer inherent is the SOLE writer of talk-capacity weight, voting power and role badges. When

@@ -150,3 +150,51 @@ describe("pendingLockCreditIndeterminate", () => {
     ).toBe(false);
   });
 });
+
+describe("a RECOVERED record (rebuilt from chain on a second device)", () => {
+  // It has no submit-time frontier and no lock slot: we know a lock exists, not when it landed.
+  const recovered = { lockSlot: null, submittedAtMs: 0, recovered: true as const };
+
+  it("clears on the credit alone, since there is no slot to compare a frontier against", () => {
+    expect(
+      shouldClearPendingLock({
+        record: recovered,
+        allowedStake: 1n,
+        frontier: null,
+        nowMs: 1_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("still does not clear while the account has no weight", () => {
+    expect(
+      shouldClearPendingLock({ record: recovered, allowedStake: 0n, frontier: null, nowMs: 1_000 }),
+    ).toBe(false);
+  });
+
+  it("does not clear on an unresolved weight read", () => {
+    expect(
+      shouldClearPendingLock({ record: recovered, allowedStake: null, frontier: null, nowMs: 1_000 }),
+    ).toBe(false);
+  });
+
+  it("is NOT aged out by the confirm timeout the way a submit-time record is", () => {
+    // `submittedAtMs` on a recovered record is when we NOTICED the lock, not when it was placed, so
+    // the timeout measures nothing. A submit-time record with no slot DOES age out; this must not.
+    const old = { lockSlot: null, submittedAtMs: 0 };
+    const wayPastTimeout = CONFIRM_TIMEOUT_MS * 10;
+    expect(
+      shouldClearPendingLock({ record: old, allowedStake: 1n, frontier: null, nowMs: wayPastTimeout }),
+    ).toBe(true);
+    // The recovered one clears for the credit reason above, never for the age reason. With no credit
+    // it stays put no matter how long it has been on screen.
+    expect(
+      shouldClearPendingLock({
+        record: recovered,
+        allowedStake: 0n,
+        frontier: null,
+        nowMs: wayPastTimeout,
+      }),
+    ).toBe(false);
+  });
+});

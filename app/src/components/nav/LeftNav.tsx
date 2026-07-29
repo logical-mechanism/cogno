@@ -14,11 +14,13 @@
 
 import { useCallback } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import styles from "./LeftNav.module.css";
 import { Account } from "../Account";
 import { IconHome, IconSearch, IconProfile, IconBookmark, IconList, IconSettings, IconCompose, IconBell, IconPoll } from "../icons";
 import { useSession } from "../Providers";
+import { signInPromptActions } from "@/lib/signInPromptStore";
+import { isWalledForGuest } from "@/lib/routeAccess";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useNavReTap } from "@/hooks/useNavReTap";
 import { useModalStore } from "@/lib/modalStore";
@@ -36,7 +38,6 @@ interface NavItem {
 
 export function LeftNav() {
   const pathname = usePathname() ?? "/";
-  const router = useRouter();
   const { viewer } = useSession();
   const { unreadCount } = useNotificationsFeed();
   const { openCompose } = useModalStore();
@@ -45,6 +46,16 @@ export function LeftNav() {
 
   // Profile target resolves to the connected account, else the onboarding gate.
   const profileHref = viewer.address ? `/u/${viewer.address}/` : "/welcome/";
+
+  // A guest can READ most of this nav but not all of it: Notifications and Settings are walled, and
+  // clicking one bounces them to /welcome. Derive that from `isWalledForGuest` — built on the SAME
+  // table AppShell walls on — rather than restating a list here, so a future walled route is marked
+  // automatically and the two can never disagree. Marking is accessible-name-first: at tablet width
+  // `.itemLabel` is display:none and the icon is aria-hidden, so the aria-label is the only name a
+  // screen reader or voice-control user gets. The items stay CLICKABLE: they lead somewhere real, and
+  // disabling them would hide what signing in is for.
+  const loggedIn = viewer.status === "ready";
+  const walled = (href: string) => !loggedIn && isWalledForGuest(href);
 
   const items: NavItem[] = [
     { label: "Home", href: "/", Icon: IconHome, match: (p) => p === "/" },
@@ -82,9 +93,9 @@ export function LeftNav() {
     } else {
       // Write intent funnels to /welcome until setup is fully complete (bound + stake-bound + posting
       // power). An explicit "Post" click is clearer sent to finish setup than to a disabled composer CTA.
-      router.push("/welcome/");
+      signInPromptActions.open("post");
     }
-  }, [viewer.writeReady, openCompose, router]);
+  }, [viewer.writeReady, openCompose]);
 
   return (
     <nav className={styles.nav} aria-label="Primary">
@@ -107,7 +118,13 @@ export function LeftNav() {
                   // Always set the accessible name: at tablet width the visible .itemLabel is
                   // display:none and the icon is aria-hidden, so without this the link announces as a
                   // bare "link" to screen readers / voice control.
-                  aria-label={count > 0 ? `${label} (${count} unread)` : label}
+                  aria-label={
+                    walled(href)
+                      ? `${label} (sign in required)`
+                      : count > 0
+                        ? `${label} (${count} unread)`
+                        : label
+                  }
                 >
                   <span className={styles.itemIcon}>
                     <Icon filled={active} size="var(--cg-icon-lg)" />
@@ -117,7 +134,14 @@ export function LeftNav() {
                       </span>
                     )}
                   </span>
-                  <span className={styles.itemLabel}>{label}</span>
+                  <span className={styles.itemLabel}>
+                    {label}
+                    {walled(href) && (
+                      <span className={styles.lock} aria-hidden>
+                        🔒
+                      </span>
+                    )}
+                  </span>
                 </Link>
               </li>
             );

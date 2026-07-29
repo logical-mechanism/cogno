@@ -186,7 +186,7 @@ export function ComposePage() {
   //    useSession already publishes; the shared hook reads the session's, so that second subscription
   //    (and its extra render cadence) is gone.
   const gateText = mode === "poll" ? pollDraft.question : serialized;
-  const { rateLimited, noPostingPower, needsVotingPower, retryInSeconds } = useComposerGate(gateText);
+  const { rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
 
   // ── goBack: prefer in-app history; else land on Home (step 3 / Cancel). ────────────────────────
   const goBack = useCallback(() => {
@@ -343,7 +343,6 @@ export function ComposePage() {
             rateLimited={rateLimited}
             retryInSeconds={retryInSeconds}
             noPostingPower={noPostingPower}
-            needsVotingPower={needsVotingPower}
             autoFocus
             onTogglePoll={() => router.push("/compose/?poll=1")}
             onSubmit={onPost}
@@ -361,7 +360,6 @@ export function ComposePage() {
               submitState={submitState}
               rateLimited={rateLimited}
               noPostingPower={noPostingPower}
-              needsVotingPower={needsVotingPower}
               autoFocus
               submitReply={onReply}
               onDirtyChange={onComposerDirty}
@@ -381,7 +379,6 @@ export function ComposePage() {
                 rateLimited={rateLimited}
                 retryInSeconds={retryInSeconds}
                 noPostingPower={noPostingPower}
-                needsVotingPower={needsVotingPower}
                 autoFocus
                 onSubmit={onPost}
               />
@@ -397,7 +394,6 @@ export function ComposePage() {
               submitState={submitState}
               rateLimited={rateLimited}
               noPostingPower={noPostingPower}
-              needsVotingPower={needsVotingPower}
               autoFocus
               submitQuote={onQuote}
               onDirtyChange={onComposerDirty}
@@ -416,7 +412,6 @@ export function ComposePage() {
                 rateLimited={rateLimited}
                 retryInSeconds={retryInSeconds}
                 noPostingPower={noPostingPower}
-                needsVotingPower={needsVotingPower}
                 autoFocus
                 onSubmit={onPost}
               />
@@ -433,7 +428,6 @@ export function ComposePage() {
             rateLimited={rateLimited}
             retryInSeconds={retryInSeconds}
             noPostingPower={noPostingPower}
-            needsVotingPower={needsVotingPower}
             autoFocus
             submitCreatePoll={onCreatePoll}
           />

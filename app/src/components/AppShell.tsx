@@ -28,6 +28,8 @@ import { useHelpHotkey } from "@/hooks/useHelpHotkey";
 import { BottomTabBar } from "./nav/BottomTabBar";
 import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
+import { WalledRouteNotice } from "./WalledRouteNotice";
+import { SignInSheet } from "./signin/SignInSheet";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { BootGuardNotice } from "./BootGuardNotice";
 import { SmallScreenFooter } from "./nav/SmallScreenFooter";
@@ -35,7 +37,6 @@ import { EmptyState } from "./EmptyState";
 import { Loading } from "./Loading";
 import { IconBack } from "./icons";
 import { useSession } from "./Providers";
-import { welcomeUrlFor } from "@/lib/returnTo";
 import { rememberContentRoute } from "@/lib/onboardingReturn";
 // The route table lives in lib/ so a node test can assert it against the filesystem — see
 // lib/routeAccess.ts and routeClassification.test.ts.
@@ -53,7 +54,6 @@ function isSettingsPath(pathname: string | null): boolean {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
   const { viewer, signerCtl, identity } = useSession();
 
   // "Logged in" = an identity-bound session (a real account). A connected-but-unbound wallet is still
@@ -97,10 +97,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   // A public deep link (a shared /post/123/) now simply opens for the guest — no bounce needed. The query
   // string comes off `window.location` rather than useSearchParams(): this component wraps every route,
   // and useSearchParams() here would force a client-side bailout for the whole app under `output: export`.
-  useEffect(() => {
-    if (deciding || loggedIn || onWelcome || publicRoute) return;
-    router.replace(welcomeUrlFor(pathname, window.location.search));
-  }, [deciding, loggedIn, onWelcome, publicRoute, pathname, router]);
+  // NO BOUNCE. This used to `router.replace(welcomeUrlFor(...))` a signed-out visitor off a walled
+  // route, which meant a blank screen and then a silent teleport into a full-screen onboarding
+  // takeover that never said which page had refused them. The route now renders
+  // WalledRouteNotice in place of the page (see below), inside the shell, and ITS button carries the
+  // same `?next=` so finishing setup still returns them here.
 
   // Remember the last CONTENT deep-link (a post / a profile) the visitor was reading, so finishing
   // onboarding returns them THERE rather than the timeline — a shared /post link should reopen the post,
@@ -145,7 +146,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   // NOT add `deciding` to this condition: it is true on the pre-hydration render for EVERY visitor, so a
   // first-time guest would get a full-screen spinner where the timeline should paint — the exact LCP
   // regression the landing-page work went to some trouble to remove.
-  if (!loggedIn && !publicRoute) return <Loading variant="screen" label="Loading…" />;
+  // A signed-out visitor on a walled route. `deciding` is checked INSIDE this branch, not in its
+  // condition: a restored session lands one render after hydration, so a returning user must see the
+  // loader rather than a "sign in" page that is about to be wrong. The hazard the comment above warns
+  // about (a full-screen spinner where the timeline should paint) does not apply here, because a guest
+  // on a PUBLIC route never reaches this branch at all.
+  const walledOut = !loggedIn && !publicRoute;
+  if (walledOut && deciding) return <Loading variant="screen" label="Loading…" />;
 
   return (
     <div className={styles.shell}>
@@ -164,7 +171,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               upgrade looks completely functional and fails at the moment of posting, and this shell
               read no boot state at all, so nothing said otherwise until the click. */}
           <BootGuardNotice />
-          {children}
+          {walledOut ? <WalledRouteNotice pathname={pathname} /> : children}
           {/* The policy/legal/privacy links for the widths where RightRail (which carries them on
               desktop) is display:none. Without it a signed-out phone visitor could reach NONE of
               them, since the only other link lives in Settings and Settings is walled.
@@ -188,6 +195,9 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       {/* overlays — never block the reads behind them */}
       <ModalRouteHost />
+      {/* Mounted once, beside the modal host: every write affordance opens it in place instead of
+          navigating to /welcome, so <main> and its live feed subscription stay mounted. */}
+      <SignInSheet />
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
     </div>
   );

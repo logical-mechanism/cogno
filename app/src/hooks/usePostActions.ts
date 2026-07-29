@@ -27,6 +27,7 @@
 import { useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { modalActions } from "@/lib/modalStore";
+import { signInPromptActions, type SignInReason } from "@/lib/signInPromptStore";
 import { sharePostWithToast, type ShareToast } from "@/lib/share";
 import { NO_VIEWER } from "@/lib/optimistic";
 import type { UseVote } from "./useVote";
@@ -78,11 +79,15 @@ export function usePostActions({
   const followUndo = follow?.unfollow;
 
   return useMemo<PostActionCallbacks>(() => {
-    /** The finish-setup bounce, in ONE place. Returns false when the caller must stop. Gates on
-     *  writeReady (bound + stake-bound + posting power), not just bound — stake/lock are required. */
-    const ready = (): boolean => {
+    /** The write gate, in ONE place. Returns false when the caller must stop. Gates on `writeReady`
+     *  (identity bound + posting power), which is exactly what the runtime enforces.
+     *
+     *  It opens the sign-in sheet IN PLACE rather than pushing /welcome. The push unmounted <main>,
+     *  which dropped the feed's live subscription, its loaded pages and the reader's scroll position:
+     *  tapping Like halfway down the timeline took the timeline away and gave no reason. */
+    const ready = (reason: SignInReason): boolean => {
       if (viewer.writeReady) return true;
-      void router.push("/welcome/");
+      signInPromptActions.open(reason);
       return false;
     };
     const stateOf = (post: CognoPost) => viewerStates.get(post.id) ?? NO_VIEWER;
@@ -91,29 +96,29 @@ export function usePostActions({
       onOpen: (id) => router.push(`/post/${id}/`),
       onAuthorOpen: (address) => router.push(`/u/${address}/`),
       onReply: (post) => {
-        if (!ready()) return;
+        if (!ready("reply")) return;
         if (onReplyReady) onReplyReady(post);
         else modalActions.openReply(post.id);
       },
       onQuote: (post) => {
-        if (!ready()) return;
+        if (!ready("quote")) return;
         modalActions.openQuote(post.id);
       },
       onLike: (post, next) => {
-        if (!ready()) return;
+        if (!ready("vote")) return;
         const cur = stateOf(post);
         if (next) vote.like(post.id, cur);
         else vote.unlike(post.id, cur);
       },
       onDownvote: (post, next) => {
-        if (!ready()) return;
+        if (!ready("vote")) return;
         const cur = stateOf(post);
         if (next) vote.downvote(post.id, cur);
         else vote.clear(post.id, cur);
       },
       onShare: (post) => void sharePostWithToast(post.id, toast),
       onPin: (post) => {
-        if (!ready()) return;
+        if (!ready("post")) return;
         pin(post.id);
       },
       // Follow/unfollow from the ··· menu — only when the surface wired the shared follow graph.
@@ -121,7 +126,7 @@ export function usePostActions({
       onToggleFollow:
         followDo && followUndo
           ? (target, next) => {
-              if (!ready()) return;
+              if (!ready("follow")) return;
               if (next) followDo(target);
               else followUndo(target);
             }

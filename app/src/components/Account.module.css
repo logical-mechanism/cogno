@@ -65,6 +65,26 @@
   }
 }
 
+/* Desktop: the labelled pill carries it, so the icon is redundant. Hidden by default and revealed only
+   at the tablet breakpoint BELOW.
+   ORDER IS LOAD-BEARING. A media query adds no specificity, so `.connectIcon` inside one and
+   `.connectIcon` outside it are a tie that source order breaks. This block used to sit AFTER the
+   breakpoint, which meant its `display: none` won at EVERY width and the tablet rail still had no
+   sign-in control — the whole point of the icon button. Any new `.connectIcon` rule goes here, above
+   the override, not below it. */
+.connectIcon {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--cg-avatar-lg);
+  height: var(--cg-avatar-lg);
+  border: 0;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  cursor: pointer;
+}
+
 /* Tablet icon-only rail (≤1019px): collapse to just the avatar, matching the rest of LeftNav. */
 @media (max-width: 1019px) {
   .trigger {
@@ -75,11 +95,25 @@
   .who {
     display: none;
   }
-  /* The guest connect pill (a nowrap accent button ≈160px wide) does not fit the 88px icon-only rail —
-     hide it here. A tablet guest reaches sign-in via the accent "Post" circle / Profile (both → /welcome). */
+  /* The onboarding pill is nowrap and too wide for the 88px icon-only rail: "Sign in" is close but
+     "Finish setup" (the connected-but-unbound label) is not, and one rule has to fit both. Swap it for
+     the round icon button, which does fit. This rail used to show NEITHER, leaving a tablet guest with
+     no sign-in control at all. */
   .connectRoot {
     display: none;
   }
+  .connectIcon {
+    display: inline-flex;
+  }
+}
+
+.connectIcon:hover {
+  background: var(--cg-accent-hover);
+}
+
+.connectIcon:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
 }
 
 /* The menu floats above the trigger (the rail base is sticky to viewport bottom). */

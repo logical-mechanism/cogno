@@ -130,22 +130,9 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
             )}
           </button>
         )}
-        {status.next?.kind === "stake" && (
-          <button
-            type="button"
-            className={styles.primaryBtn}
-            onClick={() => walletId && identity.bindStake(walletId)}
-            disabled={identity.stakeBinding || !walletId}
-          >
-            {identity.stakeBinding ? (
-              <>
-                <Spinner size="sm" label="Adding voting power" /> Adding voting power…
-              </>
-            ) : (
-              status.next.label
-            )}
-          </button>
-        )}
+        {/* No `next.kind === "stake"` button here. The stake bind is optional and never blocks
+            posting, so it is never the "one next REQUIRED action" this card renders. Its button and
+            its error live in the Voting power block below, which always offered both. */}
         {status.next?.kind === "lock" && onGoVault && (
           <button type="button" className={styles.primaryBtn} onClick={onGoVault}>
             {status.next.label}
@@ -154,11 +141,6 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
         {identity.error && (
           <p className={styles.error} role="alert">
             {identity.error}
-          </p>
-        )}
-        {status.next?.kind === "stake" && identity.stakeError && (
-          <p className={styles.error} role="alert">
-            {identity.stakeError}
           </p>
         )}
       </div>
@@ -230,12 +212,15 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
           )}
         </div>
 
-        {/* Voting power — a REQUIRED setup step (the status card above drives the action); this row is
-            the display + a manual re-link affordance once registered. */}
+        {/* Voting power. NOT a posting gate (the chain's stake bind writes TalkStake::VotingPower and
+            nothing else), but the copy deliberately does not lead with "optional" either. Leading with
+            the dismissal is what makes people skip it, and a skipped stake bind means votes that count
+            for nothing on an app whose whole point is voting. It stays skippable; it is just not sold
+            as skippable. Say what it DOES, and let the absence of a required-step CTA carry the rest. */}
         {identity.bound && (
           <>
             <p className={styles.optionalNote}>
-              Required to post. Sets your vote weight.
+              Sets how much your votes count.
             </p>
             <div className={styles.statRow}>
               <span className={styles.statLabel}>Voting power</span>
