@@ -156,7 +156,16 @@ export default function BookmarksPage() {
         paginationCapable={false}
         emptyVariant="feed"
         emptyTitle="No bookmarks yet"
-        emptyDescription="Save a post from the ··· menu. Bookmarks stay on this device."
+        emptyDescription={
+          // A signed-out visitor CAN save posts, and they go to the shared-device "Signed out" bucket
+          // (viewerScopedStore's `:anon`), which is a different bucket from any account's. Nothing
+          // migrates on sign-in, and nothing should: silently adopting a stranger's saves would break
+          // the promise /privacy makes about a shared browser. But leaving it unsaid meant a guest
+          // built a list and quietly lost it the moment they signed in, which is its own small lie.
+          viewer.status === "not-connected"
+            ? "Save a post from the ··· menu. Saved on this device, under Signed out. Signing in gives you a separate list."
+            : "Save a post from the ··· menu. Bookmarks stay on this device."
+        }
         emptyAction={{ label: "Explore", onClick: () => router.push("/explore/") }}
       />
     </>
