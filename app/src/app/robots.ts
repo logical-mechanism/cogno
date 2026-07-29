@@ -21,6 +21,7 @@
 // is on the corpus-collection use, not on the AI-ness of the client.
 
 import type { MetadataRoute } from "next";
+import { SITE_ORIGIN } from "@/lib/config/operator";
 
 // Required under `output: export`. A metadata route is a Route Handler, and Next treats one as dynamic
 // unless told otherwise, so without this the export fails outright ("dynamic = force-static not
@@ -57,6 +58,8 @@ export default function robots(): MetadataRoute.Robots {
       { userAgent: "*", allow: "/", disallow: WALLED },
       { userAgent: TRAINING_CRAWLERS, disallow: "/" },
     ],
-    sitemap: "https://cogno.forum/sitemap.xml",
+    // Absolute, and from the same constant sitemap.ts builds its entries from: a crawler discards a
+    // sitemap whose URLs sit on a different host than the robots.txt that pointed at it.
+    sitemap: `${SITE_ORIGIN}/sitemap.xml`,
   };
 }

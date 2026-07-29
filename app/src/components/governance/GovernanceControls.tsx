@@ -66,11 +66,23 @@ export interface GovernanceControlsProps {
   /** How many polls survive the filters, and how many were read. Renders the scope disclosure. */
   shown: number;
   total: number;
+  /**
+   * False while the read is in flight, held for the chain head, or failed. `shown`/`total` are then not
+   * facts about the list, and the disclosure omits the count rather than asserting one.
+   */
+  counted: boolean;
   /** Whether the viewer's roles are known. Gates the personal lens row. */
   hasViewer: boolean;
 }
 
-export function GovernanceControls({ axes, onChange, shown, total, hasViewer }: GovernanceControlsProps) {
+export function GovernanceControls({
+  axes,
+  onChange,
+  shown,
+  total,
+  counted,
+  hasViewer,
+}: GovernanceControlsProps) {
   const noteId = useId();
 
   return (
@@ -125,10 +137,20 @@ export function GovernanceControls({ axes, onChange, shown, total, hasViewer }: 
       {/* The disclosure is not decoration: "Most discussed" counts direct replies to the opening post,
           not the size of the whole thread, and the list is a bounded scan. Saying so is what keeps the
           order's claim true. Always rendered alongside the controls, never hidden to save space. */}
+      {/* The COUNT is gated, the paragraph is not. This is the aria-describedby target of every row
+          above, so hiding the whole thing while the read lands would silently strip the description off
+          five radiogroups. And the count is a claim: the page holds the list at [] until the chain head
+          is known (a shared ?t=closed link would otherwise resolve every poll to "open" and paint a
+          false empty), so rendering "0 of 21 polls." from the first paint made in words exactly the
+          assertion the hold exists to avoid. */}
       <p className={styles.note} id={noteId}>
-        {shown === total
-          ? `${total} ${total === 1 ? "poll" : "polls"}.`
-          : `${shown} of ${total} polls.`}{" "}
+        {counted && (
+          <>
+            {shown === total
+              ? `${total} ${total === 1 ? "poll" : "polls"}.`
+              : `${shown} of ${total} polls.`}{" "}
+          </>
+        )}
         Most discussed counts direct replies to the opening post.
       </p>
     </div>

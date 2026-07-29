@@ -22,6 +22,7 @@ import { useMutation } from "./useMutation";
 import { useActionToast } from "./useActionToast";
 import { useZeroWeightVoteNotice } from "./useZeroWeightVoteNotice";
 import { submitPollVote, submitClosePoll } from "@/lib/chain/mutations";
+import { notePollCast } from "@/lib/pollCastStore";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, PostingSigner, PollView, Ss58 } from "@/lib/types";
 
@@ -243,6 +244,10 @@ export function usePoll(
           setPoll(r.poll);
           setMyChoice(r.choice);
           setPendingOption(null);
+          // Tell anything rendered beside this poll that a fresh read will now see the cast. HERE and
+          // not in castVote's onConfirm: this is the first moment a read actually reflects it, so a
+          // listener that re-read on confirm would fetch the pre-vote answer and look unchanged.
+          if (r.choice === pendingOption && hostId != null) notePollCast(hostId);
         }
         // else: the read predates the vote — hold the optimistic count, retry on the next block tick.
       })
@@ -250,7 +255,7 @@ export function usePoll(
     return () => {
       cancelled = true;
     };
-  }, [pendingOption, bestBlock, read]);
+  }, [pendingOption, bestBlock, read, hostId]);
 
   return { poll, myChoice, castVote, loading, error, closed, provisional, finalize, finalizing, reload };
 }

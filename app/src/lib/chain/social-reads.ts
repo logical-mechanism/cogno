@@ -259,23 +259,49 @@ export interface PollVoter {
  * Defensive cap on the roster read. Unlike {@link readPollChoices}, truncating here is acceptable
  * BECAUSE the surface says it truncated: a roster is a list, not a lookup that has to be complete for a
  * named set of accounts. The rows are sorted before the cap so the same voters survive across reads
- * rather than changing with PAPI's hashed-key iteration order.
+ * rather than changing with PAPI's hashed-key iteration order. Exported for the test, and no longer for
+ * the truncation check — that now travels with the read as {@link PollRoster.truncated}.
  */
 export const MAX_POLL_VOTERS = 200;
 
+/** A poll's roster: who has cast, the option labels to file them under, and whether the read hit its cap. */
+export interface PollRoster {
+  voters: PollVoter[];
+  /** Option labels in on-chain index order. Empty when the host is not a poll, or the read failed. */
+  labels: string[];
+  /** More accounts have cast than are in `voters`. A FACT from the pre-cap count, never re-derived. */
+  truncated: boolean;
+}
+
 /**
- * Every account that has cast in a poll, with their current choice. Newest information wins: a re-cast
- * replaces, so this is each voter's CURRENT position, not their position when they voted.
+ * Every account that has cast in a poll, with their current choice, plus the option labels to render
+ * them under. Newest information wins: a re-cast replaces, so this is each voter's CURRENT position,
+ * not their position when they voted.
  *
  * Enumerates the whole `PollVotes` prefix for the poll, which is the one place in the app where that is
  * the right call: the roster's entire purpose is "who voted", so there is no smaller key set to ask for.
- * It is bounded by MAX_POLL_VOTERS and the caller discloses truncation.
+ * It is bounded by MAX_POLL_VOTERS and the surface discloses truncation.
  *
- * Never throws: a read failure yields an empty list, which renders as "nobody yet" rather than a broken
- * surface. Non-poll hosts return no entries naturally.
+ * TRUNCATION IS REPORTED FROM HERE, and that is not bookkeeping. It used to be inferred downstream from
+ * `voters.length >= MAX_POLL_VOTERS`, which is wrong in both directions: the serve denylist filters the
+ * roster AFTER this cap, so one denied account inside the cap made a truncated list report itself
+ * complete, and a poll with exactly 200 voters reported a truncation that had not happened. Counted
+ * before the slice with a strict `>`, it is neither.
+ *
+ * THE LABELS COME FROM HERE TOO, for the same self-sufficiency reason. The roster used to borrow them
+ * from `readPollChoices`, which is scoped to the reply authors on screen and returns nothing at all when
+ * there are none — so a governance poll with votes and no replies rendered the "How each voter stands"
+ * heading over an empty list. The extra `Polls` read is one point read on a surface that is already
+ * enumerating a whole storage prefix.
+ *
+ * Never throws: a read failure yields an empty roster, which renders as "nobody yet" rather than a
+ * broken surface. Non-poll hosts return no entries naturally.
  */
-export async function readPollVoters(api: CognoApi, hostId: bigint): Promise<PollVoter[]> {
-  const entries = await api.query.Microblog.PollVotes.getEntries(hostId, BEST).catch(() => []);
+export async function readPollVoters(api: CognoApi, hostId: bigint): Promise<PollRoster> {
+  const [meta, entries] = await Promise.all([
+    api.query.Microblog.Polls.getValue(hostId, BEST).catch(() => null),
+    api.query.Microblog.PollVotes.getEntries(hostId, BEST).catch(() => []),
+  ]);
   const voters: PollVoter[] = [];
   for (const e of entries) {
     // The double map is keyed (hostId, who), so the account is the LAST key argument.
@@ -286,7 +312,11 @@ export async function readPollVoters(api: CognoApi, hostId: bigint): Promise<Pol
   // Sorted by account so the order is stable across reads and across viewers. PAPI returns storage
   // (hashed-key) order, which is arbitrary and would reshuffle the list on every reload.
   voters.sort((a, b) => (a.who < b.who ? -1 : a.who > b.who ? 1 : 0));
-  return voters.slice(0, MAX_POLL_VOTERS);
+  return {
+    voters: voters.slice(0, MAX_POLL_VOTERS),
+    labels: (meta?.options ?? []).map((o) => Binary.toText(o)),
+    truncated: voters.length > MAX_POLL_VOTERS,
+  };
 }
 
 /** A poll's option labels plus the current choice of each NAMED account. */

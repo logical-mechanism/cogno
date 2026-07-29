@@ -67,6 +67,16 @@ export function PollVoters({ voters, labels, truncated }: PollVotersProps) {
     }))
     .filter((g) => g.label && g.members.length > 0);
 
+  // How many voters are actually ON SCREEN, which is not `voters.length`: the two filters above drop a
+  // voter whose option index has no label, and a whole group whose label sanitizes away to nothing (an
+  // on-chain option written entirely in bidi or invisible characters, which is exactly the unvalidated
+  // bytes case sanitizeInline exists for). The truncation note below quotes this, because a number that
+  // does not match the rows under it misrepresents the vote on the one surface that cannot afford to.
+  const shown = groups.reduce((n, g) => n + g.members.length, 0);
+  // Nothing survived grouping, so there is no option text to file anyone under. A heading and a
+  // caveat over an empty list names nobody and reads as "no positions", which is a different claim.
+  if (shown === 0) return null;
+
   return (
     <section className={styles.block} aria-labelledby="cg-poll-voters">
       <h3 className={styles.heading} id="cg-poll-voters">
@@ -91,7 +101,7 @@ export function PollVoters({ voters, labels, truncated }: PollVotersProps) {
           which is the one failure this surface cannot afford. */}
       {truncated && (
         <p className={styles.note}>
-          Showing the first {voters.length} voters by account. More have voted than are listed here.
+          Showing the first {shown} voters by account. More have voted than are listed here.
         </p>
       )}
       <p className={styles.note}>

@@ -51,7 +51,7 @@ import {
   readPollChoices,
   readPollVoters,
 } from "@/lib/chain/social-reads";
-import type { PollChoices, PollVoter } from "@/lib/chain/social-reads";
+import type { PollChoices, PollRoster } from "@/lib/chain/social-reads";
 import type {
   CognoApi,
   CognoPost,
@@ -367,7 +367,7 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     return readPollChoices(api, hostId, authors);
   }
 
-  function pollVoters(hostId: bigint): Promise<PollVoter[]> {
+  function pollVoters(hostId: bigint): Promise<PollRoster> {
     return readPollVoters(api, hostId);
   }
 

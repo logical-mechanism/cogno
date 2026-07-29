@@ -239,4 +239,71 @@ describe("withServeDenylist — people surfaces", () => {
     expect((await wrapped.poll(DENIED_POST)).options).toHaveLength(0);
     expect((await wrapped.poll(7n)).options).toHaveLength(2);
   });
+
+  // The roster is the ONE read that enumerates accounts out of storage rather than being handed a list
+  // that some earlier filter already cleaned, so this wrap is the primary guard and not defence in depth.
+  it("drops denied accounts from a poll's voter roster, and empties a denied poll's", async () => {
+    const source = {
+      pollVoters: async () => ({
+        voters: [
+          { who: "5Ok", option: 0 },
+          { who: DENIED_AUTHOR, option: 1 },
+        ],
+        labels: ["yes", "no"],
+        truncated: false,
+      }),
+    } as unknown as FeedSource;
+    const wrapped = withServeDenylist(source);
+    expect((await wrapped.pollVoters(7n)).voters).toEqual([{ who: "5Ok", option: 0 }]);
+    expect(await wrapped.pollVoters(DENIED_POST)).toEqual({
+      voters: [],
+      labels: [],
+      truncated: false,
+    });
+  });
+
+  // `truncated` is a fact about the read UPSTREAM of this filter. Re-deriving it from the shortened
+  // list is how a capped roster came to report itself as the whole electorate whenever a denied
+  // account happened to fall inside the cap.
+  it("passes a roster's truncation flag through the author filter untouched", async () => {
+    const source = {
+      pollVoters: async () => ({
+        voters: [
+          { who: "5Ok", option: 0 },
+          { who: DENIED_AUTHOR, option: 0 },
+        ],
+        labels: ["yes"],
+        truncated: true,
+      }),
+    } as unknown as FeedSource;
+    const r = await withServeDenylist(source).pollVoters(7n);
+    expect(r.voters).toHaveLength(1);
+    expect(r.truncated).toBe(true);
+  });
+
+  it("neither asks about nor returns a denied account's poll choice", async () => {
+    const asked: (readonly string[])[] = [];
+    const source = {
+      pollChoices: async (_hostId: bigint, authors: readonly string[]) => {
+        asked.push(authors);
+        // Deliberately volunteers a key nobody asked for: the interface does not promise the answer is
+        // a subset of the request, which is what the response-side sweep is there for.
+        return {
+          labels: ["yes", "no"],
+          choices: new Map([
+            ["5Ok", 0],
+            [DENIED_AUTHOR, 1],
+          ]),
+        };
+      },
+    } as unknown as FeedSource;
+    const wrapped = withServeDenylist(source);
+    const r = await wrapped.pollChoices(7n, ["5Ok", DENIED_AUTHOR] as never);
+    expect(asked).toEqual([["5Ok"]]);
+    expect([...r.choices.keys()]).toEqual(["5Ok"]);
+    expect(await wrapped.pollChoices(DENIED_POST, ["5Ok"] as never)).toEqual({
+      labels: [],
+      choices: new Map(),
+    });
+  });
 });

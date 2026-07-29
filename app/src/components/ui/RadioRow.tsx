@@ -39,17 +39,26 @@ export function RadioRow<T extends string | null>({
   const labelId = useId();
   const rowRef = useRef<HTMLDivElement | null>(null);
 
-  // Move selection by `delta` (wrapping) and put DOM focus on the newly selected radio, which is what
-  // makes a roving-tabindex group navigable: the old radio leaves the tab order as the new one enters it.
+  // Select the option AT an index and put DOM focus on it, which is what makes a roving-tabindex group
+  // navigable: the old radio leaves the tab order as the new one enters it.
+  const select = useCallback(
+    (index: number) => {
+      const next = options[index]!;
+      onChange(next.value);
+      rowRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[index]?.focus();
+    },
+    [options, onChange],
+  );
+
+  // Move selection by `delta` from the current option, wrapping. `findIndex` is -1 when `value` is not
+  // one of the options, which the clamp reads as "start from the first" — a relative move has to start
+  // somewhere.
   const move = useCallback(
     (delta: number) => {
       const i = options.findIndex((o) => o.value === value);
-      const next = options[(((i < 0 ? 0 : i) + delta + options.length) % options.length)!];
-      onChange(next.value);
-      const btns = rowRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
-      btns?.[options.indexOf(next)]?.focus();
+      select((((i < 0 ? 0 : i) + delta) % options.length + options.length) % options.length);
     },
-    [options, value, onChange],
+    [options, value, select],
   );
 
   const onKeyDown = useCallback(
@@ -65,17 +74,22 @@ export function RadioRow<T extends string | null>({
           e.preventDefault();
           move(-1);
           break;
+        // ABSOLUTE, not a delta off the current index. Expressed as a delta they were wrong for a value
+        // that is not in `options`: `findIndex` returns -1, so Home became `move(1)` and landed on the
+        // SECOND chip while End became `move(length)` and landed on the first. Nothing today passes such
+        // a value (both call sites parse through an allowlist built from the same constants as the
+        // options), but this is a shared primitive and the delta form only reads as correct.
         case "Home":
           e.preventDefault();
-          move(-options.findIndex((o) => o.value === value));
+          select(0);
           break;
         case "End":
           e.preventDefault();
-          move(options.length - 1 - options.findIndex((o) => o.value === value));
+          select(options.length - 1);
           break;
       }
     },
-    [move, options, value],
+    [move, select, options.length],
   );
 
   return (

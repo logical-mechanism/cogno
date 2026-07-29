@@ -221,9 +221,21 @@ export function ProposalPreview({
           )}
 
           {status === "empty" && (
-            <p className={styles.status}>
-              Couldn&apos;t load the proposal. {sourceLink("View source ↗", href)}
-            </p>
+            <>
+              <p className={styles.status}>
+                Couldn&apos;t load the proposal. {sourceLink("View source ↗", href)}
+              </p>
+              {/* The verdict has to survive INTO the panel, and this branch is where it matters most.
+                  A 404 on a pinned document settles "empty" by construction (a refused read is exactly
+                  what produces the "missing" verdict), so without this line the collapsed card shows
+                  the red accusation and opening it replaces that with environmental-sounding copy —
+                  the mildest label in the set handed to the cheapest attack, which is the failure the
+                  VERDICT_COPY comment above says the split exists to prevent. Same for a document
+                  swapped for something that no longer parses. */}
+              {(verdict === "changed" || verdict === "missing") && (
+                <p className={styles.alarm}>{VERDICT_COPY[verdict]}</p>
+              )}
+            </>
           )}
 
           {status === "loaded" && meta && (

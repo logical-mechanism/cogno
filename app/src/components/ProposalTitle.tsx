@@ -17,9 +17,20 @@
 //   • "Couldn't load proposal"  — the fetch/parse failed (bad metadata)
 //   • "Open the poll to see the proposal"  — a host we won't auto-fetch (author-controlled / not fetchable)
 // Both the resolved title and the `fallback` are already hardened + capped upstream, so both are safe to render.
+//
+// A resolved title is NEVER shown once the pinned hash says the document was swapped or deleted; the row
+// says so instead. Hardening the poll's own card (ProposalPreview) and not this one would have left the
+// whole mechanism defeated on the surface where it matters most, since a reader scans a list of rows and
+// opens none of them. See the SUBSTITUTION CHECK note below.
 
 import { useEffect, useRef, useState } from "react";
-import { resolveProposal, proposalHttpUrl, isNeutralProposalHost } from "@/lib/cardano/proposalMeta";
+import {
+  resolveProposal,
+  proposalHttpUrl,
+  isNeutralProposalHost,
+  anchorVerdict,
+  readAnchorOutcome,
+} from "@/lib/cardano/proposalMeta";
 
 type State =
   | { kind: "gated" } // author-controlled / not fetchable / no anchor — title only after opening the poll
@@ -35,12 +46,26 @@ const DEFAULT_TEXT: Record<Exclude<State["kind"], "title">, string> = {
   failed: "Couldn't load proposal",
 };
 
+/**
+ * What the row says INSTEAD of a title when the pinned document no longer matches. Shorter than
+ * ProposalPreview's VERDICT_COPY on purpose: this is one clamped line in a dense list, and its job is
+ * to stop the substituted text being read as the row's name and send the reader into the poll, where
+ * the full verdict and the source link live.
+ */
+const SWAPPED_TEXT = {
+  changed: "The pinned proposal has changed. Open the poll.",
+  missing: "The pinned proposal is no longer readable. Open the poll.",
+} as const;
+
 export function ProposalTitle({
   anchorUrl,
+  anchorHash,
   className,
   fallback,
 }: {
   anchorUrl?: string;
+  /** The hash the poll pinned for that document, when it pinned one. Drives the substitution check. */
+  anchorHash?: string;
   className?: string;
   /** The poll's own (sanitized) question — shown, muted, whenever a resolved title isn't available, so
    *  unresolved rows stay distinguishable instead of collapsing to an identical state string. */
@@ -90,12 +115,39 @@ export function ProposalTitle({
     };
   }, [eager, anchorUrl]);
 
-  const isTitle = state.kind === "title";
-  // Precedence: a resolved title (primary) → the poll's own question (muted) → a muted state default.
+  // THE SUBSTITUTION CHECK, on the scanning surface. The poll's own card hides a swapped title behind
+  // ProposalPreview's alarm, but a /governance reader takes in dozens of rows and opens none of them, so
+  // an author who swaps the document after the votes are in would get their new title read as the row
+  // headline by everyone who never clicked. Recomputed each render off the module-level outcome cache
+  // that the fetch effect above fills; no extra request, and none is added — the eager fetch stays gated
+  // to neutral hosts for the privacy reason in the header.
+  //
+  // ONLY `changed` and `missing` suppress. `unpinned` is every poll created before pinning shipped and
+  // `unchecked` is every author-controlled host (never fetched here, by design), so suppressing on
+  // anything short of a positive mismatch would blank almost every title on the page.
+  const verdict = anchorUrl ? anchorVerdict(anchorHash, readAnchorOutcome(anchorUrl)) : "unpinned";
+  const swapped = verdict === "changed" || verdict === "missing";
+  const isTitle = state.kind === "title" && !swapped;
+  // Precedence: the substitution warning → a resolved title (primary) → the poll's own question (muted)
+  // → a muted state default. The warning is FIRST: `DEFAULT_TEXT` has no "title" key, so letting a
+  // suppressed title fall through to it would render the string "undefined".
   const fallbackText = fallback?.trim();
-  const shown = isTitle ? state.text : (fallbackText || DEFAULT_TEXT[state.kind]);
+  const shown = swapped
+    ? SWAPPED_TEXT[verdict]
+    : state.kind === "title"
+      ? state.text
+      : (fallbackText || DEFAULT_TEXT[state.kind]);
   return (
-    <p ref={ref} className={className} dir="auto" data-muted={isTitle ? undefined : true}>
+    <p
+      ref={ref}
+      className={className}
+      dir="auto"
+      data-muted={isTitle ? undefined : true}
+      // Marked so the surface can style it as the warning it is. Without this it would render in the
+      // same muted grey as "Loading proposal…", which is the wrong register for the one line on the row
+      // that says the document behind it does not match what the poll committed to.
+      data-alarm={swapped ? true : undefined}
+    >
       {shown}
     </p>
   );

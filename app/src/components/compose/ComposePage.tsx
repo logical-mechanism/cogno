@@ -222,7 +222,14 @@ export function ComposePage() {
   // ── Per-mode submit handlers ───────────────────────────────────────────────────────────────────
   // This page UNMOUNTS on navigation, so runWrite's onCancel is live here: it drops the sticky
   // pending toast when the user navigates away mid-flight.
-  const { submitState, runWrite, optimisticPost } = useComposeWrite(api, signer, viewer, goBack);
+  // `setSubmitState` is needed for the poll path only: it does async work BEFORE runWrite (see
+  // onCreatePoll), and runWrite is where the in-flight lock is normally taken.
+  const { submitState, setSubmitState, runWrite, optimisticPost } = useComposeWrite(
+    api,
+    signer,
+    viewer,
+    goBack,
+  );
 
   const onPost = useCallback(
     (draft: ComposerDraft) => {
@@ -287,6 +294,12 @@ export function ComposePage() {
       // Composer enables submit with blank text (allowEmptyText). Don't re-impose a non-empty gate here or the
       // enabled CTA would silently no-op; the runtime accepts an empty question and PollComposer gates options.
       if (!api || !signer) return;
+      // TAKE THE IN-FLIGHT LOCK HERE, not in runWrite. This is the only submit path that does async
+      // work first: a chain read for the deadline, and then hashProposalDoc, which can hold for its
+      // whole 8s fetch timeout against a slow proposal host. Until submitState is "pending" the CTA is
+      // enabled with no spinner and nothing on screen has changed, so a second tap runs the whole
+      // handler again and lands a SECOND identical poll on a chain that cannot delete one.
+      setSubmitState("pending");
       // Convert the chosen deadline (days) to an absolute block-number `close_at` (defaulting to the
       // 1-day the control displays when untouched). If the chain height can't be read, surface it —
       // the chain rejects a poll without a deadline since spec 211.
@@ -294,6 +307,8 @@ export function ComposePage() {
       try {
         closeAt = await resolveCloseAt(api, bestBlock, closeInDays);
       } catch {
+        // Hand the CTA back. Nothing was submitted, and the toast asks them to try again.
+        setSubmitState("idle");
         toast({
           id: "poll-deadline",
           kind: "error",
@@ -317,7 +332,7 @@ export function ComposePage() {
         { pending: "Creating poll…", success: "Poll created" },
       );
     },
-    [viewer.status, api, signer, bestBlock, runWrite, optimisticPost, router, toast],
+    [viewer.status, api, signer, bestBlock, runWrite, setSubmitState, optimisticPost, router, toast],
   );
 
   return (

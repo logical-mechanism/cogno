@@ -63,6 +63,13 @@ export interface GovPollSummary {
   question: string;
   /** The CIP-1694 proposal's off-chain anchor URL (decoded, length-capped), for the glanceable title. */
   anchorUrl?: string;
+  /**
+   * blake2b-256 of the document the poll was created from, when its author pinned one. Carried here so
+   * the LIST can check it too: without it the row would render a fetched title with no way to tell that
+   * the document behind it had been swapped, which is the one surface where that matters most (a reader
+   * scans dozens of rows and opens none). `anchor_hash: Option<[u8;32]>` decodes as a `0x…` hex string.
+   */
+  anchorHash?: string;
   /** Block-number deadline, or undefined for a floating poll. */
   closeAt?: number;
   /** `true` once `close_poll` has frozen the result. */
@@ -137,6 +144,9 @@ export async function readGovernancePolls(api: CognoApi): Promise<GovPollSummary
         actionType: actionTypeOf(e.value.action?.action_type),
         question,
         anchorUrl: denied ? undefined : decodeAnchor(e.value.action?.anchor_url),
+        // Moves with the URL it commits to. A hash without the anchor it pins is unusable, and a
+        // denied row fetches nothing to compare against.
+        anchorHash: denied ? undefined : (e.value.action?.anchor_hash ?? undefined),
         closeAt: e.value.close_at ?? undefined,
         finalized: finalized.has(hostId),
         // Zeroed for a denied host along with its text: "most discussed" is a claim about a thread the

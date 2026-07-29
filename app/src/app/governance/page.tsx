@@ -30,6 +30,7 @@ import { pollClosesIn } from "@/lib/poll";
 import { useViewerPollVotes } from "@/hooks/useViewerPollVotes";
 import { viewerBucket } from "@/lib/viewerBucket";
 import {
+  GOV_DEFAULT_AXES,
   buildGovernanceUrl,
   filterGovPolls,
   govAxesAreDefault,
@@ -103,6 +104,9 @@ function GovernanceView() {
             onChange={setAxes}
             shown={shown.length}
             total={polls?.length ?? 0}
+            // Not the `loading` const below: that is `&& !error`, so the error path would flip this
+            // back to true and re-assert "0 polls." underneath the failure state.
+            counted={polls != null && !awaitingHead}
             hasViewer={viewerRoles != null}
           />
         }
@@ -126,11 +130,13 @@ function GovernanceView() {
           <EmptyState
             title="No polls match these filters"
             description="Try a wider set, or clear the filters to see everything."
-            // Through the builder, like every other write, so clearing cannot drift from what the
-            // default axes actually are.
+            // Through the builder AND the exported defaults, so clearing cannot drift from what the
+            // default axes actually are. A second hardcoded copy here would let a changed default leave
+            // this button writing a URL `govAxesAreDefault` still calls filtered — an offer to clear
+            // that never clears.
             action={{
               label: "Clear filters",
-              onClick: () => router.replace(buildGovernanceUrl({ ...axes, ...DEFAULTS })),
+              onClick: () => router.replace(buildGovernanceUrl(GOV_DEFAULT_AXES)),
             }}
           />
         )
@@ -155,9 +161,12 @@ function GovernanceView() {
                     {closesIn && <span className={styles.closesIn}>closes {closesIn}</span>}
                   </div>
                   {/* The linked proposal's title identifies the row when we can resolve it (neutral hosts
-                      only, for privacy); otherwise the poll's own question keeps the row distinguishable. */}
+                      only, for privacy); otherwise the poll's own question keeps the row distinguishable.
+                      The pinned hash goes with it: a title fetched from a document that no longer matches
+                      what the poll committed to must not become this row's headline. */}
                   <ProposalTitle
                     anchorUrl={p.anchorUrl}
+                    anchorHash={p.anchorHash}
                     fallback={p.question}
                     className={styles.question}
                   />
@@ -178,9 +187,6 @@ function GovernanceView() {
     </>
   );
 }
-
-/** The axes a "Clear filters" returns to. Spread over the current axes so the reset is total. */
-const DEFAULTS = { status: "all", action: null, chamber: "all", sort: "latest", lens: "all" } as const;
 
 export default function GovernancePage() {
   // `useSearchParams` must sit under a Suspense boundary for `output: 'export'` to prerender this

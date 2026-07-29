@@ -21,7 +21,7 @@
 // Lifted from ShortcutsDialog, which had the only complete implementation. ComposerModal restored
 // without the guards; ConfirmDialog and SignInSheet did not restore at all.
 
-import { useEffect, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 /**
  * @param open   whether the dialog is showing. A dialog that mounts already-open passes `true`; one that
@@ -37,11 +37,29 @@ export function useDialogFocus(
   open: boolean,
   initialFocusRef?: RefObject<HTMLElement | null>,
 ): void {
+  // THE OPENER IS CAPTURED DURING RENDER, and it has to be. React applies a child's `autoFocus` in the
+  // COMMIT phase, which runs before passive effects flush — so reading `document.activeElement` inside
+  // the effect below sees the dialog's own autofocused control, not the trigger. That is not a corner
+  // case: ModalRouteHost passes `autoFocus` to every composer it puts inside ComposerModal, so the
+  // most-used dialog in the app remembered its own textarea, the detached-opener guard then declined to
+  // restore (the textarea unmounts with the dialog), and focus fell to <body> anyway.
+  //
+  // Guarded on the open EDGE, so a re-render while open never re-reads and clobbers the opener with a
+  // control inside the dialog, and StrictMode's double render is idempotent (refs survive both passes).
+  const openerRef = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(false);
+  if (open !== wasOpen.current) {
+    wasOpen.current = open;
+    if (open) {
+      openerRef.current =
+        typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null);
+    }
+  }
+
   useEffect(() => {
     if (!open) return;
 
-    // Read the opener BEFORE moving focus, or we would remember the dialog's own control.
-    const opener = document.activeElement as HTMLElement | null;
+    const opener = openerRef.current;
     initialFocusRef?.current?.focus();
 
     return () => {

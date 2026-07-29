@@ -12,11 +12,13 @@
 
 import { useEffect, useState } from "react";
 import type { FeedSource } from "@/lib/feed/source";
-import { MAX_POLL_VOTERS, type PollVoter } from "@/lib/chain/social-reads";
+import type { PollVoter } from "@/lib/chain/social-reads";
 
 export interface UsePollVoters {
   voters: PollVoter[] | null;
-  /** The read came back at the cap, so there are more voters than are listed. */
+  /** The poll's option labels, in on-chain index order. Read with the roster, not borrowed. */
+  labels: string[];
+  /** More accounts have cast than are listed. Reported BY the read; never inferred from the list length. */
   truncated: boolean;
 }
 
@@ -27,30 +29,41 @@ export function usePollVoters(
   nonce = 0,
 ): UsePollVoters {
   const [voters, setVoters] = useState<PollVoter[] | null>(null);
+  const [labels, setLabels] = useState<string[]>([]);
+  const [truncated, setTruncated] = useState(false);
 
   useEffect(() => {
     if (!source || hostId == null || !isPoll) {
       setVoters(null);
+      setLabels([]);
+      setTruncated(false);
       return;
     }
     let alive = true;
     source
       .pollVoters(hostId)
-      .then((v) => {
-        if (alive) setVoters(v);
+      .then((r) => {
+        if (!alive) return;
+        setVoters(r.voters);
+        setLabels(r.labels);
+        setTruncated(r.truncated);
       })
       .catch(() => {
-        if (alive) setVoters(null);
+        if (!alive) return;
+        setVoters(null);
+        setLabels([]);
+        setTruncated(false);
       });
     return () => {
       alive = false;
     };
   }, [source, hostId, isPoll, nonce]);
 
-  // Exactly at the cap is the only signal available that more exist, and it can be a false positive when
-  // a poll has precisely MAX_POLL_VOTERS voters. Over-disclosing is the right error: the copy says the
-  // list may be incomplete, which stays true either way.
-  return { voters, truncated: voters != null && voters.length >= MAX_POLL_VOTERS };
+  // `truncated` is passed through from the read rather than derived here. Deriving it as
+  // `voters.length >= MAX_POLL_VOTERS` was wrong in both directions: the serve denylist filters the
+  // roster after the cap has bitten, so one denied account inside the cap made a truncated list report
+  // itself complete, and a poll with exactly 200 voters claimed a truncation that had not happened.
+  return { voters, labels, truncated };
 }
 
 export default usePollVoters;

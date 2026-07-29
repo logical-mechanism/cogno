@@ -88,6 +88,18 @@
   color: var(--cg-text-secondary);
 }
 
+/* The pinned document was swapped or deleted, so this line replaces the title rather than describing a
+   loading state. It has to out-rank the muted rule above it (both are set: the row has no title to
+   promote), and it must not read as one more grey placeholder. Same wash as ProposalPreview's .alarm,
+   so the list and the poll's own card agree on what an alarm looks like. */
+.question[data-alarm="true"] {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-semibold);
+  background: var(--cg-danger-wash);
+  border-radius: var(--cg-radius-sm);
+  padding: var(--cg-space-1) var(--cg-space-2);
+}
+
 /* The row's footer line: the direct-reply count (which the "most discussed" order sorts on, so it is
    worth showing rather than making the reader trust an invisible key) and the eligibility flag. */
 .meta {

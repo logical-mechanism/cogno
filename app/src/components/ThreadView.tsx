@@ -40,6 +40,7 @@ import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useReplyVoteChoices } from "@/hooks/useReplyVoteChoices";
 import { usePollVoters } from "@/hooks/usePollVoters";
+import { usePollCastTick } from "@/lib/pollCastStore";
 import { PollVoters } from "./PollVoters";
 import { ReplyVoteChip } from "./ReplyVoteChip";
 import { pollChoiceLabel } from "@/lib/poll";
@@ -171,13 +172,19 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     () => Array.from(new Set(shownReplies.map((r) => r.author))),
     [shownReplies],
   );
-  // The roster under the focal poll. Shares `pollLabels` with the reply chips below, so the option text
-  // is read once and the two surfaces cannot disagree about what "Yes" is.
-  const { voters: pollVoters, truncated: votersTruncated } = usePollVoters(
-    source,
-    rootId,
-    focal?.isPoll === true,
-  );
+  // The roster under the focal poll. It carries its OWN option labels rather than borrowing the reply
+  // chips' below: those are read for the reply authors on screen, so a poll with votes and no replies
+  // handed back no labels at all and the roster rendered its heading over an empty list.
+  //
+  // Re-read when the viewer's own cast settles on chain (not per block, and not on submit — see
+  // pollCastStore). Being absent from a roster you just joined, directly under bars that already moved,
+  // reads as a vote that did not register.
+  const pollCastTick = usePollCastTick(focal?.isPoll === true ? rootId : null);
+  const {
+    voters: pollVoters,
+    labels: voterLabels,
+    truncated: votersTruncated,
+  } = usePollVoters(source, rootId, focal?.isPoll === true, pollCastTick);
   const { labels: pollLabels, choices: pollChoices } = useReplyVoteChoices(
     source,
     rootId,
@@ -439,7 +446,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
             not a suppression. Renders nothing at all until the read lands, and nothing when nobody has
             voted, so a plain post never grows an empty section. */}
         {!focalSuppressed && focal.isPoll && (
-          <PollVoters voters={pollVoters} labels={pollLabels} truncated={votersTruncated} />
+          <PollVoters voters={pollVoters} labels={voterLabels} truncated={votersTruncated} />
         )}
 
         {/* The ONE weighted-nature surface (D2/D12): score (signed, may be negative) + up/down weight,

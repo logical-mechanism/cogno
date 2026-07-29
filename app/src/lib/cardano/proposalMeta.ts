@@ -313,6 +313,13 @@ export async function resolveProposal(
 //    would read back the very entry the commitment was derived from, without touching the network.
 //
 // So a hash is pinned only when a reader, fetching the same way, will be able to reproduce it.
+//
+// THE CONSENTED READ IS THE ONE EXCEPTION, and it is deliberate. `resolveProposal({followRedirects})`
+// records `readOutcome` for the bytes it actually received, redirect chain and all, and those are
+// compared against a pin taken with `redirect: "error"`. That asymmetry is the point: the verdict has to
+// describe THE BYTES ON SCREEN. Recording nothing when a redirect was followed would leave the panel
+// rendering a substituted document's title and rationale under "Could not check this document from your
+// browser", which is exactly the swap-by-redirect evasion the pin exists to catch. Do not "fix" it.
 
 import { blake2b } from "blakejs";
 import { toHex } from "@polkadot-api/utils";

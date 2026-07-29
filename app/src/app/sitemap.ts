@@ -14,11 +14,10 @@
 
 import type { MetadataRoute } from "next";
 import { PUBLIC_SEGMENTS } from "@/lib/routeAccess";
+import { SITE_ORIGIN as BASE } from "@/lib/config/operator";
 
 // Required under `output: export` — see the note in robots.ts. Without it the build errors.
 export const dynamic = "force-static";
-
-const BASE = "https://cogno.forum";
 
 /**
  * Public segments that are dynamic, so there is nothing static to list. Named rather than pattern

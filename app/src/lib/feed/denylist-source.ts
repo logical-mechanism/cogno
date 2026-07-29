@@ -51,7 +51,7 @@ import type {
   Suggestion,
   Ss58,
 } from "@/lib/types";
-import type { PollChoices, PollVoter } from "@/lib/chain/social-reads";
+import type { PollChoices, PollRoster } from "@/lib/chain/social-reads";
 import type { FeedSource, ProfileArgs } from "./source";
 
 /**
@@ -186,6 +186,13 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     // A denied AUTHOR is dropped from the result even though the caller asked for them by name. Every
     // surface that feeds this list already filters denied authors out, so this is defence in depth
     // rather than the only guard, and it is cheap.
+    //
+    // THE SWEEP AFTER IT IS NOT REDUNDANT with the filter before it, although today's single reader
+    // makes it look that way. `FeedSource.pollChoices` does not promise that the keys it answers with
+    // are a subset of the accounts it was given, and it should not have to: a node-served or
+    // indexer-backed reader could reasonably answer from a per-poll aggregate. The request filter keeps
+    // us from ASKING about a denied account; the sweep keeps a reader that volunteers one from putting
+    // their chip on a reply. Deleting it is a silent regression the day a second reader lands.
     const { labels, choices } = await source.pollChoices(
       hostId,
       authors.filter((a) => !isDeniedAuthor(a)),
@@ -197,14 +204,19 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     return source.viewerPostState(post, whoId);
   }
 
-  async function pollVoters(hostId: bigint): Promise<PollVoter[]> {
+  async function pollVoters(hostId: bigint): Promise<PollRoster> {
     // A denied HOST loses its roster with its option labels: without labels there is nothing to render a
     // position as, and a bare list of accounts beside a delisted poll is worse than nothing.
-    if (isDeniedPost(hostId)) return [];
+    if (isDeniedPost(hostId)) return { voters: [], labels: [], truncated: false };
     // A denied AUTHOR is dropped from the list. This is the primary guard, not defence in depth: the
     // roster is the ONE surface that enumerates accounts from storage rather than receiving them from a
     // read that has already been filtered.
-    return (await source.pollVoters(hostId)).filter((v) => !isDeniedAuthor(v.who));
+    //
+    // `truncated` is passed through UNTOUCHED, and must be. It is a fact about the read that happened
+    // upstream of this filter, so recomputing it from the shortened list would let one denied account
+    // inside the cap turn a truncated roster into one that claims to be the whole electorate.
+    const roster = await source.pollVoters(hostId);
+    return { ...roster, voters: roster.voters.filter((v) => !isDeniedAuthor(v.who)) };
   }
 
   return {

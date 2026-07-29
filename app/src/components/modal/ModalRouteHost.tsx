@@ -392,6 +392,12 @@ export function ModalRouteHost() {
       // submit (allowEmptyText + option validity) and the runtime accepts it, so no non-empty gate here — else
       // the enabled CTA silently no-ops.
       if (!api || !signer) return;
+      // TAKE THE IN-FLIGHT LOCK HERE, not in runWrite. This is the only submit path that does async
+      // work first: a chain read for the deadline, and then hashProposalDoc, which can hold for its
+      // whole 8s fetch timeout against a slow proposal host. Until submitState is "pending" the CTA is
+      // enabled with no spinner and the modal is still open, so a second tap runs the whole handler
+      // again and lands a SECOND identical poll on a chain that cannot delete one.
+      setSubmitState("pending");
       // Convert the chosen deadline (days) to an absolute block-number `close_at` (defaulting to the
       // 1-day the control displays when untouched). If the chain height can't be read, surface it —
       // the chain rejects a poll without a deadline since spec 211.
@@ -399,6 +405,9 @@ export function ModalRouteHost() {
       try {
         closeAt = await resolveCloseAt(api, bestBlock, closeInDays);
       } catch {
+        // Hand the CTA back. This host never unmounts, so without the reset the composer would stay
+        // disabled and spinning until it was closed and reopened.
+        setSubmitState("idle");
         toast({
           id: "poll-deadline",
           kind: "error",
@@ -422,7 +431,7 @@ export function ModalRouteHost() {
         { pending: "Creating poll…", success: "Poll created" },
       );
     },
-    [viewer.status, api, signer, bestBlock, runWrite, optimisticPost, toast, close, router],
+    [viewer.status, api, signer, bestBlock, runWrite, setSubmitState, optimisticPost, toast, close, router],
   );
 
   // ── profile save/clear pipeline (feeless + capacity-metered, exactly like a post) ──────────────
