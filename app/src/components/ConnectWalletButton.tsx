@@ -34,12 +34,24 @@ export interface ConnectWalletButtonProps {
   size?: ControlSize;
 }
 
+/**
+ * The onboarding-entry label for a viewer who is not fully set up. Connected but not bound → they are
+ * mid-flow, so name the resumption rather than re-inviting them.
+ *
+ * EXPORTED because the LeftNav shows this control at two breakpoints and only one of them is this
+ * component: below 1020px the pill is swapped for a round icon button (Account.module.css), whose
+ * aria-label and title ARE its whole accessible name. Those two are the same affordance and must never
+ * say different things, so they read one function rather than each computing the ternary.
+ */
+export function connectLabelFor(viewer: Viewer): string {
+  return viewer.status === "not-identity-bound" ? "Finish setup" : "Sign in";
+}
+
 export function ConnectWalletButton({ viewer, onStart, size = "md" }: ConnectWalletButtonProps) {
   if (viewer.status === "ready") return null;
 
   const cls = [styles.btn, size === "sm" ? styles.sm : styles.md].join(" ");
-  // Connected but not bound → they are mid-flow, so name the resumption rather than re-inviting them.
-  const label = viewer.status === "not-identity-bound" ? "Finish setup" : "Sign in";
+  const label = connectLabelFor(viewer);
 
   return (
     <button type="button" className={cls} onClick={onStart}>

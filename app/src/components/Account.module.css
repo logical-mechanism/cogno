@@ -65,6 +65,26 @@
   }
 }
 
+/* Desktop: the labelled pill carries it, so the icon is redundant. Hidden by default and revealed only
+   at the tablet breakpoint BELOW.
+   ORDER IS LOAD-BEARING. A media query adds no specificity, so `.connectIcon` inside one and
+   `.connectIcon` outside it are a tie that source order breaks. This block used to sit AFTER the
+   breakpoint, which meant its `display: none` won at EVERY width and the tablet rail still had no
+   sign-in control — the whole point of the icon button. Any new `.connectIcon` rule goes here, above
+   the override, not below it. */
+.connectIcon {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--cg-avatar-lg);
+  height: var(--cg-avatar-lg);
+  border: 0;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  cursor: pointer;
+}
+
 /* Tablet icon-only rail (≤1019px): collapse to just the avatar, matching the rest of LeftNav. */
 @media (max-width: 1019px) {
   .trigger {
@@ -85,21 +105,6 @@
   .connectIcon {
     display: inline-flex;
   }
-}
-
-/* Desktop: the labelled pill carries it, so the icon is redundant. Hidden by default and revealed only
-   at the tablet breakpoint above, so the two are never on screen together. */
-.connectIcon {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  width: var(--cg-avatar-lg);
-  height: var(--cg-avatar-lg);
-  border: 0;
-  border-radius: var(--cg-radius-pill);
-  background: var(--cg-accent);
-  color: var(--cg-accent-contrast);
-  cursor: pointer;
 }
 
 .connectIcon:hover {

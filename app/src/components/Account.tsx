@@ -16,7 +16,7 @@ import styles from "./Account.module.css";
 import { Avatar } from "./Avatar";
 import { DisplayName } from "./DisplayName";
 import { Handle } from "./Handle";
-import { ConnectWalletButton } from "./ConnectWalletButton";
+import { ConnectWalletButton, connectLabelFor } from "./ConnectWalletButton";
 import { IconSignIn } from "./icons";
 import { useSession } from "./Providers";
 import { useToaster } from "./toast/ToasterProvider";
@@ -99,7 +99,11 @@ export function Account() {
     // meaning, and a person glyph reads as "your profile" which is precisely what a signed-out visitor
     // does not have. Both controls go to /welcome rather than opening the sign-in sheet, because
     // unlike a blocked Like this is the user explicitly asking to sign in.
-    const label = viewer.status === "not-identity-bound" ? "Finish setup" : "Sign in";
+    //
+    // The label comes from ConnectWalletButton's own helper, not a second copy of the ternary: these
+    // two ARE one affordance at two breakpoints, and a third viewer.status case added to one of them
+    // has to reach both.
+    const label = connectLabelFor(viewer);
     return (
       <div className={styles.root}>
         <div className={styles.connectRoot}>
