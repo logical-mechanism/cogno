@@ -67,9 +67,16 @@ export interface PollCardProps {
   /** Disable voting (e.g. not-identity-bound). The surface still renders the gate copy elsewhere. */
   disabled?: boolean;
   /**
-   * Tooltip explaining WHY voting is disabled (e.g. "Finish setup to vote") — shown on each option only
-   * for the `disabled` gate, never for a closed poll (which is self-explanatory). Mirrors PostCardActions,
-   * which keeps the same not-bound copy on its vote controls, so the two controls on one card agree.
+   * Tooltip explaining what pressing an option will actually do for THIS viewer (e.g. "Finish setup to
+   * vote", "Sign in to vote") — shown on each option whenever the poll is open, never on a closed one
+   * (which is self-explanatory). Mirrors PostCardActions, which keeps the same copy on its vote
+   * controls, so the two controls on one card agree.
+   *
+   * NOT SCOPED TO `disabled`, deliberately. It was, and that silently dropped the whole guest case: a
+   * signed-out viewer is `invite` in lib/writeAffordance, which keeps the options ENABLED on purpose
+   * (the click is the teaching moment) and changes only what the control claims. Gating the tooltip on
+   * `disabled` therefore computed "Sign in to vote" and threw it away, on the one viewer with no other
+   * way to find out — while PostCardActions on the same card showed theirs.
    */
   disabledHint?: string;
   /** Tighter bars inside a dense timeline card. */
@@ -220,9 +227,10 @@ export function PollCard({
               }}
               aria-checked={mine}
               aria-label={ariaLabel}
-              // Explain the gate on hover for the disabled (not-bound) case — a closed poll needs no such
-              // hint, so scope the title to the `disabled` prop, not the derived `votingDisabled`.
-              title={disabled && !closed ? disabledHint : undefined}
+              // Explain what this option does for this viewer, on hover. Scoped to the poll being OPEN
+              // and nothing else: a closed poll needs no such hint, and a guest's option stays enabled
+              // (writeAffordance `invite`) yet still needs to say it is a sign-in. See `disabledHint`.
+              title={!closed ? disabledHint : undefined}
               tabIndex={i === rovingPos ? 0 : -1}
               className={`${styles.option} ${rowResults ? styles.resultRow : styles.voteRow} ${
                 mine ? styles.mine : ""
