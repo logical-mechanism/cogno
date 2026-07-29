@@ -216,6 +216,38 @@ export async function readViewerPollChoice(
   return option ?? null;
 }
 
+/**
+ * One account's current choice across MANY polls, as a map of host id → option index. A poll the account
+ * has not voted in is simply absent.
+ *
+ * The transpose of {@link readPollChoices}: same batched tuple-keyed read, one account against many
+ * polls instead of one poll against many accounts. It answers "which of these have I already voted in",
+ * which is what turns a governance list into a personal queue.
+ *
+ * Never throws: a read failure yields an empty map, which renders as "not voted" everywhere. That is the
+ * safe direction, because it can only ever show somebody a poll they have already dealt with. The
+ * opposite default would hide one they still owe a vote on.
+ */
+export async function readViewerPollChoices(
+  api: CognoApi,
+  hostIds: readonly bigint[],
+  who: Ss58,
+): Promise<Map<bigint, number>> {
+  if (hostIds.length === 0) return new Map();
+  const votes = await api.query.Microblog.PollVotes.getValues(
+    hostIds.map((id) => [id, who] as const),
+    BEST,
+  ).catch(() => [] as (number | undefined)[]);
+
+  const out = new Map<bigint, number>();
+  // Positional, and nullish-tested rather than falsy-tested: option 0 is a real vote.
+  votes.forEach((option, i) => {
+    const id = hostIds[i];
+    if (option != null && id != null) out.set(id, option);
+  });
+  return out;
+}
+
 /** A poll's option labels plus the current choice of each NAMED account. */
 export interface PollChoices {
   /** Option labels in on-chain index order (empty when the host is not a poll, or is denied). */

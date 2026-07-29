@@ -27,12 +27,15 @@ import { useGovernancePolls } from "@/hooks/useGovernancePolls";
 import { GOV_ACTION_LABEL } from "@/lib/cardano/governance";
 import { eligibleToVote, govCloseState } from "@/lib/chain/governance-feed";
 import { pollClosesIn } from "@/lib/poll";
+import { useViewerPollVotes } from "@/hooks/useViewerPollVotes";
+import { viewerBucket } from "@/lib/viewerBucket";
 import {
   buildGovernanceUrl,
   filterGovPolls,
   govAxesAreDefault,
   parseGovAction,
   parseGovChamber,
+  parseGovLens,
   parseGovSort,
   parseGovStatus,
   sortGovPolls,
@@ -43,7 +46,7 @@ import styles from "./page.module.css";
 const STATE_LABEL = { open: "Open", provisional: "Closed", final: "Final" } as const;
 
 function GovernanceView() {
-  const { api, viewerRoles } = useSession();
+  const { api, viewerRoles, viewer } = useSession();
   const bestBlock = useBestBlock();
   const { polls, error, reload } = useGovernancePolls(api);
   const router = useRouter();
@@ -58,6 +61,7 @@ function GovernanceView() {
       action: parseGovAction(searchParams.get("a")),
       chamber: parseGovChamber(searchParams.get("c")),
       sort: parseGovSort(searchParams.get("s")),
+      lens: parseGovLens(searchParams.get("v")),
     }),
     [searchParams],
   );
@@ -72,10 +76,17 @@ function GovernanceView() {
   // `?t=closed` link would paint a false "nothing matches" and then flip. Hold the list instead.
   const awaitingHead = bestBlock == null && axes.status !== "all";
 
+  // Which of these the viewer has already cast in. Read for the WHOLE list rather than the filtered one,
+  // so toggling the lens never re-fires it.
+  const allIds = useMemo(() => (polls ?? []).map((p) => p.hostId), [polls]);
+  // viewerBucket is the one correct "who am I" expression for a viewer-relative chain read.
+  const voted = useViewerPollVotes(api, allIds, viewerBucket(viewer));
+
   const shown = useMemo(() => {
     if (!polls || awaitingHead) return [];
-    return sortGovPolls(filterGovPolls(polls, axes, bestBlock), axes.sort, bestBlock);
-  }, [polls, axes, bestBlock, awaitingHead]);
+    const filtered = filterGovPolls(polls, axes, bestBlock, { roles: viewerRoles, voted });
+    return sortGovPolls(filtered, axes.sort, bestBlock);
+  }, [polls, axes, bestBlock, awaitingHead, viewerRoles, voted]);
 
   const loading = (polls == null || awaitingHead) && !error;
 
@@ -92,6 +103,7 @@ function GovernanceView() {
             onChange={setAxes}
             shown={shown.length}
             total={polls?.length ?? 0}
+            hasViewer={viewerRoles != null}
           />
         }
       />
@@ -168,7 +180,7 @@ function GovernanceView() {
 }
 
 /** The axes a "Clear filters" returns to. Spread over the current axes so the reset is total. */
-const DEFAULTS = { status: "all", action: null, chamber: "all", sort: "latest" } as const;
+const DEFAULTS = { status: "all", action: null, chamber: "all", sort: "latest", lens: "all" } as const;
 
 export default function GovernancePage() {
   // `useSearchParams` must sit under a Suspense boundary for `output: 'export'` to prerender this

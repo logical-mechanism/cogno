@@ -15,6 +15,7 @@ import type { GovActionType } from "@/lib/types";
 import {
   GOV_ACTION_SLUG,
   type GovAxes,
+  type GovLens,
   type GovChamber,
   type GovSort,
   type GovStatus,
@@ -37,6 +38,14 @@ const CHAMBER_OPTIONS: RadioOption<GovChamber>[] = [
   { value: "drep", label: "dReps vote on" },
 ];
 
+// Only rendered for a viewer whose roles are known. Signed out, "you can vote" has no referent, and a
+// chip that always resolves to the whole list is worse than an absent one.
+const LENS_OPTIONS: RadioOption<GovLens>[] = [
+  { value: "all", label: "Anyone" },
+  { value: "eligible", label: "You can vote" },
+  { value: "unvoted", label: "You have not voted" },
+];
+
 const SORT_OPTIONS: RadioOption<GovSort>[] = [
   { value: "latest", label: "Newest" },
   { value: "closing", label: "Closing soon" },
@@ -57,9 +66,11 @@ export interface GovernanceControlsProps {
   /** How many polls survive the filters, and how many were read. Renders the scope disclosure. */
   shown: number;
   total: number;
+  /** Whether the viewer's roles are known. Gates the personal lens row. */
+  hasViewer: boolean;
 }
 
-export function GovernanceControls({ axes, onChange, shown, total }: GovernanceControlsProps) {
+export function GovernanceControls({ axes, onChange, shown, total, hasViewer }: GovernanceControlsProps) {
   const noteId = useId();
 
   return (
@@ -95,6 +106,15 @@ export function GovernanceControls({ axes, onChange, shown, total }: GovernanceC
         onChange={(chamber) => onChange({ ...axes, chamber })}
         describedById={noteId}
       />
+      {hasViewer && (
+        <RadioRow
+          label="For you"
+          options={LENS_OPTIONS}
+          value={axes.lens}
+          onChange={(lens) => onChange({ ...axes, lens })}
+          describedById={noteId}
+        />
+      )}
       <RadioRow
         label="Order"
         options={SORT_OPTIONS}

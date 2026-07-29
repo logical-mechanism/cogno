@@ -8,6 +8,7 @@ import {
   parseGovAction,
   parseGovChamber,
   parseGovSort,
+  parseGovLens,
   parseGovStatus,
   sortGovPolls,
   type GovAxes,
@@ -32,6 +33,7 @@ describe("parsers", () => {
       expect(parseGovStatus(bad)).toBe("all");
       expect(parseGovChamber(bad)).toBe("all");
       expect(parseGovSort(bad)).toBe("latest");
+      expect(parseGovLens(bad)).toBe("all");
       expect(parseGovAction(bad)).toBeNull();
     }
   });
@@ -80,7 +82,7 @@ describe("buildGovernanceUrl", () => {
   });
 
   it("emits a stable key order for a fully specified view", () => {
-    const axes: GovAxes = { status: "open", action: "ParamChange", chamber: "drep", sort: "closing" };
+    const axes: GovAxes = { status: "open", action: "ParamChange", chamber: "drep", sort: "closing", lens: "all" };
     expect(buildGovernanceUrl(axes)).toBe("/governance/?t=open&a=params&c=drep&s=closing");
   });
 
@@ -93,14 +95,15 @@ describe("buildGovernanceUrl", () => {
       for (const chamber of chambers)
         for (const sort of sorts)
           for (const action of actions) {
-            const url = buildGovernanceUrl({ status, action, chamber, sort });
+            const url = buildGovernanceUrl({ status, action, chamber, sort, lens: "all" });
             const q = new URLSearchParams(url.split("?")[1] ?? "");
             expect({
               status: parseGovStatus(q.get("t")),
               action: parseGovAction(q.get("a")),
               chamber: parseGovChamber(q.get("c")),
               sort: parseGovSort(q.get("s")),
-            }).toEqual({ status, action, chamber, sort });
+              lens: parseGovLens(q.get("v")),
+            }).toEqual({ status, action, chamber, sort, lens: "all" });
           }
   });
 });
@@ -120,7 +123,7 @@ describe("filterGovPolls", () => {
     poll({ hostId: 3n, actionType: "HardFork", closeAt: 500 }),
     poll({ hostId: 4n, actionType: "TreasuryWithdrawal", finalized: true }),
   ];
-  const none = { status: "all", action: null, chamber: "all" } as const;
+  const none = { status: "all", action: null, chamber: "all", lens: "all" } as const;
 
   it("keeps everything by default", () => {
     expect(filterGovPolls(all, none, 200)).toHaveLength(4);
@@ -211,5 +214,74 @@ describe("sortGovPolls", () => {
     const b = sortGovPolls(polls, "discussed", 100).map((p) => p.hostId);
     expect(a).toEqual(b);
     expect(a).toEqual([7n, 6n, 5n]);
+  });
+});
+
+// The personal lens turns the list into a work queue. Its most important property is that it FAILS
+// OPEN: an empty queue is a claim that there is nothing to do, and that claim must never be made on
+// data that has not arrived.
+describe("filterGovPolls — the personal lens", () => {
+  // Info and HardFork are decided by both chambers; ParamChange and TreasuryWithdrawal are dRep-only.
+  const polls = [
+    poll({ hostId: 1n, actionType: "Info", closeAt: 500 }),
+    poll({ hostId: 2n, actionType: "TreasuryWithdrawal", closeAt: 500 }),
+    poll({ hostId: 3n, actionType: "HardFork", closeAt: 500 }),
+  ];
+  const base = { status: "all", action: null, chamber: "all" } as const;
+
+  it("does not filter at all when the lens is off", () => {
+    const out = filterGovPolls(polls, { ...base, lens: "all" }, 100, { roles: [], voted: new Set() });
+    expect(out).toHaveLength(3);
+  });
+
+  it("keeps only what the viewer's chamber decides", () => {
+    const spo = filterGovPolls(polls, { ...base, lens: "eligible" }, 100, {
+      roles: ["Spo"],
+      voted: new Set(),
+    });
+    expect(spo.map((p) => p.hostId)).toEqual([1n, 3n]);
+
+    const drep = filterGovPolls(polls, { ...base, lens: "eligible" }, 100, {
+      roles: ["DRep"],
+      voted: new Set(),
+    });
+    expect(drep.map((p) => p.hostId)).toEqual([1n, 2n, 3n]);
+  });
+
+  it("drops what the viewer has already voted in", () => {
+    const out = filterGovPolls(polls, { ...base, lens: "unvoted" }, 100, {
+      roles: ["DRep"],
+      voted: new Set([2n]),
+    });
+    expect(out.map((p) => p.hostId)).toEqual([1n, 3n]);
+  });
+
+  it("never counts a closed poll as outstanding work", () => {
+    const closed = [poll({ hostId: 9n, actionType: "Info", closeAt: 10 })]; // past head 100
+    const out = filterGovPolls(closed, { ...base, lens: "unvoted" }, 100, {
+      roles: ["Spo"],
+      voted: new Set(),
+    });
+    expect(out).toHaveLength(0);
+  });
+
+  it("fails OPEN while the viewer's roles are unknown, rather than painting an empty queue", () => {
+    const out = filterGovPolls(polls, { ...base, lens: "eligible" }, 100, {
+      roles: null,
+      voted: new Set(),
+    });
+    expect(out).toHaveLength(3);
+  });
+
+  it("fails OPEN while the voted set has not loaded", () => {
+    const out = filterGovPolls(polls, { ...base, lens: "unvoted" }, 100, {
+      roles: ["DRep"],
+      voted: null,
+    });
+    expect(out).toHaveLength(3);
+  });
+
+  it("ignores the lens entirely when no viewer is supplied", () => {
+    expect(filterGovPolls(polls, { ...base, lens: "unvoted" }, 100)).toHaveLength(3);
   });
 });

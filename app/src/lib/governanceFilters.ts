@@ -16,7 +16,8 @@
 
 import type { GovActionType } from "@/lib/types";
 import { GOV_ACTION_LABEL, actionBodies } from "@/lib/cardano/governance";
-import { govCloseState, type GovPollSummary } from "@/lib/chain/governance-feed";
+import { eligibleToVote, govCloseState, type GovPollSummary } from "@/lib/chain/governance-feed";
+import type { RoleKindType } from "@/lib/chain/roles";
 
 // ── axes ─────────────────────────────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,14 @@ export type GovChamber = (typeof GOV_CHAMBERS)[number];
 
 export const GOV_SORTS = ["latest", "closing", "discussed"] as const;
 export type GovSort = (typeof GOV_SORTS)[number];
+
+/**
+ * The personal lens: everything, the polls this viewer's roles let them decide, or just those of those
+ * they have not cast in yet. Turns the list into a work queue without a second route that would list the
+ * same polls under a different name.
+ */
+export const GOV_LENSES = ["all", "eligible", "unvoted"] as const;
+export type GovLens = (typeof GOV_LENSES)[number];
 
 /**
  * URL slug per CIP-1694 action type. Written out rather than derived from the type name so the slugs are
@@ -64,6 +73,10 @@ export function parseGovSort(raw: string | null | undefined): GovSort {
   return GOV_SORTS.includes(raw as GovSort) ? (raw as GovSort) : "latest";
 }
 
+export function parseGovLens(raw: string | null | undefined): GovLens {
+  return GOV_LENSES.includes(raw as GovLens) ? (raw as GovLens) : "all";
+}
+
 /** The action type for a slug, or null for "every type" (the default) and for an unknown slug. */
 export function parseGovAction(raw: string | null | undefined): GovActionType | null {
   return (raw && ACTION_BY_SLUG.get(raw)) || null;
@@ -76,6 +89,7 @@ export interface GovAxes {
   action: GovActionType | null;
   chamber: GovChamber;
   sort: GovSort;
+  lens: GovLens;
 }
 
 export const GOV_DEFAULT_AXES: GovAxes = {
@@ -83,6 +97,7 @@ export const GOV_DEFAULT_AXES: GovAxes = {
   action: null,
   chamber: "all",
   sort: "latest",
+  lens: "all",
 };
 
 /** True when nothing is filtered and the order is the default (so "Clear filters" can be hidden). */
@@ -91,7 +106,8 @@ export function govAxesAreDefault(a: GovAxes): boolean {
     a.status === GOV_DEFAULT_AXES.status &&
     a.action === GOV_DEFAULT_AXES.action &&
     a.chamber === GOV_DEFAULT_AXES.chamber &&
-    a.sort === GOV_DEFAULT_AXES.sort
+    a.sort === GOV_DEFAULT_AXES.sort &&
+    a.lens === GOV_DEFAULT_AXES.lens
   );
 }
 
@@ -108,20 +124,36 @@ export function buildGovernanceUrl(a: GovAxes): string {
   if (a.action !== null) q.set("a", GOV_ACTION_SLUG[a.action]);
   if (a.chamber !== GOV_DEFAULT_AXES.chamber) q.set("c", a.chamber);
   if (a.sort !== GOV_DEFAULT_AXES.sort) q.set("s", a.sort);
+  if (a.lens !== GOV_DEFAULT_AXES.lens) q.set("v", a.lens);
   const s = q.toString();
   return s ? `/governance/?${s}` : "/governance/";
 }
 
 // ── filter ───────────────────────────────────────────────────────────────────────────────────────
 
+/** What the personal lens needs to know about the viewer. Both null before a viewer is known. */
+export interface GovViewer {
+  /** The viewer's observed Cardano roles, or null while unknown / signed out. */
+  roles: readonly RoleKindType[] | null;
+  /** Host ids the viewer has already cast in, or null before the read lands. */
+  voted: ReadonlySet<bigint> | null;
+}
+
 /**
- * Apply the three filter axes. `bestBlock` is only consulted by the status axis (through the same
+ * Apply the filter axes. `bestBlock` is only consulted by the status axis (through the same
  * `govCloseState` the rows render), so a chamber or type filter works before the chain head is known.
+ *
+ * The personal lens FAILS OPEN in both directions, and that matters more than it looks. `roles === null`
+ * is a signed-out or still-resolving viewer, and `voted === null` is a read that has not landed: in
+ * either case the lens is not applied at all, rather than resolving to "you are eligible for nothing"
+ * and painting an empty queue at exactly the moment a role-holder arrives. An empty work queue is a
+ * claim that there is nothing to do, and it must never be made on missing data.
  */
 export function filterGovPolls(
   polls: readonly GovPollSummary[],
-  axes: Pick<GovAxes, "status" | "action" | "chamber">,
+  axes: Pick<GovAxes, "status" | "action" | "chamber" | "lens">,
   bestBlock: number | null,
+  viewer?: GovViewer,
 ): GovPollSummary[] {
   return polls.filter((p) => {
     if (axes.action !== null && p.actionType !== axes.action) return false;
@@ -130,6 +162,16 @@ export function filterGovPolls(
       const state = govCloseState(p, bestBlock);
       const want = axes.status === "closed" ? "provisional" : axes.status;
       if (state !== want) return false;
+    }
+    if (axes.lens !== "all" && viewer) {
+      // `eligibleToVote` returns undefined for an unknown role set, which is the fail-open case.
+      const eligible = eligibleToVote(p.actionType, viewer.roles);
+      if (eligible === false) return false;
+      if (axes.lens === "unvoted") {
+        // A closed poll cannot be voted in, so it is never outstanding work whatever the vote map says.
+        if (govCloseState(p, bestBlock) !== "open") return false;
+        if (viewer.voted?.has(p.hostId)) return false;
+      }
     }
     return true;
   });
