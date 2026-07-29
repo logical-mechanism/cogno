@@ -432,9 +432,9 @@ function StakeCard({
 
   return (
     <div className={styles.card}>
-      <h2 className={styles.cardTitle}>Add voting power (optional)</h2>
+      <h2 className={styles.cardTitle}>Add voting power</h2>
       <p className={styles.cardBody}>
-        Prove your wallet&apos;s stake so your votes count for more. You can post without this.
+        Prove your wallet&apos;s stake so your votes count for more.
       </p>
 
       {stake.stakeBound === true ? (

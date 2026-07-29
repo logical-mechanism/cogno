@@ -212,12 +212,15 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
           )}
         </div>
 
-        {/* Voting power — an OPTIONAL add-on, and the only place it is offered. It is not a posting
-            gate: the chain's stake bind writes TalkStake::VotingPower and nothing else. */}
+        {/* Voting power. NOT a posting gate (the chain's stake bind writes TalkStake::VotingPower and
+            nothing else), but the copy deliberately does not lead with "optional" either. Leading with
+            the dismissal is what makes people skip it, and a skipped stake bind means votes that count
+            for nothing on an app whose whole point is voting. It stays skippable; it is just not sold
+            as skippable. Say what it DOES, and let the absence of a required-step CTA carry the rest. */}
         {identity.bound && (
           <>
             <p className={styles.optionalNote}>
-              Optional. Sets how much your votes count. You can post without it.
+              Sets how much your votes count.
             </p>
             <div className={styles.statRow}>
               <span className={styles.statLabel}>Voting power</span>
