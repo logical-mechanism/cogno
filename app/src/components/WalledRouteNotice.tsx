@@ -23,7 +23,7 @@ import { useRouter } from "next/navigation";
 import styles from "./WalledRouteNotice.module.css";
 import { welcomeUrlFor } from "@/lib/returnTo";
 import { firstSegment } from "@/lib/routeAccess";
-import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 
 interface Copy {
   /** Names the destination that refused them, so the page is not a generic "no". */

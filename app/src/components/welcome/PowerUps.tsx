@@ -35,7 +35,7 @@ import { pendingLockActions } from "@/lib/pendingLockStore";
 import { useSession } from "@/components/Providers";
 import { useStabilityWindow } from "@/hooks/useStabilityWindow";
 import { formatAda } from "@/lib/format";
-import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 import type { PendingCapacityStatus } from "@/hooks/usePendingCapacity";
 import type { ObserverHealth } from "@/lib/chain/observer";
 import type { UseVault, VaultStep } from "@/hooks/useVault";

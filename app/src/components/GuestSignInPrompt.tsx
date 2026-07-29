@@ -22,7 +22,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import styles from "./GuestSignInPrompt.module.css";
 import { useSession } from "./Providers";
-import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 
 /** Which surface this is sitting on, so the copy names the action the reader actually reached for. */
 export type GuestPromptVariant = "home" | "profile";

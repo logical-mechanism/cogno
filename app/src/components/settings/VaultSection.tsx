@@ -26,7 +26,8 @@ import { pendingLockActions } from "@/lib/pendingLockStore";
 import { useActionToast } from "@/hooks/useActionToast";
 import { formatAda } from "@/lib/format";
 import { useStabilityWindow } from "@/hooks/useStabilityWindow";
-import { MIN_LOCK, LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
+import { MIN_LOCK } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 
 // The script's own enforced floor, never a literal. This was a hardcoded `100_000_000n`, which is a
 // worse hazard than the copy alongside it: a redeploy that moves `minLock` would leave this building

@@ -33,7 +33,7 @@
 import Link from "next/link";
 import { useSession } from "@/components/Providers";
 import { useStabilityWindow } from "@/hooks/useStabilityWindow";
-import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 import styles from "./SetupCostNote.module.css";
 
 export function SetupCostNote({ variant = "full" }: { variant?: "full" | "brief" }) {

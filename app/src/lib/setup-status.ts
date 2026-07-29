@@ -24,7 +24,7 @@
 // as the advisory `votingPowerLinked` flag, never as a `next` action.
 
 import type { SessionState } from "./session";
-import { LOCK_ADA_WHOLE } from "./cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "./cardano/lockAmount";
 
 export type SetupPhase =
   | "disconnected"

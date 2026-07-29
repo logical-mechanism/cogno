@@ -25,7 +25,7 @@ import { ByteCounter } from "./ByteCounter";
 import { utf8Bytes, clampToBytes } from "@/lib/bytes";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
-import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 import { CapacityMeter } from "./CapacityMeter";
 import { Avatar } from "./Avatar";
 import { Spinner, IconPoll, IconEye } from "./icons";

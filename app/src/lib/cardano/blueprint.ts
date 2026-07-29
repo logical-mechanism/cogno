@@ -18,18 +18,15 @@ import { currentVaultScript, type VaultScript } from "./vaults";
 /** The lovelace floor the current script enforces (and the default lock amount). */
 export const MIN_LOCK: bigint = currentVaultScript().minLock;
 
-/**
- * The same floor as WHOLE ADA, for user-facing copy: "Lock 100 ADA".
- *
- * `formatAda` is deliberately not used: it renders a decimal place ("100.0 ADA"), which reads as a
- * precision none of these sentences is making a claim about.
- *
- * This exists because the string "100 ADA" was hardcoded in seven places (the welcome flow, the
- * settings vault card, the setup-status funnel copy, and /legal, which was the only one deriving it).
- * They all say the same number today and would all silently disagree with the deployed script the
- * moment a redeploy moves `minLock`. Read this, never a literal.
- */
-export const LOCK_ADA_WHOLE: string = (MIN_LOCK / 1_000_000n).toString();
+// THE SAME FLOOR AS WHOLE-ADA COPY ("lock 100 ADA") LIVES IN lib/cardano/lockAmount.ts, NOT HERE, and
+// is deliberately not re-exported from this module. It was here, as `LOCK_ADA_WHOLE`, and the string
+// is named on surfaces that sit in the app-shell chunk (the sign-in sheet, the walled-route notice,
+// the composer's guest prompt, the root layout's metadata) — so importing it from this file pulled
+// `vaults.ts` and its 6 KB of applied Plutus CBOR into the bundle every cold visitor downloads, to
+// render three characters. `lockAmount.test.ts` pins that literal against `MIN_LOCK` below, so the
+// derivation still runs; it just runs in CI instead of in everyone's browser.
+//
+// Re-exporting it from here would quietly undo that: the import path is the whole mechanism.
 
 /**
  * Hashes proven to match their own CBOR, so the check runs once per script rather than once per app.

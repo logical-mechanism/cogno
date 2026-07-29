@@ -45,7 +45,7 @@
 
 import Link from "next/link";
 import { StickyHeader } from "@/components/AppShell";
-import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 import { ABUSE_EMAIL, MIN_AGE, OPERATOR_LEGAL_NAME, REPO_URL as REPO } from "@/lib/config/operator";
 import styles from "@/components/legal/Prose.module.css";
 
