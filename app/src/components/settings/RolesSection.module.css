@@ -30,6 +30,30 @@
   color: var(--cg-text-secondary);
 }
 
+/* The verified role's chamber weight. Deliberately the SAME shape as AccountSection's voting-power row
+   (label left, value right, 32px min-height): the two answer the same question about different weights, so
+   a reader moving between the Account and Roles cards should not have to re-learn the layout. Duplicated
+   rather than shared because CSS Modules scope per file and these are three declarations; if a third
+   surface needs them, promote them then. */
+.statRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-3);
+  min-height: 32px;
+}
+
+.statLabel {
+  font-size: var(--cg-fs-sm);
+  color: var(--cg-text-secondary);
+}
+
+.statValue {
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+  color: var(--cg-text);
+}
+
 .prompt {
   margin: 0;
   font-size: var(--cg-fs-md);

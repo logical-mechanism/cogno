@@ -11,8 +11,11 @@
 import { describe, it, expect } from "vitest";
 import { roleStatusOf, type ObservedRoleView } from "./roles";
 
-const spo: ObservedRoleView = { kind: "Spo", id: "0x" + "ab".repeat(28) };
-const drep: ObservedRoleView = { kind: "DRep", id: "0x" + "cd".repeat(28) };
+// `weight` is irrelevant to roleStatusOf (it answers "do you hold this role", never "how much"), so a
+// plain 0n is fine here — and pinning it proves the two stay independent: a zero-weight role is still a
+// VERIFIED role. That is the whole point of counting participation apart from stake.
+const spo: ObservedRoleView = { kind: "Spo", id: "0x" + "ab".repeat(28), weight: 15_000_000n };
+const drep: ObservedRoleView = { kind: "DRep", id: "0x" + "cd".repeat(28), weight: 0n };
 
 describe("roleStatusOf", () => {
   it("reports LOADING for an unresolved read, never 'none'", () => {
@@ -34,7 +37,7 @@ describe("roleStatusOf", () => {
   });
 
   it("handles an mSPO holding several SPO entries", () => {
-    const second: ObservedRoleView = { kind: "Spo", id: "0x" + "ef".repeat(28) };
+    const second: ObservedRoleView = { kind: "Spo", id: "0x" + "ef".repeat(28), weight: 0n };
     expect(roleStatusOf([spo, second], "Spo")).toBe("verified");
   });
 });
