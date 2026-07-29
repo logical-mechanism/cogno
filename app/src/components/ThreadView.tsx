@@ -82,7 +82,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   //
   // "" because this composer is UNCONTROLLED: the gate then probes the BASE post cost, which is exactly
   // what we want (an exhausted bucket disables the CTA before a single character is typed).
-  const { rateLimited, noPostingPower, needsVotingPower } = useComposerGate("");
+  const { rateLimited, noPostingPower } = useComposerGate("");
 
   // `me` threaded into the thread read so the node stamps the `myVote` overlay node-side;
   // `bestBlock` drives the live re-read (tallies refresh in place; new replies buffer behind the pill).
@@ -456,7 +456,6 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           mode="reply"
           submitState={composeState}
           noPostingPower={noPostingPower}
-          needsVotingPower={needsVotingPower}
           rateLimited={rateLimited}
           onSubmit={onSubmitReply}
           draftExtras={{ parentId: rootId }}

@@ -129,7 +129,6 @@ export default function HomePage() {
   const {
     rateLimited: composerRateLimited,
     noPostingPower: composerNoPower,
-    needsVotingPower: composerNeedsVotingPower,
     retryInSeconds,
   } = useComposerGate(composerSerialized);
 
@@ -279,7 +278,6 @@ export default function HomePage() {
             rateLimited={composerRateLimited}
             retryInSeconds={retryInSeconds}
             noPostingPower={composerNoPower}
-            needsVotingPower={composerNeedsVotingPower}
             onTogglePoll={() => modalActions.openPoll()}
             onSubmit={onComposePost}
           />

@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation } from "./useMutation";
 import { useActionToast } from "./useActionToast";
+import { useZeroWeightVoteNotice } from "./useZeroWeightVoteNotice";
 import { submitPollVote, submitClosePoll } from "@/lib/chain/mutations";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi, PostingSigner, PollView, Ss58 } from "@/lib/types";
@@ -57,6 +58,7 @@ export function usePoll(
 ): UsePoll {
   const { run } = useMutation();
   const { fail } = useActionToast();
+  const discloseZeroWeight = useZeroWeightVoteNotice();
   const [poll, setPoll] = useState<PollView | null>(null);
   const [myChoice, setMyChoice] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -123,6 +125,9 @@ export function usePoll(
       if (!api || !signer || hostId == null) return;
       // A closed poll accepts no votes — the chain rejects it `PollClosed`, so don't optimistically move.
       if (closed) return;
+      // Zero observed VotingPower → the vote registers in the COUNT and adds nothing to the weighted
+      // tally. Disclose it once, so a voter is not left reading a poll their vote did not move.
+      discloseZeroWeight();
       const prev = myChoice;
       setMyChoice(option);
       // Optimistic: move the count from the previous option to the new one (true weights reconcile later).
@@ -199,7 +204,7 @@ export function usePoll(
         },
       });
     },
-    [api, signer, hostId, closed, myChoice, run, read, fail],
+    [api, signer, hostId, closed, myChoice, run, read, fail, discloseZeroWeight],
   );
 
   // Permissionlessly finalize a provisional poll: `close_poll` freezes the weighted result. On confirm,

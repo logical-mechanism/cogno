@@ -20,7 +20,7 @@
 //     cred) and validate.ak ENFORCES `out_stake == owner.stake_credential`. This page said the exact
 //     opposite for a while ("earns no interest, rewards or yield of any kind"), which was the single
 //     worst kind of error a terms page can carry: a checkable falsehood, in writing, about money.
-//   • the lock amount is a FLOOR the script enforces ...... MIN_LOCK, imported below (not a literal)
+//   • the lock amount is a FLOOR the script enforces ...... LOCK_ADA_WHOLE, imported below (not a literal)
 //   • a bind cannot be undone by the user ................. pallets/cogno-gate has three calls and no
 //     unbind; revoke is committee-only and writes two permanent tombstones
 //   • posts cannot be removed by anyone .................... pallets/microblog, delete_post is a
@@ -45,14 +45,9 @@
 
 import Link from "next/link";
 import { StickyHeader } from "@/components/AppShell";
-import { MIN_LOCK } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
 import { ABUSE_EMAIL, MIN_AGE, OPERATOR_LEGAL_NAME, REPO_URL as REPO } from "@/lib/config/operator";
 import styles from "@/components/legal/Prose.module.css";
-
-// Whole ADA, from the script's own enforced floor rather than a fourth hardcoded "100". `formatAda`
-// is not used here because it renders a decimal place ("100.0 ADA"), which reads as a precision this
-// sentence is not making a claim about.
-const LOCK_ADA = (MIN_LOCK / 1_000_000n).toString();
 
 export default function LegalPage() {
   return (
@@ -94,7 +89,7 @@ export default function LegalPage() {
         <section className={styles.section}>
           <h2 className={styles.heading}>Your ADA, and who holds it</h2>
           <p className={styles.body}>
-            Posting power comes from locking {LOCK_ADA} ADA in a Cardano smart contract. We never
+            Posting power comes from locking {LOCK_ADA_WHOLE} ADA in a Cardano smart contract. We never
             take custody of it. The contract only ever releases funds to a transaction signed by the
             payment key of the wallet that locked them, so the only person who can move your ADA is
             you. There is no operator key, no admin role, no pause switch and no upgrade path that

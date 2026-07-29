@@ -2,11 +2,11 @@
 
 // WelcomePage — /welcome. The connect → derive → CIP-8 bind onboarding stepper, then the
 // power-ups step, which now has TWO required, non-skippable sub-steps in order: (1) bind the stake key
-// (voting power) — required and ordered first so a wallet that can't sign its stake is caught before any
-// ADA is locked; (2) lock 100 ADA into the L1 vault for talk-capacity (a bound account with zero locked
-// ADA cannot post). It is the canonical target for any write intent attempted before setup is fully
-// complete — every write affordance funnels here until `viewer.writeReady` (bound + stake-bound +
-// posting power). Reading stays open throughout (read-only browse).
+// lock ADA into the L1 vault for talk-capacity (a bound account with zero locked ADA cannot post).
+// Binding the stake key is offered alongside it as an OPTIONAL add-on that buys vote weight, never as a
+// gate. It is the canonical target for any write intent attempted before setup is fully complete —
+// every write affordance funnels here until `viewer.writeReady` (bound + posting power). Reading stays
+// open throughout (read-only browse).
 //
 // The stepper is driven by session.sessionState (@/lib/session) + a local subStep within
 // connected_unbound:
@@ -77,7 +77,7 @@ function classifyConnectError(raw: string): { inline: string | null; toast: stri
 
 export default function WelcomePage() {
   const router = useRouter();
-  const { signerCtl, identity, sessionState, api, client, boot } = useSession();
+  const { signerCtl, identity, sessionState, api, client, boot, viewer } = useSession();
   const bestBlock = useBestBlock();
   const vault = useVault();
   const { toast } = useToaster();
@@ -143,18 +143,19 @@ export default function WelcomePage() {
   // (onRegister) rather than the session state, and reset it on a real disconnect. It is STATE (not a
   // ref) so the routing below re-derives from it during render.
   //
-  // "Fully set up" = stake bound AND posting power > 0 — the same rule `viewer.writeReady` gates writes
-  // on. For a returning user we must WAIT for the stake + posting-power reads before deciding, else a
-  // fully-set-up user flashes the power-ups "checking" UI for a frame before the bounce; `decidingReturn`
-  // holds the loader until both resolve. Fresh registrants skip the wait and continue through the steps.
+  // "Fully set up" is `viewer.writeReady` itself, not a second copy of its rule. This used to restate
+  // `stakeBound === true && postingPower > 0n` inline, which drifted the moment the stake bind stopped
+  // being a write gate. Consume the one definition (components/Providers.tsx) so it cannot drift again.
+  // For a returning user we must WAIT for the posting-power read before deciding, else a fully-set-up
+  // user flashes the power-ups "checking" UI for a frame before the bounce; `decidingReturn` holds the
+  // loader until it resolves. Fresh registrants skip the wait and continue through the steps.
   const [registeredThisSession, setRegisteredThisSession] = useState(false);
   useEffect(() => {
     if (sessionState === "disconnected") setRegisteredThisSession(false);
   }, [sessionState]);
-  const fullySetUp = identity.stakeBound === true && (postingPower ?? 0n) > 0n;
+  const fullySetUp = viewer.writeReady;
   const returningOnPowerups = welcomeStep === "powerups" && !registeredThisSession;
-  const decidingReturn =
-    returningOnPowerups && (identity.stakeBound === null || postingPower === null);
+  const decidingReturn = returningOnPowerups && postingPower === null;
   const bouncingToFeed = returningOnPowerups && !decidingReturn && fullySetUp;
   // Land them where they were actually HEADED, not on the feed. A returning, fully-set-up visitor is
   // precisely the person who pasted a share link: a WALLED deep-link bounced them here carrying `?next=`,
@@ -192,7 +193,7 @@ export default function WelcomePage() {
   // so focus follows (and screen readers re-announce) the new heading instead of dropping to <body>.
   const powerupsBanner =
     welcomeStep === "powerups"
-      ? `${identity.stakeBound}|${(postingPower ?? 0n) > 0n}|${pending.kind}|${postingPower === null}`
+      ? `${(postingPower ?? 0n) > 0n}|${pending.kind}|${postingPower === null}`
       : "";
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
@@ -236,12 +237,12 @@ export default function WelcomePage() {
   const goToTimeline = useCallback(() => router.push(consumeReturnTarget(window.location.search)), [router]);
   const openSettings = useCallback(() => router.push("/settings/"), [router]);
 
-  // "Use a different wallet" from the (now-required) stake step: a wallet that can't sign over its
-  // reward address can't finish, so drop back to the wallet picker to re-derive from another wallet.
-  const useDifferentWallet = useCallback(() => {
-    setSubStep("account");
-    signerCtl.disconnect();
-  }, [signerCtl]);
+  // There is deliberately no "use a different wallet" escape on the power-ups step any more. It
+  // existed for a wallet that could not sign over its reward address, back when the stake bind was
+  // required — but by that point the PERMANENT identity bind was already burned on this wallet, so
+  // "use a different one" meant abandoning the account, not recovering it. The stake bind is optional
+  // now, so there is nothing to escape from. AccountConfirm keeps its own copy, where it is real:
+  // that step runs BEFORE the bind, so switching wallets there genuinely costs nothing.
 
   const walletName = signerCtl.connectedWalletId
     ? capitalize(signerCtl.connectedWalletId)
@@ -320,7 +321,6 @@ export default function WelcomePage() {
           ss58={signerCtl.signer.ss58}
           onGoToTimeline={goToTimeline}
           onOpenSettings={openSettings}
-          onUseDifferentWallet={useDifferentWallet}
           headingRef={headingRef}
         />
       )}

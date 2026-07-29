@@ -144,7 +144,6 @@ export interface PollComposerProps {
   rateLimited?: boolean;
   retryInSeconds?: number | null;
   noPostingPower?: boolean;
-  needsVotingPower?: boolean;
   autoFocus?: boolean;
   /**
    * Hand back the trimmed args; the surface calls mutations.submitCreatePoll(question, options, closeAt,
@@ -183,7 +182,6 @@ export function PollComposer({
   rateLimited,
   retryInSeconds,
   noPostingPower,
-  needsVotingPower,
   autoFocus,
   submitCreatePoll,
   onTogglePoll,
@@ -539,7 +537,6 @@ export function PollComposer({
       rateLimited={rateLimited}
       retryInSeconds={retryInSeconds}
       noPostingPower={noPostingPower}
-      needsVotingPower={needsVotingPower}
       autoFocus={autoFocus}
       text={pollDraft.question}
       onTextChange={setQuestion}

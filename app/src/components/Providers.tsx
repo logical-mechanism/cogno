@@ -227,18 +227,27 @@ function ChainProvider({ children }: { children: ReactNode }) {
       identityHash: identity.bound ? (identity.boundStakeCredHex ?? undefined) : undefined,
       displayName: self.displayName,
       avatar: self.avatar,
-      // The one authoritative write gate: bound + stake-bound + locked-ADA weight. Stake is a MANDATORY
-      // onboarding step, so a bound, locked, but never-stake-bound account is intentionally NOT writeReady
-      // (it browses read-only and every write funnels to /welcome to finish). False while any read loads.
-      writeReady:
-        identity.bound === true && identity.stakeBound === true && (postingPower ?? 0n) > 0n,
+      // The one authoritative write gate, and it mirrors the RUNTIME exactly: identity bind
+      // (pallet-microblog's `IdentityGate::is_allowed` → `Error::NotAllowed`) + non-zero locked-ADA
+      // weight (`CheckCapacity` → `ExhaustsResources`). Those are the only two gates `post_message`
+      // has. False while either read loads.
+      //
+      // The STAKE BIND IS DELIBERATELY ABSENT. `link_stake_signed` writes `TalkStake::VotingPower`
+      // and nothing else — cogno-gate's own doc says it "grants VOTING POWER, not posting capacity",
+      // and `CheckCapacity::validate` never reads `StakeCredOf`. ANDing it in here was a frontend
+      // policy that blocked a whole class of wallets (Nami and anything that cannot sign over a
+      // reward address) from posting on a step the chain never asks for — and because
+      // `PowerUps` gated the lock card behind it too, those users could not even reach the lock.
+      // `lib/session.ts` has always modelled this correctly: `bound_no_stake` is documented there as
+      // "can write; votes carry 0 weight". A stake-less account can post; its VOTES carry no weight,
+      // which is surfaced honestly at the three vote call sites rather than by refusing to write.
+      writeReady: identity.bound === true && (postingPower ?? 0n) > 0n,
     };
   }, [
     sessionState,
     signerCtl.postingEnabled,
     signer.ss58,
     identity.bound,
-    identity.stakeBound,
     identity.boundStakeCredHex,
     postingPower,
     self.displayName,

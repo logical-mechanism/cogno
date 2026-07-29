@@ -130,22 +130,9 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
             )}
           </button>
         )}
-        {status.next?.kind === "stake" && (
-          <button
-            type="button"
-            className={styles.primaryBtn}
-            onClick={() => walletId && identity.bindStake(walletId)}
-            disabled={identity.stakeBinding || !walletId}
-          >
-            {identity.stakeBinding ? (
-              <>
-                <Spinner size="sm" label="Adding voting power" /> Adding voting power…
-              </>
-            ) : (
-              status.next.label
-            )}
-          </button>
-        )}
+        {/* No `next.kind === "stake"` button here. The stake bind is optional and never blocks
+            posting, so it is never the "one next REQUIRED action" this card renders. Its button and
+            its error live in the Voting power block below, which always offered both. */}
         {status.next?.kind === "lock" && onGoVault && (
           <button type="button" className={styles.primaryBtn} onClick={onGoVault}>
             {status.next.label}
@@ -154,11 +141,6 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
         {identity.error && (
           <p className={styles.error} role="alert">
             {identity.error}
-          </p>
-        )}
-        {status.next?.kind === "stake" && identity.stakeError && (
-          <p className={styles.error} role="alert">
-            {identity.stakeError}
           </p>
         )}
       </div>
@@ -230,12 +212,12 @@ export function AccountSection({ onGoVault }: { onGoVault?: () => void }) {
           )}
         </div>
 
-        {/* Voting power — a REQUIRED setup step (the status card above drives the action); this row is
-            the display + a manual re-link affordance once registered. */}
+        {/* Voting power — an OPTIONAL add-on, and the only place it is offered. It is not a posting
+            gate: the chain's stake bind writes TalkStake::VotingPower and nothing else. */}
         {identity.bound && (
           <>
             <p className={styles.optionalNote}>
-              Required to post. Sets your vote weight.
+              Optional. Sets how much your votes count. You can post without it.
             </p>
             <div className={styles.statRow}>
               <span className={styles.statLabel}>Voting power</span>

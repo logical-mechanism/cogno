@@ -66,7 +66,6 @@ export interface EditProfileModalProps {
    * "fully set up" rule as every other write, so hard-disable the actions (the NoPostingPowerNotice
    * renders the "add voting power / finish setup" variant self-contained).
    */
-  needsVotingPower?: boolean;
 }
 
 export function EditProfileModal({
@@ -74,7 +73,6 @@ export function EditProfileModal({
   onSaveProfile,
   onClearProfile,
   noPostingPower,
-  needsVotingPower,
 }: EditProfileModalProps) {
   const { api, source, signerCtl } = useSession();
   const { overlay } = useOptimistic();
@@ -85,7 +83,7 @@ export function EditProfileModal({
   // account is setup-incomplete. Gate both actions off them (the NoPostingPowerNotice below explains
   // why — and shows the timed "crediting" state when a lock is still settling).
   const canWrite =
-    !!api && signerCtl.postingEnabled && noPostingPower !== true && needsVotingPower !== true;
+    !!api && signerCtl.postingEnabled && noPostingPower !== true;
 
   const [name, setName] = useState("");
   const [bio, setBio] = useState("");

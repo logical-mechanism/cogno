@@ -11,6 +11,7 @@
 import { useCallback, useMemo } from "react";
 import { useMutation } from "./useMutation";
 import { useActionToast } from "./useActionToast";
+import { useZeroWeightVoteNotice } from "./useZeroWeightVoteNotice";
 import { useOptimistic } from "./useOptimistic";
 import { voteDelta } from "@/lib/optimistic";
 import { submitVote, submitClearVote } from "@/lib/chain/mutations";
@@ -35,11 +36,16 @@ export function useVote(
   const { patchViewer, patchCounts, confirmPost, clearPost } = useOptimistic();
   const { run } = useMutation();
   const { fail } = useActionToast();
+  const discloseZeroWeight = useZeroWeightVoteNotice();
 
   const doVote = useCallback(
     (postId: bigint, current: ViewerPostState, next: "Up" | "Down" | null) => {
       if (!api || !signer) return;
       if (current.myVote === next) return; // no-op
+      // A vote from an account with no observed VotingPower is accepted by the chain and weighs zero.
+      // Say so once. Not gated on the submit succeeding: the disclosure is about what this account's
+      // votes are worth, which is true whether or not this particular tx lands.
+      if (next !== null) discloseZeroWeight();
       patchViewer(postId, { myVote: next });
       patchCounts(postId, voteDelta(current.myVote, next, myWeight));
       const stream =
@@ -61,7 +67,7 @@ export function useVote(
         onCancel: () => clearPost(postId),
       });
     },
-    [api, signer, myWeight, patchViewer, patchCounts, confirmPost, clearPost, run, fail],
+    [api, signer, myWeight, patchViewer, patchCounts, confirmPost, clearPost, run, fail, discloseZeroWeight],
   );
 
   // This return used to be a fresh object with four fresh closures on every render. Five surfaces wrap

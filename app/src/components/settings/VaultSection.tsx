@@ -25,8 +25,12 @@ import { pendingLockActions } from "@/lib/pendingLockStore";
 import { useActionToast } from "@/hooks/useActionToast";
 import { formatAda } from "@/lib/format";
 import { useStabilityWindow } from "@/hooks/useStabilityWindow";
+import { MIN_LOCK, LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
 
-const LOCK_AMOUNT = 100_000_000n; // 100 ADA in lovelace
+// The script's own enforced floor, never a literal. This was a hardcoded `100_000_000n`, which is a
+// worse hazard than the copy alongside it: a redeploy that moves `minLock` would leave this building
+// transactions for the wrong amount, silently under- or over-paying the vault.
+const LOCK_AMOUNT = MIN_LOCK;
 
 export function VaultSection() {
   const { api, signerCtl, boot } = useSession();
@@ -212,7 +216,7 @@ export function VaultSection() {
               ) : hasLock ? (
                 "Already locked"
               ) : (
-                "Lock 100 ADA"
+                `Lock ${LOCK_ADA_WHOLE} ADA`
               )}
             </button>
             <button
@@ -236,7 +240,8 @@ export function VaultSection() {
           </div>
           {hasLock && !exitInFlight && (
             <p className={styles.note}>
-              Exiting returns your 100 ADA and removes your posting power until you lock again.
+              Exiting returns your {LOCK_ADA_WHOLE} ADA and removes your posting power until you lock
+              again.
             </p>
           )}
           {/* A second vault UTxO is pure loss of use: the chain credits the largest one and never sums,

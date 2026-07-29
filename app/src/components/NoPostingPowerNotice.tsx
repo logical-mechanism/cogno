@@ -1,15 +1,17 @@
 "use client";
 
-// NoPostingPowerNotice — the honest "you can't post yet" banner for a bound account with setup still
-// incomplete. It covers the two required post-register steps, IN ORDER:
-//   (0) the stake key not linked → "add voting power" (the mandatory step BEFORE the lock; routes to
-//       /welcome to finish). Shown even when ADA is already locked (an existing, never-staked account).
-//   (a) stake linked, NO lock in flight → the block is permanent until ADA is locked, so nag to lock
-//       (distinct from RateLimitNotice's "try again shortly"); (b) a lock IS crediting → show the timed
-//       pending state (usePendingCapacity) instead — telling a user who JUST locked to "lock ADA" again
-//       is wrong. A bound account with zero locked ADA has zero talk-capacity so CheckCapacity refuses
-//       every post; a never-stake-bound account is likewise treated as setup-incomplete (a FRONTEND
-//       policy — stake is not a pool gate).
+// NoPostingPowerNotice — the honest "you can't post yet" banner for a bound account with no posting
+// power. There is exactly ONE required post-register step, and this covers both of its states:
+//   (a) NO lock in flight → the block is permanent until ADA is locked, so nag to lock (distinct from
+//       RateLimitNotice's "try again shortly"); (b) a lock IS crediting → show the timed pending state
+//       (usePendingCapacity) instead — telling a user who JUST locked to "lock ADA" again is wrong.
+//   A bound account with zero locked ADA has zero talk-capacity, so CheckCapacity refuses every post.
+//
+// It used to carry a THIRD, leading branch ("Add voting power to post.") for `stakeBound === false`.
+// That was removed with the write gate it belonged to: the stake bind writes `TalkStake::VotingPower`
+// and nothing else, so "add voting power to post" was a false statement about the chain, rendered on
+// every composer on every surface. A stake-less account posts normally; only its VOTE WEIGHT is zero,
+// which the vote call sites disclose.
 //
 // Self-contained (reads the shared session + useHeads + useCapacity), mirroring CapacityMeter, so it
 // can sit in the Composer notice area on EVERY surface (inline / modal / cold page / thread) without
@@ -26,7 +28,7 @@ import { PendingCapacityNotice } from "./PendingCapacityNotice";
 import { viewerBucket } from "@/lib/viewerBucket";
 
 export function NoPostingPowerNotice() {
-  const { api, viewer, identity } = useSession();
+  const { api, viewer } = useSession();
   // useBestBlock (the shared, visibility-frozen head), not a private useHeads subscription: a
   // second subscription re-renders on every block even while the tab is hidden, which is exactly
   // what freezing the shared one is for.
@@ -40,23 +42,6 @@ export function NoPostingPowerNotice() {
 
   // Only for a ready (identity-bound) account.
   if (viewer.status !== "ready") return null;
-
-  // Stake is the MANDATORY step BEFORE the lock — surface it first (only once the read resolves to a
-  // real `false`, so a returning stake-bound account never flashes it). Shown even when ADA is already
-  // locked, to backfill an existing account that registered before stake became required.
-  if (identity.stakeBound === false) {
-    return (
-      <div className={styles.notice} role="status">
-        <span className={styles.glyph} aria-hidden>
-          🔑
-        </span>
-        <span className={styles.text}>Add voting power to post.</span>
-        <Link href="/welcome/" className={styles.action}>
-          Finish setup
-        </Link>
-      </div>
-    );
-  }
 
   // Already funded → this notice has nothing to say. It sits ABOVE the pending branch on purpose:
   // `usePendingCapacity` now keeps a record alive while a stale-positive weight from a PRIOR lock is

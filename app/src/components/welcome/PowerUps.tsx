@@ -1,22 +1,26 @@
 "use client";
 
-// PowerUps — Step 4 of onboarding. The identity is bound (the Sybil
-// gate). Two REQUIRED steps remain, in order, and neither is skippable:
+// PowerUps — Step 4 of onboarding. The identity is bound (the Sybil gate). Exactly ONE required step
+// remains:
 //
-//   1. Add voting power (bind the stake key). Mandatory and shown FIRST — it is feeless and fails fast
-//      on a wallet that can't sign over its reward address (Eternl/Lace can), so the user learns their
-//      wallet can't finish BEFORE locking 100 ADA. On that failure the card hard-blocks with a "use a
-//      different wallet" affordance (disconnect → wallet picker). Reading stays open (read-only escape).
-//   2. Lock 100 ADA → talk-capacity. Shown only once the stake key is bound. A bound account with zero
-//      locked ADA has zero capacity and every post is refused by CheckCapacity, so this is required to
-//      post. After submit the timed PendingCapacityNotice shows the "posting unlocks in ~N min" credit.
+//   Lock ADA → talk-capacity. A bound account with zero locked ADA has zero capacity and every post is
+//   refused by CheckCapacity, so this is the one thing that is genuinely required to post. After submit
+//   the timed PendingCapacityNotice shows the "posting unlocks in ~N min" credit.
 //
-//   done — stake bound AND posting power > 0 → "You're all set" + "Go to your timeline".
+//   done — posting power > 0 → "You're all set" + "Go to your timeline".
 //
-// VaultCard — lock 100 ADA into the L1 vault to GET posting capacity (useVault.lock). When no Cardano
+// VaultCard — lock ADA into the L1 vault to GET posting capacity (useVault.lock). When no Cardano
 //             provider is configured the lock is disabled with a Settings link.
-// StakeCard — bind the wallet's stake key to earn voting weight (useIdentity.bindStake). REQUIRED; a
-//             wallet that can't sign over a reward address hard-blocks with "use a different wallet".
+// StakeCard — bind the wallet's stake key to earn vote WEIGHT (useIdentity.bindStake). OPTIONAL, and
+//             offered alongside the lock rather than in front of it.
+//
+// THE STAKE BIND USED TO GATE THIS WHOLE SCREEN, and that was the worst bug in the funnel. It was
+// ordered first and hard-blocked on `stakeBound === false`, on the reasoning that it is feeless and
+// fails fast, so a wallet that cannot sign over a reward address would find out before spending 100
+// ADA. But `link_stake_signed` writes TalkStake::VotingPower and nothing else — the chain never asks
+// for it to post. The early return sat ABOVE VaultCard, so such a wallet (Nami and friends) could not
+// reach the lock at all, and was permanently unable to post, with a "use a different wallet" dead end
+// as its only exit. Both the block and that dead end are gone. Keep them gone.
 //
 // NO honesty chrome: no battery, no block numbers, no anchor UI, no trust labels.
 //
@@ -31,6 +35,7 @@ import { pendingLockActions } from "@/lib/pendingLockStore";
 import { useSession } from "@/components/Providers";
 import { useStabilityWindow } from "@/hooks/useStabilityWindow";
 import { formatAda } from "@/lib/format";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
 import type { PendingCapacityStatus } from "@/hooks/usePendingCapacity";
 import type { ObserverHealth } from "@/lib/chain/observer";
 import type { UseVault, VaultStep } from "@/hooks/useVault";
@@ -93,8 +98,6 @@ export interface PowerUpsProps {
   ss58?: string | null;
   onGoToTimeline: () => void;
   onOpenSettings: () => void;
-  /** Disconnect and return to the wallet picker — the escape when the wallet can't sign its stake. */
-  onUseDifferentWallet: () => void;
   headingRef?: React.Ref<HTMLHeadingElement>;
 }
 
@@ -108,62 +111,26 @@ export function PowerUps({
   ss58,
   onGoToTimeline,
   onOpenSettings,
-  onUseDifferentWallet,
   headingRef,
 }: PowerUpsProps) {
   const hasPostingPower = (postingPower ?? 0n) > 0n;
   const stakeBound = stake.stakeBound;
 
-  // DONE: both mandatory steps complete (stake bound + posting power). No StakeCard — stake is already
-  // linked; just the "you're all set" banner.
-  if (stakeBound === true && hasPostingPower) {
+  // DONE: posting power > 0. The ONE required step is complete. An unlinked stake key does not hold
+  // this back; it is offered below as an optional add-on.
+  if (hasPostingPower) {
     return (
       <section className={styles.step} aria-labelledby="welcome-heading">
         <DoneBanner onGoToTimeline={onGoToTimeline} headingRef={headingRef} />
+        {stakeBound === false && (
+          <div className={styles.cards}>
+            <StakeCard stake={stake} walletId={walletId} />
+          </div>
+        )}
       </section>
     );
   }
 
-  // Stake read still loading → neutral "checking" (a returning stake-bound user never flashes the
-  // stake step before the read resolves).
-  if (stakeBound === null) {
-    return (
-      <section className={styles.step} aria-labelledby="welcome-heading">
-        <div className={styles.banner}>
-          <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
-            Almost there
-          </h1>
-          <p className={styles.bannerLede} aria-live="polite">
-            Checking your setup…
-          </p>
-        </div>
-      </section>
-    );
-  }
-
-  // STEP 1 (mandatory, first): bind the stake key. Ordered before the lock so a wallet that can't sign
-  // over its reward address is caught BEFORE 100 ADA is locked. No skip. Reading stays open.
-  if (stakeBound === false) {
-    return (
-      <section className={styles.step} aria-labelledby="welcome-heading">
-        <div className={styles.banner}>
-          <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
-            Add voting power to continue
-          </h1>
-        </div>
-
-        <div className={styles.cards}>
-          <StakeCard stake={stake} walletId={walletId} onUseDifferentWallet={onUseDifferentWallet} />
-        </div>
-
-        <button type="button" className={styles.readOnly} onClick={onGoToTimeline}>
-          Browse the timeline
-        </button>
-      </section>
-    );
-  }
-
-  // Stake bound from here on. STEP 2 is the lock.
   // A lock is in flight/crediting → the explained, timed pending state (survives reload / follows the
   // user here from a relock). Reading stays open, so keep the "go to your timeline" invite.
   if (pending.kind !== "none") {
@@ -182,6 +149,7 @@ export function PowerUps({
             hideTitle
             onDismiss={ss58 ? () => pendingLockActions.clear(ss58) : undefined}
           />
+          {stakeBound === false && <StakeCard stake={stake} walletId={walletId} />}
         </div>
         <button type="button" className={styles.primary} onClick={onGoToTimeline}>
           Go to your timeline
@@ -207,7 +175,8 @@ export function PowerUps({
     );
   }
 
-  // STEP 2 (mandatory): lock ADA (stake bound, postingPower === 0n, none pending). Reading stays open.
+  // THE required step: lock ADA (postingPower === 0n, none pending). Reading stays open. The stake card
+  // rides alongside as an optional extra, never in front of the lock.
   return (
     <section className={styles.step} aria-labelledby="welcome-heading">
       <div className={styles.banner}>
@@ -219,6 +188,7 @@ export function PowerUps({
 
       <div className={styles.cards}>
         <VaultCard vault={vault} walletId={walletId} onOpenSettings={onOpenSettings} />
+        {stakeBound === false && <StakeCard stake={stake} walletId={walletId} />}
       </div>
 
       <button type="button" className={styles.readOnly} onClick={onGoToTimeline}>
@@ -295,7 +265,7 @@ function VaultCard({
     <div className={styles.card}>
       <h2 className={styles.cardTitle}>Lock ADA to post</h2>
       <p className={styles.cardBody}>
-        Lock 100 ADA to earn posting power. You can get your ADA back anytime.
+        Lock {LOCK_ADA_WHOLE} ADA to earn posting power. You can get your ADA back anytime.
         {/* The wait is a chain parameter, not a fixed phrase: ~10 minutes on preprod, ~36 hours at the
             mainnet stability window. Omitted entirely until the read resolves rather than guessed. */}
         {stabilityWindow ? ` Posting power arrives ${stabilityWindow} after your lock confirms.` : ""}
@@ -309,7 +279,7 @@ function VaultCard({
       ) : !vault.available ? (
         <div className={styles.cardActions}>
           <button type="button" className={styles.cardCta} disabled aria-disabled>
-            Lock 100 ADA
+            Lock {LOCK_ADA_WHOLE} ADA
           </button>
           <p className={styles.cardNote}>
             Add a Cardano provider in{" "}
@@ -361,7 +331,7 @@ function VaultCard({
                 <Spinner size="sm" /> Checking…
               </>
             ) : (
-              "Lock 100 ADA"
+              `Lock ${LOCK_ADA_WHOLE} ADA`
             )}
           </button>
         </div>
@@ -390,19 +360,20 @@ function VaultCard({
 function StakeCard({
   stake,
   walletId,
-  onUseDifferentWallet,
 }: {
   stake: PowerUpsProps["stake"];
   walletId: string | null;
-  onUseDifferentWallet: () => void;
 }) {
   const add = () => {
     if (walletId) stake.bindStake(walletId);
   };
 
-  // A stake-signing failure (wallet won't sign over a reward address — e.g. Nami) is a HARD block now
-  // that the step is required: there is no "skip", so guide the user to reconnect with a stake-signing
-  // wallet. Any other error falls through to the generic "couldn't add voting power" retry copy.
+  // A stake-signing failure (wallet won't sign over a reward address — e.g. Nami) is NOT a block. It
+  // used to be, because the step was required and there was no skip, so the only exit offered was
+  // "use a different wallet" — which for a user who had already burned the permanent identity bind on
+  // this wallet was not an exit at all. The step is optional now, so this states the real consequence
+  // (votes weigh nothing) and gets out of the way. Any other error falls through to the generic
+  // "couldn't add voting power" retry copy.
   const cantStakeSign =
     !!stake.stakeError &&
     /reward address|stake-sign|no reward|exposes no reward|script stake|cannot prove/i.test(
@@ -411,9 +382,9 @@ function StakeCard({
 
   return (
     <div className={styles.card}>
-      <h2 className={styles.cardTitle}>Add voting power</h2>
+      <h2 className={styles.cardTitle}>Add voting power (optional)</h2>
       <p className={styles.cardBody}>
-        Prove your wallet&apos;s stake so your votes carry weight. Locking ADA comes next.
+        Prove your wallet&apos;s stake so your votes count for more. You can post without this.
       </p>
 
       {stake.stakeBound === true ? (
@@ -424,16 +395,10 @@ function StakeCard({
             : "Your votes will carry weight shortly."}
         </p>
       ) : cantStakeSign ? (
-        <div className={styles.cardActions}>
-          <p className={styles.cardError} role="alert">
-            This wallet can&apos;t prove its stake. Try Eternl or Lace.
-          </p>
-          <div className={styles.cardRow}>
-            <button type="button" className={styles.cardCta} onClick={onUseDifferentWallet}>
-              Use a different wallet
-            </button>
-          </div>
-        </div>
+        <p className={styles.cardBody} role="status">
+          This wallet cannot prove its stake, so your votes will count as one voice. Everything else
+          works normally. Eternl and Lace can prove stake if you want vote weight later.
+        </p>
       ) : (
         <>
           <div className={styles.cardRow}>
