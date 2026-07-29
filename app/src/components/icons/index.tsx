@@ -205,6 +205,17 @@ export function IconProfile(p: IconProps) {
   );
 }
 
+export function IconSignIn(p: IconProps) {
+  // Material "login" — an arrow entering a door. Deliberately NOT IconProfile for the tablet rail's
+  // sign-in control: a person glyph reads as "your profile", which is the one thing a signed-out
+  // visitor does not have, and the rail is icon-only so the glyph carries the whole meaning.
+  return (
+    <svg {...svgProps(p)}>
+      <path d="M11 7 9.6 8.4l2.6 2.6H2v2h10.2l-2.6 2.6L11 17l5-5-5-5zm9 12h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-8v2h8v14z" />
+    </svg>
+  );
+}
+
 export function IconSettings(p: IconProps) {
   // Material "settings" (filled + outlined variants of the same glyph).
   if (p.filled) {

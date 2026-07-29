@@ -75,14 +75,40 @@
   .who {
     display: none;
   }
-  /* The onboarding pill is nowrap and still too wide for the 88px icon-only rail: "Sign in" is close
-     but "Finish setup" (the connected-but-unbound label) is not, and one rule has to fit both. Hidden
-     here. A tablet guest still reaches sign-in via the accent "Post" circle and the Profile tab, which
-     both route to /welcome and are now marked "(sign in required)". Giving this rail its own labelled
-     control means an icon-only variant, not a narrower pill. */
+  /* The onboarding pill is nowrap and too wide for the 88px icon-only rail: "Sign in" is close but
+     "Finish setup" (the connected-but-unbound label) is not, and one rule has to fit both. Swap it for
+     the round icon button, which does fit. This rail used to show NEITHER, leaving a tablet guest with
+     no sign-in control at all. */
   .connectRoot {
     display: none;
   }
+  .connectIcon {
+    display: inline-flex;
+  }
+}
+
+/* Desktop: the labelled pill carries it, so the icon is redundant. Hidden by default and revealed only
+   at the tablet breakpoint above, so the two are never on screen together. */
+.connectIcon {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--cg-avatar-lg);
+  height: var(--cg-avatar-lg);
+  border: 0;
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-accent);
+  color: var(--cg-accent-contrast);
+  cursor: pointer;
+}
+
+.connectIcon:hover {
+  background: var(--cg-accent-hover);
+}
+
+.connectIcon:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
 }
 
 /* The menu floats above the trigger (the rail base is sticky to viewport bottom). */
