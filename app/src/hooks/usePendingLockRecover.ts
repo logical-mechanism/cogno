@@ -28,7 +28,15 @@ import { pendingLockActions } from "@/lib/pendingLockStore";
 export function usePendingLockRecover(
   vault: UseVault,
   ss58: string | null,
-  /** `TalkStake.AllowedStake`. `null` = unresolved; only a confirmed ZERO means "not credited yet". */
+  /**
+   * `TalkStake.AllowedStake`. `null` = unresolved; only a confirmed ZERO means "not credited yet".
+   *
+   * CALLERS MUST NOT PASS A SYNTHETIC ZERO. Both AllowedStake watches in the app fall back on a read
+   * error, and the session-wide one falls back to `0n` so the write gate stays closed. That zero is a
+   * placeholder, not an answer, and feeding it here invents a pending lock for an account credited
+   * days ago (`session.postingPowerKnown` is how the caller tells them apart). `null` on error is the
+   * correct thing to pass: no record is written, and nothing is claimed.
+   */
   postingPower: bigint | null,
 ): void {
   useEffect(() => {

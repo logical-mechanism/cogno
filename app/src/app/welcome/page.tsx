@@ -1,12 +1,13 @@
 "use client";
 
-// WelcomePage — /welcome. The connect → derive → CIP-8 bind onboarding stepper, then the
-// power-ups step, which now has TWO required, non-skippable sub-steps in order: (1) bind the stake key
-// lock ADA into the L1 vault for talk-capacity (a bound account with zero locked ADA cannot post).
-// Binding the stake key is offered alongside it as an OPTIONAL add-on that buys vote weight, never as a
-// gate. It is the canonical target for any write intent attempted before setup is fully complete —
-// every write affordance funnels here until `viewer.writeReady` (bound + posting power). Reading stays
-// open throughout (read-only browse).
+// WelcomePage — /welcome. The connect → derive → CIP-8 bind onboarding stepper, then the power-ups
+// step, which has exactly ONE required action: lock ADA into the L1 vault for talk-capacity (a bound
+// account with zero locked ADA cannot post). Binding the stake key follows it as a skippable step that
+// buys vote weight, never as a gate — the chain has never asked for it to post, and gating on it
+// bricked every wallet that cannot sign over a reward address. See PowerUps for that history.
+// This page is the canonical target for any write intent attempted before setup is complete — every
+// write affordance funnels here until `viewer.writeReady` (bound + posting power). Reading stays open
+// throughout (read-only browse).
 //
 // The stepper is driven by session.sessionState (@/lib/session) + a local subStep within
 // connected_unbound:
@@ -79,7 +80,8 @@ function classifyConnectError(raw: string): { inline: string | null; toast: stri
 
 export default function WelcomePage() {
   const router = useRouter();
-  const { signerCtl, identity, sessionState, api, client, boot, viewer } = useSession();
+  const { signerCtl, identity, sessionState, api, client, boot, viewer, postingPower, postingPowerKnown } =
+    useSession();
   const bestBlock = useBestBlock();
   const vault = useVault();
   const { toast } = useToaster();
@@ -89,22 +91,14 @@ export default function WelcomePage() {
   // Live posting power (TalkStake.AllowedStake = locked-ADA weight) for the active key. Drives whether
   // the power-ups step says "you can post" (weight > 0) or "lock ADA to post". null while loading →
   // treated as no-power-yet so we never falsely claim "all set" before the read resolves.
-  const [postingPower, setPostingPower] = useState<bigint | null>(null);
-  useEffect(() => {
-    if (!api) {
-      setPostingPower(null);
-      return;
-    }
-    const ss58 = signerCtl.signer.ss58;
-    // PAPI v2: watchValue takes an options object and emits { block, value } (destructure .value).
-    const sub = api.query.TalkStake.AllowedStake.watchValue(ss58, { at: "best" }).subscribe(
-      ({ value: w }) => setPostingPower((w as bigint) ?? 0n),
-      // Subscription errored: fall through to the zero-power branch (lock CTA + read-only escape)
-      // rather than sit on the indefinite "Checking your posting power…" state forever.
-      () => setPostingPower(0n),
-    );
-    return () => sub.unsubscribe();
-  }, [api, signerCtl.signer.ss58]);
+  //
+  // READ OFF THE SESSION, never a second subscription. This page used to open its own
+  // `AllowedStake.watchValue`, which meant two independent reads of one value resolving at
+  // independent times — and the returning-user fast path below reads BOTH (`decidingReturn` from the
+  // page's copy, `fullySetUp` from `viewer.writeReady`, derived from the provider's). The page's copy
+  // landing first lifted the loader while `writeReady` was still false, painting a frame of the
+  // power-ups step at a fully-set-up user right before bouncing them — the exact flash `decidingReturn`
+  // exists to prevent. One source, one resolution moment, no race.
 
   // The lock→credit pending state (explained, timed) + persistence of the in-flight lock so it survives
   // navigate/reload and follows a relock. usePendingLockSync writes the record when a lock submits (and
@@ -112,7 +106,12 @@ export default function WelcomePage() {
   usePendingLockSync(vault, signerCtl.signer.ss58, api);
   // A lock placed on another device (or before this browser's storage was cleared) has no local
   // record, so rebuild one from the vault rather than telling a locked account to lock again.
-  usePendingLockRecover(vault, signerCtl.signer.ss58, postingPower);
+  //
+  // `postingPowerKnown` is load-bearing: the provider reports 0n on a read ERROR so the write gate
+  // fails closed, and this hook writes a pending record from a zero it believes. Handed the synthetic
+  // one it narrates "Lock submitted / confirming…" at an account whose lock credited days ago. Pass the
+  // value only when the chain actually said it.
+  usePendingLockRecover(vault, signerCtl.signer.ss58, postingPowerKnown ? postingPower : null);
 
   // Whether this account already dismissed the voting-power step. Per account and device-local: the
   // wait it sits inside can run 36 hours across many reloads, and re-asking on each one would turn a
@@ -164,6 +163,10 @@ export default function WelcomePage() {
   // For a returning user we must WAIT for the posting-power read before deciding, else a fully-set-up
   // user flashes the power-ups "checking" UI for a frame before the bounce; `decidingReturn` holds the
   // loader until it resolves. Fresh registrants skip the wait and continue through the steps.
+  //
+  // `decidingReturn` and `fullySetUp` must read the SAME subscription for that to hold — see the
+  // posting-power note at the top of this component. Gating the loader on one copy of AllowedStake
+  // while deciding on another means the loader can lift before the deciding value exists.
   const [registeredThisSession, setRegisteredThisSession] = useState(false);
   useEffect(() => {
     if (sessionState === "disconnected") setRegisteredThisSession(false);
@@ -203,12 +206,25 @@ export default function WelcomePage() {
   }, [signerCtl.error, toast]);
 
   // ── focus the step heading on each transition (a11y) ───────────────────────────────────────────
-  // The powerups step swaps its own heading as on-chain state lands (checking → "Lock ADA" → "Almost
-  // there" → "You're all set"), all under welcomeStep==='powerups'. Key the focus on that sub-state too
-  // so focus follows (and screen readers re-announce) the new heading instead of dropping to <body>.
+  // The powerups step swaps its own heading as on-chain state lands (checking → "Lock ADA" → "While
+  // your lock settles" → "Almost there" → "You're all set"), all under welcomeStep==='powerups'. Key
+  // the focus on that sub-state too so focus follows (and screen readers re-announce) the new heading
+  // instead of dropping to <body>.
+  //
+  // EVERY INPUT PowerUps BRANCHES ON HAS TO BE IN THIS KEY. `stakeBound` and `stakeSkipped` were
+  // missing, and they gate the voting-power step — so the two transitions that screen swaps on
+  // ("Skip for now", and a successful stake bind) changed the whole heading while the key stood still.
+  // Focus stayed on a button that had just unmounted, which drops it to <body> with the new h1 never
+  // announced. If a branch is added to PowerUps, add its input here.
   const powerupsBanner =
     welcomeStep === "powerups"
-      ? `${(postingPower ?? 0n) > 0n}|${pending.kind}|${postingPower === null}`
+      ? [
+          (postingPower ?? 0n) > 0n,
+          pending.kind,
+          postingPower === null,
+          identity.stakeBound,
+          stakeSkipped,
+        ].join("|")
       : "";
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {

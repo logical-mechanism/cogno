@@ -58,6 +58,29 @@ export interface Session {
   identity: UseIdentity;
   /** Live voting power (TalkStake.VotingPower) for the active key; 0n until observed, null while loading. */
   votingPower: bigint | null;
+  /**
+   * Live posting power (`TalkStake.AllowedStake`) for the active key: `> 0n` can post, `0n` bound but
+   * unlocked (or a lock still crediting), `null` while loading / no posting account.
+   *
+   * The same watch `viewer.writeReady` is derived from, exposed so a surface that needs the VALUE (an
+   * ETA, a pending-lock decision) reads this one rather than opening its own `AllowedStake`
+   * subscription. Two of those existed and both were wrong in the same way: they resolved on their own
+   * schedule, so a page could act on its copy a frame before `writeReady` agreed.
+   */
+  postingPower: bigint | null;
+  /**
+   * Is {@link postingPower} an ANSWER FROM THE CHAIN, rather than a placeholder?
+   *
+   * `postingPower` falls to `0n` on a subscription error on purpose — `writeReady` must fail closed,
+   * and a surface stuck on "Checking…" forever is worse than one that offers the lock step. But `0n`
+   * then means two different things, and one caller cannot live with that: `usePendingLockRecover`
+   * treats a confirmed zero as "this locked vault has not been credited yet" and writes a pending
+   * record from it. Fed a synthetic zero it invents a wait for an account that was credited days ago.
+   *
+   * True only after a real emission. Anything ASSERTING something about a zero must check it; anything
+   * merely gating a write (the common case) can keep reading `postingPower`/`writeReady` directly.
+   */
+  postingPowerKnown: boolean;
 
   // ── derived ──
   /** The canonical write-gate state (@/lib/session) the surfaces branch on. */
@@ -145,18 +168,36 @@ function ChainProvider({ children }: { children: ReactNode }) {
   // `viewer.writeReady` can gate EVERY write affordance on the same "fully set up" signal instead of each
   // surface re-deriving it. 0n = registered-but-unlocked (or a lock still crediting), null = still loading.
   // Composers still read their own useCapacity for the rate-limit math; this is only for the coarse gate.
-  const [postingPower, setPostingPower] = useState<bigint | null>(null);
+  //
+  // `known` rides alongside the value because the error path below collapses two different states into
+  // `0n`. Fail-closed is right for the gate and wrong for anything reading that zero as a FACT — see the
+  // `postingPowerKnown` doc on Session. Carried in one state object so the pair can never be observed
+  // half-updated (a render with the new value and the stale flag is exactly the false-confirmation this
+  // is meant to rule out).
+  const [power, setPower] = useState<{ value: bigint | null; known: boolean }>({
+    value: null,
+    known: false,
+  });
+  const { value: postingPower, known: postingPowerKnown } = power;
   useEffect(() => {
+    // Reset to UNRESOLVED whenever the account or socket changes, so the previous account's answer is
+    // never briefly reported as this one's. Keep the PREVIOUS object when it already says that: this
+    // state sits in the session context value, so minting an equal-but-new one re-renders all 41
+    // `useSession` consumers to tell them nothing (same reason `viewerRoles` below holds its array).
+    const unresolved = (p: { value: bigint | null; known: boolean }) =>
+      p.value === null && !p.known ? p : { value: null, known: false };
     const active = signerCtl.postingEnabled ? signer.ss58 : null;
     if (!api || !active) {
-      setPostingPower(null);
+      setPower(unresolved);
       return;
     }
+    setPower(unresolved);
     // PAPI v2: watchValue takes an options object and emits { block, value } (destructure .value). On a
-    // subscription error fall through to 0n (not-ready) rather than sit on null (loading) forever.
+    // subscription error fall through to 0n (not-ready) rather than sit on null (loading) forever — but
+    // mark it NOT known, because "the read failed" is not the same claim as "this account has none".
     const sub = api.query.TalkStake.AllowedStake.watchValue(active, { at: "best" }).subscribe(
-      ({ value: w }) => setPostingPower((w as bigint) ?? 0n),
-      () => setPostingPower(0n),
+      ({ value: w }) => setPower({ value: (w as bigint) ?? 0n, known: true }),
+      () => setPower({ value: 0n, known: false }),
     );
     return () => sub.unsubscribe();
   }, [api, signerCtl.postingEnabled, signer.ss58]);
@@ -266,12 +307,30 @@ function ChainProvider({ children }: { children: ReactNode }) {
       signerCtl,
       identity,
       votingPower: identity.votingPower,
+      postingPower,
+      postingPowerKnown,
       sessionState,
       viewer,
       source,
       viewerRoles,
     }),
-    [api, client, status, boot, wsUrl, reconnect, signer, signerCtl, identity, sessionState, viewer, source, viewerRoles],
+    [
+      api,
+      client,
+      status,
+      boot,
+      wsUrl,
+      reconnect,
+      signer,
+      signerCtl,
+      identity,
+      postingPower,
+      postingPowerKnown,
+      sessionState,
+      viewer,
+      source,
+      viewerRoles,
+    ],
   );
 
   // ReputationProvider + AccountProfileProvider live INSIDE the session context (they read `api` via
