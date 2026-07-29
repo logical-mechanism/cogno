@@ -154,7 +154,14 @@ export function usePendingCapacity(
   const cantTell = pendingLockCreditIndeterminate({ record, allowedStake, frontier, nowMs: now });
   if (record.lockSlot == null || !cfg) {
     // Stuck confirming too long → an honest exit (can't compute an ETA without the lock slot).
-    if (now - record.submittedAtMs > CONFIRM_TIMEOUT_MS && !cantTell) {
+    //
+    // A RECOVERED record is exempt. It was rebuilt from an on-chain vault UTxO on a device that never
+    // saw the lock submitted, so its `submittedAtMs` is when we NOTICED the lock, not when it was
+    // placed. Ageing that out would announce "taking longer than expected" five minutes after the
+    // user opened the app, about a lock that may have landed seconds ago. "Overdue" is the one status
+    // that asserts a negative, and here there is nothing to assert it from.
+    const ageable = !record.recovered;
+    if (ageable && now - record.submittedAtMs > CONFIRM_TIMEOUT_MS && !cantTell) {
       return { kind: "overdue", txHash: record.txHash };
     }
     return { kind: "confirming" };

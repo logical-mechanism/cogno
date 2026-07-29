@@ -120,7 +120,18 @@ describe("errorCopy", () => {
     // This copy existed as two subtly different sentences — "You are over the rate limit." in the chain
     // layer (written, regex-matched, then discarded on every path) and "You're over the rate limit." in
     // the toaster. There is now one.
-    expect(errorCopy({ kind: "rate-limit" })).toBe("You're over the rate limit. Try again shortly.");
+    expect(errorCopy({ kind: "rate-limit" })).toBe(
+      "Your posting power is still charging. Try again shortly.",
+    );
+  });
+
+  it("does not accuse a brand-new account of posting too fast", () => {
+    // A new account's bucket starts at zero and charges up, so this line is the FIRST thing many
+    // users ever see about capacity, before they have posted once. It must describe the bucket, not
+    // judge the user.
+    const copy = errorCopy({ kind: "rate-limit" });
+    expect(copy).not.toMatch(/rate limit/i);
+    expect(copy).not.toMatch(/too fast/i);
   });
 
   it("is total over the union (every kind words to non-empty prose)", () => {

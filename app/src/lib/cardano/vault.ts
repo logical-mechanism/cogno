@@ -307,7 +307,20 @@ export async function exitVault(
  */
 export async function fetchVaultState(
   walletId: string,
-): Promise<{ info: VaultInfo; locked: bigint | null; known: boolean; extraVaults: number }> {
+): Promise<{
+  info: VaultInfo;
+  locked: bigint | null;
+  known: boolean;
+  extraVaults: number;
+  /**
+   * The tx that CREATED the winning vault UTxO, or null when nothing is locked.
+   *
+   * Surfaced so a device that never saw the lock submitted can still rebuild a pending record from
+   * chain state (`usePendingLockRecover`). Without it, opening the app on a second device mid-wait
+   * reports "you have no posting power, lock some ADA" to someone whose ADA is already locked.
+   */
+  lockedTxHash: string | null;
+}> {
   const { info } = await resolveVault(walletId);
   const provider = await getProvider();
   const read = await readVault(provider, info);
@@ -317,6 +330,7 @@ export async function fetchVaultState(
     known: read.kind !== "unknown",
     // >0 means a second, uncredited vault UTxO exists for this owner (see readVault).
     extraVaults: read.kind === "locked" ? read.utxos - 1 : 0,
+    lockedTxHash: read.kind === "locked" ? read.utxo.input.txHash : null,
   };
 }
 

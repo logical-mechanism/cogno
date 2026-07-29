@@ -55,6 +55,8 @@ export interface UseVault {
   /** lovelace currently locked (null = none), once inspected. */
   locked: bigint | null;
   lockedKnown: boolean;
+  /** The tx that created the winning vault UTxO (null = nothing locked). Feeds pending-lock recovery. */
+  lockedTxHash: string | null;
   /** count of EXTRA vault UTxOs beyond the credited one (0 normally); >0 means ADA earning nothing. */
   extraVaults: number;
   /**
@@ -108,6 +110,7 @@ export function useVault(): UseVault {
   const [info, setInfo] = useState<VaultInfo | null>(null);
   const [locked, setLocked] = useState<bigint | null>(null);
   const [lockedKnown, setLockedKnown] = useState(false);
+  const [lockedTxHash, setLockedTxHash] = useState<string | null>(null);
   // >0 ⇒ this owner has a second vault UTxO that earns nothing (the observer credits largest-wins and
   // never sums). Surfaced so the UI can say so instead of silently showing one of them.
   const [extraVaults, setExtraVaults] = useState(0);
@@ -202,6 +205,7 @@ export function useVault(): UseVault {
             return;
           }
           setLocked(res.locked);
+          setLockedTxHash(res.lockedTxHash);
           setExtraVaults(res.extraVaults);
           setLockedKnown(true);
           setPhase((p) => (p === "error" ? "idle" : p)); // a successful re-read clears a stale failure
@@ -242,6 +246,7 @@ export function useVault(): UseVault {
             // previous known-ness and keep polling within the budget rather than claiming an answer.
             if (res.known) {
               setLocked(res.locked);
+              setLockedTxHash(res.lockedTxHash);
               setExtraVaults(res.extraVaults);
               setLockedKnown(true);
               if (settled(res.locked)) return clearPoll();
@@ -368,5 +373,5 @@ export function useVault(): UseVault {
     inFlight.current = false;
   }, [clearPoll]);
 
-  return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, extraVaults, legacy, confirming, inspect, lock, exit, exitLegacy, reset };
+  return { available, phase, step, busy, error, txHash, lastAction, info, locked, lockedKnown, lockedTxHash, extraVaults, legacy, confirming, inspect, lock, exit, exitLegacy, reset };
 }

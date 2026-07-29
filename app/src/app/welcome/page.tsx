@@ -28,6 +28,7 @@ import { useVault } from "@/hooks/useVault";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
+import { usePendingLockRecover } from "@/hooks/usePendingLockRecover";
 import { onboardingFlagStore, SKIPPED_VOTING_POWER } from "@/lib/onboardingFlags";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { consumeReturnTarget } from "@/lib/onboardingReturn";
@@ -109,6 +110,9 @@ export default function WelcomePage() {
   // navigate/reload and follows a relock. usePendingLockSync writes the record when a lock submits (and
   // clears it on exit); usePendingCapacity turns record + observer frontier + AllowedStake into a status.
   usePendingLockSync(vault, signerCtl.signer.ss58, api);
+  // A lock placed on another device (or before this browser's storage was cleared) has no local
+  // record, so rebuild one from the vault rather than telling a locked account to lock again.
+  usePendingLockRecover(vault, signerCtl.signer.ss58, postingPower);
 
   // Whether this account already dismissed the voting-power step. Per account and device-local: the
   // wait it sits inside can run 36 hours across many reloads, and re-asking on each one would turn a

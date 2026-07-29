@@ -20,6 +20,7 @@ import { useVault, type VaultAction } from "@/hooks/useVault";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
+import { usePendingLockRecover } from "@/hooks/usePendingLockRecover";
 import { PendingCapacityNotice } from "@/components/PendingCapacityNotice";
 import { pendingLockActions } from "@/lib/pendingLockStore";
 import { useActionToast } from "@/hooks/useActionToast";
@@ -72,6 +73,9 @@ export function VaultSection() {
   // Persist the in-flight lock + surface the explained, timed "crediting" state (survives reload,
   // covers relock). Mirrors the welcome flow so both places tell the same story.
   usePendingLockSync(vault, ss58, api);
+  // Same recovery as the welcome flow: this section already has vault state loaded, so it is one of
+  // the two places that can rebuild a record for a lock placed on another device.
+  usePendingLockRecover(vault, ss58, postingPower);
   const pending = usePendingCapacity(api, ss58, postingPower);
   // Observer liveness, so this panel does not narrate a countdown against a frontier that has stopped
   // moving. `useBestBlock` is the shared, visibility-frozen head — never a private useHeads here.

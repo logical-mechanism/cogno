@@ -546,7 +546,7 @@ export function Composer({
                     : !allowEmptyText && !nonEmpty
                       ? "Write something first"
                       : rateLimited
-                        ? "You're over the rate limit"
+                        ? "Your posting power is still charging"
                         : `${label} (${IS_MAC ? "⌘↵" : "Ctrl+Enter"})`
             }
           >

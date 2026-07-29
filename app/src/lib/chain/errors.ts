@@ -170,7 +170,19 @@ export function classifyThrown(err: unknown): ChainError {
 export function errorCopy(e: ChainError): string {
   switch (e.kind) {
     case "rate-limit":
-      return "You're over the rate limit. Try again shortly.";
+      // NOT "you're over the rate limit". That sentence is a judgement, and for the most common
+      // person who sees it the judgement is false: a brand-new account's capacity bucket starts at
+      // ZERO and charges up (`current_capacity`: `None => 0`, "first-touch is empty, not full"), so
+      // the very first thing a user is told after their lock credits is that they are posting too
+      // fast, before they have posted at all. `draftStatus` does carry a `charging` kind for exactly
+      // this, but its discriminator is whether a `Microblog.Capacity` row exists, and the runtime
+      // stamps an empty one at bind and again at credit, so a new account is already past it.
+      //
+      // "Charging" is a description rather than an accusation, and it is true in both cases: the
+      // bucket really is refilling, whether it drained from a burst of posts or has never been full.
+      // It also matches the vocabulary the rest of the app uses for this (posting power, the capacity
+      // meter) instead of borrowing a fee-based metaphor from chains that charge per post.
+      return "Your posting power is still charging. Try again shortly.";
     case "module":
       return MODULE_COPY[`${e.pallet}::${e.name}`] ?? `${e.pallet}: ${e.name}`;
     case "raw":
