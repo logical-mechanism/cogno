@@ -10,7 +10,7 @@ import { usePathname } from "next/navigation";
 import styles from "./BottomTabBar.module.css";
 import { IconHome, IconSearch, IconProfile, IconSettings, IconBell, IconPoll } from "../icons";
 import { useSession } from "../Providers";
-import { isPublicPath } from "@/lib/routeAccess";
+import { isWalledForGuest } from "@/lib/routeAccess";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useNavReTap } from "@/hooks/useNavReTap";
 import type { IconProps } from "../icons";
@@ -36,7 +36,7 @@ export function BottomTabBar() {
   // the aria-label is the ENTIRE accessible name and carrying the marker there is the load-bearing
   // half. Tabs stay tappable: they lead somewhere real, and disabling them hides what signing in is for.
   const loggedIn = viewer.status === "ready";
-  const walled = (href: string) => !loggedIn && !isPublicPath(href);
+  const walled = (href: string) => !loggedIn && isWalledForGuest(href);
 
   const tabs: Tab[] = [
     { label: "Home", href: "/", Icon: IconHome, match: (p) => p === "/" },

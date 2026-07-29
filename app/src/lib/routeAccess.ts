@@ -58,3 +58,23 @@ export function isPublicPath(pathname: string | null): boolean {
   if (!pathname) return false;
   return PUBLIC_SEGMENTS.has(firstSegment(pathname));
 }
+
+/**
+ * Should a nav item pointing here carry the "sign in required" marker for a signed-out visitor?
+ *
+ * Not the same question as `!isPublicPath`, and the difference is /welcome. It is deliberately absent
+ * from PUBLIC_SEGMENTS (it is the onboarding canvas, with its own gate), so the plain negation marks it
+ * as walled — and /welcome is exactly where a guest goes to STOP being walled. Both nav bars resolve
+ * their Profile item to /welcome/ when signed out, so the plain rule put a padlock and a
+ * "(sign in required)" accessible name on the one control that leads into sign-in. Nothing is walled
+ * behind it; it IS the door.
+ *
+ * Lives here rather than in the two nav components so they cannot answer it differently. Callers still
+ * apply their own "is this viewer signed out" test; this is only about the destination.
+ */
+export function isWalledForGuest(pathname: string | null): boolean {
+  if (!pathname) return true;
+  const seg = firstSegment(pathname);
+  if (seg === WELCOME_SEGMENT) return false;
+  return !PUBLIC_SEGMENTS.has(seg);
+}
