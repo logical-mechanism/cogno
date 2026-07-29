@@ -4,6 +4,12 @@
 //   node scripts/shoot.mjs / /explore/ --v mobile,feed,desktop
 //   node scripts/shoot.mjs /settings/ --signed-in --out /tmp/shots
 //   node scripts/shoot.mjs /post/1/ --ws ws://127.0.0.1:9944 --full
+//   node scripts/shoot.mjs / --ws ws://127.0.0.1:9944 --settle    # real posts, not skeletons
+//
+// USE --settle FOR ANY CHAIN-BACKED SURFACE. Without it the capture is taken at first paint, which on a
+// feed / thread / profile / poll is the shimmer placeholder — and a screenshot of a skeleton reads as a
+// real loading state, so nothing about it says the shot was useless. It needs --ws too: with no endpoint
+// the surface stays legitimately busy and the wait just burns its timeout (reported, never fatal).
 //
 // For LOOKING at a change, not for asserting one. Assertions belong in check-overflow.mjs or a real
 // test, because a screenshot only fails when somebody opens it. This exists because CSS work was
@@ -19,7 +25,7 @@ import { launch, newContext, openPage, parseViewports } from "./lib/browser.mjs"
 
 function parseArgs(argv) {
   const paths = [];
-  const opts = { out: null, viewports: null, signedIn: false, ws: null, full: false };
+  const opts = { out: null, viewports: null, signedIn: false, ws: null, full: false, settle: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--v" || a === "--viewports") opts.viewports = argv[++i];
@@ -27,6 +33,7 @@ function parseArgs(argv) {
     else if (a === "--ws") opts.ws = argv[++i];
     else if (a === "--signed-in") opts.signedIn = true;
     else if (a === "--full") opts.full = true;
+    else if (a === "--settle") opts.settle = true;
     else if (a.startsWith("-")) throw new Error(`unknown flag: ${a}`);
     else paths.push(a.startsWith("/") ? a : `/${a}`);
   }
@@ -53,11 +60,13 @@ const written = [];
 for (const viewport of viewports) {
   const context = await newContext(browser, viewport, { signedIn: opts.signedIn, ws: opts.ws });
   for (const path of paths) {
-    const { page, errors } = await openPage(context, server.origin, path);
+    const { page, errors, settled } = await openPage(context, server.origin, path, {
+      settle: opts.settle,
+    });
     const slug = path.replace(/^\/|\/$/g, "").replace(/[^a-z0-9]+/gi, "-") || "home";
     const file = join(outDir, `${slug}.${viewport.name}.png`);
     await page.screenshot({ path: file, fullPage: opts.full });
-    written.push({ file, path, viewport: viewport.name, errors });
+    written.push({ file, path, viewport: viewport.name, errors, settled });
     await page.close();
   }
   await context.close();
@@ -71,5 +80,9 @@ for (const w of written) {
   // Surfaced rather than swallowed: a page that threw during hydration still screenshots, and the
   // image looks plausible, so a silent error here is exactly how a broken surface reads as fine.
   for (const e of w.errors) console.log(`      page error: ${e.split("\n")[0]}`);
+  // Same reasoning for the wait: an unsettled shot is a skeleton, and it does not look like one.
+  if (w.settled && !w.settled.ok) {
+    console.log(`      did not settle after ${w.settled.ms}ms — ${w.settled.reason}`);
+  }
 }
 console.log(`\n${written.length} shot(s) in ${outDir}`);
