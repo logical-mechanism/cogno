@@ -176,7 +176,12 @@ export interface PollDraft {
    * off-chain proposal document (GitHub/IPFS). Only valid on a chamber `kind` (cleared when `kind` is
    * `"Stake"`).
    */
-  govAction?: { actionType: GovActionType; anchorUrl: string };
+  /**
+   * The governance-action tag. `actionId` is the CIP-129 id the author pasted, when they used the
+   * lookup: it is DRAFT-ONLY and never submitted (the chain stores no such field), kept here so the id
+   * survives a modal close and so the resolved state can be rebuilt without re-typing it.
+   */
+  govAction?: { actionType: GovActionType; anchorUrl: string; actionId?: string };
 }
 
 /** What a Composer hands back on submit; the surface maps it to the right extrinsic in @/lib/chain/mutations. */
