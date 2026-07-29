@@ -9,6 +9,7 @@ import {
   lensVoters,
   roleLabel,
   chamberBlocksViewer,
+  pollClosesIn,
 } from "./poll";
 import type { PollOptionView } from "./types";
 
@@ -97,5 +98,50 @@ describe("chamberBlocksViewer", () => {
     expect(chamberBlocksViewer("Drep", ["DRep"])).toBe(false);
     expect(chamberBlocksViewer("Spo", ["Spo"])).toBe(false);
     expect(chamberBlocksViewer("Drep", ["Spo", "DRep"])).toBe(false);
+  });
+});
+
+// SECS_PER_BLOCK is 6, so one minute is 10 blocks, one hour 600, one day 14400. The cases below are
+// written in blocks rather than derived from the constant on purpose: a test that recomputes the
+// conversion it is checking agrees with itself no matter what the conversion does.
+describe("pollClosesIn", () => {
+  it("says nothing when there is nothing truthful to say", () => {
+    expect(pollClosesIn(undefined, 100)).toBeNull(); // floating poll, no deadline
+    expect(pollClosesIn(1000, null)).toBeNull(); // head unknown (still connecting)
+  });
+
+  it("returns null once the deadline is reached, so no countdown outlives the poll", () => {
+    expect(pollClosesIn(1000, 1000)).toBeNull(); // exactly at the deadline
+    expect(pollClosesIn(1000, 1001)).toBeNull(); // past it
+    expect(pollClosesIn(1000, 99_999)).toBeNull(); // long past it
+  });
+
+  it("collapses the last minute rather than counting seconds down", () => {
+    expect(pollClosesIn(1001, 1000)).toBe("in under a minute"); // 1 block, 6s
+    expect(pollClosesIn(1009, 1000)).toBe("in under a minute"); // 9 blocks, 54s
+  });
+
+  it("reads in minutes below an hour, singular at one", () => {
+    expect(pollClosesIn(1010, 1000)).toBe("in about 1 minute"); // 10 blocks, 60s
+    expect(pollClosesIn(1100, 1000)).toBe("in about 10 minutes");
+    expect(pollClosesIn(1590, 1000)).toBe("in about 59 minutes");
+  });
+
+  it("never says '60 minutes' — rounding promotes it to the next unit", () => {
+    // 595 blocks is 59.5 min, which rounds to 60 and so fails the `< 60` minutes branch. That is the
+    // intended behaviour, not an off-by-one: "in about 1 hour" is what a person would say.
+    expect(pollClosesIn(1595, 1000)).toBe("in about 1 hour");
+  });
+
+  it("reads in hours up to two days, singular at one", () => {
+    expect(pollClosesIn(1600, 1000)).toBe("in about 1 hour"); // 600 blocks
+    expect(pollClosesIn(2800, 1000)).toBe("in about 3 hours");
+    // 47h stays in hours: "in about 47 hours" tells a voter more than "in about 2 days".
+    expect(pollClosesIn(1000 + 47 * 600, 1000)).toBe("in about 47 hours");
+  });
+
+  it("switches to days at 48 hours", () => {
+    expect(pollClosesIn(1000 + 48 * 600, 1000)).toBe("in about 2 days");
+    expect(pollClosesIn(1000 + 7 * 14_400, 1000)).toBe("in about 7 days");
   });
 });

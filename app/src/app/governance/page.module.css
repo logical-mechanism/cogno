@@ -26,10 +26,13 @@
   outline-offset: calc(-1 * var(--cg-focus-ring-width));
 }
 
+/* The action pill sits left; the close state and its countdown group together on the right. That is a
+   `margin-left: auto` on .state rather than `justify-content: space-between`, because space-between with
+   three children would strand the countdown at the far edge instead of keeping it with the state it
+   qualifies. */
 .head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: baseline;
   gap: var(--cg-space-2);
 }
 
@@ -46,6 +49,7 @@
 
 .state {
   flex: 0 0 auto;
+  margin-left: auto;
   font-size: var(--cg-fs-xs);
   font-weight: var(--cg-fw-semibold);
   color: var(--cg-text-secondary);
@@ -53,6 +57,14 @@
 
 .state[data-state="open"] {
   color: var(--cg-accent);
+}
+
+/* Quieter than the state beside it: the countdown qualifies "Open", it is not a second state. */
+.closesIn {
+  flex: 0 0 auto;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-muted);
+  white-space: nowrap;
 }
 
 .question {

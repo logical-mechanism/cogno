@@ -20,6 +20,7 @@ import { useSession, useBestBlock } from "@/components/Providers";
 import { useGovernancePolls } from "@/hooks/useGovernancePolls";
 import { GOV_ACTION_LABEL } from "@/lib/cardano/governance";
 import { eligibleToVote, govCloseState } from "@/lib/chain/governance-feed";
+import { pollClosesIn } from "@/lib/poll";
 import styles from "./page.module.css";
 
 const STATE_LABEL = { open: "Open", provisional: "Closed", final: "Final" } as const;
@@ -61,6 +62,9 @@ export default function GovernancePage() {
           {sorted.map((p) => {
             const state = govCloseState(p, bestBlock);
             const eligible = eligibleToVote(p.actionType, viewerRoles);
+            // Sorting puts open polls on top, but "open" spans everything from minutes left to weeks.
+            // The countdown is what turns this list into something you act on rather than browse.
+            const closesIn = state === "open" ? pollClosesIn(p.closeAt, bestBlock) : null;
             return (
               <li key={p.hostId.toString()}>
                 {/* prefetch off: the list renders every open poll on arrival, so the default put each
@@ -71,6 +75,7 @@ export default function GovernancePage() {
                     <span className={styles.state} data-state={state}>
                       {STATE_LABEL[state]}
                     </span>
+                    {closesIn && <span className={styles.closesIn}>closes {closesIn}</span>}
                   </div>
                   {/* The linked proposal's title identifies the row when we can resolve it (neutral hosts
                       only, for privacy); otherwise the poll's own question keeps the row distinguishable. */}

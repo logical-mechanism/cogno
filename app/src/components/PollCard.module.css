@@ -129,6 +129,12 @@
   color: var(--cg-text-secondary);
 }
 
+/* The countdown sits one step quieter than the "Open" state beside it: it is context for that state,
+   not a second state of its own. --cg-text-muted is the same tone as the separator dot. */
+.closesIn {
+  color: var(--cg-text-muted);
+}
+
 /* The permissionless "Finalize" affordance on a provisional (past-deadline, unfrozen) poll. */
 .finalize {
   margin-left: 0.5rem;

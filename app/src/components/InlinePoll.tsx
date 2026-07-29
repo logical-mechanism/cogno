@@ -13,7 +13,7 @@ import { PollCard } from "./PollCard";
 import { Skeleton } from "./Skeleton";
 import { useSession, useBestBlock } from "./Providers";
 import { usePoll } from "@/hooks/usePoll";
-import { chamberBlocksViewer, chamberRequiredRole, roleLabel } from "@/lib/poll";
+import { chamberBlocksViewer, chamberRequiredRole, pollClosesIn, roleLabel } from "@/lib/poll";
 import styles from "./InlinePoll.module.css";
 import { viewerBucket } from "@/lib/viewerBucket";
 import type { Viewer } from "./kit";
@@ -107,6 +107,9 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
       gateNotice={gateNotice}
       compact={!detail}
       closeState={closeState}
+      // Only while open: `provisional`/`final` already say the deadline has passed, and pollClosesIn
+      // returns null past it anyway, so this is belt-and-braces against a lagging head reading.
+      closesIn={closeState === "open" ? pollClosesIn(poll.closeAt, bestBlock) : null}
       onFinalize={onFinalize}
       finalizing={finalizing}
     />

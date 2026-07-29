@@ -41,12 +41,16 @@ function ChamberRow({
   threshold,
   advisory,
   totalActiveStake,
+  paramsResolved,
 }: {
   poll: PollView;
   body: "spo" | "drep";
   threshold: Threshold | null;
   advisory: boolean;
   totalActiveStake: bigint | null;
+  /** The live-params read has settled (either way). Gates the "unknown" copy so it can't flash on the
+   *  first paint, when `totalActiveStake` is null merely because the fetch has not returned yet. */
+  paramsResolved: boolean;
 }) {
   const v = chamberVote(poll.options, body);
   const unit = lensVoterUnit(body);
@@ -118,6 +122,12 @@ function ChamberRow({
       <div className={styles.meta}>
         {v.total > 0n ? `${formatWeight(v.total)} ₳` : "no stake"}
         {coverage != null && v.total > 0n && <> · {coverage}% of active stake</>}
+        {/* Coverage needs a denominator we could not always read. Silently dropping the share made an
+            unreadable total look identical to a poll nobody had voted in, which is the one thing this
+            readout must never do: a share of an unknown whole is not a small share, it is no answer. */}
+        {coverage == null && v.total > 0n && paramsResolved && (
+          <> · share of active stake unknown</>
+        )}
         {" · "}
         {lensVoters(v.voters, body)}
         {v.abstain > 0n && <> · {formatWeight(v.abstain)} ₳ abstained</>}
@@ -133,10 +143,17 @@ export function GovernanceResult({ poll, action }: { poll: PollView; action: Gov
     totalActiveStake: null,
     live: false,
   });
+  // Tracked apart from `params.live` because the two mean different things and the initial state can't
+  // distinguish them: `live: false` is both "not read yet" and "read failed, using the snapshot". Only
+  // the second is worth telling a reader about, so the caveat waits for the read to settle.
+  const [resolved, setResolved] = useState(false);
   useEffect(() => {
     let alive = true;
     resolveGovParams().then((p) => {
-      if (alive) setParams(p);
+      if (alive) {
+        setParams(p);
+        setResolved(true);
+      }
     });
     return () => {
       alive = false;
@@ -155,8 +172,19 @@ export function GovernanceResult({ poll, action }: { poll: PollView; action: Gov
           threshold={ch.threshold}
           advisory={chambers.advisory}
           totalActiveStake={params.totalActiveStake}
+          paramsResolved={resolved}
         />
       ))}
+      {/* The bar every percentage above is judged against is itself a Cardano protocol parameter, and
+          governance can move it. When the live read fails we fall back to a shipped snapshot and keep
+          rendering a verdict, which is the right call (a stale bar beats no bar) but only if the reader
+          is told. Advisory polls carry no threshold, so there is nothing to caveat. */}
+      {resolved && !params.live && !chambers.advisory && (
+        <p className={styles.stale}>
+          Ratification thresholds are from a stored snapshot. The live Cardano values could not be read,
+          so a verdict here may not match the current bar.
+        </p>
+      )}
     </div>
   );
 }

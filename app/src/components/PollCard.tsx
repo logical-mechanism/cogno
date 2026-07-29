@@ -87,6 +87,13 @@ export interface PollCardProps {
    * and always reveal results.
    */
   closeState?: "open" | "provisional" | "final";
+  /**
+   * How long an OPEN poll has left, already phrased ("in about 3 hours") by `lib/poll.pollClosesIn`.
+   * Passed in rather than derived here because the deadline is a block number and this card is
+   * presentational — InlinePoll is the piece that holds the chain head. Omitted for a floating poll,
+   * an unknown head, or a poll already past its deadline.
+   */
+  closesIn?: string | null;
   /** Permissionlessly finalize a provisional poll (freezes the weighted result). Shown only when provisional. */
   onFinalize?: () => void;
   /** A finalize (`close_poll`) is in flight → spinner on the Finalize control. */
@@ -109,6 +116,7 @@ export function PollCard({
   disabledHint,
   compact,
   closeState = "open",
+  closesIn,
   onFinalize,
   finalizing,
   gateNotice,
@@ -324,7 +332,21 @@ export function PollCard({
             )}
           </>
         ) : (
-          <span className={styles.open}>{voted ? "Live results" : "Open"}</span>
+          <>
+            <span className={styles.open}>{voted ? "Live results" : "Open"}</span>
+            {/* The deadline is the whole point of a temperature check: it is worth catching BEFORE the
+                proposal goes on chain, and "Open" alone never told anyone whether that was tonight or
+                next week. Only rendered while genuinely open — pollClosesIn returns null once the
+                deadline is reached, so a stale countdown can't sit beside "Closed". */}
+            {closesIn && (
+              <>
+                <span className={styles.dot} aria-hidden>
+                  ·
+                </span>
+                <span className={styles.closesIn}>closes {closesIn}</span>
+              </>
+            )}
+          </>
         )}
       </div>
 
