@@ -6,13 +6,25 @@ import type { CognoApi } from "@/lib/types";
 type Entry = { keyArgs: [bigint]; value: Record<string, unknown> };
 type Bin = ReturnType<typeof Binary.fromText>;
 
-function mockApi(polls: Entry[], results: Entry[], posts: Record<string, { text: Bin }>): CognoApi {
+function mockApi(
+  polls: Entry[],
+  results: Entry[],
+  posts: Record<string, { text: Bin }>,
+  replies: Record<string, number> = {},
+): CognoApi {
   return {
     query: {
       Microblog: {
         Polls: { getEntries: async () => polls },
         PollResults: { getEntries: async () => results },
         Posts: { getValue: async (id: bigint) => posts[String(id)] ?? null },
+        // ReplyCount must be present even when a case does not care about it: the reader batches it
+        // for every row, and a missing stub would throw on the member access rather than reject, which
+        // no `.catch` on the call can intercept.
+        ReplyCount: {
+          getValues: async (keys: ReadonlyArray<readonly [bigint]>) =>
+            keys.map(([id]) => replies[String(id)] ?? 0),
+        },
       },
     },
   } as unknown as CognoApi;

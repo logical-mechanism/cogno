@@ -67,6 +67,12 @@ export interface GovPollSummary {
   closeAt?: number;
   /** `true` once `close_poll` has frozen the result. */
   finalized: boolean;
+  /**
+   * DIRECT replies to the host post (the runtime's `ReplyCount` aggregate, which is per-parent, not
+   * thread size). Drives the "most discussed" order. 0 for a poll whose host is denylisted, so a
+   * delisted thread cannot ride real engagement to the top of the list under a blank title.
+   */
+  replyCount: number;
 }
 
 /**
@@ -85,8 +91,27 @@ export async function readGovernancePolls(api: CognoApi): Promise<GovPollSummary
     .sort((a, b) => Number((b.keyArgs[0] as bigint) - (a.keyArgs[0] as bigint))) // newest (highest id) first
     .slice(0, MAX_SCAN);
 
+  // One batched read for every host's direct-reply count, rather than a point read per row. Kept
+  // outside the per-poll map below for that reason. `ReplyCount` is ValueQuery so an unreplied host
+  // answers 0 rather than None; a failed or absent read degrades to 0, which orders those rows last
+  // under "most discussed" instead of hiding them.
+  //
+  // In a `try`, not merely `.catch`-ed: this function's contract is that it never throws, and a
+  // trailing `.catch` only covers a REJECTED promise. If the storage item is absent from the reader
+  // the throw happens on the member access, in the expression that produces the promise, where no
+  // `.catch` can reach it.
+  let replyCounts: (number | undefined)[] = [];
+  try {
+    replyCounts = await api.query.Microblog.ReplyCount.getValues(
+      govs.map((e) => [e.keyArgs[0] as bigint] as const),
+      BEST,
+    );
+  } catch {
+    replyCounts = [];
+  }
+
   return Promise.all(
-    govs.map(async (e) => {
+    govs.map(async (e, i) => {
       const hostId = e.keyArgs[0] as bigint;
       // This reads Microblog.Posts DIRECTLY rather than through the FeedSource, so the serve denylist
       // has to be applied here by hand — by post id AND by author. Checking only the post id was a
@@ -114,6 +139,9 @@ export async function readGovernancePolls(api: CognoApi): Promise<GovPollSummary
         anchorUrl: denied ? undefined : decodeAnchor(e.value.action?.anchor_url),
         closeAt: e.value.close_at ?? undefined,
         finalized: finalized.has(hostId),
+        // Zeroed for a denied host along with its text: "most discussed" is a claim about a thread the
+        // reader can go and read, and this deployment is not serving that one.
+        replyCount: denied ? 0 : (replyCounts[i] ?? 0),
       };
     }),
   );

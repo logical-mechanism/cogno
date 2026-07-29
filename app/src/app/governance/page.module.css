@@ -88,6 +88,16 @@
   color: var(--cg-text-secondary);
 }
 
+/* The row's footer line: the direct-reply count (which the "most discussed" order sorts on, so it is
+   worth showing rather than making the reader trust an invisible key) and the eligibility flag. */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+}
+
 .eligible {
   align-self: flex-start;
   margin-top: 2px;

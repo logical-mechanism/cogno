@@ -1,0 +1,19 @@
+/* GovernanceControls — the /governance filter axes, rendered into StickyHeader's tabs slot.
+   No background, blur or border here: StickyHeader's own .header already supplies all three, and
+   layering a second translucent surface over it draws a visibly darker band plus a doubled rule. */
+
+.controls {
+  /* AppShell's .headerTabs is a ROW flex container, so an unstyled child shrinks to fit instead of
+     spanning the header. Claim the full width and stack the rows. */
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.note {
+  margin: 0;
+  padding: 0 var(--cg-space-4) var(--cg-space-2);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+}
