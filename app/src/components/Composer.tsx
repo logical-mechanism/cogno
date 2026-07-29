@@ -25,6 +25,7 @@ import { ByteCounter } from "./ByteCounter";
 import { utf8Bytes, clampToBytes } from "@/lib/bytes";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
 import { CapacityMeter } from "./CapacityMeter";
 import { Avatar } from "./Avatar";
 import { Spinner, IconPoll, IconEye } from "./icons";
@@ -465,10 +466,13 @@ export function Composer({
         </div>
       </div>
 
+      {/* The signed-out prompt. On /post this is the ONLY sign-in affordance a shared link lands on
+          (ThreadView renders a reply composer at every breakpoint, and GuestSignInPrompt deliberately
+          does not mount there), so it names the price rather than just asking for a wallet. */}
       {sessionGated && (
         <p className={styles.sessionPrompt} role="status">
           {viewer.status === "not-connected"
-            ? "Connect a wallet to post."
+            ? `Reading is free. Posting needs a wallet and a ${LOCK_ADA_WHOLE} ADA lock you can take back whenever you want.`
             : "Finish setup to post."}
         </p>
       )}

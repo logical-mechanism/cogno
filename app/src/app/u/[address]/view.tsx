@@ -30,6 +30,7 @@ import { Skeleton } from "@/components/Skeleton";
 import { EmptyState } from "@/components/EmptyState";
 import { Timeline } from "@/components/Timeline";
 import { ProfileHeader } from "@/components/profile/ProfileHeader";
+import { GuestSignInPrompt } from "@/components/GuestSignInPrompt";
 import { ProfileTabs, type ProfileTab } from "@/components/profile/ProfileTabs";
 import { FollowsPanel } from "@/components/profile/FollowsPanel";
 import { PinnedPostBlock } from "@/components/profile/PinnedPostBlock";
@@ -446,6 +447,11 @@ function ProfileBody({ address }: { address: Ss58 }) {
             onAccountUp={onAccountUp}
             onAccountDown={onAccountDown}
           />
+
+          {/* The shared-link landing. A cold click from elsewhere most often lands on a profile or a
+              thread, and this route had NO sign-in affordance at all: the Follow button looked live,
+              and clicking it navigated the reader away. Renders nothing once the viewer is set up. */}
+          <GuestSignInPrompt variant="profile" />
 
           <div
             id="cg-profile-panel"

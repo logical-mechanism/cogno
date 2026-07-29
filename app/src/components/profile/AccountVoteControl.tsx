@@ -11,6 +11,7 @@
 // not-connected: the click is routed to /welcome/ by the surface callback (the buttons stay enabled).
 
 import styles from "./AccountVoteControl.module.css";
+import { affordanceFor, affordanceTitle } from "@/lib/writeAffordance";
 import { IconDownvote } from "@/components/icons";
 import { formatSignedWeight } from "@/lib/format";
 import type { Viewer } from "@/components/kit";
@@ -56,7 +57,9 @@ export function AccountVoteControl({
 }: AccountVoteControlProps) {
   const up = vote.myVote === "Up";
   const down = vote.myVote === "Down";
-  const notBound = gate.status === "not-identity-bound";
+  // See lib/writeAffordance. Guests keep live controls; only a mid-setup viewer is greyed out.
+  const mode = affordanceFor({ status: gate.status, writeReady: gate.writeReady });
+  const gateDisabled = mode === "blocked";
   const score = formatSignedWeight(vote.score ?? 0n);
   // Show the arrows only when the viewer may act on a votable OTHER account; otherwise score-only.
   const showArrows = votable && !isSelf;
@@ -74,8 +77,8 @@ export function AccountVoteControl({
             className={`${styles.action} ${styles.up} ${up ? styles.upOn : ""}`}
             aria-label={`Endorse this account${vote.upCount ? `, ${vote.upCount} endorsement${vote.upCount === 1 ? "" : "s"}` : ""}`}
             aria-pressed={up}
-            disabled={notBound || pending}
-            title={notBound ? "Finish setup to vote" : "Endorse"}
+            disabled={gateDisabled || pending}
+            title={affordanceTitle(mode, "vote") ?? "Endorse"}
             onClick={onUp}
           >
             <span className={`${styles.iconWrap} ${up ? styles.pop : ""}`}>
@@ -101,8 +104,8 @@ export function AccountVoteControl({
             className={`${styles.action} ${styles.down} ${down ? styles.downOn : ""}`}
             aria-label={`Dispute this account${vote.downCount ? `, ${vote.downCount} dispute${vote.downCount === 1 ? "" : "s"}` : ""}`}
             aria-pressed={down}
-            disabled={notBound || pending}
-            title={notBound ? "Finish setup to vote" : "Dispute"}
+            disabled={gateDisabled || pending}
+            title={affordanceTitle(mode, "vote") ?? "Dispute"}
             onClick={onDown}
           >
             <span className={styles.iconWrap}>

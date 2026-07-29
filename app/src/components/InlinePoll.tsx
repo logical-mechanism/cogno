@@ -7,6 +7,7 @@
 // so polls render + vote inline in the feed instead of showing as plain text posts.
 
 import { useCallback } from "react";
+import { affordanceFor, affordanceTitle } from "@/lib/writeAffordance";
 import { useRouter } from "next/navigation";
 import { PollCard } from "./PollCard";
 import { Skeleton } from "./Skeleton";
@@ -81,15 +82,18 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
   // a non-member's cast would never enter the tally, so we block it rather than record a phantom vote. Only
   // gate while OPEN (a closed poll is disabled for everyone). `viewerRoles === null` fails open, so a member
   // is never blocked mid-load. A blocked non-member still READS the result (showResults), they just can't cast.
-  const notBound = gate.status === "not-identity-bound";
+  // See lib/writeAffordance. A guest keeps a live option row that reads as sign-in; the CHAMBER gate
+  // below is a different thing and still hard-disables, because a non-member's cast can never tally.
+  const mode = affordanceFor({ status: gate.status, writeReady: gate.writeReady });
+  const gateDisabled = mode === "blocked";
   const blocked = closeState === "open" && chamberBlocksViewer(poll.kind, viewerRoles);
   const required = chamberRequiredRole(poll.kind);
   const label = required ? roleLabel(required) : "";
-  const disabledHint = notBound
-    ? "Finish setup to vote"
-    : blocked
-      ? `Only ${label}s can vote`
-      : undefined;
+  // The setup hint wins over the chamber one: "sign in to vote" is the more actionable truth for
+  // someone who is not signed in, and telling a guest "only SPOs can vote" first would read as a
+  // permanent exclusion rather than a step they have not taken yet.
+  const disabledHint =
+    affordanceTitle(mode, "vote") ?? (blocked ? `Only ${label}s can vote` : undefined);
   const gateNotice = blocked
     ? `Only verified ${label}s can vote in this poll.`
     : undefined;
@@ -99,7 +103,7 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
       myChoice={myChoice}
       onVote={onVote}
       showResults={detail || blocked}
-      disabled={notBound || blocked}
+      disabled={gateDisabled || blocked}
       disabledHint={disabledHint}
       gateNotice={gateNotice}
       compact={!detail}

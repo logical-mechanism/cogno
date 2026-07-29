@@ -9,6 +9,7 @@
 // presentational toggle that NEVER builds an extrinsic.
 
 import { useState } from "react";
+import { affordanceFor, affordanceTitle } from "@/lib/writeAffordance";
 import styles from "./FollowButton.module.css";
 import { Spinner } from "./icons";
 import { handleOf } from "@/lib/ss58";
@@ -37,7 +38,8 @@ export function FollowButton({
   if (viewer.address && target === viewer.address) return null;
 
   const pending = state === "pending";
-  const notBound = viewer.status === "not-identity-bound";
+  // See lib/writeAffordance. A guest keeps a live Follow button that says what it will actually do.
+  const mode = affordanceFor({ status: viewer.status, writeReady: viewer.writeReady });
 
   // Visual label: following + hover → "Unfollow"; otherwise the edge state.
   const label = pending
@@ -73,8 +75,8 @@ export function FollowButton({
       className={cls}
       aria-pressed={isFollowing}
       aria-label={ariaLabel}
-      disabled={pending || notBound}
-      title={notBound ? "Finish setup to follow" : undefined}
+      disabled={pending || mode === "blocked"}
+      title={affordanceTitle(mode, "follow")}
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
       onFocus={() => setHovering(true)}

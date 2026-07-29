@@ -32,6 +32,17 @@
   color: var(--cg-text-secondary);
 }
 
+.link {
+  color: var(--cg-accent);
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: var(--cg-focus-ring-offset);
+  border-radius: var(--cg-radius-sm);
+}
+
 .cta {
   flex: 0 0 auto;
   padding: var(--cg-space-2) var(--cg-space-5);
