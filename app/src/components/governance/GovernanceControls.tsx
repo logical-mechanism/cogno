@@ -14,6 +14,7 @@ import { GOV_ACTION_LABEL } from "@/lib/cardano/governance";
 import type { GovActionType } from "@/lib/types";
 import {
   GOV_ACTION_SLUG,
+  parseGovAction,
   type GovAxes,
   type GovLens,
   type GovChamber,
@@ -94,23 +95,39 @@ export function GovernanceControls({
         onChange={(status) => onChange({ ...axes, status })}
         describedById={noteId}
       />
-      <RadioRow
-        label="Type"
-        options={ACTION_OPTIONS}
-        value={axes.action === null ? "" : GOV_ACTION_SLUG[axes.action]}
-        onChange={(slug) =>
-          onChange({
-            ...axes,
-            action:
-              slug === ""
-                ? null
-                : ((Object.keys(GOV_ACTION_LABEL) as GovActionType[]).find(
-                    (t) => GOV_ACTION_SLUG[t] === slug,
-                  ) ?? null),
-          })
-        }
-        describedById={noteId}
-      />
+      {/* The ONE axis that is not a chip row, and it cannot be. Eight options whose labels run to 25
+          characters ("Protocol-parameter change") measure 1257px of chips against the 568px the feed
+          column leaves: 2.2x over at the widest layout the app has, and 3.7x on a phone. As a row it
+          overflowed and, with the scrollbar hidden on both engines, simply looked cut off, so most of
+          the eight types were unreachable without knowing to drag sideways.
+
+          A select shows its current value, opens to the full list, and costs one line at every
+          viewport. The same labels already render in a select in PollComposer, so this is the shape
+          they are known to work in. */}
+      <div className={styles.selectRow}>
+        <label className={styles.selectLabel} htmlFor="cg-gov-type">
+          Type
+        </label>
+        <select
+          id="cg-gov-type"
+          className={styles.select}
+          value={axes.action === null ? "" : GOV_ACTION_SLUG[axes.action]}
+          aria-describedby={noteId}
+          // Parity with the chip rows beside it, which fill the selected chip with the accent. Without
+          // it this axis would be the only one giving no at-a-glance cue that it is narrowing the list.
+          data-active={axes.action !== null || undefined}
+          // Through the shared parser, not a second slug→type lookup. `parseGovAction` already owns
+          // that map and answers null for both "" and an unknown slug, which is the same "every type"
+          // this axis means.
+          onChange={(e) => onChange({ ...axes, action: parseGovAction(e.target.value) })}
+        >
+          {ACTION_OPTIONS.map((a) => (
+            <option key={a.value || "any"} value={a.value}>
+              {a.label}
+            </option>
+          ))}
+        </select>
+      </div>
       <RadioRow
         label="Decided by"
         options={CHAMBER_OPTIONS}

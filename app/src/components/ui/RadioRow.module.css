@@ -2,17 +2,22 @@
    Carries NO surface chrome (background, blur, border): the host decides that. /explore wraps it in its
    own translucent .bar; /governance hands it to StickyHeader, which already blurs. */
 
+/* WRAPS, rather than scrolling. It used to be `overflow-x: auto` with the scrollbar hidden on both
+   engines, which meant a row too wide for its column simply looked cut off: no scrollbar, no fade, no
+   hint that the chips past the edge existed at all. A filter a reader cannot see is a filter that does
+   not exist to them, and on /governance that hid five of the eight action types behind an invisible
+   scroll.
+
+   Wrapping is affordable because no row is very wide any more. The one that was, /governance's action
+   TYPE, is a <select> now: measured against the real font it ran 1257px against the 568px the feed
+   column leaves, so it could not be a chip row at any viewport. What is left here measures 322 to 459px
+   per row, so every row is one line at 600px and the three widest take a second line on a phone. */
 .row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--cg-space-2);
   padding: var(--cg-space-2) var(--cg-space-4);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.row::-webkit-scrollbar {
-  display: none;
 }
 
 .label {

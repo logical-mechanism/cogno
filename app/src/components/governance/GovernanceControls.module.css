@@ -10,6 +10,51 @@
   flex-direction: column;
 }
 
+/* The action-TYPE axis, as a select rather than a chip row. Laid out to match RadioRow's own geometry
+   (same padding and gap, same label treatment) so it reads as one more row in the stack rather than a
+   different kind of control that wandered in. */
+.selectRow {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-2) var(--cg-space-4);
+}
+
+.selectLabel {
+  flex: 0 0 auto;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
+.select {
+  /* Shrinkable, so a long option label narrows the control instead of pushing the row past the column
+     edge. The whole point of this axis not being a chip row. */
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--cg-space-1) var(--cg-space-2);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-bg);
+  color: var(--cg-text);
+  font: inherit;
+  font-size: var(--cg-fs-sm);
+  cursor: pointer;
+}
+
+.select:focus-visible {
+  outline: 2px solid var(--cg-accent);
+  outline-offset: 2px;
+}
+
+/* Filtering. Borrowed from .chipActive rather than reinvented, so "this axis is narrowing the list"
+   looks the same across the bar. The accent stays on the BORDER instead of filling the control: a
+   filled select would put option text on the accent, and only --cg-text is guaranteed to pass contrast
+   on every surface here. */
+.select[data-active] {
+  border-color: var(--cg-accent);
+  font-weight: 600;
+}
+
 .note {
   margin: 0;
   padding: 0 var(--cg-space-4) var(--cg-space-2);
