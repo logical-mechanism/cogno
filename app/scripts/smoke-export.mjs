@@ -6,56 +6,11 @@
 // is NEVER exercised in dev. That is exactly how two Retry buttons shipped calling router.refresh(),
 // which does nothing at all under a static export.
 //
-// The routing below mirrors deploy/nginx/cogno.conf, including the fact that there is NO SPA catch-all:
-// /post/<id>/ and /u/<addr>/ map to their `_` shims and everything else must resolve to a real file.
-// Do NOT replace this with `python3 -m http.server` — it has no fallback, would serve the shims' 404s
-// as 200s, and the whole check would go vacuously green.
+// The SERVER now lives in scripts/lib/export-server.mjs, shared with the browser harness (scripts/
+// shoot.mjs, e2e/). It is shared rather than copied because the routing is the thing under test: a
+// second harness with its own static server would be checking a routing production does not have.
 
-import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
-import { join, extname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const ROOT = fileURLToPath(new URL("../out", import.meta.url));
-const PORT = 8099;
-
-const TYPES = {
-  ".html": "text/html",
-  ".js": "application/javascript",
-  ".css": "text/css",
-  ".json": "application/json",
-  ".svg": "image/svg+xml",
-  ".txt": "text/plain",
-  ".woff2": "font/woff2",
-};
-
-/** nginx `try_files`: first candidate that exists wins. */
-async function tryFiles(candidates) {
-  for (const c of candidates) {
-    try {
-      return { body: await readFile(join(ROOT, c)), path: c };
-    } catch {
-      /* next candidate */
-    }
-  }
-  return null;
-}
-
-const server = createServer(async (req, res) => {
-  const p = decodeURIComponent(new URL(req.url, "http://x").pathname);
-  let hit;
-  if (/^\/post\/[^/]+\/?$/.test(p)) hit = await tryFiles(["/post/_/index.html"]);
-  else if (/^\/u\/[^/]+\/?$/.test(p)) hit = await tryFiles(["/u/_/index.html"]);
-  else hit = await tryFiles([p, `${p}/index.html`, `${p}.html`]);
-
-  if (!hit) {
-    res.writeHead(404, { "content-type": "text/html" });
-    res.end((await tryFiles(["/404.html"]))?.body ?? "404");
-    return;
-  }
-  res.writeHead(200, { "content-type": TYPES[extname(hit.path)] ?? "application/octet-stream" });
-  res.end(hit.body);
-});
+import { startExportServer, exportExists } from "./lib/export-server.mjs";
 
 const SS58 = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const CASES = [
@@ -80,24 +35,31 @@ const CASES = [
   ["/this-route-does-not-exist/", 404], // proves the server is not blanket-200ing (a vacuous pass)
 ];
 
-await new Promise((r) => server.listen(PORT, r));
+if (!(await exportExists())) {
+  console.error("smoke FAILED — no export in app/out. Run `npm run build` first.");
+  process.exit(1);
+}
+
+// 8099 stays pinned here (not the module's default free port) so the log line is stable and an operator
+// can curl the same address the check used while it is running.
+const server = await startExportServer({ port: 8099 });
 
 let failed = 0;
 for (const [path, want] of CASES) {
-  const res = await fetch(`http://127.0.0.1:${PORT}${path}`);
+  const res = await fetch(`${server.origin}${path}`);
   const ok = res.status === want;
   if (!ok) failed++;
   console.log(`  ${ok ? "ok  " : "FAIL"}  ${path.padEnd(52)} ${res.status}${ok ? "" : ` (want ${want})`}`);
 }
 
 // A 200 is not enough — assert the shell HTML actually came back on the rewritten route.
-const shell = await (await fetch(`http://127.0.0.1:${PORT}/post/1/`)).text();
+const shell = await (await fetch(`${server.origin}/post/1/`)).text();
 if (!shell.includes("<body")) {
   console.log("  FAIL  /post/1/ returned no app shell");
   failed++;
 }
 
-server.close();
+await server.close();
 
 if (failed > 0) {
   console.error(`\nsmoke FAILED (${failed})`);

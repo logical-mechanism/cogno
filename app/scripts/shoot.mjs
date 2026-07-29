@@ -1,0 +1,75 @@
+// Screenshot routes of the BUILT export at one or more viewports.
+//
+//   node scripts/shoot.mjs /governance/
+//   node scripts/shoot.mjs / /explore/ --v mobile,feed,desktop
+//   node scripts/shoot.mjs /settings/ --signed-in --out /tmp/shots
+//   node scripts/shoot.mjs /post/1/ --ws ws://127.0.0.1:9944 --full
+//
+// For LOOKING at a change, not for asserting one. Assertions belong in check-overflow.mjs or a real
+// test, because a screenshot only fails when somebody opens it. This exists because CSS work was
+// otherwise unverifiable here: vitest runs in a `node` environment so components cannot be rendered,
+// and the alternative was reasoning about layout from font metrics.
+//
+// Run `npm run build` first. It shoots the export, never `next dev` — see lib/export-server.mjs.
+
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { startExportServer, exportExists } from "./lib/export-server.mjs";
+import { launch, newContext, openPage, parseViewports } from "./lib/browser.mjs";
+
+function parseArgs(argv) {
+  const paths = [];
+  const opts = { out: null, viewports: null, signedIn: false, ws: null, full: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--v" || a === "--viewports") opts.viewports = argv[++i];
+    else if (a === "--out") opts.out = argv[++i];
+    else if (a === "--ws") opts.ws = argv[++i];
+    else if (a === "--signed-in") opts.signedIn = true;
+    else if (a === "--full") opts.full = true;
+    else if (a.startsWith("-")) throw new Error(`unknown flag: ${a}`);
+    else paths.push(a.startsWith("/") ? a : `/${a}`);
+  }
+  if (paths.length === 0) paths.push("/");
+  return { paths, opts };
+}
+
+const { paths, opts } = parseArgs(process.argv.slice(2));
+const viewports = parseViewports(opts.viewports);
+// Default under the OS temp dir rather than into the repo: these are throwaway artifacts and must
+// never be mistaken for something to commit.
+const outDir = opts.out ?? join(process.env.TMPDIR ?? "/tmp", "cogno-shots");
+
+if (!(await exportExists())) {
+  console.error("no export in app/out. Run `npm run build` first.");
+  process.exit(1);
+}
+
+await mkdir(outDir, { recursive: true });
+const server = await startExportServer();
+const browser = await launch();
+
+const written = [];
+for (const viewport of viewports) {
+  const context = await newContext(browser, viewport, { signedIn: opts.signedIn, ws: opts.ws });
+  for (const path of paths) {
+    const { page, errors } = await openPage(context, server.origin, path);
+    const slug = path.replace(/^\/|\/$/g, "").replace(/[^a-z0-9]+/gi, "-") || "home";
+    const file = join(outDir, `${slug}.${viewport.name}.png`);
+    await page.screenshot({ path: file, fullPage: opts.full });
+    written.push({ file, path, viewport: viewport.name, errors });
+    await page.close();
+  }
+  await context.close();
+}
+
+await browser.close();
+await server.close();
+
+for (const w of written) {
+  console.log(`  ${w.viewport.padEnd(8)} ${w.path.padEnd(28)} ${w.file}`);
+  // Surfaced rather than swallowed: a page that threw during hydration still screenshots, and the
+  // image looks plausible, so a silent error here is exactly how a broken surface reads as fine.
+  for (const e of w.errors) console.log(`      page error: ${e.split("\n")[0]}`);
+}
+console.log(`\n${written.length} shot(s) in ${outDir}`);

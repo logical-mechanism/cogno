@@ -59,6 +59,29 @@ cd contracts && script -qec "aiken check" /dev/null                    # aiken e
   — note the path, the root `scripts/` is a different directory.
 - **After an encoding-affecting spec bump**, regenerate the frontend's PAPI descriptors:
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
+- **Seeing the frontend, rather than reasoning about it.** `vitest` runs in a `node` environment, so no
+  component can be rendered and no CSS change is verifiable by any other gate here. From `app/`, after a
+  `npm run build`:
+
+  ```bash
+  npx playwright install chromium        # once per machine; ~115 MB into ~/.cache, NOT the repo
+  npm run shoot -- /governance/ --v mobile,feed,desktop   # screenshots to $TMPDIR/cogno-shots
+  npm run check:overflow                 # asserts nothing hides content sideways
+  ```
+
+  Both drive the BUILT export through the same nginx-accurate server the smoke check uses
+  (`scripts/lib/export-server.mjs`), never `next dev` — the `_` SSG shims and the rewrites do not exist
+  in dev. `scripts/lib/browser.mjs` holds the traps: a headless context is a MOUSE device unless
+  `hasTouch` is set, so a 375px viewport silently renders the desktop styling, and a signed-in surface
+  needs a fabricated `cg-session` whose five fields all pass `parseRestoredSession` or the run quietly
+  stays a guest. Chrome (nav, headers, filters, empty states) renders with no chain; point `--ws` at
+  `scripts/run-tracking-node.sh` for surfaces that need real posts.
+
+  `check:overflow` reports exactly two faults: the page scrolling sideways, and an element that opts into
+  scrolling while hiding its scrollbar. It deliberately ignores content overflowing a `visible` box,
+  `.srOnly`, and `text-overflow`/`line-clamp` truncation — the first version flagged all of those and was
+  17-for-17 wrong. Neither script runs in CI, and `npm ci` does NOT download browsers (the Playwright
+  packages ship no install script), so CI is unaffected until someone deliberately adds the install step.
 
 ## Critical gotchas
 
