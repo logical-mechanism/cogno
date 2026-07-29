@@ -107,7 +107,7 @@ export default function WelcomePage() {
   // The lock→credit pending state (explained, timed) + persistence of the in-flight lock so it survives
   // navigate/reload and follows a relock. usePendingLockSync writes the record when a lock submits (and
   // clears it on exit); usePendingCapacity turns record + observer frontier + AllowedStake into a status.
-  usePendingLockSync(vault, signerCtl.signer.ss58);
+  usePendingLockSync(vault, signerCtl.signer.ss58, api);
   const pending = usePendingCapacity(api, signerCtl.signer.ss58, postingPower);
   // Whether the sole writer of posting power is still running. Without this, a first-time user who
   // locks during a freeze watches the ETA run out and is told "It should still land", which is a claim

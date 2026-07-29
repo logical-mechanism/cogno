@@ -22,11 +22,22 @@ const KEY = "cg-pending-locks";
 const EMPTY: PendingLockMap = {};
 
 export interface PendingLock {
-  /** the Cardano lock tx hash (used to resolve its confirmation slot + to link the tx). */
+  /** the Cardano lock tx hash (used to link the tx from the pending notice). */
   txHash: string;
   /** when the lock was submitted (ms) — drives the "overdue" nudge if it never credits. */
   submittedAtMs: number;
-  /** the lock tx's Cardano slot, once Blockfrost confirms it in a block; null while still confirming. */
+  /**
+   * The lock tx's Cardano slot: the frontier value at which this lock's weight becomes authoritative.
+   * Null only when it could not be resolved at submit (chain unreachable), which leaves the no-ETA
+   * "confirming" path in place.
+   *
+   * DERIVED FROM THE CHAIN, NOT FROM A PROVIDER. It is written once at submit by `usePendingLockSync`
+   * as `frontier + stabilitySlots` (see `estimateLockSlot`). It used to be resolved by polling
+   * Blockfrost every 15 s per client until the tx confirmed — on a build-time NEXT_PUBLIC_ project id
+   * shared by every visitor, so a signup spike exhausted one quota for everybody at once. Records
+   * written by that older build carry a Blockfrost-observed slot here and stay valid: both are the same
+   * quantity and both feed the same `frontier >= lockSlot` comparison.
+   */
   lockSlot: number | null;
 }
 
@@ -35,7 +46,8 @@ type PendingLockMap = Record<string, PendingLock>;
 /**
  * How long a record may sit without its Cardano slot resolving before the app stops treating it as a
  * live lock. Mirrors `usePendingCapacity`'s confirm timeout, and is the only wall-clock input to
- * {@link shouldClearPendingLock}.
+ * {@link shouldClearPendingLock}. Reached far more rarely now that the slot is resolved from the chain
+ * at submit rather than by waiting on a third-party provider to see the tx.
  */
 export const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -64,7 +76,7 @@ export interface ClearPendingLockInput {
  *
  * The confirm-timeout arm is still needed: with no slot resolved there is nothing to compare, so a
  * record that has aged out of the confirm window while the account demonstrably has weight is stale
- * (the tx never landed, or Blockfrost could not answer) and must not pin the UI forever.
+ * (the tx never landed, or the chain was unreachable at submit) and must not pin the UI forever.
  */
 export function shouldClearPendingLock(input: ClearPendingLockInput): boolean {
   const { record, allowedStake, frontier, nowMs } = input;
@@ -132,7 +144,7 @@ export const pendingLockActions = {
     if (existing && existing.txHash === txHash) return;
     store.commit({ ...cache, [ss58]: { txHash, submittedAtMs: Date.now(), lockSlot: null } });
   },
-  /** Fill in the lock tx's Cardano slot once Blockfrost confirms it in a block. */
+  /** Fill in the lock's credit slot, derived from the observation frontier at submit. One shot. */
   setLockSlot(ss58: string, txHash: string, lockSlot: number): void {
     const cache = store.read();
     const existing = cache[ss58];

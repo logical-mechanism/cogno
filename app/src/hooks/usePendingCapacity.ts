@@ -23,13 +23,11 @@ import {
   CONFIRM_TIMEOUT_MS,
 } from "@/lib/pendingLockStore";
 import { readObserverConfig, slotToUnixSec, type ObserverConfig } from "@/lib/chain/observer";
-import { fetchTxSlot } from "@/lib/cardano/provider";
 
 // Grace past the theoretical unlock before we call a lock "overdue": the credit lands a little AFTER the
 // frontier passes the lock slot (one app-chain block + this node's db-sync index lag), so a small margin
 // avoids a false "stuck" while it is genuinely finishing.
 const OVERDUE_GRACE_MS = 3 * 60 * 1000;
-const CONFIRM_POLL_MS = 15_000;
 // CONFIRM_TIMEOUT_MS lives in pendingLockStore beside `shouldClearPendingLock`, which is its other
 // consumer: if the lock tx's Cardano slot never resolves (Blockfrost can't return it on this tier, or
 // the tx never confirmed), don't sit in "confirming" forever — fall to the "overdue" nudge + dismiss.
@@ -135,26 +133,14 @@ export function usePendingCapacity(
     }
   }, [ss58, record, allowedStake, frontier, now]);
 
-  // Resolve the lock tx's Cardano slot once it confirms in a block (poll Blockfrost until it lands).
-  const recordTx = record?.txHash;
-  const haveSlot = record?.lockSlot != null;
-  useEffect(() => {
-    if (!ss58 || !recordTx || haveSlot) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = () => {
-      void fetchTxSlot(recordTx).then((slot) => {
-        if (cancelled) return;
-        if (slot != null) pendingLockActions.setLockSlot(ss58, recordTx, slot);
-        else timer = setTimeout(poll, CONFIRM_POLL_MS);
-      });
-    };
-    poll();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [ss58, recordTx, haveSlot]);
+  // NO PROVIDER POLL HERE. This used to poll Blockfrost every 15 s, per client, for the whole
+  // confirmation window, to learn the lock tx's Cardano slot. The project id is a build-time
+  // NEXT_PUBLIC_ value baked into the static bundle, so every visitor shares one quota — which makes a
+  // signup spike a self-inflicted denial of service: the burst limit trips, `fetchTxSlot` starts
+  // returning null for everyone at once, and every pending lock in the world falls through to the
+  // no-ETA path together. The slot is now derived once, at submit, from the observation frontier the
+  // chain already publishes (`estimateLockSlot`, written by `usePendingLockSync`). Do not reintroduce a
+  // provider call on this path: nothing here needs an answer only Blockfrost can give.
 
   if (!record) return { kind: "none" };
   // Credited AND the credit demonstrably belongs to THIS lock — same rule as the clear effect above, so

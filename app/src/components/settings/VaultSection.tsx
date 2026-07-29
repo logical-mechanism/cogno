@@ -71,7 +71,7 @@ export function VaultSection() {
 
   // Persist the in-flight lock + surface the explained, timed "crediting" state (survives reload,
   // covers relock). Mirrors the welcome flow so both places tell the same story.
-  usePendingLockSync(vault, ss58);
+  usePendingLockSync(vault, ss58, api);
   const pending = usePendingCapacity(api, ss58, postingPower);
   // Observer liveness, so this panel does not narrate a countdown against a frontier that has stopped
   // moving. `useBestBlock` is the shared, visibility-frozen head — never a private useHeads here.
