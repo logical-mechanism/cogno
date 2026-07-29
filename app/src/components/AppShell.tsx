@@ -28,6 +28,7 @@ import { useHelpHotkey } from "@/hooks/useHelpHotkey";
 import { BottomTabBar } from "./nav/BottomTabBar";
 import { ComposeFab } from "./nav/ComposeFab";
 import { ModalRouteHost } from "./modal/ModalRouteHost";
+import { SignInSheet } from "./signin/SignInSheet";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { BootGuardNotice } from "./BootGuardNotice";
 import { SmallScreenFooter } from "./nav/SmallScreenFooter";
@@ -188,6 +189,9 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       {/* overlays — never block the reads behind them */}
       <ModalRouteHost />
+      {/* Mounted once, beside the modal host: every write affordance opens it in place instead of
+          navigating to /welcome, so <main> and its live feed subscription stay mounted. */}
+      <SignInSheet />
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
     </div>
   );

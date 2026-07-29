@@ -8,7 +8,7 @@
 
 import { useCallback } from "react";
 import { affordanceFor, affordanceTitle } from "@/lib/writeAffordance";
-import { useRouter } from "next/navigation";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { PollCard } from "./PollCard";
 import { Skeleton } from "./Skeleton";
 import { useSession, useBestBlock } from "./Providers";
@@ -28,7 +28,6 @@ export interface InlinePollProps {
 }
 
 export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
-  const router = useRouter();
   const { source, api, signer, viewerRoles } = useSession();
   const bestBlock = useBestBlock();
   const { poll, myChoice, castVote, loading, error, provisional, finalize, finalizing, reload } = usePoll(
@@ -44,16 +43,16 @@ export function InlinePoll({ postId, gate, detail }: InlinePollProps) {
   // poll votes (the mandatory stake step is not a pool gate, so the UI must hold the line).
   const onVote = useCallback(
     (index: number) => {
-      if (!gate.writeReady) return void router.push("/welcome/");
+      if (!gate.writeReady) return void signInPromptActions.open("vote");
       castVote(index);
     },
-    [gate.writeReady, router, castVote],
+    [gate.writeReady, castVote],
   );
   // Finalizing (`close_poll`) is a permissionless mutating write too — same write-gate funnel.
   const onFinalize = useCallback(() => {
-    if (!gate.writeReady) return void router.push("/welcome/");
+    if (!gate.writeReady) return void signInPromptActions.open("vote");
     finalize();
-  }, [gate.writeReady, router, finalize]);
+  }, [gate.writeReady, finalize]);
   if (!poll) {
     // Hold the poll's shape while the tallies load so the card doesn't paint body-only and then jump when
     // they land; on a read failure show a Retry rather than silently rendering nothing.

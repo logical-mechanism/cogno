@@ -23,7 +23,7 @@
 //
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import styles from "./view.module.css";
 import { StickyHeader, NotFoundInline } from "@/components/AppShell";
 import { Skeleton } from "@/components/Skeleton";
@@ -38,6 +38,7 @@ import { useSession, useBestBlock } from "@/components/Providers";
 import { NO_VIEWER } from "@/lib/optimistic";
 import { usePostActions } from "@/hooks/usePostActions";
 import { modalActions } from "@/lib/modalStore";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useProfile } from "@/hooks/useProfile";
 import { isDeniedAuthor } from "@/lib/config/denylist";
 import { useFollow } from "@/hooks/useFollow";
@@ -112,7 +113,6 @@ export function ProfileView() {
 }
 
 function ProfileBody({ address }: { address: Ss58 }) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const { api, signer, source, viewer, votingPower } = useSession();
   // useBestBlock (the shared, visibility-frozen head), not a private useHeads subscription: a
@@ -177,7 +177,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const onToggleFollow = useCallback(
     (target: Ss58, next: boolean) => {
       if (!viewer.writeReady) {
-        router.push("/welcome/");
+        signInPromptActions.open("follow");
         return;
       }
       if (next) {
@@ -191,7 +191,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
         setFollowDelta((d) => d - 1);
       }
     },
-    [viewer.writeReady, follow, router],
+    [viewer.writeReady, follow],
   );
 
   // ── followers / following lists: a full-screen sub-view synced to ?follows=followers|following. ──
@@ -236,13 +236,13 @@ function ProfileBody({ address }: { address: Ss58 }) {
   const onListToggleFollow = useCallback(
     (target: Ss58, next: boolean) => {
       if (!viewer.writeReady) {
-        router.push("/welcome/");
+        signInPromptActions.open("follow");
         return;
       }
       if (next) follow.follow(target);
       else follow.unfollow(target);
     },
-    [viewer.writeReady, follow, router],
+    [viewer.writeReady, follow],
   );
 
   // ── account reputation (header): stake-weighted up/down votes ON this account (spec-202) ──
@@ -496,7 +496,7 @@ function ProfileBody({ address }: { address: Ss58 }) {
                 emptyTitle={emptyForTab.title}
                 emptyAction={"action" in emptyForTab ? emptyForTab.action : undefined}
                 onCompose={() =>
-                  viewer.writeReady ? modalActions.openCompose() : router.push("/welcome/")
+                  viewer.writeReady ? modalActions.openCompose() : signInPromptActions.open("post")
                 }
               />
             ) : pinned ? null : (

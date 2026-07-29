@@ -34,6 +34,7 @@ import { Skeleton } from "./Skeleton";
 import { NotFoundInline } from "./AppShell";
 import { Spinner } from "./icons";
 import { useSession, useBestBlock } from "./Providers";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useThread } from "@/hooks/useThread";
 import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -211,7 +212,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const onSubmitReply = useCallback(
     (draft: ComposerDraft) => {
       if (viewer.status !== "ready") {
-        router.push("/welcome/");
+        signInPromptActions.open("reply");
         return;
       }
       if (!api || !signer || draft.text.trim().length === 0) return;

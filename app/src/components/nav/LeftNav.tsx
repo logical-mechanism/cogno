@@ -14,11 +14,12 @@
 
 import { useCallback } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import styles from "./LeftNav.module.css";
 import { Account } from "../Account";
 import { IconHome, IconSearch, IconProfile, IconBookmark, IconList, IconSettings, IconCompose, IconBell, IconPoll } from "../icons";
 import { useSession } from "../Providers";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { isPublicPath } from "@/lib/routeAccess";
 import { useNotificationsFeed } from "@/hooks/useNotifications";
 import { useNavReTap } from "@/hooks/useNavReTap";
@@ -37,7 +38,6 @@ interface NavItem {
 
 export function LeftNav() {
   const pathname = usePathname() ?? "/";
-  const router = useRouter();
   const { viewer } = useSession();
   const { unreadCount } = useNotificationsFeed();
   const { openCompose } = useModalStore();
@@ -93,9 +93,9 @@ export function LeftNav() {
     } else {
       // Write intent funnels to /welcome until setup is fully complete (bound + stake-bound + posting
       // power). An explicit "Post" click is clearer sent to finish setup than to a disabled composer CTA.
-      router.push("/welcome/");
+      signInPromptActions.open("post");
     }
-  }, [viewer.writeReady, openCompose, router]);
+  }, [viewer.writeReady, openCompose]);
 
   return (
     <nav className={styles.nav} aria-label="Primary">

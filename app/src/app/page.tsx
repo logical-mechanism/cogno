@@ -30,6 +30,7 @@ import { useSession, useBestBlock } from "@/components/Providers";
 import { useLiveFeed } from "@/hooks/useLiveFeed";
 import { usePostActions } from "@/hooks/usePostActions";
 import { modalActions } from "@/lib/modalStore";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useFeedPage } from "@/hooks/useFeed";
 import { useFollowEdgesFor } from "@/hooks/useFollowEdges";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -135,8 +136,8 @@ export default function HomePage() {
   // ── inline composer (top-level post) ───────────────────────────────────────────────────────────
   const onComposePost = useCallback(
     (draft: ComposerDraft) => {
-      if (viewer.status !== "ready") {
-        router.push("/welcome/");
+      if (!viewer.writeReady) {
+        signInPromptActions.open("post");
         return;
       }
       if (!api || !signer || draft.text.trim().length === 0) return;
@@ -225,7 +226,7 @@ export default function HomePage() {
   // textarea. An explicit compose intent funnels to /welcome until setup is fully complete (writeReady).
   const onCompose = useCallback(() => {
     if (!viewer.writeReady) {
-      router.push("/welcome/");
+      signInPromptActions.open("post");
       return;
     }
     // The inline composer is always in the DOM when ready but CSS-hidden below 688px; offsetParent is
@@ -233,7 +234,7 @@ export default function HomePage() {
     const ta = document.getElementById("cg-composer-post") as HTMLTextAreaElement | null;
     if (ta && ta.offsetParent !== null) ta.focus();
     else modalActions.openCompose();
-  }, [viewer.writeReady, router]);
+  }, [viewer.writeReady]);
 
   // Both loading gates are measured POST-moderation, on the same side of the filter as the rows the
   // reader will actually see. Counting the RAW list lied in the direction that matters: a first page

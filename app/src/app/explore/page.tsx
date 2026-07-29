@@ -42,6 +42,7 @@ import { FirehoseControls, LENSES } from "@/components/explore/FirehoseControls"
 import { TopicHeader } from "@/components/explore/TopicHeader";
 import { FollowedTopics } from "@/components/explore/FollowedTopics";
 import { useSession } from "@/components/Providers";
+import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useFeedPage } from "@/hooks/useFeed";
 import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
@@ -423,13 +424,13 @@ function ExploreView() {
   const onToggleFollow = useCallback(
     (target: string, next: boolean) => {
       if (!viewer.writeReady) {
-        router.push("/welcome/");
+        signInPromptActions.open("follow");
         return;
       }
       if (next) follow.follow(target);
       else follow.unfollow(target);
     },
-    [viewer.writeReady, router, follow],
+    [viewer.writeReady, follow],
   );
 
   // ── write hooks for result/firehose cards ──────────────────────────────────────────────────────
