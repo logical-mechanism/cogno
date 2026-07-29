@@ -127,6 +127,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The sample-versus-population caveat: what this poll clearing the bar does and does not mean. Shares
+   .stale's four declarations rather than reusing the class, because .stale's name is a claim about data
+   PROVENANCE and this note is about interpretation. Two different things that happen to look alike. */
+.caveat {
+  margin: var(--cg-space-2) 0 0;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+}
+
 /* The snapshot-thresholds caveat, beneath every chamber it qualifies. --cg-text-secondary, not
    --cg-warning: this is a provenance note about numbers that are still worth showing, not a fault
    state, and amber fails WCAG AA at this size on the card background (see .partial above). */
