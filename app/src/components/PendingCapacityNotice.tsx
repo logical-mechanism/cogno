@@ -92,6 +92,27 @@ function toView(status: PendingCapacityStatus, observer?: ObserverHealth): View 
 
   switch (status.kind) {
     case "confirming":
+      // A RECOVERED record gets different words, because it is a different claim. It was rebuilt from a
+      // vault UTxO on a device that saw nothing submit, so "Lock submitted" is false here and the
+      // spinner is worse: a recovered record has no slot, is exempt from the confirm timeout, and can
+      // never reach "overdue", so this is the terminal state for it. That spinner spins for as long as
+      // the wait lasts (up to 36 h at the mainnet window) and forever if the lock never credits.
+      //
+      // What is actually known is the useful part anyway: the ADA IS locked, and the credit has not
+      // arrived. Say that, drop the spinner (nothing is happening on this device), and do not offer a
+      // countdown there is no honest basis for.
+      if (status.recovered) {
+        return {
+          title: "Your ADA is locked",
+          detail:
+            "cogno can see your lock on Cardano and has not credited your posting power yet. There is nothing to do but wait. Do not lock again.",
+          why: false,
+          bar: null,
+          spinner: false,
+          txHash: null,
+          dismissible: false,
+        };
+      }
       return {
         title: "Lock submitted",
         detail: "Confirming your lock on Cardano…",

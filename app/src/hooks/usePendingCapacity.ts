@@ -34,7 +34,24 @@ const OVERDUE_GRACE_MS = 3 * 60 * 1000;
 
 export type PendingCapacityStatus =
   | { kind: "none" }
-  | { kind: "confirming" }
+  | {
+      kind: "confirming";
+      /**
+       * This record was REBUILT from an on-chain vault UTxO (pendingLockStore's `recovered`), on a
+       * device that watched nothing submit. It is carried out to the view because the two are not the
+       * same claim and must not read the same. A submit-time record can honestly say "Lock submitted /
+       * confirming on Cardano…" with a spinner: we saw it go, seconds ago. A recovered one cannot. It
+       * knows only that locked ADA exists and has not been credited — not that anything was just sent,
+       * and not how long the wait has left, since its clock starts when this device NOTICED.
+       *
+       * It also never leaves this state: nothing fills a recovered record's `lockSlot` (only
+       * `usePendingLockSync` writes one, at submit, on the other device), and it is exempt from the
+       * confirm-timeout for the reason above. So whatever this renders is what that user sees until
+       * the credit lands — for up to a full stability window, and forever if the lock never credits.
+       * A permanent spinner over a sentence that is false on its face is the wrong thing to leave there.
+       */
+      recovered: boolean;
+    }
   | {
       kind: "crediting";
       /** wall-clock time posting is expected to unlock (ms). */
@@ -164,7 +181,7 @@ export function usePendingCapacity(
     if (ageable && now - record.submittedAtMs > CONFIRM_TIMEOUT_MS && !cantTell) {
       return { kind: "overdue", txHash: record.txHash };
     }
-    return { kind: "confirming" };
+    return { kind: "confirming", recovered: record.recovered === true };
   }
 
   const stability = Number(cfg.stabilitySlots);
