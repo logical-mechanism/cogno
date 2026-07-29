@@ -215,3 +215,157 @@ export async function readViewerPollChoice(
   const option = await api.query.Microblog.PollVotes.getValue(hostId, who, BEST);
   return option ?? null;
 }
+
+/**
+ * One account's current choice across MANY polls, as a map of host id → option index. A poll the account
+ * has not voted in is simply absent.
+ *
+ * The transpose of {@link readPollChoices}: same batched tuple-keyed read, one account against many
+ * polls instead of one poll against many accounts. It answers "which of these have I already voted in",
+ * which is what turns a governance list into a personal queue.
+ *
+ * Never throws: a read failure yields an empty map, which renders as "not voted" everywhere. That is the
+ * safe direction, because it can only ever show somebody a poll they have already dealt with. The
+ * opposite default would hide one they still owe a vote on.
+ */
+export async function readViewerPollChoices(
+  api: CognoApi,
+  hostIds: readonly bigint[],
+  who: Ss58,
+): Promise<Map<bigint, number>> {
+  if (hostIds.length === 0) return new Map();
+  const votes = await api.query.Microblog.PollVotes.getValues(
+    hostIds.map((id) => [id, who] as const),
+    BEST,
+  ).catch(() => [] as (number | undefined)[]);
+
+  const out = new Map<bigint, number>();
+  // Positional, and nullish-tested rather than falsy-tested: option 0 is a real vote.
+  votes.forEach((option, i) => {
+    const id = hostIds[i];
+    if (option != null && id != null) out.set(id, option);
+  });
+  return out;
+}
+
+
+/** One account's position in a poll, for the roster. */
+export interface PollVoter {
+  who: Ss58;
+  option: number;
+}
+
+/**
+ * Defensive cap on the roster read. Unlike {@link readPollChoices}, truncating here is acceptable
+ * BECAUSE the surface says it truncated: a roster is a list, not a lookup that has to be complete for a
+ * named set of accounts. The rows are sorted before the cap so the same voters survive across reads
+ * rather than changing with PAPI's hashed-key iteration order. Exported for the test, and no longer for
+ * the truncation check — that now travels with the read as {@link PollRoster.truncated}.
+ */
+export const MAX_POLL_VOTERS = 200;
+
+/** A poll's roster: who has cast, the option labels to file them under, and whether the read hit its cap. */
+export interface PollRoster {
+  voters: PollVoter[];
+  /** Option labels in on-chain index order. Empty when the host is not a poll, or the read failed. */
+  labels: string[];
+  /** More accounts have cast than are in `voters`. A FACT from the pre-cap count, never re-derived. */
+  truncated: boolean;
+}
+
+/**
+ * Every account that has cast in a poll, with their current choice, plus the option labels to render
+ * them under. Newest information wins: a re-cast replaces, so this is each voter's CURRENT position,
+ * not their position when they voted.
+ *
+ * Enumerates the whole `PollVotes` prefix for the poll, which is the one place in the app where that is
+ * the right call: the roster's entire purpose is "who voted", so there is no smaller key set to ask for.
+ * It is bounded by MAX_POLL_VOTERS and the surface discloses truncation.
+ *
+ * TRUNCATION IS REPORTED FROM HERE, and that is not bookkeeping. It used to be inferred downstream from
+ * `voters.length >= MAX_POLL_VOTERS`, which is wrong in both directions: the serve denylist filters the
+ * roster AFTER this cap, so one denied account inside the cap made a truncated list report itself
+ * complete, and a poll with exactly 200 voters reported a truncation that had not happened. Counted
+ * before the slice with a strict `>`, it is neither.
+ *
+ * THE LABELS COME FROM HERE TOO, for the same self-sufficiency reason. The roster used to borrow them
+ * from `readPollChoices`, which is scoped to the reply authors on screen and returns nothing at all when
+ * there are none — so a governance poll with votes and no replies rendered the "How each voter stands"
+ * heading over an empty list. The extra `Polls` read is one point read on a surface that is already
+ * enumerating a whole storage prefix.
+ *
+ * Never throws: a read failure yields an empty roster, which renders as "nobody yet" rather than a
+ * broken surface. Non-poll hosts return no entries naturally.
+ */
+export async function readPollVoters(api: CognoApi, hostId: bigint): Promise<PollRoster> {
+  const [meta, entries] = await Promise.all([
+    api.query.Microblog.Polls.getValue(hostId, BEST).catch(() => null),
+    api.query.Microblog.PollVotes.getEntries(hostId, BEST).catch(() => []),
+  ]);
+  const voters: PollVoter[] = [];
+  for (const e of entries) {
+    // The double map is keyed (hostId, who), so the account is the LAST key argument.
+    const who = e.keyArgs[e.keyArgs.length - 1] as Ss58;
+    const option = e.value as unknown as number;
+    if (who && option != null) voters.push({ who, option });
+  }
+  // Sorted by account so the order is stable across reads and across viewers. PAPI returns storage
+  // (hashed-key) order, which is arbitrary and would reshuffle the list on every reload.
+  voters.sort((a, b) => (a.who < b.who ? -1 : a.who > b.who ? 1 : 0));
+  return {
+    voters: voters.slice(0, MAX_POLL_VOTERS),
+    labels: (meta?.options ?? []).map((o) => Binary.toText(o)),
+    truncated: voters.length > MAX_POLL_VOTERS,
+  };
+}
+
+/** A poll's option labels plus the current choice of each NAMED account. */
+export interface PollChoices {
+  /** Option labels in on-chain index order (empty when the host is not a poll, or is denied). */
+  labels: string[];
+  /** author → their current option index. An author who has not cast is simply absent. */
+  choices: Map<Ss58, number>;
+}
+
+/**
+ * Every named account's current choice in one poll, plus the option labels to render them with.
+ *
+ * The account list is an INPUT rather than something this discovers, and that is the whole design.
+ * `PollVotes.getEntries(hostId)` would hand back every voter on the poll unbounded, and capping that
+ * afterwards is worse than not capping: PAPI returns entries in hashed-key order, which has no relation
+ * to who is on screen, so a cap would give some replies a chip and others none, and swap which ones
+ * between reads. Asking for exactly the accounts being rendered is bounded by the page size instead,
+ * and is the same batched tuple-keyed read `notifications.ts` uses for `ByAuthor`.
+ *
+ * The labels come from `Polls` directly rather than `readPoll`, because a chip needs the option TEXT and
+ * nothing else. `readPoll` additionally makes a `MicroblogApi.poll` state_call and a `PollResults` read
+ * to build the weighted tallies, and those are two reads this does not use.
+ *
+ * Never throws: any read failure degrades to no labels and no choices, which renders no chips.
+ */
+export async function readPollChoices(
+  api: CognoApi,
+  hostId: bigint,
+  authors: readonly Ss58[],
+): Promise<PollChoices> {
+  if (authors.length === 0) return { labels: [], choices: new Map() };
+
+  const [meta, votes] = await Promise.all([
+    api.query.Microblog.Polls.getValue(hostId, BEST).catch(() => null),
+    api.query.Microblog.PollVotes.getValues(
+      authors.map((a) => [hostId, a] as const),
+      BEST,
+    ).catch(() => [] as (number | undefined)[]),
+  ]);
+
+  const choices = new Map<Ss58, number>();
+  // `getValues` answers positionally, so the result index IS the author index. A `null`/`undefined` slot
+  // is "has not cast" and must be tested for nullishness, never falsiness: option 0 is a real choice and
+  // is exactly the trap `readViewerPollChoice` above documents.
+  votes.forEach((option, i) => {
+    const who = authors[i];
+    if (option != null && who != null) choices.set(who, option);
+  });
+
+  return { labels: (meta?.options ?? []).map((o) => Binary.toText(o)), choices };
+}

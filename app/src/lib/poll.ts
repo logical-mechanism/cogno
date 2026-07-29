@@ -13,6 +13,7 @@
 
 import type { PollKindName, PollOptionView } from "@/lib/types";
 import type { RoleKindType } from "@/lib/chain/roles";
+import { SECS_PER_BLOCK } from "@/lib/chain/capacity";
 
 /** Which lens a poll's PRIMARY (headline) result bars read. */
 export type PollLens = "holder" | "spo" | "drep";
@@ -66,6 +67,63 @@ export function lensVoters(n: number, lens: PollLens): string {
 /** A short human label for a chamber role, for the gate copy (`Spo` → "SPO", `DRep` → "dRep"). */
 export function roleLabel(role: RoleKindType): string {
   return role === "Spo" ? "SPO" : role === "DRep" ? "dRep" : "committee";
+}
+
+/**
+ * The label of the option at `index`, or null when there is nothing to show.
+ *
+ * `labels` is in on-chain index order (the runtime documents `PollView.options` that way and `index` as
+ * the matching 0-based option index), so array position IS the option index. Null covers all three ways
+ * there is no answer: the account has not cast (`index == null`), the poll's options have not loaded or
+ * were withheld (empty `labels`), and an index the option list does not reach — the last of which should
+ * be unreachable but would otherwise render `undefined` into the page.
+ *
+ * The label is returned RAW. Sanitizing is display-only and belongs at the render site.
+ */
+export function pollChoiceLabel(
+  labels: readonly string[],
+  index: number | null | undefined,
+): string | null {
+  if (index == null) return null;
+  return labels[index] ?? null;
+}
+
+/**
+ * How long an open poll has left, as a phrase a reader takes in at a glance ("in about 3 hours").
+ *
+ * A poll's deadline is a BLOCK NUMBER, not a timestamp, so the remaining wall time is the block gap
+ * times the runtime's block time — the same conversion `lib/feed/rank.ts` uses for post age. That is
+ * why this is approximate and says so: block production is nominal, not guaranteed, so an exact
+ * "closes at 14:32" would be a precision the chain does not actually offer.
+ *
+ * `null` whenever there is nothing truthful to say: a floating poll (no deadline), an unknown head
+ * (still connecting), or a deadline already reached — the caller renders its Closed/Final state
+ * instead, and a countdown that has run out must never linger next to it.
+ *
+ * Kept separate from `RateLimitNotice.formatRetry`, which deliberately tops out at hours: a rate-limit
+ * wait is always minutes, so days would be dead code there, and a poll deadline is routinely days out.
+ */
+export function pollClosesIn(
+  closeAt: number | undefined,
+  bestBlock: number | null,
+): string | null {
+  if (closeAt == null || bestBlock == null) return null;
+  const blocks = closeAt - bestBlock;
+  if (blocks <= 0) return null;
+
+  const secs = blocks * SECS_PER_BLOCK;
+  if (secs < 60) return "in under a minute";
+
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `in about ${mins} ${mins === 1 ? "minute" : "minutes"}`;
+
+  // Hours stay the unit up to two days, so "in about 30 hours" beats a rounded "in about 1 day" for
+  // someone deciding whether to vote tonight or tomorrow.
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `in about ${hours} ${hours === 1 ? "hour" : "hours"}`;
+
+  const days = Math.round(hours / 24);
+  return `in about ${days} ${days === 1 ? "day" : "days"}`;
 }
 
 /**

@@ -141,6 +141,22 @@
   line-height: var(--cg-lh-xs);
 }
 
+/* The document does not match what the poll pinned, or has vanished. This is the one state on the card
+   that is an accusation rather than a disclaimer, so unlike .caveat it is not a footnote: it carries the
+   danger wash and sits above the fold as the card's visible headline when the panel is closed.
+   --cg-text, not --cg-danger, for the TEXT: on the danger wash any color below --cg-text fails WCAG AA
+   at this size, which is the same constraint .fieldLabel documents for the subtle panel fill. */
+.alarm {
+  margin: var(--cg-space-2) 0 0;
+  padding: var(--cg-space-2);
+  border-radius: var(--cg-radius-sm);
+  background: var(--cg-danger-wash);
+  color: var(--cg-text);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+  font-weight: var(--cg-fw-semibold);
+}
+
 .link {
   color: var(--cg-accent);
   font-weight: var(--cg-fw-semibold);

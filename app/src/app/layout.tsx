@@ -10,6 +10,7 @@ import { FONTS_LOADED } from "../styles/fonts"; // value import → the @font-fa
 import { Providers } from "@/components/Providers";
 import { AppShell } from "@/components/AppShell";
 import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
+import { SITE_ORIGIN } from "@/lib/config/operator";
 
 // Reference FONTS_LOADED so the import is retained (the fonts module is a pure side-effect otherwise).
 void FONTS_LOADED;
@@ -18,8 +19,9 @@ export const metadata: Metadata = {
   // Resolves every relative metadata URL — the opengraph-image below included — to an absolute one.
   // Scrapers ignore relative og:image URLs, so without this the link-card image never renders
   // anywhere. Pinned to the production origin: a static export has no per-host env, and a preview
-  // deploy pointing its cards at production is the right trade.
-  metadataBase: new URL("https://cogno.forum"),
+  // deploy pointing its cards at production is the right trade. Shared with sitemap.ts and robots.ts,
+  // which have to name the same origin or the sitemap they point at is discarded.
+  metadataBase: new URL(SITE_ORIGIN),
   title: "cogno",
   // Names the PRICE, not just the mechanism. This is the first and often only sentence a cold visitor
   // reads before deciding to click, and the previous version ("...where ADA locked on Cardano is your

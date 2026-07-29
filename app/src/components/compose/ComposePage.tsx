@@ -49,10 +49,12 @@ import {
   submitCreatePoll,
   resolveCloseAt,
 } from "@/lib/chain/mutations";
+import type { PollActionInput } from "@/lib/chain/mutations";
+import { hashProposalDoc } from "@/lib/cardano/proposalMeta";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { viewerBucket } from "@/lib/viewerBucket";
 import type { ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
-import type { CognoPost, PollKindName, GovActionType } from "@/lib/types";
+import type { CognoPost, PollKindName } from "@/lib/types";
 
 /** Only a canonical decimal u64 is a valid reply/quote target; reject anything else (no BigInt throw). */
 function parseTargetId(raw: string | null): bigint | null {
@@ -220,7 +222,14 @@ export function ComposePage() {
   // ── Per-mode submit handlers ───────────────────────────────────────────────────────────────────
   // This page UNMOUNTS on navigation, so runWrite's onCancel is live here: it drops the sticky
   // pending toast when the user navigates away mid-flight.
-  const { submitState, runWrite, optimisticPost } = useComposeWrite(api, signer, viewer, goBack);
+  // `setSubmitState` is needed for the poll path only: it does async work BEFORE runWrite (see
+  // onCreatePoll), and runWrite is where the in-flight lock is normally taken.
+  const { submitState, setSubmitState, runWrite, optimisticPost } = useComposeWrite(
+    api,
+    signer,
+    viewer,
+    goBack,
+  );
 
   const onPost = useCallback(
     (draft: ComposerDraft) => {
@@ -278,13 +287,19 @@ export function ComposePage() {
       options: string[],
       closeInDays?: number,
       kind?: PollKindName,
-      action?: { actionType: GovActionType; anchorUrl: string },
+      action?: PollActionInput,
     ) => {
       if (viewer.status !== "ready") return void router.push("/welcome/");
       // A chamber (governance) poll may carry an empty question — its subject is the tagged proposal, so the
       // Composer enables submit with blank text (allowEmptyText). Don't re-impose a non-empty gate here or the
       // enabled CTA would silently no-op; the runtime accepts an empty question and PollComposer gates options.
       if (!api || !signer) return;
+      // TAKE THE IN-FLIGHT LOCK HERE, not in runWrite. This is the only submit path that does async
+      // work first: a chain read for the deadline, and then hashProposalDoc, which can hold for its
+      // whole 8s fetch timeout against a slow proposal host. Until submitState is "pending" the CTA is
+      // enabled with no spinner and nothing on screen has changed, so a second tap runs the whole
+      // handler again and lands a SECOND identical poll on a chain that cannot delete one.
+      setSubmitState("pending");
       // Convert the chosen deadline (days) to an absolute block-number `close_at` (defaulting to the
       // 1-day the control displays when untouched). If the chain height can't be read, surface it —
       // the chain rejects a poll without a deadline since spec 211.
@@ -292,6 +307,8 @@ export function ComposePage() {
       try {
         closeAt = await resolveCloseAt(api, bestBlock, closeInDays);
       } catch {
+        // Hand the CTA back. Nothing was submitted, and the toast asks them to try again.
+        setSubmitState("idle");
         toast({
           id: "poll-deadline",
           kind: "error",
@@ -299,13 +316,23 @@ export function ComposePage() {
         });
         return;
       }
+      // Pin the document's hash, so the poll commits to the version its author read. Done HERE rather
+      // than live in the composer: the hash then has exactly one home and cannot be dropped by a draft
+      // setter, and the fetch happens once, next to the signature the author is already waiting on.
+      // A failure is not an error state. It means the poll carries no fingerprint, which the preview
+      // says plainly, so we proceed rather than blocking a poll on somebody else's CORS policy.
+      let pinned = action;
+      if (action) {
+        const h = await hashProposalDoc(action.anchorUrl);
+        if (h.kind === "ok") pinned = { ...action, anchorHash: h.hash };
+      }
       runWrite(
-        submitCreatePoll(api, signer, question, options, closeAt, kind, action),
+        submitCreatePoll(api, signer, question, options, closeAt, kind, pinned),
         optimisticPost(question, { isPoll: true }),
         { pending: "Creating poll…", success: "Poll created" },
       );
     },
-    [viewer.status, api, signer, bestBlock, runWrite, optimisticPost, router, toast],
+    [viewer.status, api, signer, bestBlock, runWrite, setSubmitState, optimisticPost, router, toast],
   );
 
   return (

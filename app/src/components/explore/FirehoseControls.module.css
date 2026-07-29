@@ -8,56 +8,6 @@
   -webkit-backdrop-filter: blur(var(--cg-header-blur));
 }
 
-.row {
-  display: flex;
-  align-items: center;
-  gap: var(--cg-space-2);
-  padding: var(--cg-space-2) var(--cg-space-4);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.row::-webkit-scrollbar {
-  display: none;
-}
-
-.label {
-  flex: 0 0 auto;
-  font-size: var(--cg-fs-xs);
-  color: var(--cg-text-secondary);
-}
-
-.chip {
-  flex: 0 0 auto;
-  padding: var(--cg-space-1) var(--cg-space-3);
-  border: 1px solid var(--cg-border);
-  border-radius: var(--cg-radius-pill);
-  background: transparent;
-  color: var(--cg-text-secondary);
-  font-size: var(--cg-fs-sm);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.chip:hover {
-  background: var(--cg-bg-hover);
-  color: var(--cg-text);
-}
-
-.chip:focus-visible {
-  outline: 2px solid var(--cg-accent);
-  outline-offset: 2px;
-}
-
-.chipActive {
-  border-color: var(--cg-accent);
-  background: var(--cg-accent);
-  /* The declared contrast colour for text ON the accent fill — never a hard-coded #fff fallback, which
-     is the exact bug (--cg-on-accent) that made a badge invisible against a near-white accent. */
-  color: var(--cg-accent-contrast);
-  font-weight: 600;
-}
-
 /* The window disclosure. NOT decoration: it is what keeps a ranked mode's claim true, so it is always
    rendered alongside a ranking (never conditionally hidden to save space). */
 .disclosure {

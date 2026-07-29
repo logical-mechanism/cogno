@@ -48,7 +48,10 @@ import {
   readPoll,
   readViewerPostState,
   readViewerPollChoice,
+  readPollChoices,
+  readPollVoters,
 } from "@/lib/chain/social-reads";
+import type { PollChoices, PollRoster } from "@/lib/chain/social-reads";
 import type {
   CognoApi,
   CognoPost,
@@ -360,6 +363,14 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     return readViewerPollChoice(api, hostId, who);
   }
 
+  function pollChoices(hostId: bigint, authors: readonly Ss58[]): Promise<PollChoices> {
+    return readPollChoices(api, hostId, authors);
+  }
+
+  function pollVoters(hostId: bigint): Promise<PollRoster> {
+    return readPollVoters(api, hostId);
+  }
+
   function viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState> {
     return readViewerPostState(api, post, who);
   }
@@ -400,6 +411,8 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     profile,
     poll,
     viewerPollChoice,
+    pollChoices,
+    pollVoters,
     viewerPostState,
     followEdges,
     whoToFollow,

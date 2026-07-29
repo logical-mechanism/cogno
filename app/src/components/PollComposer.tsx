@@ -17,13 +17,18 @@
 // then hands back through `submitCreatePoll(question, options, closeInDays, kind, action)`. CONTROLLED via
 // `pollDraft` + `onChange`. PRESENTATIONAL — no mutation built here.
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { KeyboardEvent } from "react";
 import { Composer, MAX_POST_BYTES } from "./Composer";
 import { ByteCounter } from "./ByteCounter";
+import { Spinner } from "./icons";
 import { utf8Bytes, clampToBytes } from "@/lib/bytes";
 import { IconClose } from "./icons";
 import { actionKind } from "@/lib/cardano/governance";
+import { proposalHttpUrl } from "@/lib/cardano/proposalMeta";
+import { getCardanoNetworkId, networkLabel } from "@/lib/cardano/network";
+import { useGovActionLookup, type DocCheck } from "@/hooks/useGovActionLookup";
+import type { GovActionStatus } from "@/lib/cardano/govAction";
 import styles from "./PollComposer.module.css";
 import type {
   Viewer,
@@ -46,19 +51,61 @@ export const MAX_ANCHOR_URL_BYTES = 256;
 const YES_NO_ABSTAIN = ["Yes", "No", "Abstain"];
 
 /**
- * A proposal link is only accepted if it is an absolute http(s) URL — EXACTLY the guard PollCard applies
- * when it renders the "View proposal" link (`safeUrl`). Gating the creator on the same rule means what you
- * can submit is always what renders as a clickable link: a scheme-less (`github.com/…`) or non-http
- * (`ipfs://…`) link can never be written on-chain as a permanently-unlinkable anchor (there is no
- * delete_post to fix one).
+ * Where the resolved action stands on CARDANO, which is a second clock the poll's own deadline knows
+ * nothing about. A cogno poll runs at most 7 days; a governance action lives about 6 epochs and can be
+ * ratified, enacted, dropped or expired while the poll is still open. Saying so at compose time is the
+ * cheapest place to stop somebody opening a week-long temperature check on an action that closed
+ * yesterday.
+ */
+function STATUS_NOTE(status: GovActionStatus): string {
+  switch (status.kind) {
+    case "open":
+      return `Still open for voting on Cardano, until epoch ${status.expiresEpoch}.`;
+    case "ratified":
+      return `Already ratified on Cardano, in epoch ${status.epoch}.`;
+    case "enacted":
+      return `Already enacted on Cardano, in epoch ${status.epoch}.`;
+    case "dropped":
+      return `No longer live on Cardano. It was dropped in epoch ${status.epoch}.`;
+    case "expired":
+      return `Voting has closed on Cardano. It expired in epoch ${status.epoch}.`;
+    case "unknown":
+      return "We could not read whether voting is still open on Cardano.";
+  }
+}
+
+/**
+ * The document check. This is the part that makes the tag worth trusting: Cardano records a hash of the
+ * proposal document, cogno hashes the document it fetched, and these say whether they agree.
+ *
+ * "unreadable" is deliberately not phrased as a problem with the proposal. The document may be behind a
+ * host that sends no CORS header, which says nothing about the proposal and everything about the host.
+ */
+const CHECK_NOTE: Record<DocCheck["kind"], string> = {
+  checking: "Checking the document against the hash Cardano recorded.",
+  match: "The document at this link is the one Cardano recorded.",
+  mismatch:
+    "Warning: the document at this link is not the one Cardano recorded for this action. Check the link before you post.",
+  unreadable:
+    "We could not read the document from this browser, so it has not been checked against Cardano.",
+};
+
+/**
+ * A proposal link is accepted when the READER can actually open it — which is exactly what
+ * `proposalHttpUrl` decides, so this defers to it rather than keeping a second opinion. What you can
+ * submit is therefore always what renders, and a scheme-less (`github.com/…`) or unopenable
+ * (`data:`, `javascript:`) link can never be written on-chain as a permanently unlinkable anchor.
+ * There is no delete_post to fix one.
+ *
+ * IT USED TO REFUSE `ipfs://`, and that was a real hole rather than a strict-is-safe choice. 88 of the
+ * 110 governance actions ever submitted to preprod anchor their proposal on IPFS, so the composer
+ * rejected the format four out of five real actions use. Meanwhile the reader side had already moved
+ * on: `proposalHttpUrl` maps `ipfs://` to a gateway, ProposalPreview offers the inline preview for it,
+ * and ipfs.io is a NEUTRAL_HOST so the title even reads out on the /governance list. The guard was
+ * enforcing a rule the rest of the app had stopped following.
  */
 function isSafeAnchorUrl(url: string): boolean {
-  try {
-    const u = new URL(url.trim());
-    return u.protocol === "https:" || u.protocol === "http:";
-  } catch {
-    return false;
-  }
+  return proposalHttpUrl(url.trim()) != null;
 }
 
 /** Does a poll kind surface the SPO chamber / the dRep chamber / any chamber? (Mirrors the runtime.) */
@@ -124,7 +171,19 @@ const GOV_ACTIONS: {
     label: "Protocol-parameter change",
     spo: false,
     drep: true,
-    note: "Decided by dReps, plus SPOs when a security-group parameter changes.",
+    // The old wording ("plus SPOs when a security-group parameter changes") was true of Cardano and
+    // false of this poll. `spo: false` on this same row, `actionChambers` and `actionKind` all agree
+    // that a ParamChange poll tallies dReps only, and they are right to: a poll carries the action TYPE
+    // but not the parameter group, so it cannot know whether the SPO seat applies. Promising a chamber
+    // the tally then never shows is the one thing this surface must not do, so the note says what the
+    // poll does and why, rather than what Cardano does.
+    // The clause this used to carry, "but a poll cannot say which group", stopped being true when the
+    // composer learned to resolve a real action id: the ledger names the exact parameters, so for a
+    // resolved action the group IS knowable. Rather than making the note conditional on how the tag was
+    // filled in, it now says only what this poll DOES, which is true either way. Refining the chamber
+    // for a resolved security-group change is a real improvement and a separate one: it moves
+    // `actionKind`, which decides the on-chain PollKind.
+    note: "Decided by dReps. On Cardano, SPOs also vote when a security-group parameter changes, and this poll counts dReps only.",
   },
   {
     value: "TreasuryWithdrawal",
@@ -244,7 +303,14 @@ export function PollComposer({
         ...pollDraft,
         options: [...YES_NO_ABSTAIN],
         kind: actionKind(actionType),
-        govAction: { actionType, anchorUrl: govAction?.anchorUrl ?? "" },
+        govAction: {
+          actionType,
+          anchorUrl: govAction?.anchorUrl ?? "",
+          // Overriding the type by hand detaches the tag from the resolved action, exactly as editing
+          // the link does. The ledger said what type it is; disagreeing with it is allowed, but the
+          // form must then stop presenting itself as that action.
+          actionId: undefined,
+        },
       }),
     [onChange, pollDraft, govAction],
   );
@@ -256,11 +322,75 @@ export function PollComposer({
       onChange({
         ...pollDraft,
         options,
-        govAction: { actionType: govAction?.actionType ?? "Info", anchorUrl: clamped },
+        govAction: {
+          actionType: govAction?.actionType ?? "Info",
+          anchorUrl: clamped,
+          // Editing the link by hand detaches it from the resolved action. Keeping the id here would
+          // leave the form claiming a Cardano action whose document it no longer points at.
+          actionId: undefined,
+        },
       });
     },
     [onChange, options, pollDraft, govAction],
   );
+
+  // ── resolve a pasted CIP-129 governance action id ───────────────────────────────────────────────
+  //
+  // The id is DRAFT state, not local state, so it survives the modal closing and reopening the same way
+  // the question and the choices do.
+  const setActionId = useCallback(
+    (value: string) =>
+      onChange({
+        ...pollDraft,
+        options,
+        govAction: {
+          actionType: govAction?.actionType ?? "Info",
+          anchorUrl: govAction?.anchorUrl ?? "",
+          actionId: value,
+        },
+      }),
+    [onChange, options, pollDraft, govAction],
+  );
+
+  const { state: lookup, retry: retryLookup } = useGovActionLookup(govAction?.actionId);
+  // Named for the "not on this network" copy. Read here rather than inside the note so the whole note
+  // stays a pure function of state.
+  const cardanoNetwork = getCardanoNetworkId();
+
+  // Refs so the apply effect below depends only on the RESOLVED ACTION, never on the draft it is about
+  // to replace. Listing the draft as a dep would re-run the effect on its own output.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const pollDraftRef = useRef(pollDraft);
+  pollDraftRef.current = pollDraft;
+
+  // Apply a resolved action to the draft ONCE per id, tracked by id rather than by comparing values.
+  // The difference matters: an author who resolves an action and then deliberately edits the type or
+  // the link is not fought by this effect re-imposing the resolved values on the next render. The
+  // resolved answer is a starting point, not a lock.
+  const appliedId = useRef<string | null>(null);
+  const resolved = lookup.kind === "resolved" ? lookup.action : null;
+  useEffect(() => {
+    if (!resolved) {
+      appliedId.current = null;
+      return;
+    }
+    if (appliedId.current === resolved.id) return;
+    appliedId.current = resolved.id;
+    const draft = pollDraftRef.current;
+    onChangeRef.current({
+      ...draft,
+      // Same presets the manual type picker applies: the on-chain tri-state, and the chamber(s) this
+      // action is decided by, so the poll stays comparable to the real vote.
+      options: [...YES_NO_ABSTAIN],
+      kind: actionKind(resolved.actionType),
+      govAction: {
+        actionType: resolved.actionType,
+        anchorUrl: resolved.anchorUrl,
+        actionId: draft.govAction?.actionId,
+      },
+    });
+  }, [resolved]);
 
   const setOption = useCallback(
     (i: number, value: string) => {
@@ -342,6 +472,41 @@ export function PollComposer({
   const selectedAction = govAction
     ? GOV_ACTIONS.find((a) => a.value === govAction.actionType)
     : undefined;
+
+  // What the id field says back. Every branch is prose the author can act on, and none of them claims
+  // more than the read established: a failed lookup says the lookup failed, never that the action does
+  // not exist.
+  const lookupNote = useMemo(() => {
+    switch (lookup.kind) {
+      case "idle":
+        return "Paste the id of an action already submitted to Cardano and we will fill in the rest. Leave it blank for a proposal that has not been submitted yet.";
+      case "malformed":
+        return "That does not look like a governance action id. They start with gov_action1.";
+      case "resolving":
+        return (
+          <>
+            <Spinner size="sm" /> Looking this action up on Cardano.
+          </>
+        );
+      case "unavailable":
+        // Says what is true and stops. It does NOT tell the reader to go and configure a provider:
+        // `setBlockfrostProjectId` has no caller anywhere in the UI, so the project id is a build-time
+        // value on this deployment and there is no control for them to reach. Sending somebody to a
+        // Settings screen that cannot do the thing is worse than telling them the lookup is off.
+        return "Looking an id up is not available on this deployment. Fill in the type and the link yourself.";
+      case "notfound":
+        return `No governance action with that id on ${networkLabel(cardanoNetwork ?? 0)}. Check the id, or fill in the type and link yourself.`;
+      case "resolved": {
+        const { action, check } = lookup;
+        return (
+          <>
+            {action.title ? `${action.title}. ` : ""}
+            {STATUS_NOTE(action.status)} {CHECK_NOTE[check.kind]}
+          </>
+        );
+      }
+    }
+  }, [lookup, cardanoNetwork]);
 
   const onSubmit = useCallback(
     (draft: ComposerDraft) => {
@@ -478,6 +643,49 @@ export function PollComposer({
                 </select>
               </div>
               {selectedAction && <span className={styles.govNote}>{selectedAction.note}</span>}
+
+              {/* The id field LEADS, because for an action already submitted to Cardano it fills in
+                  both fields below and is the only one the author has to hand. It stays optional: a
+                  poll about a proposal that has not been submitted yet has no id to paste, which is
+                  the case the manual fields were built for and still serve. */}
+              <div className={styles.govUrlRow}>
+                <label className={styles.deadlineLabel} htmlFor="cg-poll-gov-id">
+                  Action id
+                </label>
+                <input
+                  id="cg-poll-gov-id"
+                  className={styles.govUrlInput}
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={govAction.actionId ?? ""}
+                  placeholder="gov_action1… (optional)"
+                  onChange={(e) => setActionId(e.target.value)}
+                  aria-invalid={lookup.kind === "malformed" || undefined}
+                  aria-describedby="cg-poll-gov-id-status"
+                />
+              </div>
+              <div
+                className={styles.govNote}
+                id="cg-poll-gov-id-status"
+                role="status"
+                // A substituted document is the one thing here worth interrupting for, so it is styled
+                // as an alarm rather than left in the same muted grey as "looking this up".
+                data-alarm={
+                  lookup.kind === "resolved" && lookup.check.kind === "mismatch" ? true : undefined
+                }
+              >
+                {lookupNote}{" "}
+                {/* A settled answer is cached for the session, so re-typing the same id would not
+                    re-ask. These two states can both be a transient network failure, so they are the
+                    two that need a way to ask again. */}
+                {(lookup.kind === "notfound" ||
+                  (lookup.kind === "resolved" && lookup.check.kind === "unreadable")) && (
+                  <button type="button" className={styles.govRetry} onClick={retryLookup}>
+                    Try again
+                  </button>
+                )}
+              </div>
 
               <div className={styles.govUrlRow}>
                 <label className={styles.srOnly} htmlFor="cg-poll-gov-url">

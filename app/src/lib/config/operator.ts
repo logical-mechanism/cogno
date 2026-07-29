@@ -32,6 +32,21 @@ export const MIN_AGE = 13;
 export const REPO_URL = "https://github.com/logical-mechanism/cogno";
 
 /**
+ * The origin this deployment is served from, for the three build-time metadata surfaces that must all
+ * agree: `metadataBase` in layout.tsx, the URLs in sitemap.ts, and the `sitemap:` line in robots.ts.
+ * They disagree silently — a robots.txt pointing at a sitemap on a host the site is not served from is
+ * just discarded, and a stale metadataBase makes every og:image absolute to a dead host, which shows up
+ * as a link card that stopped rendering rather than as an error anywhere.
+ *
+ * A literal rather than a NEXT_PUBLIC_ read, for the reason layout.tsx already gives: a static export
+ * has no per-host env, and pointing a preview deploy's cards at production is the right trade.
+ *
+ * NOT the whole story on a domain move. The WS endpoint (config/endpoints.ts), the deploy/ nginx vhost
+ * and the docs each carry the host separately and on purpose. Still grep.
+ */
+export const SITE_ORIGIN = "https://cogno.forum";
+
+/**
  * A `mailto:` for a report about one post or account, pre-filled with the permalink so the reporter
  * does not have to construct one and we do not have to ask for it.
  *

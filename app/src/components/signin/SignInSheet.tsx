@@ -21,6 +21,7 @@
 // to the obscured page behind the scrim, and that file's comment says so.
 
 import { useCallback, useEffect, useRef } from "react";
+import { useDialogFocus } from "@/hooks/useDialogFocus";
 import { useRouter } from "next/navigation";
 import styles from "./SignInSheet.module.css";
 import { useSession } from "@/components/Providers";
@@ -61,9 +62,9 @@ export function SignInSheet() {
 
   const close = useCallback(() => signInPromptActions.close(), []);
 
-  useEffect(() => {
-    if (open) closeRef.current?.focus();
-  }, [open]);
+  // This sheet stays mounted and toggles, so the hook is driven by `open` rather than by mount: focus
+  // moves in on each open and returns to whatever opened it on each close.
+  useDialogFocus(open, closeRef);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

@@ -13,6 +13,7 @@
 // itself; the CIP-8 proof is the authorization.
 
 import { Binary, Enum } from "polkadot-api";
+import type { SizedHex } from "polkadot-api";
 import type { Observable } from "rxjs";
 import { signSubmitWatch, submitPost, type SignableTx } from "@/lib/chain/post";
 import { BLOCKS_PER_DAY } from "@/lib/chain/capacity";
@@ -193,7 +194,7 @@ export function submitCreatePoll(
   options: string[],
   closeAt?: number,
   kind: PollKindName = "Stake",
-  action?: { actionType: GovActionType; anchorUrl: string },
+  action?: PollActionInput,
 ): Observable<TxUpdate> {
   const tx = api.tx.Microblog.create_poll({
     question: Binary.fromText(question),
@@ -207,16 +208,35 @@ export function submitCreatePoll(
     kind: Enum(kind),
     // `action: Option<GovActionInput>` (spec 209): the optional governance-action tag — a CIP-1694 type +
     // a link to the OFF-CHAIN proposal doc. `undefined` ⇒ a plain poll. Only valid on a chamber kind (the
-    // runtime rejects an action on a `Stake` poll). The doc hash is left to a later revision.
+    // runtime rejects an action on a `Stake` poll).
     action: action
       ? {
           action_type: Enum(action.actionType),
           anchor_url: Binary.fromText(action.anchorUrl),
-          anchor_hash: undefined,
+          // blake2b-256 of the document the composer actually fetched, pinning the poll to the version
+          // its author read. `undefined` when it could not be hashed (unreachable, refused, or not a
+          // CIP-108 doc), which is honest rather than a failure: the poll simply carries no fingerprint
+          // and the UI says so. Note the shapes differ within this one struct — `anchor_url` is a
+          // Binary, `anchor_hash` is a SizedHex<32>, i.e. a plain 0x hex STRING.
+          anchor_hash: action.anchorHash as SizedHex<32> | undefined,
         }
       : undefined,
   });
   return watchSigned(api, tx, signer, "PostCreated");
+}
+
+/**
+ * The governance-action tag a poll carries: a CIP-1694 type, a link to the off-chain proposal document,
+ * and optionally blake2b-256 of that document as the composer fetched it.
+ *
+ * Declared once and imported, because this shape was hand-copied at four call sites and the hash field
+ * would otherwise have had to be added to all four by somebody remembering to.
+ */
+export interface PollActionInput {
+  actionType: GovActionType;
+  anchorUrl: string;
+  /** Pinned at poll creation. Absent when the document could not be hashed, which is a normal outcome. */
+  anchorHash?: string;
 }
 
 /** Cast / re-cast a poll vote (re-cast moves the voter's live weight to the new option). */

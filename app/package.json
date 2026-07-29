@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "cogno-chain frontend — a Next.js static-export SPA that reads and writes the chain node-direct over PAPI, and reaches Cardano with MeshJS for the L1 vault lock/exit",
+  "description": "cogno-chain frontend \u2014 a Next.js static-export SPA that reads and writes the chain node-direct over PAPI, and reaches Cardano with MeshJS for the L1 vault lock/exit",
   "engines": {
     "node": ">=22.12.0 <23"
   },
@@ -18,6 +18,8 @@
     "check:tokens": "node scripts/check-tokens.mjs",
     "check:spec": "node scripts/check-spec.mjs",
     "smoke": "node scripts/smoke-export.mjs",
+    "shoot": "node scripts/shoot.mjs",
+    "check:overflow": "node scripts/check-overflow.mjs",
     "psi": "node scripts/psi.mjs",
     "papi:add": "papi add cogno -w ws://127.0.0.1:9944",
     "papi": "papi",
@@ -40,6 +42,7 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.0",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

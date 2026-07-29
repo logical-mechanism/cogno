@@ -1,0 +1,89 @@
+/* PollVoters — the per-voter roster under a governance poll. A dense identity list, so it borrows the
+   thread's own rhythm rather than inventing a card: a separator rule, quiet headings, no fill. */
+
+.block {
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-top: 1px solid var(--cg-border);
+}
+
+.heading {
+  margin: 0 0 var(--cg-space-3);
+  color: var(--cg-text);
+  font-size: var(--cg-fs-md);
+  font-weight: var(--cg-fw-semibold);
+}
+
+.group {
+  margin-bottom: var(--cg-space-3);
+}
+
+.group:last-of-type {
+  margin-bottom: 0;
+}
+
+/* The option a group voted for. Carries data-choice so a future surface can tint Yes/No without
+   touching the markup; deliberately untinted here, because the app is monochrome plus danger and
+   colouring a position would editorialize a temperature check the reader is meant to judge. */
+.groupHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--cg-space-2);
+  margin: 0 0 var(--cg-space-2);
+  padding-bottom: var(--cg-space-1);
+  border-bottom: 1px solid var(--cg-border);
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+  font-weight: var(--cg-fw-semibold);
+}
+
+.count {
+  flex: 0 0 auto;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-regular);
+  font-variant-numeric: tabular-nums;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+}
+
+.voter {
+  display: flex;
+  align-items: baseline;
+  gap: var(--cg-space-2);
+  min-width: 0;
+}
+
+.link {
+  display: flex;
+  align-items: baseline;
+  gap: var(--cg-space-2);
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--cg-radius-sm);
+}
+
+/* The disclosures. Not decoration: they are what keeps the roster's claim true. */
+.note {
+  margin: var(--cg-space-2) 0 0;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+}

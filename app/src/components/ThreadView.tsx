@@ -38,6 +38,12 @@ import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useThread } from "@/hooks/useThread";
 import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
+import { useReplyVoteChoices } from "@/hooks/useReplyVoteChoices";
+import { usePollVoters } from "@/hooks/usePollVoters";
+import { usePollCastTick } from "@/lib/pollCastStore";
+import { PollVoters } from "./PollVoters";
+import { ReplyVoteChip } from "./ReplyVoteChip";
+import { pollChoiceLabel } from "@/lib/poll";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
@@ -154,6 +160,37 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     return [...confirmed.slice(Math.max(0, confirmed.length - visibleReplies)), ...pending];
   }, [replies, visibleReplies]);
   const hiddenReplies = Math.max(0, confirmedReplyCount - visibleReplies);
+
+  // Poll positions for the replies actually on screen, so an argument in the thread is bound to how its
+  // author has voted. Keyed off `shownReplies` rather than `replies` so paging older replies into view
+  // widens the read to match, and a huge thread never asks for choices it will not render.
+  //
+  // This reads poll data in ThreadView, which the comment further down warns about — but that warning is
+  // specifically that PostCard must not be handed a poll (it mounts InlinePoll either way, so passing
+  // one ran two usePolls on the focal card). Nothing here goes to PostCard except a finished label.
+  const chipAuthors = useMemo(
+    () => Array.from(new Set(shownReplies.map((r) => r.author))),
+    [shownReplies],
+  );
+  // The roster under the focal poll. It carries its OWN option labels rather than borrowing the reply
+  // chips' below: those are read for the reply authors on screen, so a poll with votes and no replies
+  // handed back no labels at all and the roster rendered its heading over an empty list.
+  //
+  // Re-read when the viewer's own cast settles on chain (not per block, and not on submit — see
+  // pollCastStore). Being absent from a roster you just joined, directly under bars that already moved,
+  // reads as a vote that did not register.
+  const pollCastTick = usePollCastTick(focal?.isPoll === true ? rootId : null);
+  const {
+    voters: pollVoters,
+    labels: voterLabels,
+    truncated: votersTruncated,
+  } = usePollVoters(source, rootId, focal?.isPoll === true, pollCastTick);
+  const { labels: pollLabels, choices: pollChoices } = useReplyVoteChoices(
+    source,
+    rootId,
+    focal?.isPoll === true,
+    chipAuthors,
+  );
 
   // Every card on screen (focal + ancestor chain + direct replies) drives the viewer's vote state, so
   // a like reflects instantly anywhere on the screen.
@@ -404,6 +441,14 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           variant="detail"
         />
 
+        {/* Who voted, and which way. Suppressed along with the stats for a moderated focal, for the
+            same reason: a card that says "You've blocked this account" with a live roster underneath is
+            not a suppression. Renders nothing at all until the read lands, and nothing when nobody has
+            voted, so a plain post never grows an empty section. */}
+        {!focalSuppressed && focal.isPoll && (
+          <PollVoters voters={pollVoters} labels={voterLabels} truncated={votersTruncated} />
+        )}
+
         {/* The ONE weighted-nature surface (D2/D12): score (signed, may be negative) + up/down weight,
             with the Like count. Detail-only — never rendered on timeline/reply cards. Omitted entirely
             for a suppressed focal: a card that says "You've blocked this account" with a live tally
@@ -514,6 +559,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
                 handlers={handlers}
                 variant="thread"
                 pending={reply.id < 0n}
+                headerExtra={(() => {
+                  const label = pollChoiceLabel(pollLabels, pollChoices?.get(reply.author));
+                  return label ? <ReplyVoteChip label={label} /> : null;
+                })()}
               />
               {(reply.replyCount ?? 0) > 0 && reply.id >= 0n && (
                 <button

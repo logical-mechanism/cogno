@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Binary } from "polkadot-api";
-import { readPoll } from "./social-reads";
+import { readPoll, readPollChoices, readPollVoters, MAX_POLL_VOTERS } from "./social-reads";
 import type { CognoApi } from "@/lib/types";
 
 /** A minimal fake api serving one poll view + its `Polls`/`PollResults` storage rows to `readPoll`. */
@@ -174,5 +174,198 @@ describe("readPoll", () => {
       11n,
     );
     expect(p.action).toMatchObject({ actionType: "Info", anchorUrl: "https://ipfs.io/ipfs/cid", anchorHash: hash });
+  });
+});
+
+// ── readPollChoices — the bounded, author-keyed poll-position read behind the reply vote chip ──
+//
+// The invariant under test is that the read is keyed by the NAMED authors and answers positionally.
+// A whole-set enumeration was rejected precisely because it cannot be capped safely, so the tests here
+// pin the batch shape rather than an entry fold.
+
+/** A fake api serving `Polls` (option labels) + a positional `PollVotes.getValues`. */
+function apiWithChoices(
+  labels: string[] | null,
+  votes: Record<string, number>,
+  spy?: { keys: (readonly [bigint, string])[] },
+): CognoApi {
+  return {
+    query: {
+      Microblog: {
+        Polls: {
+          getValue: () =>
+            Promise.resolve(labels ? { options: labels.map((l) => Binary.fromText(l)) } : undefined),
+        },
+        PollVotes: {
+          getValues: (keys: ReadonlyArray<readonly [bigint, string]>) => {
+            if (spy) keys.forEach((k) => spy.keys.push(k));
+            return Promise.resolve(keys.map(([, who]) => votes[who]));
+          },
+        },
+      },
+    },
+  } as unknown as CognoApi;
+}
+
+describe("readPollChoices", () => {
+  it("issues no read at all for an empty author list", async () => {
+    const spy = { keys: [] as (readonly [bigint, string])[] };
+    const r = await readPollChoices(apiWithChoices(["Yes"], {}, spy), 7n, []);
+    expect(r).toEqual({ labels: [], choices: new Map() });
+    expect(spy.keys).toHaveLength(0);
+  });
+
+  it("asks for exactly the authors it was given, keyed by (hostId, who)", async () => {
+    const spy = { keys: [] as (readonly [bigint, string])[] };
+    await readPollChoices(apiWithChoices(["Yes", "No"], {}, spy), 7n, ["addrA", "addrB"]);
+    expect(spy.keys).toEqual([
+      [7n, "addrA"],
+      [7n, "addrB"],
+    ]);
+  });
+
+  it("keeps option 0 — the falsy-index trap", async () => {
+    const r = await readPollChoices(apiWithChoices(["Yes", "No"], { addrA: 0 }), 7n, ["addrA"]);
+    expect(r.choices.get("addrA")).toBe(0);
+  });
+
+  it("omits an author who has not cast, rather than recording a zero", async () => {
+    const r = await readPollChoices(
+      apiWithChoices(["Yes", "No"], { addrB: 1 }),
+      7n,
+      ["addrA", "addrB"],
+    );
+    expect(r.choices.has("addrA")).toBe(false);
+    expect(r.choices.get("addrB")).toBe(1);
+  });
+
+  it("zips positionally, so a gap does not shift later authors onto the wrong choice", async () => {
+    const r = await readPollChoices(
+      apiWithChoices(["Yes", "No", "Abstain"], { addrA: 2, addrC: 1 }),
+      7n,
+      ["addrA", "addrB", "addrC"],
+    );
+    expect(r.choices.get("addrA")).toBe(2);
+    expect(r.choices.has("addrB")).toBe(false);
+    expect(r.choices.get("addrC")).toBe(1);
+  });
+
+  it("decodes the option labels off Polls", async () => {
+    const r = await readPollChoices(apiWithChoices(["Yes", "No"], {}), 7n, ["addrA"]);
+    expect(r.labels).toEqual(["Yes", "No"]);
+  });
+
+  it("degrades to no labels when the host is not a poll", async () => {
+    const r = await readPollChoices(apiWithChoices(null, { addrA: 0 }), 7n, ["addrA"]);
+    expect(r.labels).toEqual([]);
+  });
+
+  it("never throws — a failing read yields no choices", async () => {
+    const api = {
+      query: {
+        Microblog: {
+          Polls: { getValue: () => Promise.reject(new Error("down")) },
+          PollVotes: { getValues: () => Promise.reject(new Error("down")) },
+        },
+      },
+    } as unknown as CognoApi;
+    await expect(readPollChoices(api, 7n, ["addrA"])).resolves.toEqual({
+      labels: [],
+      choices: new Map(),
+    });
+  });
+});
+
+// ── readPollVoters — the roster behind the accountability surface ──
+describe("readPollVoters", () => {
+  function apiWithVoters(
+    entries: { keyArgs: unknown[]; value: unknown }[],
+    options: string[] = ["Yes", "No"],
+  ): CognoApi {
+    return {
+      query: {
+        Microblog: {
+          PollVotes: { getEntries: async () => entries },
+          Polls: { getValue: async () => ({ options: options.map((o) => Binary.fromText(o)) }) },
+        },
+      },
+    } as unknown as CognoApi;
+  }
+
+  it("takes the account from the LAST key arg of the double map", async () => {
+    const r = await readPollVoters(apiWithVoters([{ keyArgs: [7n, "addrB"], value: 1 }]), 7n);
+    expect(r.voters).toEqual([{ who: "addrB", option: 1 }]);
+  });
+
+  it("keeps option 0 rather than dropping it as falsy", async () => {
+    const r = await readPollVoters(apiWithVoters([{ keyArgs: [7n, "addrA"], value: 0 }]), 7n);
+    expect(r.voters).toEqual([{ who: "addrA", option: 0 }]);
+  });
+
+  // The roster reads its own labels rather than borrowing the reply chips', which are scoped to the
+  // reply authors on screen: a poll with votes and no replies would otherwise have nothing to file
+  // anyone under and render an empty section.
+  it("carries the poll's option labels", async () => {
+    const r = await readPollVoters(
+      apiWithVoters([{ keyArgs: [7n, "addrA"], value: 0 }], ["Yes", "No", "Abstain"]),
+      7n,
+    );
+    expect(r.labels).toEqual(["Yes", "No", "Abstain"]);
+  });
+
+  // PAPI hands entries back in storage (hashed-key) order, which is arbitrary and would reshuffle the
+  // roster on every reload — and, once the cap bites, silently change WHICH voters are shown.
+  it("sorts by account so the roster is stable across reads", async () => {
+    const r = await readPollVoters(
+      apiWithVoters([
+        { keyArgs: [7n, "addrC"], value: 0 },
+        { keyArgs: [7n, "addrA"], value: 1 },
+        { keyArgs: [7n, "addrB"], value: 2 },
+      ]),
+      7n,
+    );
+    expect(r.voters.map((x) => x.who)).toEqual(["addrA", "addrB", "addrC"]);
+  });
+
+  it("caps the roster, and caps it AFTER sorting", async () => {
+    const many = Array.from({ length: MAX_POLL_VOTERS + 25 }, (_, i) => ({
+      keyArgs: [7n, `addr${String(i).padStart(4, "0")}`],
+      value: i % 3,
+    }));
+    // Shuffle deterministically so the input is not already ordered.
+    const shuffled = [...many.slice(100), ...many.slice(0, 100)];
+    const r = await readPollVoters(apiWithVoters(shuffled), 7n);
+    expect(r.voters).toHaveLength(MAX_POLL_VOTERS);
+    expect(r.voters[0].who).toBe("addr0000");
+    expect(r.truncated).toBe(true);
+  });
+
+  // The count is taken BEFORE the slice with a strict `>`, so this is not "the list came back full".
+  // Re-derived downstream as `voters.length >= MAX_POLL_VOTERS` it claimed a truncation that had not
+  // happened, and the serve denylist (which filters after the cap) could hide one that had.
+  it("does not claim truncation at exactly the cap", async () => {
+    const exact = Array.from({ length: MAX_POLL_VOTERS }, (_, i) => ({
+      keyArgs: [7n, `addr${String(i).padStart(4, "0")}`],
+      value: 0,
+    }));
+    const r = await readPollVoters(apiWithVoters(exact), 7n);
+    expect(r.voters).toHaveLength(MAX_POLL_VOTERS);
+    expect(r.truncated).toBe(false);
+  });
+
+  it("never throws — a failed read yields an empty roster", async () => {
+    const api = {
+      query: {
+        Microblog: {
+          PollVotes: { getEntries: () => Promise.reject(new Error("x")) },
+          Polls: { getValue: () => Promise.reject(new Error("x")) },
+        },
+      },
+    } as unknown as CognoApi;
+    await expect(readPollVoters(api, 7n)).resolves.toEqual({
+      voters: [],
+      labels: [],
+      truncated: false,
+    });
   });
 });

@@ -10,6 +10,7 @@
 // if the draft is dirty; this wrapper just reports the close intent).
 
 import { useCallback, useEffect, useRef } from "react";
+import { useDialogFocus } from "@/hooks/useDialogFocus";
 import type { ReactNode } from "react";
 import { IconClose } from "./icons";
 import styles from "./ComposerModal.module.css";
@@ -28,13 +29,13 @@ const FOCUSABLE =
 
 export function ComposerModal({ title, onClose, children }: ComposerModalProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
-  const returnFocusRef = useRef<HTMLElement | null>(null);
 
-  // Remember the trigger so focus returns to it on close.
-  useEffect(() => {
-    returnFocusRef.current = (document.activeElement as HTMLElement) ?? null;
-    return () => returnFocusRef.current?.focus?.();
-  }, []);
+  // Focus returns to the trigger on close. This used to restore unguarded, which silently did nothing
+  // whenever the trigger had been unmounted along the way (a menu item, say): focus() on a detached node
+  // is a no-op, so focus fell to <body> exactly as if there had been no restore at all. The shared hook
+  // checks the opener is still in the document first. No initial-focus ref: the composer's textarea
+  // autofocuses itself, so this hook only owns the restore.
+  useDialogFocus(true);
 
   // Scroll-lock the body while the dialog is open.
   useEffect(() => {

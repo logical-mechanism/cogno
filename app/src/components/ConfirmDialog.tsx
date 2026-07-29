@@ -5,7 +5,8 @@
 // (z-index cg-z-modal + 10). Esc / scrim-click = cancel; the non-destructive button is focused on open
 // so a stray Enter/Space never triggers the destructive action.
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
+import { useDialogFocus } from "@/hooks/useDialogFocus";
 import styles from "./ConfirmDialog.module.css";
 
 export interface ConfirmDialogProps {
@@ -31,9 +32,8 @@ export function ConfirmDialog({
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    cancelRef.current?.focus();
-  }, []);
+  // Focus Cancel on open (never the destructive button), and restore focus to the opener on close.
+  useDialogFocus(true, cancelRef);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

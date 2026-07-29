@@ -19,6 +19,7 @@ import type {
   Suggestion,
   Ss58,
 } from "@/lib/types";
+import type { PollChoices, PollRoster } from "@/lib/chain/social-reads";
 
 /** Arguments for {@link FeedSource.profile} — by account or by identity hash. */
 export interface ProfileArgs {
@@ -54,6 +55,18 @@ export interface FeedSource {
   poll(hostId: bigint): Promise<PollView>;
   /** The viewer's chosen option index for a poll, or null if they have not cast. */
   viewerPollChoice(hostId: bigint, who: Ss58): Promise<number | null>;
+  /**
+   * Option labels plus the current choice of each NAMED account in a poll. The account list is bounded
+   * by the caller (the replies actually on screen), so this never enumerates a poll's whole voter set.
+   * Empty labels when the host is not a poll.
+   */
+  pollChoices(hostId: bigint, authors: readonly Ss58[]): Promise<PollChoices>;
+  /**
+   * Everyone who has cast in a poll, with their current choice, the option labels, and whether the read
+   * hit its cap. `truncated` rides along rather than being inferred from `voters.length` downstream,
+   * because a wrapper (the serve denylist) can shorten the list after the cap has already bitten.
+   */
+  pollVoters(hostId: bigint): Promise<PollRoster>;
   /** The viewer's own vote state on a post. */
   viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState>;
   /** Followers/following ids + counts for an account. */

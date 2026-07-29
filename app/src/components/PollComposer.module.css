@@ -215,3 +215,32 @@
   font-size: var(--cg-fs-xs);
   line-height: var(--cg-lh-sm);
 }
+
+/* The action-id status line, when what it is reporting is a MISMATCH between the document at the link
+   and the hash Cardano recorded. Same danger wash the proposal alarms use, so a warning about a
+   substituted document looks the same wherever the reader meets it. Not merely coloured text: this one
+   is asking the author to stop and check something before a write with no delete. */
+.govNote[data-alarm="true"] {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-semibold);
+  background: var(--cg-danger-wash);
+  border-radius: var(--cg-radius-sm);
+  padding: var(--cg-space-1) var(--cg-space-2);
+}
+
+/* Inline "Try again" inside the status line, for the two lookup states that can be a passing network
+   failure rather than an answer. */
+.govRetry {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--cg-accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.govRetry:focus-visible {
+  outline: 2px solid var(--cg-accent);
+  outline-offset: 2px;
+  border-radius: var(--cg-radius-sm);
+}

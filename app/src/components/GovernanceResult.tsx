@@ -41,12 +41,16 @@ function ChamberRow({
   threshold,
   advisory,
   totalActiveStake,
+  paramsResolved,
 }: {
   poll: PollView;
   body: "spo" | "drep";
   threshold: Threshold | null;
   advisory: boolean;
   totalActiveStake: bigint | null;
+  /** The live-params read has settled (either way). Gates the "unknown" copy so it can't flash on the
+   *  first paint, when `totalActiveStake` is null merely because the fetch has not returned yet. */
+  paramsResolved: boolean;
 }) {
   const v = chamberVote(poll.options, body);
   const unit = lensVoterUnit(body);
@@ -117,7 +121,24 @@ function ChamberRow({
 
       <div className={styles.meta}>
         {v.total > 0n ? `${formatWeight(v.total)} ₳` : "no stake"}
-        {coverage != null && v.total > 0n && <> · {coverage}% of active stake</>}
+        {/* The denominator is NAMED rather than called "active stake", because the two chambers do not
+            stand in the same relation to it. Blockfrost's `stake.active` is the sum of pool-delegated
+            stake, so for the SPO row it is exactly the right whole and the numerator nests inside it.
+            For the dRep row it is not: dRep voting power and pool stake OVERLAP without nesting (stake
+            delegated to a pool but no dRep is in the denominator only; stake delegated to a dRep but no
+            pool is in the numerator only), and total dRep power is materially smaller than total pool
+            stake, so read as dRep turnout the figure understates several-fold. This line sits directly
+            under a chamber-relative pill ("58% Yes · below 67%"), which primes exactly that misreading.
+            Naming the denominator closes it in one string. Substituting a real dRep denominator would
+            be the wrong fix even if we could fetch one, because it would inflate how representative a
+            handful of voters looks. */}
+        {coverage != null && v.total > 0n && <> · {coverage}% of all stake delegated to pools</>}
+        {/* Coverage needs a denominator we could not always read. Silently dropping the share made an
+            unreadable total look identical to a poll nobody had voted in, which is the one thing this
+            readout must never do: a share of an unknown whole is not a small share, it is no answer. */}
+        {coverage == null && v.total > 0n && paramsResolved && (
+          <> · share of delegated stake unknown</>
+        )}
         {" · "}
         {lensVoters(v.voters, body)}
         {v.abstain > 0n && <> · {formatWeight(v.abstain)} ₳ abstained</>}
@@ -133,10 +154,17 @@ export function GovernanceResult({ poll, action }: { poll: PollView; action: Gov
     totalActiveStake: null,
     live: false,
   });
+  // Tracked apart from `params.live` because the two mean different things and the initial state can't
+  // distinguish them: `live: false` is both "not read yet" and "read failed, using the snapshot". Only
+  // the second is worth telling a reader about, so the caveat waits for the read to settle.
+  const [resolved, setResolved] = useState(false);
   useEffect(() => {
     let alive = true;
     resolveGovParams().then((p) => {
-      if (alive) setParams(p);
+      if (alive) {
+        setParams(p);
+        setResolved(true);
+      }
     });
     return () => {
       alive = false;
@@ -155,8 +183,41 @@ export function GovernanceResult({ poll, action }: { poll: PollView; action: Gov
           threshold={ch.threshold}
           advisory={chambers.advisory}
           totalActiveStake={params.totalActiveStake}
+          paramsResolved={resolved}
         />
       ))}
+      {/* The gap between this poll and the real vote, stated once rather than implied.
+
+          Cogno prices a temperature check against the REAL ratification bar, which is the thing that
+          makes it more than an opinion poll. The cost of that is a reader who sees "meets 67%" and
+          concludes the action would pass. It would not follow, because on Cardano a chamber member who
+          does not vote is generally counted as a No, while this poll counts only the people who showed
+          up here. A sample that clears the bar tells you nothing about whether the population would.
+
+          "usually" is load-bearing. Non-voters default to No under every post-bootstrap action type,
+          but stake delegated to an always-abstain dRep leaves the denominator instead, so a flat
+          "always counts as No" would be affirmatively false. We do not spell that out: the caveat only
+          has to stop the over-read, and the full rule is a paragraph nobody would finish.
+
+          Only where there is a bar to over-read. An advisory (Info) poll has no threshold. */}
+      {!chambers.advisory && (
+        <p className={styles.caveat}>
+          On Cardano, a member who does not vote is usually counted the same as voting No. This poll
+          counts only the SPOs and dReps who voted here, so a result above the bar does not mean the
+          action would pass on Cardano.
+        </p>
+      )}
+
+      {/* The bar every percentage above is judged against is itself a Cardano protocol parameter, and
+          governance can move it. When the live read fails we fall back to a shipped snapshot and keep
+          rendering a verdict, which is the right call (a stale bar beats no bar) but only if the reader
+          is told. Advisory polls carry no threshold, so there is nothing to caveat. */}
+      {resolved && !params.live && !chambers.advisory && (
+        <p className={styles.stale}>
+          Ratification thresholds are from a stored snapshot. The live Cardano values could not be read,
+          so a verdict here may not match the current bar.
+        </p>
+      )}
     </div>
   );
 }

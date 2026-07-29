@@ -6,13 +6,25 @@ import type { CognoApi } from "@/lib/types";
 type Entry = { keyArgs: [bigint]; value: Record<string, unknown> };
 type Bin = ReturnType<typeof Binary.fromText>;
 
-function mockApi(polls: Entry[], results: Entry[], posts: Record<string, { text: Bin }>): CognoApi {
+function mockApi(
+  polls: Entry[],
+  results: Entry[],
+  posts: Record<string, { text: Bin }>,
+  replies: Record<string, number> = {},
+): CognoApi {
   return {
     query: {
       Microblog: {
         Polls: { getEntries: async () => polls },
         PollResults: { getEntries: async () => results },
         Posts: { getValue: async (id: bigint) => posts[String(id)] ?? null },
+        // ReplyCount must be present even when a case does not care about it: the reader batches it
+        // for every row, and a missing stub would throw on the member access rather than reject, which
+        // no `.catch` on the call can intercept.
+        ReplyCount: {
+          getValues: async (keys: ReadonlyArray<readonly [bigint]>) =>
+            keys.map(([id]) => replies[String(id)] ?? 0),
+        },
       },
     },
   } as unknown as CognoApi;
@@ -105,6 +117,7 @@ describe("govCloseState", () => {
 describe("the operator serve denylist on /governance", () => {
   const DENIED = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
   const ANCHOR = "https://example.org/proposal.json";
+  const PINNED = `0x${"ab".repeat(32)}`;
 
   /** The mock has to be installed per test (doMock is not hoisted), so it is torn down per test too. */
   function denyOnlyThatAuthor() {
@@ -128,7 +141,11 @@ describe("the operator serve denylist on /governance", () => {
     {
       keyArgs: [1n],
       value: {
-        action: { action_type: { type: "HardFork" }, anchor_url: Binary.fromText(ANCHOR) },
+        action: {
+          action_type: { type: "HardFork" },
+          anchor_url: Binary.fromText(ANCHOR),
+          anchor_hash: PINNED,
+        },
         close_at: undefined,
       },
     },
@@ -152,6 +169,9 @@ describe("the operator serve denylist on /governance", () => {
     const posts = { "1": { text: Binary.fromText("Vote for me"), author: DENIED } };
     const out = await read(mockApi(govPoll, [], posts));
     expect(out[0].anchorUrl).toBeUndefined();
+    // The pin goes with the URL it commits to. A hash with no anchor to check it against is unusable,
+    // and a denied row fetches nothing to compare.
+    expect(out[0].anchorHash).toBeUndefined();
   });
 
   it("leaves a poll by an undenied account alone", async () => {
@@ -161,5 +181,16 @@ describe("the operator serve denylist on /governance", () => {
     const out = await read(mockApi(govPoll, [], posts));
     expect(out[0].question).toBe("Fork now?");
     expect(out[0].anchorUrl).toBe(ANCHOR);
+  });
+
+  // The list surface has to be able to check the pin itself. Without the hash on the row, a reader
+  // scanning /governance would take in a substituted document's title as the row headline, with the
+  // warning that contradicts it sitting behind a poll they never opened.
+  it("carries the pinned anchor hash onto the row", async () => {
+    denyOnlyThatAuthor();
+    const { readGovernancePolls: read } = await import("./governance-feed");
+    const posts = { "1": { text: Binary.fromText("Fork now?"), author: "5SomeoneElse" } };
+    const out = await read(mockApi(govPoll, [], posts));
+    expect(out[0].anchorHash).toBe(PINNED);
   });
 });

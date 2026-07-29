@@ -26,10 +26,13 @@
   outline-offset: calc(-1 * var(--cg-focus-ring-width));
 }
 
+/* The action pill sits left; the close state and its countdown group together on the right. That is a
+   `margin-left: auto` on .state rather than `justify-content: space-between`, because space-between with
+   three children would strand the countdown at the far edge instead of keeping it with the state it
+   qualifies. */
 .head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: baseline;
   gap: var(--cg-space-2);
 }
 
@@ -46,6 +49,7 @@
 
 .state {
   flex: 0 0 auto;
+  margin-left: auto;
   font-size: var(--cg-fs-xs);
   font-weight: var(--cg-fw-semibold);
   color: var(--cg-text-secondary);
@@ -53,6 +57,14 @@
 
 .state[data-state="open"] {
   color: var(--cg-accent);
+}
+
+/* Quieter than the state beside it: the countdown qualifies "Open", it is not a second state. */
+.closesIn {
+  flex: 0 0 auto;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-muted);
+  white-space: nowrap;
 }
 
 .question {
@@ -74,6 +86,28 @@
    metadata, or a gated host — is muted so it doesn't masquerade as a real title. */
 .question[data-muted="true"] {
   color: var(--cg-text-secondary);
+}
+
+/* The pinned document was swapped or deleted, so this line replaces the title rather than describing a
+   loading state. It has to out-rank the muted rule above it (both are set: the row has no title to
+   promote), and it must not read as one more grey placeholder. Same wash as ProposalPreview's .alarm,
+   so the list and the poll's own card agree on what an alarm looks like. */
+.question[data-alarm="true"] {
+  color: var(--cg-text);
+  font-weight: var(--cg-fw-semibold);
+  background: var(--cg-danger-wash);
+  border-radius: var(--cg-radius-sm);
+  padding: var(--cg-space-1) var(--cg-space-2);
+}
+
+/* The row's footer line: the direct-reply count (which the "most discussed" order sorts on, so it is
+   worth showing rather than making the reader trust an invisible key) and the eligibility flag. */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
 }
 
 .eligible {

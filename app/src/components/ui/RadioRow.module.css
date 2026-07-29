@@ -1,0 +1,58 @@
+/* RadioRow — the chip-row radiogroup shared by /explore's firehose controls and /governance's filters.
+   Carries NO surface chrome (background, blur, border): the host decides that. /explore wraps it in its
+   own translucent .bar; /governance hands it to StickyHeader, which already blurs. */
+
+/* WRAPS, rather than scrolling. It used to be `overflow-x: auto` with the scrollbar hidden on both
+   engines, which meant a row too wide for its column simply looked cut off: no scrollbar, no fade, no
+   hint that the chips past the edge existed at all. A filter a reader cannot see is a filter that does
+   not exist to them, and on /governance that hid five of the eight action types behind an invisible
+   scroll.
+
+   Wrapping is affordable because no row is very wide any more. The one that was, /governance's action
+   TYPE, is a <select> now: measured against the real font it ran 1257px against the 568px the feed
+   column leaves, so it could not be a chip row at any viewport. What is left here measures 322 to 459px
+   per row, so every row is one line at 600px and the three widest take a second line on a phone. */
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-2) var(--cg-space-4);
+}
+
+.label {
+  flex: 0 0 auto;
+  font-size: var(--cg-fs-xs);
+  color: var(--cg-text-secondary);
+}
+
+.chip {
+  flex: 0 0 auto;
+  padding: var(--cg-space-1) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: transparent;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  background: var(--cg-bg-hover);
+  color: var(--cg-text);
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--cg-accent);
+  outline-offset: 2px;
+}
+
+.chipActive {
+  border-color: var(--cg-accent);
+  background: var(--cg-accent);
+  /* The declared contrast colour for text ON the accent fill — never a hard-coded #fff fallback, which
+     is the exact bug (--cg-on-accent) that made a badge invisible against a near-white accent. */
+  color: var(--cg-accent-contrast);
+  font-weight: 600;
+}
