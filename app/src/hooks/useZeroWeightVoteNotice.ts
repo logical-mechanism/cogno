@@ -1,6 +1,6 @@
 "use client";
 
-// useZeroWeightVoteNotice — fires the one-shot "your vote carries no weight" disclosure.
+// useZeroWeightVoteNotice — fires the "your vote carries no weight" disclosure.
 //
 // Mounted at the three WRITE paths (useVote, useAccountVote, usePoll), never at the ~25 affordances
 // that render a vote control. The distinction matters: the disclosure is about a vote that was just
@@ -8,15 +8,14 @@
 // the app funnels through one of those three.
 //
 // See lib/voteWeightNotice.ts for why this keys on `votingPower` rather than `stakeBound`, and why it
-// is one shot per account rather than per vote.
+// fires on every weightless vote rather than once per account.
 
 import { useCallback } from "react";
 import { useSession } from "@/components/Providers";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import {
-  seenNoticeStore,
   shouldWarnZeroWeight,
-  ZERO_WEIGHT_VOTE,
+  ZERO_WEIGHT_TOAST_ID,
   ZERO_WEIGHT_MESSAGE,
   ZERO_WEIGHT_ACTION_LABEL,
 } from "@/lib/voteWeightNotice";
@@ -28,29 +27,26 @@ import {
  * is already valid on chain; this only explains what it is worth.
  */
 export function useZeroWeightVoteNotice(): () => void {
-  const { viewer, votingPower } = useSession();
+  const { votingPower } = useSession();
   const { toast } = useToaster();
-  const who = viewer.address ?? null;
-  const seen = seenNoticeStore.useSet(who);
 
   return useCallback(() => {
-    if (!shouldWarnZeroWeight({ votingPower, seen })) return;
-    // Mark BEFORE raising, so a double-click cannot queue the toast twice. `add` returning false
-    // (blocked site data / quota) is not worth failing on: the worst case is the user sees this again
-    // next time, which is strictly better than swallowing the disclosure.
-    seenNoticeStore.actionsFor(who).add(ZERO_WEIGHT_VOTE);
+    if (!shouldWarnZeroWeight({ votingPower })) return;
     toast({
+      // Fixed id: the toaster dedupes on it, so voting repeatedly refreshes this one toast rather
+      // than stacking an identical copy per vote.
+      id: ZERO_WEIGHT_TOAST_ID,
       kind: "info",
       message: ZERO_WEIGHT_MESSAGE,
       action: {
         label: ZERO_WEIGHT_ACTION_LABEL,
-        // A plain assignment, not next/navigation: this hook is called from inside mutation callbacks
-        // on surfaces that may unmount as the vote settles, and the settings deep-link is a full page
+        // A plain assignment, not next/navigation: this runs from inside mutation callbacks on
+        // surfaces that may unmount as the vote settles, and the settings deep-link is a full page
         // the user is choosing to leave for.
         onClick: () => {
           window.location.href = "/settings/#account";
         },
       },
     });
-  }, [votingPower, seen, who, toast]);
+  }, [votingPower, toast]);
 }

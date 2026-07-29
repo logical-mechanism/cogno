@@ -28,6 +28,7 @@ import { useVault } from "@/hooks/useVault";
 import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { useObserverHealth } from "@/hooks/useObserverHealth";
 import { usePendingLockSync } from "@/hooks/usePendingLockSync";
+import { onboardingFlagStore, SKIPPED_VOTING_POWER } from "@/lib/onboardingFlags";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { consumeReturnTarget } from "@/lib/onboardingReturn";
 import { WelcomeShell } from "@/components/welcome/WelcomeShell";
@@ -108,6 +109,16 @@ export default function WelcomePage() {
   // navigate/reload and follows a relock. usePendingLockSync writes the record when a lock submits (and
   // clears it on exit); usePendingCapacity turns record + observer frontier + AllowedStake into a status.
   usePendingLockSync(vault, signerCtl.signer.ss58, api);
+
+  // Whether this account already dismissed the voting-power step. Per account and device-local: the
+  // wait it sits inside can run 36 hours across many reloads, and re-asking on each one would turn a
+  // quiet skip into the nagging the step is deliberately not.
+  const flagAccount = signerCtl.postingEnabled ? signerCtl.signer.ss58 : null;
+  const onboardingFlags = onboardingFlagStore.useSet(flagAccount);
+  const stakeSkipped = onboardingFlags.has(SKIPPED_VOTING_POWER);
+  const skipVotingPower = useCallback(() => {
+    onboardingFlagStore.actionsFor(flagAccount).add(SKIPPED_VOTING_POWER);
+  }, [flagAccount]);
   const pending = usePendingCapacity(api, signerCtl.signer.ss58, postingPower);
   // Whether the sole writer of posting power is still running. Without this, a first-time user who
   // locks during a freeze watches the ETA run out and is told "It should still land", which is a claim
@@ -321,6 +332,8 @@ export default function WelcomePage() {
           ss58={signerCtl.signer.ss58}
           onGoToTimeline={goToTimeline}
           onOpenSettings={openSettings}
+          stakeSkipped={stakeSkipped}
+          onSkipVotingPower={skipVotingPower}
           headingRef={headingRef}
         />
       )}

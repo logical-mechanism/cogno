@@ -98,6 +98,10 @@ export interface PowerUpsProps {
   ss58?: string | null;
   onGoToTimeline: () => void;
   onOpenSettings: () => void;
+  /** The user has already dismissed the voting-power step on this device (per account). */
+  stakeSkipped?: boolean;
+  /** Remember the dismissal, so a 36-hour wait does not re-ask on every reload. */
+  onSkipVotingPower: () => void;
   headingRef?: React.Ref<HTMLHeadingElement>;
 }
 
@@ -111,22 +115,71 @@ export function PowerUps({
   ss58,
   onGoToTimeline,
   onOpenSettings,
+  stakeSkipped = false,
+  onSkipVotingPower,
   headingRef,
 }: PowerUpsProps) {
   const hasPostingPower = (postingPower ?? 0n) > 0n;
   const stakeBound = stake.stakeBound;
 
-  // DONE: posting power > 0. The ONE required step is complete. An unlinked stake key does not hold
-  // this back; it is offered below as an optional add-on.
+  // ── THE VOTING-POWER STEP ────────────────────────────────────────────────────────────────────
+  //
+  // Placed AFTER the lock, on purpose, and it is a STEP rather than a card beside another one.
+  //
+  // Two mistakes to avoid here, and this screen exists because both were made in turn. The first was
+  // making it REQUIRED and ordering it first: a wallet that cannot sign over a reward address then hit
+  // an early return sitting above VaultCard and could never reach the lock at all. The second was
+  // over-correcting into "optional" and parking it as a card next to the lock — which under-sold the
+  // thing voting runs on, put two cards under a heading that says "One step left", and left new users
+  // sailing past it to cast votes worth nothing.
+  //
+  // So: not required, but not decoration either. It gets its own screen, with the bind as the primary
+  // action and a quiet skip. It lands DURING THE WAIT because that is dead time the user is already
+  // sitting in (10 minutes to 36 hours), the bind is feeless and instant, and they have just committed
+  // real ADA so they are as invested as they will ever be. Skipping is remembered per account so a
+  // 36-hour wait does not re-ask on every reload.
+  const showStakeStep = stakeBound === false && !stakeSkipped && (pending.kind !== "none" || hasPostingPower);
+
+  if (showStakeStep) {
+    const settling = pending.kind !== "none";
+    return (
+      <section className={styles.step} aria-labelledby="welcome-heading">
+        <div className={styles.banner}>
+          <h1 id="welcome-heading" className={styles.heading} tabIndex={-1} ref={headingRef}>
+            {settling ? "While your lock settles" : "One more thing"}
+          </h1>
+          <p className={styles.bannerLede}>
+            {settling
+              ? "Your ADA is on its way. Here is the last piece, and it is free."
+              : "You can post now. Here is the last piece, and it is free."}
+          </p>
+        </div>
+
+        <div className={styles.cards}>
+          <StakeCard stake={stake} walletId={walletId} />
+          {settling && (
+            <PendingCapacityNotice
+              status={pending}
+              observer={observer}
+              variant="card"
+              hideTitle
+              onDismiss={ss58 ? () => pendingLockActions.clear(ss58) : undefined}
+            />
+          )}
+        </div>
+
+        <button type="button" className={styles.readOnly} onClick={onSkipVotingPower}>
+          Skip for now
+        </button>
+      </section>
+    );
+  }
+
+  // DONE: posting power > 0, and the voting-power step is either finished or skipped.
   if (hasPostingPower) {
     return (
       <section className={styles.step} aria-labelledby="welcome-heading">
         <DoneBanner onGoToTimeline={onGoToTimeline} headingRef={headingRef} />
-        {stakeBound === false && (
-          <div className={styles.cards}>
-            <StakeCard stake={stake} walletId={walletId} />
-          </div>
-        )}
       </section>
     );
   }
@@ -149,7 +202,6 @@ export function PowerUps({
             hideTitle
             onDismiss={ss58 ? () => pendingLockActions.clear(ss58) : undefined}
           />
-          {stakeBound === false && <StakeCard stake={stake} walletId={walletId} />}
         </div>
         <button type="button" className={styles.primary} onClick={onGoToTimeline}>
           Go to your timeline
@@ -175,8 +227,7 @@ export function PowerUps({
     );
   }
 
-  // THE required step: lock ADA (postingPower === 0n, none pending). Reading stays open. The stake card
-  // rides alongside as an optional extra, never in front of the lock.
+  // THE required step: lock ADA (postingPower === 0n, none pending). ONE card, so the heading is true.
   return (
     <section className={styles.step} aria-labelledby="welcome-heading">
       <div className={styles.banner}>
@@ -188,7 +239,6 @@ export function PowerUps({
 
       <div className={styles.cards}>
         <VaultCard vault={vault} walletId={walletId} onOpenSettings={onOpenSettings} />
-        {stakeBound === false && <StakeCard stake={stake} walletId={walletId} />}
       </div>
 
       <button type="button" className={styles.readOnly} onClick={onGoToTimeline}>
