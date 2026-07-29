@@ -29,7 +29,7 @@ import { usePendingCapacity } from "@/hooks/usePendingCapacity";
 import { useStabilityWindow } from "@/hooks/useStabilityWindow";
 import { setupStatus } from "@/lib/setup-status";
 import { viewerBucket } from "@/lib/viewerBucket";
-import { LOCK_ADA_WHOLE } from "@/lib/cardano/blueprint";
+import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
 
 /** What they reached for, in the second person, so the heading names it. */
 const REASON_TITLE: Record<SignInReason, string> = {
@@ -38,15 +38,24 @@ const REASON_TITLE: Record<SignInReason, string> = {
   quote: "Sign in to quote",
   vote: "Sign in to vote",
   follow: "Sign in to follow",
-  settings: "Sign in to open settings",
 };
 
 export function SignInSheet() {
   const { open, reason } = useSignInPrompt();
   const router = useRouter();
-  const { api, viewer, sessionState, votingPower } = useSession();
+  const { api, viewer, sessionState, votingPower, postingPower } = useSession();
   const stabilityWindow = useStabilityWindow(api);
-  const pending = usePendingCapacity(api, viewerBucket(viewer), null);
+  // `open ? api : null`, and the REAL posting power rather than a hardcoded null. This component is
+  // mounted once in AppShell and lives on every route, so both arguments matter:
+  //
+  //   • Passing `api` unconditionally opened a `LastReference` watch, an `EnforceWeight` watch and a
+  //     1 s ticker on every surface for anyone holding a pending-lock record, alongside the identical
+  //     pair NoPostingPowerNotice opens inside each composer. A closed sheet has nothing to narrate;
+  //     null-api parks the hook and both subscriptions close. They reopen when it opens.
+  //   • `null` for the stake meant `shouldClearPendingLock` could never return true here, so on a route
+  //     with no other consumer this instance held a credited record open indefinitely. The session
+  //     already watches AllowedStake for `viewer.writeReady`; read that instead of asserting ignorance.
+  const pending = usePendingCapacity(open ? api : null, viewerBucket(viewer), postingPower);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
@@ -111,8 +120,8 @@ export function SignInSheet() {
   const body =
     viewer.status === "not-connected" ? (
       <>
-        Reading is free forever. To {reason === "settings" ? "use settings" : reason}, sign in with a
-        Cardano wallet and lock {LOCK_ADA_WHOLE} ADA you can take back whenever you want.
+        Reading is free forever. To {reason}, sign in with a Cardano wallet and lock {LOCK_ADA_WHOLE}{" "}
+        ADA you can take back whenever you want.
       </>
     ) : viewer.status === "not-identity-bound" ? (
       <>You are part way through setup. One signature registers your account, and it is free.</>

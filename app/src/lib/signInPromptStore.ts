@@ -25,8 +25,17 @@
 
 import { useSyncExternalStore } from "react";
 
-/** What the viewer reached for, so the sheet can name it instead of asking generically. */
-export type SignInReason = "post" | "reply" | "quote" | "vote" | "follow" | "settings";
+/**
+ * What the viewer reached for, so the sheet can name it instead of asking generically.
+ *
+ * WRITE INTENTS ONLY. There was a `"settings"` member here and nothing ever opened with it: a walled
+ * ROUTE is answered by WalledRouteNotice on the page itself, not by this sheet, so /settings never
+ * reaches here. It cost more than a dead line — the sheet body carried a `reason === "settings" ?
+ * "use settings" : reason` branch that could not be taken, and its presence invited someone to wire a
+ * route through the sheet and end up with two answers to one block. If a new member is added it should
+ * be a verb a user pressed, and it must have a caller.
+ */
+export type SignInReason = "post" | "reply" | "quote" | "vote" | "follow";
 
 export interface SignInPromptState {
   open: boolean;
