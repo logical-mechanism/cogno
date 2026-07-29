@@ -21,7 +21,8 @@
 // kind, so routing a help sheet through it would put a compose URL in the address bar. Local state,
 // mounted once in AppShell.
 
-import { Fragment, useCallback, useEffect, useRef } from "react";
+import { Fragment, useCallback, useRef } from "react";
+import { useDialogFocus } from "@/hooks/useDialogFocus";
 import styles from "./ShortcutsDialog.module.css";
 
 interface Shortcut {
@@ -83,19 +84,10 @@ export function ShortcutsDialog({ onClose }: ShortcutsDialogProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
-  // Focus the Close button on mount, and put focus BACK where it came from on unmount. The restore is
-  // the load-bearing half for a keyboard user: without it, dismissing the sheet leaves focus on a removed
-  // node, the browser falls back to <body>, and the next Tab restarts from the top of the document
-  // instead of returning to the control that opened it. Same contract ConnectWalletButton's popover
-  // documents for itself. `?` opens the sheet with no opener element, in which case there is nothing to
-  // restore to and we leave focus alone.
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    closeRef.current?.focus();
-    return () => {
-      if (opener && opener !== document.body && document.contains(opener)) opener.focus();
-    };
-  }, []);
+  // Focus Close on mount, restore to the opener on unmount. This dialog had the only complete
+  // implementation of that contract, which is why useDialogFocus was lifted out of it: `?` opens the
+  // sheet with no opener element at all, so the guards it needed are the guards every dialog needs.
+  useDialogFocus(true, closeRef);
 
   // Esc closes; Tab is trapped inside the card. Same contract as ConfirmDialog — a Tab off the last
   // control would otherwise wrap to the top of the document and land on the page behind the scrim,
