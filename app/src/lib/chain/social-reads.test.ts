@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Binary } from "polkadot-api";
-import { readPoll } from "./social-reads";
+import { readPoll, readPollChoices } from "./social-reads";
 import type { CognoApi } from "@/lib/types";
 
 /** A minimal fake api serving one poll view + its `Polls`/`PollResults` storage rows to `readPoll`. */
@@ -174,5 +174,104 @@ describe("readPoll", () => {
       11n,
     );
     expect(p.action).toMatchObject({ actionType: "Info", anchorUrl: "https://ipfs.io/ipfs/cid", anchorHash: hash });
+  });
+});
+
+// ── readPollChoices — the bounded, author-keyed poll-position read behind the reply vote chip ──
+//
+// The invariant under test is that the read is keyed by the NAMED authors and answers positionally.
+// A whole-set enumeration was rejected precisely because it cannot be capped safely, so the tests here
+// pin the batch shape rather than an entry fold.
+
+/** A fake api serving `Polls` (option labels) + a positional `PollVotes.getValues`. */
+function apiWithChoices(
+  labels: string[] | null,
+  votes: Record<string, number>,
+  spy?: { keys: (readonly [bigint, string])[] },
+): CognoApi {
+  return {
+    query: {
+      Microblog: {
+        Polls: {
+          getValue: () =>
+            Promise.resolve(labels ? { options: labels.map((l) => Binary.fromText(l)) } : undefined),
+        },
+        PollVotes: {
+          getValues: (keys: ReadonlyArray<readonly [bigint, string]>) => {
+            if (spy) keys.forEach((k) => spy.keys.push(k));
+            return Promise.resolve(keys.map(([, who]) => votes[who]));
+          },
+        },
+      },
+    },
+  } as unknown as CognoApi;
+}
+
+describe("readPollChoices", () => {
+  it("issues no read at all for an empty author list", async () => {
+    const spy = { keys: [] as (readonly [bigint, string])[] };
+    const r = await readPollChoices(apiWithChoices(["Yes"], {}, spy), 7n, []);
+    expect(r).toEqual({ labels: [], choices: new Map() });
+    expect(spy.keys).toHaveLength(0);
+  });
+
+  it("asks for exactly the authors it was given, keyed by (hostId, who)", async () => {
+    const spy = { keys: [] as (readonly [bigint, string])[] };
+    await readPollChoices(apiWithChoices(["Yes", "No"], {}, spy), 7n, ["addrA", "addrB"]);
+    expect(spy.keys).toEqual([
+      [7n, "addrA"],
+      [7n, "addrB"],
+    ]);
+  });
+
+  it("keeps option 0 — the falsy-index trap", async () => {
+    const r = await readPollChoices(apiWithChoices(["Yes", "No"], { addrA: 0 }), 7n, ["addrA"]);
+    expect(r.choices.get("addrA")).toBe(0);
+  });
+
+  it("omits an author who has not cast, rather than recording a zero", async () => {
+    const r = await readPollChoices(
+      apiWithChoices(["Yes", "No"], { addrB: 1 }),
+      7n,
+      ["addrA", "addrB"],
+    );
+    expect(r.choices.has("addrA")).toBe(false);
+    expect(r.choices.get("addrB")).toBe(1);
+  });
+
+  it("zips positionally, so a gap does not shift later authors onto the wrong choice", async () => {
+    const r = await readPollChoices(
+      apiWithChoices(["Yes", "No", "Abstain"], { addrA: 2, addrC: 1 }),
+      7n,
+      ["addrA", "addrB", "addrC"],
+    );
+    expect(r.choices.get("addrA")).toBe(2);
+    expect(r.choices.has("addrB")).toBe(false);
+    expect(r.choices.get("addrC")).toBe(1);
+  });
+
+  it("decodes the option labels off Polls", async () => {
+    const r = await readPollChoices(apiWithChoices(["Yes", "No"], {}), 7n, ["addrA"]);
+    expect(r.labels).toEqual(["Yes", "No"]);
+  });
+
+  it("degrades to no labels when the host is not a poll", async () => {
+    const r = await readPollChoices(apiWithChoices(null, { addrA: 0 }), 7n, ["addrA"]);
+    expect(r.labels).toEqual([]);
+  });
+
+  it("never throws — a failing read yields no choices", async () => {
+    const api = {
+      query: {
+        Microblog: {
+          Polls: { getValue: () => Promise.reject(new Error("down")) },
+          PollVotes: { getValues: () => Promise.reject(new Error("down")) },
+        },
+      },
+    } as unknown as CognoApi;
+    await expect(readPollChoices(api, 7n, ["addrA"])).resolves.toEqual({
+      labels: [],
+      choices: new Map(),
+    });
   });
 });

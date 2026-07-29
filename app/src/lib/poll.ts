@@ -70,6 +70,25 @@ export function roleLabel(role: RoleKindType): string {
 }
 
 /**
+ * The label of the option at `index`, or null when there is nothing to show.
+ *
+ * `labels` is in on-chain index order (the runtime documents `PollView.options` that way and `index` as
+ * the matching 0-based option index), so array position IS the option index. Null covers all three ways
+ * there is no answer: the account has not cast (`index == null`), the poll's options have not loaded or
+ * were withheld (empty `labels`), and an index the option list does not reach — the last of which should
+ * be unreachable but would otherwise render `undefined` into the page.
+ *
+ * The label is returned RAW. Sanitizing is display-only and belongs at the render site.
+ */
+export function pollChoiceLabel(
+  labels: readonly string[],
+  index: number | null | undefined,
+): string | null {
+  if (index == null) return null;
+  return labels[index] ?? null;
+}
+
+/**
  * How long an open poll has left, as a phrase a reader takes in at a glance ("in about 3 hours").
  *
  * A poll's deadline is a BLOCK NUMBER, not a timestamp, so the remaining wall time is the block gap

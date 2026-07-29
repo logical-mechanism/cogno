@@ -10,6 +10,7 @@ import {
   roleLabel,
   chamberBlocksViewer,
   pollClosesIn,
+  pollChoiceLabel,
 } from "./poll";
 import type { PollOptionView } from "./types";
 
@@ -143,5 +144,38 @@ describe("pollClosesIn", () => {
   it("switches to days at 48 hours", () => {
     expect(pollClosesIn(1000 + 48 * 600, 1000)).toBe("in about 2 days");
     expect(pollClosesIn(1000 + 7 * 14_400, 1000)).toBe("in about 7 days");
+  });
+});
+
+// `labels` is in on-chain index order, so array position IS the option index. The cases that matter are
+// the three ways there is no answer, and option 0 — which is a real choice and falsy.
+describe("pollChoiceLabel", () => {
+  const labels = ["Yes", "No", "Abstain"];
+
+  it("resolves option 0 rather than treating it as absent", () => {
+    expect(pollChoiceLabel(labels, 0)).toBe("Yes");
+  });
+
+  it("resolves the other indices by position", () => {
+    expect(pollChoiceLabel(labels, 1)).toBe("No");
+    expect(pollChoiceLabel(labels, 2)).toBe("Abstain");
+  });
+
+  it("returns null when the author has not cast", () => {
+    expect(pollChoiceLabel(labels, null)).toBeNull();
+    expect(pollChoiceLabel(labels, undefined)).toBeNull();
+  });
+
+  it("returns null when the options have not loaded or were withheld", () => {
+    expect(pollChoiceLabel([], 0)).toBeNull();
+  });
+
+  it("returns null for an index the option list does not reach, never undefined", () => {
+    expect(pollChoiceLabel(labels, 9)).toBeNull();
+    expect(pollChoiceLabel(labels, -1)).toBeNull();
+  });
+
+  it("returns the label RAW — sanitizing is the render site's job", () => {
+    expect(pollChoiceLabel(["  Yes\u202e  "], 0)).toBe("  Yes\u202e  ");
   });
 });

@@ -51,6 +51,7 @@ import type {
   Suggestion,
   Ss58,
 } from "@/lib/types";
+import type { PollChoices } from "@/lib/chain/social-reads";
 import type { FeedSource, ProfileArgs } from "./source";
 
 /**
@@ -176,6 +177,22 @@ export function withServeDenylist(source: FeedSource): FeedSource {
   function viewerPollChoice(hostId: bigint, whoId: Ss58): Promise<number | null> {
     return source.viewerPollChoice(hostId, whoId);
   }
+
+  async function pollChoices(hostId: bigint, authors: readonly Ss58[]): Promise<PollChoices> {
+    // A denied HOST takes its option labels with it, exactly as `poll()` above empties them: the labels
+    // are user-authored chain text hanging off that post. With no labels nothing can render a chip, so
+    // the choices are moot, but they go too rather than being left for a future caller to misuse.
+    if (isDeniedPost(hostId)) return { labels: [], choices: new Map() };
+    // A denied AUTHOR is dropped from the result even though the caller asked for them by name. Every
+    // surface that feeds this list already filters denied authors out, so this is defence in depth
+    // rather than the only guard, and it is cheap.
+    const { labels, choices } = await source.pollChoices(
+      hostId,
+      authors.filter((a) => !isDeniedAuthor(a)),
+    );
+    for (const a of choices.keys()) if (isDeniedAuthor(a)) choices.delete(a);
+    return { labels, choices };
+  }
   function viewerPostState(post: bigint, whoId: Ss58): Promise<ViewerPostState> {
     return source.viewerPostState(post, whoId);
   }
@@ -187,6 +204,7 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     profile,
     poll,
     viewerPollChoice,
+    pollChoices,
     viewerPostState,
     followEdges,
     whoToFollow,

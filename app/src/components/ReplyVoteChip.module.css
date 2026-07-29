@@ -1,0 +1,29 @@
+/* ReplyVoteChip — the poll-position chip on a reply's identity line. Mirrors RoleBadge's chip recipe so
+   the two read as one family when they sit side by side (flex 0 0 auto, pill, no wrap). */
+
+.chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: var(--cg-radius-pill);
+  font-size: var(--cg-fs-xs);
+  font-weight: var(--cg-fw-bold);
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--cg-text-secondary);
+  background: var(--cg-accent-wash);
+}
+
+/* Clipped so a long option label can't blow out the identity line. On an inner span: the chip is an
+   inline-flex container, and text-overflow does not apply to an anonymous flex item. */
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 14ch;
+}
+
+/* Yes / No / Abstain get no colour of their own. The app is monochrome plus danger, and tinting a
+   position green or red would editorialize a temperature check the reader is supposed to judge. The
+   data-choice attribute is carried anyway so a future surface can style it without touching the markup. */

@@ -38,6 +38,9 @@ import { signInPromptActions } from "@/lib/signInPromptStore";
 import { useThread } from "@/hooks/useThread";
 import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
+import { useReplyVoteChoices } from "@/hooks/useReplyVoteChoices";
+import { ReplyVoteChip } from "./ReplyVoteChip";
+import { pollChoiceLabel } from "@/lib/poll";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
 import { useVote } from "@/hooks/useVote";
 import { usePinPost } from "@/hooks/usePinPost";
@@ -154,6 +157,24 @@ export function ThreadView({ rootId }: ThreadViewProps) {
     return [...confirmed.slice(Math.max(0, confirmed.length - visibleReplies)), ...pending];
   }, [replies, visibleReplies]);
   const hiddenReplies = Math.max(0, confirmedReplyCount - visibleReplies);
+
+  // Poll positions for the replies actually on screen, so an argument in the thread is bound to how its
+  // author has voted. Keyed off `shownReplies` rather than `replies` so paging older replies into view
+  // widens the read to match, and a huge thread never asks for choices it will not render.
+  //
+  // This reads poll data in ThreadView, which the comment further down warns about — but that warning is
+  // specifically that PostCard must not be handed a poll (it mounts InlinePoll either way, so passing
+  // one ran two usePolls on the focal card). Nothing here goes to PostCard except a finished label.
+  const chipAuthors = useMemo(
+    () => Array.from(new Set(shownReplies.map((r) => r.author))),
+    [shownReplies],
+  );
+  const { labels: pollLabels, choices: pollChoices } = useReplyVoteChoices(
+    source,
+    rootId,
+    focal?.isPoll === true,
+    chipAuthors,
+  );
 
   // Every card on screen (focal + ancestor chain + direct replies) drives the viewer's vote state, so
   // a like reflects instantly anywhere on the screen.
@@ -514,6 +535,10 @@ export function ThreadView({ rootId }: ThreadViewProps) {
                 handlers={handlers}
                 variant="thread"
                 pending={reply.id < 0n}
+                headerExtra={(() => {
+                  const label = pollChoiceLabel(pollLabels, pollChoices?.get(reply.author));
+                  return label ? <ReplyVoteChip label={label} /> : null;
+                })()}
               />
               {(reply.replyCount ?? 0) > 0 && reply.id >= 0n && (
                 <button

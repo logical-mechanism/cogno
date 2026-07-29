@@ -215,3 +215,54 @@ export async function readViewerPollChoice(
   const option = await api.query.Microblog.PollVotes.getValue(hostId, who, BEST);
   return option ?? null;
 }
+
+/** A poll's option labels plus the current choice of each NAMED account. */
+export interface PollChoices {
+  /** Option labels in on-chain index order (empty when the host is not a poll, or is denied). */
+  labels: string[];
+  /** author → their current option index. An author who has not cast is simply absent. */
+  choices: Map<Ss58, number>;
+}
+
+/**
+ * Every named account's current choice in one poll, plus the option labels to render them with.
+ *
+ * The account list is an INPUT rather than something this discovers, and that is the whole design.
+ * `PollVotes.getEntries(hostId)` would hand back every voter on the poll unbounded, and capping that
+ * afterwards is worse than not capping: PAPI returns entries in hashed-key order, which has no relation
+ * to who is on screen, so a cap would give some replies a chip and others none, and swap which ones
+ * between reads. Asking for exactly the accounts being rendered is bounded by the page size instead,
+ * and is the same batched tuple-keyed read `notifications.ts` uses for `ByAuthor`.
+ *
+ * The labels come from `Polls` directly rather than `readPoll`, because a chip needs the option TEXT and
+ * nothing else. `readPoll` additionally makes a `MicroblogApi.poll` state_call and a `PollResults` read
+ * to build the weighted tallies, and those are two reads this does not use.
+ *
+ * Never throws: any read failure degrades to no labels and no choices, which renders no chips.
+ */
+export async function readPollChoices(
+  api: CognoApi,
+  hostId: bigint,
+  authors: readonly Ss58[],
+): Promise<PollChoices> {
+  if (authors.length === 0) return { labels: [], choices: new Map() };
+
+  const [meta, votes] = await Promise.all([
+    api.query.Microblog.Polls.getValue(hostId, BEST).catch(() => null),
+    api.query.Microblog.PollVotes.getValues(
+      authors.map((a) => [hostId, a] as const),
+      BEST,
+    ).catch(() => [] as (number | undefined)[]),
+  ]);
+
+  const choices = new Map<Ss58, number>();
+  // `getValues` answers positionally, so the result index IS the author index. A `null`/`undefined` slot
+  // is "has not cast" and must be tested for nullishness, never falsiness: option 0 is a real choice and
+  // is exactly the trap `readViewerPollChoice` above documents.
+  votes.forEach((option, i) => {
+    const who = authors[i];
+    if (option != null && who != null) choices.set(who, option);
+  });
+
+  return { labels: (meta?.options ?? []).map((o) => Binary.toText(o)), choices };
+}
