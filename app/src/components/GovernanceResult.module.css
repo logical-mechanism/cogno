@@ -127,6 +127,17 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Why a chamber shows voters but no counted stake. Muted and one step in, so it reads as a footnote to the
+   row above rather than a warning about the poll: nothing is wrong, the delegation is just younger than the
+   snapshot. Deliberately NOT .stale (that one is about a read we could not refresh) and not .novote (an
+   inline span in the head row, which cannot carry a paragraph's leading). */
+.pending {
+  margin: var(--cg-space-1) 0 0;
+  color: var(--cg-text-muted);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-xs);
+}
+
 /* The sample-versus-population caveat: what this poll clearing the bar does and does not mean. Shares
    .stale's four declarations rather than reusing the class, because .stale's name is a claim about data
    PROVENANCE and this note is about interpretation. Two different things that happen to look alike. */

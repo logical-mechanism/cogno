@@ -120,6 +120,30 @@ describe("chamberVote — fold options into a chamber's Yes/No/Abstain", () => {
     expect(v.voters).toBe(8);
     expect(approvalRatio(v.yes, v.no)).toBeCloseTo(1, 6); // … but not the ratio denominator
   });
+
+  // The state GovernanceResult reads to say "voted, no stake counted yet" rather than "no dReps voted".
+  // Pinned here because vitest runs in a `node` environment and cannot render the component, so this is
+  // the only place the DATA CONTRACT behind that branch can be asserted: `voters` and `total` have to be
+  // able to disagree. The runtime side is pinned by pallet-microblog's
+  // `governance_poll_counts_a_zero_weight_role_without_giving_it_weight`.
+  it("reports participation and stake INDEPENDENTLY, so a counted role can carry no weight", () => {
+    // One dRep voted Yes carrying 0 stake — a live state, not a contrived one: Cardano makes a delegation
+    // effective the epoch AFTER its certificate and the observer reads the previous epoch's snapshot, so a
+    // newly delegated dRep genuinely weighs 0 for up to two epochs.
+    const v = chamberVote([opt("Yes", 0n, 0, 0n, 1), opt("No", 0n, 0, 0n, 0)], "drep");
+    expect(v.voters).toBe(1); // somebody voted …
+    expect(v.total).toBe(0n); // … carrying nothing the snapshot can price
+    // So `total === 0n` must NEVER be read as "nobody voted": here it is true while a dRep has voted.
+    expect(v.voters > 0 && v.total === 0n).toBe(true);
+    // And there is no ratio to draw a gauge from — 0 Yes vs 0 No is not a 0% rejection.
+    expect(approvalRatio(v.yes, v.no)).toBeNull();
+  });
+
+  it("still reports a genuinely empty chamber as no voters at all", () => {
+    const v = chamberVote([opt("Yes", 0n, 0, 0n, 0), opt("No", 0n, 0, 0n, 0)], "drep");
+    expect(v.voters).toBe(0);
+    expect(v.total).toBe(0n);
+  });
 });
 
 describe("ratificationVerdict", () => {
