@@ -22,7 +22,7 @@
 // both directions: someone who signed out or cleared storage looks new, and worse, a genuine
 // first-timer who looks returning would have the price hidden from them, which is the precise failure
 // this panel exists to prevent. A heading a returning user can skip past costs nothing and cannot
-// misfire, so the panel stays visible for everyone and says who it is for.
+// misfire, so the panel stays visible for everyone and the heading alone carries who it is for.
 //
 // THE WAIT IS A CHAIN PARAMETER, NEVER A PHRASE. `useStabilityWindow` reads `StabilitySlots` off the
 // observer config: about 10 minutes on preprod, about 36 hours on mainnet. When the read has not
@@ -74,8 +74,7 @@ export function SetupCostNote({ variant = "full" }: { variant?: "full" | "brief"
         )}
       </ol>
       <p className={styles.freeNote}>
-        Signing back in on a new device or after signing out? None of this happens again. Reading is
-        free and always open either way.{" "}
+        Reading is free and always open. You do not need any of this to browse.{" "}
         <Link href="/legal/#cost" className={styles.link}>
           More about the lock
         </Link>
