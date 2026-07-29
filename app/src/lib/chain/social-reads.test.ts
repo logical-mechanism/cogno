@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Binary } from "polkadot-api";
-import { readPoll, readPollChoices } from "./social-reads";
+import { readPoll, readPollChoices, readPollVoters, MAX_POLL_VOTERS } from "./social-reads";
 import type { CognoApi } from "@/lib/types";
 
 /** A minimal fake api serving one poll view + its `Polls`/`PollResults` storage rows to `readPoll`. */
@@ -273,5 +273,60 @@ describe("readPollChoices", () => {
       labels: [],
       choices: new Map(),
     });
+  });
+});
+
+// ── readPollVoters — the roster behind the accountability surface ──
+describe("readPollVoters", () => {
+  function apiWithVoters(entries: { keyArgs: unknown[]; value: unknown }[]): CognoApi {
+    return {
+      query: { Microblog: { PollVotes: { getEntries: async () => entries } } },
+    } as unknown as CognoApi;
+  }
+
+  it("takes the account from the LAST key arg of the double map", async () => {
+    const v = await readPollVoters(
+      apiWithVoters([{ keyArgs: [7n, "addrB"], value: 1 }]),
+      7n,
+    );
+    expect(v).toEqual([{ who: "addrB", option: 1 }]);
+  });
+
+  it("keeps option 0 rather than dropping it as falsy", async () => {
+    const v = await readPollVoters(apiWithVoters([{ keyArgs: [7n, "addrA"], value: 0 }]), 7n);
+    expect(v).toEqual([{ who: "addrA", option: 0 }]);
+  });
+
+  // PAPI hands entries back in storage (hashed-key) order, which is arbitrary and would reshuffle the
+  // roster on every reload — and, once the cap bites, silently change WHICH voters are shown.
+  it("sorts by account so the roster is stable across reads", async () => {
+    const v = await readPollVoters(
+      apiWithVoters([
+        { keyArgs: [7n, "addrC"], value: 0 },
+        { keyArgs: [7n, "addrA"], value: 1 },
+        { keyArgs: [7n, "addrB"], value: 2 },
+      ]),
+      7n,
+    );
+    expect(v.map((x) => x.who)).toEqual(["addrA", "addrB", "addrC"]);
+  });
+
+  it("caps the roster, and caps it AFTER sorting", async () => {
+    const many = Array.from({ length: MAX_POLL_VOTERS + 25 }, (_, i) => ({
+      keyArgs: [7n, `addr${String(i).padStart(4, "0")}`],
+      value: i % 3,
+    }));
+    // Shuffle deterministically so the input is not already ordered.
+    const shuffled = [...many.slice(100), ...many.slice(0, 100)];
+    const v = await readPollVoters(apiWithVoters(shuffled), 7n);
+    expect(v).toHaveLength(MAX_POLL_VOTERS);
+    expect(v[0].who).toBe("addr0000");
+  });
+
+  it("never throws — a failed read yields no voters", async () => {
+    const api = {
+      query: { Microblog: { PollVotes: { getEntries: () => Promise.reject(new Error("x")) } } },
+    } as unknown as CognoApi;
+    await expect(readPollVoters(api, 7n)).resolves.toEqual([]);
   });
 });

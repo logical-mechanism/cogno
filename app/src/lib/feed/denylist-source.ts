@@ -51,7 +51,7 @@ import type {
   Suggestion,
   Ss58,
 } from "@/lib/types";
-import type { PollChoices } from "@/lib/chain/social-reads";
+import type { PollChoices, PollVoter } from "@/lib/chain/social-reads";
 import type { FeedSource, ProfileArgs } from "./source";
 
 /**
@@ -197,6 +197,16 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     return source.viewerPostState(post, whoId);
   }
 
+  async function pollVoters(hostId: bigint): Promise<PollVoter[]> {
+    // A denied HOST loses its roster with its option labels: without labels there is nothing to render a
+    // position as, and a bare list of accounts beside a delisted poll is worse than nothing.
+    if (isDeniedPost(hostId)) return [];
+    // A denied AUTHOR is dropped from the list. This is the primary guard, not defence in depth: the
+    // roster is the ONE surface that enumerates accounts from storage rather than receiving them from a
+    // read that has already been filtered.
+    return (await source.pollVoters(hostId)).filter((v) => !isDeniedAuthor(v.who));
+  }
+
   return {
     liveHeadId,
     page,
@@ -205,6 +215,7 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     poll,
     viewerPollChoice,
     pollChoices,
+    pollVoters,
     viewerPostState,
     followEdges,
     whoToFollow,

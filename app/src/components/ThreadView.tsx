@@ -39,6 +39,8 @@ import { useThread } from "@/hooks/useThread";
 import { usePostActions } from "@/hooks/usePostActions";
 import { useViewerStates } from "@/hooks/useViewerStates";
 import { useReplyVoteChoices } from "@/hooks/useReplyVoteChoices";
+import { usePollVoters } from "@/hooks/usePollVoters";
+import { PollVoters } from "./PollVoters";
 import { ReplyVoteChip } from "./ReplyVoteChip";
 import { pollChoiceLabel } from "@/lib/poll";
 import { carriedViewerStates } from "@/lib/chain/node-reads";
@@ -168,6 +170,13 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   const chipAuthors = useMemo(
     () => Array.from(new Set(shownReplies.map((r) => r.author))),
     [shownReplies],
+  );
+  // The roster under the focal poll. Shares `pollLabels` with the reply chips below, so the option text
+  // is read once and the two surfaces cannot disagree about what "Yes" is.
+  const { voters: pollVoters, truncated: votersTruncated } = usePollVoters(
+    source,
+    rootId,
+    focal?.isPoll === true,
   );
   const { labels: pollLabels, choices: pollChoices } = useReplyVoteChoices(
     source,
@@ -424,6 +433,14 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           handlers={handlers}
           variant="detail"
         />
+
+        {/* Who voted, and which way. Suppressed along with the stats for a moderated focal, for the
+            same reason: a card that says "You've blocked this account" with a live roster underneath is
+            not a suppression. Renders nothing at all until the read lands, and nothing when nobody has
+            voted, so a plain post never grows an empty section. */}
+        {!focalSuppressed && focal.isPoll && (
+          <PollVoters voters={pollVoters} labels={pollLabels} truncated={votersTruncated} />
+        )}
 
         {/* The ONE weighted-nature surface (D2/D12): score (signed, may be negative) + up/down weight,
             with the Like count. Detail-only — never rendered on timeline/reply cards. Omitted entirely

@@ -248,6 +248,47 @@ export async function readViewerPollChoices(
   return out;
 }
 
+
+/** One account's position in a poll, for the roster. */
+export interface PollVoter {
+  who: Ss58;
+  option: number;
+}
+
+/**
+ * Defensive cap on the roster read. Unlike {@link readPollChoices}, truncating here is acceptable
+ * BECAUSE the surface says it truncated: a roster is a list, not a lookup that has to be complete for a
+ * named set of accounts. The rows are sorted before the cap so the same voters survive across reads
+ * rather than changing with PAPI's hashed-key iteration order.
+ */
+export const MAX_POLL_VOTERS = 200;
+
+/**
+ * Every account that has cast in a poll, with their current choice. Newest information wins: a re-cast
+ * replaces, so this is each voter's CURRENT position, not their position when they voted.
+ *
+ * Enumerates the whole `PollVotes` prefix for the poll, which is the one place in the app where that is
+ * the right call: the roster's entire purpose is "who voted", so there is no smaller key set to ask for.
+ * It is bounded by MAX_POLL_VOTERS and the caller discloses truncation.
+ *
+ * Never throws: a read failure yields an empty list, which renders as "nobody yet" rather than a broken
+ * surface. Non-poll hosts return no entries naturally.
+ */
+export async function readPollVoters(api: CognoApi, hostId: bigint): Promise<PollVoter[]> {
+  const entries = await api.query.Microblog.PollVotes.getEntries(hostId, BEST).catch(() => []);
+  const voters: PollVoter[] = [];
+  for (const e of entries) {
+    // The double map is keyed (hostId, who), so the account is the LAST key argument.
+    const who = e.keyArgs[e.keyArgs.length - 1] as Ss58;
+    const option = e.value as unknown as number;
+    if (who && option != null) voters.push({ who, option });
+  }
+  // Sorted by account so the order is stable across reads and across viewers. PAPI returns storage
+  // (hashed-key) order, which is arbitrary and would reshuffle the list on every reload.
+  voters.sort((a, b) => (a.who < b.who ? -1 : a.who > b.who ? 1 : 0));
+  return voters.slice(0, MAX_POLL_VOTERS);
+}
+
 /** A poll's option labels plus the current choice of each NAMED account. */
 export interface PollChoices {
   /** Option labels in on-chain index order (empty when the host is not a poll, or is denied). */

@@ -124,7 +124,13 @@ const GOV_ACTIONS: {
     label: "Protocol-parameter change",
     spo: false,
     drep: true,
-    note: "Decided by dReps, plus SPOs when a security-group parameter changes.",
+    // The old wording ("plus SPOs when a security-group parameter changes") was true of Cardano and
+    // false of this poll. `spo: false` on this same row, `actionChambers` and `actionKind` all agree
+    // that a ParamChange poll tallies dReps only, and they are right to: a poll carries the action TYPE
+    // but not the parameter group, so it cannot know whether the SPO seat applies. Promising a chamber
+    // the tally then never shows is the one thing this surface must not do, so the note says what the
+    // poll does and why, rather than what Cardano does.
+    note: "Decided by dReps. On Cardano, SPOs also vote when a security-group parameter changes, but a poll cannot say which group, so this one counts dReps only.",
   },
   {
     value: "TreasuryWithdrawal",

@@ -19,7 +19,7 @@ import type {
   Suggestion,
   Ss58,
 } from "@/lib/types";
-import type { PollChoices } from "@/lib/chain/social-reads";
+import type { PollChoices, PollVoter } from "@/lib/chain/social-reads";
 
 /** Arguments for {@link FeedSource.profile} — by account or by identity hash. */
 export interface ProfileArgs {
@@ -61,6 +61,8 @@ export interface FeedSource {
    * Empty labels when the host is not a poll.
    */
   pollChoices(hostId: bigint, authors: readonly Ss58[]): Promise<PollChoices>;
+  /** Everyone who has cast in a poll, with their current choice. Bounded; the surface discloses truncation. */
+  pollVoters(hostId: bigint): Promise<PollVoter[]>;
   /** The viewer's own vote state on a post. */
   viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState>;
   /** Followers/following ids + counts for an account. */
