@@ -3000,12 +3000,22 @@ impl<T: Config> Pallet<T> {
     /// way. The SPO chamber is DEDUPED by pool id — a pool's delegated stake counts ONCE even if several
     /// declared owners of it voted; if those owners SPLIT across options the pool ABSTAINS (its weight is
     /// dropped) rather than being assigned arbitrarily. The dRep chamber needs no dedup (the claim ledger is
-    /// 1:1 drep↔account). Undelegated pools/dReps carry weight 0 and are skipped, so the SPO chamber
-    /// reflects the real delegated stake of every live pool a voter operates — via ownership OR a
-    /// claim-backed Calidus key. That weight can never be fabricated (it is always on-chain delegation of a
-    /// cold-key-signed pool), so both SPO sources tally honestly; an mSPO's per-pool weights SUM here (each
-    /// pool a distinct dedup key), matching the aggregate the operator would vote with on Cardano. The
-    /// result is independent of holder-iteration order.
+    /// 1:1 drep↔account). The SPO chamber reflects the real delegated stake of every live pool a voter
+    /// operates — via ownership OR a claim-backed Calidus key. That weight can never be fabricated (it is
+    /// always on-chain delegation of a cold-key-signed pool), so both SPO sources tally honestly; an mSPO's
+    /// per-pool weights SUM here (each pool a distinct dedup key), matching the aggregate the operator would
+    /// vote with on Cardano. The result is independent of holder-iteration order.
+    ///
+    /// A ZERO-WEIGHT ROLE STILL COUNTS, and separating the count from the weight is the whole point. This
+    /// used to `continue` on `weight == 0`, which dropped the role from the COUNT as well as the sum — so a
+    /// dRep who had voted was reported as `0 dReps`, i.e. as no participation at all. Two ordinary states
+    /// reach weight 0: a genuinely undelegated pool/dRep, and — far more often — a *newly* delegated one
+    /// whose stake is not in the as-of epoch snapshot yet (`StakeEpochLookback` reads `tip − 1`, and Cardano
+    /// only makes a new dRep's voting power effective the epoch AFTER its delegation cert, so a fresh dRep
+    /// legitimately weighs 0 here for up to two epochs). Both are "voted, no stake counted", never "did not
+    /// vote", and the count is the only place that distinction can live. Skipping them also made the count
+    /// disagree with `PollVotes`, which had recorded the vote all along. Weights are unaffected: adding 0 is
+    /// a no-op, so this changes counts ONLY. The SPO conflict rule applies to a 0-weight pool the same way.
     ///
     /// `want_spo` / `want_drep` (spec 209) select which chamber(s) this poll's [`PollKind`] surfaces:
     /// `Governance` passes both, an `Spo`/`Drep`-only poll passes a single `true`, and a `Stake` poll never
@@ -3037,10 +3047,9 @@ impl<T: Config> Pallet<T> {
             if (opt as usize) >= num_options {
                 continue;
             }
+            // NO `weight == 0` SKIP — see the note on this fn. A 0-weight role has still VOTED, and the
+            // count is what says so; its weight contributes 0 either way.
             for (kind, id, weight) in T::ChamberRoles::roles_of(holder) {
-                if weight == 0 {
-                    continue; // an undelegated pool or dRep (weight 0) contributes nothing
-                }
                 match kind {
                     0 if want_spo => {
                         // SPO chamber: dedup by pool; owners split across options ⇒ the pool abstains.

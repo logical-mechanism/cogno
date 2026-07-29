@@ -343,7 +343,13 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
       pinnedPostId: pinned == null ? undefined : BigInt(pinned),
       followerCount: Number(followerCount ?? 0),
       followingCount: Number(followingCount ?? 0),
-      observedRoles: (observedRolesRaw ?? []).map((r) => ({ kind: r.kind.type, id: r.id })),
+      // A direct `ObservedRoles` storage read, so the chamber `weight` is present and carried through
+      // (unlike the node-served folded pairs, which have none — see mapObservedRolePairs).
+      observedRoles: (observedRolesRaw ?? []).map((r) => ({
+        kind: r.kind.type,
+        id: r.id,
+        weight: r.weight,
+      })),
       page: {
         posts,
         endCursor,

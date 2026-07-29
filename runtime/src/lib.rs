@@ -131,7 +131,21 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // `app/.papi/polkadot-api.json`, so `postinstall: papi` regenerates the descriptors from it and
     // the new storage query and error variant DO reach the typed client. The
     // `DESCRIPTOR_SPEC_VERSION` lockstep constant moves with it.
-    spec_version: 213,
+    // 213 → 214 stops a governance poll reporting a chamber vote that HAPPENED as no participation.
+    // `poll_chamber_weights` skipped any role whose delegated stake was 0, which dropped it from the
+    // distinct-role COUNT as well as the weight sum — so a dRep who had voted rendered as "0 dReps",
+    // contradicting `PollVotes`, which had recorded the vote all along. Weight 0 is reached by two
+    // ordinary states, and neither is "did not vote": an undelegated pool/dRep, and a NEWLY delegated
+    // one whose stake is not in the as-of epoch snapshot yet (chamber stake is read at `tip −
+    // StakeEpochLookback`, and Cardano only makes a new dRep's voting power effective the epoch after
+    // its delegation cert, so a fresh dRep legitimately weighs 0 for up to two epochs). Counting it is
+    // the only way the surface can say "voted, no stake counted yet".
+    // This is a pure VALUE change — counts only, since summing 0 was already a no-op — so no call
+    // argument, no `TxExtension` change and no metadata SHAPE change. It nonetheless needs a
+    // `spec_version` bump to be enactable at all: `authorize_upgrade` sets `check_version = true`, and
+    // `frame_system::can_set_code` refuses a non-increasing `spec_version`. The metadata snapshot
+    // therefore moves by exactly the one `System::Version` byte that embeds this constant.
+    spec_version: 214,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or

@@ -31,6 +31,22 @@ export interface ObservedRoleView {
   kind: RoleKindType;
   /** 0x-prefixed 28-byte display id (a poolID for an SPO — ownership or Calidus; the drepID for a dRep). */
   id: string;
+  /**
+   * The governance-poll CHAMBER WEIGHT this role votes with, in lovelace — a pool's total delegated
+   * block-production stake, or a dRep's total delegated voting stake, at the observer's as-of epoch.
+   *
+   * `null` IS NOT ZERO, and conflating the two is the whole reason this is nullable. `null` means the read
+   * that produced this entry does not carry a weight at all: {@link mapObservedRolePairs} decodes the
+   * node-served `Vec<(u8, [u8;28])>` folded into `ProfileView.observed_roles` / `EnrichedPost.author_roles`,
+   * which is kind + id only. `0n` is a FACT from the ledger — the credential is observed and currently
+   * carries no delegated stake. Only a direct `CardanoRoles.ObservedRoles` storage read supplies a number.
+   *
+   * A `0n` has two ordinary causes and a surface must not read it as "not a real role": a genuinely
+   * undelegated pool/dRep, and a NEWLY delegated one whose stake is not in the as-of epoch snapshot yet
+   * (chamber stake is read at `tip − StakeEpochLookback`, and Cardano only makes a new dRep's voting power
+   * effective the epoch after its delegation cert, so a fresh dRep reads 0 here for up to two epochs).
+   */
+  weight: bigint | null;
 }
 
 /**
@@ -75,6 +91,11 @@ const ROLE_KIND_BY_INDEX: readonly RoleKindType[] = ["Spo", "DRep", "Committee"]
  * Map the node-served primitive role pairs — `[kind_index, id]`, how PAPI decodes the `Vec<(u8, [u8;28])>`
  * the runtime folds into `ProfileView.observed_roles` / `EnrichedPost.author_roles` — to `ObservedRoleView[]`.
  * Tolerant of the id arriving as a 0x-hex string or a `FixedSizeBinary`. Unknown kind indices are skipped.
+ *
+ * `weight` is `null` on every entry, and that is the honest answer rather than a gap: the folded pair
+ * carries kind + id and no stake, so claiming `0n` here would state as fact ("this role has no delegated
+ * stake") something this read never looked at. A surface that wants the number reads
+ * `CardanoRoles.ObservedRoles` directly. See {@link ObservedRoleView.weight}.
  */
 export function mapObservedRolePairs(
   pairs: ReadonlyArray<readonly [number, unknown]> | undefined | null,
@@ -90,7 +111,7 @@ export function mapObservedRolePairs(
         : typeof (rawId as { asHex?: () => string } | null)?.asHex === "function"
           ? (rawId as { asHex: () => string }).asHex()
           : undefined;
-    if (id) out.push({ kind, id });
+    if (id) out.push({ kind, id, weight: null });
   }
   return out;
 }

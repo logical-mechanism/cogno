@@ -1440,7 +1440,7 @@ fn co_owners_split_makes_the_pool_abstain_and_stake_polls_have_no_chambers() {
 }
 
 #[test]
-fn governance_poll_skips_zero_weight_roles() {
+fn governance_poll_counts_a_zero_weight_role_without_giving_it_weight() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         for who in [10u64, 11, 12, 13, 14] {
@@ -1455,9 +1455,12 @@ fn governance_poll_skips_zero_weight_roles() {
             None,
         ));
         let host = 0u64;
-        // One genuinely-delegated role per chamber, plus three ZERO-weight roles that must contribute
-        // NOTHING (the `if weight == 0 { continue }` skip): two pools with no delegators (weight 0, from
-        // either SPO source) and an undelegated dRep.
+        // One genuinely-delegated role per chamber, plus three ZERO-weight roles. A zero-weight role is
+        // COUNTED (it voted) but adds no stake — the two facts are reported separately. Skipping it
+        // outright, as this used to, reported a chamber vote that happened as no participation at all: the
+        // commonest way to reach weight 0 is simply being NEWLY delegated (Cardano makes a delegation
+        // effective the epoch after its cert, and the observer reads the previous epoch), so the surface
+        // told a dRep who had just voted that no dReps had voted.
         set_chamber_roles(10, vec![(0, POOL_P, 15_000_000)]); // real SPO → "yes"
         set_chamber_roles(11, vec![(0, POOL_R, 0)]); // undelegated pool (weight 0) → "yes"
         set_chamber_roles(12, vec![(0, POOL_Q, 0)]); // undelegated pool (weight 0) → "no"
@@ -1472,20 +1475,23 @@ fn governance_poll_skips_zero_weight_roles() {
         }
 
         let view = Microblog::poll(host).expect("poll exists");
-        // SPO chamber: only the delegated pool P (15M) counts; both undelegated pools (weight 0) are
-        // skipped — so "no" has NO pool despite voter 12 holding a (zero-weight) SPO role.
+        // SPO chamber, "yes": pool P (15M) AND undelegated pool R. TWO pools voted, carrying 15M between
+        // them — the count says both took part, the weight says only one of them has stake.
         assert_eq!(
             (view.options[0].spo_weight, view.options[0].spo_count),
-            (15_000_000, 1)
+            (15_000_000, 2)
         );
+        // SPO chamber, "no": undelegated pool Q alone. A pool voted (count 1) with no stake (weight 0).
+        // This is the case that used to read as an empty option, indistinguishable from nobody voting.
         assert_eq!(
             (view.options[1].spo_weight, view.options[1].spo_count),
-            (0, 0)
+            (0, 1)
         );
-        // dRep chamber: only the delegated dRep (7M, on "no"); the undelegated dRep on "yes" is skipped.
+        // dRep chamber, "yes": the undelegated dRep — counted, unweighted. Exactly the live-chain state
+        // that prompted this: a dRep whose delegation is newer than the epoch snapshot being read.
         assert_eq!(
             (view.options[0].drep_weight, view.options[0].drep_count),
-            (0, 0)
+            (0, 1)
         );
         assert_eq!(
             (view.options[1].drep_weight, view.options[1].drep_count),

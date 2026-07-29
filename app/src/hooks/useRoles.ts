@@ -86,8 +86,15 @@ export function useRoles(
     subs.push(
       api.query.CardanoRoles.ObservedRoles.watchValue(signer.ss58, { at: "best" }).subscribe(
         ({ value }) => {
-          const next: ObservedRoleView[] = (value ?? []).map((r) => ({ kind: r.kind.type, id: r.id }));
-          const key = JSON.stringify(next);
+          const next: ObservedRoleView[] = (value ?? []).map((r) => ({
+            kind: r.kind.type,
+            id: r.id,
+            weight: r.weight,
+          }));
+          // `weight` is a u128 → bigint, and `JSON.stringify` THROWS on a bigint ("Do not know how to
+          // serialize a BigInt") — inside a subscription callback, where it would kill the watch and leave
+          // Settings stuck on "Checking your verified roles." forever. Build the dedupe key by hand.
+          const key = next.map((r) => `${r.kind}:${r.id}:${r.weight ?? "-"}`).join("|");
           if (key === lastObserved) return;
           lastObserved = key;
           setObservedError(false);

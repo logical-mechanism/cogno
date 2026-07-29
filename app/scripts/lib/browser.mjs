@@ -8,14 +8,24 @@
 //    a "mobile" viewport without hasTouch renders the DESKTOP styling at 375px wide and reports it as
 //    fine. Viewports below the tablet breakpoint therefore always set it.
 //
-//  • The chain. The app reads over WS from PUBLIC_WS and nothing on a data surface renders without it.
-//    Chrome (nav, filters, headers, empty states) renders from first paint regardless, which is why the
-//    layout checks here do not need a chain at all. Point CG_WS at the tracking node
-//    (scripts/run-tracking-node.sh) or the live relay when a check needs real posts.
+//  • The chain. Chrome (nav, filters, headers, empty states) renders from first paint regardless of any
+//    endpoint, which is why the layout checks here do not need a chain. But OMITTING `ws` IS NOT "NO
+//    CHAIN": getEndpoints falls back to DEFAULT_WS_ENDPOINTS, which is the LIVE PUBLIC NODE
+//    (wss://cogno.forum/rpc), so an un-pointed run quietly reads production and renders whatever is on
+//    it. That makes any un-pointed check network-dependent and non-reproducible — it sees real posts on
+//    a good connection, a half-populated race on a slow one, and empty states on a plane. Pass `ws`
+//    explicitly for anything whose result should be stable: the local tracking node
+//    (scripts/run-tracking-node.sh) for real data, or an unroutable port for a guaranteed empty read.
 //
 //  • Sign-in. Signed-in surfaces are reachable with NO wallet by writing the `cg-session` record before
 //    the app boots. It is device-global (not viewer-scoped), so it goes in as a plain key. This only
 //    gets the viewer past the auth wall; it does not give them posting power, which is a chain read.
+//
+//  • Settling. openPage returns as soon as the shell has painted, which on every chain-backed surface is
+//    the SKELETON. A capture taken then shows shimmer rows and a spinner, and it looks like a legitimate
+//    loading state rather than a harness that photographed the wrong moment — so a feed, a poll, a thread
+//    and a profile were all unreviewable while appearing to have been reviewed. Pass `settle` to wait for
+//    the real content. See waitForSettled.
 //
 // SSG note: everything here drives the EXPORT, never `next dev`. See lib/export-server.mjs for why.
 
@@ -120,7 +130,7 @@ export async function newContext(browser, viewport, opts = {}) {
  * element is both faster and a stronger claim (the React tree mounted), and layout checks only need
  * chrome, which does not wait on any read.
  */
-export async function openPage(context, origin, path) {
+export async function openPage(context, origin, path, opts = {}) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -130,7 +140,70 @@ export async function openPage(context, origin, path) {
   // burns its whole timeout on every page while the DOM has in fact been ready the entire time. With a
   // 15s timeout across 13 routes and 3 viewports that is ten minutes of waiting for nothing.
   await page.waitForSelector("body *", { state: "attached", timeout: 10000 }).catch(() => {});
+  let settled = null;
+  if (opts.settle) settled = await waitForSettled(page, opts.settle === true ? {} : opts.settle);
   // One frame for layout to settle after hydration, so a measurement is not taken mid-paint.
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-  return { page, errors };
+  return { page, errors, settled };
+}
+
+/**
+ * Wait until the surface has stopped loading, so a capture or a measurement sees real content.
+ *
+ * THE PREDICATE IS `aria-busy="true"`, and that choice is the point. The app already declares its own
+ * waiting state there — Skeleton, Loading and Timeline's placeholder list all set it — so this reads a
+ * contract the components maintain rather than guessing. The obvious alternative, matching hashed
+ * CSS-module class names (`[class*="keleton"]`), works only by coincidence: the hash happens to embed the
+ * source name today, nothing guarantees it, and a production build is free to mangle it into oblivion —
+ * at which point the wait would silently pass instantly and every capture would go back to being shimmer.
+ *
+ * TEXT STABILITY IS A SECOND, SEPARATE GATE, because aria-busy drops the instant the FIRST read lands
+ * and the surface keeps moving after that: on /, article count is final at ~1s but the text still grows
+ * for another second as relative times, vote tallies and poll state arrive. Settling on aria-busy alone
+ * therefore photographs a half-populated feed, which is a more convincing wrong answer than a skeleton.
+ *
+ * IT NEVER THROWS, AND THAT IS DELIBERATE. Plenty of surfaces legitimately never settle: any chain-backed
+ * route with no `--ws` stays busy forever, and that is the correct rendering of "no chain", not a failure.
+ * A throwing wait would turn every no-chain run red and the flag would stop being used. Callers get the
+ * outcome back instead and can report it — see how shoot.mjs prints `did not settle`.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {{ timeout?: number, quiet?: number }} [opts] quiet = ms of no text change before we call it.
+ * @returns {Promise<{ ok: boolean, ms: number, busy: number, reason?: string }>}
+ */
+export async function waitForSettled(page, opts = {}) {
+  const timeout = opts.timeout ?? 10000;
+  const quiet = opts.quiet ?? 400;
+  const started = Date.now();
+  let lastLen = -1;
+  let lastChange = started;
+  let busy = -1;
+
+  while (Date.now() - started < timeout) {
+    let state;
+    try {
+      state = await page.evaluate(() => ({
+        busy: document.querySelectorAll('[aria-busy="true"]').length,
+        len: document.body.innerText.length,
+      }));
+    } catch {
+      // Navigated or closed under us. Nothing to wait for.
+      return { ok: false, ms: Date.now() - started, busy, reason: "page went away" };
+    }
+    busy = state.busy;
+    if (state.len !== lastLen) {
+      lastLen = state.len;
+      lastChange = Date.now();
+    }
+    if (state.busy === 0 && Date.now() - lastChange >= quiet) {
+      return { ok: true, ms: Date.now() - started, busy: 0 };
+    }
+    await page.waitForTimeout(100);
+  }
+  return {
+    ok: false,
+    ms: Date.now() - started,
+    busy,
+    reason: busy > 0 ? `${busy} element(s) still aria-busy` : "content never stopped changing",
+  };
 }

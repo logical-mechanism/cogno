@@ -82,8 +82,14 @@ export function RoleBadge({
     let last = " "; // sentinel distinct from any JSON
     const sub = api.query.CardanoRoles.ObservedRoles.watchValue(address, { at: "best" }).subscribe(
       ({ value }) => {
-        const next: ObservedRoleView[] = (value ?? []).map((r) => ({ kind: r.kind.type, id: r.id }));
-        const key = JSON.stringify(next);
+        const next: ObservedRoleView[] = (value ?? []).map((r) => ({
+          kind: r.kind.type,
+          id: r.id,
+          weight: r.weight,
+        }));
+        // Hand-built, NOT `JSON.stringify`: `weight` is a u128 → bigint and stringify throws on one, which
+        // here would tear down the watch and freeze the badge. Same reason as the guard in useRoles.
+        const key = next.map((r) => `${r.kind}:${r.id}:${r.weight ?? "-"}`).join("|");
         if (key === last) return;
         last = key;
         setFetched(next);

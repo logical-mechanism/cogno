@@ -71,13 +71,29 @@ function ChamberRow({
     totalActiveStake && totalActiveStake > 0n
       ? Number((v.total * 10000n) / totalActiveStake) / 100
       : null;
+  // PARTICIPATION AND WEIGHT ARE DIFFERENT QUESTIONS, and every claim below now reads the one it means.
+  // This whole readout used to branch on `v.total === 0n` — a STAKE sum — to say "no dReps voted", a
+  // PARTICIPATION claim. They come apart exactly when a role votes carrying no counted stake, which is not
+  // rare: Cardano makes a delegation effective the epoch after its certificate and the observer reads the
+  // previous epoch's snapshot, so a newly delegated dRep weighs 0 for up to two epochs. The surface then
+  // told a dRep who had just voted that no dReps had voted, while `PollVotes` held their vote and the
+  // voter roster listed them by name. `voters` is the participation fact (a distinct-role count the
+  // runtime tallies alongside the weight); `total` is only ever the stake.
+  const nobodyVoted = v.voters === 0;
+  const votedWithoutWeight = v.voters > 0 && v.total === 0n;
 
   return (
     <div className={styles.chamber}>
       <div className={styles.head}>
         <span className={styles.title}>{title}</span>
-        {v.total === 0n ? (
+        {nobodyVoted ? (
           <span className={styles.novote}>no {unit}s voted</span>
+        ) : votedWithoutWeight ? (
+          // Voted, but carrying no stake this snapshot can price. Says what happened rather than
+          // collapsing to "nobody voted" (false) or showing "0% Yes" (which reads as a rejection).
+          <span className={styles.novote}>
+            {lensVoters(v.voters, body)} voted, no stake counted yet
+          </span>
         ) : ratio == null ? (
           <span className={styles.novote}>all abstained</span>
         ) : advisory ? (
@@ -120,7 +136,13 @@ function ChamberRow({
       )}
 
       <div className={styles.meta}>
-        {v.total > 0n ? `${formatWeight(v.total)} ₳` : "no stake"}
+        {/* "no stake" ONLY when nobody voted. With voters and no weight the reason is the epoch snapshot,
+            not an absence of delegation, and a bare "no stake" reads as the latter. */}
+        {v.total > 0n
+          ? `${formatWeight(v.total)} ₳`
+          : votedWithoutWeight
+            ? "no stake counted yet"
+            : "no stake"}
         {/* The denominator is NAMED rather than called "active stake", because the two chambers do not
             stand in the same relation to it. Blockfrost's `stake.active` is the sum of pool-delegated
             stake, so for the SPO row it is exactly the right whole and the numerator nests inside it.
@@ -143,6 +165,15 @@ function ChamberRow({
         {lensVoters(v.voters, body)}
         {v.abstain > 0n && <> · {formatWeight(v.abstain)} ₳ abstained</>}
       </div>
+      {/* The reason, once, on the row it applies to. Without it "no stake counted yet" is an unexplained
+          dead end for the one reader most likely to be looking: the {unit} who just voted and cannot see
+          their own weight. Named epochs rather than a date, because the wait is measured in them. */}
+      {votedWithoutWeight && (
+        <p className={styles.pending}>
+          Cardano starts counting a delegation in the epoch after it is made, and this reads the epoch
+          before last. A new {unit} can take up to two epochs, about 10 days, to carry weight here.
+        </p>
+      )}
     </div>
   );
 }

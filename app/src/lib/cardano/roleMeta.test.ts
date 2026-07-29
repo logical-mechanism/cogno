@@ -89,9 +89,12 @@ describe("mapObservedRolePairs", () => {
         [7, "0xdd"], // unknown kind index → skipped
       ]),
     ).toEqual([
-      { kind: "Spo", id: "0xaa" },
-      { kind: "DRep", id: "0xbb" },
-      { kind: "Committee", id: "0xcc" },
+      // `weight: null`, NOT `0n`. The folded node-served pair is kind + id and never carries stake, so
+      // null is "this read did not look" while 0n would assert "this role has no delegated stake" — a
+      // claim only a direct ObservedRoles storage read is entitled to make.
+      { kind: "Spo", id: "0xaa", weight: null },
+      { kind: "DRep", id: "0xbb", weight: null },
+      { kind: "Committee", id: "0xcc", weight: null },
     ]);
   });
 
@@ -103,6 +106,8 @@ describe("mapObservedRolePairs", () => {
 
   it("coerces a FixedSizeBinary-shaped id via asHex()", () => {
     const bin = { asHex: () => "0xdeadbeef" };
-    expect(mapObservedRolePairs([[0, bin]])).toEqual([{ kind: "Spo", id: "0xdeadbeef" }]);
+    expect(mapObservedRolePairs([[0, bin]])).toEqual([
+      { kind: "Spo", id: "0xdeadbeef", weight: null },
+    ]);
   });
 });

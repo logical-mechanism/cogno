@@ -25,8 +25,14 @@ import {
   type RoleProofRequest,
   type RoleToken,
 } from "@/lib/cardano/role-proof";
-import { isBlankRoleId, roleStatusOf, type RoleKindType } from "@/lib/chain/roles";
+import {
+  isBlankRoleId,
+  roleStatusOf,
+  type ObservedRoleView,
+  type RoleKindType,
+} from "@/lib/chain/roles";
 import { getGenesisHex } from "@/lib/chain/identity";
+import { formatAda } from "@/lib/format";
 import { copyToClipboard } from "@/lib/share";
 import type { CognoApi, PostingSigner } from "@/lib/types";
 
@@ -43,6 +49,11 @@ interface RoleSpec {
   label: string; // short, e.g. "SPO"
   title: string;
   cardHint: string;
+  /** What this role's chamber weight IS, as the row label. The two are different Cardano quantities and
+   *  must not share a word: an SPO votes with the stake DELEGATED TO ITS POOL for block production, a dRep
+   *  with the stake DELEGATED TO IT for voting. Calling both "stake" invites the reading that a pool's
+   *  delegators also decide its governance vote. */
+  stakeLabel: string;
   keyPlaceholder: string;
   keyHint: ReactNode;
   /** The key can be signed IN-WALLET (dRep via CIP-95; SPO via the wallet's root payment key, from which
@@ -61,6 +72,7 @@ const ROLE_SPECS: RoleSpec[] = [
     title: "Stake pool operator (SPO)",
     cardHint:
       "Prove you control your pool's Calidus key. The tag comes off if the pool retires.",
+    stakeLabel: "Pool stake",
     // SPO wallet-sign is OFF on the live chain. Eternl's raw Calidus `signData` embeds a CIP-0151 `0xa1‖cred`
     // address, which the runtime (spec 210) rejects with `WrongNetwork` — the claim would always fail in the
     // pool. Runtime support lands with spec 211; the wallet pre-flight already accepts the 0xa1 form, so flip
@@ -79,6 +91,7 @@ const ROLE_SPECS: RoleSpec[] = [
     title: "Delegated representative (dRep)",
     cardHint:
       "Prove you control your dRep key. The tag comes off if you deregister.",
+    stakeLabel: "Voting stake",
     walletSignable: true,
     walletHint: "Needs a wallet that can sign with your dRep key, like Eternl or Lace.",
     keyPlaceholder: "drep1… id / drep .vkey cborHex / 56-hex dRep ID",
@@ -86,6 +99,49 @@ const ROLE_SPECS: RoleSpec[] = [
       "Only key-based dReps can sign. This is a public key, so never paste your secret one.",
   },
 ];
+
+/**
+ * The governance-poll weight a verified role actually votes with, from `ObservedRoles`.
+ *
+ * WHY THIS EXISTS. The card said "✓ Verified dRep" and stopped there, so the one number that decides what
+ * the tag is FOR was nowhere in the app. A dRep could see the badge, vote in a dRep poll, and be told the
+ * poll had "0 dReps" with no way to find out that their voting stake was reading as zero.
+ *
+ * ZERO IS NOT AN ERROR AND IS NOT "NO ROLE", so it gets an explanation instead of a dash. Two ordinary
+ * states reach it, and the far more common one is simply being new: Cardano makes a delegation effective the
+ * epoch AFTER its certificate, and the observer reads the previous epoch's snapshot, so a freshly delegated
+ * pool or dRep genuinely weighs nothing here for up to two epochs. Rendering that as "—" (what `formatAda`
+ * gives a 0) reads as "we do not know", and rendering it as a plain "0 ADA" reads as "you have no
+ * delegators". Neither is what happened.
+ *
+ * `weight == null` renders NOTHING: it means the read did not carry a weight, which is a different claim
+ * from zero and not one this row can make. `useRoles` reads storage so it always has a number; the guard is
+ * for a future caller passing folded node-served pairs (see `ObservedRoleView.weight`).
+ */
+function ChamberStake({ entries, spec }: { entries: readonly ObservedRoleView[]; spec: RoleSpec }) {
+  const weighed = entries.filter((r) => r.weight != null);
+  if (weighed.length === 0) return null;
+  // An mSPO holds one entry per declaring pool and votes with their SUM (the runtime's chamber tally dedups
+  // by pool id and adds, so this matches what the poll counts). A dRep is 1:1 and the sum is its one entry.
+  const total = weighed.reduce((s, r) => s + (r.weight ?? 0n), 0n);
+  return (
+    <>
+      <div className={styles.statRow}>
+        <span className={styles.statLabel}>{spec.stakeLabel}</span>
+        <span className={styles.statValue}>
+          {total > 0n ? formatAda(total) : "None counted yet"}
+        </span>
+      </div>
+      {total === 0n && (
+        <p className={styles.cardHint}>
+          Cardano starts counting a new delegation in the epoch after it is made, and we read the
+          epoch before last. A new {spec.label} can take up to two epochs, about 10 days, to show a
+          number here. Your votes still record in the meantime, they just carry no weight yet.
+        </p>
+      )}
+    </>
+  );
+}
 
 function RoleClaimCard({
   spec,
@@ -259,23 +315,26 @@ function RoleClaimCard({
 
       {status === "verified" ? (
         // ── verified: the observer confirmed a live role ──
-        <div className={styles.statusRow}>
-          <span className={styles.verifiedMark}>✓ Verified {spec.label}</span>
-          {/* An SPO names its pool(s) — an mSPO shows one id per declaring pool; a dRep shows its drepID.
-              (The blank guard is defensive — no live role carries an all-zero id.) */}
-          {observedList
-            .filter((r) => !isBlankRoleId(r.id))
-            .map((r) => (
-              <span key={r.id} className={styles.mono}>
-                {truncId(r.id)}
-              </span>
-            ))}
-          {/* Only offer "Remove" when a CLAIM backs the badge — a badge from the free SpoOwner path (live
-              pool ownership, no `RoleClaimOf` entry) has nothing to unclaim, and unclaim_role would fail
-              `NotClaimed` + can't-pay for a zero-balance account. Ownership-derived badges clear only when
-              the pool retires, not by a user action. */}
-          {claimCred && removeBtn}
-        </div>
+        <>
+          <div className={styles.statusRow}>
+            <span className={styles.verifiedMark}>✓ Verified {spec.label}</span>
+            {/* An SPO names its pool(s) — an mSPO shows one id per declaring pool; a dRep shows its drepID.
+                (The blank guard is defensive — no live role carries an all-zero id.) */}
+            {observedList
+              .filter((r) => !isBlankRoleId(r.id))
+              .map((r) => (
+                <span key={r.id} className={styles.mono}>
+                  {truncId(r.id)}
+                </span>
+              ))}
+            {/* Only offer "Remove" when a CLAIM backs the badge — a badge from the free SpoOwner path (live
+                pool ownership, no `RoleClaimOf` entry) has nothing to unclaim, and unclaim_role would fail
+                `NotClaimed` + can't-pay for a zero-balance account. Ownership-derived badges clear only when
+                the pool retires, not by a user action. */}
+            {claimCred && removeBtn}
+          </div>
+          <ChamberStake entries={observedList} spec={spec} />
+        </>
       ) : claimCred ? (
         // ── claimed, but the observer hasn't confirmed a live role yet ──
         <div className={styles.statusRow}>
