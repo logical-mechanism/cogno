@@ -41,8 +41,15 @@ const EXPECTED_SPEC_NAME = "cogno-chain-runtime";
  * 209 → 210 was a NON-encoding bump (a cogno-gate CIP-8 role-verifier change — see runtime spec 210):
  * calls/storage/events/extensions are byte-identical, so the descriptors did not need regenerating; only
  * this guard constant moves in lockstep with the runtime.
+ *
+ * 213 → 214 is another non-encoding bump: `poll_chamber_weights` now COUNTS a zero-weight chamber role
+ * instead of skipping it, which changes tallied VALUES and no shape at all. `check-metadata.sh` confirmed
+ * it — one differing byte, `0xd5 → 0xd6`, at the `System::Version` offset that embeds this very number,
+ * with the blob the same 141110 bytes. So the descriptors are unchanged in substance and only this
+ * constant had to move. It still HAS to move: the guard compares it to the live `spec_version`, and the
+ * bump itself is unavoidable because `frame_system::can_set_code` refuses a non-increasing one.
  */
-export const DESCRIPTOR_SPEC_VERSION: number | null = 213;
+export const DESCRIPTOR_SPEC_VERSION: number | null = 214;
 
 /** Heartbeat window: if no new best block arrives within this, we surface "reconnecting". */
 const BLOCK_HEARTBEAT_MS = 30_000;
