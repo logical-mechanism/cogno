@@ -6,9 +6,11 @@
 // null on ANY failure (CORS / offline / 404 / bad JSON / oversize / timeout). It NEVER throws and NEVER
 // fabricates content. SSG-safe: no `window` / `fetch` at module scope — only inside `resolveProposal`.
 //
-// UNVERIFIED by design: cogno stores only the anchor LINK (the composer pins no hash), so the fetched doc
-// could have changed since the poll was created. The UI labels the preview as unverified — this is a
-// convenience read of off-chain text, not an on-chain fact.
+// PINNED WHERE POSSIBLE: the composer hashes the document it fetched and stores blake2b-256 of it on
+// chain beside the link, so a reader can be told whether what they are reading is what the poll was
+// created from. A hash is only pinned when a reader could reproduce it (see hashProposalDoc), so many
+// polls legitimately carry none and are labelled unverified. Either way this is still a convenience read
+// of off-chain text, not an on-chain fact: the DOCUMENT is not on chain, only a commitment to it.
 
 import { sanitizeInline, sanitizeText } from "@/lib/sanitize";
 
@@ -143,12 +145,16 @@ export function parseProposalDoc(json: unknown): ProposalMeta | null {
  * letting `res.text()` buffer the whole thing and OOM the tab. Falls back to a bounded `text()` only if the
  * platform exposes no readable stream. Called client-side only (SSG-safe: no fetch/stream at module scope).
  */
-async function readCapped(res: Response, capBytes: number): Promise<string | null> {
+async function readCapped(
+  res: Response,
+  capBytes: number,
+): Promise<{ text: string; bytes: Uint8Array } | null> {
   const reader = res.body?.getReader();
   if (!reader) {
     const text = await res.text();
     // Measure BYTES (not `.length`, which counts UTF-16 code units) so a multibyte doc can't slip the cap.
-    return new TextEncoder().encode(text).byteLength > capBytes ? null : text;
+    const bytes = new TextEncoder().encode(text);
+    return bytes.byteLength > capBytes ? null : { text, bytes };
   }
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -169,7 +175,13 @@ async function readCapped(res: Response, capBytes: number): Promise<string | nul
     buf.set(c, off);
     off += c.byteLength;
   }
-  return new TextDecoder().decode(buf);
+  // The RAW bytes are returned alongside the decoded text, and the anchor hash is taken over the bytes.
+  // Hashing the decoded text instead would be a bug that only shows up on real documents: TextDecoder
+  // strips a UTF-8 BOM by default, so re-encoding gives a buffer three bytes shorter than what arrived,
+  // and any invalid UTF-8 decodes to U+FFFD and re-encodes as EF BF BD. Either way the pinned hash could
+  // never be reproduced from the identical document. The no-stream fallback above is exempt because it
+  // has already lost the original bytes; it is a platform fallback that no real browser takes.
+  return { text: new TextDecoder().decode(buf), bytes: buf };
 }
 
 // Per-URL caches. `resolved` holds only TERMINAL outcomes — a parsed value, or `null` when a RESPONSE came
@@ -187,6 +199,20 @@ async function readCapped(res: Response, capBytes: number): Promise<string | nul
 // keyed by url alone, correctly: a TERMINAL outcome is about the document, not about how it was reached.
 const resolved = new Map<string, ProposalMeta | null>();
 const inflight = new Map<string, Promise<ProposalMeta | null>>();
+
+// The hash of whatever the READER's own fetch returned for a url, alongside `resolved`. Safe to cache
+// next to the meta precisely because the composer does NOT populate it: `hashProposalDoc` is a separate,
+// uncached, no-redirect read. Were the commitment path to share this cache, verification would compare a
+// pinned hash against the very entry it was derived from and return "verified" without touching the
+// network for the author's whole session.
+const readOutcome = new Map<string, AnchorHashResult>();
+
+/** The hash outcome of this reader's own fetch of `anchorUrl`, or null if they have not fetched it yet. */
+export function readAnchorOutcome(anchorUrl: string): AnchorHashResult | null {
+  const url = proposalHttpUrl(anchorUrl);
+  if (!url) return null;
+  return readOutcome.get(url) ?? null;
+}
 
 /**
  * Fetch + parse the proposal doc for `anchorUrl` (on demand), or null when it can't be loaded/parsed.
@@ -227,18 +253,33 @@ export async function resolveProposal(
       // transient (uncached) failure — so the Preview click can still follow it afterwards.
       const res = await fetch(url, { signal: ctl.signal, redirect: follow ? "follow" : "error" });
       // A response arrived: every conclusion from here is TERMINAL (a retry won't change it) → cache it.
-      if (!res.ok) return settle(null); // 404 / 403 / 429 → degrade gracefully
+      if (!res.ok) {
+        readOutcome.set(url, { kind: "refused" });
+        return settle(null); // 404 / 403 / 429 → degrade gracefully
+      }
       const declared = Number(res.headers.get("content-length") ?? "0");
-      if (declared > MAX_DOC_BYTES) return settle(null); // host DOES declare an oversized doc
-      const text = await readCapped(res, MAX_DOC_BYTES);
-      if (text === null) return settle(null); // over the cap mid-stream → refuse
+      if (declared > MAX_DOC_BYTES) {
+        readOutcome.set(url, { kind: "refused" });
+        return settle(null); // host DOES declare an oversized doc
+      }
+      const read = await readCapped(res, MAX_DOC_BYTES);
+      if (read === null) {
+        readOutcome.set(url, { kind: "refused" });
+        return settle(null); // over the cap mid-stream → refuse
+      }
       let json: unknown;
       try {
-        json = JSON.parse(text);
+        json = JSON.parse(read.text);
       } catch {
+        readOutcome.set(url, { kind: "not-a-doc" });
         return settle(null); // malformed JSON — won't improve on retry
       }
-      return settle(parseProposalDoc(json));
+      const parsed = parseProposalDoc(json);
+      // Hashed over the RAW bytes, the same input `hashProposalDoc` pinned from, so the two are
+      // comparable. Recorded even when the doc did not parse into display fields: a poll that pinned a
+      // hash still deserves a verdict about the bytes.
+      readOutcome.set(url, { kind: "ok", hash: toHex(blake2b(read.bytes, undefined, 32)) });
+      return settle(parsed);
     } catch {
       // Transient (offline / CORS / abort / timeout): NO response arrived — don't cache, allow a later retry.
       return null;
@@ -252,4 +293,120 @@ export async function resolveProposal(
 
   inflight.set(flightKey, p);
   return p;
+}
+
+// ── anchor-hash pinning + verification ───────────────────────────────────────────────────────────
+//
+// A cogno governance poll is created BEFORE the Cardano action is submitted, so there is usually no
+// on-chain proposal whose anchor hash we could copy. Instead the composer hashes the document it
+// actually fetched and pins that, and the poll becomes a commitment to the version its author read.
+//
+// THE COMPOSER FETCHES EXACTLY AS A READER WILL. Same no-redirect policy, and deliberately NOT through
+// the shared `resolved` cache. Both halves are load-bearing:
+//
+//  • Following redirects at compose time would pin a hash from a document readers can never fetch (the
+//    browser cannot read a cross-origin Location, so the read path refuses a 3xx on purpose). The author
+//    would see "verified" on their own poll while every reader saw "could not check" forever. GitHub
+//    blob URLs 302, and the composer's own placeholder suggests one, so this would have been the modal
+//    outcome rather than an edge case.
+//  • Sharing the cache would make verification a tautology for the author's whole session: the compare
+//    would read back the very entry the commitment was derived from, without touching the network.
+//
+// So a hash is pinned only when a reader, fetching the same way, will be able to reproduce it.
+
+import { blake2b } from "blakejs";
+import { toHex } from "@polkadot-api/utils";
+
+/** The outcome of a compose-time hash attempt. Only `ok` produces a pin. */
+export type AnchorHashResult =
+  | { kind: "ok"; hash: string }
+  /** Fetched and hashed, but the body was not a CIP-108 document we could parse. */
+  | { kind: "not-a-doc" }
+  /** A response arrived and was refused (bad status, oversized). Terminal: retrying changes nothing. */
+  | { kind: "refused" }
+  /** No response at all (CORS, offline, timeout, or a redirect the read path will also refuse). */
+  | { kind: "unreachable" };
+
+/**
+ * Fetch the document at `anchorUrl` and return blake2b-256 of the bytes as received, for pinning on
+ * chain. Never throws.
+ *
+ * Deliberately UNCACHED and non-following, mirroring what a reader's verification fetch will do. See the
+ * section header for why both matter.
+ *
+ * A hash is only produced when the body also PARSES as a CIP-108 document. That is not pedantry: the
+ * hosts that survive CORS and serve non-JSON are exactly the churny ones (an IPFS directory CID renders
+ * a gateway-generated HTML listing that tracks the gateway's version; an SPA shell rewrites its bytes on
+ * every deploy). Pinning those would produce "changed" with no author involvement, which trains readers
+ * to ignore the warning that is the whole point of the feature.
+ */
+export async function hashProposalDoc(anchorUrl: string): Promise<AnchorHashResult> {
+  const url = proposalHttpUrl(anchorUrl);
+  if (!url) return { kind: "unreachable" };
+
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: ctl.signal, redirect: "error" });
+    if (!res.ok) return { kind: "refused" };
+    const declared = Number(res.headers.get("content-length") ?? "0");
+    if (declared > MAX_DOC_BYTES) return { kind: "refused" };
+    const read = await readCapped(res, MAX_DOC_BYTES);
+    if (read === null) return { kind: "refused" };
+    try {
+      if (parseProposalDoc(JSON.parse(read.text)) === null) return { kind: "not-a-doc" };
+    } catch {
+      return { kind: "not-a-doc" };
+    }
+    // Over the RAW bytes, never the decoded text. See readCapped.
+    return { kind: "ok", hash: toHex(blake2b(read.bytes, undefined, 32)) };
+  } catch {
+    return { kind: "unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** What a reader can be told about a poll's pinned document. */
+export type AnchorVerdict =
+  /** No hash was pinned (every poll before this shipped, and any whose document could not be hashed). */
+  | "unpinned"
+  /** The document still hashes to what the poll pinned. */
+  | "verified"
+  /** It fetched, and it is NOT what was pinned. */
+  | "changed"
+  /** A hash was pinned and the document is now gone or refused. Evidence AGAINST it, not absence of it. */
+  | "missing"
+  /** Could not be checked from this browser at all. Says nothing either way. */
+  | "unchecked";
+
+/**
+ * Compare a freshly-read document against the hash a poll pinned.
+ *
+ * `missing` is separated from `unchecked` on purpose, and it is the one distinction that carries weight.
+ * Deleting the document after votes are cast is the cheapest evasion available to a poll author, and a
+ * 404 on a pinned document is terminal, cached, and squarely evidence against it. Folding that into the
+ * same environmental-sounding "could not check" as an offline reader would give the cheapest attack the
+ * mildest label in the set. Pure, so the whole table is unit-tested.
+ */
+export function anchorVerdict(
+  pinned: string | undefined,
+  read: AnchorHashResult | null,
+): AnchorVerdict {
+  if (!pinned) return "unpinned";
+  if (read === null) return "unchecked";
+  switch (read.kind) {
+    case "ok":
+      // Hex from `toHex` is lowercase; the on-chain value arrives as PAPI's SizedHex. Compare
+      // case-insensitively rather than trusting both ends to agree on casing forever.
+      return read.hash.toLowerCase() === pinned.toLowerCase() ? "verified" : "changed";
+    case "not-a-doc":
+      // It fetched and it is not the pinned document. Whether it stopped being JSON or was replaced
+      // wholesale, the commitment does not hold.
+      return "changed";
+    case "refused":
+      return "missing";
+    case "unreachable":
+      return "unchecked";
+  }
 }

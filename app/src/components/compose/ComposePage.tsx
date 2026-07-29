@@ -49,10 +49,12 @@ import {
   submitCreatePoll,
   resolveCloseAt,
 } from "@/lib/chain/mutations";
+import type { PollActionInput } from "@/lib/chain/mutations";
+import { hashProposalDoc } from "@/lib/cardano/proposalMeta";
 import { useToaster } from "@/components/toast/ToasterProvider";
 import { viewerBucket } from "@/lib/viewerBucket";
 import type { ComposerDraft, ComposerMode, PollDraft } from "@/components/kit";
-import type { CognoPost, PollKindName, GovActionType } from "@/lib/types";
+import type { CognoPost, PollKindName } from "@/lib/types";
 
 /** Only a canonical decimal u64 is a valid reply/quote target; reject anything else (no BigInt throw). */
 function parseTargetId(raw: string | null): bigint | null {
@@ -278,7 +280,7 @@ export function ComposePage() {
       options: string[],
       closeInDays?: number,
       kind?: PollKindName,
-      action?: { actionType: GovActionType; anchorUrl: string },
+      action?: PollActionInput,
     ) => {
       if (viewer.status !== "ready") return void router.push("/welcome/");
       // A chamber (governance) poll may carry an empty question — its subject is the tagged proposal, so the
@@ -299,8 +301,18 @@ export function ComposePage() {
         });
         return;
       }
+      // Pin the document's hash, so the poll commits to the version its author read. Done HERE rather
+      // than live in the composer: the hash then has exactly one home and cannot be dropped by a draft
+      // setter, and the fetch happens once, next to the signature the author is already waiting on.
+      // A failure is not an error state. It means the poll carries no fingerprint, which the preview
+      // says plainly, so we proceed rather than blocking a poll on somebody else's CORS policy.
+      let pinned = action;
+      if (action) {
+        const h = await hashProposalDoc(action.anchorUrl);
+        if (h.kind === "ok") pinned = { ...action, anchorHash: h.hash };
+      }
       runWrite(
-        submitCreatePoll(api, signer, question, options, closeAt, kind, action),
+        submitCreatePoll(api, signer, question, options, closeAt, kind, pinned),
         optimisticPost(question, { isPoll: true }),
         { pending: "Creating poll…", success: "Poll created" },
       );

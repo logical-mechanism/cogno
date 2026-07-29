@@ -46,9 +46,11 @@ import {
   submitSetProfile,
   submitClearProfile,
 } from "@/lib/chain/mutations";
+import type { PollActionInput } from "@/lib/chain/mutations";
+import { hashProposalDoc } from "@/lib/cardano/proposalMeta";
 import { viewerBucket } from "@/lib/viewerBucket";
 import type { ComposerDraft, PollDraft, ModalKind } from "../kit";
-import type { CognoPost, PollKindName, GovActionType } from "@/lib/types";
+import type { CognoPost, PollKindName } from "@/lib/types";
 import type { ProfileFields } from "../EditProfileModal";
 
 const TITLES: Record<Exclude<ModalKind, null>, string> = {
@@ -379,7 +381,7 @@ export function ModalRouteHost() {
       options: string[],
       closeInDays?: number,
       kind?: PollKindName,
-      action?: { actionType: GovActionType; anchorUrl: string },
+      action?: PollActionInput,
     ) => {
       if (viewer.status !== "ready") {
         close();
@@ -404,8 +406,18 @@ export function ModalRouteHost() {
         });
         return;
       }
+      // Pin the document's hash, so the poll commits to the version its author read. Done HERE rather
+      // than live in the composer: the hash then has exactly one home and cannot be dropped by a draft
+      // setter, and the fetch happens once, next to the signature the author is already waiting on.
+      // A failure is not an error state. It means the poll carries no fingerprint, which the preview
+      // says plainly, so we proceed rather than blocking a poll on somebody else's CORS policy.
+      let pinned = action;
+      if (action) {
+        const h = await hashProposalDoc(action.anchorUrl);
+        if (h.kind === "ok") pinned = { ...action, anchorHash: h.hash };
+      }
       runWrite(
-        submitCreatePoll(api, signer, question, options, closeAt, kind, action),
+        submitCreatePoll(api, signer, question, options, closeAt, kind, pinned),
         optimisticPost(question, { isPoll: true }),
         { pending: "Creating poll…", success: "Poll created" },
       );

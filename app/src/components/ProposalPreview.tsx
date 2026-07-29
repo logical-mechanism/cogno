@@ -28,6 +28,9 @@ import {
   resolveProposal,
   proposalHttpUrl,
   isNeutralProposalHost,
+  anchorVerdict,
+  readAnchorOutcome,
+  type AnchorVerdict,
   type ProposalMeta,
 } from "@/lib/cardano/proposalMeta";
 import type { GovActionView } from "@/lib/types";
@@ -40,6 +43,21 @@ const BLOCK_FIELDS = [
   { key: "motivation", label: "Motivation" },
   { key: "rationale", label: "Rationale" },
 ] as const;
+
+/**
+ * What the reader is told about the pinned document, per verdict.
+ *
+ * "missing" reads as an accusation on purpose. Deleting the document after votes are cast is the
+ * cheapest evasion available to a poll author, and folding a 404 into the same environmental-sounding
+ * "could not check" as an offline reader would hand the cheapest attack the mildest label in the set.
+ */
+const VERDICT_COPY: Record<AnchorVerdict, string> = {
+  unpinned: "Unverified. This poll did not pin the document, so it may have changed since.",
+  verified: "Matches the document this poll was created from.",
+  changed: "This is not the document this poll was created from. It has changed since.",
+  missing: "The document this poll pinned is no longer readable at this link.",
+  unchecked: "Could not check this document from your browser.",
+};
 
 export function ProposalPreview({
   action,
@@ -62,6 +80,9 @@ export function ProposalPreview({
   const [status, setStatus] = useState<Status>("idle");
   const [meta, setMeta] = useState<ProposalMeta | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Recomputed on every render off the module-level outcome cache, which the fetch effect below fills.
+  // `status` is in the dep chain implicitly: the effect setState that flips it is what re-renders us.
+  const verdict = anchorVerdict(action.anchorHash, readAnchorOutcome(action.anchorUrl));
 
   // TWO paths, and the difference between them is a privacy boundary, not an optimization.
   //
@@ -162,10 +183,17 @@ export function ProposalPreview({
           title LEADS so a viewer tells one Treasury withdrawal from the next without opening anything; it's
           present once resolved (an eager neutral-host fetch, or a prior open) and hidden while the panel is
           open, where the title already heads the content. Clamped to two lines. */}
-      {!open && meta?.title && (
+      {/* The glance title is the card's DEFAULT visible state, so it is guarded here and not only in
+          the panel below. Rendering a substituted title as the headline while the "this changed"
+          warning sits behind a collapsed expander would waste the whole mechanism: the reader would
+          take in the attacker's text and never open the thing that contradicts it. */}
+      {!open && meta?.title && verdict !== "changed" && verdict !== "missing" && (
         <p className={styles.glanceTitle} dir="auto">
           {meta.title}
         </p>
+      )}
+      {!open && (verdict === "changed" || verdict === "missing") && (
+        <p className={styles.alarm}>{VERDICT_COPY[verdict]}</p>
       )}
 
       <span className={styles.type}>{typeLabel}</span>
@@ -217,9 +245,8 @@ export function ProposalPreview({
                   </div>
                 );
               })}
-              <p className={styles.caveat}>
-                Unverified · may have changed since the poll was created.{" "}
-                {sourceLink("View source ↗", href)}
+              <p className={verdict === "changed" || verdict === "missing" ? styles.alarm : styles.caveat}>
+                {VERDICT_COPY[verdict]} {sourceLink("View source ↗", href)}
               </p>
             </>
           )}

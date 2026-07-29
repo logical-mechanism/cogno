@@ -4,6 +4,7 @@ import {
   parseProposalDoc,
   resolveProposal,
   isNeutralProposalHost,
+  anchorVerdict,
 } from "./proposalMeta";
 
 describe("proposalHttpUrl", () => {
@@ -244,5 +245,42 @@ describe("resolveProposal redirect policy", () => {
     expect(await eager).toBeNull(); // transient: refused the 3xx, deliberately uncached
     expect((await demanded)?.title).toBe("Behind a redirect");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// The verdict table is the whole reader-facing contract of anchor pinning, so it is pinned here rather
+// than left to the component. The distinction that matters most is `missing` versus `unchecked`: a
+// pinned document that 404s is evidence AGAINST it, while an offline reader has no evidence either way.
+describe("anchorVerdict", () => {
+  const H = "0xaabb";
+
+  it("is unpinned whenever the poll carries no hash, whatever the read said", () => {
+    expect(anchorVerdict(undefined, null)).toBe("unpinned");
+    expect(anchorVerdict(undefined, { kind: "ok", hash: H })).toBe("unpinned");
+    expect(anchorVerdict(undefined, { kind: "refused" })).toBe("unpinned");
+    expect(anchorVerdict("", { kind: "ok", hash: H })).toBe("unpinned");
+  });
+
+  it("verifies an exact match", () => {
+    expect(anchorVerdict(H, { kind: "ok", hash: H })).toBe("verified");
+  });
+
+  it("compares case-insensitively, so hex casing cannot cause a false alarm", () => {
+    expect(anchorVerdict("0xAABB", { kind: "ok", hash: "0xaabb" })).toBe("verified");
+    expect(anchorVerdict("0xaabb", { kind: "ok", hash: "0xAABB" })).toBe("verified");
+  });
+
+  it("reports a mismatch as changed", () => {
+    expect(anchorVerdict(H, { kind: "ok", hash: "0xccdd" })).toBe("changed");
+  });
+
+  it("treats a body that stopped being a document as changed, not as unreadable", () => {
+    expect(anchorVerdict(H, { kind: "not-a-doc" })).toBe("changed");
+  });
+
+  it("separates a vanished pinned document from a reader who simply could not check", () => {
+    expect(anchorVerdict(H, { kind: "refused" })).toBe("missing");
+    expect(anchorVerdict(H, { kind: "unreachable" })).toBe("unchecked");
+    expect(anchorVerdict(H, null)).toBe("unchecked");
   });
 });
