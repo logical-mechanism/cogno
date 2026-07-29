@@ -15,6 +15,15 @@
 // CAN be (the ADA is refundable, with no timelock and no cooldown). Folding the two together would
 // misrepresent both.
 //
+// "FIRST TIME HERE?" IS A LABEL, NOT A DETECTION, and that is deliberate. Step 1 is also where a
+// RETURNING user lands: nothing is stored, so re-deriving the posting key means picking a wallet
+// again, and a signup checklist over that reads as "you are making a second account". The obvious fix
+// is to detect a returning user from the `cg-session` record and hide this. That detection is wrong in
+// both directions: someone who signed out or cleared storage looks new, and worse, a genuine
+// first-timer who looks returning would have the price hidden from them, which is the precise failure
+// this panel exists to prevent. A heading a returning user can skip past costs nothing and cannot
+// misfire, so the panel stays visible for everyone and says who it is for.
+//
 // THE WAIT IS A CHAIN PARAMETER, NEVER A PHRASE. `useStabilityWindow` reads `StabilitySlots` off the
 // observer config: about 10 minutes on preprod, about 36 hours on mainnet. When the read has not
 // resolved the sentence is OMITTED rather than guessed — the same rule PowerUps and setup-status
@@ -49,7 +58,7 @@ export function SetupCostNote({ variant = "full" }: { variant?: "full" | "brief"
 
   return (
     <div className={styles.full}>
-      <p className={styles.fullLead}>Before you connect</p>
+      <p className={styles.fullLead}>First time here?</p>
       <ol className={styles.steps}>
         <li>
           <strong>Sign in with your wallet.</strong> Two signatures, no fees.
@@ -65,7 +74,8 @@ export function SetupCostNote({ variant = "full" }: { variant?: "full" | "brief"
         )}
       </ol>
       <p className={styles.freeNote}>
-        Reading is free and always open. You do not need any of this to browse.{" "}
+        Signing back in on a new device or after signing out? None of this happens again. Reading is
+        free and always open either way.{" "}
         <Link href="/legal/#cost" className={styles.link}>
           More about the lock
         </Link>
