@@ -75,8 +75,11 @@
   .who {
     display: none;
   }
-  /* The guest connect pill (a nowrap accent button ≈160px wide) does not fit the 88px icon-only rail —
-     hide it here. A tablet guest reaches sign-in via the accent "Post" circle / Profile (both → /welcome). */
+  /* The onboarding pill is nowrap and still too wide for the 88px icon-only rail: "Sign in" is close
+     but "Finish setup" (the connected-but-unbound label) is not, and one rule has to fit both. Hidden
+     here. A tablet guest still reaches sign-in via the accent "Post" circle and the Profile tab, which
+     both route to /welcome and are now marked "(sign in required)". Giving this rail its own labelled
+     control means an icon-only variant, not a narrower pill. */
   .connectRoot {
     display: none;
   }

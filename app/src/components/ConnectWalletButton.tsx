@@ -1,174 +1,49 @@
 "use client";
 
-// ConnectWalletButton — the entry to "Cardano wallet → derive posting key → bind identity".
-// Label/target derive from `viewer.status`:
-//   not-connected      → "Connect wallet" → opens the CIP-30 wallet picker → useSigner.connectWallet
-//                        (derives the sr25519 posting key from the CIP-8 signature; nothing stored).
-//   not-identity-bound → "Finish setup" → onContinueSetup() (routes to /welcome's bind step).
-//   ready              → renders NOTHING (the LeftNav shows the account chip instead).
-// The actual bind extrinsic lives in /welcome; this button only initiates/continues. Reading always
-// works unauthenticated, so a decline never blocks the app — it surfaces as a toast and the user
-// can just tap Connect again (no inline Retry).
+// ConnectWalletButton — the LeftNav entry into onboarding. Label/target derive from `viewer.status`:
+//   not-connected      → "Sign in"      → /welcome (step 1 is the wallet picker)
+//   not-identity-bound → "Finish setup" → /welcome (resumes at the bind step)
+//   ready              → renders NOTHING (the LeftNav shows the account chip instead)
+//
+// IT USED TO OPEN ITS OWN INLINE WALLET PICKER, and that was a second door onto the same first step.
+// Both doors listed the same `listCardanoWallets()` and ran the same `connectWallet()` derive; the
+// difference was only where you landed. This one dropped you back on the timeline as
+// `connected_unbound`, having spent a wallet signature, with every write control now reading "Finish
+// setup" and this button relabelled to the same thing. The only move left was to press it again and go
+// where the other door went directly. Three things were wrong with that:
+//
+//   • It ended in a state where nothing worked, as the outcome of a first interaction.
+//   • It bypassed the cost disclosure. `SetupCostNote` lives in /welcome's WalletPicker, so a desktop
+//     user signing here never saw what setup costs before committing — the exact consent gap that
+//     panel exists to close, left open on one of the two paths.
+//   • It was DESKTOP ONLY (Account.module.css hides this pill at ≤1019px, and mobile has no LeftNav),
+//     so tablet and mobile users already had exactly one door. This makes desktop match them.
+//
+// "Connect wallet" went with the popover. In most of web3 that phrase means the whole auth; here it
+// meant step 1 of 4, and naming a partial step like a complete one is a good part of why a new user
+// could not tell the two buttons apart. Reading always works unauthenticated, so neither label is a
+// wall — it is an invitation.
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./ConnectWalletButton.module.css";
-import { Spinner } from "./icons";
-import { useSession } from "./Providers";
-import { useToaster } from "./toast/ToasterProvider";
-import { listCardanoWallets } from "@/lib/cardano/cip8";
-import type { CardanoWalletInfo } from "@/lib/cardano/cip8";
 import type { ControlSize, Viewer } from "./kit";
 
 export interface ConnectWalletButtonProps {
   viewer: Viewer;
-  /** Route to /welcome's identity-bind step (used when connected but not yet bound). */
-  onContinueSetup?: () => void;
+  /** Open onboarding (/welcome). It resolves its own step from session state, so one target serves both. */
+  onStart?: () => void;
   size?: ControlSize;
 }
 
-export function ConnectWalletButton({ viewer, onContinueSetup, size = "md" }: ConnectWalletButtonProps) {
-  // Use the SHARED session signer (Providers), NOT a fresh useSigner() — a second instance would
-  // derive into isolated state the rest of the app never sees ("connect does nothing").
-  const { signerCtl } = useSession();
-  const { connectWallet, deriving } = signerCtl;
-  const { toast } = useToaster();
-  const [open, setOpen] = useState(false);
-  const [wallets, setWallets] = useState<CardanoWalletInfo[]>([]);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const pickerRef = useRef<HTMLDivElement>(null);
-
-  // Close the picker on an outside click / Escape. Escape returns focus to the trigger so a keyboard
-  // user isn't stranded on <body> when the role="dialog" popover unmounts.
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  // Move focus into the picker once it opens and its wallet rows have rendered, so the announced
-  // dialog actually receives focus (a11y: role="dialog" should not leave focus on the trigger behind it).
-  useEffect(() => {
-    if (open && !deriving) {
-      pickerRef.current?.querySelector<HTMLElement>("button, [tabindex]")?.focus();
-    }
-  }, [open, deriving]);
-
-  const openPicker = useCallback(() => {
-    // A synchronous window.cardano read (no MeshJS import) — the list is ready immediately on click,
-    // and the heavy Cardano bundle stays deferred until the user actually picks a wallet to connect.
-    setOpen(true);
-    setWallets(listCardanoWallets());
-  }, []);
-
-  const pick = useCallback(
-    async (id: string) => {
-      const ok = await connectWallet(id);
-      // Close the picker either way — a decline isn't an error wall; the toast tells the user they
-      // can just tap Connect again (no inline Retry).
-      setOpen(false);
-      toast(
-        ok
-          ? { kind: "success", message: "Wallet connected" }
-          : { kind: "info", message: "Connection cancelled" },
-      );
-    },
-    [connectWallet, toast],
-  );
-
+export function ConnectWalletButton({ viewer, onStart, size = "md" }: ConnectWalletButtonProps) {
   if (viewer.status === "ready") return null;
 
   const cls = [styles.btn, size === "sm" ? styles.sm : styles.md].join(" ");
+  // Connected but not bound → they are mid-flow, so name the resumption rather than re-inviting them.
+  const label = viewer.status === "not-identity-bound" ? "Finish setup" : "Sign in";
 
-  // Connected but not bound → "Finish setup".
-  if (viewer.status === "not-identity-bound") {
-    return (
-      <button type="button" className={cls} onClick={onContinueSetup}>
-        Finish setup
-      </button>
-    );
-  }
-
-  // Not connected → the wallet picker.
   return (
-    <div className={styles.root} ref={rootRef}>
-      <button
-        type="button"
-        ref={triggerRef}
-        className={cls}
-        onClick={open ? () => setOpen(false) : openPicker}
-        disabled={deriving}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-      >
-        {deriving ? (
-          <>
-            <Spinner size="sm" /> Connecting
-          </>
-        ) : (
-          "Connect wallet"
-        )}
-      </button>
-
-      {open && !deriving && (
-        <div ref={pickerRef} className={styles.picker} role="dialog" aria-label="Choose a wallet">
-          <p className={styles.pickerTitle}>Choose a wallet</p>
-          {wallets.length === 0 ? (
-            <div className={styles.pickerEmpty}>
-              <p>No Cardano wallet found. Install one to continue.</p>
-              {/* Give the guest a way forward — the same install links the /welcome WalletPicker offers,
-                  so both connect entry points behave consistently instead of a dead message here. */}
-              <div className={styles.installLinks}>
-                <a
-                  href="https://eternl.io/"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className={styles.installLink}
-                >
-                  Install Eternl ↗
-                </a>
-                <a
-                  href="https://www.lace.io/"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className={styles.installLink}
-                >
-                  Install Lace ↗
-                </a>
-              </div>
-            </div>
-          ) : (
-            <ul className={styles.list}>
-              {wallets.map((w) => (
-                <li key={w.id}>
-                  <button type="button" className={styles.walletRow} onClick={() => pick(w.id)}>
-                    {w.icon && (
-                      // Wallet-supplied data-URI icon; a sandboxed <img> is correct here, not next/image.
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img className={styles.walletIcon} src={w.icon} alt="" aria-hidden />
-                    )}
-                    <span>{w.name}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-    </div>
+    <button type="button" className={cls} onClick={onStart}>
+      {label}
+    </button>
   );
 }

@@ -83,22 +83,18 @@ export function Account() {
     });
   }, [signerCtl, toast]);
 
-  // Not fully set up (not connected, or connected but not identity-bound) → the connect/finish-setup
-  // entry. ConnectWalletButton picks "Connect wallet" vs "Finish setup" from viewer.status; the
-  // latter routes to /welcome to complete the bind.
+  // Not fully set up (not connected, or connected but not identity-bound) → the onboarding entry.
+  // ConnectWalletButton picks "Sign in" vs "Finish setup" from viewer.status; both open /welcome,
+  // which resolves its own step from session state. There is deliberately no inline wallet picker
+  // here any more — see that component's header for why a second door onto step 1 was a dead end.
   if (!ready) {
-    // The "Connect wallet" / "Finish setup" pill is a fixed-width nowrap accent button — it does not fit
-    // the 88px icon-only tablet rail (≤1019px), so it is hidden there via `connectRoot`. A tablet guest
-    // still reaches sign-in through the prominent accent "Post" circle (and Profile), which funnel to
-    // /welcome. Desktop keeps the labeled button; mobile has no LeftNav (Home's sign-in card + the
-    // ComposeFab cover it).
+    // The "Sign in" / "Finish setup" pill is nowrap and does not fit the 88px icon-only tablet rail
+    // (≤1019px), so it is hidden there via `connectRoot`. A tablet guest still reaches sign-in through
+    // the accent "Post" circle and the Profile tab, both of which route to /welcome. Desktop keeps the
+    // labeled button; mobile has no LeftNav (Home's sign-in card + the ComposeFab cover it).
     return (
       <div className={`${styles.root} ${styles.connectRoot}`}>
-        <ConnectWalletButton
-          viewer={viewer}
-          onContinueSetup={() => router.push("/welcome/")}
-          size="md"
-        />
+        <ConnectWalletButton viewer={viewer} onStart={() => router.push("/welcome/")} size="md" />
       </div>
     );
   }

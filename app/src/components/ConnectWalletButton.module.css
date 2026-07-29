@@ -1,9 +1,7 @@
-/* ConnectWalletButton — accent pill + a small wallet picker popover. */
-
-.root {
-  position: relative;
-  display: inline-block;
-}
+/* ConnectWalletButton — an accent pill that opens onboarding. Nothing else.
+   The wallet-picker popover this used to anchor (and its .root/.picker/.list/.walletRow/.install*
+   rules) is gone: it was a second door onto /welcome's step 1 that bypassed the cost disclosure and
+   dead-ended the user. See the component header. */
 
 .btn {
   display: inline-flex;
@@ -44,103 +42,3 @@
 }
 
 /* ── picker popover ── */
-.picker {
-  position: absolute;
-  bottom: calc(100% + var(--cg-space-2));
-  left: 0;
-  z-index: var(--cg-z-dropdown);
-  min-width: 220px;
-  padding: var(--cg-space-2);
-  border-radius: var(--cg-radius-card);
-  background: var(--cg-bg-elevated);
-  border: 1px solid var(--cg-border);
-  box-shadow: var(--cg-shadow-menu);
-}
-
-.pickerTitle {
-  padding: var(--cg-space-2) var(--cg-space-3);
-  font-size: var(--cg-fs-xs);
-  font-weight: var(--cg-fw-semibold);
-  color: var(--cg-text-secondary);
-}
-
-.pickerEmpty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--cg-space-2);
-  padding: var(--cg-space-3);
-  font-size: var(--cg-fs-sm);
-  color: var(--cg-text-secondary);
-  text-align: center;
-}
-
-.installLinks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--cg-space-2);
-  justify-content: center;
-}
-
-.installLink {
-  color: var(--cg-accent);
-  font-weight: var(--cg-fw-semibold);
-  text-decoration: none;
-}
-
-.installLink:hover {
-  text-decoration: underline;
-}
-
-.list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.walletRow {
-  display: flex;
-  align-items: center;
-  gap: var(--cg-space-3);
-  width: 100%;
-  padding: var(--cg-space-3);
-  background: none;
-  border: 0;
-  border-radius: var(--cg-radius-sm);
-  color: var(--cg-text);
-  font-size: var(--cg-fs-sm);
-  cursor: pointer;
-  text-align: left;
-}
-
-.walletRow:hover {
-  background: var(--cg-bg-hover);
-}
-
-.walletRow:focus-visible {
-  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
-  outline-offset: calc(-1 * var(--cg-focus-ring-width));
-}
-
-.walletIcon {
-  width: var(--cg-icon-lg);
-  height: var(--cg-icon-lg);
-  border-radius: var(--cg-radius-input);
-}
-
-.error {
-  margin-top: var(--cg-space-2);
-  font-size: var(--cg-fs-xs);
-  color: var(--cg-danger);
-}
-
-.retry {
-  background: none;
-  border: 0;
-  padding: 0;
-  color: var(--cg-accent);
-  font-weight: var(--cg-fw-semibold);
-  cursor: pointer;
-  text-decoration: underline;
-}
