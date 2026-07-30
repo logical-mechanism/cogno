@@ -35,18 +35,21 @@ pub struct ObserverMetrics {
     observed_voters: Gauge<U64>,
     /// Role (SPO / dRep / CC badge) entry count in the most recent non-empty observation.
     ///
-    /// Tracked separately because this is the axis that reaches `MaxObserved` FIRST. The other two are
-    /// one entry per identity, but the role axis is one-to-MANY: an mSPO emits one entry per declaring
-    /// pool, and the owner path one per owned pool, all against the same single ceiling. A handful of
-    /// multi-pool operators can therefore cross it while both other gauges sit near zero — so an alert
-    /// written only on vaults/voters is blind to the freeze that actually happens.
+    /// Tracked separately because it is one-to-MANY where the other two are one entry per identity: an
+    /// mSPO emits one entry per declaring pool, and the owner path one per owned pool. So this gauge can
+    /// run far ahead of the identity count, and an alert written only on vaults/voters is blind to it.
     observed_roles: Gauge<U64>,
-    /// The runtime's `MaxObserved` ceiling (from `ObserverConfig`). Exposed so an alert rule can compare
-    /// `observed_vaults`/`observed_voters`/`observed_roles` against it without hard-coding the limit.
-    max_observed: Gauge<U64>,
-    /// Observations whose vault OR stake set EXCEEDED `MaxObserved` — the SILENT-FREEZE condition
-    /// (`create_inherent` abstains, so weight stops updating). A non-zero rate here is a page.
-    observations_oversize_total: Counter<U64>,
+    /// The runtime's `MaxScanned` cap (from `ObserverConfig`). Exposed so an alert rule can compare
+    /// `observed_voters`/`observed_roles` against it without hard-coding the limit.
+    ///
+    /// ⚠ NOT a ceiling on the observation — spec 215 removed that, along with the freeze that used to
+    /// follow from crossing it. It caps the per-block credential SCANS that scope the db-sync query, so
+    /// it bounds the STAKE and ROLE axes only. `observed_vaults` is not comparable to it.
+    max_scanned: Gauge<U64>,
+    /// Observations whose scanned credential set reached `MaxScanned` — credentials past the cap were not
+    /// scanned, so those identities' voting power and role badges are NOT observed. A per-identity
+    /// omission, not a chain-wide freeze; a non-zero rate means someone's badge is silently missing.
+    observations_scan_capped_total: Counter<U64>,
 }
 
 impl ObserverMetrics {
@@ -105,21 +108,21 @@ impl ObserverMetrics {
 			observed_roles: register(
 				Gauge::new(
 					"cogno_observer_observed_roles",
-					"Role entry count in the most recent non-empty observation (the axis that reaches MaxObserved first)",
+					"Role entry count in the most recent non-empty observation (one-to-many: an entry per declaring pool)",
 				)?,
 				registry,
 			)?,
-			max_observed: register(
+			max_scanned: register(
 				Gauge::new(
-					"cogno_observer_max_observed",
-					"Runtime MaxObserved ceiling; an observation reaching it freezes the weight writer",
+					"cogno_observer_max_scanned",
+					"Runtime MaxScanned cap on the per-block credential scans; bounds the stake and role axes only",
 				)?,
 				registry,
 			)?,
-			observations_oversize_total: register(
+			observations_scan_capped_total: register(
 				Counter::new(
-					"cogno_observer_observations_oversize_total",
-					"Observations exceeding MaxObserved (the silent-freeze condition: create_inherent abstains)",
+					"cogno_observer_observations_scan_capped_total",
+					"Observations whose scanned credential set reached MaxScanned (those identities are not observed)",
 				)?,
 				registry,
 			)?,
@@ -152,14 +155,14 @@ impl ObserverMetrics {
         self.observed_roles.set(roles as u64);
     }
 
-    /// Publish the runtime's `MaxObserved` ceiling so alert rules can key off it without a duplicate const.
-    pub fn set_max_observed(&self, max_observed: u32) {
-        self.max_observed.set(u64::from(max_observed));
+    /// Publish the runtime's `MaxScanned` cap so alert rules can key off it without a duplicate const.
+    pub fn set_max_scanned(&self, max_scanned: u32) {
+        self.max_scanned.set(u64::from(max_scanned));
     }
 
-    /// Record that an observation EXCEEDED `MaxObserved` — the silent-freeze condition
-    /// (`create_inherent` will abstain, so the sole weight writer stops updating).
-    pub fn record_oversize(&self) {
-        self.observations_oversize_total.inc();
+    /// Record that an observation's scanned credential set reached `MaxScanned` — credentials past the
+    /// cap were not scanned, so their voting power and role badges are not observed.
+    pub fn record_scan_capped(&self) {
+        self.observations_scan_capped_total.inc();
     }
 }

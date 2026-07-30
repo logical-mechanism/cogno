@@ -474,10 +474,14 @@ pub mod pallet {
         /// that is a free way for anyone to grow the per-block cost until the query blows its timeout,
         /// at which point `observe_for_parent` abstains and the SOLE weight writer stops for everyone.
         ///
-        /// `cap` is the observer's `MaxObserved`, so nothing observable is lost: the observation's stake
-        /// axis is itself a `BoundedVec<_, MaxObserved>` and a credential past the cap could not have
-        /// been represented in the result. Iteration is by hashed key — deterministic, so every node
-        /// takes the same prefix and `check_inherent` still agrees.
+        /// `cap` is the observer's `MaxScanned`. Iteration is by hashed key — deterministic, so every
+        /// node takes the same prefix and `check_inherent` still agrees.
+        ///
+        /// ⚠ Since spec 215 this cap BINDS. It used to be redundant with a cap the observation already
+        /// had (the stake axis was a `BoundedVec<_, MaxObserved>`, so a credential past it could not have
+        /// been represented anyway). The observation is an unbounded delta now, so a credential past this
+        /// cap is genuinely never scanned and never gets voting power — which is what the warnings below
+        /// are for.
         pub fn bound_stake_credentials_capped(cap: u32) -> alloc::vec::Vec<StakeCredential> {
             let cap = cap as usize;
             // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that
@@ -492,13 +496,13 @@ pub mod pallet {
                 log::warn!(
                     target: LOG_TARGET,
                     "bound stake credentials EXCEED the observer cap ({cap}) — voting power past it is \
-                     not observed. Raise MaxObserved or prune the ledger.",
+                     not observed. Raise MaxScanned or prune the ledger.",
                 );
             } else if out.len() == cap {
                 log::warn!(
                     target: LOG_TARGET,
                     "bound stake credentials are exactly AT the observer cap ({cap}) — the next bind's \
-                     voting power is not observed. Raise MaxObserved or prune the ledger.",
+                     voting power is not observed. Raise MaxScanned or prune the ledger.",
                 );
             }
             out

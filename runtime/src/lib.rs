@@ -145,7 +145,24 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // `spec_version` bump to be enactable at all: `authorize_upgrade` sets `check_version = true`, and
     // `frame_system::can_set_code` refuses a non-increasing `spec_version`. The metadata snapshot
     // therefore moves by exactly the one `System::Version` byte that embeds this constant.
-    spec_version: 214,
+    // 214 → 215 removes the cardano-observer's population CLIFF. `MaxObserved = 1024` was documented as
+    // a size bound but behaved as a hard cap on how many accounts could hold posting power, and crossing
+    // it was not a degradation: `create_inherent` did `BoundedVec::try_from(..).ok()?`, so ONE entry over
+    // the bound dropped the ENTIRE inherent, and because the observer is the sole weight writer and the
+    // reference is a pure function of the parent, that repeated every slot — the 1025th locker froze
+    // weight updates for all 1024 others, permanently, until someone unlocked.
+    // The observation now goes on the wire as a DELTA against the previously-applied basis. The node's
+    // full Cardano read is unchanged; `create_inherent` diffs it in-runtime against parent state (which
+    // is where the block builder already runs it) and emits at most `MaxChangesPerBlock` changes per
+    // axis, with the remainder recorded in `PendingChanges` and drained over the following blocks.
+    // `create_inherent` can no longer return `None` for a size reason at all.
+    // This moves a LOT of metadata: `observe`'s five arguments become six of different types, the three
+    // `LastObserved*` storage entries change from `StorageValue<BoundedVec<..>>` to StorageMaps,
+    // `PendingChanges` and `Event::ObservationBacklogged` (index 6) are added, and the `MaxObserved`
+    // constant becomes `MaxChangesPerBlock` + `MaxRolesPerAccount` + `MaxScanned`. So
+    // `check-metadata.sh` takes its "MORE THAN spec_version MOVED" branch, correctly and by a wide
+    // margin — the shapes a client sees really did change, and the descriptors are regenerated for it.
+    spec_version: 215,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     // Bump `transaction_version` only when the on-wire extrinsic encoding changes — a call's args, or
@@ -158,7 +175,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // removing a call ARGUMENT changes the extrinsic encoding. (Nothing else in spec 211 moves it: the
     // new tx-pause CALLS and the new poll-duration VALIDATION are metadata-only, and the `TxExtension`
     // tuple is byte-identical.)
-    transaction_version: 7,
+    // 7 → 8: `observe`'s arguments changed (spec 215) — the three full-snapshot vectors became three
+    // bounded CHANGE vectors of new types plus a `pending: u32`. Nothing that signs a transaction is
+    // affected in practice: `observe` is inherent-only (`is_inherent` matches it, so it is
+    // pool-inadmissible and can never be submitted by a signing tool), and the `TxExtension` tuple is
+    // byte-identical. The rule is nonetheless literal — a call ARGUMENT changed, so this moves — and
+    // taking the bump costs nothing while leaving the on-wire record honest for anything that decodes
+    // extrinsics rather than submitting them.
+    transaction_version: 8,
     system_version: 1,
 };
 

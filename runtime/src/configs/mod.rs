@@ -125,6 +125,12 @@ type SingleBlockMigrations = (
     // writes; this deletes what was already written, so the rows do not sit in the state root forever
     // under a prefix nothing declares. See `pallet_cogno_gate::migrations::v1`.
     pallet_cogno_gate::migrations::v1::MigrateV0ToV1<Runtime>,
+    // spec 215: REPAGE the observer's three `LastObserved*` clamp bases from whole-set `BoundedVec`
+    // blobs into StorageMaps — the change that removes the population ceiling. This one MOVES REAL ROWS
+    // on the live chain (7 vault + 2 stake), and the migrated values are deliberately seeded EMPTY so the
+    // first observation after the upgrade re-derives them; read the module docs before touching it.
+    // The observer had NO declared storage version before this, so the on-chain version reads 0.
+    pallet_cardano_observer::migrations::v1::MigrateV0ToV1<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -872,9 +878,10 @@ mod tx_pause_tests {
         let observe = RuntimeCall::CardanoObserver(pallet_cardano_observer::Call::observe {
             reference: Default::default(),
             inputs_commitment: [0u8; 32],
-            entries: Default::default(),
-            stake_entries: Default::default(),
-            role_entries: Default::default(),
+            changes: Default::default(),
+            stake_changes: Default::default(),
+            role_changes: Default::default(),
+            pending: 0,
         });
         for call in [ts, observe] {
             let m = call.get_call_metadata();
@@ -1266,15 +1273,21 @@ impl pallet_microblog::Config for Runtime {
     // Profile pallet's feeless writes share this one battery, priced at `ProfileCost` and gated at the
     // pool by `CheckCapacity` — so the whole app is feeless with no second transaction-extension.
     type ForeignCost = ProfileCapacityCost;
-    // The staker set for the LIVE weighted-tally join = the observer's currently-credited accounts. Bounded
-    // by `MaxObserved`; exactly the set of accounts with non-zero `VotingPower`. See `ObservedStakers`.
+    // The staker set for the LIVE weighted-tally join = the observer's currently-credited accounts. Capped
+    // at `MaxScanned`; exactly the set of accounts with non-zero `VotingPower`. See `ObservedStakers`.
     type StakerSet = ObservedStakers;
     // Governance-poll chambers (spec 207): read each voter's observed roles + delegated-stake weight from
     // pallet-cardano-roles' `ObservedRoles`. See `ChamberRolesProvider`.
     type ChamberRoles = ChamberRolesProvider;
-    // The staker set AND the role-holder set are both bounded by the observer's `MaxObserved`; `close_poll`
+    // The staker set AND the role-holder set are both capped at the observer's `MaxScanned`; `close_poll`
     // uses this to declare its worst-case weight (then refunds to the rows actually scanned). Single source.
-    type MaxObservedAccounts = <Runtime as pallet_cardano_observer::Config>::MaxObserved;
+    //
+    // ⚠ Since spec 215 this is a cap the READ SIDE imposes, not one the write side guarantees. The observer
+    // no longer bounds how many accounts hold voting power, so above `MaxScanned` a poll tally joins over a
+    // capped, storage-order subset of stakers rather than all of them. That is a real behaviour change at a
+    // scale this chain is nowhere near (it has single-digit stakers), and fixing it properly means giving
+    // `close_poll` a paged tally — a separate piece of work from removing the observer's cliff.
+    type MaxObservedAccounts = <Runtime as pallet_cardano_observer::Config>::MaxScanned;
     type WeightInfo = pallet_microblog::weights::SubstrateWeight<Runtime>;
 }
 
@@ -1291,12 +1304,12 @@ impl pallet_microblog::ChamberRoles<AccountId> for ChamberRolesProvider {
             .map(|r| (r.kind.index(), r.id, r.weight))
             .collect()
     }
-    // The observed role-holder set — the `ObservedRoles` keys. Bounded by the observer's `MaxObserved` (it
-    // clears every account that drops out), and defensively capped at that same bound so the on-chain
-    // chamber freeze (`close_poll`) stays O(`MaxObserved`) even against a map with stale rows — mirroring
-    // `ObservedStakers::stakers`.
+    // The observed role-holder set — the `ObservedRoles` keys, capped at `MaxScanned` so the on-chain
+    // chamber freeze (`close_poll`) stays bounded even against a map with stale rows — mirroring
+    // `ObservedStakers::stakers`. The role axis cannot actually exceed the cap today: the observation is
+    // scoped to the claimed credentials, and that scan is capped at the same value.
     fn role_holders() -> alloc::vec::Vec<AccountId> {
-        let cap = <<Runtime as pallet_cardano_observer::Config>::MaxObserved as frame_support::traits::Get<
+        let cap = <<Runtime as pallet_cardano_observer::Config>::MaxScanned as frame_support::traits::Get<
             u32,
         >>::get() as usize;
         pallet_cardano_roles::ObservedRoles::<Runtime>::iter_keys()
@@ -1307,36 +1320,40 @@ impl pallet_microblog::ChamberRoles<AccountId> for ChamberRolesProvider {
 
 /// Staker-set provider for pallet-microblog's live weighted-tally join: the accounts the `cardano-observer`
 /// currently credits (`LastObservedStake`), which on a Cardano-observing chain is exactly the set with
-/// non-zero `VotingPower` (the observer writes both in the same inherent and clamps everything absent from
-/// it to `0`). Bounded by `MaxObserved`, so the read-time join is `O(MaxObserved)` per entity regardless of
-/// how viral a post is. Microblog stays free of a Cargo dependency on cardano-observer — the same
+/// non-zero `VotingPower` (the observer writes both in the same inherent and zeroes everything it
+/// explicitly drops). Microblog stays free of a Cargo dependency on cardano-observer — the same
 /// loose-coupling seam as `WeightApply`/`BeaconLookup`.
+///
+/// ⚠ The cap moved from the WRITE side to the READ side in spec 215. `LastObservedStake` used to be a
+/// `BoundedVec<_, MaxObserved>` read whole in one go, so the join was bounded because the basis itself
+/// could not be bigger. It is a StorageMap now and nothing bounds it, so the `.take(cap)` below is what
+/// keeps `close_poll`'s declared worst case honest. Above the cap a tally joins over a storage-order
+/// subset — see `MaxObservedAccounts` in the microblog config for why that is left as separate work.
 ///
 /// FALLBACK for a no-observer chain (`--dev`/`local`): there the observer never runs, so `LastObservedStake`
 /// stays EMPTY while genesis seeds `pallet_talk_stake::VotingPower` directly (`genesis_config_presets`).
 /// Without a fallback every weighted vote/poll/reputation would read `0` on a dev chain even though voting
 /// power is seeded. So when `LastObservedStake` is empty we derive the set from the `VotingPower` map keys
-/// instead, capped at `MaxObserved`. This branch is UNREACHABLE on any chain that has ever observed: the
+/// instead, capped the same way. This branch is UNREACHABLE on any chain that has ever observed: the
 /// observer writes `LastObservedStake` and `VotingPower` together, so a non-empty `VotingPower` there
 /// implies a non-empty `LastObservedStake` and the primary path is taken — the `VotingPower` map (which
-/// keeps stale `0` rows and can outgrow `MaxObserved`) is never the canonical source in production.
+/// keeps stale `0` rows) is never the canonical source in production.
 pub struct ObservedStakers;
 impl pallet_microblog::StakerSet<AccountId> for ObservedStakers {
     fn stakers() -> alloc::vec::Vec<AccountId> {
+        let cap = <<Runtime as pallet_cardano_observer::Config>::MaxScanned as frame_support::traits::Get<
+            u32,
+        >>::get() as usize;
         let observed: alloc::vec::Vec<AccountId> =
-            pallet_cardano_observer::LastObservedStake::<Runtime>::get()
-                .into_iter()
-                .map(|(_stake_cred, account)| account)
+            pallet_cardano_observer::LastObservedStake::<Runtime>::iter_values()
+                .map(|(account, _total)| account)
+                .take(cap)
                 .collect();
         if !observed.is_empty() {
             return observed;
         }
         // No observation yet (dev/local genesis-seeded weight, or a chain before its first observation —
-        // where `VotingPower` is likewise empty and this yields nothing). Cap at `MaxObserved` to keep the
-        // join bounded even against a `VotingPower` map that has accumulated stale rows.
-        let cap = <<Runtime as pallet_cardano_observer::Config>::MaxObserved as frame_support::traits::Get<
-            u32,
-        >>::get() as usize;
+        // where `VotingPower` is likewise empty and this yields nothing).
         pallet_talk_stake::VotingPower::<Runtime>::iter_keys()
             .take(cap)
             .collect()
@@ -1384,10 +1401,11 @@ impl pallet_cardano_roles::Config for Runtime {
     type IdentityGate = CognoGate;
     // Derived from the ONE `CARDANO_NET` cutover selector (spec 211), shared with cogno-gate.
     type CardanoNetwork = CardanoNetworkId;
-    // The SAME cap the observer bounds its observation by, so the per-block claimed-credential scan
-    // can never outrun what an observation could carry. Taken from the observer's own Config so the
-    // two cannot drift.
-    type MaxObserved = <Runtime as pallet_cardano_observer::Config>::MaxObserved;
+    // The cap on the per-block claimed-credential scan that scopes the node's db-sync role query. Taken
+    // from the observer's own Config so the two cannot drift. It is no longer "the same cap the observer
+    // bounds its observation by" — nothing bounds that since spec 215 — but the scan cap is load-bearing
+    // for its own reason: `claim_role_signed` is feeless and bare-unsigned.
+    type MaxScanned = <Runtime as pallet_cardano_observer::Config>::MaxScanned;
     type WeightInfo = ();
 }
 
@@ -1460,11 +1478,11 @@ impl pallet_cardano_observer::StakeResolver<AccountId> for StakeLookup {
 pub struct BoundStakeCreds;
 impl pallet_cardano_observer::BoundStakeCredentials for BoundStakeCreds {
     fn bound_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
-        // CAPPED at the observer's own `MaxObserved`, so a bare-unsigned, feeless `link_stake_signed`
-        // cannot grow the per-block db-sync scope without bound and stall the sole weight writer. The
-        // scan + the operator warning live in cogno-gate, next to the map and the log target.
+        // CAPPED at the observer's `MaxScanned`, so a bare-unsigned, feeless `link_stake_signed` cannot
+        // grow the per-block db-sync scope without bound and stall the sole weight writer. The scan + the
+        // operator warning live in cogno-gate, next to the map and the log target.
         pallet_cogno_gate::Pallet::<Runtime>::bound_stake_credentials_capped(
-            <<Runtime as pallet_cardano_observer::Config>::MaxObserved as sp_core::Get<u32>>::get(),
+            <<Runtime as pallet_cardano_observer::Config>::MaxScanned as sp_core::Get<u32>>::get(),
         )
     }
 }
@@ -1902,51 +1920,60 @@ impl pallet_cardano_observer::BenchmarkSetup<AccountId> for ObserverBenchSetup {
 /// validator must run cardano-node + Cardano db-sync. See docs/IN-PROTOCOL-OBSERVATION.md.
 impl pallet_cardano_observer::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
-    // Max identities observed per block. A HARD CEILING on concurrent participants, not a batch size: the
-    // observation is a FULL-SET snapshot re-derived every block (the unlock-clamp zeroes any identity absent
-    // from the CURRENT set, so a delta would wrongly clear unchanged accounts), carried in every block body
-    // and re-derived by every producer. Both axes are bounded by it — the vault set (`entries`) AND the
-    // bound-stake set (`stake_entries`).
+    // Max CHANGES per axis per block. A churn batch size, NOT a population bound — spec 215 removed the
+    // population bound entirely, and this is what replaced it. Nothing caps how many identities may hold
+    // weight; what this caps is how much of a change set one block carries, with the rest draining over the
+    // following blocks.
     //
-    // 4096 -> 1024, because the REAL benchmarked cost says 4096 never fit. `observe` is Mandatory
-    // (`max_total: None`), so it cannot `ExhaustsResources` — an over-budget observation is not rejected,
-    // it just runs the block long and risks missing the 6 s Aura slot. The bound IS the budget:
+    // Sizing is now purely a block-budget question, because overrunning it costs latency rather than
+    // correctness. The worst case is three full pages, and the benchmarked cost puts that comfortably
+    // inside the block:
     //
-    //   observe(4096,4096,4096,4096) = 3.60  s ref_time = 180% of max_block (2 s) — never survivable
-    //   observe(1024,1024,1024,1024) = 0.885 s ref_time =  44% of max_block
-    //   observe(   7,   2,   7,   2) = 0.047 s ref_time = 2.4% of max_block — the live chain today
+    //   observe( 256, 256, 256) = 0.229 s = 11.4% of max_block (2 s) — three full pages, the ceiling
+    //   observe(   7,   2,   7) = 0.006 s =  0.3% — a busy block on a chain the size of this one
+    //   observe(   0,   0,   0) = 0.001 s =  0.03% — a QUIET block, which is almost all of them
     //
-    // 1024 is a 146x margin over the 7 live participants and leaves the block usable at the ceiling. The
-    // old hand-estimate priced the 4096 worst case at 8.2 ms — a 440x under-count of the only call in the
-    // chain that cannot be skipped.
+    // That last line is the real win and it is worth stating plainly: the full-snapshot design charged
+    // ~47 ms (2.4% of every block) forever just to re-observe a set that had not moved, because per-block
+    // cost was O(participants). A delta makes a quiet block cost ~0.58 ms — 80x less — and, more to the
+    // point, that figure does not grow as the chain does.
     //
-    // ⚠ These are CHARGES, not measurements, and the small end is a loose upper bound rather than a tight
-    // one. `observe`'s fitted base weight is ~42.6 ms (weights.rs), which is ~90% of that 47 ms live-chain
-    // figure — and an `observe` over empty vectors does ~6 reads / 4 writes and plainly cannot cost 42.6 ms
-    // (`set_enforcement`, one write + one event, measures 4.7 US). It is a regression artifact, not a
-    // constant: FRAME's benchmark CLI sweeps ONE component across its range while holding the others at
-    // their MAXIMUM, so with four components there is no datapoint anywhere near (0,0,0,0) and the
-    // intercept is pure extrapolation. Not fixable by re-running — the sampling design is the tool's, not
-    // ours — and it errs CONSERVATIVE (we over-charge the Mandatory inherent, never under-charge it), so
-    // it is safe. The cost is that ~2% of every block is reserved for work that is not happening. The
-    // per-entry coefficients, which are what actually govern scaling, are sound; do not read the base as
-    // the real cost of a quiet block.
+    // 256 is ~50x more churn than a 6 s window can realistically deliver (256 vault UTxO movements per
+    // block is ~43 Cardano tx/s against one script address, sustained). The one case that genuinely
+    // exceeds it is a BOOTSTRAP — a fresh chain, or the first observation after the v0 -> v1 migration
+    // re-derives every value — and that drains at 256 per block, so even a 100k-identity chain is caught
+    // up in ~7 minutes, once. It is not on any critical path.
     //
-    // ⚠ RESIDUAL CEILING — this fix does NOT lift it. The observation is still a FULL SNAPSHOT of every
-    // bound identity in EVERY block, so per-block cost stays O(total participants), not O(changes): at the
-    // ceiling the observer alone charges half the block, every block, forever. `MaxObserved` remains a hard
-    // cap on concurrent participants, and an observation over it still makes `create_inherent` abstain
-    // (dropping the whole inherent → the sole weight writer FREEZES). All this buys is that hitting it is
-    // now LOUD and ON-CHAIN (`CardanoObserver::Stalled` + `ObservationStalled`) instead of silent, and that
-    // the cost is honestly priced instead of under-counted ~100x. Getting PAST the ceiling needs a
-    // delta/paged observation re-architecture — deliberately deferred, not solved here.
+    // The old fitted base of ~42.6 ms was a regression artifact (with four components sweeping to 1024
+    // there was no datapoint anywhere near the origin, so the intercept was pure extrapolation). Three
+    // components over a 256 range put real samples near it, and the fitted base fell to 0.185 ms — which
+    // is why the quiet-block figure above can be read as a cost rather than as a charge.
     //
-    // ⚠ LOWERING this bound is itself a brick vector: `LastObserved` / `LastObservedStake` are
-    // `BoundedVec<_, MaxObserved>`, so a live vec longer than the bound fails to decode and `ValueQuery`
-    // hands back an EMPTY clamp basis — stranding the weight of every account that has since unlocked. The
-    // live vecs were verified at 7 and 2 entries before this drop, and the observer's `try_state` guard
-    // re-checks it against real state under `try-runtime` (docs/UPGRADES.md's pre-enactment dry-run).
-    type MaxObserved = ConstU32<1024>;
+    // ⚠ RAISING or LOWERING this is safe in a way the old `MaxObserved` was not. Lowering it used to be a
+    // brick vector (the clamp bases were `BoundedVec<_, MaxObserved>`, so a live vec longer than a lowered
+    // bound failed to decode and `ValueQuery` handed back an EMPTY basis, stranding the weight of every
+    // account that had since unlocked). The bases are StorageMaps now — no length prefix to overrun, every
+    // row decodes on its own — so this bound touches only how fast a change set drains.
+    type MaxChangesPerBlock = ConstU32<256>;
+    // Max observed roles per ACCOUNT — a per-identity bound, never a population one.
+    //
+    // DOUBLE `pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT` (16), and the factor is the point: the
+    // sink truncates with a two-pass reserve that keeps the non-SPO badges, precisely because the canonical
+    // role order puts every SPO entry first and a naive truncation dropped a multi-pool operator's dRep
+    // badge. If THIS bound bit first it would truncate naively, in SPO-first order, and reintroduce that
+    // bug one layer up. Sized so the sink's own reserve-aware truncation is always the one that acts.
+    type MaxRolesPerAccount = ConstU32<32>;
+    // The cap on the per-block credential SCANS that scope the node's db-sync query, and on the read-side
+    // observed-account joins. NOT a bound on the observation — see the pallet's `MaxScanned` docs. It kept
+    // its 1024 value across the spec-215 rewrite because its reason is unchanged: `link_stake_signed` and
+    // `claim_role_signed` are feeless bare-unsigned calls, so an unbounded scan of the maps they grow is a
+    // free way to enlarge every node's per-block work until the db-sync query blows its timeout.
+    //
+    // ⚠ It IS still a real ceiling on two of the three axes, just not the one it used to be. A stake
+    // credential or role claim past the cap is not scanned, so it is not observed and gets no weight — a
+    // per-identity omission that the node WARNs about, not the chain-wide freeze the old overrun caused.
+    // The vault axis is discovered by policy id and has no cap at all.
+    type MaxScanned = ConstU32<1024>;
     // The same `stake-1` ceiling as talk-stake (max lockable lovelace = total ADA supply). An entry
     // above it is SKIPPED by the observer (never bricks the Mandatory block), not rejected.
     type MaxStakeWeight = ConstU128<45_000_000_000_000_000>;
@@ -1963,8 +1990,9 @@ impl pallet_cardano_observer::Config for Runtime {
     type StakeEpochLookback = ConstU64<1>;
     // The observation is authored every block, so 5 minutes of silence is not a hiccup — it is the sole
     // weight writer stopped. Long enough to ride out a db-sync blip without crying wolf; short enough that
-    // a real freeze (a Cardano read that is down, or an observation over MaxObserved that makes
-    // `create_inherent` abstain) is on-chain and alertable within minutes rather than never. The alarm only
+    // a real stop (the node's Cardano read down or behind) is on-chain and alertable within minutes rather
+    // than never. A draining backlog is NOT a stall — each of those blocks applies a page and stamps the
+    // clock; `PendingChanges` is the signal for that instead. The alarm only
     // ARMS once the chain has applied its first observation, so `--dev` (which has no db-sync and never
     // observes at all) does not trip it every run — see the pallet's `on_initialize`.
     type StallAfter = ConstU32<{ 5 * MINUTES }>;

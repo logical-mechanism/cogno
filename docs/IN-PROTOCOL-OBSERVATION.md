@@ -52,7 +52,10 @@ across an inter-call rollback):
 
 The reduction (`observe_as_of`) then keeps, per beacon, the single largest qualifying UTxO and emits a
 canonically-sorted `(beacon, lovelace)` set. That set — plus the voting-power `(stake_credential,
-lovelace)` set from `epoch_stake` — is the observation the node carries into the block.
+lovelace)` set from `epoch_stake` — is the observation the node hands to the runtime as inherent data.
+
+What goes into the BLOCK is the difference between that snapshot and what has already been applied. See
+[Snapshot in, delta on the wire](#snapshot-in-delta-on-the-wire).
 
 ## Consensus-critical byte-identity invariants
 
@@ -160,34 +163,88 @@ skip, account resolution, weight application, the unlock clamp — is enforced i
 `observe` dispatchable, which *does* run in `execute_block` and whose dispatch error invalidates the
 block.
 
+## Snapshot in, delta on the wire
+
+The node reads the whole of Cardano's relevant state every block, exactly as described above, and hands
+that full snapshot over as inherent *data*. What crosses into the block is the **difference** against
+what the chain has already applied.
+
+That split is possible because `create_inherent` runs **inside the runtime, against the parent block's
+state** — the block builder executes `BlockBuilder::inherent_extrinsics` there. So it can compare the
+node's snapshot against the on-chain basis (`LastObserved` / `LastObservedStake` / `LastObservedRoles`)
+and emit only what moved. `check_inherent` runs against the *same* parent state on the import path, so
+every importer re-derives the identical delta from its own read and compares. The two sides agree by
+construction; no new runtime API and no node-side state access are involved.
+
+A change is `(key, Some(value))` for a new or moved value and `(key, None)` for "no longer observed".
+Absence from the delta means **unchanged**.
+
+### Why this replaced a full snapshot per block
+
+The observation used to be a full set in every block, bounded by a `MaxObserved` of 1024. That number
+was documented as a size bound but behaved as a hard cap on how many accounts could hold posting power,
+and crossing it was a cliff rather than a degradation: `create_inherent` did
+`BoundedVec::try_from(..).ok()?`, so one entry over the bound dropped the *entire* inherent. Since this
+pallet is the sole weight writer and the reference is a pure function of the parent block, that
+abstention repeated every slot — the 1025th locker froze weight updates for the other 1024,
+permanently, until somebody unlocked. `MaxObserved` is gone. Nothing bounds the observed population.
+
+### Paging and the backlog
+
+`MaxChangesPerBlock` (256 per axis) bounds a block's **churn**, not its population. A larger change set
+fills one page and records the remainder in `PendingChanges`; because each applied page advances the
+basis the next block diffs against, the following block's delta *is* the remainder, and the queue
+drains. Overrunning the bound costs latency, never correctness, and `create_inherent` can no longer
+return `None` for a size reason at all.
+
+While a backlog exists, `LastReference` is **held**. It advances only on a block that carried its whole
+change set, so it reads as "Cardano observed *and applied* through here" rather than "the newest
+reference some part of which landed". A backlogged block emits `ObservationBacklogged` carrying the
+depth.
+
 ## Applying the observation
 
-For each `(beacon, lovelace)` in the verified set, the `observe` dispatchable, atomically:
+For each vault change, the `observe` dispatchable, atomically:
 
-1. resolves `account = CognoGate::AccountOf[beacon]`; an unbound beacon is skipped, not an error (a bind
-   must precede weight).
+1. for `Some(lovelace)`, resolves `account = CognoGate::AccountOf[beacon]`; an unbound beacon is
+   skipped, not an error (a bind must precede weight).
 2. applies the `MinLock` floor (100,000,000 lovelace): below it, weight is 0.
 3. **skips, never rejects, an over-cap entry.** If weight exceeds `MaxStakeWeight`, that one entry is
    dropped and counted — a single absurd value must not brick a Mandatory block. (This deliberately
    differs from the old `set_stake`, which rejected the whole call.)
 4. sets weight via talk-stake's internal entry point and primes microblog capacity in the same write,
-   preserving the going-forward-only / unlock→0 / never-delete-the-row invariants.
-5. **unlock clamp:** any account credited last block (`LastObserved`) that is absent from the current set
-   is set to weight 0. This is why the full observed set is carried every block and `LastObserved` is
-   stored — a bare digest could not tell you *which* identities dropped out.
+   preserving the going-forward-only / unlock→0 / never-delete-the-row invariants, and records the
+   applied value in the basis the next diff reads.
+5. for `None`, sets weight 0 and removes the basis row. The account comes from the **basis**, not from a
+   fresh resolve: a beacon whose identity has since been revoked or rebound no longer resolves to the
+   account holding the weight, and zeroing the wrong one would leave `AllowedStake` standing with no
+   locked ADA behind it.
 
-The voting-power half runs the same discipline over `epoch_stake` totals: resolve the bound stake
-credential, skip over-`MaxVotingPower` values, apply `VotingPower`, clamp anything that dropped out.
-There is no floor and no largest-wins there — the node supplies one total per credential, read at
-`StakeEpochLookback` epochs before the reference's epoch (a fully-closed, immutable snapshot). Each
-result is recorded in an `ObservationApplied` / `VotingPowerObserved` event.
+Steps 1–3 are also applied when the delta is *derived*, and an entry that would be skipped never enters
+it. If it did, it would be emitted, skipped, left out of the basis, and emitted again next block — for
+ever, holding a page slot a real change needed.
+
+The voting-power half runs the same discipline over `epoch_stake` totals. There is no floor and no
+largest-wins there — the node supplies one total per credential, read at `StakeEpochLookback` epochs
+before the reference's epoch (a fully-closed, immutable snapshot).
+
+The role half is the exception to per-key changes: its unit is a whole **account's** badge set. The
+sink overwrites an account's set in one go, and an account can reach several badges through several
+credentials (an mSPO's pools, plus a dRep tag). A per-credential delta could split one account across
+two blocks, and the first block's overwrite would drop the badges the second was going to restore. So
+the resolve-and-aggregate step happens during derivation and each change carries the account's complete
+new set.
+
+Each result is recorded in an `ObservationApplied` / `VotingPowerObserved` / `RolesObserved` event,
+counted over the block's **changes** rather than over the whole observed population.
 
 ## Emergency freeze
 
 `set_enforcement(false)` is **not** a cutover flip — it is an emergency weight-**freeze**. When frozen,
 the inherent keeps verifying the read cross-node (`check_inherent` is flag-independent) but stops writing
-`AllowedStake`/`VotingPower`, and the clamp baseline is held so an unlock that happens mid-freeze is
-still clamped on re-enable. This lets a determinism bug be halted before a bad observation corrupts
+`AllowedStake`/`VotingPower`, and the **basis is held along with the writes**, so the very same change
+set is re-derived on every frozen block and lands intact on the first enforcing one. (Advancing the
+basis while freezing the writes would record an unlock as applied without ever zeroing it.) This lets a determinism bug be halted before a bad observation corrupts
 weight, then fixed via a committee-governed runtime upgrade. It is gated by the 3-of-5 committee
 (`EnforceOrigin`), the same origin that gates identity revoke, validator changes, and upgrades. Weight
 simply holds at its last values while frozen.
@@ -219,12 +276,13 @@ mechanism itself, which is complete and enforcing today.
 ## Key values and paths
 
 - Pallet: `pallet-cardano-observer` @ index 16 (`pallets/cardano-observer/src/lib.rs`); inherent id
-  `cgnoobsv`. Runtime **spec_version 204 / transaction_version 3**, genesis `0x73eaa4bf`.
+  `cgnoobsv`. Runtime **spec_version 215 / transaction_version 8**, genesis `0x73eaa4bf`.
 - Read + reduction: `cogno-dbsync/` (`dbsync.rs` = SQL/IO, `reduction.rs` = pure reduction). The
   on-chain result is read back with `cogno-chain-cli query weight` (over RPC).
 - Constants (`runtime/src/configs/mod.rs`): `MinLock = 100_000_000`; `MaxStakeWeight = MaxVotingPower =
   45×10¹⁵`; `StabilitySlots = 600` (testnet; mainnet 129,600); Shelley anchor `1655769600` / slot
-  `86400`; `StakeEpochLookback = 1`; `MaxObserved = 1024`; `StallAfter = 50` blocks (5 min).
+  `86400`; `StakeEpochLookback = 1`; `MaxChangesPerBlock = 256`; `MaxRolesPerAccount = 32`;
+  `MaxScanned = 1024`; `StallAfter = 50` blocks (5 min).
 - Live vault policy / script hash: `168a9710e991b768426b58011febec0fa3c5ff6beb49065cc52489c7`
   (`contracts/vault.json`) — never move it.
 - Identity keys: 32-byte beacon name = `AccountOf` key; 28-byte stake credential = `AccountOfStakeCred`

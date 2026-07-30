@@ -9,8 +9,10 @@
 //! digest is a cheap read-only MIRROR, not something a third party can trust on its own: nothing on the
 //! import path extracts or compares it, so it is only as honest as the node that sealed it. It is also
 //! emitted from inherent DATA rather than from the inherent the block ends up carrying, so a block that
-//! abstained on a `MaxObserved` overrun — or hit either runtime SKIP bound — still seals a healthy-looking
-//! anchor for an observation it never applied. [`value_from_digest`] is implemented + tested here (the
+//! hit a runtime SKIP bound — or applied only a PAGE of a backlogged change set (spec 215) — still seals
+//! the anchor for the full observation. The paged case is the common one now: the sealed anchor is the
+//! reference the node READ at, which is ahead of the on-chain `LastReference` for as long as a backlog
+//! drains. [`value_from_digest`] is implemented + tested here (the
 //! missing→`None` / duplicate→`Err` / malformed→`Err` trichotomy) so the deferred Architecture-B upgrade
 //! (making the header digest itself consensus-binding on import) is ready, even though Architecture A does
 //! not extract it on the import path.

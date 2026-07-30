@@ -14,15 +14,40 @@
 //! deterministic on-chain logic that lives here: the `beacon → account` lookup
 //! ([`Config::BeaconResolver`] = cogno-gate `AccountOf` in the runtime), the MIN_LOCK floor, the
 //! `MaxStakeWeight` bound, weight application + capacity priming ([`Config::WeightSink`] = a
-//! talk-stake + microblog adapter), and the unlock clamp.
+//! talk-stake + microblog adapter), and the delta against the previously-applied basis.
+//!
+//! ## Snapshot in, DELTA on the wire (spec 215)
+//! The node still reads and supplies the FULL Cardano snapshot as inherent DATA, exactly as before.
+//! What crosses into the block is the DIFFERENCE. [`ProvideInherent::create_inherent`] runs
+//! **in-runtime against the parent block's state** (the block builder executes
+//! `BlockBuilder::inherent_extrinsics` there), so it can diff the node's snapshot against the
+//! previously-applied basis ([`LastObserved`] / [`LastObservedStake`] / [`LastObservedRoles`]) and
+//! emit only what MOVED. [`ProvideInherent::check_inherent`] runs against the SAME parent state (the
+//! import path calls `BlockBuilder::check_inherents` at the parent hash), so an importer re-derives
+//! the identical delta from its own snapshot and byte-compares. Author and importer agree by
+//! construction; no new runtime API and no node-side state access are involved.
+//!
+//! Two consequences that used to be the pallet's sharpest edge:
+//!
+//! - **Per-block cost is O(changes), not O(participants).** A quiet block carries an empty delta.
+//! - **There is no population ceiling and no cliff.** A change set larger than
+//!   [`Config::MaxChangesPerBlock`] fills one page, records the remainder in [`PendingChanges`], and
+//!   DRAINS over the following blocks — the basis advances as each page applies, so the next block's
+//!   diff is the remainder. `create_inherent` can no longer return `None` for a size reason, which is
+//!   what used to freeze the sole weight writer chain-wide (see [`PendingChanges`]).
+//!
+//! Absence from `changes` now means UNCHANGED. An unlock is carried EXPLICITLY as
+//! `(key, None)`, derived by the same diff (present in the basis, absent from the snapshot), so the
+//! old second full-set clamp pass is gone.
 //!
 //! ## The two enforcement layers
-//! - [`ProvideInherent::check_inherent`] does the CROSS-NODE read match only: the importer compares the
-//!   author's observation against its OWN node's read at the same reference. When the reduced `entries`
-//!   differ, the carried `inputs_commitment` (a `blake2_256` of the pre-reduction candidate set — the
-//!   partner-chains `selection_inputs_hash` analog) splits the failure: differing commitments ⇒
+//! - [`ProvideInherent::check_inherent`] does the CROSS-NODE read match only: the importer re-derives the
+//!   delta from its OWN node's read at the same reference and compares it to the author's. When the derived
+//!   vault `changes` differ, the carried `inputs_commitment` (a `blake2_256` of the pre-reduction candidate
+//!   set — the partner-chains `selection_inputs_hash` analog) splits the failure: differing commitments ⇒
 //!   [`InherentError::Mismatch`] ("saw different Cardano data"); identical commitments ⇒
-//!   [`InherentError::ComputeDiverged`] ("same data, different reduction" — a determinism bug). BOTH are
+//!   [`InherentError::ComputeDiverged`] ("same data, different derived output" — a determinism bug in the
+//!   reduction OR in the diff, both of which are the pallet's own code). BOTH are
 //!   **fatal** → block rejected; the split is diagnostic. The importer's own source being behind is
 //!   [`InherentError::CannotVerify`] (**non-fatal** → accept without verifying — never fork on a slow
 //!   node). `check_inherent` is NOT run by every node (warp/state sync skip it; it is not re-run in
@@ -31,7 +56,7 @@
 //! - The `observe` dispatchable is `DispatchClass::Mandatory` and `is_inherent`-only (pool-inadmissible,
 //!   the mutual-exclusion invariant). It enforces, on every node: reference monotonicity, the
 //!   stability sanity bound, the `MaxStakeWeight` skip-not-reject, account resolution, weight + capacity
-//!   application, and the unlock clamp.
+//!   application, the explicit unlock, and the basis bookkeeping the next block's diff reads.
 //!
 //! ## Honest posture
 //! `check_inherent`'s "every producer re-derives" is load-bearing only with MULTIPLE independent block
@@ -52,6 +77,7 @@ pub use pallet::*;
 
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
+pub mod migrations;
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
@@ -61,6 +87,9 @@ pub mod weights;
 pub use weights::*;
 
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+use frame_support::{
+    traits::Get, BoundedVec, CloneNoBound, DebugNoBound, EqNoBound, PartialEqNoBound,
+};
 use scale_info::TypeInfo;
 use sp_inherents::{InherentIdentifier, IsFatalError};
 use sp_runtime::traits::{Saturating, Zero};
@@ -112,9 +141,12 @@ pub struct CardanoRef {
     pub block_hash: [u8; 32],
 }
 
-/// The observation supplied as inherent DATA by the node (transport form: an unbounded `Vec`; the
-/// runtime `Call` bounds it to [`Config::MaxObserved`]). Entries are canonical-sorted ascending by the
-/// 32 beacon bytes — the SAME canonical order the `cogno-dbsync` reduction produces.
+/// The observation supplied as inherent DATA by the node: the FULL Cardano snapshot as-of `reference`,
+/// in unbounded `Vec`s. It is NOT what goes into the block — [`ProvideInherent::create_inherent`] diffs
+/// it against the on-chain basis and puts only the resulting bounded DELTA in the [`Call::observe`]
+/// extrinsic. Nothing here is bounded, so no size of Cardano state can make the node fail to supply an
+/// observation. Entries are canonical-sorted ascending by the 32 beacon bytes — the SAME canonical order
+/// the `cogno-dbsync` reduction produces.
 ///
 /// `inputs_commitment` is the `blake2_256` of the canonical SCALE encoding of the PRE-REDUCTION
 /// structural candidate set (every vault UTxO the as-of reduction consumes, before the time-filter /
@@ -300,6 +332,58 @@ pub struct RoleEntry {
     pub weight: u128,
 }
 
+/// One VAULT-axis change: `Some(weight)` sets a beacon's observed weight, `None` says the beacon is no
+/// longer locked (the explicit unlock, which used to be inferred from absence in a full snapshot).
+///
+/// The weight is the EFFECTIVE one — [`Config::MinLock`] floor already applied — because the diff is
+/// taken in the terms the apply step writes. An entry the apply step would SKIP (its beacon resolves to
+/// no account, or its weight exceeds [`Config::MaxStakeWeight`]) is never emitted as a change at all, so
+/// it can never occupy a page slot and starve real changes block after block.
+pub type VaultChange = (BeaconName, Option<u128>);
+
+/// One VOTING-POWER-axis change, the [`VaultChange`] analog: `Some(total)` sets a bound stake
+/// credential's observed Cardano stake, `None` says it is no longer observed (unbound, or no stake).
+pub type StakeChange = (StakeCredential, Option<u128>);
+
+/// One ROLE-axis change, keyed by ACCOUNT rather than by credential.
+///
+/// The role sink ([`RoleSink::set_roles`]) is a whole-set OVERWRITE of one account's badges, and an
+/// account can hold several roles reached through several credentials (an mSPO's pools, plus a dRep
+/// badge). A per-CREDENTIAL delta could therefore split one account's set across two blocks, and the
+/// first block's overwrite would drop the badges the second block was going to restore. So the diff is
+/// taken over the AGGREGATED per-account sets — the same aggregation the apply step used to do inline —
+/// and each change carries the account's COMPLETE new set. `None` clears every role (the account dropped
+/// out of the observation entirely).
+///
+/// Keying by account is also what makes a lapsed CLAIM clear correctly: the account comes from the diff
+/// against the basis, not from re-resolving a credential that may no longer resolve to anything.
+// The `*NoBound` derives are load-bearing, not stylistic: `MaxRoles` is a `Get<u32>` witness type that
+// appears only inside the `BoundedVec`, and the std derives would demand `MaxRoles: Clone + Debug + Eq`
+// of it — which `ConstU32<N>` does not satisfy. `skip_type_params` does the same for `TypeInfo`.
+#[derive(
+    Encode,
+    Decode,
+    DecodeWithMemTracking,
+    CloneNoBound,
+    PartialEqNoBound,
+    EqNoBound,
+    DebugNoBound,
+    TypeInfo,
+    MaxEncodedLen,
+)]
+#[scale_info(skip_type_params(MaxRoles))]
+pub struct RoleChange<AccountId, MaxRoles>
+where
+    AccountId: Clone + Eq + core::fmt::Debug,
+    MaxRoles: Get<u32>,
+{
+    /// The account whose observed-role set changed.
+    pub who: AccountId,
+    /// The account's complete new set as `(role_kind_index, display_id, chamber_weight)`, or `None` to
+    /// clear every role.
+    pub roles: Option<BoundedVec<(u8, RoleCredential, u128), MaxRoles>>,
+}
+
 /// Resolve a role credential to its bound account, via the reverse map named by `source`. Implemented in
 /// the runtime (roles-pallet `RoleCredIndex` + cogno-gate `AccountOfStakeCred` for the free path); a
 /// fixture map in tests. The role analog of [`StakeResolver`], but source-tagged.
@@ -368,12 +452,16 @@ pub struct ObserverConfig {
     /// uses for leader election (CIP-1694 voting power); the node resolves the reference slot's epoch from
     /// db-sync's `block.epoch_no` (network-agnostic — no slots-per-epoch arithmetic) and subtracts this.
     pub stake_epoch_lookback: u64,
-    /// The [`Config::MaxObserved`] ceiling, surfaced to the node so it can ALARM before the observation
-    /// overruns it. An observation whose vault OR stake set exceeds this abstains in `create_inherent`
-    /// (the whole inherent drops to `None`), silently FREEZING the sole weight writer — so the node logs
-    /// a WARN as it approaches this and an ERROR at/over it. Single source of truth (node + runtime read
-    /// the same ceiling), so a monitoring rule can key off it without a hard-coded duplicate.
-    pub max_observed: u32,
+    /// The [`Config::MaxScanned`] cap, surfaced to the node so it can ALARM as the scanned credential sets
+    /// approach it. Single source of truth (node + runtime read the same value), so a monitoring rule can
+    /// key off it without a hard-coded duplicate.
+    ///
+    /// ⚠ Its meaning changed in spec 215 and the alarm changed with it. It is no longer a ceiling on the
+    /// observation — nothing bounds that now, and overrunning it is no longer a chain-wide weight freeze.
+    /// It caps the two per-block credential SCANS that scope the db-sync query, so it remains a real
+    /// ceiling on the STAKE and ROLE axes: a credential past the cap is not scanned, so it is not
+    /// observed. The vault axis is discovered by policy id and has no cap at all.
+    pub max_scanned: u32,
 }
 
 sp_api::decl_runtime_apis! {
@@ -406,7 +494,15 @@ pub mod pallet {
     };
     use frame_system::{ensure_none, pallet_prelude::*};
 
+    /// Storage version 1 (spec 215): the three `LastObserved*` clamp bases moved from
+    /// `StorageValue<BoundedVec<_, MaxObserved>>` blobs to StorageMaps, which is what removes the
+    /// population ceiling. Version 0 is the implicit pre-migration state — the pallet never declared a
+    /// version before, so `on_chain_version` reads 0 on the live chain and
+    /// `migrations::v1::MigrateV0ToV1` runs exactly once. See that module.
+    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     #[pallet::config]
@@ -414,18 +510,41 @@ pub mod pallet {
         /// The overarching runtime event type.
         #[allow(deprecated)]
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
-        /// Max identities observed in one block (bounds the inherent + `LastObserved`).
+        /// Max CHANGES carried in one block, per axis. A CHURN bound — a batch size, explicitly NOT a
+        /// population bound. Nothing caps how many identities may hold weight.
         ///
-        /// A HARD CEILING on concurrent participants, not a batch size: the observation is a FULL-SET
-        /// snapshot re-derived every block, so per-block cost is O(total participants), not O(changes).
-        /// An observation over this bound makes `create_inherent` abstain — the whole inherent drops and
-        /// the sole weight writer FREEZES. [`Stalled`] is what makes that freeze visible on-chain.
+        /// A change set larger than this fills one page; the rest is recorded in [`PendingChanges`] and
+        /// drains over the following blocks, because each applied page advances the basis the next
+        /// block's diff is taken against. The worst case a block can carry is `3 ×` this (the three
+        /// axes), which is what [`Config::WeightInfo::observe`] is benchmarked over.
+        ///
+        /// ⚠ This is the bound whose OVERRUN used to be a cliff. It no longer is: overrunning it costs
+        /// LATENCY (the tail lands a block or more later), never a dropped inherent and never a frozen
+        /// weight writer. Sizing it is a block-budget question, nothing more.
         #[pallet::constant]
-        type MaxObserved: Get<u32>;
+        type MaxChangesPerBlock: Get<u32>;
+        /// Max observed roles recorded for ONE account — a per-ACCOUNT bound (how many badges one
+        /// identity can hold at once: an mSPO's pools plus a dRep and a CC badge), never a population
+        /// bound. Bounds [`RoleChange::roles`] and the [`LastObservedRoles`] value. A set longer than
+        /// this is truncated deterministically, exactly as the runtime's own `RoleSink` already
+        /// truncates to its stored set's bound.
+        #[pallet::constant]
+        type MaxRolesPerAccount: Get<u32>;
+        /// The cap on the per-block credential SCANS that scope the node's db-sync query, and on the
+        /// read-side observed-account joins ([`ObserverConfig::max_scanned`], surfaced to the node).
+        ///
+        /// ⚠ NOT a bound on the observation — since spec 215 nothing bounds that. This exists for a
+        /// different reason that is unchanged: `link_stake_signed` / `claim_role_signed` are feeless
+        /// bare-unsigned calls, so an unbounded scan of the maps they grow is a free way to enlarge every
+        /// node's per-block work until the db-sync query blows its timeout. Capping the SCAN is what stops
+        /// that. It also bounds the on-chain poll-tally join (`pallet_microblog::Config::MaxObservedAccounts`
+        /// is wired to it), which is what lets `close_poll` declare a finite worst case.
+        #[pallet::constant]
+        type MaxScanned: Get<u32>;
         /// Blocks without an APPLIED observation before the on-chain stall alarm latches ([`Stalled`]).
         /// The node authors the inherent every block, so a gap this long means the sole weight writer has
-        /// stopped: db-sync is down or behind, or the observation overran [`Config::MaxObserved`] and
-        /// `create_inherent` abstained.
+        /// stopped: db-sync is down or behind, or the node's own read is failing. A large change set is
+        /// NOT a stall — a draining backlog still applies a page every block and still stamps the clock.
         #[pallet::constant]
         type StallAfter: Get<BlockNumberFor<Self>>;
         /// Hard ceiling on a single account's weight (`stake-1`). An entry above it is SKIPPED (not a
@@ -484,16 +603,34 @@ pub mod pallet {
         type BenchmarkSetup: BenchmarkSetup<Self::AccountId>;
     }
 
-    /// The last accepted Cardano reference — the monotonicity anchor. `None` before the first
+    /// The last FULLY-APPLIED Cardano reference — the monotonicity anchor. `None` before the first
     /// observation.
+    ///
+    /// "Fully applied" is load-bearing: it advances only on a block that carried its whole change set
+    /// ([`PendingChanges`] is `0`). A block that fills a page and defers the rest holds it where it is, so
+    /// the frontier never reads as "Cardano observed through here" while part of that reference is still
+    /// queued. Readers treat it as a conservative lower bound on what has landed — see
+    /// `estimateLockSlot` in the app, which turns it into a lock-credit ETA.
     #[pallet::storage]
     pub type LastReference<T: Config> = StorageValue<_, CardanoRef, OptionQuery>;
 
-    /// The previously-credited `(beacon, account)` set — required to compute the unlock-clamp set
-    /// (`LastObserved \ current`); a bare digest could not yield "which identities dropped out".
+    /// The APPLIED vault basis: `beacon → (account, weight)` for everything the observer has actually
+    /// written. This is what [`ProvideInherent::create_inherent`] diffs the node's snapshot against, and
+    /// it is a StorageMap precisely so that nothing about its SIZE can fail: the old
+    /// `StorageValue<BoundedVec<_, MaxObserved>>` was read and re-encoded whole every block and could not
+    /// hold more than `MaxObserved` rows at all.
+    ///
+    /// Two properties the rest of the pallet leans on:
+    ///
+    /// - It records the ACCOUNT, so an unlock can be applied to the right account even after the
+    ///   identity binding is gone (a revoked beacon no longer resolves, but its row still knows whom to
+    ///   zero).
+    /// - It records only what was APPLIED. An entry the apply step skipped is absent, so the next
+    ///   block's diff naturally re-derives it — the basis can never claim credit for a write that did
+    ///   not happen.
     #[pallet::storage]
     pub type LastObserved<T: Config> =
-        StorageValue<_, BoundedVec<(BeaconName, T::AccountId), T::MaxObserved>, ValueQuery>;
+        StorageMap<_, Blake2_128Concat, BeaconName, (T::AccountId, u128), OptionQuery>;
 
     /// Whether the verified observation's weight is APPLIED to talk-stake/microblog. **DEFAULT: `true`** —
     /// the observer is the SOLE weight writer from genesis (there is no committee `set_stake` fallback; that
@@ -512,19 +649,42 @@ pub mod pallet {
     #[pallet::storage]
     pub type EnforceWeight<T: Config> = StorageValue<_, bool, ValueQuery, DefaultEnforce<T>>;
 
-    /// The previously-credited `(stake_credential, account)` set — the voting-power unlock-clamp basis
-    /// (`LastObservedStake \ current` → 0), mirroring [`LastObserved`] for the vault weight.
+    /// The APPLIED voting-power basis: `stake_credential → (account, total)`, mirroring [`LastObserved`]
+    /// for the vault axis and diffed the same way.
     #[pallet::storage]
     pub type LastObservedStake<T: Config> =
-        StorageValue<_, BoundedVec<(StakeCredential, T::AccountId), T::MaxObserved>, ValueQuery>;
+        StorageMap<_, Blake2_128Concat, StakeCredential, (T::AccountId, u128), OptionQuery>;
 
-    /// The previously-credited accounts in the ROLE axis — the role unlock-clamp basis
-    /// (`LastObservedRoles \ current` → cleared), mirroring [`LastObservedStake`]. Roles are per-ACCOUNT
-    /// (an account may hold SPO + dRep + CC at once), so the basis is the account set, not a per-credential
-    /// list — the observer overwrites each current account's FULL set and clears the accounts that dropped out.
+    /// The APPLIED role basis: `account → its full observed-role set`. Keyed by ACCOUNT rather than by
+    /// credential because [`RoleSink::set_roles`] is a whole-set overwrite — see [`RoleChange`] for why a
+    /// per-credential delta would drop badges. The stored value is exactly what was last handed to the
+    /// sink, so the diff compares like with like.
     #[pallet::storage]
-    pub type LastObservedRoles<T: Config> =
-        StorageValue<_, BoundedVec<T::AccountId, T::MaxObserved>, ValueQuery>;
+    pub type LastObservedRoles<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        BoundedVec<(u8, RoleCredential, u128), T::MaxRolesPerAccount>,
+        OptionQuery,
+    >;
+
+    /// How many changes the last observation could NOT fit in its block, summed across the three axes —
+    /// the backlog depth. `0` is the normal state.
+    ///
+    /// This is the generalization of the latched [`Stalled`] alarm to a graded signal. It exists because
+    /// the failure it replaces was invisible: an observation over the old `MaxObserved` made
+    /// `create_inherent` return `None`, which dropped the WHOLE inherent and froze the sole weight writer
+    /// chain-wide until someone unlocked. There is no such state any more — a surplus is a page of work
+    /// deferred to the next block, not a dropped inherent — but a backlog that never drains still means
+    /// churn is outrunning [`Config::MaxChangesPerBlock`], and that is worth seeing on-chain rather than
+    /// inferring from a node log.
+    ///
+    /// It is carried in the [`Call::observe`] extrinsic (so `check_inherent` verifies it cross-node like
+    /// everything else) rather than recomputed here, and it gates [`LastReference`]: the reference
+    /// advances only on a block that drained, so `LastReference` never claims a reference was applied in
+    /// full when part of it is still queued.
+    #[pallet::storage]
+    pub type PendingChanges<T: Config> = StorageValue<_, u32, ValueQuery>;
 
     /// The block in which the last observation was APPLIED — the stall alarm's clock. `0` means "none
     /// yet": block 0 is genesis and carries no extrinsics, so a real observation can never stamp it. The
@@ -539,11 +699,11 @@ pub mod pallet {
     /// after the chain's first-ever accepted observation ([`LastReference`] is `Some`) — a chain that never
     /// started is not a chain that stopped.
     ///
-    /// This is the ONLY on-chain signal that the sole weight writer has stopped. `create_inherent` drops
-    /// the ENTIRE inherent when an observation exceeds [`Config::MaxObserved`] (the `BoundedVec::try_from`
-    /// fails ⇒ `None`) — no delta, no partial apply — which silently freezes weight chain-wide. Before this
-    /// flag the only evidence was a node-side `log::error!` and a Prometheus counter, i.e. OFF-CHAIN only:
-    /// an operator watching the chain saw nothing at all.
+    /// This is the on-chain signal that the sole weight writer has stopped ENTIRELY — no observation is
+    /// landing at all, because the node's Cardano read is down or behind. It no longer has a size-related
+    /// cause: since spec 215 an oversized change set drains rather than dropping the inherent, and a
+    /// draining block IS an applied observation, so it stamps the clock and keeps this quiet. A backlog is
+    /// reported by [`PendingChanges`] instead, which is graded rather than binary.
     #[pallet::storage]
     pub type Stalled<T: Config> = StorageValue<_, bool, ValueQuery>;
 
@@ -553,11 +713,14 @@ pub mod pallet {
     // from declaration order, so they are pinned explicitly here: the two variants appended below cannot
     // shift 0/1/2, and a future reorder is a compile-visible decision rather than a silent break.
     pub enum Event<T: Config> {
-        /// A verified observation was processed as-of `reference_slot`: `credited` identities had weight
-        /// applied, `cleared` had it zeroed (unlock clamp), `skipped` were observed but dropped for
-        /// exceeding `MaxStakeWeight` (step 3). `enforced` is the mode: `true` (the default) means weight
-        /// was APPLIED to `AllowedStake`/capacity; `false` means frozen (emergency revert: verified but not
-        /// applied), so `credited`/`cleared` count what WOULD have been applied.
+        /// A verified observation was processed as-of `reference_slot`. Since spec 215 the counts are over
+        /// the block's CHANGES, not over the whole observed population: `credited` beacons had a new
+        /// weight applied, `cleared` were explicitly unlocked (`None`) and zeroed, `skipped` were carried
+        /// but dropped by the `MaxStakeWeight` bound or an unresolvable beacon. A quiet block reports
+        /// zeroes, which now means "nothing moved" rather than "nothing is locked". `enforced` is the
+        /// mode: `true` (the default) means weight was APPLIED to `AllowedStake`/capacity; `false` means
+        /// frozen (emergency revert: verified but not applied), so `credited`/`cleared` count what WOULD
+        /// have been applied.
         #[codec(index = 0)]
         ObservationApplied {
             reference_slot: u64,
@@ -566,10 +729,11 @@ pub mod pallet {
             skipped: u32,
             enforced: bool,
         },
-        /// The VOTING-POWER half of the same verified observation: `credited` bound stake credentials had
-        /// voting power applied, `cleared` were zeroed (unlock clamp), `skipped` exceeded `MaxVotingPower`.
-        /// `enforced` mirrors `ObservationApplied`: `true` means applied to talk-stake `VotingPower`;
-        /// `false` means frozen (not applied).
+        /// The VOTING-POWER half of the same verified observation, counted over CHANGES exactly as
+        /// `ObservationApplied` is: `credited` stake credentials had a new voting power applied, `cleared`
+        /// were explicitly dropped and zeroed, `skipped` exceeded `MaxVotingPower` or resolved to no
+        /// account. `enforced` mirrors `ObservationApplied`: `true` means applied to talk-stake
+        /// `VotingPower`; `false` means frozen (not applied).
         #[codec(index = 1)]
         VotingPowerObserved {
             reference_slot: u64,
@@ -583,10 +747,10 @@ pub mod pallet {
         #[codec(index = 2)]
         EnforcementSet { enabled: bool },
         /// No observation has been applied for more than [`Config::StallAfter`] blocks — the SOLE weight
-        /// writer has stopped. Either the node's Cardano read is unavailable, or the observation overran
-        /// [`Config::MaxObserved`] and `create_inherent` abstained (dropping the whole inherent). Latched
-        /// via [`Stalled`], so it fires ONCE per episode. `last_applied` is the block the last observation
-        /// landed in; `blocks` is how long the gap had run when the alarm latched.
+        /// writer has stopped, because the node's Cardano read is unavailable or behind. (A large change
+        /// set is NOT a cause: it drains a page per block, and each of those blocks is an applied
+        /// observation.) Latched via [`Stalled`], so it fires ONCE per episode. `last_applied` is the block
+        /// the last observation landed in; `blocks` is how long the gap had run when the alarm latched.
         #[codec(index = 3)]
         ObservationStalled {
             last_applied: BlockNumberFor<T>,
@@ -596,11 +760,11 @@ pub mod pallet {
         /// total length of the gap.
         #[codec(index = 4)]
         ObservationResumed { blocks: BlockNumberFor<T> },
-        /// The ROLE half of the same verified observation (spec 206): `credited` accounts had their live
-        /// role set written, `cleared` accounts had all roles clamped away (a pool retired / a claim was
-        /// unclaimed or revoked). `enforced` mirrors the other two: `true` means written to `ObservedRoles`;
-        /// `false` means frozen (verified but not applied). Per-account role events are emitted by the
-        /// roles pallet's `apply_roles`; this is the aggregate for the observation.
+        /// The ROLE half of the same verified observation (spec 206), counted over CHANGES: `credited`
+        /// accounts had a new role set written, `cleared` accounts had all roles cleared (a pool retired /
+        /// a claim was unclaimed or revoked). `enforced` mirrors the other two: `true` means written to
+        /// `ObservedRoles`; `false` means frozen (verified but not applied). Per-account role events are
+        /// emitted by the roles pallet's `apply_roles`; this is the aggregate for the observation.
         #[codec(index = 5)]
         RolesObserved {
             reference_slot: u64,
@@ -608,6 +772,17 @@ pub mod pallet {
             cleared: u32,
             enforced: bool,
         },
+        /// The observation's change set did not fit in one block: this block carried a full page on at
+        /// least one axis and `pending` changes are deferred to the following blocks (summed across the
+        /// three axes). [`LastReference`] is HELD at its previous value until the backlog drains, so the
+        /// frontier never claims a reference landed in full.
+        ///
+        /// This is a latency signal, not a fault: the basis advances as each page applies, so the next
+        /// block's diff is the remainder and the queue strictly shrinks under any churn rate the chain can
+        /// actually sustain. It fires on every backlogged block (not latched like
+        /// [`Event::ObservationStalled`]) because `pending` is a depth that is worth watching move.
+        #[codec(index = 6)]
+        ObservationBacklogged { reference_slot: u64, pending: u32 },
     }
 
     // Variant indices are ON-WIRE (the index IS the wire format of a `DispatchError::Module`), so
@@ -685,7 +860,7 @@ pub mod pallet {
             Stalled::<T>::put(true);
             log::error!(
                 target: LOG_TARGET,
-                "OBSERVATION STALLED: no observation applied for {blocks:?} blocks (last at {last:?}) — the SOLE weight writer has stopped (Cardano read unavailable, or the observation exceeded MaxObserved and the inherent was dropped)",
+                "OBSERVATION STALLED: no observation applied for {blocks:?} blocks (last at {last:?}) — the SOLE weight writer has stopped. The node's Cardano read is unavailable or behind; a large change set cannot cause this (it drains a page per block and each of those blocks applies)",
             );
             Self::deposit_event(Event::ObservationStalled {
                 last_applied: last,
@@ -694,31 +869,45 @@ pub mod pallet {
             T::DbWeight::get().reads_writes(3, 2)
         }
 
-        /// All three unlock-clamp bases (vault `LastObserved`, stake `LastObservedStake`, role
-        /// `LastObservedRoles`) are `BoundedVec<_, MaxObserved>`. LOWERING `MaxObserved` under live state
-        /// therefore has teeth: a stored vec longer than the new bound fails to decode, and `ValueQuery`
-        /// answers a decode failure with the DEFAULT — an EMPTY basis — so every account that has since
-        /// unlocked keeps its weight (or its role badge) forever, silently. `get()` cannot see that (it IS
-        /// the thing that swallows it); `decode_len` reads the raw length prefix and is bound-independent,
-        /// so it can.
+        /// Invariants that hold on every block, checked under `try-runtime` against a snapshot of REAL
+        /// state (docs/UPGRADES.md's pre-enactment dry-run) — the only place they can be checked before
+        /// they are on-chain.
         ///
-        /// This runs under `try-runtime` against a snapshot of REAL state (docs/UPGRADES.md's pre-enactment
-        /// dry-run), which is the only place a bound drop can be caught BEFORE it is on-chain.
+        /// The three bases are StorageMaps now, so the old check is gone with the failure mode it guarded:
+        /// lowering a bound could shorten a `BoundedVec` past its stored length, and `ValueQuery` answered
+        /// the resulting decode failure with an EMPTY basis, silently stranding the weight of every account
+        /// that had since unlocked. A map has no length prefix to overrun, and every row decodes on its
+        /// own. What replaces it is the invariant the delta design actually rests on:
+        ///
+        /// - **The frontier is not held by a backlog that has already drained.** [`LastReference`] advances
+        ///   only when [`PendingChanges`] is `0`, so a non-zero `PendingChanges` with no observation
+        ///   landing would freeze the frontier indefinitely. The pairing is what makes `LastReference`
+        ///   readable as "applied in full through here".
+        /// - **Every role basis row is within its per-account bound**, i.e. the stored set is one the sink
+        ///   could actually have been handed.
         #[cfg(feature = "try-runtime")]
         fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
-            let bound = T::MaxObserved::get() as usize;
+            // A backlog implies the chain has observed at least once — the count is only ever written by an
+            // applied `observe`. The inverse (a frontier with no backlog) is the normal state.
             ensure!(
-                LastObserved::<T>::decode_len().unwrap_or(0) <= bound,
-                "LastObserved is longer than MaxObserved — the vault clamp basis will not decode"
+                PendingChanges::<T>::get() == 0 || LastReference::<T>::get().is_some(),
+                "PendingChanges is non-zero on a chain that has never applied an observation"
             );
-            ensure!(
-                LastObservedStake::<T>::decode_len().unwrap_or(0) <= bound,
-                "LastObservedStake is longer than MaxObserved — the stake clamp basis will not decode"
-            );
-            ensure!(
-                LastObservedRoles::<T>::decode_len().unwrap_or(0) <= bound,
-                "LastObservedRoles is longer than MaxObserved — the role clamp basis will not decode"
-            );
+            let bound = T::MaxRolesPerAccount::get() as usize;
+            for (who, roles) in LastObservedRoles::<T>::iter() {
+                ensure!(
+                    roles.len() <= bound,
+                    "a LastObservedRoles row exceeds MaxRolesPerAccount"
+                );
+                // A row is the set last handed to the sink; an EMPTY one is indistinguishable from "no
+                // roles", which is what `remove` is for. An empty row would make the diff emit a
+                // `None` clear for an account that already has nothing, every block, forever.
+                ensure!(
+                    !roles.is_empty(),
+                    "a LastObservedRoles row is empty — it should have been removed, not stored empty"
+                );
+                let _ = who;
+            }
             Ok(())
         }
     }
@@ -730,48 +919,37 @@ pub mod pallet {
         /// stability bound, `MaxStakeWeight` skip, account resolution, weight/capacity application, unlock
         /// clamp) is what holds even on nodes that skip `check_inherent`.
         ///
-        /// The weight is the benchmarked cost of the WHOLE call over four components, because the
-        /// mass-unlock worst case is not expressible from the arguments alone:
+        /// The weight is the benchmarked cost over the three change counts — one component per axis. It
+        /// used to need four, two of which came from STORAGE rather than from the arguments: the old body
+        /// re-scanned the entire previously-observed set every block to find the identities that had
+        /// dropped out, so a block with an empty observation and a full previous set was the most
+        /// expensive one there was, and no argument said so. There is no such scan now. An unlock is an
+        /// ordinary `(key, None)` change that costs what any other change costs, so the arguments describe
+        /// the whole cost and the worst case is simply three full pages.
         ///
-        /// - `n` = `entries.len()` and `m` = `stake_entries.len()` — the two credit loops.
-        /// - `p` = `LastObserved` len and `q` = `LastObservedStake` len — the two unlock-clamp bases. A
-        ///   block whose observation is EMPTY but whose previous set was full is the most expensive one
-        ///   there is (every prior identity is settled and zeroed), and `n`/`m` say nothing about it.
-        ///
-        /// `p`/`q` therefore come from storage. `decode_len` reads only the length prefix, of the two keys
-        /// the body reads in full anyway.
-        ///
-        /// This replaces a hand-estimate that took `entries.len()` alone and under-counted the true cost by
-        /// ~100x — on the one call in the chain that cannot be skipped. It also priced every term at
-        /// `proof_size = 0`: inert here (a solochain's `max_block` sets proof_size to `u64::MAX`), but the
-        /// entire PoV dimension of the sole per-block weight writer would read as free on a parachain.
+        /// That also means the declared weight no longer scales with the number of participants at all,
+        /// which is the point: it is bounded by `3 × MaxChangesPerBlock` forever, whatever the chain grows
+        /// to.
         #[pallet::call_index(0)]
         #[pallet::weight((
             T::WeightInfo::observe(
-                entries.len() as u32,
-                stake_entries.len() as u32,
-                LastObserved::<T>::decode_len().unwrap_or(0) as u32,
-                LastObservedStake::<T>::decode_len().unwrap_or(0) as u32,
-            )
-            // The ROLE axis is not (yet) in `WeightInfo::observe`'s benchmark; add a conservative DbWeight
-            // term for it — a resolver read per entry + a sink write per credited/cleared account. (A
-            // MAINNET PREREQUISITE is to fold it into the benchmark, as with the vault/stake terms.)
-            .saturating_add(<T as frame_system::Config>::DbWeight::get().reads_writes(
-                (role_entries.len() as u64)
-                    .saturating_mul(2)
-                    .saturating_add(LastObservedRoles::<T>::decode_len().unwrap_or(0) as u64),
-                (role_entries.len() as u64)
-                    .saturating_add(LastObservedRoles::<T>::decode_len().unwrap_or(0) as u64),
-            )),
+                changes.len() as u32,
+                stake_changes.len() as u32,
+                role_changes.len() as u32,
+            ),
             DispatchClass::Mandatory,
         ))]
         pub fn observe(
             origin: OriginFor<T>,
             reference: CardanoRef,
             inputs_commitment: [u8; 32],
-            entries: BoundedVec<(BeaconName, u128), T::MaxObserved>,
-            stake_entries: BoundedVec<(StakeCredential, u128), T::MaxObserved>,
-            role_entries: BoundedVec<RoleEntry, T::MaxObserved>,
+            changes: BoundedVec<VaultChange, T::MaxChangesPerBlock>,
+            stake_changes: BoundedVec<StakeChange, T::MaxChangesPerBlock>,
+            role_changes: BoundedVec<
+                RoleChange<T::AccountId, T::MaxRolesPerAccount>,
+                T::MaxChangesPerBlock,
+            >,
+            pending: u32,
         ) -> DispatchResult {
             ensure_none(origin)?; // inherents dispatch with the None origin
 
@@ -838,186 +1016,181 @@ pub mod pallet {
             // Mode read ONCE (deterministic — every node reads the identical pre-state in execute_block).
             // Enforcing (`true`, the DEFAULT) ⇒ `WeightSink` touches `AllowedStake`/capacity; frozen
             // (`false`, the emergency revert) ⇒ the read is still verified but no weight is written — it
-            // holds at its last value. Both `set_weight` call-sites (credit + clamp) AND the `LastObserved`/
-            // `LastObservedStake` clamp-basis writes are gated under this one flag — advancing the basis while
-            // freezing the writes would evict a mid-freeze unlock before it was zeroed (a stale-positive leak).
+            // holds at its last value.
+            //
+            // Every sink write AND every basis write is gated under this one flag, together. That pairing
+            // is what makes a freeze recoverable: the basis is what `create_inherent` diffs against, so
+            // holding it means the very same change set is re-derived on every frozen block and lands
+            // intact on the first enforcing one. Advancing the basis while freezing the writes would
+            // record an unlock as applied without ever zeroing it, stranding weight that no locked ADA
+            // backs.
             let enforce = EnforceWeight::<T>::get();
             let min_lock = T::MinLock::get();
             let max_weight = T::MaxStakeWeight::get();
-            let mut credited_set: BoundedVec<(BeaconName, T::AccountId), T::MaxObserved> =
-                BoundedVec::new();
             let mut credited: u32 = 0;
+            let mut cleared: u32 = 0;
             let mut skipped: u32 = 0;
 
-            for (beacon, lovelace) in entries.iter() {
-                // beacon → account (bind precedes weight; an unbound beacon is skipped, not an error).
-                let account = match T::BeaconResolver::resolve(beacon) {
-                    Some(a) => a,
-                    None => continue,
-                };
-                // MIN_LOCK floor, then the MaxStakeWeight bound as SKIP-not-reject. A skipped
-                // over-cap entry is counted (surfaced in the `ObservationApplied` event) so it is not
-                // silently mis-read as agreement.
-                let weight = if *lovelace >= min_lock {
-                    *lovelace
-                } else {
-                    0u128
-                };
-                if weight > max_weight {
-                    log::warn!(
-                        target: LOG_TARGET,
-                        "observe: SKIP entry weight={weight} > MaxStakeWeight={max_weight} (bad value not consensus-pinned, block not bricked)",
-                    );
-                    skipped = skipped.saturating_add(1);
-                    continue;
-                }
-                // Apply to weight when enforcing (the default). When frozen (`set_enforcement(false)`), the
-                // read is still verified but no `AllowedStake` write happens — weight holds at its last value.
-                if enforce {
-                    T::WeightSink::set_weight(&account, weight);
-                }
-                // credited_set is bounded by MaxObserved, same as `entries`, so try_push cannot overflow
-                // for a well-formed inherent; on the (impossible) overflow we simply don't record it for
-                // the clamp diff rather than failing the Mandatory block.
-                let _ = credited_set.try_push((*beacon, account));
-                credited = credited.saturating_add(1);
-            }
-
-            // Unlock clamp: a previously-credited account absent from the current set → 0.
-            // FROZEN (`set_enforcement(false)`): the weight write is skipped, and — critically — the
-            // `LastObserved` basis is HELD (advanced only when enforcing, below), so an account that unlocks
-            // DURING a freeze stays in the basis and is clamped to 0 on the first enforcing block after
-            // re-enable. Advancing the basis while frozen would evict such an account before it was ever
-            // zeroed, stranding a stale-positive `AllowedStake` forever (voice not backed by locked ADA).
-            // O(N) clamp: index the current beacons in a BTreeSet so the "absent from the current set" test
-            // is a log-N lookup, not a nested linear scan. The old `credited_set.iter().any(..)` made this
-            // loop O(N^2) — the binding per-block cost that capped how far `MaxObserved` could be raised.
-            let current_beacons: alloc::collections::BTreeSet<BeaconName> =
-                credited_set.iter().map(|(b, _)| *b).collect();
-            let prev = LastObserved::<T>::get();
-            let mut cleared: u32 = 0;
-            for (beacon, account) in prev.iter() {
-                if !current_beacons.contains(beacon) {
-                    if enforce {
-                        T::WeightSink::set_weight(account, 0);
+            for (beacon, observed) in changes.iter() {
+                match observed {
+                    // A new or moved weight.
+                    Some(lovelace) => {
+                        // beacon → account. `create_inherent` already dropped the unresolvable ones, so
+                        // this is defence in depth for a payload that did not come from it; skip, never
+                        // Err (this dispatch is Mandatory — see the note above).
+                        let account = match T::BeaconResolver::resolve(beacon) {
+                            Some(a) => a,
+                            None => {
+                                skipped = skipped.saturating_add(1);
+                                continue;
+                            }
+                        };
+                        // Re-apply the MIN_LOCK floor and the MaxStakeWeight bound. `create_inherent`
+                        // diffs on the floored value, so this is idempotent on a well-formed payload —
+                        // but it is enforced HERE because this dispatch is the layer that runs on every
+                        // node, including the ones that skip `check_inherent` entirely.
+                        let weight = if *lovelace >= min_lock {
+                            *lovelace
+                        } else {
+                            0u128
+                        };
+                        if weight > max_weight {
+                            log::warn!(
+                                target: LOG_TARGET,
+                                "observe: SKIP change weight={weight} > MaxStakeWeight={max_weight} (bad value not consensus-pinned, block not bricked)",
+                            );
+                            skipped = skipped.saturating_add(1);
+                            continue;
+                        }
+                        if enforce {
+                            T::WeightSink::set_weight(&account, weight);
+                            LastObserved::<T>::insert(beacon, (account, weight));
+                        }
+                        credited = credited.saturating_add(1);
                     }
-                    cleared = cleared.saturating_add(1);
+                    // The explicit unlock — this beacon is no longer locked.
+                    None => {
+                        // The account comes from the BASIS, never from a fresh resolve. A beacon whose
+                        // identity has since been revoked or rebound no longer resolves to the account
+                        // that holds the weight, and zeroing the wrong account (or nobody) would leave
+                        // `AllowedStake` standing with no locked ADA behind it.
+                        let Some((account, _)) = LastObserved::<T>::get(beacon) else {
+                            // Nothing recorded — already cleared, or never applied. Not an error.
+                            skipped = skipped.saturating_add(1);
+                            continue;
+                        };
+                        if enforce {
+                            T::WeightSink::set_weight(&account, 0);
+                            LastObserved::<T>::remove(beacon);
+                        }
+                        cleared = cleared.saturating_add(1);
+                    }
                 }
             }
 
-            // Advance the clamp basis ONLY when enforcing. Frozen, it must hold at its pre-freeze value so
-            // re-enable clamps the accounts that dropped out during the freeze (counted in `cleared` but not
-            // yet zeroed) — gating the write but not the basis would leak stale-positive weight.
-            if enforce {
-                LastObserved::<T>::put(credited_set);
-            }
-
-            // ── VOTING POWER (epoch_stake) — the same enforce/freeze discipline as the vault
-            // weight above, on the SAME verified observation. No MIN_LOCK floor (total stake counts at any
-            // size) and no largest-wins (the node supplies one total per credential); just resolve →
-            // cap-skip → project/apply → unlock-clamp.
+            // ── VOTING POWER (epoch_stake) — the same enforce/freeze discipline and the same explicit
+            // `None` unlock as the vault axis above, on the SAME verified observation. No MIN_LOCK floor
+            // (total stake counts at any size) and no largest-wins (the node supplies one total per
+            // credential); just resolve → cap-skip → apply.
             let max_vp = T::MaxVotingPower::get();
-            let mut vp_credited_set: BoundedVec<(StakeCredential, T::AccountId), T::MaxObserved> =
-                BoundedVec::new();
             let mut vp_credited: u32 = 0;
-            let mut vp_skipped: u32 = 0;
-            for (stake_cred, total) in stake_entries.iter() {
-                let account = match T::StakeResolver::resolve(stake_cred) {
-                    Some(a) => a,
-                    None => continue, // unbound stake credential — skipped, not an error
-                };
-                if *total > max_vp {
-                    log::warn!(
-                        target: LOG_TARGET,
-                        "observe: SKIP voting power={total} > MaxVotingPower={max_vp} (bad value not consensus-pinned)",
-                    );
-                    vp_skipped = vp_skipped.saturating_add(1);
-                    continue;
-                }
-                if enforce {
-                    T::VotingPowerSink::set_voting_power(&account, *total);
-                }
-                let _ = vp_credited_set.try_push((*stake_cred, account));
-                vp_credited = vp_credited.saturating_add(1);
-            }
-            // Unlock clamp: a previously-credited stake credential absent from the current set → 0. Same
-            // freeze discipline as the vault path: hold the `LastObservedStake` basis while frozen (advance
-            // only when enforcing, below) so a credential that unbinds/unstakes DURING a freeze is clamped
-            // on re-enable rather than evicted-unzeroed into a stale-positive `VotingPower`.
-            // O(N) clamp (as the vault path above): BTreeSet lookup, not a nested linear scan.
-            let current_creds: alloc::collections::BTreeSet<StakeCredential> =
-                vp_credited_set.iter().map(|(c, _)| *c).collect();
-            let vp_prev = LastObservedStake::<T>::get();
             let mut vp_cleared: u32 = 0;
-            for (stake_cred, account) in vp_prev.iter() {
-                if !current_creds.contains(stake_cred) {
-                    if enforce {
-                        T::VotingPowerSink::set_voting_power(account, 0);
+            let mut vp_skipped: u32 = 0;
+            for (stake_cred, observed) in stake_changes.iter() {
+                match observed {
+                    Some(total) => {
+                        let account = match T::StakeResolver::resolve(stake_cred) {
+                            Some(a) => a,
+                            None => {
+                                vp_skipped = vp_skipped.saturating_add(1);
+                                continue; // unbound stake credential — skipped, not an error
+                            }
+                        };
+                        if *total > max_vp {
+                            log::warn!(
+                                target: LOG_TARGET,
+                                "observe: SKIP voting power={total} > MaxVotingPower={max_vp} (bad value not consensus-pinned)",
+                            );
+                            vp_skipped = vp_skipped.saturating_add(1);
+                            continue;
+                        }
+                        if enforce {
+                            T::VotingPowerSink::set_voting_power(&account, *total);
+                            LastObservedStake::<T>::insert(stake_cred, (account, *total));
+                        }
+                        vp_credited = vp_credited.saturating_add(1);
                     }
-                    vp_cleared = vp_cleared.saturating_add(1);
+                    None => {
+                        // Account from the basis, for the same reason as the vault unlock: an unbound
+                        // credential no longer resolves, and the weight still has to be taken back.
+                        let Some((account, _)) = LastObservedStake::<T>::get(stake_cred) else {
+                            vp_skipped = vp_skipped.saturating_add(1);
+                            continue;
+                        };
+                        if enforce {
+                            T::VotingPowerSink::set_voting_power(&account, 0);
+                            LastObservedStake::<T>::remove(stake_cred);
+                        }
+                        vp_cleared = vp_cleared.saturating_add(1);
+                    }
                 }
-            }
-            if enforce {
-                LastObservedStake::<T>::put(vp_credited_set);
             }
 
-            // ── ROLES (SPO / dRep / CC) — the same enforce/freeze/clamp discipline, but PER ACCOUNT (an
-            // account may hold several roles at once). Aggregate the canonical `role_entries` per resolved
-            // account (≤ one entry per role kind — first-wins in the canonical order), overwrite each
-            // account's FULL observed set, then clamp the accounts that dropped out to empty.
-            let mut role_sets: alloc::collections::BTreeMap<
-                T::AccountId,
-                alloc::vec::Vec<(u8, RoleCredential, u128)>,
-            > = alloc::collections::BTreeMap::new();
-            for entry in role_entries.iter() {
-                // credential → account via the reverse map named by `source` (unresolved ⇒ skip, not error).
-                let account = match T::RoleResolver::resolve(entry.source, &entry.credential) {
-                    Some(a) => a,
-                    None => continue,
-                };
-                let kind = entry.source.kind_index();
-                let set = role_sets.entry(account).or_default();
-                // Dedup by the full (kind, id): both SPO sources key on the pool id, so an mSPO's several
-                // pools each yield their own pool-named SPO badge, while the SAME pool reached via both the
-                // owner and Calidus paths collapses to ONE entry (never double-counted). first-wins in the
-                // deterministic `role_entries` order, so the per-account set stays byte-stable across nodes.
-                // The chamber `weight` rides with the (kind, id) — it is deterministic per id, so first-wins
-                // keeps the canonical value.
-                if set.iter().any(|(k, v, _w)| *k == kind && *v == entry.id) {
-                    continue;
-                }
-                set.push((kind, entry.id, entry.weight));
-            }
+            // ── ROLES (SPO / dRep / CC) — the same enforce/freeze discipline, but the change unit is a
+            // whole ACCOUNT's set rather than one credential's. The aggregation that used to happen here
+            // (resolve every entry, group per account, dedup by `(kind, id)`) now happens in
+            // `create_inherent`, which can do it because it runs in-runtime with the same state; each
+            // change arrives carrying the account's COMPLETE new set. See [`RoleChange`] for why splitting
+            // an account across two blocks would silently drop badges.
             let mut role_credited: u32 = 0;
-            let mut role_current: BoundedVec<T::AccountId, T::MaxObserved> = BoundedVec::new();
-            for (account, roles) in role_sets.iter() {
-                if enforce {
-                    T::RoleSink::set_roles(account, roles);
-                }
-                let _ = role_current.try_push(account.clone());
-                role_credited = role_credited.saturating_add(1);
-            }
-            // Unlock clamp: an account credited last time but absent now → clear ALL its roles. Same freeze
-            // discipline as the other axes: hold the `LastObservedRoles` basis while frozen so an account
-            // whose role lapses DURING a freeze is cleared on re-enable, not evicted-unzeroed into a
-            // stale-positive badge.
-            let current_accounts: alloc::collections::BTreeSet<T::AccountId> =
-                role_sets.keys().cloned().collect();
-            let role_prev = LastObservedRoles::<T>::get();
             let mut role_cleared: u32 = 0;
-            for account in role_prev.iter() {
-                if !current_accounts.contains(account) {
-                    if enforce {
-                        T::RoleSink::set_roles(account, &[]);
+            for change in role_changes.iter() {
+                match &change.roles {
+                    // An empty set is a clear, not a write — `create_inherent` emits `None` for it, so
+                    // this only catches a payload that did not come from there. Storing an empty row
+                    // would make the next diff see a basis account with nothing in it and emit a clear
+                    // for it every block, forever.
+                    Some(roles) if !roles.is_empty() => {
+                        if enforce {
+                            T::RoleSink::set_roles(&change.who, roles.as_slice());
+                            LastObservedRoles::<T>::insert(&change.who, roles);
+                        }
+                        role_credited = role_credited.saturating_add(1);
                     }
-                    role_cleared = role_cleared.saturating_add(1);
+                    _ => {
+                        if enforce {
+                            T::RoleSink::set_roles(&change.who, &[]);
+                            LastObservedRoles::<T>::remove(&change.who);
+                        }
+                        role_cleared = role_cleared.saturating_add(1);
+                    }
                 }
-            }
-            if enforce {
-                LastObservedRoles::<T>::put(role_current);
             }
 
-            LastReference::<T>::put(&reference);
+            // ── The backlog. `pending` is how much of this reference's change set did not fit; it is
+            // carried in the extrinsic rather than recomputed here, so `check_inherent` verifies it
+            // cross-node along with everything else.
+            PendingChanges::<T>::put(pending);
+
+            // The frontier advances ONLY on a block that carried its whole change set. Holding it while a
+            // backlog drains is what lets a reader treat `LastReference` as "Cardano observed AND APPLIED
+            // through here" instead of "the newest reference some part of which was applied". Nothing is
+            // lost by waiting: the un-applied tail is not tracked against this reference at all, it is
+            // simply the difference between the next snapshot and the basis, which the next block
+            // re-derives from scratch.
+            if pending == 0 {
+                LastReference::<T>::put(&reference);
+            } else {
+                log::info!(
+                    target: LOG_TARGET,
+                    "observation BACKLOGGED at reference slot {}: {pending} changes deferred to the following blocks; the frontier holds until they drain",
+                    reference.slot,
+                );
+                Self::deposit_event(Event::ObservationBacklogged {
+                    reference_slot: reference.slot,
+                    pending,
+                });
+            }
 
             // The stall alarm's clock, stamped on every APPLIED observation — including a FROZEN one: the
             // read was still verified cross-node, and a freeze is a deliberate governance state, not a
@@ -1084,7 +1257,181 @@ pub mod pallet {
                 stability_slots: T::StabilitySlots::get(),
                 vault_policy_id: T::VaultPolicyId::get().to_vec(),
                 stake_epoch_lookback: T::StakeEpochLookback::get(),
-                max_observed: T::MaxObserved::get(),
+                max_scanned: T::MaxScanned::get(),
+            }
+        }
+
+        /// Derive the bounded DELTA call from the node's FULL snapshot, against the basis in the current
+        /// (parent-block) state. THE load-bearing function: both sides of consensus call it — the author
+        /// through [`ProvideInherent::create_inherent`], every importer through
+        /// [`ProvideInherent::check_inherent`] — and both execute it in-runtime against the same parent
+        /// state, so agreement is by construction rather than by convention.
+        ///
+        /// It resolves, floors and cap-checks in exactly the terms `observe` will apply, and emits a change
+        /// only where the result DIFFERS from the basis. Two consequences worth stating:
+        ///
+        /// - An entry `observe` would skip (a beacon bound to no account, a weight over
+        ///   [`Config::MaxStakeWeight`]) is never emitted at all. If it were, `observe` would skip it, the
+        ///   basis would not record it, and the next block would emit it again — for ever, occupying a page
+        ///   slot and starving real changes. Filtering here is what makes the page fair.
+        /// - Absence from the snapshot becomes an explicit `(key, None)`. That is the whole of the old
+        ///   unlock clamp; there is no second full-set pass anywhere any more.
+        ///
+        /// ⚠ COST. This walks the snapshot (a point read of the basis per entry) and then the basis (to
+        /// find what dropped out), so deriving the delta is O(observed set) even when the delta is empty.
+        /// That is deliberate and it is not the cost this change set out to remove: it is node-local work
+        /// in the block-building and import paths, NOT consensus weight, and it is strictly smaller than
+        /// the db-sync read and reduction the same node already performs over the same set to produce the
+        /// snapshot in the first place. What the change removes is the O(participants) term from the
+        /// WEIGHED dispatch and from the block payload, and the ceiling that came with it.
+        ///
+        /// Two of the three axes are not even unbounded here: the stake and role observations are scoped
+        /// node-side to the credentials the runtime reports, and both of those scans are capped at
+        /// [`Config::MaxScanned`] — so those bases cannot exceed it. Only the vault axis is unbounded, and
+        /// each row there costs a real Cardano UTxO holding at least [`Config::MinLock`].
+        fn derive_call(obs: &CardanoObservation) -> Call<T> {
+            let limit = T::MaxChangesPerBlock::get() as usize;
+
+            // ── VAULT. Desired state first, in the terms `observe` writes.
+            let min_lock = T::MinLock::get();
+            let max_weight = T::MaxStakeWeight::get();
+            let mut desired: alloc::collections::BTreeMap<BeaconName, (T::AccountId, u128)> =
+                alloc::collections::BTreeMap::new();
+            for (beacon, lovelace) in obs.entries.iter() {
+                let Some(account) = T::BeaconResolver::resolve(beacon) else {
+                    continue; // unbound beacon — never enters the delta
+                };
+                let weight = if *lovelace >= min_lock {
+                    *lovelace
+                } else {
+                    0u128
+                };
+                if weight > max_weight {
+                    continue; // would be skipped on apply — never enters the delta
+                }
+                desired.insert(*beacon, (account, weight));
+            }
+            let mut vault: alloc::vec::Vec<VaultChange> = alloc::vec::Vec::new();
+            for (beacon, (account, weight)) in desired.iter() {
+                // The account is part of the comparison, not just the weight: a beacon rebound to a
+                // different account has to be re-applied even at an unchanged lovelace, or the new owner
+                // never gets the weight.
+                match LastObserved::<T>::get(beacon) {
+                    Some((prev_account, prev_weight))
+                        if prev_account == *account && prev_weight == *weight => {}
+                    _ => vault.push((*beacon, Some(*weight))),
+                }
+            }
+            for (beacon, _) in LastObserved::<T>::iter() {
+                if !desired.contains_key(&beacon) {
+                    vault.push((beacon, None));
+                }
+            }
+
+            // ── VOTING POWER. Same shape, no floor.
+            let max_vp = T::MaxVotingPower::get();
+            let mut vp_desired: alloc::collections::BTreeMap<
+                StakeCredential,
+                (T::AccountId, u128),
+            > = alloc::collections::BTreeMap::new();
+            for (cred, total) in obs.stake_entries.iter() {
+                let Some(account) = T::StakeResolver::resolve(cred) else {
+                    continue;
+                };
+                if *total > max_vp {
+                    continue;
+                }
+                vp_desired.insert(*cred, (account, *total));
+            }
+            let mut stake: alloc::vec::Vec<StakeChange> = alloc::vec::Vec::new();
+            for (cred, (account, total)) in vp_desired.iter() {
+                match LastObservedStake::<T>::get(cred) {
+                    Some((prev_account, prev_total))
+                        if prev_account == *account && prev_total == *total => {}
+                    _ => stake.push((*cred, Some(*total))),
+                }
+            }
+            for (cred, _) in LastObservedStake::<T>::iter() {
+                if !vp_desired.contains_key(&cred) {
+                    stake.push((cred, None));
+                }
+            }
+
+            // ── ROLES. Aggregate per resolved account FIRST — the sink overwrites an account's whole set,
+            // so the account, not the credential, is the unit that can be safely written on its own. This
+            // is the aggregation `observe` used to do inline, moved here so the diff compares whole sets.
+            let mut role_desired: alloc::collections::BTreeMap<
+                T::AccountId,
+                alloc::vec::Vec<(u8, RoleCredential, u128)>,
+            > = alloc::collections::BTreeMap::new();
+            for entry in obs.role_entries.iter() {
+                let Some(account) = T::RoleResolver::resolve(entry.source, &entry.credential)
+                else {
+                    continue; // unresolved credential — skipped, not an error
+                };
+                let kind = entry.source.kind_index();
+                let set = role_desired.entry(account).or_default();
+                // Dedup by the full (kind, id): both SPO sources key on the pool id, so an mSPO's several
+                // pools each yield their own pool-named SPO badge, while the SAME pool reached via both
+                // the owner and Calidus paths collapses to ONE entry (never double-counted). First-wins in
+                // the deterministic `role_entries` order, so the set stays byte-stable across nodes. The
+                // chamber `weight` rides with the (kind, id) — deterministic per id, so first-wins keeps
+                // the canonical value.
+                if set.iter().any(|(k, v, _w)| *k == kind && *v == entry.id) {
+                    continue;
+                }
+                if set.len() < T::MaxRolesPerAccount::get() as usize {
+                    set.push((kind, entry.id, entry.weight));
+                }
+            }
+            let mut roles: alloc::vec::Vec<RoleChange<T::AccountId, T::MaxRolesPerAccount>> =
+                alloc::vec::Vec::new();
+            for (account, set) in role_desired.iter() {
+                let bounded: BoundedVec<(u8, RoleCredential, u128), T::MaxRolesPerAccount> =
+                    BoundedVec::truncate_from(set.clone());
+                if LastObservedRoles::<T>::get(account).as_ref() == Some(&bounded) {
+                    continue;
+                }
+                roles.push(RoleChange {
+                    who: account.clone(),
+                    roles: Some(bounded),
+                });
+            }
+            for (account, _) in LastObservedRoles::<T>::iter() {
+                if !role_desired.contains_key(&account) {
+                    roles.push(RoleChange {
+                        who: account,
+                        roles: None,
+                    });
+                }
+            }
+
+            // ── Canonical order, then page. Sorting is what makes the truncation deterministic across
+            // nodes: the forward pass is already key-sorted (a BTreeMap), but the drop-outs come from a
+            // hash-ordered map iteration and have to be merged into place.
+            vault.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            stake.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            roles.sort_unstable_by(|a, b| a.who.cmp(&b.who));
+
+            let pending = vault
+                .len()
+                .saturating_sub(limit)
+                .saturating_add(stake.len().saturating_sub(limit))
+                .saturating_add(roles.len().saturating_sub(limit)) as u32;
+            vault.truncate(limit);
+            stake.truncate(limit);
+            roles.truncate(limit);
+
+            Call::observe {
+                reference: obs.reference.clone(),
+                inputs_commitment: obs.inputs_commitment,
+                // Truncated to `limit` above, so `truncate_from` never actually truncates — it is the
+                // infallible constructor, chosen over `try_from().expect()` because this runs inside a
+                // Mandatory inherent where a panic discards the block.
+                changes: BoundedVec::truncate_from(vault),
+                stake_changes: BoundedVec::truncate_from(stake),
+                role_changes: BoundedVec::truncate_from(roles),
+                pending,
             }
         }
 
@@ -1113,48 +1460,53 @@ pub mod pallet {
         type Error = InherentError;
         const INHERENT_IDENTIFIER: InherentIdentifier = INHERENT_IDENTIFIER;
 
-        /// AUTHOR side: build the `observe` call from this node's observation. Absent data ⇒ no inherent
-        /// this block (legal — `is_inherent_required` is the default `Ok(None)`). An observation larger
-        /// than `MaxObserved` ⇒ abstain (never author a malformed/truncated inherent).
+        /// AUTHOR side: diff this node's snapshot against the on-chain basis and build the `observe` call
+        /// from the difference. Absent data ⇒ no inherent this block (legal — `is_inherent_required` is the
+        /// default `Ok(None)`), which is now the ONLY reason this returns `None`.
+        ///
+        /// It used to have a second: an observation over `MaxObserved` failed `BoundedVec::try_from` and
+        /// abstained, dropping the whole inherent. Because this pallet is the sole weight writer and the
+        /// reference is a pure function of the parent, that abstention repeated every slot and froze weight
+        /// for EVERY account until somebody unlocked — a 1025th locker could brick the chain's weight
+        /// writer for the other 1024. A surplus is now a page boundary: [`Self::derive_call`] fills one
+        /// page, reports the rest as `pending`, and the basis it advances makes the next block's diff the
+        /// remainder.
         fn create_inherent(data: &InherentData) -> Option<Self::Call> {
             let obs = data
                 .get_data::<CardanoObservation>(&INHERENT_IDENTIFIER)
                 .ok()
                 .flatten()?;
-            let entries = BoundedVec::try_from(obs.entries).ok()?;
-            let stake_entries = BoundedVec::try_from(obs.stake_entries).ok()?;
-            let role_entries = BoundedVec::try_from(obs.role_entries).ok()?;
-            Some(Call::observe {
-                reference: obs.reference,
-                inputs_commitment: obs.inputs_commitment,
-                entries,
-                stake_entries,
-                role_entries,
-            })
+            Some(Self::derive_call(&obs))
         }
 
-        /// IMPORTER side: compare the author's observation against THIS node's own read at the same
-        /// reference. Identical reference (slot + sealed `block_hash` anchor) + reduced entries ⇒ Ok. Own
-        /// source behind/absent ⇒ `CannotVerify` (non-fatal: accept without verifying — never fork on lag).
-        /// When the reduced entries DIFFER, the `inputs_commitment` splits the (fatal) failure: a differing
-        /// commitment ⇒ `Mismatch` (saw different Cardano data); an identical commitment ⇒ `ComputeDiverged`
-        /// (same data, different reduction — a determinism bug / version skew).
+        /// IMPORTER side: re-derive the delta from THIS node's own read, against the SAME parent state the
+        /// author derived against, and compare. Own source behind/absent ⇒ `CannotVerify` (non-fatal:
+        /// accept without verifying — never fork on lag).
+        ///
+        /// Comparing the DERIVED delta rather than the raw snapshot is what keeps this honest under a
+        /// backlog. Both sides run the identical [`Self::derive_call`] over the identical basis, so both
+        /// page at the identical boundary and both report the identical `pending` — a draining block is not
+        /// a disagreement. Comparing raw snapshots instead would have said nothing about whether the
+        /// author's page was the one the rules produce, which is precisely what has to be verified now that
+        /// the block carries a difference rather than a statement of the whole truth.
+        ///
+        /// When the derived vault `changes` differ, the `inputs_commitment` splits the (fatal) failure: a
+        /// differing commitment ⇒ `Mismatch` (saw different Cardano data); an identical commitment ⇒
+        /// `ComputeDiverged` (same raw data, different derived output). `ComputeDiverged` now covers the
+        /// diff as well as the reduction, which are both this codebase's own deterministic code — the
+        /// diagnostic it carries ("not a data disagreement; a version skew or a determinism bug") is
+        /// unchanged and if anything more likely to be the truth.
         fn check_inherent(call: &Self::Call, data: &InherentData) -> Result<(), Self::Error> {
-            let (reference, inputs_commitment, entries, stake_entries, role_entries) = match call {
-                Call::observe {
-                    reference,
-                    inputs_commitment,
-                    entries,
-                    stake_entries,
-                    role_entries,
-                } => (
-                    reference,
-                    inputs_commitment,
-                    entries,
-                    stake_entries,
-                    role_entries,
-                ),
-                _ => return Ok(()),
+            let Call::observe {
+                reference,
+                inputs_commitment,
+                changes,
+                stake_changes,
+                role_changes,
+                pending,
+            } = call
+            else {
+                return Ok(());
             };
             let local = match data
                 .get_data::<CardanoObservation>(&INHERENT_IDENTIFIER)
@@ -1164,29 +1516,45 @@ pub mod pallet {
                 Some(o) => o,
                 None => return Err(InherentError::CannotVerify),
             };
-            // Compare the FULL reference (slot + the SEALED `block_hash` anchor) + the canonical entries. The
-            // anchor is the latest stable Cardano block ≤ the reference (see [`CardanoRef`]) — re-validating
-            // it is what makes the header-sealed `cobs` anchor importer-checked. It does
-            // NOT spuriously fork: a behind importer abstains (→ CannotVerify above) before it can reach a
-            // FALSE mismatch, and two honest caught-up nodes agree on the stable anchor by construction.
-            if reference == &local.reference
-                && entries.as_slice() == local.entries.as_slice()
-                && stake_entries.as_slice() == local.stake_entries.as_slice()
-                && role_entries.as_slice() == local.role_entries.as_slice()
+            let Call::observe {
+                reference: exp_reference,
+                changes: exp_changes,
+                stake_changes: exp_stake,
+                role_changes: exp_roles,
+                pending: exp_pending,
+                ..
+            } = Self::derive_call(&local)
+            else {
+                return Err(InherentError::Mismatch);
+            };
+            // The reference is compared IN FULL (slot + the SEALED `block_hash` anchor). The anchor is the
+            // latest stable Cardano block ≤ the reference (see [`CardanoRef`]) — re-validating it is what
+            // makes the header-sealed `cobs` anchor importer-checked. It does NOT spuriously fork: a behind
+            // importer abstains (→ CannotVerify above) before it can reach a FALSE mismatch, and two honest
+            // caught-up nodes agree on the stable anchor by construction.
+            //
+            // ⚠ `inputs_commitment` is deliberately NOT part of this test. It commits to the PRE-reduction
+            // vault candidate set, and two honest nodes routinely hold different candidate sets that reduce
+            // to the same result — one may have seen a UTxO the other has not, which the time filter or the
+            // largest-wins fold then drops. Rejecting on the commitment alone would fork the chain on a
+            // difference that provably changed nothing. It is consulted ONLY below, to classify a failure
+            // that has already been established on the outputs.
+            if reference == &exp_reference
+                && changes.as_slice() == exp_changes.as_slice()
+                && stake_changes.as_slice() == exp_stake.as_slice()
+                && role_changes.as_slice() == exp_roles.as_slice()
+                && *pending == exp_pending
             {
-                // Outputs agree (vault entries AND voting-power stake entries AND role entries) ⇒ accept,
-                // REGARDLESS of the input commitment: two honest nodes whose raw candidate sets differ only
-                // in UTxOs the reduction drops (too-fresh / spent) still reduce to the same entries.
                 return Ok(());
             }
-            // The reads disagree (fatal either way). `ComputeDiverged` is reserved for the VAULT reduction:
-            // same reference + same vault `inputs_commitment` but different vault `entries` ⇒ same raw vault
-            // data reduced differently (a determinism bug). Everything else — a differing reference/anchor, a
-            // differing vault commitment, or a differing `stake_entries` (a DIRECT `epoch_stake` read, no
-            // reduction to diverge) — is a data `Mismatch`.
+            // The reads disagree (fatal either way). `ComputeDiverged` is reserved for the case where the
+            // raw vault inputs provably agree: same reference + same vault `inputs_commitment`, but a
+            // different derived vault delta ⇒ the same raw data turned into a different output. Everything
+            // else — a differing reference/anchor, a differing vault commitment, or a differing stake/role
+            // delta (neither has a vault commitment to appeal to) — is a data `Mismatch`.
             if reference == &local.reference
                 && *inputs_commitment == local.inputs_commitment
-                && entries.as_slice() != local.entries.as_slice()
+                && changes.as_slice() != exp_changes.as_slice()
             {
                 Err(InherentError::ComputeDiverged)
             } else {

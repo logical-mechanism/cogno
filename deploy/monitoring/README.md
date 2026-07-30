@@ -28,10 +28,11 @@ Key metrics:
   `cogno_observer_last_reference_slot` (Cardano slot of the latest non-empty observation) +
   `cogno_observer_dbsync_tip_slot` (this node's db-sync tip) and `cogno_observer_lag_slots` (how far the
   tip trails the current Cardano slot — the *observer lag*, ~0 healthy, climbs before it abstains);
-  `cogno_observer_observed_vaults` / `_observed_voters` vs `cogno_observer_max_observed` (the freeze
-  ceiling) and `cogno_observer_observations_oversize_total` (**a non-zero rate is a page** — the observe
-  inherent has started abstaining and weight is frozen). **These are updated only by the AUTHORING
-  producer** — a tracking node leaves them at 0.
+  `cogno_observer_observed_voters` / `_observed_roles` vs `cogno_observer_max_scanned` (the credential-scan
+  cap) and `cogno_observer_observations_scan_capped_total` (a non-zero rate means credentials past the cap
+  are not being observed at all). `cogno_observer_observed_vaults` has NO ceiling to compare against —
+  since spec 215 the vault axis is unbounded. **These are updated only by the AUTHORING producer** — a
+  tracking node leaves them at 0.
 - **Host metrics** (`node_*`, from `node_exporter` — OPTIONAL, off by default): CPU / memory / disk and
   the chain-DB mount. Enable the `node-exporter` scrape job in `prometheus.yml` (install one-liner is
   there) to light up the "Host …" dashboard panels and the `HostDiskFilling` / `HostMemoryHigh` alerts.
@@ -64,11 +65,17 @@ scrape network or a proxy — never expose it publicly.
   commented-out — a single `--force-authoring` validator runs at 0 peers by design).
 - **cogno-observer:** `ObserverAbstaining` (no non-empty observation in 15m — weight going stale),
   `ObserverReferenceSlotStalled` (db-sync's Cardano tip fully frozen), `ObserverNoVaults` (observing, but
-  the locked-ADA vault set is empty — a broken vault scan on a live chain), `ObserverOversize`
-  (**critical** — an observation exceeded `MaxObserved`, so the inherent abstains and weight is FROZEN;
-  raise `MaxObserved` via a governed upgrade), `ObserverApproachingMaxObserved` (within 10% of the
-  ceiling — raise it before it freezes), `ObserverLagHigh` (db-sync tip >300 slots behind — falling
-  behind before it fully stalls; scale the threshold up for mainnet's larger stability window).
+  the locked-ADA vault set is empty — a broken vault scan on a live chain), `ObserverScanCapped` (a
+  scanned credential set reached `MaxScanned`, so those identities get no voting power and no role badge;
+  raise `MaxScanned` via a governed upgrade), `ObserverApproachingMaxScanned` (within 10% of that cap),
+  `ObserverLagHigh` (db-sync tip >300 slots behind — falling behind before it fully stalls; scale the
+  threshold up for mainnet's larger stability window).
+
+  Spec 215 RETIRED the `ObserverOversize` freeze page along with the condition it watched: an oversized
+  observation used to drop the whole inherent and freeze weight chain-wide, and now it pages and drains.
+  The replacement signal, `CardanoObserver::PendingChanges`, is on-chain rather than node-side, and
+  nothing scrapes chain storage into Prometheus yet — see the commented-out `ObserverBacklogNotDraining`
+  rule in `alerts.yml` for what to wire when a chain-state exporter exists.
 - **cogno-rpc:** `RpcErrorRateHigh` (sustained RPC error rate — a broken/abusive client or upstream fault).
 - **host** (requires the `node-exporter` scrape job): `HostDiskFilling` (**critical** — <10% free on the
   chain-DB mount; with `MinAuthorities=1` the validator DB is the sole copy of history), `HostMemoryHigh`.

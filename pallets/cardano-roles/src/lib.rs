@@ -200,15 +200,19 @@ pub mod pallet {
         #[pallet::constant]
         type CardanoNetwork: Get<u8>;
         /// The ceiling on how many claimed credentials the per-block observer scan may return — the
-        /// SAME `MaxObserved` the cardano-observer bounds its observation by. Not a `#[pallet::constant]`:
-        /// it bounds a runtime-API read, not anything on the wire.
+        /// cardano-observer's `MaxScanned`. Not a `#[pallet::constant]`: it bounds a runtime-API read,
+        /// not anything on the wire.
         ///
         /// `claimed_credentials` runs on the inherent-data path of every node on every block and feeds a
         /// db-sync query under a timeout, while the map it scans is grown by the bare-unsigned, feeless
         /// `claim_role_signed`. Unbounded, that is a free way to stop the sole weight writer for
-        /// everyone. Matching the observer's cap loses nothing: the observation's role axis is itself a
-        /// `BoundedVec<_, MaxObserved>`.
-        type MaxObserved: Get<u32>;
+        /// everyone.
+        ///
+        /// ⚠ Since spec 215 this cap is a REAL ceiling on what gets observed, where it used to be
+        /// redundant with one the observation already had. The observation is a delta now and nothing
+        /// bounds its size, so a credential past this cap is simply never scanned, never observed, and
+        /// never badged — a per-identity omission the warnings below exist to catch.
+        type MaxScanned: Get<u32>;
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
     }
@@ -546,11 +550,11 @@ pub mod pallet {
             // feeless and capacity-unmetered. An unbounded scan here stops the sole weight writer for
             // everyone once the query outgrows the timeout.
             //
-            // `MaxObserved` is the right ceiling because the observation's role axis is itself a
-            // `BoundedVec<_, MaxObserved>`: a credential past the cap could not have been represented in
-            // the result anyway. Iteration is by hashed key, so the prefix is deterministic and every
-            // node takes the same one — `check_inherent` still agrees.
-            let cap = T::MaxObserved::get() as usize;
+            // Iteration is by hashed key, so the prefix is deterministic and every node takes the same
+            // one — `check_inherent` still agrees. Note this cap now BINDS: the observation itself is
+            // unbounded since spec 215, so a credential past the cap is genuinely not observed rather
+            // than merely unrepresentable.
+            let cap = T::MaxScanned::get() as usize;
             // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that
             // exactly fills it (nothing dropped yet — the last quiet block), `len > cap` is a real
             // truncation. Truncating back leaves the returned prefix byte-identical to `take(cap)`, so
@@ -562,14 +566,14 @@ pub mod pallet {
                 out.truncate(cap);
                 log::warn!(
                     target: LOG_TARGET,
-                    "claimed {role:?} credentials EXCEED the MaxObserved cap ({cap}) — claims past it \
-                     are not observed. Raise MaxObserved or prune the ledger.",
+                    "claimed {role:?} credentials EXCEED the MaxScanned cap ({cap}) — claims past it \
+                     are not observed. Raise MaxScanned or prune the ledger.",
                 );
             } else if out.len() == cap {
                 log::warn!(
                     target: LOG_TARGET,
-                    "claimed {role:?} credentials are exactly AT the MaxObserved cap ({cap}) — the next \
-                     claim is not observed. Raise MaxObserved or prune the ledger.",
+                    "claimed {role:?} credentials are exactly AT the MaxScanned cap ({cap}) — the next \
+                     claim is not observed. Raise MaxScanned or prune the ledger.",
                 );
             }
             out

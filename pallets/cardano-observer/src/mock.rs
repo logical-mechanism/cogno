@@ -186,6 +186,9 @@ pub const MIN_LOCK: u128 = 100_000_000;
 pub const MAX_STAKE_WEIGHT: u128 = 45_000_000_000_000_000;
 /// Blocks without an applied observation before the stall alarm latches (small, so the tests can cross it).
 pub const STALL_AFTER: u64 = 10;
+/// The per-axis change page. Pinned to the runtime's `MaxChangesPerBlock` and to `benchmarking::MAX_CHANGES`
+/// — see the note on the `Config` impl below for why all three have to agree.
+pub const MAX_CHANGES_PER_BLOCK: u32 = 256;
 
 parameter_types! {
     // A dummy 28-byte policy id for the mock (the real one is the live vault hash in the runtime).
@@ -194,10 +197,13 @@ parameter_types! {
 
 impl pallet_cardano_observer::Config for Test {
     type RuntimeEvent = RuntimeEvent;
-    // ⚠ Must equal the runtime's `MaxObserved`: it is also the upper bound of the `observe` benchmark's
-    // `Linear` components (which need a literal), and `impl_benchmark_test_suite!` runs those bodies
-    // against THIS mock. A smaller bound here fails the benchmark's seeding.
-    type MaxObserved = ConstU32<1024>;
+    // ⚠ Must equal the runtime's `MaxChangesPerBlock`: it is also the upper bound of the `observe`
+    // benchmark's `Linear` components (which need a literal), and `impl_benchmark_test_suite!` runs those
+    // bodies against THIS mock. A smaller bound here fails the benchmark's seeding. Kept at the real value
+    // rather than shrunk for convenience, so the paging tests exercise the bound the chain actually has.
+    type MaxChangesPerBlock = ConstU32<MAX_CHANGES_PER_BLOCK>;
+    type MaxRolesPerAccount = ConstU32<32>;
+    type MaxScanned = ConstU32<1024>;
     type MaxStakeWeight = ConstU128<MAX_STAKE_WEIGHT>;
     type MinLock = ConstU128<MIN_LOCK>;
     type StabilitySlots = ConstU64<STABILITY_SLOTS>;
@@ -229,11 +235,15 @@ pub const NOW_SECS_DEFAULT: u64 = SHELLEY_START_UNIX + ELAPSED_SECS;
 pub const MAX_REFERENCE: u64 = SHELLEY_START_SLOT + ELAPSED_SECS - STABILITY_SLOTS;
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
-    // Reset thread-local fixtures so tests don't leak state into each other.
+    // Reset thread-local fixtures so tests don't leak state into each other. ROLE_BINDINGS and
+    // OBSERVED_ROLES are cleared here too: libtest gives each test its own thread today, which masks the
+    // omission, but `--test-threads=1` or any pooled harness would leak role fixtures between tests.
     BINDINGS.with(|b| b.borrow_mut().clear());
     WEIGHTS.with(|w| w.borrow_mut().clear());
     STAKE_BINDINGS.with(|b| b.borrow_mut().clear());
     VOTING_POWERS.with(|w| w.borrow_mut().clear());
+    ROLE_BINDINGS.with(|b| b.borrow_mut().clear());
+    OBSERVED_ROLES.with(|r| r.borrow_mut().clear());
     set_now_secs(NOW_SECS_DEFAULT);
     frame_system::GenesisConfig::<Test>::default()
         .build_storage()
