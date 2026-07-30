@@ -18,7 +18,9 @@ import {
   actionChambers,
   approvalRatio,
   chamberVote,
+  countDirection,
   ratificationVerdict,
+  unanimousChoice,
   FALLBACK_THRESHOLDS,
   type Threshold,
 } from "@/lib/cardano/governance";
@@ -81,6 +83,13 @@ function ChamberRow({
   // runtime tallies alongside the weight); `total` is only ever the stake.
   const nobodyVoted = v.voters === 0;
   const votedWithoutWeight = v.voters > 0 && v.total === 0n;
+  // Which way the turnout actually went, by head count. Only consulted when the WEIGHTED view cannot
+  // speak: with no counted stake there is no ratio and no bar, and reporting "2 dReps voted" while
+  // staying silent on Yes-versus-No withholds the only thing a temperature check is for. Never shown
+  // alongside a live ratio, where it would invite reading a head count as the result — a chamber
+  // ratifies by stake, so two voters are not "50/50" unless their stake happens to be.
+  const unanimous = votedWithoutWeight ? unanimousChoice(v) : null;
+  const direction = votedWithoutWeight ? countDirection(v) : null;
 
   return (
     <div className={styles.chamber}>
@@ -90,9 +99,10 @@ function ChamberRow({
           <span className={styles.novote}>no {unit}s voted</span>
         ) : votedWithoutWeight ? (
           // Voted, but carrying no stake this snapshot can price. Says what happened rather than
-          // collapsing to "nobody voted" (false) or showing "0% Yes" (which reads as a rejection).
+          // collapsing to "nobody voted" (false) or showing "0% Yes" (which reads as a rejection) — and
+          // names the DIRECTION, which is the only thing worth knowing when the weight is unavailable.
           <span className={styles.novote}>
-            {lensVoters(v.voters, body)} voted, no stake counted yet
+            {lensVoters(v.voters, body)} voted{unanimous ? ` ${unanimous}` : ""}, no stake counted yet
           </span>
         ) : ratio == null ? (
           <span className={styles.novote}>all abstained</span>
@@ -163,6 +173,9 @@ function ChamberRow({
         )}
         {" · "}
         {lensVoters(v.voters, body)}
+        {/* A SPLIT chamber with no counted stake: the headline can only say how many voted, so the tally
+            goes here. A unanimous one is already named in the headline and would just repeat. */}
+        {direction && <> · {direction}</>}
         {v.abstain > 0n && <> · {formatWeight(v.abstain)} ₳ abstained</>}
       </div>
       {/* The reason, once, on the row it applies to. Without it "no stake counted yet" is an unexplained

@@ -133,6 +133,21 @@ export interface ChamberVote {
   abstain: bigint;
   total: bigint;
   voters: number;
+  /**
+   * The same Yes/No/Abstain fold by HEAD COUNT rather than stake.
+   *
+   * Carried because the weighted fold goes blind exactly when a chamber's stake is 0: `approvalRatio` is
+   * null, the gauge has nothing to draw, and a readout with only `voters` can say that two dReps voted
+   * but not that both voted Yes. Direction is the entire point of a temperature check, and the chain has
+   * always known it — the per-option counts were simply summed away here.
+   *
+   * NOT a substitute for the weighted ratio and never used to draw the bar: a chamber ratifies by stake,
+   * so one whale and one dust holder are not "50% Yes". This is only for saying which way the people who
+   * turned out actually voted, and it is surfaced when the weighted view cannot speak.
+   */
+  yesVoters: number;
+  noVoters: number;
+  abstainVoters: number;
 }
 
 /** Fold the poll options into a chamber's Yes/No/Abstain stake + voter count, reading that chamber's lens
@@ -146,16 +161,64 @@ export function chamberVote(options: PollOptionView[], body: "spo" | "drep"): Ch
   let abstain = 0n;
   let total = 0n;
   let voters = 0;
+  let yesVoters = 0;
+  let noVoters = 0;
+  let abstainVoters = 0;
   for (const o of options) {
     const weight = w(o);
+    const count = c(o);
     total += weight;
-    voters += c(o);
+    voters += count;
     const cls = classifyChoice(o.label);
-    if (cls === "yes") yes += weight;
-    else if (cls === "no") no += weight;
-    else if (cls === "abstain") abstain += weight;
+    if (cls === "yes") {
+      yes += weight;
+      yesVoters += count;
+    } else if (cls === "no") {
+      no += weight;
+      noVoters += count;
+    } else if (cls === "abstain") {
+      abstain += weight;
+      abstainVoters += count;
+    }
   }
-  return { yes, no, abstain, total, voters };
+  return { yes, no, abstain, total, voters, yesVoters, noVoters, abstainVoters };
+}
+
+/** The canonical buckets that actually drew a voter, in CIP-1694 order (the order the option rows use). */
+function occupiedBuckets(v: ChamberVote): [string, number][] {
+  return (
+    [
+      ["Yes", v.yesVoters],
+      ["No", v.noVoters],
+      ["Abstain", v.abstainVoters],
+    ] as [string, number][]
+  ).filter(([, n]) => n > 0);
+}
+
+/**
+ * The single choice EVERY voter in this chamber made ("Yes"), or null when they split, nobody voted, or
+ * they all picked non-canonical options.
+ *
+ * Split from {@link countDirection} because the two belong in different sentences. A unanimous chamber
+ * reads as a phrase — "1 dRep voted Yes" — where pasting the tally in would give the redundant "1 dRep
+ * voted 1 Yes". A split chamber has no such phrase and needs the tally instead.
+ */
+export function unanimousChoice(v: ChamberVote): string | null {
+  const buckets = occupiedBuckets(v);
+  return buckets.length === 1 ? buckets[0][0] : null;
+}
+
+/**
+ * Which way the members who turned out voted, BY HEAD COUNT — "2 Yes, 1 No" — or null when they did not
+ * split (a unanimous chamber is said as a phrase, see {@link unanimousChoice}) or nobody voted.
+ *
+ * Exists for the case the weighted readout cannot cover: a chamber with voters and no counted stake has
+ * no ratio, so without this the surface can report that somebody voted but never which way. Empty
+ * buckets are omitted, so nothing ever reads "2 Yes, 0 No, 0 Abstain".
+ */
+export function countDirection(v: ChamberVote): string | null {
+  const buckets = occupiedBuckets(v);
+  return buckets.length > 1 ? buckets.map(([k, n]) => `${n} ${k}`).join(", ") : null;
 }
 
 // ── Deciding bodies per action type ──────────────────────────────────────────────────────────────────
