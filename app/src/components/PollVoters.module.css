@@ -1,5 +1,8 @@
 /* PollVoters — the per-voter roster under a governance poll. A dense identity list, so it borrows the
-   thread's own rhythm rather than inventing a card: a separator rule, quiet headings, no fill. */
+   thread's own rhythm rather than inventing a card: a separator rule, quiet headings, no fill.
+
+   COLLAPSED BY DEFAULT, because opening it is what starts the read (see the component header). The
+   heading is therefore a button, and it stays a heading so the section is still reachable by landmark. */
 
 .block {
   padding: var(--cg-space-3) var(--cg-space-4);
@@ -7,38 +10,159 @@
 }
 
 .heading {
-  margin: 0 0 var(--cg-space-3);
-  color: var(--cg-text);
+  margin: 0;
   font-size: var(--cg-fs-md);
   font-weight: var(--cg-fw-semibold);
 }
 
-.group {
+/* Full-width so the whole heading row is the hit target, and tall enough to clear the touch minimum. */
+.disclosure {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  width: 100%;
+  min-height: var(--cg-touch-min);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--cg-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.disclosure:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--cg-radius-sm);
+}
+
+.caret {
+  flex: 0 0 auto;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+}
+
+/* The per-option split, from the poll's aggregate — true before a single row has loaded. */
+.totals {
+  margin: 0 0 var(--cg-space-3);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.lookup {
+  display: flex;
+  gap: var(--cg-space-2);
   margin-bottom: var(--cg-space-3);
 }
 
-.group:last-of-type {
-  margin-bottom: 0;
+.input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--cg-space-2) var(--cg-space-3);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: var(--cg-bg);
+  color: var(--cg-text);
+  /* --cg-fs-input, not --cg-fs-sm: iOS Safari zooms the page on focus for anything under 16px and never
+     zooms back, which shoves the fixed bottom bar and the FAB off screen. */
+  font-size: var(--cg-fs-input);
 }
 
-/* The option a group voted for. Carries data-choice so a future surface can tint Yes/No without
-   touching the markup; deliberately untinted here, because the app is monochrome plus danger and
-   colouring a position would editorialize a temperature check the reader is meant to judge. */
-.groupHead {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--cg-space-2);
-  margin: 0 0 var(--cg-space-2);
-  padding-bottom: var(--cg-space-1);
-  border-bottom: 1px solid var(--cg-border);
+.input:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: 1px;
+}
+
+.checkBtn,
+.more,
+.retry {
+  flex: 0 0 auto;
+  min-height: var(--cg-touch-min);
+  padding: var(--cg-space-2) var(--cg-space-4);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  background: none;
   color: var(--cg-text);
   font-size: var(--cg-fs-sm);
   font-weight: var(--cg-fw-semibold);
+  cursor: pointer;
+}
+
+.checkBtn:hover,
+.more:hover,
+.retry:hover {
+  background: var(--cg-bg-hover);
+}
+
+.checkBtn:disabled {
+  opacity: var(--cg-disabled-opacity);
+  cursor: not-allowed;
+}
+
+.checkBtn:focus-visible,
+.more:focus-visible,
+.retry:focus-visible {
+  outline: var(--cg-focus-ring-width) solid var(--cg-focus-ring);
+  outline-offset: 2px;
+}
+
+.more {
+  width: 100%;
+  margin-top: var(--cg-space-3);
+}
+
+.retry {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  text-decoration: underline;
+  font-size: inherit;
+}
+
+.lookupResult {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  margin: 0 0 var(--cg-space-3);
+  color: var(--cg-text);
+  font-size: var(--cg-fs-sm);
+}
+
+/* The option a voter chose, per row. Carries data-choice so a future surface can tint Yes/No without
+   touching the markup; deliberately untinted, because the app is monochrome plus danger and colouring a
+   position would editorialize a temperature check the reader is meant to judge. */
+.choice {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 var(--cg-space-2);
+  border: 1px solid var(--cg-border);
+  border-radius: var(--cg-radius-pill);
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-fs-xs);
+  line-height: var(--cg-lh-sm);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 .count {
   flex: 0 0 auto;
+  margin-left: auto;
   color: var(--cg-text-secondary);
   font-size: var(--cg-fs-xs);
   font-weight: var(--cg-fw-regular);
@@ -59,6 +183,7 @@
   align-items: baseline;
   gap: var(--cg-space-2);
   min-width: 0;
+  padding: var(--cg-space-1) 0;
 }
 
 .link {

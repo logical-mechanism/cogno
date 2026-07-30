@@ -20,7 +20,8 @@
 // This file does NOT modify reads.ts — it only consumes it (+ social-reads.ts).
 
 import type { Observable } from "rxjs";
-import type { SizedHex } from "polkadot-api";
+import { Binary } from "polkadot-api";
+import type { SizedHex, PolkadotClient } from "polkadot-api";
 import {
   authorPostCount,
   getThread,
@@ -51,7 +52,8 @@ import {
   readPollChoices,
   readPollVoters,
 } from "@/lib/chain/social-reads";
-import type { PollChoices, PollRoster } from "@/lib/chain/social-reads";
+import type { PollChoices, PollRoster, PollVoter } from "@/lib/chain/social-reads";
+import { readPollVotersPage } from "@/lib/chain/poll-voters";
 import type {
   CognoApi,
   CognoPost,
@@ -90,7 +92,13 @@ async function readWeight(api: CognoApi, account: Ss58): Promise<bigint | undefi
  *  The shared decoder (reads.ts `binTextOpt`) so feed + profile reads can't disagree on empty/trim. */
 const profileText = binTextOpt;
 
-export function createPapiFeedSource(api: CognoApi): FeedSource {
+/**
+ * @param client the low-level client, used ONLY for the paged voter roster. That read walks a storage
+ *   prefix with a cursor, and PAPI's typed `getEntries` takes partial keys with no cursor — there is no
+ *   typed way to ask for part of a prefix, so it goes through raw state RPC. Everything else here stays
+ *   on the typed `api`.
+ */
+export function createPapiFeedSource(api: CognoApi, client: PolkadotClient): FeedSource {
   // One `PkhOf` read per author, shared across every page, thread re-read and profile read this source
   // serves. Reading it per page sounded bounded, and is — but /post re-reads its thread on EVERY block,
   // so an open thread sustained one read per participant every ~6s forever, for a committee-gated
@@ -377,6 +385,48 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     return readPollVoters(api, hostId);
   }
 
+  // Raw state RPC rather than a typed query, because PAPI's `getEntries` takes partial keys and no
+  // cursor — there is no typed way to ask for PART of a prefix. Both methods are available under the
+  // relay's `--rpc-methods safe` (verified against the deployed node).
+  // BOUNDED: `PollTally` holds one row per OPTION (capped by MaxPollOptions), never one per voter, so
+  // this is a handful of entries however large the electorate — which is why it can be read up front
+  // while the roster pages stay lazy. It is also the only honest source for the split: counting the rows
+  // on screen would under-report by exactly the amount still unpaged.
+  async function pollVoterTotals(hostId: bigint): Promise<{ label: string; count: number }[]> {
+    const [meta, tally] = await Promise.all([
+      api.query.Microblog.Polls.getValue(hostId).catch(() => null),
+      api.query.Microblog.PollTally.getEntries(hostId).catch(() => []),
+    ]);
+    // PAPI UNWRAPS the single-field `OptionTally { count }` to the bare u32, exactly as it does for
+    // `PollVoteRecord { option }` (see social-reads.ts). Reading `.count` off it yields undefined.
+    const counts = new Map<number, number>(
+      tally.map((e) => [
+        Number(e.keyArgs[e.keyArgs.length - 1]),
+        (e.value as unknown as number) ?? 0,
+      ]),
+    );
+    return (meta?.options ?? []).map((o, i) => ({
+      label: Binary.toText(o),
+      count: counts.get(i) ?? 0,
+    }));
+  }
+
+  async function pollVotersPage(
+    hostId: bigint,
+    opts: { after?: string | null; limit?: number } = {},
+  ): Promise<{ voters: PollVoter[]; nextCursor: string | null; labels?: string[] }> {
+    const first = opts.after == null;
+    // The labels ride along with the FIRST page only, in parallel with it. One extra point read per
+    // roster open, which is what lets the roster be self-sufficient without the caller running a second
+    // `usePoll` on a card that already renders one.
+    const [page, meta] = await Promise.all([
+      readPollVotersPage((method, params) => client._request(method, params), hostId, opts),
+      first ? api.query.Microblog.Polls.getValue(hostId).catch(() => null) : Promise.resolve(null),
+    ]);
+    if (!first) return page;
+    return { ...page, labels: (meta?.options ?? []).map((o) => Binary.toText(o)) };
+  }
+
   function viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState> {
     return readViewerPostState(api, post, who);
   }
@@ -419,6 +469,8 @@ export function createPapiFeedSource(api: CognoApi): FeedSource {
     viewerPollChoice,
     pollChoices,
     pollVoters,
+    pollVoterTotals,
+    pollVotersPage,
     viewerPostState,
     followEdges,
     whoToFollow,

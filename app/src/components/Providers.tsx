@@ -146,7 +146,7 @@ function ChainProvider({ children }: { children: ReactNode }) {
   const identity = useIdentity(api, client, signer, signerCtl.postingEnabled);
 
   // The feed reader seam — the PAPI-direct node reader, memoized on [api] inside the hook.
-  const source = useFeedSource(api);
+  const source = useFeedSource(api, client);
 
   // One shared head subscription for all block-relative UI (post times, capacity, live profile).
   // Deliberately NOT part of the session context value — see BlockContext below.

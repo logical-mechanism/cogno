@@ -51,7 +51,7 @@ import type {
   Suggestion,
   Ss58,
 } from "@/lib/types";
-import type { PollChoices, PollRoster } from "@/lib/chain/social-reads";
+import type { PollChoices, PollRoster, PollVoter } from "@/lib/chain/social-reads";
 import type { FeedSource, ProfileArgs } from "./source";
 
 /**
@@ -219,6 +219,29 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     return { ...roster, voters: roster.voters.filter((v) => !isDeniedAuthor(v.who)) };
   }
 
+  // Same two guards as `pollVoters`, applied per PAGE. A denied host yields an empty page AND a null
+  // cursor, so the caller stops rather than walking a prefix it will never be allowed to show. A denied
+  // author is dropped from the page while the CURSOR is passed through untouched: the cursor is a
+  // position in storage, not a count, so shortening a page must never move it — recomputing it from the
+  // filtered rows would skip every voter after a denied one.
+  // A denied host discloses nothing, not even how many voted. There is no per-author filtering to do
+  // here: these are per-OPTION counts, so no account is named and none can be dropped.
+  async function pollVoterTotals(hostId: bigint): Promise<{ label: string; count: number }[]> {
+    if (isDeniedPost(hostId)) return [];
+    return source.pollVoterTotals(hostId);
+  }
+
+  async function pollVotersPage(
+    hostId: bigint,
+    opts: { after?: string | null; limit?: number } = {},
+  ): Promise<{ voters: PollVoter[]; nextCursor: string | null; labels?: string[] }> {
+    // A denied host loses its labels with its roster, for the same reason `pollVoters` does: a bare list
+    // of accounts beside a delisted poll, with nothing to render a position as, is worse than nothing.
+    if (isDeniedPost(hostId)) return { voters: [], nextCursor: null, labels: [] };
+    const page = await source.pollVotersPage(hostId, opts);
+    return { ...page, voters: page.voters.filter((v) => !isDeniedAuthor(v.who)) };
+  }
+
   return {
     liveHeadId,
     page,
@@ -228,6 +251,8 @@ export function withServeDenylist(source: FeedSource): FeedSource {
     viewerPollChoice,
     pollChoices,
     pollVoters,
+    pollVoterTotals,
+    pollVotersPage,
     viewerPostState,
     followEdges,
     whoToFollow,
