@@ -19,7 +19,7 @@ import type {
   Suggestion,
   Ss58,
 } from "@/lib/types";
-import type { PollChoices, PollRoster } from "@/lib/chain/social-reads";
+import type { PollChoices, PollRoster, PollVoter } from "@/lib/chain/social-reads";
 
 /** Arguments for {@link FeedSource.profile} — by account or by identity hash. */
 export interface ProfileArgs {
@@ -67,6 +67,37 @@ export interface FeedSource {
    * because a wrapper (the serve denylist) can shorten the list after the cap has already bitten.
    */
   pollVoters(hostId: bigint): Promise<PollRoster>;
+  /**
+   * ONE PAGE of a poll's voters, resuming after `after` (null to start). The roster surface uses this;
+   * {@link FeedSource.pollVoters} remains for callers that genuinely want a bounded one-shot.
+   *
+   * Paged because the one-shot pulls the whole `PollVotes` prefix — about 0.42 KB per voter, so ~4 MB at
+   * ten thousand — and then renders 200 of it. See lib/chain/poll-voters.
+   *
+   * `nextCursor` is null at the end of the prefix.
+   *
+   * `labels` comes back ONLY on the first page (`after` null/absent) and is undefined thereafter: the
+   * option names are a property of the poll, not of a page, and re-sending them with every page would
+   * pay for them once per scroll. The caller holds the first page's copy.
+   */
+  /**
+   * The TRUE per-option voter counts for a poll, from `PollTally`.
+   *
+   * Split from {@link FeedSource.pollVotersPage} because the two have completely different cost shapes
+   * and therefore different eagerness. This is BOUNDED — one row per option, so a handful however large
+   * the electorate — and is read up front so the roster can say how many voted before anyone opens it.
+   * The voter pages are unbounded and stay lazy. Folding this into the first page created a
+   * chicken-and-egg: the disclosure needs the count to render, and the count only arrived once opened.
+   */
+  pollVoterTotals(hostId: bigint): Promise<{ label: string; count: number }[]>;
+  pollVotersPage(
+    hostId: bigint,
+    opts?: { after?: string | null; limit?: number },
+  ): Promise<{
+    voters: PollVoter[];
+    nextCursor: string | null;
+    labels?: string[];
+  }>;
   /** The viewer's own vote state on a post. */
   viewerPostState(post: bigint, who: Ss58): Promise<ViewerPostState>;
   /** Followers/following ids + counts for an account. */

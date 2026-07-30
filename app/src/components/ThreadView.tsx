@@ -61,7 +61,7 @@ import { handleOf } from "@/lib/ss58";
 import { sanitizeInline } from "@/lib/sanitize";
 import { viewerBucket } from "@/lib/viewerBucket";
 import { threadDocumentTitle } from "@/lib/threadTitle";
-import type { CognoPost } from "@/lib/types";
+import type { CognoPost, Ss58 } from "@/lib/types";
 import type { ActionState, ComposerDraft } from "@/components/kit";
 
 // Render replies in pages so a huge thread doesn't mount hundreds of cards at once (useThread fetches
@@ -180,11 +180,29 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // pollCastStore). Being absent from a roster you just joined, directly under bars that already moved,
   // reads as a vote that did not register.
   const pollCastTick = usePollCastTick(focal?.isPoll === true ? rootId : null);
+  // OPEN IS OWNED HERE because opening is what starts the read: the roster stays unread until a reader
+  // asks for it, so a poll page costs nothing for the majority who never look. Reset per poll id, or the
+  // next poll would open pre-expanded and immediately enumerate.
+  const [rosterOpen, setRosterOpen] = useState(false);
+  useEffect(() => {
+    setRosterOpen(false);
+  }, [rootId]);
   const {
     voters: pollVoters,
     labels: voterLabels,
-    truncated: votersTruncated,
-  } = usePollVoters(source, rootId, focal?.isPoll === true, pollCastTick);
+    totals: voterTotals,
+    loading: votersLoading,
+    hasMore: votersHasMore,
+    loadMore: loadMoreVoters,
+    failed: votersFailed,
+  } = usePollVoters(source, rootId, focal?.isPoll === true, rosterOpen, pollCastTick);
+
+  // The lookup's point read. Bound here so PollVoters never holds a source itself: it is a presentational
+  // list, and the one read it needs is this single `PollVotes[host][who]` hit.
+  const lookupVoter = useCallback(
+    (who: Ss58) => (source ? source.viewerPollChoice(rootId, who) : Promise.resolve(null)),
+    [source, rootId],
+  );
   const { labels: pollLabels, choices: pollChoices } = useReplyVoteChoices(
     source,
     rootId,
@@ -446,7 +464,18 @@ export function ThreadView({ rootId }: ThreadViewProps) {
             not a suppression. Renders nothing at all until the read lands, and nothing when nobody has
             voted, so a plain post never grows an empty section. */}
         {!focalSuppressed && focal.isPoll && (
-          <PollVoters voters={pollVoters} labels={voterLabels} truncated={votersTruncated} />
+          <PollVoters
+            voters={pollVoters}
+            labels={voterLabels}
+            totals={voterTotals}
+            loading={votersLoading}
+            hasMore={votersHasMore}
+            loadMore={loadMoreVoters}
+            failed={votersFailed}
+            open={rosterOpen}
+            onOpenChange={setRosterOpen}
+            onLookup={lookupVoter}
+          />
         )}
 
         {/* The ONE weighted-nature surface (D2/D12): score (signed, may be negative) + up/down weight,

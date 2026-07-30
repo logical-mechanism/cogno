@@ -9,10 +9,14 @@ import { useMemo } from "react";
 import { makeFeedSource } from "@/lib/feed";
 import type { FeedSource } from "@/lib/feed/source";
 import type { CognoApi } from "@/lib/types";
+import type { PolkadotClient } from "polkadot-api";
 
-export function useFeedSource(api: CognoApi | null): FeedSource | null {
+export function useFeedSource(
+  api: CognoApi | null,
+  client: PolkadotClient | null,
+): FeedSource | null {
   return useMemo(() => {
-    if (!api) return null;
-    return makeFeedSource(api);
-  }, [api]);
+    if (!api || !client) return null;
+    return makeFeedSource(api, client);
+  }, [api, client]);
 }

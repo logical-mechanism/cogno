@@ -6,6 +6,7 @@
 import { createPapiFeedSource } from "./papi-source";
 import { withServeDenylist } from "./denylist-source";
 import type { CognoApi } from "@/lib/types";
+import type { PolkadotClient } from "polkadot-api";
 import type { FeedSource } from "./source";
 
 /**
@@ -17,8 +18,8 @@ import type { FeedSource } from "./source";
  * HERE rather than a check at every render site is the whole point: there is one reader, so there is
  * one place to forget, and this is it. See lib/feed/denylist-source.ts.
  */
-export function makeFeedSource(api: CognoApi): FeedSource {
-  return withServeDenylist(createPapiFeedSource(api));
+export function makeFeedSource(api: CognoApi, client: PolkadotClient): FeedSource {
+  return withServeDenylist(createPapiFeedSource(api, client));
 }
 
 export type { FeedSource } from "./source";

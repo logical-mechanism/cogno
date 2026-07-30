@@ -3,36 +3,53 @@
 // PollVoters — who voted in a governance poll, and which way.
 //
 // This is the accountability surface. Every voter's identity and choice has been on chain since polls
-// shipped, and until now nothing rendered any of it: a reader saw aggregate chamber bars and their own
-// check mark, and could not see a single individual. A stake-weighted governance poll with an anonymous
-// electorate is an opinion poll with extra arithmetic.
+// shipped, and a stake-weighted governance poll with an anonymous electorate is an opinion poll with
+// extra arithmetic.
 //
-// WHAT IT DOES NOT SHOW, AND WHY. Per-voter WEIGHT. The runtime derives chamber weights inside
-// `poll_chamber_weights` and exposes only the per-option aggregate through `MicroblogApi.poll`; there is
-// no per-voter weight read, so showing one would mean inventing it. Grouping by option and naming each
-// voter is the honest subset, and it is most of the value. A per-voter weight needs a runtime read,
-// which is a spec bump, and belongs with the other chain-change work rather than smuggled in here.
+// IT DOES NOT LOAD UNTIL ASKED. It used to read on mount, so every reader who opened a poll paid a full
+// `PollVotes` prefix enumeration whether or not they ever scrolled to a single name. The read now starts
+// when this section is opened, which is the change that matters most, because most readers never open it.
 //
-// NO ROLE BADGE PER ROW, for now. `useAccountProfile` carries the display name and avatar only, so a
-// badge here would mean a second per-voter read of the roles map. The voter's profile link carries it
-// one tap away, and adding a read per row to a list that can hold two hundred is not worth it until the
-// list is paged.
+// IT PAGES, IT DOES NOT CAP. The old read pulled the whole prefix and sliced the first 200 client-side —
+// roughly 0.42 KB per voter, so about 4 MB at ten thousand, to render an alphabetical-by-address sample
+// under a caveat admitting the rest was unreachable. Rows now arrive ~50 at a time by storage cursor.
+// There is no cap left to disclose and no hidden remainder.
+//
+// FLAT, NOT GROUPED BY OPTION, and that is a paging decision. Storage order interleaves the options, so
+// grouping would insert each new page's rows into the MIDDLE of the list under their headings, which
+// reads as the page rearranging itself under the reader. A flat list always appends at the bottom and
+// the per-row chip carries the same fact. The per-option TOTALS still lead the section, taken from the
+// poll's own aggregate — so they are the true counts even when a single page has loaded.
+//
+// THE LOOKUP answers the question people actually have ("how did my dRep vote?"). It is a point read of
+// `PollVotes[host][who]`, so it costs the same on a poll with ten voters and one with ten thousand, and
+// it never enumerates. That is why it sits ABOVE the list rather than filtering it: a filter could only
+// search rows that happened to be fetched, and would answer "has not voted" for someone who simply had
+// not been paged in yet — the one wrong answer this surface must never give.
+//
+// WHAT IT STILL DOES NOT SHOW. Per-voter WEIGHT. The runtime derives chamber weights inside
+// `poll_chamber_weights` and exposes only the per-option aggregate, so showing one would mean inventing
+// it. That needs a runtime read, which is a spec bump.
 //
 // POSITIONS ARE CURRENT, NOT HISTORICAL. A re-cast replaces, and the chain keeps no per-vote block
 // height, so this is where each account stands now. Same reason ReplyVoteChip is present tense.
 
+import { useCallback, useId, useState } from "react";
 import Link from "next/link";
 import { Handle } from "./Handle";
 import { DisplayName } from "./DisplayName";
+import { Spinner } from "./icons";
 import { useAccountProfile } from "@/hooks/useAccountProfile";
 import { classifyChoice } from "@/lib/cardano/governance";
+import { pollChoiceLabel } from "@/lib/poll";
 import { sanitizeInline } from "@/lib/sanitize";
+import { normalizeSs58 } from "@/lib/ss58";
 import type { PollVoter } from "@/lib/chain/social-reads";
 import type { Ss58 } from "@/lib/types";
 import styles from "./PollVoters.module.css";
 
 /** One voter. Split out so `useAccountProfile` (a shared, cached read) is called per row, not in a loop. */
-function VoterRow({ who }: { who: Ss58 }) {
+function VoterRow({ who, choice }: { who: Ss58; choice: string | null }) {
   const profile = useAccountProfile(who);
   return (
     <li className={styles.voter}>
@@ -40,74 +57,211 @@ function VoterRow({ who }: { who: Ss58 }) {
         <DisplayName address={who} displayName={profile?.displayName} truncate />
         <Handle address={who} />
       </Link>
+      {choice && (
+        <span className={styles.choice} data-choice={classifyChoice(choice)}>
+          {choice}
+        </span>
+      )}
     </li>
   );
 }
 
+/** One option's true voter count, from the poll's own aggregate rather than from what has loaded. */
+export interface PollVoterTotal {
+  label: string;
+  count: number;
+}
+
 export interface PollVotersProps {
+  /** Loaded so far, in storage order. Null until the first page lands (or while closed). */
   voters: readonly PollVoter[] | null;
   /** Option labels in on-chain index order. */
   labels: readonly string[];
-  /** True when the read hit its cap, so the list is a sample rather than the whole electorate. */
-  truncated: boolean;
+  /** The TRUE per-option counts. Correct before a single row has loaded. */
+  totals: readonly PollVoterTotal[];
+  loading: boolean;
+  hasMore: boolean;
+  loadMore: () => void;
+  /** The first page failed with nothing loaded. */
+  failed: boolean;
+  /** Whether the roster is open. Owned by the parent, because opening is what STARTS the read. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Point read: one account's current option index in this poll, or null if they have not cast. */
+  onLookup: (who: Ss58) => Promise<number | null>;
 }
 
-export function PollVoters({ voters, labels, truncated }: PollVotersProps) {
-  if (voters == null) return null; // still loading: an identity list that pops in beats a shimmer block
-  if (voters.length === 0) return null; // nobody has voted; the poll's own "no votes" copy covers it
+type LookupState =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "voted"; who: Ss58; label: string | null }
+  | { kind: "absent"; who: Ss58 }
+  | { kind: "bad" };
 
-  // Grouped by the option each voter chose, in on-chain option order so Yes precedes No precedes Abstain
-  // exactly as the poll's own bars do. A voter whose option index has no label (a poll edited out from
-  // under them, which cannot happen today) is dropped rather than rendered under a blank heading.
-  const groups = labels
-    .map((label, index) => ({
-      label: sanitizeInline(label),
-      index,
-      members: voters.filter((v) => v.option === index),
-    }))
-    .filter((g) => g.label && g.members.length > 0);
+export function PollVoters({
+  voters,
+  labels,
+  totals,
+  loading,
+  hasMore,
+  loadMore,
+  failed,
+  open,
+  onOpenChange,
+  onLookup,
+}: PollVotersProps) {
+  const [query, setQuery] = useState("");
+  const [lookup, setLookup] = useState<LookupState>({ kind: "idle" });
+  const id = useId();
 
-  // How many voters are actually ON SCREEN, which is not `voters.length`: the two filters above drop a
-  // voter whose option index has no label, and a whole group whose label sanitizes away to nothing (an
-  // on-chain option written entirely in bidi or invisible characters, which is exactly the unvalidated
-  // bytes case sanitizeInline exists for). The truncation note below quotes this, because a number that
-  // does not match the rows under it misrepresents the vote on the one surface that cannot afford to.
-  const shown = groups.reduce((n, g) => n + g.members.length, 0);
-  // Nothing survived grouping, so there is no option text to file anyone under. A heading and a
-  // caveat over an empty list names nobody and reads as "no positions", which is a different claim.
-  if (shown === 0) return null;
+  const total = totals.reduce((s, t) => s + t.count, 0);
+
+  const check = useCallback(
+    async (raw: string) => {
+      // `normalizeSs58` re-encodes to this chain's prefix, so the same key pasted in another network's
+      // format still matches. Something that is not an address never becomes a read at all — it is a
+      // typo, and "has not voted" would be the wrong answer to one.
+      const who = normalizeSs58(raw.trim());
+      if (!who) {
+        setLookup({ kind: "bad" });
+        return;
+      }
+      setLookup({ kind: "checking" });
+      try {
+        const option = await onLookup(who as Ss58);
+        setLookup(
+          option == null
+            ? { kind: "absent", who: who as Ss58 }
+            : { kind: "voted", who: who as Ss58, label: pollChoiceLabel(labels, option) },
+        );
+      } catch {
+        setLookup({ kind: "bad" });
+      }
+    },
+    [onLookup, labels],
+  );
+
+  // Nobody has voted, so there is no section: a plain poll never grows an empty disclosure.
+  if (total === 0) return null;
 
   return (
-    <section className={styles.block} aria-labelledby="cg-poll-voters">
-      <h3 className={styles.heading} id="cg-poll-voters">
-        How each voter stands
+    <section className={styles.block} aria-labelledby={`${id}-h`}>
+      <h3 className={styles.heading}>
+        <button
+          type="button"
+          id={`${id}-h`}
+          className={styles.disclosure}
+          aria-expanded={open}
+          aria-controls={open ? `${id}-body` : undefined}
+          onClick={() => onOpenChange(!open)}
+        >
+          <span className={styles.caret} aria-hidden>
+            {open ? "▾" : "▸"}
+          </span>
+          How each voter stands
+          <span className={styles.count}>{total.toLocaleString()}</span>
+        </button>
       </h3>
-      {groups.map((g) => (
-        <div className={styles.group} key={g.index}>
-          <p className={styles.groupHead} data-choice={classifyChoice(g.label)}>
-            {g.label}
-            <span className={styles.count}>
-              {g.members.length} {g.members.length === 1 ? "voter" : "voters"}
-            </span>
+
+      {open && (
+        <div id={`${id}-body`}>
+          {/* The true split. Sanitized because an option label is unvalidated on-chain bytes. */}
+          <p className={styles.totals}>
+            {totals
+              .filter((t) => t.count > 0 && sanitizeInline(t.label))
+              .map((t) => `${t.count.toLocaleString()} ${sanitizeInline(t.label)}`)
+              .join(" · ")}
           </p>
-          <ul className={styles.list}>
-            {g.members.map((v) => (
-              <VoterRow key={v.who} who={v.who} />
-            ))}
-          </ul>
+
+          <form
+            className={styles.lookup}
+            onSubmit={(e) => {
+              e.preventDefault();
+              void check(query);
+            }}
+          >
+            <label className={styles.srOnly} htmlFor={`${id}-q`}>
+              Check whether an address voted in this poll
+            </label>
+            <input
+              id={`${id}-q`}
+              className={styles.input}
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                if (lookup.kind !== "idle") setLookup({ kind: "idle" });
+              }}
+              placeholder="Check an address"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <button type="submit" className={styles.checkBtn} disabled={query.trim().length === 0}>
+              Check
+            </button>
+          </form>
+
+          {lookup.kind !== "idle" && (
+            <p className={styles.lookupResult} role="status">
+              {lookup.kind === "checking" ? (
+                <>
+                  <Spinner size="sm" label="Checking" /> Checking…
+                </>
+              ) : lookup.kind === "bad" ? (
+                "That does not look like an address on this chain."
+              ) : lookup.kind === "absent" ? (
+                "That account has not voted in this poll."
+              ) : (
+                <>
+                  Voted{" "}
+                  <strong>
+                    {lookup.label && sanitizeInline(lookup.label)
+                      ? sanitizeInline(lookup.label)
+                      : "an option"}
+                  </strong>
+                  .{" "}
+                  <Link href={`/u/${lookup.who}/`} className={styles.link} prefetch={false}>
+                    View profile
+                  </Link>
+                </>
+              )}
+            </p>
+          )}
+
+          {failed ? (
+            <p className={styles.note} role="status">
+              Couldn&apos;t load the list.{" "}
+              <button type="button" className={styles.retry} onClick={loadMore}>
+                Try again
+              </button>
+            </p>
+          ) : (
+            <>
+              <ul className={styles.list}>
+                {(voters ?? []).map((v) => {
+                  const label = pollChoiceLabel(labels, v.option);
+                  const safe = label ? sanitizeInline(label) : null;
+                  return <VoterRow key={v.who} who={v.who} choice={safe || null} />;
+                })}
+              </ul>
+              {loading && (
+                <p className={styles.note}>
+                  <Spinner size="sm" label="Loading voters" /> Loading…
+                </p>
+              )}
+              {!loading && hasMore && (
+                <button type="button" className={styles.more} onClick={loadMore}>
+                  Load more
+                </button>
+              )}
+            </>
+          )}
+
+          <p className={styles.note}>
+            Positions are current. A voter can change their choice while the poll is open, and the chain
+            keeps only the latest one. Individual voting weight is not shown.
+          </p>
         </div>
-      ))}
-      {/* Stated, never silent. A truncated roster that reads as complete would misrepresent the vote,
-          which is the one failure this surface cannot afford. */}
-      {truncated && (
-        <p className={styles.note}>
-          Showing the first {shown} voters by account. More have voted than are listed here.
-        </p>
       )}
-      <p className={styles.note}>
-        Positions are current. A voter can change their choice while the poll is open, and the chain
-        keeps only the latest one. Individual voting weight is not shown.
-      </p>
     </section>
   );
 }

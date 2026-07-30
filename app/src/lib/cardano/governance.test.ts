@@ -7,6 +7,8 @@ import {
   actionKind,
   actionBodies,
   chamberVote,
+  countDirection,
+  unanimousChoice,
   FALLBACK_THRESHOLDS,
 } from "./governance";
 import type { GovActionType, PollOptionView } from "@/lib/types";
@@ -103,13 +105,19 @@ describe("chamberVote — fold options into a chamber's Yes/No/Abstain", () => {
 
   it("reads the dRep lens", () => {
     const v = chamberVote(options, "drep");
-    expect(v).toEqual({ yes: 70n, no: 30n, abstain: 10n, total: 110n, voters: 11 });
+    expect(v).toEqual({
+      yes: 70n, no: 30n, abstain: 10n, total: 110n, voters: 11,
+      yesVoters: 7, noVoters: 3, abstainVoters: 1,
+    });
     expect(approvalRatio(v.yes, v.no)).toBeCloseTo(0.7, 6);
   });
 
   it("reads the SPO lens independently", () => {
     const v = chamberVote(options, "spo");
-    expect(v).toEqual({ yes: 40n, no: 20n, abstain: 5n, total: 65n, voters: 7 });
+    expect(v).toEqual({
+      yes: 40n, no: 20n, abstain: 5n, total: 65n, voters: 7,
+      yesVoters: 4, noVoters: 2, abstainVoters: 1,
+    });
   });
 
   it("a non-canonical option counts toward total/voters but never Yes or No", () => {
@@ -143,6 +151,53 @@ describe("chamberVote — fold options into a chamber's Yes/No/Abstain", () => {
     const v = chamberVote([opt("Yes", 0n, 0, 0n, 0), opt("No", 0n, 0, 0n, 0)], "drep");
     expect(v.voters).toBe(0);
     expect(v.total).toBe(0n);
+  });
+
+  it("folds head counts by choice, so direction survives a zero-stake chamber", () => {
+    const v = chamberVote(
+      [opt("Yes", 0n, 0, 0n, 2), opt("No", 0n, 0, 0n, 1), opt("Abstain", 0n, 0, 0n, 0)],
+      "drep",
+    );
+    expect([v.yesVoters, v.noVoters, v.abstainVoters]).toEqual([2, 1, 0]);
+    expect(v.voters).toBe(3);
+    expect(v.total).toBe(0n); // no stake at all, yet the direction above is fully known
+  });
+});
+
+describe("unanimousChoice / countDirection — direction when weight cannot speak", () => {
+  const drep = (yes: number, no: number, abstain: number) =>
+    chamberVote(
+      [opt("Yes", 0n, 0, 0n, yes), opt("No", 0n, 0, 0n, no), opt("Abstain", 0n, 0, 0n, abstain)],
+      "drep",
+    );
+
+  it("names the choice when every voter agreed, and gives no tally to repeat", () => {
+    expect(unanimousChoice(drep(2, 0, 0))).toBe("Yes");
+    expect(countDirection(drep(2, 0, 0))).toBeNull(); // "2 dReps voted Yes" — a tally would be redundant
+    expect(unanimousChoice(drep(0, 1, 0))).toBe("No");
+    expect(unanimousChoice(drep(0, 0, 3))).toBe("Abstain");
+  });
+
+  it("gives the tally when they split, and no single choice to name", () => {
+    expect(unanimousChoice(drep(2, 1, 0))).toBeNull();
+    expect(countDirection(drep(2, 1, 0))).toBe("2 Yes, 1 No");
+    expect(countDirection(drep(1, 1, 1))).toBe("1 Yes, 1 No, 1 Abstain");
+  });
+
+  it("omits empty buckets rather than reporting zeroes", () => {
+    expect(countDirection(drep(3, 0, 1))).toBe("3 Yes, 1 Abstain");
+  });
+
+  it("says nothing at all when nobody voted", () => {
+    expect(unanimousChoice(drep(0, 0, 0))).toBeNull();
+    expect(countDirection(drep(0, 0, 0))).toBeNull();
+  });
+
+  it("ignores non-canonical options, which belong to no bucket", () => {
+    const v = chamberVote([opt("Maybe", 0n, 0, 0n, 2)], "drep");
+    expect(v.voters).toBe(2); // they did turn out …
+    expect(unanimousChoice(v)).toBeNull(); // … but there is no canonical direction to claim
+    expect(countDirection(v)).toBeNull();
   });
 });
 
