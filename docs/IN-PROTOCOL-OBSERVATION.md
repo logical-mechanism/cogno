@@ -141,8 +141,10 @@ inherent. The decoder that would make the digest consensus-binding is implemente
 The observation travels as inherent data. The `observe` dispatchable is `DispatchClass::Mandatory` and
 inherent-only (`is_inherent` is true), so it can never enter the public transaction pool.
 
-On import, `check_inherent` compares the author's observation against the importer's **own** read at the
-same reference and returns one of three outcomes (`InherentError`):
+On import, `check_inherent` re-derives the delta from the importer's **own** read at the same reference,
+against the same on-chain basis, and compares it to the author's. (Before spec 215 it compared the raw
+observations; it has to compare the derived delta now, or nothing would establish that the author's page
+was the one the rules produce.) It returns one of three outcomes (`InherentError`):
 
 - **`Mismatch` (fatal).** The importer read *different* Cardano data — the reduced entries differ and the
   input commitments differ. The block is permanently rejected. Matching is **exact**, never a tolerance
@@ -157,9 +159,31 @@ same reference and returns one of three outcomes (`InherentError`):
   it means a bad block is caught only if at least one honest, caught-up, full-execution verifier is in
   the set.
 
+There is one further case, and it is not an `InherentError` at all: **the block that enacts a runtime
+upgrade is accepted without being verified.** The author and the importer genuinely do not see the same
+state there, and the asymmetry belongs to the SDK rather than to this pallet. The author builds through
+`sc_block_builder::BlockBuilder`, which calls `Core::initialize_block` — and therefore
+`on_runtime_upgrade` — and then runs `inherent_extrinsics` on that same runtime instance, so
+`create_inherent` derives against **post-migration** state. The importer arrives through
+`check_inherents_with_data(client, parent_hash, ..)`, whose runtime side is `data.check_extrinsics(&block)`
+with no `initialize_block` anywhere, so it derives against the **raw parent** state.
+
+That was invisible while verification was a data comparison. It matters now that the check re-derives from
+storage: a migration that writes anything `derive_call` reads makes the two sides produce different deltas
+for one block, and a difference is fatal — every importing node would reject the upgrade and the chain
+would stop. Spec 215's own migration seeds the three bases the delta is taken against, so this was not
+hypothetical.
+
+`check_inherent` detects the case by comparing `System::LastRuntimeUpgrade` at the parent (still the
+outgoing `spec_version`) against the running runtime's, which is exactly "this block runs
+`on_runtime_upgrade`", and returns `Ok` for it. The exemption is one block wide, it costs no more than the
+`CannotVerify` path already concedes, the Mandatory dispatchable's own enforcement still runs on every
+node, and verification resumes at the next block. It also covers future migrations touching the resolver
+maps (`AccountOf`, `AccountOfStakeCred`, `RoleCredIndex`), which the delta derivation reads too.
+
 `check_inherent` is a network-edge gate — it is not re-run inside `execute_block` and is skipped on warp/
 state sync. So anything that must hold on **every** node — reference monotonicity, the `MaxStakeWeight`
-skip, account resolution, weight application, the unlock clamp — is enforced inside the Mandatory
+skip, account resolution, weight application, the explicit unlock — is enforced inside the Mandatory
 `observe` dispatchable, which *does* run in `execute_block` and whose dispatch error invalidates the
 block.
 

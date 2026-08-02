@@ -1598,11 +1598,17 @@ pub mod pallet {
             // against empty ones. The deltas differ, and the difference reads as `ComputeDiverged`, which
             // is FATAL. Every importing node would reject the upgrade block and the chain would stop.
             //
-            // `LastRuntimeUpgrade` is written by `initialize_block`, so at the parent state it still holds
-            // the OUTGOING spec_version while this code is the incoming one. A difference therefore means
-            // exactly "this block runs `on_runtime_upgrade`", for ANY migration — including future ones
-            // touching the resolver maps (`AccountOf`, `AccountOfStakeCred`, `RoleCredIndex`) that
-            // `derive_call` also reads, which would fork the same way.
+            // The predicate is `Executive::runtime_upgraded()` verbatim — the same `LastRuntimeUpgrade`
+            // read and the same `was_upgraded` comparison that DECIDES whether the migration runs at all.
+            // Reimplementing it as a spec_version inequality would work today and silently drift the day
+            // the two disagree (`was_upgraded` also fires on a `spec_name` change, and treats an absent
+            // record as upgraded). Borrowing the exact test means this exemption covers precisely the
+            // blocks that migrate, for ANY migration — including future ones touching the resolver maps
+            // (`AccountOf`, `AccountOfStakeCred`, `RoleCredIndex`) that `derive_call` also reads and that
+            // would fork the same way.
+            //
+            // At the parent state `LastRuntimeUpgrade` still holds the OUTGOING version, because
+            // `initialize_block` is what updates it — which is the same reason the two sides disagree.
             //
             // Skipping the cross-node comparison for one block is safe, and narrower than it looks. It is
             // the same posture as `CannotVerify` (accept, do not verify), the block still has to be
@@ -1611,9 +1617,11 @@ pub mod pallet {
             // Mandatory dispatchable's own enforcement (monotonicity, the stability bound, the skip
             // bounds, resolution, the basis bookkeeping) runs on every node regardless, and the block
             // after this one verifies normally again.
-            if frame_system::Pallet::<T>::last_runtime_upgrade_spec_version()
-                != <T as frame_system::Config>::Version::get().spec_version
-            {
+            let current_version = <T as frame_system::Config>::Version::get();
+            let enacting_upgrade = frame_system::LastRuntimeUpgrade::<T>::get()
+                .map(|last| last.was_upgraded(&current_version))
+                .unwrap_or(true);
+            if enacting_upgrade {
                 log::info!(
                     target: LOG_TARGET,
                     "runtime-upgrade block: accepting the observation without cross-node verification (the author derived it after on_runtime_upgrade, this node would derive it before). Verification resumes next block.",

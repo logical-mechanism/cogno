@@ -1715,6 +1715,10 @@ fn check_inherent_accepts_without_verifying_on_a_runtime_upgrade_block() {
         let mut id = InherentData::new();
         put_obs(&mut id, &local);
 
+        // Genesis seeds `LastRuntimeUpgrade` with the running version, so this is an ordinary block.
+        let ordinary = frame_system::LastRuntimeUpgrade::<Test>::get();
+        assert!(ordinary.is_some(), "genesis seeds the upgrade record");
+
         // Normal block: the disagreement is fatal, as it must be.
         assert!(matches!(
             <CardanoObserver as ProvideInherent>::check_inherent(&author, &id),
@@ -1733,8 +1737,11 @@ fn check_inherent_accepts_without_verifying_on_a_runtime_upgrade_block() {
             "an upgrade block must be accepted without cross-node verification, not rejected",
         );
 
-        // And only for that block: once the stored version matches the running one, verification resumes.
-        frame_system::LastRuntimeUpgrade::<Test>::kill();
+        // And only for that block: once the stored version matches the running one — which is what
+        // `initialize_block` writes as it runs the migration — verification resumes. (Restoring the
+        // genesis record rather than `kill()`ing it: an ABSENT record reads as UPGRADED, matching
+        // `Executive::runtime_upgraded`, which treats a chain with no upgrade history as needing one.)
+        frame_system::LastRuntimeUpgrade::<Test>::set(ordinary);
         assert!(matches!(
             <CardanoObserver as ProvideInherent>::check_inherent(&author, &id),
             Err(InherentError::ComputeDiverged)
