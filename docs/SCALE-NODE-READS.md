@@ -27,7 +27,8 @@ no dependency on profile). The main surface:
 - `feed_page(before, limit, viewer)` — the global "For-you" feed: top-level posts, newest-first.
 - `author_feed_page(author, before_id, limit, viewer)` — one author's top-level posts (profile Posts tab).
 - `following_feed_page(viewer, before, limit)` — top-level posts by the accounts `viewer` follows.
-- `thread(focal, viewer)` — a reconstructed thread: focal post + ancestor chain (depth-capped) + direct replies.
+- `thread(focal, viewer)` — a reconstructed thread: focal post + ancestor chain (depth-capped) + the newest page of direct replies, plus the cursor to the rest.
+- `replies_page(parent, before_seq, limit, viewer)` — the continuation of `thread`: one page of a post's direct replies, older first-page-ward.
 - `author_replies_page`, `likes_page` — the profile Replies and Likes tabs.
 - `search_posts(term, …)` — case-insensitive substring search over post bodies (an in-runtime linear scan).
 - `poll` / `poll_choice` — a poll's options and per-option tally, and the viewer's own choice.
@@ -54,6 +55,22 @@ reloaded. They cost 5 bytes per post on `EnrichedPost` and 1 byte per id on `Vie
 re-declare the `Reposts` / `RepostCount` prefixes — a re-declared prefix resurrects the state the
 migration deleted.
 
+## The ordered reply spine
+
+`RepliesByParent` is a `DoubleMap`, so prefix iteration yields HASH order. That is fine for "which
+replies does this post have" and useless for "the next page of them": until spec 216 `thread` had to
+materialize the whole prefix and sort it, then enrich the first 512 — an unbounded trie walk whose only
+bounded part was the enrichment, dropping the *newest* replies, with no cursor for the rest.
+
+`RepliesByParentSeq` (parent, seq → reply id) is the ordered spine, dense over `0 .. ReplyCount[parent]`
+in insertion order, which is ascending id order because `NextPostId` is monotonic and replies are
+append-only. `index_reply` maintains it alongside `ReplyCount` and `RepliesByParent` on the one
+reply-creation path, and the seq IS the pre-increment count — one extra write, no extra read.
+`replies_page` walks it DOWN from a cursor: exact-N, no sort, no scan budget, and bounded by SLOTS
+examined rather than posts returned, so a (try_state-forbidden) hole yields a short page plus a cursor
+instead of a hunt. `thread` returns the newest page off the same walk. Same index/read pairing as the
+top-level spine below, for the same reason.
+
 ## The top-level-post index
 
 `Posts` interleaves replies and top-level posts in one id space, so paging top-level content by raw id
@@ -78,9 +95,13 @@ top-level creation site (`post_message` with `parent == None`, `quote_post`, `cr
   replies, so it takes the scan budget above on top: an author with a long top-level run cannot make it
   walk their whole index to return nothing.
 - `thread` caps the ancestor chain at a fixed depth (matching the client) and breaks on a cyclic parent.
+  Its replies are a PAGE (the newest `MAX_THREAD_REPLIES`, 512) with a cursor, not a truncation.
+- `replies_page` needs no scan budget: the spine holds only that parent's replies and is dense, so every
+  slot it touches is returned. An out-of-range `before_seq` is clamped to `ReplyCount`, never trusted.
 - Cursors are **opaque and endpoint-scoped**: a `next_cursor` from one method is only valid passed back to
-  the *same* method. `feed_page` / `following_feed_page` page a `TopLevelPosts` seq; `author_feed_page`
-  pages a post id. Never cross-wire them.
+  the *same* method. `feed_page` / `following_feed_page` page a `TopLevelPosts` seq; `replies_page` pages
+  a per-parent reply seq; `author_feed_page` pages a post id. Never cross-wire them. The one deliberate
+  crossing is `Thread::replies_next_cursor`, which exists to seed `replies_page`.
 - Runtime APIs are off-chain `state_call`s under a node-side time/memory budget — not gas-metered — so the
   bounds above are what keep each call tight.
 
@@ -98,7 +119,10 @@ One fallback survives, in `thread()`: `nodeThread(…).catch(() => getThread(…
 path, not a compatibility one — a viral post whose replies are enumerated in a single `state_call` can hit
 the node's resource budget, where incremental keyed reads still succeed. The feed paths are deliberately
 *not* wrapped this way: the node cursor is a `TopLevelPosts` seq while the keyed cursor is a post id, so a
-mid-page fallback would cross-wire the cursor.
+mid-page fallback would cross-wire the cursor. `repliesPage` is not wrapped either, and for a sharper
+version of the same reason: its cursor is a seq in the ordered spine, an index the keyed path cannot page
+at all — a "fallback" would have to re-read and re-sort the entire prefix, which is the unbounded read the
+spine replaced.
 
 ## Guardrails
 

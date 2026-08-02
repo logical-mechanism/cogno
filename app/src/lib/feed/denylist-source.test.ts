@@ -124,6 +124,7 @@ describe("withServeDenylist — thread()", () => {
         replies,
         parent,
         replyCount: replies.length,
+        repliesCursor: null,
         lastActivity: 1,
       }),
     }) as unknown as FeedSource;
@@ -139,6 +140,29 @@ describe("withServeDenylist — thread()", () => {
   it("adjusts replyCount so the UI does not promise rows it will not render", async () => {
     const t = await withServeDenylist(threadSource([post(2n), post(3n, DENIED_AUTHOR)])).thread(1n);
     expect(t.replyCount).toBe(1);
+  });
+
+  it("filters a replies PAGE without moving its cursor", async () => {
+    // The cursor is a position in the parent's reply spine, so shortening a page must not shift where
+    // the next one starts — that would skip the replies the denied ones were standing in front of.
+    const source = {
+      repliesPage: async () => ({
+        posts: [post(2n), post(3n, DENIED_AUTHOR), post(4n)],
+        nextCursor: 7n,
+      }),
+    } as unknown as FeedSource;
+    const page = await withServeDenylist(source).repliesPage(1n, 10n, 3);
+    expect(page.posts.map((p) => p.id)).toEqual([2n, 4n]);
+    expect(page.nextCursor).toBe(7n);
+  });
+
+  it("keeps a fully-denied replies page's cursor, so the caller keeps walking", async () => {
+    const source = {
+      repliesPage: async () => ({ posts: [post(2n, DENIED_AUTHOR)], nextCursor: 5n }),
+    } as unknown as FeedSource;
+    const page = await withServeDenylist(source).repliesPage(1n, 6n, 1);
+    expect(page.posts).toEqual([]);
+    expect(page.nextCursor).toBe(5n);
   });
 
   it("keeps the ROOT, because there is no shape for 'the post you asked for is gone'", async () => {
