@@ -41,10 +41,10 @@ const ids = (w: OlderReplies) => w.posts.map((p) => Number(p.id));
 describe("reanchorReplyWindow", () => {
   it("returns the SAME object when nothing slid, so a short thread never re-renders", () => {
     const win: OlderReplies = { posts: [], cursor: null, anchor: null };
-    expect(reanchorReplyWindow(win, null, page(0, 10))).toBe(win);
+    expect(reanchorReplyWindow(win, null, page(0, 10), page(0, 10))).toBe(win);
 
     const paged: OlderReplies = { posts: page(0, 5), cursor: 0n, anchor: 5n };
-    expect(reanchorReplyWindow(paged, 5n, page(5, 512))).toBe(paged);
+    expect(reanchorReplyWindow(paged, 5n, page(5, 512), page(5, 512))).toBe(paged);
   });
 
   it("carries the replies the newest page slid past, one per new reply", () => {
@@ -54,7 +54,8 @@ describe("reanchorReplyWindow", () => {
     // One reply lands. The runtime's cursor moves 88 -> 89, so the reply at seq 88 falls out of the
     // newest page — it is that page's OLDEST entry, so it is carried rather than re-fetched.
     const prevPage = page(88, 512); // the page being replaced: seq 88..599
-    const next = reanchorReplyWindow(win, 89n, prevPage);
+    const freshPage = page(89, 512); // the page replacing it: seq 89..600
+    const next = reanchorReplyWindow(win, 89n, prevPage, freshPage);
 
     expect(next.anchor).toBe(89n);
     expect(next.cursor).toBe(38n); // the far end of the window does not move
@@ -70,7 +71,7 @@ describe("reanchorReplyWindow", () => {
     // Ten replies land one at a time, each re-anchoring by one.
     for (let k = 0; k < 10; k++) {
       const anchor = 88 + k;
-      win = reanchorReplyWindow(win, BigInt(anchor + 1), page(anchor, 512));
+      win = reanchorReplyWindow(win, BigInt(anchor + 1), page(anchor, 512), page(anchor + 1, 512));
     }
     expect(win.anchor).toBe(98n);
     // Contiguous 38..97, no gap and no duplicate — which is the whole invariant.
@@ -79,25 +80,48 @@ describe("reanchorReplyWindow", () => {
     expect(win.posts.length).toBe(Number(win.anchor) - Number(win.cursor));
   });
 
+  it("carries nothing extra when the slid-past reply was filtered out of the page", () => {
+    // A serve denylist shortens the thread page without shortening the cursor, which is a SPINE
+    // position. So the page is no longer dense over its seq span, and the old index slice took the
+    // reply one slot ABOVE the one that actually slid out — a reply the fresh page still holds, which
+    // then rendered twice under the same React key and compounded on every later slide.
+    //
+    // 600 replies with the one at seq 88 denied: the previous page carries 89..599 (511 posts, not
+    // 512) and the fresh page carries 89..600. Exactly one slot slid out and its reply is not in
+    // either list, so the honest carry is EMPTY.
+    const win: OlderReplies = { posts: [], cursor: 88n, anchor: 88n };
+    const prevFiltered = page(89, 511); // runtime returned 88..599; seq 88 denied
+    const freshFiltered = page(89, 512); // runtime returned 89..600; nothing denied in range
+    const next = reanchorReplyWindow(win, 89n, prevFiltered, freshFiltered);
+
+    expect(next.anchor).toBe(89n);
+    expect(next.cursor).toBe(88n);
+    expect(next.posts).toEqual([]); // NOT [seq 89], which the fresh page still holds
+  });
+
   it("re-anchors EMPTY rather than splicing across a hole it cannot fill", () => {
     // The count moved by more than one page between two reads (a tab asleep through a burst), so the
     // page being replaced does not reach far enough back to cover the gap. Restarting the window is
     // visibly incomplete; splicing would read as a complete conversation and would not be one.
     const win: OlderReplies = { posts: page(38, 50), cursor: 38n, anchor: 88n };
-    const next = reanchorReplyWindow(win, 700n, page(700, 512));
+    const next = reanchorReplyWindow(win, 700n, page(88, 512), page(700, 512));
     expect(next).toEqual({ posts: [], cursor: 700n, anchor: 700n });
   });
 
   it("adopts the anchor on a first load, with nothing to carry", () => {
     const win: OlderReplies = { posts: [], cursor: null, anchor: null };
-    expect(reanchorReplyWindow(win, 88n, null)).toEqual({ posts: [], cursor: 88n, anchor: 88n });
+    expect(reanchorReplyWindow(win, 88n, null, page(88, 512))).toEqual({
+      posts: [],
+      cursor: 88n,
+      anchor: 88n,
+    });
   });
 
   it("treats a null anchor as seq 0 when a thread first crosses the page size", () => {
     // The thread was under 512 (cursor null, so the page held everything) and has just crossed it: the
     // newest page now starts at seq 3, so replies 0..2 fell out of it and belong to the older half.
     const win: OlderReplies = { posts: [], cursor: null, anchor: null };
-    const next = reanchorReplyWindow(win, 3n, page(0, 512));
+    const next = reanchorReplyWindow(win, 3n, page(0, 512), page(3, 512));
     expect(next.anchor).toBe(3n);
     expect(ids(next)).toEqual([0, 1, 2]);
     // `cursor` stays null: everything below the anchor IS loaded, so there is nothing left to fetch.
@@ -109,7 +133,7 @@ describe("reanchorReplyWindow", () => {
     // went backwards would mean a read from an older block; restarting is the safe answer, not
     // trimming a window against a position that no longer exists.
     const win: OlderReplies = { posts: page(38, 50), cursor: 38n, anchor: 88n };
-    const next = reanchorReplyWindow(win, 80n, page(80, 512));
+    const next = reanchorReplyWindow(win, 80n, page(88, 512), page(80, 512));
     expect(next).toEqual({ posts: [], cursor: 80n, anchor: 80n });
   });
 });

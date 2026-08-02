@@ -59,8 +59,19 @@ export interface OlderReplies {
  * pushes its oldest entries out of it; those replies are in neither half unless they are moved here, and
  * a hole in the middle of a conversation is invisible to the reader.
  *
- * They need no fetch: the replies that fell out are exactly the oldest `to - from` entries of
- * `prevReplies`, the page being replaced. Carry them.
+ * They need no fetch: the replies that fell out are the ones the page being replaced held and the
+ * fresh page no longer does. Carry them.
+ *
+ * Identified by SET DIFFERENCE against the fresh page, not by slicing `prevReplies` at the seq delta.
+ * The delta counts SPINE SLOTS while the slice counts ARRAY ELEMENTS, and those agree only while the
+ * page is dense over its seq span. `withServeDenylist.thread()` filters replies out of the page while
+ * passing `repliesCursor` through unshortened (deliberately — the cursor is a spine position), so on a
+ * deployment with a non-empty denylist the slice took a reply the fresh page STILL holds and rendered
+ * it twice, under a duplicate React key, compounding on every slide. The difference is exact under any
+ * filtering, because both pages are filtered the same way.
+ *
+ * Still bounded by the slot delta: at most `slid` replies can have left the page, so a reply that
+ * vanished for any OTHER reason (the runtime denylist arriving between two reads) is not carried back in.
  *
  * Returns the SAME window object when nothing slid, which is every thread under one page (both cursors
  * stay null) — so the common case causes no re-render.
@@ -69,13 +80,16 @@ export function reanchorReplyWindow(
   win: OlderReplies,
   freshCursor: bigint | null,
   prevReplies: CognoPost[] | null,
+  freshReplies: CognoPost[] | null,
 ): OlderReplies {
   if (win.anchor === freshCursor) return win;
   const from = win.anchor ?? 0n;
   const to = freshCursor ?? 0n;
-  const carried = to > from ? Number(to - from) : 0;
-  if (carried > 0 && prevReplies && prevReplies.length >= carried) {
-    return { ...win, posts: [...win.posts, ...prevReplies.slice(0, carried)], anchor: freshCursor };
+  const slid = to > from ? Number(to - from) : 0;
+  if (slid > 0 && prevReplies && prevReplies.length >= slid) {
+    const kept = new Set((freshReplies ?? []).map((p) => String(p.id)));
+    const fell = prevReplies.filter((p) => !kept.has(String(p.id))).slice(0, slid);
+    return { ...win, posts: [...win.posts, ...fell], anchor: freshCursor };
   }
   // Nothing to carry (a first load), or the previous page cannot cover the gap (the count moved by more
   // than a whole page between two reads). Re-anchor EMPTY: a window that visibly starts again is honest,
@@ -224,7 +238,7 @@ export function useThread(
   // the carry logic is directly testable: `vitest` runs in a `node` environment here, so no hook can be
   // rendered and this is the only way to pin behaviour that only appears past 512 replies.
   const reanchorOlder = useCallback((t: ThreadView, prev: ThreadView | null) => {
-    setOlder((win) => reanchorReplyWindow(win, t.repliesCursor, prev?.replies ?? null));
+    setOlder((win) => reanchorReplyWindow(win, t.repliesCursor, prev?.replies ?? null, t.replies));
   }, []);
 
   // Apply a freshly-read thread: chain truth for the focal/ancestors/tallies, plus own-reply promotion.
@@ -336,10 +350,16 @@ export function useThread(
       .then((page) => {
         if (!mounted.current || loadGen.current !== gen || rootIdRef.current !== rid) return;
         setOlder((prev) => {
-          // The window moved under this fetch (a fresh base re-anchored it, or another page landed
-          // first). Splicing the page in anyway would put replies at a position they no longer belong
-          // at, so drop it — the control is still there to ask again.
-          if (prev.anchor !== win.anchor || prev.cursor !== win.cursor) return prev;
+          // Drop the page if the OLDER end moved under this fetch — that is the end it splices onto,
+          // so anywhere else it would sit at a position it no longer belongs at. The control is still
+          // there to ask again.
+          //
+          // `anchor` deliberately does NOT gate this. It moves once per new reply on any thread past
+          // the page size (the runtime derives the cursor as `replyCount - MAX_THREAD_REPLIES`), and the
+          // carry branch of `reanchorReplyWindow` moves ONLY `anchor`, appending at the opposite end and
+          // leaving `cursor` alone. Gating on it threw away a page that was still exactly adjacent, so
+          // on a busy thread the fetch could lose the race indefinitely and the tap read as dead.
+          if (prev.cursor !== win.cursor) return prev;
           const seen = new Set(prev.posts.map((p) => String(p.id)));
           // The page arrives newest-first; this list is chronological, and it grows at the FRONT.
           const fresh = page.posts.filter((p) => !seen.has(String(p.id))).reverse();
