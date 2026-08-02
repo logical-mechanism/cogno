@@ -1,4 +1,31 @@
 {
+  // rust-analyzer auto-discovers Cargo workspaces anywhere under the folder you opened, and `_sdk/` and
+  // `_reference/` are vendored checkouts that each carry their own `rust-toolchain.toml`. Two of them pin
+  // 1.90.0 WITHOUT the `rust-analyzer` component (`_reference/iagon-partner-chain/`, and the stale copy of
+  // this repo nested inside it), which is what makes the extension prompt "toolchain too old ... add
+  // components = [\"rust-analyzer\"]" on every open. The prompt is not about THIS repo's toolchain file —
+  // that one is 1.93.0 and already names the component.
+  //
+  // Pinning `linkedProjects` to the root manifest stops the discovery scan outright, and `excludeDirs`
+  // keeps the vendored trees out of the file/symbol index too. The root workspace lists every crate the
+  // repo actually builds, so nothing real is lost.
+  "rust-analyzer.linkedProjects": ["Cargo.toml"],
+  "rust-analyzer.files.excludeDirs": ["_sdk", "_reference", "target", "app"],
+
+  // Same trap, different tool. CLAUDE.md's standing rule is to keep BOTH vendored trees out of repo-wide
+  // searches, because `_reference/` embeds a whole stale copy of this repo and a hit in it reads exactly
+  // like a hit in the real one. Excluded from search rather than hidden from the explorer, so they can
+  // still be opened deliberately.
+  "search.exclude": {
+    "_sdk/**": true,
+    "_reference/**": true,
+    "**/target/**": true,
+    "**/node_modules/**": true,
+    "app/.next/**": true,
+    "app/out/**": true,
+    "app/.papi/descriptors/**": true
+  },
+
   "files.watcherExclude": {
     "**/target/**": true,
     "_sdk/**": true,
