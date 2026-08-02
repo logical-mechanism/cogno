@@ -128,6 +128,7 @@ export default function HomePage() {
   const [composerText, setComposerText] = useState("");
   const [composerSerialized, setComposerSerialized] = useState("");
   const {
+    maxBytes,
     rateLimited: composerRateLimited,
     noPostingPower: composerNoPower,
     retryInSeconds,
@@ -277,6 +278,7 @@ export default function HomePage() {
             onTextChange={setComposerText}
             onSerializedChange={setComposerSerialized}
             rateLimited={composerRateLimited}
+            maxBytes={maxBytes}
             retryInSeconds={retryInSeconds}
             noPostingPower={composerNoPower}
             onTogglePoll={() => modalActions.openPoll()}

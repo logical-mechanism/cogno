@@ -8,14 +8,38 @@
 
 import type { CognoApi, Ss58 } from "@/lib/types";
 
-/** Capacity constants, read from runtime metadata (all micro-capacity units / lovelace). */
+/**
+ * The composer's on-wire constants, read from runtime metadata.
+ *
+ * The five capacity terms are micro-capacity units / lovelace. `maxLength` is the odd one out —
+ * UTF-8 BYTES, `Microblog::MaxLength` — and it lives here because it is read, cached and
+ * fail-closed on the same path as the rest, and because a second async read would mean a second
+ * failure mode for a value the same composer gates on.
+ */
 export interface CapacityConsts {
   capRatio: bigint;
   regenPerBlock: bigint;
   ceiling: bigint;
   baseCost: bigint;
   perByteCost: bigint;
+  /** `Microblog::MaxLength` — the hard byte bound `post_message` rejects past, as `TooLong`. */
+  maxLength: number;
 }
+
+/**
+ * The post byte cap to use BEFORE metadata answers — not the truth, and deliberately the smaller of
+ * the two possible wrong answers.
+ *
+ * The truth is `CapacityConsts.maxLength`, read live above. This exists only for the window between
+ * mount and that read landing, and for the fail-closed case where it never does. It is a FLOOR, so
+ * the worst outcome is that a user is briefly held to less than the chain would accept; seeding it
+ * optimistically would instead let them compose a draft the runtime rejects as `TooLong` after they
+ * hit Post.
+ *
+ * ⛔ Never use this AS the cap. A client that hardcodes the bound silently truncates its users the
+ * day the runtime raises it — see docs/CLIENT-INTEGRATION.md.
+ */
+export const FALLBACK_MAX_POST_BYTES = 512;
 
 /** The lazy token-bucket row (`Microblog.Capacity`), or null for a never-bound account. */
 export interface CapacityBucket {
@@ -45,14 +69,15 @@ export interface CapacityView {
 
 /** Read the capacity constants from metadata. Throws if any are missing (fail-closed). */
 export async function readCapacityConsts(api: CognoApi): Promise<CapacityConsts> {
-  const [capRatio, regenPerBlock, ceiling, baseCost, perByteCost] = await Promise.all([
+  const [capRatio, regenPerBlock, ceiling, baseCost, perByteCost, maxLength] = await Promise.all([
     api.constants.Microblog.CapRatio(),
     api.constants.Microblog.RegenPerBlock(),
     api.constants.Microblog.Ceiling(),
     api.constants.Microblog.BaseCost(),
     api.constants.Microblog.PerByteCost(),
+    api.constants.Microblog.MaxLength(),
   ]);
-  return { capRatio, regenPerBlock, ceiling, baseCost, perByteCost };
+  return { capRatio, regenPerBlock, ceiling, baseCost, perByteCost, maxLength };
 }
 
 /**

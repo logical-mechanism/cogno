@@ -23,6 +23,7 @@ import { useMentions } from "@/hooks/useMentions";
 import type { MentionRef } from "@/lib/mentions";
 import { ByteCounter } from "./ByteCounter";
 import { utf8Bytes, clampToBytes } from "@/lib/bytes";
+import { FALLBACK_MAX_POST_BYTES } from "@/lib/chain/capacity";
 import { RateLimitNotice } from "./RateLimitNotice";
 import { NoPostingPowerNotice } from "./NoPostingPowerNotice";
 import { LOCK_ADA_WHOLE } from "@/lib/cardano/lockAmount";
@@ -41,8 +42,9 @@ import type {
 } from "./kit";
 import type { ReactNode, CSSProperties } from "react";
 
-/** Runtime Microblog::MaxLength (Vec<u8>), measured as UTF-8 BYTES (D1). */
-export const MAX_POST_BYTES = 512;
+// The post byte cap is `Microblog::MaxLength`, read live from metadata — surfaces pass it down as
+// `maxBytes` from `useComposerGate`. `FALLBACK_MAX_POST_BYTES` (lib/chain/capacity) is only the
+// pre-metadata floor; it is the default here so an unwired surface fails small rather than large.
 
 /**
  * Grow the textarea to fit its content, then hand scrollability back once the CSS max-height clamps
@@ -92,7 +94,10 @@ export interface ComposerProps {
   mode: ComposerMode;
   /** Override the per-mode placeholder. */
   placeholder?: string;
-  /** Byte cap for the textarea (default 512). PollComposer passes 512 for the question. */
+  /**
+   * Byte cap for the textarea. Surfaces pass the LIVE `Microblog::MaxLength` from
+   * `useComposerGate().maxBytes`; the default is only the pre-metadata floor.
+   */
   maxBytes?: number;
   /** Optimistic submit state (idle → pending → ok/error/rate-limited). */
   submitState: ActionState;
@@ -176,7 +181,7 @@ export function Composer({
   viewer,
   mode,
   placeholder,
-  maxBytes = MAX_POST_BYTES,
+  maxBytes = FALLBACK_MAX_POST_BYTES,
   submitState,
   rateLimited,
   retryInSeconds,

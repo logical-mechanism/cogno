@@ -265,7 +265,7 @@ export function ModalRouteHost() {
   // quote are uncontrolled → `serialized` stays "" and the gate uses the base-cost probe, as before.
   // `noPostingPower` also feeds EditProfileModal below — profile writes are capacity-metered too.
   const gateText = kind === "poll" ? pollDraft.question : serialized;
-  const { rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
+  const { maxBytes, rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
 
 
   const onComposerDirty = useCallback((dirty: boolean) => {
@@ -564,6 +564,7 @@ export function ModalRouteHost() {
           submitState={submitState}
           noPostingPower={noPostingPower}
           rateLimited={rateLimited}
+          maxBytes={maxBytes}
           retryInSeconds={retryInSeconds}
           text={text}
           onTextChange={setText}
@@ -600,6 +601,7 @@ export function ModalRouteHost() {
             submitState={submitState}
             noPostingPower={noPostingPower}
             rateLimited={rateLimited}
+            maxBytes={maxBytes}
             retryInSeconds={retryInSeconds}
             text={text}
             onTextChange={setText}
@@ -619,6 +621,7 @@ export function ModalRouteHost() {
             submitState={submitState}
             noPostingPower={noPostingPower}
             rateLimited={rateLimited}
+            maxBytes={maxBytes}
             autoFocus
             submitReply={onReply}
             onDirtyChange={onComposerDirty}
@@ -631,6 +634,7 @@ export function ModalRouteHost() {
             submitState={submitState}
             noPostingPower={noPostingPower}
             rateLimited={rateLimited}
+            maxBytes={maxBytes}
             autoFocus
             submitQuote={onQuote}
             onDirtyChange={onComposerDirty}
@@ -644,6 +648,7 @@ export function ModalRouteHost() {
             submitState={submitState}
             noPostingPower={noPostingPower}
             rateLimited={rateLimited}
+            maxBytes={maxBytes}
             retryInSeconds={retryInSeconds}
             autoFocus
             submitCreatePoll={onCreatePoll}

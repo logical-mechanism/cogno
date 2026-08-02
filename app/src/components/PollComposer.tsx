@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { KeyboardEvent } from "react";
-import { Composer, MAX_POST_BYTES } from "./Composer";
+import { Composer } from "./Composer";
 import { ByteCounter } from "./ByteCounter";
 import { Spinner } from "./icons";
 import { utf8Bytes, clampToBytes } from "@/lib/bytes";
@@ -200,6 +200,12 @@ export interface PollComposerProps {
   pollDraft: PollDraft;
   onChange: (draft: PollDraft) => void;
   submitState: ActionState;
+  /**
+   * Live `Microblog::MaxLength` from `useComposerGate().maxBytes`, applied to the poll QUESTION —
+   * the question rides in the host post's body, so it shares the post bound. The per-option and
+   * anchor-URL caps below are separate runtime bounds and are unaffected.
+   */
+  maxBytes?: number;
   rateLimited?: boolean;
   retryInSeconds?: number | null;
   noPostingPower?: boolean;
@@ -238,6 +244,7 @@ export function PollComposer({
   pollDraft,
   onChange,
   submitState,
+  maxBytes,
   rateLimited,
   retryInSeconds,
   noPostingPower,
@@ -740,7 +747,7 @@ export function PollComposer({
     <Composer
       viewer={viewer}
       mode="poll"
-      maxBytes={MAX_POST_BYTES}
+      maxBytes={maxBytes}
       submitState={submitState}
       rateLimited={rateLimited}
       retryInSeconds={retryInSeconds}
