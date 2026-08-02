@@ -507,7 +507,12 @@ pub mod pallet {
     /// population ceiling. Version 0 is the implicit pre-migration state — the pallet never declared a
     /// version before, so `on_chain_version` reads 0 on the live chain and
     /// `migrations::v1::MigrateV0ToV1` runs exactly once. See that module.
-    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+    ///
+    /// Storage version 2 (spec 217): no SHAPE change — the role basis is cleared so that spec 217's
+    /// widened `MAX_OBSERVED_ROLES_PER_ACCOUNT` actually reaches an already-truncated account. The diff
+    /// is against this basis, which the sink cap never bounded, so without the clear a truncated row is
+    /// never rewritten. See `migrations::v2`.
+    pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]

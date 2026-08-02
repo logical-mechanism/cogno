@@ -60,19 +60,39 @@ pub type RoleCredential = [u8; 28];
 
 /// The maximum number of observed role BADGES one account can display at once. An account holds at most
 /// one dRep and one CC badge, but can hold SEVERAL SPO badges — one per pool it operates via a Calidus
-/// key and/or owns (an mSPO now consumes one slot PER declaring pool) — so this is deliberately well above
-/// the three [`RoleKind`]s. The observer truncates to this cap; the set is display-only, so a cap is a UI
-/// bound, not an economic one.
+/// key and/or owns (an mSPO consumes one slot PER declaring pool) — so this is deliberately well above
+/// the three [`RoleKind`]s.
 ///
-/// Truncation order (spec 211): the runtime `RoleApply` sink fills NON-SPO roles (dRep, CC) FIRST —
+/// NOT display-only, which is the thing to know before touching it. `poll_chamber_weights` reads this
+/// set for the governance-poll chamber tallies: it dedups by pool id and SUMS delegated stake, and it
+/// counts distinct roles as the "N SPOs voted" figure. So a truncated mSPO under-reports BOTH its own
+/// chamber weight and its participation — and `close_poll` FREEZES the result into `PollResult` with no
+/// re-pricing path, so for a poll closed while truncated the under-count is permanent. (An OPEN poll
+/// re-prices on every read, so only closed ones fossilize it.)
+///
+/// Truncation order (spec 211): [`Pallet::bound_observed_roles`] fills NON-SPO roles (dRep, CC) FIRST —
 /// bounded to a small fixed reserve, so badges can never starve the pools either — then the SPO
 /// entries, so a large mSPO past the cap loses only surplus SPO pools, never its dRep/CC badge or its
-/// dRep-chamber weight. (Before spec 211 it kept the first N in the canonical order,
-/// which sorts every SPO entry ahead of dRep/CC — so one Calidus key declared by ~14+ live pools
-/// silently truncated the operator's dRep badge away.) An mSPO past the cap still under-counts its own
-/// SPO-chamber weight — RAISING this cap needs a storage migration (the bound types `ObservedRoleSet`)
-/// and is deliberately deferred.
-pub const MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 16;
+/// dRep-chamber weight. (Before spec 211 it kept the first N in the canonical order, which sorts every
+/// SPO entry ahead of dRep/CC — so one Calidus key declared by ~14+ live pools silently truncated the
+/// operator's dRep badge away.)
+///
+/// Spec 217 raised this 16 → 32, which is the observer's `MaxRolesPerAccount` and therefore the largest
+/// set the sink can ever be handed. At 16 the reserve left 12..=16 usable SPO slots, and live preprod
+/// already holds a credential owning 17 pools while mainnet mSPOs run 20-30 — so the cap was a latent
+/// under-count waiting on a real operator, and truncation was SILENT (no log, no event field, no
+/// counter, with `RolesUpdated` carrying only the survivors as though complete).
+///
+/// RAISING it needs no storage migration: [`ObservedRoleSet`] is a `BoundedVec`, whose `Decode` reads a
+/// compact length and then bound-checks it, so every stored row (len ≤ the old bound ≤ the new one)
+/// decodes unchanged and byte-identically. What a raise DOES need is a re-apply — see
+/// `pallet_cardano_observer::migrations::v2` — because `derive_call` diffs against the observer's own
+/// basis, which the sink cap never touched, so an already-truncated row is not rewritten by itself.
+///
+/// ⚠ NARROWING it is a different matter and is genuinely unsafe: [`ObservedRoles`] is `ValueQuery`, so a
+/// stored row longer than a lowered bound fails to decode and hands back the DEFAULT — a silently empty
+/// badge set, with the account's chamber weight silently gone. That needs a migration.
+pub const MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 32;
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -542,6 +562,83 @@ pub mod pallet {
         /// ProfileView). Empty if the account holds no live role.
         pub fn observed_roles(who: &T::AccountId) -> Vec<ObservedRole> {
             ObservedRoles::<T>::get(who).into_inner()
+        }
+
+        /// Fit the observer's `(kind_index, id, weight)` slice into an [`ObservedRoleSet`], reserving the
+        /// non-SPO badges — the whole of what the runtime's `RoleSink` adapter does before writing.
+        ///
+        /// Lives HERE, next to [`MAX_OBSERVED_ROLES_PER_ACCOUNT`], for two reasons. The reserve only
+        /// makes sense as a defence of that cap, so the two drifting apart would be silent; and the
+        /// truncation now has a `LOG_TARGET` to announce itself on. Before spec 217 it happened in the
+        /// runtime adapter with no log, no event field and no counter, and `RolesUpdated` carried only
+        /// the survivors as though the set were complete — so an mSPO's chamber weight could be under-
+        /// reported for ever with nothing anywhere saying so.
+        ///
+        /// TWO PASSES, truncating not clearing: NON-SPO roles (dRep, CC) first, then the SPO entries.
+        /// The observer's canonical `role_entries` order sorts on `RoleSource` first, which puts EVERY
+        /// SPO entry ahead of every dRep/CC one — so a single pass truncating at the cap silently dropped
+        /// a large mSPO's dRep badge AND its dRep-chamber weight once its pool count neared the cap
+        /// (spec 211's fix). Both passes are deterministic and preserve the slice order within each
+        /// class, so every node stores the identical set.
+        ///
+        /// The first pass is itself capped, at `NON_SPO_RESERVE`. "At most one dRep and one CC" is what
+        /// the reduction emits today, but nothing in this signature enforces it — and if a future
+        /// reduction ever emitted a handful of dRep/CC credentials for one account, an uncapped first
+        /// pass would fill every slot and drop EVERY SPO badge: the exact inverse of the bug the two
+        /// passes fix, and just as silent. Reserving a small fixed prefix bounds the trade both ways.
+        ///
+        /// (The pre-211 `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
+        /// wiped the ENTIRE set to empty. `weight` is the governance-poll chamber weight, carried
+        /// through verbatim.)
+        pub fn bound_observed_roles(roles: &[(u8, RoleCredential, u128)]) -> ObservedRoleSet {
+            const NON_SPO_RESERVE: usize = 4;
+
+            let mut bounded = ObservedRoleSet::default();
+            let mut truncated = false;
+            'fill: for pass_spo in [false, true] {
+                for (kind_ix, id, weight) in roles {
+                    let kind = match kind_ix {
+                        0 if pass_spo => RoleKind::Spo,
+                        1 if !pass_spo => RoleKind::DRep,
+                        2 if !pass_spo => RoleKind::Committee,
+                        _ => continue,
+                    };
+                    if !pass_spo && bounded.len() >= NON_SPO_RESERVE {
+                        continue; // the non-SPO prefix is full — leave the rest of the set for pools
+                    }
+                    if bounded
+                        .try_push(ObservedRole {
+                            kind,
+                            id: *id,
+                            weight: *weight,
+                        })
+                        .is_err()
+                    {
+                        // At the cap — keep what fits (deterministically), drop the rest. Break out of
+                        // BOTH loops: a plain `break` would only end this pass and then re-walk the whole
+                        // slice in the next one, every `try_push` failing, inside a Mandatory inherent.
+                        truncated = true;
+                        break 'fill;
+                    }
+                }
+            }
+            if truncated {
+                // Not an event: this rides a Mandatory inherent that must stay cheap and
+                // encoding-neutral, and it is an operator signal rather than an on-chain fact. It is a
+                // WARN because the consequence is not cosmetic — the dropped pools are missing from this
+                // account's governance-poll chamber weight AND from the distinct-role count, and any
+                // poll closed while it is truncated freezes that under-count permanently.
+                log::warn!(
+                    target: LOG_TARGET,
+                    "observed roles TRUNCATED for one account: {} of {} entries kept (cap {}). The \
+                     dropped pools are absent from its chamber weight and participation count; a poll \
+                     closed now freezes that under-count. Raise MAX_OBSERVED_ROLES_PER_ACCOUNT.",
+                    bounded.len(),
+                    roles.len(),
+                    MAX_OBSERVED_ROLES_PER_ACCOUNT,
+                );
+            }
+            bounded
         }
 
         /// Every credential currently CLAIMED for `role` that the cardano-observer should scan this

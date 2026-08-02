@@ -136,6 +136,13 @@ type SingleBlockMigrations = (
     // LOAD-BEARING on the live chain: `thread` and `replies_page` both walk the spine now, so without
     // this every existing thread would read back as having no replies at all. See `migrations::v11`.
     pallet_microblog::migrations::v11::MigrateV10ToV11<Runtime>,
+    // spec 217: CLEAR the observer's role basis (and the badge sets it backs) so that the widened
+    // `MAX_OBSERVED_ROLES_PER_ACCOUNT` reaches accounts that were already truncated. Widening a
+    // `BoundedVec` bound is decode-compatible and needs no rewrite to be READ — but `derive_call` diffs
+    // against this basis, which the sink cap never bounded, so a truncated row is otherwise never
+    // re-emitted and the raise is inert on exactly the accounts it exists for. A no-op on the live
+    // chain, where `v1` (above) empties the same basis in the same block. See `migrations::v2`.
+    pallet_cardano_observer::migrations::v2::MigrateV1ToV2<Runtime>,
 );
 
 /// The runtime base call filter — the sudo-free brick-guard + the fuel-non-transferability rule.
@@ -1486,6 +1493,21 @@ impl pallet_cardano_observer::StakeResolver<AccountId> for StakeLookup {
     }
 }
 
+/// The observer's `MaxRolesPerAccount` — how many role entries the observer will carry for one account,
+/// and therefore the largest set it can ever hand the `RoleSink`. Named rather than inlined so the
+/// relationship below can be checked at compile time.
+const MAX_ROLES_PER_ACCOUNT: u32 = 32;
+
+/// The two role caps are stacked, and the ORDER they cut in is load-bearing. The sink's
+/// `MAX_OBSERVED_ROLES_PER_ACCOUNT` must never exceed the observer's `MaxRolesPerAccount`: past it the
+/// sink's bound is unreachable, every cut moves upstream into `bounded_roles`, and nothing here would
+/// say so — the pair has only ever been documented in prose, never checked. Both layers reserve the
+/// non-SPO badges, so EQUAL is fine; greater is not.
+const _: () = assert!(
+    pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT <= MAX_ROLES_PER_ACCOUNT,
+    "MAX_OBSERVED_ROLES_PER_ACCOUNT must not exceed the observer's MaxRolesPerAccount",
+);
+
 /// The observer's `MaxScanned`, the one cap the three credential scans and the read-side observed-account
 /// joins all spend. Named once so the adapters below cannot drift from the pallet's own bound.
 fn max_scanned() -> u32 {
@@ -1590,61 +1612,13 @@ impl pallet_cardano_observer::RoleResolver<AccountId> for RoleLookup {
 pub struct RoleApply;
 impl pallet_cardano_observer::RoleSink<AccountId> for RoleApply {
     fn set_roles(who: &AccountId, roles: &[(u8, [u8; 28], u128)]) {
-        use pallet_cardano_roles::{ObservedRole, ObservedRoleSet, RoleKind};
-        // Build the bounded set in TWO PASSES (spec 211), TRUNCATING not clearing: NON-SPO roles
-        // (dRep, CC — at most one of each) first, then fill the remaining slots with SPO entries.
-        //
-        // The canonical `role_entries` order sorts on `RoleSource` first, which puts EVERY SPO entry
-        // ahead of every dRep/CC one — so a single pass truncating at the cap silently dropped a
-        // large mSPO's dRep badge AND its dRep-chamber weight once its pool count neared the cap
-        // (the old "⚠ MAINNET PREREQUISITE (a deterministic under-count)" this fixes). Two passes
-        // reserve the non-SPO badges by construction; only surplus SPO pools past the cap are
-        // dropped, deterministically (the slice order within each class is preserved). Both passes
-        // are deterministic, so every node stores the identical set. Side effect, priced in: the
-        // stored order of an EXISTING multi-role account changes once (non-SPO now first), costing a
-        // one-time `RolesUpdated` rewrite per such account on the first enforcing observation after
-        // the upgrade — a handful of rows on preprod, none at a fresh mainnet genesis.
-        //
-        // The old `try_from(set).unwrap_or_default()` was all-or-nothing — one badge over the cap
-        // wiped the ENTIRE set to empty. `weight` (spec 207) is the governance-poll chamber weight,
-        // carried through verbatim.
-        //
-        // The non-SPO pass is itself CAPPED, at `NON_SPO_RESERVE`. "At most one of each" is what the
-        // reduction emits today, but nothing in this signature enforces it — and if a future reduction
-        // ever emitted a handful of dRep/CC credentials for one account, an uncapped first pass would
-        // fill all 16 slots and drop EVERY SPO badge: the exact inverse of the bug the two passes fix,
-        // and just as silent. Reserving a small, fixed prefix bounds the trade in both directions —
-        // non-SPO badges can never be starved by pools, and pools can never be starved by badges.
-        const NON_SPO_RESERVE: usize = 4;
-
-        let mut bounded = ObservedRoleSet::default();
-        'fill: for pass_spo in [false, true] {
-            for (kind_ix, id, weight) in roles {
-                let kind = match kind_ix {
-                    0 if pass_spo => RoleKind::Spo,
-                    1 if !pass_spo => RoleKind::DRep,
-                    2 if !pass_spo => RoleKind::Committee,
-                    _ => continue,
-                };
-                if !pass_spo && bounded.len() >= NON_SPO_RESERVE {
-                    continue; // the non-SPO prefix is full — leave the rest of the set for pools
-                }
-                if bounded
-                    .try_push(ObservedRole {
-                        kind,
-                        id: *id,
-                        weight: *weight,
-                    })
-                    .is_err()
-                {
-                    // At the cap — keep what fits (deterministically), drop the rest. Break out of
-                    // BOTH loops: a plain `break` would only end this pass and then re-walk the whole
-                    // slice in the next one, every `try_push` failing, inside a Mandatory inherent.
-                    break 'fill;
-                }
-            }
-        }
-        pallet_cardano_roles::Pallet::<Runtime>::apply_roles(who, bounded);
+        // The reserve-aware two-pass bounding lives in pallet-cardano-roles, next to the cap it
+        // defends and next to a `LOG_TARGET` that can announce a truncation. It used to be inlined
+        // here, where it had neither.
+        pallet_cardano_roles::Pallet::<Runtime>::apply_roles(
+            who,
+            pallet_cardano_roles::Pallet::<Runtime>::bound_observed_roles(roles),
+        );
     }
 }
 
@@ -1896,28 +1870,40 @@ mod fair_scan_tests {
 mod role_apply_tests {
     use super::*;
     use pallet_cardano_observer::RoleSink;
-    use pallet_cardano_roles::RoleKind;
+    use pallet_cardano_roles::{RoleKind, MAX_OBSERVED_ROLES_PER_ACCOUNT};
+
+    /// The reserve, expressed against the CAP rather than a literal, so raising the cap does not
+    /// silently turn these into tests of something else.
+    const CAP: usize = MAX_OBSERVED_ROLES_PER_ACCOUNT as usize;
+    const RESERVE: usize = 4;
+
+    /// A distinct 28-byte credential per index (`[i; 28]` runs out at 256, and the cap does not).
+    fn cred(i: usize) -> [u8; 28] {
+        let mut c = [0u8; 28];
+        c[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        c
+    }
 
     #[test]
     fn truncation_keeps_non_spo_badges_and_drops_surplus_pools() {
         sp_io::TestExternalities::default().execute_with(|| {
             let who = AccountId::from([7u8; 32]);
-            // The canonical order puts every SPO entry first: 16 pools (already at the cap), then
-            // the operator's dRep and CC badges. A single-pass fill dropped both badges.
+            // The canonical order puts every SPO entry first: enough pools to fill the cap on their
+            // own, then the operator's dRep and CC badges. A single-pass fill dropped both badges.
             let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
-                (0..16u8).map(|i| (0u8, [i; 28], 1u128)).collect();
+                (0..CAP).map(|i| (0u8, cred(i), 1u128)).collect();
             roles.push((1, [0xD0; 28], 5));
             roles.push((2, [0xC0; 28], 0));
             RoleApply::set_roles(&who, &roles);
             let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
-            assert_eq!(stored.len(), 16, "filled to the cap");
+            assert_eq!(stored.len(), CAP, "filled to the cap");
             // The non-SPO badges survive (filled first), in slice order, ahead of the pools …
             assert_eq!(stored[0].kind, RoleKind::DRep);
             assert_eq!(stored[1].kind, RoleKind::Committee);
-            // … and only the surplus SPO pools were dropped (14 of 16 fit).
+            // … and only the surplus SPO pools were dropped.
             assert_eq!(
                 stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
-                14
+                CAP - 2
             );
             // An under-cap account keeps every role.
             let small = AccountId::from([8u8; 32]);
@@ -1936,24 +1922,54 @@ mod role_apply_tests {
     fn the_non_spo_reserve_cannot_starve_the_spo_badges() {
         sp_io::TestExternalities::default().execute_with(|| {
             let who = AccountId::from([9u8; 32]);
-            // 16 pools (the cap on its own) plus EIGHT dRep entries — twice the reserve. Nothing in
-            // `RoleSink`'s signature forbids this; an uncapped first pass would keep all eight and
+            // Enough pools to fill the cap alone, plus twice the reserve in dRep entries. Nothing in
+            // `RoleSink`'s signature forbids this; an uncapped first pass would keep all of them and
             // drop every pool.
             let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
-                (0..16u8).map(|i| (0u8, [i; 28], 1u128)).collect();
-            roles.extend((0..8u8).map(|i| (1u8, [0xD0 + i; 28], 5u128)));
+                (0..CAP).map(|i| (0u8, cred(i), 1u128)).collect();
+            roles.extend((0..RESERVE * 2).map(|i| (1u8, cred(1_000 + i), 5u128)));
             RoleApply::set_roles(&who, &roles);
             let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
-            assert_eq!(stored.len(), 16, "filled to the cap");
+            assert_eq!(stored.len(), CAP, "filled to the cap");
             assert_eq!(
                 stored.iter().filter(|r| r.kind == RoleKind::DRep).count(),
-                4,
+                RESERVE,
                 "the non-SPO prefix is capped at the reserve"
             );
             assert_eq!(
                 stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
-                12,
+                CAP - RESERVE,
                 "every remaining slot still goes to the pools"
+            );
+        });
+    }
+
+    /// The spec-217 raise, stated as the case it exists for: a real mSPO. Live preprod already holds a
+    /// credential owning 17 pools and mainnet mSPOs run 20-30, all of which were truncated at the old
+    /// cap of 16 — and the truncation cost chamber WEIGHT and the participation COUNT, not just badges.
+    /// Fails against the old cap.
+    #[test]
+    fn a_thirty_pool_mspo_keeps_every_pool_and_both_badges() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let who = AccountId::from([11u8; 32]);
+            let mut roles: alloc::vec::Vec<(u8, [u8; 28], u128)> =
+                (0..30).map(|i| (0u8, cred(i), 1u128)).collect();
+            roles.push((1, [0xD0; 28], 5));
+            roles.push((2, [0xC0; 28], 0));
+
+            RoleApply::set_roles(&who, &roles);
+
+            let stored = pallet_cardano_roles::Pallet::<Runtime>::observed_roles(&who);
+            assert_eq!(
+                stored.len(),
+                32,
+                "a 30-pool mSPO with a dRep and a CC badge must not be truncated",
+            );
+            assert_eq!(
+                stored.iter().filter(|r| r.kind == RoleKind::Spo).count(),
+                30,
+                "every pool has to count: poll_chamber_weights sums their delegated stake and \
+                 close_poll freezes the total permanently",
             );
         });
     }
@@ -2225,8 +2241,12 @@ impl pallet_cardano_observer::Config for Runtime {
     type MaxChangesPerBlock = ConstU32<256>;
     // Max observed roles per ACCOUNT — a per-identity bound, never a population one.
     //
-    // DOUBLE `pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT` (16), so that in practice the sink's
-    // truncation is the only one that acts and the observer hands it a complete set.
+    // EQUAL to `pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT` since spec 217, where it used to be
+    // double it. That inverts which layer cuts — the observer's `bounded_roles` now reaches its bound
+    // first and the sink's truncation never acts — and that is safe here only because BOTH layers reserve
+    // the non-SPO slots (see the ⚠ below and `Pallet::bound_observed_roles`). The trade is deliberate:
+    // headroom bought nothing at 16, because 16 was itself below what a real mSPO needs, so the badges
+    // the headroom protected were being dropped anyway one layer down.
     //
     // ⚠ Sizing does NOT make the observer's own cut safe, and it is not what makes it safe. An account
     // with more than 32 role entries reaches this bound however generous it is, and the canonical role
@@ -2234,7 +2254,7 @@ impl pallet_cardano_observer::Config for Runtime {
     // badges the sink's two-pass reserve exists to protect, one layer upstream of where that fix lives.
     // `Pallet::bounded_roles` therefore reserves non-SPO slots itself. This value only decides how often
     // either reserve has to act.
-    type MaxRolesPerAccount = ConstU32<32>;
+    type MaxRolesPerAccount = ConstU32<MAX_ROLES_PER_ACCOUNT>;
     // The cap on the per-block credential SCANS that scope the node's db-sync query, and on the read-side
     // observed-account joins. NOT a bound on the observation — see the pallet's `MaxScanned` docs. It kept
     // its 1024 value across the spec-215 rewrite because its reason is unchanged: `link_stake_signed` and

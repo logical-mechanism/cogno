@@ -15,7 +15,6 @@
 
 use crate::{
     Config, ObservedRole, ObservedRoleSet, ObservedRoles, Pallet, RoleCredential, RoleKind,
-    MAX_OBSERVED_ROLES_PER_ACCOUNT,
 };
 use frame_support::{
     migrations::VersionedMigration,
@@ -41,8 +40,15 @@ pub struct OldObservedRole {
     pub id: RoleCredential,
 }
 
-/// The v0 observed-role set (the same bound the live type uses), re-declared over [`OldObservedRole`].
-type OldObservedRoleSet = BoundedVec<OldObservedRole, ConstU32<MAX_OBSERVED_ROLES_PER_ACCOUNT>>;
+/// The v0 observed-role set, re-declared over [`OldObservedRole`].
+///
+/// The bound is a LITERAL 16, not `MAX_OBSERVED_ROLES_PER_ACCOUNT`. A migration's "old" type is a
+/// frozen snapshot of a shape that already shipped, so tracking the live constant would silently
+/// re-bound a decoder for data written under a different one — harmless while the constant only ever
+/// grows (spec 217 took it 16 → 32, and every stored row was ≤ 16), and a decode failure the moment
+/// anyone lowers it. 16 is what v0 was written with; that is what reads it.
+const V0_MAX_OBSERVED_ROLES_PER_ACCOUNT: u32 = 16;
+type OldObservedRoleSet = BoundedVec<OldObservedRole, ConstU32<V0_MAX_OBSERVED_ROLES_PER_ACCOUNT>>;
 
 /// The unchecked inner migration wrapped by [`MigrateV0ToV1`]. Register `MigrateV0ToV1` (the
 /// version-guarded wrapper), never this directly, so it stays idempotent.
@@ -55,8 +61,8 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV0ToV1<T> {
             rows = rows.saturating_add(1);
             let mut new = ObservedRoleSet::default();
             for r in old.into_iter() {
-                // weight 0 until the observer re-derives the live delegated stake next block (both bounds
-                // are identical, so every push fits).
+                // weight 0 until the observer re-derives the live delegated stake next block (the old
+                // bound is ≤ the new one, so every push fits).
                 let _ = new.try_push(ObservedRole {
                     kind: r.kind,
                     id: r.id,
