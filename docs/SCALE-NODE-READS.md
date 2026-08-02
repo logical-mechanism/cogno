@@ -28,7 +28,7 @@ no dependency on profile). The main surface:
 - `author_feed_page(author, before_id, limit, viewer)` — one author's top-level posts (profile Posts tab).
 - `following_feed_page(viewer, before, limit)` — top-level posts by the accounts `viewer` follows.
 - `thread(focal, viewer)` — a reconstructed thread: focal post + ancestor chain (depth-capped) + the newest page of direct replies, plus the cursor to the rest.
-- `replies_page(parent, before_seq, limit, viewer)` — the continuation of `thread`: one page of a post's direct replies, older first-page-ward.
+- `replies_page(parent, before_seq, limit, viewer)` — the continuation of `thread`: one page of a post's direct replies, newest-first, below the `before_seq` cursor.
 - `author_replies_page`, `likes_page` — the profile Replies and Likes tabs.
 - `search_posts(term, …)` — case-insensitive substring search over post bodies (an in-runtime linear scan).
 - `poll` / `poll_choice` — a poll's options and per-option tally, and the viewer's own choice.
