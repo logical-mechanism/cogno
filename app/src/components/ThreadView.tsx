@@ -168,6 +168,15 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // the seq-cursored replies read). This used to be the client-side window ALONE, with a separate
   // "N newer replies are not shown" notice at the foot admitting the rest were unreadable.
   const windowedOlder = Math.max(0, confirmedReplyCount - visibleReplies);
+  // The control SHOWS whenever either source has something left, and it is `hasOlderReplies` — the
+  // chain cursor — that decides the second one, never `unloadedReplies`. Those two can disagree on a
+  // deployment running a serve denylist: it shortens a fetched page without adjusting `replyCount`, so
+  // `unloadedReplies` stays positive after the walk has genuinely ended, and keying off it would leave
+  // a "Show N older replies" button that no longer fetches anything and can no longer widen either.
+  const hasMoreOlder = windowedOlder > 0 || hasOlderReplies;
+  // The COUNT is a best effort for the same reason: past the loaded window we only know what the
+  // on-chain aggregate claims. When that says nothing is left but the cursor says otherwise, say
+  // "older replies" rather than name a number we would then not deliver.
   const olderReplies = windowedOlder + unloadedReplies;
   // Fetch before widening whenever the window would run past what is loaded — so one tap always reveals
   // a full step rather than an empty one, and only fetches when it has to.
@@ -583,7 +592,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
         />
         {/* Reveals OLDER replies above the newest window (see the shownReplies tail-slice), fetching
             the next page off the chain first when the window would run past what is loaded. */}
-        {olderReplies > 0 && (
+        {hasMoreOlder && (
           <button
             type="button"
             className={styles.showMoreReplies}
@@ -592,9 +601,11 @@ export function ThreadView({ rootId }: ThreadViewProps) {
           >
             {loadingOlder
               ? "Loading older replies"
-              : `Show ${Math.min(olderReplies, REPLIES_PAGE)} older ${
-                  olderReplies === 1 ? "reply" : "replies"
-                }`}
+              : olderReplies > 0
+                ? `Show ${Math.min(olderReplies, REPLIES_PAGE)} older ${
+                    olderReplies === 1 ? "reply" : "replies"
+                  }`
+                : "Show older replies"}
           </button>
         )}
         {replies.length === 0 && newReplyCount === 0 ? (
