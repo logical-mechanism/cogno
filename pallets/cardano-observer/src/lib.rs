@@ -97,6 +97,14 @@ use sp_runtime::traits::{Saturating, Zero};
 /// Off-chain node logs only (the on-chain audit trail is the `ObservationApplied` event).
 pub const LOG_TARGET: &str = "runtime::cardano-observer";
 
+/// How many of an account's [`Config::MaxRolesPerAccount`] slots are reserved for NON-SPO badges (dRep,
+/// CC) when its role set does not fit. Mirrors the runtime `RoleApply` sink's own reserve, for the same
+/// reason and at the same size — see `Pallet::bounded_roles`. "At most one of each" is what the reduction
+/// emits today, but nothing in the type enforces that, so the reserve is capped rather than open-ended:
+/// an uncapped non-SPO pass could fill every slot and starve the pools instead, which is the same bug
+/// inverted.
+pub const NON_SPO_RESERVE: usize = 4;
+
 /// The 8-byte inherent identifier under which the node-side `InherentDataProvider` supplies the
 /// observed Cardano vault state.
 pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"cgnoobsv";
@@ -850,12 +858,19 @@ pub mod pallet {
             // chain: it has no db-sync, so the node's IDP returns no data, `create_inherent` abstains on
             // every block, and `LastAppliedAt` never moves past the anchor above. Without this guard every
             // dev run latches the alarm ~5 minutes in and logs a chain-is-broken ERROR that is pure noise,
-            // and every dev chain carries `Stalled = true` in state forever. `LastReference` is `Some` from
-            // the first accepted observation onward, so a real chain arms the alarm the moment it has
-            // anything to lose — and a production chain whose observer never worked from genesis has zero
-            // weight for everybody (nobody can post at all), which needs no alarm to notice.
-            if LastReference::<T>::get().is_none() {
-                return T::DbWeight::get().reads(3);
+            // and every dev chain carries `Stalled = true` in state forever. A real chain arms the alarm
+            // the moment it has anything to lose — and a production chain whose observer never worked from
+            // genesis has zero weight for everybody (nobody can post at all), which needs no alarm.
+            //
+            // ⚠ `LastReference` alone is NO LONGER that test. It used to be `Some` from the first accepted
+            // observation onward, but since spec 215 it advances only on a FULLY DRAINED block. A chain
+            // whose first observation is backlogged — the ordinary bootstrap, and precisely the case where
+            // a stall would matter most — has applied real work, has a real growing gap, and still reads
+            // `None` here. On that chain the old guard disarmed the alarm for as long as the backlog ran.
+            // `PendingChanges` is non-zero exactly in that window, so the two together mean "has ever
+            // applied anything", which is what this guard was always trying to ask.
+            if LastReference::<T>::get().is_none() && PendingChanges::<T>::get() == 0 {
+                return T::DbWeight::get().reads(4);
             }
             Stalled::<T>::put(true);
             log::error!(
@@ -879,18 +894,20 @@ pub mod pallet {
         /// that had since unlocked. A map has no length prefix to overrun, and every row decodes on its
         /// own. What replaces it is the invariant the delta design actually rests on:
         ///
-        /// - **The frontier is not held by a backlog that has already drained.** [`LastReference`] advances
-        ///   only when [`PendingChanges`] is `0`, so a non-zero `PendingChanges` with no observation
-        ///   landing would freeze the frontier indefinitely. The pairing is what makes `LastReference`
-        ///   readable as "applied in full through here".
+        /// - **A backlog can only exist on a chain that has applied an observation.** [`PendingChanges`] is
+        ///   written by nothing but an applied `observe`, which also stamps [`LastAppliedAt`].
         /// - **Every role basis row is within its per-account bound**, i.e. the stored set is one the sink
-        ///   could actually have been handed.
+        ///   could actually have been handed, and none is empty.
         #[cfg(feature = "try-runtime")]
         fn try_state(_: BlockNumberFor<T>) -> Result<(), sp_runtime::TryRuntimeError> {
-            // A backlog implies the chain has observed at least once — the count is only ever written by an
-            // applied `observe`. The inverse (a frontier with no backlog) is the normal state.
+            // ⚠ This deliberately does NOT pair `PendingChanges` with `LastReference`. That looks like the
+            // tighter invariant and it is simply false: `LastReference` advances only on a fully drained
+            // block, so a chain whose FIRST observation is backlogged legitimately has a non-zero backlog
+            // and no frontier at all. That is the ordinary bootstrap, and the design's own acceptance test
+            // asserts it. `LastAppliedAt` is the honest witness — it is stamped by every applied
+            // observation, drained or not.
             ensure!(
-                PendingChanges::<T>::get() == 0 || LastReference::<T>::get().is_some(),
+                PendingChanges::<T>::get() == 0 || !LastAppliedAt::<T>::get().is_zero(),
                 "PendingChanges is non-zero on a chain that has never applied an observation"
             );
             let bound = T::MaxRolesPerAccount::get() as usize;
@@ -1261,6 +1278,52 @@ pub mod pallet {
             }
         }
 
+        /// Fit one account's aggregated role set into [`Config::MaxRolesPerAccount`], RESERVING room for
+        /// the non-SPO badges.
+        ///
+        /// Two passes, not a truncation, and the reason is a bug this repo has already shipped once. The
+        /// canonical `role_entries` order sorts on `RoleSource`, whose discriminants run
+        /// `SpoCalidus(0), SpoOwner(1), DRep(2), Committee(3)` — so EVERY SPO entry for an account precedes
+        /// its dRep and CC ones. A first-N cut therefore keeps pools and throws away exactly the badges a
+        /// user cannot get back, and it does so silently. Spec 211 fixed that in the runtime's `RoleApply`
+        /// sink with a reserved non-SPO prefix; doing it naively HERE would put the same bug one layer
+        /// upstream, where the sink's fix can never see the entries it was meant to protect.
+        ///
+        /// Sizing `MaxRolesPerAccount` above the sink's own bound makes this rare rather than impossible —
+        /// which is not the same thing, so the shape is enforced rather than assumed. The non-SPO pass is
+        /// itself capped at [`NON_SPO_RESERVE`], bounding the trade in both directions: badges can never be
+        /// starved by pools, and pools can never be starved by badges.
+        ///
+        /// Deterministic in both passes (it walks a canonically-ordered slice), so every node builds the
+        /// identical set — which `check_inherent` requires.
+        fn bounded_roles(
+            set: &[(u8, RoleCredential, u128)],
+        ) -> BoundedVec<(u8, RoleCredential, u128), T::MaxRolesPerAccount> {
+            let mut out: BoundedVec<(u8, RoleCredential, u128), T::MaxRolesPerAccount> =
+                BoundedVec::new();
+            if set.len() <= T::MaxRolesPerAccount::get() as usize {
+                // The overwhelmingly common case: everything fits, so nothing has to be chosen between and
+                // the canonical order is preserved exactly.
+                return BoundedVec::truncate_from(set.to_vec());
+            }
+            for spo_pass in [false, true] {
+                for role in set.iter() {
+                    // `kind_index`: 0 = SPO, 1 = dRep, 2 = CC.
+                    let is_spo = role.0 == 0;
+                    if is_spo != spo_pass {
+                        continue;
+                    }
+                    if !spo_pass && out.len() >= NON_SPO_RESERVE {
+                        break; // the reserved prefix is full — leave the rest of the set for pools
+                    }
+                    if out.try_push(*role).is_err() {
+                        return out; // full
+                    }
+                }
+            }
+            out
+        }
+
         /// Derive the bounded DELTA call from the node's FULL snapshot, against the basis in the current
         /// (parent-block) state. THE load-bearing function: both sides of consensus call it — the author
         /// through [`ProvideInherent::create_inherent`], every importer through
@@ -1380,15 +1443,15 @@ pub mod pallet {
                 if set.iter().any(|(k, v, _w)| *k == kind && *v == entry.id) {
                     continue;
                 }
-                if set.len() < T::MaxRolesPerAccount::get() as usize {
-                    set.push((kind, entry.id, entry.weight));
-                }
+                // Collected UNBOUNDED on purpose — the bound is applied below, reserve-aware. Truncating
+                // here would truncate in `role_entries` order, and see `bounded_roles` for why that
+                // silently throws away the wrong badges.
+                set.push((kind, entry.id, entry.weight));
             }
             let mut roles: alloc::vec::Vec<RoleChange<T::AccountId, T::MaxRolesPerAccount>> =
                 alloc::vec::Vec::new();
             for (account, set) in role_desired.iter() {
-                let bounded: BoundedVec<(u8, RoleCredential, u128), T::MaxRolesPerAccount> =
-                    BoundedVec::truncate_from(set.clone());
+                let bounded = Self::bounded_roles(set);
                 if LastObservedRoles::<T>::get(account).as_ref() == Some(&bounded) {
                     continue;
                 }
@@ -1516,6 +1579,48 @@ pub mod pallet {
                 Some(o) => o,
                 None => return Err(InherentError::CannotVerify),
             };
+
+            // ⚠ THE ONE BLOCK WHERE "the same parent state" IS FALSE — accept without verifying.
+            //
+            // Everywhere else, author and importer derive against identical state and agree by
+            // construction. On the block that ENACTS a runtime upgrade they do not, and the asymmetry is
+            // in the SDK rather than here: the author builds through `sc_block_builder::BlockBuilder`,
+            // which calls `Core::initialize_block` and then runs `inherent_extrinsics` on that SAME api
+            // instance — so `create_inherent` sees state AFTER `on_runtime_upgrade`. The importer arrives
+            // through `check_inherents_with_data(client, parent_hash, ..)`, a bare runtime-API call whose
+            // runtime impl is `data.check_extrinsics(&block)`; nothing calls `initialize_block`, so it
+            // sees the raw parent state with no migration applied.
+            //
+            // That is invisible while `check_inherent` compares raw data, which is what it did before
+            // spec 215. It bites the moment it re-derives from STORAGE — and it bites hardest on the very
+            // upgrade this pallet ships: `migrations::v1` seeds the three bases `derive_call` diffs
+            // against, so on that block the author diffs against seeded maps and every importer diffs
+            // against empty ones. The deltas differ, and the difference reads as `ComputeDiverged`, which
+            // is FATAL. Every importing node would reject the upgrade block and the chain would stop.
+            //
+            // `LastRuntimeUpgrade` is written by `initialize_block`, so at the parent state it still holds
+            // the OUTGOING spec_version while this code is the incoming one. A difference therefore means
+            // exactly "this block runs `on_runtime_upgrade`", for ANY migration — including future ones
+            // touching the resolver maps (`AccountOf`, `AccountOfStakeCred`, `RoleCredIndex`) that
+            // `derive_call` also reads, which would fork the same way.
+            //
+            // Skipping the cross-node comparison for one block is safe, and narrower than it looks. It is
+            // the same posture as `CannotVerify` (accept, do not verify), the block still has to be
+            // AUTHORED by a producer whose own read succeeded, and `execute_block` then runs the migration
+            // before applying `observe` — so the delta lands against the state it was derived from. The
+            // Mandatory dispatchable's own enforcement (monotonicity, the stability bound, the skip
+            // bounds, resolution, the basis bookkeeping) runs on every node regardless, and the block
+            // after this one verifies normally again.
+            if frame_system::Pallet::<T>::last_runtime_upgrade_spec_version()
+                != <T as frame_system::Config>::Version::get().spec_version
+            {
+                log::info!(
+                    target: LOG_TARGET,
+                    "runtime-upgrade block: accepting the observation without cross-node verification (the author derived it after on_runtime_upgrade, this node would derive it before). Verification resumes next block.",
+                );
+                return Ok(());
+            }
+
             let Call::observe {
                 reference: exp_reference,
                 changes: exp_changes,

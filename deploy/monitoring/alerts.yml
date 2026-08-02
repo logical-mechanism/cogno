@@ -119,7 +119,7 @@ groups:
         annotations:
           summary: "cogno observer scanned set within 10% of MaxScanned — raise MaxScanned before credentials past it stop being observed"
 
-      - alert: ObserverBacklogNotDraining
+      # - alert: ObserverBacklogNotDraining
         # The on-chain backlog (CardanoObserver::PendingChanges) is the spec-215 replacement for the freeze
         # signal, and it is graded rather than binary. A backlog is NORMAL and self-correcting — a change
         # set larger than MaxChangesPerBlock pages and the next block's diff is the remainder — so this

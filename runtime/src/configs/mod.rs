@@ -1957,11 +1957,15 @@ impl pallet_cardano_observer::Config for Runtime {
     type MaxChangesPerBlock = ConstU32<256>;
     // Max observed roles per ACCOUNT — a per-identity bound, never a population one.
     //
-    // DOUBLE `pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT` (16), and the factor is the point: the
-    // sink truncates with a two-pass reserve that keeps the non-SPO badges, precisely because the canonical
-    // role order puts every SPO entry first and a naive truncation dropped a multi-pool operator's dRep
-    // badge. If THIS bound bit first it would truncate naively, in SPO-first order, and reintroduce that
-    // bug one layer up. Sized so the sink's own reserve-aware truncation is always the one that acts.
+    // DOUBLE `pallet_cardano_roles::MAX_OBSERVED_ROLES_PER_ACCOUNT` (16), so that in practice the sink's
+    // truncation is the only one that acts and the observer hands it a complete set.
+    //
+    // ⚠ Sizing does NOT make the observer's own cut safe, and it is not what makes it safe. An account
+    // with more than 32 role entries reaches this bound however generous it is, and the canonical role
+    // order puts every SPO entry ahead of every dRep/CC one — so a first-N cut here would drop exactly the
+    // badges the sink's two-pass reserve exists to protect, one layer upstream of where that fix lives.
+    // `Pallet::bounded_roles` therefore reserves non-SPO slots itself. This value only decides how often
+    // either reserve has to act.
     type MaxRolesPerAccount = ConstU32<32>;
     // The cap on the per-block credential SCANS that scope the node's db-sync query, and on the read-side
     // observed-account joins. NOT a bound on the observation — see the pallet's `MaxScanned` docs. It kept

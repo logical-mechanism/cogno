@@ -1688,6 +1688,146 @@ fn the_roles_observed_event_reports_change_counts() {
     });
 }
 
+#[test]
+fn check_inherent_accepts_without_verifying_on_a_runtime_upgrade_block() {
+    new_test_ext().execute_with(|| {
+        // THE one block where "author and importer derive against the same state" is false, and the
+        // reason is in the SDK rather than here: the author's `create_inherent` runs on an api instance
+        // that `initialize_block` (and therefore `on_runtime_upgrade`) has already mutated, while the
+        // importer's `check_inherents` is a bare runtime-API call at the parent hash with no
+        // `initialize_block` at all. A migration that writes what `derive_call` reads — which is exactly
+        // what this spec ships — makes the two sides derive different deltas on the enactment block, and
+        // that difference is FATAL. Every importing node would reject the upgrade and the chain would stop.
+        bind(A, ALICE);
+        bind(B, BOB);
+        let local = snap(1000, &[(A, 200_000_000)]);
+
+        // A call that does NOT match what this node would derive — standing in for the author's
+        // post-migration delta.
+        let author = crate::Call::<Test>::observe {
+            reference: cref(1000),
+            inputs_commitment: COMMIT,
+            changes: BoundedVec::truncate_from(vec![(A, Some(200_000_000)), (B, None)]),
+            stake_changes: BoundedVec::new(),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        };
+        let mut id = InherentData::new();
+        put_obs(&mut id, &local);
+
+        // Normal block: the disagreement is fatal, as it must be.
+        assert!(matches!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&author, &id),
+            Err(InherentError::ComputeDiverged)
+        ));
+
+        // Upgrade block: `LastRuntimeUpgrade` at the parent still holds the OUTGOING spec_version while
+        // this code is the incoming one, which is precisely "this block runs on_runtime_upgrade".
+        // Verification is skipped for that one block rather than forking the chain.
+        frame_system::LastRuntimeUpgrade::<Test>::put(frame_system::LastRuntimeUpgradeInfo {
+            spec_version: 1.into(),
+            spec_name: "cogno-chain-runtime".into(),
+        });
+        assert!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&author, &id).is_ok(),
+            "an upgrade block must be accepted without cross-node verification, not rejected",
+        );
+
+        // And only for that block: once the stored version matches the running one, verification resumes.
+        frame_system::LastRuntimeUpgrade::<Test>::kill();
+        assert!(matches!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&author, &id),
+            Err(InherentError::ComputeDiverged)
+        ));
+    });
+}
+
+#[test]
+fn the_stall_alarm_arms_on_a_chain_whose_first_observation_was_backlogged() {
+    new_test_ext().execute_with(|| {
+        // `LastReference` used to mean "has ever applied an observation", and the alarm's arming guard
+        // still read it that way. Since it now advances only on a fully DRAINED block, a chain whose first
+        // observation is backlogged — the ordinary bootstrap, and the case where a stall matters most —
+        // has applied real work and still reads `None`. The old guard disarmed the alarm for exactly as
+        // long as the backlog ran.
+        System::set_block_number(1);
+        let n = MAX_CHANGES_PER_BLOCK + 10;
+        let mut items = Vec::new();
+        for i in 0..n {
+            bind(nth_beacon(i), nth_account(i));
+            items.push((nth_beacon(i), 200_000_000u128));
+        }
+        assert!(observe_snapshot(&snap(1000, &items)) > 0, "backlogged");
+        assert!(
+            LastReference::<Test>::get().is_none(),
+            "the frontier is held while the backlog drains",
+        );
+        assert!(PendingChanges::<Test>::get() > 0);
+
+        // The observer now stops entirely (db-sync down). This IS a stall and it must be reported.
+        roll_to(2 + STALL_AFTER);
+        assert!(
+            crate::Stalled::<Test>::get(),
+            "a chain that applied a backlogged page HAS started, so the alarm must arm",
+        );
+        assert_eq!(stalled_events(), 1);
+    });
+}
+
+#[test]
+fn a_full_role_set_reserves_room_for_the_non_spo_badges() {
+    new_test_ext().execute_with(|| {
+        // The spec-211 bug, one layer up. The canonical role order sorts on `RoleSource`, whose
+        // discriminants put every SPO entry (`SpoCalidus` 0, `SpoOwner` 1) ahead of every dRep (2) and CC
+        // (3) one — so a first-N cut keeps pools and silently throws away the badge a user cannot get back.
+        // The runtime's `RoleApply` sink was rewritten with a reserved non-SPO prefix for exactly this, and
+        // truncating naively HERE would put the bug upstream of that fix, where it can never see the
+        // dropped entries.
+        enforce();
+        bind_role(CAL, ALICE);
+        bind_role(STAKE_OWNER, ALICE);
+        let cap = 32usize; // MaxRolesPerAccount in the mock
+
+        // One account with far more SPO pools than fit, plus a single dRep badge LAST in canonical order.
+        let mut entries = Vec::new();
+        for i in 0..(cap + 8) {
+            let mut pool = [0u8; 28];
+            pool[..4].copy_from_slice(&(i as u32).to_be_bytes());
+            entries.push((RoleSource::SpoCalidus, CAL, pool, 1_000u128));
+        }
+        entries.push((RoleSource::DRep, STAKE_OWNER, [0xFE; 28], 7_000_000u128));
+
+        let call = derive(&snap_roles(MAX_REFERENCE - 5, &roles_w(&entries)));
+        let set = match &call {
+            crate::Call::observe { role_changes, .. } => {
+                assert_eq!(role_changes.len(), 1);
+                role_changes[0].roles.clone().expect("a set, not a clear")
+            }
+            _ => panic!("expected observe call"),
+        };
+        assert_eq!(
+            set.len(),
+            cap,
+            "the set is filled to the bound, not past it"
+        );
+        assert!(
+            set.iter()
+                .any(|(kind, id, _w)| *kind == 1 && *id == [0xFE; 28]),
+            "the dRep badge must survive a set of pools that overruns the bound",
+        );
+        // And pools still get the rest — the reserve is capped, so badges cannot starve them either.
+        assert_eq!(
+            set.iter().filter(|(kind, _, _)| *kind == 0).count(),
+            cap - 1,
+        );
+
+        assert_ok!(dispatch(call));
+        assert!(observed_roles_full_of(ALICE)
+            .iter()
+            .any(|(kind, id, _w)| *kind == 1 && *id == [0xFE; 28]));
+    });
+}
+
 // ── storage migration v0 → v1 ──────────────────────────────────────────────────────────────────────
 
 mod migration {
