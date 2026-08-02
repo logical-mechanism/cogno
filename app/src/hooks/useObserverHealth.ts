@@ -60,10 +60,38 @@ function readStallAfter(api: CognoApi): Promise<number> {
 /** The three WATCHED reads, as one immutable value. `null` is "not resolved yet", never "zero". */
 type Watched = Pick<ObserverLiveness, "latched" | "lastAppliedAt" | "everObserved">;
 
-const UNRESOLVED: Watched = { latched: null, lastAppliedAt: null, everObserved: null };
+/**
+ * The raw watched state. `hasReference` is the `LastReference` read on its own; `everObserved` is DERIVED
+ * from it plus `lastAppliedAt` (see the subscription below for why the frontier alone no longer answers
+ * the question) and is what consumers read.
+ */
+type RawWatched = Watched & { hasReference: boolean | null };
+
+const UNRESOLVED: RawWatched = {
+  latched: null,
+  lastAppliedAt: null,
+  everObserved: null,
+  hasReference: null,
+};
+
+/**
+ * "Has this chain ever applied an observation?" — `true` if the frontier moved OR a block ever stamped
+ * the applied-at clock (block 0 is genesis and carries no extrinsics, so a non-zero clock is always a
+ * real observation). Stays `null` while both reads are unresolved, because "inconclusive" and "never"
+ * must not collapse: reporting "never" on a read failure would hide a live stall.
+ */
+export function deriveEverObserved(raw: {
+  hasReference: boolean | null;
+  lastAppliedAt: number | null;
+}): boolean | null {
+  if (raw.hasReference === true) return true;
+  if (raw.lastAppliedAt !== null && raw.lastAppliedAt > 0) return true;
+  if (raw.hasReference === null || raw.lastAppliedAt === null) return null;
+  return false;
+}
 
 interface SharedWatch {
-  snapshot: Watched;
+  snapshot: RawWatched;
   listeners: Set<(w: Watched) => void>;
   subs: { unsubscribe: () => void }[];
 }
@@ -84,8 +112,9 @@ function subscribeWatched(api: CognoApi, listener: (w: Watched) => void): () => 
   let entry = watchCache.get(api);
   if (!entry) {
     const created: SharedWatch = { snapshot: UNRESOLVED, listeners: new Set(), subs: [] };
-    const patch = (next: Partial<Watched>) => {
+    const patch = (next: Partial<RawWatched>) => {
       const merged = { ...created.snapshot, ...next };
+      merged.everObserved = deriveEverObserved(merged);
       if (
         merged.latched === created.snapshot.latched &&
         merged.lastAppliedAt === created.snapshot.lastAppliedAt &&
@@ -111,9 +140,16 @@ function subscribeWatched(api: CognoApi, listener: (w: Watched) => void): () => 
       // Has this chain EVER observed? LastReference is an OptionQuery, `Some` from the first accepted
       // observation onward. Only the BOOLEAN is kept, never the record: a fresh object per block would
       // re-render every consumer on every block for a value that changes once in the life of a chain.
+      //
+      // Since spec 215 it is NOT the whole test. LastReference advances only on a block that carried its
+      // whole change set, so a chain whose first observation is BACKLOGGED has applied real pages, is
+      // crediting real weight, and still reads `None` here — the ordinary bootstrap, and exactly the
+      // window in which "not started" is the most misleading thing to render. LastAppliedAt is stamped by
+      // every applied observation, drained or not, so the two together are the honest test. The pallet
+      // pairs them the same way in its own stall-alarm guard.
       q.LastReference.watchValue({ at: "best" }).subscribe(
-        ({ value: ref }) => patch({ everObserved: !!ref }),
-        () => patch({ everObserved: null }), // inconclusive, NOT "never" — that would misreport a stall
+        ({ value: ref }) => patch({ hasReference: !!ref }),
+        () => patch({ hasReference: null }), // inconclusive, NOT "never" — that would misreport a stall
       ),
     );
     watchCache.set(api, created);
