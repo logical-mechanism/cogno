@@ -27,12 +27,15 @@ blockspace and swaps fees for a capacity meter.
   curl -sH 'content-type: application/json' \
     -d '{"id":1,"jsonrpc":"2.0","method":"state_getRuntimeVersion"}' https://cogno.forum/rpc \
     | jq -c '.result | {specName, specVersion, transactionVersion}'
-  # {"specName":"cogno-chain-runtime","specVersion":203,"transactionVersion":3}
+  # {"specName":"cogno-chain-runtime","specVersion":214,"transactionVersion":7}
   ```
 
 - **Read the chain yourself.** Sync your own tracking node and point the app at it, if you'd rather not
   read through the operator's RPC: [docs/RELAY-NODE.md](docs/RELAY-NODE.md) →
   [docs/LOCAL-FRONTEND.md](docs/LOCAL-FRONTEND.md).
+- **Build your own frontend.** The runtime metadata is committed, so you can generate a typed client
+  without running a node, and every read is one stateless HTTP call:
+  [docs/CLIENT-INTEGRATION.md](docs/CLIENT-INTEGRATION.md).
 - **Run your own network.** [docs/PREPROD-BRINGUP.md](docs/PREPROD-BRINGUP.md).
 - **Understand how it works.** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); why posting is feeless and
   what a lock buys you: [docs/ECONOMICS.md](docs/ECONOMICS.md).
