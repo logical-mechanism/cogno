@@ -38,6 +38,51 @@ import type { CognoPost, ThreadView, Ss58 } from "@/lib/types";
 /** How many older replies one "Show older" fetch pulls off the chain. */
 const OLDER_REPLIES_PAGE = 50;
 
+/**
+ * The fetched older-replies window: `posts` covers reply seqs `[cursor, anchor)`, chronologically, and
+ * the thread's own newest page covers `[anchor, replyCount)`. `null` means seq 0 on either side —
+ * "reaches the conversation's first reply".
+ */
+export interface OlderReplies {
+  posts: CognoPost[];
+  /** Exclusive seq the next older page starts below; null once the first reply is loaded. */
+  cursor: bigint | null;
+  /** The `repliesCursor` this window was built against — where the newest page currently starts. */
+  anchor: bigint | null;
+}
+
+/**
+ * Re-anchor the older-replies window against a freshly-read thread, keeping the two halves ADJACENT.
+ *
+ * The runtime computes `Thread.repliesCursor` as `replyCount - MAX_THREAD_REPLIES`, so on a thread past
+ * 512 replies it advances by ONE PER NEW REPLY. Each advance slides the newest page up the spine and
+ * pushes its oldest entries out of it; those replies are in neither half unless they are moved here, and
+ * a hole in the middle of a conversation is invisible to the reader.
+ *
+ * They need no fetch: the replies that fell out are exactly the oldest `to - from` entries of
+ * `prevReplies`, the page being replaced. Carry them.
+ *
+ * Returns the SAME window object when nothing slid, which is every thread under one page (both cursors
+ * stay null) — so the common case causes no re-render.
+ */
+export function reanchorReplyWindow(
+  win: OlderReplies,
+  freshCursor: bigint | null,
+  prevReplies: CognoPost[] | null,
+): OlderReplies {
+  if (win.anchor === freshCursor) return win;
+  const from = win.anchor ?? 0n;
+  const to = freshCursor ?? 0n;
+  const carried = to > from ? Number(to - from) : 0;
+  if (carried > 0 && prevReplies && prevReplies.length >= carried) {
+    return { ...win, posts: [...win.posts, ...prevReplies.slice(0, carried)], anchor: freshCursor };
+  }
+  // Nothing to carry (a first load), or the previous page cannot cover the gap (the count moved by more
+  // than a whole page between two reads). Re-anchor EMPTY: a window that visibly starts again is honest,
+  // where one spliced across a hole reads as a complete conversation and is not.
+  return { posts: [], cursor: freshCursor, anchor: freshCursor };
+}
+
 export interface UseThread {
   thread: ThreadView | null;
   /**
@@ -99,21 +144,24 @@ export function useThread(
   // Replies OLDER than `base.replies`, fetched a page at a time and kept chronological (oldest first).
   //
   // `cursor` is the exclusive seq the next page starts below (null ⇒ the conversation's first reply is
-  // loaded). `anchor` is the `base.repliesCursor` this window was built against, and it is what keeps
-  // the two halves CONTIGUOUS: `base.replies` is the newest page, so as new replies land that window
-  // slides UP the spine, and if it slides past where this window starts the replies in between would be
-  // in neither list — a silent gap in the middle of a conversation. A base whose cursor no longer
-  // matches the anchor therefore drops these pages and re-anchors, which is visible and correct rather
-  // than invisible and wrong. It takes a full page (512) of new replies during one sitting to happen.
+  // loaded). `anchor` is the `base.repliesCursor` this window was built against, so these posts cover
+  // seqs `[cursor, anchor)` and `base.replies` covers `[anchor, replyCount)`. Keeping those two ranges
+  // ADJACENT is the whole job: `base.replies` is the newest page, so it slides UP the spine as replies
+  // land, and anything it slides past is in neither list — a silent hole in the middle of a
+  // conversation.
+  //
+  // The cursor moves by ONE PER REPLY, not once per page: the runtime computes it as
+  // `replyCount - MAX_THREAD_REPLIES`, so on any thread past 512 replies every single new reply
+  // re-anchors. `reanchorOlder` therefore CARRIES the replies that fell out of the base window into
+  // this list rather than dropping the list and starting over — they are exactly the oldest entries of
+  // the base page we are replacing, so no fetch is needed to recover them. (Dropping was the first cut,
+  // written against the belief that a re-anchor took 512 new replies. It takes one, which on a busy
+  // thread meant the older half could never be assembled at all.)
   //
   // These pages are NOT re-read per block: the live tick is about the newest end of a conversation, and
   // re-reading every page a reader has walked back through would cost a state_call per page every ~6s
   // to move tallies nobody is looking at.
-  const [older, setOlder] = useState<{
-    posts: CognoPost[];
-    cursor: bigint | null;
-    anchor: bigint | null;
-  }>({ posts: [], cursor: null, anchor: null });
+  const [older, setOlder] = useState<OlderReplies>({ posts: [], cursor: null, anchor: null });
   const [loadingOlder, setLoadingOlder] = useState(false);
   const olderRef = useRef(older);
   olderRef.current = older;
@@ -172,23 +220,27 @@ export function useThread(
     });
   }, []);
 
-  // Keep the older-replies window anchored to the page `base` actually returned. Same reference back
-  // when the anchor is unchanged (the overwhelmingly common case, including every thread under one
-  // page, where both cursors are null) → no re-render.
-  const reanchorOlder = useCallback((t: ThreadView) => {
-    setOlder((prev) =>
-      prev.anchor === t.repliesCursor
-        ? prev
-        : { posts: [], cursor: t.repliesCursor, anchor: t.repliesCursor },
-    );
+  // Keep the older-replies window adjacent to the page `base` actually returned. Pure, and exported, so
+  // the carry logic is directly testable: `vitest` runs in a `node` environment here, so no hook can be
+  // rendered and this is the only way to pin behaviour that only appears past 512 replies.
+  const reanchorOlder = useCallback((t: ThreadView, prev: ThreadView | null) => {
+    setOlder((win) => reanchorReplyWindow(win, t.repliesCursor, prev?.replies ?? null));
   }, []);
 
   // Apply a freshly-read thread: chain truth for the focal/ancestors/tallies, plus own-reply promotion.
+  //
+  // `baseRef` is advanced HERE rather than left to the render-time assignment, so it names the page
+  // actually replaced even when two reads settle in the same tick (a `confirmReply` re-read landing
+  // beside a best-block refetch — `refetching` only stops refetches stacking on each other). Reading a
+  // render-stale ref there would have handed the re-anchor a page from the wrong position and carried
+  // the wrong replies across.
   const applyFresh = useCallback(
     (t: ThreadView) => {
+      const prev = baseRef.current;
+      baseRef.current = t;
       setBase(t);
       promoteOwn(t.replies);
-      reanchorOlder(t);
+      reanchorOlder(t, prev);
     },
     [promoteOwn, reanchorOlder],
   );
@@ -200,6 +252,7 @@ export function useThread(
       seeded.current = false;
       refetching.current = false;
       setBase(null);
+      baseRef.current = null; // kept in step with `base` — the re-anchor reads it as the previous page
       setOlder({ posts: [], cursor: null, anchor: null });
       // Drop any stale error when the target is DESELECTED (rootId null → e.g. a reply/quote modal
       // closed) so it can't survive to the next target: ModalRouteHost degrades to a plain composer on
@@ -224,6 +277,7 @@ export function useThread(
       refetching.current = false;
       seededRoot.current = null;
       setBase(null);
+      baseRef.current = null;
       // The older-replies window belongs to the focal we are leaving — its cursor is a seq in THAT
       // post's reply spine and means nothing under another one.
       setOlder({ posts: [], cursor: null, anchor: null });
@@ -240,8 +294,11 @@ export function useThread(
           // First successful load of this root: reveal every existing reply. Later same-root re-loads
           // keep the pill buffer intact (only `flushReplies` reveals what arrived since).
           setBase(t);
+          baseRef.current = t;
           setShownIds(new Set(t.replies.map((r) => String(r.id))));
-          reanchorOlder(t);
+          // A first load of this root has nothing to carry — the window is empty by construction here
+          // (both the deselect and the nav branch above clear it), so this only adopts the anchor.
+          reanchorOlder(t, null);
           seededRoot.current = rootId;
         } else {
           applyFresh(t);

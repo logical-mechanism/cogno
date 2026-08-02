@@ -30,8 +30,8 @@ scoped-out testnet choices, not bugs.
 | Path | What |
 |---|---|
 | `node/` | `cogno-chain-node` (Aura + GRANDPA). `src/consensus/` = a custom proposer (reimplemented Apache-2.0 partner-chains `PartnerChainsProposerFactory` + `InherentDigest`) that seals the stable Cardano block anchor into each header as a `cobs` PreRuntime digest. Operator subcommands: `run`, `gen-chainspec`, `export-chain-spec`, `key insert`/`inspect-node-key` (session secret by file; p2p identity); a one-shot db-sync `config_check` runs automatically at boot |
-| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 215 / tx_version 8**) |
-| `pallets/` | `microblog` (10, storage v10; call_index 1 `delete_post` and 6 `repost` both permanently vacant), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; storage v1, a DELTA inherent paged at `MaxChangesPerBlock` 256/axis with an on-chain `PendingChanges` backlog, benchmarked `observe`, on-chain stall alarm; `MaxScanned` 1024 caps the credential SCANS only, never the observation), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
+| `runtime/` | `cogno-chain-runtime` (`#[frame_support::runtime]`, **spec_version 216 / tx_version 8**) |
+| `pallets/` | `microblog` (10, storage v11; call_index 1 `delete_post` and 6 `repost` both permanently vacant; replies are PAGED off the seq-keyed `RepliesByParentSeq` spine since spec 216 — `thread` returns the newest page plus a cursor, `replies_page` serves the rest), `talk-stake` (9, call-less observer-written ledger), `cogno-gate` (8, CIP-8 1:1 identity), `governed-upgrade` (7), `validator-set` (14), `cardano-observer` (16, enforcing; storage v1, a DELTA inherent paged at `MaxChangesPerBlock` 256/axis with an on-chain `PendingChanges` backlog, benchmarked `observe`, on-chain stall alarm; `MaxScanned` 1024 caps the credential SCANS only, never the observation), `profile` (17), `governance-fuel` (18, committee-administered REGENERATING admin-fuel budget — `set_allowance`/`revoke` + an `on_initialize` regen hook; non-transferable, mint-on-demand), `cardano-roles` (19, verifiable role tags: a bare-unsigned CIP-8 `claim_role_signed` + feeless `unclaim_role`, over a call-less observer-written `ObservedRoles` ledger; only `revoke_role` is committee-gated), `tx-pause` (20, upstream FRAME — the committee break-glass wired into `BaseCallFilter`) |
 | `cli/` | `cogno-chain-cli` — the all-Rust admin CLI (typed `RuntimeCall` only, keys-by-file, committee lifecycle, bare identity binds, `query state`/`weight`/`authors` over RPC) |
 | `cogno-dbsync/` | shared crate: the deterministic db-sync reader + Cardano-state reduction (the node's inherent writer + its boot `config_check` probe read it identically) |
 | `cogno-keyfile/` | shared crate: the cardano-cli-style JSON key envelope |
@@ -126,7 +126,7 @@ an agent needs:
   (Anchor, removed) are permanently vacant; **7** is GovernedUpgrade. Adding a pallet uses a new index
   (next free is **21**; 20 is TxPause); gaps are fine.
 - **Spec-bump discipline.** Encoding-affecting runtime changes (calls/storage/events/extensions) bump
-  `spec_version` (currently **215**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
+  `spec_version` (currently **216**); after a bump, regenerate PAPI descriptors against a LOCAL dev node
   (never the live chain):
   `rm app/.papi/descriptors/generated.json && (cd app && npx papi add cogno -w ws://127.0.0.1:9944)`.
   Non-encoding changes (bounds, logging, tests) must **not** bump it. `transaction_version` moves ONLY on
@@ -146,7 +146,9 @@ an agent needs:
   `System::Version`) — read what the script says moved before re-snapshotting: one byte is a plain spec
   bump, more than one means a shape a client can see actually changed. Spec 212 retired
   microblog error 2 (`TooManyPosts`) with `MaxPostsPerAuthor` — index 2 is now a permanent gap too.
-  Spec 215 appends observer event 6 (`ObservationBacklogged`).
+  Spec 215 appends observer event 6 (`ObservationBacklogged`). Spec 216 adds no variant: it appends a
+  FIELD to the `Thread` read DTO (`replies_next_cursor`), which is a runtime-API return shape rather
+  than a pinned enum, so the same rule does not apply — append at the END and never reorder.
 - **A storage migration must be wired into `SingleBlockMigrations`** (runtime/src/configs/mod.rs) or it
   never runs: the on-chain `StorageVersion` stays put while the code declares the new one, and
   `post_upgrade` never fires. Before enacting, run the `try-runtime` dry-run against live state that
