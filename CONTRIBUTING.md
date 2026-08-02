@@ -65,29 +65,40 @@ cargo build --release --features runtime-benchmarks   # ✗ panics in a dependen
 `--features runtime-benchmarks`. That crate only exists under that feature, so it fails to find itself
 and panics with `Failed to find entry for package frame-storage-access-test-runtime`.
 
-We never need that crate's wasm (it backs `benchmark storage`, not `benchmark pallet`). So build the
-benchmarks RUNTIME on its own — `frame-benchmarking-cli` is not in the runtime crate's dependency
-graph — then build the node with the wasm step skipped, and point the CLI at the runtime blob:
+We never need that crate's wasm (it backs `benchmark storage`, not `benchmark pallet`). wasm-builder
+takes a PER-CRATE skip variable — `SKIP_<CRATE_NAME>_WASM_BUILD` — so skip exactly the crate that
+panics and let everything else build normally:
 
 ```bash
 # 1. the benchmarks runtime (no frame-benchmarking-cli in the graph, so no panic)
 cargo build --release -p cogno-chain-runtime --features runtime-benchmarks
 cp target/release/wbuild/cogno-chain-runtime/cogno_chain_runtime.compact.compressed.wasm /tmp/bench.wasm
 
-# 2. the node, for its `benchmark` subcommand only — SKIP_WASM_BUILD dodges the broken build script
-SKIP_WASM_BUILD=1 cargo build --release --features runtime-benchmarks
+# 2. the node, for its `benchmark` subcommand only
+SKIP_FRAME_STORAGE_ACCESS_TEST_RUNTIME_WASM_BUILD=1 cargo build --release --features runtime-benchmarks
 
 # 3. measure, against the blob from step 1 rather than an embedded runtime
 ./target/release/cogno-chain-node benchmark pallet \
-  --runtime /tmp/bench.wasm --genesis-builder=runtime \
+  --runtime /tmp/bench.wasm --genesis-builder=runtime --genesis-builder-preset development \
   --pallet pallet_microblog --extrinsic '*' \
-  --steps 20 --repeat 5 --wasm-execution compiled \
+  --steps 50 --repeat 20 --wasm-execution compiled \
   --template _sdk/substrate/.maintain/frame-weight-template.hbs \
   --output pallets/microblog/src/weights.rs
 ```
 
-Step 2 leaves a stub where the runtime wasm goes, so run a plain `cargo build --release` afterwards
-before you use `target/release/wbuild/…` for anything else.
+**Do not use the blanket `SKIP_WASM_BUILD=1` for step 2**, which is what this recipe used to say. It
+skips *our* runtime's wasm build too, so `WASM_BINARY` compiles to `None` — and the node's `load_spec`
+builds every one of its chain specs from `WASM_BINARY`. `create_runner` resolves a spec before the
+benchmark command ever runs, so step 3 dies on `Error: Input("Development wasm not available")`, and
+`--chain` cannot rescue it because clap declares it mutually exclusive with `--runtime`. (It appears to
+work if a wasm from a previous build happens to be sitting in `target/release/wbuild/`, which is why
+the recipe survived: wasm-builder only substitutes the `None` stub when no binary exists yet.)
+
+Step 3 needs `--genesis-builder-preset development` explicitly; the CLI does not default to it.
+
+Both the runtime and the node are left built with `--features runtime-benchmarks` afterwards, so run a
+plain `cargo build --release` before using `target/release/…` for anything else — including
+`scripts/check-metadata.sh`, which gates against whichever node binary is newest.
 
 Two things to watch. The harness dispatches the extrinsic in the block AFTER your `#[benchmark]`
 setup runs, so setup that computes a block-number bound must not sit exactly on it — `create_poll`
@@ -139,7 +150,7 @@ check). Please make sure the relevant gates pass locally before opening a PR.
   each other's output.
 - **Pallet indices and `transaction_version` are on-wire contracts — never renumber.** Indices 6
   (Sudo, removed) and 12 (Anchor, removed) are permanently vacant; adding a pallet uses a new index.
-- **Spec-bump discipline.** Bump `spec_version` (currently **216**) *only* for encoding-affecting
+- **Spec-bump discipline.** Bump `spec_version` (currently **217**) *only* for encoding-affecting
   runtime changes (calls/storage/events/extensions); after a bump, regenerate the frontend's PAPI
   descriptors. Non-encoding changes (bounds, logging, docs, tests) must **not** bump it.
 - **Cardano is read exclusively through db-sync** via the `cogno-dbsync` crate, and its byte-identity

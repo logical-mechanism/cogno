@@ -188,7 +188,7 @@ against a block.
 
 One honest scoping note: capacity disciplines **users**, not the operator. On a single-operator PoA
 chain the operator builds the blocks and could include their own over-budget posts. This is a live,
-operator-run preprod testnet (spec_version 212 / transaction_version 7), not a
+operator-run preprod testnet (spec_version 217 / transaction_version 8), not a
 trustless network — consensus trust, not capacity, is the real security boundary. Capacity's job is to
 rate-limit everyone else, exactly as fees once did.
 

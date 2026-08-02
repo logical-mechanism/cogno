@@ -98,10 +98,29 @@ top-level creation site (`post_message` with `parent == None`, `quote_post`, `cr
   Its replies are a PAGE (the newest `MAX_THREAD_REPLIES`, 512) with a cursor, not a truncation.
 - `replies_page` needs no scan budget: the spine holds only that parent's replies and is dense, so every
   slot it touches is returned. An out-of-range `before_seq` is clamped to `ReplyCount`, never trusted.
+- The two PEOPLE readers, `search_people` and `who_to_follow`, spend a separate budget: `MAX_PEOPLE_SCAN`
+  (10,000 rows EXAMINED per call, in `runtime/src/apis.rs`). They differ from every reader above in that
+  there is no seq-ordered index over people to page — `Profiles` and `ByAuthorCount` are both
+  `Blake2_128Concat` maps — so the walk order is hash order, arbitrary but stable within a block, and the
+  cursor is the last account EXAMINED, resumed exclusively through `iter_from_key`.
+
+  Since spec 217 that budget is a PAGE, not a truncation. Both reads filter inside it (the display-name
+  match; the bound-account gate), and before the cursor existed a bound account whose address hashed past
+  position 10,000 was not mis-ranked, it was permanently INVISIBLE — its exact display name came back as
+  "No people found", with no signal to the caller that anything had been cut. Both now return
+  `PeoplePage { people, next_cursor }` under the same short-page-plus-cursor contract as the feeds.
+
+  Two honest limits remain. Ranking is **per page**: the follower-count sort runs over what one page
+  examined, so a caller that wants the best N overall must chase the cursor and rank the union itself
+  (`nodeSearchPeople` does). A globally-correct top-N needs a ranked index, which is separate work. And
+  the budget value is deliberately not raised — `Profiles::iter()` full-decodes each ~1 KB profile before
+  the bound-account gate can reject it, so 10,000 already authorises megabytes of decode per anonymous
+  call; reach is what the cursor buys, not a bigger number.
 - Cursors are **opaque and endpoint-scoped**: a `next_cursor` from one method is only valid passed back to
   the *same* method. `feed_page` / `following_feed_page` page a `TopLevelPosts` seq; `replies_page` pages
-  a per-parent reply seq; `author_feed_page` pages a post id. Never cross-wire them. The one deliberate
-  crossing is `Thread::replies_next_cursor`, which exists to seed `replies_page`.
+  a per-parent reply seq; `author_feed_page` pages a post id; `search_people` / `who_to_follow` page an
+  ACCOUNT. Never cross-wire them. The one deliberate crossing is `Thread::replies_next_cursor`, which
+  exists to seed `replies_page`.
 - Runtime APIs are off-chain `state_call`s under a node-side time/memory budget — not gas-metered — so the
   bounds above are what keep each call tight.
 
