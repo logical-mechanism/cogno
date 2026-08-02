@@ -16,7 +16,6 @@ const { DENIED_AUTHOR, DENIED_POST } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/config/denylist", () => ({
-  DENYLIST_EMPTY: false,
   isDeniedAuthor: (a: string | null | undefined) => a === DENIED_AUTHOR,
   isDeniedPost: (id: bigint | string | null | undefined) => String(id) === String(DENIED_POST),
   isDenied: (p: { id: bigint; author: string }) =>

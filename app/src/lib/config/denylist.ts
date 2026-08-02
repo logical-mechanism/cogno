@@ -21,25 +21,43 @@
 // That is a real thing to be able to do, it is what a takedown notice can actually compel, and it is
 // meaningfully less than "removed".
 //
-// SHIPPED EMPTY. Both sets are empty here and in the build, so the decorator short-circuits to the
-// identity function and the whole mechanism costs nothing until somebody deliberately populates it.
+// SHIPPED EMPTY. Both sets are empty here and in the build, and no runtime file exists until an
+// operator creates one, so the whole mechanism is inert until somebody deliberately populates it.
 //
-// HOW TO POPULATE
+// HOW TO POPULATE — TWO SOURCES, UNIONED
 //
-// Two build-time env vars, comma-separated, read at `next build` and inlined into the export:
+// 1. A RUNTIME FILE, /denylist.json, fetched once at boot. This is the fast lever, and the one to
+//    reach for when a notice arrives:
 //
-//   NEXT_PUBLIC_DENY_AUTHORS=5Grw…utQY,5FHn…9xKp     ss58 addresses (prefix 42)
-//   NEXT_PUBLIC_DENY_POSTS=1234,5678                  post ids, decimal
+//      {"authors": ["5Grw…utQY"], "posts": ["1234", "5678"]}
+//
+//    nginx maps it to /etc/cogno/denylist.json — OUTSIDE the web root, because `deploy-app` is
+//    `rsync -a --delete out/ /var/www/cogno/` and anything under the root is reset or deleted by the
+//    next deploy. Editing it takes effect on the next page load. No rebuild, no rsync, no deploy.
+//
+// 2. TWO BUILD-TIME ENV VARS, comma-separated, read at `next build` and inlined into the export:
+//
+//      NEXT_PUBLIC_DENY_AUTHORS=5Grw…utQY,5FHn…9xKp     ss58 addresses (prefix 42)
+//      NEXT_PUBLIC_DENY_POSTS=1234,5678                  post ids, decimal
+//
+//    This is the durable half. It is baked into the bundle, so unlike the file it cannot fail to
+//    load, cannot 404, and cannot be forgotten when someone rebuilds the server from scratch. A
+//    permanent delisting belongs here; the file is what you use in the twenty minutes before you get
+//    round to a deploy.
+//
+// The two are UNIONED, never merged-with-precedence: removing an entry from the file does not
+// un-deny something the env var also names. That is deliberate — the failure worth designing against
+// is an entry quietly ceasing to apply, not one applying twice.
 //
 // Denying an AUTHOR omits everything of theirs the app reads: their posts, replies, quotes, their
 // profile, their rows in search and who-to-follow, and their mentions inside other people's posts.
-// Denying a POST omits that one item. Both take effect on the next deploy of the static export, and
-// both are reversible by removing the entry and deploying again.
+// Denying a POST omits that one item. Both are reversible by removing the entry.
 //
-// THE LIST IS PUBLIC. A static export inlines it into the JavaScript bundle, so anyone can read it.
-// That is the right trade for this project: a secret list of what an operator has quietly stopped
-// serving is worse than a visible one, and the chain makes the underlying content trivially findable
-// anyway. Do not treat an entry here as confidential.
+// THE LIST IS PUBLIC, from both sources. A static export inlines the env vars into the JavaScript
+// bundle, and /denylist.json is served to anyone who asks for it. That is the right trade for this
+// project: a secret list of what an operator has quietly stopped serving is worse than a visible one,
+// and the chain makes the underlying content trivially findable anyway. Do not treat an entry as
+// confidential, and do not put a reason, a reporter or a case number in the file.
 //
 // NOT device-local state. `createViewerScopedStore` and its facades exist for a VIEWER's own choices
 // (mutes, blocks, hidden posts, lists), bucketed per account so a shared device does not leak one
@@ -124,7 +142,15 @@ function ss58Problem(entry: string): string | null {
 const ENV_DENY_AUTHORS = process.env.NEXT_PUBLIC_DENY_AUTHORS || "";
 const ENV_DENY_POSTS = process.env.NEXT_PUBLIC_DENY_POSTS || "";
 
-/** ss58 addresses this deployment declines to serve. EMPTY as shipped. */
+/**
+ * ss58 addresses this deployment declines to serve. EMPTY as shipped.
+ *
+ * MUTATED IN PLACE by `loadServeDenylist` when the runtime file lands — the Set identity is stable,
+ * so every module that captured this binding at import time sees the additions without a re-import.
+ * That is why it is a live `Set` behind a `ReadonlySet` type rather than a frozen snapshot: a
+ * rebuilt-on-load collection would leave stale copies denying nothing in whichever modules imported
+ * first, which is the silent-reopen failure this whole module exists to avoid.
+ */
 export const DENIED_AUTHORS: ReadonlySet<string> = new Set(
   validated(parseList(ENV_DENY_AUTHORS), SS58_SHAPE, "author", ss58Problem),
 );
@@ -132,15 +158,144 @@ export const DENIED_AUTHORS: ReadonlySet<string> = new Set(
 /**
  * Post ids this deployment declines to serve, as decimal STRINGS.
  *
- * Strings, not bigints, so lookups match `hiddenStore`'s `String(id)` convention and so a Set built at
- * module scope needs no bigint parsing on a hot path.
+ * Strings, not bigints, so lookups match `hiddenStore`'s `String(id)` convention and so the Set needs
+ * no bigint parsing on a hot path. Mutated in place on load, like `DENIED_AUTHORS`.
  */
 export const DENIED_POSTS: ReadonlySet<string> = new Set(
   validated(parseList(ENV_DENY_POSTS), POST_ID_SHAPE, "post"),
 );
 
-/** True when this deployment denies nothing, which is the shipped state. Lets callers short-circuit. */
-export const DENYLIST_EMPTY: boolean = DENIED_AUTHORS.size === 0 && DENIED_POSTS.size === 0;
+/**
+ * Does this deployment currently deny nothing?
+ *
+ * A FUNCTION, not the constant it used to be. The constant was evaluated once at module scope, which
+ * was correct while the only source was a build-time env var and is a bug the moment a runtime file
+ * can add entries later: `withServeDenylist` read it to decide whether to wrap the feed source at
+ * all, so a list that arrived after that decision would have been read into a set nothing consulted.
+ * Callers that cache the answer must re-ask, or simply not short-circuit — the per-entry predicates
+ * below already cost nothing on an empty set.
+ */
+export function denylistEmpty(): boolean {
+  return DENIED_AUTHORS.size === 0 && DENIED_POSTS.size === 0;
+}
+
+/** Where the runtime list is served from. nginx maps it to /etc/cogno/denylist.json (see deploy/). */
+const DENYLIST_URL = "/denylist.json";
+
+/** The shape of that file. Both keys optional so `{}` and `{"posts":[]}` are both legal. */
+interface DenylistFile {
+  authors?: unknown;
+  posts?: unknown;
+}
+
+/** Entries as strings, dropping anything that is not one. Non-array input yields []. */
+function asStringList(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((e): e is string => typeof e === "string").map((e) => e.trim()).filter(Boolean);
+}
+
+/**
+ * Validate runtime entries. Unlike the build-time path this can NEVER throw: it runs in the browser,
+ * and a malformed file must not take the site down. It is still LOUD — `console.error`, not a warn —
+ * because the failure mode is the operator believing something is delisted when it is not, and the
+ * console is the only channel there is. Valid entries in the same file still apply; one bad line does
+ * not discard the rest, which is the behaviour you want at 2am with a notice in hand.
+ */
+function validatedAtRuntime(entries: string[], shape: RegExp, what: string): string[] {
+  const good = entries.filter((e) => shape.test(e));
+  if (good.length !== entries.length) {
+    const bad = entries.filter((e) => !shape.test(e));
+    console.error(
+      `[cogno] ${DENYLIST_URL}: ignored ${bad.length} malformed ${what} entr${bad.length === 1 ? "y" : "ies"} (${bad.join(", ")}). They are NOT being denied. Fix the file.`,
+    );
+  }
+  return good;
+}
+
+/**
+ * Runtime author entries, CANONICALIZED to prefix 42 rather than rejected.
+ *
+ * This deliberately diverges from the build-time path, which rejects a wrong-prefix address so the
+ * operator fixes it before deploying. Here there is no build to fail and no operator watching: an
+ * address pasted from a Polkadot or Substrate explorer is checksum-valid and encodes the SAME key as
+ * a different string, so rejecting it would leave the account fully served while the operator, having
+ * just edited the file during an incident, believes it is delisted. Denying is the safe direction and
+ * the intent is unambiguous — it is the same 32 bytes. The correction is still logged so the file
+ * gets fixed.
+ *
+ * A genuinely invalid entry (a typo, not a prefix) has no such unambiguous intent and is dropped.
+ */
+function canonicalAuthorsAtRuntime(entries: string[]): string[] {
+  const out: string[] = [];
+  const bad: string[] = [];
+  for (const e of entries) {
+    const canonical = SS58_SHAPE.test(e) ? normalizeSs58(e) : null;
+    if (canonical === null) {
+      bad.push(e);
+      continue;
+    }
+    if (canonical !== e) {
+      console.warn(
+        `[cogno] ${DENYLIST_URL}: author "${e}" is at a non-42 network prefix. Denying it as ${canonical} (the same account). Update the file to the canonical form.`,
+      );
+    }
+    out.push(canonical);
+  }
+  if (bad.length > 0) {
+    console.error(
+      `[cogno] ${DENYLIST_URL}: ignored ${bad.length} malformed author entr${bad.length === 1 ? "y" : "ies"} (${bad.join(", ")}). They are NOT being denied. Fix the file.`,
+    );
+  }
+  return out;
+}
+
+/** Resolves once the runtime list has been applied (or definitively has not). Idempotent. */
+let loadOnce: Promise<void> | null = null;
+
+/**
+ * Fetch and apply the runtime denylist. Called once at app boot (see components/Providers).
+ *
+ * FAIL-OPEN, deliberately and with the trade stated: if the file cannot be read, this deployment
+ * serves whatever the build-time env vars did not already deny. The alternative — refusing to render
+ * the site when a static JSON 404s — would mean a routine nginx typo takes cogno.forum down, and the
+ * content in question is on a public chain that anyone can read from any node regardless. So the
+ * durable entries belong in the env vars (baked, cannot fail) and this is the fast path on top.
+ *
+ * A 404 is the NORMAL state, not an error: it is what an operator who has never needed the lever
+ * sees, so it is silent. Anything else is logged.
+ */
+export function loadServeDenylist(): Promise<void> {
+  if (loadOnce) return loadOnce;
+  // No fetch during prerender: `next build` runs this module in Node with no origin to resolve
+  // against, and the export must not bake in whatever the build host happened to answer.
+  if (typeof window === "undefined") {
+    loadOnce = Promise.resolve();
+    return loadOnce;
+  }
+  loadOnce = (async () => {
+    let file: DenylistFile;
+    try {
+      const res = await fetch(DENYLIST_URL, { cache: "no-store" });
+      if (res.status === 404) return; // no runtime list configured — the shipped state
+      if (!res.ok) {
+        console.error(`[cogno] ${DENYLIST_URL}: HTTP ${res.status}. Runtime denylist NOT applied.`);
+        return;
+      }
+      file = (await res.json()) as DenylistFile;
+    } catch (err) {
+      console.error(`[cogno] ${DENYLIST_URL}: unreadable. Runtime denylist NOT applied.`, err);
+      return;
+    }
+
+    const authors = canonicalAuthorsAtRuntime(asStringList(file.authors));
+    const posts = validatedAtRuntime(asStringList(file.posts), POST_ID_SHAPE, "post");
+    // Union onto the env seed, in place. Never a replacement: an entry named by the build can only be
+    // withdrawn by a build, so nothing that ships denied can be quietly re-opened by editing a file.
+    for (const a of authors) (DENIED_AUTHORS as Set<string>).add(a);
+    for (const p of posts) (DENIED_POSTS as Set<string>).add(p);
+  })();
+  return loadOnce;
+}
 
 /**
  * Canonical form of an address, memoized.
