@@ -41,28 +41,33 @@ async fn build_cardano_idp(
     metrics: Option<Arc<crate::metrics::ObserverMetrics>>,
 ) -> CardanoObservationInherentDataProvider {
     match observe_for_parent(client, parent).await {
-        Some((obs, max_observed, dbsync_tip_slot, lag_slots)) => {
-            // Alarm on the silent-freeze condition: `create_inherent` bounds each axis with
-            // `BoundedVec::try_from` (which SUCCEEDS at exactly `len == MaxObserved` and FAILS above it), so
-            // the whole inherent is dropped — freezing the sole weight writer with no on-chain signal — only
-            // once the count EXCEEDS the ceiling. ERROR on that actual freeze; WARN across the approach
-            // (75%..=100%, so the at-capacity block that authors the LAST good observation is loud too).
-            // Fires on the import path as well (metrics is None there) so any node seeing it warns.
-            let hi = obs
-                .entries
-                .len()
-                .max(obs.stake_entries.len())
-                .max(obs.role_entries.len()) as u32;
-            let frozen = max_observed > 0 && hi > max_observed;
-            if frozen {
+        Some((obs, max_scanned, scanned, dbsync_tip_slot, lag_slots)) => {
+            // Alarm on the SCAN cap. Since spec 215 the observation itself is unbounded — an oversized
+            // change set pages and drains rather than dropping the inherent — so there is no
+            // freeze condition left to alarm on here, and the on-chain `PendingChanges` reports a backlog
+            // far better than a node log could.
+            //
+            // What `MaxScanned` still caps is the per-block credential SCANS that scope the db-sync
+            // queries, so it remains a real ceiling on the STAKE and ROLE axes: a credential past it is not
+            // scanned, so it is not observed and that identity silently gets no voting power or badge. The
+            // vault axis is discovered by policy id and has no cap, so it is not measured here — including
+            // it would fire this warning on a healthy chain that simply has many vaults.
+            //
+            // `scanned` is measured AT THE SCAN, in `observe_for_parent`, not inferred from the
+            // observation: the cap truncates an INPUT, and neither output is that quantity (see the note
+            // there). WARN across the approach (75% and up) and ERROR at/over the cap, where omissions are
+            // actually happening. Fires on the import path too (metrics is None there) so any node warns.
+            let over_scan_cap = max_scanned > 0 && scanned >= max_scanned;
+            if over_scan_cap {
                 log::error!(
                     target: "cardano-observer",
-                    "observation of {hi} identities EXCEEDS MaxObserved={max_observed}: the observe inherent will ABSTAIN and Cardano weight is now FROZEN until MaxObserved is raised (governed upgrade) or the set is paged — see docs/IN-PROTOCOL-OBSERVATION.md scaling notes",
+                    "scanned credential set of {scanned} is AT OR OVER MaxScanned={max_scanned}: credentials past the cap are not scanned, so their voting power and role badges are NOT observed. Raise MaxScanned (governed upgrade) or prune the ledger — see docs/IN-PROTOCOL-OBSERVATION.md",
                 );
-            } else if max_observed > 0 && hi.saturating_mul(4) >= max_observed.saturating_mul(3) {
+            } else if max_scanned > 0 && scanned.saturating_mul(4) >= max_scanned.saturating_mul(3)
+            {
                 log::warn!(
                     target: "cardano-observer",
-                    "observation of {hi} identities is at/near MaxObserved={max_observed} (freeze once it exceeds {max_observed}): raise MaxObserved before the ceiling is crossed",
+                    "scanned credential set of {scanned} is nearing MaxScanned={max_scanned}: credentials past the cap will not be observed. Raise MaxScanned before it is reached",
                 );
             }
             if let Some(m) = &metrics {
@@ -74,9 +79,9 @@ async fn build_cardano_idp(
                     obs.stake_entries.len(),
                     obs.role_entries.len(),
                 );
-                m.set_max_observed(max_observed);
-                if frozen {
-                    m.record_oversize();
+                m.set_scan(scanned, max_scanned);
+                if over_scan_cap {
+                    m.record_scan_capped();
                 }
             }
             CardanoObservationInherentDataProvider {
@@ -102,8 +107,8 @@ async fn build_cardano_idp(
 async fn observe_for_parent(
     client: Arc<FullClient>,
     parent: <Block as BlockT>::Hash,
-) -> Option<(CardanoObservation, u32, u64, u64)> {
-    // 1. consensus-pinned config (anchors, stability window, vault policy id, MaxObserved ceiling).
+) -> Option<(CardanoObservation, u32, u32, u64, u64)> {
+    // 1. consensus-pinned config (anchors, stability window, vault policy id, MaxScanned cap).
     let config = match client.runtime_api().observer_config(parent) {
         Ok(c) => c,
         Err(e) => {
@@ -111,8 +116,8 @@ async fn observe_for_parent(
             return None;
         }
     };
-    // The freeze ceiling, surfaced to the caller so it can alarm before the observation overruns it.
-    let max_observed = config.max_observed;
+    // The credential-scan cap, surfaced to the caller so it can alarm as the scanned sets approach it.
+    let max_scanned = config.max_scanned;
     // 2. parent block's Aura slot → canonical unix time (slot × SLOT_DURATION). Genesis ⇒ slot 0 ⇒
     //    pre-Shelley ⇒ abstain.
     let header = match client.header(parent) {
@@ -224,6 +229,26 @@ async fn observe_for_parent(
             return None;
         }
     };
+    // The largest of the INDEPENDENTLY-CAPPED credential scans that actually scope a db-sync query. This
+    // is the quantity `MaxScanned` bounds, and it has to be captured HERE because it is an INPUT: by the
+    // time the observation exists the scan has already been truncated and the evidence is gone.
+    //
+    // Measuring the observation instead is wrong in both directions. `stake_entries` is strictly SMALLER
+    // than the scanned set (the SQL returns rows only for credentials holding stake at the as-of epoch, so
+    // a bound-but-undelegated key is simply absent), which hides a real truncation; and `role_entries` is
+    // one-to-MANY per credential — one entry per declaring or owned pool — so it can run far past the cap
+    // with no truncation having happened at all.
+    //
+    // ⚠ `_claimed_committee` is deliberately EXCLUDED until Phase C wires its reduction. Nothing reads it,
+    // so a credential past the cap there costs nobody anything — but `RoleCredIndex[Committee]` grows via
+    // the feeless bare-unsigned `claim_role_signed`, whose CC proof is self-generated and consults no
+    // Cardano state. Folding it in would let anyone pin `scanned` at the cap for ever: a per-block ERROR
+    // log and a permanently-firing `ObserverScanCapped` page whose text ("no voting power, no role badge")
+    // would be false, training the operator to ignore the alarm that fires when a scan really is capped.
+    let scanned = bound_creds
+        .len()
+        .max(claimed_calidus.len())
+        .max(claimed_dreps.len()) as u32;
     let role_read = match dbsync::read_role_observation(
         &dbsync_url,
         ref_slot,
@@ -304,7 +329,7 @@ async fn observe_for_parent(
     let lag_slots = ref_slot
         .saturating_add(config.stability_slots)
         .saturating_sub(dbsync_tip_slot);
-    Some((obs, max_observed, dbsync_tip_slot, lag_slots))
+    Some((obs, max_scanned, scanned, dbsync_tip_slot, lag_slots))
 }
 
 /// The minimum period of blocks on which justifications will be

@@ -1,11 +1,23 @@
 //! Unit tests for `pallet-cardano-observer` — the inherent verification semantics + the Mandatory
 //! `observe` dispatchable (monotonicity, stability bound, MaxStakeWeight skip, account resolution,
-//! weight application, unlock clamp).
+//! weight application, the explicit unlock, and the paging that replaced the old population cliff).
+//!
+//! ## Reading these tests
+//!
+//! Most of them drive [`observe_snapshot`], which does what a real block does: build the node's FULL
+//! snapshot, let `create_inherent` diff it against on-chain state, and dispatch the resulting delta. That
+//! is deliberate. Calling `observe` with a hand-built change list would test the apply half against
+//! payloads the diff can never produce, and the interesting invariants (an unlock is derived, an
+//! unresolvable entry never enters a page, a re-sent snapshot is a no-op) live in the diff.
+//!
+//! Where a test needs a payload the diff would NOT produce — a tampered delta, a change for an unbound
+//! beacon — it builds the call directly and dispatches it through [`dispatch`].
 
 use crate::mock::*;
 use crate::{
-    BeaconName, CardanoObservation, CardanoRef, Event, InherentError, RoleEntry, RoleSource,
-    INHERENT_IDENTIFIER,
+    BeaconName, CardanoObservation, CardanoRef, Event, InherentError, LastObserved,
+    LastObservedRoles, LastObservedStake, LastReference, PendingChanges, RoleEntry, RoleSource,
+    StakeCredential, INHERENT_IDENTIFIER,
 };
 use frame_support::{
     assert_ok,
@@ -18,8 +30,8 @@ const ALICE: AccountId = 1;
 const BOB: AccountId = 2;
 const A: BeaconName = [0xAA; 32];
 const B: BeaconName = [0xBB; 32];
-const S1: crate::StakeCredential = [0xC1; 28];
-const S2: crate::StakeCredential = [0xC2; 28];
+const S1: StakeCredential = [0xC1; 28];
+const S2: StakeCredential = [0xC2; 28];
 
 /// A placeholder input commitment for the application/dispatchable tests. The commitment is only
 /// load-bearing in `check_inherent` (the Mandatory dispatchable carries-but-ignores it), exercised by
@@ -35,27 +47,140 @@ fn cref(slot: u64) -> CardanoRef {
     }
 }
 
-fn entries(
-    items: &[(BeaconName, u128)],
-) -> BoundedVec<(BeaconName, u128), <Test as crate::Config>::MaxObserved> {
-    BoundedVec::try_from(items.to_vec()).expect("within MaxObserved")
+// ── snapshot construction ──────────────────────────────────────────────────────────────────────────
+//
+// These build the NODE's observation (the full-snapshot inherent DATA), not the block payload. The
+// payload is derived from them.
+
+/// A node snapshot with the given vault entries and nothing else.
+fn snap(slot: u64, entries: &[(BeaconName, u128)]) -> CardanoObservation {
+    snap_full(slot, COMMIT, entries, &[], &[])
 }
 
-fn stk(
-    items: &[(crate::StakeCredential, u128)],
-) -> BoundedVec<(crate::StakeCredential, u128), <Test as crate::Config>::MaxObserved> {
-    BoundedVec::try_from(items.to_vec()).expect("within MaxObserved")
+/// A node snapshot with the given vault + stake entries.
+fn snap_stake(
+    slot: u64,
+    entries: &[(BeaconName, u128)],
+    stake: &[(StakeCredential, u128)],
+) -> CardanoObservation {
+    snap_full(slot, COMMIT, entries, stake, &[])
 }
-fn no_stake() -> BoundedVec<(crate::StakeCredential, u128), <Test as crate::Config>::MaxObserved> {
-    BoundedVec::new()
+
+/// A node snapshot with the given role entries and nothing else.
+fn snap_roles(slot: u64, roles: &[RoleEntry]) -> CardanoObservation {
+    snap_full(slot, COMMIT, &[], &[], roles)
 }
-fn no_roles() -> BoundedVec<crate::RoleEntry, <Test as crate::Config>::MaxObserved> {
-    BoundedVec::new()
+
+fn snap_full(
+    slot: u64,
+    commitment: [u8; 32],
+    entries: &[(BeaconName, u128)],
+    stake: &[(StakeCredential, u128)],
+    roles: &[RoleEntry],
+) -> CardanoObservation {
+    CardanoObservation {
+        reference: cref(slot),
+        inputs_commitment: commitment,
+        entries: entries.to_vec(),
+        stake_entries: stake.to_vec(),
+        role_entries: roles.to_vec(),
+    }
 }
+
+/// Role entries with a zero chamber weight (the badge-shape tests).
+fn roles(items: &[(RoleSource, [u8; 28], [u8; 28])]) -> Vec<RoleEntry> {
+    items
+        .iter()
+        .map(|(source, credential, id)| RoleEntry {
+            source: *source,
+            credential: *credential,
+            id: *id,
+            weight: 0,
+        })
+        .collect()
+}
+
+/// Role entries carrying an explicit chamber weight (spec 207).
+fn roles_w(items: &[(RoleSource, [u8; 28], [u8; 28], u128)]) -> Vec<RoleEntry> {
+    items
+        .iter()
+        .map(|(source, credential, id, weight)| RoleEntry {
+            source: *source,
+            credential: *credential,
+            id: *id,
+            weight: *weight,
+        })
+        .collect()
+}
+
+// ── driving a block ────────────────────────────────────────────────────────────────────────────────
 
 fn put_obs(id: &mut InherentData, obs: &CardanoObservation) {
     id.put_data(INHERENT_IDENTIFIER, obs)
         .expect("encode observation");
+}
+
+/// The call `create_inherent` builds from `obs` against the CURRENT state — i.e. the delta.
+fn derive(obs: &CardanoObservation) -> crate::Call<Test> {
+    let mut id = InherentData::new();
+    put_obs(&mut id, obs);
+    <CardanoObserver as ProvideInherent>::create_inherent(&id).expect("inherent produced")
+}
+
+/// Dispatch an `observe` call as the inherent would.
+fn dispatch(call: crate::Call<Test>) -> frame_support::pallet_prelude::DispatchResult {
+    match call {
+        crate::Call::observe {
+            reference,
+            inputs_commitment,
+            changes,
+            stake_changes,
+            role_changes,
+            pending,
+        } => CardanoObserver::observe(
+            RuntimeOrigin::none(),
+            reference,
+            inputs_commitment,
+            changes,
+            stake_changes,
+            role_changes,
+            pending,
+        ),
+        _ => panic!("expected an observe call"),
+    }
+}
+
+/// One whole block's worth of observation: derive the delta from the node snapshot and apply it. Returns
+/// the `pending` backlog the block reported.
+fn observe_snapshot(obs: &CardanoObservation) -> u32 {
+    let call = derive(obs);
+    let pending = match &call {
+        crate::Call::observe { pending, .. } => *pending,
+        _ => panic!("expected an observe call"),
+    };
+    assert_ok!(dispatch(call));
+    pending
+}
+
+/// The change counts in a derived call, as `(vault, stake, role)`.
+fn change_counts(call: &crate::Call<Test>) -> (usize, usize, usize) {
+    match call {
+        crate::Call::observe {
+            changes,
+            stake_changes,
+            role_changes,
+            ..
+        } => (changes.len(), stake_changes.len(), role_changes.len()),
+        _ => panic!("expected an observe call"),
+    }
+}
+
+/// The single-identity observation the stall-alarm tests share. The value moves with the slot so each
+/// block produces a REAL change — re-sending an identical snapshot derives an empty delta, which would
+/// still stamp the clock but would stop these tests exercising the apply path at all.
+fn observe_once(slot: u64) {
+    let obs = snap(slot, &[(A, MIN_LOCK.saturating_add(slot as u128))]);
+    observe_snapshot(&obs);
 }
 
 /// Enforce mode is the DEFAULT (`EnforceWeight` defaults to `true`), so this is now a no-op made explicit
@@ -74,44 +199,66 @@ fn freeze() {
     ));
 }
 
-// ── ProvideInherent (create_inherent / check_inherent) ─────────────────────────────────────────────
+/// The 32-byte beacon for index `i`, big-endian so a generated set is ASCENDING — the canonical order the
+/// real reduction produces and `derive_call` pages in.
+fn nth_beacon(i: u32) -> BeaconName {
+    let mut b = [0u8; 32];
+    b[..4].copy_from_slice(&i.to_be_bytes());
+    b
+}
+
+/// The account index `i`'s beacon is bound to. Offset well clear of ALICE/BOB.
+fn nth_account(i: u32) -> AccountId {
+    1000 + i as AccountId
+}
+
+// ── ProvideInherent: create_inherent ───────────────────────────────────────────────────────────────
 
 #[test]
-fn create_inherent_builds_the_observe_call_from_node_data() {
+fn create_inherent_emits_the_difference_not_the_snapshot() {
     new_test_ext().execute_with(|| {
-        let obs = CardanoObservation {
-            reference: cref(1000),
-            inputs_commitment: COMMIT2,
-            entries: vec![(A, 200_000_000), (B, 300_000_000)],
-            stake_entries: vec![(S1, 700_000_000)],
-            role_entries: vec![],
-        };
-        let mut id = InherentData::new();
-        put_obs(&mut id, &obs);
-        let call =
-            <CardanoObserver as ProvideInherent>::create_inherent(&id).expect("inherent produced");
-        match call {
+        bind(A, ALICE);
+        bind(B, BOB);
+        bind_stake(S1, ALICE);
+        let obs = snap_full(
+            1000,
+            COMMIT2,
+            &[(A, 200_000_000), (B, 300_000_000)],
+            &[(S1, 700_000_000)],
+            &[],
+        );
+
+        // Nothing applied yet, so the first delta IS the whole set.
+        let call = derive(&obs);
+        match &call {
             crate::Call::observe {
                 reference,
                 inputs_commitment,
-                entries,
-                stake_entries,
-                role_entries: _,
+                changes,
+                stake_changes,
+                pending,
+                ..
             } => {
-                assert_eq!(reference, cref(1000));
+                assert_eq!(*reference, cref(1000));
                 assert_eq!(
-                    inputs_commitment, COMMIT2,
+                    *inputs_commitment, COMMIT2,
                     "the node's input commitment is carried into the call"
                 );
-                assert_eq!(entries.to_vec(), vec![(A, 200_000_000), (B, 300_000_000)]);
                 assert_eq!(
-                    stake_entries.to_vec(),
-                    vec![(S1, 700_000_000)],
-                    "stake entries are carried into the call too"
+                    changes.to_vec(),
+                    vec![(A, Some(200_000_000)), (B, Some(300_000_000))]
                 );
+                assert_eq!(stake_changes.to_vec(), vec![(S1, Some(700_000_000))]);
+                assert_eq!(*pending, 0, "well under one page");
             }
             _ => panic!("expected observe call"),
         }
+        assert_ok!(dispatch(call));
+
+        // Re-deriving from the SAME snapshot now yields NOTHING. This is the property the whole design
+        // rests on: the block payload is proportional to what moved, not to how many identities exist.
+        let again = derive(&obs);
+        assert_eq!(change_counts(&again), (0, 0, 0));
     });
 }
 
@@ -125,264 +272,514 @@ fn create_inherent_absent_data_is_none() {
 }
 
 #[test]
+fn create_inherent_never_abstains_on_size() {
+    new_test_ext().execute_with(|| {
+        // THE regression this change exists to prevent. `create_inherent` used to do
+        // `BoundedVec::try_from(obs.entries).ok()?`, so ONE entry over `MaxObserved` dropped the ENTIRE
+        // inherent — and because the observer is the sole weight writer and the reference is a pure
+        // function of the parent, that repeated every slot and froze weight for everyone, permanently.
+        //
+        // Here the change set is more than double a page. The inherent is still produced, it carries a
+        // full page, and the remainder is REPORTED rather than lost.
+        let n = MAX_CHANGES_PER_BLOCK * 2 + 7;
+        let mut items = Vec::new();
+        for i in 0..n {
+            bind(nth_beacon(i), nth_account(i));
+            items.push((nth_beacon(i), 200_000_000u128));
+        }
+        let obs = snap(1000, &items);
+
+        let call = derive(&obs);
+        let (vault, _, _) = change_counts(&call);
+        assert_eq!(
+            vault, MAX_CHANGES_PER_BLOCK as usize,
+            "the page is filled exactly, not truncated arbitrarily and not dropped"
+        );
+        match &call {
+            crate::Call::observe { pending, .. } => assert_eq!(
+                *pending,
+                n - MAX_CHANGES_PER_BLOCK,
+                "the surplus is reported, so it is visible on-chain rather than silently lost"
+            ),
+            _ => panic!("expected observe call"),
+        }
+    });
+}
+
+#[test]
+fn a_change_set_larger_than_a_page_drains_over_blocks_and_converges() {
+    new_test_ext().execute_with(|| {
+        // THE acceptance test. A churn spike far larger than any per-block bound must DRAIN, never drop
+        // the inherent and never freeze weight — and it must converge to the correct state.
+        let n = MAX_CHANGES_PER_BLOCK * 2 + 7; // 519 at the live bound: three blocks' worth
+        let mut items = Vec::new();
+        for i in 0..n {
+            bind(nth_beacon(i), nth_account(i));
+            items.push((nth_beacon(i), 200_000_000u128 + i as u128));
+        }
+        let obs = snap(1000, &items);
+
+        // Block 1: a full page lands, the rest is queued, and the frontier does NOT move.
+        let pending = observe_snapshot(&obs);
+        assert_eq!(pending, n - MAX_CHANGES_PER_BLOCK);
+        assert_eq!(PendingChanges::<Test>::get(), n - MAX_CHANGES_PER_BLOCK);
+        assert!(
+            LastReference::<Test>::get().is_none(),
+            "the frontier must not claim a reference was applied while part of it is queued"
+        );
+
+        // Block 2: another page. Still backlogged, still held.
+        let pending = observe_snapshot(&obs);
+        assert_eq!(pending, n - MAX_CHANGES_PER_BLOCK * 2);
+        assert!(LastReference::<Test>::get().is_none());
+
+        // Block 3: the tail. Drained, so the frontier finally advances.
+        let pending = observe_snapshot(&obs);
+        assert_eq!(pending, 0);
+        assert_eq!(PendingChanges::<Test>::get(), 0);
+        assert_eq!(LastReference::<Test>::get(), Some(cref(1000)));
+
+        // Converged: every one of the 519 identities holds exactly its observed weight.
+        for i in 0..n {
+            assert_eq!(
+                weight_of(nth_account(i)),
+                200_000_000u128 + i as u128,
+                "identity {i} did not converge",
+            );
+        }
+        // And a fourth block over the same snapshot is a complete no-op.
+        assert_eq!(change_counts(&derive(&obs)), (0, 0, 0));
+    });
+}
+
+#[test]
+fn a_backlogged_block_reports_its_depth_on_chain() {
+    new_test_ext().execute_with(|| {
+        let n = MAX_CHANGES_PER_BLOCK + 5;
+        let mut items = Vec::new();
+        for i in 0..n {
+            bind(nth_beacon(i), nth_account(i));
+            items.push((nth_beacon(i), 200_000_000u128));
+        }
+        System::set_block_number(1);
+        observe_snapshot(&snap(1000, &items));
+        // The backlog is a graded, on-chain signal — the generalization of the old latched `Stalled`
+        // flag, which could only say "the writer stopped" and had no way to say "it is catching up".
+        System::assert_has_event(RuntimeEvent::CardanoObserver(
+            Event::ObservationBacklogged {
+                reference_slot: 1000,
+                pending: 5,
+            },
+        ));
+    });
+}
+
+#[test]
+fn an_unlock_arriving_mid_backlog_still_zeroes() {
+    new_test_ext().execute_with(|| {
+        // A drain is not a quiet period: Cardano keeps moving while it runs. An identity that was credited
+        // in the FIRST page and unlocks before the last one must still be taken back — the diff is against
+        // the applied basis, so its `None` appears the moment it leaves the snapshot.
+        let n = MAX_CHANGES_PER_BLOCK + 20;
+        let mut items = Vec::new();
+        for i in 0..n {
+            bind(nth_beacon(i), nth_account(i));
+            items.push((nth_beacon(i), 200_000_000u128));
+        }
+        // Page 1 credits indices 0..256 (ascending beacons), so index 3 is definitely applied.
+        observe_snapshot(&snap(1000, &items));
+        assert_eq!(weight_of(nth_account(3)), 200_000_000);
+        assert!(PendingChanges::<Test>::get() > 0, "still draining");
+
+        // Index 3 unlocks. The next snapshot simply lacks it.
+        items.retain(|(b, _)| *b != nth_beacon(3));
+        observe_snapshot(&snap(1001, &items));
+        assert_eq!(
+            weight_of(nth_account(3)),
+            0,
+            "an unlock during a drain is derived and applied like any other change",
+        );
+        assert!(
+            LastObserved::<Test>::get(nth_beacon(3)).is_none(),
+            "and it leaves the basis, so it is not re-emitted forever",
+        );
+
+        // Drain the rest and confirm everything else converged.
+        for slot in 1002..1010 {
+            if observe_snapshot(&snap(slot, &items)) == 0 {
+                break;
+            }
+        }
+        assert_eq!(PendingChanges::<Test>::get(), 0);
+        for i in 0..n {
+            let expected = if i == 3 { 0 } else { 200_000_000 };
+            assert_eq!(weight_of(nth_account(i)), expected, "identity {i}");
+        }
+    });
+}
+
+#[test]
+fn an_unresolvable_or_over_cap_entry_never_occupies_a_page_slot() {
+    new_test_ext().execute_with(|| {
+        // The anti-starvation rule. An entry the apply step would SKIP must not enter the delta: it would
+        // be emitted, skipped, left out of the basis, and emitted again next block — for ever, holding a
+        // page slot that a real change needed. Both skip reasons are covered.
+        bind(A, ALICE);
+        let obs = snap(
+            1000,
+            &[
+                (A, 200_000_000),                   // fine
+                (B, 300_000_000),                   // B is bound to nobody
+                ([0x11; 32], MAX_STAKE_WEIGHT + 1), // over MaxStakeWeight
+            ],
+        );
+        bind([0x11; 32], BOB);
+
+        let call = derive(&obs);
+        match &call {
+            crate::Call::observe { changes, .. } => assert_eq!(
+                changes.to_vec(),
+                vec![(A, Some(200_000_000))],
+                "only the entry that can actually be applied is carried",
+            ),
+            _ => panic!("expected observe call"),
+        }
+        assert_ok!(dispatch(call));
+        // And it stays out on the next block too, rather than churning.
+        assert_eq!(change_counts(&derive(&obs)), (0, 0, 0));
+    });
+}
+
+// ── ProvideInherent: check_inherent ────────────────────────────────────────────────────────────────
+
+#[test]
 fn check_inherent_matches_local_read() {
     new_test_ext().execute_with(|| {
-        let obs = CardanoObservation {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: vec![(A, 200_000_000)],
-            stake_entries: vec![],
-            role_entries: vec![],
+        bind(A, ALICE);
+        let obs = snap(1000, &[(A, 200_000_000)]);
+        let call = derive(&obs);
+        let mut id = InherentData::new();
+        put_obs(&mut id, &obs);
+        // The importer re-derives the delta from its OWN snapshot against the SAME parent state, so an
+        // honest author's page matches byte for byte.
+        assert!(<CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok());
+    });
+}
+
+#[test]
+fn check_inherent_agrees_with_the_author_mid_backlog() {
+    new_test_ext().execute_with(|| {
+        // The hazard a paged payload introduces: if the importer compared the author's PAGE against its own
+        // full snapshot it would see a difference on every backlogged block and fatally reject an honest
+        // one. Both sides run the same derivation over the same basis, so both page at the same boundary.
+        let n = MAX_CHANGES_PER_BLOCK + 40;
+        let mut items = Vec::new();
+        for i in 0..n {
+            bind(nth_beacon(i), nth_account(i));
+            items.push((nth_beacon(i), 200_000_000u128));
+        }
+        let obs = snap(1000, &items);
+        let call = derive(&obs);
+        match &call {
+            crate::Call::observe { pending, .. } => assert_eq!(*pending, 40),
+            _ => panic!("expected observe call"),
+        }
+        let mut id = InherentData::new();
+        put_obs(&mut id, &obs);
+        assert!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok(),
+            "a backlogged page is not a disagreement",
+        );
+    });
+}
+
+#[test]
+fn check_inherent_pins_the_clears_before_credits_page_order() {
+    new_test_ext().execute_with(|| {
+        // The page order is a CONSENSUS rule, not a local tidiness one: `observe` applies the page in the
+        // order it arrives, so an importer that accepted a re-ordered page would accept a block that
+        // silently un-credits an account. Both halves are asserted — the honest mixed page agrees, and the
+        // same changes in the other order are rejected.
+        enforce();
+        bind(A, ALICE);
+        bind(B, BOB);
+        observe_snapshot(&snap(
+            MAX_REFERENCE - 5,
+            &[(A, 200_000_000), (B, 300_000_000)],
+        ));
+
+        // A keeps its lock at a NEW value (a credit) while B unlocks (a clear) — one page, both kinds.
+        let obs = snap(MAX_REFERENCE - 4, &[(A, 250_000_000)]);
+        let call = derive(&obs);
+        let (reference, commitment, changes) = match &call {
+            crate::Call::observe {
+                reference,
+                inputs_commitment,
+                changes,
+                ..
+            } => (reference.clone(), *inputs_commitment, changes.clone()),
+            _ => panic!("expected observe call"),
+        };
+        assert_eq!(
+            changes.to_vec(),
+            vec![(B, None), (A, Some(250_000_000))],
+            "the clear pages first even though B's beacon byte is higher",
+        );
+
+        let mut id = InherentData::new();
+        put_obs(&mut id, &obs);
+        assert!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok(),
+            "an honest mixed page agrees on both sides",
+        );
+
+        // The SAME set of changes, credits first. Byte-comparing the derived delta is what rejects it.
+        let mut reordered = changes.to_vec();
+        reordered.reverse();
+        let forged = crate::Call::observe {
+            reference,
+            inputs_commitment: commitment,
+            changes: BoundedVec::truncate_from(reordered),
+            stake_changes: BoundedVec::new(),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        };
+        assert!(
+            matches!(
+                <CardanoObserver as ProvideInherent>::check_inherent(&forged, &id),
+                Err(InherentError::ComputeDiverged),
+            ),
+            "a re-ordered page is a divergence, not an accepted alternative",
+        );
+    });
+}
+
+#[test]
+fn check_inherent_rejects_a_tampered_delta() {
+    new_test_ext().execute_with(|| {
+        bind(A, ALICE);
+        bind(B, BOB);
+        let obs = snap(1000, &[(A, 200_000_000), (B, 300_000_000)]);
+        let honest = derive(&obs);
+
+        // An author who inflates a weight in an otherwise-correct page.
+        let forged = match honest.clone() {
+            crate::Call::observe {
+                reference,
+                inputs_commitment,
+                stake_changes,
+                role_changes,
+                pending,
+                ..
+            } => crate::Call::observe {
+                reference,
+                inputs_commitment,
+                changes: BoundedVec::truncate_from(vec![
+                    (A, Some(999_000_000)),
+                    (B, Some(300_000_000)),
+                ]),
+                stake_changes,
+                role_changes,
+                pending,
+            },
+            _ => panic!("expected observe call"),
         };
         let mut id = InherentData::new();
         put_obs(&mut id, &obs);
-        let call = crate::Call::<Test>::observe {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: entries(&[(A, 200_000_000)]),
-            stake_entries: no_stake(),
-            role_entries: no_roles(),
+        let err = <CardanoObserver as ProvideInherent>::check_inherent(&forged, &id)
+            .expect_err("a tampered delta must be rejected");
+        // Same raw Cardano inputs (the commitment matches), different derived output ⇒ a compute
+        // divergence rather than a data disagreement. Fatal either way.
+        assert!(matches!(err, InherentError::ComputeDiverged));
+        assert!(err.is_fatal_error());
+
+        // Dropping a change is caught too — an author cannot quietly withhold someone's unlock.
+        let withheld = match honest {
+            crate::Call::observe {
+                reference,
+                inputs_commitment,
+                stake_changes,
+                role_changes,
+                pending,
+                ..
+            } => crate::Call::observe {
+                reference,
+                inputs_commitment,
+                changes: BoundedVec::truncate_from(vec![(A, Some(200_000_000))]),
+                stake_changes,
+                role_changes,
+                pending,
+            },
+            _ => panic!("expected observe call"),
         };
-        assert!(<CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok());
+        assert!(matches!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&withheld, &id),
+            Err(InherentError::ComputeDiverged)
+        ));
     });
 }
 
 #[test]
 fn check_inherent_mismatch_is_fatal() {
     new_test_ext().execute_with(|| {
-        // The importer's own read differs from the author's claim AND the input commitments differ (the
-        // author saw DIFFERENT Cardano data) ⇒ Mismatch (FATAL → block rejected).
-        let local = CardanoObservation {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: vec![(A, 200_000_000)],
-            stake_entries: vec![],
-            role_entries: vec![],
-        };
+        bind(A, ALICE);
+        bind(B, BOB);
+        // The author saw A; the importer sees B, and their raw input commitments differ too.
+        let author_obs = snap_full(1000, COMMIT, &[(A, 200_000_000)], &[], &[]);
+        let call = derive(&author_obs);
+        let local = snap_full(1000, COMMIT2, &[(B, 300_000_000)], &[], &[]);
         let mut id = InherentData::new();
         put_obs(&mut id, &local);
-        let lying_call = crate::Call::<Test>::observe {
-            reference: cref(1000),
-            inputs_commitment: COMMIT2,
-            entries: entries(&[(A, 999_000_000)]),
-            stake_entries: no_stake(),
-            role_entries: no_roles(),
-        };
-        let err =
-            <CardanoObserver as ProvideInherent>::check_inherent(&lying_call, &id).unwrap_err();
+        let err = <CardanoObserver as ProvideInherent>::check_inherent(&call, &id)
+            .expect_err("differing reads must be rejected");
         assert!(matches!(err, InherentError::Mismatch));
-        assert!(
-            err.is_fatal_error(),
-            "Mismatch must be fatal (reject the block)"
-        );
+        assert!(err.is_fatal_error());
 
-        // A differing reference is also a mismatch (regardless of the commitment — the reference is a pure
-        // function of the parent, so a differing slot is always a data disagreement).
-        let wrong_ref = crate::Call::<Test>::observe {
-            reference: cref(1001),
-            inputs_commitment: COMMIT,
-            entries: entries(&[(A, 200_000_000)]),
-            stake_entries: no_stake(),
-            role_entries: no_roles(),
-        };
+        // A differing reference SLOT alone is a mismatch, whatever the entries say.
+        let other_ref = snap_full(999, COMMIT, &[(A, 200_000_000)], &[], &[]);
+        let mut id2 = InherentData::new();
+        put_obs(&mut id2, &other_ref);
         assert!(matches!(
-            <CardanoObserver as ProvideInherent>::check_inherent(&wrong_ref, &id).unwrap_err(),
-            InherentError::Mismatch
+            <CardanoObserver as ProvideInherent>::check_inherent(&call, &id2),
+            Err(InherentError::Mismatch)
         ));
-    });
-}
-
-#[test]
-fn check_inherent_compute_diverged_when_same_inputs_different_output() {
-    new_test_ext().execute_with(|| {
-        // SAME reference + SAME input commitment (both nodes agreed on the raw Cardano candidate set) but
-        // DIFFERENT reduced entries ⇒ ComputeDiverged: the reduction itself diverged (a determinism bug /
-        // binary version skew), NOT a data disagreement. FATAL but reported distinctly from Mismatch.
-        let local = CardanoObservation {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: vec![(A, 200_000_000)],
-            stake_entries: vec![],
-            role_entries: vec![],
-        };
-        let mut id = InherentData::new();
-        put_obs(&mut id, &local);
-        let diverged_call = crate::Call::<Test>::observe {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: entries(&[(A, 999_000_000)]),
-            stake_entries: no_stake(),
-            role_entries: no_roles(),
-        };
-        let err =
-            <CardanoObserver as ProvideInherent>::check_inherent(&diverged_call, &id).unwrap_err();
-        assert!(
-            matches!(err, InherentError::ComputeDiverged),
-            "same inputs, different output ⇒ ComputeDiverged"
-        );
-        assert!(
-            err.is_fatal_error(),
-            "ComputeDiverged must be fatal (a divergent reduction must not be consensus-pinned)"
-        );
-    });
-}
-
-#[test]
-fn check_inherent_accepts_when_entries_agree_despite_commitment_diff() {
-    new_test_ext().execute_with(|| {
-        // The reduced OUTPUTS agree (same reference + same entries) but the input commitments DIFFER — e.g.
-        // two honest nodes whose raw candidate sets differ only in UTxOs the reduction drops (too-fresh /
-        // spent). The commitment must NEVER reject on its own: outputs agree ⇒ accept.
-        let local = CardanoObservation {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: vec![(A, 200_000_000)],
-            stake_entries: vec![],
-            role_entries: vec![],
-        };
-        let mut id = InherentData::new();
-        put_obs(&mut id, &local);
-        let call = crate::Call::<Test>::observe {
-            reference: cref(1000),
-            inputs_commitment: COMMIT2,
-            entries: entries(&[(A, 200_000_000)]),
-            stake_entries: no_stake(),
-            role_entries: no_roles(),
-        };
-        assert!(
-            <CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok(),
-            "agreeing entries must be accepted even when the input commitments differ",
-        );
     });
 }
 
 #[test]
 fn check_inherent_rejects_a_forged_sealed_block_hash_anchor() {
     new_test_ext().execute_with(|| {
-        // `block_hash` is the SEALED stable-block
-        // anchor (the latest stable Cardano block ≤ the reference), re-validated cross-node — NOT the old
-        // node-local tip diagnostic. The importer agrees on the SLOT, the entries, and the input commitment
-        // but the author sealed a DIFFERENT block_hash (a forged / regressing / wrong stable block). A
-        // caught-up importer (which HAS a local read) must FATALLY reject this as a Mismatch — the header-
-        // sealed anchor is importer-re-validated. (A BEHIND importer never reaches here: its IDP abstains →
-        // CannotVerify, see `check_inherent_cannot_verify_when_local_source_behind_is_non_fatal`.)
-        let local = CardanoObservation {
-            reference: CardanoRef {
-                slot: 1000,
-                block_hash: [0x11; 32],
-            },
-            inputs_commitment: COMMIT,
-            entries: vec![(A, 200_000_000)],
-            stake_entries: vec![],
-            role_entries: vec![],
-        };
+        bind(A, ALICE);
+        let local = snap(1000, &[(A, 200_000_000)]);
+        let call = derive(&local);
         let mut id = InherentData::new();
         put_obs(&mut id, &local);
-        let forged = crate::Call::<Test>::observe {
-            reference: CardanoRef {
-                slot: 1000,
-                block_hash: [0x22; 32],
-            }, // forged anchor, same slot + entries
-            inputs_commitment: COMMIT,
-            entries: entries(&[(A, 200_000_000)]),
-            stake_entries: no_stake(),
-            role_entries: no_roles(),
-        };
-        let err = <CardanoObserver as ProvideInherent>::check_inherent(&forged, &id).unwrap_err();
-        assert!(
-			matches!(err, InherentError::Mismatch),
-			"a forged sealed block_hash anchor (differing from the importer's stable block) ⇒ Mismatch",
-		);
-        assert!(
-            err.is_fatal_error(),
-            "a forged anchor must be fatal (reject the block)"
-        );
+        assert!(<CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok());
 
-        // The matching anchor (same slot + block_hash + entries) is still accepted.
-        let honest = crate::Call::<Test>::observe {
-            reference: CardanoRef {
-                slot: 1000,
-                block_hash: [0x11; 32],
+        // Same slot, same entries, same commitment — but a different sealed stable-block anchor. Comparing
+        // the FULL reference is what makes the header-sealed `cobs` anchor importer-checked.
+        let forged = match call {
+            crate::Call::observe {
+                inputs_commitment,
+                changes,
+                stake_changes,
+                role_changes,
+                pending,
+                ..
+            } => crate::Call::observe {
+                reference: CardanoRef {
+                    slot: 1000,
+                    block_hash: [0x77; 32],
+                },
+                inputs_commitment,
+                changes,
+                stake_changes,
+                role_changes,
+                pending,
             },
-            inputs_commitment: COMMIT,
-            entries: entries(&[(A, 200_000_000)]),
-            stake_entries: no_stake(),
-            role_entries: no_roles(),
+            _ => panic!("expected observe call"),
         };
-        assert!(<CardanoObserver as ProvideInherent>::check_inherent(&honest, &id).is_ok());
+        let err = <CardanoObserver as ProvideInherent>::check_inherent(&forged, &id)
+            .expect_err("a forged anchor must be rejected");
+        assert!(matches!(err, InherentError::Mismatch));
+        assert!(err.is_fatal_error());
+    });
+}
+
+#[test]
+fn check_inherent_accepts_when_the_derived_delta_agrees_despite_a_commitment_diff() {
+    new_test_ext().execute_with(|| {
+        bind(A, ALICE);
+        // Two honest nodes whose raw candidate sets differ only in UTxOs the reduction drops (too fresh,
+        // already spent) reduce to the same entries and therefore derive the same delta. The commitment
+        // must NEVER reject on its own.
+        let author_obs = snap_full(1000, COMMIT, &[(A, 200_000_000)], &[], &[]);
+        let call = derive(&author_obs);
+        let local = snap_full(1000, COMMIT2, &[(A, 200_000_000)], &[], &[]);
+        let mut id = InherentData::new();
+        put_obs(&mut id, &local);
+        assert!(<CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok());
     });
 }
 
 #[test]
 fn check_inherent_cannot_verify_when_local_source_behind_is_non_fatal() {
     new_test_ext().execute_with(|| {
-        // The importer has NO local observation (its Cardano source is behind/down) ⇒ CannotVerify,
-        // NON-FATAL: accept without verifying (never fork because YOUR follower lags).
-        let id = InherentData::new(); // no data
-        let call = crate::Call::<Test>::observe {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: entries(&[(A, 200_000_000)]),
-            stake_entries: no_stake(),
-            role_entries: no_roles(),
-        };
-        let err = <CardanoObserver as ProvideInherent>::check_inherent(&call, &id).unwrap_err();
+        bind(A, ALICE);
+        let call = derive(&snap(1000, &[(A, 200_000_000)]));
+        // The importer has no observation of its own (db-sync down or behind).
+        let id = InherentData::new();
+        let err = <CardanoObserver as ProvideInherent>::check_inherent(&call, &id)
+            .expect_err("no local data cannot be verified");
         assert!(matches!(err, InherentError::CannotVerify));
         assert!(
             !err.is_fatal_error(),
-            "CannotVerify must be NON-fatal (accept, don't fork on a slow node)"
+            "a lagging follower must never fork the chain",
         );
     });
 }
 
 #[test]
+fn check_inherent_rejects_differing_stake_changes_as_mismatch() {
+    new_test_ext().execute_with(|| {
+        bind_stake(S1, ALICE);
+        bind_stake(S2, BOB);
+        // Identical vault half (and identical commitment); the stake halves disagree. The commitment covers
+        // the VAULT candidate set only, so there is nothing to appeal to on the stake axis — a difference
+        // there is always a data mismatch.
+        let author_obs = snap_stake(1000, &[], &[(S1, 700_000_000)]);
+        let call = derive(&author_obs);
+        let local = snap_stake(1000, &[], &[(S2, 500_000_000)]);
+        let mut id = InherentData::new();
+        put_obs(&mut id, &local);
+        assert!(matches!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&call, &id),
+            Err(InherentError::Mismatch)
+        ));
+    });
+}
+
+#[test]
 fn observe_call_is_recognised_as_an_inherent() {
+    // Deliberately NOT wrapped in externalities: `is_inherent` must stay storage-free, or the pool would
+    // panic instead of rejecting. (`create_inherent` and `check_inherent` DO read state — they run inside
+    // the block builder and the import path, which both provide the parent's externalities.)
     let call = crate::Call::<Test>::observe {
         reference: cref(1),
         inputs_commitment: COMMIT,
-        entries: entries(&[]),
-        stake_entries: no_stake(),
-        role_entries: no_roles(),
+        changes: BoundedVec::new(),
+        stake_changes: BoundedVec::new(),
+        role_changes: BoundedVec::new(),
+        pending: 0,
     };
     assert!(<CardanoObserver as ProvideInherent>::is_inherent(&call));
 }
 
-// ── the Mandatory observe dispatchable (ENFORCE mode — weight is applied) ───────────────────────────
+// ── the vault axis ─────────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn observe_applies_weight_to_bound_accounts_and_skips_unbound() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         enforce();
-        bind(A, ALICE); // B is observed but NOT bound
-
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, 200_000_000), (B, 500_000_000)]),
-            no_stake(),
-            no_roles(),
+        bind(A, ALICE);
+        // B is bound to nobody.
+        observe_snapshot(&snap(
+            MAX_REFERENCE - 1,
+            &[(A, 200_000_000), (B, 300_000_000)],
         ));
-        assert_eq!(
-            weight_of(ALICE),
-            200_000_000,
-            "bound A credited at its lovelace"
-        );
+        assert_eq!(weight_of(ALICE), 200_000_000);
         assert!(
             !was_written(BOB),
-            "unbound B is skipped (bind precedes weight)"
+            "an unbound beacon is skipped, not an error"
         );
-        System::assert_has_event(
-            Event::ObservationApplied {
-                reference_slot: MAX_REFERENCE - 1,
-                credited: 1,
-                cleared: 0,
-                skipped: 0,
-                enforced: true,
-            }
-            .into(),
-        );
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::ObservationApplied {
+            reference_slot: MAX_REFERENCE - 1,
+            credited: 1,
+            cleared: 0,
+            skipped: 0,
+            enforced: true,
+        }));
     });
 }
 
@@ -391,15 +788,18 @@ fn observe_applies_min_lock_floor() {
     new_test_ext().execute_with(|| {
         enforce();
         bind(A, ALICE);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, MIN_LOCK - 1)]),
-            no_stake(),
-            no_roles(),
-        ));
-        assert_eq!(weight_of(ALICE), 0, "below MIN_LOCK ⇒ weight 0");
+        // Below MIN_LOCK maps to weight 0 — credited at zero, not skipped.
+        observe_snapshot(&snap(MAX_REFERENCE - 1, &[(A, MIN_LOCK - 1)]));
+        assert!(was_written(ALICE));
+        assert_eq!(weight_of(ALICE), 0);
+        // The basis records the FLOORED value, so a second sub-floor observation is a no-op rather than
+        // churning a change every block.
+        assert_eq!(LastObserved::<Test>::get(A), Some((ALICE, 0)));
+        assert_eq!(
+            change_counts(&derive(&snap(MAX_REFERENCE - 1, &[(A, MIN_LOCK - 2)]))),
+            (0, 0, 0),
+            "two different sub-floor amounts are the same applied weight",
+        );
     });
 }
 
@@ -410,450 +810,251 @@ fn observe_skips_over_max_stake_weight_without_bricking_the_block() {
         enforce();
         bind(A, ALICE);
         bind(B, BOB);
-        // A is fine; B is absurdly large (> MaxStakeWeight) ⇒ B is SKIPPED, the call still succeeds and
-        // the skip is COUNTED in the event (so it can't be silently mis-read as agreement).
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, 200_000_000), (B, MAX_STAKE_WEIGHT + 1)]),
-            no_stake(),
-            no_roles(),
-        ));
-        assert_eq!(weight_of(ALICE), 200_000_000, "A still credited");
+        // Built directly: `create_inherent` filters an over-cap entry out, so this is the payload a hand-
+        // built or hostile inherent would carry. It must SKIP, not `Err` — an `Err` from a Mandatory
+        // dispatch is `BadMandatory`, which discards the whole block.
+        assert_ok!(dispatch(crate::Call::observe {
+            reference: cref(MAX_REFERENCE - 1),
+            inputs_commitment: COMMIT,
+            changes: BoundedVec::truncate_from(vec![
+                (A, Some(200_000_000)),
+                (B, Some(MAX_STAKE_WEIGHT + 1)),
+            ]),
+            stake_changes: BoundedVec::new(),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        }));
+        assert_eq!(weight_of(ALICE), 200_000_000);
         assert!(
             !was_written(BOB),
-            "the over-cap entry is skipped, not consensus-pinned (block not bricked)"
+            "the over-cap value is not consensus-pinned"
         );
-        System::assert_has_event(
-            Event::ObservationApplied {
-                reference_slot: MAX_REFERENCE - 1,
-                credited: 1,
-                cleared: 0,
-                skipped: 1,
-                enforced: true,
-            }
-            .into(),
-        );
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::ObservationApplied {
+            reference_slot: MAX_REFERENCE - 1,
+            credited: 1,
+            cleared: 0,
+            skipped: 1,
+            enforced: true,
+        }));
     });
 }
 
 #[test]
-fn observe_clamps_accounts_that_dropped_out_to_zero() {
+fn a_beacon_absent_from_the_delta_keeps_its_weight() {
     new_test_ext().execute_with(|| {
+        // The inverse of the old full-snapshot rule, and the single most important semantic change in the
+        // payload: absence used to MEAN "unlocked", and now means "unchanged". A test that expresses an
+        // unlock by simply omitting a key would silently stop meaning what it says.
         enforce();
         bind(A, ALICE);
         bind(B, BOB);
-        // Block 1: both A and B locked.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 10),
-            COMMIT,
-            entries(&[(A, 200_000_000), (B, 300_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
-        assert_eq!(weight_of(ALICE), 200_000_000);
-        assert_eq!(weight_of(BOB), 300_000_000);
-        // Block 2: B unlocked (absent now) ⇒ clamped to 0; A persists.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 5),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
-        assert_eq!(weight_of(ALICE), 200_000_000, "A persists");
-        assert_eq!(
-            weight_of(BOB),
-            0,
-            "B (absent now) is clamped to 0 — the unlock path"
-        );
-    });
-}
-
-// ── FROZEN mode (the emergency revert, `set_enforcement(false)`) — verify but DO NOT touch weight ────
-
-#[test]
-fn frozen_mode_verifies_but_never_writes_weight() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        freeze(); // emergency revert: default is enforce, so flip it OFF for this test
-        bind(A, ALICE);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
-        // The WeightSink (talk-stake/microblog) is NEVER called while frozen — weight holds at its last value.
-        assert!(
-            !was_written(ALICE),
-            "frozen mode must NOT apply weight (the read is still verified)"
-        );
-        // The observation is still processed (counters + event), just not applied.
-        System::assert_has_event(
-            Event::ObservationApplied {
-                reference_slot: MAX_REFERENCE - 1,
-                credited: 1,
-                cleared: 0,
-                skipped: 0,
-                enforced: false,
-            }
-            .into(),
-        );
-    });
-}
-
-#[test]
-fn frozen_mode_clamp_still_writes_nothing() {
-    new_test_ext().execute_with(|| {
-        freeze();
-        bind(A, ALICE);
-        bind(B, BOB);
-        // Both observed while frozen — weight untouched.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 10),
-            COMMIT,
-            entries(&[(A, 200_000_000), (B, 300_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
-        assert!(!was_written(BOB));
-        // B drops out: the clamp path runs (counter tracked) but the WeightSink is STILL never called.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 5),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
-        assert!(!was_written(BOB), "no AllowedStake write while frozen");
-    });
-}
-
-#[test]
-fn re_enable_clamps_an_account_that_unlocked_during_a_freeze() {
-    // Regression: the clamp basis (`LastObserved`) must be HELD, not advanced, while frozen — otherwise an
-    // account that unlocks DURING the freeze is evicted from the basis before it is ever zeroed and stays
-    // stale-positive forever after re-enable (posting weight with no backing locked ADA).
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        enforce();
-        bind(A, ALICE);
-        bind(B, BOB);
-        // Block 1 (enforcing): both A and B locked and credited.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 20),
-            COMMIT,
-            entries(&[(A, 200_000_000), (B, 300_000_000)]),
-            no_stake(),
-            no_roles(),
+        observe_snapshot(&snap(
+            MAX_REFERENCE - 3,
+            &[(A, 200_000_000), (B, 300_000_000)],
         ));
         assert_eq!(weight_of(BOB), 300_000_000);
 
-        // Emergency freeze, then B unlocks DURING the freeze (absent from the observation).
-        freeze();
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 15),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
+        // A delta that mentions only A. B is untouched.
+        assert_ok!(dispatch(crate::Call::observe {
+            reference: cref(MAX_REFERENCE - 2),
+            inputs_commitment: COMMIT,
+            changes: BoundedVec::truncate_from(vec![(A, Some(250_000_000))]),
+            stake_changes: BoundedVec::new(),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        }));
+        assert_eq!(weight_of(ALICE), 250_000_000);
         assert_eq!(
             weight_of(BOB),
             300_000_000,
-            "frozen: B's weight is held at its last value (not yet zeroed)"
-        );
-
-        // Re-enable: B is still absent. The held basis must still contain B, so it is clamped to 0 now.
-        enforce();
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 10),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
-        assert_eq!(
-            weight_of(ALICE),
-            200_000_000,
-            "A persists across the freeze"
-        );
-        assert_eq!(
-            weight_of(BOB),
-            0,
-            "B, which unlocked mid-freeze, is clamped on re-enable — not stranded stale-positive"
+            "absence from a delta is not an unlock",
         );
     });
 }
 
 #[test]
-fn re_enable_clamps_a_stake_cred_that_dropped_out_during_a_freeze() {
-    // The voting-power analog of the vault regression above: `LastObservedStake` must be held while frozen.
+fn an_explicit_none_clears_a_beacon() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         enforce();
-        bind_stake(S1, ALICE);
-        bind_stake(S2, BOB);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 20),
-            COMMIT,
-            entries(&[]),
-            stk(&[(S1, 800_000_000), (S2, 300_000_000)]),
-            no_roles(),
-        ));
-        assert_eq!(voting_power_of(BOB), 300_000_000);
-
-        freeze();
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 15),
-            COMMIT,
-            entries(&[]),
-            stk(&[(S1, 800_000_000)]),
-            no_roles(),
-        ));
-        assert_eq!(
-            voting_power_of(BOB),
-            300_000_000,
-            "frozen: BOB's voting power is held"
-        );
-
-        enforce();
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 10),
-            COMMIT,
-            entries(&[]),
-            stk(&[(S1, 800_000_000)]),
-            no_roles(),
-        ));
-        assert_eq!(
-            voting_power_of(BOB),
-            0,
-            "the stake cred that unbound mid-freeze is clamped on re-enable"
-        );
-    });
-}
-
-// ── the enforce flag setter ───────────────────────────────────────────────────────────────────────
-
-#[test]
-fn set_enforcement_is_gated_by_the_enforce_origin() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        // The flag DEFAULTS to true (enforce is the normal state; the observer is the sole writer).
-        assert!(
-            crate::EnforceWeight::<Test>::get(),
-            "EnforceWeight defaults to true"
-        );
-        // A signed (non-root) caller cannot flip it (EnforceOrigin = EnsureRoot in the mock).
-        assert!(CardanoObserver::set_enforcement(RuntimeOrigin::signed(ALICE), false).is_err());
-        assert!(
-            crate::EnforceWeight::<Test>::get(),
-            "flag unchanged after a rejected call"
-        );
-        // Root can FREEZE it (the emergency revert)…
-        assert_ok!(CardanoObserver::set_enforcement(
-            RuntimeOrigin::root(),
-            false
-        ));
-        assert!(!crate::EnforceWeight::<Test>::get(), "root froze weight");
-        System::assert_last_event(Event::EnforcementSet { enabled: false }.into());
-        // …and re-enable.
-        assert_ok!(CardanoObserver::set_enforcement(
-            RuntimeOrigin::root(),
-            true
-        ));
-        assert!(crate::EnforceWeight::<Test>::get());
-    });
-}
-
-#[test]
-fn set_enforcement_is_not_an_inherent() {
-    // Only `observe` may be an inherent (the mutual-exclusion invariant) — the setter is a normal,
-    // pool-admissible governance call and must NOT be discriminated as an inherent.
-    let call = crate::Call::<Test>::set_enforcement { enabled: true };
-    assert!(!<CardanoObserver as ProvideInherent>::is_inherent(&call));
-}
-
-#[test]
-fn observe_skips_a_regressing_reference_without_discarding_the_block() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
         bind(A, ALICE);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 5),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            no_roles(),
+        bind(B, BOB);
+        observe_snapshot(&snap(
+            MAX_REFERENCE - 3,
+            &[(A, 200_000_000), (B, 300_000_000)],
         ));
-        assert_eq!(weight_of(ALICE), 200_000_000);
-        assert_eq!(crate::LastAppliedAt::<Test>::get(), 1);
 
-        // A later block proposing an OLDER reference is SKIPPED, never REJECTED. `observe` is
-        // Mandatory: an Err here is `BadMandatory`, which discards the whole BLOCK — and because the
-        // reference is a pure function of the PARENT's slot, the discarded block leaves the parent (and
-        // so the next reference) unchanged, wedging authoring permanently. Raising `StabilitySlots` in
-        // a runtime upgrade is exactly that trigger.
-        roll_to(2);
-        // (an Err here would be `BadMandatory` — the whole block discarded)
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 6),
-            COMMIT,
-            entries(&[(A, 999_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
-        // ...and it applied NOTHING: the stale entry never reached the ledger,
-        assert_eq!(
-            weight_of(ALICE),
-            200_000_000,
-            "a skipped observation must not apply its entries",
-        );
-        // `LastReference` was not moved backwards (the anti-regression guarantee is preserved by
-        // declining to apply, not by killing the block),
-        assert_eq!(
-            crate::LastReference::<Test>::get(),
-            Some(cref(MAX_REFERENCE - 5)),
-        );
-        // and `LastAppliedAt` was NOT stamped, so a persistent skip still latches the stall alarm.
-        assert_eq!(crate::LastAppliedAt::<Test>::get(), 1);
-    });
-}
-
-#[test]
-fn a_persistent_regressed_reference_latches_the_stall_alarm_instead_of_wedging() {
-    // The recovery story for a raised `StabilitySlots`: authoring CONTINUES, weight freezes at its
-    // last value, and the freeze becomes loud on-chain rather than silently bricking the chain.
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        bind(A, ALICE);
-        observe_once(MAX_REFERENCE);
-        assert_eq!(crate::LastAppliedAt::<Test>::get(), 1);
-
-        // Every subsequent block carries a reference below the one already applied.
-        for b in 2..=(1 + STALL_AFTER + 1) {
-            roll_to(b);
-            assert_ok!(CardanoObserver::observe(
-                RuntimeOrigin::none(),
-                cref(MAX_REFERENCE - 100),
-                COMMIT,
-                entries(&[(A, 200_000_000)]),
-                no_stake(),
-                no_roles(),
-            ));
+        // B unlocks: it leaves the snapshot, and the diff turns that into an explicit `(B, None)`.
+        let call = derive(&snap(MAX_REFERENCE - 2, &[(A, 200_000_000)]));
+        match &call {
+            crate::Call::observe { changes, .. } => {
+                assert_eq!(changes.to_vec(), vec![(B, None)])
+            }
+            _ => panic!("expected observe call"),
         }
-        assert!(
-            crate::Stalled::<Test>::get(),
-            "a persistent skip must surface as ObservationStalled, not as a silent freeze",
-        );
-        assert_eq!(stalled_events(), 1);
+        assert_ok!(dispatch(call));
+        assert_eq!(weight_of(BOB), 0);
+        assert_eq!(weight_of(ALICE), 200_000_000, "A is untouched");
+        assert!(LastObserved::<Test>::get(B).is_none());
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::ObservationApplied {
+            reference_slot: MAX_REFERENCE - 2,
+            credited: 0,
+            cleared: 1,
+            skipped: 0,
+            enforced: true,
+        }));
     });
 }
 
 #[test]
-fn observe_skips_a_too_fresh_reference() {
+fn an_unlock_zeroes_the_account_from_the_basis_not_the_resolver() {
     new_test_ext().execute_with(|| {
-        System::set_block_number(1);
+        // A beacon whose identity binding is revoked (or rebound) no longer resolves to the account that
+        // holds the weight. The unlock has to reach that account anyway, or `AllowedStake` is left standing
+        // with no locked ADA behind it — so the account comes out of the BASIS.
+        enforce();
         bind(A, ALICE);
-        // A reference fresher than the stability window allows (closer to `now` than STABILITY_SLOTS)
-        // is skipped, not rejected — same Mandatory discipline as the regression bound above.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE + 1),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
+        observe_snapshot(&snap(MAX_REFERENCE - 3, &[(A, 200_000_000)]));
+        assert_eq!(weight_of(ALICE), 200_000_000);
+
+        // The binding moves to BOB (a revoke-and-rebind), and A unlocks in the same window.
+        bind(A, BOB);
+        assert_ok!(dispatch(crate::Call::observe {
+            reference: cref(MAX_REFERENCE - 2),
+            inputs_commitment: COMMIT,
+            changes: BoundedVec::truncate_from(vec![(A, None)]),
+            stake_changes: BoundedVec::new(),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        }));
         assert_eq!(
             weight_of(ALICE),
             0,
-            "a too-fresh observation must not apply its entries",
+            "the account that HELD the weight is the one zeroed",
         );
-        assert!(crate::LastReference::<Test>::get().is_none());
-        assert_eq!(crate::LastAppliedAt::<Test>::get(), 0);
-        // Exactly at the boundary is allowed.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            no_roles(),
-        ));
-        assert_eq!(weight_of(ALICE), 200_000_000);
+        assert!(!was_written(BOB), "and the new binding is not touched");
     });
 }
 
 #[test]
-fn observe_requires_the_none_origin() {
+fn a_rebound_beacon_is_re_applied_to_the_new_account() {
     new_test_ext().execute_with(|| {
-        // An inherent must be dispatched with the None origin — a signed caller is rejected (it also
-        // can never reach the pool, since is_inherent is true; this is defence-in-depth).
-        assert!(CardanoObserver::observe(
-            RuntimeOrigin::signed(ALICE),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            no_roles(),
-        )
-        .is_err());
+        // The account is part of the diff comparison, not just the weight — otherwise a beacon rebound to
+        // a different account at an unchanged lovelace would produce no change and the new owner would
+        // never be credited.
+        enforce();
+        bind(A, ALICE);
+        let obs = snap(MAX_REFERENCE - 3, &[(A, 200_000_000)]);
+        observe_snapshot(&obs);
+        assert_eq!(weight_of(ALICE), 200_000_000);
+
+        bind(A, BOB);
+        let call = derive(&obs);
+        assert_eq!(change_counts(&call), (1, 0, 0));
+        assert_ok!(dispatch(call));
+        assert_eq!(weight_of(BOB), 200_000_000);
+        assert_eq!(LastObserved::<Test>::get(A), Some((BOB, 200_000_000)));
     });
 }
 
-// ── VOTING POWER (epoch_stake) projection — the trustless voting weight ──────────────────────────────
+#[test]
+fn a_credit_and_a_clear_on_the_same_account_apply_in_the_safe_order() {
+    new_test_ext().execute_with(|| {
+        // Two DIFFERENT beacons can name the SAME account: the basis records the account a beacon was
+        // applied to, so a revoked beacon keeps a row naming it while the account's NEW beacon resolves
+        // to it. `observe` credits from a fresh resolve but clears from the BASIS row, so if the clear
+        // applied last it would zero the account it had just credited — and because the basis then says
+        // the credit landed, the next diff sees `desired == basis` and NEVER re-emits it. That is a
+        // funded lock stranded at zero weight for ever, with no event and no alarm.
+        //
+        // B sorts AFTER A by beacon bytes, so a plain key sort would put the clear last. The page order
+        // is what makes this safe; assert the order explicitly, not just the outcome.
+        enforce();
+        bind(B, ALICE);
+        observe_snapshot(&snap(MAX_REFERENCE - 4, &[(B, 200_000_000)]));
+        assert_eq!(weight_of(ALICE), 200_000_000);
+
+        // Committee `revoke` frees the ACCOUNT side (only the identity is tombstoned), and ALICE
+        // re-binds to a new Cardano wallet whose beacon A already holds a 300 ADA vault UTxO.
+        unbind(B);
+        bind(A, ALICE);
+
+        let call = derive(&snap(MAX_REFERENCE - 3, &[(A, 300_000_000)]));
+        match &call {
+            crate::Call::observe { changes, .. } => assert_eq!(
+                changes.to_vec(),
+                vec![(B, None), (A, Some(300_000_000))],
+                "the clear pages ahead of the credit, so the credit is the last write",
+            ),
+            _ => panic!("expected observe call"),
+        }
+        assert_ok!(dispatch(call));
+        assert_eq!(
+            weight_of(ALICE),
+            300_000_000,
+            "ALICE holds a valid 300 ADA lock and must end the block with that weight",
+        );
+        assert_eq!(LastObserved::<Test>::get(A), Some((ALICE, 300_000_000)));
+        assert!(LastObserved::<Test>::get(B).is_none());
+    });
+}
+
+#[test]
+fn a_credit_and_a_clear_on_the_same_account_apply_in_the_safe_order_on_the_stake_axis() {
+    new_test_ext().execute_with(|| {
+        // The voting-power analog of the test above, and the same reasoning: `LastObservedStake` records
+        // the account, the clear reads it from there, so a stale credential and a live one can both name
+        // one account. S2 sorts after S1.
+        enforce();
+        bind_stake(S2, ALICE);
+        observe_snapshot(&snap_stake(MAX_REFERENCE - 4, &[], &[(S2, 900_000_000)]));
+        assert_eq!(voting_power_of(ALICE), 900_000_000);
+
+        unbind_stake(S2);
+        bind_stake(S1, ALICE);
+
+        let call = derive(&snap_stake(MAX_REFERENCE - 3, &[], &[(S1, 700_000_000)]));
+        match &call {
+            crate::Call::observe { stake_changes, .. } => assert_eq!(
+                stake_changes.to_vec(),
+                vec![(S2, None), (S1, Some(700_000_000))],
+                "the clear pages ahead of the credit on this axis too",
+            ),
+            _ => panic!("expected observe call"),
+        }
+        assert_ok!(dispatch(call));
+        assert_eq!(voting_power_of(ALICE), 700_000_000);
+        assert_eq!(
+            LastObservedStake::<Test>::get(S1),
+            Some((ALICE, 700_000_000))
+        );
+        assert!(LastObservedStake::<Test>::get(S2).is_none());
+    });
+}
+
+// ── the voting-power axis ──────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn observe_applies_voting_power_to_bound_stake_creds_and_skips_unbound() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         enforce();
-        bind_stake(S1, ALICE); // S2 is observed but NOT stake-bound
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[]),
-            stk(&[(S1, 800_000_000), (S2, 999_000_000)]),
-            no_roles(),
+        bind_stake(S1, ALICE);
+        // No MIN_LOCK floor on this axis — total stake counts at any size.
+        observe_snapshot(&snap_stake(
+            MAX_REFERENCE - 1,
+            &[],
+            &[(S1, 700_000_000), (S2, 5)],
         ));
-        // No MIN_LOCK floor: the full observed stake is the voting power.
-        assert_eq!(
-            voting_power_of(ALICE),
-            800_000_000,
-            "bound S1 → ALICE's voting power = its total stake"
-        );
-        assert!(
-            !vp_was_written(BOB),
-            "unbound S2 is skipped (bind precedes voting power)"
-        );
-        System::assert_has_event(
-            Event::VotingPowerObserved {
-                reference_slot: MAX_REFERENCE - 1,
-                credited: 1,
-                cleared: 0,
-                skipped: 0,
-                enforced: true,
-            }
-            .into(),
-        );
+        assert_eq!(voting_power_of(ALICE), 700_000_000);
+        assert!(!vp_was_written(BOB));
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::VotingPowerObserved {
+            reference_slot: MAX_REFERENCE - 1,
+            credited: 1,
+            cleared: 0,
+            skipped: 0,
+            enforced: true,
+        }));
     });
 }
 
@@ -864,63 +1065,154 @@ fn observe_skips_voting_power_over_max_without_bricking_the_block() {
         enforce();
         bind_stake(S1, ALICE);
         bind_stake(S2, BOB);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[]),
-            stk(&[(S1, 800_000_000), (S2, MAX_STAKE_WEIGHT + 1)]),
-            no_roles(),
-        ));
-        assert_eq!(voting_power_of(ALICE), 800_000_000);
-        assert!(
-            !vp_was_written(BOB),
-            "the over-cap stake is skipped (not consensus-pinned, block not bricked)"
-        );
-        System::assert_has_event(
-            Event::VotingPowerObserved {
-                reference_slot: MAX_REFERENCE - 1,
-                credited: 1,
-                cleared: 0,
-                skipped: 1,
-                enforced: true,
-            }
-            .into(),
-        );
+        assert_ok!(dispatch(crate::Call::observe {
+            reference: cref(MAX_REFERENCE - 1),
+            inputs_commitment: COMMIT,
+            changes: BoundedVec::new(),
+            stake_changes: BoundedVec::truncate_from(vec![
+                (S1, Some(700_000_000)),
+                (S2, Some(MAX_STAKE_WEIGHT + 1)),
+            ]),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        }));
+        assert_eq!(voting_power_of(ALICE), 700_000_000);
+        assert!(!vp_was_written(BOB));
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::VotingPowerObserved {
+            reference_slot: MAX_REFERENCE - 1,
+            credited: 1,
+            cleared: 0,
+            skipped: 1,
+            enforced: true,
+        }));
     });
 }
 
 #[test]
-fn observe_clamps_dropped_stake_creds_to_zero() {
+fn a_dropped_stake_cred_is_zeroed_by_an_explicit_none() {
     new_test_ext().execute_with(|| {
         enforce();
         bind_stake(S1, ALICE);
         bind_stake(S2, BOB);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 10),
-            COMMIT,
-            entries(&[]),
-            stk(&[(S1, 800_000_000), (S2, 300_000_000)]),
-            no_roles(),
+        observe_snapshot(&snap_stake(
+            MAX_REFERENCE - 3,
+            &[],
+            &[(S1, 700_000_000), (S2, 500_000_000)],
         ));
-        assert_eq!(voting_power_of(ALICE), 800_000_000);
-        assert_eq!(voting_power_of(BOB), 300_000_000);
-        // S2 drops out (its owner re-delegated / withdrew) ⇒ clamped to 0; S1 persists.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 5),
-            COMMIT,
-            entries(&[]),
-            stk(&[(S1, 800_000_000)]),
-            no_roles(),
-        ));
-        assert_eq!(voting_power_of(ALICE), 800_000_000, "S1 persists");
-        assert_eq!(
-            voting_power_of(BOB),
-            0,
-            "the dropped stake credential is clamped to 0"
+        assert_eq!(voting_power_of(BOB), 500_000_000);
+
+        let call = derive(&snap_stake(MAX_REFERENCE - 2, &[], &[(S1, 700_000_000)]));
+        match &call {
+            crate::Call::observe { stake_changes, .. } => {
+                assert_eq!(stake_changes.to_vec(), vec![(S2, None)])
+            }
+            _ => panic!("expected observe call"),
+        }
+        assert_ok!(dispatch(call));
+        assert_eq!(voting_power_of(BOB), 0);
+        assert_eq!(voting_power_of(ALICE), 700_000_000);
+        assert!(LastObservedStake::<Test>::get(S2).is_none());
+    });
+}
+
+// ── the freeze / re-enable discipline ──────────────────────────────────────────────────────────────
+
+#[test]
+fn frozen_mode_verifies_but_never_writes_weight() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        bind(A, ALICE);
+        freeze();
+        observe_snapshot(&snap(MAX_REFERENCE - 1, &[(A, 200_000_000)]));
+        assert!(
+            !was_written(ALICE),
+            "frozen: the read is verified but no weight is applied",
         );
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::ObservationApplied {
+            reference_slot: MAX_REFERENCE - 1,
+            credited: 1,
+            cleared: 0,
+            skipped: 0,
+            enforced: false,
+        }));
+    });
+}
+
+#[test]
+fn a_freeze_holds_the_basis_so_the_same_delta_is_re_derived_every_block() {
+    new_test_ext().execute_with(|| {
+        // The mechanism the three `re_enable_*` tests below depend on, stated on its own. Freezing gates
+        // the BASIS writes as well as the sink writes, so the diff is taken against unchanged state and
+        // re-derives the identical change set. Gating only the sink would record the change as applied
+        // while never applying it — and it would never be re-sent.
+        bind(A, ALICE);
+        freeze();
+        let obs = snap(MAX_REFERENCE - 3, &[(A, 200_000_000)]);
+        observe_snapshot(&obs);
+        assert!(LastObserved::<Test>::get(A).is_none(), "basis held");
+        assert_eq!(
+            change_counts(&derive(&obs)),
+            (1, 0, 0),
+            "the same change is still outstanding",
+        );
+
+        enforce();
+        observe_snapshot(&obs);
+        assert_eq!(weight_of(ALICE), 200_000_000);
+        assert_eq!(LastObserved::<Test>::get(A), Some((ALICE, 200_000_000)));
+    });
+}
+
+#[test]
+fn re_enable_clamps_an_account_that_unlocked_during_a_freeze() {
+    new_test_ext().execute_with(|| {
+        enforce();
+        bind(A, ALICE);
+        bind(B, BOB);
+        observe_snapshot(&snap(
+            MAX_REFERENCE - 5,
+            &[(A, 200_000_000), (B, 300_000_000)],
+        ));
+        assert_eq!(weight_of(BOB), 300_000_000);
+
+        // B unlocks DURING a freeze. Nothing is written, and — critically — the basis still says B is
+        // credited, so the unlock is still outstanding.
+        freeze();
+        observe_snapshot(&snap(MAX_REFERENCE - 4, &[(A, 200_000_000)]));
+        assert_eq!(
+            weight_of(BOB),
+            300_000_000,
+            "frozen: weight holds at its last value",
+        );
+
+        // Re-enabling applies it. Without the held basis, B would have been recorded as already handled
+        // and would keep a stale-positive weight for ever: voice not backed by locked ADA.
+        enforce();
+        observe_snapshot(&snap(MAX_REFERENCE - 3, &[(A, 200_000_000)]));
+        assert_eq!(weight_of(BOB), 0);
+    });
+}
+
+#[test]
+fn re_enable_clamps_a_stake_cred_that_dropped_out_during_a_freeze() {
+    new_test_ext().execute_with(|| {
+        enforce();
+        bind_stake(S1, ALICE);
+        bind_stake(S2, BOB);
+        observe_snapshot(&snap_stake(
+            MAX_REFERENCE - 5,
+            &[],
+            &[(S1, 700_000_000), (S2, 300_000_000)],
+        ));
+        assert_eq!(voting_power_of(BOB), 300_000_000);
+
+        freeze();
+        observe_snapshot(&snap_stake(MAX_REFERENCE - 4, &[], &[(S1, 700_000_000)]));
+        assert_eq!(voting_power_of(BOB), 300_000_000);
+
+        enforce();
+        observe_snapshot(&snap_stake(MAX_REFERENCE - 3, &[], &[(S1, 700_000_000)]));
+        assert_eq!(voting_power_of(BOB), 0);
     });
 }
 
@@ -928,81 +1220,201 @@ fn observe_clamps_dropped_stake_creds_to_zero() {
 fn frozen_mode_verifies_voting_power_but_never_writes_it() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        freeze(); // emergency revert
         bind_stake(S1, ALICE);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[]),
-            stk(&[(S1, 800_000_000)]),
-            no_roles(),
-        ));
-        assert!(
-            !vp_was_written(ALICE),
-            "frozen mode must NOT apply voting power"
+        freeze();
+        observe_snapshot(&snap_stake(MAX_REFERENCE - 1, &[], &[(S1, 700_000_000)]));
+        assert!(!vp_was_written(ALICE));
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::VotingPowerObserved {
+            reference_slot: MAX_REFERENCE - 1,
+            credited: 1,
+            cleared: 0,
+            skipped: 0,
+            enforced: false,
+        }));
+    });
+}
+
+// ── reference bounds ───────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn observe_skips_a_regressing_reference_without_discarding_the_block() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind(A, ALICE);
+        observe_snapshot(&snap(MAX_REFERENCE - 5, &[(A, 200_000_000)]));
+        assert_eq!(LastReference::<Test>::get(), Some(cref(MAX_REFERENCE - 5)));
+        let applied_at = crate::LastAppliedAt::<Test>::get();
+
+        // An OLDER reference is skipped, not `Err`'d. An `Err` from a Mandatory dispatch is
+        // `BadMandatory`, which discards the whole block — and since the reference is a pure function of
+        // the parent, the next slot would recompute the same one and fail identically, for ever.
+        System::set_block_number(5);
+        assert_ok!(dispatch(crate::Call::observe {
+            reference: cref(MAX_REFERENCE - 50),
+            inputs_commitment: COMMIT,
+            changes: BoundedVec::truncate_from(vec![(A, Some(999_000_000))]),
+            stake_changes: BoundedVec::new(),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        }));
+        assert_eq!(weight_of(ALICE), 200_000_000, "nothing applied");
+        assert_eq!(
+            LastReference::<Test>::get(),
+            Some(cref(MAX_REFERENCE - 5)),
+            "and the frontier is not rewound",
         );
-        System::assert_has_event(
-            Event::VotingPowerObserved {
-                reference_slot: MAX_REFERENCE - 1,
-                credited: 1,
-                cleared: 0,
-                skipped: 0,
-                enforced: false,
-            }
-            .into(),
+        assert_eq!(
+            crate::LastAppliedAt::<Test>::get(),
+            applied_at,
+            "a skipped observation does not stamp the clock, so a persistent skip latches the alarm",
         );
     });
 }
 
 #[test]
-fn check_inherent_rejects_differing_stake_entries_as_mismatch() {
+fn observe_skips_a_too_fresh_reference() {
     new_test_ext().execute_with(|| {
-        // Same reference + same vault entries + same commitment, but the author's stake_entries differ from
-        // the importer's epoch_stake read ⇒ a data Mismatch (a DIRECT read has no reduction to diverge).
-        let local = CardanoObservation {
-            reference: cref(1000),
+        enforce();
+        bind(A, ALICE);
+        // One slot inside the Cardano rollback window.
+        assert_ok!(dispatch(crate::Call::observe {
+            reference: cref(MAX_REFERENCE + 1),
             inputs_commitment: COMMIT,
-            entries: vec![(A, 200_000_000)],
-            stake_entries: vec![(S1, 800_000_000)],
-            role_entries: vec![],
-        };
-        let mut id = InherentData::new();
-        put_obs(&mut id, &local);
-        let lying = crate::Call::<Test>::observe {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: entries(&[(A, 200_000_000)]),
-            stake_entries: stk(&[(S1, 999_000_000)]), // different stake read
-            role_entries: no_roles(),
-        };
-        let err = <CardanoObserver as ProvideInherent>::check_inherent(&lying, &id).unwrap_err();
-        assert!(
-            matches!(err, InherentError::Mismatch),
-            "a differing epoch_stake read is a data Mismatch, not ComputeDiverged"
-        );
-        assert!(err.is_fatal_error());
+            changes: BoundedVec::truncate_from(vec![(A, Some(200_000_000))]),
+            stake_changes: BoundedVec::new(),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        }));
+        assert!(!was_written(ALICE));
+        assert!(LastReference::<Test>::get().is_none());
 
-        // Identical stake_entries (and vault) ⇒ accepted.
-        let honest = crate::Call::<Test>::observe {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: entries(&[(A, 200_000_000)]),
-            stake_entries: stk(&[(S1, 800_000_000)]),
-            role_entries: no_roles(),
-        };
-        assert!(<CardanoObserver as ProvideInherent>::check_inherent(&honest, &id).is_ok());
+        // Exactly at the bound is accepted — the boundary is pinned.
+        observe_snapshot(&snap(MAX_REFERENCE, &[(A, 200_000_000)]));
+        assert_eq!(weight_of(ALICE), 200_000_000);
+        assert_eq!(LastReference::<Test>::get(), Some(cref(MAX_REFERENCE)));
     });
 }
 
-// ── the on-chain stall alarm (`Stalled` / `LastAppliedAt`) ──────────────────────────────────────────
-//
-// An observation over `MaxObserved` makes `create_inherent` abstain: the whole inherent drops, the sole
-// weight writer freezes chain-wide, and before this alarm the only evidence was a node-side log line. These
-// pin the latch's contract — it fires ONCE, it does not fire while observations land, and an upgraded
-// chain's history is not read as one long stall.
+#[test]
+fn observe_requires_the_none_origin() {
+    new_test_ext().execute_with(|| {
+        // Defence in depth on top of `is_inherent` (which already makes this pool-inadmissible).
+        assert!(CardanoObserver::observe(
+            RuntimeOrigin::signed(ALICE),
+            cref(MAX_REFERENCE - 1),
+            COMMIT,
+            BoundedVec::new(),
+            BoundedVec::new(),
+            BoundedVec::new(),
+            0,
+        )
+        .is_err());
+    });
+}
 
-/// Run `on_initialize` for every block up to `to`, as `Executive` does — before that block's inherents.
+// ── idempotence and re-execution ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn applying_the_same_delta_twice_is_idempotent() {
+    new_test_ext().execute_with(|| {
+        // A Substrate re-org RE-EXECUTES the Mandatory `observe`. Every change is an absolute SET (or an
+        // absolute clear), never an increment, so replaying one lands on the same state.
+        enforce();
+        bind(A, ALICE);
+        bind(B, BOB);
+        observe_snapshot(&snap(
+            MAX_REFERENCE - 5,
+            &[(A, 200_000_000), (B, 300_000_000)],
+        ));
+        let call = derive(&snap(MAX_REFERENCE - 4, &[(A, 250_000_000)]));
+
+        assert_ok!(dispatch(call.clone()));
+        let after_first = (weight_of(ALICE), weight_of(BOB));
+        assert_eq!(after_first, (250_000_000, 0));
+
+        assert_ok!(dispatch(call));
+        assert_eq!(
+            (weight_of(ALICE), weight_of(BOB)),
+            after_first,
+            "replaying a delta converges on the same state, it does not accumulate",
+        );
+        assert_eq!(LastObserved::<Test>::get(A), Some((ALICE, 250_000_000)));
+        assert!(LastObserved::<Test>::get(B).is_none());
+    });
+}
+
+#[test]
+fn a_delta_replayed_against_a_changed_base_still_lands_on_the_right_state() {
+    new_test_ext().execute_with(|| {
+        // The sharper version of the above, and the one a delta design actually has to answer: replaying a
+        // change against a DIFFERENT basis. Because each change carries an absolute value and the basis is
+        // rewritten from it (rather than adjusted by it), the outcome is the value in the change either
+        // way — and the next block's diff re-derives anything the replay left behind.
+        enforce();
+        bind(A, ALICE);
+        observe_snapshot(&snap(MAX_REFERENCE - 5, &[(A, 200_000_000)]));
+        let call = derive(&snap(MAX_REFERENCE - 4, &[(A, 250_000_000)]));
+
+        // Something else moves the basis on before the replay (the re-org's competing branch).
+        observe_snapshot(&snap(MAX_REFERENCE - 4, &[(A, 900_000_000)]));
+        assert_eq!(weight_of(ALICE), 900_000_000);
+
+        assert_ok!(dispatch(call));
+        assert_eq!(weight_of(ALICE), 250_000_000);
+        assert_eq!(
+            LastObserved::<Test>::get(A),
+            Some((ALICE, 250_000_000)),
+            "the basis agrees with what was actually applied, so the next diff is correct",
+        );
+        // And the next honest block puts it right.
+        observe_snapshot(&snap(MAX_REFERENCE - 3, &[(A, 900_000_000)]));
+        assert_eq!(weight_of(ALICE), 900_000_000);
+    });
+}
+
+// ── set_enforcement ────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn set_enforcement_is_gated_by_the_enforce_origin() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert!(
+            crate::EnforceWeight::<Test>::get(),
+            "the observer is the sole weight writer from genesis, so enforcement defaults ON",
+        );
+        assert!(
+            CardanoObserver::set_enforcement(RuntimeOrigin::signed(ALICE), false).is_err(),
+            "a signed caller cannot flip the emergency freeze",
+        );
+        assert!(crate::EnforceWeight::<Test>::get(), "and it is unchanged");
+
+        assert_ok!(CardanoObserver::set_enforcement(
+            RuntimeOrigin::root(),
+            false
+        ));
+        assert!(!crate::EnforceWeight::<Test>::get());
+        System::assert_last_event(RuntimeEvent::CardanoObserver(Event::EnforcementSet {
+            enabled: false,
+        }));
+        assert_ok!(CardanoObserver::set_enforcement(
+            RuntimeOrigin::root(),
+            true
+        ));
+        assert!(crate::EnforceWeight::<Test>::get());
+    });
+}
+
+#[test]
+fn set_enforcement_is_not_an_inherent() {
+    // The mutual-exclusion invariant: only `observe` is an inherent, so `set_enforcement` stays a normal
+    // pool-admissible governance call.
+    let call = crate::Call::<Test>::set_enforcement { enabled: false };
+    assert!(!<CardanoObserver as ProvideInherent>::is_inherent(&call));
+}
+
+// ── the stall alarm ────────────────────────────────────────────────────────────────────────────────
+
 fn roll_to(to: u64) {
     let mut n = System::block_number();
     while n < to {
@@ -1024,16 +1436,32 @@ fn stalled_events() -> usize {
         .count()
 }
 
-/// A well-formed observation of a single bound identity, applied at the current block.
-fn observe_once(slot: u64) {
-    assert_ok!(CardanoObserver::observe(
-        RuntimeOrigin::none(),
-        cref(slot),
-        COMMIT,
-        entries(&[(A, 200_000_000)]),
-        no_stake(),
-        no_roles(),
-    ));
+#[test]
+fn a_persistent_regressed_reference_latches_the_stall_alarm_instead_of_wedging() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        bind(A, ALICE);
+        observe_once(MAX_REFERENCE - 5);
+        // Every following block proposes an OLDER reference, so every one skips and none stamps the clock.
+        for n in 2..=(STALL_AFTER + 2) {
+            System::set_block_number(n);
+            CardanoObserver::on_initialize(n);
+            assert_ok!(dispatch(crate::Call::observe {
+                reference: cref(MAX_REFERENCE - 50),
+                inputs_commitment: COMMIT,
+                changes: BoundedVec::new(),
+                stake_changes: BoundedVec::new(),
+                role_changes: BoundedVec::new(),
+                pending: 0,
+            }));
+        }
+        assert!(crate::Stalled::<Test>::get());
+        assert_eq!(
+            stalled_events(),
+            1,
+            "latched: once per episode, not per block"
+        );
+    });
 }
 
 #[test]
@@ -1041,53 +1469,44 @@ fn stall_alarm_latches_exactly_once_and_clears_on_the_next_observation() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         bind(A, ALICE);
-        observe_once(MAX_REFERENCE - 1);
+        observe_once(MAX_REFERENCE - 100);
         assert_eq!(crate::LastAppliedAt::<Test>::get(), 1);
-        assert!(!crate::Stalled::<Test>::get());
 
-        // A gap of exactly StallAfter is not yet a stall.
+        // A gap of exactly StallAfter is not a stall.
         roll_to(1 + STALL_AFTER);
         assert!(!crate::Stalled::<Test>::get());
         assert_eq!(stalled_events(), 0);
 
-        // One block past it, the alarm latches.
-        roll_to(1 + STALL_AFTER + 1);
+        // One block past it latches, exactly once.
+        roll_to(2 + STALL_AFTER);
         assert!(crate::Stalled::<Test>::get());
         assert_eq!(stalled_events(), 1);
-        System::assert_last_event(
-            Event::ObservationStalled {
-                last_applied: 1,
-                blocks: STALL_AFTER + 1,
-            }
-            .into(),
-        );
+        System::assert_last_event(RuntimeEvent::CardanoObserver(Event::ObservationStalled {
+            last_applied: 1,
+            blocks: STALL_AFTER + 1,
+        }));
+        roll_to(5 + STALL_AFTER);
+        assert_eq!(stalled_events(), 1, "still once");
 
-        // Latched: every further block is silent. The alarm is a latch, not a per-block event.
-        roll_to(1 + STALL_AFTER + 20);
-        assert!(crate::Stalled::<Test>::get());
-        assert_eq!(
-            stalled_events(),
-            1,
-            "the alarm fires ONCE per episode, not once per block"
-        );
-
-        // The next accepted observation clears it and reports the whole gap.
+        // The next applied observation clears it and reports the whole gap.
         let now = System::block_number();
-        observe_once(MAX_REFERENCE);
+        observe_once(MAX_REFERENCE - 99);
         assert!(!crate::Stalled::<Test>::get());
-        assert_eq!(crate::LastAppliedAt::<Test>::get(), now);
-        System::assert_has_event(Event::ObservationResumed { blocks: now - 1 }.into());
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::ObservationResumed {
+            blocks: now - 1,
+        }));
     });
 }
 
 #[test]
 fn no_alarm_while_observations_keep_landing() {
     new_test_ext().execute_with(|| {
+        System::set_block_number(1);
         bind(A, ALICE);
         for n in 1..=(STALL_AFTER * 3) {
             System::set_block_number(n);
             CardanoObserver::on_initialize(n);
-            observe_once(MAX_REFERENCE - 1);
+            observe_once(MAX_REFERENCE - 200 + n);
         }
         assert!(!crate::Stalled::<Test>::get());
         assert_eq!(stalled_events(), 0);
@@ -1096,23 +1515,49 @@ fn no_alarm_while_observations_keep_landing() {
 }
 
 #[test]
+fn a_draining_backlog_is_not_a_stall() {
+    new_test_ext().execute_with(|| {
+        // A backlog must not read as a stopped writer. Each draining block applies a page and stamps the
+        // clock, so the alarm stays quiet across a drain far longer than `StallAfter`.
+        System::set_block_number(1);
+        let n = MAX_CHANGES_PER_BLOCK * (STALL_AFTER as u32 + 3);
+        let mut items = Vec::new();
+        for i in 0..n {
+            bind(nth_beacon(i), nth_account(i));
+            items.push((nth_beacon(i), 200_000_000u128));
+        }
+        let obs = snap(MAX_REFERENCE - 5, &items);
+
+        let mut block = 1u64;
+        loop {
+            block += 1;
+            System::set_block_number(block);
+            CardanoObserver::on_initialize(block);
+            if observe_snapshot(&obs) == 0 {
+                break;
+            }
+            assert!(
+                !crate::Stalled::<Test>::get(),
+                "a draining block is an APPLIED observation",
+            );
+        }
+        assert!(
+            block > STALL_AFTER + 1,
+            "the drain outlasted the alarm window"
+        );
+        assert_eq!(stalled_events(), 0);
+        assert_eq!(LastReference::<Test>::get(), Some(cref(MAX_REFERENCE - 5)));
+    });
+}
+
+#[test]
 fn a_zero_clock_anchors_at_the_current_block_instead_of_alarming() {
     new_test_ext().execute_with(|| {
-        // The state a chain upgraded INTO this alarm starts in: a high block number, no clock yet.
+        // A chain upgraded INTO this alarm must not read its whole history as one enormous stall.
         System::set_block_number(500_000);
-        assert_eq!(crate::LastAppliedAt::<Test>::get(), 0);
-
         CardanoObserver::on_initialize(500_000);
-
-        assert_eq!(
-            crate::LastAppliedAt::<Test>::get(),
-            500_000,
-            "the stall window opens HERE, not at block 0"
-        );
-        assert!(
-            !crate::Stalled::<Test>::get(),
-            "an upgraded chain's history is not a stall"
-        );
+        assert_eq!(crate::LastAppliedAt::<Test>::get(), 500_000);
+        assert!(!crate::Stalled::<Test>::get());
         assert_eq!(stalled_events(), 0);
     });
 }
@@ -1120,372 +1565,593 @@ fn a_zero_clock_anchors_at_the_current_block_instead_of_alarming() {
 #[test]
 fn a_chain_that_never_observed_does_not_alarm() {
     new_test_ext().execute_with(|| {
-        // `--dev`: no db-sync, so the node's IDP returns no data, `create_inherent` abstains on EVERY
-        // block, and no observation ever lands. The alarm says "the sole weight writer has STOPPED" — a
-        // false statement about a chain where it never started. Roll well past the threshold: silence.
-        for n in 1..=(STALL_AFTER * 4) {
-            System::set_block_number(n);
-            CardanoObserver::on_initialize(n);
-        }
-        assert!(crate::LastReference::<Test>::get().is_none());
-        assert!(
-            !crate::Stalled::<Test>::get(),
-            "a chain that never observed is not stalled — it never started"
-        );
-        assert_eq!(stalled_events(), 0, "no dev-run noise, no on-chain alarm");
+        // `--dev` is exactly this: no db-sync, so no observation ever lands. "The sole weight writer has
+        // STOPPED" is a false statement about a chain that never started.
+        System::set_block_number(1);
+        roll_to(STALL_AFTER * 4);
+        assert!(!crate::Stalled::<Test>::get());
+        assert_eq!(stalled_events(), 0);
 
-        // But the FIRST accepted observation arms it for good: from here the alarm has something to lose.
+        // The first accepted observation ARMS it; a gap after that latches.
         bind(A, ALICE);
-        observe_once(MAX_REFERENCE - 1);
-        let armed_at = System::block_number();
-        assert!(crate::LastReference::<Test>::get().is_some());
-
-        roll_to(armed_at + STALL_AFTER + 1);
-        assert!(
-            crate::Stalled::<Test>::get(),
-            "once a real observation has landed, a gap past StallAfter IS a stall"
-        );
-        assert_eq!(stalled_events(), 1);
+        observe_once(MAX_REFERENCE - 100);
+        roll_to(System::block_number() + STALL_AFTER + 2);
+        assert!(crate::Stalled::<Test>::get());
     });
 }
 
 #[test]
 fn a_frozen_observation_still_stamps_the_clock() {
     new_test_ext().execute_with(|| {
+        // A governance freeze is a deliberate state, not a stalled observer: the read is still verified
+        // cross-node every block.
         System::set_block_number(1);
-        freeze();
         bind(A, ALICE);
-
-        // Frozen, the inherent still LANDS every block — it verifies the read cross-node and skips only the
-        // weight writes. So the clock keeps advancing and the alarm stays quiet: an emergency weight freeze
-        // is a deliberate governance state, not a stalled observer.
+        freeze();
         for n in 1..=(STALL_AFTER * 2) {
             System::set_block_number(n);
             CardanoObserver::on_initialize(n);
-            observe_once(MAX_REFERENCE - 1);
+            observe_once(MAX_REFERENCE - 200 + n);
         }
-
-        assert!(!was_written(ALICE), "frozen: no weight applied");
-        assert_eq!(crate::LastAppliedAt::<Test>::get(), STALL_AFTER * 2);
+        assert!(!was_written(ALICE), "frozen: nothing applied");
         assert!(!crate::Stalled::<Test>::get());
         assert_eq!(stalled_events(), 0);
     });
 }
 
-// ── idempotency + inherent-overrun (the observer boundary) ──────────────────────────────────────────
+// ── the role axis ──────────────────────────────────────────────────────────────────────────────────
 
-/// Re-applying the SAME observation is idempotent at the observer level. A Substrate re-org re-executes
-/// the Mandatory `observe`, and re-derivation OVERWRITES the sink to the identical values — it NEVER
-/// accumulates. `slot == last.slot` is admitted (the monotonicity guard is `>=`), so an unchanged
-/// re-observation is legal and a no-op in effect. Complements talk-stake's downstream idempotency test
-/// with the observer-level guarantee.
+const CAL: [u8; 28] = [0xD1; 28];
+const STAKE_OWNER: [u8; 28] = [0xD2; 28];
+const POOL_A: [u8; 28] = [0xE1; 28];
+const POOL_B: [u8; 28] = [0xE2; 28];
+
 #[test]
-fn re_applying_the_same_observation_is_idempotent() {
+fn observe_credits_then_clears_roles() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
         enforce();
-        bind(A, ALICE);
-        bind_stake(S1, ALICE);
-        let slot = MAX_REFERENCE - 5;
-        let apply = || {
-            CardanoObserver::observe(
-                RuntimeOrigin::none(),
-                cref(slot),
-                COMMIT,
-                entries(&[(A, 200_000_000)]),
-                stk(&[(S1, 700_000_000)]),
-                no_roles(),
-            )
-        };
-        assert_ok!(apply());
-        assert_eq!(weight_of(ALICE), 200_000_000);
-        assert_eq!(voting_power_of(ALICE), 700_000_000);
-        assert_eq!(crate::LastReference::<Test>::get(), Some(cref(slot)));
-
-        // Re-apply the identical reference + entries (the reorg-safe re-derive path).
-        assert_ok!(apply());
-        assert_eq!(
-            weight_of(ALICE),
-            200_000_000,
-            "re-derive is a pure overwrite, never a sum"
-        );
-        assert_eq!(voting_power_of(ALICE), 700_000_000);
-        assert_eq!(crate::LastReference::<Test>::get(), Some(cref(slot)));
-    });
-}
-
-/// `create_inherent` abstains — drops the WHOLE inherent — when an observation would exceed `MaxObserved`,
-/// rather than truncating it to a partial (fork-inducing) set. This is the silent-freeze PRECONDITION the
-/// node's `ObserverOversize` alert and `cogno_observer_observations_oversize_total` metric watch for.
-/// `BoundedVec::try_from` succeeds at EXACTLY `MaxObserved` and fails one above it — the boundary is pinned.
-#[test]
-fn create_inherent_abstains_when_the_observation_overruns_max_observed() {
-    new_test_ext().execute_with(|| {
-        let max = <<Test as crate::Config>::MaxObserved as frame_support::traits::Get<u32>>::get()
-            as usize;
-        // Distinct beacons; the value is irrelevant here (create_inherent neither resolves nor floors).
-        let beacon = |i: usize| {
-            let mut b = [0u8; 32];
-            b[..8].copy_from_slice(&(i as u64).to_le_bytes());
-            b
-        };
-        let make = |n: usize| CardanoObservation {
-            reference: cref(1000),
-            inputs_commitment: COMMIT,
-            entries: (0..n).map(|i| (beacon(i), 200_000_000u128)).collect(),
-            stake_entries: vec![],
-            role_entries: vec![],
-        };
-
-        // Exactly MaxObserved fits — the inherent is produced.
-        let mut id_ok = InherentData::new();
-        put_obs(&mut id_ok, &make(max));
-        assert!(<CardanoObserver as ProvideInherent>::create_inherent(&id_ok).is_some());
-
-        // One over the ceiling — the whole inherent is dropped (author abstains, weight freezes).
-        let mut id_over = InherentData::new();
-        put_obs(&mut id_over, &make(max + 1));
-        assert!(
-            <CardanoObserver as ProvideInherent>::create_inherent(&id_over).is_none(),
-            "an observation exceeding MaxObserved must abstain, not truncate"
-        );
-    });
-}
-
-// ── ROLE observation (spec 206): the observe role loop + unlock clamp ────────────────────────────────
-
-fn roles(
-    items: &[(RoleSource, [u8; 28], [u8; 28])],
-) -> BoundedVec<RoleEntry, <Test as crate::Config>::MaxObserved> {
-    // The credit/clamp tests don't exercise chamber weight — default it to 0. `roles_w` below carries a
-    // weight for the spec-207 chamber-weight flow test.
-    roles_w(
-        &items
-            .iter()
-            .map(|(s, c, i)| (*s, *c, *i, 0u128))
-            .collect::<Vec<_>>(),
-    )
-}
-
-fn roles_w(
-    items: &[(RoleSource, [u8; 28], [u8; 28], u128)],
-) -> BoundedVec<RoleEntry, <Test as crate::Config>::MaxObserved> {
-    BoundedVec::try_from(
-        items
-            .iter()
-            .map(|(source, credential, id, weight)| RoleEntry {
-                source: *source,
-                credential: *credential,
-                id: *id,
-                weight: *weight,
-            })
-            .collect::<Vec<_>>(),
-    )
-    .expect("within MaxObserved")
-}
-
-#[test]
-fn observe_credits_then_clamps_roles() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        enforce();
-        bind(A, ALICE);
-        let cal: [u8; 28] = [0xCA; 28];
-        // A SpoCalidus entry now names the live pool whose cold key authorized the key; the observer
-        // resolves the credential to ALICE and writes SPO(kind 0, pool).
-        let pool: [u8; 28] = [0x9B; 28];
-        bind_role(cal, ALICE);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 2),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            roles(&[(RoleSource::SpoCalidus, cal, pool)]),
+        bind_role(CAL, ALICE);
+        observe_snapshot(&snap_roles(
+            MAX_REFERENCE - 5,
+            &roles(&[(RoleSource::SpoCalidus, CAL, POOL_A)]),
         ));
-        assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool)]);
-        // A later observation WITHOUT the role entry → the unlock clamp clears ALICE's roles.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            roles(&[]),
-        ));
-        assert_eq!(observed_roles_of(ALICE), Vec::<(u8, [u8; 28])>::new());
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, POOL_A)]);
+
+        // The pool retires (or the claim lapses): the account leaves the observation, and the diff turns
+        // that into an explicit clear carrying the ACCOUNT — which is why it still works after the
+        // credential itself has stopped resolving.
+        let call = derive(&snap_roles(MAX_REFERENCE - 4, &[]));
+        match &call {
+            crate::Call::observe { role_changes, .. } => {
+                assert_eq!(role_changes.len(), 1);
+                assert_eq!(role_changes[0].who, ALICE);
+                assert!(role_changes[0].roles.is_none());
+            }
+            _ => panic!("expected observe call"),
+        }
+        assert_ok!(dispatch(call));
+        assert!(observed_roles_of(ALICE).is_empty());
+        assert!(LastObservedRoles::<Test>::get(ALICE).is_none());
     });
 }
 
 #[test]
 fn observe_skips_an_unresolved_role_credential() {
     new_test_ext().execute_with(|| {
-        System::set_block_number(1);
         enforce();
-        bind(A, ALICE);
-        // A role credential that resolves to no account (never bound) is skipped, not an error. (The
-        // credential [0x11;28] is what resolves; [0x9B;28] is the declaring pool the entry names.)
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            roles(&[(RoleSource::SpoCalidus, [0x11; 28], [0x9B; 28])]),
+        // CAL is bound to nobody.
+        let call = derive(&snap_roles(
+            MAX_REFERENCE - 5,
+            &roles(&[(RoleSource::SpoCalidus, CAL, POOL_A)]),
         ));
-        assert_eq!(observed_roles_of(ALICE), Vec::<(u8, [u8; 28])>::new());
+        assert_eq!(change_counts(&call), (0, 0, 0));
+        assert_ok!(dispatch(call));
+        assert!(observed_roles_of(ALICE).is_empty());
     });
 }
 
 #[test]
 fn observe_carries_chamber_weight_into_the_role_set() {
     new_test_ext().execute_with(|| {
-        System::set_block_number(1);
         enforce();
-        bind(A, ALICE);
-        let stake: [u8; 28] = [0x1A; 28];
-        let pool: [u8; 28] = [0xA0; 28];
-        bind_role(stake, ALICE);
-        // The SpoOwner entry carries the pool's delegated stake (spec 207) — it must land verbatim in the
-        // observed set the governance-poll SPO chamber reads.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            roles_w(&[(RoleSource::SpoOwner, stake, pool, 15_000_000_000_000)]),
+        bind_role(STAKE_OWNER, ALICE);
+        observe_snapshot(&snap_roles(
+            MAX_REFERENCE - 5,
+            &roles_w(&[(
+                RoleSource::SpoOwner,
+                STAKE_OWNER,
+                POOL_A,
+                15_000_000_000_000,
+            )]),
         ));
         assert_eq!(
             observed_roles_full_of(ALICE),
-            vec![(0u8, pool, 15_000_000_000_000u128)],
-            "the pool's delegated stake is carried into the observed role set as its chamber weight"
+            vec![(0u8, POOL_A, 15_000_000_000_000)],
+            "the spec-207 chamber weight rides through verbatim",
         );
     });
 }
 
 #[test]
-fn observe_credits_a_badge_per_owned_pool() {
+fn one_account_with_several_credentials_lands_as_one_atomic_set() {
     new_test_ext().execute_with(|| {
-        System::set_block_number(1);
+        // THE reason the role change unit is an ACCOUNT and not a credential. The sink OVERWRITES an
+        // account's whole badge set, and an mSPO reaches its badges through several credentials. A
+        // per-credential delta could split them across two blocks, and the first block's overwrite would
+        // drop the badges the second was going to restore.
         enforce();
-        bind(A, ALICE);
-        // The multi-pool operator: ALICE owns two distinct pools via two bound stake credentials (the
-        // SpoOwner free path names the pool, so distinct pools show as distinct badges — dedup is by
-        // (kind, id)). (The Calidus path now ALSO names its pool, so it yields per-pool badges the same way —
-        // see `observe_credits_a_badge_per_declaring_pool_and_dedups_shared_pools`.)
-        let stake_a: [u8; 28] = [0x1A; 28];
-        let stake_b: [u8; 28] = [0x2B; 28];
-        let pool_a: [u8; 28] = [0xA0; 28];
-        let pool_b: [u8; 28] = [0xB0; 28];
-        bind_role(stake_a, ALICE);
-        bind_role(stake_b, ALICE);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            roles(&[
-                (RoleSource::SpoOwner, stake_a, pool_a),
-                (RoleSource::SpoOwner, stake_b, pool_b),
+        bind_role(CAL, ALICE);
+        bind_role(STAKE_OWNER, ALICE);
+        let call = derive(&snap_roles(
+            MAX_REFERENCE - 5,
+            &roles_w(&[
+                (RoleSource::SpoCalidus, CAL, POOL_A, 1_000_000),
+                (RoleSource::SpoOwner, STAKE_OWNER, POOL_B, 2_000_000),
             ]),
         ));
-        assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool_a), (0u8, pool_b)]);
-    });
-}
-
-#[test]
-fn observe_credits_a_badge_per_declaring_pool_and_dedups_shared_pools() {
-    new_test_ext().execute_with(|| {
-        System::set_block_number(1);
-        enforce();
-        bind(A, ALICE);
-        // The mSPO at the observer level (case e): ALICE's ONE Calidus credential `cal` is declared by TWO
-        // live pools (p1, p2 — an operator running two pools), so the reduction emits one SpoCalidus entry
-        // PER pool (each cold-key-signed). ALICE also OWNS p2 via a stake key. The observer dedups by
-        // (kind, id): p1 (Calidus) and p2 (Calidus == owner) leave DISTINCT badges {p1, p2}, and the SHARED
-        // pool p2 collapses to ONE badge — no pool double-counted across the owner + Calidus paths.
-        let cal: [u8; 28] = [0xCA; 28];
-        let stake: [u8; 28] = [0x5A; 28];
-        let p1: [u8; 28] = [0xB1; 28];
-        let p2: [u8; 28] = [0xB2; 28];
-        bind_role(cal, ALICE);
-        bind_role(stake, ALICE);
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 1),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            // Canonical order (SpoCalidus < SpoOwner, then by id): the two Calidus pools, then the owner.
-            roles_w(&[
-                (RoleSource::SpoCalidus, cal, p1, 1_000_000),
-                (RoleSource::SpoCalidus, cal, p2, 2_000_000),
-                (RoleSource::SpoOwner, stake, p2, 2_000_000),
-            ]),
-        ));
-        // One badge per DISTINCT pool: p1 (Calidus) + p2 (Calidus, == the owner pool, deduped to one).
+        match &call {
+            crate::Call::observe { role_changes, .. } => {
+                assert_eq!(role_changes.len(), 1, "ONE change, not one per credential");
+                assert_eq!(role_changes[0].who, ALICE);
+                assert_eq!(
+                    role_changes[0].roles.as_ref().unwrap().to_vec(),
+                    vec![(0u8, POOL_A, 1_000_000), (0u8, POOL_B, 2_000_000)],
+                );
+            }
+            _ => panic!("expected observe call"),
+        }
+        assert_ok!(dispatch(call));
         assert_eq!(
-            observed_roles_full_of(ALICE),
-            vec![(0u8, p1, 1_000_000u128), (0u8, p2, 2_000_000u128)],
+            observed_roles_of(ALICE),
+            vec![(0u8, POOL_A), (0u8, POOL_B)],
+            "both badges, from one write",
         );
     });
 }
 
 #[test]
-fn re_enable_clamps_a_role_that_lapsed_during_a_freeze() {
-    // The role analog of `re_enable_clamps_a_stake_cred_that_dropped_out_during_a_freeze`:
-    // `LastObservedRoles` must be HELD while frozen, so a role that lapses mid-freeze is cleared on
-    // re-enable (not evicted-unzeroed into a stale-positive badge). Verifies the per-ACCOUNT clamp basis.
+fn a_pool_reached_through_two_paths_is_deduped_once() {
     new_test_ext().execute_with(|| {
-        System::set_block_number(1);
+        // The mSPO case: several declaring pools each get their own badge, but the SAME pool reached
+        // through both the Calidus and the owner path collapses to ONE entry (never double-counted in a
+        // chamber tally). First-wins in the canonical order keeps the value byte-stable across nodes.
         enforce();
-        bind(A, ALICE);
-        let cal: [u8; 28] = [0xCA; 28];
-        let pool: [u8; 28] = [0x9B; 28]; // the Calidus SPO's declaring pool id
-        bind_role(cal, ALICE);
-        // Credit ALICE's SPO badge under enforce.
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 20),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            roles(&[(RoleSource::SpoCalidus, cal, pool)]),
+        bind_role(CAL, ALICE);
+        bind_role(STAKE_OWNER, ALICE);
+        observe_snapshot(&snap_roles(
+            MAX_REFERENCE - 5,
+            &roles_w(&[
+                (RoleSource::SpoCalidus, CAL, POOL_A, 1_000_000),
+                (RoleSource::SpoCalidus, CAL, POOL_B, 2_000_000),
+                (RoleSource::SpoOwner, STAKE_OWNER, POOL_B, 2_000_000),
+            ]),
         ));
-        assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool)]);
+        assert_eq!(
+            observed_roles_full_of(ALICE),
+            vec![(0u8, POOL_A, 1_000_000), (0u8, POOL_B, 2_000_000)],
+        );
+    });
+}
 
-        // Freeze, then observe WITHOUT the role (the pool lapsed): the badge is held, not cleared.
+#[test]
+fn a_role_set_that_did_not_move_produces_no_change() {
+    new_test_ext().execute_with(|| {
+        enforce();
+        bind_role(CAL, ALICE);
+        let obs = snap_roles(
+            MAX_REFERENCE - 5,
+            &roles_w(&[(RoleSource::SpoCalidus, CAL, POOL_A, 1_000_000)]),
+        );
+        observe_snapshot(&obs);
+        assert_eq!(change_counts(&derive(&obs)), (0, 0, 0));
+
+        // But a changed chamber WEIGHT at the same badge does move it — the weight is part of the set the
+        // diff compares, not decoration.
+        let heavier = snap_roles(
+            MAX_REFERENCE - 4,
+            &roles_w(&[(RoleSource::SpoCalidus, CAL, POOL_A, 9_000_000)]),
+        );
+        assert_eq!(change_counts(&derive(&heavier)), (0, 0, 1));
+        observe_snapshot(&heavier);
+        assert_eq!(
+            observed_roles_full_of(ALICE),
+            vec![(0u8, POOL_A, 9_000_000)],
+        );
+    });
+}
+
+#[test]
+fn re_enable_clears_a_role_that_lapsed_during_a_freeze() {
+    new_test_ext().execute_with(|| {
+        enforce();
+        bind_role(CAL, ALICE);
+        observe_snapshot(&snap_roles(
+            MAX_REFERENCE - 5,
+            &roles(&[(RoleSource::SpoCalidus, CAL, POOL_A)]),
+        ));
+        assert_eq!(observed_roles_of(ALICE), vec![(0u8, POOL_A)]);
+
         freeze();
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 15),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            roles(&[]),
-        ));
+        observe_snapshot(&snap_roles(MAX_REFERENCE - 4, &[]));
         assert_eq!(
             observed_roles_of(ALICE),
-            vec![(0u8, pool)],
-            "frozen: ALICE's role badge is held (RoleSink never called)"
+            vec![(0u8, POOL_A)],
+            "frozen: the badge holds",
         );
 
-        // Re-enable with the role still absent: the clamp basis was held, so ALICE is cleared now.
         enforce();
-        assert_ok!(CardanoObserver::observe(
-            RuntimeOrigin::none(),
-            cref(MAX_REFERENCE - 10),
-            COMMIT,
-            entries(&[(A, 200_000_000)]),
-            no_stake(),
-            roles(&[]),
-        ));
-        assert_eq!(
-            observed_roles_of(ALICE),
-            Vec::<(u8, [u8; 28])>::new(),
-            "the role that lapsed mid-freeze is clamped on re-enable"
+        observe_snapshot(&snap_roles(MAX_REFERENCE - 3, &[]));
+        assert!(
+            observed_roles_of(ALICE).is_empty(),
+            "and re-enabling clears it, rather than leaving a stale-positive badge",
         );
     });
+}
+
+#[test]
+fn the_roles_observed_event_reports_change_counts() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        enforce();
+        bind_role(CAL, ALICE);
+        bind_role(STAKE_OWNER, BOB);
+        observe_snapshot(&snap_roles(
+            MAX_REFERENCE - 5,
+            &roles(&[
+                (RoleSource::SpoCalidus, CAL, POOL_A),
+                (RoleSource::SpoOwner, STAKE_OWNER, POOL_B),
+            ]),
+        ));
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::RolesObserved {
+            reference_slot: MAX_REFERENCE - 5,
+            credited: 2,
+            cleared: 0,
+            enforced: true,
+        }));
+
+        // BOB's pool retires.
+        observe_snapshot(&snap_roles(
+            MAX_REFERENCE - 4,
+            &roles(&[(RoleSource::SpoCalidus, CAL, POOL_A)]),
+        ));
+        System::assert_has_event(RuntimeEvent::CardanoObserver(Event::RolesObserved {
+            reference_slot: MAX_REFERENCE - 4,
+            credited: 0,
+            cleared: 1,
+            enforced: true,
+        }));
+    });
+}
+
+#[test]
+fn check_inherent_accepts_without_verifying_on_a_runtime_upgrade_block() {
+    new_test_ext().execute_with(|| {
+        // THE one block where "author and importer derive against the same state" is false, and the
+        // reason is in the SDK rather than here: the author's `create_inherent` runs on an api instance
+        // that `initialize_block` (and therefore `on_runtime_upgrade`) has already mutated, while the
+        // importer's `check_inherents` is a bare runtime-API call at the parent hash with no
+        // `initialize_block` at all. A migration that writes what `derive_call` reads — which is exactly
+        // what this spec ships — makes the two sides derive different deltas on the enactment block, and
+        // that difference is FATAL. Every importing node would reject the upgrade and the chain would stop.
+        bind(A, ALICE);
+        bind(B, BOB);
+        let local = snap(1000, &[(A, 200_000_000)]);
+
+        // A call that does NOT match what this node would derive — standing in for the author's
+        // post-migration delta.
+        let author = crate::Call::<Test>::observe {
+            reference: cref(1000),
+            inputs_commitment: COMMIT,
+            changes: BoundedVec::truncate_from(vec![(A, Some(200_000_000)), (B, None)]),
+            stake_changes: BoundedVec::new(),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        };
+        let mut id = InherentData::new();
+        put_obs(&mut id, &local);
+
+        // Genesis seeds `LastRuntimeUpgrade` with the running version, so this is an ordinary block.
+        let ordinary = frame_system::LastRuntimeUpgrade::<Test>::get();
+        assert!(ordinary.is_some(), "genesis seeds the upgrade record");
+
+        // Normal block: the disagreement is fatal, as it must be.
+        assert!(matches!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&author, &id),
+            Err(InherentError::ComputeDiverged)
+        ));
+
+        // Upgrade block: `LastRuntimeUpgrade` at the parent still holds the OUTGOING spec_version while
+        // this code is the incoming one, which is precisely "this block runs on_runtime_upgrade".
+        // Verification is skipped for that one block rather than forking the chain.
+        frame_system::LastRuntimeUpgrade::<Test>::put(frame_system::LastRuntimeUpgradeInfo {
+            spec_version: 1.into(),
+            spec_name: "cogno-chain-runtime".into(),
+        });
+        assert!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&author, &id).is_ok(),
+            "an upgrade block must be accepted without cross-node verification, not rejected",
+        );
+
+        // And only for that block: once the stored version matches the running one — which is what
+        // `initialize_block` writes as it runs the migration — verification resumes. (Restoring the
+        // genesis record rather than `kill()`ing it: an ABSENT record reads as UPGRADED, matching
+        // `Executive::runtime_upgraded`, which treats a chain with no upgrade history as needing one.)
+        frame_system::LastRuntimeUpgrade::<Test>::set(ordinary);
+        assert!(matches!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&author, &id),
+            Err(InherentError::ComputeDiverged)
+        ));
+    });
+}
+
+#[test]
+fn the_stall_alarm_arms_on_a_chain_whose_first_observation_was_backlogged() {
+    new_test_ext().execute_with(|| {
+        // `LastReference` used to mean "has ever applied an observation", and the alarm's arming guard
+        // still read it that way. Since it now advances only on a fully DRAINED block, a chain whose first
+        // observation is backlogged — the ordinary bootstrap, and the case where a stall matters most —
+        // has applied real work and still reads `None`. The old guard disarmed the alarm for exactly as
+        // long as the backlog ran.
+        System::set_block_number(1);
+        let n = MAX_CHANGES_PER_BLOCK + 10;
+        let mut items = Vec::new();
+        for i in 0..n {
+            bind(nth_beacon(i), nth_account(i));
+            items.push((nth_beacon(i), 200_000_000u128));
+        }
+        assert!(observe_snapshot(&snap(1000, &items)) > 0, "backlogged");
+        assert!(
+            LastReference::<Test>::get().is_none(),
+            "the frontier is held while the backlog drains",
+        );
+        assert!(PendingChanges::<Test>::get() > 0);
+
+        // The observer now stops entirely (db-sync down). This IS a stall and it must be reported.
+        roll_to(2 + STALL_AFTER);
+        assert!(
+            crate::Stalled::<Test>::get(),
+            "a chain that applied a backlogged page HAS started, so the alarm must arm",
+        );
+        assert_eq!(stalled_events(), 1);
+    });
+}
+
+#[test]
+fn a_full_role_set_reserves_room_for_the_non_spo_badges() {
+    new_test_ext().execute_with(|| {
+        // The spec-211 bug, one layer up. The canonical role order sorts on `RoleSource`, whose
+        // discriminants put every SPO entry (`SpoCalidus` 0, `SpoOwner` 1) ahead of every dRep (2) and CC
+        // (3) one — so a first-N cut keeps pools and silently throws away the badge a user cannot get back.
+        // The runtime's `RoleApply` sink was rewritten with a reserved non-SPO prefix for exactly this, and
+        // truncating naively HERE would put the bug upstream of that fix, where it can never see the
+        // dropped entries.
+        enforce();
+        bind_role(CAL, ALICE);
+        bind_role(STAKE_OWNER, ALICE);
+        let cap = 32usize; // MaxRolesPerAccount in the mock
+
+        // One account with far more SPO pools than fit, plus a single dRep badge LAST in canonical order.
+        let mut entries = Vec::new();
+        for i in 0..(cap + 8) {
+            let mut pool = [0u8; 28];
+            pool[..4].copy_from_slice(&(i as u32).to_be_bytes());
+            entries.push((RoleSource::SpoCalidus, CAL, pool, 1_000u128));
+        }
+        entries.push((RoleSource::DRep, STAKE_OWNER, [0xFE; 28], 7_000_000u128));
+
+        let call = derive(&snap_roles(MAX_REFERENCE - 5, &roles_w(&entries)));
+        let set = match &call {
+            crate::Call::observe { role_changes, .. } => {
+                assert_eq!(role_changes.len(), 1);
+                role_changes[0].roles.clone().expect("a set, not a clear")
+            }
+            _ => panic!("expected observe call"),
+        };
+        assert_eq!(
+            set.len(),
+            cap,
+            "the set is filled to the bound, not past it"
+        );
+        assert!(
+            set.iter()
+                .any(|(kind, id, _w)| *kind == 1 && *id == [0xFE; 28]),
+            "the dRep badge must survive a set of pools that overruns the bound",
+        );
+        // And pools still get the rest — the reserve is capped, so badges cannot starve them either.
+        assert_eq!(
+            set.iter().filter(|(kind, _, _)| *kind == 0).count(),
+            cap - 1,
+        );
+
+        assert_ok!(dispatch(call));
+        assert!(observed_roles_full_of(ALICE)
+            .iter()
+            .any(|(kind, id, _w)| *kind == 1 && *id == [0xFE; 28]));
+    });
+}
+
+// ── storage migration v0 → v1 ──────────────────────────────────────────────────────────────────────
+
+mod migration {
+    use super::*;
+    use crate::migrations::legacy::blob::{
+        LastObserved as LastObservedV0, LastObservedRoles as LastObservedRolesV0,
+        LastObservedStake as LastObservedStakeV0,
+    };
+    use crate::migrations::v1::MigrateV0ToV1;
+    use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+
+    #[test]
+    fn legacy_prefixes_match_the_live_items() {
+        new_test_ext().execute_with(|| {
+            // THE trap this whole `legacy` module exists to avoid. `#[storage_alias]` takes the on-chain
+            // item name from the ALIAS TYPE NAME, so a `LastObservedV0` alias would address
+            // `twox128("CardanoObserver") ++ twox128("LastObservedV0")` — a prefix nothing has ever
+            // written. The migration would then iterate zero rows, report success, and orphan every real
+            // one. Unit tests cannot catch that on their own (they read and write through the same wrong
+            // prefix, so they agree with themselves), which is why these assert against the PALLET's own
+            // items rather than against the aliases.
+            //
+            // 32 bytes: twox128(pallet) ++ twox128(item). A StorageValue is exactly that; a StorageMap key
+            // is that plus the hashed key, so the first 32 bytes have to agree.
+            assert_eq!(
+                LastObservedV0::<Test>::hashed_key()[..],
+                LastObserved::<Test>::hashed_key_for(A)[..32],
+                "the v0 LastObserved alias must address the pallet's LastObserved prefix",
+            );
+            assert_eq!(
+                LastObservedStakeV0::<Test>::hashed_key()[..],
+                LastObservedStake::<Test>::hashed_key_for(S1)[..32],
+                "the v0 LastObservedStake alias must address the pallet's LastObservedStake prefix",
+            );
+            assert_eq!(
+                LastObservedRolesV0::<Test>::hashed_key()[..],
+                LastObservedRoles::<Test>::hashed_key_for(ALICE)[..32],
+                "the v0 LastObservedRoles alias must address the pallet's LastObservedRoles prefix",
+            );
+        });
+    }
+
+    #[test]
+    fn v0_to_v1_repages_the_bases_and_is_idempotent() {
+        new_test_ext().execute_with(|| {
+            // Pre-v1 state: three whole-set blobs, recording WHO was credited but never with what.
+            LastObservedV0::<Test>::put(vec![(A, ALICE), (B, BOB)]);
+            LastObservedStakeV0::<Test>::put(vec![(S1, ALICE)]);
+            LastObservedRolesV0::<Test>::put(vec![ALICE]);
+            assert_eq!(
+                CardanoObserver::on_chain_storage_version(),
+                StorageVersion::new(0),
+                "the pallet declared no version before this migration",
+            );
+
+            let _w = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+
+            // Every vault/stake row became a map row, seeded at weight 0 — the old shape carried no value
+            // to migrate, so the first observation re-derives it.
+            assert_eq!(LastObserved::<Test>::get(A), Some((ALICE, 0)));
+            assert_eq!(LastObserved::<Test>::get(B), Some((BOB, 0)));
+            assert_eq!(LastObservedStake::<Test>::get(S1), Some((ALICE, 0)));
+            // The role accounts are dropped rather than carried as empty rows (an empty row would make the
+            // diff emit a redundant clear every block, for ever).
+            assert!(LastObservedRoles::<Test>::iter().next().is_none());
+            assert_eq!(PendingChanges::<Test>::get(), 0);
+            assert_eq!(
+                CardanoObserver::on_chain_storage_version(),
+                StorageVersion::new(1),
+            );
+
+            // The retired blobs are gone, and a re-run is a no-op (the version guard).
+            assert!(LastObservedV0::<Test>::get().is_empty());
+            let _w = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+            assert_eq!(LastObserved::<Test>::iter().count(), 2);
+        });
+    }
+
+    #[test]
+    fn the_migration_clears_the_role_sink_for_every_account_it_drops() {
+        new_test_ext().execute_with(|| {
+            // The role axis is the one that keeps NO basis row, so it is the one where dropping a row
+            // silently strands a badge: `derive_call` derives a role clear only by iterating the basis,
+            // and an account that lapses in the upgrade window is in neither the basis nor the snapshot.
+            // `unclaim_role`/`revoke_role` deliberately leave `ObservedRoles` for the observer to clear,
+            // so without this the badge (and its governance-poll chamber weight) would render for ever.
+            enforce();
+            let cred = [0x41u8; 28];
+            let pool = [0x42u8; 28];
+            bind_role(cred, ALICE);
+            observe_snapshot(&snap_roles(
+                MAX_REFERENCE - 5,
+                &roles(&[(RoleSource::SpoCalidus, cred, pool)]),
+            ));
+            assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool)]);
+
+            // Pre-215 shape: the blob recorded WHO held a badge, never which. Then ALICE's claim lapses
+            // (an `unclaim_role`, a committee `revoke_role`, or the pool retiring on L1) before the first
+            // post-upgrade observation, so she resolves to nothing.
+            LastObservedRolesV0::<Test>::put(vec![ALICE]);
+            LastObservedRoles::<Test>::remove(ALICE);
+            let _w = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+            unbind_role(cred);
+
+            assert!(
+                observed_roles_of(ALICE).is_empty(),
+                "the migration must clear the sink for an account it drops from the basis",
+            );
+            // And the first post-migration observation has nothing left to say about her — which is why
+            // the clear had to happen in the migration and not be left to the delta.
+            assert_eq!(
+                change_counts(&derive(&snap(MAX_REFERENCE - 4, &[]))),
+                (0, 0, 0)
+            );
+            assert!(observed_roles_of(ALICE).is_empty());
+        });
+    }
+
+    #[test]
+    fn the_migration_does_not_strand_an_account_whose_roles_are_still_live() {
+        new_test_ext().execute_with(|| {
+            // The other direction: clearing the sink must not COST anything for an account that still
+            // holds its role. The enactment block's own `create_inherent` runs later in the same block,
+            // against the migrated state, and re-emits the full set — so the clear is invisible.
+            enforce();
+            let cred = [0x41u8; 28];
+            let pool = [0x42u8; 28];
+            bind_role(cred, ALICE);
+            let obs = snap_roles(
+                MAX_REFERENCE - 5,
+                &roles(&[(RoleSource::SpoCalidus, cred, pool)]),
+            );
+            observe_snapshot(&obs);
+            LastObservedRolesV0::<Test>::put(vec![ALICE]);
+            LastObservedRoles::<Test>::remove(ALICE);
+
+            let _w = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+            assert!(
+                observed_roles_of(ALICE).is_empty(),
+                "cleared by the migration"
+            );
+
+            observe_snapshot(&snap_roles(
+                MAX_REFERENCE - 4,
+                &roles(&[(RoleSource::SpoCalidus, cred, pool)]),
+            ));
+            assert_eq!(
+                observed_roles_of(ALICE),
+                vec![(0u8, pool)],
+                "and restored by the same block's observation",
+            );
+        });
+    }
+
+    #[test]
+    fn the_first_observation_after_the_migration_re_derives_every_value() {
+        new_test_ext().execute_with(|| {
+            // The migration's correctness argument, exercised end to end: the seeded zeroes are not a lie
+            // that sticks, they are a basis the very next diff corrects. A row that has since unlocked is
+            // cleared; a row still locked is re-applied at its true weight.
+            enforce();
+            bind(A, ALICE);
+            bind(B, BOB);
+            LastObservedV0::<Test>::put(vec![(A, ALICE), (B, BOB)]);
+            let _w = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+
+            // B has unlocked in the meantime; A is still locked.
+            let call = derive(&snap(MAX_REFERENCE - 5, &[(A, 200_000_000)]));
+            match &call {
+                // Clears page ahead of credits (see `derive_call`'s ordering note), so B's take-back
+                // sorts first even though its beacon byte is higher.
+                crate::Call::observe { changes, .. } => assert_eq!(
+                    changes.to_vec(),
+                    vec![(B, None), (A, Some(200_000_000))],
+                    "A is re-applied at its true weight and B is taken back",
+                ),
+                _ => panic!("expected observe call"),
+            }
+            assert_ok!(dispatch(call));
+            assert_eq!(weight_of(ALICE), 200_000_000);
+            assert_eq!(weight_of(BOB), 0);
+        });
+    }
 }

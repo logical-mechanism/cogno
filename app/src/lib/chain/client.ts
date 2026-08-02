@@ -48,8 +48,15 @@ const EXPECTED_SPEC_NAME = "cogno-chain-runtime";
  * with the blob the same 141110 bytes. So the descriptors are unchanged in substance and only this
  * constant had to move. It still HAS to move: the guard compares it to the live `spec_version`, and the
  * bump itself is unavoidable because `frame_system::can_set_code` refuses a non-increasing one.
+ *
+ * 214 → 215 is the OPPOSITE case and the reason this guard exists. The cardano-observer's inherent became
+ * a delta: `observe`'s arguments changed, the three `LastObserved*` storage entries went from
+ * `StorageValue<BoundedVec<..>>` to StorageMaps, `PendingChanges` and `ObservationBacklogged` were added,
+ * and the `MaxObserved` constant split into three. The descriptors WERE regenerated, and a bundle built
+ * against 214 would mis-decode the observer surface — so the lockstep deploy is mandatory, not a
+ * formality.
  */
-export const DESCRIPTOR_SPEC_VERSION: number | null = 214;
+export const DESCRIPTOR_SPEC_VERSION: number | null = 215;
 
 /** Heartbeat window: if no new best block arrives within this, we surface "reconnecting". */
 const BLOCK_HEARTBEAT_MS = 30_000;

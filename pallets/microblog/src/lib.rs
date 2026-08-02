@@ -1960,12 +1960,20 @@ pub mod pallet {
         /// retroactively re-price a socially-concluded poll. Feeless + capacity-metered (priced at
         /// `VoteCost`).
         ///
-        /// WEIGHT (§2.1): the two joins are each O(observed-set) — bounded by
-        /// [`Config::MaxObservedAccounts`] (the observer's `MaxObserved`). The `#[pallet::weight]` declares
+        /// WEIGHT (§2.1): the two joins are each O(observed-set) — capped at
+        /// [`Config::MaxObservedAccounts`] (the observer's `MaxScanned`). The `#[pallet::weight]` declares
         /// the WORST case (both sets full: `close_poll()` + `6 × MaxObservedAccounts` reads); the body then
         /// REFUNDS via `PostDispatchInfo` down to `≤3` reads per account it actually scanned, so a real
         /// close (a handful of stakers/role-holders) is priced at its true cost and a burst can't overrun a
         /// block on an under-declared weight.
+        ///
+        /// ⚠ Spec 215 moved where the staker cap comes from without changing this arithmetic. The staker
+        /// set used to be one whole-vec read of the observer's `BoundedVec` basis plus 2 reads per staker;
+        /// the basis is a StorageMap now, so it is 3 reads per staker (the map iteration, then
+        /// `VotingPower`, then the vote) and no fixed read at all. `≤3 per account` was already what the
+        /// refund charged and what the declaration reserves, so both still hold — but the cap is now
+        /// imposed by `ObservedStakers`' own `.take(cap)` rather than guaranteed by the basis type, and
+        /// above it a tally joins over a storage-order subset. See `MaxObservedAccounts` in the runtime.
         #[pallet::call_index(13)]
         #[pallet::weight(<T as Config>::WeightInfo::close_poll().saturating_add(
             T::DbWeight::get().reads((T::MaxObservedAccounts::get() as u64).saturating_mul(6))
@@ -2098,9 +2106,11 @@ pub mod pallet {
                 },
             );
             Self::deposit_event(Event::PollClosed { host_id });
-            // Refund: the joins scanned `s_len` stakers + `r_len` role-holders; charge ≤3 reads/account
-            // (holder ≤2, chamber ≤3) on top of the base. `≤ MaxObservedAccounts` each, so this is always
-            // ≤ the declared worst case (`6 × MaxObservedAccounts`).
+            // Refund: the joins scanned `s_len` stakers + `r_len` role-holders; charge 3 reads/account on
+            // top of the base. Both joins now cost exactly that per account — a staker is (map iteration,
+            // `VotingPower`, vote) and a role-holder is (key iteration, `ObservedRoles`, vote) — and each
+            // is `≤ MaxObservedAccounts`, so this is always ≤ the declared worst case
+            // (`6 × MaxObservedAccounts`).
             let scanned = (s_len as u64).saturating_add(r_len as u64);
             let actual = <T as Config>::WeightInfo::close_poll()
                 .saturating_add(T::DbWeight::get().reads(scanned.saturating_mul(3)));

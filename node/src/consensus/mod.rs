@@ -10,10 +10,12 @@
 //! to, cheaply and without a state query. It does NOT let them skip trusting the operator — nothing on
 //! the import path extracts or compares it (that is Architecture B, below), so the header value is only
 //! as honest as the node that sealed it. The value that IS consensus-checked is the one inside the
-//! `observe` extrinsic. Two known ways the seal can differ from what the block applied: it is emitted
-//! from inherent DATA, so a block whose observation overran `MaxObserved` (or hit either of the runtime's
-//! SKIP bounds) still carries a healthy-looking `cobs` anchor while applying nothing. Read the extrinsic,
-//! not the header, when the answer has to be load-bearing. The LOAD-BEARING importer re-validation rides
+//! `observe` extrinsic. The seal can differ from what the block applied, because it is emitted from
+//! inherent DATA: a block that hit one of the runtime's SKIP bounds applies nothing while still carrying
+//! a healthy-looking `cobs` anchor, and since spec 215 a block that applies only a PAGE of a backlogged
+//! change set seals the reference for the WHOLE observation. Read the extrinsic (or on-chain
+//! `LastReference`, which holds until a backlog drains), not the header, when the answer has to be
+//! load-bearing. The LOAD-BEARING importer re-validation rides
 //! cogno's existing
 //! `pallet_cardano_observer::check_inherent` chokepoint (which now compares `CardanoRef.block_hash`), so
 //! the import path is UNCHANGED — NO forked `import_queue` / `start_aura` / verifier, and NO GPL-licensed

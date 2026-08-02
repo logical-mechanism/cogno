@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 213**.
+it. This is a snapshot of **spec_version 215**.
 
 Two things to keep in mind:
 
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **213** | `VERSION` — `runtime/src/lib.rs` |
-| transaction_version | 7 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 213 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| **spec_version** | **215** | `VERSION` — `runtime/src/lib.rs` |
+| transaction_version | 8 | `VERSION` — `runtime/src/lib.rs` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 215 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -186,7 +186,7 @@ A poll stores vote COUNTS only — the weight is derived at read time from each 
 
 | Parameter | Value | Symbol / file |
 |---|---|---|
-| `MaxObservedAccounts` (accounts a tally joins over) | 1024 (= the observer's `MaxObserved`) — declares `close_poll`'s worst case, which then refunds down to the rows actually scanned | `pallet_microblog::Config` |
+| `MaxObservedAccounts` (accounts a tally joins over) | 1024 (= the observer's `MaxScanned`) — declares `close_poll`'s worst case, which then refunds down to the rows actually scanned. ⚠ Since spec 215 this is a cap the READ side imposes, not one the write side guarantees: the observer no longer bounds how many accounts hold voting power, so above 1024 a tally joins over a storage-order subset. Giving `close_poll` a paged tally is deferred, separate work | `pallet_microblog::Config` |
 | Roles folded per voter in a chamber tally | 16 (the observed-badge cap — see [Cardano role tags](#cardano-role-tags)) | `MAX_OBSERVED_ROLES_PER_ACCOUNT` — `pallets/cardano-roles/src/lib.rs` |
 | Poll deadline (`close_at`) | REQUIRED since spec 211, and validated into `[now + MinPollDuration, now + MaxPollDuration]`. (A pre-211 `None` poll already in storage keeps floating and can never be frozen.) | `create_poll` — `pallets/microblog/src/lib.rs` |
 | `MinPollDuration` | 100 blocks (10 min) | `pallet_microblog::Config` |
@@ -199,8 +199,10 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 
 | Parameter | Value | Symbol / file |
 |---|---|---|
-| `MaxObserved` | 1024 (hard cap, full snapshot/block; node WARNs at 75%). Since spec 213 it ALSO caps the two per-block credential scans that feed the db-sync query scope (`bound_stake_credentials_capped` in cogno-gate, `claimed_credentials` in cardano-roles). Those maps are grown by the bare-unsigned, feeless `link_stake_signed` / `claim_role_signed`, so an unbounded scan was a free way to grow every node's per-block work until the db-sync query blew its 2 s timeout and the sole weight writer stopped for everyone. Capping there loses nothing observable: both observation axes are already `BoundedVec<_, MaxObserved>` | `pallet_cardano_observer::Config` |
-| `StallAfter` | 50 blocks (5 min) before `ObservationStalled` latches | `pallet_cardano_observer::Config` |
+| `MaxChangesPerBlock` | 256 per axis (vault / stake / role). A CHURN batch size, not a population bound — nothing caps how many identities may hold weight. A larger change set fills one page and the rest drains over the following blocks, so overrunning it costs latency, never correctness. Worst case is three full pages ≈ 10% of `max_block` | `pallet_cardano_observer::Config` |
+| `MaxRolesPerAccount` | 32 — a per-IDENTITY bound on the observed badge set. DOUBLE `MAX_OBSERVED_ROLES_PER_ACCOUNT` (16) on purpose: the sink truncates with a two-pass reserve that keeps the non-SPO badges, and if this bound bit first it would truncate naively in SPO-first order and drop a multi-pool operator's dRep badge | `pallet_cardano_observer::Config` |
+| `MaxScanned` | 1024 — caps the two per-block credential scans that feed the db-sync query scope (`bound_stake_credentials_capped` in cogno-gate, `claimed_credentials` in cardano-roles), and the read-side observed-account joins. Those maps are grown by the bare-unsigned, feeless `link_stake_signed` / `claim_role_signed`, so an unbounded scan was a free way to grow every node's per-block work until the db-sync query blew its 2 s timeout and the sole weight writer stopped for everyone. ⚠ Since spec 215 it BINDS where it used to be redundant: it is a real ceiling on the STAKE and ROLE axes (a credential past it is not scanned, so it is not observed and that identity silently gets no voting power or badge — a per-identity omission, not a chain-wide freeze). The vault axis is discovered by policy id and has no cap. Node WARNs at 75%, ERRORs at the cap | `pallet_cardano_observer::Config` |
+| `StallAfter` | 50 blocks (5 min) before `ObservationStalled` latches. A draining backlog is NOT a stall — each of those blocks applies a page and stamps the clock; `PendingChanges` is the signal for that | `pallet_cardano_observer::Config` |
 | `MinLock` | 100 ADA (100,000,000 lovelace) | `ObsMinLock` |
 | `MaxStakeWeight` | 45e15 lovelace (~total ADA supply; over-cap entry skipped) | `pallet_cardano_observer::Config` |
 | `MaxVotingPower` | 45e15 lovelace (over-cap entry skipped) | `pallet_cardano_observer::Config` |
@@ -212,16 +214,18 @@ These are consensus-critical — a change here can fork the chain. All in `runti
 | `EnforceWeight` default | `true` (observer is sole weight writer from genesis) | `pallets/cardano-observer/src/lib.rs` |
 | `CardanoNetwork` | 0 (testnet/preprod; 1 = mainnet) — ONE derived constant both CIP-8 pallets share | `CardanoNetworkId` |
 
-`MaxObserved` bounds ENTRIES, not identities, and on the role axis those are not the same number. The
-vault and voting-power axes emit one entry per identity, but an mSPO emits one `SpoCalidus` entry per
-declaring pool and the owner path one `SpoOwner` entry per owned pool — so a few dozen multi-pool
-operators can reach 1024 role entries while the other two axes sit near zero. Against the live preprod
-db-sync the owner path alone resolves 739 (credential, pool) rows across 635 credentials, with one
-credential owning 17 pools. Capping the SCOPING sets does not bound this; the output bound is enforced
-fail-closed by `create_inherent`, which abstains rather than truncate. That is deliberate — absence from
-`role_entries` is a REVOKE (the unlock clamp clears every role of an account that drops out), so
-truncating to fit would silently strip badges instead of freezing. Watch `cogno_observer_observed_roles`,
-which is the axis `ObserverApproachingMaxObserved` fires on first.
+`MaxScanned` caps CREDENTIALS scanned, which on the role axis is not the same number as entries emitted.
+The vault and voting-power axes emit one entry per identity, but an mSPO emits one `SpoCalidus` entry per
+declaring pool and the owner path one `SpoOwner` entry per owned pool. Against the live preprod db-sync
+the owner path alone resolves 739 (credential, pool) rows across 635 credentials, with one credential
+owning 17 pools — so `cogno_observer_observed_roles` runs well ahead of the credential count and is worth
+watching on its own.
+
+None of that is a ceiling any more. Before spec 215 the emitted entries were bounded too, and overrunning
+that bound made `create_inherent` abstain — dropping the whole inherent and freezing the sole weight
+writer chain-wide. Now the observation is a delta with no size bound at all: a large change set pages and
+drains. What `MaxScanned` still does is bound the SCOPING sets, so a credential past it is never scanned
+and that one identity gets no voting power or badge until the cap is raised.
 
 ## Governance (sudo-free)
 
@@ -276,7 +280,9 @@ prefix nothing declares.
 
 Verifiable SPO / dRep / CC badges (see [VERIFIABLE-ROLE-TAGS.md](VERIFIABLE-ROLE-TAGS.md)). Claiming a role
 key is a permissionless CIP-8 self-proof (bare-unsigned and feeless, reusing the cogno-gate verifier); the
-badge itself is written only by the cardano-observer inherent, so the observed side sits under `MaxObserved`.
+badge itself is written only by the cardano-observer inherent, so the observed side sits under `MaxScanned`
+(the per-`RoleKind` claimed-credential scan cap — no longer a bound on the observation itself, which is a
+delta since spec 215).
 
 | Parameter | Value | Symbol / file |
 |---|---|---|

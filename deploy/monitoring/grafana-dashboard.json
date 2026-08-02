@@ -144,26 +144,28 @@
     },
     {
       "id": 12,
-      "title": "Observer set size vs MaxObserved ceiling",
+      "title": "Observer set sizes vs the MaxScanned cap",
       "type": "timeseries",
-      "description": "The observed vault/voter counts against the MaxObserved ceiling (1024). At the ceiling the observe inherent abstains and weight FREEZES — see the ObserverOversize / ObserverApproachingMaxObserved alerts.",
+      "description": "The credential SCAN against the MaxScanned cap (1024): a credential past it is not scanned, so that identity gets no voting power or role badge. Only 'scanned credentials' is comparable to the cap — observed voters run BELOW the scan (an undelegated credential has no epoch_stake row) and observed roles run ABOVE it (one entry per declaring or owned pool), so neither is a truncation signal. Vaults have no cap at all since spec 215. See the ObserverScanCapped / ObserverApproachingMaxScanned alerts.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 38 },
       "targets": [
-        { "expr": "cogno_observer_observed_vaults{job=\"cogno-node\"}", "legendFormat": "vaults" },
-        { "expr": "cogno_observer_observed_voters{job=\"cogno-node\"}", "legendFormat": "voters" },
-        { "expr": "cogno_observer_max_observed{job=\"cogno-node\"}", "legendFormat": "MaxObserved" }
+        { "expr": "cogno_observer_scanned_credentials{job=\"cogno-node\"}", "legendFormat": "scanned credentials" },
+        { "expr": "cogno_observer_max_scanned{job=\"cogno-node\"}", "legendFormat": "MaxScanned" },
+        { "expr": "cogno_observer_observed_vaults{job=\"cogno-node\"}", "legendFormat": "vaults (uncapped)" },
+        { "expr": "cogno_observer_observed_voters{job=\"cogno-node\"}", "legendFormat": "voters (output, not the scan)" },
+        { "expr": "cogno_observer_observed_roles{job=\"cogno-node\"}", "legendFormat": "roles (output, one-to-many)" }
       ]
     },
     {
       "id": 13,
-      "title": "Observer oversize (freeze) events — non-zero is a page",
+      "title": "Observer scan-capped events — non-zero means identities are unobserved",
       "type": "stat",
-      "description": "cogno_observer_observations_oversize_total: an observation exceeded MaxObserved, so create_inherent abstains and the sole weight writer is frozen until MaxObserved is raised.",
+      "description": "cogno_observer_observations_scan_capped_total: a scanned credential set reached MaxScanned, so credentials past the cap were not scanned and those identities have no voting power and no role badge until it is raised. Per-identity, not the chain-wide freeze the retired ObserverOversize watched.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 38 },
       "targets": [
-        { "expr": "cogno_observer_observations_oversize_total{job=\"cogno-node\"}", "legendFormat": "oversize events" }
+        { "expr": "cogno_observer_observations_scan_capped_total{job=\"cogno-node\"}", "legendFormat": "scan-capped events" }
       ]
     },
     {
