@@ -26,6 +26,7 @@ const K: CapacityConsts = {
   ceiling: 1_000n, // hard cap
   baseCost: 100n, // a post costs 100 + 5/byte
   perByteCost: 5n,
+  maxLength: 512, // the byte bound; unused by the capacity replay, carried for type completeness
 };
 
 describe("capOf — capped-linear ceiling", () => {

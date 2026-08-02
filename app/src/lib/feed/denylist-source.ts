@@ -34,11 +34,12 @@
 // if the budget is exhausted the page comes back short, which is the same shape the bounded lens reads
 // already produce and which /explore's guard already covers.
 //
-// COST WHEN EMPTY: nothing at all. `withServeDenylist` returns the source unwrapped when the list is
-// empty, which is the shipped state, so there is not even a predicate call on the hot path.
+// COST WHEN EMPTY: one `Array.filter` per page over an O(1) predicate that returns false on its first
+// line. The wrap is unconditional because the list can now arrive at runtime (/denylist.json), after
+// the moment a wrap-or-not decision would have been made — see the note on `withServeDenylist`.
 
 import type { Observable } from "rxjs";
-import { DENYLIST_EMPTY, isDenied, isDeniedAuthor, isDeniedPost } from "@/lib/config/denylist";
+import { isDenied, isDeniedAuthor, isDeniedPost } from "@/lib/config/denylist";
 import type {
   CognoPost,
   FeedPage,
@@ -76,7 +77,16 @@ export function filterDenied<T extends CognoPost>(posts: T[]): T[] {
  * Returns `source` UNWRAPPED when nothing is denied, so the shipped build carries no indirection.
  */
 export function withServeDenylist(source: FeedSource): FeedSource {
-  if (DENYLIST_EMPTY) return source;
+  // ⛔ This used to `return source` unwrapped when the list was empty. That was a correct
+  // optimization while the only source was a build-time env var, and it became a silent hole the
+  // moment /denylist.json could arrive later: the wrap decision is made ONCE, when the api connects,
+  // so a list that landed a moment after it would have been parsed, validated, logged — and then
+  // consulted by nothing at all. The lever would read as working right up until someone checked.
+  //
+  // Wrapping unconditionally costs one `Array.filter` per page with an O(1) predicate that returns
+  // false on its first line while the sets are empty (`isDeniedAuthor` checks `size === 0` before it
+  // decodes anything). The top-up loop cannot engage either: with nothing denied every post survives,
+  // so `kept.length === 0` is only ever true for a page that was already empty.
 
   async function page(q: FeedQuery): Promise<FeedPage> {
     let pg = await source.page(q);

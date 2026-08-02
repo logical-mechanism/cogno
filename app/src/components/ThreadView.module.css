@@ -67,6 +67,17 @@
   background: var(--cg-bg-subtle);
 }
 
+/* The "N newer replies are not shown" line at the foot of a thread past the runtime's reply cap.
+   Deliberately NOT styled as an action: there is nothing to click, because the runtime has no cursor
+   for those replies. It is a statement of a limit, so it reads as text, not as a disabled button. */
+.repliesCapped {
+  margin: 0;
+  padding: var(--cg-space-3) var(--cg-space-4);
+  border-top: 1px solid var(--cg-border);
+  color: var(--cg-text-muted);
+  font-size: var(--cg-fs-sm);
+}
+
 /* The focal post wrapper — anchors scroll-to-focal + SR focus; carries the detail stats row below. */
 .focal {
   border-bottom: 1px solid var(--cg-border);

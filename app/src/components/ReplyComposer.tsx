@@ -21,6 +21,8 @@ export interface ReplyComposerProps {
   /** The post being replied to (sets parent=Some(id) + drives the context line/preview). */
   replyTo: CognoPost;
   submitState: ActionState;
+  /** Live `Microblog::MaxLength` from `useComposerGate().maxBytes` — never a hardcoded bound. */
+  maxBytes?: number;
   rateLimited?: boolean;
   retryInSeconds?: number | null;
   noPostingPower?: boolean;
@@ -34,6 +36,7 @@ export function ReplyComposer({
   viewer,
   replyTo,
   submitState,
+  maxBytes,
   rateLimited,
   retryInSeconds,
   noPostingPower,
@@ -83,6 +86,7 @@ export function ReplyComposer({
       mode="reply"
       submitState={submitState}
       rateLimited={rateLimited}
+      maxBytes={maxBytes}
       retryInSeconds={retryInSeconds}
       noPostingPower={noPostingPower}
       autoFocus={autoFocus}

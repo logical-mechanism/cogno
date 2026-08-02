@@ -379,6 +379,53 @@ that is the alarm working, and it is the only thing that will ever tell you that
 alarm gets muted; disable the workflow for the duration rather than learning to ignore it, and remember that
 a disabled canary is itself an oven left on.
 
+## Declining to serve something
+
+The one moderation lever this project has. It changes what **this deployment renders**; it does not
+and cannot change the chain, because every post is in every block and anyone running a node reads the
+complete record. That is the design, not a gap — see
+[`app/src/lib/config/denylist.ts`](../app/src/lib/config/denylist.ts) for the full posture and
+[`../POLICY.md`](../POLICY.md) for the promise it implements.
+
+There are two lists and they are **unioned**, so removing something from one does not un-deny what the
+other still names.
+
+**The fast one — `/etc/cogno/denylist.json`.** Fetched by the app on every page load. Edit it and it
+applies on the next load: no rebuild, no rsync, no deploy. Reach for this when a notice arrives.
+
+```bash
+# One-time, as root. It lives OUTSIDE /var/www deliberately: `deploy-app` is an
+# `rsync -a --delete`, so anything under the web root is reset or deleted by the next deploy.
+sudo install -d -m 0755 /etc/cogno
+printf '{"authors":[],"posts":[]}' | sudo tee /etc/cogno/denylist.json
+
+# Then, when you need it — ss58 addresses at prefix 42, post ids as decimal strings.
+sudo tee /etc/cogno/denylist.json <<'JSON'
+{"authors": ["5Grw…utQY"], "posts": ["1234"]}
+JSON
+curl -sI https://<your-domain>/denylist.json | head -1   # 200, and Cache-Control: no-store
+```
+
+Denying an **author** omits everything of theirs the app reads: posts, replies, quotes, their profile,
+their rows in search and who-to-follow, and their mentions inside other people's posts. Denying a
+**post** omits that one item.
+
+**The durable one — the build-time env vars.** `NEXT_PUBLIC_DENY_AUTHORS` and
+`NEXT_PUBLIC_DENY_POSTS`, comma-separated, inlined at `next build`. Slower to apply (it needs a
+deploy) but it cannot 404, cannot fail to load, and survives rebuilding the server from scratch. A
+**permanent** delisting belongs here; move entries over once the incident is done.
+
+Three things worth knowing before you need this at speed:
+
+- **A malformed entry is dropped, not fatal.** The runtime file cannot fail a build, so a bad line is
+  reported to the browser console (`console.error`) and the rest of the file still applies. If you are
+  not watching the console, check that the account actually disappeared rather than assuming.
+- **An address at the wrong network prefix still works.** One pasted from a Polkadot or Substrate
+  explorer encodes the same key as a different string; the runtime path canonicalizes it to prefix 42
+  and warns. The build-time path is stricter and fails the build instead.
+- **Both lists are public.** The env vars are inlined into the JavaScript bundle and the JSON file is
+  served to anyone who asks. Never put a reason, a reporter, or a case number in either.
+
 ## Operating notes
 
 - **Durable state.** Everything stateful lives under `/var/lib/cogno`. With `MinAuthorities=1` the node DB

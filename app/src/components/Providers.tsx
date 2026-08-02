@@ -25,6 +25,7 @@ import { useFeedSource } from "@/hooks/useFeedSource";
 import { useHeads } from "@/hooks/useHeads";
 import { useSelfProfile } from "@/hooks/useSelfProfile";
 import { deriveSessionState, type SessionState } from "@/lib/session";
+import { loadServeDenylist } from "@/lib/config/denylist";
 import { useDocumentVisible, useFrozenWhileHidden } from "@/lib/visibility";
 import { ToasterProvider } from "@/components/toast/ToasterProvider";
 import { OptimisticProvider } from "@/hooks/useOptimistic";
@@ -144,6 +145,16 @@ function ChainProvider({ children }: { children: ReactNode }) {
   // `postingEnabled` gates the identity reads off the BACKGROUND //Alice default — see the param doc
   // on useIdentity. Same guard `postingPower` and `viewerRoles` below already apply.
   const identity = useIdentity(api, client, signer, signerCtl.postingEnabled);
+
+  // The operator's serve denylist, fetched once per page load. Kicked off HERE, at the top of the
+  // provider tree, so it races the WebSocket handshake rather than waiting behind it — a same-origin
+  // static JSON resolves long before the first chain read returns a post to filter. Nothing awaits it
+  // and nothing renders differently for it: the sets it fills are mutated in place, so a late arrival
+  // simply applies from the next read on (~one block). See lib/config/denylist.ts for the fail-open
+  // trade and why the durable entries belong in the build-time env vars instead.
+  useEffect(() => {
+    void loadServeDenylist();
+  }, []);
 
   // The feed reader seam — the PAPI-direct node reader, memoized on [api] inside the hook.
   const source = useFeedSource(api, client);

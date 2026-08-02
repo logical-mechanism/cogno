@@ -188,7 +188,7 @@ export function ComposePage() {
   //    useSession already publishes; the shared hook reads the session's, so that second subscription
   //    (and its extra render cadence) is gone.
   const gateText = mode === "poll" ? pollDraft.question : serialized;
-  const { rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
+  const { maxBytes, rateLimited, noPostingPower, retryInSeconds } = useComposerGate(gateText);
 
   // ── goBack: prefer in-app history; else land on Home (step 3 / Cancel). ────────────────────────
   const goBack = useCallback(() => {
@@ -368,6 +368,7 @@ export function ComposePage() {
             onMentionsChange={setMentions}
             onSerializedChange={setSerialized}
             rateLimited={rateLimited}
+            maxBytes={maxBytes}
             retryInSeconds={retryInSeconds}
             noPostingPower={noPostingPower}
             autoFocus
@@ -386,6 +387,7 @@ export function ComposePage() {
               replyTo={targetPost}
               submitState={submitState}
               rateLimited={rateLimited}
+              maxBytes={maxBytes}
               noPostingPower={noPostingPower}
               autoFocus
               submitReply={onReply}
@@ -404,6 +406,7 @@ export function ComposePage() {
                 onMentionsChange={setMentions}
                 onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
+                maxBytes={maxBytes}
                 retryInSeconds={retryInSeconds}
                 noPostingPower={noPostingPower}
                 autoFocus
@@ -420,6 +423,7 @@ export function ComposePage() {
               quoted={targetPost}
               submitState={submitState}
               rateLimited={rateLimited}
+              maxBytes={maxBytes}
               noPostingPower={noPostingPower}
               autoFocus
               submitQuote={onQuote}
@@ -437,6 +441,7 @@ export function ComposePage() {
                 onMentionsChange={setMentions}
                 onSerializedChange={setSerialized}
                 rateLimited={rateLimited}
+                maxBytes={maxBytes}
                 retryInSeconds={retryInSeconds}
                 noPostingPower={noPostingPower}
                 autoFocus
@@ -453,6 +458,7 @@ export function ComposePage() {
             onChange={setPollDraft}
             submitState={submitState}
             rateLimited={rateLimited}
+            maxBytes={maxBytes}
             retryInSeconds={retryInSeconds}
             noPostingPower={noPostingPower}
             autoFocus

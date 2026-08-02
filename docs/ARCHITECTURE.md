@@ -160,6 +160,7 @@ once at boot.
 
 - Bring up a fresh chain: [`PREPROD-BRINGUP.md`](PREPROD-BRINGUP.md).
 - Run a tracking / relay node: [`RELAY-NODE.md`](RELAY-NODE.md).
+- Build a different frontend against this chain: [`CLIENT-INTEGRATION.md`](CLIENT-INTEGRATION.md).
 - Upgrade a running chain (committee-authorized): [`UPGRADES.md`](UPGRADES.md).
 - Committee custody / rotation / audit: [`D2-custody-runbook.md`](D2-custody-runbook.md).
 - Deployment (systemd + monitoring): [`../deploy/README.md`](../deploy/README.md).

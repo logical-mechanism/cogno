@@ -19,6 +19,8 @@ export interface QuoteComposerProps {
   /** The post being quoted (renders the embed + sets quoted_id). */
   quoted: CognoPost;
   submitState: ActionState;
+  /** Live `Microblog::MaxLength` from `useComposerGate().maxBytes` — never a hardcoded bound. */
+  maxBytes?: number;
   rateLimited?: boolean;
   retryInSeconds?: number | null;
   noPostingPower?: boolean;
@@ -44,6 +46,7 @@ export function QuoteComposer({
   viewer,
   quoted,
   submitState,
+  maxBytes,
   rateLimited,
   retryInSeconds,
   noPostingPower,
@@ -71,6 +74,7 @@ export function QuoteComposer({
       mode="quote"
       submitState={submitState}
       rateLimited={rateLimited}
+      maxBytes={maxBytes}
       retryInSeconds={retryInSeconds}
       noPostingPower={noPostingPower}
       autoFocus={autoFocus}

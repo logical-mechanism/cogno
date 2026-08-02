@@ -111,6 +111,81 @@ stake cannot be claimed by anyone who does not hold its stake key. It is optiona
 without it) and must follow the identity bind — `validate_unsigned` requires the account to already be
 payment-bound.
 
+## The posting key is derived from the wallet, and the derivation is normative
+
+The account that signs a post is not stored anywhere. It is a pure function of a signature the
+Cardano wallet produces over one fixed message, so a user re-derives it by signing again and there is
+no key to back up, export or lose.
+
+That makes an account portable between clients for free — someone who onboarded on cogno.forum
+arrives at any other client as the same account — but only if every client derives **identically**.
+A client that gets any step wrong mints a different account, and since the identity bind is 1:1 and
+`revoke` writes a permanent tombstone, a wrong derivation is not something the user can undo.
+
+So this is a specification, not an implementation note. The reference implementation is
+`app/src/lib/signer/wallet-derive.ts`.
+
+1. Take the wallet's **change address** (CIP-30 `getChangeAddress()`), bech32. Not the reward
+   address, and not the first used address.
+2. Reject the wallet if the address's payment credential is **not a verification key** (type `0`). A
+   script or vault credential has no key to sign with, so there is nothing to derive from.
+3. Have the wallet CIP-8-sign this **exact string**, with that same address as the signing address:
+
+   ```
+   cogno-chain · derive my posting key (v1). Signing this unlocks your posting identity on this device; the signature never leaves it. Do NOT sign this exact message in any other app.
+   ```
+
+   The `·` is U+00B7 MIDDLE DOT and the string is UTF-8. There is no nonce, no genesis hash and no
+   chain id in it, deliberately: the key must be stable across sessions and across chains, and the
+   per-chain anti-replay lives in the bind payloads above, not here.
+
+4. Take the **`signature` field** of the CIP-30 `DataSignature` — the COSE_Sign1 bytes, hex — and
+   decode it to bytes. Not the `key` field, and not the bare 64-byte Ed25519 signature inside it.
+5. `seed = blake2b(signature_bytes, 32)` — blake2b with a 32-byte digest, unkeyed.
+6. `keypair = sr25519_derive(seed, path = "")` — an **empty** derivation path (a soft/hard junction
+   would give a different key).
+7. The account is that keypair's public key at **SS58 prefix 42**.
+
+The wallet's Ed25519 signature is deterministic (RFC 8032), so the whole chain is deterministic: the
+same wallet and message always give the same account.
+
+### Test vectors
+
+Steps 4 to 7 are a pure transform over bytes, so an implementation can check itself against these
+without a Cardano wallet, a network or any Cardano tooling. The inputs are fixed stand-in signature
+bytes, not a real wallet's output — only the transform is under test.
+
+| signature bytes (hex) | resulting account |
+|---|---|
+| `aa` × 32 | `5CDrV6ENfvCvLfaxzmuEs7bj1GUsGbJLhVH4WHUYm7ta8MUU` |
+| `bb` × 32 | `5HK93uxFLmK3o6ZT6DuZVBbqHcTAxpGGuBgYunH1WFiDEZA2` |
+
+For the first, in full:
+
+```
+signature   aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+seed        0x046c0d987075db8217087bae19e9f753305890fc6772908c57f07878211cc8cb
+public key  0x06fa40c2f135f8f8d0603152246ce2c0b251f466a1ba02cf79c710dfce0cd471
+account     5CDrV6ENfvCvLfaxzmuEs7bj1GUsGbJLhVH4WHUYm7ta8MUU
+```
+
+These are the same vectors `app/src/lib/signer/derive-golden.test.ts` enforces in CI, deliberately —
+one set of numbers, checked by a test, rather than a second set in prose that can drift away from the
+code. That test also pins the well-known `//Alice`, `//Bob` and `//Charlie` dev accounts, which are
+fixed by the wider Substrate ecosystem rather than by us: if those move, the sr25519 implementation
+underneath has changed and every existing user has been re-keyed. That is a dependency bump to
+reject, not a test to update.
+
+### What the derived key is and is not
+
+It signs **posts only**. It never controls funds: the ADA stays in the Cardano wallet, which is not
+derived from anything. So a phished derive-signature costs impersonation, never theft.
+
+It also **cannot be rotated**. There is no nonce, so re-deriving returns the same key, and `revoke`
+is committee-only and permanent. A leaked signature is unfixable impersonation, and the warning in
+the message text — which the wallet displays — is the entire mitigation. That is a real, accepted
+weakness, and it is the reason the message says what it says.
+
 ## Revocation is a permanent tombstone
 
 `revoke` (`call_index(1)`) is the one privileged call here — it is gated by `FollowerOrigin` (the

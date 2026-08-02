@@ -17,10 +17,20 @@
 import { useMemo } from "react";
 import { useSession, useBestBlock } from "@/components/Providers";
 import { useCapacity } from "./useCapacity";
-import { draftStatus, SECS_PER_BLOCK } from "@/lib/chain/capacity";
+import { draftStatus, SECS_PER_BLOCK, FALLBACK_MAX_POST_BYTES } from "@/lib/chain/capacity";
 import { viewerBucket } from "@/lib/viewerBucket";
 
 export interface ComposerGate {
+  /**
+   * The live post byte cap — `Microblog::MaxLength` read from metadata, falling back to
+   * `FALLBACK_MAX_POST_BYTES` until that read lands (or forever, if it fails).
+   *
+   * This is here rather than hardcoded at each composer because the bound is an ON-WIRE constant
+   * that the runtime can raise. A duplicated 512 in the bundle desyncs at exactly the moment it
+   * matters most — the upgrade — and the failure is silent: the ring says the draft is full, the
+   * chain would have taken twice as much, and nothing tells the user which one is lying.
+   */
+  maxBytes: number;
   /** The draft cannot be posted right now (bucket exhausted / charging) → disable the CTA + notice. */
   rateLimited: boolean;
   /** Ready account with zero locked-ADA weight → the honest "lock ADA to post" gate, NOT a rate limit. */
@@ -87,5 +97,9 @@ export function useComposerGate(gateText: string): ComposerGate {
     return st.blocks * SECS_PER_BLOCK;
   }, [viewer.status, view, consts, gateText]);
 
-  return { rateLimited, noPostingPower, retryInSeconds };
+  // Fail-closed to the floor: a missing/unread constant holds the composer to the smaller bound
+  // rather than letting a draft the runtime would reject look acceptable (see FALLBACK_MAX_POST_BYTES).
+  const maxBytes = consts?.maxLength ?? FALLBACK_MAX_POST_BYTES;
+
+  return { maxBytes, rateLimited, noPostingPower, retryInSeconds };
 }

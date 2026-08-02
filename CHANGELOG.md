@@ -3,9 +3,21 @@
 What's changed in cogno-chain, newest first — written for people, not compilers. Each entry leads
 with what it *means*; the runtime `spec_version` it shipped in is noted at the end where it matters.
 
-The live chain runs **`spec_version` 204** (`transaction_version` 3). There is no tagged public
-release yet: this is a running preprod testnet, so the on-chain `spec_version` is the real version
-number. It only moves when the runtime's logic or encoding changes — most app work moves nothing.
+There is no tagged public release yet: this is a running preprod testnet, so the on-chain
+`spec_version` is the real version number. It only moves when the runtime's logic or encoding
+changes — most app work moves nothing.
+
+Ask the chain what it is running rather than trusting a number written down here, which is stale the
+moment the next upgrade is enacted:
+
+```bash
+curl -sH 'content-type: application/json' \
+  -d '{"id":1,"jsonrpc":"2.0","method":"state_getRuntimeVersion"}' https://cogno.forum/rpc \
+  | jq -c '.result | {specVersion, transactionVersion}'
+```
+
+As of 2 August 2026 that answers 214 / 7, and this repo builds 215 — a runtime is only live once a
+governed upgrade has enacted it, so the two are routinely a step apart.
 
 ## Talk-capacity you have to earn, and an observer that says when it stops
 

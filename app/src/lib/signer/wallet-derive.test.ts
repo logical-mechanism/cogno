@@ -91,6 +91,49 @@ describe("deriveSignerFromWallet — determinism (no storage)", () => {
   });
 });
 
+// The message BYTES, pinned as a literal.
+//
+// The assertion above compares what was signed against `DERIVE_MESSAGE` — which is the right check
+// for "the module signs the constant and not something it built on the fly", but it is a comparison
+// with itself: edit the constant and it still passes, in both places, together. Nothing in the repo
+// noticed if these bytes moved, and they are the highest-consequence bytes in the frontend.
+//
+// The account is a pure function of the wallet's signature over this exact string, so a single
+// changed character silently mints a DIFFERENT account for every existing user. Their real account
+// is still on chain and still bound 1:1 to their Cardano identity; `CognoGate::revoke` is
+// committee-only and writes a permanent tombstone, so there is no path back and no way to re-bind.
+// A user would simply arrive one day as a stranger with no posts, no follows and no posting power.
+//
+// docs/TRUSTLESS-IDENTITY.md specifies this normatively for third-party clients. If you change
+// anything here, that document is wrong too — and every other client is now minting foreign accounts.
+describe("DERIVE_MESSAGE is pinned forever", () => {
+  it("is byte-for-byte what every existing account was derived from", () => {
+    expect(DERIVE_MESSAGE).toBe(
+      "cogno-chain · derive my posting key (v1). Signing this unlocks your posting identity on this " +
+        "device; the signature never leaves it. Do NOT sign this exact message in any other app.",
+    );
+  });
+
+  it("carries the separator as U+00B7 MIDDLE DOT, not a hyphen or a bullet", () => {
+    // The character most likely to be silently "corrected" by an editor, a linter, or a round trip
+    // through something that normalizes punctuation. It is 2 bytes in UTF-8, so a swap for an ASCII
+    // hyphen changes the byte length as well as the content.
+    expect(DERIVE_MESSAGE).toContain("·");
+    expect(DERIVE_MESSAGE.startsWith("cogno-chain · derive")).toBe(true);
+    // U+00B7 is the ONLY non-ASCII character in the string, so its presence is exactly one extra
+    // UTF-8 byte over the code-unit count. Swapping it for an ASCII hyphen collapses them.
+    expect(new TextEncoder().encode(DERIVE_MESSAGE)).toHaveLength(DERIVE_MESSAGE.length + 1);
+  });
+
+  it("still tells the user not to sign it anywhere else", () => {
+    // Not cosmetic, and not a nice-to-have. The derived key CANNOT be rotated — there is no nonce, so
+    // re-deriving returns the same key — which makes this sentence, displayed by the wallet, the
+    // entire mitigation for a phished signature. Dropping it to shorten the prompt removes the only
+    // defence there is.
+    expect(DERIVE_MESSAGE).toContain("Do NOT sign this exact message in any other app");
+  });
+});
+
 describe("deriveSignerFromWallet — defensive rejections (with logging)", () => {
   it("rejects a wrong-network (mainnet) wallet BEFORE deriving, so no key is minted and no sign is asked", async () => {
     fake.networkId = 1; // mainnet
