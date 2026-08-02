@@ -58,6 +58,16 @@ pub fn bind(beacon: [u8; 32], who: AccountId) {
     });
 }
 
+/// Drop a beacon's binding (the cogno-gate `revoke` fixture). Revoke tombstones the IDENTITY but frees
+/// the ACCOUNT side, so the same account can re-bind to a different Cardano wallet — which is what makes
+/// a stale basis row and a live credit name the same account. See
+/// `a_credit_and_a_clear_on_the_same_account_apply_in_the_safe_order`.
+pub fn unbind(beacon: [u8; 32]) {
+    BINDINGS.with(|b| {
+        b.borrow_mut().remove(&beacon);
+    });
+}
+
 /// talk-stake + microblog weight/capacity adapter stand-in — records the last weight per account.
 pub struct MockSink;
 impl WeightSink<AccountId> for MockSink {
@@ -89,6 +99,12 @@ pub fn bind_stake(stake_cred: [u8; 28], who: AccountId) {
         b.borrow_mut().insert(stake_cred, who);
     });
 }
+/// Drop a stake credential's binding — the [`unbind`] analog for the voting-power axis.
+pub fn unbind_stake(stake_cred: [u8; 28]) {
+    STAKE_BINDINGS.with(|b| {
+        b.borrow_mut().remove(&stake_cred);
+    });
+}
 
 /// talk-stake `apply_voting_power` adapter stand-in — records the last voting power per account.
 pub struct MockVotingPowerSink;
@@ -116,6 +132,12 @@ impl crate::RoleResolver<AccountId> for MockRoleResolver {
 pub fn bind_role(credential: [u8; 28], who: AccountId) {
     ROLE_BINDINGS.with(|m| {
         m.borrow_mut().insert(credential, who);
+    });
+}
+/// Drop a role credential's binding — an `unclaim_role` / `revoke_role` / pool-retirement fixture.
+pub fn unbind_role(credential: [u8; 28]) {
+    ROLE_BINDINGS.with(|m| {
+        m.borrow_mut().remove(&credential);
     });
 }
 

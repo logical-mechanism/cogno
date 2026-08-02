@@ -28,9 +28,14 @@
 //! - A row that has since dropped out is absent from the new snapshot and gets its explicit `None`, so it
 //!   is cleared exactly as it would have been.
 //!
+//! The ROLE axis is the exception to that last point, and it is why this migration also CLEARS the role
+//! sink rather than only dropping the rows: a role account keeps no basis row at all, so there is nothing
+//! left for the first delta to derive a take-back from. See `on_runtime_upgrade`.
+//!
 //! The re-emission is the same bootstrap the design gives a fresh chain: if it exceeds
-//! `MaxChangesPerBlock` it pages and drains over the following blocks. On the live chain the vault basis
-//! is 7 rows and the stake basis 2, so it drains in the first block.
+//! `MaxChangesPerBlock` it pages and drains over the following blocks. Measured against live preprod
+//! state (a `try-runtime` dry-run at block 389175, spec 214): 13 vault rows, 7 stake rows and 2 role
+//! accounts — 20 basis rows, well inside one 256-change page, so it drains in the first block.
 //!
 //! Wired into the runtime's `SingleBlockMigrations` behind [`VersionedMigration`], so it runs exactly once
 //! (on-chain version 0 → 1) and self-skips on re-run.
@@ -41,7 +46,7 @@ use crate::migrations::legacy::blob::{
 };
 #[cfg(feature = "try-runtime")]
 use crate::LastObservedRoles;
-use crate::{Config, LastObserved, LastObservedStake, Pallet, PendingChanges};
+use crate::{Config, LastObserved, LastObservedStake, Pallet, PendingChanges, RoleSink};
 use frame_support::{
     migrations::VersionedMigration,
     traits::{Get, UncheckedOnRuntimeUpgrade},
@@ -87,13 +92,31 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV0ToV1<T> {
         // ── Roles ────────────────────────────────────────────────────────────────────────────────
         // The old shape held accounts with no sets. An EMPTY set would be an invalid new row (the pallet's
         // `try_state` rejects one, because an empty row makes the diff emit a redundant clear every block
-        // forever), so these accounts are NOT carried across as rows at all. Dropping them is safe in both
-        // directions: an account that still holds roles is absent from the basis, so the first delta emits
-        // its full set and re-applies it; an account that has since lost them is absent from BOTH the basis
-        // and the snapshot, so no change is emitted — and its badges were already cleared by the last
-        // full-snapshot observation before the upgrade.
+        // forever), so these accounts are NOT carried across as rows at all.
+        //
+        // ⚠ Dropping the row is NOT sufficient on its own, and the reason is the one asymmetry between
+        // this axis and the other two. Vault and stake rows migrate as `(account, 0)`, so they keep their
+        // place in the basis and the first delta can still emit their explicit `None` take-back. A role
+        // account that is dropped is in the basis NOWHERE — and `derive_call` produces a role clear only
+        // by iterating that basis. So an account whose role lapses between the last pre-upgrade
+        // observation and the first post-upgrade one is absent from the snapshot AND absent from the
+        // basis: no change is ever emitted for it, and `pallet_cardano_roles::ObservedRoles` keeps
+        // rendering a verified badge (and feeding its pool's stake into every governance-poll chamber)
+        // for ever. `unclaim_role` and `revoke_role` deliberately do NOT clear `ObservedRoles` — they
+        // document that "the observer drops the badge on its next observation", which is exactly the
+        // promise this migration would otherwise break. For the `revoke_role` case the credential is
+        // tombstoned, so the account can never re-claim, re-enter the basis and self-heal: the
+        // committee's moderation ban would be permanently defeated on the surface that renders.
+        //
+        // So the sink is cleared HERE, for every account whose row is dropped. That is safe in both
+        // directions: an account that still holds roles is re-emitted in full by the enactment block's
+        // own `create_inherent` (which runs later in this same block, against the migrated state), so
+        // the clear is invisible; an account that has lost them stays cleared, which is the truth.
         let old_roles = LastObservedRolesV0::<T>::take();
         let role_accounts = old_roles.len() as u64;
+        for account in old_roles {
+            T::RoleSink::set_roles(&account, &[]);
+        }
 
         // The backlog counter starts at zero: nothing is deferred until an observation says so.
         PendingChanges::<T>::put(0u32);
@@ -103,9 +126,10 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV0ToV1<T> {
             "cardano-observer v0 -> v1: repaged {rows} basis rows into StorageMaps and dropped {role_accounts} setless role accounts; the next observation re-derives every value",
         );
 
-        // Reads/writes: one read + one kill per old blob (3 each), one write per new row, and one write for
-        // `PendingChanges`.
-        T::DbWeight::get().reads_writes(3, rows.saturating_add(4))
+        // Reads/writes: one read + one kill per old blob (3 each), one write per new row, one write for
+        // `PendingChanges`, and one sink clear per dropped role account (the roles pallet's `apply_roles`
+        // does a single `ObservedRoles::remove` for an empty set).
+        T::DbWeight::get().reads_writes(3, rows.saturating_add(4).saturating_add(role_accounts))
     }
 
     #[cfg(feature = "try-runtime")]

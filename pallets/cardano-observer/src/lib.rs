@@ -869,7 +869,14 @@ pub mod pallet {
             // `None` here. On that chain the old guard disarmed the alarm for as long as the backlog ran.
             // `PendingChanges` is non-zero exactly in that window, so the two together mean "has ever
             // applied anything", which is what this guard was always trying to ask.
-            if LastReference::<T>::get().is_none() && PendingChanges::<T>::get() == 0 {
+            // Read both BEFORE the test rather than inside it. `&&` short-circuits, so an inline
+            // `LastReference.is_none() && PendingChanges == 0` reads three items on the latch path and
+            // four on the disarm path — and the latch path below then has to declare the larger of the
+            // two anyway. Hoisting makes the count the same on both, which is what the two `reads(..)`
+            // figures can then state honestly.
+            let never_started = LastReference::<T>::get().is_none();
+            let backlog = PendingChanges::<T>::get();
+            if never_started && backlog == 0 {
                 return T::DbWeight::get().reads(4);
             }
             Stalled::<T>::put(true);
@@ -881,7 +888,8 @@ pub mod pallet {
                 last_applied: last,
                 blocks,
             });
-            T::DbWeight::get().reads_writes(3, 2)
+            // 4 reads: LastAppliedAt, Stalled, LastReference, PendingChanges.
+            T::DbWeight::get().reads_writes(4, 2)
         }
 
         /// Invariants that hold on every block, checked under `try-runtime` against a snapshot of REAL
@@ -1091,6 +1099,11 @@ pub mod pallet {
                         // identity has since been revoked or rebound no longer resolves to the account
                         // that holds the weight, and zeroing the wrong account (or nobody) would leave
                         // `AllowedStake` standing with no locked ADA behind it.
+                        //
+                        // ⚠ That is also why `derive_call` pages every clear AHEAD of every credit: a
+                        // basis account and a freshly-resolved one can be the SAME account, and a clear
+                        // applied after that account's credit would silently un-credit it with no way
+                        // back. See the ordering note there before changing either side.
                         let Some((account, _)) = LastObserved::<T>::get(beacon) else {
                             // Nothing recorded — already cleared, or never applied. Not an error.
                             skipped = skipped.saturating_add(1);
@@ -1472,8 +1485,26 @@ pub mod pallet {
             // ── Canonical order, then page. Sorting is what makes the truncation deterministic across
             // nodes: the forward pass is already key-sorted (a BTreeMap), but the drop-outs come from a
             // hash-ordered map iteration and have to be merged into place.
-            vault.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            stake.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            //
+            // ⚠ CLEARS SORT BEFORE CREDITS on the two key-addressed axes, and that is a correctness
+            // rule, not a preference. Two DIFFERENT keys can name the SAME account: the basis records
+            // the account a key was applied to, so a key whose identity binding has since been revoked
+            // keeps a basis row naming that account, while the account's NEW key resolves to it in the
+            // same block. The apply step credits from a fresh resolve but clears from the BASIS row, so
+            // with a plain key sort the two land in coin-flip order and a `None` applied after a
+            // `Some` zeroes the account it just credited. The delta then never repairs it — the basis
+            // says the credit landed, so the next diff sees `desired == basis` and emits nothing, and
+            // the account holds a funded lock at zero weight for ever, with no event and no alarm.
+            // (The full-snapshot design self-healed this in one block; the delta is what makes it
+            // permanent.) Ordering clears first makes the credit the LAST write in every such pair.
+            //
+            // Deterministic on both sides of `check_inherent`: it is a pure function of the change
+            // vector, so author and importer page at the identical boundary exactly as before.
+            //
+            // The role axis needs none of this — it is keyed by ACCOUNT, so one account is one change
+            // and the collision cannot arise (see [`RoleChange`]).
+            vault.sort_unstable_by(|a, b| a.1.is_some().cmp(&b.1.is_some()).then(a.0.cmp(&b.0)));
+            stake.sort_unstable_by(|a, b| a.1.is_some().cmp(&b.1.is_some()).then(a.0.cmp(&b.0)));
             roles.sort_unstable_by(|a, b| a.who.cmp(&b.who));
 
             let pending = vault
@@ -1611,12 +1642,31 @@ pub mod pallet {
             // `initialize_block` is what updates it — which is the same reason the two sides disagree.
             //
             // Skipping the cross-node comparison for one block is safe, and narrower than it looks. It is
-            // the same posture as `CannotVerify` (accept, do not verify), the block still has to be
-            // AUTHORED by a producer whose own read succeeded, and `execute_block` then runs the migration
-            // before applying `observe` — so the delta lands against the state it was derived from. The
-            // Mandatory dispatchable's own enforcement (monotonicity, the stability bound, the skip
-            // bounds, resolution, the basis bookkeeping) runs on every node regardless, and the block
-            // after this one verifies normally again.
+            // the same posture as `CannotVerify` (accept, do not verify), and `execute_block` then runs
+            // the migration before applying `observe` — so the delta lands against the state it was
+            // derived from. The Mandatory dispatchable's own enforcement (monotonicity, the stability
+            // bound, the skip bounds, the vault/stake resolution, the basis bookkeeping) runs on every
+            // node regardless, and the block after this one verifies normally again.
+            //
+            // ⚠ BE PRECISE ABOUT WHAT THIS COSTS, because it is wider than `CannotVerify`. That one is a
+            // per-node abstain: a caught-up honest node still rejects a bad block. This accepts on EVERY
+            // importer at once, and it returns before any field of the payload is compared, so on an
+            // upgrade block the author's delta is applied unverified. What still constrains it is only
+            // what `observe` re-derives for itself, and that list has a real hole: the vault and stake
+            // axes re-resolve their key and re-apply their bound, but the ROLE axis applies
+            // `change.who` and its per-badge chamber weights verbatim — the payload carries no credential
+            // to re-resolve. The caps that do apply (`MaxStakeWeight`, `MaxVotingPower`) are sized at
+            // roughly the whole ADA supply, so they bound nothing meaningful. On-ledger weight self-heals
+            // on the next block's diff; a `close_poll` landing in the SAME block does not, because it
+            // freezes chamber weights into `PollResult` permanently.
+            //
+            // Left as-is deliberately. Narrowing it (accept only an empty delta here, and have
+            // `create_inherent` skip the observation on an enacting block) is not free: `create_inherent`
+            // runs AFTER `initialize_block`, which is precisely when `LastRuntimeUpgrade` has already been
+            // updated, so the author cannot use this predicate to detect its own upgrade block and the two
+            // sides would need a different shared signal. Getting that wrong halts the one block that must
+            // not halt. With a single operator the "byzantine author" is the operator, so this buys
+            // nothing today. FEDERATION PREREQUISITE: close it before there are independent producers.
             let current_version = <T as frame_system::Config>::Version::get();
             let enacting_upgrade = frame_system::LastRuntimeUpgrade::<T>::get()
                 .map(|last| last.was_upgraded(&current_version))

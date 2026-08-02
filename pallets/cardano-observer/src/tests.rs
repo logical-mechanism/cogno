@@ -896,6 +896,81 @@ fn a_rebound_beacon_is_re_applied_to_the_new_account() {
     });
 }
 
+#[test]
+fn a_credit_and_a_clear_on_the_same_account_apply_in_the_safe_order() {
+    new_test_ext().execute_with(|| {
+        // Two DIFFERENT beacons can name the SAME account: the basis records the account a beacon was
+        // applied to, so a revoked beacon keeps a row naming it while the account's NEW beacon resolves
+        // to it. `observe` credits from a fresh resolve but clears from the BASIS row, so if the clear
+        // applied last it would zero the account it had just credited — and because the basis then says
+        // the credit landed, the next diff sees `desired == basis` and NEVER re-emits it. That is a
+        // funded lock stranded at zero weight for ever, with no event and no alarm.
+        //
+        // B sorts AFTER A by beacon bytes, so a plain key sort would put the clear last. The page order
+        // is what makes this safe; assert the order explicitly, not just the outcome.
+        enforce();
+        bind(B, ALICE);
+        observe_snapshot(&snap(MAX_REFERENCE - 4, &[(B, 200_000_000)]));
+        assert_eq!(weight_of(ALICE), 200_000_000);
+
+        // Committee `revoke` frees the ACCOUNT side (only the identity is tombstoned), and ALICE
+        // re-binds to a new Cardano wallet whose beacon A already holds a 300 ADA vault UTxO.
+        unbind(B);
+        bind(A, ALICE);
+
+        let call = derive(&snap(MAX_REFERENCE - 3, &[(A, 300_000_000)]));
+        match &call {
+            crate::Call::observe { changes, .. } => assert_eq!(
+                changes.to_vec(),
+                vec![(B, None), (A, Some(300_000_000))],
+                "the clear pages ahead of the credit, so the credit is the last write",
+            ),
+            _ => panic!("expected observe call"),
+        }
+        assert_ok!(dispatch(call));
+        assert_eq!(
+            weight_of(ALICE),
+            300_000_000,
+            "ALICE holds a valid 300 ADA lock and must end the block with that weight",
+        );
+        assert_eq!(LastObserved::<Test>::get(A), Some((ALICE, 300_000_000)));
+        assert!(LastObserved::<Test>::get(B).is_none());
+    });
+}
+
+#[test]
+fn a_credit_and_a_clear_on_the_same_account_apply_in_the_safe_order_on_the_stake_axis() {
+    new_test_ext().execute_with(|| {
+        // The voting-power analog of the test above, and the same reasoning: `LastObservedStake` records
+        // the account, the clear reads it from there, so a stale credential and a live one can both name
+        // one account. S2 sorts after S1.
+        enforce();
+        bind_stake(S2, ALICE);
+        observe_snapshot(&snap_stake(MAX_REFERENCE - 4, &[], &[(S2, 900_000_000)]));
+        assert_eq!(voting_power_of(ALICE), 900_000_000);
+
+        unbind_stake(S2);
+        bind_stake(S1, ALICE);
+
+        let call = derive(&snap_stake(MAX_REFERENCE - 3, &[], &[(S1, 700_000_000)]));
+        match &call {
+            crate::Call::observe { stake_changes, .. } => assert_eq!(
+                stake_changes.to_vec(),
+                vec![(S2, None), (S1, Some(700_000_000))],
+                "the clear pages ahead of the credit on this axis too",
+            ),
+            _ => panic!("expected observe call"),
+        }
+        assert_ok!(dispatch(call));
+        assert_eq!(voting_power_of(ALICE), 700_000_000);
+        assert_eq!(
+            LastObservedStake::<Test>::get(S1),
+            Some((ALICE, 700_000_000))
+        );
+        assert!(LastObservedStake::<Test>::get(S2).is_none());
+    });
+}
+
 // ── the voting-power axis ──────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1914,6 +1989,82 @@ mod migration {
     }
 
     #[test]
+    fn the_migration_clears_the_role_sink_for_every_account_it_drops() {
+        new_test_ext().execute_with(|| {
+            // The role axis is the one that keeps NO basis row, so it is the one where dropping a row
+            // silently strands a badge: `derive_call` derives a role clear only by iterating the basis,
+            // and an account that lapses in the upgrade window is in neither the basis nor the snapshot.
+            // `unclaim_role`/`revoke_role` deliberately leave `ObservedRoles` for the observer to clear,
+            // so without this the badge (and its governance-poll chamber weight) would render for ever.
+            enforce();
+            let cred = [0x41u8; 28];
+            let pool = [0x42u8; 28];
+            bind_role(cred, ALICE);
+            observe_snapshot(&snap_roles(
+                MAX_REFERENCE - 5,
+                &roles(&[(RoleSource::SpoCalidus, cred, pool)]),
+            ));
+            assert_eq!(observed_roles_of(ALICE), vec![(0u8, pool)]);
+
+            // Pre-215 shape: the blob recorded WHO held a badge, never which. Then ALICE's claim lapses
+            // (an `unclaim_role`, a committee `revoke_role`, or the pool retiring on L1) before the first
+            // post-upgrade observation, so she resolves to nothing.
+            LastObservedRolesV0::<Test>::put(vec![ALICE]);
+            LastObservedRoles::<Test>::remove(ALICE);
+            let _w = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+            unbind_role(cred);
+
+            assert!(
+                observed_roles_of(ALICE).is_empty(),
+                "the migration must clear the sink for an account it drops from the basis",
+            );
+            // And the first post-migration observation has nothing left to say about her — which is why
+            // the clear had to happen in the migration and not be left to the delta.
+            assert_eq!(
+                change_counts(&derive(&snap(MAX_REFERENCE - 4, &[]))),
+                (0, 0, 0)
+            );
+            assert!(observed_roles_of(ALICE).is_empty());
+        });
+    }
+
+    #[test]
+    fn the_migration_does_not_strand_an_account_whose_roles_are_still_live() {
+        new_test_ext().execute_with(|| {
+            // The other direction: clearing the sink must not COST anything for an account that still
+            // holds its role. The enactment block's own `create_inherent` runs later in the same block,
+            // against the migrated state, and re-emits the full set — so the clear is invisible.
+            enforce();
+            let cred = [0x41u8; 28];
+            let pool = [0x42u8; 28];
+            bind_role(cred, ALICE);
+            let obs = snap_roles(
+                MAX_REFERENCE - 5,
+                &roles(&[(RoleSource::SpoCalidus, cred, pool)]),
+            );
+            observe_snapshot(&obs);
+            LastObservedRolesV0::<Test>::put(vec![ALICE]);
+            LastObservedRoles::<Test>::remove(ALICE);
+
+            let _w = MigrateV0ToV1::<Test>::on_runtime_upgrade();
+            assert!(
+                observed_roles_of(ALICE).is_empty(),
+                "cleared by the migration"
+            );
+
+            observe_snapshot(&snap_roles(
+                MAX_REFERENCE - 4,
+                &roles(&[(RoleSource::SpoCalidus, cred, pool)]),
+            ));
+            assert_eq!(
+                observed_roles_of(ALICE),
+                vec![(0u8, pool)],
+                "and restored by the same block's observation",
+            );
+        });
+    }
+
+    #[test]
     fn the_first_observation_after_the_migration_re_derives_every_value() {
         new_test_ext().execute_with(|| {
             // The migration's correctness argument, exercised end to end: the seeded zeroes are not a lie
@@ -1928,9 +2079,11 @@ mod migration {
             // B has unlocked in the meantime; A is still locked.
             let call = derive(&snap(MAX_REFERENCE - 5, &[(A, 200_000_000)]));
             match &call {
+                // Clears page ahead of credits (see `derive_call`'s ordering note), so B's take-back
+                // sorts first even though its beacon byte is higher.
                 crate::Call::observe { changes, .. } => assert_eq!(
                     changes.to_vec(),
-                    vec![(A, Some(200_000_000)), (B, None)],
+                    vec![(B, None), (A, Some(200_000_000))],
                     "A is re-applied at its true weight and B is taken back",
                 ),
                 _ => panic!("expected observe call"),
