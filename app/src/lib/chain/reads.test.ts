@@ -11,7 +11,7 @@
 import { describe, it, expect } from "vitest";
 import { Binary } from "polkadot-api";
 import { authorPostCount, getThread, latestPostId } from "./reads";
-import { nodeGlobalFeedPage, nodeAuthorFeedPage, nodeThread } from "./node-reads";
+import { nodeGlobalFeedPage, nodeAuthorFeedPage, nodeThread, nodeRepliesPage } from "./node-reads";
 import type { CognoApi, CognoPost } from "@/lib/types";
 
 interface FakePost {
@@ -30,9 +30,20 @@ interface FakeSpec {
   byAuthor?: Map<string, bigint[]>;
   /** Viewer's votes: post id → direction (drives the node API's `my_vote` overlay). */
   votesByAccount?: Map<string, Map<bigint, "Up" | "Down">>;
+  /**
+   * How many direct replies `thread` returns per page — the fake's stand-in for the runtime's
+   * `MAX_THREAD_REPLIES` (512), which no fixture could reach. Default: every reply, i.e. the shape
+   * every real thread has today.
+   */
+  threadReplyPage?: number;
 }
 
 const ZERO_TALLY = { up_weight: 0n, down_weight: 0n, up_count: 0, down_count: 0 };
+
+/** One parent's direct replies in ASCENDING id order — the order the runtime's seq spine is dense in. */
+function repliesAsc(spec: FakeSpec, parent: bigint): bigint[] {
+  return (spec.repliesByParent?.get(parent) ?? []).slice().sort((a, b) => (a < b ? -1 : 1));
+}
 
 /** Wrap a FakePost into the PAPI v2-shaped value the reads decode (text is a `Vec<u8>` → Uint8Array). */
 function wrap(p: FakePost) {
@@ -172,7 +183,12 @@ function makeFakeApi(spec: FakeSpec): CognoApi {
         },
         thread: (focal: bigint, viewer?: string) => {
           if (!spec.posts.has(focal)) {
-            return Promise.resolve({ ancestors: [], focal: undefined, replies: [] });
+            return Promise.resolve({
+              ancestors: [],
+              focal: undefined,
+              replies: [],
+              replies_next_cursor: undefined,
+            });
           }
           // Top-down ancestor chain by walking `parent`.
           const ancestors: bigint[] = [];
@@ -184,11 +200,33 @@ function makeFakeApi(spec: FakeSpec): CognoApi {
             cursor = spec.posts.get(cursor)!.parent;
           }
           ancestors.reverse();
-          const replies = (spec.repliesByParent?.get(focal) ?? []).slice().sort((a, b) => (a < b ? -1 : 1));
+          // spec 216: the NEWEST page off the seq spine, chronological within the page, plus the seq to
+          // continue below. `seq` here is simply the index into the ascending reply list, which is what
+          // the runtime's dense `0..ReplyCount` spine amounts to.
+          const all = repliesAsc(spec, focal);
+          const page = all.slice(Math.max(0, all.length - (spec.threadReplyPage ?? all.length)));
+          const below = all.length - page.length;
           return Promise.resolve({
             ancestors: ancestors.map((id) => enrichFor(spec, id, viewer)),
             focal: enrichFor(spec, focal, viewer),
-            replies: replies.map((id) => enrichFor(spec, id, viewer)),
+            replies: page.map((id) => enrichFor(spec, id, viewer)),
+            replies_next_cursor: below > 0 ? BigInt(below) : undefined,
+          });
+        },
+        replies_page: (
+          parent: bigint,
+          beforeSeq: bigint | undefined,
+          limit: number,
+          viewer?: string,
+        ) => {
+          const all = repliesAsc(spec, parent);
+          // The cursor is EXCLUSIVE and clamped, exactly as the runtime clamps it to `ReplyCount`.
+          const start = beforeSeq == null ? all.length : Math.min(Number(beforeSeq), all.length);
+          const from = Math.max(0, start - limit);
+          const taken = all.slice(from, start).reverse(); // newest-first, like every other page
+          return Promise.resolve({
+            posts: taken.map((id) => enrichFor(spec, id, viewer)),
+            next_cursor: from > 0 ? BigInt(from) : undefined,
           });
         },
       },
@@ -335,6 +373,59 @@ describe("node-served reads", () => {
     expect(node.ancestors.map((p) => p.id)).toEqual(keyed.ancestors.map((p) => p.id));
     expect(node.replies.map((p) => p.id)).toEqual(keyed.replies.map((p) => p.id));
     expect(node.replyCount).toBe(keyed.replyCount);
+    // Both reach the conversation's first reply here, so neither has anything older to continue to.
+    // They can legitimately DIFFER on this field when the thread is longer than one page: the keyed
+    // path reads the whole prefix in one go and so is always null, which is exactly why it stays a
+    // fallback rather than the primary.
+    expect(node.repliesCursor).toBeNull();
+    expect(keyed.repliesCursor).toBeNull();
+  });
+
+  it("nodeThread carries the cursor for the replies BELOW its page", async () => {
+    const spec = sampleSpec();
+    // A conversation of five replies read two at a time — the runtime's real page is 512, which no
+    // fixture can reach, so the fake's page size stands in for it.
+    spec.posts.set(10n, { author: "alice", text: "root", at: 10 });
+    for (const [i, id] of [11n, 12n, 13n, 14n, 15n].entries()) {
+      spec.posts.set(id, { author: "bob", text: `r${i}`, parent: 10n, at: 10 + i });
+    }
+    spec.repliesByParent!.set(10n, [11n, 12n, 13n, 14n, 15n]);
+    spec.replyCount!.set(10n, 5);
+    spec.threadReplyPage = 2;
+
+    const api = makeFakeApi(spec);
+    const t = await nodeThread(api, 10n);
+    // The NEWEST two, chronological — not the oldest two, which is what the pre-216 runtime returned.
+    expect(t.replies.map((p) => p.id)).toEqual([14n, 15n]);
+    expect(t.replyCount).toBe(5);
+    expect(t.repliesCursor).toBe(3n);
+
+    // Walking the cursor back reaches every remaining reply, once each, and then ends.
+    const older1 = await nodeRepliesPage(api, 10n, { beforeSeq: t.repliesCursor, limit: 2 });
+    expect(older1.posts.map((p) => p.id)).toEqual([13n, 12n]); // newest-first within the page
+    expect(older1.nextCursor).toBe(1n);
+    const older2 = await nodeRepliesPage(api, 10n, { beforeSeq: older1.nextCursor, limit: 2 });
+    expect(older2.posts.map((p) => p.id)).toEqual([11n]);
+    expect(older2.nextCursor).toBeNull();
+
+    const walked = [...older2.posts, ...older1.posts, ...t.replies].map((p) => p.id).sort();
+    expect(walked).toEqual([11n, 12n, 13n, 14n, 15n]);
+  });
+
+  it("a replies page clamps a cursor past the end and ends cleanly at the first reply", async () => {
+    const api = makeFakeApi(sampleSpec());
+    // Post 0 has exactly one reply (id 1) in the sample spec.
+    const all = await nodeRepliesPage(api, 0n, { beforeSeq: 9_999n, limit: 10 });
+    expect(all.posts.map((p) => p.id)).toEqual([1n]);
+    expect(all.nextCursor).toBeNull();
+    // Cursor 0 ⇒ nothing below the first reply, and no cursor to loop on.
+    const none = await nodeRepliesPage(api, 0n, { beforeSeq: 0n, limit: 10 });
+    expect(none.posts).toEqual([]);
+    expect(none.nextCursor).toBeNull();
+    // A post with no replies at all.
+    const empty = await nodeRepliesPage(api, 2n, { beforeSeq: null, limit: 10 });
+    expect(empty.posts).toEqual([]);
+    expect(empty.nextCursor).toBeNull();
   });
 
   it("stamps the viewer overlay (myVote) node-side when a viewer is passed", async () => {

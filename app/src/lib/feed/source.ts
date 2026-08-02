@@ -9,6 +9,7 @@
 
 import type { Observable } from "rxjs";
 import type {
+  CognoPost,
   FeedPage,
   FeedQuery,
   ThreadView,
@@ -45,10 +46,28 @@ export interface FeedSource {
   /** One page of the feed (global, search, author-scoped, or a home/profile tab). */
   page(q: FeedQuery): Promise<FeedPage>;
   /**
-   * A reconstructed thread for `rootId`. `viewer` (the connected account, when known) lets the source
-   * stamp each post's `myVote` overlay node-side in the same state_call.
+   * A reconstructed thread for `rootId`: the focal post, its ancestors, and the NEWEST page of its
+   * direct replies. `viewer` (the connected account, when known) lets the source stamp each post's
+   * `myVote` overlay node-side in the same state_call.
+   *
+   * `repliesCursor` continues into {@link FeedSource.repliesPage} when the conversation is longer than
+   * one page.
    */
   thread(rootId: bigint, viewer?: Ss58): Promise<ThreadView>;
+  /**
+   * One page of `parentId`'s direct replies, OLDER than `beforeSeq`, newest-first. Seeded from a
+   * thread's `repliesCursor` and continued by each returned `nextCursor`; `nextCursor` is null at the
+   * conversation's first reply.
+   *
+   * The cursor is a reply SEQUENCE NUMBER, not a post id — endpoint-scoped like every other cursor
+   * here, and not interchangeable with the `beforeId` the feed reads page by.
+   */
+  repliesPage(
+    parentId: bigint,
+    beforeSeq: bigint | null,
+    limit: number,
+    viewer?: Ss58,
+  ): Promise<{ posts: CognoPost[]; nextCursor: bigint | null }>;
   /** One author's profile + posts. */
   profile(args: ProfileArgs): Promise<ProfileView>;
   /** Options + per-option stake-weighted tally for a poll host id. */

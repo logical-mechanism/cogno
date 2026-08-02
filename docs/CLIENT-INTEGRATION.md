@@ -102,16 +102,21 @@ is" unless you know to check. The values are in `pallets/microblog/src/lib.rs`.
 - **Scanning reads examine at most `limit × 8` ids per call** (`feed_page`, `following_feed_page`,
   `search_posts`, `author_replies_page`). A page can therefore come back short *with* a
   `next_cursor`; short does not mean finished. Follow the cursor until it is `None`.
-- **`thread` caps ancestors at 64 deep and enriches only the oldest 512 direct replies.** There is no
-  cursor for the 513th. A thread larger than that is not fully readable through this method.
+- **`thread` caps ancestors at 64 deep and returns at most 512 direct replies per call.** Those are the
+  *newest* 512, and `Thread.replies_next_cursor` continues into `replies_page` for the rest — pass it as
+  `before_seq` and follow each `next_cursor` until it is `None`. Until spec 216 this cap really did
+  truncate: it returned the *oldest* 512 with no cursor at all, so a longer thread was missing its most
+  recent end and reply 513 was unreachable through any read.
 - **`follow_edges` truncates at 1000 per side.**
 - **`viewer_states` takes at most 256 ids per call.** Batch beyond that yourself.
 
 ### Cursors are opaque and endpoint-scoped
 
 A `next_cursor` from one method is only valid passed back to **the same method**. `feed_page` and
-`following_feed_page` page a `TopLevelPosts` sequence number; `author_feed_page` and the rest page a
-post id. They are both `u64` and crossing them silently returns plausible nonsense.
+`following_feed_page` page a `TopLevelPosts` sequence number; `replies_page` pages a per-parent reply
+sequence number; `author_feed_page` and the rest page a post id. They are all `u64` and crossing them
+silently returns plausible nonsense. The one cursor that legitimately crosses methods is
+`Thread.replies_next_cursor`, which exists to seed `replies_page`.
 
 One useful exception to treat them as opaque: `feed_page`'s cursor is an absolute index into a dense
 sequence, and `Microblog.NextTopLevelSeq` is the running total of top-level posts. So offset paging

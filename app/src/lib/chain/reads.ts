@@ -205,6 +205,12 @@ export interface RawThread {
   ancestors: CognoPost[];
   replies: CognoPost[];
   replyCount: number;
+  /**
+   * The `beforeSeq` cursor for the replies OLDER than `replies`, or null when `replies` already reaches
+   * the first reply. The node read returns at most one page (512) and hands this back; the keyed
+   * fallback returns every reply and so always returns null.
+   */
+  repliesCursor: bigint | null;
 }
 
 /**
@@ -259,7 +265,9 @@ export async function getThread(api: CognoApi, focalId: bigint): Promise<RawThre
   const root = enriched[0];
   const ancestors = enriched.slice(1, 1 + ancestorsRaw.length);
   const replies = enriched.slice(1 + ancestorsRaw.length);
-  return { root, ancestors, replies, replyCount: root.replyCount ?? 0 };
+  // This path reads the WHOLE `RepliesByParent` prefix, so there is never an older page to continue to
+  // — which is also why it is a resilience fallback and not the primary: that read is unbounded.
+  return { root, ancestors, replies, replyCount: root.replyCount ?? 0, repliesCursor: null };
 }
 
 // ── head positions (unchanged from the load-all era) ─────────────────────────────────────────────

@@ -168,13 +168,13 @@ Enact only after this passes — then build the enactment WASM **clean**, with n
 
 ## Version rules
 
-- **`spec_version`** — bump on any logic/storage/metadata change (currently **215**). `apply` rejects
+- **`spec_version`** — bump on any logic/storage/metadata change (currently **216**). `apply` rejects
   a non-increasing value on-chain.
 - **`transaction_version`** — bump *only* when the extrinsic encoding changes (a new transaction
   extension, or changed call arguments — removing an argument counts, removing a whole call does
   not). Adding a new call does **not** change it. Keeping it stable means in-flight signed
-  transactions and signing tools don't break. (Currently **7** — spec 211 removed
-  `link_identity_signed`'s `thread_pointer` argument.)
+  transactions and signing tools don't break. (Currently **8** — spec 215 turned `observe`'s three
+  full-snapshot vectors into bounded change vectors, which is a call-argument change.)
 - **Pallet indices are forever.** A new pallet gets a new index; never renumber. Indices 6 (Sudo) and
   12 (Anchor) are permanently vacant — gaps are fine.
 

@@ -9,8 +9,8 @@
 use crate::{
     mock::*, AccountVoteTally, AccountVotes, ByAuthor, ByAuthorCount, Capacity, Error, Event,
     FollowerCount, Following, FollowingCount, NextPostId, NextTopLevelSeq, PollKind, PollTally,
-    PollVotes, Polls, Posts, RepliesByParent, ReplyCount, TopLevelByAuthor, TopLevelByAuthorCount,
-    TopLevelPosts, VoteDir, VoteTally, Votes, WeightInfo,
+    PollVotes, Polls, Posts, RepliesByParent, RepliesByParentSeq, ReplyCount, TopLevelByAuthor,
+    TopLevelByAuthorCount, TopLevelPosts, VoteDir, VoteTally, Votes, WeightInfo,
 };
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
@@ -127,6 +127,59 @@ fn reply_bumps_reply_count_and_records_reverse_index() {
         assert!(RepliesByParent::<Test>::iter_key_prefix(2).next().is_none());
         assert!(RepliesByParent::<Test>::contains_key(0, 1));
         assert!(RepliesByParent::<Test>::contains_key(0, 2));
+
+        // The ORDERED spine (spec 216): dense over `0..ReplyCount[parent]`, in insertion (= ascending
+        // id) order. This is the index a page and its cursor are built on, so its ORDER is the property
+        // under test — `RepliesByParent` above holds the same ids and cannot state it.
+        assert_eq!(RepliesByParentSeq::<Test>::get(0, 0), Some(1));
+        assert_eq!(RepliesByParentSeq::<Test>::get(0, 1), Some(2));
+        assert_eq!(RepliesByParentSeq::<Test>::get(0, 2), None); // dense: nothing at or past the count
+        assert_eq!(RepliesByParentSeq::<Test>::get(1, 0), Some(3));
+        assert!(RepliesByParentSeq::<Test>::iter_key_prefix(2)
+            .next()
+            .is_none());
+        assert_eq!(RepliesByParentSeq::<Test>::iter().count(), 3);
+    });
+}
+
+#[test]
+fn the_reply_seq_is_the_pre_increment_reply_count() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        assert_ok!(Microblog::post_message(
+            RuntimeOrigin::signed(1),
+            b"root".to_vec(),
+            None
+        ));
+        // Interleave replies to the root with replies to OTHER parents, so a per-parent sequence that
+        // was accidentally global (or shared) shows up as a gap rather than passing by luck.
+        for i in 0..5u32 {
+            let expected_seq = u64::from(ReplyCount::<Test>::get(0));
+            assert_eq!(expected_seq, u64::from(i));
+            let id = NextPostId::<Test>::get();
+            assert_ok!(Microblog::post_message(
+                RuntimeOrigin::signed(2),
+                b"r".to_vec(),
+                Some(0)
+            ));
+            assert_eq!(RepliesByParentSeq::<Test>::get(0, expected_seq), Some(id));
+            // A reply under the reply just made — its own parent's sequence restarts at 0.
+            let sub = NextPostId::<Test>::get();
+            assert_ok!(Microblog::post_message(
+                RuntimeOrigin::signed(3),
+                b"s".to_vec(),
+                Some(id)
+            ));
+            assert_eq!(RepliesByParentSeq::<Test>::get(id, 0), Some(sub));
+            assert_eq!(ReplyCount::<Test>::get(id), 1);
+        }
+        assert_eq!(ReplyCount::<Test>::get(0), 5);
+        // Dense, ascending, and exactly `count` rows under the root.
+        let ids: Vec<u64> = (0..5u64)
+            .filter_map(|s| RepliesByParentSeq::<Test>::get(0, s))
+            .collect();
+        assert_eq!(ids.len(), 5);
+        assert!(ids.windows(2).all(|w| w[0] < w[1]));
     });
 }
 
@@ -156,9 +209,10 @@ fn top_level_and_quote_posts_do_not_touch_reply_aggregates() {
             None
         ));
 
-        // None of these are replies, so the reply aggregates stay empty.
+        // None of these are replies, so all three reply aggregates stay empty.
         assert_eq!(ReplyCount::<Test>::get(0), 0);
         assert_eq!(RepliesByParent::<Test>::iter().count(), 0);
+        assert_eq!(RepliesByParentSeq::<Test>::iter().count(), 0);
     });
 }
 
@@ -4013,6 +4067,210 @@ mod migration_v10 {
     }
 }
 
+// ── migration v10 → v11 (spec 216): backfill the ordered reply spine ────────────────────────────
+
+mod migration_v11 {
+    use super::*;
+    use crate::migrations::v11::MigrateV10ToV11;
+    use crate::Pallet;
+    use frame_support::traits::{GetStorageVersion, OnRuntimeUpgrade, StorageVersion};
+
+    /// Seed the PRE-v11 shape of a reply: `Posts` + the per-author index + `ReplyCount` +
+    /// `RepliesByParent`, and deliberately NOT the spine — that is what the migration is for. This is
+    /// exactly what every reply on the live chain looks like, because it is what `post_message` wrote
+    /// before spec 216, so the SPINE is the only thing a pre-upgrade state is missing.
+    fn seed_pre_v11_reply(id: u64, parent: u64, author: u64) {
+        Posts::<Test>::insert(
+            id,
+            crate::Post::<Test> {
+                author,
+                text: b"r".to_vec().try_into().expect("short"),
+                parent: Some(parent),
+                quote: None,
+                at: 1,
+            },
+        );
+        Microblog::index_by_author(id, &author);
+        NextPostId::<Test>::put(NextPostId::<Test>::get().max(id.saturating_add(1)));
+        ReplyCount::<Test>::mutate(parent, |c| *c = c.saturating_add(1));
+        RepliesByParent::<Test>::insert(parent, id, ());
+    }
+
+    /// The top-level post those replies hang under, in the same pre-v11 shape. The spine has no
+    /// top-level half, so this is identical to what the live path writes.
+    fn seed_pre_v11_root(id: u64, author: u64) {
+        Posts::<Test>::insert(
+            id,
+            crate::Post::<Test> {
+                author,
+                text: b"root".to_vec().try_into().expect("short"),
+                parent: None,
+                quote: None,
+                at: 1,
+            },
+        );
+        Microblog::index_by_author(id, &author);
+        Microblog::index_top_level(id, &author);
+        NextPostId::<Test>::put(NextPostId::<Test>::get().max(id.saturating_add(1)));
+    }
+
+    #[test]
+    fn v10_to_v11_backfills_the_spine_in_id_order_and_is_idempotent() {
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(10).put::<Pallet<Test>>();
+            // Two parents with interleaved reply ids, seeded in a deliberately SCRAMBLED order. The
+            // source is a double map, so it iterates in HASH order either way — this just makes sure the
+            // test is not accidentally handing the migration a pre-sorted walk.
+            seed_pre_v11_reply(7, 0, 2);
+            seed_pre_v11_reply(3, 0, 2);
+            seed_pre_v11_reply(9, 1, 3);
+            seed_pre_v11_reply(5, 0, 4);
+            seed_pre_v11_reply(4, 1, 5);
+
+            let _w = MigrateV10ToV11::<Test>::on_runtime_upgrade();
+
+            assert_eq!(
+                Pallet::<Test>::on_chain_storage_version(),
+                StorageVersion::new(11)
+            );
+            // Parent 0: ids 3, 5, 7 at seq 0, 1, 2 — ASCENDING BY ID, which is the property the whole
+            // index exists for and the one the hash-ordered source cannot state.
+            assert_eq!(RepliesByParentSeq::<Test>::get(0, 0), Some(3));
+            assert_eq!(RepliesByParentSeq::<Test>::get(0, 1), Some(5));
+            assert_eq!(RepliesByParentSeq::<Test>::get(0, 2), Some(7));
+            assert!(
+                RepliesByParentSeq::<Test>::get(0, 3).is_none(),
+                "dense over 0..ReplyCount"
+            );
+            // Parent 1 restarts its own sequence at 0 — the seq is per parent, not global.
+            assert_eq!(RepliesByParentSeq::<Test>::get(1, 0), Some(4));
+            assert_eq!(RepliesByParentSeq::<Test>::get(1, 1), Some(9));
+            assert_eq!(RepliesByParentSeq::<Test>::iter().count(), 5);
+
+            // Idempotency: the version guard makes a second run a no-op, not a re-write.
+            let _ = MigrateV10ToV11::<Test>::on_runtime_upgrade();
+            assert_eq!(RepliesByParentSeq::<Test>::iter().count(), 5);
+            assert_eq!(RepliesByParentSeq::<Test>::get(0, 0), Some(3));
+        });
+    }
+
+    /// The migrated state must be BYTE-IDENTICAL to what the live reply path builds — otherwise a
+    /// migrated chain and a fresh one page the same thread differently, which is a consensus-visible
+    /// split in what every client reads.
+    #[test]
+    fn v10_to_v11_output_matches_what_the_live_path_would_have_built() {
+        let live = new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            assert_ok!(Microblog::post_message(
+                RuntimeOrigin::signed(1),
+                b"root".to_vec(),
+                None
+            ));
+            for _ in 0..4 {
+                assert_ok!(Microblog::post_message(
+                    RuntimeOrigin::signed(2),
+                    b"r".to_vec(),
+                    Some(0)
+                ));
+            }
+            // A nested reply, so the fixture has more than one parent group.
+            assert_ok!(Microblog::post_message(
+                RuntimeOrigin::signed(3),
+                b"s".to_vec(),
+                Some(2)
+            ));
+            let mut v: Vec<(u64, u64, u64)> = RepliesByParentSeq::<Test>::iter().collect();
+            v.sort();
+            v
+        });
+
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(10).put::<Pallet<Test>>();
+            // The SAME posts, in the pre-v11 shape (root 0; replies 1..=4 under 0; reply 5 under 2).
+            seed_pre_v11_root(0, 1);
+            for id in 1..=4u64 {
+                seed_pre_v11_reply(id, 0, 2);
+            }
+            seed_pre_v11_reply(5, 2, 3);
+
+            let _ = MigrateV10ToV11::<Test>::on_runtime_upgrade();
+
+            let mut migrated: Vec<(u64, u64, u64)> = RepliesByParentSeq::<Test>::iter().collect();
+            migrated.sort();
+            assert_eq!(
+                migrated, live,
+                "the backfilled spine must equal the one the live reply path builds"
+            );
+        });
+    }
+
+    /// The reason this migration is load-bearing rather than cosmetic: `thread` and `replies_page` both
+    /// read the SPINE now, so an un-backfilled chain would serve every existing conversation as empty.
+    #[test]
+    fn a_migrated_thread_reads_back_with_all_its_replies() {
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(10).put::<Pallet<Test>>();
+            seed_pre_v11_root(0, 1);
+            for id in 1..=3u64 {
+                seed_pre_v11_reply(id, 0, 2);
+            }
+
+            // Before: the count is right (it always was) but the spine is empty, so the read is blind.
+            assert_eq!(ReplyCount::<Test>::get(0), 3);
+            assert!(Microblog::thread(0, None).replies.is_empty());
+
+            let _ = MigrateV10ToV11::<Test>::on_runtime_upgrade();
+
+            let t = Microblog::thread(0, None);
+            assert_eq!(
+                t.replies.iter().map(|p| p.id).collect::<Vec<_>>(),
+                vec![1, 2, 3]
+            );
+            assert_eq!(
+                ids(&Microblog::replies_page(0, None, 2, None)),
+                vec![3u64, 2]
+            );
+        });
+    }
+
+    #[test]
+    fn v10_to_v11_on_empty_state_is_safe() {
+        // The fresh-mainnet-genesis case: no replies to index.
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(10).put::<Pallet<Test>>();
+            let _ = MigrateV10ToV11::<Test>::on_runtime_upgrade();
+            assert_eq!(
+                Pallet::<Test>::on_chain_storage_version(),
+                StorageVersion::new(11)
+            );
+            assert_eq!(RepliesByParentSeq::<Test>::iter().count(), 0);
+        });
+    }
+
+    /// The post-migration state must satisfy the pallet's own `try_state` invariant — the same
+    /// three-way agreement the pre-enactment `try-runtime` dry-run enforces against live state.
+    #[test]
+    fn the_migrated_state_satisfies_the_pallet_invariant() {
+        new_test_ext().execute_with(|| {
+            StorageVersion::new(10).put::<Pallet<Test>>();
+            seed_pre_v11_root(0, 1);
+            for id in 1..=5u64 {
+                seed_pre_v11_reply(id, 0, 2);
+            }
+            // A pre-v11 chain fails the invariant precisely because the spine is missing.
+            assert!(Microblog::check_tally_consistency().is_err());
+
+            let _ = MigrateV10ToV11::<Test>::on_runtime_upgrade();
+            assert_ok!(Microblog::check_tally_consistency());
+        });
+    }
+
+    /// `ids` is defined in the `node_reads` module; re-derive it here rather than reaching across.
+    fn ids(page: &crate::FeedPage<u64>) -> Vec<u64> {
+        page.posts.iter().map(|p| p.id).collect()
+    }
+}
+
 // ── Asymmetric-safety property test ─────────────────────────────────────────────────────────
 
 /// **Clamp-latency ≤ grant-latency.** The weight writer's
@@ -4298,6 +4556,8 @@ mod node_reads {
                 t.replies.iter().map(|p| p.id).collect::<Vec<_>>(),
                 vec![r_a, r_b]
             );
+            // both replies fit in the first page, so there is nothing older to continue to
+            assert_eq!(t.replies_next_cursor, None);
 
             // a root has no ancestors and one direct reply
             let troot = Microblog::thread(root, None);
@@ -4312,6 +4572,175 @@ mod node_reads {
             assert!(missing.focal.is_none());
             assert!(missing.ancestors.is_empty());
             assert!(missing.replies.is_empty());
+            assert_eq!(missing.replies_next_cursor, None);
+        });
+    }
+
+    /// The whole point of the seq spine: a page of replies is EXACT-N off a cursor, in order, with no
+    /// prefix sort and no truncation. Walks a thread end to end and checks the pages tile it exactly.
+    #[test]
+    fn replies_page_walks_a_thread_newest_first_and_tiles_it_exactly() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let root = post(1, b"root");
+            // Interleave a second thread, so a page that leaked across parents (or paged the global id
+            // space instead of the parent's own spine) returns the wrong ids rather than merely extra ones.
+            let other = post(1, b"other");
+            let mut replies = Vec::new();
+            for i in 0..7u32 {
+                replies.push(reply(2, b"r", root));
+                if i % 2 == 0 {
+                    reply(3, b"o", other);
+                }
+            }
+
+            // Page 1: the NEWEST three, newest-first.
+            let p1 = Microblog::replies_page(root, None, 3, None);
+            assert_eq!(ids(&p1), vec![replies[6], replies[5], replies[4]]);
+            let c1 = p1.next_cursor.expect("four replies remain below");
+
+            let p2 = Microblog::replies_page(root, Some(c1), 3, None);
+            assert_eq!(ids(&p2), vec![replies[3], replies[2], replies[1]]);
+            let c2 = p2.next_cursor.expect("one reply remains below");
+
+            let p3 = Microblog::replies_page(root, Some(c2), 3, None);
+            assert_eq!(ids(&p3), vec![replies[0]]);
+            // Reached the parent's first reply — no cursor, so the client stops rather than paging an
+            // empty page forever.
+            assert_eq!(p3.next_cursor, None);
+
+            // The three pages tile the thread exactly: every reply once, none from the other thread.
+            let walked: Vec<u64> = ids(&p1)
+                .into_iter()
+                .chain(ids(&p2))
+                .chain(ids(&p3))
+                .collect();
+            let mut sorted = walked.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), walked.len(), "a reply was served twice");
+            assert_eq!(sorted, replies);
+        });
+    }
+
+    /// `thread` returns the NEWEST page, not the oldest — the defect that made a capped thread's last
+    /// visible reply stale while looking current, and hid a user's own just-posted reply from the
+    /// confirm re-read. Checked at a page size of 3 rather than the real 512, which no test could seed.
+    #[test]
+    fn thread_returns_the_newest_replies_and_a_cursor_to_the_rest() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let root = post(1, b"root");
+            let replies: Vec<u64> = (0..6).map(|_| reply(2, b"r", root)).collect();
+
+            // `thread` itself pages at MAX_THREAD_REPLIES (512), far above anything constructible here,
+            // so drive the SHARED walk `thread` is built on at a size that pages. Reversing the
+            // newest-first page is exactly what `thread` does with it.
+            let first = Microblog::replies_page(root, None, 3, None);
+            let mut newest = ids(&first);
+            newest.reverse();
+            assert_eq!(
+                newest,
+                vec![replies[3], replies[4], replies[5]],
+                "the first page must be the NEWEST replies, chronological within the page"
+            );
+            assert!(
+                !newest.contains(&replies[0]),
+                "the OLDEST replies belong to a later page, not the first one"
+            );
+
+            // Under the cap, `thread` returns everything, chronological, with no cursor — the shape
+            // every live thread has today.
+            let t = Microblog::thread(root, None);
+            assert_eq!(t.replies.iter().map(|p| p.id).collect::<Vec<_>>(), replies);
+            assert_eq!(t.replies_next_cursor, None);
+            assert_eq!(t.focal.expect("root exists").reply_count, 6);
+        });
+    }
+
+    /// Cursor hygiene on a public, unmetered read: an out-of-range or degenerate cursor must clamp,
+    /// return nothing, or end — never over-read and never loop.
+    #[test]
+    fn replies_page_clamps_a_bogus_cursor_and_ends_cleanly() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let root = post(1, b"root");
+            let replies: Vec<u64> = (0..3).map(|_| reply(2, b"r", root)).collect();
+
+            // A cursor past the end clamps to the reply count: the same page `None` gives, not an empty
+            // one and not `limit` reads of empty slots.
+            let huge = Microblog::replies_page(root, Some(u64::MAX), 10, None);
+            assert_eq!(huge.posts.len(), 3);
+            assert_eq!(
+                ids(&huge),
+                ids(&Microblog::replies_page(root, None, 10, None))
+            );
+            assert_eq!(huge.next_cursor, None);
+
+            // Cursor 0 ⇒ nothing below the first reply.
+            let none_below = Microblog::replies_page(root, Some(0), 10, None);
+            assert!(none_below.posts.is_empty());
+            assert_eq!(none_below.next_cursor, None);
+
+            // A post with no replies, and a parent that does not exist at all.
+            assert!(Microblog::replies_page(replies[0], None, 10, None)
+                .posts
+                .is_empty());
+            let ghost = Microblog::replies_page(999, None, 10, None);
+            assert!(ghost.posts.is_empty());
+            assert_eq!(ghost.next_cursor, None);
+
+            // limit 0 clamps up to 1 (shared `clamp_limit`), and a limit above MAX_PAGE clamps down.
+            let one = Microblog::replies_page(root, None, 0, None);
+            assert_eq!(one.posts.len(), 1);
+            assert_eq!(one.next_cursor, Some(2));
+        });
+    }
+
+    /// A hole in the spine (which `try_state` forbids, so this is the defensive path) must make the page
+    /// come back SHORT with a cursor — never an unbounded hunt for `limit` live rows.
+    #[test]
+    fn replies_page_bounds_on_slots_examined_not_on_posts_returned() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let root = post(1, b"root");
+            let replies: Vec<u64> = (0..6).map(|_| reply(2, b"r", root)).collect();
+            // Corrupt the spine by hand: blank the two newest slots. `ReplyCount` still says 6.
+            RepliesByParentSeq::<Test>::remove(root, 5u64);
+            RepliesByParentSeq::<Test>::remove(root, 4u64);
+
+            let page = Microblog::replies_page(root, None, 3, None);
+            // Three SLOTS examined (5, 4, 3), one live ⇒ a short page plus a cursor to continue.
+            assert_eq!(ids(&page), vec![replies[3]]);
+            assert_eq!(page.next_cursor, Some(3));
+            // Continuing from it still reaches every remaining reply.
+            let rest = Microblog::replies_page(root, page.next_cursor, 10, None);
+            assert_eq!(ids(&rest), vec![replies[2], replies[1], replies[0]]);
+            assert_eq!(rest.next_cursor, None);
+        });
+    }
+
+    /// The viewer overlay and author enrichment reach a replies page, exactly as they reach every other
+    /// page — a paged read that dropped `my_vote` would silently un-highlight a viewer's own votes.
+    #[test]
+    fn replies_page_stamps_the_viewer_overlay() {
+        new_test_ext().execute_with(|| {
+            System::set_block_number(1);
+            let root = post(1, b"root");
+            let r0 = reply(2, b"r", root);
+            pallet_talk_stake::VotingPower::<Test>::insert(3u64, 700u128);
+            assert_ok!(Microblog::vote(RuntimeOrigin::signed(3), r0, VoteDir::Up));
+
+            let seen = Microblog::replies_page(root, None, 10, Some(3));
+            assert_eq!(seen.posts[0].my_vote, Some(VoteDir::Up));
+            assert_eq!(seen.posts[0].up_count, 1);
+            assert_eq!(seen.posts[0].up_weight, 700);
+            assert_eq!(seen.posts[0].author, 2);
+            assert_eq!(seen.posts[0].parent, Some(root));
+
+            let anon = Microblog::replies_page(root, None, 10, None);
+            assert_eq!(anon.posts[0].my_vote, None);
+            assert_eq!(anon.posts[0].up_count, 1);
         });
     }
 

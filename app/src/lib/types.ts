@@ -306,8 +306,17 @@ export interface ThreadView {
    * the snapshot.
    */
   ancestors: CognoPost[];
+  /**
+   * The NEWEST page of `root`'s direct replies, chronological within the page. Older replies are read
+   * with `FeedSource.repliesPage`, starting from `repliesCursor`.
+   */
   replies: CognoPost[];
   replyCount: number;
+  /**
+   * The `beforeSeq` to continue the replies read from, or null when `replies` already reaches the
+   * conversation's first reply. A reply SEQUENCE NUMBER, not a post id.
+   */
+  repliesCursor: bigint | null;
   /** The post `root` replies to, for the "Replying to @…" context line (when known). */
   parent?: QuotedRef;
   /** Block height of the latest activity in the thread (root or any reply), when knowable. */

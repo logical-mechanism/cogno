@@ -16,8 +16,23 @@ curl -sH 'content-type: application/json' \
   | jq -c '.result | {specVersion, transactionVersion}'
 ```
 
-As of 2 August 2026 that answers 214 / 7, and this repo builds 215 — a runtime is only live once a
+As of 2 August 2026 that answers 214 / 7, and this repo builds 216 — a runtime is only live once a
 governed upgrade has enacted it, so the two are routinely a step apart.
+
+## Long conversations stop losing their newest replies
+
+A post's replies were only ever readable through one call, and that call sorted them oldest-first and
+returned the first 512. Past that the rest were unreachable, and the ones it dropped were the newest —
+the end a conversation is read at. So a busy thread looked finished when it was not, and a reply you had
+just posted could fail to come back at all.
+
+- **A thread now returns its newest replies, plus a way to walk back through the rest.** Nothing is
+  unreachable any more, however long the conversation gets.
+- **"Show older replies" fetches from the chain.** It used to page only what one read had already
+  returned, with a line at the foot admitting the remainder could not be reached. That line is gone
+  because the remainder is now reachable.
+- **The read got cheaper as well as complete.** Serving one page used to mean walking and sorting every
+  reply a post had; it now costs one lookup per reply actually returned, at any depth.
 
 ## Talk-capacity you have to earn, and an observer that says when it stops
 

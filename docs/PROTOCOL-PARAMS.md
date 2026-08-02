@@ -1,7 +1,7 @@
 # Protocol parameters
 
 Every tunable the chain runs on, in one place, with the value and the file + symbol you'd edit to change
-it. This is a snapshot of **spec_version 215**.
+it. This is a snapshot of **spec_version 216**.
 
 Two things to keep in mind:
 
@@ -31,7 +31,7 @@ on every commit, which is how this table was wrong before.)
 - **Block time / slot duration cannot change after the chain has started** — doing so bricks block
   production. It's fixed for the life of this chain.
 - **Some values are contracts with the outside world, not free knobs:**
-  - `transaction_version` (7) — only bump when the extrinsic byte format changes.
+  - `transaction_version` (8) — only bump when the extrinsic byte format changes.
   - `SS58Prefix` (42) — changes every printed address.
   - `VaultPolicyId` — the live L1 script hash; changing it means you redeployed the vault (see the
     contracts gotcha in [CLAUDE.md](../CLAUDE.md)).
@@ -76,9 +76,9 @@ the next-but-one session boundary (~2 sessions, ~2 min).
 | Parameter | Value | Symbol / file |
 |---|---|---|
 | spec_name / impl_name | `cogno-chain-runtime` | `VERSION` — `runtime/src/lib.rs` |
-| **spec_version** | **215** | `VERSION` — `runtime/src/lib.rs` |
+| **spec_version** | **216** | `VERSION` — `runtime/src/lib.rs` |
 | transaction_version | 8 | `VERSION` — `runtime/src/lib.rs` |
-| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 215 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
+| `DESCRIPTOR_SPEC_VERSION` (frontend lockstep) | 216 — must equal `spec_version`; `npm run lint` fails on drift, and a mismatch blocks posting | `DESCRIPTOR_SPEC_VERSION` — `app/src/lib/chain/client.ts` |
 | authoring / impl / system_version | 1 / 1 / 1 | `VERSION` — `runtime/src/lib.rs` |
 | SS58 prefix | 42 (generic Substrate) | `SS58Prefix` |
 | `BlockHashCount` | 2400 blocks (~4 h) | `BlockHashCount` — `runtime/src/configs/mod.rs` |
@@ -163,6 +163,7 @@ social calls: they are feeless (no fee floor) and `RuntimeBlockWeights` sets pro
 | `MaxPollOptionLen` | 80 bytes | `pallet_microblog::Config` |
 | `MaxAnchorUrlLen` (poll governance-action anchor) | 256 bytes; must be non-empty, and only a chamber poll may carry one | `pallet_microblog::Config` |
 | Following / Followers | unbounded (no `MaxFollowing`) | `pallets/microblog/src/lib.rs` |
+| Direct replies per post | UNBOUNDED, and readable in full since spec 216. `thread` returns the NEWEST `MAX_THREAD_REPLIES` (512) plus `Thread::replies_next_cursor`; `replies_page` serves every page below it off the ordered `RepliesByParentSeq` spine. Before that the 512 was a truncation of the OLDEST replies with no cursor at all | `MAX_THREAD_REPLIES` / `RepliesByParentSeq` — `pallets/microblog/src/lib.rs` |
 
 Profile field bounds (`pallet-profile`; there is no separate "handle" — `display_name` is the only name),
 all in `pallet_profile::Config`:
