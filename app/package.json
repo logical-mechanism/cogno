@@ -26,8 +26,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@fontsource-variable/inter-tight": "^5.2.7",
-    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource-variable/inter-tight": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
     "@meshsdk/core": "^1.9.1",
     "@meshsdk/core-cst": "^1.9.1",
     "@polkadot-api/descriptors": "file:.papi/descriptors",
@@ -36,18 +36,18 @@
     "bech32": "^2.0.0",
     "blakejs": "^1.2.1",
     "emojibase-data": "^17.0.0",
-    "next": "^16.2.10",
-    "polkadot-api": "^2.1.8",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "next": "^16.2.12",
+    "polkadot-api": "^2.2.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@playwright/test": "1.62.0",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.2.10",
+    "eslint-config-next": "^16.2.12",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   }
