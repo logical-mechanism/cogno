@@ -14,6 +14,16 @@ components = [
 	"rustc",
 	"rust-std",
 	"rust-src",
+	# The rust-analyzer that SHIPS with the VS Code extension tracks current stable, and it refuses to
+	# index a workspace pinned this far back — the editor prompts for this component on every open. Naming
+	# it here makes rustup install the 1.93.0-matched server, which the extension then prefers over its
+	# own. Editor-only: it changes no compiler behaviour and moves no artifact.
+	#
+	# CI's build jobs pass `components:` to dtolnay/rust-toolchain explicitly and are unaffected. The
+	# supply-chain job is the one that lets rustup materialize THIS file (cargo-deny shells out to
+	# `cargo metadata`), so it pays one extra component download — the trade for not having every
+	# contributor dismiss a modal.
+	"rust-analyzer",
 ]
 # substrate's wasm-builder prefers wasm32v1-none when it is installed, and falls back to
 # wasm32-unknown-unknown; both are here so the runtime wasm builds either way.
