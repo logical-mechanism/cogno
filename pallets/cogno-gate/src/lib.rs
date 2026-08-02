@@ -482,6 +482,19 @@ pub mod pallet {
         /// been represented anyway). The observation is an unbounded delta now, so a credential past this
         /// cap is genuinely never scanned and never gets voting power — which is what the warnings below
         /// are for.
+        ///
+        /// ⚠⚠ And "never gets voting power" understates it, which matters if anyone ever sizes this cap
+        /// against a real ledger. The scan is the SCOPE of the node's read, so a credential outside it is
+        /// absent from `stake_entries` — and the observer cannot tell that apart from a credential whose
+        /// stake genuinely went to zero, so it emits an explicit unlock and ZEROES that account's
+        /// `VotingPower`. Iteration is by hashed key, so which credentials fall outside the prefix SHIFTS
+        /// as the map grows: a new feeless `link_stake_signed` hashing low can displace an
+        /// already-credited one. An account past the cap therefore does not merely fail to gain power, it
+        /// silently loses power it already had, having done nothing. (The pre-215 unlock clamp behaved
+        /// the same way, so this is not new — but `MaxScanned` is the only ceiling left, which makes it
+        /// the one that has to be sized honestly.) Fixing it properly means never dropping a credential
+        /// that holds a live `LastObservedStake` row, i.e. spending the cap on the not-yet-credited
+        /// remainder. Not reachable on this chain: 7 bound credentials against a cap of 1024.
         pub fn bound_stake_credentials_capped(cap: u32) -> alloc::vec::Vec<StakeCredential> {
             let cap = cap as usize;
             // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that

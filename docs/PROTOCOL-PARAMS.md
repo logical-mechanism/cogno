@@ -280,7 +280,9 @@ prefix nothing declares.
 
 Verifiable SPO / dRep / CC badges (see [VERIFIABLE-ROLE-TAGS.md](VERIFIABLE-ROLE-TAGS.md)). Claiming a role
 key is a permissionless CIP-8 self-proof (bare-unsigned and feeless, reusing the cogno-gate verifier); the
-badge itself is written only by the cardano-observer inherent, so the observed side sits under `MaxObserved`.
+badge itself is written only by the cardano-observer inherent, so the observed side sits under `MaxScanned`
+(the per-`RoleKind` claimed-credential scan cap — no longer a bound on the observation itself, which is a
+delta since spec 215).
 
 | Parameter | Value | Symbol / file |
 |---|---|---|

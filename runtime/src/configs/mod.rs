@@ -1306,8 +1306,16 @@ impl pallet_microblog::ChamberRoles<AccountId> for ChamberRolesProvider {
     }
     // The observed role-holder set — the `ObservedRoles` keys, capped at `MaxScanned` so the on-chain
     // chamber freeze (`close_poll`) stays bounded even against a map with stale rows — mirroring
-    // `ObservedStakers::stakers`. The role axis cannot actually exceed the cap today: the observation is
-    // scoped to the claimed credentials, and that scan is capped at the same value.
+    // `ObservedStakers::stakers`.
+    //
+    // ⚠ It used to be true that the role axis "cannot exceed the cap": before spec 215 `role_entries`
+    // was itself a `BoundedVec<_, MaxObserved>`, so the observation could not carry more. It is a plain
+    // `Vec` now and nothing bounds it, and the SCAN cap is applied PER `RoleKind` (`claimed_credentials`
+    // takes `cap` of each of Spo/DRep/Committee) with `BoundStakeCreds` a fourth independent budget for
+    // the SpoOwner free path — so the union ceiling is a few times `MaxScanned`, not `MaxScanned`. Above
+    // it this `.take(cap)` is a real truncation of the chamber tally, which `close_poll` then freezes
+    // into `PollResult`. Same accepted-deferred-work note as `MaxObservedAccounts` below: the chain has
+    // single-digit role holders against a 1024 cap, and the fix is a paged tally.
     fn role_holders() -> alloc::vec::Vec<AccountId> {
         let cap = <<Runtime as pallet_cardano_observer::Config>::MaxScanned as frame_support::traits::Get<
             u32,
@@ -1942,7 +1950,8 @@ impl pallet_cardano_observer::Config for Runtime {
     // block is ~43 Cardano tx/s against one script address, sustained). The one case that genuinely
     // exceeds it is a BOOTSTRAP — a fresh chain, or the first observation after the v0 -> v1 migration
     // re-derives every value — and that drains at 256 per block, so even a 100k-identity chain is caught
-    // up in ~7 minutes, once. It is not on any critical path.
+    // up in ~40 minutes (391 blocks x 6 s), once. It is not on any critical path. On the live chain the
+    // migration re-derives 20 rows, which is one block.
     //
     // The old fitted base of ~42.6 ms was a regression artifact (with four components sweeping to 1024
     // there was no datapoint anywhere near the origin, so the intercept was pure extrapolation). Three

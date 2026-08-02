@@ -211,7 +211,18 @@ and crossing it was a cliff rather than a degradation: `create_inherent` did
 `BoundedVec::try_from(..).ok()?`, so one entry over the bound dropped the *entire* inherent. Since this
 pallet is the sole weight writer and the reference is a pure function of the parent block, that
 abstention repeated every slot — the 1025th locker froze weight updates for the other 1024,
-permanently, until somebody unlocked. `MaxObserved` is gone. Nothing bounds the observed population.
+permanently, until somebody unlocked. `MaxObserved` is gone, and with it the cliff: nothing bounds how
+many accounts can hold posting power.
+
+One ceiling did survive, on a different axis and for a different reason. The vault set is discovered by
+policy id and is genuinely unbounded, but the stake and role observations are *scoped* to credentials the
+runtime enumerates, and those scans are capped at `MaxScanned` (1024) because `link_stake_signed` and
+`claim_role_signed` are feeless bare-unsigned calls — an uncapped scan is a free way to grow every node's
+per-block db-sync query until it blows its timeout. A credential past that cap is not scanned, so it is
+not observed; and because the observer cannot tell "outside the scan" from "stake went to zero", it
+zeroes that account rather than merely failing to credit it. That is a per-identity omission the node
+alarms on (`ObserverScanCapped`), not the chain-wide freeze the old overrun caused, and the chain is
+three orders of magnitude below it — but it is the number to size before the stake or role ledger grows.
 
 ### Paging and the backlog
 

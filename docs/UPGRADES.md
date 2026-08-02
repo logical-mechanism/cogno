@@ -138,9 +138,12 @@ never enact it.
 cargo install --git https://github.com/paritytech/try-runtime-cli --locked   # once
 cargo build --release --features try-runtime                                 # NOT the enactment blob
 
+# Sync a local tracking node first (see below for why), then point the dry-run at IT:
+scripts/run-tracking-node.sh &                                               # syncs to tip over P2P
+
 try-runtime --runtime target/release/wbuild/cogno-chain-runtime/cogno_chain_runtime.wasm \
   on-runtime-upgrade --checks all --blocktime 6000 \
-  live --uri wss://cogno.forum/rpc
+  live --uri ws://127.0.0.1:9944
 ```
 
 `--checks all` is the point — it runs the pre/post hooks *and* `try_state` over the whole migrated
@@ -150,12 +153,22 @@ re-downloading. Read the output for `post_upgrade` failures **and** for the weig
 single-block migration reports its weight after the fact, so an under-count is not something the block
 limiter can catch for you.
 
+**Scrape from a LOCAL node, not `wss://cogno.forum/rpc`.** The public endpoint rate-limits, and
+`remote-ext` answers a throttled batch by *logging* `Value worker N: batch item error: RPC rate limit
+exceeded` and carrying on — so it hands you a snapshot with holes and try-runtime then reports a
+`try_state` failure in whichever pallet happened to lose a value. That failure is indistinguishable from
+a real one: the spec-215 dry-run against the public RPC failed with `"a TopLevelByAuthor entry is missing
+or is not top-level"` on all four attempts (7–9 rate-limit errors each), while the same runtime against a
+locally-synced node passed every pallet's `try_state` and exited 0. Live state was independently verified
+consistent. A truncated scrape is the one failure mode that makes this gate lie in *both* directions, so
+if you see a `try_state` error, confirm the scrape was clean before believing it.
+
 Enact only after this passes — then build the enactment WASM **clean**, with no `try-runtime` and no
 `runtime-benchmarks` feature.
 
 ## Version rules
 
-- **`spec_version`** — bump on any logic/storage/metadata change (currently **213**). `apply` rejects
+- **`spec_version`** — bump on any logic/storage/metadata change (currently **215**). `apply` rejects
   a non-increasing value on-chain.
 - **`transaction_version`** — bump *only* when the extrinsic encoding changes (a new transaction
   extension, or changed call arguments — removing an argument counts, removing a whole call does
