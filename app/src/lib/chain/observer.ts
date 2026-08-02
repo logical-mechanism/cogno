@@ -119,6 +119,15 @@ export function slotToUnixSec(slot: bigint, cfg: ObserverConfig): number {
  * would keep the "crediting" narration on screen after the user could already post, which is worse than
  * an ETA that expires a minute early.
  *
+ * ONE MORE SOURCE OF THAT ERROR, since spec 215. The observer applies a delta, and a change set larger
+ * than one block's page drains over several blocks — during which `LastReference` is deliberately HELD,
+ * so it reads as "observed AND applied through here" rather than over-claiming. A held frontier makes
+ * this estimate lag by the length of the drain, in the same early-predicting direction as above and
+ * usually by seconds. It is bounded by how long a drain runs (a page is 256 changes per axis per block,
+ * which is far more churn than a 6 s window realistically delivers), and it is zero on a chain that is
+ * not backlogged, which is nearly always. If a user ever reports "it said my ADA landed and it hadn't",
+ * `CardanoObserver.PendingChanges` is the thing to read.
+ *
  * Returns null when the frontier has never been written (a chain that has not yet observed) or on any
  * read error, in which case the caller keeps the existing "confirming, no ETA yet" behaviour.
  */

@@ -144,20 +144,18 @@ impl<T: Config> UncheckedOnRuntimeUpgrade for InnerMigrateV0ToV1<T> {
         );
         let _ = roles;
 
-        // The retired blobs are gone. This asserts on the RAW keys rather than through the old aliases,
-        // because a `Vec` alias answers a missing value with `ValueQuery`'s empty default and would agree
-        // with itself either way.
-        for item in ["LastObserved", "LastObservedStake", "LastObservedRoles"] {
-            let key = [
-                sp_io::hashing::twox_128(
-                    <Pallet<T> as frame_support::traits::PalletInfoAccess>::name().as_bytes(),
-                )
-                .as_slice(),
-                sp_io::hashing::twox_128(item.as_bytes()).as_slice(),
-            ]
-            .concat();
+        // The retired blobs are gone. This probes the RAW key rather than reading through the old alias:
+        // a `Vec` alias answers a missing value with `ValueQuery`'s empty default, so `get().is_empty()`
+        // would be true whether the blob was removed or merely emptied, and it would agree with itself
+        // either way. The key comes FROM the alias (`hashed_key()`), so it is provably the same prefix the
+        // migration wrote through.
+        for key in [
+            LastObservedV0::<T>::hashed_key(),
+            LastObservedStakeV0::<T>::hashed_key(),
+            LastObservedRolesV0::<T>::hashed_key(),
+        ] {
             ensure!(
-                sp_io::storage::get(&key).is_none(),
+                !frame_support::storage::unhashed::exists(&key),
                 "v1: a retired StorageValue blob is still present at its bare prefix"
             );
         }
