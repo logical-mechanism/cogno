@@ -494,6 +494,67 @@ fn check_inherent_agrees_with_the_author_mid_backlog() {
 }
 
 #[test]
+fn check_inherent_pins_the_clears_before_credits_page_order() {
+    new_test_ext().execute_with(|| {
+        // The page order is a CONSENSUS rule, not a local tidiness one: `observe` applies the page in the
+        // order it arrives, so an importer that accepted a re-ordered page would accept a block that
+        // silently un-credits an account. Both halves are asserted — the honest mixed page agrees, and the
+        // same changes in the other order are rejected.
+        enforce();
+        bind(A, ALICE);
+        bind(B, BOB);
+        observe_snapshot(&snap(
+            MAX_REFERENCE - 5,
+            &[(A, 200_000_000), (B, 300_000_000)],
+        ));
+
+        // A keeps its lock at a NEW value (a credit) while B unlocks (a clear) — one page, both kinds.
+        let obs = snap(MAX_REFERENCE - 4, &[(A, 250_000_000)]);
+        let call = derive(&obs);
+        let (reference, commitment, changes) = match &call {
+            crate::Call::observe {
+                reference,
+                inputs_commitment,
+                changes,
+                ..
+            } => (reference.clone(), *inputs_commitment, changes.clone()),
+            _ => panic!("expected observe call"),
+        };
+        assert_eq!(
+            changes.to_vec(),
+            vec![(B, None), (A, Some(250_000_000))],
+            "the clear pages first even though B's beacon byte is higher",
+        );
+
+        let mut id = InherentData::new();
+        put_obs(&mut id, &obs);
+        assert!(
+            <CardanoObserver as ProvideInherent>::check_inherent(&call, &id).is_ok(),
+            "an honest mixed page agrees on both sides",
+        );
+
+        // The SAME set of changes, credits first. Byte-comparing the derived delta is what rejects it.
+        let mut reordered = changes.to_vec();
+        reordered.reverse();
+        let forged = crate::Call::observe {
+            reference,
+            inputs_commitment: commitment,
+            changes: BoundedVec::truncate_from(reordered),
+            stake_changes: BoundedVec::new(),
+            role_changes: BoundedVec::new(),
+            pending: 0,
+        };
+        assert!(
+            matches!(
+                <CardanoObserver as ProvideInherent>::check_inherent(&forged, &id),
+                Err(InherentError::ComputeDiverged),
+            ),
+            "a re-ordered page is a divergence, not an accepted alternative",
+        );
+    });
+}
+
+#[test]
 fn check_inherent_rejects_a_tampered_delta() {
     new_test_ext().execute_with(|| {
         bind(A, ALICE);
