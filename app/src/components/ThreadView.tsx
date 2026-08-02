@@ -95,6 +95,7 @@ export function ThreadView({ rootId }: ThreadViewProps) {
   // `bestBlock` drives the live re-read (tallies refresh in place; new replies buffer behind the pill).
   const {
     thread,
+    unreachableReplies,
     loading,
     error,
     addOptimisticReply,
@@ -605,6 +606,18 @@ export function ThreadView({ rootId }: ThreadViewProps) {
               )}
             </div>
           ))
+        )}
+        {/* The runtime returns at most MAX_THREAD_REPLIES (512) direct replies and has no cursor for
+            the rest, and the ones it drops are the NEWEST — so on a thread past the cap the bottom of
+            this list looks current and is not. Say so rather than ending silently: the exact count is
+            an O(1) on-chain aggregate, so we always know how many are missing. Rendered here, at the
+            bottom, because that is where the gap actually is. */}
+        {unreachableReplies > 0 && (
+          <p className={styles.repliesCapped}>
+            {formatCount(unreachableReplies)} newer{" "}
+            {unreachableReplies === 1 ? "reply is" : "replies are"} not shown. This thread is longer
+            than one read can return.
+          </p>
         )}
         {loading && thread && (
           <div className={styles.refetching}>

@@ -30,6 +30,22 @@ import type { CognoPost, ThreadView, Ss58 } from "@/lib/types";
 
 export interface UseThread {
   thread: ThreadView | null;
+  /**
+   * Direct replies the chain says exist that this read did NOT return, because the runtime's
+   * `thread()` enriches at most `MAX_THREAD_REPLIES` (512) of them and has no cursor for the rest.
+   *
+   * Derived from the RAW read, deliberately, and not from `thread` — by the time the returned
+   * `thread` is assembled its `replies` have been narrowed by the new-reply pill (`shownIds`) and
+   * widened by the optimistic overlay, so comparing its own two fields reports a phantom truncation
+   * every time a reply is buffered behind the pill. `base` is the only place the two numbers mean
+   * what they look like: `replyCount` is the exact on-chain `ReplyCount` aggregate and
+   * `replies.length` is what the node was willing to enrich.
+   *
+   * The truncated replies are the NEWEST ones: the runtime sorts reply ids ascending and takes the
+   * first 512, so a thread past the cap is missing its most recent end, which is also the end this
+   * surface renders at the bottom. 0 for every thread under the cap, which is all of them today.
+   */
+  unreachableReplies: number;
   loading: boolean;
   error: string | null;
   /** Insert a pending optimistic reply under this thread; returns its clientId. */
@@ -282,8 +298,15 @@ export function useThread(
     setShownIds(new Set(b.replies.map((r) => String(r.id))));
   }, []);
 
+  // See the doc on `UseThread.unreachableReplies` for why this reads `base` and not `thread`.
+  const unreachableReplies = useMemo(
+    () => (base ? Math.max(0, base.replyCount - base.replies.length) : 0),
+    [base],
+  );
+
   return {
     thread,
+    unreachableReplies,
     loading,
     error,
     addOptimisticReply: (post: CognoPost) => addPending(post, rootId ?? undefined),
