@@ -212,6 +212,10 @@ pub mod pallet {
         /// redundant with one the observation already had. The observation is a delta now and nothing
         /// bounds its size, so a credential past this cap is simply never scanned, never observed, and
         /// never badged — a per-identity omission the warnings below exist to catch.
+        ///
+        /// ⚠ Since spec 217 that omission can no longer take a badge AWAY. The scan pins every claim
+        /// whose account already holds a live observed-role row, so the cap falls only on claims that
+        /// have never been confirmed. See [`Pallet::claimed_credentials`].
         type MaxScanned: Get<u32>;
         /// Weight information for this pallet's dispatchables.
         type WeightInfo: WeightInfo;
@@ -540,34 +544,82 @@ pub mod pallet {
             ObservedRoles::<T>::get(who).into_inner()
         }
 
-        /// Every credential currently CLAIMED for `role` — the enumeration the cardano-observer scopes
-        /// its db-sync read to (the `bound_role_credentials` runtime API). Bounded by the number of
-        /// claims, not by all Cardano pools / dReps.
-        pub fn claimed_credentials(role: RoleKind) -> Vec<RoleCredential> {
+        /// Every credential currently CLAIMED for `role` that the cardano-observer should scan this
+        /// block — the enumeration it scopes its db-sync read to (the `bound_role_credentials` runtime
+        /// API): the `pinned` ones first (never dropped), then as much of the rest as the budget allows.
+        /// Bounded by the number of claims, not by all Cardano pools / dReps.
+        pub fn claimed_credentials(
+            role: RoleKind,
+            pinned: Vec<RoleCredential>,
+        ) -> Vec<RoleCredential> {
             // BOUNDED, for the same reason `bound_stake_credentials` is: this runs on the inherent-data
             // path of every node on every block and feeds a `= ANY(…)` array into a db-sync query under a
             // 2 s timeout, while the map it scans is grown by `claim_role_signed` — bare-unsigned,
             // feeless and capacity-unmetered. An unbounded scan here stops the sole weight writer for
             // everyone once the query outgrows the timeout.
             //
-            // Iteration is by hashed key, so the prefix is deterministic and every node takes the same
-            // one — `check_inherent` still agrees. Note this cap now BINDS: the observation itself is
-            // unbounded since spec 215, so a credential past the cap is genuinely not observed rather
-            // than merely unrepresentable.
+            // The result is canonically sorted and a pure function of parent state, so every node derives
+            // the same scoping set and `check_inherent` agrees. Note this cap BINDS: the observation
+            // itself is unbounded since spec 215, so a credential past the cap is genuinely not observed
+            // rather than merely unrepresentable.
+            //
+            // ⚠ `pinned` is the spec-217 eviction fix, and it matters MORE here than on the stake axis.
+            // Dropping a claimed credential out of scope makes it absent from `role_entries`, which the
+            // observer cannot tell apart from a role that genuinely lapsed — so it clears the account's
+            // WHOLE badge set (`RoleSink::set_roles` is a whole-set overwrite) and, because the badge
+            // carries the governance-poll chamber weight, drops that account out of every chamber tally.
+            // A `close_poll` in the same block FREEZES that under-count into `PollResult` permanently,
+            // with no re-pricing path. Since iteration was by hashed key and `blake2_128` is grindable
+            // offline, a feeless `claim_role_signed` flood could target a specific operator's badge.
+            // The caller pins every credential whose account already holds a live `LastObservedRoles`
+            // row, which is self-sustaining: pinned ⇒ always in scope ⇒ never spuriously cleared ⇒ the
+            // basis row that pins it is never removed.
+            //
+            // Still NOT fixed: a not-yet-observed claim past the cap is never scanned. See
+            // `pallet_cogno_gate::Pallet::bound_stake_credentials_capped` for why the rotating window
+            // that would fix it is a larger change than this one.
             let cap = T::MaxScanned::get() as usize;
-            // Take ONE past the cap so the two cases are distinguishable: `len == cap` is a ledger that
-            // exactly fills it (nothing dropped yet — the last quiet block), `len > cap` is a real
-            // truncation. Truncating back leaves the returned prefix byte-identical to `take(cap)`, so
-            // the author and the importer still derive the same scoping set.
-            let mut out: Vec<RoleCredential> = RoleCredIndex::<T>::iter_key_prefix(role)
-                .take(cap.saturating_add(1))
+            // A BTreeSet, not a Vec: dedups and makes the result canonically sorted, so the scoping set
+            // never depends on the order a hash-ordered iteration happened to yield keys in.
+            let mut out: alloc::collections::BTreeSet<RoleCredential> = pinned
+                .into_iter()
+                // A pinned credential that has since been unclaimed or revoked is NOT scanned: its
+                // account's basis row should be cleared, and that is exactly how `derive_call` clears it.
+                .filter(|cred| RoleCredIndex::<T>::contains_key(role, cred))
+                .take(cap)
                 .collect();
-            if out.len() > cap {
-                out.truncate(cap);
+            if out.len() >= cap {
+                log::error!(
+                    target: LOG_TARGET,
+                    "claimed {role:?} credentials holding observed state have reached the MaxScanned cap \
+                     ({cap}) — no budget is left to confirm new claims, and the next one past the cap \
+                     loses the eviction protection. Raise MaxScanned or prune the ledger.",
+                );
+                return out.into_iter().collect();
+            }
+            // Spend what is left on the not-yet-observed remainder, in hash order. One past the budget
+            // keeps "exactly fits" distinguishable from "truncated". The skips are pinned credentials,
+            // of which there are at most `out.len()`, so the walk stays bounded.
+            let budget = cap - out.len();
+            let mut examined = 0usize;
+            let mut overflowed = false;
+            for cred in RoleCredIndex::<T>::iter_key_prefix(role) {
+                if out.contains(&cred) {
+                    continue; // already pinned — not a second slot
+                }
+                if examined == budget {
+                    overflowed = true;
+                    break;
+                }
+                examined += 1;
+                out.insert(cred);
+            }
+            if overflowed {
                 log::warn!(
                     target: LOG_TARGET,
                     "claimed {role:?} credentials EXCEED the MaxScanned cap ({cap}) — claims past it \
-                     are not observed. Raise MaxScanned or prune the ledger.",
+                     are not observed. Claims already confirmed on-chain are pinned and keep their \
+                     badges. Raise MaxScanned or prune the ledger.",
                 );
             } else if out.len() == cap {
                 log::warn!(
@@ -576,7 +628,7 @@ pub mod pallet {
                      claim is not observed. Raise MaxScanned or prune the ledger.",
                 );
             }
-            out
+            out.into_iter().collect()
         }
 
         /// Verify a CIP-8 role-key proof and resolve `(bound account, role, credential)`. The shared

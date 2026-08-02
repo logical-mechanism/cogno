@@ -1486,6 +1486,44 @@ impl pallet_cardano_observer::StakeResolver<AccountId> for StakeLookup {
     }
 }
 
+/// The observer's `MaxScanned`, the one cap the three credential scans and the read-side observed-account
+/// joins all spend. Named once so the adapters below cannot drift from the pallet's own bound.
+fn max_scanned() -> u32 {
+    <<Runtime as pallet_cardano_observer::Config>::MaxScanned as sp_core::Get<u32>>::get()
+}
+
+/// The stake credentials that must NEVER be dropped from the observer's per-block scan: everything that
+/// already holds observed state, on either axis.
+///
+/// This lives in the runtime rather than in cogno-gate because cogno-gate does not (and should not)
+/// depend on pallet-cardano-observer — the adapter is the only place that can name both.
+///
+/// Two sources, and the second is not optional:
+///
+/// - `LastObservedStake` — the applied voting-power basis. A credential with a row here has been
+///   credited, and dropping it out of scope makes it absent from `stake_entries`, which `derive_call`
+///   reads as "stake went to zero" and `observe` applies by zeroing the account's `VotingPower`.
+/// - The stake credential of every account holding a `LastObservedRoles` row. The stake list is not only
+///   the stake scope: the node passes it as `$2` to the ROLE query, where it scopes the `owners` CTE, and
+///   the pools it finds there feed `read_pool_stake`. So dropping a stake credential also deletes its
+///   `SpoOwner` badges AND zeroes those pools' governance-poll chamber weight — which `close_poll`
+///   freezes into `PollResult` permanently. Pinning on the role basis closes that path too.
+///
+/// Both walks are bounded by `MaxScanned`, and the set is deduped and sorted by the callee.
+fn pinned_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
+    let cap = max_scanned() as usize;
+    let mut pinned: alloc::vec::Vec<[u8; 28]> =
+        pallet_cardano_observer::LastObservedStake::<Runtime>::iter_keys()
+            .take(cap)
+            .collect();
+    for account in pallet_cardano_observer::LastObservedRoles::<Runtime>::iter_keys().take(cap) {
+        if let Some(cred) = pallet_cogno_gate::StakeCredOf::<Runtime>::get(&account) {
+            pinned.push(cred);
+        }
+    }
+    pinned
+}
+
 /// The set of bound stake credentials, for the node-side IDP (via the `CardanoObserverApi`): enumerate
 /// the cogno-gate `AccountOfStakeCred` keys at the parent block's state.
 pub struct BoundStakeCreds;
@@ -1493,9 +1531,11 @@ impl pallet_cardano_observer::BoundStakeCredentials for BoundStakeCreds {
     fn bound_stake_credentials() -> alloc::vec::Vec<[u8; 28]> {
         // CAPPED at the observer's `MaxScanned`, so a bare-unsigned, feeless `link_stake_signed` cannot
         // grow the per-block db-sync scope without bound and stall the sole weight writer. The scan + the
-        // operator warning live in cogno-gate, next to the map and the log target.
+        // operator warning live in cogno-gate, next to the map and the log target; the pinned set is
+        // built HERE because it reads the observer's bases, which that pallet cannot see.
         pallet_cogno_gate::Pallet::<Runtime>::bound_stake_credentials_capped(
-            <<Runtime as pallet_cardano_observer::Config>::MaxScanned as sp_core::Get<u32>>::get(),
+            pinned_stake_credentials(),
+            max_scanned(),
         )
     }
 }
@@ -1658,6 +1698,200 @@ mod identity_lifecycle_tests {
     }
 }
 
+/// The spec-217 eviction fix: the observer's per-block credential SCAN must never drop a credential
+/// that already holds observed state.
+///
+/// These drive the real `BoundStakeCreds` / `BoundRoleCreds` adapters against real `Runtime` storage,
+/// not a mock, because the whole fix is the runtime-level join between cogno-gate's / cardano-roles'
+/// claim maps and the OBSERVER's bases — neither pallet can see the other, so a pallet-level test
+/// cannot express the invariant at all.
+#[cfg(test)]
+mod fair_scan_tests {
+    use super::*;
+    use alloc::collections::BTreeSet;
+    use frame_support::BoundedVec;
+    use pallet_cardano_observer::{BoundRoleCredentials, BoundStakeCredentials};
+    use pallet_cardano_roles::RoleKind;
+
+    /// Distinct, deterministic `(credential, account)` pairs. The credential bytes are what
+    /// `blake2_128` orders the map by, so varying them varies the hash position — which is exactly the
+    /// axis a real attacker grinds.
+    fn pair(i: u32) -> ([u8; 28], AccountId) {
+        let mut cred = [0u8; 28];
+        cred[..4].copy_from_slice(&i.to_le_bytes());
+        let mut acct = [0u8; 32];
+        acct[..4].copy_from_slice(&i.to_le_bytes());
+        acct[31] = 0xAA;
+        (cred, AccountId::from(acct))
+    }
+
+    /// Fill `AccountOfStakeCred` past `MaxScanned` and return a credential that the OLD hash-ordered
+    /// `iter_keys().take(cap)` prefix would have left out — the account a feeless bind flood evicts.
+    fn flood_past_the_cap() -> ([u8; 28], AccountId) {
+        let cap = max_scanned() as usize;
+        for i in 0..(cap as u32 * 2) {
+            let (cred, who) = pair(i);
+            pallet_cogno_gate::StakeCredOf::<Runtime>::insert(&who, cred);
+            pallet_cogno_gate::AccountOfStakeCred::<Runtime>::insert(cred, &who);
+        }
+        let prefix: BTreeSet<[u8; 28]> =
+            pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+                .take(cap)
+                .collect();
+        let cred = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+            .find(|c| !prefix.contains(c))
+            .expect("the map holds twice the cap, so something is outside the prefix");
+        let who = pallet_cogno_gate::AccountOfStakeCred::<Runtime>::get(cred)
+            .expect("the key came from this map");
+        (cred, who)
+    }
+
+    /// THE test. A credential holding a live `LastObservedStake` row is still scanned after the map
+    /// grows past the cap — even though its hash position puts it outside the prefix the scan used to
+    /// return. Against the pre-217 scan this fails: the credential is absent from the scan, therefore
+    /// absent from `stake_entries`, therefore emitted as `(cred, None)` and its account's `VotingPower`
+    /// is zeroed.
+    #[test]
+    fn a_credited_stake_credential_survives_a_bind_flood() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned() as usize;
+            let (victim, victim_account) = flood_past_the_cap();
+            pallet_cardano_observer::LastObservedStake::<Runtime>::insert(
+                victim,
+                (victim_account, 1_000u128),
+            );
+
+            let scanned = BoundStakeCreds::bound_stake_credentials();
+
+            assert_eq!(
+                scanned.len(),
+                cap,
+                "the db-sync scope must still respect MaxScanned"
+            );
+            assert!(
+                scanned.contains(&victim),
+                "an account that already holds observed voting power must never be scanned out of \
+                 scope by a flood of feeless binds — that is what zeroes its VotingPower",
+            );
+        });
+    }
+
+    /// The `SpoOwner` half of the same defect. The stake list is `$2` in the ROLE query, so a stake
+    /// credential dropped out of scope also loses its owner-pool badges and their chamber weight. An
+    /// account holding a live ROLE basis row must therefore pin its STAKE credential too, even with no
+    /// `LastObservedStake` row of its own.
+    #[test]
+    fn a_role_holders_stake_credential_survives_a_bind_flood() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let (victim, victim_account) = flood_past_the_cap();
+            let basis: BoundedVec<
+                (u8, [u8; 28], u128),
+                <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
+            > = alloc::vec![(0u8, [0xC0u8; 28], 42u128)]
+                .try_into()
+                .expect("one badge fits");
+            pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(&victim_account, basis);
+
+            assert!(
+                BoundStakeCreds::bound_stake_credentials().contains(&victim),
+                "dropping this credential deletes the account's SpoOwner badges and zeroes its pools' \
+                 chamber weight, which close_poll then freezes permanently",
+            );
+        });
+    }
+
+    /// The role axis' own scan, pinned through `RoleClaimOf`. A claimed credential whose account holds
+    /// a live role basis row stays in scope however many claims are ground in around it.
+    #[test]
+    fn a_confirmed_role_claim_survives_a_claim_flood() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned() as usize;
+            for i in 0..(cap as u32 * 2) {
+                let (cred, who) = pair(i);
+                pallet_cardano_roles::RoleClaimOf::<Runtime>::insert(&who, RoleKind::Spo, cred);
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::insert(RoleKind::Spo, cred, &who);
+            }
+            let prefix: BTreeSet<[u8; 28]> =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
+                    .take(cap)
+                    .collect();
+            let victim =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::iter_key_prefix(RoleKind::Spo)
+                    .find(|c| !prefix.contains(c))
+                    .expect("the map holds twice the cap");
+            let victim_account =
+                pallet_cardano_roles::RoleCredIndex::<Runtime>::get(RoleKind::Spo, victim)
+                    .expect("the key came from this map");
+            let basis: BoundedVec<
+                (u8, [u8; 28], u128),
+                <Runtime as pallet_cardano_observer::Config>::MaxRolesPerAccount,
+            > = alloc::vec![(0u8, victim, 7u128)]
+                .try_into()
+                .expect("one badge fits");
+            pallet_cardano_observer::LastObservedRoles::<Runtime>::insert(&victim_account, basis);
+
+            let scanned = BoundRoleCreds::claimed_calidus();
+
+            assert_eq!(
+                scanned.len(),
+                cap,
+                "the db-sync scope must still respect MaxScanned"
+            );
+            assert!(
+                scanned.contains(&victim),
+                "an operator whose badge is already confirmed must not lose it (and its chamber \
+                 weight) to a flood of feeless role claims",
+            );
+        });
+    }
+
+    /// The pin must not outlive the bind. A credential with a basis row whose cogno-gate bind was
+    /// REVOKED is deliberately left out of the scan, because `derive_call` clears a stale basis row
+    /// precisely by finding it absent from the observation. Pinning it would strand the row for ever.
+    #[test]
+    fn a_revoked_bind_is_not_pinned_back_into_scope() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let (cred, who) = pair(1);
+            pallet_cardano_observer::LastObservedStake::<Runtime>::insert(cred, (who, 1_000u128));
+            // No `AccountOfStakeCred` row: the bind is gone, only the basis remains.
+
+            assert!(
+                !BoundStakeCreds::bound_stake_credentials().contains(&cred),
+                "an unbound credential must stay out of scope so its basis row gets cleared",
+            );
+        });
+    }
+
+    /// The remainder budget is what the cap now falls on, and it must still be respected exactly:
+    /// pinning cannot become a way to grow the per-block db-sync query without bound.
+    #[test]
+    fn the_scan_never_exceeds_max_scanned() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            let cap = max_scanned() as usize;
+            flood_past_the_cap();
+            // Pin half the budget, then check the total is still exactly the cap.
+            for (i, cred) in pallet_cogno_gate::AccountOfStakeCred::<Runtime>::iter_keys()
+                .take(cap / 2)
+                .collect::<alloc::vec::Vec<_>>()
+                .into_iter()
+                .enumerate()
+            {
+                let (_, who) = pair(i as u32);
+                pallet_cardano_observer::LastObservedStake::<Runtime>::insert(cred, (who, 1u128));
+            }
+
+            let scanned = BoundStakeCreds::bound_stake_credentials();
+            assert_eq!(scanned.len(), cap);
+            let unique: BTreeSet<[u8; 28]> = scanned.iter().copied().collect();
+            assert_eq!(
+                unique.len(),
+                cap,
+                "a pinned credential must not occupy two slots"
+            );
+        });
+    }
+}
+
 #[cfg(test)]
 mod role_apply_tests {
     use super::*;
@@ -1725,24 +1959,44 @@ mod role_apply_tests {
     }
 }
 
+/// The claimed credentials for `role` that must never be dropped from the observer's per-block scan:
+/// the claim of every account that already holds a live `LastObservedRoles` row.
+///
+/// Keyed the long way round on purpose. The role basis is keyed by ACCOUNT (the sink is a whole-set
+/// overwrite, so the account is the unit that can be written safely), while the scan enumerates
+/// CREDENTIALS — so the pin walks the basis and maps each account back through `RoleClaimOf`, which
+/// holds at most one credential per (account, role). Bounded by `MaxScanned`.
+fn pinned_role_credentials(role: pallet_cardano_roles::RoleKind) -> alloc::vec::Vec<[u8; 28]> {
+    pallet_cardano_observer::LastObservedRoles::<Runtime>::iter_keys()
+        .take(max_scanned() as usize)
+        .filter_map(|account| pallet_cardano_roles::RoleClaimOf::<Runtime>::get(&account, role))
+        .collect()
+}
+
 /// The claimed role credentials, for the node-side IDP (via the `CardanoObserverApi`): enumerate the
 /// roles-pallet `RoleCredIndex` keys per role at the parent block's state. The `SpoOwner` free path reuses
 /// [`BoundStakeCreds`].
 pub struct BoundRoleCreds;
 impl pallet_cardano_observer::BoundRoleCredentials for BoundRoleCreds {
     fn claimed_calidus() -> alloc::vec::Vec<[u8; 28]> {
+        let role = pallet_cardano_roles::RoleKind::Spo;
         pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
-            pallet_cardano_roles::RoleKind::Spo,
+            role,
+            pinned_role_credentials(role),
         )
     }
     fn claimed_dreps() -> alloc::vec::Vec<[u8; 28]> {
+        let role = pallet_cardano_roles::RoleKind::DRep;
         pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
-            pallet_cardano_roles::RoleKind::DRep,
+            role,
+            pinned_role_credentials(role),
         )
     }
     fn claimed_committee() -> alloc::vec::Vec<[u8; 28]> {
+        let role = pallet_cardano_roles::RoleKind::Committee;
         pallet_cardano_roles::Pallet::<Runtime>::claimed_credentials(
-            pallet_cardano_roles::RoleKind::Committee,
+            role,
+            pinned_role_credentials(role),
         )
     }
 }
@@ -1991,6 +2245,19 @@ impl pallet_cardano_observer::Config for Runtime {
     // credential or role claim past the cap is not scanned, so it is not observed and gets no weight — a
     // per-identity omission that the node WARNs about, not the chain-wide freeze the old overrun caused.
     // The vault axis is discovered by policy id and has no cap at all.
+    //
+    // ⚠ Since spec 217 the ceiling falls only on credentials that have NEVER been credited. The two
+    // scans PIN everything holding a live observer basis row (`pinned_stake_credentials` /
+    // `pinned_role_credentials` above), because the scan is the SCOPE of the node's read: a credential
+    // outside it is absent from the observation, which `derive_call` cannot tell apart from "the stake
+    // went to zero" and applies by ZEROING that account. Iteration was by hashed key and `blake2_128` is
+    // grindable offline, so a feeless bind flood could evict a chosen account's weight on purpose.
+    //
+    // ⚠⚠ DO NOT RAISE THIS ALONE. `MaxObservedAccounts` (pallet-microblog) is an alias of it, and
+    // `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads. At 1024 that is 6144 reads ≈ 154 ms; the
+    // Normal-class budget is 75% of 2 s ≈ 60,000 reads, so somewhere around 10,000 a single feeless
+    // `close_poll` no longer fits in a block and becomes permanently undispatchable on a sudo-free
+    // chain. Raising this also silently changes poll TALLY VALUES (the two `.take(cap)` joins above).
     type MaxScanned = ConstU32<1024>;
     // The same `stake-1` ceiling as talk-stake (max lockable lovelace = total ADA supply). An entry
     // above it is SKIPPED by the observer (never bricks the Mandatory block), not rejected.

@@ -547,6 +547,20 @@ pub mod pallet {
         /// node's per-block work until the db-sync query blows its timeout. Capping the SCAN is what stops
         /// that. It also bounds the on-chain poll-tally join (`pallet_microblog::Config::MaxObservedAccounts`
         /// is wired to it), which is what lets `close_poll` declare a finite worst case.
+        ///
+        /// ⚠ It IS still a real ceiling on the stake and role axes: a credential past the cap is not
+        /// scanned, so it is not observed and gets no weight or badge. Since spec 217 that ceiling falls
+        /// only on credentials that have NEVER been credited — the scan pins everything holding a live
+        /// `LastObservedStake` / `LastObservedRoles` row, so an account can no longer lose weight it
+        /// already had to a flood of feeless binds. See
+        /// `pallet_cogno_gate::Pallet::bound_stake_credentials_capped`.
+        ///
+        /// ⚠⚠ RAISING THIS IS NOT FREE, and the ceiling is lower than it looks. `MaxObservedAccounts` is
+        /// an alias of it, and `close_poll` DECLARES `6 × MaxObservedAccounts` DB reads (~154 ms at 1024).
+        /// The Normal-class block budget is 75% of 2 s, i.e. roughly 60,000 reads — so somewhere around
+        /// 10,000 the declared weight of a single feeless `close_poll` no longer fits in a block and that
+        /// call becomes permanently undispatchable, with no sudo to undo it. Raise this constant and
+        /// `close_poll`'s weight declaration together, or not at all.
         #[pallet::constant]
         type MaxScanned: Get<u32>;
         /// Blocks without an APPLIED observation before the on-chain stall alarm latches ([`Stalled`]).
