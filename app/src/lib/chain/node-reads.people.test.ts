@@ -48,15 +48,41 @@ interface Calls {
 function fakeApi(people: FakePerson[], budget: number) {
   const calls: Calls = { search: [], who: [] };
 
-  const walk = (after: Ss58 | undefined, keep: (p: FakePerson) => boolean, limit: number) => {
+  /**
+   * The ENUMERATOR contract (`search_people`): stop examining once the page is full OR the budget is
+   * spent, and hand back the last row examined. Nothing the walk passed is dropped, so every match is
+   * returned by exactly one page.
+   */
+  const walkEnumerating = (after: Ss58 | undefined, keep: (p: FakePerson) => boolean, limit: number) => {
+    const start = after == null ? 0 : people.findIndex((p) => p.account === after) + 1;
+    const matched: FakePerson[] = [];
+    let examined = 0;
+    let last: string | undefined;
+    for (const p of people.slice(start)) {
+      if (matched.length >= limit || examined >= budget) break;
+      examined += 1;
+      last = p.account;
+      if (keep(p)) matched.push(p);
+    }
+    const more = matched.length >= limit || examined >= budget;
+    matched.sort((a, b) => b.followers - a.followers);
+    return Promise.resolve({
+      people: matched.map(summary),
+      next_cursor: more ? last : undefined,
+    });
+  };
+
+  /**
+   * The SAMPLER contract (`who_to_follow`): scan the whole budget, return the top `limit` of it, and
+   * advance past the window. Lower-ranked candidates the window examined are skipped.
+   */
+  const walkSampling = (after: Ss58 | undefined, limit: number) => {
     const start = after == null ? 0 : people.findIndex((p) => p.account === after) + 1;
     const window = people.slice(start, start + budget);
-    const matched = window.filter(keep);
-    matched.sort((a, b) => b.followers - a.followers);
-    // A cursor ONLY when the budget was actually spent — i.e. there are more rows past this window.
+    const ranked = [...window].sort((a, b) => b.followers - a.followers);
     const spent = window.length === budget && start + budget < people.length;
     return Promise.resolve({
-      people: matched.slice(0, limit).map(summary),
+      people: ranked.slice(0, limit).map(summary),
       next_cursor: spent ? window[window.length - 1].account : undefined,
     });
   };
@@ -71,11 +97,11 @@ function fakeApi(people: FakePerson[], budget: number) {
         ) => {
           calls.search.push({ after, limit });
           const needle = Binary.toText(term).toLowerCase();
-          return walk(after, (p) => p.name.toLowerCase().includes(needle), limit);
+          return walkEnumerating(after, (p) => p.name.toLowerCase().includes(needle), limit);
         },
         who_to_follow: (limit: number, after: Ss58 | undefined) => {
           calls.who.push({ after, limit });
-          return walk(after, () => true, limit);
+          return walkSampling(after, limit);
         },
       },
     },
@@ -145,6 +171,27 @@ describe("nodeSearchPeople", () => {
 
     expect(found).toHaveLength(5);
     expect(calls.search).toHaveLength(1);
+  });
+
+  it("returns every match, including ones a full page would once have discarded", async () => {
+    // THE ENUMERATOR CONTRACT. 12 matches sit inside one 20-row scan window with limit=4. A read that
+    // scanned the whole window and then rank-truncated to 4 would return the 4 highest and advance the
+    // cursor past the other 8, making them unreachable through any page — the same defect the cursor
+    // exists to remove, one level down. Stopping at the page limit is what keeps every match reachable.
+    const matches = Array.from({ length: 12 }, (_, i) => ({
+      account: `5m${i}`,
+      name: `Alice ${i}`,
+      followers: i,
+    }));
+    const { api } = fakeApi(matches, 20);
+
+    const found = await nodeSearchPeople(api, "alice", 4);
+
+    // The client asked for 4 and gets its 4, but chasing further reaches the rest: assemble all 12 by
+    // asking for a window big enough to hold them.
+    expect(found).toHaveLength(4);
+    const all = await nodeSearchPeople(fakeApi(matches, 20).api, "alice", 12);
+    expect(all.map((p) => p.author).sort()).toEqual(matches.map((m) => m.account).sort());
   });
 
   it("does not return the same account twice when a page seam repeats a row", async () => {

@@ -512,8 +512,14 @@ impl_runtime_apis! {
                 Some(a) => alloc::boxed::Box::new(pallet_profile::Profiles::<Runtime>::iter_from_key(a)),
                 None => alloc::boxed::Box::new(pallet_profile::Profiles::<Runtime>::iter()),
             };
+            // Stop EXAMINING once the page is full, exactly as `replies_from_seq` does — do not keep
+            // scanning and then rank-and-truncate. Truncating would drop matches the walk had already
+            // passed while the cursor advanced past them, so they would be unreachable through any page:
+            // the very defect this cursor exists to remove, reintroduced one level down. Ranking within
+            // a page is preserved (the sort below still orders the `limit` it returns); ranking ACROSS
+            // pages is the caller's job, and `nodeSearchPeople` does it over the union it assembles.
             for (account, prof) in scan {
-                if examined >= MAX_PEOPLE_SCAN {
+                if matches.len() >= limit || examined >= MAX_PEOPLE_SCAN {
                     break;
                 }
                 examined = examined.saturating_add(1);
@@ -528,9 +534,9 @@ impl_runtime_apis! {
                 let follower_count = pallet_microblog::FollowerCount::<Runtime>::get(&account);
                 matches.push((account, follower_count, prof));
             }
-            // Budget spent ⇒ there may be more; the walk ending on its own ⇒ genuinely exhausted, and the
-            // caller must not be handed a cursor that returns an empty page for ever.
-            let next_cursor = if examined >= MAX_PEOPLE_SCAN { last } else { None };
+            // Page full OR budget spent ⇒ there may be more below; the walk ending on its own ⇒ genuinely
+            // exhausted, and the caller must not be handed a cursor that returns an empty page for ever.
+            let next_cursor = if matches.len() >= limit || examined >= MAX_PEOPLE_SCAN { last } else { None };
             matches.sort_unstable_by(|a, b| b.1.cmp(&a.1));
             matches.truncate(limit);
             if matches.is_empty() {
@@ -556,6 +562,18 @@ impl_runtime_apis! {
             // still yields one row per AUTHOR, which is the membership semantics this scan wants (and
             // what keeps `MAX_PEOPLE_SCAN` a bound on candidates rather than on posts). `iter_keys`, not
             // `iter`: the count itself is never read, so decoding it is pure waste per row.
+            //
+            // ⚠ THIS PAGE IS A RANKED SAMPLER, NOT AN ENUMERATOR, and the difference from `search_people`
+            // above is deliberate. That one stops examining once the page is full, so every match is
+            // returned by exactly one page — because a person searching a name needs the one account they
+            // are looking for, however few followers it has. This one keeps scanning the whole budget and
+            // returns the TOP `limit` of the window, so a candidate it examined but did not return is
+            // skipped when the cursor advances past it. That is the correct trade here: the ones dropped
+            // are the LOWEST-ranked of their window, which is exactly what a suggestion list should drop,
+            // and stopping at `limit` instead would collapse the ranking pool from the whole window to
+            // `limit` candidates — making the ranking worse than before the cursor existed. Chasing the
+            // cursor still walks the entire corpus, so no high-follower account is unreachable.
+            // A globally-correct top-N needs a ranked index; that is separate, migration-bearing work.
             let mut ranked: Vec<(AccountId, u32)> = Vec::new();
             let mut examined: u32 = 0;
             let mut last: Option<AccountId> = None;

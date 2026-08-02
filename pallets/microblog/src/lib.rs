@@ -2589,6 +2589,13 @@ pub struct PersonSummary<AccountId> {
 /// examining the whole corpus in one `state_call`, which is the unbounded read the scan budget exists to
 /// prevent. A caller that wants the best N overall must chase pages and rank the union itself, and any
 /// surface that implies otherwise is making a promise the read does not keep.
+///
+/// ⚠⚠ THE TWO PRODUCERS DIFFER IN WHAT A PAGE OMITS, on purpose. [`Pallet::search_people`] is an
+/// ENUMERATOR: it stops examining once the page is full, so every match is returned by exactly one page
+/// and chasing to `next_cursor == None` sees all of them. [`Pallet::who_to_follow`] is a ranked SAMPLER:
+/// it scans its whole budget and returns the top `limit` of that window, so a candidate it examined but
+/// did not return is skipped when the cursor advances. Searching a name has to find the one account you
+/// asked for however few followers it has; a suggestion list is supposed to drop the lowest-ranked.
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug, TypeInfo)]
 pub struct PeoplePage<AccountId> {
     /// The page of people, ranked by `follower_count` within the page.
@@ -4027,11 +4034,14 @@ sp_api::decl_runtime_apis! {
         fn resolve_identity(identity_hash: [u8; 32]) -> Option<AccountId>;
         /// One page of people whose display name contains `term` (case-insensitive), ranked by follower
         /// count WITHIN the page, paged after the `after` cursor (`None` ⇒ from the start of the walk).
-        /// A short page with a non-`None` `next_cursor` means the scan budget ran out, not that the
-        /// matches did — chase it, or a bound account's exact name comes back as "no results".
+        /// EXHAUSTIVE: every match is returned by exactly one page, so chasing to `next_cursor == None`
+        /// sees all of them. A short page with a non-`None` cursor means the scan budget ran out, not
+        /// that the matches did — chase it, or a bound account's exact name comes back as "no results".
         fn search_people(term: Vec<u8>, limit: u32, after: Option<AccountId>) -> PeoplePage<AccountId>;
         /// One page of who-to-follow suggestions: bound authors with at least one post, ranked by
-        /// follower count WITHIN the page, paged after the `after` cursor. Same short-page contract.
+        /// follower count WITHIN the page, paged after the `after` cursor. A ranked SAMPLER, not an
+        /// enumerator — it returns the top `limit` of each scanned window, so lower-ranked candidates it
+        /// examined are skipped when the cursor advances. See [`PeoplePage`] for why the two differ.
         fn who_to_follow(limit: u32, after: Option<AccountId>) -> PeoplePage<AccountId>;
     }
 }
